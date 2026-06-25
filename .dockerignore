@@ -1,0 +1,23 @@
+# Keep the build context lean and never bake host/private state into the image.
+.git/
+.venv/
+venv/
+**/__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# archive data + machine-specific config — never ship these into the image
+data/
+truth/
+index.db
+index.db-*
+*.sqlite
+/.mcp.json
+
+# the obfuscated real corpus is mounted at runtime, never baked in (may be private)
+tests/install/fixtures-real/
+
+.DS_Store

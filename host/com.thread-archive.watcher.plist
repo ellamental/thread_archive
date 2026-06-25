@@ -1,0 +1,63 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Template — `make install-agent` substitutes __REPO__ and __LOGDIR__ at
+     install time. Do not install this file verbatim. -->
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.thread-archive.watcher</string>
+
+    <!-- `archive watch`: poll local AI-tool stores and import incrementally,
+         straight into the JSONL truth + SQLite index. No backend, no HTTP. -->
+    <key>ProgramArguments</key>
+    <array>
+        <string>__REPO__/.venv/bin/archive</string>
+        <string>watch</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>__REPO__</string>
+
+    <!-- The watcher is always-on. -->
+    <key>RunAtLoad</key>
+    <true/>
+
+    <!-- Load in the user's GUI login session — that's where the watched
+         home-dir stores (~/.claude, ~/.codex, Cursor, etc.) live. -->
+    <key>LimitLoadToSessionType</key>
+    <string>Aqua</string>
+
+    <key>KeepAlive</key>
+    <dict>
+        <key>Crashed</key>
+        <true/>
+    </dict>
+
+    <key>ThrottleInterval</key>
+    <integer>5</integer>
+
+    <!-- A live working-memory indexer: keep it responsive, don't let App Nap
+         stall the poll cadence. -->
+    <key>ProcessType</key>
+    <string>Standard</string>
+
+    <key>StandardOutPath</key>
+    <string>__LOGDIR__/watcher-stdout.log</string>
+
+    <key>StandardErrorPath</key>
+    <string>__LOGDIR__/watcher-stderr.log</string>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <!-- The venv's bin first so `archive` resolves its own interpreter. -->
+        <key>PATH</key>
+        <string>__REPO__/.venv/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+
+        <!-- THREAD_ARCHIVE_HOME is intentionally unset → ~/.thread_archive.
+             Uncomment to point the watcher at a non-default archive home.
+        <key>THREAD_ARCHIVE_HOME</key>
+        <string>__HOME__/.thread_archive</string>
+        -->
+    </dict>
+</dict>
+</plist>

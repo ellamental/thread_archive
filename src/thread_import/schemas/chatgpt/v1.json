@@ -1,0 +1,197 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "chatgpt_export_v1",
+  "title": "ChatGPT Export v1",
+  "description": "Original ChatGPT conversation export format",
+  "type": "array",
+  "items": {
+    "$ref": "#/definitions/conversation"
+  },
+  "definitions": {
+    "conversation": {
+      "type": "object",
+      "required": ["title", "mapping"],
+      "properties": {
+        "title": {
+          "type": ["string", "null"],
+          "description": "Conversation title"
+        },
+        "create_time": {
+          "type": ["number", "null"],
+          "description": "Unix timestamp when conversation was created"
+        },
+        "update_time": {
+          "type": ["number", "null"],
+          "description": "Unix timestamp when conversation was last updated"
+        },
+        "mapping": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/definitions/mappingNode"
+          },
+          "description": "Tree structure of messages"
+        },
+        "current_node": {
+          "type": ["string", "null"],
+          "description": "ID of the currently active message node"
+        },
+        "conversation_template_id": {
+          "type": ["string", "null"]
+        },
+        "gizmo_id": {
+          "type": ["string", "null"]
+        },
+        "id": {
+          "type": "string"
+        },
+        "moderation_results": {
+          "type": "array"
+        },
+        "safe_urls": {
+          "type": "array"
+        }
+      }
+    },
+    "mappingNode": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Node/message ID"
+        },
+        "parent": {
+          "type": ["string", "null"],
+          "description": "Parent node ID (null for root)"
+        },
+        "children": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Child node IDs"
+        },
+        "message": {
+          "oneOf": [
+            {"$ref": "#/definitions/message"},
+            {"type": "null"}
+          ],
+          "description": "Message content (null for structural nodes)"
+        }
+      }
+    },
+    "message": {
+      "type": "object",
+      "required": ["id", "author", "content"],
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Message ID"
+        },
+        "author": {
+          "$ref": "#/definitions/author"
+        },
+        "content": {
+          "$ref": "#/definitions/content"
+        },
+        "create_time": {
+          "type": ["number", "null"],
+          "description": "Unix timestamp when message was created"
+        },
+        "update_time": {
+          "type": ["number", "null"]
+        },
+        "status": {
+          "type": "string",
+          "enum": ["finished_successfully", "in_progress", "finished_partial_completion"]
+        },
+        "end_turn": {
+          "type": ["boolean", "null"]
+        },
+        "weight": {
+          "type": "number"
+        },
+        "metadata": {
+          "$ref": "#/definitions/metadata"
+        },
+        "recipient": {
+          "type": "string"
+        }
+      }
+    },
+    "author": {
+      "type": "object",
+      "required": ["role"],
+      "properties": {
+        "role": {
+          "type": "string",
+          "enum": ["user", "assistant", "system", "tool"],
+          "description": "Message author role"
+        },
+        "name": {
+          "type": ["string", "null"]
+        },
+        "metadata": {
+          "type": "object"
+        }
+      }
+    },
+    "content": {
+      "type": "object",
+      "properties": {
+        "content_type": {
+          "type": "string",
+          "enum": ["text", "code", "execution_output", "tether_browsing_display", "tether_quote", "multimodal_text", "system_error"]
+        },
+        "parts": {
+          "type": "array",
+          "description": "Content parts (text strings or objects)"
+        },
+        "language": {
+          "type": "string"
+        },
+        "text": {
+          "type": "string"
+        },
+        "result": {
+          "type": "string"
+        }
+      }
+    },
+    "metadata": {
+      "type": "object",
+      "properties": {
+        "is_user_system_message": {
+          "type": "boolean",
+          "description": "True if this is user's custom instructions"
+        },
+        "user_context_message_data": {
+          "type": "object"
+        },
+        "model_slug": {
+          "type": "string"
+        },
+        "default_model_slug": {
+          "type": "string"
+        },
+        "finish_details": {
+          "type": "object"
+        },
+        "citations": {
+          "type": "array"
+        },
+        "gizmo_id": {
+          "type": ["string", "null"]
+        },
+        "message_type": {
+          "type": ["string", "null"]
+        },
+        "request_id": {
+          "type": "string"
+        },
+        "timestamp_": {
+          "type": "string"
+        }
+      }
+    }
+  }
+}

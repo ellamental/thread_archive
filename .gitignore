@@ -1,0 +1,32 @@
+# venvs
+.venv/
+venv/
+
+# python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# Archive data lives in the user's home (~/.thread_archive), NEVER in the repo.
+# These are belt-and-suspenders in case a run is pointed at the repo by mistake.
+# All anchored to the repo root so they can't shadow the source tree (e.g. the
+# `src/thread_archive/truth/` module must stay tracked).
+/data/
+/index.db
+/index.db-*
+/truth/
+/*.sqlite
+
+# Machine-specific MCP client config — generated at install time with absolute paths
+# to this clone's venv (see claude-install.md). The tracked template is .mcp.json.example.
+/.mcp.json
+
+# Obfuscated corpus built from real local stores by tests/install/obfuscate_fixtures.py.
+# Private even after obfuscation — never commit it.
+tests/install/fixtures-real/
+
+# os
+.DS_Store

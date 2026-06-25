@@ -1,0 +1,191 @@
+"""
+Provider-specific parsers for chat export files.
+
+Each parser transforms a provider's export format into a standardized
+message format with unified content_blocks schema.
+
+## Architecture
+
+The parser system uses a pipeline pattern with clear boundaries:
+
+1. **Types** (`types/`): TypedDict schemas for provider input formats
+2. **Config** (`config/`): Provider-specific configuration (ProviderConfig)
+3. **Pipeline** (`pipeline/`): Composable parse -> transform -> normalize -> validate
+4. **Validators** (`validators/`): Pluggable validation rules
+5. **Transformers** (`transformers/`): Message transformations (coalescing, etc.)
+
+## Content Block Types
+
+- text: Plain text content
+- thinking: Model thinking/reasoning
+- tool_use: Tool/function call
+- tool_result: Tool/function result
+- image: Image content
+- file: File attachment
+- code: Code execution
+- system_context: System/user context
+- ide_context: IDE state (opened files, selections)
+- file_snapshot: File state snapshots
+- context_summary: Conversation summaries
+- parse_error: Preserved malformed data
+
+## Field Mapping
+
+- Each parser uses explicit FieldMapping declarations
+- Maps provider JSON fields to our semantic model
+- Documents what each field MEANS, not just where it comes from
+"""
+
+from typing import Type
+
+# Base types and infrastructure
+from .base import (
+    CodeBlock,
+    ContentBlock,
+    FieldMapping,
+    FileBlock,
+    ImageBlock,
+    ImportResult,
+    NormalizedMessage,
+    ProviderParser,
+    SemanticCheck,
+    SystemContextBlock,
+    TextBlock,
+    ThinkingBlock,
+    ToolResultBlock,
+    ToolUseBlock,
+    ValidationContext,
+    ValidationSeverity,
+)
+
+# Existing parsers (legacy interface, still functional)
+from .chatgpt import ChatGPTParser
+from .claude import ClaudeParser
+from .claude_code import ClaudeCodeParser
+
+# Provider configurations
+from .config import (
+    CHATGPT_CONFIG,
+    CLAUDE_CODE_CONFIG,
+    CLAUDE_CONFIG,
+    CURSOR_CONFIG,
+    ProviderConfig,
+    ThinkingExpectation,
+    get_provider_config,
+)
+from .cursor import CursorParser
+
+# Pipeline infrastructure
+from .pipeline import (
+    Normalizer,
+    Parser,
+    ParserPipeline,
+    RawMessage,
+    Transformer,
+    Validator,
+)
+
+# Transformers
+from .transformers import (
+    ActivePathTransformer,
+    IDEContextTransformer,
+    ThinkingMergeTransformer,
+    ToolCoalescingTransformer,
+)
+
+# Validators
+from .validators import (
+    BaseValidator,
+    ContentValidator,
+    ReferentialIntegrityValidator,
+    ThinkingBlockValidator,
+    TypeValidator,
+)
+
+# Registry of parser classes (not instances - we create instances with config)
+PARSER_CLASSES: dict[str, Type[ProviderParser]] = {
+    "chatgpt": ChatGPTParser,
+    "claude": ClaudeParser,
+    "claude-code": ClaudeCodeParser,
+    "cursor": CursorParser,
+    # Add more providers here:
+    # 'gemini': GeminiParser,
+    # 'copilot': CopilotParser,
+}
+
+# Available provider names
+PROVIDERS = list(PARSER_CLASSES.keys())
+
+
+def get_parser(provider: str, strict: bool = False) -> ProviderParser:
+    """
+    Get a parser instance for a provider.
+
+    Args:
+        provider: Provider name (chatgpt, claude, cursor)
+        strict: If True, validation warnings become errors
+
+    Returns:
+        Parser instance configured with the given strictness level
+    """
+    if provider not in PARSER_CLASSES:
+        raise ValueError(f"Unknown provider '{provider}'. Available: {PROVIDERS}")
+    return PARSER_CLASSES[provider](strict=strict)
+
+
+__all__ = [
+    # Base types
+    "ProviderParser",
+    "NormalizedMessage",
+    "ContentBlock",
+    "ImportResult",
+    # Field mapping infrastructure
+    "FieldMapping",
+    "SemanticCheck",
+    "ValidationContext",
+    "ValidationSeverity",
+    # Block types
+    "TextBlock",
+    "ThinkingBlock",
+    "ToolUseBlock",
+    "ToolResultBlock",
+    "ImageBlock",
+    "FileBlock",
+    "CodeBlock",
+    "SystemContextBlock",
+    # Provider configurations
+    "ProviderConfig",
+    "ThinkingExpectation",
+    "CHATGPT_CONFIG",
+    "CLAUDE_CONFIG",
+    "CLAUDE_CODE_CONFIG",
+    "CURSOR_CONFIG",
+    "get_provider_config",
+    # Pipeline infrastructure
+    "RawMessage",
+    "Parser",
+    "Transformer",
+    "Normalizer",
+    "Validator",
+    "ParserPipeline",
+    # Validators
+    "BaseValidator",
+    "ThinkingBlockValidator",
+    "ReferentialIntegrityValidator",
+    "TypeValidator",
+    "ContentValidator",
+    # Transformers
+    "ToolCoalescingTransformer",
+    "ActivePathTransformer",
+    "ThinkingMergeTransformer",
+    "IDEContextTransformer",
+    # Parsers (legacy interface)
+    "ChatGPTParser",
+    "ClaudeParser",
+    "ClaudeCodeParser",
+    "CursorParser",
+    "PARSER_CLASSES",
+    "PROVIDERS",
+    "get_parser",
+]
+

@@ -1,0 +1,292 @@
+"""Codex (`~/.codex`) incremental session import + line-stream assembler.
+
+The ``_codex_*`` / ``_build_codex_messages`` helpers are pure functions over the
+line dicts; the orchestration is wired onto the shared scaffold + ``assemble_events``.
+"""
+
+from __future__ import annotations
+
+import json
+import logging
+from typing import Any, Optional
+
+from thread_import import DefaultEventBuilder
+
+from ._events import assemble_events
+from ._line_stream import import_line_stream_session
+from ._result import IncrementalImportResult
+
+logger = logging.getLogger(__name__)
+
+
+def import_codex_session_incremental(session_path, source_id: str, *, session=None) -> IncrementalImportResult:
+    """Import a Codex session JSONL into the archive's event log.
+
+    Codex writes a different JSONL shape from Claude Code: ``event_msg.user_message``
+    / ``event_msg.agent_message`` are the canonical transcript, and
+    ``response_item.function_call*`` / ``custom_tool_call*`` are tool events.
+    """
+
+    def _do_import(sess, thread_id, all_lines, new_lines, meta):
+        call_names, call_inputs = _codex_call_maps(all_lines)
+        messages = _build_codex_messages(new_lines, meta, call_names, call_inputs)
+        return assemble_events(sess, thread_id, messages, DefaultEventBuilder())
+
+    return import_line_stream_session(
+        source="codex",
+        source_id=source_id,
+        session_path=session_path,
+        session=session,
+        not_found_msg=f"Codex session file not found: {session_path}",
+        prepare=lambda all_lines, _path: _codex_session_meta(all_lines),
+        has_importable_content=_codex_has_importable_content,
+        make_title=lambda all_lines, _meta: _codex_title(all_lines),
+        make_source_metadata=lambda meta: {"cwd": meta["cwd"]} if meta.get("cwd") else None,
+        import_lines=_do_import,
+    )
+
+
+def _codex_session_meta(lines: list[dict]) -> dict[str, Any]:
+    for line in lines:
+        if line.get("type") != "session_meta":
+            continue
+        payload = line.get("payload")
+        return payload if isinstance(payload, dict) else {}
+    return {}
+
+
+def _codex_model(meta: dict[str, Any]) -> str:
+    model = meta.get("model")
+    if isinstance(model, str) and model.strip():
+        return model.strip()
+    return "codex"
+
+
+def _codex_has_importable_content(lines: list[dict]) -> bool:
+    for line in lines:
+        payload = line.get("payload")
+        if not isinstance(payload, dict):
+            continue
+        if line.get("type") == "event_msg" and payload.get("type") in {"user_message", "agent_message"}:
+            if payload.get("message"):
+                return True
+    return False
+
+
+def _codex_first_user_line(lines: list[dict]) -> Optional[str]:
+    """First non-empty line of the first ``event_msg``/``user_message``, or None."""
+    for line in lines:
+        payload = line.get("payload")
+        if not isinstance(payload, dict):
+            continue
+        if line.get("type") == "event_msg" and payload.get("type") == "user_message":
+            msg = str(payload.get("message") or "").strip()
+            if msg:
+                return next((part.strip() for part in msg.splitlines() if part.strip()), "")
+    return None
+
+
+def _codex_title(lines: list[dict]) -> str:
+    meta = _codex_session_meta(lines)
+    thread_name = meta.get("thread_name")
+    if isinstance(thread_name, str) and thread_name.strip():
+        return thread_name.strip()[:100]
+    first = _codex_first_user_line(lines)
+    if first is not None:
+        return (first[:97] + "...") if len(first) > 100 else first
+    return "Codex Session"
+
+
+def _codex_call_input(payload: dict[str, Any], payload_type: str) -> Optional[dict[str, Any]]:
+    """Extract a tool call's input dict, or None when there's nothing to store."""
+    if payload_type == "custom_tool_call":
+        raw_input = payload.get("input")
+        if isinstance(raw_input, dict):
+            return raw_input
+        if raw_input is not None:
+            return {"input": str(raw_input)}
+        return None
+
+    raw_args = payload.get("arguments")
+    if isinstance(raw_args, str) and raw_args:
+        try:
+            parsed = json.loads(raw_args)
+        except json.JSONDecodeError:
+            return {"arguments": raw_args}
+        return parsed if isinstance(parsed, dict) else None
+    if isinstance(raw_args, dict):
+        return raw_args
+    return None
+
+
+def _codex_call_maps(lines: list[dict]) -> tuple[dict[str, str], dict[str, dict[str, Any]]]:
+    names: dict[str, str] = {}
+    inputs: dict[str, dict[str, Any]] = {}
+    for line in lines:
+        payload = line.get("payload")
+        if not isinstance(payload, dict):
+            continue
+        if line.get("type") != "response_item":
+            continue
+        payload_type = payload.get("type")
+        if payload_type not in {"function_call", "custom_tool_call"}:
+            continue
+        call_id = payload.get("call_id")
+        if not isinstance(call_id, str) or not call_id:
+            continue
+        name = payload.get("name")
+        if isinstance(name, str) and name:
+            names[call_id] = name
+        call_input = _codex_call_input(payload, payload_type)
+        if call_input is not None:
+            inputs[call_id] = call_input
+    return names, inputs
+
+
+def _codex_reasoning_text(payload: dict) -> str:
+    parts: list[str] = []
+    for key in ("summary", "content"):
+        v = payload.get(key)
+        if isinstance(v, list):
+            for b in v:
+                if isinstance(b, dict) and isinstance(b.get("text"), str):
+                    parts.append(b["text"])
+                elif isinstance(b, str):
+                    parts.append(b)
+        elif isinstance(v, str):
+            parts.append(v)
+    return "\n".join(t for t in parts if t).strip()
+
+
+def _codex_user_message(payload: dict[str, Any], ts: Optional[str]) -> Optional[dict[str, Any]]:
+    message = str(payload.get("message") or "")
+    if not message:
+        return None
+    return {
+        "role": "user",
+        "created_at": ts,
+        "content_text": message,
+        "content_blocks": [],
+        "provider_message_id": payload.get("turn_id") or ts or "",
+        "provider_data": {"provider": "codex"},
+    }
+
+
+def _codex_tool_use_block(
+    payload: dict[str, Any], ts: Optional[str],
+    call_names: dict[str, str], call_inputs: dict[str, dict[str, Any]],
+) -> Optional[dict[str, Any]]:
+    call_id = payload.get("call_id")
+    if not isinstance(call_id, str) or not call_id:
+        return None
+    return {
+        "type": "tool_use",
+        "id": call_id,
+        "name": call_names.get(call_id, payload.get("name") or "unknown"),
+        "input": call_inputs.get(call_id, {}),
+        "start_timestamp": ts,
+    }
+
+
+def _codex_tool_result_block(
+    payload: dict[str, Any], ts: Optional[str], call_names: dict[str, str],
+) -> Optional[dict[str, Any]]:
+    call_id = payload.get("call_id")
+    if not isinstance(call_id, str) or not call_id:
+        return None
+    output = payload.get("output", "")
+    if not isinstance(output, str):
+        output = json.dumps(output, default=str)
+    return {
+        "type": "tool_result",
+        "tool_use_id": call_id,
+        "name": call_names.get(call_id, "unknown"),
+        "content": output,
+        "is_error": False,
+        "start_timestamp": ts,
+    }
+
+
+def _codex_assistant_block(
+    line_type: Any,
+    payload_type: Any,
+    payload: dict[str, Any],
+    ts: Optional[str],
+    call_names: dict[str, str],
+    call_inputs: dict[str, dict[str, Any]],
+) -> Optional[dict[str, Any]]:
+    if line_type == "event_msg":
+        if payload_type == "agent_message":
+            message = str(payload.get("message") or "")
+            return {"type": "text", "text": message, "start_timestamp": ts} if message else None
+        return None
+
+    if line_type != "response_item":
+        return None
+
+    if payload_type == "reasoning":
+        text = _codex_reasoning_text(payload)
+        return {"type": "thinking", "text": text, "start_timestamp": ts} if text else None
+    if payload_type in ("function_call", "custom_tool_call"):
+        return _codex_tool_use_block(payload, ts, call_names, call_inputs)
+    if payload_type in ("function_call_output", "custom_tool_call_output"):
+        return _codex_tool_result_block(payload, ts, call_names)
+    return None
+
+
+def _build_codex_messages(
+    lines: list[dict],
+    meta: dict[str, Any],
+    call_names: dict[str, str],
+    call_inputs: dict[str, dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Assemble codex's interleaved line stream into canonical NormalizedMessages."""
+    messages: list[dict[str, Any]] = []
+    model = _codex_model(meta)
+    cur: Optional[dict[str, Any]] = None
+
+    def flush() -> None:
+        nonlocal cur
+        if cur is not None and cur["content_blocks"]:
+            messages.append(cur)
+        cur = None
+
+    def assistant(ts: Optional[str]) -> dict[str, Any]:
+        nonlocal cur
+        if cur is None:
+            cur = {
+                "role": "assistant",
+                "created_at": ts,
+                "content_text": "",
+                "content_blocks": [],
+                "provider_message_id": ts or "",
+                "provider_data": {"provider": "codex", "model": model},
+            }
+        return cur
+
+    for line in lines:
+        if not isinstance(line, dict):
+            continue
+        payload = line.get("payload")
+        if not isinstance(payload, dict):
+            continue
+        line_type = line.get("type")
+        payload_type = payload.get("type")
+        ts = line.get("timestamp")
+
+        if line_type == "event_msg" and payload_type == "user_message":
+            user_msg = _codex_user_message(payload, ts)
+            if user_msg is None:
+                continue
+            flush()
+            messages.append(user_msg)
+            continue
+
+        block = _codex_assistant_block(
+            line_type, payload_type, payload, ts, call_names, call_inputs
+        )
+        if block is not None:
+            assistant(ts)["content_blocks"].append(block)
+
+    flush()
+    return messages

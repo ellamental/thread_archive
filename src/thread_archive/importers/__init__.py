@@ -1,0 +1,62 @@
+"""Incremental import: provider transcripts → events (over the JSONL truth seam).
+
+Two shapes: single-file line-stream importers (Claude Code, Codex, Grok,
+Antigravity) and SQLite-DB scanners (Cursor, OpenCode). All converge on the same
+``assemble_events`` build → dedup → write loop, and all are atomic per unit of
+import.
+"""
+
+from __future__ import annotations
+
+from ._result import IncrementalImportResult
+from .antigravity import import_antigravity_session_incremental
+from .claude_code import import_session_incremental
+from .codex import import_codex_session_incremental
+from .cursor import (
+    CursorDbScanResult,
+    CursorImportResult,
+    import_cursor_db,
+    import_cursor_from_payload,
+)
+from .grok import import_grok_session_incremental
+from .opencode import (
+    OpenCodeDbScanResult,
+    OpenCodeImportResult,
+    import_opencode_db,
+    import_opencode_from_payload,
+)
+
+# Provider name → single-file line-stream importer. (Cursor / OpenCode scan a DB
+# of many sessions and are dispatched separately.)
+LINE_STREAM_IMPORTERS = {
+    "claude-code": import_session_incremental,
+    "codex": import_codex_session_incremental,
+    "grok": import_grok_session_incremental,
+    "antigravity": import_antigravity_session_incremental,
+}
+
+DB_SCANNERS = {
+    "cursor": import_cursor_db,
+    "opencode": import_opencode_db,
+}
+
+PROVIDERS = list(LINE_STREAM_IMPORTERS) + list(DB_SCANNERS)
+
+__all__ = [
+    "IncrementalImportResult",
+    "import_session_incremental",
+    "import_codex_session_incremental",
+    "import_grok_session_incremental",
+    "import_antigravity_session_incremental",
+    "import_cursor_db",
+    "import_cursor_from_payload",
+    "import_opencode_db",
+    "import_opencode_from_payload",
+    "CursorImportResult",
+    "CursorDbScanResult",
+    "OpenCodeImportResult",
+    "OpenCodeDbScanResult",
+    "LINE_STREAM_IMPORTERS",
+    "DB_SCANNERS",
+    "PROVIDERS",
+]

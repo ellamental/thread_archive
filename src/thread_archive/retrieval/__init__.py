@@ -1,0 +1,161 @@
+"""Search + read over the SQLite store.
+
+``search`` runs the production pipeline: federate two arms — FTS5 **lexical** + an
+optional in-process **vector** (semantic) search — fuse them by reciprocal-rank
+fusion (``_rrf`` normalized to [0,1]), dedup, score with the weighted lexical
+**ranker** (density / phrase / recency / content-type / fusion — :mod:`.rank`),
+then optionally re-order the head with an in-process **cross-encoder** (:mod:`.rerank`)
+on conceptual multi-term queries. With no ``[embeddings]`` extra the vector and
+cross-encoder arms sit out and search is lexical-only (still through the ranker).
+``read_thread`` reconstructs a conversation; ``rebuild_fts`` is the FTS half of reindex.
+"""
+
+from __future__ import annotations
+
+from typing import Optional
+
+from sqlalchemy import select
+from sqlalchemy.orm import Session
+
+from ..store import Thread, use_session
+from . import rank as _rank
+from ._classify import resolve_relative_date
+from .format import format_results
+from .fts import ensure_fts, fts_status, index_events, rebuild_fts, search_events
+from .read import read_thread
+
+
+def _enrich_thread_titles(hits: list[dict], *, session: Optional[Session] = None) -> None:
+    """Fill ``thread_title`` on hits from the threads table (one query)."""
+    if not hits:
+        return
+    ids = {h["thread_id"] for h in hits}
+    with use_session(session) as s:
+        rows = s.execute(select(Thread.id, Thread.title, Thread.name).where(Thread.id.in_(ids))).all()
+    titles = {tid: (title or name) for tid, title, name in rows}
+    for h in hits:
+        h["thread_title"] = titles.get(h["thread_id"])
+
+
+def _rrf_merge(result_lists: list[list[dict]], limit: int, k: int = 60) -> list[dict]:
+    """Reciprocal-rank fusion of several ranked hit lists, keyed by
+    (event_id, content_type). RRF score = Σ 1/(k + rank), **normalized to [0,1]**
+    (÷ peak) so the ranker's ``fusion_weight`` is calibrated against it. The semantic
+    provenance (``_semantic`` cosine) is carried onto the fused hit."""
+    scores: dict = {}
+    chosen: dict = {}
+    for lst in result_lists:
+        for rank, h in enumerate(lst):
+            key = (h["event_id"], h.get("content_type"))
+            scores[key] = scores.get(key, 0.0) + 1.0 / (k + rank + 1)
+            if key not in chosen:
+                chosen[key] = h
+            elif "_semantic" in h and "_semantic" not in chosen[key]:
+                chosen[key]["_semantic"] = h["_semantic"]
+    peak = max(scores.values()) if scores else 0.0
+    ranked = sorted(chosen, key=lambda key: (-scores[key], chosen[key]["event_id"]))
+    out = []
+    for key in ranked[:limit]:
+        chosen[key]["_rrf"] = round(scores[key] / peak, 6) if peak > 0 else 0.0
+        out.append(chosen[key])
+    return out
+
+
+def _semantic_hits(query, *, thread_id, content_types, exclude_content_types, since, until, over):
+    """The vector arm — None when the extra is absent, nothing's indexed, or embed fails."""
+    try:
+        from . import vectors
+
+        if not vectors.is_available():
+            return None
+        return vectors.search(
+            query, thread_id=thread_id, content_types=content_types,
+            exclude_content_types=exclude_content_types, limit=over, since=since, until=until,
+        )
+    except Exception:  # noqa: BLE001 — vector arm must never break lexical search
+        return None
+
+
+def _do_rerank(query: str, terms: list[str], force: Optional[bool]) -> bool:
+    """Whether to run the cross-encoder head re-rank. ``force`` (the ``rerank=``
+    arg) overrides the auto-gate; otherwise gate to conceptual multi-term queries
+    *and* an available reranker (the ``[embeddings]`` extra)."""
+    from . import rerank as _rerank
+
+    if force is not None:
+        return force and _rerank.is_available()
+    return _rank.should_rerank(query, terms) and _rerank.is_available()
+
+
+def search(
+    query: str,
+    *,
+    limit: int = 20,
+    thread_id: Optional[int] = None,
+    content_types: Optional[list[str]] = None,
+    exclude_content_types: Optional[list[str]] = None,
+    since: Optional[str] = None,
+    until: Optional[str] = None,
+    tool_name: Optional[str] = None,
+    rerank: Optional[bool] = None,
+    session: Optional[Session] = None,
+) -> list[dict]:
+    """Search over conversation events through the production pipeline: lexical FTS5
+    + optional semantic vectors → RRF fusion → dedup → weighted lexical rank →
+    optional cross-encoder head re-rank. Returns event-hit dicts with the thread
+    title enriched. ``since``/``until`` accept ISO timestamps or a relative ``<N>d``
+    window; ``rerank`` forces the cross-encoder stage on/off (else auto-gated)."""
+    since_r = resolve_relative_date(since) if since else None
+    until_r = resolve_relative_date(until) if until else None
+    over = max(limit * 5, 50)  # over-fetch each arm so fusion + rank have a pool
+
+    terms = _rank.search_terms(query)
+
+    lexical = search_events(
+        query, thread_id=thread_id, content_types=content_types,
+        exclude_content_types=exclude_content_types, limit=over,
+        since=since_r, until=until_r, tool_name=tool_name, session=session,
+    )
+    semantic = _semantic_hits(
+        query, thread_id=thread_id, content_types=content_types,
+        exclude_content_types=exclude_content_types, since=since_r, until=until_r, over=over,
+    )
+
+    # Fuse the arms into a wide pool (keeps _rrf agreement + _semantic provenance),
+    # then dedup byte-identical hits before ranking.
+    fused = _rrf_merge([lexical, semantic], over) if semantic else lexical
+    fused = _rank.dedup_results(fused)
+
+    # Weighted lexical rank selects + orders the pool; a wider pool when a
+    # cross-encoder re-rank will re-order the head, else straight to `limit`.
+    do_rerank = _do_rerank(query, terms, rerank)
+    rank_to = max(limit, _rank.RERANK_POOL) if do_rerank else limit
+    ranked = _rank.rank_search_results(fused, terms, rank_to)
+
+    # Cross-encoder head re-rank (gated, fail-soft): scores (query, content)
+    # jointly and floats the true target up the mid-list. None → keep lexical order.
+    if do_rerank:
+        from . import rerank as _rerank
+
+        reordered = _rerank.rerank(
+            query, ranked,
+            get_text=lambda r: (r.get("full_content") or r.get("snippet") or ""),
+        )
+        if reordered is not None:
+            ranked = reordered
+
+    hits = ranked[:limit]
+    _enrich_thread_titles(hits, session=session)
+    return hits
+
+
+__all__ = [
+    "search",
+    "read_thread",
+    "rebuild_fts",
+    "index_events",
+    "ensure_fts",
+    "fts_status",
+    "format_results",
+    "search_events",
+]

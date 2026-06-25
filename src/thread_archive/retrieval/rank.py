@@ -1,0 +1,180 @@
+"""Result ranking — the weighted lexical scorer + the cross-encoder gate.
+
+The production ranker. The federation produces a pool; this turns it into an order:
+
+  1. :func:`dedup_results` collapses byte-identical hits (same logical message
+     re-emitted under two event_ids) before ranking.
+  2. :func:`rank_search_results` scores each hit by term **density** (normalized by
+     content length), **phrase proximity**, **recency**, **content-type** weight,
+     and **cross-backend fusion** (the ``_rrf`` agreement score the vector arm
+     contributes) — the same five knobs, at the same shipped weights, as prod.
+  3. :func:`should_rerank` gates the latency-bearing cross-encoder head re-rank
+     (:mod:`.rerank`) to *conceptual* multi-term queries — the vocab-mismatch ones
+     where the bi-encoder ranks the target mid-list. Keyword shapes (OR / quoted /
+     code-identifier / single-term) the lexical arm already nails are skipped.
+
+The weights are the production values, with their evidence: recency 1.0 (the first
+call made on production click data — the corpus skews to OLD threads, so a recency
+boost buries what users actually read), fusion 50.0 (the MRR optimum once the vector
+arm joined), content-type from ``_CONTENT_TYPE_WEIGHT`` (user > text > tool_result …).
+"""
+
+from __future__ import annotations
+
+import math
+import re
+from datetime import datetime
+
+# Per-content-type relevance multiplier — user messages are the most intentional,
+# tool/thinking the noisiest.
+_CONTENT_TYPE_WEIGHT = {
+    "user": 1.5,
+    "text": 1.2,
+    "tool_result": 0.8,
+    "tool": 0.5,
+    "thinking": 0.3,
+    "continuation_summary": 0.1,
+}
+
+# Cross-backend RRF fusion weight — the MRR optimum once the vector arm joined the
+# federation (the fusion-sweep: 50.0 Pareto-dominates 0.0 on R@1/10/20 and MRR).
+# Lexical scoring is ~0 for a semantic-only hit, so without this term a
+# vocab-mismatch hit the vector arm surfaced would sink regardless of its rank.
+_SEARCH_FUSION_WEIGHT = 50.0
+
+# Recency weight — dropped 10.0→1.0 on production click data (the first decision
+# made on real searches-that-led-to-reads). The corpus skews to OLD threads; a
+# recency boost buries what users actually read. 1.0 keeps a mild recent tiebreaker.
+_SEARCH_RECENCY_WEIGHT = 1.0
+
+# Cross-encoder re-rank pool — how many ranked candidates to feed the reranker
+# before cutting to ``limit``. Wide enough to cover recall@20, small enough to keep
+# the in-process re-rank stage quick.
+RERANK_POOL = 24
+
+
+def recency_score(occurred_at, now: datetime | None = None) -> int:
+    """0–20 exponential-decay recency score (half-life ~3 days). Datetime or ISO
+    string in, int out."""
+    dt = _parse_naive_dt(occurred_at)
+    if dt is None:
+        return 0
+    if now is None:
+        now = datetime.now()
+    age_hours = max(0, (now - dt).total_seconds() / 3600)
+    return max(1, int(20 * math.exp(-age_hours / 72)))
+
+
+def _parse_naive_dt(val) -> datetime | None:
+    if not val:
+        return None
+    try:
+        dt = val if isinstance(val, datetime) else datetime.fromisoformat(str(val).replace("Z", "+00:00"))
+        if dt.tzinfo:
+            dt = dt.replace(tzinfo=None)
+        return dt
+    except Exception:
+        return None
+
+
+def search_terms(query: str) -> list[str]:
+    """Lowercased ranking terms for ``query`` — the term set the density/phrase
+    scorer matches against. Identifier-style words (``help_think``) are preserved
+    intact; quoted spans become one phrase term each; AND/OR/NOT/pipe are dropped."""
+    if not query or not query.strip():
+        return []
+    if re.search(r'\b(AND|OR|NOT)\b|".*?"|\*$', query):
+        phrases = [m.strip().lower() for m in re.findall(r'"([^"]+)"', query) if m.strip()]
+        outside = re.sub(r'"[^"]*"', " ", query)
+        words = [w.lower() for w in outside.split() if w not in ("AND", "OR", "NOT", "|")]
+        terms = phrases + words
+        if not terms:
+            terms = [t.lower() for t in query.split() if t not in ("AND", "OR", "NOT")]
+        return terms
+    q = re.sub(r"(?<=\w)-(?=\w)", " ", query)
+    q = re.sub(r"[:\^()\[\]{}]", " ", q)
+    q = re.sub(r"\s+", " ", q).strip()
+    return [t.lower() for t in q.split()]
+
+
+def should_rerank(query: str, terms: list[str]) -> bool:
+    """Gate the cross-encoder re-rank to *conceptual* multi-term queries. Skip the
+    keyword shapes the lexical arm already nails: pipe-OR, quoted exact phrases,
+    code identifiers (``_`` / ``::`` / dotted), and single-term queries. A false
+    positive only costs latency (the re-rank is fail-soft), never results."""
+    q = (query or "").strip()
+    if "|" in q or '"' in q:
+        return False
+    if re.search(r"[_]|::|(?<=\w)\.(?=\w)", q):
+        return False
+    return len(terms) >= 2
+
+
+def dedup_results(results: list[dict]) -> list[dict]:
+    """Collapse byte-identical hits before ranking. The same logical message can
+    land as two events (streaming re-emits a text block), which the
+    (event_id, content_type) federation dedup misses. Key on (thread_id, content)
+    so identical short lines in *different* threads still both surface; keep first."""
+    if len(results) <= 1:
+        return results
+    seen: set[tuple] = set()
+    out: list[dict] = []
+    for r in results:
+        key = (r.get("thread_id"), (r.get("full_content") or r.get("snippet") or "").strip())
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(r)
+    return out
+
+
+def rank_search_results(
+    results: list[dict],
+    terms: list[str],
+    limit: int,
+    *,
+    recency_weight: float = _SEARCH_RECENCY_WEIGHT,
+    density_weight: float = 100.0,
+    phrase_weight: float = 50.0,
+    fusion_weight: float = _SEARCH_FUSION_WEIGHT,
+    content_type_weights: dict[str, float] | None = None,
+    now: datetime | None = None,
+) -> list[dict]:
+    """Re-rank ``results`` by term density, phrase proximity, recency, content-type,
+    and cross-backend fusion (``_rrf``). The production scorer — see the module
+    docstring for the weight evidence. Returns the top ``limit``."""
+    now = now or datetime.now()
+    ct_weights = content_type_weights if content_type_weights is not None else _CONTENT_TYPE_WEIGHT
+    term_patterns = {t: re.compile(r"\b" + re.escape(t) + r"\b") for t in terms if len(t) < 4}
+
+    def combined_score(result: dict) -> float:
+        content = (result.get("full_content", "") or "").lower()
+        content_len = max(len(content), 1)
+        term_count = sum(
+            1 for t in terms
+            if (len(t) >= 4 and t in content) or (len(t) < 4 and bool(term_patterns[t].search(content)))
+        )
+        density = term_count / max(1, content_len / 500)
+
+        phrase_bonus = 0.0
+        if len(terms) >= 2:
+            full_phrase = " ".join(terms)
+            if full_phrase in content:
+                phrase_bonus = 3.0
+            else:
+                positions = [content.find(t) for t in terms if content.find(t) >= 0]
+                if len(positions) == len(terms):
+                    span = max(positions) - min(positions)
+                    if span < 100:
+                        phrase_bonus = 2.0
+                    elif span < 300:
+                        phrase_bonus = 1.0
+
+        recency = recency_score(result.get("occurred_at", ""), now)
+        ct_weight = ct_weights.get(result.get("content_type", "text"), 1.0)
+        rrf = result.get("_rrf", 0.0) or 0.0
+        return (density * density_weight + phrase_bonus * phrase_weight
+                + recency * recency_weight + rrf * fusion_weight) * ct_weight
+
+    ranked = sorted(enumerate(results), key=lambda x: (-combined_score(x[1]), x[0]))
+    return [r for _, r in ranked[:limit]]

@@ -1,0 +1,45 @@
+"""The SQLite store: engine/session machinery + the conversation schema.
+
+JSONL is truth; this SQLite store is the rebuildable projection.
+"""
+
+from __future__ import annotations
+
+from ._base import (
+    Base,
+    active_dsn,
+    build_engine,
+    close_engine,
+    dml_rowcount,
+    get_engine,
+    get_session,
+    init_engine,
+    use_engine,
+    use_session,
+)
+from .models import Event, EventFts, ImportState, KgEvent, Thread, ThreadLink, TopicMessage
+from .schema import init_db
+
+__all__ = [
+    # engine + session
+    "Base",
+    "build_engine",
+    "init_engine",
+    "active_dsn",
+    "get_engine",
+    "get_session",
+    "use_session",
+    "use_engine",
+    "close_engine",
+    "dml_rowcount",
+    # schema
+    "init_db",
+    # models
+    "Thread",
+    "Event",
+    "EventFts",
+    "ImportState",
+    "ThreadLink",
+    "TopicMessage",
+    "KgEvent",
+]
