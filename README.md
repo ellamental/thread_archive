@@ -124,8 +124,10 @@ curation power. Client config:
 
 ## Knowledge layer (the topic graph)
 
-Topics are threads (`thread_type='topic'`); `thread_links` are the edges, `topic_messages`
-the message→topic citations. Reads/analytics live in `thread_archive.knowledge` — PageRank,
+There are exactly two kinds of thread: imported **conversations** and curated **topics**
+(`thread_type='topic'`). A topic is modeled as a thread on purpose — so the graph's edges
+(`thread_links`) and message→topic citations (`topic_messages`) reference one id space.
+Reads/analytics live in `thread_archive.knowledge` — PageRank,
 communities (**Leiden**, the algorithm Neo4j GDS ran, with a networkx-Louvain fail-soft
 fallback), bridges, peers.
 
@@ -141,3 +143,10 @@ summary/citation backlog on demand.
 ## License
 
 MIT — see [LICENSE](LICENSE).
+
+## Origin
+
+thread-archive was carved out of a larger personal project ("thread") and reworked to
+stand on its own — serverless, dependency-free, no backend or external services. The split
+was deliberate and the package is self-contained, but it's young and the extraction was
+recent: expect the occasional rough edge or vestigial reference left over from its origins.

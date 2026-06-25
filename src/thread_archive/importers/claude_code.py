@@ -11,8 +11,8 @@ session, so "the watermark advances only after a successful import" holds by
 construction.
 
 Deferred (enhancements, not core): compaction continuation/fork detection, subagent
-``thread_type='system'``, sidecar hook context, batch-thread adoption,
-description/models backfill, and rich title extraction.
+session handling, sidecar hook context, batch-thread adoption, description/models
+backfill, and rich title extraction.
 """
 
 from __future__ import annotations

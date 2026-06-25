@@ -40,12 +40,15 @@ from ._types import ARRAY, JSONB, REAL, BigIntPK
 
 
 class Thread(Base):
-    """A coherent sequence of related events. Everything is a thread.
+    """An imported conversation, or a curated topic.
 
-    ``thread_type`` distinguishes the kind: 'conversation' (a chat session, the
-    default), 'topic', 'patch', 'plan', 'system'. ``source`` tracks origin
-    ('claude-code', 'cursor', 'codex', 'web', ...). ``source_metadata`` (JSON)
-    carries branching info (branched_from, branch_event_id, quoted_event_id, ...).
+    ``thread_type`` is one of just two kinds: 'conversation' (a chat session — the
+    default, what every importer creates) or 'topic' (a curated knowledge node in the
+    topic graph; see :mod:`thread_archive.knowledge`). Modeling a topic *as* a thread is
+    deliberate, not leftover polymorphism: it gives topics thread ids, so the graph's
+    edges and citations reference a single id space. ``source`` tracks origin
+    ('claude-code', 'cursor', 'codex', ...). ``source_metadata`` (JSON) carries branching
+    info (branched_from, branch_event_id, quoted_event_id, ...).
     """
 
     __tablename__ = "threads"
