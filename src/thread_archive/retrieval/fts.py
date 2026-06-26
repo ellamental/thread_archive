@@ -97,6 +97,13 @@ def _clean_query_text(query: str) -> str:
     return re.sub(r"\s+", " ", clean).strip()
 
 
+def _like_prefix(prefix: str) -> str:
+    """Escape LIKE wildcards (``\\`` ``%`` ``_``) so ``startswith`` matches a literal
+    prefix; pair with ``ESCAPE '\\'`` in the SQL."""
+    escaped = prefix.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    return escaped + "%"
+
+
 def _in_clause(column: str, values: list, prefix: str, params: dict, negate: bool) -> str:
     names = []
     for i, v in enumerate(values):
@@ -116,6 +123,8 @@ def search_events(
     until: Optional[str] = None,
     tool_name: Optional[str] = None,
     exclude_content_types: Optional[list[str]] = None,
+    source: Optional[list[str]] = None,
+    startswith: Optional[str] = None,
     *,
     session: Optional[Session] = None,
 ) -> list[dict]:
@@ -123,13 +132,21 @@ def search_events(
 
     Query mode (shared classifier): pipe-OR and code-identifier shapes match by
     substring LIKE (un-stemmed, recency-ordered); natural-language / boolean /
-    quoted-phrase queries run FTS5 MATCH (bm25-ranked).
+    quoted-phrase queries run FTS5 MATCH (bm25-ranked). ``startswith`` overrides the
+    query mode entirely with a structural prefix scan (content LIKE 'prefix%',
+    recency-ordered) — the query text is not matched, only the structural filters.
     """
     ensure_fts(session)
     mode, _is_boolean = classify_query(query)
 
     params: dict = {"lim": limit}
-    if mode == "or":
+    if startswith is not None:
+        # Structural prefix scan — wildcards in the prefix are escaped so it matches
+        # a literal prefix (the reference left them unescaped; this hardens it).
+        where = ["content LIKE :sw ESCAPE '\\'"]
+        params["sw"] = _like_prefix(startswith)
+        order, use_match = "occurred_at DESC", False
+    elif mode == "or":
         terms = [_clean_query_text(t) for t in (query or "").split("|")]
         terms = [t for t in terms if t]
         if not terms:
@@ -159,6 +176,14 @@ def search_events(
         where.append(_in_clause("content_type", content_types, "ct", params, negate=False))
     if exclude_content_types:
         where.append(_in_clause("content_type", exclude_content_types, "xct", params, negate=True))
+    if source:
+        # event_search carries thread_id but not source; constrain to threads of
+        # the named provider(s) via an indexed subquery (idx_threads_source). An
+        # empty match yields no rows rather than invalid SQL.
+        where.append(
+            "thread_id IN (SELECT id FROM threads WHERE "
+            + _in_clause("source", source, "src", params, negate=False) + ")"
+        )
     if since:
         where.append("occurred_at >= :since")
         params["since"] = since

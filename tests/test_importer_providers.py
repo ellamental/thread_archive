@@ -14,6 +14,7 @@ from sqlalchemy import select
 
 from thread_archive.importers import (
     import_antigravity_session_incremental,
+    import_cloth_session_incremental,
     import_codex_session_incremental,
     import_cursor_db,
     import_grok_session_incremental,
@@ -60,6 +61,42 @@ def test_codex_import_and_idempotent(archive_home) -> None:
     assert thread.title == "what is 2+2"
 
     r2 = import_codex_session_incremental(f, "codex-sess")
+    assert r2.events_created == 0
+    assert _event_count() == n
+
+
+# ── cloth ───────────────────────────────────────────────────────────────────
+
+CLOTH = [
+    {"type": "user", "uuid": "u1", "timestamp": "2026-01-01T10:00:00Z", "sessionId": "cloth-7",
+     "message": {"role": "user", "content": "hello cloth"}},
+    {"type": "cloth_meta", "uuid": "m1", "parentUuid": "u1",
+     "timestamp": "2026-01-01T10:00:00.5Z", "sessionId": "cloth-7",
+     "meta": {"client": "cloth", "model": "deepseek/deepseek-v4-pro"}},
+    {"type": "assistant", "uuid": "a1", "timestamp": "2026-01-01T10:00:05Z", "sessionId": "cloth-7",
+     "message": {"role": "assistant", "model": "deepseek/deepseek-v4-pro",
+                 "content": [{"type": "text", "text": "hi from cloth"}]}},
+]
+
+
+def test_cloth_import_and_idempotent(archive_home) -> None:
+    """cloth is a first-class provider: its own importer, labeled source='cloth'
+    (not claude-code), with the ``cloth_meta`` line absorbed by the shared parser."""
+    init_db()
+    f = archive_home / "cloth.jsonl"
+    _write_jsonl(f, CLOTH)
+
+    r = import_cloth_session_incremental(f, "cloth-cli-7")
+    assert r.is_new_thread and r.events_created > 0
+    n = _event_count()
+    thread = _thread_for("cloth")
+    assert thread.source == "cloth"
+    assert thread.source_id == "cloth-cli-7"
+    # The cloth_meta line yields no junk thread under another source.
+    with get_session() as s:
+        assert s.execute(select(Thread).where(Thread.source == "claude-code")).first() is None
+
+    r2 = import_cloth_session_incremental(f, "cloth-cli-7")
     assert r2.events_created == 0
     assert _event_count() == n
 

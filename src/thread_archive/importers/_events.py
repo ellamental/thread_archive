@@ -17,7 +17,7 @@ import uuid
 from datetime import datetime
 from typing import Optional
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 from thread_import import DefaultEventBuilder
 
@@ -34,6 +34,39 @@ def _existing_dedup_keys(session: Session, thread_id: int) -> set[str]:
         )
     ).scalars().all()
     return set(rows)
+
+
+def _anchor_event(events: list, event_type: str):
+    """The content-bearing anchor event of a built message (the user_message_sent
+    of a user turn, the api_request_completed of an assistant turn), or None."""
+    for ev in events:
+        if ev.event_type == event_type:
+            return ev
+    return None
+
+
+def _message_already_present(session: Session, thread_id: int, anchor) -> bool:
+    """True when an event with the same (type, content, occurred_at) already exists
+    in the thread. Used to suppress the replayed prefix when a CC continuation /
+    fork-resume merges into an existing thread (its fresh UUIDs defeat the dedup_key
+    check). The built ``anchor.occurred_at`` is the deterministic parse of the source
+    line's timestamp, so passing it as a bind param matches the value the original
+    import stored through the same column processor — robust across tz/format."""
+    if anchor is None:
+        return False
+    content = anchor.payload.get("content")
+    if content is None:
+        return False
+    return session.execute(
+        select(Event.id)
+        .where(
+            Event.thread_id == thread_id,
+            Event.event_type == anchor.event_type,
+            func.json_extract(Event.payload, "$.content") == content,
+            Event.occurred_at == anchor.occurred_at,
+        )
+        .limit(1)
+    ).first() is not None
 
 
 def _to_event(thread_id: int, te) -> Event:
@@ -57,12 +90,20 @@ def assemble_events(
     builder: DefaultEventBuilder,
     *,
     base_prev_ts: Optional[datetime] = None,
+    cross_pass_dedup: bool = False,
 ) -> tuple[int, Optional[str]]:
     """Build events from NormalizedMessages and write the not-yet-seen ones.
 
     ``base_prev_ts`` seeds the timestamp-inheritance anchor (grok/opencode seed it
     from the newest persisted event so a later incremental pass doesn't sort to the
     top of the thread). Returns ``(events_created, last_message_uuid)``.
+
+    ``cross_pass_dedup`` adds a message-level (content + timestamp) existence check
+    on top of the dedup_key membership check. It is enabled only when merging a CC
+    continuation / fork-resume into an existing thread, where the replayed prefix
+    carries fresh UUIDs (so its dedup_keys won't match) but identical content +
+    timestamps. A matched user turn is skipped along with its following assistant
+    turns (until the next genuinely-new user turn), mirroring canonical.
     """
     if not messages:
         return 0, None
@@ -72,6 +113,7 @@ def assemble_events(
     last_uuid: Optional[str] = None
     current_stream_id: Optional[str] = None
     prev_occurred_at: Optional[datetime] = base_prev_ts
+    skip_until_next_user = False
 
     for msg in messages:
         role = msg.get("role", "")
@@ -102,6 +144,23 @@ def assemble_events(
             # inherits a monotonic time (never a silent now()).
             prev_occurred_at = events[-1].occurred_at
 
+        # Cross-pass message-level dedup (continuation/fork merge only): skip a turn
+        # whose anchor (content + timestamp) is already in the thread.
+        if cross_pass_dedup:
+            if role == "user":
+                skip_until_next_user = _message_already_present(
+                    session, thread_id, _anchor_event(events, "user_message_sent")
+                )
+                if skip_until_next_user:
+                    continue
+            elif role == "assistant":
+                if skip_until_next_user:
+                    continue
+                if _message_already_present(
+                    session, thread_id, _anchor_event(events, "api_request_completed")
+                ):
+                    continue
+
         for te in events:
             if te.dedup_key and te.dedup_key in seen:
                 continue
@@ -129,6 +188,7 @@ def import_lines(
     *,
     source: str = "claude-code",
     source_id: str = "",
+    cross_pass_dedup: bool = False,
 ) -> tuple[int, Optional[str]]:
     """Claude Code: parse a line bundle via the thread_import parser, then assemble."""
     session_data = {
@@ -136,4 +196,4 @@ def import_lines(
         "sessions": [{"session_id": "incremental", "project": "incremental", "lines": lines}],
     }
     messages = parser.parse_export(session_data)
-    return assemble_events(session, thread_id, messages, builder)
+    return assemble_events(session, thread_id, messages, builder, cross_pass_dedup=cross_pass_dedup)

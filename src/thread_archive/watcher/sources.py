@@ -18,7 +18,9 @@ from typing import Callable, Iterator, Optional
 
 from ..importers import (
     import_antigravity_session_incremental,
+    import_cloth_session_incremental,
     import_codex_session_incremental,
+    import_cowork_session_incremental,
     import_cursor_db,
     import_grok_session_incremental,
     import_opencode_db,
@@ -115,6 +117,7 @@ class ClaudeCodeWatcher(FileSessionWatcher):
         return any(d.exists() for d in self._dirs())
 
     def _iter_files(self) -> Iterator[tuple[Path, str]]:
+        pairs: list[tuple[Path, str]] = []
         for projects_dir in self._dirs():
             if not projects_dir.exists():
                 continue
@@ -122,9 +125,22 @@ class ClaudeCodeWatcher(FileSessionWatcher):
                 if not project_dir.is_dir():
                     continue
                 for session_file in project_dir.glob("*.jsonl"):
-                    yield session_file, f"{project_dir.name}:{session_file.stem}"
+                    pairs.append((session_file, f"{project_dir.name}:{session_file.stem}"))
                 for agent_file in project_dir.glob("*/subagents/*.jsonl"):
-                    yield agent_file, f"{project_dir.name}:{agent_file.stem}"
+                    pairs.append((agent_file, f"{project_dir.name}:{agent_file.stem}"))
+
+        # Import oldest-first so a continuation's parent thread already exists when
+        # the continuation is processed (continuation detection resolves to an
+        # existing thread). On the live path parents land in earlier polls anyway;
+        # this makes a cold start / rebuild-from-source merge correctly too.
+        def _mtime(path: Path) -> float:
+            try:
+                return path.stat().st_mtime
+            except OSError:
+                return 0.0
+
+        pairs.sort(key=lambda ps: _mtime(ps[0]))
+        yield from pairs
 
     def _import(self, path: Path, source_id: str):
         return import_session_incremental(path, source_id)
@@ -190,6 +206,17 @@ def antigravity_watcher(brain_dir: Optional[Path] = None) -> _RglobWatcher:
         lambda p: p.parents[2].name,
     )
     w.glob, w._name = "transcript.jsonl", "antigravity"
+    return w
+
+
+def cloth_watcher(threads_dir: Optional[Path] = None) -> _RglobWatcher:
+    # cloth writes Claude-Code-shaped JSONL to ~/.cloth/threads/<n>.jsonl — one file
+    # per CLI session, ``source_id = "cloth-cli-<n>"``. (CLOTH_HOME relocates the store.)
+    import os
+
+    root = threads_dir or (Path(os.environ.get("CLOTH_HOME") or Path.home() / ".cloth").expanduser() / "threads")
+    w = _RglobWatcher(root, import_cloth_session_incremental, lambda p: f"cloth-cli-{p.stem}")
+    w.glob, w._name = "*.jsonl", "cloth"
     return w
 
 
@@ -283,8 +310,97 @@ def _opencode_default_db() -> Optional[Path]:
     return path if path.exists() else None
 
 
+# ── Cowork (nested local-agent-mode sessions) ───────────────────────────────
+
+
+def discover_cowork_session_dirs() -> list[Path]:
+    """Org-scoped dirs under ``~/Library/Application Support/Claude/
+    local-agent-mode-sessions/<user>/<org>/`` (one level above the ``local_<id>/``
+    session folders), so the caller derives ``user_uuid`` from ``parent.name`` and
+    ``org_uuid`` from ``dir.name``."""
+    base = Path.home() / "Library" / "Application Support" / "Claude" / "local-agent-mode-sessions"
+    if not base.is_dir():
+        return []
+    dirs: list[Path] = []
+    for user_dir in base.iterdir():
+        if not user_dir.is_dir() or user_dir.name == "skills-plugin":
+            continue
+        for org_dir in user_dir.iterdir():
+            if org_dir.is_dir():
+                dirs.append(org_dir)
+    return dirs
+
+
+class CoworkWatcher(SourceWatcher):
+    """Watches Cowork ``audit.jsonl`` logs across all org dirs and imports the grown
+    ones directly. source_id is ``{user_uuid}:{org_uuid}:{session_id}``; the human
+    title comes from the sibling ``local_{id}.json``."""
+
+    def __init__(self) -> None:
+        self._seen: dict[str, tuple[int, int]] = {}
+
+    @property
+    def source_name(self) -> str:
+        return "cowork"
+
+    def is_available(self) -> bool:
+        return bool(discover_cowork_session_dirs())
+
+    def _iter_sessions(self) -> Iterator[tuple[Path, str, Optional[Path]]]:
+        for org_dir in discover_cowork_session_dirs():
+            user_uuid = org_dir.parent.name
+            org_uuid = org_dir.name
+            for session_dir in org_dir.iterdir():
+                if not session_dir.is_dir() or not session_dir.name.startswith("local_"):
+                    continue
+                audit_path = session_dir / "audit.jsonl"
+                if not audit_path.exists():
+                    continue
+                session_id = session_dir.name[len("local_"):]
+                source_id = f"{user_uuid}:{org_uuid}:{session_id}"
+                metadata_path = org_dir / f"{session_dir.name}.json"
+                yield audit_path, source_id, (metadata_path if metadata_path.exists() else None)
+
+    def poll(self) -> WatchResult:
+        result = WatchResult()
+        seen_this_poll: set[str] = set()
+        for audit_path, source_id, metadata_path in self._iter_sessions():
+            try:
+                st = audit_path.stat()
+            except OSError:
+                continue
+            if st.st_size == 0:
+                continue
+            resolved = str(audit_path.resolve())
+            fingerprint = (st.st_mtime_ns, st.st_size)
+            seen_this_poll.add(resolved)
+            if self._seen.get(resolved) == fingerprint:
+                result = result + WatchResult(sources_checked=1)
+                continue
+            try:
+                imp = import_cowork_session_incremental(audit_path, source_id, metadata_path)
+                self._seen[resolved] = fingerprint
+                result = result + WatchResult(
+                    sources_checked=1,
+                    items_imported=1 if imp.events_created > 0 else 0,
+                    events_created=imp.events_created,
+                )
+            except Exception as e:  # noqa: BLE001 — one bad session must not stop the poll
+                msg = f"cowork import error for {source_id}: {e}"
+                logger.warning(msg)
+                result = result + WatchResult(sources_checked=1, errors=[msg])
+        if seen_this_poll:
+            self._seen = {k: v for k, v in self._seen.items() if k in seen_this_poll}
+        return result
+
+
 def default_watchers() -> list[SourceWatcher]:
-    """The full set of provider watchers, default system paths.
+    """One watcher per provider, default system paths.
+
+    Each is **self-gating** — ``poll_once`` skips any whose ``is_available()`` is
+    false — so a provider whose store is absent (no Cursor installed, no ``~/.cloth``)
+    costs nothing and adds no process. cloth is a provider like the rest, riding this
+    one loop; there is no separate cloth daemon.
 
     The exthost watcher runs last: the JSONL sources import each session's persisted
     messages first (establishing their dedup_keys), so the exthost pass only has the
@@ -296,7 +412,9 @@ def default_watchers() -> list[SourceWatcher]:
         codex_watcher(),
         grok_watcher(),
         antigravity_watcher(),
+        cloth_watcher(),
         cursor_watcher(),
         opencode_watcher(),
+        CoworkWatcher(),
         ExthostWatcher(),
     ]

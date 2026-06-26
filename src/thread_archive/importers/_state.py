@@ -11,16 +11,72 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Optional
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from ..store import ImportState, Thread
+from ..store import Event, ImportState, Thread
+
+# Placeholder model values that aren't a real model — skipped when denormalizing a
+# thread's models list (mirrors canonical NON_MODEL_VALUES).
+NON_MODEL_VALUES = ("", "unknown", "<synthetic>")
 
 
 def get_thread_by_source(session: Session, source: str, source_id: str) -> Optional[Thread]:
     return session.execute(
         select(Thread).where(Thread.source == source, Thread.source_id == source_id)
     ).scalars().first()
+
+
+def lookup_parent_thread(
+    session: Session, parent_source_id: str, *, source: str = "claude-code"
+) -> Optional[int]:
+    """Resolve a parent session's thread_id by ``(source, parent_source_id)`` —
+    the import-state watermark first (authoritative even before the thread row is
+    visible), then the threads table. None when unknown."""
+    state = get_import_state(session, source, parent_source_id)
+    if state and state.thread_id:
+        return state.thread_id
+    thread = get_thread_by_source(session, source, parent_source_id)
+    return thread.id if thread else None
+
+
+def adopt_if_unwatermarked(
+    session: Session,
+    *,
+    source: str,
+    source_id: str,
+    thread_id: Optional[int],
+    total_lines: int,
+    file_size: int,
+) -> bool:
+    """Guard against re-importing a thread whose ingest cursor was lost.
+
+    A thread can exist with no ``import_state`` — most importantly after a
+    ``rm index.db && archive reindex``, which rebuilds events/threads from the truth
+    log but not the (non-truth) watermarks. Re-importing such a file from line 0 would
+    re-insert events the truth already holds: their stored ``dedup_key`` need not match
+    a fresh import's (e.g. a bulk-seeded archive), so the dedup check wouldn't catch
+    them and every event would double. When the thread already has events, we instead
+    stamp the watermark at the file's current EOF and skip — the existing events stand,
+    and only genuinely-new appended lines import on later polls. Returns True when it
+    adopted (caller must not import)."""
+    if thread_id is None:
+        return False
+    has_events = session.execute(
+        select(Event.id).where(Event.thread_id == thread_id).limit(1)
+    ).first() is not None
+    if not has_events:
+        return False
+    upsert_import_state(
+        session,
+        source=source,
+        source_id=source_id,
+        thread_id=thread_id,
+        last_line_count=total_lines,
+        last_file_size=file_size,
+        last_message_uuid=None,
+    )
+    return True
 
 
 def create_thread(
@@ -30,6 +86,7 @@ def create_thread(
     source_id: str,
     title: Optional[str] = None,
     thread_type: str = "conversation",
+    description: Optional[str] = None,
     source_metadata: Optional[dict] = None,
 ) -> int:
     """Create a thread for ``(source, source_id)`` and return its id (flushed)."""
@@ -37,6 +94,7 @@ def create_thread(
         name=f"{source}:{source_id}",
         title=title,
         thread_type=thread_type,
+        description=description,
         source=source,
         source_id=source_id,
         source_metadata=source_metadata,
@@ -49,6 +107,81 @@ def create_thread(
 
     record_thread(session, thread)
     return thread.id
+
+
+def _restage_thread(session: Session, thread: Thread) -> None:
+    """Bump ``updated_at`` and re-stage the thread's metadata record to truth.
+
+    A metadata change after creation (title resync, description/models backfill)
+    must reach the JSONL truth or a ``reindex`` would lose it. ``record_thread``
+    appends a fresh ``{"type": "thread", ...}`` record (latest wins on reindex),
+    and the bumped ``updated_at`` also lets the checkpoint backstop pick it up."""
+    thread.updated_at = datetime.now(timezone.utc)
+    session.flush()
+    from ..truth.jsonl_log import record_thread
+
+    record_thread(session, thread)
+
+
+def update_thread_title(session: Session, thread_id: int, title: str) -> bool:
+    """Set a thread's title and re-stage it to truth. No-op if unchanged/missing."""
+    thread = session.get(Thread, thread_id)
+    if not thread or thread.title == title:
+        return False
+    thread.title = title
+    _restage_thread(session, thread)
+    return True
+
+
+def update_thread_description(session: Session, thread_id: int, description: str) -> bool:
+    """Set a thread's one-line description and re-stage it to truth."""
+    thread = session.get(Thread, thread_id)
+    if not thread:
+        return False
+    thread.description = description
+    _restage_thread(session, thread)
+    return True
+
+
+def set_thread_models_from_events(session: Session, thread_id: int) -> list[str]:
+    """Denormalize a thread's models into ``source_metadata['models']`` from its
+    ``api_request_completed`` events (distinct, first-appearance order), so new
+    imports land in the sidebar's model filter. Falls back to the operative
+    ``source_metadata['model']`` when no model appears in the events. Pure
+    re-derivation (overwrites any prior value); re-stages truth only on change.
+
+    SQLite analogue of canonical ``set_thread_models_from_events`` — ``json_extract``
+    replaces the Postgres ``payload['model'].astext``."""
+    thread = session.get(Thread, thread_id)
+    if not thread:
+        return []
+    model_col = func.json_extract(Event.payload, "$.model")
+    rows = session.execute(
+        select(model_col)
+        .where(Event.thread_id == thread_id)
+        .where(Event.event_type == "api_request_completed")
+        .where(model_col.is_not(None))
+        .where(model_col.notin_(NON_MODEL_VALUES))
+        .order_by(Event.id.asc())
+    ).scalars().all()
+    models: list[str] = []
+    for m in rows:
+        if m and m not in models:
+            models.append(m)
+    if not models:
+        operative = (thread.source_metadata or {}).get("model")
+        if operative:
+            models = [operative]
+    if not models:
+        return []
+    if (thread.source_metadata or {}).get("models") == models:
+        return models
+    # Reassign a fresh dict so SQLAlchemy flags the JSON column dirty.
+    meta = dict(thread.source_metadata or {})
+    meta["models"] = models
+    thread.source_metadata = meta
+    _restage_thread(session, thread)
+    return models
 
 
 def get_import_state(session: Session, source: str, source_id: str) -> Optional[ImportState]:

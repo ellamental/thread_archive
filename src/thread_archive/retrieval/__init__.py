@@ -20,9 +20,13 @@ from sqlalchemy.orm import Session
 from ..store import Thread, use_session
 from . import rank as _rank
 from ._classify import resolve_relative_date
+from ._context import extract_context_lines, get_context_events, parse_context_events_spec
 from .format import format_results
 from .fts import ensure_fts, fts_status, index_events, rebuild_fts, search_events
-from .read import read_thread
+from .read import read_thread, read_thread_structured
+
+# output='count' wants a true tally, so over-fetch far past the page size.
+_COUNT_FETCH_CAP = 1000
 
 
 def _enrich_thread_titles(hits: list[dict], *, session: Optional[Session] = None) -> None:
@@ -61,7 +65,7 @@ def _rrf_merge(result_lists: list[list[dict]], limit: int, k: int = 60) -> list[
     return out
 
 
-def _semantic_hits(query, *, thread_id, content_types, exclude_content_types, since, until, over):
+def _semantic_hits(query, *, thread_id, content_types, exclude_content_types, since, until, over, source):
     """The vector arm — None when the extra is absent, nothing's indexed, or embed fails."""
     try:
         from . import vectors
@@ -71,6 +75,7 @@ def _semantic_hits(query, *, thread_id, content_types, exclude_content_types, si
         return vectors.search(
             query, thread_id=thread_id, content_types=content_types,
             exclude_content_types=exclude_content_types, limit=over, since=since, until=until,
+            source=source,
         )
     except Exception:  # noqa: BLE001 — vector arm must never break lexical search
         return None
@@ -97,6 +102,12 @@ def search(
     since: Optional[str] = None,
     until: Optional[str] = None,
     tool_name: Optional[str] = None,
+    source: Optional[list[str]] = None,
+    startswith: Optional[str] = None,
+    sort: Optional[str] = None,
+    output: Optional[str] = None,
+    context_lines: int = 2,
+    context_events: Optional[str] = None,
     rerank: Optional[bool] = None,
     session: Optional[Session] = None,
 ) -> list[dict]:
@@ -104,21 +115,38 @@ def search(
     + optional semantic vectors → RRF fusion → dedup → weighted lexical rank →
     optional cross-encoder head re-rank. Returns event-hit dicts with the thread
     title enriched. ``since``/``until`` accept ISO timestamps or a relative ``<N>d``
-    window; ``rerank`` forces the cross-encoder stage on/off (else auto-gated)."""
+    window; ``source`` restricts to threads of the named provider(s); ``rerank``
+    forces the cross-encoder stage on/off (else auto-gated).
+
+    ``startswith`` does a structural prefix scan (query text unused). ``sort='oldest'``
+    returns the candidate pool chronologically, bypassing the ranker. ``output='count'``
+    returns the whole match pool unranked (the renderer tallies per-thread). With a
+    structural shape (browse / startswith / oldest / count) the semantic arm and the
+    cross-encoder sit out. ``context_lines`` (default 2; 0 = the raw FTS snippet)
+    attaches a numbered window around each hit's match; ``context_events`` (``N`` /
+    ``b:a`` / ``b:a:types``) attaches the neighbouring events. Both enrich the
+    returned hits in place (skipped for count)."""
     since_r = resolve_relative_date(since) if since else None
     until_r = resolve_relative_date(until) if until else None
-    over = max(limit * 5, 50)  # over-fetch each arm so fusion + rank have a pool
+
+    # browse/startswith are structural — there's no lexical MATCH to rank or embed
+    # against, so the semantic arm and the weighted ranker both sit out.
+    structural = startswith is not None or not (query or "").strip()
+    is_count = output == "count"
+    over = max(limit, _COUNT_FETCH_CAP) if is_count else max(limit * 5, 50)
 
     terms = _rank.search_terms(query)
 
     lexical = search_events(
         query, thread_id=thread_id, content_types=content_types,
         exclude_content_types=exclude_content_types, limit=over,
-        since=since_r, until=until_r, tool_name=tool_name, session=session,
+        since=since_r, until=until_r, tool_name=tool_name, source=source,
+        startswith=startswith, session=session,
     )
-    semantic = _semantic_hits(
+    semantic = None if structural else _semantic_hits(
         query, thread_id=thread_id, content_types=content_types,
-        exclude_content_types=exclude_content_types, since=since_r, until=until_r, over=over,
+        exclude_content_types=exclude_content_types, since=since_r, until=until_r,
+        over=over, source=source,
     )
 
     # Fuse the arms into a wide pool (keeps _rrf agreement + _semantic provenance),
@@ -126,25 +154,50 @@ def search(
     fused = _rrf_merge([lexical, semantic], over) if semantic else lexical
     fused = _rank.dedup_results(fused)
 
-    # Weighted lexical rank selects + orders the pool; a wider pool when a
-    # cross-encoder re-rank will re-order the head, else straight to `limit`.
-    do_rerank = _do_rerank(query, terms, rerank)
-    rank_to = max(limit, _rank.RERANK_POOL) if do_rerank else limit
-    ranked = _rank.rank_search_results(fused, terms, rank_to)
+    did_rerank = False
+    if is_count:
+        ranked = fused  # whole match pool, unranked — the renderer tallies it
+    elif sort == "oldest":
+        ranked = sorted(fused, key=lambda r: str(r.get("occurred_at") or ""))[:limit]
+    elif structural:
+        ranked = fused[:limit]  # structural recency order from the scan
+    else:
+        # Weighted lexical rank; a wider pool when a cross-encoder re-rank will
+        # re-order the head, else straight to `limit`.
+        do_rerank = _do_rerank(query, terms, rerank)
+        rank_to = max(limit, _rank.RERANK_POOL) if do_rerank else limit
+        ranked = _rank.rank_search_results(fused, terms, rank_to)
+        # Cross-encoder head re-rank (gated, fail-soft): scores (query, content)
+        # jointly and floats the true target up. None → keep lexical order.
+        if do_rerank:
+            from . import rerank as _rerank
 
-    # Cross-encoder head re-rank (gated, fail-soft): scores (query, content)
-    # jointly and floats the true target up the mid-list. None → keep lexical order.
-    if do_rerank:
-        from . import rerank as _rerank
+            reordered = _rerank.rerank(
+                query, ranked,
+                get_text=lambda r: (r.get("full_content") or r.get("snippet") or ""),
+            )
+            if reordered is not None:
+                ranked, did_rerank = reordered, True
 
-        reordered = _rerank.rerank(
-            query, ranked,
-            get_text=lambda r: (r.get("full_content") or r.get("snippet") or ""),
-        )
-        if reordered is not None:
-            ranked = reordered
+    hits = ranked if is_count else ranked[:limit]
 
-    hits = ranked[:limit]
+    # Per-hit enrichments the renderer reads. A pure tally (count) needs none.
+    if not is_count:
+        if context_lines > 0:
+            for r in hits:
+                if r.get("full_content"):
+                    r["context"] = extract_context_lines(r["full_content"], query, context_lines)
+        if context_events:
+            cb, ca, cts = parse_context_events_spec(context_events)
+            ctx_map = get_context_events(hits, cb, ca, cts, session=session)
+            for r in hits:
+                if r["event_id"] in ctx_map:
+                    r["context_events"] = ctx_map[r["event_id"]]
+        # The quality verdict (Feature: match-signal) turns on whether the
+        # cross-encoder actually ran, so carry it onto each hit for the renderer.
+        for r in hits:
+            r["_did_rerank"] = did_rerank
+
     _enrich_thread_titles(hits, session=session)
     return hits
 
@@ -152,6 +205,7 @@ def search(
 __all__ = [
     "search",
     "read_thread",
+    "read_thread_structured",
     "rebuild_fts",
     "index_events",
     "ensure_fts",

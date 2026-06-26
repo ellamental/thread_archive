@@ -18,7 +18,13 @@ from sqlalchemy import delete
 from ..store import Thread, get_session
 from ._read import read_session_lines
 from ._result import IncrementalImportResult
-from ._state import create_thread, get_import_state, get_thread_by_source, upsert_import_state
+from ._state import (
+    adopt_if_unwatermarked,
+    create_thread,
+    get_import_state,
+    get_thread_by_source,
+    upsert_import_state,
+)
 
 
 def _run(
@@ -62,6 +68,12 @@ def _run(
     if thread_id is None:
         existing = get_thread_by_source(session, source, source_id)
         thread_id = existing.id if existing else None
+
+    if import_state is None and adopt_if_unwatermarked(
+        session, source=source, source_id=source_id,
+        thread_id=thread_id, total_lines=total_lines, file_size=current_file_size,
+    ):
+        return IncrementalImportResult(0, 0, thread_id or 0, False, None)
 
     is_new_thread = False
     if thread_id is None:

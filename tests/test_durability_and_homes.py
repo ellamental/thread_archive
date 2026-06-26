@@ -94,6 +94,55 @@ def test_jsonl_write_failure_aborts_the_commit(archive_home, monkeypatch) -> Non
         assert s.execute(select(Event)).scalars().all() == []
 
 
+def test_verify_passes_on_a_clean_archive_and_detects_drift(archive_home) -> None:
+    """``verify`` confirms the truth parses + matches the index, and flags drift when
+    the index diverges from the truth."""
+    f = archive_home / "sess.jsonl"
+    _write_cc(f, [USER, ASSISTANT])
+    ta.import_path(f)
+    ta.checkpoint()
+
+    res = ta.verify()
+    assert res["ok"] is True
+    assert res["truth"]["threads"] == 1 and res["truth"]["parse_errors"] == 0
+    assert res["drift"] == {"threads": 0, "events": 0}
+
+    # Delete an event from the index only (truth untouched) → positive-ish drift surfaces.
+    with get_session() as s:
+        ev = s.execute(select(Event)).scalars().first()
+        s.delete(ev)
+        s.commit()
+    res2 = ta.verify()
+    assert res2["ok"] is False
+    assert res2["drift"]["events"] != 0
+
+
+def test_backup_mirrors_truth_and_is_restorable(archive_home, tmp_path) -> None:
+    """``backup`` mirrors the truth dir to a destination from which a fresh archive
+    reindexes losslessly (truth is the backup; index.db is rebuildable)."""
+    f = archive_home / "sess.jsonl"
+    _write_cc(f, [USER, ASSISTANT])
+    ta.import_path(f)
+
+    dest = tmp_path / "backup"
+    res = ta.backup(str(dest))
+    assert res["files_copied"] > 0
+    assert (dest / "threads").exists()
+
+    # Re-run is incremental: nothing changed → nothing recopied.
+    assert ta.backup(str(dest))["files_copied"] == 0
+
+    # The backup is a complete restore set: point a fresh archive at it and reindex.
+    ta.close()
+    restored_home = tmp_path / "restored"
+    restored_home.mkdir()
+    import shutil
+    shutil.copytree(dest, restored_home / "truth")
+    counts = ta.reindex(home=str(restored_home))
+    assert counts["threads"] == 1 and counts["events"] > 0
+    assert ta.search("durability", home=str(restored_home))
+
+
 def test_import_path_leaves_a_complete_truth_set(archive_home) -> None:
     """Library import → delete index.db → reindex must keep the thread (its metadata
     record is written to the thread's own truth file at creation — no manual call)."""

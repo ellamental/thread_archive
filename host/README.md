@@ -10,9 +10,14 @@ ingest route, this one runs entirely local: it calls the importer directly
 (`thread_archive.importers`) and writes straight to the JSONL truth + SQLite index.
 No backend, no peer mesh, no health server — just change-detect → import.
 
+The plist runs `archive watch --web`, so this always-on process also **cohosts the
+read viewer** (http://127.0.0.1:8787) in the same process — giving the viewer and
+the archive-link endpoint a persistent URL without a second daemon. The web reader
+runs concurrently with the watcher's writes; WAL makes that safe (`store/_base.py`).
+
 ## What it watches
 
-The six providers with importers, at their default home-dir locations:
+The seven providers with importers, at their default home-dir locations:
 
 | provider     | store                                                        |
 |--------------|--------------------------------------------------------------|
@@ -20,6 +25,7 @@ The six providers with importers, at their default home-dir locations:
 | codex        | `~/.codex/sessions/**/*.jsonl`                               |
 | grok         | `~/.grok/sessions/**/chat_history.jsonl`                     |
 | antigravity  | `~/.gemini/antigravity-cli/brain/**/transcript.jsonl`       |
+| cloth        | `~/.cloth/threads/*.jsonl` (Claude-Code-shaped harness)      |
 | cursor       | Cursor `state.vscdb` (SQLite, mtime-gated)                   |
 | opencode     | `~/.local/share/opencode/opencode.db` (SQLite, WAL-gated)    |
 | cc-exthost   | VS Code exthost log — recovers lost Claude Code steering msgs |

@@ -39,9 +39,24 @@ def test_public_surface_round_trip(archive_home) -> None:
 
 
 def test_public_api_is_exported() -> None:
-    for name in ("open_archive", "search", "read_thread", "import_path", "reindex",
-                 "checkpoint", "watch", "status", "close"):
+    for name in ("open_archive", "search", "read_thread", "read_thread_structured",
+                 "import_path", "reindex", "checkpoint", "watch", "status", "close"):
         assert hasattr(ta, name), f"thread_archive.{name} missing"
+
+
+def test_structured_read(archive_home) -> None:
+    f = archive_home / "sess.jsonl"
+    _write_cc(f, [USER, ASSISTANT])
+    ta.import_path(f)
+
+    hits = ta.search("hello")
+    doc = ta.read_thread_structured(hits[0]["thread_id"])
+    assert doc["title"] and doc["messages"]
+    roles = [m["role"] for m in doc["messages"]]
+    assert roles == ["user", "assistant"]
+    # typed render blocks, not a flattened string
+    user_text = doc["messages"][0]["blocks"][0]
+    assert user_text["type"] == "text" and "hello library" in user_text["text"]
 
 
 def test_reindex_via_api(archive_home) -> None:

@@ -84,6 +84,36 @@ def test_content_type_filter(archive_home) -> None:
     assert user_only and all(h["content_type"] == "user" for h in user_only)
 
 
+def test_source_filter(archive_home) -> None:
+    """``source`` restricts to threads of the named provider(s) — the lexical arm
+    resolves it through an indexed subquery on threads.source."""
+    from sqlalchemy import update
+
+    from thread_archive.store import Thread, use_session
+
+    _seed_corpus(archive_home)
+    # both fixture threads import as 'claude-code'; relabel the db thread to 'cursor'
+    db_tid = search("database")[0]["thread_id"]
+    with use_session() as s:
+        s.execute(update(Thread).where(Thread.id == db_tid).values(source="cursor"))
+        s.commit()
+
+    # restrict to claude-code → the relabeled 'database' thread drops out
+    cc = search("authentication OR database", source=["claude-code"])
+    assert cc and all(h["thread_id"] != db_tid for h in cc)
+
+    # restrict to cursor → only the relabeled thread
+    cur = search("authentication OR database", source=["cursor"])
+    assert cur and all(h["thread_id"] == db_tid for h in cur)
+
+    # both providers → spans both threads
+    both = search("authentication OR database", source=["claude-code", "cursor"])
+    assert {h["thread_id"] for h in both} == {tid for tid in (cc[0]["thread_id"], db_tid)}
+
+    # a provider nobody has → empty (subquery yields no ids, not invalid SQL)
+    assert search("authentication", source=["chatgpt"]) == []
+
+
 def test_read_reconstructs_conversation(archive_home) -> None:
     _seed_corpus(archive_home)
     hits = search("authentication", content_types=["user"])
@@ -134,3 +164,113 @@ def test_empty_query_returns_nothing(archive_home) -> None:
     _seed_corpus(archive_home)
     # browse mode (empty query) isn't a lexical search here → no hits
     assert search("") == []
+
+
+# --- match-quality signal ---------------------------------------------------
+
+def test_quality_verdict_logic() -> None:
+    from thread_archive.retrieval.format import _search_quality, _term_hit_count
+
+    # term matching: ≥4 chars substring, <4 chars word-boundary, each term once
+    assert _term_hit_count("the authentication flow", ["authentication"]) == 1
+    assert _term_hit_count("goodbye world", ["go"]) == 0       # boundary, not substring
+    assert _term_hit_count("let's go now", ["go"]) == 1
+    assert _term_hit_count("auth auth auth", ["auth"]) == 1     # distinct count
+
+    assert _search_quality(0, 0, False) is None                # no terms → no verdict
+    assert _search_quality(9, 3, True)[0] == "semantic"        # rerank wins outright
+    assert _search_quality(0, 2, False)[0] == "weak"           # zero overlap
+    assert _search_quality(2, 3, False)[0] == "strong"         # ceil(2/3·3)=2
+    assert _search_quality(1, 3, False)[0] == "partial"
+    assert _search_quality(2, 2, False)[0] == "strong"
+
+
+def test_quality_signal_rendered(archive_home) -> None:
+    from thread_archive.retrieval import format_results
+
+    _seed_corpus(archive_home)
+    # rerank=False forces the lexical verdict (a 2-term query auto-reranks to
+    # 'semantic' when the cross-encoder is installed).
+    strong = format_results(search("authentication login", rerank=False), "authentication login")
+    assert "quality=strong" in strong and "2/2" in strong
+
+    # 'authenticated' stems to the same root as 'authentication' (FTS5 porter), so
+    # it MATCHES — but the literal term is absent, so K=0 → weak, flagged semantic.
+    weak = format_results(search("authenticated"), "authenticated")
+    assert "quality=weak" in weak and "0/1" in weak and "(semantic)" in weak
+
+
+# --- output modes -----------------------------------------------------------
+
+def test_output_count_and_linkable(archive_home) -> None:
+    import json as _json
+
+    from thread_archive.retrieval import format_results
+
+    _seed_corpus(archive_home)
+    cnt = format_results(search("get_session", output="count"), "get_session", output="count")
+    assert cnt.startswith("Total:") and "corpus:" in cnt
+
+    lnk = format_results(search("authentication", output="linkable"), "authentication", output="linkable")
+    arr = _json.loads(lnk)
+    assert arr and all({"event_id", "thread_id", "preview"} <= set(e) for e in arr)
+
+
+# --- sort -------------------------------------------------------------------
+
+def test_sort_oldest(archive_home) -> None:
+    _seed_corpus(archive_home)  # auth thread @ 2026-01-01, db thread @ 2026-01-02
+    hits = search("authentication OR database", sort="oldest")
+    assert hits
+    times = [str(h.get("occurred_at") or "") for h in hits]
+    assert times == sorted(times)                  # chronological, oldest first
+    assert hits[0]["occurred_at"] <= hits[-1]["occurred_at"]
+
+
+# --- context_lines ----------------------------------------------------------
+
+def test_context_lines(archive_home) -> None:
+    from thread_archive.retrieval._context import extract_context_lines
+
+    block = extract_context_lines("line one\nhas the AUTH term\nline three\nfour", "auth", 1)
+    rows = block.split("\n")
+    assert rows[0].startswith("    1: ")           # context line, numbered (3sp prefix + " 1:")
+    assert rows[1].startswith(">>> 2: ")           # matched line, marked
+    assert rows[2].startswith("    3: ")
+
+    _seed_corpus(archive_home)
+    from thread_archive.retrieval import format_results
+    out = format_results(search("authentication", content_types=["user"], context_lines=2),
+                         "authentication")
+    assert ">>>" in out                            # context block replaced the snippet
+
+
+# --- context_events ---------------------------------------------------------
+
+def test_context_events(archive_home) -> None:
+    from thread_archive.retrieval._context import parse_context_events_spec
+
+    assert parse_context_events_spec("3") == (3, 3, None)
+    assert parse_context_events_spec("0:1") == (0, 1, None)
+    assert parse_context_events_spec("2:0:user,text") == (2, 0, ["user", "text"])
+
+    _seed_corpus(archive_home)
+    hits = search("authentication", content_types=["user"], context_events="0:1")
+    assert hits
+    ce = hits[0].get("context_events")
+    assert ce and ce.get("after")                  # the next event (assistant reply)
+    assert any("session token" in (e.get("content") or "") for e in ce["after"])
+
+
+# --- startswith -------------------------------------------------------------
+
+def test_startswith(archive_home) -> None:
+    _seed_corpus(archive_home)  # asst text begins "Authentication uses a session token..."
+    hits = search("", startswith="Authentication uses")
+    assert hits and all((h["full_content"] or "").startswith("Authentication uses") for h in hits)
+
+    # query text is ignored under a structural prefix scan
+    assert search("zzznomatch", startswith="Authentication uses")
+
+    # LIKE wildcards in the prefix are escaped → literal, so '%' matches nothing extra
+    assert search("", startswith="Authentication%") == []

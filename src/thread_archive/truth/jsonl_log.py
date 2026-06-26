@@ -389,6 +389,34 @@ def _maybe_rebalance(d: Path, depth: int) -> int:
     return target
 
 
+# ── integrity scan (the primitive behind `archive verify`) ───────────────────
+def scan_truth_counts() -> dict:
+    """Count thread files + event lines across the truth directory, tallying any
+    JSON parse errors. The integrity primitive behind ``archive verify``: a clean
+    archive has these match the SQLite projection's thread/event counts (the
+    JSONL ⊇ SQLite invariant) with zero parse errors. Each ``threads/<id>.jsonl``
+    is one thread (so file count = thread count, matching how reindex loads them)."""
+    d = log_dir()
+    threads_dir = d / THREADS_SUBDIR
+    n_threads = n_events = parse_errors = 0
+    if threads_dir.exists():
+        for path in threads_dir.rglob("*.jsonl"):
+            n_threads += 1
+            with open(path, encoding="utf-8", errors="replace") as fh:
+                for line in fh:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        rec = json.loads(line)
+                    except ValueError:
+                        parse_errors += 1
+                        continue
+                    if rec.get("type", "event") == "event":
+                        n_events += 1
+    return {"threads": n_threads, "events": n_events, "parse_errors": parse_errors}
+
+
 # ── reindex (rebuild the SQLite projection from the JSONL truth) ─────────────
 def _iter_jsonl(path: Path):
     if not path.exists():

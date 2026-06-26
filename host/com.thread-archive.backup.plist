@@ -1,0 +1,56 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Template — `make install-backup-agent DEST=<path>` substitutes __REPO__,
+     __DEST__, and __LOGDIR__ at install time. Do not install this file verbatim.
+
+     Runs `archive backup <DEST> && archive verify` on a daily schedule: mirror the
+     JSONL truth dir to a backup destination (point it at a DIFFERENT disk/machine —
+     for pre-retention history the truth log is the only copy), then integrity-check
+     that the truth parses and matches the index. -->
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.thread-archive.backup</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/sh</string>
+        <string>-c</string>
+        <string>__REPO__/.venv/bin/archive backup '__DEST__' &amp;&amp; __REPO__/.venv/bin/archive verify</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>__REPO__</string>
+
+    <!-- Daily at 04:00. A run also fires on load if the machine was asleep at 04:00. -->
+    <key>StartCalendarInterval</key>
+    <dict>
+        <key>Hour</key>
+        <integer>4</integer>
+        <key>Minute</key>
+        <integer>0</integer>
+    </dict>
+
+    <key>RunAtLoad</key>
+    <false/>
+
+    <key>LimitLoadToSessionType</key>
+    <string>Aqua</string>
+
+    <!-- A backup is I/O bound and not latency-sensitive; let it run nice. -->
+    <key>ProcessType</key>
+    <string>Background</string>
+
+    <key>StandardOutPath</key>
+    <string>__LOGDIR__/backup-stdout.log</string>
+
+    <key>StandardErrorPath</key>
+    <string>__LOGDIR__/backup-stderr.log</string>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>__REPO__/.venv/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+    </dict>
+</dict>
+</plist>

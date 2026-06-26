@@ -68,6 +68,42 @@ def test_claude_code_watcher_unavailable_when_dir_absent(archive_home, tmp_path)
     assert not w.is_available()
 
 
+def test_cloth_watcher_detects_imports_and_self_gates(archive_home, tmp_path) -> None:
+    """cloth is a plain provider watcher like the rest: it imports its store's
+    sessions under ``source="cloth"`` / ``cloth-cli-<n>``, dedups on re-poll, sits in
+    the default set, and self-gates (inert, process-free) when ``~/.cloth`` is absent."""
+    from sqlalchemy import select
+
+    from thread_archive.store import Thread
+    from thread_archive.watcher import cloth_watcher
+    from thread_archive.watcher.sources import default_watchers
+
+    assert "cloth" in [w.source_name for w in default_watchers()]
+    assert not cloth_watcher(threads_dir=tmp_path / "no-cloth-here").is_available()
+
+    init_db()
+    threads_dir = tmp_path / "threads"
+    threads_dir.mkdir()
+    (threads_dir / "63.jsonl").write_text(
+        "\n".join(json.dumps(ln) for ln in [USER, ASSISTANT]) + "\n", encoding="utf-8"
+    )
+
+    w = cloth_watcher(threads_dir=threads_dir)
+    assert w.is_available()
+
+    r1 = w.poll()
+    assert r1.items_imported == 1 and r1.events_created > 0
+    n1 = _event_count()
+    with get_session() as s:
+        t = s.execute(select(Thread).where(Thread.source == "cloth")).scalar_one()
+        assert t.source_id == "cloth-cli-63"
+
+    # Unchanged file → fingerprint skip, no duplication.
+    r2 = w.poll()
+    assert r2.events_created == 0
+    assert _event_count() == n1
+
+
 def _make_cursor_db(path) -> None:
     conn = sqlite3.connect(path)
     conn.execute("CREATE TABLE cursorDiskKV (key TEXT PRIMARY KEY, value TEXT)")

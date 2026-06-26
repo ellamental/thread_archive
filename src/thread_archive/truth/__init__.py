@@ -14,6 +14,7 @@ from .jsonl_log import (
     record_thread,
     reindex,
     reset_handles,
+    scan_truth_counts,
     write_events,
 )
 
@@ -27,4 +28,5 @@ __all__ = [
     "rebuild_truth_from_store",
     "log_dir",
     "reset_handles",
+    "scan_truth_counts",
 ]

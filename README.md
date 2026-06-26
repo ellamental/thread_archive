@@ -57,6 +57,7 @@ archive import <path>     # import a transcript / provider store
 archive watch             # watch local AI-tool stores and import incrementally
 archive search "<query>"  # search conversations
 archive read <thread_id>  # read a conversation
+archive web               # on-demand local web UI (search + reader); Ctrl-C to stop
 archive reindex           # rebuild index.db from the JSONL truth directory
 archive status            # archive health / counts
 ```
@@ -75,16 +76,47 @@ src/thread_archive/
   knowledge/        # topic graph: event-sourced curation + Leiden analytics
   watcher/          # local-source watcher (self-feeding ingest)
   mcp/              # library-native MCP servers (read + librarian)
+  web/              # `archive web`: stdlib server + the built viewer (static/)
 src/thread_import/  # vendored provider parsers (a clean, dependency-free island)
+frontend/           # the viewer's React+Vite source (dev-only; builds into web/static/)
 host/               # `archive watch` LaunchAgent (live ingest)
 scripts/            # operator tools (e.g. the librarian backfill driver)
 tests/install/      # isolated Docker install test + fixtures
 ```
 
+## Web viewer
+
+`archive web` serves a local search + reader UI over the same library surface
+(`search` / `read_thread_structured` / `status`) — a stdlib HTTP server (no extra
+runtime dependency, not a daemon: Ctrl-C stops it) handing out a pre-built React
+bundle plus a few JSON endpoints. **Runtime is node-free**: the bundle is built
+ahead of time and committed under `web/static/`, so `pip install` never touches
+node. Node is a *build*-only tool.
+
+```bash
+archive web                       # serve at http://127.0.0.1:8787, open a browser
+archive web --port 9000 --no-open
+
+# rebuild the bundle after editing the frontend (node only here):
+cd frontend && npm install && npm run build   # → ../src/thread_archive/web/static/
+```
+
+**Persistent URL — the watcher cohosts it.** `archive web` is on-demand (Ctrl-C
+stops it), so for a stable address the always-on watcher serves the viewer in its
+*own* process: `archive watch --web` (the shipped LaunchAgent passes it). One
+process, one SQLite engine — the viewer reads concurrently with the watcher's
+writes, which WAL makes safe (`store/_base.py`). No second daemon.
+
+**Archive-links.** With that persistent server, the archive owns the editor
+"open this conversation" link itself: `GET /api/archive-link?id=<session-uuid>&source=claude-code`
+resolves the session to its thread via `ImportState` and returns `{thread_id, url}`,
+or `&redirect=1` → a `302` to `/archive/<id>`. (This used to live in a separate
+backend; it's local now.)
+
 ## What it does
 
-- **Ingests 6 providers** into one event model — Claude Code, Codex, Grok, Antigravity
-  (transcript line-streams) and Cursor, OpenCode (SQLite scanners). Imports are
+- **Ingests 7 providers** into one event model — Claude Code, Codex, Grok, Antigravity,
+  cloth (transcript line-streams) and Cursor, OpenCode (SQLite scanners). Imports are
   idempotent, atomic, and survive a full reindex losslessly. A `cc-exthost` watcher also
   recovers mid-turn Claude Code steering messages that never reach the session JSONL.
 - **Self-feeds** — the watcher tails local stores and ingests incrementally; events land

@@ -63,12 +63,22 @@ def search(
     since: Optional[str] = None,
     until: Optional[str] = None,
     tool_name: Optional[str] = None,
+    source: Optional[list[str]] = None,
+    startswith: Optional[str] = None,
+    sort: Optional[str] = None,
+    output: Optional[str] = None,
+    context_lines: int = 2,
+    context_events: Optional[str] = None,
     rerank: Optional[bool] = None,
 ) -> list[dict]:
     """Federated search over conversation events (lexical FTS5 + optional semantic
     vectors → RRF fusion → weighted rank → optional cross-encoder re-rank). Returns
-    enriched event-hit dicts. ``rerank`` forces the cross-encoder stage (else
-    auto-gated to conceptual queries when the ``[embeddings]`` extra is present)."""
+    enriched event-hit dicts. ``source`` restricts to threads of the named
+    provider(s); ``startswith`` does a structural prefix scan; ``sort='oldest'``
+    returns the pool chronologically; ``output`` ('count'/'linkable') and
+    ``context_lines`` / ``context_events`` shape what each hit carries; ``rerank``
+    forces the cross-encoder stage (else auto-gated to conceptual queries when the
+    ``[embeddings]`` extra is present)."""
     open_archive(home)
     from .retrieval import search as _search
 
@@ -81,6 +91,12 @@ def search(
         since=since,
         until=until,
         tool_name=tool_name,
+        source=source,
+        startswith=startswith,
+        sort=sort,
+        output=output,
+        context_lines=context_lines,
+        context_events=context_events,
         rerank=rerank,
     )
 
@@ -105,6 +121,22 @@ def read_thread(
         include_thinking=include_thinking,
         include_tools=include_tools,
     )
+
+
+def read_thread_structured(
+    thread_id: int,
+    *,
+    home: Optional[str] = None,
+    include_thinking: bool = True,
+    include_tools: bool = True,
+) -> dict:
+    """Reconstruct a thread as structured messages (typed render blocks) for the web
+    viewer. Returns ``{thread_id, title, source, messages}``; see
+    :func:`thread_archive.retrieval.read_thread_structured`."""
+    open_archive(home)
+    from .retrieval import read_thread_structured as _read
+
+    return _read(thread_id, include_thinking=include_thinking, include_tools=include_tools)
 
 
 def import_path(path, *, home: Optional[str] = None, provider: str = "claude-code", source_id: Optional[str] = None):
@@ -159,6 +191,83 @@ def watch(*, home: Optional[str] = None, interval: float = 5.0, once: bool = Fal
         return watcher.poll_once()
     watcher.run()
     return None
+
+
+def _mirror_dir(src: Path, dest: Path) -> tuple[int, int]:
+    """Incrementally mirror ``src`` into ``dest`` (skip files unchanged by size +
+    mtime). Returns ``(files_copied, bytes_copied)``. ``copy2`` preserves mtime so a
+    re-run copies only what changed — the truth dir is append-mostly, so a periodic
+    backup moves little."""
+    import shutil
+
+    copied = total = 0
+    for sp in src.rglob("*"):
+        if sp.is_dir():
+            continue
+        dp = dest / sp.relative_to(src)
+        if dp.exists():
+            ss, ds = sp.stat(), dp.stat()
+            if ss.st_size == ds.st_size and int(ss.st_mtime) <= int(ds.st_mtime):
+                continue
+        dp.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(sp, dp)
+        copied += 1
+        total += sp.stat().st_size
+    return copied, total
+
+
+def backup(dest: str, *, home: Optional[str] = None) -> dict:
+    """Back the archive up by mirroring its JSONL truth directory to ``dest``.
+
+    A ``cp``/``rsync`` of the truth dir *is* the backup (index.db is rebuildable from
+    it), so this checkpoints first — flushing the cross-thread overlays + any thread-
+    metadata updates so the on-disk truth is a complete restore set — then mirrors
+    ``truth/`` into ``dest`` incrementally. Point ``dest`` at a *different disk /
+    machine*: for pre-retention history the truth log is the only copy.
+    """
+    open_archive(home)
+    from .truth import checkpoint as _checkpoint
+
+    _checkpoint()  # full: overlays + metadata-update backstop → truth is a complete restore set
+    paths = resolve_paths(home)
+    dest_path = Path(dest).expanduser()
+    dest_path.mkdir(parents=True, exist_ok=True)
+    copied, total = _mirror_dir(paths.truth_dir, dest_path)
+    return {
+        "truth_dir": str(paths.truth_dir),
+        "dest": str(dest_path),
+        "files_copied": copied,
+        "bytes_copied": total,
+    }
+
+
+def verify(*, home: Optional[str] = None) -> dict:
+    """Integrity check: the JSONL truth parses cleanly and matches the SQLite index.
+
+    Scans every per-thread truth file (counting threads + events, tallying parse
+    errors) and compares to the projection's counts. ``ok`` is True only when the
+    counts align and nothing failed to parse. A negative event drift (truth > index)
+    is the *safe* direction — ``archive reindex`` rebuilds the index from truth; a
+    positive drift (index > truth) or any parse error is a real integrity problem.
+    """
+    open_archive(home)
+    from sqlalchemy import func, select
+
+    from .store import Event, Thread, get_session
+    from .truth import scan_truth_counts
+
+    truth = scan_truth_counts()
+    with get_session() as s:
+        idx_threads = s.execute(select(func.count()).select_from(Thread)).scalar() or 0
+        idx_events = s.execute(select(func.count()).select_from(Event)).scalar() or 0
+    drift_threads = int(idx_threads) - truth["threads"]
+    drift_events = int(idx_events) - truth["events"]
+    return {
+        "ok": drift_threads == 0 and drift_events == 0 and truth["parse_errors"] == 0,
+        "truth": truth,
+        "index": {"threads": int(idx_threads), "events": int(idx_events)},
+        "drift": {"threads": drift_threads, "events": drift_events},
+    }
 
 
 def status(*, home: Optional[str] = None) -> dict:

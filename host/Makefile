@@ -24,7 +24,14 @@ ENTRY     := $(REPO)/.venv/bin/archive
 # Logs live next to the data (the archive home), not in the repo.
 LOG_DIR   := $(HOME)/.thread_archive/logs
 
-.PHONY: all install-agent uninstall-agent restart logs status
+# Scheduled backup+verify job (daily). DEST is the backup destination — pass it on
+# the command line and point it at a DIFFERENT disk/machine:
+#   make install-backup-agent DEST=/Volumes/Backup/thread_archive
+BACKUP_PLIST_SRC := com.thread-archive.backup.plist
+BACKUP_LABEL     := com.thread-archive.backup
+BACKUP_PLIST     := $(HOME)/Library/LaunchAgents/$(BACKUP_LABEL).plist
+
+.PHONY: all install-agent uninstall-agent restart logs status install-backup-agent uninstall-backup-agent
 
 all: install-agent
 
@@ -59,3 +66,20 @@ status:
 
 logs:
 	tail -F $(LOG_DIR)/watcher-stdout.log $(LOG_DIR)/watcher-stderr.log
+
+# Backup+verify scheduled job. Requires DEST=<path> (a different disk/machine).
+install-backup-agent:
+	@test -n "$(DEST)" || { echo "pass a destination: make install-backup-agent DEST=/Volumes/Backup/thread_archive"; exit 1; }
+	@test -x $(ENTRY) || { echo "missing $(ENTRY) — run 'pip install -e .' into the repo venv first"; exit 1; }
+	@mkdir -p $(LOG_DIR) $(dir $(BACKUP_PLIST))
+	sed -e 's#__REPO__#$(REPO)#g' -e 's#__LOGDIR__#$(LOG_DIR)#g' -e 's#__DEST__#$(DEST)#g' \
+	    $(BACKUP_PLIST_SRC) > $(BACKUP_PLIST)
+	-launchctl bootout gui/$(UID)/$(BACKUP_LABEL) 2>/dev/null
+	@sleep 3
+	launchctl bootstrap gui/$(UID) $(BACKUP_PLIST)
+	@echo "installed $(BACKUP_LABEL) — backs up to $(DEST) daily at 04:00, then verifies."
+
+uninstall-backup-agent:
+	-launchctl bootout gui/$(UID)/$(BACKUP_LABEL)
+	rm -f $(BACKUP_PLIST)
+	@echo "uninstalled $(BACKUP_LABEL)"

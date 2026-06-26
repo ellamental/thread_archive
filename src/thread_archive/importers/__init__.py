@@ -1,9 +1,10 @@
 """Incremental import: provider transcripts → events (over the JSONL truth seam).
 
 Two shapes: single-file line-stream importers (Claude Code, Codex, Grok,
-Antigravity) and SQLite-DB scanners (Cursor, OpenCode). All converge on the same
-``assemble_events`` build → dedup → write loop, and all are atomic per unit of
-import.
+Antigravity, cloth) and SQLite-DB scanners (Cursor, OpenCode). All converge on the
+same ``assemble_events`` build → dedup → write loop, and all are atomic per unit of
+import. (cloth is Claude-Code-shaped, so its importer delegates to the claude_code
+path under ``source="cloth"``.)
 """
 
 from __future__ import annotations
@@ -11,7 +12,9 @@ from __future__ import annotations
 from ._result import IncrementalImportResult
 from .antigravity import import_antigravity_session_incremental
 from .claude_code import import_session_incremental
+from .cloth import import_cloth_session_incremental
 from .codex import import_codex_session_incremental
+from .cowork import import_cowork_session_incremental
 from .cursor import (
     CursorDbScanResult,
     CursorImportResult,
@@ -33,6 +36,7 @@ LINE_STREAM_IMPORTERS = {
     "codex": import_codex_session_incremental,
     "grok": import_grok_session_incremental,
     "antigravity": import_antigravity_session_incremental,
+    "cloth": import_cloth_session_incremental,
 }
 
 DB_SCANNERS = {
@@ -45,7 +49,9 @@ PROVIDERS = list(LINE_STREAM_IMPORTERS) + list(DB_SCANNERS)
 __all__ = [
     "IncrementalImportResult",
     "import_session_incremental",
+    "import_cloth_session_incremental",
     "import_codex_session_incremental",
+    "import_cowork_session_incremental",
     "import_grok_session_incremental",
     "import_antigravity_session_incremental",
     "import_cursor_db",

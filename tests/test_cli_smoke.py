@@ -19,7 +19,10 @@ def test_all_subcommands_present() -> None:
     parser = build_parser()
     # Reach into the subparsers action to assert the full command surface is wired.
     sub = next(a for a in parser._actions if hasattr(a, "choices") and a.choices)
-    assert set(sub.choices) == {"import", "watch", "search", "read", "reindex", "status"}
+    assert set(sub.choices) == {
+        "import", "import-export", "watch", "search", "read", "reindex", "status",
+        "backup", "verify", "web",
+    }
 
 
 def test_status_runs_on_empty_home(tmp_path, capsys: pytest.CaptureFixture[str]) -> None:

@@ -60,7 +60,9 @@ def test_import_creates_thread_and_events(archive_home) -> None:
         thread = s.execute(select(Thread).where(Thread.source == "claude-code")).scalar_one()
         tid = thread.id
         assert thread.source_id == "proj:s1"
-        assert thread.source_metadata == {"cwd": "/proj", "project_dir": "proj"}
+        assert thread.source_metadata["cwd"] == "/proj"
+        assert thread.source_metadata["project_dir"] == "proj"
+        assert thread.source_metadata["models"] == ["claude-opus-4"]  # backfilled from events
         events = s.execute(select(Event).where(Event.thread_id == thread.id)).scalars().all()
 
     user_events = [e for e in events if e.event_type == "user_message_sent"]
@@ -71,6 +73,188 @@ def test_import_creates_thread_and_events(archive_home) -> None:
     recs = [json.loads(ln) for ln in tf.read_text().splitlines() if ln.strip()]
     assert sum(1 for r in recs if r["type"] == "event") == len(events)
     assert any(r["type"] == "thread" for r in recs)  # metadata record present
+
+
+def test_subagent_filed_as_hidden_system_thread(archive_home) -> None:
+    """A ``agent-*`` subagent transcript files as a hidden ``thread_type='system'``
+    thread with a 🤖 title and parent lineage stamped — kept out of the sidebar."""
+    init_db()
+    f = archive_home / "agent.jsonl"
+    sub_user = {"type": "user", "uuid": "su1", "timestamp": "2026-01-01T10:00:00Z",
+                "sessionId": "parent-sess", "agentId": "agent-abc", "cwd": "/proj",
+                "message": {"role": "user", "content": "do the subtask"}}
+    sub_asst = {"type": "assistant", "uuid": "sa1", "timestamp": "2026-01-01T10:00:05Z",
+                "sessionId": "parent-sess", "agentId": "agent-abc",
+                "message": {"role": "assistant", "model": "claude-opus-4",
+                            "content": [{"type": "text", "text": "done"}]}}
+    _write_jsonl(f, [sub_user, sub_asst])
+
+    result = import_session_incremental(f, "proj:agent-abc")
+    assert result.is_new_thread is True
+    with get_session() as s:
+        t = s.execute(select(Thread).where(Thread.source == "claude-code")).scalar_one()
+        assert t.thread_type == "system"
+        assert t.title.startswith("🤖")
+        assert t.source_metadata.get("is_subagent") is True
+        assert t.source_metadata.get("agent_id") == "agent-abc"
+        assert t.source_metadata.get("parent_session_id") == "parent-sess"
+
+
+def test_custom_title_wins_over_ai_title(archive_home) -> None:
+    """A user rename (``custom-title``) beats the auto-titler's ``ai-title``."""
+    init_db()
+    f = archive_home / "titled.jsonl"
+    _write_jsonl(f, [
+        {"type": "ai-title", "aiTitle": "Auto Generated Title"},
+        USER, ASSISTANT,
+        {"type": "custom-title", "customTitle": "My Renamed Session"},
+    ])
+    import_session_incremental(f, "proj:t1")
+    with get_session() as s:
+        t = s.execute(select(Thread).where(Thread.source == "claude-code")).scalar_one()
+        assert t.title == "My Renamed Session"
+
+
+def test_ai_title_used_when_no_rename(archive_home) -> None:
+    """With no user rename, the auto-titler's ``ai-title`` is the title."""
+    init_db()
+    f = archive_home / "ai.jsonl"
+    _write_jsonl(f, [{"type": "ai-title", "aiTitle": "Memory requirements for MoE"}, USER, ASSISTANT])
+    import_session_incremental(f, "proj:t2")
+    with get_session() as s:
+        t = s.execute(select(Thread).where(Thread.source == "claude-code")).scalar_one()
+        assert t.title == "Memory requirements for MoE"
+
+
+def test_command_invocation_titles_with_command_name(archive_home) -> None:
+    """A bare slash-command session is titled with the command, not the XML noise
+    or the injected skill doc that follows."""
+    init_db()
+    f = archive_home / "cmd.jsonl"
+    cmd_user = {"type": "user", "uuid": "uc", "timestamp": "2026-01-01T10:00:00Z", "cwd": "/proj",
+                "message": {"role": "user",
+                            "content": "<command-message>cleanup</command-message>\n<command-name>/cleanup</command-name>"}}
+    _write_jsonl(f, [cmd_user, ASSISTANT])
+    import_session_incremental(f, "proj:cmd")
+    with get_session() as s:
+        t = s.execute(select(Thread).where(Thread.source == "claude-code")).scalar_one()
+        assert t.title == "/cleanup"
+
+
+def test_description_and_models_backfilled(archive_home) -> None:
+    """A new thread carries a one-line description (first user message) and a
+    denormalized models list from its api_request_completed events."""
+    init_db()
+    f = archive_home / "sess.jsonl"
+    _write_jsonl(f, [USER, ASSISTANT])
+    import_session_incremental(f, "proj:s1")
+    with get_session() as s:
+        t = s.execute(select(Thread).where(Thread.source == "claude-code")).scalar_one()
+        assert t.description == "hello world"
+        assert t.source_metadata.get("models") == ["claude-opus-4"]
+
+
+def test_title_resyncs_on_rename(archive_home) -> None:
+    """An existing thread re-syncs its title when a later ``custom-title`` appears."""
+    init_db()
+    f = archive_home / "sess.jsonl"
+    _write_jsonl(f, [USER, ASSISTANT])
+    import_session_incremental(f, "proj:s1")
+    with get_session() as s:
+        assert s.execute(select(Thread)).scalar_one().title == "hello world"
+
+    u2 = {**USER, "uuid": "u2", "timestamp": "2026-01-01T10:01:00Z",
+          "message": {"role": "user", "content": "more"}}
+    a2 = {**ASSISTANT, "uuid": "a2", "timestamp": "2026-01-01T10:01:05Z",
+          "message": {"role": "assistant", "model": "claude-opus-4",
+                      "content": [{"type": "text", "text": "ok"}]}}
+    _write_jsonl(f, [USER, ASSISTANT, {"type": "custom-title", "customTitle": "Renamed Later"}, u2, a2])
+    import_session_incremental(f, "proj:s1")
+    with get_session() as s:
+        assert s.execute(select(Thread)).scalar_one().title == "Renamed Later"
+
+
+def test_metadata_survives_reindex(archive_home) -> None:
+    """Title, description, and the backfilled models list are written to truth, so a
+    ``rm index.db && reindex`` reproduces them."""
+    init_db()
+    f = archive_home / "sess.jsonl"
+    _write_jsonl(f, [{"type": "custom-title", "customTitle": "Kept Title"}, USER, ASSISTANT])
+    import_session_incremental(f, "proj:s1")
+    checkpoint()
+
+    from thread_archive.store import get_engine
+    get_engine().dispose()
+    jsonl_log.reset_handles()
+    _base.close_engine()
+    for suffix in ("", "-wal", "-shm"):
+        (archive_home / f"index.db{suffix}").unlink(missing_ok=True)
+    reindex()
+
+    with get_session() as s:
+        t = s.execute(select(Thread).where(Thread.source == "claude-code")).scalar_one()
+        assert t.title == "Kept Title"
+        assert t.description == "hello world"
+        assert t.source_metadata.get("models") == ["claude-opus-4"]
+
+
+def test_hook_context_sidecar_imported(archive_home) -> None:
+    """A sibling ``<session>.context.jsonl`` imports as hook_context events on the
+    thread; empty-context lines are skipped and re-import adds nothing."""
+    init_db()
+    f = archive_home / "sess.jsonl"
+    _write_jsonl(f, [USER, ASSISTANT])
+    _write_jsonl(archive_home / "sess.context.jsonl", [
+        {"hook": "UserPromptSubmit", "context": "injected context here", "ts": "2026-01-01T10:00:01"},
+        {"hook": "PreToolUse", "context": "", "ts": "2026-01-01T10:00:02"},  # empty → skipped
+    ])
+    import_session_incremental(f, "proj:s1")
+
+    with get_session() as s:
+        t = s.execute(select(Thread).where(Thread.source == "claude-code")).scalar_one()
+        hooks = s.execute(
+            select(Event).where(Event.thread_id == t.id, Event.event_type == "hook_context")
+        ).scalars().all()
+    assert len(hooks) == 1
+    assert hooks[0].payload["context"] == "injected context here"
+    assert hooks[0].payload["hook_name"] == "UserPromptSubmit"
+
+    # Re-import: the sidecar cursor short-circuits, nothing doubles.
+    import_session_incremental(f, "proj:s1")
+    with get_session() as s:
+        t = s.execute(select(Thread).where(Thread.source == "claude-code")).scalar_one()
+        n = len(s.execute(
+            select(Event).where(Event.thread_id == t.id, Event.event_type == "hook_context")
+        ).scalars().all())
+    assert n == 1
+
+
+def test_source_override_labels_thread_and_watermark(archive_home) -> None:
+    """``source=`` overrides the default ``"claude-code"`` label end to end — the
+    one knob a deployment watcher (e.g. cloth) needs to import Claude-Code-shaped
+    JSONL under its own identity. Thread, name, and import-state all carry it."""
+    init_db()
+    f = archive_home / "sess.jsonl"
+    _write_jsonl(f, [USER, ASSISTANT])
+
+    result = import_session_incremental(f, "cloth-cli-7", source="cloth")
+    assert result.is_new_thread is True
+    assert result.events_created > 0
+
+    with get_session() as s:
+        thread = s.execute(select(Thread).where(Thread.source == "cloth")).scalar_one()
+        assert thread.source_id == "cloth-cli-7"
+        assert thread.name == "cloth:cloth-cli-7"
+        # No claude-code thread leaked in under the default.
+        assert s.execute(select(Thread).where(Thread.source == "claude-code")).first() is None
+        # Watermark is keyed on the overridden source, so the resume path matches.
+        state = s.execute(select(ImportState).where(ImportState.source == "cloth")).scalar_one()
+        assert state.source_id == "cloth-cli-7"
+
+    # Resume resolves the same thread under the same source — no fork, no re-import.
+    again = import_session_incremental(f, "cloth-cli-7", source="cloth")
+    assert again.events_created == 0
+    assert again.is_new_thread is False
 
 
 def test_reimport_unchanged_file_is_noop(archive_home) -> None:
@@ -103,6 +287,32 @@ def test_dedup_key_idempotent_even_without_watermark(archive_home) -> None:
     assert result.events_created == 0
     assert result.is_new_thread is False  # resolved the existing thread, didn't recreate
     assert _event_count() == n1
+
+
+def test_reimport_after_watermark_loss_does_not_double(archive_home) -> None:
+    """The reindex-safety guard: after ``rm index.db && reindex`` the watermark is
+    gone but the thread+events are rebuilt from truth — and a bulk-seeded archive's
+    stored dedup_keys need not match a fresh import's. Re-importing the file must NOT
+    re-insert those events; the thread is adopted (watermark re-stamped at EOF)."""
+    init_db()
+    f = archive_home / "sess.jsonl"
+    _write_jsonl(f, [USER, ASSISTANT])
+
+    import_session_incremental(f, "proj:s1")
+    n1 = _event_count()
+
+    # Simulate the post-reindex state: events present but with keys a fresh import
+    # won't reproduce, and no watermark.
+    with get_session() as s:
+        for e in s.execute(select(Event)).scalars().all():
+            if e.dedup_key:
+                e.dedup_key = "STALE-" + e.dedup_key
+        s.execute(delete(ImportState))
+        s.commit()
+
+    result = import_session_incremental(f, "proj:s1")
+    assert result.events_created == 0          # adopted, not re-imported
+    assert _event_count() == n1                # nothing doubled
 
 
 def test_watermark_advances_on_appended_turns(archive_home) -> None:

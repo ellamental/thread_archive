@@ -8,6 +8,7 @@ the MCP server (:mod:`.mcp.server`) and the ``archive`` CLI are built on it.
 from __future__ import annotations
 
 from .api import (
+    backup,
     bridge_topics,
     checkpoint,
     close,
@@ -15,10 +16,12 @@ from .api import (
     knowledge_status,
     open_archive,
     read_thread,
+    read_thread_structured,
     reindex,
     search,
     status,
     topic_peers,
+    verify,
     watch,
 )
 
@@ -30,6 +33,7 @@ __all__ = [
     "close",
     "search",
     "read_thread",
+    "read_thread_structured",
     "import_path",
     "reindex",
     "checkpoint",
@@ -38,4 +42,6 @@ __all__ = [
     "knowledge_status",
     "bridge_topics",
     "topic_peers",
+    "backup",
+    "verify",
 ]

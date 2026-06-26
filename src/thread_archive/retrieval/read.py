@@ -122,3 +122,99 @@ def read_thread(
     if not window:
         out.append("_(no renderable content)_")
     return "\n".join(out)
+
+
+# Cap a single tool result so a megabyte of command output never ships to the
+# viewer whole; the UI shows the head and flags the truncation.
+_TOOL_OUTPUT_CAP = 20_000
+
+
+def _structured_event(
+    ev: Event, *, include_thinking: bool, include_tools: bool
+) -> Optional[tuple[str, dict]]:
+    """Like :func:`_render_event`, but returns ``(role, block)`` where ``block`` is a
+    typed renderable dict — so the web viewer can render markdown, syntax-highlighted
+    code, and collapsible tool calls instead of a pre-flattened string. Mirrors the
+    same event-type handling; returns None to skip lifecycle/empty events."""
+    et = ev.event_type
+    if et in _SKIP_TYPES:
+        return None
+    p = _payload(ev)
+
+    if et in ("user_message_sent", "thread_message_sent"):
+        content = p.get("content", "")
+        return ("user", {"type": "text", "text": content}) if content.strip() else None
+    if et == "text_complete":
+        text = p.get("text", "")
+        return ("assistant", {"type": "text", "text": text}) if text.strip() else None
+    if et == "thinking_complete":
+        if not include_thinking:
+            return None
+        text = p.get("text", "")
+        return ("assistant", {"type": "thinking", "text": text}) if text.strip() else None
+    if et in ("tool_use_complete", "tool_use_started"):
+        if not include_tools:
+            return None
+        return ("assistant", {
+            "type": "tool_use",
+            "name": p.get("tool_name", "unknown"),
+            "input": p.get("input", {}),
+        })
+    if et == "tool_execution_completed":
+        if not include_tools:
+            return None
+        out = str(p.get("output", ""))
+        return ("assistant", {
+            "type": "tool_result",
+            "output": out[:_TOOL_OUTPUT_CAP],
+            "truncated": len(out) > _TOOL_OUTPUT_CAP,
+        })
+    if et == "tool_execution_error":
+        if not include_tools:
+            return None
+        return ("assistant", {"type": "tool_error", "error": str(p.get("error", ""))})
+    if et == "context_summary":
+        content = p.get("content", "")
+        return ("assistant", {"type": "context_summary", "text": content}) if content.strip() else None
+    return None
+
+
+def read_thread_structured(
+    thread_id: int,
+    *,
+    include_thinking: bool = True,
+    include_tools: bool = True,
+    session: Optional[Session] = None,
+) -> dict:
+    """Reconstruct a thread as structured messages for the web viewer.
+
+    Returns ``{thread_id, title, source, messages}`` where ``messages`` is a list of
+    ``{role, blocks}`` — contiguous same-role events grouped into one message, each
+    block a typed dict (:func:`_structured_event`). The string :func:`read_thread`
+    stays the canonical transcript (CLI / MCP); this is the render-friendly sibling."""
+    with use_session(session) as s:
+        thread = s.get(Thread, thread_id)
+        if thread is None:
+            return {"thread_id": thread_id, "title": None, "source": None, "messages": []}
+        events = s.execute(
+            select(Event).where(Event.thread_id == thread_id).order_by(Event.id)
+        ).scalars().all()
+
+    messages: list[dict] = []
+    current: Optional[dict] = None
+    for ev in events:
+        rendered = _structured_event(ev, include_thinking=include_thinking, include_tools=include_tools)
+        if rendered is None:
+            continue
+        role, block = rendered
+        if current is None or current["role"] != role:
+            current = {"role": role, "blocks": []}
+            messages.append(current)
+        current["blocks"].append(block)
+
+    return {
+        "thread_id": thread.id,
+        "title": thread.title or thread.name,
+        "source": thread.source,
+        "messages": messages,
+    }

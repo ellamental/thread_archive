@@ -44,6 +44,11 @@ archive-librarian-mcp = "thread_archive.mcp.librarian:main"
 # so the archive owns its provider parsers with no external dependency.
 # See src/thread_import/.
 packages = ["src/thread_archive", "src/thread_import"]
+# The web viewer ships pre-built: frontend/ (node, dev-only) builds into
+# web/static/, which is committed and packaged so `pip install` needs no node.
+# Under the package dir and tracked, so hatchling includes it by default; declared
+# explicitly so the bundle ships even if static/ is ever gitignored as build output.
+artifacts = ["src/thread_archive/web/static/**/*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

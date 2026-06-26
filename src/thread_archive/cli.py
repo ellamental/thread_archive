@@ -37,6 +37,20 @@ def cmd_import(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_import_export(args: argparse.Namespace) -> int:
+    from . import api
+    from .importers.exports import import_export
+
+    api.open_archive(args.home)
+    result = import_export(args.path, force=args.force)
+    api.checkpoint(home=args.home)  # snapshot the new threads' metadata to truth
+    print(
+        f"imported export {args.path}: processed={result.processed} "
+        f"imported={result.imported} skipped={result.skipped} events={result.events_created}"
+    )
+    return 0
+
+
 def cmd_watch(args: argparse.Namespace) -> int:
     import logging
 
@@ -67,6 +81,18 @@ def cmd_watch(args: argparse.Namespace) -> int:
             print(f"  ! {err}", flush=True)
         return 0
 
+    # Optionally cohost the read viewer in this always-on process (one process, one
+    # engine) so there's a persistent URL — WAL lets the web reader run concurrent
+    # with the watcher's writes (see store._base).
+    httpd = None
+    if args.web:
+        from .web import serve_in_thread
+
+        httpd = serve_in_thread(host=args.web_host, port=args.web_port)
+        logging.getLogger("thread_archive.watcher").info(
+            "cohosting web viewer on http://%s:%s", args.web_host, args.web_port
+        )
+
     available = [w.source_name for w in watcher.available()]
     logging.getLogger("thread_archive.watcher").info(
         "watching %d sources %s every %ss (maintenance every %.0fs)",
@@ -76,6 +102,9 @@ def cmd_watch(args: argparse.Namespace) -> int:
         watcher.run()
     except KeyboardInterrupt:
         print("\nstopped.", flush=True)
+    finally:
+        if httpd is not None:
+            httpd.server_close()
     return 0
 
 
@@ -98,6 +127,13 @@ def cmd_read(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_web(args: argparse.Namespace) -> int:
+    from .web import serve
+
+    serve(host=args.host, port=args.port, open_browser=not args.no_open, home=args.home)
+    return 0
+
+
 def cmd_reindex(args: argparse.Namespace) -> int:
     from . import api
 
@@ -108,6 +144,29 @@ def cmd_reindex(args: argparse.Namespace) -> int:
         print(f"  {name:16} {n:>9}")
     print("done")
     return 0
+
+
+def cmd_backup(args: argparse.Namespace) -> int:
+    from . import api
+
+    res = api.backup(args.dest, home=args.home)
+    mb = res["bytes_copied"] / (1024 * 1024)
+    print(f"backed up {res['truth_dir']} → {res['dest']}: {res['files_copied']} files ({mb:.1f} MB copied)")
+    return 0
+
+
+def cmd_verify(args: argparse.Namespace) -> int:
+    from . import api
+
+    res = api.verify(home=args.home)
+    print(
+        f"truth: threads={res['truth']['threads']} events={res['truth']['events']} "
+        f"parse_errors={res['truth']['parse_errors']}"
+    )
+    print(f"index: threads={res['index']['threads']} events={res['index']['events']}")
+    print(f"drift: threads={res['drift']['threads']:+d} events={res['drift']['events']:+d}")
+    print("OK" if res["ok"] else "DRIFT DETECTED")
+    return 0 if res["ok"] else 1
 
 
 def cmd_status(args: argparse.Namespace) -> int:
@@ -131,21 +190,36 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--version", action="version", version=f"thread-archive {__version__}")
     sub = parser.add_subparsers(dest="command", metavar="<command>")
 
+    from .importers import PROVIDERS  # registry is the single source of truth for choices
+
     p_import = sub.add_parser("import", help="import a transcript or provider store")
     _add_home_arg(p_import)
-    p_import.add_argument("path", help="transcript file (claude-code/codex/grok/antigravity) or DB (cursor/opencode)")
+    p_import.add_argument("path", help="transcript file (claude-code/codex/grok/antigravity/cloth) or DB (cursor/opencode)")
     p_import.add_argument(
         "--provider",
         default=None,
-        choices=["claude-code", "codex", "grok", "antigravity", "cursor", "opencode"],
+        choices=PROVIDERS,
         help="source provider (default: claude-code)",
     )
     p_import.set_defaults(func=cmd_import)
+
+    p_import_export = sub.add_parser(
+        "import-export", help="import a downloaded claude.ai / xAI account export (ZIP or dir)"
+    )
+    _add_home_arg(p_import_export)
+    p_import_export.add_argument("path", help="export ZIP file or unzipped directory")
+    p_import_export.add_argument(
+        "--force", action="store_true", help="reimport conversations already present"
+    )
+    p_import_export.set_defaults(func=cmd_import_export)
 
     p_watch = sub.add_parser("watch", help="watch local AI-tool stores and import incrementally")
     _add_home_arg(p_watch)
     p_watch.add_argument("--once", action="store_true", help="poll once and exit")
     p_watch.add_argument("--interval", type=float, default=5.0, help="poll interval in seconds")
+    p_watch.add_argument("--web", action="store_true", help="cohost the web viewer (persistent URL)")
+    p_watch.add_argument("--web-host", default="127.0.0.1", help="cohosted viewer bind host")
+    p_watch.add_argument("--web-port", type=int, default=8787, help="cohosted viewer bind port")
     p_watch.set_defaults(func=cmd_watch)
 
     p_search = sub.add_parser("search", help="search conversations")
@@ -161,6 +235,13 @@ def build_parser() -> argparse.ArgumentParser:
     p_read.add_argument("--no-tools", action="store_true", help="omit tool calls and results")
     p_read.set_defaults(func=cmd_read)
 
+    p_web = sub.add_parser("web", help="serve the local search + reader web UI (Ctrl-C to stop)")
+    _add_home_arg(p_web)
+    p_web.add_argument("--host", default="127.0.0.1", help="bind host (default: 127.0.0.1)")
+    p_web.add_argument("--port", type=int, default=8787, help="bind port (default: 8787)")
+    p_web.add_argument("--no-open", action="store_true", help="don't open a browser on start")
+    p_web.set_defaults(func=cmd_web)
+
     p_reindex = sub.add_parser("reindex", help="rebuild index.db from the JSONL truth directory")
     _add_home_arg(p_reindex)
     p_reindex.add_argument("--vectors", action="store_true", help="also rebuild local vectors")
@@ -169,6 +250,15 @@ def build_parser() -> argparse.ArgumentParser:
     p_status = sub.add_parser("status", help="archive health / paths / counts")
     _add_home_arg(p_status)
     p_status.set_defaults(func=cmd_status)
+
+    p_backup = sub.add_parser("backup", help="mirror the JSONL truth dir to a backup destination")
+    _add_home_arg(p_backup)
+    p_backup.add_argument("dest", help="backup destination dir (ideally a different disk/machine)")
+    p_backup.set_defaults(func=cmd_backup)
+
+    p_verify = sub.add_parser("verify", help="integrity check: truth parses + matches the index")
+    _add_home_arg(p_verify)
+    p_verify.set_defaults(func=cmd_verify)
 
     return parser
 
