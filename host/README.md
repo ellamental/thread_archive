@@ -59,6 +59,56 @@ snapshots (`thread_links.jsonl` / `topic_messages.jsonl`) — conversation inges
 never changes those (they're projections of the append-only `kg_events` curatorial
 log), so there's nothing to rewrite.
 
+## Vector freshness — the live embed cohost
+
+Lexical (FTS5) index aside, semantic search needs each user/text event **embedded**
+into `event_vectors`. Ingest keeps the FTS index current, but embedding is a separate
+step — so without upkeep the vector arm falls behind live ingest, and recent threads
+become findable by keyword but **not by meaning** (a paraphrased query that relies on
+the semantic arm misses them).
+
+So the watcher cohosts an **incremental embed** on the same slow cadence as
+maintenance (`--embed-interval`, default 300 s): each pass embeds the freshest
+user/text events still missing a vector (anti-join, newest-first), bounded by
+`--embed-batch` (default 512) so a backlog drains over cycles without stalling the
+loop. The embed backend loads once and stays warm in this process; it no-ops without
+the `[embeddings]` extra, and a failure is logged, never fatal. `--no-embed` disables
+it. One process keeps both index arms current — no second daemon.
+
+For a one-shot catch-up (e.g. after a long gap or a fresh `[embeddings]` install),
+`archive embed` fills the whole vector gap immediately; `archive embed --rebuild`
+re-embeds everything.
+
+## Using the archive MCP from Claude Science (a *Local command* connector + grants)
+
+Claude Science (the AI Workbench app) can run the **same stdio `archive-mcp`** — no HTTP,
+no extra daemon — but it spawns connectors in a **sandbox**, so two things must be true.
+
+What *doesn't* work: a **Remote** (URL) connector. Claude Science's `safeFetch` is an SSRF
+guard — it rejects every loopback/private host (`127.0.0.0/8`, `10/8`, `192.168/16`, …, and
+bare `localhost`), so a connector can never point at a local server. Local is the only path.
+
+The connector sandbox is `(allow file-read*)` then `(deny file-read* (subpath $HOME))` —
+everything outside `$HOME` is readable, all of `$HOME` is denied **unless granted**. So a
+home-resident `archive-mcp` needs read grants for the three `$HOME` paths it touches:
+
+| grant (read-only)              | why                                              |
+|--------------------------------|--------------------------------------------------|
+| `~/dev/thread/archive`         | the repo: the venv **and** the editable `src/`   |
+| `~/.pyenv`                     | the interpreter + `libpython` + stdlib (pyenv build) |
+| `~/.thread_archive`            | the archive data (`index.db`, truth log)         |
+
+Grants are persistent "host access" mounts (`host_grants` table): add them from the app's
+**Permissions** panel, or ask the Science agent to grant filesystem access to those paths
+(it calls `request_host_access` → you approve the card). Then in **Connectors → add a
+*Local command* connector** pointing at `~/dev/thread/archive/.venv/bin/archive-mcp` and
+**Reconnect**. (Verified by replicating the seatbelt profile with `sandbox-exec`: with the
+three grants, `thread_search` returns live results; the optional embed/re-rank models stay
+disabled under the sandbox, which only degrades semantic ranking — FTS is unaffected.)
+
+The default stdio wiring (Claude Code, Cursor) is unchanged; this is purely a Claude
+Science connector + grants, needing no code here.
+
 ## Install
 
 ```bash
