@@ -9,7 +9,8 @@ tool_execution_*) plus lifecycle/summary events (api_request_*, stream_completed
 :func:`read_thread` is the string transcript surface (CLI / MCP). It mirrors the
 monorepo ``thread_read`` contract: a ``mode`` view knob (user / chat / full),
 turn-based pagination (``limit`` / ``offset`` / ``after_event``), a per-chunk
-``max_chars`` budget with a CHUNKED footer, and ``summary`` for a compact TOC. The
+``max_chars`` budget with a CHUNKED footer, and ``summary`` for the summary views
+(true/'toc' = compact TOC; 'short' / 'indexed' = the stored thread summaries). The
 default view is ``user`` — only the user turns, the cheap signal — exactly as the
 monorepo defaults. Tool *results* are never rendered (the transcript shows tool
 calls, not their output), also matching the monorepo. :func:`read_thread_structured`
@@ -19,6 +20,7 @@ is the render-friendly sibling for the web viewer (typed blocks, results include
 from __future__ import annotations
 
 import json
+import os
 from datetime import datetime
 from typing import Optional
 
@@ -412,6 +414,56 @@ def _topic_read_message(thread: Thread, *, session: Optional[Session] = None) ->
     )
 
 
+# Feature flag for the stored-summary read kinds (summary='short'/'indexed').
+# On by default; set THREAD_ARCHIVE_STORED_SUMMARIES=0 (or false/no/off) to disable —
+# those kinds then return a disabled notice, and everything else is unchanged.
+_ENV_STORED_SUMMARIES = "THREAD_ARCHIVE_STORED_SUMMARIES"
+
+
+def _stored_summaries_enabled() -> bool:
+    """Checked per call, so flipping the env var needs no restart for in-process
+    callers (a long-lived MCP server picks it up on its next environment)."""
+    v = os.environ.get(_ENV_STORED_SUMMARIES, "1").strip().lower()
+    return v not in ("0", "false", "no", "off")
+
+
+def _resolve_summary_kind(summary: bool | str) -> Optional[str]:
+    """Map the ``summary`` knob → ``None`` (normal read), ``'toc'``, ``'short'``,
+    ``'indexed'``, or ``'?'`` for an unrecognised string (the caller reports it).
+    Bool-ish strings are accepted because MCP clients sometimes stringify booleans."""
+    if isinstance(summary, str):
+        v = summary.strip().lower()
+        if v in ("short", "indexed", "toc"):
+            return v
+        if v in ("true", "1", "yes"):
+            return "toc"
+        if v in ("", "false", "0", "no", "none"):
+            return None
+        return "?"
+    return "toc" if summary else None
+
+
+def _stored_summary(thread: Thread, kind: str) -> str:
+    """The thread's stored summary: ``short`` (``Thread.summary``, a few sentences)
+    or ``indexed`` (``Thread.indexed_summary``, structured markdown with event
+    anchors). Written by the summarizer pipeline, so not every thread has them;
+    absence names whichever alternative exists rather than returning empty."""
+    text = thread.summary if kind == "short" else thread.indexed_summary
+    other_kind = "indexed" if kind == "short" else "short"
+    other_text = thread.indexed_summary if kind == "short" else thread.summary
+    if not (text and text.strip()):
+        hint = (
+            f" The {other_kind} summary exists: summary='{other_kind}'."
+            if other_text and other_text.strip()
+            else " Neither stored summary exists; summary=true gives the message TOC."
+        )
+        return f"Thread {thread.id} has no {kind} summary.{hint}"
+    return (
+        f"# Thread {thread.id}: {thread.title or thread.name or '(untitled)'} "
+        f"({kind} summary)\n\n{text.strip()}"
+    )
+
+
 def _thread_read_summary(
     thread: Thread, steps: list[dict], limit: int, offset: int, *, session: Optional[Session] = None
 ) -> str:
@@ -455,7 +507,7 @@ def read_thread(
     *,
     limit: int = 200,
     offset: int = 0,
-    summary: bool = False,
+    summary: bool | str = False,
     mode: Optional[str] = None,
     user_only: Optional[bool] = None,
     tool_results: bool = False,
@@ -474,10 +526,25 @@ def read_thread(
     (where calls are shown). The read is paginated by turns and size-budgeted at
     ``max_chars`` (default ~48k chars): a thread bigger than one chunk ends in a
     CHUNKED footer naming the next offset. ``after_event`` resumes from the turn after
-    an event id; ``summary`` returns a compact TOC. ``user_only`` is a back-compat
-    alias for ``mode`` (True→user, False→full); ``mode`` wins. Returns a message
-    string if absent.
+    an event id; ``summary`` picks a summary view instead of the transcript —
+    ``True``/``'toc'`` = compact per-message TOC, ``'short'`` = the stored short
+    summary (``Thread.summary``), ``'indexed'`` = the stored indexed summary
+    (``Thread.indexed_summary``, structured, with event anchors). ``user_only`` is a
+    back-compat alias for ``mode`` (True→user, False→full); ``mode`` wins. Returns a
+    message string if absent.
     """
+    summary_kind = _resolve_summary_kind(summary)
+    if summary_kind == "?":
+        return (
+            f"Unknown summary kind {summary!r} — use 'short' (stored short summary), "
+            f"'indexed' (stored indexed summary), or true/'toc' (compact message TOC)."
+        )
+    if summary_kind in ("short", "indexed") and not _stored_summaries_enabled():
+        return (
+            f"Stored-summary reads are disabled ({_ENV_STORED_SUMMARIES} is off). "
+            f"summary=true still gives the compact message TOC."
+        )
+
     with use_session(session) as s:
         resolved = resolve_thread_ref(s, thread_id)
         if resolved is None:
@@ -486,13 +553,15 @@ def read_thread(
         thread = s.get(Thread, thread_id)
         if thread is None:
             return f"Thread {thread_id} not found."
+        if summary_kind in ("short", "indexed"):
+            return _stored_summary(thread, summary_kind)
         events = s.execute(
             select(Event).where(Event.thread_id == thread_id).order_by(Event.id)
         ).scalars().all()
 
     steps = _build_steps(_slot_queued_events(events))
 
-    if summary:
+    if summary_kind == "toc":
         return _thread_read_summary(
             thread, steps, limit if limit and limit > 0 else 200, offset, session=session
         )

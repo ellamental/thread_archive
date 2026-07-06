@@ -280,7 +280,9 @@ def build_parser() -> argparse.ArgumentParser:
     p_read.add_argument("thread_id", help="integer thread id, or a provider session uuid (source_id)")
     p_read.add_argument("--mode", choices=["user", "chat", "full"], default=None,
                         help="view: user (default) = user turns only; chat = + assistant text; full = + tool calls")
-    p_read.add_argument("--summary", action="store_true", help="compact TOC with previews instead of full content")
+    p_read.add_argument("--summary", nargs="?", const=True, default=False,
+                        help="summary view instead of full content: bare/'toc' = compact TOC "
+                             "with previews; 'short' / 'indexed' = the stored thread summary")
     p_read.add_argument("--tool-results", dest="tool_results", action="store_true",
                         help="include tool output under each call (needs --mode full)")
     p_read.add_argument("--limit", type=int, default=200, help="max turns per chunk (default: 200)")

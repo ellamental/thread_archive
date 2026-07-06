@@ -30,7 +30,11 @@ def test_mcp_registers_two_tools() -> None:
     # the filters + shaping args wired through from the library layer are exposed
     assert {"exclude_content_type", "source", "rerank", "startswith", "sort",
             "output", "context_lines", "context_events"} <= set(search_props)
-    assert "thread_id" in by_name["thread_read"].inputSchema["properties"]
+    read_props = by_name["thread_read"].inputSchema["properties"]
+    assert "thread_id" in read_props
+    # summary is bool | str: true/'toc' = TOC, 'short'/'indexed' = stored summaries
+    summary_types = {v["type"] for v in read_props["summary"]["anyOf"]}
+    assert summary_types == {"boolean", "string"}
     # both tools carry a description (docstring)
     assert all(t.description for t in tools)
 

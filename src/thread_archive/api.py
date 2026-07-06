@@ -107,7 +107,7 @@ def read_thread(
     home: Optional[str] = None,
     limit: int = 200,
     offset: int = 0,
-    summary: bool = False,
+    summary: bool | str = False,
     mode: Optional[str] = None,
     user_only: Optional[bool] = None,
     tool_results: bool = False,
@@ -120,8 +120,9 @@ def read_thread(
     (the uuid/source_id a tool knows the conversation by). ``mode`` picks the view —
     ``user`` (default), ``chat``, or ``full`` — and the read is turn-paginated +
     size-budgeted (``max_chars``, default ~48k). ``tool_results`` (default off) adds
-    tool output under each call in ``full``; see
-    :func:`thread_archive.retrieval.read_thread` for the full contract."""
+    tool output under each call in ``full``. ``summary`` swaps in a summary view:
+    ``True``/``'toc'`` = compact TOC, ``'short'`` / ``'indexed'`` = the stored thread
+    summaries; see :func:`thread_archive.retrieval.read_thread` for the full contract."""
     open_archive(home)
     from .retrieval import read_thread as _read
 

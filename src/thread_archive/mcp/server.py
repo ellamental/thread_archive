@@ -118,7 +118,7 @@ def thread_read(
     thread_id: int | str,
     limit: int = 200,
     offset: int = 0,
-    summary: bool = False,
+    summary: bool | str = False,
     mode: Optional[str] = None,
     user_only: Optional[bool] = None,
     tool_results: bool = False,
@@ -146,9 +146,13 @@ def thread_read(
     The read is size-budgeted (~48k chars), so it never silently overflows the MCP
     output cap: a thread bigger than one chunk ends in a CHUNKED footer naming the
     exact offset to read next (that's pagination, not lost data — page with
-    ``offset``, or resume from an event with ``after_event``). ``summary=true`` gives
-    a compact TOC. ``user_only`` is a back-compat alias for ``mode`` (true→user,
-    false→full); prefer ``mode``, which wins if both are set.
+    ``offset``, or resume from an event with ``after_event``). ``summary`` picks a
+    summary view instead of the transcript: ``true``/``'toc'`` = a compact per-message
+    TOC; ``'short'`` = the thread's stored short summary (a few sentences);
+    ``'indexed'`` = the stored indexed summary (structured, with event anchors) —
+    the stored kinds exist only where the summarizer has covered the thread.
+    ``user_only`` is a back-compat alias for ``mode`` (true→user, false→full);
+    prefer ``mode``, which wins if both are set.
 
     Args:
         thread_id: Integer thread id, or a provider session uuid (source_id) which
@@ -157,7 +161,8 @@ def thread_read(
             Default: 200.
         offset: Skip first N turns. Use the offset from a CHUNKED footer to read the
             next chunk. Negative counts from end: -20 = last 20 turns. Default: 0.
-        summary: Return a compact TOC with previews instead of full content.
+        summary: Summary view instead of full content — true/'toc' for a compact
+            TOC with previews, 'short' or 'indexed' for the stored thread summary.
         mode: View — 'user' (default), 'chat', or 'full'. Default: user.
         user_only: Back-compat alias for mode (true→user, false→full). Prefer mode.
         tool_results: Include tool output under each call (default off; needs 'full').

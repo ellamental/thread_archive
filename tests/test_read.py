@@ -2,7 +2,8 @@
 
 Pins the standalone ``read_thread`` to the monorepo ``thread_read`` behavior:
 default user-only, ``mode`` = user/chat/full, turn pagination (limit/offset/
-after_event), a ~48k char budget with a CHUNKED footer, and a ``summary`` TOC.
+after_event), a ~48k char budget with a CHUNKED footer, and the ``summary`` views
+(TOC, plus the stored short/indexed thread summaries behind a feature flag).
 Tool *results* are never rendered (calls only), matching the monorepo.
 
 Events are seeded directly so the rendering contract is tested independently of the
@@ -184,6 +185,75 @@ def test_summary_pagination(archive_home) -> None:
     assert "Showing 1-2 of 7" in out
     out2 = read_thread(tid, summary=True, limit=2, offset=2)
     assert "Showing 3-4 of 7" in out2
+
+
+# ── stored summaries (summary='short' / 'indexed') ──────────────────────────
+
+def _set_summaries(tid: int, *, short=None, indexed=None) -> None:
+    with use_session() as s:
+        t = s.get(Thread, tid)
+        t.summary = short
+        t.indexed_summary = indexed
+        s.commit()
+
+
+def test_summary_short_returns_stored(archive_home) -> None:
+    tid = _seed()
+    _set_summaries(tid, short="A short prose summary.", indexed="## Indexed\nthe long form")
+    out = read_thread(tid, summary="short")
+    assert "(short summary)" in out
+    assert "A short prose summary." in out
+    assert "the long form" not in out
+
+
+def test_summary_indexed_returns_stored(archive_home) -> None:
+    tid = _seed()
+    _set_summaries(tid, short="A short prose summary.", indexed="## Indexed\nthe long form")
+    out = read_thread(tid, summary="indexed")
+    assert "(indexed summary)" in out
+    assert "the long form" in out
+    assert "A short prose summary." not in out
+
+
+def test_summary_missing_kind_names_the_other(archive_home) -> None:
+    tid = _seed()
+    _set_summaries(tid, indexed="## Indexed only")
+    out = read_thread(tid, summary="short")
+    assert "no short summary" in out
+    assert "summary='indexed'" in out
+
+
+def test_summary_missing_both_points_at_toc(archive_home) -> None:
+    tid = _seed()
+    out = read_thread(tid, summary="indexed")
+    assert "no indexed summary" in out
+    assert "summary=true" in out
+
+
+def test_summary_unknown_kind_is_reported(archive_home) -> None:
+    tid = _seed()
+    out = read_thread(tid, summary="shrot")
+    assert "Unknown summary kind" in out
+    assert "'short'" in out and "'indexed'" in out
+
+
+def test_summary_string_bool_aliases(archive_home) -> None:
+    tid = _seed()
+    # MCP clients sometimes stringify booleans; 'toc' is the explicit TOC name.
+    assert read_thread(tid, summary="toc") == read_thread(tid, summary=True)
+    assert read_thread(tid, summary="true") == read_thread(tid, summary=True)
+    assert "[USER" in read_thread(tid, summary="false")
+
+
+def test_stored_summaries_feature_flag_disables(archive_home, monkeypatch) -> None:
+    tid = _seed()
+    _set_summaries(tid, short="A short prose summary.")
+    monkeypatch.setenv("THREAD_ARCHIVE_STORED_SUMMARIES", "0")
+    out = read_thread(tid, summary="short")
+    assert "disabled" in out
+    assert "A short prose summary." not in out
+    # the TOC view is not behind the flag
+    assert "| # | Role | Event ID | Time | Preview |" in read_thread(tid, summary=True)
 
 
 # ── turn pagination ──────────────────────────────────────────────────────────
