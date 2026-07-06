@@ -16,12 +16,13 @@ package is ``thread_archive.mcp`` and never shadows it.
 
 from __future__ import annotations
 
+import threading
 from typing import Optional
 
 from mcp.server.fastmcp import FastMCP
 
 from .. import api
-from ..retrieval import format_results
+from ..retrieval import format_results, warm_models
 
 mcp = FastMCP("thread-archive")
 
@@ -185,6 +186,15 @@ def thread_read(
 
 
 def main() -> None:
+    # Warm the embedding + cross-encoder models on a background daemon thread. The cold load
+    # is tens of seconds; when it lands inside the first conceptual search it can exceed the
+    # client's MCP request timeout (cloth defaults to 60s), which surfaces to the model as a
+    # failed tool call. Warming at startup moves that cost off the request path — the models
+    # are (usually) resident by the time the first query arrives, and _load()'s lock makes an
+    # early query that races the warm wait on one load rather than kick off a second. Daemon
+    # so it never holds up interpreter exit; warm_models is fail-soft (a missing extra / load
+    # failure just restores the old lazy behaviour).
+    threading.Thread(target=warm_models, name="archive-warm-models", daemon=True).start()
     mcp.run()
 
 

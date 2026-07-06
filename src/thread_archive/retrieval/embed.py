@@ -16,6 +16,7 @@ import importlib.util
 import logging
 import os
 import sys
+import threading
 
 logger = logging.getLogger(__name__)
 
@@ -28,6 +29,9 @@ _MODEL_NAME = os.environ.get("THREAD_ARCHIVE_EMBED_MODEL", "nomic-ai/nomic-embed
 
 _model = None
 _load_failed = False
+# Serializes _load() so a background warm (mcp.server) and a concurrent first query can't
+# both construct the heavy model at once (a transient double-load / memory spike).
+_load_lock = threading.Lock()
 
 
 def model_name() -> str:
@@ -112,25 +116,41 @@ def _pin_offline_if_cached() -> None:
 
 
 def _load():
-    """Lazily construct the cached SentenceTransformer (nomic needs trust_remote_code)."""
+    """Lazily construct the cached SentenceTransformer (nomic needs trust_remote_code).
+    Double-checked under ``_load_lock`` so a background warm and a first query race to a
+    single construction, not two concurrent heavy loads."""
     global _model, _load_failed
     if _model is not None:
         return _model
     if _load_failed:
         return None
-    try:
-        _pin_offline_if_cached()
-        from sentence_transformers import SentenceTransformer
+    with _load_lock:
+        if _model is not None:
+            return _model
+        if _load_failed:
+            return None
+        try:
+            _pin_offline_if_cached()
+            from sentence_transformers import SentenceTransformer
 
-        device = _device()
-        _model = SentenceTransformer(_MODEL_NAME, trust_remote_code=True, device=device)
-        dim = getattr(_model, "get_embedding_dimension", _model.get_sentence_embedding_dimension)()
-        logger.info("embed: loaded %s (dim=%s, device=%s)", _MODEL_NAME, dim, device)
-        return _model
-    except Exception as e:  # noqa: BLE001
-        _load_failed = True
-        logger.warning("embed: model load failed (%s) — vector arm degrades", e)
-        return None
+            device = _device()
+            _model = SentenceTransformer(_MODEL_NAME, trust_remote_code=True, device=device)
+            dim = getattr(_model, "get_embedding_dimension", _model.get_sentence_embedding_dimension)()
+            logger.info("embed: loaded %s (dim=%s, device=%s)", _MODEL_NAME, dim, device)
+            return _model
+        except Exception as e:  # noqa: BLE001
+            _load_failed = True
+            logger.warning("embed: model load failed (%s) — vector arm degrades", e)
+            return None
+
+
+def warm() -> bool:
+    """Eagerly load the embedding model so it isn't cold-loaded inside the first query.
+    Fail-soft and idempotent: returns False when the ``[embeddings]`` extra is absent or the
+    load fails (search then stays lexical, exactly as it does without warming)."""
+    if not is_available():
+        return False
+    return _load() is not None
 
 
 def _cap(text: str) -> str:

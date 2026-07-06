@@ -26,6 +26,7 @@ from __future__ import annotations
 import importlib.util
 import logging
 import os
+import threading
 
 logger = logging.getLogger(__name__)
 
@@ -37,6 +38,9 @@ _MODEL_NAME = os.environ.get("THREAD_ARCHIVE_RERANK_MODEL", "BAAI/bge-reranker-v
 
 _model = None
 _load_failed = False
+# Serializes _load() so a background warm (mcp.server) and a concurrent first conceptual
+# query can't both construct this ~570M cross-encoder at once.
+_load_lock = threading.Lock()
 
 
 def model_name() -> str:
@@ -73,23 +77,39 @@ def is_available() -> bool:
 
 
 def _load():
-    """Lazily construct the cached CrossEncoder. None (cached) on any load failure."""
+    """Lazily construct the cached CrossEncoder. None (cached) on any load failure.
+    Double-checked under ``_load_lock`` so a background warm and a first query race to a
+    single construction, not two concurrent heavy loads."""
     global _model, _load_failed
     if _model is not None:
         return _model
     if _load_failed:
         return None
-    try:
-        from sentence_transformers import CrossEncoder
+    with _load_lock:
+        if _model is not None:
+            return _model
+        if _load_failed:
+            return None
+        try:
+            from sentence_transformers import CrossEncoder
 
-        device = _device()
-        _model = CrossEncoder(_MODEL_NAME, device=device)
-        logger.info("rerank: loaded %s (device=%s)", _MODEL_NAME, device)
-        return _model
-    except Exception as e:  # noqa: BLE001
-        _load_failed = True
-        logger.warning("rerank: model load failed (%s) — re-rank stage degrades", e)
-        return None
+            device = _device()
+            _model = CrossEncoder(_MODEL_NAME, device=device)
+            logger.info("rerank: loaded %s (device=%s)", _MODEL_NAME, device)
+            return _model
+        except Exception as e:  # noqa: BLE001
+            _load_failed = True
+            logger.warning("rerank: model load failed (%s) — re-rank stage degrades", e)
+            return None
+
+
+def warm() -> bool:
+    """Eagerly load the cross-encoder so it isn't cold-loaded inside the first conceptual
+    query (a >60s stall that can blow past an MCP client's request timeout). Fail-soft and
+    idempotent: returns False when the extra is absent or the load fails."""
+    if not is_available():
+        return False
+    return _load() is not None
 
 
 def rerank_scores(query: str, docs: list[str]) -> list[float] | None:

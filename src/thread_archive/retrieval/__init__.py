@@ -12,6 +12,7 @@ cross-encoder arms sit out and search is lexical-only (still through the ranker)
 
 from __future__ import annotations
 
+import logging
 from typing import Optional
 
 from sqlalchemy import select
@@ -24,6 +25,8 @@ from ._context import extract_context_lines, get_context_events, parse_context_e
 from .format import format_results
 from .fts import ensure_fts, fts_status, index_events, rebuild_fts, search_events
 from .read import read_thread, read_thread_structured, resolve_thread_ref
+
+logger = logging.getLogger(__name__)
 
 # output='count' wants a true tally, so over-fetch far past the page size.
 _COUNT_FETCH_CAP = 1000
@@ -79,6 +82,47 @@ def _semantic_hits(query, *, thread_id, content_types, exclude_content_types, si
         )
     except Exception:  # noqa: BLE001 — vector arm must never break lexical search
         return None
+
+
+# A throwaway conceptual, multi-term query for the warm pass: multi-term + no operators so
+# it trips the rerank gate (should_rerank), exercising the cross-encoder head too.
+_WARM_QUERY = "warm up the retrieval vector index and reranker"
+
+
+def warm_models() -> None:
+    """Prime the whole retrieval pipeline on the caller's thread so the FIRST real search
+    doesn't pay startup costs *inside* the request. Those costs — cold-loading the embedding
+    + cross-encoder models (tens of seconds), loading the vector matrix off disk, and the
+    first cross-encoder inference — otherwise land on the first query and can exceed an MCP
+    client's request timeout (see :mod:`thread_archive.mcp.server`, which calls this on a
+    background thread at startup).
+
+    Two steps: load the models explicitly (works even with an empty store), then run one
+    throwaway conceptual search to fill the process-global caches the first real query
+    reuses (the vector matrix, the reranker's warmed inference path). Fail-soft throughout:
+    a missing ``[embeddings]`` extra, a load failure, or an unavailable store just leaves
+    search to cold-load lazily, exactly as before."""
+    from . import embed as _embed
+    from . import rerank as _rerank
+
+    for stage in (_embed.warm, _rerank.warm):
+        try:
+            stage()
+        except Exception:  # noqa: BLE001 — warming is best-effort; never raise into a caller
+            logger.debug("warm_models: a model stage failed to preload", exc_info=True)
+
+    # Run one throwaway search end to end: it loads the vector matrix and runs a first
+    # cross-encoder inference, both of which cache process-globally for the real queries.
+    # Scope it to user-only ('user') — the agent surface's default (mcp.server's
+    # DEFAULT_SEARCH_CONTENT_TYPES), so the matrix this primes is keyed the same as the real
+    # queries reuse (the matrix cache is keyed by content-type scope; a mismatched scope
+    # would prime a matrix the real query never touches).
+    try:
+        from .. import api
+
+        api.search(_WARM_QUERY, limit=1, content_types=["user"])
+    except Exception:  # noqa: BLE001 — a store that isn't ready just warms the models, not the caches
+        logger.debug("warm_models: dummy warm search skipped", exc_info=True)
 
 
 def _do_rerank(query: str, terms: list[str], force: Optional[bool]) -> bool:

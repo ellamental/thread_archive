@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta
 
-from thread_archive.retrieval import rank, rerank
+from thread_archive.retrieval import embed, rank, rerank, warm_models
 
 
 def _hit(eid, content, ct="user", occurred_at=None, rrf=0.0):
@@ -113,3 +113,44 @@ def test_rerank_scores_none_without_model(monkeypatch) -> None:
     # No query / no docs short-circuits before any model load.
     assert rerank.rerank_scores("", ["a"]) is None
     assert rerank.rerank_scores("q", []) is None
+
+
+# ── warm() preload contract (model-free) ─────────────────────────────────────
+def test_warm_skips_the_loader_when_unavailable(monkeypatch) -> None:
+    # Extra absent → warm() reports False and never touches the (heavy) model loader.
+    for mod in (rerank, embed):
+        loaded = False
+
+        def _boom():  # a _load() that must not run
+            nonlocal loaded
+            loaded = True
+            return object()
+
+        monkeypatch.setattr(mod, "is_available", lambda: False)
+        monkeypatch.setattr(mod, "_load", _boom)
+        assert mod.warm() is False
+        assert loaded is False
+
+
+def test_warm_reports_the_load_outcome(monkeypatch) -> None:
+    # Available + a model loads → True; available + load fails (None) → False (degrade lazily).
+    for mod in (rerank, embed):
+        monkeypatch.setattr(mod, "is_available", lambda: True)
+        monkeypatch.setattr(mod, "_load", lambda: object())
+        assert mod.warm() is True
+        monkeypatch.setattr(mod, "_load", lambda: None)
+        assert mod.warm() is False
+
+
+def test_warm_models_never_raises(monkeypatch) -> None:
+    # A stage that blows up must not propagate — warming is best-effort startup work. Every
+    # stage is stubbed to raise (and the dummy search stubbed out) so the suite stays model-free.
+    from thread_archive import api
+
+    def _raise(*a, **k):
+        raise RuntimeError("torch exploded")
+
+    monkeypatch.setattr(embed, "warm", _raise)
+    monkeypatch.setattr(rerank, "warm", _raise)
+    monkeypatch.setattr(api, "search", _raise)
+    warm_models()  # returns None, swallows every stage failure
