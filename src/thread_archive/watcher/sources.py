@@ -211,7 +211,7 @@ def antigravity_watcher(brain_dir: Optional[Path] = None) -> _RglobWatcher:
 
 
 def cloth_watcher(threads_dir: Optional[Path] = None) -> _RglobWatcher:
-    # cloth writes Claude-Code-shaped JSONL to ~/.cloth/threads/<stem>.jsonl — one file
+    # cloth writes Claude-Code-shaped JSONL to ~/.thread/cloth/threads/<stem>.jsonl — one file
     # per CLI session, ``source_id = "<stem>"``. Modern cloth names files by session
     # uuid (already globally unique), so the source_id is the bare stem — no prefix.
     # (Legacy numeric stems like ``1``/``22`` land bare too; they namespace under
@@ -220,7 +220,7 @@ def cloth_watcher(threads_dir: Optional[Path] = None) -> _RglobWatcher:
     # the store. This is the sole live cloth store the standalone archive ingests.
     import os
 
-    root = threads_dir or (Path(os.environ.get("CLOTH_HOME") or Path.home() / ".cloth").expanduser() / "threads")
+    root = threads_dir or (Path(os.environ.get("CLOTH_HOME") or Path.home() / ".thread" / "cloth").expanduser() / "threads")
     w = _RglobWatcher(root, import_cloth_session_incremental, lambda p: p.stem)
     w.glob, w._name = "*.jsonl", "cloth"
     return w
@@ -487,7 +487,7 @@ def default_watchers() -> list[SourceWatcher]:
     """One watcher per provider, default system paths.
 
     Each is **self-gating** — ``poll_once`` skips any whose ``is_available()`` is
-    false — so a provider whose store is absent (no Cursor installed, no ``~/.cloth``)
+    false — so a provider whose store is absent (no Cursor installed, no cloth store)
     costs nothing and adds no process. cloth is a provider like the rest, riding this
     one loop; there is no separate cloth daemon.
 

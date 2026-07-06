@@ -3,7 +3,7 @@
 Unlike the per-provider watchers that tail a tool's *live* store, this one watches a
 human-driven **drop zone**. You download a claude.ai or xAI (Grok) account export — a
 ZIP (or unzipped batch directory) of *all* your conversations — drop it into
-``~/.thread_archive/dumps/``, and the watcher imports it on the next poll and clears it.
+``~/.thread/archive/dumps/``, and the watcher imports it on the next poll and clears it.
 
 Serverless by construction: it calls the in-process bulk importer
 (:mod:`..importers.exports`) directly. The monorepo ancestor POSTed the path to a backend

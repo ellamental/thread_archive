@@ -9,7 +9,7 @@ the upstream operator surface enforces.
 
 Library-native, like the read server: each tool opens the archive and dispatches
 straight to :mod:`thread_archive.knowledge.write` in-process — no HTTP, no route layer.
-The archive home comes from ``$THREAD_ARCHIVE_HOME`` (else ``~/.thread_archive``).
+The archive home comes from ``$THREAD_ARCHIVE_HOME`` (else ``~/.thread/archive``).
 Run with::
 
     python -m thread_archive.mcp.librarian

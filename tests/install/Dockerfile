@@ -23,6 +23,6 @@ RUN python -m venv /opt/venv \
     && /opt/venv/bin/pip install -e '.[dev]'
 
 ENV PATH="/opt/venv/bin:$PATH" \
-    THREAD_ARCHIVE_HOME=/root/.thread_archive
+    THREAD_ARCHIVE_HOME=/root/.thread/archive
 
 CMD ["bash", "tests/install/run_in_container.sh"]

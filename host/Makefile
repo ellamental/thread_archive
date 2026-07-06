@@ -22,7 +22,7 @@ UID       := $(shell id -u)
 REPO      := $(abspath $(CURDIR)/..)
 ENTRY     := $(REPO)/.venv/bin/archive
 # Logs live next to the data (the archive home), not in the repo.
-LOG_DIR   := $(HOME)/.thread_archive/logs
+LOG_DIR   := $(HOME)/.thread/archive/logs
 
 # Scheduled backup+verify job (daily). DEST is the backup destination — pass it on
 # the command line and point it at a DIFFERENT disk/machine:
@@ -31,7 +31,7 @@ BACKUP_PLIST_SRC := com.thread-archive.backup.plist
 BACKUP_LABEL     := com.thread-archive.backup
 BACKUP_PLIST     := $(HOME)/Library/LaunchAgents/$(BACKUP_LABEL).plist
 
-.PHONY: all install-agent uninstall-agent restart logs status install-backup-agent uninstall-backup-agent
+.PHONY: all install-agent uninstall-agent restart logs status manifest install-backup-agent uninstall-backup-agent
 
 all: install-agent
 
@@ -46,9 +46,18 @@ install-agent:
 	-launchctl bootout gui/$(UID)/$(LABEL) 2>/dev/null
 	@sleep 3   # let bootout settle before bootstrap (avoids 'Bootstrap failed: 5: Input/output error')
 	launchctl bootstrap gui/$(UID) $(PLIST)
+	$(REPO)/.venv/bin/python -m thread_archive.manifest
 	@echo "installed (RunAtLoad=true; the watcher starts automatically)."
 	@echo "to reload after a code edit:  make restart"
 	@echo "to tail:                      make logs"
+
+# (Re)write the family manifest alone — <home>/product.json, the discovery
+# record consumers glob for (spec: docs/spec/product-json.md in the thread
+# monorepo). install-agent already does this; use this target after a version
+# bump or a path change without reloading the agent.
+manifest:
+	@test -x $(ENTRY) || { echo "missing $(ENTRY) — run 'pip install -e .' into the repo venv first"; exit 1; }
+	$(REPO)/.venv/bin/python -m thread_archive.manifest
 
 uninstall-agent:
 	-launchctl bootout gui/$(UID)/$(LABEL)

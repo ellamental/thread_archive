@@ -175,6 +175,13 @@ def route(method: str, path: str, params: dict) -> Response:
         return _text(405, "method not allowed")
 
     # ---- JSON API: thin wrappers over thread_archive.api ----
+    if path == "/api/health":
+        # Cheap liveness for probes (the family manifest's health URL).
+        # /api/status is the real survey but counts the whole index — seconds,
+        # not the milliseconds a poller budgets.
+        paths = api.open_archive()
+        return _ok({"ok": paths.index_path.exists(), "home": str(paths.home)})
+
     if path == "/api/status":
         return _ok(api.status())
 

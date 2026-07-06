@@ -72,7 +72,7 @@ def test_cloth_watcher_detects_imports_and_self_gates(archive_home, tmp_path) ->
     """cloth is a plain provider watcher like the rest: it imports its store's
     sessions under ``source="cloth"`` with the bare file stem as ``source_id``,
     dedups on re-poll, sits in
-    the default set, and self-gates (inert, process-free) when ``~/.cloth`` is absent."""
+    the default set, and self-gates (inert, process-free) when the cloth home is absent."""
     from sqlalchemy import select
 
     from thread_archive.store import Thread

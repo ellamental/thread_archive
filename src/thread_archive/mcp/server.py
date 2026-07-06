@@ -6,7 +6,7 @@ no route layer. The server is library-native: it dispatches straight to the API
 functions in-process.
 
 The archive home comes from ``$THREAD_ARCHIVE_HOME`` (set by the MCP client
-config), else ``~/.thread_archive``. Run with::
+config), else ``~/.thread/archive``. Run with::
 
     python -m thread_archive.mcp.server
 

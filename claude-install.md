@@ -67,6 +67,17 @@ ls -l "$REPO/.venv/bin/archive-mcp" "$REPO/.venv/bin/archive-librarian-mcp"
 `.mcp.json` is git-ignored (it's machine-specific). The hook + skill come from the
 tracked `.claude/` dir and need no setup.
 
+Also write the thread-family manifest — the discovery record other thread
+products glob for (harmless if none are installed):
+
+```bash
+"$REPO/.venv/bin/python" -m thread_archive.manifest --no-web
+```
+
+(Drop `--no-web` if you also install the live-ingest LaunchAgent from `host/`
+later — `make install-agent` rewrites the manifest with the :8787 viewer
+declared.)
+
 ## 4. Populate the archive
 
 An empty archive has nothing to search or curate. Two ways to get conversations in:

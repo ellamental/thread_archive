@@ -96,7 +96,7 @@ home-resident `archive-mcp` needs read grants for the three `$HOME` paths it tou
 |--------------------------------|--------------------------------------------------|
 | `~/dev/thread/archive`         | the repo: the venv **and** the editable `src/`   |
 | `~/.pyenv`                     | the interpreter + `libpython` + stdlib (pyenv build) |
-| `~/.thread_archive`            | the archive data (`index.db`, truth log)         |
+| `~/.thread/archive`            | the archive data (`index.db`, truth log)         |
 
 Grants are persistent "host access" mounts (`host_grants` table): add them from the app's
 **Permissions** panel, or ask the Science agent to grant filesystem access to those paths
@@ -121,6 +121,6 @@ make uninstall-agent
 ```
 
 Requires the `archive` console script in the repo venv (`pip install -e .` at the
-repo root). Logs go to `~/.thread_archive/logs/`. The agent writes to the default
-archive home (`~/.thread_archive`); set `THREAD_ARCHIVE_HOME` in the plist's
+repo root). Logs go to `~/.thread/archive/logs/`. The agent writes to the default
+archive home (`~/.thread/archive`); set `THREAD_ARCHIVE_HOME` in the plist's
 `EnvironmentVariables` to point it elsewhere.

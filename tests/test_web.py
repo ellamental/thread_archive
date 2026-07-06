@@ -91,6 +91,15 @@ def test_status_endpoint(archive_home):
     assert payload["fts_indexed"] > 0
 
 
+def test_health_endpoint(archive_home):
+    # Cheap liveness (the family manifest's health URL) — no index survey.
+    _seed(archive_home)
+    status, ctype, payload = _get("/api/health")
+    assert status == 200 and ctype == "application/json"
+    assert payload["ok"] is True
+    assert payload["home"] == str(archive_home)
+
+
 def test_search_endpoint(archive_home):
     _seed(archive_home)
     status, _, payload = _get("/api/search", q="hello")

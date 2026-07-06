@@ -3,7 +3,7 @@
 The store keeps a module-global engine and the truth-log keeps cached file handles;
 both must be reset around every test so state never leaks between tests. Critically,
 every test is defaulted to a *throwaway* home so nothing can ever touch the real
-``~/.thread_archive`` (the global engine lazily resolves its DSN from ``$THREAD_ARCHIVE_HOME``,
+``~/.thread/archive`` (the global engine lazily resolves its DSN from ``$THREAD_ARCHIVE_HOME``,
 so an un-homed test would otherwise create the real default).
 """
 

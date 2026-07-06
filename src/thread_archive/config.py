@@ -12,7 +12,9 @@ A single archive lives under one *home* directory:
       index.db            # SQLite projection, rebuildable from truth/ via `archive reindex`
       dumps/              # drop zone: account exports dropped here are auto-imported
 
-`home` resolves from ``THREAD_ARCHIVE_HOME`` (env), else ``~/.thread_archive``.
+`home` resolves from ``THREAD_ARCHIVE_HOME`` (env), else ``~/.thread/archive``
+(the family's ``~/.thread/<product>/`` namespace; the pre-2026-07-06 default was
+``~/.thread_archive``, now a compat symlink on migrated boxes).
 Truth and index paths can be overridden individually (e.g. for tests).
 """
 
@@ -26,7 +28,7 @@ ENV_HOME = "THREAD_ARCHIVE_HOME"
 ENV_TRUTH = "THREAD_ARCHIVE_TRUTH_DIR"
 ENV_INDEX = "THREAD_ARCHIVE_INDEX"
 
-DEFAULT_HOME = Path.home() / ".thread_archive"
+DEFAULT_HOME = Path.home() / ".thread" / "archive"
 
 
 @dataclass(frozen=True)

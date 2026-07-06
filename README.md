@@ -123,6 +123,10 @@ backend; it's local now.)
 - **Self-feeds** — the watcher tails local stores and ingests incrementally; events land
   in the JSONL truth *before* their commit (no checkpoint in the hot loop). Ships as a
   macOS LaunchAgent (`host/`), so no external service is needed.
+- **Declares itself** — the installer writes the thread-family manifest
+  `<home>/product.json` (`python -m thread_archive.manifest`; `make install-agent`
+  runs it), so family consumers discover the archive by enumeration. Spec:
+  `docs/spec/product-json.md` in the thread monorepo.
 - **Searches locally** — FTS5 lexical (boolean / phrase / pipe-OR / code-identifier),
   optionally fused with local semantic vectors and a cross-encoder re-rank; plus
   transcript reconstruction for reading.
@@ -145,11 +149,11 @@ curation power. Client config:
   "mcpServers": {
     "thread-archive": {
       "command": "archive-mcp",
-      "env": { "THREAD_ARCHIVE_HOME": "~/.thread_archive" }
+      "env": { "THREAD_ARCHIVE_HOME": "~/.thread/archive" }
     },
     "thread-archive-librarian": {
       "command": "archive-librarian-mcp",
-      "env": { "THREAD_ARCHIVE_HOME": "~/.thread_archive" }
+      "env": { "THREAD_ARCHIVE_HOME": "~/.thread/archive" }
     }
   }
 }

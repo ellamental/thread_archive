@@ -13,7 +13,7 @@ def _add_home_arg(p: argparse.ArgumentParser) -> None:
     p.add_argument(
         "--home",
         default=None,
-        help="archive home dir (default: $THREAD_ARCHIVE_HOME or ~/.thread_archive)",
+        help="archive home dir (default: $THREAD_ARCHIVE_HOME or ~/.thread/archive)",
     )
 
 

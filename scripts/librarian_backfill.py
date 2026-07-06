@@ -123,7 +123,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--model", default="claude-opus-4-8", help="model for the librarian (opus per the exception)")
     parser.add_argument("--effort", default="xhigh", help="reasoning effort for the headless run")
     parser.add_argument("--max-spawns", type=int, default=0, help="cap spawns per worker (0 = until drained)")
-    parser.add_argument("--home", default=None, help="archive home (default $THREAD_ARCHIVE_HOME or ~/.thread_archive)")
+    parser.add_argument("--home", default=None, help="archive home (default $THREAD_ARCHIVE_HOME or ~/.thread/archive)")
     args = parser.parse_args(argv)
 
     claude = _resolve_claude()
