@@ -45,7 +45,7 @@ def test_mcp_tools_query_the_archive(archive_home) -> None:
 
     thread_id = ta.search("hello")[0]["thread_id"]
     transcript = thread_read(thread_id)
-    assert "## USER" in transcript and "hello mcp" in transcript
+    assert "[USER" in transcript and "hello mcp" in transcript
 
 
 def test_mcp_search_new_filters(archive_home) -> None:
@@ -62,6 +62,23 @@ def test_mcp_search_new_filters(archive_home) -> None:
     assert "hello mcp" not in thread_search("hello", exclude_content_type="user")
     # rerank=False is accepted (cross-encoder forced off) and still searches
     assert "hello mcp" in thread_search("hello", rerank=False)
+
+
+def test_mcp_search_defaults_to_user_only(archive_home) -> None:
+    """Bare thread_search scopes to USER messages; assistant text is opt-in via
+    content_type='all' (or the specific type). Mirrors the archive backend default."""
+    f = archive_home / "sess.jsonl"
+    _write_cc(f, [USER, ASSISTANT])  # USER: "hello mcp"; ASSISTANT: "hi from mcp"
+    ta.import_path(f)
+
+    # default scope: the assistant's text is NOT returned
+    assert "hi from mcp" not in thread_search("from mcp")
+    # 'all' clears the filter → assistant text now found
+    assert "hi from mcp" in thread_search("from mcp", content_type="all")
+    # an explicit type targets it directly
+    assert "hi from mcp" in thread_search("from mcp", content_type="text")
+    # the user message is always reachable under the default
+    assert "hello mcp" in thread_search("hello mcp")
 
 
 def test_mcp_search_rendering(archive_home) -> None:

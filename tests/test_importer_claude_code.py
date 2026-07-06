@@ -46,6 +46,24 @@ def _event_count(thread_id=None) -> int:
         return len(s.execute(stmt).scalars().all())
 
 
+def _imported_source_ids(thread_id: int) -> set[str]:
+    """The set of source message ids that survived import, recovered from each
+    event's dedup_key anchor.
+
+    The CC parser maps a line's ``uuid`` → ``provider_message_id``, and the builder
+    stamps that id as the dedup_key anchor (``{id}:{event_type}:{block}:{hash}``) on
+    *every* event it builds from the message. So the distinct anchors over a thread's
+    events are exactly the source messages that produced at least one event. An event
+    with no provider id falls back to a ``c=<hash>`` anchor, excluded here."""
+    with get_session() as s:
+        events = s.execute(select(Event).where(Event.thread_id == thread_id)).scalars().all()
+    return {
+        e.dedup_key.split(":", 1)[0]
+        for e in events
+        if e.dedup_key and not e.dedup_key.startswith("c=")
+    }
+
+
 def test_import_creates_thread_and_events(archive_home) -> None:
     init_db()
     f = archive_home / "sess.jsonl"
@@ -73,6 +91,81 @@ def test_import_creates_thread_and_events(archive_home) -> None:
     recs = [json.loads(ln) for ln in tf.read_text().splitlines() if ln.strip()]
     assert sum(1 for r in recs if r["type"] == "event") == len(events)
     assert any(r["type"] == "thread" for r in recs)  # metadata record present
+
+
+def test_every_source_message_is_imported(archive_home) -> None:
+    """Fidelity/no-drop: the count of unique source messages (by CC ``uuid``) equals
+    the count of unique message ids that made it into the archive, and the two sets
+    are identical. This is the guard against the importer silently dropping turns —
+    a whole message vanishing between the source document and the event log."""
+    init_db()
+    lines: list[dict] = []
+    for i in range(1, 4):
+        lines.append({
+            "type": "user", "uuid": f"u{i}", "timestamp": f"2026-01-01T10:0{i}:00Z",
+            "sessionId": "s1", "cwd": "/proj",
+            "message": {"role": "user", "content": f"question {i}"},
+        })
+        lines.append({
+            "type": "assistant", "uuid": f"a{i}", "timestamp": f"2026-01-01T10:0{i}:05Z",
+            "sessionId": "s1",
+            "message": {"role": "assistant", "model": "claude-opus-4",
+                        "content": [{"type": "text", "text": f"answer {i}"}]},
+        })
+    f = archive_home / "sess.jsonl"
+    _write_jsonl(f, lines)
+
+    result = import_session_incremental(f, "proj:s1")
+
+    source_ids = {ln["uuid"] for ln in lines}
+    imported_ids = _imported_source_ids(result.thread_id)
+    assert imported_ids == source_ids
+    assert len(imported_ids) == len(source_ids) == 6
+
+
+def test_ide_context_is_preserved_as_events(archive_home) -> None:
+    """IDE context (opened files, selections) is preserved as ``ide_context`` events,
+    not stripped away: a context-only turn survives import (its uuid is represented),
+    and a turn carrying both text and a selection keeps *both*. Guards the fidelity
+    hole where the builder used to drop the whole turn once its tags were stripped."""
+    init_db()
+    context_only = {
+        "type": "user", "uuid": "u_ctx", "timestamp": "2026-01-01T10:00:03Z",
+        "sessionId": "s1",
+        "message": {"role": "user",
+                    "content": "<ide_selection>def foo(): pass</ide_selection>"},
+    }
+    text_plus_ide = {
+        "type": "user", "uuid": "u_mix", "timestamp": "2026-01-01T10:00:07Z",
+        "sessionId": "s1",
+        "message": {"role": "user",
+                    "content": "fix this\n<ide_selection>def foo(): pass</ide_selection>"},
+    }
+    f = archive_home / "sess.jsonl"
+    _write_jsonl(f, [USER, context_only, text_plus_ide, ASSISTANT])
+
+    result = import_session_incremental(f, "proj:s1")
+
+    # No unique source turn is dropped, including the context-only one.
+    imported_ids = _imported_source_ids(result.thread_id)
+    assert imported_ids == {"u1", "u_ctx", "u_mix", "a1"}
+
+    with get_session() as s:
+        events = s.execute(
+            select(Event).where(Event.thread_id == result.thread_id)
+        ).scalars().all()
+
+    # One ide_context event per selection: the context-only turn and the mixed turn.
+    ide = [e for e in events if e.event_type == "ide_context"]
+    assert {e.dedup_key.split(":", 1)[0] for e in ide} == {"u_ctx", "u_mix"}
+    assert all("def foo(): pass" in e.payload.get("content", "") for e in ide)
+
+    # The mixed turn keeps its user text too — the selection didn't displace it.
+    mix_text = [
+        e.payload.get("content", "").strip() for e in events
+        if e.event_type == "user_message_sent" and e.dedup_key.split(":", 1)[0] == "u_mix"
+    ]
+    assert mix_text == ["fix this"]
 
 
 def test_subagent_filed_as_hidden_system_thread(archive_home) -> None:

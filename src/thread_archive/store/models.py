@@ -115,6 +115,13 @@ class Thread(Base):
         Index("idx_threads_workspace_type", "workspace", "thread_type"),
         Index("idx_threads_epistemic_type", "epistemological_type"),
         Index("idx_threads_topic_kind", "topic_kind"),
+        # AUTOINCREMENT: keep a persistent id high-water (sqlite_sequence) that DELETE
+        # does NOT reset. reindex clears + reloads with explicit ids; without this a
+        # concurrent writer mid-reindex gets a low rowid (max+1 of the partially loaded
+        # table) that collides with a not-yet-reloaded historical row. With it, new ids
+        # always continue past the high-water and are never reused. See
+        # truth.jsonl_log.reindex.
+        {"sqlite_autoincrement": True},
     )
 
 
@@ -157,6 +164,10 @@ class Event(Base):
         Index("idx_events_correlation", "correlation_id", postgresql_where=text("(correlation_id IS NOT NULL)")),
         Index("idx_events_stream_seq", "stream_id", "id"),
         Index("idx_events_dedup_key", "dedup_key", postgresql_where=text("(dedup_key IS NOT NULL)")),
+        # Persistent id high-water across DELETE — see the Thread note. This is the
+        # column that bit us: the live watcher mints event ids on insert, so a reindex
+        # running against a live watcher must not be able to recycle a historical id.
+        {"sqlite_autoincrement": True},
     )
 
 
@@ -328,4 +339,9 @@ class KgEvent(Base):
         Index("idx_kg_events_occurred", "occurred_at"),
         Index("idx_kg_events_actor_thread", "actor_thread_id"),
         Index("idx_kg_events_correlation", "correlation_id", postgresql_where=text("(correlation_id IS NOT NULL)")),
+        # Persistent id high-water across DELETE — see the Thread note. The librarian
+        # mints kg-event ids on insert; without this, a reindex that emptied the table
+        # let the next curation write restart ids from 1 and collide (the kg_events
+        # id=1 dup that aborted reindex).
+        {"sqlite_autoincrement": True},
     )

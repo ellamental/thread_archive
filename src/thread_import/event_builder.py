@@ -145,7 +145,7 @@ class DefaultEventBuilder:
         elif role == "system":
             events = self._build_system_events(message, stream_id, occurred_at)
         else:
-            return []
+            events = self._build_generic_message_events(message, stream_id, occurred_at)
 
         provider_message_id = message.get("provider_message_id", "") or ""
         for event in events:
@@ -250,10 +250,18 @@ class DefaultEventBuilder:
             b for b in content_blocks
             if isinstance(b, dict) and b.get("type") == "tool_result"
         ]
+        # IDE context blocks (opened files, selections) the parser lifted out of the
+        # raw turn — "what Ella was looking at when she sent this". Preserved as their
+        # own events below rather than stripped away with the tags.
+        ide_context_blocks = [
+            b for b in content_blocks
+            if isinstance(b, dict) and b.get("type") == "ide_context"
+        ]
 
-        # Skip empty user messages (IDE context-only messages after tag stripping)
-        # BUT allow through if they contain tool_result blocks
-        if not content_text.strip() and not tool_result_blocks:
+        # Skip genuinely-empty user messages, but keep a turn that carried only
+        # tool_result or ide_context blocks (its text stripped to empty) — those
+        # still record real content that must not be dropped on import.
+        if not content_text.strip() and not tool_result_blocks and not ide_context_blocks:
             return []
 
         # Detect tool-loading confirmation turns: content blocks are mostly
@@ -306,6 +314,12 @@ class DefaultEventBuilder:
                 payload["injected"] = True
                 payload["source"] = source
 
+            # Tag steering messages (typed mid-turn, queued, consumed as an
+            # attachment injection). The read path uses this to slot a
+            # late-backfilled steering event into its chronological position.
+            if (message.get("provider_data") or {}).get("queued_command"):
+                payload["queued"] = True
+
             events.append(ThreadEvent(
                 event_type="user_message_sent",
                 payload=payload,
@@ -317,6 +331,11 @@ class DefaultEventBuilder:
         # tool results come as content blocks on user-role messages)
         for block in tool_result_blocks:
             events.append(self._tool_result_event(block, stream_id, None, occurred_at))
+
+        # Preserve IDE context (opened files, selections) as its own events, so a
+        # turn's editor context survives import — and a context-only turn isn't lost.
+        for block in ide_context_blocks:
+            events.append(self._ide_context_event(block, stream_id, occurred_at))
 
         return events
 
@@ -376,6 +395,61 @@ class DefaultEventBuilder:
             api_call_id=api_call_id,
             occurred_at=occurred_at,
         )
+
+    @staticmethod
+    def _ide_context_event(
+        block: Mapping[str, Any],
+        stream_id: str,
+        occurred_at: datetime,
+    ) -> "ThreadEvent":
+        """Build the event for an ``ide_context`` block — an opened file or a code
+        selection the parser lifted out of the raw user turn. Kept as a first-class
+        event so "what was open / selected when this turn was sent" survives import
+        rather than being stripped away with the tags. ``block_index`` (the block's
+        seq) namespaces the dedup key so several context blocks on one turn don't
+        collapse into one."""
+        payload: dict = {
+            "context_type": block.get("context_type"),
+            "content": block.get("raw_content", ""),
+            "block_index": block.get("seq"),
+        }
+        file_path = block.get("file_path")
+        if file_path:
+            payload["file_path"] = file_path
+        return ThreadEvent(
+            event_type="ide_context",
+            payload=payload,
+            stream_id=stream_id,
+            occurred_at=occurred_at,
+        )
+
+    def _build_generic_message_events(
+        self,
+        message: NormalizedMessage,
+        stream_id: str,
+        occurred_at: datetime,
+    ) -> list[ThreadEvent]:
+        """Preserve a message whose role isn't one of user/assistant/system.
+
+        Other harnesses emit roles the builder doesn't model — ``tool``,
+        ``function``, ``developer``, ``model``, or anything ``normalize_role`` passes
+        through unchanged. Rather than drop the turn, keep it verbatim as a single
+        ``message`` event carrying the role, its text, and its raw content blocks, so
+        nothing is lost on import and it stays searchable + re-exportable."""
+        role = message.get("role", "") or "unknown"
+        content_text = message.get("content_text", "")
+        content_blocks = message.get("content_blocks", [])
+        if not content_text.strip() and not content_blocks:
+            return []
+        payload: dict = {"role": role, "content": content_text}
+        if content_blocks:
+            payload["content_blocks"] = content_blocks
+        return [ThreadEvent(
+            event_type="message",
+            payload=payload,
+            stream_id=stream_id,
+            occurred_at=occurred_at,
+        )]
 
     def _build_system_events(
         self,
@@ -629,6 +703,20 @@ class DefaultEventBuilder:
         elif block_type == "tool_result":
             events.append(self._tool_result_event(block, stream_id, api_call_id, occurred_at))
             # No api_block for tool_result - it's handled separately
+
+        else:
+            # A block type the builder doesn't specifically model. Other harnesses
+            # emit server_tool_use, web_search_tool_result, redacted_thinking, image,
+            # document, mcp_tool_use, … — preserve them verbatim rather than dropping:
+            # as their own content_block event, and unchanged in the api summary.
+            api_block = block
+            events.append(ThreadEvent(
+                event_type="content_block",
+                payload={"block_type": block_type, "data": block, "block_index": idx},
+                stream_id=stream_id,
+                api_call_id=api_call_id,
+                occurred_at=occurred_at,
+            ))
 
         return events, api_block
 

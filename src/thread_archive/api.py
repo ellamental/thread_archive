@@ -102,15 +102,26 @@ def search(
 
 
 def read_thread(
-    thread_id: int,
+    thread_id: int | str,
     *,
     home: Optional[str] = None,
-    limit: Optional[int] = None,
+    limit: int = 200,
     offset: int = 0,
-    include_thinking: bool = False,
-    include_tools: bool = True,
+    summary: bool = False,
+    mode: Optional[str] = None,
+    user_only: Optional[bool] = None,
+    tool_results: bool = False,
+    max_chars: int = 0,
+    after_event: Optional[int] = None,
 ) -> str:
-    """Reconstruct a conversation thread as a readable transcript."""
+    """Reconstruct a conversation thread as a readable transcript.
+
+    ``thread_id`` is the archive's integer thread id or a provider **session id**
+    (the uuid/source_id a tool knows the conversation by). ``mode`` picks the view —
+    ``user`` (default), ``chat``, or ``full`` — and the read is turn-paginated +
+    size-budgeted (``max_chars``, default ~48k). ``tool_results`` (default off) adds
+    tool output under each call in ``full``; see
+    :func:`thread_archive.retrieval.read_thread` for the full contract."""
     open_archive(home)
     from .retrieval import read_thread as _read
 
@@ -118,20 +129,25 @@ def read_thread(
         thread_id,
         limit=limit,
         offset=offset,
-        include_thinking=include_thinking,
-        include_tools=include_tools,
+        summary=summary,
+        mode=mode,
+        user_only=user_only,
+        tool_results=tool_results,
+        max_chars=max_chars,
+        after_event=after_event,
     )
 
 
 def read_thread_structured(
-    thread_id: int,
+    thread_id: int | str,
     *,
     home: Optional[str] = None,
     include_thinking: bool = True,
     include_tools: bool = True,
 ) -> dict:
     """Reconstruct a thread as structured messages (typed render blocks) for the web
-    viewer. Returns ``{thread_id, title, source, messages}``; see
+    viewer. ``thread_id`` accepts an integer thread id or a provider session id.
+    Returns ``{thread_id, title, source, messages}``; see
     :func:`thread_archive.retrieval.read_thread_structured`."""
     open_archive(home)
     from .retrieval import read_thread_structured as _read
@@ -171,6 +187,27 @@ def reindex(*, home: Optional[str] = None, vectors: bool = False) -> dict:
     from .truth import reindex as _reindex
 
     return _reindex(vectors=vectors)
+
+
+def embed(
+    *,
+    home: Optional[str] = None,
+    rebuild: bool = False,
+    max_events: Optional[int] = None,
+    newest_first: bool = False,
+) -> dict:
+    """Embed the user/text events that are missing a vector (incremental anti-join).
+
+    The catch-up counterpart to the watcher's live cohost: ``reindex(vectors=True)``
+    rebuilds the whole vector index, this just fills the gap. ``rebuild=True``
+    re-embeds everything; ``max_events`` caps one call; ``newest_first`` drains the
+    freshest gap first (recent threads become semantically findable soonest). No-op
+    without the ``[embeddings]`` extra. Returns ``{'embedded': n}``."""
+    open_archive(home)
+    from .retrieval.vectors import index_events_local
+
+    n = index_events_local(rebuild=rebuild, max_events=max_events, newest_first=newest_first)
+    return {"embedded": n}
 
 
 def checkpoint(*, home: Optional[str] = None) -> dict:

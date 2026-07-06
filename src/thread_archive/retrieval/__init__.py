@@ -23,7 +23,7 @@ from ._classify import resolve_relative_date
 from ._context import extract_context_lines, get_context_events, parse_context_events_spec
 from .format import format_results
 from .fts import ensure_fts, fts_status, index_events, rebuild_fts, search_events
-from .read import read_thread, read_thread_structured
+from .read import read_thread, read_thread_structured, resolve_thread_ref
 
 # output='count' wants a true tally, so over-fetch far past the page size.
 _COUNT_FETCH_CAP = 1000
@@ -206,6 +206,7 @@ __all__ = [
     "search",
     "read_thread",
     "read_thread_structured",
+    "resolve_thread_ref",
     "rebuild_fts",
     "index_events",
     "ensure_fts",

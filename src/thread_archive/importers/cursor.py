@@ -131,7 +131,15 @@ def _run_cursor(session, composer_id, composer_data, bubbles) -> CursorImportRes
         return CursorImportResult(0, thread_id, is_new_thread)
 
     normalized = [_cursor_to_normalized(m) for m in new_messages]
-    events_created, _ = assemble_events(session, thread_id, normalized, DefaultEventBuilder())
+    # cross_pass_dedup: a full re-scan of an already-imported composer (import_state
+    # reset, or a manual migration re-run) must be a no-op even against rows the
+    # dedup_key can't see — e.g. the March 2026 backfill seeded from Postgres carries
+    # NULL dedup_key, so a re-import stacked duplicate events. The message-level
+    # (content + timestamp) existence check skips any turn already present regardless
+    # of dedup_key, mirroring the claude-code continuation guard.
+    events_created, _ = assemble_events(
+        session, thread_id, normalized, DefaultEventBuilder(), cross_pass_dedup=True
+    )
     upsert_import_state(
         session,
         source="cursor",
@@ -205,11 +213,28 @@ def _build_cursor_messages(
 
         tool_data = bubble.get("toolFormerData")
         if tool_data and isinstance(tool_data, dict):
+            # ``params`` is Cursor's resolved arg dict; ``rawArgs`` the model's raw
+            # JSON-string args. Prefer params, fall back to parsed rawArgs. ``result``
+            # is the tool output. Capturing input+result lets us emit the tool_use +
+            # tool_execution events the builder produces (previously dropped, so a
+            # re-parse lost every tool call).
+            tool_input = tool_data.get("params")
+            if tool_input is None:
+                raw = tool_data.get("rawArgs")
+                if isinstance(raw, str):
+                    try:
+                        tool_input = json.loads(raw)
+                    except json.JSONDecodeError:
+                        tool_input = raw
+                else:
+                    tool_input = raw
             message["tool_call"] = {
                 "name": tool_data.get("name", "unknown"),
                 "tool_id": tool_data.get("tool"),
                 "call_id": tool_data.get("toolCallId"),
                 "status": tool_data.get("status"),
+                "input": tool_input,
+                "result": tool_data.get("result"),
             }
         messages.append(message)
     return messages
@@ -254,6 +279,26 @@ def _cursor_to_normalized(msg: dict[str, Any]) -> dict[str, Any]:
             blocks.append({"type": "thinking", "text": msg["thinking"]})
         if msg.get("content"):
             blocks.append({"type": "text", "text": msg["content"]})
+        tc = msg.get("tool_call")
+        if tc and isinstance(tc, dict):
+            call_id = tc.get("call_id")
+            name = tc.get("name", "unknown")
+            blocks.append({
+                "type": "tool_use",
+                "tool_call_id": call_id,
+                "name": name,
+                "input": tc.get("input") or {},
+            })
+            result = tc.get("result")
+            if result is not None:
+                content = result if isinstance(result, str) else json.dumps(result, ensure_ascii=False)
+                blocks.append({
+                    "type": "tool_result",
+                    "tool_use_id": call_id,
+                    "name": name,
+                    "content": content,
+                    "is_error": tc.get("status") == "error",
+                })
         return {
             "role": "assistant",
             "created_at": created_at,

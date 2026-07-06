@@ -41,6 +41,36 @@ def test_vector_store_upsert_and_knn(archive_home) -> None:
     assert vectors.get_status()["indexed"] == 3
 
 
+def test_index_events_local_incremental_cap_and_order(archive_home, monkeypatch) -> None:
+    """The cohost's embed pass: incremental (anti-join), bounded by ``max_events``,
+    newest-first. Stubs the embed backend so no model is needed."""
+    import json
+
+    import thread_archive as ta
+    from thread_archive.retrieval import embed as E
+
+    monkeypatch.setattr(E, "is_available", lambda: True)
+    monkeypatch.setattr(E, "embed_documents", lambda docs: [_unit((0, 1.0)) for _ in docs])
+
+    f = archive_home / "sess.jsonl"
+    lines = []
+    for i in range(3):  # 3 user + 3 assistant-text = 6 embeddable events
+        lines.append({"type": "user", "uuid": f"u{i}", "timestamp": f"2026-01-01T10:0{i}:00Z",
+                      "cwd": "/p", "message": {"role": "user", "content": f"question {i}"}})
+        lines.append({"type": "assistant", "uuid": f"a{i}", "timestamp": f"2026-01-01T10:0{i}:30Z",
+                      "message": {"role": "assistant", "model": "claude-opus-4",
+                                  "content": [{"type": "text", "text": f"answer {i}"}]}})
+    f.write_text("\n".join(json.dumps(ln) for ln in lines) + "\n", encoding="utf-8")
+    ta.import_path(f)
+
+    assert vectors.get_status()["indexed"] == 0                             # nothing embedded yet
+    assert vectors.index_events_local(max_events=2, newest_first=True) == 2  # capped pass
+    assert vectors.get_status()["indexed"] == 2
+    assert vectors.index_events_local(max_events=2) == 2                    # incremental: next gap
+    assert vectors.index_events_local() == 2                                # drains the rest
+    assert vectors.index_events_local() == 0                                # caught up → no-op
+
+
 def test_vectors_search_sits_out_when_unindexed(archive_home) -> None:
     init_db()
     vectors.ensure_index()

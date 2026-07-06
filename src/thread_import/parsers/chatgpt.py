@@ -61,8 +61,9 @@ Branching
 - ``current_node`` → Used to compute ``is_active_path``
 """
 
-from datetime import datetime
 from typing import Any, Dict, List, Optional, Set, Union, cast
+
+from thread_import.timestamps import parse_timestamp_iso
 
 from .base import (
     ContentBlock,
@@ -107,10 +108,9 @@ def _extract_create_time_iso(raw_msg: Dict[str, Any]) -> Optional[str]:
     create_time = raw_msg.get("create_time")
     if create_time is None:
         return None
-    try:
-        return datetime.fromtimestamp(create_time).isoformat()
-    except (ValueError, OSError, OverflowError):
-        return None
+    # Epoch is an absolute instant — parse to aware UTC, not naive-local (which
+    # would silently skew every ChatGPT timestamp by the host's UTC offset).
+    return parse_timestamp_iso(create_time)
 
 
 def _extract_update_time_iso(raw_msg: Dict[str, Any]) -> Optional[str]:
@@ -118,10 +118,8 @@ def _extract_update_time_iso(raw_msg: Dict[str, Any]) -> Optional[str]:
     update_time = raw_msg.get("update_time")
     if update_time is None:
         return None
-    try:
-        return datetime.fromtimestamp(update_time).isoformat()
-    except (ValueError, OSError, OverflowError):
-        return None
+    # Aware UTC (see _extract_create_time_iso) — never naive-local.
+    return parse_timestamp_iso(update_time)
 
 
 def _extract_message_order(raw_msg: Dict[str, Any]) -> Optional[int]:
@@ -706,13 +704,10 @@ class ChatGPTParser(ProviderParser):
         }
 
     def _timestamp_to_iso(self, ts: Optional[float]) -> Optional[str]:
-        """Convert Unix timestamp to ISO format."""
+        """Convert Unix timestamp to ISO format (aware UTC, never naive-local)."""
         if ts is None:
             return None
-        try:
-            return datetime.fromtimestamp(ts).isoformat()
-        except (ValueError, OSError, OverflowError):
-            return None
+        return parse_timestamp_iso(ts)
 
     def _timestamp_to_order(self, ts: Optional[float]) -> Optional[int]:
         """Convert Unix timestamp to message order (microseconds)."""

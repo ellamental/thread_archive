@@ -20,11 +20,14 @@ from sqlalchemy.types import TypeEngine
 JSONB: TypeEngine = JSON()
 REAL: TypeEngine = Float()
 
-# A big-integer PRIMARY KEY that autoincrements on SQLite. `BIGINT PRIMARY KEY`
-# is *not* a rowid alias (so it won't autoincrement), but `INTEGER PRIMARY KEY`
-# is — and SQLite's INTEGER rowid is already 64-bit, so nothing is lost. These ids
-# are declared as ``BigInteger`` to keep the 64-bit intent legible; the variant
-# compiles that to the autoincrementing form here.
+# A big-integer PRIMARY KEY rendered as SQLite's ``INTEGER PRIMARY KEY`` (a 64-bit
+# rowid alias). `BIGINT PRIMARY KEY` is *not* a rowid alias, but `INTEGER PRIMARY
+# KEY` is — and SQLite's rowid is already 64-bit, so nothing is lost. Declared as
+# ``BigInteger`` to keep the 64-bit intent legible; the variant compiles it to the
+# rowid form here. NOTE: a bare rowid only ever yields ``max(rowid)+1``, which a
+# ``DELETE``/reload (reindex) can lower and so recycle ids; the tables whose ids are
+# minted on insert (Thread/Event/KgEvent) therefore set ``sqlite_autoincrement=True``
+# in ``__table_args__`` to keep a persistent high-water that DELETE never resets.
 BigIntPK: TypeEngine = BigInteger().with_variant(Integer(), "sqlite")
 
 

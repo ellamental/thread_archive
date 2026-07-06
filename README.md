@@ -115,10 +115,11 @@ backend; it's local now.)
 
 ## What it does
 
-- **Ingests 7 providers** into one event model — Claude Code, Codex, Grok, Antigravity,
-  cloth (transcript line-streams) and Cursor, OpenCode (SQLite scanners). Imports are
-  idempotent, atomic, and survive a full reindex losslessly. A `cc-exthost` watcher also
-  recovers mid-turn Claude Code steering messages that never reach the session JSONL.
+- **Ingests 9 providers** into one event model — Claude Code, Codex, Grok, Antigravity,
+  cloth, Cowork (transcript line-streams) and Cursor, OpenCode, Claude Science (SQLite
+  scanners). Imports are idempotent, atomic, and survive a full reindex losslessly. A
+  `cc-exthost` watcher also recovers mid-turn Claude Code steering messages that never
+  reach the session JSONL.
 - **Self-feeds** — the watcher tails local stores and ingests incrementally; events land
   in the JSONL truth *before* their commit (no checkpoint in the hot loop). Ships as a
   macOS LaunchAgent (`host/`), so no external service is needed.
@@ -164,13 +165,14 @@ communities (**Leiden**, the algorithm Neo4j GDS ran, with a networkx-Louvain fa
 fallback), bridges, peers.
 
 Curation is **event-sourced**. Every write (`create_topic`, `link_threads`,
-`add_topic_evidence`, `merge_topics`, `set_thread_summary`, …) appends a `KgEvent` to an
+`add_topic_evidence`, `merge_topics`, …) appends a `KgEvent` to an
 append-only `truth/kg_events.jsonl` and folds it into the SQLite projection in one
 transaction. The log is the source of truth for curation; `thread_links` / `topic_messages`
 are rebuildable from it — `reindex` replays the log (idempotent upsert + tombstone) to
 reconstruct them, so an unlink/merge/archive is recorded history, never silent loss. The
 librarian skill (`.claude/skills/librarian/`) drives the write MCP to clear the
-summary/citation backlog on demand.
+citation backlog on demand (a conversation is 'reviewed' once it gains its first
+citation/link — there is no per-thread summary).
 
 ## License
 

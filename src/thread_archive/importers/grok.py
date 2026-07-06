@@ -40,7 +40,10 @@ def import_grok_session_incremental(session_path, source_id: str, *, session=Non
         tool_times = _grok_tool_timestamps(session_dir)
         prompt_times = _grok_prompt_ts_map(session_dir, source_id)
         base_ts = _parse_grok_timestamp(meta.get("created_at")) or datetime.now(timezone.utc)
-        messages = _build_grok_messages(new_lines, meta, tool_times, prompt_times)
+        messages = _build_grok_messages(
+            new_lines, meta, tool_times, prompt_times,
+            prefix_lines=all_lines[: len(all_lines) - len(new_lines)],
+        )
         return assemble_events(sess, thread_id, messages, DefaultEventBuilder(), base_prev_ts=base_ts)
 
     return import_line_stream_session(
@@ -434,16 +437,41 @@ def _grok_user_turn(
     return _grok_build_user_message(query, prompt_times, meta)
 
 
+def _harvest_tool_names(lines: list[dict]) -> dict[str, str]:
+    """tool_call id→name from every assistant line in ``lines``. The already-
+    imported prefix of an incremental batch must contribute its names, or a
+    ``tool_result`` landing in a later poll than its ``tool_calls`` line
+    resolves to ``"unknown"`` — permanently, since the payload is baked into
+    the event log (the divergence the ingest-cutover soak caught on the
+    2026-06-29 grok sessions)."""
+    names: dict[str, str] = {}
+    for line in lines:
+        if not isinstance(line, dict) or line.get("type") != "assistant":
+            continue
+        tool_calls = line.get("tool_calls") or []
+        if not isinstance(tool_calls, list):
+            continue
+        for tool_call in tool_calls:
+            cid = tool_call.get("id")
+            if isinstance(cid, str) and cid:
+                names[cid] = tool_call.get("name") or "unknown"
+    return names
+
+
 def _build_grok_messages(
     new_lines: list[dict],
     meta: dict[str, Any],
     tool_times: dict[str, dict[str, Any]],
     prompt_times: dict[str, list[datetime]],
+    prefix_lines: list[dict] | None = None,
 ) -> list[dict[str, Any]]:
-    """Assemble grok's interleaved line stream into canonical NormalizedMessages."""
+    """Assemble grok's interleaved line stream into canonical NormalizedMessages.
+
+    ``prefix_lines`` is the file's already-imported prefix: it seeds the
+    tool-name map so results split across increments still resolve."""
     messages: list[dict[str, Any]] = []
     model_default = _grok_model(meta)
-    tool_names: dict[str, str] = {}
+    tool_names: dict[str, str] = _harvest_tool_names(prefix_lines or [])
     pending_thinking: Optional[str] = None
     cur: Optional[dict[str, Any]] = None
 

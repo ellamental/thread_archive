@@ -46,6 +46,43 @@ def _claude_code_session_uuid(archive_home):
     return sid.split(":")[-1]
 
 
+def _seed_cloth(archive_home, uuid="27056da6-8578-4a8c-ab90-d634702dc42d"):
+    """Import a minimal cloth session the way the watcher does — source_id is the bare
+    session uuid (the file stem, no prefix). Returns the uuid a paster would drop into
+    ``/archive/<uuid>`` and the archive thread id it seeded."""
+    from thread_archive.importers import import_cloth_session_incremental
+
+    f = archive_home / f"{uuid}.jsonl"
+    lines = [
+        dict(USER, message={"role": "user", "content": "hello from cloth"}),
+        dict(ASSISTANT, message={"role": "assistant", "model": "claude-opus-4",
+                                 "content": [{"type": "text", "text": "hi from cloth"}]}),
+    ]
+    f.write_text("\n".join(json.dumps(ln) for ln in lines) + "\n", encoding="utf-8")
+    ta.open_archive(str(archive_home))
+    res = import_cloth_session_incremental(f, source_id=uuid)
+    return uuid, res.thread_id
+
+
+def _seed_codex(archive_home, uuid="019f33d1-3e87-7a42-bab1-489d754fd0df"):
+    """Import a minimal codex session the way the watcher does — source_id is the
+    rollout filename stem ``rollout-{ts}-{uuid}`` (dash-joined, no colon). Returns the
+    bare ``uuid`` an editor's archive-link passes and the archive thread id it seeded."""
+    from thread_archive.importers import import_codex_session_incremental
+
+    stem = f"rollout-2026-07-05T14-46-18-{uuid}"
+    f = archive_home / f"{stem}.jsonl"
+    lines = [
+        {"type": "session_meta", "payload": {"id": uuid, "cwd": "/proj", "model": "gpt-5"}},
+        {"type": "event_msg", "payload": {"type": "user_message", "message": "hello codex"}},
+        {"type": "event_msg", "payload": {"type": "agent_message", "message": "hi from codex"}},
+    ]
+    f.write_text("\n".join(json.dumps(ln) for ln in lines) + "\n", encoding="utf-8")
+    ta.open_archive(str(archive_home))
+    res = import_codex_session_incremental(f, source_id=stem)
+    return uuid, res.thread_id
+
+
 def test_status_endpoint(archive_home):
     _seed(archive_home)
     status, ctype, payload = _get("/api/status")
@@ -93,7 +130,7 @@ def test_read_endpoint(archive_home):
     status, _, payload = _get(f"/api/read/{tid}")
     assert status == 200
     assert payload["thread_id"] == tid
-    assert "## USER" in payload["transcript"] and "hello webview" in payload["transcript"]
+    assert "[USER" in payload["transcript"] and "hello webview" in payload["transcript"]
 
 
 def test_read_bad_id_is_404(archive_home):
@@ -114,6 +151,16 @@ def test_structured_thread_endpoint(archive_home):
     assert "user" in roles and "assistant" in roles
     blocks = [b for m in payload["messages"] for b in m["blocks"]]
     assert any(b["type"] == "text" and "hello webview" in b["text"] for b in blocks)
+    # per-message drawer payload: every message carries a timestamped meta; the
+    # assistant message folds in the model + request tallies from its api_request events
+    assert all(isinstance(m["meta"]["ts"], (str, type(None))) for m in payload["messages"])
+    asst = next(m for m in payload["messages"] if m["role"] == "assistant")
+    assert "claude-opus-4" in asst["meta"]["models"]
+    assert asst["meta"]["requests"] >= 1
+    assert {"input", "output", "thinking"} <= asst["meta"]["tokens"].keys()
+    # a user message carries just its timestamp — no model/request fields
+    user = next(m for m in payload["messages"] if m["role"] == "user")
+    assert "models" not in user["meta"]
 
 
 def test_structured_thread_bad_id_404(archive_home):
@@ -185,6 +232,35 @@ def test_archive_link_redirect(archive_home):
     status, _, _, headers = route("GET", "/api/archive-link", {"id": [uuid], "redirect": ["1"]})
     assert status == 302
     assert headers["Location"].startswith("/archive/")
+
+
+def test_archive_link_resolves_codex_rollout_stem(archive_home):
+    # codex source_id is the dash-joined rollout stem, not the colon-joined
+    # {project}:{uuid} claude-code shape — the editor still links by the bare uuid.
+    uuid, tid = _seed_codex(archive_home)
+    status, _, payload = _get("/api/archive-link", id=uuid, source="codex")
+    assert status == 200
+    assert payload["thread_id"] == tid
+    assert payload["url"] == f"/archive/{tid}"
+
+
+def test_archive_link_resolves_bare_cloth_uuid_without_source(archive_home):
+    # the paste-a-uuid-as-thread-id path: cloth stores the bare session uuid as its
+    # source_id, and the paster doesn't pass a source — resolution must search every
+    # provider, not default to claude-code (which would 404 on a cloth-only id).
+    uuid, tid = _seed_cloth(archive_home)
+    status, _, payload = _get("/api/archive-link", id=uuid)
+    assert status == 200
+    assert payload["thread_id"] == tid
+    assert payload["url"] == f"/archive/{tid}"
+
+
+def test_archive_link_source_narrows_to_provider(archive_home):
+    # passing source still scopes the lookup: a cloth-only uuid asked for as claude-code
+    # resolves to nothing (an editor that knows its harness gets the exact match only).
+    uuid, _ = _seed_cloth(archive_home)
+    status, _, _ = _get("/api/archive-link", id=uuid, source="claude-code")
+    assert status == 404
 
 
 def test_archive_link_unknown_is_404(archive_home):

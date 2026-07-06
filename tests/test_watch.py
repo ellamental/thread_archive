@@ -70,7 +70,8 @@ def test_claude_code_watcher_unavailable_when_dir_absent(archive_home, tmp_path)
 
 def test_cloth_watcher_detects_imports_and_self_gates(archive_home, tmp_path) -> None:
     """cloth is a plain provider watcher like the rest: it imports its store's
-    sessions under ``source="cloth"`` / ``cloth-cli-<n>``, dedups on re-poll, sits in
+    sessions under ``source="cloth"`` with the bare file stem as ``source_id``,
+    dedups on re-poll, sits in
     the default set, and self-gates (inert, process-free) when ``~/.cloth`` is absent."""
     from sqlalchemy import select
 
@@ -96,7 +97,7 @@ def test_cloth_watcher_detects_imports_and_self_gates(archive_home, tmp_path) ->
     n1 = _event_count()
     with get_session() as s:
         t = s.execute(select(Thread).where(Thread.source == "cloth")).scalar_one()
-        assert t.source_id == "cloth-cli-63"
+        assert t.source_id == "63"  # bare session-file stem, no prefix
 
     # Unchanged file → fingerprint skip, no duplication.
     r2 = w.poll()
@@ -169,6 +170,31 @@ def test_watcher_maintenance_writes_manifest_not_overlays(archive_home, tmp_path
     # The overlays are owned by migration + the kg_events log, not the ingest path.
     assert not (truth / "thread_links.jsonl").exists()
     assert not (truth / "topic_messages.jsonl").exists()
+
+
+def test_watcher_embed_pending_delegates_bounded(archive_home, monkeypatch) -> None:
+    """embed_pending() drains the freshest gap, bounded by embed_batch — it asks the
+    incremental embedder for the newest missing vectors, capped."""
+    from thread_archive.retrieval import vectors as V
+
+    seen = {}
+    monkeypatch.setattr(
+        V, "index_events_local",
+        lambda max_events=None, newest_first=False: (
+            seen.update(max_events=max_events, newest_first=newest_first) or 9),
+    )
+    w = Watcher([], embed_batch=256)
+    assert w.embed_pending() == 9
+    assert seen == {"max_events": 256, "newest_first": True}
+
+
+def test_watcher_embed_cohost_flags_default_on() -> None:
+    """The vector cohost is on by default (so the lag can't reopen), with a startup
+    backlog hint set; --no-embed turns it off."""
+    on = Watcher([])
+    assert on.embed_enabled is True and on.embed_batch == 512 and on._embed_more is True
+    off = Watcher([], embed=False)
+    assert off.embed_enabled is False
 
 
 def test_watcher_available_filters_missing_sources(archive_home, tmp_path) -> None:

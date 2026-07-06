@@ -12,6 +12,12 @@ from __future__ import annotations
 from ._result import IncrementalImportResult
 from .antigravity import import_antigravity_session_incremental
 from .claude_code import import_session_incremental
+from .claude_science import (
+    ClaudeScienceDbScanResult,
+    ClaudeScienceImportResult,
+    import_claude_science_db,
+    import_claude_science_frame,
+)
 from .cloth import import_cloth_session_incremental
 from .codex import import_codex_session_incremental
 from .cowork import import_cowork_session_incremental
@@ -44,6 +50,9 @@ DB_SCANNERS = {
     "opencode": import_opencode_db,
 }
 
+# Claude Science scans a DB of many frames per org, dispatched per-org by the watcher
+# (not a single fixed DB path like Cursor/OpenCode), so it's tracked separately.
+
 PROVIDERS = list(LINE_STREAM_IMPORTERS) + list(DB_SCANNERS)
 
 __all__ = [
@@ -52,6 +61,10 @@ __all__ = [
     "import_cloth_session_incremental",
     "import_codex_session_incremental",
     "import_cowork_session_incremental",
+    "import_claude_science_db",
+    "import_claude_science_frame",
+    "ClaudeScienceImportResult",
+    "ClaudeScienceDbScanResult",
     "import_grok_session_incremental",
     "import_antigravity_session_incremental",
     "import_cursor_db",

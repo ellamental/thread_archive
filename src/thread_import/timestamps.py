@@ -27,9 +27,15 @@ def parse_timestamp(ts: Optional[Union[str, int, float]], *, default: Optional[d
         try:
             if ts.endswith("Z"):
                 ts = ts[:-1] + "+00:00"
-            return datetime.fromisoformat(ts)
+            dt = datetime.fromisoformat(ts)
         except (ValueError, TypeError):
             return default
+        # An offset-less ISO string parses to a naive datetime; treat it as UTC
+        # so callers never mix naive and aware datetimes (comparing the two
+        # raises TypeError in the event-ordering path). Explicit offsets are kept.
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt
 
     # Unix timestamp (seconds or milliseconds). Epoch is an absolute instant —
     # build an aware UTC datetime, not a naive-local one (the host's local zone

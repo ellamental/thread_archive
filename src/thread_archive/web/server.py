@@ -130,28 +130,38 @@ def _list_threads(*, limit: int, q: Optional[str]) -> list[dict]:
     ]
 
 
-def resolve_archive_link(link_id: str, source: str = "claude-code") -> Optional[int]:
+def resolve_archive_link(link_id: str, source: Optional[str] = None) -> Optional[int]:
     """Resolve a provider session id to its archive thread id, via ``ImportState``.
 
     This is the archive-link lookup an editor needs ("I have a session uuid, open the
-    conversation"). ``source_id`` is stored as ``{project}:{uuid}`` by the watcher but
-    can be a bare stem for a one-shot import, so we match exact **or** ``:``-suffix —
-    a bare uuid finds ``{project}:{uuid}`` and a bare stem finds itself. Newest import
-    wins. Owned here now that the watcher cohosts a persistent server — it used to live
-    in the (separate) ops backend."""
+    conversation"), and the same lookup that lets a bare uuid be pasted straight into
+    ``/archive/<uuid>``. The id passed is the tail of a longer ``source_id`` the watcher
+    stored, joined by a provider-specific separator: claude-code stores ``{project}:{uuid}``
+    (``:``), codex stores the rollout filename stem ``rollout-{ts}-{uuid}`` (``-``), and
+    cloth stores the bare session uuid. So we match exact **or** either separator-suffix —
+    a bare uuid finds ``{project}:{uuid}``, ``rollout-…-{uuid}``, *and* the bare cloth uuid.
+    ``source`` narrows the search to one provider (an editor knows its own); omit it (None)
+    to resolve across every provider — what pasting a bare uuid as a thread id wants, since
+    the paster rarely knows which harness it came from. Newest import wins. Owned here now
+    that the watcher cohosts a persistent server — it used to live in the (separate) ops
+    backend."""
     from sqlalchemy import select
 
     from ..store import ImportState, get_session
 
     api.open_archive()
-    norm = source.replace("_", "-")
     stmt = (
         select(ImportState.thread_id)
         .where(ImportState.thread_id.isnot(None))
-        .where(ImportState.source == norm)
-        .where((ImportState.source_id == link_id) | (ImportState.source_id.like(f"%:{link_id}")))
+        .where(
+            (ImportState.source_id == link_id)
+            | (ImportState.source_id.like(f"%:{link_id}"))
+            | (ImportState.source_id.like(f"%-{link_id}"))
+        )
         .order_by(ImportState.last_import_at.desc())
     )
+    if source:
+        stmt = stmt.where(ImportState.source == source.replace("_", "-"))
     with get_session() as s:
         return s.execute(stmt).scalars().first()
 
@@ -172,7 +182,7 @@ def route(method: str, path: str, params: dict) -> Response:
         link_id = _first(params, "id")
         if not link_id:
             return _text(400, "missing id")
-        tid = resolve_archive_link(link_id, _first(params, "source") or "claude-code")
+        tid = resolve_archive_link(link_id, _first(params, "source"))
         if tid is None:
             return 404, "application/json", json.dumps({"error": f"no thread for id={link_id}"}).encode(), {}
         url = f"/archive/{tid}"
@@ -204,8 +214,9 @@ def route(method: str, path: str, params: dict) -> Response:
         if path.startswith("/api/thread/"):
             # structured render blocks (the viewer's reader)
             return _ok(api.read_thread_structured(tid, include_thinking=thinking, include_tools=tools))
-        # flat transcript string (CLI-shaped; kept for back-compat)
-        transcript = api.read_thread(tid, include_thinking=thinking, include_tools=tools)
+        # flat transcript string (CLI-shaped; kept for back-compat). 'full' shows
+        # tool calls (with thinking), 'chat' is the readable assistant text only.
+        transcript = api.read_thread(tid, mode="full" if tools else "chat")
         return _ok({"thread_id": tid, "transcript": transcript})
 
     if path == "/api/threads":

@@ -1,15 +1,41 @@
 import { useEffect, useState } from 'react'
-import { useParams } from 'react-router-dom'
+import { useNavigate, useParams } from 'react-router-dom'
 import { api, type StructuredThread } from '../api'
 import { Message } from './Message'
+import { assignHues, hueStyle } from '../modelColor'
+
+// The distinct models that answered anywhere in the thread, in first-seen order —
+// listed on the header line, color-coded to match their messages below.
+function threadModels(data: StructuredThread): string[] {
+  const seen: string[] = []
+  for (const m of data.messages)
+    for (const model of m.meta?.models ?? [])
+      if (!seen.includes(model)) seen.push(model)
+  return seen
+}
 
 export function ThreadView() {
   const { id } = useParams()
-  const threadId = id ? parseInt(id, 10) : NaN
+  const navigate = useNavigate()
+  // A purely numeric id is an archive thread PK; anything else (a cloth/claude-code/
+  // codex session uuid or stem pasted straight into the URL) is a provider link id we
+  // resolve to its numeric thread and redirect to. Parsing the uuid as an int would
+  // silently truncate "27056da6-…" to 27056 and open the wrong thread.
+  const isNumeric = !!id && /^\d+$/.test(id)
+  const threadId = isNumeric ? parseInt(id as string, 10) : NaN
   const [thinking, setThinking] = useState(false)
   const [tools, setTools] = useState(true)
   const [data, setData] = useState<StructuredThread | null>(null)
   const [err, setErr] = useState<string | null>(null)
+
+  useEffect(() => {
+    if (!id || isNumeric) return
+    setErr(null)
+    api
+      .resolveLink(id)
+      .then((r) => navigate('/archive/' + r.thread_id, { replace: true }))
+      .catch((e) => setErr(String(e.message ?? e)))
+  }, [id, isNumeric, navigate])
 
   useEffect(() => {
     if (isNaN(threadId)) return
@@ -21,15 +47,27 @@ export function ThreadView() {
       .catch((e) => setErr(String(e.message ?? e)))
   }, [threadId, thinking, tools])
 
-  if (isNaN(threadId)) return <div className="wrap"><div className="empty">bad thread id</div></div>
   if (err) return <div className="wrap"><div className="empty">read error: {err}</div></div>
+  if (!isNumeric) return <div className="wrap"><div className="empty">resolving {id}…</div></div>
   if (!data) return <div className="wrap"><div className="empty">loading thread {threadId}…</div></div>
+
+  const models = threadModels(data)
+  const hues = assignHues(models)
 
   return (
     <div className="wrap">
       <h1 className="title">{data.title || 'thread ' + threadId}</h1>
       <div className="submeta">
         thread {data.thread_id} · {data.source || 'unknown'}
+        {models.length > 0 && (
+          <span className="model-tags">
+            {models.map((m) => (
+              <span className="model-tag" key={m} style={hueStyle(hues[m])}>
+                {m}
+              </span>
+            ))}
+          </span>
+        )}
       </div>
       <div className="toggles">
         <label>
@@ -42,7 +80,7 @@ export function ThreadView() {
       {data.messages.length === 0 ? (
         <div className="empty">(no renderable content)</div>
       ) : (
-        data.messages.map((m, i) => <Message key={i} message={m} />)
+        data.messages.map((m, i) => <Message key={i} message={m} hueForModel={hues} />)
       )}
     </div>
   )

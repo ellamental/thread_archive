@@ -35,7 +35,6 @@ from .write import (
     merge_topics,
     rename_topic,
     review_queue,
-    set_thread_summary,
     thread_user_messages,
     topic_search,
     unlink_threads,
@@ -61,7 +60,6 @@ __all__ = [
     "unlink_threads",
     "add_topic_evidence",
     "archive_topic_evidence",
-    "set_thread_summary",
     # curation-read
     "review_queue",
     "topic_search",

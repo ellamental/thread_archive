@@ -439,7 +439,7 @@ def _load_table(model: type, path: Path, engine, batch: int = 5000) -> int:
         if not buf:
             return
         with engine.begin() as conn:
-            conn.execute(insert(table), buf)
+            conn.execute(insert(table).prefix_with("OR REPLACE"), buf)
         total += len(buf)
         buf.clear()
 
@@ -468,12 +468,12 @@ def _load_thread_files(d: Path, engine, batch: int = 5000) -> tuple[int, int]:
         nonlocal nt, ne
         if thread_buf:
             with engine.begin() as conn:
-                conn.execute(insert(Thread.__table__), thread_buf)
+                conn.execute(insert(Thread.__table__).prefix_with("OR REPLACE"), thread_buf)
             nt += len(thread_buf)
             thread_buf.clear()
         if event_buf:
             with engine.begin() as conn:
-                conn.execute(insert(Event.__table__), event_buf)
+                conn.execute(insert(Event.__table__).prefix_with("OR REPLACE"), event_buf)
             ne += len(event_buf)
             event_buf.clear()
 
@@ -525,7 +525,7 @@ def _replay_kg_events(d: Path, engine) -> int:
         return 0
     coerced = [_coerce(KgEvent, r) for r in rows]
     with engine.begin() as conn:
-        conn.execute(insert(KgEvent.__table__), coerced)
+        conn.execute(insert(KgEvent.__table__).prefix_with("OR REPLACE"), coerced)
     with Session(engine) as s:
         for r in coerced:
             apply_event(s, KgEvent(**r))
@@ -543,8 +543,12 @@ def reindex(*, vectors: bool = False) -> dict:
     global engine through a **FK-OFF Core** loader so dependency-agnostic inserts need no
     ordering and the conversation truth-log listeners never fire; the kg-event replay
     runs through a Session on that same engine but stages nothing, so it likewise can't
-    re-write the truth it reads. The JSONL is authoritative and replayed as-is —
-    including any dangling reference; integrity was the writer's job."""
+    re-write the truth it reads. Loads are **INSERT OR REPLACE** (last-wins): a duplicate
+    primary key in the truth collapses to its newest record rather than aborting the
+    rebuild — combined with AUTOINCREMENT ids (which never recycle a high-water id), a
+    reindex run against a live watcher can neither collide nor abort. The JSONL is
+    authoritative and replayed as-is — including any dangling reference; integrity was
+    the writer's job."""
     d = log_dir()
 
     engine = get_engine()

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Bulk librarian backfill driver — drain the whole summary/citation backlog.
+"""Bulk librarian backfill driver — drain the whole citation backlog.
 
 A new archive starts with thousands of unreviewed conversations. This driver clears
 them by spawning headless Claude Code instances that run the `/librarian` skill, in a
@@ -14,10 +14,10 @@ lease older than an hour (a dead worker's). Workers self-balance; there's no sta
 partition and no central queue assignment. SQLite WAL serializes the small writes; reads
 run concurrently.
 
-State is the data: a thread is 'done' when its `indexed_summary` is set, so the driver's
+State is the data: a thread is 'done' once it gains a topic citation/link, so the driver's
 loop simply asks whether any *unclaimed* unreviewed thread remains. A crashed/timed-out
 instance loses nothing — its threads stay unreviewed, its lease lapses, and the next spawn
-picks them up (citations + summaries are idempotent).
+picks them up (citations are idempotent).
 
 Run from the repo root, with the project venv (so `thread_archive` imports and the
 spawned `claude` loads this repo's `.mcp.json` + `.claude/` skill and hook):

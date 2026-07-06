@@ -29,7 +29,7 @@ def test_public_surface_round_trip(archive_home) -> None:
 
     thread_id = hits[0]["thread_id"]
     transcript = ta.read_thread(thread_id)
-    assert "## USER" in transcript and "hello library" in transcript
+    assert "[USER" in transcript and "hello library" in transcript
 
     st = ta.status()
     assert st["threads"] == 1

@@ -79,7 +79,7 @@ h1.title { font-size: 19px; margin: 0 0 4px; }
 .badge.sem { background: var(--accent-soft); color: var(--accent); }
 
 /* ---- transcript ---- */
-.msg { border-radius: 10px; padding: 12px 16px; margin: 12px 0; border: 1px solid var(--line); }
+.msg { position: relative; border-radius: 10px; padding: 12px 16px; margin: 12px 0; border: 1px solid var(--line); }
 .msg.user { background: var(--user); }
 .msg.assistant { background: var(--assistant); }
 .msg .role { font-size: 11px; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); margin-bottom: 8px; }
@@ -116,3 +116,72 @@ h1.title { font-size: 19px; margin: 0 0 4px; }
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px;
 }
 .tool.thinking summary { font-style: italic; }
+
+/* raw (unrendered markdown source) view */
+.md-raw {
+  margin: 0; white-space: pre-wrap; word-break: break-word;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12.5px;
+  color: var(--ink);
+}
+
+/* ---- per-message info button + under-message drawer (modeled on cloth turn-meta) ---- */
+.msg-foot { display: flex; justify-content: flex-end; margin-top: 6px; }
+.msg-info {
+  width: 22px; height: 22px; border-radius: 50%;
+  display: flex; align-items: center; justify-content: center;
+  color: var(--muted); font-size: 14px; line-height: 1; opacity: .35;
+  transition: opacity .12s ease, color .12s ease;
+}
+.msg:hover .msg-info { opacity: .7; }
+.msg-info:hover, .msg-info[aria-expanded="true"] { opacity: 1; color: var(--accent); }
+
+/* the drawer: expands under the message content, in flow */
+.msg-meta {
+  margin-top: 8px; padding-top: 10px; border-top: 1px solid var(--line);
+  display: flex; flex-direction: column; gap: 8px; align-items: flex-start;
+}
+.msg-meta-row {
+  display: flex; flex-wrap: wrap; gap: 10px; align-items: center;
+  font-size: 11px; color: var(--muted);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+.msg-meta-row span { white-space: nowrap; }
+.chip {
+  background: var(--accent-soft); color: var(--accent); border-radius: 5px;
+  padding: 1px 7px; font-size: 11px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+.raw-toggle {
+  padding: 4px 10px; border: 1px solid var(--line); border-radius: 7px;
+  background: var(--bg); color: var(--ink); font-size: 12px;
+}
+.raw-toggle:hover { border-color: var(--accent); }
+.raw-toggle.on { background: var(--accent-soft); border-color: var(--accent); color: var(--accent); }
+
+/* ---- per-model color coding (hue carried in --mc-h; see modelColor.ts) ---- */
+/* Header line: one chip per model that answered in the thread. */
+.model-tags { display: inline-flex; flex-wrap: wrap; gap: 6px; margin-left: 8px; vertical-align: middle; }
+.model-tag {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11px;
+  padding: 1px 7px; border-radius: 5px;
+  color: hsl(var(--mc-h) 60% 40%);
+  background: hsl(var(--mc-h) 62% 50% / .12);
+  border: 1px solid hsl(var(--mc-h) 55% 50% / .35);
+}
+/* Assistant message: an accent bar down the left in its model's hue, matching role label. */
+.msg.has-model { box-shadow: inset 3px 0 0 hsl(var(--mc-h) 55% 50%); }
+.msg.has-model .role { color: hsl(var(--mc-h) 52% 42%); }
+/* The per-model chips in the info drawer, tinted like the header (override plain .chip). */
+.chip.model-chip { color: hsl(var(--mc-h) 60% 40%); background: hsl(var(--mc-h) 62% 50% / .13); }
+
+@media (prefers-color-scheme: dark) {
+  /* Lighten every hue against the near-black panel so dark hues stay legible. */
+  .model-tag {
+    color: hsl(var(--mc-h) 70% 70%);
+    background: hsl(var(--mc-h) 60% 60% / .16);
+    border-color: hsl(var(--mc-h) 55% 60% / .4);
+  }
+  .msg.has-model { box-shadow: inset 3px 0 0 hsl(var(--mc-h) 58% 60%); }
+  .msg.has-model .role { color: hsl(var(--mc-h) 62% 66%); }
+  .chip.model-chip { color: hsl(var(--mc-h) 70% 70%); background: hsl(var(--mc-h) 55% 55% / .18); }
+}

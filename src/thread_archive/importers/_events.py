@@ -137,7 +137,11 @@ def assemble_events(
                 msg, current_stream_id or str(uuid.uuid4()), prev_occurred_at=prev_occurred_at
             )
         else:
-            continue
+            # A role the builder doesn't specifically model (tool/function/developer/
+            # model/… from non-CC harnesses). Preserve the turn rather than drop it.
+            events = builder.build_events(
+                msg, current_stream_id or str(uuid.uuid4()), prev_occurred_at=prev_occurred_at
+            )
 
         if events:
             # Advance the anchor even for deduped messages so a later new message

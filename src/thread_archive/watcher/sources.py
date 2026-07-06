@@ -18,6 +18,7 @@ from typing import Callable, Iterator, Optional
 
 from ..importers import (
     import_antigravity_session_incremental,
+    import_claude_science_db,
     import_cloth_session_incremental,
     import_codex_session_incremental,
     import_cowork_session_incremental,
@@ -210,12 +211,17 @@ def antigravity_watcher(brain_dir: Optional[Path] = None) -> _RglobWatcher:
 
 
 def cloth_watcher(threads_dir: Optional[Path] = None) -> _RglobWatcher:
-    # cloth writes Claude-Code-shaped JSONL to ~/.cloth/threads/<n>.jsonl — one file
-    # per CLI session, ``source_id = "cloth-cli-<n>"``. (CLOTH_HOME relocates the store.)
+    # cloth writes Claude-Code-shaped JSONL to ~/.cloth/threads/<stem>.jsonl — one file
+    # per CLI session, ``source_id = "<stem>"``. Modern cloth names files by session
+    # uuid (already globally unique), so the source_id is the bare stem — no prefix.
+    # (Legacy numeric stems like ``1``/``22`` land bare too; they namespace under
+    # source='cloth' for import, and only collide with an integer thread PK on *read*,
+    # which is an accepted tradeoff for the near-dead numeric era.) CLOTH_HOME relocates
+    # the store. This is the sole live cloth store the standalone archive ingests.
     import os
 
     root = threads_dir or (Path(os.environ.get("CLOTH_HOME") or Path.home() / ".cloth").expanduser() / "threads")
-    w = _RglobWatcher(root, import_cloth_session_incremental, lambda p: f"cloth-cli-{p.stem}")
+    w = _RglobWatcher(root, import_cloth_session_incremental, lambda p: p.stem)
     w.glob, w._name = "*.jsonl", "cloth"
     return w
 
@@ -394,6 +400,89 @@ class CoworkWatcher(SourceWatcher):
         return result
 
 
+# ── Claude Science (per-org SQLite DB of conversation frames) ────────────────
+
+
+def discover_claude_science_dbs(base: Optional[Path] = None) -> list[tuple[Path, str]]:
+    """``(operon-cli.db path, org_uuid)`` for each org under ``~/.claude-science/orgs/``.
+
+    Claude Science (the AI Workbench app) keeps one live SQLite DB per org at
+    ``orgs/<org_uuid>/operon-cli.db``; the org_uuid is the dir name, used to scope the
+    thread source_id so two orgs' frames never collide."""
+    base = base or (Path.home() / ".claude-science" / "orgs")
+    if not base.is_dir():
+        return []
+    out: list[tuple[Path, str]] = []
+    for org_dir in sorted(base.iterdir()):
+        if not org_dir.is_dir():
+            continue
+        db = org_dir / "operon-cli.db"
+        if db.exists():
+            out.append((db, org_dir.name))
+    return out
+
+
+class ClaudeScienceWatcher(SourceWatcher):
+    """Watches every org's ``operon-cli.db`` and imports its conversation frames.
+
+    Like the Cursor/OpenCode DB watchers it mtime-gates a live SQLite DB wholesale
+    (DB **and** its ``-wal``, since writes can land in the WAL with the main file's
+    mtime untouched), but it discovers DBs dynamically each poll — as cowork does for
+    its org dirs — so an org created after startup is picked up without a restart."""
+
+    def __init__(self, base: Optional[Path] = None) -> None:
+        self._base = base
+        self._last_mtime: dict[str, float] = {}
+
+    @property
+    def source_name(self) -> str:
+        return "claude-science"
+
+    def is_available(self) -> bool:
+        return bool(discover_claude_science_dbs(self._base))
+
+    @staticmethod
+    def _current_mtime(db_path: Path) -> Optional[float]:
+        try:
+            mtimes = [db_path.stat().st_mtime]
+        except OSError:
+            return None
+        wal = db_path.with_name(db_path.name + "-wal")
+        if wal.exists():
+            mtimes.append(wal.stat().st_mtime)
+        return max(mtimes)
+
+    def poll(self) -> WatchResult:
+        result = WatchResult()
+        seen_this_poll: set[str] = set()
+        for db_path, org_uuid in discover_claude_science_dbs(self._base):
+            key = str(db_path.resolve())
+            seen_this_poll.add(key)
+            mtime = self._current_mtime(db_path)
+            if mtime is None:
+                continue
+            if self._last_mtime.get(key) == mtime:
+                result = result + WatchResult(sources_checked=1)
+                continue
+            try:
+                scan = import_claude_science_db(db_path, org_uuid)
+                # Fingerprint only after a successful scan, so a failure retries.
+                self._last_mtime[key] = mtime
+                result = result + WatchResult(
+                    sources_checked=scan.frames_processed,
+                    items_imported=scan.frames_imported,
+                    events_created=scan.events_created,
+                )
+            except Exception as e:  # noqa: BLE001 — one bad org DB must not stop the poll
+                msg = f"claude-science scan failed for {org_uuid}: {e}"
+                logger.warning(msg)
+                result = result + WatchResult(sources_checked=1, errors=[msg])
+        # Prune fingerprints for org DBs no longer present.
+        if seen_this_poll:
+            self._last_mtime = {k: v for k, v in self._last_mtime.items() if k in seen_this_poll}
+        return result
+
+
 def default_watchers() -> list[SourceWatcher]:
     """One watcher per provider, default system paths.
 
@@ -404,7 +493,12 @@ def default_watchers() -> list[SourceWatcher]:
 
     The exthost watcher runs last: the JSONL sources import each session's persisted
     messages first (establishing their dedup_keys), so the exthost pass only has the
-    genuinely-lost steering messages left to write."""
+    genuinely-lost steering messages left to write.
+
+    The export-drop watcher rides the same loop: it imports any claude.ai / xAI account
+    export dropped into ``<home>/dumps/`` (a human-driven drop zone, not a live store),
+    so a one-time bulk export needs no separate command."""
+    from .export_drop import ExportDropWatcher
     from .exthost import ExthostWatcher
 
     return [
@@ -416,5 +510,7 @@ def default_watchers() -> list[SourceWatcher]:
         cursor_watcher(),
         opencode_watcher(),
         CoworkWatcher(),
+        ClaudeScienceWatcher(),
+        ExportDropWatcher(),
         ExthostWatcher(),
     ]

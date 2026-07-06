@@ -32,11 +32,36 @@ INDEXABLE_EVENT_TYPES = [
     "context_summary",
     "tool_execution_error",
     "thread_message_sent",
+    "ide_context",
+    "content_block",
+    "message",
 ]
 
 
 def _to_str(value) -> str:
     return value if isinstance(value, str) else json.dumps(value, default=str)
+
+
+def _block_search_text(block) -> str:
+    """Best-effort human-readable text from an arbitrary content block, skipping
+    binary/base64 payloads (the ``source`` blob on image/document blocks). Used to
+    make preserved-but-unmodeled blocks (``content_block``) searchable without
+    indexing megabytes of base64."""
+    if isinstance(block, str):
+        return block
+    if not isinstance(block, dict):
+        return _to_str(block)
+    parts: list[str] = []
+    for key, value in block.items():
+        if key in ("type", "source"):  # ``source`` carries base64 image/doc data
+            continue
+        if isinstance(value, str):
+            if len(value) > 1000 and " " not in value[:100]:
+                continue  # looks like an opaque/base64 blob
+            parts.append(value)
+        elif isinstance(value, (dict, list)):
+            parts.append(_to_str(value))
+    return " ".join(parts).strip()
 
 
 def _strip_frontmatter(text: str) -> str:
@@ -131,5 +156,29 @@ def extract_fts_content(event_type: str, payload: dict) -> list[tuple[str, str, 
     if event_type == "thread_message_sent":
         content = payload.get("content", "")
         return [(content, "user", None)] if content else []
+
+    if event_type == "ide_context":
+        # Index the opened-file path / selection body so "what was I looking at"
+        # is searchable. file_path (when present) leads so a path query matches.
+        content = payload.get("content", "")
+        file_path = payload.get("file_path")
+        text = f"{file_path}\n{content}" if file_path else content
+        return [(text[:2000], "ide_context", None)] if text.strip() else []
+
+    if event_type == "content_block":
+        # An unmodeled block preserved verbatim; index its human-readable text.
+        text = _block_search_text(payload.get("data"))
+        content_type = payload.get("block_type") or "content_block"
+        return [(text[:2000], content_type, None)] if text.strip() else []
+
+    if event_type == "message":
+        # A preserved non-standard-role turn. Prefer its text; fall back to blocks.
+        content = payload.get("content", "")
+        content_type = payload.get("role") or "message"
+        if content.strip():
+            return [(content, content_type, None)]
+        blocks = payload.get("content_blocks") or []
+        text = " ".join(t for t in (_block_search_text(b) for b in blocks) if t)
+        return [(text[:2000], content_type, None)] if text.strip() else []
 
     return []

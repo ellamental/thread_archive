@@ -14,7 +14,8 @@ export function Sidebar() {
   const navigate = useNavigate()
   const { id } = useParams()
   const [params] = useSearchParams()
-  const activeId = id ? parseInt(id, 10) : null
+  // Only a numeric id maps to a rail item; a not-yet-resolved uuid highlights nothing.
+  const activeId = id && /^\d+$/.test(id) ? parseInt(id, 10) : null
 
   const [term, setTerm] = useState(params.get('q') ?? '')
   const [threads, setThreads] = useState<ThreadListItem[]>([])

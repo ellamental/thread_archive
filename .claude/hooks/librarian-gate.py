@@ -6,19 +6,17 @@ locks the session into a per-thread state machine that makes the skill's loop
 mechanically impossible to skip:
 
   read ONE thread (thread_user_messages / thread_read)
-    -> link it (>=1 topic citation)
-      -> commit it (thread_set_summary)
-        -> only THEN read the next thread.
+    -> cite it (>=1 topic citation — this IS the per-thread commit)
+      -> only THEN read the next thread.
 
 The failure this prevents: the model batch-reading the whole queue first ("I've read
-all 25 threads…") before doing any linking or summarizing — which bloats context, loses
-per-thread focus, and loses everything on a mid-run death. Without this gate, an instance
-reliably under-does the work; with it, every thread is finished before the next is opened.
+all 25 threads…") before doing any linking — which bloats context, loses per-thread
+focus, and loses everything on a mid-run death. Without this gate, an instance reliably
+under-does the work; with it, every thread is finished before the next is opened.
 
 Enforcement:
-  - Opening a *different* thread before the current one is committed: BLOCKED.
-  - Committing a thread's summary with zero citations: BLOCKED.
-  - Stop while a thread is open-but-uncommitted: BLOCKED (3-strike safety release).
+  - Opening a *different* thread before the current one has >=1 citation: BLOCKED.
+  - Stop while a thread is open with zero citations: BLOCKED (3-strike safety release).
 
 Everything else (review_queue, topic_search, topic_create/link, the citation calls, …)
 passes straight through. Sessions that never ran `/librarian` are completely unaffected —
@@ -28,7 +26,7 @@ Modes (argv[1]):
   reset  (UserPromptSubmit): detect /librarian, arm fresh state
   pre    (PreToolUse):       gate tool calls
   post   (PostToolUse):      advance state after a call runs
-  stop   (Stop):             block end-of-turn while a thread is uncommitted
+  stop   (Stop):             block end-of-turn while a thread is open with no citation
 
 Fail-open by design: any error allows the call. A hook bug must never wedge a session.
 State dir is `$THREAD_LIBRARIAN_GATE_DIR` (else /tmp/thread-archive-librarian-gate), so a
@@ -50,11 +48,10 @@ THREAD_READ_TOOLS = {
     "mcp__thread-archive__thread_read",
 }
 # A citation for the open conversation (its `thread_id` is the conversation thread).
+# The first citation is the per-thread commit point — it marks the thread reviewed.
 CITE_TOOL = "mcp__thread-archive-librarian__topic_cite"
-# The per-thread commit point.
-SUMMARY_TOOL = "mcp__thread-archive-librarian__thread_set_summary"
 
-# Minimum citations required before a thread's summary can be committed.
+# Minimum citations required before a thread counts as done (and the next may open).
 MIN_CITATIONS = 1
 # Consecutive Stop blocks tolerated before releasing (so a persistently-failing run
 # can't infinite-loop burning tokens).
@@ -125,7 +122,6 @@ def reset():
     _save({
         "active": True,
         "current_thread": None,
-        "committed": False,
         "citations": 0,
         "stop_blocks": 0,
     })
@@ -138,46 +134,30 @@ def reset():
                 "Process the queue strictly one thread at a time, finishing each before "
                 "touching the next:\n"
                 "  1. thread_user_messages(thread_id=X) — read ONE thread.\n"
-                "  2. Link it: topic_cite(...) at least once.\n"
-                "  3. Commit it: thread_set_summary(thread_id=X, ...).\n"
-                "  4. Only THEN read the next thread.\n"
-                "Reading a different thread before the current one is committed is BLOCKED. "
-                "Committing a summary with zero citations is BLOCKED. Stop is BLOCKED while a "
-                "thread is open but uncommitted. Re-reading/paging the SAME thread, "
-                "review_queue, topic_search, topic_create/link are all fine."
+                "  2. Cite it: topic_cite(...) at least once — this IS the commit.\n"
+                "  3. Only THEN read the next thread.\n"
+                "Reading a different thread before the current one has >=1 citation is "
+                "BLOCKED. Stop is BLOCKED while a thread is open with zero citations. "
+                "Re-reading/paging the SAME thread, review_queue, topic_search, "
+                "topic_create/link are all fine."
             ),
         }
     }
     print(json.dumps(output))
 
 
-def _pre_thread_read(tool_input, current, committed):
-    """Block opening a *different* thread while the current one is uncommitted."""
+def _pre_thread_read(tool_input, current, citations):
+    """Block opening a *different* thread while the current one has no citation yet."""
     tid = _thread_id(tool_input)
     if tid is None or tid == current:
         return  # malformed (fail open) or paging the current thread
-    if current is None or committed:
+    if current is None or citations >= MIN_CITATIONS:
         return  # opening the first / next thread — post records the switch
     _block(
         f"librarian-gate: still on thread {current}. Finish it first — add >=1 citation "
-        f"(topic_cite) and commit its summary (thread_set_summary(thread_id={current})) — "
-        f"before reading thread {tid}. One thread at a time."
+        f"(topic_cite(thread_id={current}, ...)) — before reading thread {tid}. "
+        f"One thread at a time."
     )
-
-
-def _pre_summary_commit(state, tool_input, current):
-    """Block a thread_set_summary with no/wrong open thread or too few citations."""
-    tid = _thread_id(tool_input)
-    if current is None:
-        _block("librarian-gate: no thread is open. Read a thread (thread_user_messages) "
-               "before writing a summary.")
-    if tid is not None and tid != current:
-        _block(f"librarian-gate: write the summary for the thread you're working ({current}), "
-               f"not {tid}. Finish {current} first.")
-    if state.get("citations", 0) < MIN_CITATIONS:
-        _block(f"librarian-gate: link thread {current} before committing it — "
-               f"{state.get('citations', 0)} citations so far, need >={MIN_CITATIONS}. "
-               f"Add a topic_cite first.")
 
 
 def pre():
@@ -191,13 +171,10 @@ def pre():
 
     tool_input = input_data.get("tool_input", {}) or {}
     current = state.get("current_thread")
-    committed = state.get("committed", False)
+    citations = state.get("citations", 0)
 
     if tool_name in THREAD_READ_TOOLS:
-        _pre_thread_read(tool_input, current, committed)
-
-    if tool_name == SUMMARY_TOOL:
-        _pre_summary_commit(state, tool_input, current)
+        _pre_thread_read(tool_input, current, citations)
 
 
 def post():
@@ -213,22 +190,15 @@ def post():
     if tool_name in THREAD_READ_TOOLS:
         tid = _thread_id(tool_input)
         if tid is not None and tid != current:
-            state.update(current_thread=tid, committed=False, citations=0, stop_blocks=0)
+            state.update(current_thread=tid, citations=0, stop_blocks=0)
             _save(state)
         return
 
-    # A citation landed for the open conversation.
+    # A citation landed for the open conversation — the per-thread commit.
     if tool_name == CITE_TOOL and current is not None:
         if _thread_id(tool_input) in (current, None):
             state["citations"] = state.get("citations", 0) + 1
-            _save(state)
-        return
-
-    # The open thread's summary was committed.
-    if tool_name == SUMMARY_TOOL and current is not None:
-        tid = _thread_id(tool_input)
-        if tid is None or tid == current:
-            state.update(committed=True, stop_blocks=0)
+            state["stop_blocks"] = 0
             _save(state)
         return
 
@@ -239,8 +209,8 @@ def stop():
         return
 
     current = state.get("current_thread")
-    # Nothing open (queue may simply be clear), or current thread finished — fine.
-    if current is None or state.get("committed", False):
+    # Nothing open (queue may simply be clear), or current thread cited — fine.
+    if current is None or state.get("citations", 0) >= MIN_CITATIONS:
         return
 
     blocks = state.get("stop_blocks", 0)
@@ -251,10 +221,9 @@ def stop():
     state["stop_blocks"] = blocks + 1
     _save(state)
     _block(
-        f"librarian-gate: thread {current} is open but not committed "
-        f"({state.get('citations', 0)} citations, summary not written). Finish it — add "
-        f">=1 citation, then thread_set_summary(thread_id={current}) — before stopping. "
-        f"Do NOT stop mid-thread."
+        f"librarian-gate: thread {current} is open but has no citation yet "
+        f"({state.get('citations', 0)} citations). Finish it — add >=1 topic_cite("
+        f"thread_id={current}, ...) — before stopping. Do NOT stop mid-thread."
     )
 
 

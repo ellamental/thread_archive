@@ -20,9 +20,22 @@ def test_all_subcommands_present() -> None:
     # Reach into the subparsers action to assert the full command surface is wired.
     sub = next(a for a in parser._actions if hasattr(a, "choices") and a.choices)
     assert set(sub.choices) == {
-        "import", "import-export", "watch", "search", "read", "reindex", "status",
-        "backup", "verify", "web",
+        "import", "import-export", "watch", "search", "read", "reindex", "embed",
+        "status", "backup", "verify", "web",
     }
+
+
+def test_embed_cli_dispatches(monkeypatch, capsys) -> None:
+    """`archive embed` wires to api.embed (the incremental vector catch-up). The
+    embed backend is stubbed so the smoke test never loads torch."""
+    from thread_archive import api
+
+    seen = {}
+    monkeypatch.setattr(api, "embed", lambda **kw: seen.update(kw) or {"embedded": 4})
+    rc = main(["embed", "--rebuild", "--limit", "100", "--home", "/unused-by-stub"])
+    assert rc == 0
+    assert seen["rebuild"] is True and seen["max_events"] == 100
+    assert "embedded 4" in capsys.readouterr().out
 
 
 def test_status_runs_on_empty_home(tmp_path, capsys: pytest.CaptureFixture[str]) -> None:

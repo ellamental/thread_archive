@@ -307,7 +307,9 @@ class ClaudeCodeParser(ProviderParser):
         """Dispatch a single session line to its type-specific parser.
 
         ``summary``/``file-history-snapshot`` are stored (not dropped) as their
-        own message kinds; unrecognized line types yield ``None``.
+        own message kinds; ``attachment`` lines carry a ``queued_command``
+        sub-kind (a steering message Ella typed mid-turn) that must survive as a
+        user message; unrecognized line types yield ``None``.
         """
         # Parsers taking (line, session_id, project_path).
         full_parsers = {
@@ -316,6 +318,7 @@ class ClaudeCodeParser(ProviderParser):
             "user": self._parse_user_message,
             "assistant": self._parse_assistant_message,
             "system": self._parse_system_message,
+            "attachment": self._parse_attachment_message,
         }
         parser = full_parsers.get(line_type)
         if parser is not None:
@@ -409,6 +412,84 @@ class ClaudeCodeParser(ProviderParser):
                 "version": line.get("version"),
                 "thinking_metadata": line.get("thinkingMetadata"),
                 "todos": line.get("todos"),
+            },
+            "conversation_title": None,
+            "conversation_metadata": {
+                "project_path": project_path or line.get("cwd"),
+                "git_branch": line.get("gitBranch"),
+            },
+        }
+
+    def _parse_attachment_message(
+        self,
+        line: Dict[str, Any],
+        session_id: Optional[str],
+        project_path: Optional[str],
+    ) -> Optional[NormalizedMessage]:
+        """Parse an ``attachment`` line.
+
+        Claude Code writes several attachment sub-kinds. Most are context
+        injections (todo reminders, tool/agent/skill listing deltas) with no
+        user signal, and are dropped. The exception is ``queued_command`` — a
+        message Ella typed *while the agent was mid-turn* (a "steering"
+        message). Its text lives only here: it is delivered to the model but
+        never re-emitted as a normal ``user`` line, and the ``queue-operation``
+        bookkeeping records carry no content. So if we don't reconstruct it, the
+        steering turn is lost from the archive (and the viewer). Rebuild it as a
+        user message, stamped with the time it was queued.
+        """
+        attachment = line.get("attachment") or {}
+        if attachment.get("type") != "queued_command":
+            return None
+
+        prompt = attachment.get("prompt")
+        content_blocks: List[ContentBlock] = []
+        if isinstance(prompt, str):
+            if prompt:
+                content_blocks.append(self.create_text_block(prompt, 0))
+        elif isinstance(prompt, list):
+            for block in prompt:
+                if isinstance(block, dict) and block.get("type") == "text":
+                    text = block.get("text", "")
+                    if text:
+                        content_blocks.append(
+                            self.create_text_block(text, len(content_blocks))
+                        )
+
+        content_text = self.extract_text_from_blocks(content_blocks)
+        if not content_text:
+            return None
+
+        uuid = line.get("uuid", "")
+        parent_uuid = line.get("parentUuid")
+        # The steering message's own time lives on the attachment (when it was
+        # queued); fall back to the enclosing line's timestamp.
+        timestamp = attachment.get("timestamp") or line.get("timestamp")
+        created_at = _parse_iso_timestamp(timestamp)
+        message_order = _timestamp_to_order(timestamp) if timestamp else 0
+
+        return {
+            "source_provider": self.PROVIDER_NAME,
+            "provider_message_id": uuid,
+            "provider_message_id_lower": uuid.lower() if uuid else None,
+            "provider_conversation_id": session_id or line.get("sessionId", ""),
+            "provider_parent_id": parent_uuid,
+            "provider_parent_id_lower": parent_uuid.lower() if parent_uuid else None,
+            "content_hash": self.hash_message(uuid, "user", prompt, timestamp),
+            "role": "user",
+            "content_text": content_text,
+            "content_blocks": content_blocks,
+            "created_at": created_at,
+            "updated_at": None,
+            "message_order": message_order,
+            "is_active_path": not line.get("isSidechain", False),
+            "provider_data": {
+                "line": line,
+                "cwd": project_path or line.get("cwd"),
+                "git_branch": line.get("gitBranch"),
+                "version": line.get("version"),
+                "queued_command": True,
+                "command_mode": attachment.get("commandMode"),
             },
             "conversation_title": None,
             "conversation_metadata": {

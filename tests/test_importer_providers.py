@@ -191,6 +191,76 @@ def test_cursor_db_scan_and_idempotent(archive_home) -> None:
     assert _event_count() == n
 
 
+def test_cursor_full_reimport_does_not_restack_null_dedup_key(archive_home) -> None:
+    """Regression: the March-2026 Postgres backfill seeded events with NULL dedup_key,
+    invisible to the key-based dedup. A later full re-import (import_state reset / a
+    manual migration re-run) then stacked duplicate events. The cross_pass_dedup guard
+    must make that re-import a no-op even though the existing rows have no dedup_key."""
+    init_db()
+    db = archive_home / "state.vscdb"
+    _make_cursor_db(db)
+    import_cursor_db(db)
+    n = _event_count()
+    assert n > 0
+
+    # Recreate the backfill condition: strip dedup_keys (as the PG-seeded rows had)
+    # and clear the import cursor so the next scan is a full re-import from index 0.
+    from thread_archive.store import ImportState
+    with get_session() as s:
+        s.query(Event).update({Event.dedup_key: None})
+        s.query(ImportState).filter(ImportState.source == "cursor").delete()
+        s.commit()
+
+    scan2 = import_cursor_db(db)  # full re-import against null-keyed existing rows
+    assert scan2.events_created == 0, "re-import re-stacked events the dedup_key couldn't see"
+    assert _event_count() == n
+
+
+def test_cursor_emits_tool_events(archive_home) -> None:
+    """Regression: the cursor importer dropped every tool call on parse — an
+    assistant bubble's toolFormerData was ignored, so a re-parse lost all
+    tool_use_complete / tool_execution_completed events. It must now emit both."""
+    init_db()
+    db = archive_home / "state.vscdb"
+    conn = sqlite3.connect(db)
+    conn.execute("CREATE TABLE cursorDiskKV (key TEXT PRIMARY KEY, value TEXT)")
+    cid = "comp_tool"
+    composer = {
+        "name": "Tool Chat",
+        "lastUpdatedAt": 1700000000000,
+        "fullConversationHeadersOnly": [
+            {"bubbleId": "b1", "type": 1},
+            {"bubbleId": "b2", "type": 2},
+        ],
+    }
+    tool_bubble = {
+        "type": 2, "text": "reading the file", "createdAt": 1700000001000,
+        "toolFormerData": {
+            "name": "read_file", "tool": 40, "toolCallId": "toolu_abc", "status": "completed",
+            "rawArgs": json.dumps({"target_file": "/x"}),
+            "params": {"targetFile": "/x"},
+            "result": {"contents": "hello world"},
+        },
+    }
+    conn.executemany("INSERT INTO cursorDiskKV VALUES (?, ?)", [
+        (f"composerData:{cid}", json.dumps(composer)),
+        (f"bubbleId:{cid}:b1", json.dumps({"type": 1, "text": "read /x", "createdAt": 1700000000000})),
+        (f"bubbleId:{cid}:b2", json.dumps(tool_bubble)),
+    ])
+    conn.commit(); conn.close()
+
+    import_cursor_db(db)
+    with get_session() as s:
+        types = {t for (t,) in s.execute(select(Event.event_type))}
+    assert "tool_use_complete" in types, "tool call was dropped on parse"
+    assert "tool_execution_completed" in types, "tool result was dropped on parse"
+    with get_session() as s:
+        use = s.execute(select(Event.payload).where(Event.event_type == "tool_use_complete")).scalar()
+        res = s.execute(select(Event.payload).where(Event.event_type == "tool_execution_completed")).scalar()
+    assert use["tool_call_id"] == "toolu_abc" and use["tool_name"] == "read_file"
+    assert res["tool_call_id"] == "toolu_abc" and "hello world" in json.dumps(res["output"])
+
+
 # ── OpenCode (SQLite scanner) ───────────────────────────────────────────────
 
 def _make_opencode_db(path) -> None:

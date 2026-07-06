@@ -45,10 +45,23 @@ class Watcher:
         *,
         interval: float = 5.0,
         maintenance_interval: float = 300.0,
+        embed: bool = True,
+        embed_interval: float = 300.0,
+        embed_batch: int = 512,
     ) -> None:
         self.watchers = watchers if watchers is not None else default_watchers()
         self.interval = interval
         self.maintenance_interval = maintenance_interval
+        # Live vector cohost: keep the semantic arm current with ingest so recent
+        # threads are findable by *meaning*, not just by keyword. The embed backend
+        # loads once and stays warm in this process; each pass is bounded by
+        # ``embed_batch`` so a backlog drains over cycles without stalling the loop,
+        # and it no-ops without the [embeddings] extra. ``_embed_more`` starts True so
+        # a pre-existing backlog drains on its own, then idles until new imports land.
+        self.embed_enabled = embed
+        self.embed_interval = embed_interval
+        self.embed_batch = embed_batch
+        self._embed_more = True
         self._stop = False
 
     def poll_once(self) -> WatchResult:
@@ -81,17 +94,30 @@ class Watcher:
         logger.info("watch: maintenance %s", counts)
         return counts
 
+    def embed_pending(self) -> int:
+        """Embed the freshest user/text events still missing a vector (bounded by
+        ``embed_batch``). Returns the count embedded — 0 when caught up or when the
+        embed backend isn't installed."""
+        from ..retrieval.vectors import index_events_local
+
+        n = index_events_local(max_events=self.embed_batch, newest_first=True)
+        if n:
+            logger.info("watch: embedded %d new vectors", n)
+        return n
+
     def run(self) -> None:
         """Loop forever (until :meth:`stop`): poll every ``interval`` seconds, and run
         maintenance every ``maintenance_interval`` seconds when something was imported
         since the last maintenance pass."""
         self._stop = False
         last_maintenance = time.monotonic()
+        last_embed = time.monotonic()
         dirty = False
         while not self._stop:
             result = self.poll_once()
             if result.events_created > 0:
                 dirty = True
+                self._embed_more = True  # new events to embed
 
             now = time.monotonic()
             if dirty and (now - last_maintenance) >= self.maintenance_interval:
@@ -101,6 +127,19 @@ class Watcher:
                     logger.warning("watch: maintenance error: %s", e)
                 last_maintenance = now
                 dirty = False
+
+            # Vector cohost on the slow cadence: embed the freshest missing vectors.
+            # Bounded per pass, so if the cap was hit there's likely more — keep the
+            # flag set to drain again next cycle; clear it once caught up so we idle.
+            if (self.embed_enabled and self._embed_more
+                    and (now - last_embed) >= self.embed_interval):
+                try:
+                    n = self.embed_pending()
+                    self._embed_more = n >= self.embed_batch
+                except Exception as e:  # noqa: BLE001 — embedding must not kill the loop
+                    logger.warning("watch: embed error: %s", e)
+                    self._embed_more = False  # don't hot-loop a persistent failure
+                last_embed = now
 
             # Sleep in short slices so stop() is responsive.
             slept = 0.0

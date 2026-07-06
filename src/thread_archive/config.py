@@ -10,6 +10,7 @@ A single archive lives under one *home* directory:
         thread_links.jsonl    # cross-thread overlay (topic-graph edges, folded from kg_events)
         topic_messages.jsonl  # cross-thread overlay (topic evidence, folded from kg_events)
       index.db            # SQLite projection, rebuildable from truth/ via `archive reindex`
+      dumps/              # drop zone: account exports dropped here are auto-imported
 
 `home` resolves from ``THREAD_ARCHIVE_HOME`` (env), else ``~/.thread_archive``.
 Truth and index paths can be overridden individually (e.g. for tests).
@@ -45,6 +46,11 @@ class ArchivePaths:
     @property
     def sqlalchemy_url(self) -> str:
         return f"sqlite:///{self.index_path}"
+
+    @property
+    def dumps_dir(self) -> Path:
+        """Drop zone for downloaded account exports (auto-imported by the watcher)."""
+        return self.home / "dumps"
 
 
 def resolve_paths(

@@ -1,0 +1,19 @@
+# thread-archive's CI suite manifest — consumed by thread-ci (~/dev/thread/ci).
+# The memory-of-record repo had no CI before the thread-ci carve (2026-07-02);
+# this is the payoff — its runs land in the same ~/.thread/ci store and the same
+# ops console as thread's. {repo} = this repo root, {home} = the user's home.
+#
+# Gates the documented quality bar (README → "confirm green"): the pytest suite,
+# run from its own venv. (ruff/pyright aren't in this repo's dev deps, so they're
+# not gated here — add [[suite]] rows if they join the dev group.)
+
+[ci]
+nice = 10
+default_timeout = 900
+path_prepend = ["{repo}/.venv/bin"]
+
+[[suite]]
+name = "pytest"
+argv = ["{repo}/.venv/bin/pytest", "-q", "--tb=short", "-p", "no:cacheprovider"]
+# cwd omitted = repo root, so it resolves testpaths=["tests"] from pyproject.
+timeout = 1800

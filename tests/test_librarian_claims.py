@@ -11,8 +11,10 @@ from __future__ import annotations
 import json
 from datetime import datetime, timezone
 
+from sqlalchemy import select
+
 import thread_archive as ta
-from thread_archive.knowledge import review_queue, set_thread_summary
+from thread_archive.knowledge import add_topic_evidence, create_topic, review_queue
 from thread_archive.knowledge._claims import claim_review_batch, claims_path, has_claimable_work
 from thread_archive.store import Event, Thread, get_session
 
@@ -78,9 +80,16 @@ def test_reviewed_threads_leave_the_claimable_set(archive_home):
     ta.open_archive()
     ids = _seed(2)
     claim_review_batch("A", 5)
-    set_thread_summary(ids[0], summary="s", indexed_summary="## x (events 1-1)")
-    set_thread_summary(ids[1], summary="s", indexed_summary="## x (events 1-1)")
-    # both reviewed → no claimable work even though the (now-stale-or-not) claims linger
+    # 'Reviewed' is derived from curation now: cite a message from each thread.
+    topic = create_topic("T")["topic_id"]
+    with get_session() as s:
+        eids = {
+            tid: s.execute(select(Event.id).where(Event.thread_id == tid)).scalars().first()
+            for tid in ids
+        }
+    for tid in ids:
+        add_topic_evidence(topic, eids[tid], tid, "q")
+    # both cited → reviewed → no claimable work even though the claims linger
     assert has_claimable_work(lease=0) is False
 
 

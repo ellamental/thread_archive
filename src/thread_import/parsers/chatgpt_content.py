@@ -31,8 +31,10 @@ def extract_text_from_content(content: Any) -> str:
     if isinstance(content, str):
         return content
     if isinstance(content, dict):
-        # Check for text field
-        if "text" in content:
+        # Check for text field. Only trust a string value — a dict/None `text`
+        # would otherwise be returned verbatim and crash downstream `.strip()`;
+        # fall through to the parts handling (which yields "" if there are none).
+        if isinstance(content.get("text"), str):
             return content["text"]
         # Check for parts array
         parts = content.get("parts", [])

@@ -40,7 +40,8 @@ def _dump(value) -> str:
 def review_queue(limit: int = 20, exclude_source_id: Optional[str] = None) -> str:
     """Unreviewed conversation threads (the librarian backlog), newest first.
 
-    Event-bearing conversations with no ``indexed_summary`` yet. Pass your own session's
+    Event-bearing conversations the librarian hasn't curated yet — a thread leaves the
+    queue once it gains its first topic citation/link. Pass your own session's
     ``source_id`` as ``exclude_source_id`` to drop your still-growing transcript from the
     queue. In a parallel backfill (when ``$THREAD_ARCHIVE_LIBRARIAN_WORKER`` is set) this
     transparently claims its batch under a lease, so concurrent workers don't overlap —
@@ -60,7 +61,7 @@ def topic_search(query: str, limit: int = 10) -> str:
 @mcp.tool()
 def thread_user_messages(thread_id: int, limit: Optional[int] = None) -> str:
     """A thread's user messages as ``[{event_id, text}]`` — the cheap, high-signal read
-    to cite from and anchor an indexed_summary on (cite the ``event_id`` values)."""
+    to cite from (cite the ``event_id`` values)."""
     api.open_archive()
     return _dump(_write.thread_user_messages(thread_id, limit=limit))
 
@@ -140,19 +141,6 @@ def topic_uncite(topic_id: int, event_id: int) -> str:
     """Archive a citation (tombstone — sets archived_at, keeps the row + history)."""
     api.open_archive()
     return _dump(_write.archive_topic_evidence(topic_id, event_id))
-
-
-# ── thread summary (the librarian's review commit) ────────────────────────────
-@mcp.tool()
-def thread_set_summary(thread_id: int, summary: str, indexed_summary: str) -> str:
-    """Write a conversation's ``summary`` + event-anchored ``indexed_summary``. Setting
-    ``indexed_summary`` marks the thread reviewed and drops it from ``review_queue``."""
-    api.open_archive()
-    try:
-        return _dump(_write.set_thread_summary(
-            thread_id, summary=summary, indexed_summary=indexed_summary))
-    except ValueError as e:
-        return f"Error: {e}"
 
 
 def main() -> None:

@@ -9,7 +9,7 @@ coordinator, and a crash forfeits nothing but a one-hour wait on those few threa
 
 The claim file (`<home>/.librarian-claims.json`) is **ephemeral operator coordination**,
 not truth — like a lock dir. Deleting it only drops in-flight leases; the archive (JSONL
-truth + the `indexed_summary` that actually marks a thread done) is untouched. Concurrency
+truth + the topic citations/links that actually mark a thread done) is untouched. Concurrency
 is an `flock`'d read-modify-write held only for the brief claim, never during the work.
 """
 

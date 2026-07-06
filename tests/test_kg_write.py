@@ -25,7 +25,6 @@ from thread_archive.knowledge import (
     link_threads,
     merge_topics,
     review_queue,
-    set_thread_summary,
     thread_user_messages,
     topic_search,
     unlink_threads,
@@ -133,6 +132,9 @@ def test_evidence_and_review_queue(archive_home):
     conv, eid = _seed_conversation("sess-A")
     topic = create_topic("Topic X")["topic_id"]
 
+    # a freshly-imported conversation with no citations is unreviewed — in the queue
+    assert any(row["id"] == conv for row in review_queue())
+
     add_topic_evidence(topic, eid, conv, "the salient quote")
     add_topic_evidence(topic, eid, conv, "re-run, idempotent")  # same (topic,event) → no 2nd row
 
@@ -140,9 +142,7 @@ def test_evidence_and_review_queue(archive_home):
         rows = s.execute(select(TopicMessage)).scalars().all()
         assert len(rows) == 1 and rows[0].topic_id == topic and rows[0].event_id == eid
 
-    # the conversation is in the queue until summarized
-    assert any(row["id"] == conv for row in review_queue())
-    set_thread_summary(conv, summary="what it was about", indexed_summary="## X (events 1-1)\nbody")
+    # citing a message from the conversation marks it reviewed → it leaves the queue
     assert all(row["id"] != conv for row in review_queue())
 
 

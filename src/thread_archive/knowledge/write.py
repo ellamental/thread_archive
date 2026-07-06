@@ -28,7 +28,7 @@ from typing import Optional
 from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
-from ..store import Event, KgEvent, Thread, use_session
+from ..store import Event, KgEvent, Thread, ThreadLink, TopicMessage, use_session
 from ..truth.jsonl_log import append_kg_event, record_thread
 from .graph import reset_cache
 from .materialize import apply_event
@@ -280,34 +280,6 @@ def archive_topic_evidence(
     return result
 
 
-# ── thread summary (librarian's per-conversation write — thread metadata, not a graph
-#    edge; the append-only per-thread file preserves its history) ───────────────────
-def set_thread_summary(
-    thread_id: int, *, summary: Optional[str] = None, indexed_summary: Optional[str] = None,
-    session: Optional[Session] = None,
-) -> dict:
-    """Write a thread's ``summary`` / ``indexed_summary`` (the librarian's review commit).
-
-    Re-records the thread's metadata to its per-thread truth file (latest wins on
-    reindex; every prior record stays in the append-only file, so summary history is
-    preserved). A thread is 'reviewed' once ``indexed_summary`` is set."""
-    own = session is None
-    with use_session(session) as s:
-        thread = s.get(Thread, int(thread_id))
-        if thread is None:
-            raise ValueError(f"no thread with id {thread_id}")
-        if summary is not None:
-            thread.summary = summary
-        if indexed_summary is not None:
-            thread.indexed_summary = indexed_summary
-        thread.updated_at = _now()
-        record_thread(s, thread)
-        result = {"thread_id": int(thread_id), "reviewed": thread.indexed_summary is not None}
-        if own:
-            s.commit()
-    return result
-
-
 # ── curation-read surface ────────────────────────────────────────────────────────
 def review_queue(
     limit: int = 20, *, exclude_source_id: Optional[str] = None,
@@ -315,14 +287,17 @@ def review_queue(
 ) -> list[dict]:
     """Unreviewed conversation threads — the librarian's backlog.
 
-    Event-bearing conversation threads with no ``indexed_summary`` yet, newest first.
+    Event-bearing conversation threads the librarian hasn't curated yet, newest first.
     Pass ``exclude_source_id`` to drop the caller's own live session (its still-growing
     transcript sits at the top of its own queue otherwise).
 
-    **State is the data, not a ledger.** 'Reviewed' means ``indexed_summary IS NOT NULL``
-    — there is no separate processed-list to keep in sync; a thread leaves the queue the
-    instant its summary lands. That makes the queue idempotent (a half-done thread simply
-    reappears) and safe to drain even if two workers briefly overlap.
+    **State is the data, not a ledger.** 'Reviewed' is *derived from the curation a thread
+    produced* — a thread leaves the queue the instant it gains its first live topic
+    citation (or a link touching it); there is no summary column or processed-list to keep
+    in sync. That makes the queue idempotent (a half-done thread simply reappears) and safe
+    to drain even if two workers briefly overlap. Corollary: a thread genuinely read but
+    yielding nothing worth citing stays in the queue — acceptable, and in practice the
+    librarian-gate forces ≥1 citation per processed thread, so reviewed ⇒ cited.
 
     **Parallel backfill via lease-claims.** When ``$THREAD_ARCHIVE_LIBRARIAN_WORKER`` is
     set (the backfill driver sets a distinct id per instance), this call *claims* the batch
@@ -338,9 +313,26 @@ def review_queue(
         return claim_review_batch(worker, batch=limit, exclude_source_id=exclude_source_id)
 
     has_events = select(Event.id).where(Event.thread_id == Thread.id).exists()
+    # 'Curated' = the librarian drew something from this thread: a live (non-archived)
+    # topic citation sourced from it, or a link touching it. This replaces the old
+    # ``indexed_summary IS NULL`` sentinel — review state is derived from the curation
+    # the thread produced, not from a summary column (summaries were retired).
+    is_curated = or_(
+        select(TopicMessage.id)
+        .where(TopicMessage.thread_id == Thread.id, TopicMessage.archived_at.is_(None))
+        .exists(),
+        select(ThreadLink.id)
+        .where(
+            or_(
+                ThreadLink.source_thread_id == Thread.id,
+                ThreadLink.target_thread_id == Thread.id,
+            )
+        )
+        .exists(),
+    )
     conds = [
         Thread.thread_type == "conversation",
-        Thread.indexed_summary.is_(None),
+        ~is_curated,
         or_(Thread.archived.is_(False), Thread.archived.is_(None)),
         has_events,
     ]
@@ -374,8 +366,7 @@ def thread_user_messages(
     thread_id: int, *, limit: Optional[int] = None, session: Optional[Session] = None,
 ) -> list[dict]:
     """A thread's user messages as ``[{event_id, text}]`` — the cheap, high-signal read
-    the librarian cites from (both citations and the indexed_summary anchor on these
-    ``event_id`` values)."""
+    the librarian cites from (citations anchor on these ``event_id`` values)."""
     q = select(Event.id, Event.payload).where(
         Event.thread_id == int(thread_id),
         Event.event_type.in_(("user_message_sent", "thread_message_sent")),

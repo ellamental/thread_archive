@@ -104,11 +104,20 @@ def index_vectors(records) -> int:
     return len(rows)
 
 
-def index_events_local(batch_size: int = 64, rebuild: bool = False) -> int:
+def index_events_local(
+    batch_size: int = 64,
+    rebuild: bool = False,
+    max_events: int | None = None,
+    newest_first: bool = False,
+) -> int:
     """Compute event vectors in-process from the FTS shadow (user/text pools).
 
     ``rebuild=False`` only embeds events missing a vector (anti-join — safe to
-    re-run). No-op (0) when the store isn't SQLite or the embed backend is absent.
+    re-run). ``max_events`` caps how many events a single call embeds — the live
+    cohost bounds each pass so a backlog drains over cycles without stalling ingest;
+    ``newest_first`` drains the freshest gap first, which is what keeps recent-thread
+    *semantic* recall current (the lexical arm already covers fresh threads). No-op
+    (0) when the store isn't SQLite or the embed backend is absent.
     """
     if not is_available():
         return 0
@@ -120,16 +129,19 @@ def index_events_local(batch_size: int = 64, rebuild: bool = False) -> int:
     ensure_index()
 
     missing = "" if rebuild else " AND v.event_id IS NULL"
+    order = "DESC" if newest_first else "ASC"
+    limit = " LIMIT :cap" if max_events else ""
     sql = sa_text(
         "SELECT f.event_id AS eid, f.content_type AS ct, group_concat(f.content, ' ') AS content "
         "FROM events_fts f "
         "LEFT JOIN event_vectors v ON v.event_id = f.event_id AND v.content_type = f.content_type "
         "WHERE f.content_type IN ('user', 'text') AND f.content IS NOT NULL AND f.content != ''"
         + missing +
-        " GROUP BY f.event_id, f.content_type ORDER BY f.event_id"
+        f" GROUP BY f.event_id, f.content_type ORDER BY f.event_id {order}" + limit
     )
+    params = {"cap": int(max_events)} if max_events else {}
     with get_session() as s:
-        pending = [(r.eid, r.ct, r.content) for r in s.execute(sql)]
+        pending = [(r.eid, r.ct, r.content) for r in s.execute(sql, params)]
 
     total = 0
     for start in range(0, len(pending), batch_size):

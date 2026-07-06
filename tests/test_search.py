@@ -119,11 +119,16 @@ def test_read_reconstructs_conversation(archive_home) -> None:
     hits = search("authentication", content_types=["user"])
     thread_id = hits[0]["thread_id"]
 
-    transcript = read_thread(thread_id)
-    assert "## USER" in transcript
-    assert "## ASSISTANT" in transcript
-    assert "authentication work in the login flow" in transcript
-    assert "session token after login" in transcript
+    # default view = user turns only
+    user_view = read_thread(thread_id)
+    assert "[USER" in user_view
+    assert "authentication work in the login flow" in user_view
+    assert "[ASSISTANT" not in user_view  # assistant suppressed in the user view
+
+    # chat view surfaces the assistant's visible text
+    chat_view = read_thread(thread_id, mode="chat")
+    assert "[ASSISTANT" in chat_view
+    assert "session token after login" in chat_view
 
 
 def test_read_missing_thread(archive_home) -> None:

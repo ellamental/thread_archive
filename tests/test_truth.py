@@ -10,7 +10,7 @@ from __future__ import annotations
 import json
 from datetime import datetime, timezone
 
-from sqlalchemy import select
+from sqlalchemy import delete, select
 
 from thread_archive.store import Event, Thread, _base, get_engine, get_session, init_db
 from thread_archive.truth import jsonl_log
@@ -142,3 +142,88 @@ def test_rollback_does_not_write_truth(archive_home) -> None:
     tf = _thread_file(archive_home, tid)
     assert tf is not None
     assert "discard me" not in tf.read_text()
+
+
+def test_id_highwater_survives_delete(archive_home) -> None:
+    """AUTOINCREMENT keeps the id high-water across a DELETE, so a writer that inserts
+    during reindex's truncated window can never recycle a historical id. DELETE-then-
+    insert is the minimal reproduction of that window — the regression for the
+    id-collision cascade (a live watcher minting ids while reindex had emptied events).
+    """
+    init_db()
+    with get_session() as s:
+        t = Thread(name="hw")
+        s.add(t)
+        s.flush()
+        jsonl_log.record_thread(s, t)
+        s.commit()
+        tid = t.id
+
+    # A historical event at a high id sets the sequence high-water.
+    with get_session() as s:
+        s.add(
+            Event(
+                id=5000, thread_id=tid, stream_id="x", event_type="user_message_sent",
+                payload={"text": "a"}, occurred_at=_now(),
+            )
+        )
+        s.commit()
+
+    # reindex's truncate: clear the table (without recreating it).
+    with get_session() as s:
+        s.execute(delete(Event))
+        s.commit()
+
+    # A fresh auto-id insert must continue *past* the high-water, never reuse 5000.
+    with get_session() as s:
+        e = Event(
+            thread_id=tid, stream_id="y", event_type="text_delta",
+            payload={"text": "b"}, occurred_at=_now(),
+        )
+        s.add(e)
+        s.flush()
+        new_id = e.id
+        s.commit()
+
+    assert new_id > 5000, f"id {new_id} recycled after DELETE — id high-water not preserved"
+
+
+def test_reindex_collapses_duplicate_pk_last_wins(archive_home) -> None:
+    """A duplicate primary key in the truth (legacy id-collision pollution) must
+    collapse last-wins on reindex via INSERT OR REPLACE — not abort the rebuild."""
+    init_db()
+    with get_session() as s:
+        t = Thread(name="dup")
+        s.add(t)
+        s.flush()
+        jsonl_log.record_thread(s, t)
+        s.commit()
+        tid = t.id
+
+    tf = _thread_file(archive_home, tid)
+    assert tf is not None
+    jsonl_log.reset_handles()  # close the seam's append handle before we append by hand
+
+    # Two event lines sharing one id, newest last — what the collision bug produced.
+    with open(tf, "a", encoding="utf-8") as fh:
+        for text in ("first", "second"):
+            fh.write(
+                json.dumps({
+                    "type": "event", "id": 777, "thread_id": tid, "stream_id": "x",
+                    "event_type": "user_message_sent", "payload": {"text": text},
+                    "occurred_at": _now().isoformat(),
+                })
+                + "\n"
+            )
+
+    get_engine().dispose()
+    jsonl_log.reset_handles()
+    _base.close_engine()
+    _delete_index(archive_home)
+
+    jsonl_log.reindex()  # must not raise on the duplicate id
+
+    with get_session() as s:
+        e = s.get(Event, 777)
+    assert e is not None, "duplicate-id event vanished"
+    assert e.payload["text"] == "second", "duplicate PK must collapse to the newest record"

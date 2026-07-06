@@ -40,10 +40,27 @@ export type Block =
   | { type: 'tool_result'; output: string; truncated: boolean }
   | { type: 'tool_error'; error: string }
   | { type: 'context_summary'; text: string }
+  | { type: 'ide_context'; context_type: string; file_path?: string | null; text: string }
+  | { type: 'content_block'; block_type: string; text: string }
+  | { type: 'unknown'; event_type: string; text: string }
+
+// Per-message metadata for the info drawer. Every message carries `ts`; assistant
+// messages also carry the model(s)/tokens/stop-reason folded from that turn's
+// api_request events (different turns can be answered by different models).
+export interface MessageMeta {
+  ts: string | null
+  models?: string[]
+  requests?: number
+  stop_reason?: string | null
+  tokens?: { input: number; output: number; thinking: number }
+}
 
 export interface Message {
-  role: 'user' | 'assistant'
+  // Usually user/assistant, but a preserved non-standard-role turn carries its
+  // own role string (e.g. 'tool', 'developer'), so this isn't a closed set.
+  role: string
   blocks: Block[]
+  meta?: MessageMeta
 }
 
 export interface StructuredThread {
@@ -70,5 +87,11 @@ export const api = {
   thread: (id: number, opts: { thinking: boolean; tools: boolean }) =>
     getJSON<StructuredThread>(
       `/api/thread/${id}?thinking=${opts.thinking ? 1 : 0}&tools=${opts.tools ? 1 : 0}`,
+    ),
+  // Resolve a pasted provider session id (a cloth/claude-code/codex uuid or stem) to
+  // its numeric archive thread. No source param → the server searches every provider.
+  resolveLink: (id: string) =>
+    getJSON<{ thread_id: number; url: string }>(
+      '/api/archive-link?id=' + encodeURIComponent(id),
     ),
 }
