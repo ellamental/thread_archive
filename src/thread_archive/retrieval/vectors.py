@@ -121,7 +121,8 @@ def index_events_local(
     """
     if not is_available():
         return 0
-    from .embed import embed_documents, is_available as embed_available
+    from .embed import embed_documents
+    from .embed import is_available as embed_available
 
     if not embed_available():
         logger.info("vectors.index_events_local: embed backend unavailable — skipping")

@@ -10,8 +10,6 @@ from __future__ import annotations
 
 import json
 
-import pytest
-
 from thread_archive.importers import import_session_incremental
 from thread_archive.retrieval import read_thread, search
 from thread_archive.store import _base, get_engine, init_db

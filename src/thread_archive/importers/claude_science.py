@@ -40,6 +40,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 from sqlalchemy import delete
+
 from thread_import import DefaultEventBuilder
 from thread_import.parsers.claude_code import ClaudeCodeParser
 

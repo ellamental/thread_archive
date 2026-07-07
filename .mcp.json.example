@@ -3,11 +3,11 @@
   "mcpServers": {
     "thread-archive": {
       "command": "ABSOLUTE_REPO_PATH/.venv/bin/archive-mcp",
-      "env": { "THREAD_ARCHIVE_HOME": "~/.thread_archive" }
+      "env": { "THREAD_ARCHIVE_HOME": "~/.thread/archive" }
     },
     "thread-archive-librarian": {
       "command": "ABSOLUTE_REPO_PATH/.venv/bin/archive-librarian-mcp",
-      "env": { "THREAD_ARCHIVE_HOME": "~/.thread_archive" }
+      "env": { "THREAD_ARCHIVE_HOME": "~/.thread/archive" }
     }
   }
 }

@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Optional
 
 from sqlalchemy.orm import Session
+
 from thread_import.event_builder import compute_dedup_key
 
 from ..store import Event

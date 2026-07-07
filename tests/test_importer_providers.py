@@ -247,7 +247,8 @@ def test_cursor_emits_tool_events(archive_home) -> None:
         (f"bubbleId:{cid}:b1", json.dumps({"type": 1, "text": "read /x", "createdAt": 1700000000000})),
         (f"bubbleId:{cid}:b2", json.dumps(tool_bubble)),
     ])
-    conn.commit(); conn.close()
+    conn.commit()
+    conn.close()
 
     import_cursor_db(db)
     with get_session() as s:

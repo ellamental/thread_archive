@@ -1,6 +1,17 @@
 # Plan: atomic reindex (build-and-swap)
 
-Status: **proposed / not started**
+Status: **landed 2026-07-07** — steps 1–4 plus in-process reconnect shipped in
+`truth/jsonl_log.py:reindex` (pre-flight disk guard, flock quiesce shared with the
+watcher's pass, build into `index.db.rebuild`, WAL fold, atomic `os.replace`, stale
+sidecar removal), with the watcher holding the lock shared across each pass and
+reconnecting its engine on the first pass after a skipped one
+(`watcher/daemon.py:run`). Cross-process reader reconnect for the *MCP read
+servers / cohosted web* (step 5's generation-marker option) remains the open
+follow-up — until then those readers serve the pre-swap inode until they
+reconnect or restart, and a non-watcher writer (the librarian MCP) is not
+quiesced: its mid-reindex writes land in truth + the old index and appear on the
+next reindex. Tests: `tests/test_truth.py` (torn-line tolerance, failed-build
+leaves the old index intact, lock shared-vs-exclusive semantics).
 Scope: `thread_archive` — `truth/jsonl_log.py:reindex`, `watcher/daemon.py`, `config.py`
 Priority: **low** — a follow-up hardening, not a live bug. The collision/dup failure
 mode is already fixed (see "Relation to the landed fix" below); this only closes the

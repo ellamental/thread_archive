@@ -108,38 +108,64 @@ class Watcher:
     def run(self) -> None:
         """Loop forever (until :meth:`stop`): poll every ``interval`` seconds, and run
         maintenance every ``maintenance_interval`` seconds when something was imported
-        since the last maintenance pass."""
+        since the last maintenance pass.
+
+        Each pass runs under the *shared* reindex lock (see
+        :func:`..truth.try_shared_ingest_lock`): while ``archive reindex`` holds it
+        exclusive for its build-and-swap, the pass is skipped entirely — poll,
+        maintenance, and embed all write to the truth and/or the index, and a write
+        landing mid-rebuild would silently miss the swapped-in index. Sources replay
+        from their own import state, so skipped passes lose nothing."""
+        from ..truth import try_shared_ingest_lock
+
         self._stop = False
         last_maintenance = time.monotonic()
         last_embed = time.monotonic()
         dirty = False
+        reconnect = False
         while not self._stop:
-            result = self.poll_once()
-            if result.events_created > 0:
-                dirty = True
-                self._embed_more = True  # new events to embed
+            with try_shared_ingest_lock() as acquired:
+                if not acquired:
+                    logger.info("watch: reindex in progress — skipping ingest pass")
+                    reconnect = True
+                else:
+                    if reconnect:
+                        # A reindex ran while we skipped: index.db was atomically
+                        # replaced, so our pooled connections point at the orphaned
+                        # old inode. Dispose them — the next connection reopens the
+                        # path and lands on the new file.
+                        from ..store import get_engine
 
-            now = time.monotonic()
-            if dirty and (now - last_maintenance) >= self.maintenance_interval:
-                try:
-                    self.maintain()
-                except Exception as e:  # noqa: BLE001 — upkeep must not kill the loop
-                    logger.warning("watch: maintenance error: %s", e)
-                last_maintenance = now
-                dirty = False
+                        get_engine().dispose()
+                        logger.info("watch: reconnected to the reindexed index")
+                        reconnect = False
+                    result = self.poll_once()
+                    if result.events_created > 0:
+                        dirty = True
+                        self._embed_more = True  # new events to embed
 
-            # Vector cohost on the slow cadence: embed the freshest missing vectors.
-            # Bounded per pass, so if the cap was hit there's likely more — keep the
-            # flag set to drain again next cycle; clear it once caught up so we idle.
-            if (self.embed_enabled and self._embed_more
-                    and (now - last_embed) >= self.embed_interval):
-                try:
-                    n = self.embed_pending()
-                    self._embed_more = n >= self.embed_batch
-                except Exception as e:  # noqa: BLE001 — embedding must not kill the loop
-                    logger.warning("watch: embed error: %s", e)
-                    self._embed_more = False  # don't hot-loop a persistent failure
-                last_embed = now
+                    now = time.monotonic()
+                    if dirty and (now - last_maintenance) >= self.maintenance_interval:
+                        try:
+                            self.maintain()
+                        except Exception as e:  # noqa: BLE001 — upkeep must not kill the loop
+                            logger.warning("watch: maintenance error: %s", e)
+                        last_maintenance = now
+                        dirty = False
+
+                    # Vector cohost on the slow cadence: embed the freshest missing
+                    # vectors. Bounded per pass, so if the cap was hit there's likely
+                    # more — keep the flag set to drain again next cycle; clear it
+                    # once caught up so we idle.
+                    if (self.embed_enabled and self._embed_more
+                            and (now - last_embed) >= self.embed_interval):
+                        try:
+                            n = self.embed_pending()
+                            self._embed_more = n >= self.embed_batch
+                        except Exception as e:  # noqa: BLE001 — embedding must not kill the loop
+                            logger.warning("watch: embed error: %s", e)
+                            self._embed_more = False  # don't hot-loop a persistent failure
+                        last_embed = now
 
             # Sleep in short slices so stop() is responsive.
             slept = 0.0

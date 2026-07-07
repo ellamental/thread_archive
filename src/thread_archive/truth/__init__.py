@@ -15,6 +15,7 @@ from .jsonl_log import (
     reindex,
     reset_handles,
     scan_truth_counts,
+    try_shared_ingest_lock,
     write_events,
 )
 
@@ -29,4 +30,5 @@ __all__ = [
     "log_dir",
     "reset_handles",
     "scan_truth_counts",
+    "try_shared_ingest_lock",
 ]

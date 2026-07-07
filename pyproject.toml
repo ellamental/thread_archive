@@ -32,7 +32,7 @@ dependencies = [
 # (pulls torch); the base install is lexical-only. einops is needed by nomic's
 # trust_remote_code model.
 embeddings = ["sentence-transformers>=3.0", "einops>=0.7"]
-dev = ["pytest>=8.0"]
+dev = ["pytest>=8.0", "ruff>=0.6"]
 
 [project.scripts]
 archive = "thread_archive.cli:main"
@@ -53,3 +53,12 @@ artifacts = ["src/thread_archive/web/static/**/*"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-q"
+
+# The family lint bar (same shape as the thread monorepo products): pycodestyle +
+# pyflakes + import sort, long lines tolerated. Gated by the ruff row in ci.toml.
+[tool.ruff]
+line-length = 120
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "W"]
+ignore = ["E501"]

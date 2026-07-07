@@ -24,25 +24,35 @@ always agree; crossing the threshold triggers a one-time auto-rebalance (the onl
 time files move). Small archives stay flat with zero ceremony.
 
 Writes preserve the **JSONL ⊇ SQLite** invariant: a row is staged on the session
-and flushed to its thread file *before* the COMMIT it belongs to, so the projection
-can never hold a row the truth lacks. :func:`reindex` is the recovery primitive —
-it rebuilds the SQLite store from the JSONL directory; a corrupted or deleted index
-is never a data-loss event. :func:`rebuild_truth_from_store` is the inverse: it
-re-emits the whole per-thread truth from the current store (used once to migrate an
-older monolithic ``events.jsonl`` into per-thread files).
+and flushed **and fsynced** to its thread file *before* the COMMIT it belongs to, so
+the projection can never hold a row the truth lacks — the truth append meets the
+same durability bar as SQLite's own WAL commit (plain ``fsync``, the same call
+SQLite issues; neither uses ``F_FULLFSYNC``). :func:`reindex` is the recovery
+primitive — it rebuilds the SQLite store from the JSONL directory as a
+**build-and-swap**: the new index is built in a temp file and atomically renamed
+over ``index.db``, so a killed reindex leaves the old index fully intact; a
+corrupted or deleted index is never a data-loss event.
+:func:`rebuild_truth_from_store` is the inverse: it re-emits the whole per-thread
+truth from the current store (used once to migrate an older monolithic
+``events.jsonl`` into per-thread files).
 """
 
 from __future__ import annotations
 
+import fcntl
 import json
 import logging
 import os
+import shutil
+import sqlite3
 from collections import OrderedDict
+from collections.abc import Generator
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import TextIO
 
-from sqlalchemy import DateTime, delete, event, insert, select
+from sqlalchemy import DateTime, event, insert, select
 from sqlalchemy.orm import Session
 
 from ..store import (
@@ -55,6 +65,7 @@ from ..store import (
     get_engine,
     get_session,
     init_db,
+    use_engine,
 )
 
 logger = logging.getLogger(__name__)
@@ -113,7 +124,10 @@ def _read_manifest(d: Path) -> dict:
 def _write_manifest(d: Path, m: dict) -> None:
     d.mkdir(parents=True, exist_ok=True)
     tmp = _manifest_path(d).with_suffix(".json.tmp")
-    tmp.write_text(json.dumps(m, indent=2), encoding="utf-8")
+    with open(tmp, "w", encoding="utf-8") as fh:
+        fh.write(json.dumps(m, indent=2))
+        fh.flush()
+        os.fsync(fh.fileno())  # durable before the rename makes it visible
     os.replace(tmp, _manifest_path(d))
 
 
@@ -211,6 +225,18 @@ def _append_line(path: Path, rec: dict) -> None:
     fh.flush()
 
 
+def _fsync_handle(path: Path) -> None:
+    """fsync a cached append handle so its flushed lines are durable on disk.
+
+    Callers batch: write every line of a logical unit via :func:`_append_line`
+    (flush-only), then fsync each touched file once — one fsync per file per
+    commit, not per line, keeps bulk imports fast while closing the power-loss
+    window between the OS page cache and the platter."""
+    fh = _handles.get(str(path))
+    if fh is not None and not fh.closed:
+        os.fsync(fh.fileno())
+
+
 def reset_handles() -> None:
     """Close cached append handles (tests / shutdown)."""
     for fh in _handles.values():
@@ -282,16 +308,22 @@ def _drain_before_commit(session: Session) -> None:
     # Flush staged truth rows to their thread files *before* the COMMIT, so a row can
     # never land in SQLite without already being in the truth (a raise here aborts
     # the commit). pop() so a second commit on the same session doesn't re-append.
+    # Each touched file is fsynced once after its lines are written: the COMMIT that
+    # follows is itself fsynced by SQLite, so without this the projection could
+    # survive a power loss that the truth doesn't — the one direction the invariant
+    # forbids.
     pending = session.info.pop(_PENDING, None)
     if not pending:
         return
     d = log_dir()
     depth = _shard_depth(d)
+    touched: set[Path] = set()
     for kind, thread_id, row in pending:
-        if kind == "kg_event":
-            _append_line(d / KG_EVENTS_FILE, {"type": kind, **row})
-        else:
-            _append_line(_thread_file(d, thread_id, depth), {"type": kind, **row})
+        path = d / KG_EVENTS_FILE if kind == "kg_event" else _thread_file(d, thread_id, depth)
+        _append_line(path, {"type": kind, **row})
+        touched.add(path)
+    for path in touched:
+        _fsync_handle(path)
 
 
 @event.listens_for(Session, "after_rollback")
@@ -311,6 +343,8 @@ def _write_snapshot(d: Path, name: str, model: type) -> int:
             fh.write(json.dumps(_row_dict(obj), default=_json_default, ensure_ascii=False))
             fh.write("\n")
             n += 1
+        fh.flush()
+        os.fsync(fh.fileno())  # durable before the rename makes it visible
     os.replace(tmp, path)
     return n
 
@@ -324,11 +358,16 @@ def _checkpoint_changed_threads(d: Path, depth: int, last_iso: str | None) -> in
         return 0
     last_dt = datetime.fromisoformat(last_iso)
     n = 0
+    touched: set[Path] = set()
     with get_session() as s:
         changed = s.execute(select(Thread).where(Thread.updated_at > last_dt)).scalars().all()
         for t in changed:
-            _append_line(_thread_file(d, t.id, depth), {"type": "thread", **_row_dict(t)})
+            path = _thread_file(d, t.id, depth)
+            _append_line(path, {"type": "thread", **_row_dict(t)})
+            touched.add(path)
             n += 1
+    for path in touched:
+        _fsync_handle(path)
     return n
 
 
@@ -418,17 +457,33 @@ def scan_truth_counts() -> dict:
 
 
 # ── reindex (rebuild the SQLite projection from the JSONL truth) ─────────────
-def _iter_jsonl(path: Path):
+def _iter_jsonl(path: Path, *, errors: list[tuple[str, int]] | None = None):
+    """Yield parsed records from a JSONL file, skipping unparseable lines.
+
+    A torn line (a crash mid-append) must not kill :func:`reindex` — the recovery
+    primitive has to recover everything parseable, with the same tolerance
+    ``archive verify`` (:func:`scan_truth_counts`) already has. Every skipped line
+    is logged, and recorded on ``errors`` as ``(path, lineno)`` when given, so
+    reindex can report the count instead of silently dropping."""
     if not path.exists():
         return
-    with open(path, encoding="utf-8") as fh:
-        for line in fh:
+    with open(path, encoding="utf-8", errors="replace") as fh:
+        for lineno, line in enumerate(fh, 1):
             line = line.strip()
-            if line:
+            if not line:
+                continue
+            try:
                 yield json.loads(line)
+            except ValueError:
+                logger.warning("truth: skipping unparseable line %s:%d", path, lineno)
+                if errors is not None:
+                    errors.append((str(path), lineno))
 
 
-def _load_table(model: type, path: Path, engine, batch: int = 5000) -> int:
+def _load_table(
+    model: type, path: Path, engine, batch: int = 5000,
+    *, errors: list[tuple[str, int]] | None = None,
+) -> int:
     """Bulk-load a snapshot file (one row per line) into its table."""
     table = model.__table__  # type: ignore[attr-defined]
     total = 0
@@ -443,7 +498,7 @@ def _load_table(model: type, path: Path, engine, batch: int = 5000) -> int:
         total += len(buf)
         buf.clear()
 
-    for row in _iter_jsonl(path):
+    for row in _iter_jsonl(path, errors=errors):
         buf.append(_coerce(model, row))
         if len(buf) >= batch:
             _flush()
@@ -451,7 +506,10 @@ def _load_table(model: type, path: Path, engine, batch: int = 5000) -> int:
     return total
 
 
-def _load_thread_files(d: Path, engine, batch: int = 5000) -> tuple[int, int]:
+def _load_thread_files(
+    d: Path, engine, batch: int = 5000,
+    *, errors: list[tuple[str, int]] | None = None,
+) -> tuple[int, int]:
     """Load every ``threads/**/<id>.jsonl`` into the threads + events tables.
 
     Per file: the last ``type:thread`` record is the metadata (latest wins), every
@@ -481,7 +539,7 @@ def _load_thread_files(d: Path, engine, batch: int = 5000) -> tuple[int, int]:
         for path in sorted(threads_dir.rglob("*.jsonl")):
             last_thread: dict | None = None
             events: list[dict] = []
-            for rec in _iter_jsonl(path):
+            for rec in _iter_jsonl(path, errors=errors):
                 kind = rec.pop("type", "event")
                 if kind == "thread":
                     last_thread = rec
@@ -503,7 +561,9 @@ def _load_thread_files(d: Path, engine, batch: int = 5000) -> tuple[int, int]:
     return nt, ne
 
 
-def _replay_kg_events(d: Path, engine) -> int:
+def _replay_kg_events(
+    d: Path, engine, *, errors: list[tuple[str, int]] | None = None,
+) -> int:
     """Fold the curatorial event log (``kg_events.jsonl``) onto the knowledge projection.
 
     Loads the log into the ``kg_events`` table and replays each event in ``id`` order
@@ -517,7 +577,7 @@ def _replay_kg_events(d: Path, engine) -> int:
     no-op here and the rebuild can't re-write the log it is reading."""
     from ..knowledge.materialize import apply_event
 
-    rows = list(_iter_jsonl(d / KG_EVENTS_FILE))
+    rows = list(_iter_jsonl(d / KG_EVENTS_FILE, errors=errors))
     for r in rows:
         r.pop("type", None)
     rows.sort(key=lambda r: r.get("id") or 0)
@@ -533,60 +593,171 @@ def _replay_kg_events(d: Path, engine) -> int:
     return len(rows)
 
 
-def reindex(*, vectors: bool = False) -> dict:
-    """Rebuild the SQLite store from the JSONL truth directory.
+# ── reindex quiesce lock (shared with the watcher's ingest pass) ─────────────
+# flock on <home>/.reindex.lock: the watcher holds it SHARED for the duration of
+# each ingest pass; reindex holds it EXCLUSIVE across build+swap. So a reindex
+# waits out an in-flight pass, and no event can land in the truth mid-rebuild and
+# silently miss the new index. flock auto-releases on process death — a killed
+# holder can never wedge the other side.
+REINDEX_LOCK_FILE = ".reindex.lock"
 
-    The recovery primitive: ensure the schema, clear the projected tables, load every
-    per-thread file (threads + events) and the cross-thread snapshots, replay the
-    curatorial event log onto the knowledge projection, then rebuild the FTS surface
-    (and, optionally, restore/refresh the vector cache). Bulk loading targets the active
-    global engine through a **FK-OFF Core** loader so dependency-agnostic inserts need no
-    ordering and the conversation truth-log listeners never fire; the kg-event replay
-    runs through a Session on that same engine but stages nothing, so it likewise can't
-    re-write the truth it reads. Loads are **INSERT OR REPLACE** (last-wins): a duplicate
-    primary key in the truth collapses to its newest record rather than aborting the
-    rebuild — combined with AUTOINCREMENT ids (which never recycle a high-water id), a
-    reindex run against a live watcher can neither collide nor abort. The JSONL is
-    authoritative and replayed as-is — including any dangling reference; integrity was
-    the writer's job."""
+
+def _reindex_lock_path() -> Path:
+    from ..config import resolve_paths
+
+    return resolve_paths().home / REINDEX_LOCK_FILE
+
+
+@contextmanager
+def try_shared_ingest_lock() -> Generator[bool, None, None]:
+    """Hold the reindex lock *shared* for one ingest pass, non-blocking.
+
+    Yields True holding the lock, or False (not holding) when a reindex holds it
+    exclusive — the caller skips the pass and ingest resumes on the next one, after
+    the swap. Sources replay from their own import state, so a skipped pass loses
+    nothing."""
+    path = _reindex_lock_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd = os.open(path, os.O_RDWR | os.O_CREAT, 0o644)
+    try:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_SH | fcntl.LOCK_NB)
+        except OSError:
+            yield False
+            return
+        yield True
+    finally:
+        os.close(fd)  # closing the fd releases the flock
+
+
+@contextmanager
+def _hold_reindex_lock() -> Generator[None, None, None]:
+    """Hold the reindex lock *exclusive* for build+swap (blocks until any
+    in-flight ingest pass — a shared holder — finishes, bounded by one pass)."""
+    path = _reindex_lock_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd = os.open(path, os.O_RDWR | os.O_CREAT, 0o644)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        yield
+    finally:
+        os.close(fd)
+
+
+def _fold_wal(path: Path) -> None:
+    """Fold any leftover ``-wal`` into the main file and drop the sidecars, so a
+    rename moves one complete, self-contained database."""
+    if Path(f"{path}-wal").exists():
+        conn = sqlite3.connect(path)
+        try:
+            conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        finally:
+            conn.close()
+    for suffix in ("-wal", "-shm"):
+        Path(f"{path}{suffix}").unlink(missing_ok=True)
+
+
+def _unlink_build(tmp_path: Path) -> None:
+    for p in (tmp_path, Path(f"{tmp_path}-wal"), Path(f"{tmp_path}-shm")):
+        p.unlink(missing_ok=True)
+
+
+def reindex(*, vectors: bool = False) -> dict:
+    """Rebuild the SQLite store from the JSONL truth directory — build-and-swap.
+
+    The recovery primitive: build a complete new index (schema, per-thread files,
+    cross-thread snapshots, kg-event replay, FTS, optionally vectors) in
+    ``index.db.rebuild`` next to the live file, then ``os.replace`` it over
+    ``index.db``. Atomic against a crash: a reindex killed at any point leaves the
+    old index fully intact and the build file is discarded; only the rename — atomic
+    on the same filesystem — publishes the new one. Ingest is quiesced for the
+    duration via the reindex flock (the watcher skips passes while it's held), so no
+    event lands in the truth mid-build and silently misses the new index. In-process
+    readers reconnect on the next ``get_engine()`` call (the live engine's pools are
+    disposed before the swap); *cross-process* readers keep serving the old inode
+    until they reconnect or restart — the accepted stale-read window (see
+    docs/plans/reindex-atomic-swap.md for the follow-up).
+
+    Bulk loading targets the build file through a **FK-OFF Core** loader so
+    dependency-agnostic inserts need no ordering and the conversation truth-log
+    listeners never fire; the kg-event replay runs through a Session on that same
+    engine but stages nothing, so it likewise can't re-write the truth it reads.
+    Loads are **INSERT OR REPLACE** (last-wins) and unparseable truth lines are
+    skipped and counted (``parse_errors``) rather than aborting — a torn last line
+    from a crash mid-append can't block recovery. The JSONL is authoritative and
+    replayed as-is — including any dangling reference; integrity was the writer's
+    job."""
     d = log_dir()
 
     engine = get_engine()
-    init_db(engine)
+    db_path = engine.url.database
+    if not db_path or db_path == ":memory:":
+        raise RuntimeError("reindex needs a file-backed index (build-and-swap)")
+    index_path = Path(db_path)
 
-    loader = build_engine(str(engine.url), enforce_fk=False)
+    # Pre-flight: the build needs room for a second copy of the index.
+    if index_path.exists():
+        free = shutil.disk_usage(index_path.parent).free
+        need = int(index_path.stat().st_size * 1.2)
+        if free < need:
+            raise RuntimeError(
+                f"reindex: {free / 1e9:.1f} GB free < {need / 1e9:.1f} GB needed "
+                "for the temp build — free disk space first"
+            )
+
+    tmp_path = index_path.with_name(index_path.name + ".rebuild")
     counts: dict = {}
-    try:
-        with loader.begin() as conn:
-            for model in (KgEvent, TopicMessage, ThreadLink, Event, Thread):  # children before parents
-                conn.execute(delete(model))
-        counts["threads"], counts["events"] = _load_thread_files(d, loader)
-        for name, model in _CROSS_THREAD.items():
-            counts[name] = _load_table(model, d / f"{name}.jsonl", loader)
-        counts["kg_events"] = _replay_kg_events(d, loader)
-    finally:
+    parse_errors: list[tuple[str, int]] = []
+
+    with _hold_reindex_lock():
+        _unlink_build(tmp_path)  # a dead prior build is stale — start clean
+        loader = build_engine(f"sqlite:///{tmp_path}", enforce_fk=False)
+        try:
+            init_db(loader)
+            counts["threads"], counts["events"] = _load_thread_files(d, loader, errors=parse_errors)
+            for name, model in _CROSS_THREAD.items():
+                counts[name] = _load_table(model, d / f"{name}.jsonl", loader, errors=parse_errors)
+            counts["kg_events"] = _replay_kg_events(d, loader, errors=parse_errors)
+
+            # FTS + vectors resolve their engine via get_engine(); point them at
+            # the build for the block.
+            with use_engine(loader):
+                from ..retrieval.fts import rebuild_fts
+
+                counts["fts"] = rebuild_fts()
+                if vectors:
+                    # Restore the durable vector cache (the hours-long embed runs
+                    # once, ever), embed only genuinely-new events, then refresh the
+                    # sidecar. Degrades to 0 without the [embeddings] extra — the
+                    # store stays lexical-only.
+                    from ..retrieval import vectors as _vec
+
+                    counts["vectors_restored"] = _vec.load_vectors_sidecar(d)
+                    counts["vectors_embedded"] = _vec.index_events_local(rebuild=False)
+                    counts["vectors_cached"] = _vec.save_vectors_sidecar(d)
+        except BaseException:
+            loader.dispose()
+            _unlink_build(tmp_path)  # the old index was never touched
+            raise
         loader.dispose()
+        _fold_wal(tmp_path)
 
-    # Rebuild the FTS surface (events_fts shadow + the FTS5 event_search table).
-    from ..retrieval.fts import rebuild_fts
+        # Publish: dispose the live engine's pools first (its connections point at
+        # the file being replaced), atomically rename the build over index.db, then
+        # drop the old sidecars — a stale -wal must never be replayed into the new
+        # database. The next get_engine() connection opens the new file.
+        engine.dispose()
+        os.replace(tmp_path, index_path)
+        for suffix in ("-wal", "-shm"):
+            Path(f"{index_path}{suffix}").unlink(missing_ok=True)
 
-    counts["fts"] = rebuild_fts()
+    counts["parse_errors"] = len(parse_errors)
 
     # The topic graph caches a projection per engine; drop it so the next read
     # rebuilds over the freshly-loaded thread_links.
     from ..knowledge import reset_cache as _reset_kg
 
     _reset_kg()
-
-    if vectors:
-        # Restore the durable vector cache (the hours-long embed runs once, ever),
-        # embed only genuinely-new events, then refresh the sidecar. Degrades to 0
-        # without the [embeddings] extra — the store stays lexical-only.
-        from ..retrieval import vectors as _vec
-
-        counts["vectors_restored"] = _vec.load_vectors_sidecar(d)
-        counts["vectors_embedded"] = _vec.index_events_local(rebuild=False)
-        counts["vectors_cached"] = _vec.save_vectors_sidecar(d)
 
     logger.info("jsonl_log reindex: %s", counts)
     return counts
@@ -610,6 +781,8 @@ def emit_thread_file(d: Path, thread_id: int, depth: int, thread_record, event_r
             fh.write(json.dumps({"type": "event", **ev}, default=_json_default, ensure_ascii=False))
             fh.write("\n")
             n_ev += 1
+        fh.flush()
+        os.fsync(fh.fileno())  # durable before the rename makes it visible
     os.replace(tmp, path)
     return n_ev
 

@@ -20,7 +20,6 @@ from sqlalchemy import func, select
 import thread_archive as ta
 from thread_archive.knowledge import (
     add_topic_evidence,
-    archive_topic,
     create_topic,
     link_threads,
     merge_topics,

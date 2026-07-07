@@ -9,8 +9,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from thread_archive.retrieval import _rrf_merge
-from thread_archive.retrieval import vectors
+from thread_archive.retrieval import _rrf_merge, vectors
 from thread_archive.store import init_db
 
 

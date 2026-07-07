@@ -227,3 +227,99 @@ def test_reindex_collapses_duplicate_pk_last_wins(archive_home) -> None:
         e = s.get(Event, 777)
     assert e is not None, "duplicate-id event vanished"
     assert e.payload["text"] == "second", "duplicate PK must collapse to the newest record"
+
+def _author_thread_with_events(name: str, texts: list[str]) -> int:
+    """Author a thread + events through the truth seam; returns the thread id."""
+    with get_session() as s:
+        t = Thread(name=name)
+        s.add(t)
+        s.flush()
+        jsonl_log.record_thread(s, t)
+        s.commit()
+        tid = t.id
+    with get_session() as s:
+        jsonl_log.write_events(
+            s,
+            [
+                Event(
+                    thread_id=tid, stream_id="x", event_type="user_message_sent",
+                    payload={"text": text}, occurred_at=_now(), dedup_key=f"{name}-{i}",
+                )
+                for i, text in enumerate(texts)
+            ],
+        )
+        s.commit()
+    return tid
+
+
+def test_reindex_tolerates_torn_truth_line(archive_home) -> None:
+    """A torn/truncated line in the truth (a crash mid-append) must not kill reindex —
+    the recovery primitive recovers everything parseable and reports the skip count,
+    the same tolerance `archive verify` already has."""
+    init_db()
+    tid = _author_thread_with_events("torn", ["hi", "yo"])
+
+    tf = _thread_file(archive_home, tid)
+    assert tf is not None
+    jsonl_log.reset_handles()  # close the seam's append handle before we append by hand
+
+    # A torn JSON line (truncated mid-record) and a garbage line, as a crash leaves them.
+    with open(tf, "a", encoding="utf-8") as fh:
+        fh.write('{"type": "event", "id": 999, "thread_id": ' + str(tid) + ', "payl\n')
+        fh.write("not json at all\n")
+
+    assert jsonl_log.scan_truth_counts()["parse_errors"] == 2
+
+    get_engine().dispose()
+    jsonl_log.reset_handles()
+    _base.close_engine()
+    _delete_index(archive_home)
+
+    counts = jsonl_log.reindex()  # must not raise on the torn lines
+    assert counts["parse_errors"] == 2
+    assert counts["events"] == 2
+
+    with get_session() as s:
+        texts = [
+            e.payload["text"]
+            for e in s.execute(select(Event).order_by(Event.id)).scalars()
+        ]
+    assert texts == ["hi", "yo"], "the parseable events must all be recovered"
+
+
+def test_failed_reindex_leaves_old_index_intact(archive_home, monkeypatch) -> None:
+    """Build-and-swap atomicity: a reindex that dies at any point must leave the old
+    index answering exactly as before, with no build leftovers on disk."""
+    init_db()
+    _author_thread_with_events("atomic", ["keep me"])
+
+    def _boom(*args, **kwargs):
+        raise RuntimeError("killed mid-build")
+
+    monkeypatch.setattr(jsonl_log, "_load_thread_files", _boom)
+    try:
+        jsonl_log.reindex()
+    except RuntimeError as e:
+        assert "killed mid-build" in str(e)
+    else:  # pragma: no cover
+        raise AssertionError("reindex should have propagated the build failure")
+
+    # The old index still answers, untouched.
+    with get_session() as s:
+        texts = [e.payload["text"] for e in s.execute(select(Event)).scalars()]
+    assert texts == ["keep me"]
+
+    # No .rebuild leftovers (main, -wal, or -shm).
+    leftovers = list(archive_home.glob("index.db.rebuild*"))
+    assert leftovers == [], f"build leftovers survived a failed reindex: {leftovers}"
+
+
+def test_ingest_lock_shared_vs_exclusive(archive_home) -> None:
+    """The watcher's shared ingest lock must yield False (skip the pass) while a
+    reindex holds the lock exclusive, and True once it's released. flock treats
+    separate fds as independent holders, so both sides are testable in-process."""
+    with jsonl_log._hold_reindex_lock():
+        with jsonl_log.try_shared_ingest_lock() as acquired:
+            assert acquired is False, "ingest must skip while reindex holds the lock"
+    with jsonl_log.try_shared_ingest_lock() as acquired:
+        assert acquired is True, "ingest must resume once the reindex lock is released"

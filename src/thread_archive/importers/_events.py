@@ -19,6 +19,7 @@ from typing import Optional
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
+
 from thread_import import DefaultEventBuilder
 
 from ..store import Event

@@ -3,14 +3,34 @@
 # this is the payoff — its runs land in the same ~/.thread/ci store and the same
 # ops console as thread's. {repo} = this repo root, {home} = the user's home.
 #
-# Gates the documented quality bar (README → "confirm green"): the pytest suite,
-# run from its own venv. (ruff/pyright aren't in this repo's dev deps, so they're
-# not gated here — add [[suite]] rows if they join the dev group.)
+# Gates the documented quality bar (README → "confirm green"): ruff + the pytest
+# suite from the repo's own venv, and a typecheck of the frontend. Fast gates
+# first so failures surface early, matching the monorepo ci.toml's ordering.
 
 [ci]
 nice = 10
 default_timeout = 900
-path_prepend = ["{repo}/.venv/bin"]
+# npx (frontend-typecheck) resolves off the fnm default-alias dir — a stable
+# symlink, same reasoning as the monorepo ci.toml's path_prepend.
+path_prepend = ["{repo}/.venv/bin", "{home}/.local/share/fnm/aliases/default/bin"]
+
+# The family lint bar (config in pyproject [tool.ruff]; ruff joined the dev group
+# 2026-07-07). Memory-of-record code shouldn't be the least statically checked in
+# the family.
+[[suite]]
+name = "ruff"
+argv = ["{repo}/.venv/bin/ruff", "check", "."]
+
+# Frontend type gate. Deliberately `tsc --noEmit`, NOT `npm run build`: vite
+# builds into the COMMITTED src/thread_archive/web/static (the SPA ships
+# pre-built), so a CI build would rewrite tracked hash-named assets on every
+# sweep. Types are the drift that bites silently; the build itself is exercised
+# by `archive web` development. npx is which-gated, so a host without node
+# records error, never a silent green.
+[[suite]]
+name = "frontend-typecheck"
+argv = ["npx", "tsc", "--noEmit"]
+cwd = "frontend"
 
 [[suite]]
 name = "pytest"

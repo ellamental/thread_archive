@@ -179,7 +179,8 @@ def test_redropping_same_content_imports_nothing_but_still_clears(archive_home) 
     _claude_batch_dir(dumps, "export-a")
 
     w = ExportDropWatcher(dumps_dir=dumps)
-    w.poll(); w.poll()
+    w.poll()
+    w.poll()
     assert _claude_count() == 1
 
     again = _claude_batch_dir(dumps, "export-b")  # same conv uuid, different dir name

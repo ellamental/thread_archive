@@ -32,7 +32,8 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
-from sqlalchemy import delete, text as sa_text
+from sqlalchemy import delete
+from sqlalchemy import text as sa_text
 
 from thread_archive.api import open_archive
 from thread_archive.retrieval.fts import index_events

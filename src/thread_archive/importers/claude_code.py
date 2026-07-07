@@ -23,13 +23,16 @@ from pathlib import Path
 from typing import Any, Optional
 
 from sqlalchemy import delete
+
 from thread_import import DefaultEventBuilder
 from thread_import.parsers.claude_code import ClaudeCodeParser
 
 from ..store import Thread, get_session
+from ._continuation import resolve_continuation_thread
 from ._events import import_lines
 from ._read import read_session_lines
 from ._result import IncrementalImportResult
+from ._sidecar import import_sidecar_lines, read_sidecar_lines
 from ._state import (
     adopt_if_unwatermarked,
     create_thread,
@@ -41,8 +44,6 @@ from ._state import (
     update_thread_title,
     upsert_import_state,
 )
-from ._continuation import resolve_continuation_thread
-from ._sidecar import import_sidecar_lines, read_sidecar_lines
 from ._titles import extract_description, extract_session_title, extract_title
 
 logger = logging.getLogger(__name__)

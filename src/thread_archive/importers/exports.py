@@ -298,8 +298,9 @@ def _import_one(
             )
             n, _ = assemble_events(s, thread_id, messages, builder)
             if n == 0:
-                from ..store import Thread
                 from sqlalchemy import delete
+
+                from ..store import Thread
                 s.execute(delete(Thread).where(Thread.id == thread_id))
                 result.skipped += 1
             else:
