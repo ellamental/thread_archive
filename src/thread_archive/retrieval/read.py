@@ -36,6 +36,11 @@ _SKIP_TYPES = frozenset({
     "api_request_completed",  # its content is already in text_complete/thinking_complete
     "stream_completed",
     "tool_loaded",
+    # Pure session bookkeeping the source parser marks visually-hidden — not content.
+    # Rendering them (as "QUEUE_OPERATION"/"FILE_SNAPSHOT" boxes) is just noise.
+    "queue_operation",
+    "file_snapshot",
+    "progress",
 })
 
 
@@ -175,22 +180,23 @@ def _assistant_block(et: str, p: dict) -> Optional[dict]:
 
 
 def _slot_queued_events(events: list[Event]) -> list[Event]:
-    """Relocate steering events into their chronological slot.
+    """Relocate backfilled events into their chronological slot.
 
-    A steering message (typed mid-turn, queued, consumed as an attachment
-    injection — ``payload.queued``) that was *backfilled* after its thread was
-    first imported carries a tail-end ``Event.id``, so the id-ordered walk would
-    render it at the end of the thread instead of where it was said. Move each
-    one to sit after the last other event whose ``occurred_at`` is at or before
-    its own (max-index semantics: one deep event with a garbage inferred
-    timestamp can't drag a steering message to the top). Live-captured steering
-    arrives in file order, so at most it shifts within its own turn; everything
-    else is untouched — this deliberately does NOT sort the stream, because
-    bookkeeping events (``file_snapshot`` etc.) carry inferred timestamps that
+    Two kinds of event can arrive with a tail-end ``Event.id`` that the id-ordered
+    walk would render at the end of the thread instead of where it belongs: a
+    steering message (typed mid-turn, queued, consumed as an attachment injection —
+    ``payload.queued``), and a ``model_change`` marker added by re-importing an older
+    thread once the ``/model`` switch capture existed. Move each to sit after the last
+    other event whose ``occurred_at`` is at or before its own (max-index semantics: one
+    deep event with a garbage inferred timestamp can't drag it to the top). Freshly
+    captured events arrive in file order, so at most this shifts one within its own
+    turn; everything else is untouched — this deliberately does NOT sort the stream,
+    because bookkeeping events (``file_snapshot`` etc.) carry inferred timestamps that
     are wrong by days."""
     queued = [
         ev for ev in events
-        if ev.event_type in _USER_TYPES and _payload(ev).get("queued")
+        if (ev.event_type in _USER_TYPES and _payload(ev).get("queued"))
+        or ev.event_type == "model_change"
     ]
     if not queued:
         return events
@@ -714,7 +720,24 @@ def _structured_event(
         return ("assistant", {"type": "tool_error", "error": str(p.get("error", ""))})
     if et == "context_summary":
         content = p.get("content", "")
-        return ("assistant", {"type": "context_summary", "text": content}) if content.strip() else None
+        if not content.strip():
+            return None
+        # Claude Code records a model_refusal_fallback (a message the active model's
+        # safeguards flagged, retried on a stronger model) as a context_summary. Surface
+        # it as a distinct, legible safeguard notice rather than a generic "context
+        # summary" — it explains an otherwise-mysterious mid-turn model switch.
+        low = content.lower()
+        if "safeguard" in low and "flag" in low:
+            return ("assistant", {"type": "safeguard_notice", "text": content})
+        return ("assistant", {"type": "context_summary", "text": content})
+    if et == "model_change":
+        # A manual `/model` switch — a standalone divider between turns (own role, so it
+        # renders bare, not inside a bubble). Genuine context, not gated behind tools.
+        to = p.get("to")
+        if not to:
+            return None
+        return ("model_switch", {"type": "model_switch", "kind": "user",
+                                 "from_model": None, "to_model": to})
     if et == "message":
         # A preserved non-standard-role turn — shown under its own role (genuine
         # content, not machinery, so not gated behind include_tools).
@@ -730,12 +753,25 @@ def _structured_event(
             "text": p.get("content", ""),
         })
     if et == "content_block":
+        data = p.get("data")
+        # A model-fallback marker (Claude Code retried a safeguard-flagged message on a
+        # stronger model) carries the from/to models — surface it as a first-class model
+        # switch marker, not a cryptic "block · fallback". Genuine conversation context,
+        # so shown regardless of the tools toggle.
+        if p.get("block_type") == "fallback":
+            raw = data.get("raw") if isinstance(data, dict) else None
+            frm = to = None
+            if isinstance(raw, dict):
+                frm = (raw.get("from") or {}).get("model")
+                to = (raw.get("to") or {}).get("model")
+            return ("assistant", {"type": "model_switch", "kind": "fallback",
+                                  "from_model": frm, "to_model": to})
         if not include_tools:
             return None
         return ("assistant", {
             "type": "content_block",
             "block_type": p.get("block_type") or "block",
-            "text": _block_search_text(p.get("data")),
+            "text": _block_search_text(data),
         })
     # An unrecognized, non-lifecycle type: surface it in the machinery view rather
     # than silently dropping it (a new importer-preserved type stays visible).
@@ -756,13 +792,16 @@ def read_thread_structured(
     ``thread_id`` accepts an integer thread id or a provider session id, same as
     :func:`read_thread` (see :func:`resolve_thread_ref`). Returns
     ``{thread_id, title, source, messages}`` where ``messages`` is a list of
-    ``{role, blocks, meta}`` — contiguous same-role events grouped into one message,
-    each block a typed dict (:func:`_structured_event`), and ``meta`` per-message info
-    (timestamp, and for assistant messages the model(s)/token/stop-reason folded from
-    that turn's api_request events) for the viewer's per-message info drawer. Different
-    turns can be answered by different models, so this is per-message, not per-thread.
-    The string :func:`read_thread` stays the canonical transcript (CLI / MCP); this is
-    the render-friendly sibling."""
+    ``{role, blocks, meta}`` — same-role events grouped into a message, but an assistant
+    turn's tool loop is split at each api_request boundary so every model inference (one
+    tool-call/response iteration) is its own message. Each block is a typed dict
+    (:func:`_structured_event`); ``meta`` is per-message info (timestamp, and for
+    assistant messages the model/token/stop-reason folded from that inference's
+    api_request events) for the viewer's info drawer and per-message model tint. A model
+    switch mid-turn thus lands on a message boundary instead of hiding inside one merged
+    bubble. Providers without api_request events keep one message per turn (nothing to
+    split on). The string :func:`read_thread` stays the canonical transcript (CLI /
+    MCP); this is the render-friendly sibling."""
     with use_session(session) as s:
         resolved = resolve_thread_ref(s, thread_id)
         if resolved is None:
@@ -777,14 +816,30 @@ def read_thread_structured(
 
     messages: list[dict] = []
     current: Optional[dict] = None
-    # api_request events for a turn precede that turn's first visible block; buffer
-    # them until the assistant message they belong to exists (and drop the buffer at a
-    # role change so a fully-hidden turn's request can't leak onto the next message).
+    # api_request events for an inference precede its first visible block; buffer them
+    # until the assistant message they belong to exists (and drop the buffer at a role
+    # change so a fully-hidden inference's request can't leak onto the next message).
     pending: list[tuple[str, dict]] = []
+    # A single assistant turn is a tool loop of N model inferences, each opened by an
+    # api_request_started. We split the turn into one message per inference — a
+    # tool-call/response iteration — rather than collapse the whole turn into one bubble.
+    # That keeps every message's model exact, so a mid-turn model switch surfaces as a
+    # fresh (differently-tinted) message instead of hiding inside one merged turn.
+    split = False  # an api_request_started opened a new inference; next block starts a message
     for ev in events:
         if ev.event_type in _REQUEST_TYPES:
             p = _payload(ev)
-            if current is not None and current["role"] == "assistant":
+            # A new inference inside the current assistant turn → force the next visible
+            # block to start a fresh message, and buffer this request so its model/tokens
+            # fold into that new message rather than the inference that just ended.
+            if (
+                ev.event_type == "api_request_started"
+                and current is not None
+                and current["role"] == "assistant"
+                and current["blocks"]
+            ):
+                split = True
+            if not split and current is not None and current["role"] == "assistant":
                 _fold_request(current["meta"], ev.event_type, p)
             else:
                 pending.append((ev.event_type, p))
@@ -793,12 +848,13 @@ def read_thread_structured(
         if rendered is None:
             continue
         role, block = rendered
-        if current is None or current["role"] != role:
+        if split or current is None or current["role"] != role:
             current = {"role": role, "blocks": [], "meta": _new_meta(role, ev)}
             if role == "assistant":
                 for pet, pp in pending:
                     _fold_request(current["meta"], pet, pp)
             pending = []
+            split = False
             messages.append(current)
         current["blocks"].append(block)
 

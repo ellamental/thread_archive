@@ -98,6 +98,25 @@ def user_content_blocks_from_list(
                         content_text = cleaned_text if not content_text else f"{content_text}\n{cleaned_text}"
                         content_blocks.append(ProviderParser.create_text_block(cleaned_text, seq))
                         seq += 1
+            elif block_type:
+                # Preserve unknown user block types — "Archivist, Not Filter"
+                # (mirrors append_assistant_block). document / redacted_thinking /
+                # mcp_tool_use / future kinds keep their own block instead of
+                # vanishing from content_blocks (they'd otherwise survive only in
+                # the raw provider_data.line blob).
+                content_blocks.append(cast(ContentBlock, {
+                    "type": block_type,
+                    "raw": block,
+                    "seq": seq,
+                }))
+                seq += 1
+        elif isinstance(block, str):
+            # A bare string inside a user content list — keep it as text rather
+            # than skip it.
+            if block:
+                content_text = block if not content_text else f"{content_text}\n{block}"
+                content_blocks.append(ProviderParser.create_text_block(block, seq))
+                seq += 1
     return content_blocks, content_text, ide_context_blocks
 
 
@@ -249,14 +268,22 @@ def dedup_compaction_replays(
     with new UUIDs but identical content+timestamps. Keep the first
     occurrence of each (role, content_text, created_at) for user/assistant.
     """
-    seen: set[tuple[str, str, str | None]] = set()
+    seen: set[tuple[str, str, str | None, str | None]] = set()
     deduped: List[NormalizedMessage] = []
     for msg in messages:
         role = msg.get("role", "")
         if role in ("user", "assistant"):
             content_text = msg.get("content_text", "")
             created_at = msg.get("created_at")
-            key = (role, content_text, str(created_at) if created_at else None)
+            # A `/model` switch has empty content_text and shares its timestamp with the
+            # command line beside it — so include the switch target in the key, else the
+            # marker-bearing turn collides with an empty one and is wrongly deduped away.
+            model_change = next(
+                (b.get("to_model") for b in msg.get("content_blocks", [])
+                 if isinstance(b, dict) and b.get("type") == "model_change"),
+                None,
+            )
+            key = (role, content_text, str(created_at) if created_at else None, model_change)
             if key in seen:
                 continue
             seen.add(key)

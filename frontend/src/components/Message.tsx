@@ -61,6 +61,33 @@ function BlockView({ block }: { block: Block }) {
           <Markdown>{block.text}</Markdown>
         </details>
       )
+    case 'model_switch':
+      // A first-class model switch marker, styled as a centered divider like the
+      // harness's own transcript. A user /model switch shows just the target; a
+      // safeguard fallback shows from → to.
+      return (
+        <div className="model-switch">
+          <span className="model-switch-label">
+            {block.from_model && block.to_model ? (
+              <>
+                model switch · <b>{block.from_model}</b> → <b>{block.to_model}</b>
+              </>
+            ) : (
+              <>
+                switched to <b>{block.to_model}</b>
+              </>
+            )}
+          </span>
+        </div>
+      )
+    case 'safeguard_notice':
+      // The reason for the switch — shown open (not folded), since it explains the jump.
+      return (
+        <div className="safeguard">
+          <span className="safeguard-tag">⚠ safeguard</span>
+          <Markdown>{block.text}</Markdown>
+        </div>
+      )
     case 'ide_context':
       return (
         <details className="tool">
@@ -158,22 +185,39 @@ function MessageMeta({
 export function Message({
   message,
   hueForModel,
+  continued,
 }: {
   message: Msg
   hueForModel?: Record<string, number>
+  // This message continues the previous one's group (same role, same model) — one
+  // inference in an ongoing tool loop. Continuations drop the role label and merge
+  // into the panel above, so a same-model turn reads as one stream and only a model
+  // switch or role change starts a fresh, labelled bubble.
+  continued?: boolean
 }) {
   const [open, setOpen] = useState(false)
   const [raw, setRaw] = useState(false)
-  // Tint an assistant message to match the model that produced it (its turn's first
-  // model — near-always its only one). Other roles carry no model, so no accent.
+  // A manual /model switch is its own "message" but renders as a bare between-turns
+  // divider — no bubble, role label, or info drawer.
+  if (message.role === 'model_switch') {
+    return (
+      <div className="msg-divider">
+        {message.blocks.map((b, i) => (
+          <BlockView key={i} block={b} />
+        ))}
+      </div>
+    )
+  }
+  // Tint an assistant message to match the model that produced it (this inference's
+  // model — one per message now). Other roles carry no model, so no accent.
   const model = message.role === 'assistant' ? message.meta?.models?.[0] : undefined
   const hue = model ? (hueForModel?.[model] ?? modelHue(model)) : undefined
   return (
     <div
-      className={'msg ' + message.role + (hue != null ? ' has-model' : '')}
+      className={'msg ' + message.role + (hue != null ? ' has-model' : '') + (continued ? ' cont' : '')}
       style={hue != null ? hueStyle(hue) : undefined}
     >
-      <div className="role">{message.role}</div>
+      {!continued && <div className="role">{message.role}</div>}
       <RawContext.Provider value={raw}>
         {message.blocks.map((b, i) => (
           <BlockView key={i} block={b} />

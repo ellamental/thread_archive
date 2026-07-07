@@ -52,6 +52,25 @@ _SYSTEM_CONTEXT_PATTERN = re.compile(
 )
 
 
+# A manual model switch: Claude Code runs `/model X` and records the confirmation as
+# `<local-command-stdout>Set model to X</local-command-stdout>` on a user line whose
+# command tags are otherwise stripped to nothing (and the turn dropped). Capture the
+# target so the archive can show the same "Switched to X" marker the CLI does.
+_MODEL_SET_PATTERN = re.compile(
+    r'<local-command-stdout>\s*Set model to\s+(.+?)\s*</local-command-stdout>',
+    re.IGNORECASE | re.DOTALL,
+)
+
+
+def _extract_model_change(text: str) -> Optional[str]:
+    """Return the model a ``/model`` command switched to, if ``text`` is that command's
+    ``<local-command-stdout>Set model to X</local-command-stdout>`` confirmation; else None."""
+    if not text:
+        return None
+    m = _MODEL_SET_PATTERN.search(text)
+    return m.group(1).strip() if m else None
+
+
 def _extract_ide_context(text: str) -> Tuple[str, List[Dict[str, Any]]]:
     """Extract IDE context tags from message text.
 

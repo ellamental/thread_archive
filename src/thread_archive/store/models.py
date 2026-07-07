@@ -130,9 +130,10 @@ class Event(Base):
 
     ``id`` is the global monotonic sequence number. ``payload`` (JSON) holds
     event-type-specific content (text deltas, tool calls, message bodies, ...).
-    ``dedup_key`` is a deterministic, timestamp-free natural identity namespaced by
-    thread (see the importer's ``compute_dedup_key``); NULL when an event lacks a
-    stable identity.
+    ``dedup_key`` is a deterministic, timestamp-free natural identity (see the
+    importer's ``compute_dedup_key``); NULL when an event lacks a stable identity.
+    It is bare — dedup is thread-scoped by the importer's ``WHERE thread_id = ...``
+    clause, so the key carries no ``{thread_id}:`` prefix.
     """
 
     __tablename__ = "events"

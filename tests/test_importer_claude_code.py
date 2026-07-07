@@ -168,6 +168,42 @@ def test_ide_context_is_preserved_as_events(archive_home) -> None:
     assert mix_text == ["fix this"]
 
 
+def test_model_command_captured_as_event(archive_home) -> None:
+    """A manual ``/model`` switch is preserved as a ``model_change`` event. Claude Code
+    records it as two user lines — the command and a ``Set model to X`` stdout — whose
+    tags are otherwise stripped to nothing; the stdout line carries the switch, and
+    (crucially) it isn't deduped away against the same-timestamp command line."""
+    init_db()
+    cmd = {
+        "type": "user", "uuid": "u_cmd", "timestamp": "2026-01-01T10:00:10Z",
+        "sessionId": "s1",
+        "message": {"role": "user",
+                    "content": "<command-name>/model</command-name>\n"
+                               "            <command-args>claude-fable-5[1m]</command-args>"},
+    }
+    stdout = {
+        "type": "user", "uuid": "u_out", "timestamp": "2026-01-01T10:00:10Z",
+        "sessionId": "s1",
+        "message": {"role": "user",
+                    "content": "<local-command-stdout>Set model to claude-fable-5</local-command-stdout>"},
+    }
+    f = archive_home / "sess.jsonl"
+    _write_jsonl(f, [USER, ASSISTANT, cmd, stdout])
+
+    result = import_session_incremental(f, "proj:s1")
+
+    with get_session() as s:
+        changes = s.execute(
+            select(Event).where(
+                Event.thread_id == result.thread_id,
+                Event.event_type == "model_change",
+            )
+        ).scalars().all()
+    assert len(changes) == 1
+    payload = changes[0].payload
+    assert payload["to"] == "claude-fable-5" and payload["trigger"] == "user"
+
+
 def test_subagent_filed_as_hidden_system_thread(archive_home) -> None:
     """A ``agent-*`` subagent transcript files as a hidden ``thread_type='system'``
     thread with a 🤖 title and parent lineage stamped — kept out of the sidebar."""

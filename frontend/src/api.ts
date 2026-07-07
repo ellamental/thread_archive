@@ -42,6 +42,12 @@ export type Block =
   | { type: 'context_summary'; text: string }
   | { type: 'ide_context'; context_type: string; file_path?: string | null; text: string }
   | { type: 'content_block'; block_type: string; text: string }
+  // A model switch marker. kind 'user' = a manual /model switch (a standalone divider
+  // between turns, to_model only); kind 'fallback' = the active model's safeguards
+  // flagged the message and Claude Code retried on a stronger one (from→to, mid-turn).
+  // `safeguard_notice` is the human-readable reason paired with a fallback.
+  | { type: 'model_switch'; kind: 'user' | 'fallback'; from_model: string | null; to_model: string | null }
+  | { type: 'safeguard_notice'; text: string }
   | { type: 'unknown'; event_type: string; text: string }
 
 // Per-message metadata for the info drawer. Every message carries `ts`; assistant

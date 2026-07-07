@@ -78,6 +78,7 @@ from .base import (
 )
 from .claude_code_ide import (
     _extract_ide_context,
+    _extract_model_change,
     _parse_iso_timestamp,
     _timestamp_to_order,
 )
@@ -330,7 +331,10 @@ class ClaudeCodeParser(ProviderParser):
         if line_type == "progress":
             return self._parse_progress_message(line, session_id)
 
-        return None
+        # Any other (unrecognized or future) line kind is preserved verbatim
+        # rather than dropped — nothing vanishes without a trace, not even a line
+        # type Claude Code adds later.
+        return self._parse_unknown_line(line, line_type, session_id, project_path)
 
     @staticmethod
     def _dedup_compaction_replays(
@@ -371,6 +375,17 @@ class ClaudeCodeParser(ProviderParser):
             content_text = cleaned_content
             if cleaned_content:
                 content_blocks.append(self.create_text_block(cleaned_content, 0))
+            # A manual `/model` switch is otherwise stripped to nothing above (and the
+            # turn dropped). Preserve it as a model_change block so the archive can show
+            # the switch — the same marker Claude Code renders in its own transcript.
+            switched_to = _extract_model_change(content)
+            if switched_to:
+                content_blocks.append(cast(ContentBlock, {
+                    "type": "model_change",
+                    "to_model": switched_to,
+                    "trigger": "user",
+                    "seq": len(content_blocks),
+                }))
         elif isinstance(content, list):
             content_blocks, content_text, ide_context_blocks = (
                 self._user_content_blocks_from_list(content)
@@ -440,7 +455,11 @@ class ClaudeCodeParser(ProviderParser):
         """
         attachment = line.get("attachment") or {}
         if attachment.get("type") != "queued_command":
-            return None
+            # Every other attachment sub-kind (todo reminders, tool/agent/skill
+            # listing deltas, context injections) is still real content Claude
+            # Code fed the model — preserve it as a hidden system record rather
+            # than dropping it. "Archivist, Not Filter."
+            return self._preserve_attachment(line, attachment, session_id, project_path)
 
         prompt = attachment.get("prompt")
         content_blocks: List[ContentBlock] = []
@@ -496,6 +515,96 @@ class ClaudeCodeParser(ProviderParser):
                 "project_path": project_path or line.get("cwd"),
                 "git_branch": line.get("gitBranch"),
             },
+        }
+
+    def _preserve_attachment(
+        self,
+        line: Dict[str, Any],
+        attachment: Dict[str, Any],
+        session_id: Optional[str],
+        project_path: Optional[str],
+    ) -> NormalizedMessage:
+        """Preserve a non-``queued_command`` attachment as a hidden system record.
+
+        These are context injections with no direct user signal, but they are
+        still content the model was shown — keep a summary event (with the full
+        raw attachment in provider_data) instead of dropping the line."""
+        uuid = line.get("uuid", "")
+        parent_uuid = line.get("parentUuid")
+        timestamp = attachment.get("timestamp") or line.get("timestamp")
+        atype = attachment.get("type") or "attachment"
+        created_at = _parse_iso_timestamp(timestamp)
+        message_order = _timestamp_to_order(timestamp) if timestamp else 0
+        return {
+            "source_provider": self.PROVIDER_NAME,
+            "provider_message_id": uuid,
+            "provider_message_id_lower": uuid.lower() if uuid else None,
+            "provider_conversation_id": session_id or line.get("sessionId", ""),
+            "provider_parent_id": parent_uuid,
+            "provider_parent_id_lower": parent_uuid.lower() if parent_uuid else None,
+            "content_hash": self.hash_message(uuid, "system", attachment, timestamp),
+            "role": "system",
+            "content_text": f"[attachment: {atype}]",
+            "content_blocks": [cast(ContentBlock, {
+                "type": "attachment",
+                "attachment_type": atype,
+                "raw": attachment,
+                "seq": 0,
+            })],
+            "created_at": created_at,
+            "updated_at": None,
+            "message_order": message_order,
+            "is_active_path": not line.get("isSidechain", False),
+            "is_visually_hidden": True,
+            "provider_data": {
+                "line": line,
+                "attachment_type": atype,
+                "cwd": project_path or line.get("cwd"),
+            },
+            "conversation_title": None,
+            "conversation_metadata": {"project_path": project_path or line.get("cwd")},
+        }
+
+    def _parse_unknown_line(
+        self,
+        line: Dict[str, Any],
+        line_type: str,
+        session_id: Optional[str],
+        project_path: Optional[str],
+    ) -> NormalizedMessage:
+        """Preserve a line whose ``type`` the parser doesn't model.
+
+        Rather than dropping an unrecognized (or future) Claude Code line kind,
+        keep it as a system record carrying the whole raw line — so nothing,
+        including line kinds Anthropic adds later, vanishes without a trace."""
+        uuid = line.get("uuid", "")
+        parent_uuid = line.get("parentUuid")
+        timestamp = line.get("timestamp")
+        created_at = _parse_iso_timestamp(timestamp)
+        message_order = _timestamp_to_order(timestamp) if timestamp else 0
+        return {
+            "source_provider": self.PROVIDER_NAME,
+            "provider_message_id": uuid,
+            "provider_message_id_lower": uuid.lower() if uuid else None,
+            "provider_conversation_id": session_id or line.get("sessionId", ""),
+            "provider_parent_id": parent_uuid,
+            "provider_parent_id_lower": parent_uuid.lower() if parent_uuid else None,
+            "content_hash": self.hash_message(uuid, "system", line, timestamp),
+            "role": "system",
+            "content_text": f"[unrecognized line: {line_type or 'unknown'}]",
+            "content_blocks": [cast(ContentBlock, {
+                "type": "unknown_line",
+                "line_type": line_type,
+                "raw": line,
+                "seq": 0,
+            })],
+            "created_at": created_at,
+            "updated_at": None,
+            "message_order": message_order,
+            "is_active_path": not line.get("isSidechain", False),
+            "provider_data": {"line": line, "line_type": line_type},
+            "conversation_title": None,
+            "conversation_metadata": {},
         }
 
     def _user_content_blocks_from_list(
@@ -615,9 +724,20 @@ class ClaudeCodeParser(ProviderParser):
         content = line.get("content", "")
         subtype = line.get("subtype", "")
 
-        # Skip if no meaningful content
+        # A system line with no ``content`` string can still carry meaning in its
+        # subtype / level / toolUseResult / compactMetadata (e.g. a
+        # ``compact_boundary`` marker recording where compaction happened, and its
+        # token counts). Synthesize a summary so the record — and its metadata in
+        # provider_data — is preserved rather than dropped; only a wholly-empty
+        # line (no content and no metadata at all) is skipped.
         if not content:
-            return None
+            carries_meta = any(
+                line.get(k)
+                for k in ("subtype", "level", "toolUseResult", "compactMetadata")
+            )
+            if not carries_meta:
+                return None
+            content = f"[system: {subtype}]" if subtype else "[system event]"
 
         content_blocks: List[ContentBlock] = [
             cast(ContentBlock, {

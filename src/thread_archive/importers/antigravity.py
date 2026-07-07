@@ -117,6 +117,33 @@ def _antigravity_title(lines: list[dict]) -> str:
     return "Antigravity Session"
 
 
+def _antigravity_preserved_message(line: dict, ts: Optional[str]) -> dict[str, Any]:
+    """Preserve an antigravity step the importer doesn't model, rather than drop it.
+
+    ``_antigravity_kind`` only maps user/model/error steps; any other step (a
+    ``Model Selection`` setting change, a system notice, a future step kind) returns
+    None and would be skipped. Kept here as a ``role="unknown"`` message so the
+    builder emits a ``message`` event carrying the step's text plus the raw step
+    verbatim under ``content_blocks`` — nothing silently lost, and idempotent because
+    the raw step is inside the dedup-hashed ``content_blocks``."""
+    content = line.get("content")
+    text = content.strip() if isinstance(content, str) else ""
+    return {
+        "role": "unknown",
+        "created_at": ts,
+        "content_text": text,
+        "content_blocks": [{
+            "type": "antigravity_step",
+            "source": line.get("source"),
+            "step_type": line.get("type"),
+            "raw": line,
+            "start_timestamp": ts,
+        }],
+        "provider_message_id": ts or "",
+        "provider_data": {"provider": "antigravity"},
+    }
+
+
 def _build_antigravity_messages(
     new_lines: list[dict],
     all_lines: list[dict],
@@ -167,9 +194,10 @@ def _build_antigravity_messages(
             pending.append((tid, name, cur))
 
     def handle_outcome(line: dict, kind: str, ts: Optional[str], content: str) -> None:
+        # An empty outcome still records that a tool completed/errored — and dropping
+        # it would leave its tool_use unpaired, so the NEXT outcome would mis-pair to
+        # it FIFO. Keep it: pop the pending call (honest empty content), never drop.
         nonlocal tool_seq
-        if not content:
-            return
         if pending:
             tid, call_name, owner = pending.pop(0)
         else:
@@ -189,9 +217,16 @@ def _build_antigravity_messages(
         if not isinstance(line, dict):
             continue
         kind = _antigravity_kind(line)
-        if kind is None:
-            continue
         ts = line.get("created_at")
+
+        if kind is None:
+            # A step the importer doesn't model (setting change, system notice, a
+            # future kind). Preserve it unless it's a genuinely-empty record with
+            # nothing to keep.
+            if line:
+                messages.append(_antigravity_preserved_message(line, ts))
+            continue
+
         content = _antigravity_content(line)
 
         if kind == "user":
@@ -211,4 +246,9 @@ def _build_antigravity_messages(
         else:
             handle_outcome(line, kind, ts, content)
 
-    return [m for m in messages if m["role"] == "user" or m["content_blocks"]]
+    # Keep every user turn, plus any turn carrying SOME content (blocks or text);
+    # only a truly-empty non-user turn (no blocks, no text) is dropped.
+    return [
+        m for m in messages
+        if m["role"] == "user" or m["content_blocks"] or m.get("content_text", "").strip()
+    ]

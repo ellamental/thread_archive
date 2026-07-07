@@ -6,6 +6,25 @@ per-session importer (incremental skip via the import_state cursor on
 ``time_updated``; a streaming assistant message with no ``time.completed`` stops
 the settled prefix so a half-finished turn isn't imported). Pure ``_opencode_*`` /
 ``_build_opencode_messages`` helpers copied verbatim; orchestration rewired.
+
+Capture-everything invariant: no provider record is silently dropped on import.
+Everything the DB holds reaches an event, leaning on the shared builder's two
+verbatim-preservation paths — an unmodeled role becomes a ``message`` event
+(``content_blocks`` kept), and an unmodeled assistant block becomes a
+``content_block`` event (raw under ``data``). So non-user/assistant messages,
+non-text user parts, unknown assistant part types, and even JSON that failed to
+parse are all preserved rather than skipped.
+
+Settled-prefix exception (the abandoned-turn hole): the ``time.completed`` gate
+holds back a *live* streaming turn so its churning partial content isn't stacked
+every poll (its dedup_key changes as it streams). But a turn that crashed and
+will never get ``completed`` written would strand itself AND every message after
+it forever. So the gate is staleness-aware: on a session untouched for longer
+than ``_OPENCODE_ABANDONED_MS`` the turn is treated as abandoned — its
+already-present content is imported once (tagged ``stop_reason="incomplete"``)
+and the walk continues so the tail survives. A fresh session still breaks (no
+churn); a stale session is re-imported at most once (the ``time_updated`` cursor
+skips it thereafter), so the partial is captured exactly once.
 """
 
 from __future__ import annotations
@@ -82,8 +101,11 @@ def import_opencode_db(db_path) -> OpenCodeDbScanResult:
         ):
             try:
                 parsed = json.loads(data)
-            except (json.JSONDecodeError, TypeError):
-                continue
+            except (json.JSONDecodeError, TypeError) as e:
+                # Corrupt message row: don't drop it silently. Carry a stub with the
+                # raw text + error so `_build_opencode_messages` can preserve it as a
+                # visible parse_error record (mirrors the parse_error convention).
+                parsed = {"_opencode_parse_error": str(e), "_raw_data": _opencode_raw_text(data)}
             messages_by_session.setdefault(session_id, []).append((msg_id, parsed))
 
         for message_id, data in conn.execute(
@@ -91,8 +113,16 @@ def import_opencode_db(db_path) -> OpenCodeDbScanResult:
         ):
             try:
                 parsed = json.loads(data)
-            except (json.JSONDecodeError, TypeError):
-                continue
+            except (json.JSONDecodeError, TypeError) as e:
+                # Corrupt part row: keep it as a parse_error part. It rides the same
+                # preservation paths as any other part (assistant → content_block,
+                # user/other → a raw block) so the corruption stays visible.
+                parsed = {
+                    "type": "parse_error",
+                    "raw_text": _opencode_raw_text(data),
+                    "error": str(e),
+                    "_opencode_parse_error": True,
+                }
             parts_by_message.setdefault(message_id, []).append(parsed)
     finally:
         conn.close()
@@ -139,7 +169,7 @@ def _run_opencode(session, session_id, session_data, messages, parts_by_message)
     if _opencode_session_unchanged(import_state, session_data):
         return OpenCodeImportResult(0, (import_state.thread_id or 0) if import_state else 0, False)
 
-    norm = _build_opencode_messages(messages, parts_by_message)
+    norm = _build_opencode_messages(messages, parts_by_message, session_data=session_data)
     if not norm:
         return OpenCodeImportResult(0, 0, False)
 
@@ -211,20 +241,39 @@ def _opencode_resolve_thread(session, import_state, session_id, source_id, sessi
     return thread_id, True
 
 
+# A session untouched for this long still carrying an unsettled assistant turn is
+# treated as abandoned/crashed rather than live-streaming: its partial content is
+# imported once (tagged incomplete) instead of stranding it + everything after it.
+# Conservatively large so a genuinely live turn is never misread as abandoned.
+_OPENCODE_ABANDONED_MS = 24 * 60 * 60 * 1000
+
+
 def _build_opencode_messages(
     messages: list[tuple[str, dict[str, Any]]],
     parts_by_message: dict[str, list[dict[str, Any]]],
+    session_data: Optional[dict[str, Any]] = None,
 ) -> list[dict[str, Any]]:
     """Assemble messages + parts into the settled-prefix normalized shape."""
     norm: list[dict[str, Any]] = []
+    now_ms = datetime.now(timezone.utc).timestamp() * 1000
+    session_updated_ms = (session_data or {}).get("time_updated")
 
     for msg_id, data in messages:
         if not isinstance(data, dict):
             continue
-        role = data.get("role")
-        if role not in ("user", "assistant"):
+
+        # A message row whose JSON failed to parse was stubbed at read time —
+        # preserve it as a visible parse_error record instead of dropping it.
+        if data.get("_opencode_parse_error") is not None:
+            norm.append({
+                "id": msg_id,
+                "role": "parse_error",
+                "error": data.get("_opencode_parse_error"),
+                "raw": data.get("_raw_data"),
+            })
             continue
 
+        role = data.get("role")
         mtime = data.get("time") or {}
         parts = parts_by_message.get(msg_id, [])
 
@@ -233,10 +282,56 @@ def _build_opencode_messages(
                 p.get("text", "") for p in parts if p.get("type") == "text" and p.get("text")
             )
             norm.append({"id": msg_id, "role": "user", "created_at": mtime.get("created"), "content": text})
+            # Non-text user parts (files/attachments/images) used to be discarded. Keep
+            # them as a sibling turn under an unmodeled role so the builder's generic
+            # `message` path preserves each raw part verbatim in content_blocks.
+            other_parts = [p for p in parts if isinstance(p, dict) and p.get("type") != "text"]
+            if other_parts:
+                norm.append({
+                    "id": f"{msg_id}#parts",
+                    "role": "user_attachment",
+                    "created_at": mtime.get("created"),
+                    "parts": other_parts,
+                })
             continue
 
-        # assistant — hold back until the turn has settled
+        if role != "assistant":
+            # Any other role (opencode is normally user/assistant only; this is the
+            # forward-compat catch). Preserve it verbatim rather than dropping — text
+            # as content, every part as a raw block.
+            text = "\n".join(
+                p.get("text", "") for p in parts if p.get("type") == "text" and p.get("text")
+            )
+            norm.append({
+                "id": msg_id,
+                "role": role or "unknown",
+                "created_at": mtime.get("created"),
+                "content": text,
+                "parts": [p for p in parts if isinstance(p, dict)],
+            })
+            continue
+
+        # assistant — hold back until the turn has settled (the settled prefix).
         if mtime.get("completed") is None:
+            # A live in-progress turn settles on a later poll, so break and wait —
+            # importing its churning partial now would stack a fresh event every poll
+            # (dedup_key tracks content). But an abandoned/crashed turn never gets
+            # `completed`; breaking there strands it + everything after it forever.
+            # If the session has gone stale, treat the turn as abandoned: keep its
+            # already-present content (tagged incomplete) and walk on. The stale
+            # session is re-imported at most once (time_updated cursor), so this
+            # partial lands exactly once — no churn.
+            if _opencode_session_stale(session_updated_ms, now_ms):
+                norm.append({
+                    "id": msg_id,
+                    "role": "assistant",
+                    "started_at": mtime.get("created"),
+                    "completed_at": None,
+                    "model": _opencode_model(data),
+                    "segments": _opencode_assistant_segments(parts),
+                    "incomplete": True,
+                })
+                continue
             break
 
         norm.append({
@@ -249,6 +344,21 @@ def _build_opencode_messages(
         })
 
     return norm
+
+
+def _opencode_session_stale(session_updated_ms: Any, now_ms: float) -> bool:
+    """True when a session hasn't been touched for ``_OPENCODE_ABANDONED_MS`` — a
+    still-unsettled turn on such a session is abandoned, not live. A missing
+    ``time_updated`` is treated as *not* stale (conservative: keep holding rather
+    than risk churning a live turn we can't date)."""
+    if not isinstance(session_updated_ms, (int, float)):
+        return False
+    return (now_ms - session_updated_ms) > _OPENCODE_ABANDONED_MS
+
+
+def _opencode_raw_text(data: Any) -> str:
+    """The raw stored blob for a corrupt row, as text and never truncated."""
+    return data if isinstance(data, str) else repr(data)
 
 
 def _opencode_text_segment(kind: str, p: dict[str, Any]) -> Optional[dict[str, Any]]:
@@ -285,7 +395,12 @@ def _opencode_assistant_segments(parts: list[dict[str, Any]]) -> list[dict[str, 
         elif ptype == "tool":
             seg = _opencode_tool_segment(p)
         else:
-            seg = None
+            # An assistant part type we don't model (file, step-start/finish,
+            # snapshot, a parse_error stub, …). Keep it as a raw segment carrying the
+            # part + its type; `_opencode_to_normalized` turns it into an unmodeled
+            # content block, which the builder preserves as a `content_block` event.
+            ptime = p.get("time") or {}
+            seg = {"kind": "raw", "part_type": ptype, "raw": p, "ts": ptime.get("start")}
         if seg is not None:
             segments.append(seg)
     return segments
@@ -325,6 +440,39 @@ def _opencode_to_normalized(msg: dict[str, Any]) -> dict[str, Any]:
             "provider_data": {"provider": "opencode", "role": "user"},
         }
 
+    if role == "parse_error":
+        # A corrupt message row — surface it as a system parse_error, mirroring the
+        # shared parse_error convention. The builder's system path routes an
+        # unrecognized first block to a context_summary event, so the raw text +
+        # error survive (raw_text in provider_data, error in the content).
+        raw = msg.get("raw")
+        err = msg.get("error")
+        return {
+            "role": "system",
+            "created_at": None,
+            "content_text": f"[OpenCode message parse error]: {err}",
+            "content_blocks": [{"type": "parse_error", "raw_text": raw, "error": err, "seq": 0}],
+            "provider_message_id": msg.get("id", ""),
+            "provider_data": {
+                "provider": "opencode", "parse_error": True, "raw_text": raw, "error": err,
+            },
+        }
+
+    if role != "assistant":
+        # An unmodeled role (opencode's non-text user parts land here as
+        # `user_attachment`; any other message role too). The builder's generic
+        # `message` path keeps content_blocks verbatim; we also stash the raw parts in
+        # provider_data so nothing is lost even on the lossier system path.
+        blocks = [p for p in msg.get("parts", []) if isinstance(p, dict)]
+        return {
+            "role": role or "unknown",
+            "created_at": _opencode_iso(msg.get("created_at")),
+            "content_text": msg.get("content", ""),
+            "content_blocks": blocks,
+            "provider_message_id": msg.get("id", ""),
+            "provider_data": {"provider": "opencode", "role": role, "opencode_parts": blocks},
+        }
+
     blocks: list[dict[str, Any]] = []
     for seg in msg.get("segments", []):
         kind = seg.get("kind")
@@ -345,13 +493,29 @@ def _opencode_to_normalized(msg: dict[str, Any]) -> dict[str, Any]:
                 "content": seg.get("output", ""), "is_error": bool(seg.get("is_error")),
                 "start_timestamp": _opencode_iso(seg.get("end_ts")) or ts,
             })
+        elif kind == "raw":
+            # An unmodeled assistant part — emit an unmodeled content block so the
+            # builder preserves it verbatim as a `content_block` event (raw under
+            # `data`). The part type stays queryable as the block type.
+            blocks.append({
+                "type": seg.get("part_type") or "opencode_part",
+                "opencode_part_type": seg.get("part_type"),
+                "opencode_part": seg.get("raw"),
+                "start_timestamp": ts,
+            })
+    provider_data = {"provider": "opencode", "model": msg.get("model") or "opencode"}
+    if msg.get("incomplete"):
+        # Abandoned/unsettled turn preserved via the staleness gate — tag it so it's
+        # distinguishable from a normally-completed turn. stop_reason isn't part of
+        # the dedup content, so a later settled version is still a distinct event.
+        provider_data["stop_reason"] = "incomplete"
     return {
         "role": "assistant",
         "created_at": _opencode_iso(msg.get("started_at")),
         "content_text": "",
         "content_blocks": blocks,
         "provider_message_id": msg.get("id", ""),
-        "provider_data": {"provider": "opencode", "model": msg.get("model") or "opencode"},
+        "provider_data": provider_data,
     }
 
 

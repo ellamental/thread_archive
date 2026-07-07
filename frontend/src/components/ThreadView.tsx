@@ -80,7 +80,19 @@ export function ThreadView() {
       {data.messages.length === 0 ? (
         <div className="empty">(no renderable content)</div>
       ) : (
-        data.messages.map((m, i) => <Message key={i} message={m} hueForModel={hues} />)
+        data.messages.map((m, i) => {
+          // A single assistant turn now arrives as one message per model inference
+          // (a tool-call/response iteration). A run of same-role, same-model messages
+          // merges into one grouped panel — only the first shows the role label — so a
+          // mid-turn model switch (which breaks the run) stands out instead of hiding.
+          const prev = i > 0 ? data.messages[i - 1] : undefined
+          const continued =
+            !!prev &&
+            prev.role === m.role &&
+            (m.role !== 'assistant' ||
+              (m.meta?.models?.[0] ?? null) === (prev.meta?.models?.[0] ?? null))
+          return <Message key={i} message={m} hueForModel={hues} continued={continued} />
+        })
       )}
     </div>
   )

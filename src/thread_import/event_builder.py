@@ -39,9 +39,13 @@ def compute_content_hash(payload: dict) -> str:
 
 def compute_dedup_key(provider_message_id: str, event_type: str, payload: dict) -> str:
     """Deterministic natural identity for one event — stable across re-imports
-    and across producers, namespaced by thread_id at append time.
+    and across producers.
 
     Form: ``{provider_message_id|content_anchor}:{event_type}:{block}:{content_hash}``.
+    The key is NOT prefixed with the thread id: dedup is thread-scoped by the
+    ``WHERE thread_id = ...`` clause in the importer, so the prefix would be
+    redundant (a retired code path did prepend ``{thread_id}:``; the
+    denamespace_dedup_keys backfill removed it — keep this bare).
     Same id + same content → same key (idempotent). Same id + edited content →
     different key (both versions kept). Events with no provider id fall back to a
     content anchor so they still dedup on content+type+position.
@@ -72,8 +76,9 @@ class ThreadEvent:
     occurred_at: datetime = field(default_factory=datetime.now)
 
     # Deterministic natural-key identity (timestamp-free, content-inclusive),
-    # set by build_events. Namespaced by thread_id at append time. Observe-only
-    # until the dedup constraint lands; see compute_dedup_key.
+    # set by build_events. Bare (not thread-id-prefixed) — dedup is thread-scoped
+    # by the importer's WHERE clause. Observe-only until the dedup constraint
+    # lands; see compute_dedup_key.
     dedup_key: Optional[str] = None
 
     # Metadata for tracking
@@ -186,6 +191,13 @@ class DefaultEventBuilder:
         "Tool loaded.",
     })
 
+    # User content-block types already represented by a dedicated event (or folded
+    # into the user_message_sent payload, for images). Any *other* block type on a
+    # user turn is preserved as its own content_block event so nothing is dropped.
+    _USER_BLOCKS_ALREADY_EMITTED = frozenset({
+        "text", "tool_result", "ide_context", "model_change", "image",
+    })
+
     # Prefix → injection source. Order matters only to mirror the original
     # if/elif fall-through (no prefix here is a prefix of another).
     _INJECTED_PREFIXES: tuple[tuple[str, str], ...] = (
@@ -257,11 +269,18 @@ class DefaultEventBuilder:
             b for b in content_blocks
             if isinstance(b, dict) and b.get("type") == "ide_context"
         ]
+        # A manual `/model` switch the parser preserved (its command text stripped to
+        # empty) — recorded as its own event so the archive can mark the switch.
+        model_change_blocks = [
+            b for b in content_blocks
+            if isinstance(b, dict) and b.get("type") == "model_change"
+        ]
 
-        # Skip genuinely-empty user messages, but keep a turn that carried only
-        # tool_result or ide_context blocks (its text stripped to empty) — those
-        # still record real content that must not be dropped on import.
-        if not content_text.strip() and not tool_result_blocks and not ide_context_blocks:
+        # Keep any turn that carries *any* content — text, or any content block
+        # (tool_result / ide_context / model_change / image / an unmodeled block).
+        # Only a genuinely empty turn (no text and no blocks at all) is skipped;
+        # everything else is preserved below, unknown block types included.
+        if not content_text.strip() and not content_blocks:
             return []
 
         # Detect tool-loading confirmation turns: content blocks are mostly
@@ -306,19 +325,22 @@ class DefaultEventBuilder:
 
         events = []
 
-        # Only create user_message_sent if there's actual user text
-        if content_text.strip():
-            # Tag injected/system content so we can distinguish real user input
-            injected, source = self._detect_injected(content_text)
-            if injected:
-                payload["injected"] = True
-                payload["source"] = source
+        # Create user_message_sent when there's real user text OR images — an
+        # image-only turn (a screenshot paste with no caption) must not be
+        # dropped; its images ride on the multimodal payload built above.
+        if content_text.strip() or has_images:
+            if content_text.strip():
+                # Tag injected/system content so we can distinguish real user input
+                injected, source = self._detect_injected(content_text)
+                if injected:
+                    payload["injected"] = True
+                    payload["source"] = source
 
-            # Tag steering messages (typed mid-turn, queued, consumed as an
-            # attachment injection). The read path uses this to slot a
-            # late-backfilled steering event into its chronological position.
-            if (message.get("provider_data") or {}).get("queued_command"):
-                payload["queued"] = True
+                # Tag steering messages (typed mid-turn, queued, consumed as an
+                # attachment injection). The read path uses this to slot a
+                # late-backfilled steering event into its chronological position.
+                if (message.get("provider_data") or {}).get("queued_command"):
+                    payload["queued"] = True
 
             events.append(ThreadEvent(
                 event_type="user_message_sent",
@@ -336,6 +358,40 @@ class DefaultEventBuilder:
         # turn's editor context survives import — and a context-only turn isn't lost.
         for block in ide_context_blocks:
             events.append(self._ide_context_event(block, stream_id, occurred_at))
+
+        # A manual model switch (`/model X`) becomes its own event so the reader can
+        # render a "switched to X" marker between turns.
+        for block in model_change_blocks:
+            events.append(ThreadEvent(
+                event_type="model_change",
+                payload={
+                    "to": block.get("to_model"),
+                    "trigger": block.get("trigger", "user"),
+                },
+                stream_id=stream_id,
+                occurred_at=occurred_at,
+            ))
+
+        # Preserve any content block the cases above didn't already emit — an
+        # unmodeled user block (document / mcp_tool_use / a future kind, or the
+        # parser's "raw" catch-all) becomes its own content_block event rather
+        # than silently vanishing. Mirrors the assistant path (_process_content_block).
+        for idx, block in enumerate(content_blocks):
+            if not isinstance(block, dict):
+                continue
+            block_type = block.get("type", "")
+            if block_type in self._USER_BLOCKS_ALREADY_EMITTED:
+                continue
+            events.append(ThreadEvent(
+                event_type="content_block",
+                payload={
+                    "block_type": block_type,
+                    "data": block,
+                    "block_index": block.get("seq", idx),
+                },
+                stream_id=stream_id,
+                occurred_at=occurred_at,
+            ))
 
         return events
 

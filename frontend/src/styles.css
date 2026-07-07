@@ -84,6 +84,14 @@ h1.title { font-size: 19px; margin: 0 0 4px; }
 .msg.assistant { background: var(--assistant); }
 .msg .role { font-size: 11px; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); margin-bottom: 8px; }
 
+/* A run of same-role, same-model messages (one assistant turn's tool loop, split one
+   message per inference) merges into a single grouped panel: continuations lose their
+   top gap/border/corners, and a message followed by a continuation loses its bottom
+   corners — so the run reads as one card with hairline dividers, and a model switch,
+   which breaks the run, starts a fresh labelled bubble that visibly stands apart. */
+.msg.cont { margin-top: 0; border-top: none; border-top-left-radius: 0; border-top-right-radius: 0; padding-top: 4px; }
+.msg:has(+ .msg.cont) { border-bottom-left-radius: 0; border-bottom-right-radius: 0; }
+
 /* markdown */
 .md > :first-child { margin-top: 0; }
 .md > :last-child { margin-bottom: 0; }
@@ -116,6 +124,33 @@ h1.title { font-size: 19px; margin: 0 0 4px; }
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px;
 }
 .tool.thinking summary { font-style: italic; }
+
+/* a standalone manual /model switch, rendered between message bubbles (no chrome) */
+.msg-divider { margin: 14px 0; }
+.msg-divider .model-switch { margin: 0; }
+
+/* model switch: a centered divider (echoing the harness transcript's own "Switched
+   to …" rule) — for a manual /model switch and for a safeguard fallback alike. */
+.model-switch { display: flex; align-items: center; gap: 10px; margin: 12px 0 8px; }
+.model-switch::before, .model-switch::after {
+  content: ""; flex: 1; border-top: 1px dashed var(--line);
+}
+.model-switch-label {
+  font-size: 11px; letter-spacing: .04em; color: var(--muted);
+  text-transform: uppercase; white-space: nowrap;
+}
+.model-switch-label b { color: var(--ink); font-weight: 600; font-family: ui-monospace, Menlo, monospace; text-transform: none; }
+
+/* the safeguard reason behind a fallback — an inline amber callout, shown open */
+.safeguard {
+  margin: 8px 0; padding: 9px 12px; border-radius: 8px;
+  border: 1px solid #c9962e55; background: #c9962e14; font-size: 13px;
+}
+.safeguard-tag {
+  display: block; margin-bottom: 4px; font-size: 10px; letter-spacing: .06em;
+  text-transform: uppercase; color: #b07d1e;
+}
+.safeguard .md p { margin: 0; }
 
 /* raw (unrendered markdown source) view */
 .md-raw {

@@ -44,6 +44,9 @@ class ExportImportResult:
     imported: int = 0
     skipped: int = 0
     events_created: int = 0
+    # Conversations that raised mid-import and were preserved as a stub thread
+    # (raw + error) rather than silently skipped — see _import_conversation_stub.
+    errored: int = 0
 
 
 # ── classification ───────────────────────────────────────────────────────────
@@ -158,7 +161,7 @@ def import_claude_ai_export(
             result, parser_messages=lambda s=single: parser.parse_export(s),
             source="claude", source_id=source_id, title=title,
             source_metadata={"provider": "claude", "surface": "web"},
-            builder=builder, force=force,
+            builder=builder, force=force, raw=conv,
         )
     return result
 
@@ -218,17 +221,33 @@ def _xai_conversation_messages(bundle: dict) -> list[dict]:
     messages: list[dict] = []
     for resp in responses:
         text_str = (resp.get("message") or "").strip()
-        if not text_str:
-            continue
-        role = "user" if (resp.get("sender") or "").lower() == "human" else "assistant"
+        sender = (resp.get("sender") or "").lower()
         created = _xai_parse_time(resp.get("create_time")) or fallback_ts
         provider_data: dict = {"provider": "grok"}
-        if role == "assistant" and resp.get("model"):
+        if sender != "human" and resp.get("model"):
             provider_data["model"] = resp["model"]
+
+        if text_str:
+            role = "user" if sender == "human" else "assistant"
+            content_text = text_str
+            content_blocks: list[dict] = [{"type": "text", "text": text_str}]
+        else:
+            # A response with no message text still carries a real turn — an
+            # image/attachment/generated-media or tool-only turn. Preserve it rather
+            # than dropping it (the old `continue` lost every one). Route it through a
+            # generic role so the shared builder keeps it as a `message` event with
+            # the full raw response — the user-role builder discards a text-less turn,
+            # so plain "user"/"assistant" wouldn't reliably survive. The sender + raw
+            # ride along in provider_data too.
+            role = f"grok_{sender or 'unknown'}"
+            content_text = ""
+            content_blocks = [{"type": "grok_raw", "data": resp}]
+            provider_data["sender"] = sender or None
+            provider_data["raw"] = resp
         messages.append({
             "role": role,
-            "content_text": text_str,
-            "content_blocks": [{"type": "text", "text": text_str}],
+            "content_text": content_text,
+            "content_blocks": content_blocks,
             "created_at": created.isoformat(),
             "provider_message_id": resp.get("_id", ""),
             "provider_data": provider_data,
@@ -266,7 +285,7 @@ def import_xai_export(
             result, parser_messages=lambda b=bundle: _xai_conversation_messages(b),
             source="grok", source_id=source_id, title=title,
             source_metadata={"provider": "grok", "surface": "web"},
-            builder=builder, force=force,
+            builder=builder, force=force, raw=bundle,
         )
     return result
 
@@ -274,9 +293,45 @@ def import_xai_export(
 # ── shared per-conversation write path ───────────────────────────────────────
 
 
+def _import_conversation_stub(
+    source: str, source_id: str, title: str, source_metadata: dict,
+    builder: DefaultEventBuilder, raw, error: Exception,
+) -> None:
+    """Preserve a conversation that failed to import as its own stub thread.
+
+    Carries the raw payload + error under a distinct ``:import-error`` source id, so
+    the failure is visible in the archive and re-exportable, while the real
+    ``source_id`` stays unimported and retryable (a plain re-run without ``force``
+    won't mistake the stub for a successful import). Idempotent via the builder's
+    dedup_key.
+    """
+    stub_source_id = f"{source_id}:import-error"
+    message = {
+        "role": f"{source}_import_error",
+        "created_at": None,
+        "content_text": f"[{source} import failed for {source_id}: {error}]",
+        "content_blocks": [{"type": "import_error", "error": str(error), "data": raw}],
+        "provider_message_id": stub_source_id,
+        "provider_data": {"provider": source, "import_error": str(error)},
+    }
+    with get_session() as s:
+        existing = get_thread_by_source(s, source, stub_source_id)
+        if existing and existing.id is not None:
+            thread_id = existing.id
+        else:
+            stub_title = f"{title or 'Untitled'} (import error)"
+            thread_id = create_thread(
+                s, source=source, source_id=stub_source_id,
+                title=stub_title[:100], source_metadata={**source_metadata, "import_error": True},
+            )
+        assemble_events(s, thread_id, [message], builder)
+        s.commit()
+
+
 def _import_one(
     result: ExportImportResult, *, parser_messages, source: str, source_id: str,
     title: str, source_metadata: dict, builder: DefaultEventBuilder, force: bool,
+    raw=None,
 ) -> ExportImportResult:
     """Import one export conversation into its own thread (atomic per conversation)."""
     if not source_id:
@@ -309,8 +364,16 @@ def _import_one(
                 result.events_created += n
             s.commit()
     except Exception as e:  # noqa: BLE001 — one bad conversation must not stop the export
-        logger.warning("export import error for %s:%s: %s", source, source_id, e)
-        result.skipped += 1
+        # Log the full traceback (a one-line warning hid the cause) and preserve a
+        # stub thread carrying the raw conversation + error, so a bad conversation is
+        # visible in the archive and re-exportable instead of silently skipped.
+        logger.exception("export import error for %s:%s", source, source_id)
+        try:
+            _import_conversation_stub(source, source_id, title, source_metadata, builder, raw, e)
+            result.errored += 1
+        except Exception:
+            logger.exception("export stub also failed for %s:%s", source, source_id)
+            result.skipped += 1
     return result
 
 

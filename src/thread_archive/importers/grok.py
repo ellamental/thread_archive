@@ -312,14 +312,63 @@ def _grok_iso(dt: Optional[datetime]) -> Optional[str]:
     return dt.isoformat() if dt is not None else None
 
 
-def _grok_build_user_message(query: str, prompt_times: dict[str, list[datetime]], meta: dict[str, Any]) -> dict[str, Any]:
+def _grok_build_user_message(
+    text: str, query: str, prompt_times: dict[str, list[datetime]], meta: dict[str, Any]
+) -> dict[str, Any]:
+    """Build a user NormalizedMessage carrying the FULL user-line text.
+
+    ``text`` is the complete user text (harness-injected ``<user_info>`` /
+    ``<environment>`` context and all); ``query`` is the ``<user_query>`` span (or the
+    same text when the line is unwrapped), used only to match the prompt-history
+    timestamp and noted under ``user_query`` so the span stays recoverable. Nothing
+    outside the query tags is discarded — the archive captures the whole turn."""
+    provider_data = _grok_provider_data(meta, "user")
+    query = query.strip()
+    if query and query != text.strip():
+        provider_data["user_query"] = query
     return {
         "role": "user",
-        "created_at": _grok_iso(_grok_pop_prompt_ts(prompt_times, query)),
-        "content_text": query,
+        # Keep the prompt-time lookup keyed on the query span (unchanged behavior);
+        # fall back to the full text only for context-only turns that have no span.
+        "created_at": _grok_iso(_grok_pop_prompt_ts(prompt_times, query or text)),
+        "content_text": text,
         "content_blocks": [],
         "provider_message_id": "",
-        "provider_data": _grok_provider_data(meta, "user"),
+        "provider_data": provider_data,
+    }
+
+
+def _grok_preserve_line(
+    line: dict[str, Any],
+    meta: dict[str, Any],
+    *,
+    block_type: str,
+    extra_provider_data: Optional[dict[str, Any]] = None,
+) -> dict[str, Any]:
+    """Preserve a grok line the modeled path would otherwise silently drop.
+
+    Emitted as a ``role="system"`` NormalizedMessage carrying the line's readable
+    text plus a single content block, so the shared event builder turns it into a
+    ``context_summary`` event (given a block, a system message is never dropped) and
+    keeps the raw line — plus any extra tags — under ``provider_data``. This upholds
+    the archive's capture-EVERYTHING invariant: no provider record is skipped on
+    import. The text is never truncated. ``created_at`` is left unset so the builder
+    inherits the prior turn's time (monotonic, flagged) rather than fabricating one."""
+    text = _grok_user_text(line) or ""
+    provider_data = {
+        **_grok_provider_data(meta, "system"),
+        "grok_line_type": line.get("type"),
+        "raw_line": line,
+    }
+    if extra_provider_data:
+        provider_data.update(extra_provider_data)
+    return {
+        "role": "system",
+        "created_at": None,
+        "content_text": text,
+        "content_blocks": [{"type": block_type, "text": text}],
+        "provider_message_id": "",
+        "provider_data": provider_data,
     }
 
 
@@ -426,15 +475,18 @@ def _grok_accumulate_thinking(pending_thinking: Optional[str], line: dict) -> Op
 def _grok_user_turn(
     line: dict, prompt_times: dict[str, list[datetime]], meta: dict[str, Any]
 ) -> Optional[dict[str, Any]]:
-    if line.get("synthetic_reason"):
-        return None
+    """Build the normalized message for a genuine (non-synthetic) user line.
+
+    Synthetic/injected turns are preserved-and-tagged by the caller. Here we keep the
+    FULL text — context-only turns (a line that is only ``<user_info>`` /
+    ``<system-reminder>`` / ``<environment>`` with no ``<user_query>``) are preserved
+    rather than dropped, and the ``<user_query>`` span no longer discards the text
+    around it."""
     text_content = _grok_user_text(line)
-    if text_content is None:
+    if text_content is None or not text_content.strip():
         return None
     query = _grok_extract_query(text_content)
-    if not query.strip():
-        return None
-    return _grok_build_user_message(query, prompt_times, meta)
+    return _grok_build_user_message(text_content, query, prompt_times, meta)
 
 
 def _harvest_tool_names(lines: list[dict]) -> dict[str, str]:
@@ -487,9 +539,29 @@ def _build_grok_messages(
         line_type = line.get("type")
 
         if line_type == "system":
+            # Grok system lines/prompts are real records — preserve them as a tagged
+            # system event instead of dropping. Flush the in-progress assistant turn
+            # first so ordering holds, but don't reset pending thinking: a system
+            # line isn't a turn boundary and mustn't discard dangling reasoning.
+            flush()
+            messages.append(_grok_preserve_line(line, meta, block_type="grok_system"))
             continue
 
         if line_type == "user":
+            if line.get("synthetic_reason"):
+                # Synthetic/injected user turn — keep AND tag (with the reason + raw
+                # line) rather than drop. Not a real turn boundary, so leave the
+                # in-progress assistant/thinking state alone.
+                flush()
+                messages.append(_grok_preserve_line(
+                    line, meta, block_type="grok_synthetic_user",
+                    extra_provider_data={
+                        "synthetic": True,
+                        "synthetic_reason": line.get("synthetic_reason"),
+                        "grok_original_role": "user",
+                    },
+                ))
+                continue
             user_msg = _grok_user_turn(line, prompt_times, meta)
             if user_msg is None:
                 continue
@@ -516,6 +588,14 @@ def _build_grok_messages(
         if line_type == "tool_result":
             cur = _grok_fold_tool_result(line, cur, tool_times, tool_names, model_default, meta)
             continue
+
+        # Any other grok line type (outside {system,user,reasoning,assistant,
+        # tool_result}) — a new or unmodeled type must never vanish on import.
+        # Preserve the raw line as a tagged event instead of silently ignoring it.
+        flush()
+        messages.append(
+            _grok_preserve_line(line, meta, block_type=f"grok_{line_type or 'unknown'}")
+        )
 
     flush()
     return messages

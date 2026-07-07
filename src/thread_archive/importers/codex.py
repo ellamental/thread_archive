@@ -207,6 +207,30 @@ def _codex_tool_result_block(
     }
 
 
+def _codex_preserved_block(
+    line_type: Any, payload_type: Any, payload: dict[str, Any], ts: Optional[str],
+) -> dict[str, Any]:
+    """Wrap a codex kind the importer doesn't model as a content block that survives
+    import — Archivist, not Filter.
+
+    A ``message`` response_item, web-search results, images, an unmodeled
+    ``event_msg`` (token_count, task_started/complete, reasoning deltas, errors), or a
+    future line/payload kind would otherwise be dropped into oblivion. Keep the raw
+    payload plus its type. The block's ``type`` is namespaced (``codex_<kind>``) so it
+    isn't one of the builder's modeled block types, which makes the builder preserve
+    it verbatim as a ``content_block`` event. The builder stores the whole block
+    under the event's ``data`` key (a dedup-content key), so the raw payload is
+    covered by the dedup hash and re-imports stay idempotent."""
+    kind = payload_type or line_type or "unknown"
+    return {
+        "type": f"codex_{kind}",
+        "codex_type": payload_type,
+        "codex_line_type": line_type,
+        "raw": payload,
+        "start_timestamp": ts,
+    }
+
+
 def _codex_assistant_block(
     line_type: Any,
     payload_type: Any,
@@ -219,19 +243,27 @@ def _codex_assistant_block(
         if payload_type == "agent_message":
             message = str(payload.get("message") or "")
             return {"type": "text", "text": message, "start_timestamp": ts} if message else None
-        return None
+        # user_message is consumed upstream; any other event_msg kind is preserved
+        # rather than dropped.
+        return _codex_preserved_block(line_type, payload_type, payload, ts)
 
-    if line_type != "response_item":
-        return None
+    if line_type == "response_item":
+        if payload_type == "reasoning":
+            text = _codex_reasoning_text(payload)
+            return {"type": "thinking", "text": text, "start_timestamp": ts} if text else None
+        if payload_type in ("function_call", "custom_tool_call"):
+            return _codex_tool_use_block(payload, ts, call_names, call_inputs)
+        if payload_type in ("function_call_output", "custom_tool_call_output"):
+            return _codex_tool_result_block(payload, ts, call_names)
+        # A `message` response_item, web-search results, images, or any future kind.
+        return _codex_preserved_block(line_type, payload_type, payload, ts)
 
-    if payload_type == "reasoning":
-        text = _codex_reasoning_text(payload)
-        return {"type": "thinking", "text": text, "start_timestamp": ts} if text else None
-    if payload_type in ("function_call", "custom_tool_call"):
-        return _codex_tool_use_block(payload, ts, call_names, call_inputs)
-    if payload_type in ("function_call_output", "custom_tool_call_output"):
-        return _codex_tool_result_block(payload, ts, call_names)
-    return None
+    # `session_meta` is consumed as thread metadata (cwd/title/model) upstream; any
+    # OTHER line type (turn_context, compacted, a future kind) is preserved so no
+    # provider record is silently dropped on import.
+    if line_type == "session_meta":
+        return None
+    return _codex_preserved_block(line_type, payload_type, payload, ts)
 
 
 def _build_codex_messages(
