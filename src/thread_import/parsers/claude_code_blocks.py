@@ -18,9 +18,9 @@ from typing import Any, Dict, List, Tuple, cast
 from .base import ContentBlock, NormalizedMessage, ProviderParser
 from .claude_code_ide import _extract_ide_context
 
-# Regex for parsing old-format XML tool calls. Kept here (also re-exported as
-# class attributes on ClaudeCodeParser for back-compat) since the XML parser
-# that uses them now lives here.
+# Regex for parsing XML-format tool calls (the `<function_calls>` form),
+# co-located with the XML parser that uses them and also exposed as class
+# attributes on ClaudeCodeParser.
 FUNCTION_CALLS_SPLIT = re.compile(
     r'(<function_calls>.*?</function_calls>)', re.DOTALL
 )

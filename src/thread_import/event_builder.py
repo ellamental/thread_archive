@@ -120,9 +120,7 @@ class EventBuilder(Protocol):
 class DefaultEventBuilder:
     """Standard event builder for all providers.
 
-    Extracted from backend/importer.py to centralize event creation logic.
-    This is the single source of truth for how NormalizedMessage becomes
-    Thread events.
+    The single source of truth for how NormalizedMessage becomes Thread events.
     """
 
     def build_events(

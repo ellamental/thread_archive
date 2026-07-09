@@ -142,8 +142,7 @@ class Normalizer(Protocol):
 class ValidationContext:
     """Context for validation across a conversation.
 
-    This replaces the ValidationContext in base.py with a cleaner
-    interface that validators can update.
+    A mutable interface that validators update as they process messages.
     """
 
     conversation_id: str

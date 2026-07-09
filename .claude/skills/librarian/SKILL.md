@@ -11,8 +11,8 @@ curated yet, and for each, do one thing and nothing heavier:
 
 - **Link** — add **~3+** salient message→topic citations (linking topics where the
   relationship is real). A thread is 'reviewed' — and leaves the queue — the moment it
-  gains its first citation/link. (Summaries were retired: the librarian no longer writes
-  per-thread summaries, and nothing reads them.)
+  gains its first citation/link. (The librarian only links; it does not write per-thread
+  summaries.)
 
 Coverage of the main threads of a conversation, not exhaustive per-message tagging.
 

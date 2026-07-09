@@ -1,9 +1,9 @@
 """Filesystem discovery and loading of Claude Code session files.
 
-Split out of ``claude_code.py``: these two helpers locate session JSONL files
-under ``~/.claude/projects/`` and read one into a lines/parse-errors dict. They
-are independent of ``ClaudeCodeParser`` (no class state) and are re-exported by
-``claude_code`` so existing ``claude_code.<name>`` access keeps resolving.
+These two helpers locate session JSONL files under ``~/.claude/projects/`` and
+read one into a lines/parse-errors dict. They are independent of
+``ClaudeCodeParser`` (no class state) and are re-exported by ``claude_code`` so
+callers can reach them as ``claude_code.<name>``.
 """
 
 import json

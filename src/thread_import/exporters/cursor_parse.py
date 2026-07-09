@@ -1,8 +1,7 @@
 """Pure per-message-shape parsing helpers for the Cursor exporter.
 
-These are stateless functions extracted from ``CursorExporter`` so the class
-stays thin. Each is behavior-preserving: the emitted dict/list shapes are an
-import contract and must stay byte-for-byte identical to the originals.
+Stateless functions that keep ``CursorExporter`` thin. The emitted dict/list
+shapes are an import contract and must stay byte-for-byte stable.
 
 No filesystem, no SQLite, no instance state — pure transforms over the raw
 composer/bubble/message blobs that Cursor stores. ``CursorExporter``'s pinned
