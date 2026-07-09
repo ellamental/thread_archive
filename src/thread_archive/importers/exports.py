@@ -32,7 +32,12 @@ from thread_import.parsers.claude import ClaudeParser
 
 from ..store import get_session
 from ._events import assemble_events
-from ._state import create_thread, get_thread_by_source, set_thread_models_from_events
+from ._state import (
+    create_thread,
+    discard_new_thread,
+    get_thread_by_source,
+    set_thread_models_from_events,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -352,10 +357,8 @@ def _import_one(
             )
             n, _ = assemble_events(s, thread_id, messages, builder)
             if n == 0:
-                from sqlalchemy import delete
-
-                from ..store import Thread
-                s.execute(delete(Thread).where(Thread.id == thread_id))
+                # Row AND staged truth record — no ghost threads/<id>.jsonl on commit.
+                discard_new_thread(s, thread_id)
                 result.skipped += 1
             else:
                 set_thread_models_from_events(s, thread_id)

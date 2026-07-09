@@ -13,14 +13,13 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Callable, Optional
 
-from sqlalchemy import delete
-
-from ..store import Thread, get_session
+from ..store import get_session
 from ._read import read_session_lines
 from ._result import IncrementalImportResult
 from ._state import (
     adopt_if_unwatermarked,
     create_thread,
+    discard_new_thread,
     get_import_state,
     get_thread_by_source,
     upsert_import_state,
@@ -102,7 +101,8 @@ def _run(
     events_created, last_uuid = import_lines(session, thread_id, all_lines, new_lines, ctx)
 
     if is_new_thread and events_created == 0:
-        session.execute(delete(Thread).where(Thread.id == thread_id))
+        # Row AND staged truth record — no ghost threads/<id>.jsonl on commit.
+        discard_new_thread(session, thread_id)
         thread_id = 0
         is_new_thread = False
 

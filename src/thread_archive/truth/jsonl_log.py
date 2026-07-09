@@ -20,8 +20,12 @@ past that, tooling (file trees, ``ls``, completion) drags. ``manifest.json`` rec
 a ``shard_depth``: 0 = flat (``threads/<id>.jsonl``), 1 = 256 id-bucketed subdirs
 (``threads/<id%256>/<id>.jsonl``, good to a few million), 2 = two levels. The path
 resolver computes a thread's location from the recorded depth, so reads and writes
-always agree; crossing the threshold triggers a one-time auto-rebalance (the only
-time files move). Small archives stay flat with zero ceremony.
+always agree; crossing the threshold triggers an auto-rebalance, and once sharded
+every checkpoint re-homes any straggler file. The rebalance is crash-safe by
+construction: the new depth is persisted *before* any file moves, a file whose home
+already exists is merged (appended) rather than overwritten, and the sweep is
+serialized across processes by a flock — see :func:`_maybe_rebalance`. Small
+archives stay flat with zero ceremony.
 
 Writes preserve the **JSONL ⊇ SQLite** invariant: a row is staged on the session
 and flushed **and fsynced** to its thread file *before* the COMMIT it belongs to, so
@@ -277,6 +281,24 @@ def record_thread(session: Session, thread: object) -> None:
     _stage(session, "thread", thread.id, _row_dict(thread))  # type: ignore[attr-defined]
 
 
+def unstage_thread(session: Session, thread_id: int) -> None:
+    """Discard any staged truth rows for ``thread_id`` (its metadata record and any
+    events) from the session's pending buffer — the complement of the staging seam
+    for the discard-an-empty-thread path. A thread row deleted before its commit
+    must ALSO drop its staged record: otherwise the drain still writes a
+    ``threads/<id>.jsonl`` the projection no longer holds, ``verify`` drifts, and
+    the next reindex resurrects the thread as an empty ghost. Cross-thread rows
+    (kind ``kg_event``) are untouched."""
+    pending = session.info.get(_PENDING)
+    if not pending:
+        return
+    tid = int(thread_id)
+    session.info[_PENDING] = [
+        (kind, t, row) for kind, t, row in pending
+        if not (t == tid and kind in ("thread", "event"))
+    ]
+
+
 def append_kg_event(session: Session, kg_event: object) -> None:
     """Stage a curatorial event for the append-only ``kg_events.jsonl`` truth log.
 
@@ -388,14 +410,20 @@ def checkpoint(*, snapshots: bool = True) -> dict:
     d = log_dir()
     (d / THREADS_SUBDIR).mkdir(parents=True, exist_ok=True)
     m = _read_manifest(d)
-    depth = int(m.get("shard_depth", 0))
     counts: dict = (
         {name: _write_snapshot(d, name, model) for name, model in _CROSS_THREAD.items()}
         if snapshots
         else {}
     )
+    # Rebalance BEFORE the thread-metadata backstop, so the backstop appends at the
+    # post-rebalance depth and can never manufacture a flat twin of a just-moved file.
+    depth = _maybe_rebalance(d, int(m.get("shard_depth", 0)))
+    # Re-read the manifest: a concurrent sweep (ours skips when the rebalance lock is
+    # held) may have advanced shard_depth — never write a stale depth back over it.
+    m = _read_manifest(d)
+    depth = max(depth, int(m.get("shard_depth", 0)))
+    m["shard_depth"] = depth
     counts["threads_updated"] = _checkpoint_changed_threads(d, depth, m.get("last_checkpoint_at"))
-    m["shard_depth"] = _maybe_rebalance(d, depth)
     m["last_checkpoint_at"] = _now_iso()
     _write_manifest(d, m)
     logger.info("jsonl_log checkpoint(snapshots=%s): %s", snapshots, counts)
@@ -403,28 +431,130 @@ def checkpoint(*, snapshots: bool = True) -> dict:
 
 
 # ── adaptive rebalance (flat → sharded when a directory gets large) ──────────
+# Serializes the move/merge sweep across processes (the watcher's maintenance pass
+# vs. the daily backup's checkpoint): flock, non-blocking — the loser skips, and
+# whichever checkpoint runs next finishes the job. Deliberately distinct from the
+# reindex lock: the watcher holds THAT one shared around its whole ingest pass, so
+# an exclusive acquire on it here would self-deadlock.
+REBALANCE_LOCK_FILE = ".rebalance.lock"
+
+
+def _rebalance_lock_path() -> Path:
+    from ..config import resolve_paths
+
+    return resolve_paths().home / REBALANCE_LOCK_FILE
+
+
+@contextmanager
+def _try_rebalance_lock() -> Generator[bool, None, None]:
+    """Hold the rebalance lock exclusive, non-blocking. Yields False (not holding)
+    when another process is mid-sweep. flock auto-releases on process death — a
+    killed sweep can never wedge the next one."""
+    path = _rebalance_lock_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd = os.open(path, os.O_RDWR | os.O_CREAT, 0o644)
+    try:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            yield False
+            return
+        yield True
+    finally:
+        os.close(fd)  # closing the fd releases the flock
+
+
+def _merge_file_into(src: Path, dest: Path) -> None:
+    """Append ``src``'s lines onto ``dest`` (fsynced), then remove ``src`` — the
+    no-clobber move for a file whose home already exists.
+
+    Safe at every boundary: if ``dest`` ends in a torn line (a crash mid-append),
+    a newline is inserted first so the fragment stays its own unparseable line
+    instead of gluing onto ``src``'s first record. Duplicate lines from a crash
+    between copy and unlink are harmless — event lines are id-keyed (reindex's
+    INSERT OR REPLACE collapses them) and thread records are latest-wins. The
+    copy re-checks ``src``'s size before unlinking so lines a racing pre-bump
+    commit appended mid-copy are drained, not dropped."""
+    with open(dest, "ab") as df:
+        if os.stat(dest).st_size > 0:
+            with open(dest, "rb") as ck:
+                ck.seek(-1, os.SEEK_END)
+                if ck.read(1) != b"\n":
+                    df.write(b"\n")
+        with open(src, "rb") as sf:
+            while True:
+                shutil.copyfileobj(sf, df)
+                df.flush()
+                if sf.tell() >= os.stat(src).st_size:
+                    break  # nothing landed on src during the copy
+        os.fsync(df.fileno())
+    os.unlink(src)
+
+
 def _maybe_rebalance(d: Path, depth: int) -> int:
-    """Bump ``shard_depth`` and move files if the current depth would overflow a
-    directory. A no-op for small archives; only fires when crossing a threshold."""
+    """Keep the shard layout balanced — crash-safe, merge-only, serialized.
+
+    Three properties make a killed or concurrent sweep unable to lose truth:
+
+    * **Manifest first.** Crossing a threshold persists the new ``shard_depth``
+      *before* any file moves. Writers re-read the manifest on every commit, so
+      they immediately compute paths in the final layout — a crash mid-sweep
+      leaves only not-yet-moved files, never a growing flat twin of an
+      already-moved one.
+    * **Merge, never clobber.** A file whose destination already exists (a twin
+      left by a killed sweep, or by a commit that raced the manifest bump) is
+      appended onto it via :func:`_merge_file_into` — recombined, not replaced.
+    * **Straggler sweep.** Once sharded (``depth > 0``), every call re-homes any
+      misplaced file, so an interrupted migration is finished by the next
+      checkpoint rather than waiting on a threshold that will never re-fire.
+
+    The sweep skips (without moving anything) while a reindex build holds the
+    ingest lock exclusive, and runs under its own non-blocking exclusive flock so
+    two checkpointing processes can't interleave moves — the loser returns the
+    depth it was given and its caller re-reads the manifest rather than writing a
+    stale depth back. Returns the effective shard depth."""
     threads_dir = d / THREADS_SUBDIR
     if not threads_dir.exists():
         return depth
     n = sum(1 for _ in threads_dir.rglob("*.jsonl"))
-    target = _depth_for(n)
-    if target <= depth:
-        return depth
-    reset_handles()  # don't move files out from under open handles
-    for path in list(threads_dir.rglob("*.jsonl")):
-        try:
-            tid = int(path.stem)
-        except ValueError:  # pragma: no cover — stray file
-            continue
-        dest = _thread_file(d, tid, target)
-        if dest == path:
-            continue
-        dest.parent.mkdir(parents=True, exist_ok=True)
-        os.replace(path, dest)
-    logger.info("jsonl_log rebalance: shard_depth %d → %d (%d threads)", depth, target, n)
+    if max(depth, _depth_for(n)) == 0:
+        return 0  # flat and staying flat — nothing can be misplaced
+    with try_shared_ingest_lock() as ingest_ok:
+        if not ingest_ok:
+            return depth  # a reindex is reading the truth — don't move it underneath
+        with _try_rebalance_lock() as held:
+            if not held:
+                return depth  # another sweep is running; it owns the manifest depth
+            m = _read_manifest(d)
+            depth = max(depth, int(m.get("shard_depth", 0)))  # fresh under the lock
+            target = max(depth, _depth_for(n))
+            if target > depth:
+                m["shard_depth"] = target
+                _write_manifest(d, m)  # durable BEFORE any file moves (see docstring)
+            # List under the lock — a sweep that completed between the count above
+            # and our acquisition has already re-homed what we would move again.
+            misplaced: list[tuple[Path, Path]] = []
+            for path in threads_dir.rglob("*.jsonl"):
+                try:
+                    tid = int(path.stem)
+                except ValueError:  # pragma: no cover — stray file
+                    continue
+                dest = _thread_file(d, tid, target)
+                if dest != path:
+                    misplaced.append((path, dest))
+            if not misplaced:
+                return target
+            reset_handles()  # our own cached appenders must not span the sweep
+            for path, dest in misplaced:
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                if dest.exists():
+                    _merge_file_into(path, dest)
+                else:
+                    os.replace(path, dest)
+            logger.info(
+                "jsonl_log rebalance: shard_depth %d → %d (%d files re-homed, %d threads)",
+                depth, target, len(misplaced), n,
+            )
     return target
 
 
@@ -802,17 +932,32 @@ def rebuild_truth_from_store() -> dict:
         threads = s.execute(select(Thread).order_by(Thread.id)).scalars().all()
         depth = _depth_for(len(threads))
         nt = ne = 0
+        emitted: set[int] = set()
         for t in threads:  # outer list is materialized, so the inner event stream is the only cursor
             ev_rows = (_row_dict(ev) for ev in s.execute(
                 select(Event).where(Event.thread_id == t.id).order_by(Event.id)
             ).scalars())
             ne += emit_thread_file(d, t.id, depth, _row_dict(t), ev_rows)
+            emitted.add(t.id)
             nt += 1
 
     for name, model in _CROSS_THREAD.items():
         _write_snapshot(d, name, model)
 
     _write_manifest(d, {"version": 1, "shard_depth": depth, "last_checkpoint_at": _now_iso()})
+
+    # Remove stale copies of re-emitted threads left at another shard depth. Their
+    # content was just fully re-emitted at ``depth``, so an old-layout copy is pure
+    # duplication — and on a later reindex a stale duplicate line would shadow the
+    # fresh (possibly repaired) row for the same event id. Files whose ids the store
+    # does NOT hold are left untouched.
+    for path in list((d / THREADS_SUBDIR).rglob("*.jsonl")):
+        try:
+            tid = int(path.stem)
+        except ValueError:  # pragma: no cover — stray file
+            continue
+        if tid in emitted and path != _thread_file(d, tid, depth):
+            path.unlink()
 
     # Drop the old monolithic files this format replaces.
     for old in ("events.jsonl", "threads.jsonl"):

@@ -323,3 +323,218 @@ def test_ingest_lock_shared_vs_exclusive(archive_home) -> None:
             assert acquired is False, "ingest must skip while reindex holds the lock"
     with jsonl_log.try_shared_ingest_lock() as acquired:
         assert acquired is True, "ingest must resume once the reindex lock is released"
+
+
+# ── rebalance crash-safety ────────────────────────────────────────────────────
+# The shard rebalance must be unable to lose truth: manifest-first (the new depth
+# is durable before any file moves), merge-never-clobber (a twin recombines), and
+# a straggler sweep (an interrupted migration is finished by the next checkpoint).
+
+
+def _seed_flat_threads(d, n_threads: int, events_per: int = 3) -> None:
+    """Hand-write ``n_threads`` flat truth files: a thread record + event lines."""
+    threads_dir = d / jsonl_log.THREADS_SUBDIR
+    threads_dir.mkdir(parents=True, exist_ok=True)
+    for tid in range(1, n_threads + 1):
+        with open(threads_dir / f"{tid}.jsonl", "w", encoding="utf-8") as fh:
+            fh.write(json.dumps({"type": "thread", "id": tid, "name": f"t{tid}"}) + "\n")
+            for i in range(events_per):
+                fh.write(json.dumps({
+                    "type": "event", "id": tid * 100 + i, "thread_id": tid,
+                    "payload": {"n": i},
+                }) + "\n")
+    jsonl_log._write_manifest(d, {"version": 1, "shard_depth": 0, "last_checkpoint_at": None})
+
+
+def _event_ids(path) -> set[int]:
+    ids: set[int] = set()
+    for line in path.read_text(encoding="utf-8").splitlines():
+        try:
+            rec = json.loads(line)
+        except ValueError:
+            continue
+        if rec.get("type") == "event":
+            ids.add(rec["id"])
+    return ids
+
+
+def test_rebalance_crash_then_twin_merges_without_loss(archive_home, monkeypatch) -> None:
+    """A sweep killed mid-move leaves the manifest already at the new depth; a flat
+    twin created by a racing writer is MERGED home by the next sweep — the failure
+    that used to clobber a thread's whole history with its tail."""
+    import os as _os
+
+    monkeypatch.setattr(jsonl_log, "_FLAT_MAX", 4)
+    d = jsonl_log.log_dir()
+    _seed_flat_threads(d, 6)
+    threads_dir = d / jsonl_log.THREADS_SUBDIR
+
+    # Kill the sweep after 2 thread-file moves (the manifest's own os.replace and
+    # any non-threads paths pass through untouched).
+    real_replace = _os.replace
+    moved = {"n": 0}
+
+    def dying_replace(src, dst):
+        if f"{jsonl_log.THREADS_SUBDIR}/" in str(dst).replace("\\", "/"):
+            if moved["n"] >= 2:
+                raise SystemExit("SIGTERM mid-sweep")
+            moved["n"] += 1
+        return real_replace(src, dst)
+
+    monkeypatch.setattr("os.replace", dying_replace)
+    try:
+        jsonl_log._maybe_rebalance(d, 0)
+    except SystemExit:
+        pass
+    else:  # pragma: no cover
+        raise AssertionError("the injected kill should have propagated")
+    monkeypatch.setattr("os.replace", real_replace)
+
+    # Manifest-first: the depth was durable BEFORE the moves, so post-crash writers
+    # compute sharded paths and cannot start new flat files.
+    assert jsonl_log._shard_depth(d) == 1
+    sharded = list(threads_dir.rglob("*/*.jsonl"))
+    assert len(sharded) == 2, "exactly the pre-kill moves happened"
+
+    # A commit that raced the manifest bump left a flat twin of a MOVED thread.
+    victim = int(sharded[0].stem)
+    flat_twin = threads_dir / f"{victim}.jsonl"
+    with open(flat_twin, "w", encoding="utf-8") as fh:
+        fh.write(json.dumps({"type": "event", "id": 9999, "thread_id": victim,
+                             "payload": {"tail": True}}) + "\n")
+
+    # Next checkpoint's sweep: finishes the migration and merges the twin.
+    depth = jsonl_log._maybe_rebalance(d, jsonl_log._shard_depth(d))
+    assert depth == 1
+    assert list(threads_dir.glob("*.jsonl")) == [], "no flat stragglers remain"
+
+    home = jsonl_log._thread_file(d, victim, 1)
+    got = _event_ids(home)
+    assert got == {victim * 100, victim * 100 + 1, victim * 100 + 2, 9999}, (
+        f"history + tail must both survive the merge, got {got}"
+    )
+    # The thread record survived too (the old clobber destroyed it).
+    recs = [json.loads(ln) for ln in home.read_text(encoding="utf-8").splitlines()]
+    assert any(r.get("type") == "thread" for r in recs)
+
+
+def test_rebalance_straggler_sweep_at_steady_depth(archive_home) -> None:
+    """Once sharded, a misplaced flat file is re-homed even though no threshold is
+    being crossed (target == depth)."""
+    d = jsonl_log.log_dir()
+    threads_dir = d / jsonl_log.THREADS_SUBDIR
+    threads_dir.mkdir(parents=True, exist_ok=True)
+    jsonl_log._write_manifest(d, {"version": 1, "shard_depth": 1, "last_checkpoint_at": None})
+
+    home = jsonl_log._thread_file(d, 7, 1)
+    home.parent.mkdir(parents=True, exist_ok=True)
+    home.write_text(json.dumps({"type": "event", "id": 701, "thread_id": 7}) + "\n")
+    stray = threads_dir / "7.jsonl"
+    stray.write_text(json.dumps({"type": "event", "id": 702, "thread_id": 7}) + "\n")
+
+    assert jsonl_log._maybe_rebalance(d, 1) == 1
+    assert not stray.exists()
+    assert _event_ids(home) == {701, 702}
+
+
+def test_rebalance_lock_loser_skips_and_checkpoint_keeps_depth(archive_home, monkeypatch) -> None:
+    """While another process holds the rebalance lock, the sweep skips without
+    moving anything — and checkpoint re-reads the manifest so it never writes a
+    stale (lower) depth back over the winner's."""
+    import fcntl as _fcntl
+    import os as _os
+
+    monkeypatch.setattr(jsonl_log, "_FLAT_MAX", 4)
+    init_db()
+    d = jsonl_log.log_dir()
+    _seed_flat_threads(d, 6)
+    # The "winner" already migrated the manifest to depth 1.
+    jsonl_log._write_manifest(d, {"version": 1, "shard_depth": 1, "last_checkpoint_at": None})
+
+    fd = _os.open(jsonl_log._rebalance_lock_path(), _os.O_RDWR | _os.O_CREAT, 0o644)
+    try:
+        _fcntl.flock(fd, _fcntl.LOCK_EX)
+        # Loser passes its stale depth (0); it must skip and move nothing.
+        assert jsonl_log._maybe_rebalance(d, 0) == 0
+        assert list((d / jsonl_log.THREADS_SUBDIR).rglob("*/*.jsonl")) == []
+        jsonl_log.checkpoint(snapshots=False)
+    finally:
+        _os.close(fd)
+    assert jsonl_log._shard_depth(d) == 1, "checkpoint must not regress the manifest depth"
+
+
+def test_merge_file_into_guards_torn_tail(tmp_path) -> None:
+    """A torn last line in dest must not glue onto src's first record — only the
+    fragment itself stays unparseable."""
+    dest = tmp_path / "d.jsonl"
+    src = tmp_path / "s.jsonl"
+    dest.write_bytes(b'{"type":"event","id":1}\n{"type":"event","i')  # torn tail
+    src.write_text(json.dumps({"type": "event", "id": 2}) + "\n", encoding="utf-8")
+
+    jsonl_log._merge_file_into(src, dest)
+
+    assert not src.exists()
+    parsed = []
+    for ln in dest.read_text(encoding="utf-8").splitlines():
+        try:
+            parsed.append(json.loads(ln))
+        except ValueError:
+            pass
+    assert {p["id"] for p in parsed} == {1, 2}
+
+
+def test_rebuild_truth_removes_stale_other_depth_twin(archive_home) -> None:
+    """rebuild_truth_from_store re-emits every thread at the computed depth and
+    removes a stale copy at another depth, so no duplicate lines survive to shadow
+    repaired rows on a later reindex. Files for ids the store lacks are kept."""
+    init_db()
+    with get_session() as s:
+        t = Thread(name="sess-r", title="r", source="claude-code", source_id="r1")
+        s.add(t)
+        s.flush()
+        jsonl_log.record_thread(s, t)
+        jsonl_log.write_events(s, [Event(
+            thread_id=t.id, stream_id="x", event_type="user_message_sent",
+            payload={"text": "hello"}, occurred_at=_now(), dedup_key="r-k1",
+        )])
+        s.commit()
+        tid = t.id
+
+    d = jsonl_log.log_dir()
+    # A stale twin at depth 1 (as if left behind by an old layout change)...
+    twin = jsonl_log._thread_file(d, tid, 1)
+    twin.parent.mkdir(parents=True, exist_ok=True)
+    twin.write_text(json.dumps({"type": "event", "id": 424242, "thread_id": tid}) + "\n")
+    # ...and a file for an id the store does NOT hold, which must be preserved.
+    ghost = jsonl_log._thread_file(d, tid + 1000, 1)
+    ghost.parent.mkdir(parents=True, exist_ok=True)
+    ghost.write_text(json.dumps({"type": "thread", "id": tid + 1000, "name": "ghost"}) + "\n")
+
+    jsonl_log.rebuild_truth_from_store()
+
+    assert not twin.exists(), "stale twin of a re-emitted thread must be removed"
+    assert ghost.exists(), "a file for an id the store lacks must be left untouched"
+    home = jsonl_log._thread_file(d, tid, jsonl_log._shard_depth(d))
+    assert home.exists()
+    assert 424242 not in _event_ids(home)
+
+
+def test_discard_new_thread_leaves_no_ghost_truth_record(archive_home) -> None:
+    """A thread created and discarded in the same transaction must leave NOTHING:
+    no row, and no staged truth record for the drain to write — the ghost file
+    that ``verify`` counts as drift and the next reindex resurrects as an empty
+    thread. Staged rows for OTHER threads must survive the unstage untouched."""
+    from thread_archive.importers._state import create_thread, discard_new_thread
+
+    init_db()
+    with get_session() as s:
+        keep_id = create_thread(s, source="claude-code", source_id="keep")
+        drop_id = create_thread(s, source="claude-code", source_id="drop")
+        discard_new_thread(s, drop_id)
+        s.commit()
+
+    with get_session() as s:
+        assert s.get(Thread, keep_id) is not None
+        assert s.get(Thread, drop_id) is None
+    assert _thread_file(archive_home, keep_id) is not None, "kept thread's record must land"
+    assert _thread_file(archive_home, drop_id) is None, "discarded thread must leave no file"

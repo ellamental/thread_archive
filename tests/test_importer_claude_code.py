@@ -514,3 +514,24 @@ def test_import_then_checkpoint_reindex_is_lossless(archive_home) -> None:
     assert after_events == before_events
     assert after_thread.source_id == "proj:s1"
     assert after_thread.title == before_title
+
+
+def test_empty_import_leaves_no_ghost_thread_or_truth_file(archive_home) -> None:
+    """A session whose lines yield zero events (thread created, then discarded)
+    must leave no thread row AND no truth file. A ghost ``threads/<id>.jsonl``
+    would drift ``verify`` and be resurrected as an empty thread on reindex."""
+    init_db()
+    f = archive_home / "empty.jsonl"
+    # A user line with empty content parses but builds no events.
+    _write_jsonl(f, [{**USER, "message": {"role": "user", "content": ""}}])
+
+    result = import_session_incremental(f, "proj:empty")
+    assert result.events_created == 0
+    assert result.thread_id == 0
+    assert result.is_new_thread is False
+
+    with get_session() as s:
+        row = s.execute(select(Thread).where(Thread.source_id == "proj:empty")).first()
+        assert row is None
+    ghosts = list((archive_home / "truth" / "threads").rglob("*.jsonl"))
+    assert ghosts == [], f"ghost truth file(s) written for a discarded thread: {ghosts}"

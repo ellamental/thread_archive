@@ -16,6 +16,7 @@ from .jsonl_log import (
     reset_handles,
     scan_truth_counts,
     try_shared_ingest_lock,
+    unstage_thread,
     write_events,
 )
 
@@ -24,6 +25,7 @@ __all__ = [
     "append_event_row",
     "append_kg_event",
     "record_thread",
+    "unstage_thread",
     "checkpoint",
     "reindex",
     "rebuild_truth_from_store",

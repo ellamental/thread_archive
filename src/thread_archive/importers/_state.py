@@ -11,7 +11,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Optional
 
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session
 
 from ..store import Event, ImportState, Thread
@@ -107,6 +107,21 @@ def create_thread(
 
     record_thread(session, thread)
     return thread.id
+
+
+def discard_new_thread(session: Session, thread_id: int) -> None:
+    """Remove a just-created thread that imported nothing — row AND staged truth.
+
+    The complement of :func:`create_thread` for the empty-import cleanup path.
+    Deleting only the row is not enough: ``create_thread`` staged the thread's
+    metadata record for its truth file, and a commit would still write that
+    ``threads/<id>.jsonl`` ghost — which ``verify`` counts as drift and the next
+    reindex resurrects as an empty thread. Only for threads created in THIS
+    session's transaction (nothing else may reference them yet)."""
+    session.execute(delete(Thread).where(Thread.id == thread_id))
+    from ..truth.jsonl_log import unstage_thread
+
+    unstage_thread(session, thread_id)
 
 
 def _restage_thread(session: Session, thread: Thread) -> None:

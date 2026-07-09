@@ -39,16 +39,15 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
 
-from sqlalchemy import delete
-
 from thread_import import DefaultEventBuilder
 from thread_import.parsers.claude_code import ClaudeCodeParser
 
-from ..store import Thread, get_session
+from ..store import get_session
 from ._events import import_lines
 from ._state import (
     adopt_if_unwatermarked,
     create_thread,
+    discard_new_thread,
     get_import_state,
     get_thread_by_source,
     set_thread_models_from_events,
@@ -223,9 +222,10 @@ def _run_frame(
     )
 
     # A freshly-created thread that imported nothing (no importable content) is
-    # cleaned up so we don't leave an empty thread behind.
+    # cleaned up so we don't leave an empty thread behind — row AND staged truth
+    # record, so no ghost threads/<id>.jsonl survives the commit.
     if is_new_thread and events_created == 0:
-        session.execute(delete(Thread).where(Thread.id == thread_id))
+        discard_new_thread(session, thread_id)
         thread_id = 0
         is_new_thread = False
     elif thread_id and events_created:
