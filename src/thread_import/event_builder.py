@@ -44,8 +44,8 @@ def compute_dedup_key(provider_message_id: str, event_type: str, payload: dict) 
     Form: ``{provider_message_id|content_anchor}:{event_type}:{block}:{content_hash}``.
     The key is NOT prefixed with the thread id: dedup is thread-scoped by the
     ``WHERE thread_id = ...`` clause in the importer, so the prefix would be
-    redundant (a retired code path did prepend ``{thread_id}:``; the
-    denamespace_dedup_keys backfill removed it — keep this bare).
+    redundant — and every stored key is bare (``denamespace_dedup_keys``
+    normalizes any prefixed stragglers); keep this bare.
     Same id + same content → same key (idempotent). Same id + edited content →
     different key (both versions kept). Events with no provider id fall back to a
     content anchor so they still dedup on content+type+position.

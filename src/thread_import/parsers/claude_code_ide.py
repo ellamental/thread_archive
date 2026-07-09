@@ -1,16 +1,12 @@
 """IDE-context extraction and timestamp helpers for the Claude Code parser.
 
-These are stateless, pure helpers lifted out of ``ClaudeCodeParser`` /
-``claude_code.py``: the IDE-context tag extraction (opened files, selections)
-plus the small timestamp-normalization helpers. They take their inputs
-explicitly and carry no instance state. ``claude_code.py`` re-imports them so
-``parent.<name>`` access and existing import sites keep resolving to the same
-objects; ``claude_code_blocks.py`` imports ``_extract_ide_context`` from here
-at module level (it previously did a deferred import from ``claude_code`` to
-dodge a circular import — that cycle is gone now).
-
-Behavior is identical to the in-module originals: every emitted block shape and
-return value is unchanged.
+Stateless, pure helpers shared by the Claude Code parser modules: the
+IDE-context tag extraction (opened files, selections) plus the small
+timestamp-normalization helpers. They take their inputs explicitly and carry
+no instance state. ``claude_code.py`` re-imports them so ``parent.<name>``
+access and import sites resolve to the same objects;
+``claude_code_blocks.py`` imports ``_extract_ide_context`` from here at
+module level (no deferred import — there is no circular-import cycle).
 """
 
 import re

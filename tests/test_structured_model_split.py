@@ -36,7 +36,8 @@ def _seed(events, tid=1):
 
 # One user turn whose tool loop starts on fable and escalates to opus mid-turn — the
 # real shape captured when a Claude Code session auto-upgrades fable→opus partway
-# through a turn (the whole turn used to collapse into one fable-tinted bubble).
+# through a turn (the split guards against the whole turn collapsing into one
+# fable-tinted bubble).
 _SWITCH = [
     ("user_message_sent", {"content": "do the thing"}, 1),
     ("api_request_started", {"model": "claude-fable-5"}, 1),
@@ -62,7 +63,7 @@ def test_model_switch_splits_into_separate_messages():
     ftypes = [b["type"] for b in fable["blocks"]]
     assert "tool_use" in ftypes and "tool_result" in ftypes
     assert any(b["type"] == "text" and "finishing on opus" in b["text"] for b in opus["blocks"])
-    # per-inference request tally (was one merged turn of 2 requests before the split)
+    # per-inference request tally (a collapsed turn would read as one turn of 2 requests)
     assert fable["meta"]["requests"] == 1 and opus["meta"]["requests"] == 1
 
 

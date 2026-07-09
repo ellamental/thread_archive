@@ -1,12 +1,12 @@
 """Drop-site regressions for the bulk export importer (claude.ai / xAI): no
 provider record may be silently skipped/dropped/truncated on import.
 
-Covers the fixed drop-sites in ``importers/exports.py``:
-3. An xAI/Grok response with no ``message`` text used to be dropped (``continue``),
-   losing image/attachment/generated-media and tool-only turns. It must now be
-   preserved with its full raw.
-4. A conversation that raised mid-import used to be swallowed with a one-line
-   warning (no traceback) and silently skipped. It must now log the traceback and
+Covers the drop-sites guarded in ``importers/exports.py``:
+3. An xAI/Grok response with no ``message`` text must not be dropped
+   (``continue``) — that loses image/attachment/generated-media and tool-only
+   turns. It must be preserved with its full raw.
+4. A conversation that raises mid-import must not be swallowed with a one-line
+   warning (no traceback) and silently skipped. It must log the traceback and
    surface a stub thread carrying id + raw + error.
 """
 
@@ -133,8 +133,8 @@ def test_xai_normal_text_turns_unchanged(archive_home) -> None:
 
 
 def test_failed_conversation_preserved_as_stub(archive_home, monkeypatch) -> None:
-    """A conversation that raises mid-import used to be silently skipped. It must
-    now surface a stub thread carrying id + raw + error, and count as `errored`."""
+    """A conversation that raises mid-import must not be silently skipped: it must
+    surface a stub thread carrying id + raw + error, and count as `errored`."""
     payload = {"conversations": [{
         "conversation": {"id": "conv-boom", "title": "Boom", "create_time": "2026-01-01T10:00:00Z"},
         "responses": [

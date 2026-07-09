@@ -64,7 +64,7 @@ def import_cursor_db(db_path) -> CursorDbScanResult:
             try:
                 composers[composer_id] = json.loads(value)
             except (json.JSONDecodeError, TypeError) as e:
-                # A corrupt composer blob used to vanish on a silent `continue`.
+                # A corrupt composer blob must not vanish on a silent `continue`.
                 # Log it and preserve a stub thread carrying the raw + error so a
                 # failed conversation is visible in the archive, not silently lost.
                 logger.warning(
@@ -91,8 +91,8 @@ def import_cursor_db(db_path) -> CursorDbScanResult:
                 data = json.loads(value)
                 data["_composerId"] = composer_id
             except (json.JSONDecodeError, TypeError) as e:
-                # A corrupt bubble used to vanish on a silent `continue`. Keep a raw
-                # stub instead: if a header references it, the unknown-bubble path
+                # A corrupt bubble must not vanish on a silent `continue`. Keep a raw
+                # stub: if a header references it, the unknown-bubble path
                 # (_cursor_to_normalized) preserves it as a `message` event.
                 logger.warning(
                     "import_cursor_db: bubble %s failed to parse; keeping raw stub: %s", key, e
@@ -141,9 +141,9 @@ def _import_cursor_error_stub(
 ) -> None:
     """Preserve a composer that failed to load/import as its own stub thread.
 
-    A corrupt (unparseable JSON) or blow-up composer used to vanish — a silent
-    ``continue`` on the load, or a logged-and-dropped ``skipping`` on the import.
-    Instead keep a stub thread carrying the raw payload + error under a distinct
+    A corrupt (unparseable JSON) or blow-up composer must not vanish behind a
+    silent ``continue`` on the load or a logged-and-dropped ``skipping`` on the
+    import. Keep a stub thread carrying the raw payload + error under a distinct
     ``:import-error`` source id, so the failure is visible in the archive and
     re-exportable while the real composer stays unimported and retryable on the
     next scan (its ``import_state`` watermark never advanced). Idempotent via the
@@ -301,8 +301,8 @@ def _build_cursor_messages(
             # ``params`` is Cursor's resolved arg dict; ``rawArgs`` the model's raw
             # JSON-string args. Prefer params, fall back to parsed rawArgs. ``result``
             # is the tool output. Capturing input+result lets us emit the tool_use +
-            # tool_execution events the builder produces (previously dropped, so a
-            # re-parse lost every tool call).
+            # tool_execution events the builder produces — dropping them would lose
+            # every tool call on a re-parse.
             tool_input = tool_data.get("params")
             if tool_input is None:
                 raw = tool_data.get("rawArgs")

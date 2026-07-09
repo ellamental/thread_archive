@@ -110,8 +110,8 @@ writes, which WAL makes safe (`store/_base.py`). No second daemon.
 **Archive-links.** With that persistent server, the archive owns the editor
 "open this conversation" link itself: `GET /api/archive-link?id=<session-uuid>&source=claude-code`
 resolves the session to its thread via `ImportState` and returns `{thread_id, url}`,
-or `&redirect=1` → a `302` to `/archive/<id>`. (This used to live in a separate
-backend; it's local now.)
+or `&redirect=1` → a `302` to `/archive/<id>`. (Local — no separate backend
+involved.)
 
 ## What it does
 
@@ -184,7 +184,7 @@ MIT — see [LICENSE](LICENSE).
 
 ## Origin
 
-thread-archive was carved out of a larger personal project ("thread") and reworked to
-stand on its own — serverless, dependency-free, no backend or external services. The split
-was deliberate and the package is self-contained, but it's young and the extraction was
-recent: expect the occasional rough edge or vestigial reference left over from its origins.
+thread-archive is the standalone member of a larger personal project ("thread"), built to
+stand on its own — serverless, dependency-free, no backend or external services. The
+package is self-contained, but it's young: expect the occasional rough edge or stray
+reference to its parent project.

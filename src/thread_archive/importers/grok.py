@@ -480,7 +480,7 @@ def _grok_user_turn(
     Synthetic/injected turns are preserved-and-tagged by the caller. Here we keep the
     FULL text — context-only turns (a line that is only ``<user_info>`` /
     ``<system-reminder>`` / ``<environment>`` with no ``<user_query>``) are preserved
-    rather than dropped, and the ``<user_query>`` span no longer discards the text
+    rather than dropped, and the ``<user_query>`` span keeps the text
     around it."""
     text_content = _grok_user_text(line)
     if text_content is None or not text_content.strip():
@@ -494,8 +494,7 @@ def _harvest_tool_names(lines: list[dict]) -> dict[str, str]:
     imported prefix of an incremental batch must contribute its names, or a
     ``tool_result`` landing in a later poll than its ``tool_calls`` line
     resolves to ``"unknown"`` — permanently, since the payload is baked into
-    the event log (the divergence the ingest-cutover soak caught on the
-    2026-06-29 grok sessions)."""
+    the event log."""
     names: dict[str, str] = {}
     for line in lines:
         if not isinstance(line, dict) or line.get("type") != "assistant":

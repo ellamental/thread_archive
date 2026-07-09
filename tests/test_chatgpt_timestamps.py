@@ -48,7 +48,7 @@ def test_explicit_offset_is_preserved():
 
 
 def test_naive_and_aware_results_are_comparable():
-    # Mixing the two previously raised TypeError on comparison.
+    # Mixing the two must not raise TypeError on comparison.
     assert parse_timestamp(1609459200) == parse_timestamp("2021-01-01T00:00:00")
 
 
@@ -57,7 +57,7 @@ def test_content_text_string_passthrough():
 
 
 def test_content_text_dict_does_not_crash():
-    # A dict `text` previously returned verbatim, then crashed on `.strip()`.
+    # A dict `text` must come back as "" — verbatim passthrough crashes on `.strip()`.
     assert extract_text_from_content({"text": {"nested": "x"}}) == ""
 
 

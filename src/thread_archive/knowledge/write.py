@@ -314,9 +314,9 @@ def review_queue(
 
     has_events = select(Event.id).where(Event.thread_id == Thread.id).exists()
     # 'Curated' = the librarian drew something from this thread: a live (non-archived)
-    # topic citation sourced from it, or a link touching it. This replaces the old
-    # ``indexed_summary IS NULL`` sentinel — review state is derived from the curation
-    # the thread produced, not from a summary column (summaries were retired).
+    # topic citation sourced from it, or a link touching it. Review state is
+    # derived from the curation the thread produced, never from a summary
+    # column (there is none).
     is_curated = or_(
         select(TopicMessage.id)
         .where(TopicMessage.thread_id == Thread.id, TopicMessage.archived_at.is_(None))

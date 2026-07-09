@@ -142,9 +142,9 @@ def resolve_archive_link(link_id: str, source: Optional[str] = None) -> Optional
     a bare uuid finds ``{project}:{uuid}``, ``rollout-…-{uuid}``, *and* the bare cloth uuid.
     ``source`` narrows the search to one provider (an editor knows its own); omit it (None)
     to resolve across every provider — what pasting a bare uuid as a thread id wants, since
-    the paster rarely knows which harness it came from. Newest import wins. Owned here now
-    that the watcher cohosts a persistent server — it used to live in the (separate) ops
-    backend."""
+    the paster rarely knows which harness it came from. Newest import wins. Owned here: the
+    watcher cohosts the persistent server, so the archive serves its own editor
+    links."""
     from sqlalchemy import select
 
     from ..store import ImportState, get_session

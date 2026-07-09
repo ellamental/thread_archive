@@ -1,12 +1,12 @@
 """Drop-site regressions for the Cursor DB importer: no provider record may be
 silently skipped/dropped/truncated on import (thread's "capture EVERYTHING").
 
-Covers the fixed drop-sites in ``importers/cursor.py``:
-1. An unknown bubble type used to map to a bare ``{"role": role}`` — dropping the
-   bubble's content/thinking/tool_call/raw. It must now be preserved as a shared
-   ``message`` event carrying all of it.
-2. A corrupt composer/bubble blob used to vanish (silent ``continue`` on a JSON
-   error, or logged-and-dropped ``skipping`` on a blow-up). It must now surface a
+Covers the drop-sites guarded in ``importers/cursor.py``:
+1. An unknown bubble type must not collapse to a bare ``{"role": role}`` —
+   that drops the bubble's content/thinking/tool_call/raw. It must be preserved
+   as a shared ``message`` event carrying all of it.
+2. A corrupt composer/bubble blob must not vanish (silent ``continue`` on a JSON
+   error, or logged-and-dropped ``skipping`` on a blow-up). It must surface a
    stub thread carrying id + raw + error, or (for a corrupt referenced bubble) be
    preserved as an unknown ``message`` event.
 """
@@ -89,7 +89,7 @@ def test_unknown_bubble_type_preserved_as_message_event(archive_home) -> None:
 
 
 def test_cursor_to_normalized_unknown_role_carries_content_not_bare_dict() -> None:
-    """Direct unit check: the mapper no longer returns a bare {"role": role} for an
+    """Direct unit check: the mapper must not return a bare {"role": role} for an
     unmodeled role — it carries content_text, content_blocks, and raw."""
     msg = {
         "id": "bx", "role": "unknown", "content": "keep me",
@@ -143,8 +143,8 @@ def test_modeled_user_assistant_still_work(archive_home) -> None:
 
 
 def test_corrupt_composer_preserved_as_stub_thread(archive_home) -> None:
-    """A composer whose JSON is corrupt used to vanish on a silent `continue`.
-    It must now surface a stub thread carrying the raw + error."""
+    """A composer whose JSON is corrupt must not vanish on a silent `continue`:
+    it must surface a stub thread carrying the raw + error."""
     init_db()
     db = archive_home / "state.vscdb"
     conn = sqlite3.connect(db)
@@ -164,8 +164,8 @@ def test_corrupt_composer_preserved_as_stub_thread(archive_home) -> None:
 
 
 def test_composer_import_blowup_preserved_as_stub(archive_home, monkeypatch) -> None:
-    """If a composer blows up mid-import, the whole conversation used to be skipped
-    (only logged). It must now surface a stub thread carrying id + raw + error."""
+    """If a composer blows up mid-import, the conversation must not be skipped
+    with only a log line: it must surface a stub thread carrying id + raw + error."""
     init_db()
     db = archive_home / "state.vscdb"
     conn = sqlite3.connect(db)
@@ -197,8 +197,8 @@ def test_composer_import_blowup_preserved_as_stub(archive_home, monkeypatch) -> 
 
 
 def test_corrupt_referenced_bubble_preserved_not_dropped(archive_home) -> None:
-    """A referenced bubble whose JSON is corrupt used to vanish on a silent
-    `continue`. Its raw must now survive via the unknown-bubble `message` path."""
+    """A referenced bubble whose JSON is corrupt must not vanish on a silent
+    `continue`: its raw must survive via the unknown-bubble `message` path."""
     init_db()
     db = archive_home / "state.vscdb"
     conn = sqlite3.connect(db)

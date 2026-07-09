@@ -1,7 +1,7 @@
-# thread-archive's CI suite manifest — consumed by thread-ci (~/dev/thread/ci).
-# The memory-of-record repo had no CI before the thread-ci carve (2026-07-02);
-# this is the payoff — its runs land in the same ~/.thread/ci store and the same
-# ops console as thread's. {repo} = this repo root, {home} = the user's home.
+# thread-archive's CI suite manifest — consumed by thread-ci
+# (~/dev/thread/ops/ci). Runs land in the same ~/.thread/ci store and the same
+# read surfaces as the monorepo's. {repo} = this repo root, {home} = the user's
+# home.
 #
 # Gates the documented quality bar (README → "confirm green"): ruff + the pytest
 # suite from the repo's own venv, and a typecheck of the frontend. Fast gates
@@ -14,9 +14,9 @@ default_timeout = 900
 # symlink, same reasoning as the monorepo ci.toml's path_prepend.
 path_prepend = ["{repo}/.venv/bin", "{home}/.local/share/fnm/aliases/default/bin"]
 
-# The family lint bar (config in pyproject [tool.ruff]; ruff joined the dev group
-# 2026-07-07). Memory-of-record code shouldn't be the least statically checked in
-# the family.
+# The family lint bar (config in pyproject [tool.ruff]; ruff is in the dev
+# dependency group). Memory-of-record code shouldn't be the least statically
+# checked in the family.
 [[suite]]
 name = "ruff"
 argv = ["{repo}/.venv/bin/ruff", "check", "."]

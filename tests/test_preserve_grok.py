@@ -1,10 +1,10 @@
 """The grok importer must capture EVERYTHING — no provider record silently dropped.
 
 Each test drives the real importer over a fixture ``chat_history.jsonl`` that contains
-one of the previously-dropped grok record shapes (system line, context-only user turn,
-synthetic/injected user turn, unmodeled line type) and proves the record now lands as
-at least one event, with its content and raw line preserved. See the drop-site fixes in
-``thread_archive.importers.grok``.
+one of the droppable grok record shapes (system line, context-only user turn,
+synthetic/injected user turn, unmodeled line type) and proves the record lands as
+at least one event, with its content and raw line preserved. See the drop-site
+guards in ``thread_archive.importers.grok``.
 """
 
 from __future__ import annotations
@@ -33,7 +33,7 @@ def _events() -> list[tuple[str, dict]]:
 
 def test_grok_system_and_unknown_lines_preserved(archive_home) -> None:
     """A ``system`` line and a novel/unmodeled line type both survive import as
-    events carrying their text and raw line (previously both silently dropped)."""
+    events carrying their text and raw line (never silently dropped)."""
     init_db()
     f = _write_grok_session(archive_home, [
         {"type": "user", "content": [{"type": "text", "text": "<user_query>hi</user_query>"}]},
@@ -70,8 +70,8 @@ def test_grok_system_and_unknown_lines_preserved(archive_home) -> None:
 
 
 def test_grok_user_context_is_not_stripped_or_dropped(archive_home) -> None:
-    """The full user text is kept: text around ``<user_query>`` is no longer
-    discarded, and a context-only turn (no query span) is no longer dropped."""
+    """The full user text is kept: text around ``<user_query>`` must not be
+    discarded, and a context-only turn (no query span) must not be dropped."""
     init_db()
     f = _write_grok_session(archive_home, [
         {"type": "user", "content": [{"type": "text",

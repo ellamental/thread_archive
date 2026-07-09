@@ -282,7 +282,7 @@ def _build_opencode_messages(
                 p.get("text", "") for p in parts if p.get("type") == "text" and p.get("text")
             )
             norm.append({"id": msg_id, "role": "user", "created_at": mtime.get("created"), "content": text})
-            # Non-text user parts (files/attachments/images) used to be discarded. Keep
+            # Non-text user parts (files/attachments/images) must not be discarded. Keep
             # them as a sibling turn under an unmodeled role so the builder's generic
             # `message` path preserves each raw part verbatim in content_blocks.
             other_parts = [p for p in parts if isinstance(p, dict) and p.get("type") != "text"]

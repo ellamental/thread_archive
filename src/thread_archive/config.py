@@ -13,8 +13,8 @@ A single archive lives under one *home* directory:
       dumps/              # drop zone: account exports dropped here are auto-imported
 
 `home` resolves from ``THREAD_ARCHIVE_HOME`` (env), else ``~/.thread/archive``
-(the family's ``~/.thread/<product>/`` namespace; the pre-2026-07-06 default was
-``~/.thread_archive``, now a compat symlink on migrated boxes).
+(the family's ``~/.thread/<product>/`` namespace; ``~/.thread_archive``
+survives as a compat symlink on some boxes).
 Truth and index paths can be overridden individually (e.g. for tests).
 """
 

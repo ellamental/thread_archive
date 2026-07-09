@@ -12,10 +12,9 @@ own thread, reusing the shared parse → :func:`assemble_events` write path.
   ``…/export_data/<uuid>/prod-grok-backend.json``. Threads land as ``source='grok'``
   (the conversation UUIDs are disjoint from the Grok-CLI session UUIDs).
 
-The loaders below are pure file-shape readers, ported verbatim from canonical
-``importer_claude_loaders`` / ``importer_xai_loaders``; the vendored ``ClaudeParser``
-does the claude.ai normalization. (ChatGPT exports are out of scope — the parser is
-vendored but, as in canonical, unwired.)
+The loaders below are pure file-shape readers; the vendored ``ClaudeParser``
+does the claude.ai normalization. (ChatGPT exports are out of scope — the
+parser is vendored but unwired.)
 """
 
 from __future__ import annotations
@@ -73,7 +72,7 @@ def classify_export(path: Path) -> Optional[str]:
     return None
 
 
-# ── claude.ai bundle loaders (ported verbatim) ───────────────────────────────
+# ── claude.ai bundle loaders ─────────────────────────────────────────────────
 
 
 def _load_claude_export(path: Path) -> dict:
@@ -166,7 +165,7 @@ def import_claude_ai_export(
     return result
 
 
-# ── xAI (Grok) export loaders (ported verbatim) ──────────────────────────────
+# ── xAI (Grok) export loaders ────────────────────────────────────────────────
 
 
 def _load_xai_export(path: Path) -> list:

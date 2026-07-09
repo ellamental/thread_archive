@@ -127,7 +127,7 @@ def test_ide_context_is_preserved_as_events(archive_home) -> None:
     """IDE context (opened files, selections) is preserved as ``ide_context`` events,
     not stripped away: a context-only turn survives import (its uuid is represented),
     and a turn carrying both text and a selection keeps *both*. Guards the fidelity
-    hole where the builder used to drop the whole turn once its tags were stripped."""
+    hole of dropping the whole turn once its tags are stripped."""
     init_db()
     context_only = {
         "type": "user", "uuid": "u_ctx", "timestamp": "2026-01-01T10:00:03Z",

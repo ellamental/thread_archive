@@ -19,7 +19,7 @@ def _write_jsonl(path, lines) -> None:
 
 def test_codex_preserves_unknown_response_item(archive_home) -> None:
     """A ``web_search_call`` response_item (outside the modeled reasoning/function/
-    tool set) used to return None and vanish. It must now become a ``content_block``
+    tool set) must not return None and vanish: it must become a ``content_block``
     event that keeps the raw payload verbatim."""
     init_db()
     f = archive_home / "codex.jsonl"
@@ -27,7 +27,7 @@ def test_codex_preserves_unknown_response_item(archive_home) -> None:
         {"type": "session_meta", "payload": {"id": "s", "cwd": "/proj", "model": "gpt-5"}},
         {"type": "event_msg", "timestamp": "2026-01-01T10:00:00Z",
          "payload": {"type": "user_message", "message": "search the web", "turn_id": "t1"}},
-        # A response_item kind the importer does not model — previously dropped.
+        # A response_item kind the importer does not model — must still be kept.
         {"type": "response_item", "timestamp": "2026-01-01T10:00:03Z",
          "payload": {"type": "web_search_call", "id": "ws1", "status": "completed",
                      "action": {"query": "python asyncio"}}},

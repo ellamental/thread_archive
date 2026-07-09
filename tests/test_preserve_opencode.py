@@ -104,7 +104,7 @@ def test_non_user_assistant_message_preserved(archive_home) -> None:
 # ── #2 non-text user parts ──────────────────────────────────────────────────
 
 def test_non_text_user_parts_preserved(archive_home) -> None:
-    """A file/attachment part on a user turn used to be filtered out; it must now be
+    """A file/attachment part on a user turn must not be filtered out: it must be
     kept alongside the user text as a sibling `message` event."""
     init_db()
     db = archive_home / "opencode.db"
