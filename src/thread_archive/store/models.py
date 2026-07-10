@@ -133,7 +133,12 @@ class Event(Base):
     ``dedup_key`` is a deterministic, timestamp-free natural identity (see the
     importer's ``compute_dedup_key``); NULL when an event lacks a stable identity.
     It is bare — dedup is thread-scoped by the importer's ``WHERE thread_id = ...``
-    clause, so the key carries no ``{thread_id}:`` prefix.
+    clause, so the key carries no ``{thread_id}:`` prefix. A partial UNIQUE index
+    on ``(thread_id, dedup_key)`` enforces that identity at the DB level: the
+    importer's membership check is advisory (it reads only what SQLite holds, so
+    a truth append whose commit was lost re-imports the same content under a
+    fresh id), and the reindex loader's INSERT OR REPLACE collapses such
+    same-content twins to one row instead of materializing both.
     """
 
     __tablename__ = "events"
@@ -150,7 +155,6 @@ class Event(Base):
     )
     caused_by_event_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     correlation_id: Mapped[str | None] = mapped_column(Text, default=None)
-    checksum: Mapped[str | None] = mapped_column(String(64), default=None)
     dedup_key: Mapped[str | None] = mapped_column(Text, default=None)
 
     __table_args__ = (
@@ -161,10 +165,20 @@ class Event(Base):
         Index("idx_events_caused_by", "caused_by_event_id"),
         Index("idx_events_api_call_id", "api_call_id"),
         Index("idx_events_api_call", "api_call_id", postgresql_where=text("(api_call_id IS NOT NULL)")),
-        Index("idx_events_checksum", "checksum", postgresql_where=text("(checksum IS NOT NULL)")),
         Index("idx_events_correlation", "correlation_id", postgresql_where=text("(correlation_id IS NOT NULL)")),
         Index("idx_events_stream_seq", "stream_id", "id"),
-        Index("idx_events_dedup_key", "dedup_key", postgresql_where=text("(dedup_key IS NOT NULL)")),
+        # DB-level dedup: one row per (thread, natural identity). Partial — NULL
+        # dedup_keys (events with no stable identity) are exempt. On a live index
+        # created before this index existed, enforcement arrives with the next
+        # reindex (create_all does not retrofit indexes onto existing tables).
+        Index(
+            "uq_events_thread_dedup",
+            "thread_id",
+            "dedup_key",
+            unique=True,
+            sqlite_where=text("dedup_key IS NOT NULL"),
+            postgresql_where=text("(dedup_key IS NOT NULL)"),
+        ),
         # Persistent id high-water across DELETE — see the Thread note. This is the
         # column that bit us: the live watcher mints event ids on insert, so a reindex
         # running against a live watcher must not be able to recycle a historical id.

@@ -125,6 +125,17 @@ def _import_cc(
 
     total_lines = len(all_lines)
     start_line = import_state.last_line_count if import_state else 0
+    if import_state and current_file_size < import_state.last_file_size:
+        # The source file shrank — it was rewritten, not appended. The line cursor
+        # indexes into content that no longer exists; left alone, rewritten content
+        # would silently never import (and every poll would re-read the file just to
+        # early-out). Rewind and re-import from the top: the dedup_key membership
+        # check collapses everything already held, so only genuinely-new content lands.
+        logger.warning(
+            "%s %s: source shrank (%d → %d bytes) — rewinding cursor, re-importing",
+            source, source_id, import_state.last_file_size, current_file_size,
+        )
+        start_line = 0
     if start_line >= total_lines:
         return IncrementalImportResult(
             lines_processed=0,

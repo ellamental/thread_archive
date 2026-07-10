@@ -193,19 +193,52 @@ def cmd_backup(args: argparse.Namespace) -> int:
     res = api.backup(args.dest, home=args.home)
     mb = res["bytes_copied"] / (1024 * 1024)
     print(f"backed up {res['truth_dir']} → {res['dest']}: {res['files_copied']} files ({mb:.1f} MB copied)")
+    if res["deletions_skipped"]:
+        print(
+            f"WARNING: {res['deletions_skipped']} stale destination files kept — "
+            "planned deletions exceeded the safety bound (gutted source?); mirror ran additively"
+        )
+    if not res["mirror_complete"]:
+        print(
+            f"MIRROR INCOMPLETE: {res['dest_missing_files']} source files missing at dest, "
+            f"{res['dest_divergent_files']} divergent"
+        )
+        return 1
     return 0
 
 
 def cmd_verify(args: argparse.Namespace) -> int:
     from . import api
 
-    res = api.verify(home=args.home)
+    res = api.verify(home=args.home, deep=args.deep)
+    t = res["truth"]
     print(
-        f"truth: threads={res['truth']['threads']} events={res['truth']['events']} "
-        f"parse_errors={res['truth']['parse_errors']}"
+        f"truth: threads={t['threads']} events={t['events']} "
+        f"effective={t['events_effective']} "
+        f"superseded={t['duplicate_id_lines'] + t['duplicate_content_lines']} "
+        f"parse_errors={t['parse_errors']}"
     )
     print(f"index: threads={res['index']['threads']} events={res['index']['events']}")
     print(f"drift: threads={res['drift']['threads']:+d} events={res['drift']['events']:+d}")
+    if args.deep:
+        dp = res["deep"]
+        print(
+            f"deep:  index_only={dp['events_index_only']} "
+            f"missing={dp['events_missing_from_index']} "
+            f"superseded_twins={dp['events_superseded_twins']} "
+            f"(watermark {dp['watermark']})"
+        )
+        print(
+            f"       kg index_only={dp['kg']['index_only']} truth_only={dp['kg']['truth_only']}; "
+            f"dangling links={dp['dangling']['link_endpoints']} "
+            f"citations={dp['dangling']['citation_events']} "
+            f"events={dp['dangling']['event_threads']}; "
+            f"dup_pairs={dp['duplicate_content_pairs_index']}"
+        )
+        if dp["events_missing_from_index"]:
+            print(f"       missing sample: {dp['missing_sample']}")
+        if dp["events_index_only"]:
+            print(f"       index-only sample: {dp['index_only_sample']}")
     print("OK" if res["ok"] else "DRIFT DETECTED")
     return 0 if res["ok"] else 1
 
@@ -324,6 +357,10 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_verify = sub.add_parser("verify", help="integrity check: truth parses + matches the index")
     _add_home_arg(p_verify)
+    p_verify.add_argument(
+        "--deep", action="store_true",
+        help="id-level truth↔index diff + knowledge-layer and dangling-reference checks (slower)",
+    )
     p_verify.set_defaults(func=cmd_verify)
 
     return parser

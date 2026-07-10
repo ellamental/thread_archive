@@ -1,5 +1,70 @@
 # Changelog
 
+## 2026-07-10 — dedup at the DB, deep verify, second-order hardening (review follow-up 2, thread 3716378)
+
+A second integrity review unwound the 07-07 residue end to end. The reindex race
+had lost the source watermarks; the re-poll re-imported ~22k turns as **keyed**
+rows beside their **pre-dedup-era NULL-key originals** (the membership check reads
+``dedup_key`` and can't match NULL), and those re-import commits went to the
+orphaned index inode — so the index of record served single copies while the truth
+held every affected turn twice. A dedup-key backfill had already keyed the
+originals, but **in the index only** — event truth lines have no update-in-place —
+so the first rebuild from truth reverted the keys and materialized the duplicates.
+Fixed durably: ``backfill_recompute --collapse`` re-keys the originals and deletes
+each duplicated copy (cited/lower-id survivor; the no-anchor tool-result class is
+matched from the twin's own key: type + block + content hash + occurred_at), and
+``rebuild_truth_from_store`` re-emits the truth keyed and single-copy, so a rebuild
+now reproduces the repair instead of undoing it. 26,970 pairs collapsed; 236,599
+keys backfilled. Changes:
+
+- **Dedup is now a DB constraint.** A partial UNIQUE index on
+  ``events(thread_id, dedup_key)`` (NULL-exempt) backs the importer's advisory
+  membership check. The reindex loader's INSERT OR REPLACE now collapses
+  same-content twins to one row (reported as ``events_collapsed``), and a live
+  insert that slips past the membership check fails loudly instead of
+  duplicating. Enforcement on an existing index arrives with its next reindex.
+  The unused ``events.checksum`` column is dropped from the model.
+- **Verify measures what a rebuild materializes.** The truth is append-only, so
+  it legitimately accumulates superseded lines (re-appended ids, same-content
+  twins); ``verify`` now compares the index against the collapsed
+  ``events_effective`` count and reports the superseded remainder separately.
+  ``verify --deep`` adds an id-level truth↔index diff below a stable id
+  watermark (in-flight ingest can't false-alarm), classifies truth-only ids as
+  superseded-twin (benign) vs missing (recoverable — reindex), flags index-only
+  ids (the forbidden direction), and checks kg-log parity plus dangling
+  link/citation/thread references.
+- **One truth writer at a time.** An exclusive flock now serializes append
+  batches (the before-commit drain, the checkpoint metadata backstop, the
+  rebalance move loop) across processes: interleaved same-file appends can no
+  longer corrupt lines, and the drain-failure truncate can no longer chop
+  another writer's records.
+- **Dirent durability.** Creating a truth file (and publishing a manifest)
+  fsyncs the parent directory, closing the power-loss window where a fully
+  fsynced new file vanishes from the directory while its SQLite commit survives.
+- **Append handles validate their inode.** A truth re-emit atomically replaces
+  every thread file; a writer's cached append handle then points at the unlinked
+  old inode and its appends vanish while their commits survive. Deep verify
+  caught this live (72 index-only events within minutes of the re-emit — the
+  watcher's cache); ``_handle`` now fstat-checks the cached handle against the
+  path and reopens on mismatch. The lost lines were restored by a second
+  re-emit.
+- **Shrunk sources rewind.** A source file smaller than its watermark was
+  silently ignored forever; the importers now log it and re-import from the top
+  (dedup collapses everything already held).
+- **Backup guard rails.** The mirror refuses to propagate a gutted source
+  (deletions bounded by a floor + fraction of the destination), holds the
+  rebalance lock so a shard sweep can't strand a moved file in neither layout,
+  and ends with a structural source⊆dest check (``mirror_complete``; CLI exits
+  nonzero). Hook-context sidecar fallback timestamps are now timezone-aware and
+  flagged ``timestamp_inferred`` like every other fabricated time.
+- **Operational.** The daily backup+verify LaunchAgent is installed (dest
+  ``~/Backups/thread-archive-truth`` — same disk until an external volume
+  exists — with a notify-on-failure hook into the lab backend), a dated
+  pre-repair truth snapshot lives at
+  ``~/Backups/thread-archive-truth-pre-keyfill-20260710``, and the two dangling
+  citations (topic evidence pointing at event ids from a prior index generation)
+  were tombstoned and re-cited against the surviving events.
+
 ## 2026-07-10 — data-integrity hardening (review follow-up, thread 3716374)
 
 An integrity review reproduced four loss/corruption paths in the truth store; all

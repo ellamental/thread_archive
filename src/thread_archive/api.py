@@ -267,20 +267,32 @@ def watch(*, home: Optional[str] = None, interval: float = 5.0, once: bool = Fal
     return None
 
 
-def _mirror_dir(src: Path, dest: Path, *, delete: bool = False) -> tuple[int, int, int]:
+# Delete-sync sanity bound: refuse to delete more than this fraction of the
+# destination's files (once past the absolute floor). A mass-wipe of the source —
+# a bug emptying truth/, an accidental rm — must not propagate to the last backup;
+# a legitimate mass-move (shard rebalance) re-homes files, so the copies land
+# first and the stale paths deleted stay a bounded fraction only when the copy
+# half of the mirror actually ran.
+_MIRROR_DELETE_FLOOR = 64
+_MIRROR_DELETE_MAX_FRACTION = 0.25
+
+
+def _mirror_dir(src: Path, dest: Path, *, delete: bool = False) -> dict:
     """Incrementally mirror ``src`` into ``dest`` (skip files unchanged by size +
-    mtime). Returns ``(files_copied, bytes_copied, files_deleted)``. ``copy2``
-    preserves mtime so a re-run copies only what changed — the truth dir is
-    append-mostly, so a periodic backup moves little.
+    mtime). ``copy2`` preserves mtime so a re-run copies only what changed — the
+    truth dir is append-mostly, so a periodic backup moves little.
 
     ``delete=True`` makes it a true mirror: destination files with no source
     counterpart are removed (and emptied directories pruned). Without it the mirror
     is additive, and a shard rebalance — which *moves* thread files to new paths —
     leaves the backup holding both layouts; on a restore-reindex the stale copy
-    loads last (last-wins) and shadows the current record."""
+    loads last (last-wins) and shadows the current record. Deletion is bounded:
+    when the planned deletions exceed both the absolute floor and the fraction cap
+    of the destination's files, they are skipped (``deletions_skipped``) — the
+    mirror stays additive rather than letting a gutted source strip the backup."""
     import shutil
 
-    copied = total = deleted = 0
+    copied = total = deleted = skipped = 0
     for sp in src.rglob("*"):
         if sp.is_dir():
             continue
@@ -294,20 +306,26 @@ def _mirror_dir(src: Path, dest: Path, *, delete: bool = False) -> tuple[int, in
         copied += 1
         total += sp.stat().st_size
     if delete:
-        doomed_dirs: list[Path] = []
-        for dp in dest.rglob("*"):
-            if dp.is_dir():
-                doomed_dirs.append(dp)
-                continue
-            if not (src / dp.relative_to(dest)).exists():
+        dest_files = [dp for dp in dest.rglob("*") if not dp.is_dir()]
+        doomed = [dp for dp in dest_files if not (src / dp.relative_to(dest)).exists()]
+        limit = max(_MIRROR_DELETE_FLOOR, int(len(dest_files) * _MIRROR_DELETE_MAX_FRACTION))
+        if len(doomed) > limit:
+            skipped = len(doomed)
+        else:
+            for dp in doomed:
                 dp.unlink()
                 deleted += 1
-        for dp in sorted(doomed_dirs, reverse=True):  # deepest first
-            try:
-                dp.rmdir()  # only succeeds when empty
-            except OSError:
-                pass
-    return copied, total, deleted
+            for dp in sorted((p for p in dest.rglob("*") if p.is_dir()), reverse=True):
+                try:
+                    dp.rmdir()  # only succeeds when empty
+                except OSError:
+                    pass
+    return {
+        "files_copied": copied,
+        "bytes_copied": total,
+        "files_deleted": deleted,
+        "deletions_skipped": skipped,
+    }
 
 
 def backup(dest: str, *, home: Optional[str] = None) -> dict:
@@ -318,9 +336,18 @@ def backup(dest: str, *, home: Optional[str] = None) -> dict:
     metadata updates so the on-disk truth is a complete restore set — then mirrors
     ``truth/`` into ``dest`` incrementally. Point ``dest`` at a *different disk /
     machine*: for pre-retention history the truth log is the only copy.
+
+    The mirror holds the rebalance lock so a shard sweep can't move files under it
+    (which could otherwise leave a moved file in *neither* layout in the backup for
+    a whole cycle), and it finishes with a structural check — per-file size parity
+    of every source ``.jsonl`` against its destination copy (``mirror_complete``).
+    Live appends between the copy pass and the check make a file *larger* at the
+    source; that isn't a mirror failure, so the check tolerates dest ≤ src growth
+    on files it copied and only flags missing or divergent copies.
     """
     open_archive(home)
     from .truth import checkpoint as _checkpoint
+    from .truth.jsonl_log import _try_rebalance_lock
 
     _checkpoint()  # full: overlays + metadata-update backstop → truth is a complete restore set
     paths = resolve_paths(home)
@@ -329,24 +356,56 @@ def backup(dest: str, *, home: Optional[str] = None) -> dict:
     # Delete-sync only when the source looks like a real, checkpointed truth dir —
     # a mirror of an empty/foreign source must never strip a good backup.
     delete = (paths.truth_dir / "manifest.json").exists()
-    copied, total, deleted = _mirror_dir(paths.truth_dir, dest_path, delete=delete)
+    with _try_rebalance_lock() as held:
+        # If a rebalance sweep is mid-flight, mirror additively (no deletions):
+        # copies of both layouts are safe; stale-path deletion waits for the next run.
+        result = _mirror_dir(paths.truth_dir, dest_path, delete=delete and held)
+
+    # Structural completeness: every source .jsonl must exist at the destination,
+    # at ≥ its size at copy time (append-only files may have grown since).
+    missing = divergent = 0
+    for sp in paths.truth_dir.rglob("*.jsonl"):
+        dp = dest_path / sp.relative_to(paths.truth_dir)
+        try:
+            ds = dp.stat()
+        except OSError:
+            missing += 1
+            continue
+        if ds.st_size > sp.stat().st_size:
+            divergent += 1  # dest larger than source: divergent copy, not growth
+    result["mirror_complete"] = missing == 0 and divergent == 0
+    result["dest_missing_files"] = missing
+    result["dest_divergent_files"] = divergent
     return {
         "truth_dir": str(paths.truth_dir),
         "dest": str(dest_path),
-        "files_copied": copied,
-        "bytes_copied": total,
-        "files_deleted": deleted,
+        **result,
     }
 
 
-def verify(*, home: Optional[str] = None) -> dict:
+def verify(*, home: Optional[str] = None, deep: bool = False) -> dict:
     """Integrity check: the JSONL truth parses cleanly and matches the SQLite index.
 
-    Scans every per-thread truth file (counting threads + events, tallying parse
-    errors) and compares to the projection's counts. ``ok`` is True only when the
-    counts align and nothing failed to parse. A negative event drift (truth > index)
-    is the *safe* direction — ``archive reindex`` rebuilds the index from truth; a
+    Scans every per-thread truth file and compares to the projection's counts.
+    The index is compared against ``events_effective`` — the truth's line count
+    after collapsing superseded lines (re-appended ids, same-content twins), which
+    is exactly what a reindex materializes; the raw line count and the superseded
+    remainder are reported alongside. ``ok`` is True only when the effective counts
+    align and nothing failed to parse. A negative event drift (truth > index) is
+    the *safe* direction — ``archive reindex`` rebuilds the index from truth; a
     positive drift (index > truth) or any parse error is a real integrity problem.
+
+    ``deep=True`` adds an id-level comparison (both directions, below a stable id
+    watermark so in-flight ingest can't false-alarm), knowledge-layer parity, and
+    dangling-reference checks. Slower — it re-reads the whole truth directory and
+    queries the index per thread — but it sees what count parity can't: missing
+    content masked by compensating errors, and exactly which events drifted.
+
+    The shallow comparison is watermark-bounded on both sides too (ids at or
+    below the index maxima captured up front), so verify can run against a live
+    watcher without racing its ingest. An *empty* index gets no bound — a
+    restored-but-not-yet-reindexed archive must show its full drift, not a
+    vacuous OK.
     """
     open_archive(home)
     from sqlalchemy import func, select
@@ -354,17 +413,164 @@ def verify(*, home: Optional[str] = None) -> dict:
     from .store import Event, Thread, get_session
     from .truth import scan_truth_counts
 
-    truth = scan_truth_counts()
     with get_session() as s:
-        idx_threads = s.execute(select(func.count()).select_from(Thread)).scalar() or 0
-        idx_events = s.execute(select(func.count()).select_from(Event)).scalar() or 0
+        watermark = s.execute(select(func.max(Event.id))).scalar() or 0
+        thread_watermark = s.execute(select(func.max(Thread.id))).scalar() or 0
+    truth = scan_truth_counts(
+        event_id_max=watermark or None, thread_id_max=thread_watermark or None,
+    )
+    with get_session() as s:
+        thread_q = select(func.count()).select_from(Thread)
+        if thread_watermark:
+            thread_q = thread_q.where(Thread.id <= thread_watermark)
+        idx_threads = s.execute(thread_q).scalar() or 0
+        event_q = select(func.count()).select_from(Event)
+        if watermark:
+            event_q = event_q.where(Event.id <= watermark)
+        idx_events = s.execute(event_q).scalar() or 0
     drift_threads = int(idx_threads) - truth["threads"]
-    drift_events = int(idx_events) - truth["events"]
-    return {
+    drift_events = int(idx_events) - truth["events_effective"]
+    result = {
         "ok": drift_threads == 0 and drift_events == 0 and truth["parse_errors"] == 0,
         "truth": truth,
         "index": {"threads": int(idx_threads), "events": int(idx_events)},
         "drift": {"threads": drift_threads, "events": drift_events},
+    }
+    if deep:
+        result["deep"] = _verify_deep(watermark)
+        result["ok"] = result["ok"] and result["deep"]["ok"]
+    return result
+
+
+def _verify_deep(watermark: int) -> dict:
+    """Id-level truth↔index comparison plus knowledge-layer checks.
+
+    Only events with ``id <= watermark`` (committed before the scan began) are
+    compared: the truth line for any such event was written *before* its commit
+    (the staging invariant), so at any later read it must be present — and any
+    index row at or below the watermark must have a truth line. Everything above
+    the watermark is in-flight ingest and skipped.
+
+    Truth-only ids are split into two classes: **superseded** (a same-content twin
+    — equal ``dedup_key`` — exists in the index under another id; the benign
+    residue of a lost-commit re-import, collapsed on reindex) and **missing**
+    (no twin: content the index genuinely lacks — recoverable via reindex).
+    Index-only ids are the forbidden direction and always fail.
+    """
+    import json as _json
+
+    from sqlalchemy import text as sa_text
+
+    from .store import get_session
+    from .truth.jsonl_log import KG_EVENTS_FILE, THREADS_SUBDIR, _iter_jsonl, log_dir
+
+    d = log_dir()
+    threads_dir = d / THREADS_SUBDIR
+
+    # Pass 1 — truth ids per thread (≤ watermark), and which files hold each thread.
+    truth_ids: dict[int, set[int]] = {}
+    thread_files: dict[int, list] = {}
+    if threads_dir.exists():
+        for path in threads_dir.rglob("*.jsonl"):
+            with open(path, encoding="utf-8", errors="replace") as fh:
+                for line in fh:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        rec = _json.loads(line)
+                    except ValueError:
+                        continue
+                    if rec.get("type", "event") != "event":
+                        continue
+                    ev_id, tid = rec.get("id"), rec.get("thread_id")
+                    if ev_id is None or tid is None or ev_id > watermark:
+                        continue
+                    truth_ids.setdefault(int(tid), set()).add(int(ev_id))
+                    files = thread_files.setdefault(int(tid), [])
+                    if path not in files:
+                        files.append(path)
+
+    # Pass 2 — per-thread diff against the index.
+    index_only: list[int] = []
+    missing: list[int] = []
+    superseded = 0
+    with get_session() as s:
+        idx_tids = {
+            r[0] for r in s.execute(sa_text(
+                "SELECT DISTINCT thread_id FROM events WHERE id <= :wm"), {"wm": watermark})
+        }
+        for tid in sorted(set(truth_ids) | idx_tids):
+            rows = s.execute(sa_text(
+                "SELECT id, dedup_key FROM events WHERE thread_id = :t AND id <= :wm"),
+                {"t": tid, "wm": watermark}).all()
+            idx_set = {r[0] for r in rows}
+            t_set = truth_ids.get(tid, set())
+            index_only.extend(sorted(idx_set - t_set))
+            orphan_ids = t_set - idx_set
+            if orphan_ids:
+                idx_keys = {r[1] for r in rows if r[1]}
+                # Re-read only this thread's files to fetch the orphans' dedup_keys.
+                orphan_keys: dict[int, str | None] = {}
+                for path in thread_files.get(tid, []):
+                    for rec in _iter_jsonl(path):
+                        if rec.get("type", "event") == "event" and rec.get("id") in orphan_ids:
+                            orphan_keys[rec["id"]] = rec.get("dedup_key")
+                for ev_id in sorted(orphan_ids):
+                    if orphan_keys.get(ev_id) and orphan_keys[ev_id] in idx_keys:
+                        superseded += 1
+                    else:
+                        missing.append(ev_id)
+
+        # Knowledge layer: the kg truth log vs its table, by id.
+        kg_line_ids = {
+            rec.get("id") for rec in _iter_jsonl(d / KG_EVENTS_FILE)
+            if rec.get("id") is not None
+        }
+        kg_row_ids = {r[0] for r in s.execute(sa_text("SELECT id FROM kg_events"))}
+        kg_index_only = len(kg_row_ids - kg_line_ids)
+        kg_truth_only = len(kg_line_ids - kg_row_ids)
+
+        # Dangling references.
+        dangling_links = s.execute(sa_text(
+            "SELECT count(*) FROM thread_links l WHERE "
+            "NOT EXISTS(SELECT 1 FROM threads t WHERE t.id = l.source_thread_id) "
+            "OR NOT EXISTS(SELECT 1 FROM threads t WHERE t.id = l.target_thread_id)"
+        )).scalar() or 0
+        dangling_citations = s.execute(sa_text(
+            "SELECT count(*) FROM topic_messages m "
+            "WHERE m.archived_at IS NULL "  # tombstoned evidence is history, not a live ref
+            "AND NOT EXISTS(SELECT 1 FROM events e WHERE e.id = m.event_id)"
+        )).scalar() or 0
+        dangling_events = s.execute(sa_text(
+            "SELECT count(*) FROM events e "
+            "WHERE NOT EXISTS(SELECT 1 FROM threads t WHERE t.id = e.thread_id)"
+        )).scalar() or 0
+        dup_pairs = s.execute(sa_text(
+            "SELECT count(*) FROM (SELECT 1 FROM events WHERE dedup_key IS NOT NULL "
+            "GROUP BY thread_id, dedup_key HAVING count(*) > 1)"
+        )).scalar() or 0
+
+    ok = (
+        not index_only and not missing
+        and kg_index_only == 0
+        and dangling_links == 0 and dangling_citations == 0 and dangling_events == 0
+    )
+    return {
+        "ok": ok,
+        "watermark": watermark,
+        "events_index_only": len(index_only),
+        "index_only_sample": index_only[:10],
+        "events_missing_from_index": len(missing),
+        "missing_sample": missing[:10],
+        "events_superseded_twins": superseded,
+        "kg": {"index_only": kg_index_only, "truth_only": kg_truth_only},
+        "dangling": {
+            "link_endpoints": int(dangling_links),
+            "citation_events": int(dangling_citations),
+            "event_threads": int(dangling_events),
+        },
+        "duplicate_content_pairs_index": int(dup_pairs),
     }
 
 

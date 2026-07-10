@@ -10,6 +10,7 @@ when no session is passed.
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 from typing import Callable, Optional
 
@@ -24,6 +25,8 @@ from ._state import (
     get_thread_by_source,
     upsert_import_state,
 )
+
+logger = logging.getLogger(__name__)
 
 
 def _run(
@@ -49,6 +52,15 @@ def _run(
 
     total_lines = len(all_lines)
     start_line = import_state.last_line_count if import_state else 0
+    if import_state and current_file_size < import_state.last_file_size:
+        # Shrunk = rewritten, not appended: the cursor indexes into content that no
+        # longer exists, so rewound content would silently never import. Re-import
+        # from the top — dedup_key membership collapses everything already held.
+        logger.warning(
+            "%s %s: source shrank (%d → %d bytes) — rewinding cursor, re-importing",
+            source, source_id, import_state.last_file_size, current_file_size,
+        )
+        start_line = 0
     if start_line >= total_lines:
         return IncrementalImportResult(
             0,

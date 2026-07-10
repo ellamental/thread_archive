@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import logging
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
@@ -74,6 +74,11 @@ def import_sidecar_lines(
             payload["prompt"] = prompt
         if entry.get("metadata"):
             payload["metadata"] = entry["metadata"]
+        if occurred_at is None:
+            # Same convention as the event builder: a fabricated timestamp is
+            # flagged, never silent — and timezone-aware like every other write.
+            payload["timestamp_inferred"] = True
+            payload["timestamp_source"] = "fabricated_no_source"
 
         # Deterministic identity over the line's stable parts so a re-import collapses.
         content_anchor = f"{ts_str or ''}:{hook_name}:{context}"
@@ -86,7 +91,7 @@ def import_sidecar_lines(
             stream_id=str(uuid.uuid4()),
             event_type="hook_context",
             payload=payload,
-            occurred_at=occurred_at or datetime.now(),
+            occurred_at=occurred_at or datetime.now(timezone.utc),
             dedup_key=dedup_key,
         ))
 
