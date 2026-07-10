@@ -299,10 +299,22 @@ def _fsync_handle(path: Path) -> None:
     Callers batch: write every line of a logical unit via :func:`_append_line`
     (flush-only), then fsync each touched file once — one fsync per file per
     commit, not per line, keeps bulk imports fast while closing the power-loss
-    window between the OS page cache and the platter."""
+    window between the OS page cache and the platter.
+
+    A batch touching more than ``_MAX_OPEN_HANDLES`` files LRU-evicts its early
+    handles before this runs; eviction close() flushes to the OS but does not
+    fsync, so an evicted file is reopened here and fsynced by fd — the durability
+    bar must not quietly drop for bulk batches. An OSError propagates (fail fast,
+    same as an fsync failure on a live handle)."""
     fh = _handles.get(str(path))
     if fh is not None and not fh.closed:
         os.fsync(fh.fileno())
+        return
+    fd = os.open(path, os.O_RDONLY)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
 
 
 def reset_handles() -> None:
@@ -562,8 +574,16 @@ def checkpoint(*, snapshots: bool = True) -> dict:
     m = _read_manifest(d)
     depth = max(depth, int(m.get("shard_depth", 0)))
     m["shard_depth"] = depth
+    # The new watermark is captured BEFORE the changed-threads query: a thread
+    # updated between the query and a later stamp would fall below the stamp and
+    # be missed by every later backstop pass. Captured-first, such an update is
+    # re-scanned next pass; the worst case is a harmless re-appended thread record
+    # (latest-wins). Updates whose transaction is still uncommitted when the query
+    # runs are the primary seam's job — every in-tree metadata writer also stages
+    # its record inline (``record_thread``); this pass is only the backstop.
+    checkpoint_started_at = _now_iso()
     counts["threads_updated"] = _checkpoint_changed_threads(d, depth, m.get("last_checkpoint_at"))
-    m["last_checkpoint_at"] = _now_iso()
+    m["last_checkpoint_at"] = checkpoint_started_at
     _write_manifest(d, m)
     logger.info("jsonl_log checkpoint(snapshots=%s): %s", snapshots, counts)
     return counts

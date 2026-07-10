@@ -456,6 +456,11 @@ def _verify_deep(watermark: int) -> dict:
     residue of a lost-commit re-import, collapsed on reindex) and **missing**
     (no twin: content the index genuinely lacks — recoverable via reindex).
     Index-only ids are the forbidden direction and always fail.
+
+    The search surface is checked too (both FTS tables are written in the same
+    transaction as their events): orphan shadow rows and a shadow↔FTS5 row-count
+    mismatch fail; indexable events with no shadow row are reported only, since an
+    event with no extractable text legitimately has none.
     """
     import json as _json
 
@@ -551,10 +556,42 @@ def _verify_deep(watermark: int) -> dict:
             "GROUP BY thread_id, dedup_key HAVING count(*) > 1)"
         )).scalar() or 0
 
+        # Search-surface parity. The FTS shadow (events_fts) and the FTS5 table
+        # (event_search) are written in the same transaction as their events, so
+        # below the watermark: no shadow row may point at a missing event (orphans),
+        # and the two surfaces must hold the same row count. Coverage — indexable
+        # events with no shadow row — is reported but not failed on: an event whose
+        # payload yields no extractable text legitimately has no row, so a nonzero
+        # count is a signal to investigate, not proof of drift.
+        fts_orphans = fts_shadow_rows = fts5_rows = fts_uncovered = 0
+        has_fts = s.execute(sa_text(
+            "SELECT count(*) FROM sqlite_master WHERE name IN ('events_fts', 'event_search')"
+        )).scalar() == 2
+        if has_fts:
+            fts_orphans = s.execute(sa_text(
+                "SELECT count(*) FROM events_fts f WHERE f.event_id <= :wm "
+                "AND NOT EXISTS(SELECT 1 FROM events e WHERE e.id = f.event_id)"),
+                {"wm": watermark}).scalar() or 0
+            fts_shadow_rows = s.execute(sa_text(
+                "SELECT count(*) FROM events_fts WHERE event_id <= :wm"),
+                {"wm": watermark}).scalar() or 0
+            fts5_rows = s.execute(sa_text(
+                "SELECT count(*) FROM event_search WHERE event_id <= :wm"),
+                {"wm": watermark}).scalar() or 0
+            from .retrieval._extract import INDEXABLE_EVENT_TYPES
+
+            types = ", ".join(f"'{t}'" for t in INDEXABLE_EVENT_TYPES)
+            fts_uncovered = s.execute(sa_text(
+                f"SELECT count(*) FROM events e WHERE e.id <= :wm "
+                f"AND e.event_type IN ({types}) "
+                "AND NOT EXISTS(SELECT 1 FROM events_fts f WHERE f.event_id = e.id)"),
+                {"wm": watermark}).scalar() or 0
+
     ok = (
         not index_only and not missing
         and kg_index_only == 0
         and dangling_links == 0 and dangling_citations == 0 and dangling_events == 0
+        and fts_orphans == 0 and fts_shadow_rows == fts5_rows
     )
     return {
         "ok": ok,
@@ -571,6 +608,12 @@ def _verify_deep(watermark: int) -> dict:
             "event_threads": int(dangling_events),
         },
         "duplicate_content_pairs_index": int(dup_pairs),
+        "fts": {
+            "orphan_rows": int(fts_orphans),
+            "shadow_rows": int(fts_shadow_rows),
+            "fts5_rows": int(fts5_rows),
+            "uncovered_indexable_events": int(fts_uncovered),
+        },
     }
 
 

@@ -235,6 +235,12 @@ def cmd_verify(args: argparse.Namespace) -> int:
             f"events={dp['dangling']['event_threads']}; "
             f"dup_pairs={dp['duplicate_content_pairs_index']}"
         )
+        f = dp["fts"]
+        print(
+            f"       fts orphans={f['orphan_rows']} "
+            f"shadow={f['shadow_rows']} fts5={f['fts5_rows']} "
+            f"uncovered={f['uncovered_indexable_events']}"
+        )
         if dp["events_missing_from_index"]:
             print(f"       missing sample: {dp['missing_sample']}")
         if dp["events_index_only"]:

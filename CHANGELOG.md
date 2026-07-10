@@ -1,5 +1,40 @@
 # Changelog
 
+## 2026-07-10 — third-pass integrity review: retry, fsync, watermark, FTS parity
+
+A third review pass over the truth store found four residual holes (none had
+bitten — live deep verify was clean before and after) plus a blind spot in
+verify itself:
+
+- **DB watchers retry failed scans.** `_DbScanWatcher` (cursor/opencode) stamped
+  its mtime fingerprint *before* running the scanner, so a failed scan wasn't
+  retried until the source DB changed again; it now fingerprints only after a
+  successful scan, matching the file watchers and the claude-science watcher.
+- **fsync survives handle eviction.** A truth-append batch touching more than
+  `_MAX_OPEN_HANDLES` files LRU-evicted its early handles (close flushes but
+  doesn't fsync) and `_fsync_handle` silently no-opped on them — the durability
+  bar quietly dropped for bulk batches. Evicted files are now reopened and
+  fsynced by fd.
+- **Checkpoint watermark can't eat an update.** `last_checkpoint_at` was stamped
+  *after* the changed-threads query; a thread whose metadata updated between the
+  two fell below the stamp and was missed by every later backstop pass. The
+  watermark is now captured before the query (worst case: one harmless
+  latest-wins re-append).
+- **Vector sidecar saves atomically.** `save_vectors_sidecar` dropped and
+  rebuilt the sidecar in place; a crash mid-save cost the hours-long embed. It
+  now builds a temp sidecar and renames it over the live one.
+- **Deep verify covers the search surface.** `verify --deep` now checks FTS:
+  orphan shadow rows (`events_fts` pointing at missing events) and a
+  shadow↔FTS5 row-count mismatch fail; indexable events with no shadow row are
+  reported (`uncovered_indexable_events`) but not failed, since an event with no
+  extractable text legitimately has none.
+
+Still open from this pass, not taken: manifest corruption silently defaults
+`shard_depth` to 0 (infer from layout instead — becomes live-relevant when the
+archive crosses the 16,384-file flat max, which is ~270 threads away), a
+restore rehearsal that verifies the *backup* copy, off-disk backup destination,
+and the known crash-window transaction framing.
+
 ## 2026-07-10 — dedup at the DB, deep verify, second-order hardening (review follow-up 2, thread 3716378)
 
 A second integrity review unwound the 07-07 residue end to end. The reindex race

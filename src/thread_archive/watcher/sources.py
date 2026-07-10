@@ -265,12 +265,13 @@ class _DbScanWatcher(SourceWatcher):
             return WatchResult(errors=[f"{self._name}: database not found"])
         if self._last_mtime == current:
             return WatchResult()
-        self._last_mtime = current
 
         try:
             scan = self._scanner(self.db_path)
         except Exception as e:  # noqa: BLE001
             return WatchResult(errors=[f"{self._name}: scan failed: {e}"])
+        # Fingerprint only after a successful scan, so a failure retries.
+        self._last_mtime = current
 
         fields = vars(scan)
         processed = next((v for k, v in fields.items() if k.endswith("_processed")), 0)

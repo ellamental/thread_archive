@@ -161,23 +161,27 @@ def save_vectors_sidecar(truth_dir, space_key: Optional[str] = None) -> int:
     space_key so a model change invalidates it."""
     if not is_available():
         return 0
+    import os
     from pathlib import Path
 
     from .embed import space_key as _sk
     sk = space_key or _sk()
-    path = str(Path(truth_dir) / "vectors.sqlite")
+    path = Path(truth_dir) / "vectors.sqlite"
+    # Build into a temp sidecar and rename over the live one: a crash mid-save must
+    # not leave a gutted cache (the embed it protects takes hours to redo).
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.unlink(missing_ok=True)
     with get_engine().connect() as conn:
         conn = conn.execution_options(isolation_level="AUTOCOMMIT")
-        conn.exec_driver_sql("ATTACH DATABASE ? AS side", (path,))
+        conn.exec_driver_sql("ATTACH DATABASE ? AS side", (str(tmp),))
         try:
-            conn.exec_driver_sql("DROP TABLE IF EXISTS side.event_vectors")
-            conn.exec_driver_sql("DROP TABLE IF EXISTS side.vector_meta")
             conn.exec_driver_sql("CREATE TABLE side.event_vectors AS SELECT * FROM event_vectors")
             conn.exec_driver_sql("CREATE TABLE side.vector_meta (space_key TEXT)")
             conn.exec_driver_sql("INSERT INTO side.vector_meta (space_key) VALUES (?)", (sk,))
             n = conn.exec_driver_sql("SELECT count(*) FROM side.event_vectors").scalar()
         finally:
             conn.exec_driver_sql("DETACH DATABASE side")
+    os.replace(tmp, path)
     logger.info("vectors: saved %s vectors to sidecar (space=%s)", n, sk)
     return int(n or 0)
 

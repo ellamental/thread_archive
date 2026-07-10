@@ -41,6 +41,16 @@ def _truth_file(archive_home):
     return next((archive_home / "truth" / "threads").rglob("*.jsonl"))
 
 
+def _lose_committed_turn(session, event_type: str) -> None:
+    """Simulate a lost commit for every ``event_type`` event: the event row AND its
+    same-transaction FTS rows vanish together (a commit is atomic — a loss that kept
+    the search rows would be a different defect, one deep verify flags as orphans)."""
+    sub = f"(SELECT id FROM events WHERE event_type = '{event_type}')"
+    session.execute(text(f"DELETE FROM event_search WHERE event_id IN {sub}"))
+    session.execute(text(f"DELETE FROM events_fts WHERE event_id IN {sub}"))
+    session.execute(text(f"DELETE FROM events WHERE event_type = '{event_type}'"))
+
+
 def _clone_line_with_fresh_id(truth_file, match: str) -> int:
     """Append a copy of the truth line containing ``match`` under a fresh id —
     the exact shape a lost-commit re-import leaves behind (same dedup_key + content,
@@ -102,7 +112,7 @@ def test_verify_treats_superseded_twins_as_clean(archive_home, tmp_path) -> None
     ta.import_path(f)
 
     with get_session() as s:
-        s.execute(text("DELETE FROM events WHERE event_type = 'user_message_sent'"))
+        _lose_committed_turn(s, "user_message_sent")
         s.execute(text("UPDATE import_state SET last_line_count = 0, last_file_size = 0"))
         s.commit()
     ta.import_path(f)  # re-imports only the lost turn, under a fresh id
@@ -128,7 +138,7 @@ def test_deep_verify_flags_missing_and_index_only_events(archive_home, tmp_path)
 
     # Missing: the index loses a row (truth keeps the line, nothing re-imports it).
     with get_session() as s:
-        s.execute(text("DELETE FROM events WHERE event_type = 'user_message_sent'"))
+        _lose_committed_turn(s, "user_message_sent")
         s.commit()
 
     res = ta.verify(deep=True)
