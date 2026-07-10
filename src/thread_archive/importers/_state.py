@@ -51,15 +51,18 @@ def adopt_if_unwatermarked(
 ) -> bool:
     """Guard against re-importing a thread whose ingest cursor was lost.
 
-    A thread can exist with no ``import_state`` — most importantly after a
-    ``rm index.db && archive reindex``, which rebuilds events/threads from the truth
-    log but not the (non-truth) watermarks. Re-importing such a file from line 0 would
-    re-insert events the truth already holds: their stored ``dedup_key`` need not match
-    a fresh import's (e.g. a bulk-seeded archive), so the dedup check wouldn't catch
-    them and every event would double. When the thread already has events, we instead
-    stamp the watermark at the file's current EOF and skip — the existing events stand,
-    and only genuinely-new appended lines import on later polls. Returns True when it
-    adopted (caller must not import)."""
+    The last-resort path for a thread that exists with no ``import_state`` at all —
+    e.g. a bulk-seeded archive whose events were loaded outside the incremental
+    importers. (Reindex carries the watermarks over — from the previous index and the
+    ``import_state.jsonl`` checkpoint snapshot — so a rebuild alone no longer lands
+    here.) Re-importing such a file from line 0 would re-insert events the truth
+    already holds: their stored ``dedup_key`` need not match a fresh import's, so the
+    dedup check wouldn't catch them and every event would double. When the thread
+    already has events, we instead stamp the watermark at the file's current EOF and
+    skip — the existing events stand, and only genuinely-new appended lines import on
+    later polls. The cost is that source lines never imported before adoption are
+    skipped for good, which is why the watermarks are kept durable and this path is
+    kept rare. Returns True when it adopted (caller must not import)."""
     if thread_id is None:
         return False
     has_events = session.execute(

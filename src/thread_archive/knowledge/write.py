@@ -20,6 +20,7 @@ the librarian never double-links or double-cites — a partial pass is simply re
 
 from __future__ import annotations
 
+import functools
 import json
 import os
 from datetime import datetime, timezone
@@ -29,13 +30,32 @@ from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
 from ..store import Event, KgEvent, Thread, ThreadLink, TopicMessage, use_session
-from ..truth.jsonl_log import append_kg_event, record_thread
+from ..truth.jsonl_log import append_kg_event, record_thread, shared_ingest_lock
 from .graph import reset_cache
 from .materialize import apply_event
 
 
 def _now() -> datetime:
     return datetime.now(timezone.utc)
+
+
+def _locked_write(fn):
+    """Run an own-session mutation under the shared reindex lock.
+
+    Every mutating function here appends truth (a ``KgEvent``, sometimes a thread
+    record) and commits; racing a reindex unlocked, that write can land after the
+    rebuild's read point and commit into the database inode the swap replaces.
+    When the caller passes its own ``session`` it owns the transaction boundary —
+    and must hold the lock around it itself."""
+
+    @functools.wraps(fn)
+    def wrapper(*args, session: Optional[Session] = None, **kwargs):
+        if session is not None:
+            return fn(*args, session=session, **kwargs)
+        with shared_ingest_lock():
+            return fn(*args, session=None, **kwargs)
+
+    return wrapper
 
 
 def _topic_name(title: str) -> str:
@@ -77,6 +97,7 @@ def _emit(
 
 
 # ── topics ─────────────────────────────────────────────────────────────────────
+@_locked_write
 def create_topic(
     title: str,
     description: Optional[str] = None,
@@ -115,6 +136,7 @@ def create_topic(
     return result
 
 
+@_locked_write
 def rename_topic(
     topic_id: int, title: str, *, description: Optional[str] = None,
     actor: str = "librarian", actor_thread_id: Optional[int] = None,
@@ -141,6 +163,7 @@ def rename_topic(
     return result
 
 
+@_locked_write
 def archive_topic(
     topic_id: int, *, actor: str = "librarian", actor_thread_id: Optional[int] = None,
     session: Optional[Session] = None,
@@ -161,6 +184,7 @@ def archive_topic(
     return result
 
 
+@_locked_write
 def merge_topics(
     from_id: int, into_id: int, *, actor: str = "librarian",
     actor_thread_id: Optional[int] = None, session: Optional[Session] = None,
@@ -186,6 +210,7 @@ def merge_topics(
 
 
 # ── links ──────────────────────────────────────────────────────────────────────
+@_locked_write
 def link_threads(
     source_id: int, target_id: int, link_type: str = "related", *,
     strength: float = 1.0, evidence: Optional[str] = None, actor: str = "librarian",
@@ -215,6 +240,7 @@ def link_threads(
     return result
 
 
+@_locked_write
 def unlink_threads(
     source_id: int, target_id: int, link_type: str = "related", *,
     actor: str = "librarian", actor_thread_id: Optional[int] = None,
@@ -239,6 +265,7 @@ def unlink_threads(
 
 
 # ── evidence (message → topic citations) ─────────────────────────────────────────
+@_locked_write
 def add_topic_evidence(
     topic_id: int, event_id: int, thread_id: int, quote: str, *,
     actor: str = "librarian", actor_thread_id: Optional[int] = None,
@@ -261,6 +288,7 @@ def add_topic_evidence(
     return result
 
 
+@_locked_write
 def archive_topic_evidence(
     topic_id: int, event_id: int, *, actor: str = "librarian",
     actor_thread_id: Optional[int] = None, session: Optional[Session] = None,

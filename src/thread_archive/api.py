@@ -20,6 +20,33 @@ from typing import Optional
 from .config import ENV_HOME, ArchivePaths, resolve_paths
 
 
+# (st_dev, st_ino) of index.db at the last open_archive — swap detection.
+_index_ident: Optional[tuple[int, int]] = None
+
+
+def _reconnect_if_swapped(paths: ArchivePaths) -> None:
+    """Dispose pooled connections when ``index.db`` was atomically replaced.
+
+    ``reindex`` publishes by renaming a freshly built database over ``index.db``;
+    another process's pooled connections keep the *old inode* open — their reads are
+    frozen at the pre-swap state and their commits write a file nothing else can see.
+    Every API call passes through :func:`open_archive`, so comparing the file identity
+    here makes long-lived processes (the librarian MCP, the web app) converge on the
+    new index on their next call."""
+    global _index_ident
+    try:
+        st = os.stat(paths.index_path)
+    except OSError:
+        _index_ident = None
+        return
+    ident = (st.st_dev, st.st_ino)
+    if _index_ident is not None and ident != _index_ident:
+        from .store import get_engine
+
+        get_engine().dispose()
+    _index_ident = ident
+
+
 def open_archive(home: Optional[str] = None) -> ArchivePaths:
     """Open (and initialize) the archive at ``home`` (env / default if None).
 
@@ -39,6 +66,7 @@ def open_archive(home: Optional[str] = None) -> ArchivePaths:
     # Pin the home so engine + truth + search resolve consistently for the process.
     os.environ[ENV_HOME] = str(paths.home)
     init_engine(target)  # rebuilds when the DSN changed
+    _reconnect_if_swapped(paths)
     init_db()
     return paths
 
@@ -167,18 +195,22 @@ def import_path(path, *, home: Optional[str] = None, provider: str = "claude-cod
     """
     open_archive(home)
     from .importers import DB_SCANNERS, LINE_STREAM_IMPORTERS
+    from .truth import checkpoint as _checkpoint, shared_ingest_lock
 
     p = Path(path)
-    if provider in LINE_STREAM_IMPORTERS:
-        result = LINE_STREAM_IMPORTERS[provider](p, source_id or p.stem)
-    elif provider in DB_SCANNERS:
-        result = DB_SCANNERS[provider](p)
-    else:
-        raise ValueError(f"unknown provider {provider!r}")
+    # Held shared across the truth append AND the SQLite commit: an unlocked import
+    # racing a reindex can land in the truth after the rebuild's read point and
+    # commit into the inode the swap replaces. Blocks (bounded by one rebuild)
+    # rather than skipping — a one-shot import has no later pass to retry on.
+    with shared_ingest_lock():
+        if provider in LINE_STREAM_IMPORTERS:
+            result = LINE_STREAM_IMPORTERS[provider](p, source_id or p.stem)
+        elif provider in DB_SCANNERS:
+            result = DB_SCANNERS[provider](p)
+        else:
+            raise ValueError(f"unknown provider {provider!r}")
 
-    from .truth import checkpoint as _checkpoint
-
-    _checkpoint(snapshots=False)
+        _checkpoint(snapshots=False)
     return result
 
 
@@ -222,23 +254,33 @@ def checkpoint(*, home: Optional[str] = None) -> dict:
 def watch(*, home: Optional[str] = None, interval: float = 5.0, once: bool = False):
     """Watch local AI-tool stores and import incrementally. Blocks unless ``once``."""
     open_archive(home)
+    from .truth import shared_ingest_lock
     from .watcher import Watcher
 
     watcher = Watcher(interval=interval)
     if once:
-        return watcher.poll_once()
+        # run() takes the shared reindex lock per pass; a one-shot poll needs the
+        # same coverage (blocking — it has no next pass to retry on).
+        with shared_ingest_lock():
+            return watcher.poll_once()
     watcher.run()
     return None
 
 
-def _mirror_dir(src: Path, dest: Path) -> tuple[int, int]:
+def _mirror_dir(src: Path, dest: Path, *, delete: bool = False) -> tuple[int, int, int]:
     """Incrementally mirror ``src`` into ``dest`` (skip files unchanged by size +
-    mtime). Returns ``(files_copied, bytes_copied)``. ``copy2`` preserves mtime so a
-    re-run copies only what changed — the truth dir is append-mostly, so a periodic
-    backup moves little."""
+    mtime). Returns ``(files_copied, bytes_copied, files_deleted)``. ``copy2``
+    preserves mtime so a re-run copies only what changed — the truth dir is
+    append-mostly, so a periodic backup moves little.
+
+    ``delete=True`` makes it a true mirror: destination files with no source
+    counterpart are removed (and emptied directories pruned). Without it the mirror
+    is additive, and a shard rebalance — which *moves* thread files to new paths —
+    leaves the backup holding both layouts; on a restore-reindex the stale copy
+    loads last (last-wins) and shadows the current record."""
     import shutil
 
-    copied = total = 0
+    copied = total = deleted = 0
     for sp in src.rglob("*"):
         if sp.is_dir():
             continue
@@ -251,7 +293,21 @@ def _mirror_dir(src: Path, dest: Path) -> tuple[int, int]:
         shutil.copy2(sp, dp)
         copied += 1
         total += sp.stat().st_size
-    return copied, total
+    if delete:
+        doomed_dirs: list[Path] = []
+        for dp in dest.rglob("*"):
+            if dp.is_dir():
+                doomed_dirs.append(dp)
+                continue
+            if not (src / dp.relative_to(dest)).exists():
+                dp.unlink()
+                deleted += 1
+        for dp in sorted(doomed_dirs, reverse=True):  # deepest first
+            try:
+                dp.rmdir()  # only succeeds when empty
+            except OSError:
+                pass
+    return copied, total, deleted
 
 
 def backup(dest: str, *, home: Optional[str] = None) -> dict:
@@ -270,12 +326,16 @@ def backup(dest: str, *, home: Optional[str] = None) -> dict:
     paths = resolve_paths(home)
     dest_path = Path(dest).expanduser()
     dest_path.mkdir(parents=True, exist_ok=True)
-    copied, total = _mirror_dir(paths.truth_dir, dest_path)
+    # Delete-sync only when the source looks like a real, checkpointed truth dir —
+    # a mirror of an empty/foreign source must never strip a good backup.
+    delete = (paths.truth_dir / "manifest.json").exists()
+    copied, total, deleted = _mirror_dir(paths.truth_dir, dest_path, delete=delete)
     return {
         "truth_dir": str(paths.truth_dir),
         "dest": str(dest_path),
         "files_copied": copied,
         "bytes_copied": total,
+        "files_deleted": deleted,
     }
 
 

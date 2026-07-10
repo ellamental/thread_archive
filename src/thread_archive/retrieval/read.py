@@ -22,12 +22,13 @@ from __future__ import annotations
 import json
 import os
 from datetime import datetime
-from typing import Optional
+from typing import Container, Optional
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from ..store import Event, Thread, TopicMessage, use_session
+from ._codex import codex_kind, render_codex_block
 from ._extract import _block_search_text
 
 # Lifecycle / duplicate-summary events that carry no standalone transcript text.
@@ -62,6 +63,39 @@ def _unknown_payload_text(payload: dict) -> str:
         )[:1000]
     except Exception:  # noqa: BLE001 — rendering must never raise
         return ""
+
+
+def _rendered_text(events: list[Event]) -> set[str]:
+    """The text of every turn the modeled path already renders in this thread.
+
+    Codex records its transcript twice — once as the ``event_msg`` stream the importer
+    models, once as ``response_item.message`` API history preserved verbatim — so the
+    reader needs to know a block's content is already on screen. Matching on text rather
+    than kind means a duplicate can't slip through under a kind we haven't met."""
+    seen: set[str] = set()
+    for ev in events:
+        if ev.event_type in _USER_TYPES:
+            key = "content"
+        elif ev.event_type == "text_complete":
+            key = "text"
+        else:
+            continue
+        value = _payload(ev).get(key)
+        if isinstance(value, str) and value.strip():
+            seen.add(value.strip())
+    return seen
+
+
+def _content_block_view(p: dict, rendered_text: Container[str]) -> Optional[tuple[str, str]]:
+    """``(label, text)`` for a preserved ``content_block`` event, or None to hide it.
+
+    Only codex blocks are ever hidden — see :mod:`._codex`. Every other provider's
+    preserved block renders under its own block type, flattened to its readable text."""
+    block_type = p.get("block_type") or "block"
+    kind = codex_kind(block_type)
+    if kind is not None:
+        return render_codex_block(kind, p.get("data"), rendered_text)
+    return block_type, _block_search_text(p.get("data"))
 
 
 def resolve_thread_ref(s: Session, ref: int | str) -> Optional[int]:
@@ -146,7 +180,7 @@ def resolve_read_view(mode: Optional[str], user_only: Optional[bool]) -> tuple[b
     return True, False, False
 
 
-def _assistant_block(et: str, p: dict) -> Optional[dict]:
+def _assistant_block(et: str, p: dict, rendered_text: Container[str]) -> Optional[dict]:
     """One assistant render block from a granular event, or None to skip.
 
     Tool *result* blocks (tool_execution_*) are built here but only rendered when
@@ -168,8 +202,11 @@ def _assistant_block(et: str, p: dict) -> Optional[dict]:
         c = p.get("content", "")
         return {"type": "text", "content": f"[context summary] {c}"} if c.strip() else None
     if et == "content_block":
-        return {"type": "content_block", "block_type": p.get("block_type") or "block",
-                "content": _block_search_text(p.get("data"))}
+        view = _content_block_view(p, rendered_text)
+        if view is None:
+            return None
+        block_type, text = view
+        return {"type": "content_block", "block_type": block_type, "content": text}
     if et == "ide_context":
         return {"type": "ide_context", "context_type": p.get("context_type") or "context",
                 "file_path": p.get("file_path"), "content": p.get("content", "")}
@@ -217,6 +254,7 @@ def _build_steps(events: list[Event]) -> list[dict]:
     into one step that closes at each text output. Tool calls + thinking thus group
     under the step whose text they precede; trailing tools form a final step."""
     steps: list[dict] = []
+    rendered_text = _rendered_text(events)
     cur: Optional[dict] = None  # open assistant step
     for ev in events:
         et = ev.event_type
@@ -252,7 +290,7 @@ def _build_steps(events: list[Event]) -> list[dict]:
                     "is_compaction": False,
                 })
             continue
-        block = _assistant_block(et, p)
+        block = _assistant_block(et, p, rendered_text)
         if block is not None:
             is_result = block["type"] in ("tool_result", "tool_error")
             # A result event can land after the text that closed its step; glue it
@@ -675,7 +713,7 @@ def _fold_request(meta: dict, event_type: str, p: dict) -> None:
 
 
 def _structured_event(
-    ev: Event, *, include_thinking: bool, include_tools: bool
+    ev: Event, *, include_thinking: bool, include_tools: bool, rendered_text: Container[str]
 ) -> Optional[tuple[str, dict]]:
     """Like the string transcript renderer, but returns ``(role, block)`` where ``block`` is a
     typed renderable dict — so the web viewer can render markdown, syntax-highlighted
@@ -768,11 +806,11 @@ def _structured_event(
                                   "from_model": frm, "to_model": to})
         if not include_tools:
             return None
-        return ("assistant", {
-            "type": "content_block",
-            "block_type": p.get("block_type") or "block",
-            "text": _block_search_text(data),
-        })
+        view = _content_block_view(p, rendered_text)
+        if view is None:
+            return None
+        block_type, text = view
+        return ("assistant", {"type": "content_block", "block_type": block_type, "text": text})
     # An unrecognized, non-lifecycle type: surface it in the machinery view rather
     # than silently dropping it (a new importer-preserved type stays visible).
     if not include_tools:
@@ -813,6 +851,7 @@ def read_thread_structured(
             select(Event).where(Event.thread_id == resolved).order_by(Event.id)
         ).scalars().all()
     events = _slot_queued_events(events)
+    rendered_text = _rendered_text(events)
 
     messages: list[dict] = []
     current: Optional[dict] = None
@@ -844,7 +883,10 @@ def read_thread_structured(
             else:
                 pending.append((ev.event_type, p))
             continue
-        rendered = _structured_event(ev, include_thinking=include_thinking, include_tools=include_tools)
+        rendered = _structured_event(
+            ev, include_thinking=include_thinking, include_tools=include_tools,
+            rendered_text=rendered_text,
+        )
         if rendered is None:
             continue
         role, block = rendered

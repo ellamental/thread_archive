@@ -61,6 +61,7 @@ from sqlalchemy.orm import Session
 
 from ..store import (
     Event,
+    ImportState,
     KgEvent,
     Thread,
     ThreadLink,
@@ -203,6 +204,28 @@ def _coerce(model: type, row: dict) -> dict:
 
 
 # ── append handles (LRU, one per open thread file) ───────────────────────────
+def _repair_torn_tail(path: Path) -> None:
+    """Newline-terminate a file whose last append was torn (a crash mid-write).
+
+    Without this, the next append glues its record onto the torn fragment and the
+    combined line is unparseable — the torn fragment *consumes a valid event*, and
+    reindex skips both. Adding the newline first isolates the fragment as its own
+    (already unrecoverable) line so every later record stays intact. Same guard
+    :func:`_merge_file_into` applies at its boundary."""
+    try:
+        if path.stat().st_size == 0:
+            return
+    except FileNotFoundError:
+        return
+    with open(path, "rb+") as fh:
+        fh.seek(-1, os.SEEK_END)
+        if fh.read(1) != b"\n":
+            fh.write(b"\n")
+            fh.flush()
+            os.fsync(fh.fileno())
+            logger.warning("truth: repaired torn tail (newline-terminated) %s", path)
+
+
 def _handle(path: Path) -> TextIO:
     key = str(path)
     fh = _handles.get(key)
@@ -210,6 +233,7 @@ def _handle(path: Path) -> TextIO:
         _handles.move_to_end(key)
         return fh
     path.parent.mkdir(parents=True, exist_ok=True)
+    _repair_torn_tail(path)  # never append onto a torn fragment
     fh = open(path, "a", encoding="utf-8")  # noqa: SIM115 — long-lived, closed in reset()
     _handles[key] = fh
     _handles.move_to_end(key)
@@ -334,18 +358,51 @@ def _drain_before_commit(session: Session) -> None:
     # follows is itself fsynced by SQLite, so without this the projection could
     # survive a power loss that the truth doesn't — the one direction the invariant
     # forbids.
+    #
+    # The drain is all-or-nothing per commit: each file's pre-drain size is recorded
+    # and a failure partway (write error, unserializable row, failed fsync) truncates
+    # every touched file back before re-raising. Without the rollback, records 1…N−1
+    # of a failed batch would stay in the truth while SQLite rolls back — a later
+    # reindex would resurrect the partial batch, and a retried import would re-append
+    # the same content under fresh ids (the dedup check reads the rolled-back SQLite),
+    # doubling events. A power loss mid-drain can still leave a partial batch — that
+    # window needs transaction framing in the record format; the torn-tail repair
+    # keeps such a file appendable.
     pending = session.info.pop(_PENDING, None)
     if not pending:
         return
     d = log_dir()
     depth = _shard_depth(d)
-    touched: set[Path] = set()
+    staged: list[tuple[Path, dict]] = []
     for kind, thread_id, row in pending:
         path = d / KG_EVENTS_FILE if kind == "kg_event" else _thread_file(d, thread_id, depth)
-        _append_line(path, {"type": kind, **row})
-        touched.add(path)
-    for path in touched:
-        _fsync_handle(path)
+        staged.append((path, {"type": kind, **row}))
+    baselines: dict[Path, int | None] = {}  # pre-drain size; None = file didn't exist
+    try:
+        for path, rec in staged:
+            if path not in baselines:
+                existed = path.exists()
+                fh = _handle(path)  # may create the file, and may newline-repair a torn tail
+                fh.flush()
+                # Post-repair size, so a rollback keeps the repair in place.
+                baselines[path] = path.stat().st_size if existed else None
+            _append_line(path, rec)
+        for path in baselines:
+            _fsync_handle(path)
+    except BaseException:
+        for path, size in baselines.items():
+            try:
+                fh = _handles.pop(str(path), None)
+                if fh is not None and not fh.closed:
+                    fh.close()  # drop any buffered partial write with the handle
+                if size is None:
+                    path.unlink(missing_ok=True)  # we created it — no ghost thread file
+                else:
+                    with open(path, "rb+") as rb:
+                        rb.truncate(size)
+            except OSError:  # pragma: no cover — rollback is best-effort
+                logger.exception("truth: could not roll back partial append to %s", path)
+        raise
 
 
 @event.listens_for(Session, "after_rollback")
@@ -415,6 +472,13 @@ def checkpoint(*, snapshots: bool = True) -> dict:
         if snapshots
         else {}
     )
+    if snapshots:
+        # Source-import watermarks: operational state, snapshotted so a reindex of a
+        # lost/deleted index (where there is no previous index to carry them from)
+        # still restores cursors instead of adopting active sources at EOF. A stale
+        # snapshot is safe: import resumes from the older watermark and dedup_key
+        # collapses the overlap.
+        counts["import_state"] = _write_snapshot(d, "import_state", ImportState)
     # Rebalance BEFORE the thread-metadata backstop, so the backstop appends at the
     # post-rebalance depth and can never manufacture a flat twin of a just-moved file.
     depth = _maybe_rebalance(d, int(m.get("shard_depth", 0)))
@@ -691,6 +755,52 @@ def _load_thread_files(
     return nt, ne
 
 
+def _carry_import_state(index_path: Path, engine) -> int:
+    """Carry the source-import watermarks from the previous index into the rebuild.
+
+    ``import_state`` is operational state, not truth — the JSONL doesn't contain it,
+    so a plain rebuild would wipe every source cursor. The next poll would then
+    re-adopt each event-bearing source at its current EOF (``adopt_if_unwatermarked``),
+    permanently skipping any source lines appended since its last import — reindexing
+    with live sessions writing would silently lose their tails. The previous live
+    index is the freshest copy of the cursors, so it overlays the (possibly stale)
+    ``import_state.jsonl`` snapshot seed loaded before this. Rows pointing at threads
+    the truth no longer holds are pruned. Returns rows carried."""
+    if not index_path.exists():
+        return 0
+    build_cols = {c.key for c in ImportState.__table__.columns}
+    try:
+        src = sqlite3.connect(f"file:{index_path}?mode=ro", uri=True)
+    except sqlite3.OperationalError:  # pragma: no cover — unreadable old index
+        return 0
+    try:
+        try:
+            cur = src.execute("SELECT * FROM import_state")
+        except sqlite3.OperationalError as e:
+            if "no such table" not in str(e):  # pragma: no cover — unreadable old index
+                logger.warning("reindex: could not read import_state from old index: %s", e)
+            return 0
+        src_cols = [d[0] for d in cur.description]
+        keep = [i for i, c in enumerate(src_cols) if c in build_cols]
+        cols = [src_cols[i] for i in keep]
+        rows = [tuple(r[i] for i in keep) for r in cur.fetchall()]
+    finally:
+        src.close()
+    if rows:
+        stmt = (
+            f"INSERT OR REPLACE INTO import_state ({', '.join(cols)}) "
+            f"VALUES ({', '.join('?' * len(cols))})"
+        )
+        with engine.begin() as conn:
+            conn.exec_driver_sql(stmt, rows)
+    with engine.begin() as conn:
+        conn.exec_driver_sql(
+            "DELETE FROM import_state WHERE thread_id IS NOT NULL "
+            "AND thread_id NOT IN (SELECT id FROM threads)"
+        )
+    return len(rows)
+
+
 def _replay_kg_events(
     d: Path, engine, *, errors: list[tuple[str, int]] | None = None,
 ) -> int:
@@ -756,6 +866,27 @@ def try_shared_ingest_lock() -> Generator[bool, None, None]:
             yield False
             return
         yield True
+    finally:
+        os.close(fd)  # closing the fd releases the flock
+
+
+@contextmanager
+def shared_ingest_lock() -> Generator[None, None, None]:
+    """Hold the reindex lock *shared*, blocking — for one-shot writers.
+
+    The watcher uses the non-blocking :func:`try_shared_ingest_lock` (it can just
+    skip a pass); a one-shot writer — a CLI import, a librarian mutation — has no
+    later pass to retry on, so it waits out an in-flight reindex instead. Every
+    cross-process writer must hold this (or the try- variant) around its truth
+    append **and** the SQLite commit: an unlocked write can append truth after the
+    rebuild's read point and commit into the database inode the swap replaces —
+    present in the truth, silently absent from the new index."""
+    path = _reindex_lock_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd = os.open(path, os.O_RDWR | os.O_CREAT, 0o644)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_SH)
+        yield
     finally:
         os.close(fd)  # closing the fd releases the flock
 
@@ -847,6 +978,10 @@ def reindex(*, vectors: bool = False) -> dict:
             counts["threads"], counts["events"] = _load_thread_files(d, loader, errors=parse_errors)
             for name, model in _CROSS_THREAD.items():
                 counts[name] = _load_table(model, d / f"{name}.jsonl", loader, errors=parse_errors)
+            # Source-import watermarks: seed from the checkpoint snapshot, then
+            # overlay the previous live index's fresher rows (see _carry_import_state).
+            _load_table(ImportState, d / "import_state.jsonl", loader, errors=parse_errors)
+            counts["import_state"] = _carry_import_state(index_path, loader)
             counts["kg_events"] = _replay_kg_events(d, loader, errors=parse_errors)
 
             # FTS + vectors resolve their engine via get_engine(); point them at
@@ -943,6 +1078,7 @@ def rebuild_truth_from_store() -> dict:
 
     for name, model in _CROSS_THREAD.items():
         _write_snapshot(d, name, model)
+    _write_snapshot(d, "import_state", ImportState)  # cursors survive the re-emit too
 
     _write_manifest(d, {"version": 1, "shard_depth": depth, "last_checkpoint_at": _now_iso()})
 
