@@ -196,13 +196,33 @@ def cmd_embed(args: argparse.Namespace) -> int:
 def cmd_backup(args: argparse.Namespace) -> int:
     from . import api
 
-    res = api.backup(args.dest, home=args.home)
+    res = api.backup(
+        args.dest, home=args.home,
+        allow_shrink=args.allow_shrink, verify_first=args.verify,
+    )
     mb = res["bytes_copied"] / (1024 * 1024)
     print(f"backed up {res['truth_dir']} → {res['dest']}: {res['files_copied']} files ({mb:.1f} MB copied)")
+    if not res["verify_ok"]:
+        print(
+            "WARNING: pre-backup verify FAILED — the source truth has integrity "
+            "problems; mirror ran additively (no deletions). Run `archive verify`."
+        )
+    if res.get("rehomed_twins_deleted"):
+        print(
+            f"rebalance twins: {res['rehomed_twins_deleted']} superseded old-layout "
+            "copies removed from the backup"
+        )
     if res["deletions_skipped"]:
         print(
             f"WARNING: {res['deletions_skipped']} stale destination files kept — "
             "planned deletions exceeded the safety bound (gutted source?); mirror ran additively"
+        )
+    if res["shrinks_skipped"]:
+        print(
+            f"SHRINK GUARD: {res['shrinks_skipped']} append-only truth files are SMALLER at "
+            f"the source than in the backup — the source lost data; their backup copies were "
+            f"kept. Sample: {res['shrink_sample']}. Investigate before rerunning; "
+            "--allow-shrink overrides after a deliberate truth re-emit."
         )
     if not res["mirror_complete"]:
         print(
@@ -210,13 +230,16 @@ def cmd_backup(args: argparse.Namespace) -> int:
             f"{res['dest_divergent_files']} divergent"
         )
         return 1
-    return 0
+    # Skipped deletions fail the run too: the condition is either a gutted source
+    # (page-worthy) or a persistently additive backup accumulating stale records —
+    # both need eyes, and the scheduled wrapper only notifies on a nonzero exit.
+    return 0 if res["verify_ok"] and not res["deletions_skipped"] else 1
 
 
 def cmd_verify(args: argparse.Namespace) -> int:
     from . import api
 
-    res = api.verify(home=args.home, deep=args.deep, hashes=args.hashes)
+    res = api.verify(home=args.home, deep=args.deep, hashes=args.hashes, backup=args.backup)
     t = res["truth"]
     print(
         f"truth: threads={t['threads']} events={t['events']} "
@@ -226,7 +249,10 @@ def cmd_verify(args: argparse.Namespace) -> int:
     )
     if t["parse_errors"]:
         print(f"       parse error sample: {t['parse_error_sample']}")
-    print(f"index: threads={res['index']['threads']} events={res['index']['events']}")
+    print(
+        f"index: threads={res['index']['threads']} events={res['index']['events']} "
+        f"quick_check={res['index']['quick_check']}"
+    )
     print(f"drift: threads={res['drift']['threads']:+d} events={res['drift']['events']:+d}")
     if args.deep:
         dp = res["deep"]
@@ -237,6 +263,11 @@ def cmd_verify(args: argparse.Namespace) -> int:
             f"superseded_twins={dp['events_superseded_twins']} "
             f"(watermark {dp['watermark']})"
         )
+        if dp["thread_meta_mismatch"]:
+            print(
+                f"       thread metadata drift (report-only): "
+                f"{dp['thread_meta_mismatch']} threads, sample {dp['thread_meta_sample']}"
+            )
         print(
             f"       kg index_only={dp['kg']['index_only']} truth_only={dp['kg']['truth_only']}; "
             f"dangling links={dp['dangling']['link_endpoints']} "
@@ -266,6 +297,23 @@ def cmd_verify(args: argparse.Namespace) -> int:
             )
             if hs["mismatched"]:
                 print(f"       mismatch sample: {hs['mismatch_sample']}")
+        if "delta" in h:
+            d = h["delta"]
+            print(
+                f"hashes delta vs {h['previous']['at']}: "
+                f"truth {d['truth_mismatched']:+d} index {d['index_mismatched']:+d}"
+            )
+    if args.backup:
+        b = res["backup"]
+        if "error" in b:
+            print(f"backup[{b['dest']}]: {b['error']}")
+        else:
+            bs = b["scan"]
+            print(
+                f"backup[{b['dest']}]: threads={bs['threads']} "
+                f"effective={bs['events_effective']} parse_errors={bs['parse_errors']} "
+                f"coverage={b['coverage']:.4f}"
+            )
     print("OK" if res["ok"] else "DRIFT DETECTED")
     return 0 if res["ok"] else 1
 
@@ -380,6 +428,15 @@ def build_parser() -> argparse.ArgumentParser:
     p_backup = sub.add_parser("backup", help="mirror the JSONL truth dir to a backup destination")
     _add_home_arg(p_backup)
     p_backup.add_argument("dest", help="backup destination dir (ideally a different disk/machine)")
+    p_backup.add_argument(
+        "--allow-shrink", action="store_true",
+        help="let a smaller source file overwrite its larger backup copy (only after "
+             "a deliberate truth re-emit; the default keeps the backup copy)",
+    )
+    p_backup.add_argument(
+        "--no-verify", dest="verify", action="store_false",
+        help="skip the pre-backup integrity verify of the source truth",
+    )
     p_backup.set_defaults(func=cmd_backup)
 
     p_verify = sub.add_parser("verify", help="integrity check: truth parses + matches the index")
@@ -393,6 +450,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--hashes", action="store_true",
         help="re-hash every payload against its dedup_key's content hash, both stores "
              "(rot detection; report-only, CPU-heavy)",
+    )
+    p_verify.add_argument(
+        "--backup", default=None, metavar="DEST",
+        help="also parse-and-count a backup mirror at DEST and report its coverage "
+             "against the live truth",
     )
     p_verify.set_defaults(func=cmd_verify)
 

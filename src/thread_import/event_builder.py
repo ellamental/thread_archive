@@ -73,7 +73,9 @@ class ThreadEvent:
     payload: dict
     stream_id: str
     api_call_id: Optional[str] = None
-    occurred_at: datetime = field(default_factory=datetime.now)
+    # tz-aware UTC: a naive local-time default sorted wrong against the aware
+    # timestamps every builder path stores (SQLite compares them as text).
+    occurred_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
 
     # Deterministic natural-key identity (timestamp-free, content-inclusive),
     # set by build_events. Bare (not thread-id-prefixed) — dedup is thread-scoped

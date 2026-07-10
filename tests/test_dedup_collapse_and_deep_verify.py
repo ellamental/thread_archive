@@ -204,7 +204,16 @@ def test_backup_deletion_bound_blocks_gutted_source_mirror(archive_home, tmp_pat
     for p in (archive_home / "truth" / "threads").rglob("*.jsonl"):
         p.unlink()
 
+    # First line of defense: a gutted source fails the pre-backup verify, which
+    # disables delete-sync outright.
     res = ta.backup(str(dest))
+    assert res["verify_ok"] is False
+    assert res["files_deleted"] == 0
+    assert any((dest / "threads").rglob("*.jsonl"))
+
+    # Second line: even with the verify gate bypassed, the deletion bound blocks
+    # the mass-delete from propagating.
+    res = ta.backup(str(dest), verify_first=False)
     assert res["deletions_skipped"] >= 1
     assert res["files_deleted"] == 0
     # The destination still holds the thread files the source lost.

@@ -1,5 +1,139 @@
 # Changelog
 
+## 2026-07-10 — sixth-pass integrity review: both-layouts twins, verify cadence
+
+A sixth review pass, focused on what happens when a thread's truth file exists
+at two shard depths at once — imminent, since the live archive (16.1k threads)
+is approaching the 16,384 flat→sharded rebalance threshold, and the first
+post-rebalance backup would otherwise have locked the mirror into a permanently
+additive both-layouts state (the ~16k stale flat copies exceed the mirror's
+deletion safety bound forever).
+
+- **Reindex loads the canonical-depth file last** (`thread_file_load_order`), so
+  a stale twin — a both-layouts backup restore, a mid-migration crash — can no
+  longer shadow the canonical thread record via path sort order (`threads/00/…`
+  sorts before `threads/12345.jsonl`, so the flat stale copy used to win
+  last-wins). The synthesized-minimal record is also guarded: it never clobbers
+  a real record supplied by a twin of the same thread. Deep verify's
+  winning-record pass follows the same order.
+- **`scan_truth_counts` collapses twins across files**: threads count once per
+  distinct stem and the id/dedup collapse runs per thread across all its files,
+  so verify over a both-layouts directory matches what reindex materializes
+  (previously each twin inflated `threads` and `events_effective`, breaking the
+  backup `coverage` metric). `rebuild_truth_from_store`'s pre-flight now reuses
+  the scan instead of duplicating the traversal.
+- **The mirror deletes provably-superseded re-homed twins regardless of the
+  deletion cap**: a doomed `threads/**` file whose thread has a canonical-depth
+  file at both ends, with the destination copy at least as large, is deleted
+  (`rehomed_twins_deleted`); everything else stays capped. And `archive backup`
+  now exits nonzero when deletions were skipped, so the scheduled wrapper's
+  failure notification fires instead of the condition persisting silently.
+- **Manifest writers re-read before writing** (checkpoint's final stamp, the
+  truth re-emit) and mutate only their own keys, so a concurrent verify run's
+  `hashes_baseline` survives instead of being clobbered by a stale
+  read-modify-write.
+- **Verify cadence** (backup LaunchAgent, template + installed): Sundays now run
+  `--deep` plus `--backup <dest>` (the mirror was never parse-scanned before —
+  a backup that doesn't parse doesn't restore), and the 1st of the month adds
+  `--hashes` (payload self-validation; the bit-rot check had never been
+  scheduled, so its delta-trending baseline had never been primed).
+
+Deliberately not done: an offsite/second-disk backup destination (deferred by
+the operator) and F_FULLFSYNC/F_BARRIERFSYNC on the truth fsyncs (documented
+parity-with-SQLite tradeoff stands).
+
+## 2026-07-10 — drain-intent frame: power loss mid-batch can no longer leave a partial batch
+
+Closes the last known hole in the crash story (finding #3 of the fifth-pass
+review). The drain's in-process rollback already made append batches
+all-or-nothing against process failure, but a power loss mid-batch left a
+partial batch in the truth indistinguishable from committed records — reindex
+would materialize it, and its rolled-back autoincrement ids could later be
+reused for different content.
+
+Each drain batch is now framed by an **undo intent journal**
+(`<home>/.drain.intent`): the batch's files, pre-append baselines, and record
+ids are written and fsynced *before* the first data append, and the intent is
+emptied after the last data fsync — all inside the truth-write mutex, so a
+non-empty intent is only ever observable after a crash. Recovery runs on every
+acquisition of the truth-write mutex (every drain, checkpoint backstop, and
+rebalance) and at the start of `reindex` / `rebuild_truth_from_store`, and rolls
+the framed files back to their baselines. Two guards keep recovery on the right
+side of the invariant:
+
+- **Committed-ids check**: any of the batch's freshly-inserted event/kg-event
+  ids present in the index proves the COMMIT landed (it was atomic), so a crash
+  *between* the intent clear window and COMMIT keeps its records — truncating
+  committed truth (index ⊃ truth) is the forbidden direction. Undecidable (no
+  readable index) also keeps: an orphaned complete batch is the pre-existing,
+  dedup-collapsed safe case.
+- **Tail check**: everything past a file's baseline must be the framed batch's
+  own records (a torn final fragment — the crash itself — is allowed); anything
+  else means another writer appended after the crash, and the file is left in
+  place rather than risk cutting foreign records.
+
+This was chosen over the review's original sketch (per-record `txn` stamps + a
+commit marker record) because it changes neither the record format nor reindex:
+no grandfathering across 3.5M historical lines, no cross-file marker pass, no
+unbounded marker growth. Cost: one small fsync per commit.
+
+## 2026-07-10 — fifth-pass integrity review: backup can't eat truth loss, manifest self-heals
+
+A fifth review pass, again integrity-focused (live shallow verify clean before
+and after: zero drift, zero parse errors over 3.56M events). This pass took two
+of the items the fourth pass left open (manifest `shard_depth` inference; backup
+hardening) and a set of detection-latency gaps:
+
+- **Backup shrink guard.** The mirror copied whenever size/mtime differed — in
+  either direction — so a truncated/corrupted source truth file silently
+  overwrote its last good backup copy on the next nightly run, and the trailing
+  size check saw nothing (post-copy the sizes match). Append-only truth files
+  (`threads/**`, `kg_events.jsonl`) whose source copy is *smaller* than the
+  backup copy are now kept at the destination, counted (`shrinks_skipped` +
+  sample), and reported as divergent until investigated; `--allow-shrink` is the
+  deliberate override after an understood truth re-emit.
+- **Pre-backup verify gate.** `archive backup` runs the shallow integrity check
+  first; a failing source still mirrors (a flawed copy beats no copy) but
+  additively — delete-sync is disabled so a sick source can't strip the backup —
+  and the run exits nonzero, so the launchd dead-man's-switch stamp is withheld
+  and monitoring fires. `--no-verify` skips the check.
+- **Backup restore-drill lite: `archive verify --backup DEST`.** Parse-and-count
+  the mirror with the same scan as the live truth; zero parse errors is the hard
+  requirement, and `coverage` (backup effective events / live) quantifies
+  staleness for trending.
+- **Manifest shard-depth inference.** A corrupt or deleted `manifest.json` used
+  to silently default `shard_depth` to 0 — on a sharded archive, writers would
+  grow flat twins of sharded files and stale metadata could shadow fresh records
+  on reindex. The depth is now inferred from the bucket-directory layout (loudly)
+  whenever the manifest is unreadable. Matters soon: the live archive is at
+  ~16.1k threads against the 16,384 flat max.
+- **`verify` runs `PRAGMA quick_check`.** Page-level index corruption was
+  invisible until a query touched a bad page; a failed check fails verify (the
+  fix is `archive reindex`, but it must be *seen*).
+- **Deep verify: thread-metadata parity (report-only).** Title/description/
+  summary compared between the winning truth record and the index row; a
+  persistent mismatch means a missed re-stage — and the next reindex would
+  silently revert the index to the stale truth record.
+- **`verify --hashes` keeps its own baseline.** The mismatch counts are persisted
+  in `manifest.json` and each run reports the delta vs the previous run — the
+  jump is the signal, and it no longer relies on operator memory.
+- **`import_state` snapshots on the maintenance cadence.** The watermark
+  snapshot was written only by the full (pre-backup) checkpoint, so an index
+  loss could regress source cursors by up to a day; the table is small (~800 KB
+  live), so the watcher's maintenance pass now keeps it minutes-fresh.
+- **Two missing directory fsyncs.** `_write_snapshot` and `emit_thread_file`
+  renamed without fsyncing the parent directory (unlike `_write_manifest`); a
+  power loss could revert a snapshot/re-emit after the code moved on.
+- **tz-aware `occurred_at` default.** `ThreadEvent.occurred_at` fell back to
+  naive local `datetime.now`, which sorts wrong against the aware UTC timestamps
+  every builder path stores.
+
+Still open, deliberately not taken: off-disk backup destination (operator
+decision), crash-window transaction framing for multi-record drain batches
+(since closed by the drain-intent frame — see the entry above), scheduled
+verify inside the watcher (the nightly backup job now effectively verifies
+daily via the gate).
+
 ## 2026-07-10 — fourth-pass integrity review: vectors survive reindex, content-level verify, guarded re-emit
 
 A fourth review pass focused on data integrity. The live archive was clean

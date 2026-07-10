@@ -31,7 +31,10 @@ Writes preserve the **JSONL ⊇ SQLite** invariant: a row is staged on the sessi
 and flushed **and fsynced** to its thread file *before* the COMMIT it belongs to, so
 the projection can never hold a row the truth lacks — the truth append meets the
 same durability bar as SQLite's own WAL commit (plain ``fsync``, the same call
-SQLite issues; neither uses ``F_FULLFSYNC``). :func:`reindex` is the recovery
+SQLite issues; neither uses ``F_FULLFSYNC``). Each append batch is framed by a
+drain-intent undo journal, so a power loss mid-batch is rolled back to the
+pre-batch baselines on the next write (see the drain-intent section).
+:func:`reindex` is the recovery
 primitive — it rebuilds the SQLite store from the JSONL directory as a
 **build-and-swap**: the new index is built in a temp file and atomically renamed
 over ``index.db``, so a killed reindex leaves the old index fully intact; a
@@ -49,6 +52,7 @@ import logging
 import os
 import shutil
 import sqlite3
+import uuid
 from collections import OrderedDict
 from collections.abc import Generator
 from contextlib import contextmanager
@@ -133,14 +137,50 @@ def _manifest_path(d: Path) -> Path:
     return d / "manifest.json"
 
 
+def _infer_shard_depth(d: Path) -> int:
+    """Infer the shard depth from the directory shape — the fallback when the
+    manifest is unreadable. A sharded layout is unmistakable: ``threads/`` contains
+    two-hex-digit bucket directories (which may themselves contain buckets). Walking
+    the first bucket chain recovers the depth, so a corrupt or deleted manifest on a
+    sharded archive can never silently reset writers to the flat layout (which would
+    grow flat twins of sharded files and let stale metadata shadow fresh records on
+    reindex)."""
+    depth = 0
+    cur = d / THREADS_SUBDIR
+    while depth < 4:  # bound: depths beyond 2 don't exist, but never loop unbounded
+        try:
+            bucket = next(
+                (
+                    e for e in os.scandir(cur)
+                    if e.is_dir() and len(e.name) == 2
+                    and all(c in "0123456789abcdef" for c in e.name)
+                ),
+                None,
+            )
+        except OSError:
+            break
+        if bucket is None:
+            break
+        depth += 1
+        cur = Path(bucket.path)
+    return depth
+
+
 def _read_manifest(d: Path) -> dict:
     p = _manifest_path(d)
     if p.exists():
         try:
             return json.loads(p.read_text(encoding="utf-8"))
-        except (OSError, ValueError):  # pragma: no cover — corrupt/missing → defaults
-            pass
-    return {"version": 1, "shard_depth": 0, "last_checkpoint_at": None}
+        except (OSError, ValueError):
+            # Corrupt manifest: fall through to defaults, but NEVER default the
+            # shard depth on a sharded archive — infer it from the layout below.
+            logger.error("truth: manifest.json unreadable — inferring shard depth")
+    depth = _infer_shard_depth(d)
+    if depth:
+        logger.warning(
+            "truth: no readable manifest; inferred shard_depth=%d from layout", depth
+        )
+    return {"version": 1, "shard_depth": depth, "last_checkpoint_at": None}
 
 
 def _write_manifest(d: Path, m: dict) -> None:
@@ -327,6 +367,202 @@ def reset_handles() -> None:
     _handles.clear()
 
 
+# ── drain intent (crash framing for append batches) ──────────────────────────
+# The all-or-nothing drain rollback handles *process* failure, but a power loss
+# mid-batch leaves a partial batch in the truth with nothing to distinguish it
+# from committed records. The intent file frames each batch as an undo journal:
+# the drain durably records ``{txn, files: [{path, baseline, ids}]}`` BEFORE its
+# first data write and empties the file after its last data fsync — both inside
+# the truth-write mutex, so a non-empty intent is only ever observable after a
+# crash. Recovery runs on every acquisition of the mutex (and at reindex start):
+# it rolls the framed files back to their baselines, guarded two ways —
+#   * the committed-ids check: any of the batch's freshly-inserted ids present in
+#     the live index means the COMMIT landed (it was atomic), so a crash *after*
+#     COMMIT can never truncate committed truth (index ⊃ truth is the forbidden
+#     direction);
+#   * the tail check: everything past a file's baseline must be the framed
+#     batch's own records (a torn final fragment — the crash itself — is
+#     allowed). Anything else means another writer appended after the crash, and
+#     the file is left in place rather than risk cutting foreign records.
+DRAIN_INTENT_FILE = ".drain.intent"
+
+# Intent record kinds whose ids are fresh inserts in an index table — the basis
+# of the committed-ids check. ``thread`` is deliberately absent: a metadata
+# re-stage carries a thread id that pre-exists in the index whether or not the
+# batch committed, so it can't witness the commit.
+_INTENT_TABLES = {"event": "events", "kg_event": "kg_events"}
+
+
+def _intent_path() -> Path:
+    from ..config import resolve_paths
+
+    return resolve_paths().home / DRAIN_INTENT_FILE
+
+
+def _write_intent(files: list[dict]) -> None:
+    """Durably frame the batch about to be appended: fsynced BEFORE the first
+    data write, so a crash mid-batch always leaves the frame recovery needs to
+    identify — and remove — the partial batch."""
+    p = _intent_path()
+    p.parent.mkdir(parents=True, exist_ok=True)
+    existed = p.exists()
+    with open(p, "w", encoding="utf-8") as fh:
+        json.dump(
+            {"txn": uuid.uuid4().hex, "at": _now_iso(), "files": files},
+            fh, default=_json_default,
+        )
+        fh.flush()
+        os.fsync(fh.fileno())
+    if not existed:
+        _fsync_dir(p.parent)  # the frame's dirent must be as durable as the frame
+
+
+def _clear_intent() -> None:
+    """Empty the intent after the batch's last data fsync, still under the write
+    mutex — an intent must never be visible outside its batch's lock hold. Not
+    fsynced: if a crash resurrects a cleared-but-complete intent, the
+    committed-ids check in recovery resolves it correctly."""
+    try:
+        with open(_intent_path(), "w", encoding="utf-8"):
+            pass
+    except OSError:  # pragma: no cover — best-effort; recovery re-resolves it
+        logger.exception("truth: could not clear drain intent")
+
+
+def _intent_committed(files: list[dict]) -> bool | None:
+    """Whether the framed batch's COMMIT landed. Any of its freshly-inserted ids
+    present in the live index means yes (the COMMIT was atomic — all or none).
+    ``None`` = cannot tell (no insert ids in the batch, or no readable index),
+    which callers treat as committed: keeping possibly-uncommitted records is the
+    safe direction (dedup collapse bounds the damage), truncating possibly-
+    committed ones is the forbidden one."""
+    by_table: dict[str, list[int]] = {}
+    for f in files:
+        for kind, rid in f.get("ids") or []:
+            table = _INTENT_TABLES.get(kind)
+            if table is not None and rid is not None:
+                by_table.setdefault(table, []).append(int(rid))
+    if not by_table:
+        return None
+    db = get_engine().url.database
+    if not db or db == ":memory:":
+        return None
+    try:
+        conn = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
+    except sqlite3.Error:
+        return None
+    try:
+        for table, ids in by_table.items():
+            probe = ids[:32]  # one committed id proves the whole batch
+            try:
+                row = conn.execute(
+                    f"SELECT 1 FROM {table} WHERE id IN ({','.join('?' * len(probe))}) LIMIT 1",  # noqa: S608 — table from _INTENT_TABLES
+                    probe,
+                ).fetchone()
+            except sqlite3.Error:
+                return None
+            if row is not None:
+                return True
+        return False
+    finally:
+        conn.close()
+
+
+def _tail_is_intent_only(path: Path, baseline: int, allowed: set) -> bool:
+    """True when everything past ``baseline`` is the framed batch's own records.
+    An unparseable FINAL fragment — the torn write of the crash itself — is
+    allowed; any other content means a writer appended after the crash and a
+    truncate would destroy records that aren't the batch's."""
+    try:
+        with open(path, "rb") as fh:
+            fh.seek(baseline)
+            chunks = fh.read().split(b"\n")
+    except OSError:
+        return False
+    for i, raw in enumerate(chunks):
+        if not raw.strip():
+            continue
+        try:
+            rec = json.loads(raw)
+        except ValueError:
+            return i == len(chunks) - 1  # torn final fragment only
+        if (rec.get("type", "event"), rec.get("id")) not in allowed:
+            return False
+    return True
+
+
+def _recover_crashed_drain() -> None:
+    """Resolve a leftover drain intent — the mark of a process that died (power
+    loss, SIGKILL) mid-batch. Runs under the truth-write mutex on every
+    acquisition: a live drain's intent never outlives its lock hold, so anything
+    found here is a dead process's. Uncommitted framed files are rolled back to
+    their baselines (the crash-durable twin of the drain's in-process rollback);
+    a committed or undecidable batch keeps its records. Never raises — recovery
+    is a repair pass, and a bug in it must not take writes down."""
+    p = _intent_path()
+    try:
+        raw = p.read_text(encoding="utf-8")
+    except OSError:
+        return
+    if not raw.strip():
+        return
+    try:
+        intent = json.loads(raw)
+        files = list(intent["files"])
+    except (ValueError, KeyError, TypeError):
+        # A torn intent write: the crash hit before any data append (the intent
+        # is durable before the first write), so the truth is untouched.
+        logger.warning("truth: discarding torn drain intent (no data was written)")
+        _clear_intent()
+        return
+    try:
+        committed = _intent_committed(files)
+        if committed is not False:
+            logger.warning(
+                "truth: drain intent txn=%s survived a crash but its commit %s — keeping its records",
+                intent.get("txn"), "landed" if committed else "cannot be determined",
+            )
+            _clear_intent()
+            return
+        d = log_dir()
+        rolled_back = kept = 0
+        for f in files:
+            path = d / f["path"]
+            baseline = f.get("baseline")
+            allowed = {(k, i) for k, i in f.get("ids") or []}
+            try:
+                size = path.stat().st_size
+            except OSError:
+                continue  # never created (crash before its first append) or already gone
+            if baseline is not None and size <= baseline:
+                continue  # nothing of the batch landed here
+            if not _tail_is_intent_only(path, baseline or 0, allowed):
+                kept += 1
+                logger.error(
+                    "truth: crashed drain tail of %s holds records outside its intent — left in place",
+                    path,
+                )
+                continue
+            fh = _handles.pop(str(path), None)
+            if fh is not None and not fh.closed:
+                fh.close()
+            if baseline is None:
+                path.unlink(missing_ok=True)  # the batch created it — no ghost thread file
+            else:
+                with open(path, "rb+") as rb:
+                    rb.truncate(baseline)
+                    os.fsync(rb.fileno())
+            rolled_back += 1
+        logger.warning(
+            "truth: recovered crashed drain txn=%s — %d file(s) rolled back to baseline%s",
+            intent.get("txn"), rolled_back,
+            f", {kept} left for inspection" if kept else "",
+        )
+    except Exception:  # pragma: no cover — recovery must never block writes
+        logger.exception("truth: crashed-drain recovery failed; intent cleared")
+    _clear_intent()
+
+
 # ── truth-write mutex (append batches are mutually exclusive across processes) ─
 # The reindex lock is *shared* among writers, so two processes can append to the
 # same truth file concurrently — a JSON line larger than one write(2) can interleave
@@ -351,6 +587,9 @@ def _truth_write_lock() -> Generator[None, None, None]:
     fd = os.open(path, os.O_RDWR | os.O_CREAT, 0o644)
     try:
         fcntl.flock(fd, fcntl.LOCK_EX)
+        # A leftover intent is a dead process's crashed batch — resolve it before
+        # this holder appends (or moves files) on top of the partial tail.
+        _recover_crashed_drain()
         yield
     finally:
         os.close(fd)  # closing the fd releases the flock
@@ -446,9 +685,10 @@ def _drain_before_commit(session: Session) -> None:
     # of a failed batch would stay in the truth while SQLite rolls back — a later
     # reindex would resurrect the partial batch, and a retried import would re-append
     # the same content under fresh ids (the dedup check reads the rolled-back SQLite),
-    # doubling events. A power loss mid-drain can still leave a partial batch — that
-    # window needs transaction framing in the record format; the torn-tail repair
-    # keeps such a file appendable.
+    # doubling events. The same guarantee against a *power loss* mid-drain comes from
+    # the intent frame (see the drain-intent section): the batch's files, baselines
+    # and ids are durable before its first data write, so recovery can roll a partial
+    # batch back to the same baselines the in-process rollback uses.
     pending = session.info.pop(_PENDING, None)
     if not pending:
         return
@@ -461,15 +701,24 @@ def _drain_before_commit(session: Session) -> None:
         for kind, thread_id, row in pending:
             path = d / KG_EVENTS_FILE if kind == "kg_event" else _thread_file(d, thread_id, depth)
             staged.append((path, {"type": kind, **row}))
+        # Baselines (and open handles) for every touched file BEFORE any append,
+        # so the intent frame describes the whole batch up front.
         baselines: dict[Path, int | None] = {}  # pre-drain size; None = file didn't exist
+        ids_by_path: dict[Path, list] = {}
+        for path, rec in staged:
+            if path not in baselines:
+                existed = path.exists()
+                fh = _handle(path)  # may create the file, and may newline-repair a torn tail
+                fh.flush()
+                # Post-repair size, so a rollback keeps the repair in place.
+                baselines[path] = path.stat().st_size if existed else None
+            ids_by_path.setdefault(path, []).append([rec["type"], rec.get("id")])
+        _write_intent([
+            {"path": str(path.relative_to(d)), "baseline": size, "ids": ids_by_path[path]}
+            for path, size in baselines.items()
+        ])  # durable BEFORE the first data write
         try:
             for path, rec in staged:
-                if path not in baselines:
-                    existed = path.exists()
-                    fh = _handle(path)  # may create the file, and may newline-repair a torn tail
-                    fh.flush()
-                    # Post-repair size, so a rollback keeps the repair in place.
-                    baselines[path] = path.stat().st_size if existed else None
                 _append_line(path, rec)
             for path in baselines:
                 _fsync_handle(path)
@@ -488,7 +737,9 @@ def _drain_before_commit(session: Session) -> None:
                             rb.truncate(size)
                 except OSError:  # pragma: no cover — rollback is best-effort
                     logger.exception("truth: could not roll back partial append to %s", path)
+            _clear_intent()  # the batch is undone; the frame must not outlive it
             raise
+        _clear_intent()  # inside the lock: an intent is never visible outside its batch
 
 
 @event.listens_for(Session, "after_rollback")
@@ -511,6 +762,7 @@ def _write_snapshot(d: Path, name: str, model: type) -> int:
         fh.flush()
         os.fsync(fh.fileno())  # durable before the rename makes it visible
     os.replace(tmp, path)
+    _fsync_dir(d)  # the rename itself must survive power loss
     return n
 
 
@@ -544,7 +796,8 @@ def checkpoint(*, snapshots: bool = True) -> dict:
     a complete restore set.
 
     ``snapshots=False`` runs **maintenance only** — the manifest watermark, the
-    thread-metadata-update backstop, and shard rebalance — and skips the full
+    thread-metadata-update backstop, the (small) ``import_state`` snapshot, and
+    shard rebalance — and skips the full
     rewrite of the cross-thread overlay files (``thread_links`` / ``topic_messages``).
     That rewrite is O(graph size) and the live-ingest path never changes those tables
     (conversation import only appends events; the overlays are the migration seed plus
@@ -559,13 +812,14 @@ def checkpoint(*, snapshots: bool = True) -> dict:
         if snapshots
         else {}
     )
-    if snapshots:
-        # Source-import watermarks: operational state, snapshotted so a reindex of a
-        # lost/deleted index (where there is no previous index to carry them from)
-        # still restores cursors instead of adopting active sources at EOF. A stale
-        # snapshot is safe: import resumes from the older watermark and dedup_key
-        # collapses the overlap.
-        counts["import_state"] = _write_snapshot(d, "import_state", ImportState)
+    # Source-import watermarks: operational state, snapshotted so a reindex of a
+    # lost/deleted index (where there is no previous index to carry them from)
+    # still restores cursors instead of adopting active sources at EOF. A stale
+    # snapshot is safe (import resumes from the older watermark and dedup_key
+    # collapses the overlap), but a *fresh* one keeps the regression window at
+    # minutes instead of a backup cycle — and the table is small, so unlike the
+    # cross-thread overlays it is snapshotted on the maintenance cadence too.
+    counts["import_state"] = _write_snapshot(d, "import_state", ImportState)
     # Rebalance BEFORE the thread-metadata backstop, so the backstop appends at the
     # post-rebalance depth and can never manufacture a flat twin of a just-moved file.
     depth = _maybe_rebalance(d, int(m.get("shard_depth", 0)))
@@ -573,7 +827,6 @@ def checkpoint(*, snapshots: bool = True) -> dict:
     # held) may have advanced shard_depth — never write a stale depth back over it.
     m = _read_manifest(d)
     depth = max(depth, int(m.get("shard_depth", 0)))
-    m["shard_depth"] = depth
     # The new watermark is captured BEFORE the changed-threads query: a thread
     # updated between the query and a later stamp would fall below the stamp and
     # be missed by every later backstop pass. Captured-first, such an update is
@@ -583,6 +836,12 @@ def checkpoint(*, snapshots: bool = True) -> dict:
     # its record inline (``record_thread``); this pass is only the backstop.
     checkpoint_started_at = _now_iso()
     counts["threads_updated"] = _checkpoint_changed_threads(d, depth, m.get("last_checkpoint_at"))
+    # Re-read once more before writing: the backstop pass takes time, and the
+    # manifest is shared state (shard depth from a concurrent sweep, a verify
+    # run's hashes baseline). Mutate only this checkpoint's own keys on a fresh
+    # copy so a foreign key written mid-pass survives.
+    m = _read_manifest(d)
+    m["shard_depth"] = max(depth, int(m.get("shard_depth", 0)))
     m["last_checkpoint_at"] = checkpoint_started_at
     _write_manifest(d, m)
     logger.info("jsonl_log checkpoint(snapshots=%s): %s", snapshots, counts)
@@ -723,31 +982,41 @@ def _maybe_rebalance(d: Path, depth: int) -> int:
 # ── integrity scan (the primitive behind `archive verify`) ───────────────────
 def scan_truth_counts(
     *, event_id_max: int | None = None, thread_id_max: int | None = None,
+    truth_dir: Path | None = None,
 ) -> dict:
-    """Count thread files + event lines across the truth directory, tallying any
+    """Count threads + event lines across the truth directory, tallying any
     JSON parse errors. The integrity primitive behind ``archive verify``: a clean
     archive has these match the SQLite projection's thread/event counts (the
-    JSONL ⊇ SQLite invariant) with zero parse errors. Each ``threads/<id>.jsonl``
-    is one thread (so file count = thread count, matching how reindex loads them).
+    JSONL ⊇ SQLite invariant) with zero parse errors.
 
     The truth is append-only, so it legitimately accumulates superseded lines the
     projection collapses: a re-appended line for an id it already holds (a crash
     between a rebalance merge-copy and its unlink), and a same-content twin under
     a fresh id (a re-import after the original's commit was lost — same
     ``dedup_key``). ``events`` counts raw lines; ``events_effective`` counts what
-    the projection materializes — per file, distinct on id, then distinct on
-    ``dedup_key`` (falling back to id when NULL). The index is compared against
+    the projection materializes — distinct on id, then distinct on ``dedup_key``
+    (falling back to id when NULL). The index is compared against
     ``events_effective``; the superseded remainder is reported, not drift.
+
+    A thread is counted once per distinct file *stem*, and the collapse runs
+    across every file sharing that stem — so a thread present at two shard
+    depths (a both-layouts backup mirror, a mid-migration crash) counts as one
+    thread and its duplicated lines as superseded, matching what a reindex of
+    that directory materializes.
 
     ``event_id_max`` / ``thread_id_max`` bound the scan to ids at or below a
     stable watermark, so a verify racing live ingest (truth lines land *before*
     their commit; the index keeps growing while the scan reads files) compares
-    the same committed prefix on both sides instead of false-alarming."""
-    d = log_dir()
+    the same committed prefix on both sides instead of false-alarming.
+
+    ``truth_dir`` scans an explicit directory instead of the live archive's —
+    the primitive behind the backup-side check (``archive verify --backup``)."""
+    d = truth_dir if truth_dir is not None else log_dir()
     threads_dir = d / THREADS_SUBDIR
-    n_threads = n_events = n_effective = parse_errors = 0
+    n_events = n_effective = parse_errors = 0
     dup_id_lines = dup_content_lines = 0
     parse_error_sample: list[str] = []
+    files_by_stem: dict[str, list[Path]] = {}
     if threads_dir.exists():
         for path in threads_dir.rglob("*.jsonl"):
             if thread_id_max is not None:
@@ -756,9 +1025,11 @@ def scan_truth_counts(
                         continue
                 except ValueError:  # pragma: no cover — stray file
                     pass
-            n_threads += 1
-            seen_ids: set = set()
-            seen_keys: set = set()
+            files_by_stem.setdefault(path.stem, []).append(path)
+    for paths in files_by_stem.values():
+        seen_ids: set = set()
+        seen_keys: set = set()
+        for path in paths:
             with open(path, encoding="utf-8", errors="replace") as fh:
                 for lineno, line in enumerate(fh, 1):
                     line = line.strip()
@@ -788,7 +1059,7 @@ def scan_truth_counts(
                     seen_keys.add(key)
                     n_effective += 1
     return {
-        "threads": n_threads,
+        "threads": len(files_by_stem),
         "events": n_events,
         "events_effective": n_effective,
         "duplicate_id_lines": dup_id_lines,
@@ -848,6 +1119,31 @@ def _load_table(
     return total
 
 
+def thread_file_load_order(d: Path) -> list[Path]:
+    """Every ``threads/**/*.jsonl`` in the order reindex loads them: path-sorted,
+    then any file at its thread's *canonical* (manifest-depth) location moved
+    last. Loads are last-wins (OR REPLACE by id; latest thread record), so when a
+    thread has files at more than one shard depth — a both-layouts backup mirror,
+    a mid-migration crash — the canonical file's records must win: it is the one
+    live writers append to, so it is at least as fresh as any stale twin. Plain
+    path order would let a stale flat twin load *after* its sharded home
+    (``threads/00/…`` sorts before ``threads/12345.jsonl``) and shadow it."""
+    threads_dir = d / THREADS_SUBDIR
+    if not threads_dir.exists():
+        return []
+    depth = _shard_depth(d)
+
+    def _canonical(path: Path) -> bool:
+        try:
+            return path == _thread_file(d, int(path.stem), depth)
+        except ValueError:
+            return False
+
+    paths = sorted(threads_dir.rglob("*.jsonl"))
+    paths.sort(key=_canonical)  # stable: non-canonical first, canonical last
+    return paths
+
+
 def _load_thread_files(
     d: Path, engine, batch: int = 5000,
     *, errors: list[tuple[str, int]] | None = None,
@@ -855,11 +1151,12 @@ def _load_thread_files(
     """Load every ``threads/**/<id>.jsonl`` into the threads + events tables.
 
     Per file: the last ``type:thread`` record is the metadata (latest wins), every
-    ``type:event`` record is an event. A file with events but no thread record (a
-    crash between an import commit and its checkpoint) gets a synthesized minimal
-    thread so its events aren't dropped. FK enforcement is off on the loader, so the
-    interleaved thread/event inserts need no ordering."""
-    threads_dir = d / THREADS_SUBDIR
+    ``type:event`` record is an event. Files load in :func:`thread_file_load_order`
+    (canonical-depth file last), so a thread with a stale twin at another shard
+    depth materializes the canonical file's records. A file with events but no
+    thread record (a crash between an import commit and its checkpoint) gets a
+    synthesized minimal thread so its events aren't dropped. FK enforcement is off
+    on the loader, so the interleaved thread/event inserts need no ordering."""
     thread_buf: list[dict] = []
     event_buf: list[dict] = []
     nt = ne = 0
@@ -877,28 +1174,39 @@ def _load_thread_files(
             ne += len(event_buf)
             event_buf.clear()
 
-    if threads_dir.exists():
-        for path in sorted(threads_dir.rglob("*.jsonl")):
-            last_thread: dict | None = None
-            events: list[dict] = []
-            for rec in _iter_jsonl(path, errors=errors):
-                kind = rec.pop("type", "event")
-                if kind == "thread":
-                    last_thread = rec
-                else:
-                    events.append(rec)
-            if last_thread is None:
-                try:
-                    tid = int(path.stem)
-                except ValueError:  # pragma: no cover
-                    continue
+    have_meta: set[int] = set()  # tids with a real thread record already loaded
+    for path in thread_file_load_order(d):
+        last_thread: dict | None = None
+        events: list[dict] = []
+        for rec in _iter_jsonl(path, errors=errors):
+            kind = rec.pop("type", "event")
+            if kind == "thread":
+                last_thread = rec
+            else:
+                events.append(rec)
+        if last_thread is None:
+            try:
+                tid = int(path.stem)
+            except ValueError:  # pragma: no cover
+                continue
+            if tid in have_meta:
+                # A twin of this thread already supplied its real record; a
+                # synthesized stub loading after it would clobber real metadata.
+                last_thread = None
+            else:
                 last_thread = {"id": tid, "name": f"thread:{tid}"}
                 logger.warning("reindex: %s had no thread record — synthesized minimal", path.name)
+        else:
+            try:
+                have_meta.add(int(last_thread.get("id")))
+            except (TypeError, ValueError):  # pragma: no cover — malformed record
+                pass
+        if last_thread is not None:
             thread_buf.append(_coerce(Thread, last_thread))
-            for ev in events:
-                event_buf.append(_coerce(Event, ev))
-            if len(thread_buf) >= batch or len(event_buf) >= batch:
-                _flush()
+        for ev in events:
+            event_buf.append(_coerce(Event, ev))
+        if len(thread_buf) >= batch or len(event_buf) >= batch:
+            _flush()
     _flush()
     return nt, ne
 
@@ -1119,19 +1427,27 @@ def reindex(*, vectors: bool = False) -> dict:
     parse_errors: list[tuple[str, int]] = []
 
     with _hold_reindex_lock():
+        # Entering the truth-write mutex resolves any crashed drain's leftover
+        # intent (a partial batch) before the rebuild reads the files.
+        with _truth_write_lock():
+            pass
         _unlink_build(tmp_path)  # a dead prior build is stale — start clean
         loader = build_engine(f"sqlite:///{tmp_path}", enforce_fk=False)
         try:
             init_db(loader)
             counts["threads"], counts["events"] = _load_thread_files(d, loader, errors=parse_errors)
-            # The loader counts lines loaded; OR REPLACE + the (thread_id, dedup_key)
+            # The loader counts rows loaded; OR REPLACE + the (thread_id, dedup_key)
             # unique index collapse superseded lines (re-appended ids, same-content
-            # twins from a lost-commit re-import), so report what actually survived.
+            # twins from a lost-commit re-import, a thread's stale twin at another
+            # shard depth), so report what actually survived.
             with loader.begin() as conn:
                 actual_events = conn.exec_driver_sql("SELECT count(*) FROM events").scalar() or 0
+                actual_threads = conn.exec_driver_sql("SELECT count(*) FROM threads").scalar() or 0
             if actual_events != counts["events"]:
                 counts["events_collapsed"] = counts["events"] - actual_events
                 counts["events"] = int(actual_events)
+            if actual_threads != counts["threads"]:
+                counts["threads"] = int(actual_threads)
             for name, model in _CROSS_THREAD.items():
                 counts[name] = _load_table(model, d / f"{name}.jsonl", loader, errors=parse_errors)
             # Source-import watermarks: seed from the checkpoint snapshot, then
@@ -1221,6 +1537,7 @@ def emit_thread_file(d: Path, thread_id: int, depth: int, thread_record, event_r
         fh.flush()
         os.fsync(fh.fileno())  # durable before the rename makes it visible
     os.replace(tmp, path)
+    _fsync_dir(path.parent)  # the rename itself must survive power loss
     return n_ev
 
 
@@ -1246,32 +1563,19 @@ def rebuild_truth_from_store(*, force: bool = False) -> dict:
     (d / THREADS_SUBDIR).mkdir(parents=True, exist_ok=True)
 
     with _hold_reindex_lock():
+        # Resolve any crashed drain's leftover intent first: a stale intent
+        # surviving past the re-emit would frame baselines that no longer
+        # describe the (replaced) files. The tail check would refuse to cut
+        # them anyway; resolving here keeps that guard a backstop, not a path.
+        with _truth_write_lock():
+            pass
         if not force:
             from sqlalchemy import func
 
-            # Globally-collapsed effective count (distinct id, then distinct
-            # thread-scoped dedup_key) — unlike scan_truth_counts' per-file
-            # tally, this collapses a stale same-id twin at another shard depth,
-            # so a layout-migration re-emit doesn't trip the guard.
-            seen_ids: set = set()
-            seen_keys: set = set()
-            truth_effective = 0
-            for path in (d / THREADS_SUBDIR).rglob("*.jsonl"):
-                for rec in _iter_jsonl(path):
-                    if rec.get("type", "event") != "event":
-                        continue
-                    ev_id = rec.get("id")
-                    if ev_id in seen_ids:
-                        continue
-                    seen_ids.add(ev_id)
-                    key = (
-                        ("k", rec.get("thread_id"), rec["dedup_key"])
-                        if rec.get("dedup_key") else ("id", ev_id)
-                    )
-                    if key in seen_keys:
-                        continue
-                    seen_keys.add(key)
-                    truth_effective += 1
+            # Effective count after collapsing superseded lines — including a
+            # stale same-id twin at another shard depth, so a layout-migration
+            # re-emit doesn't trip the guard.
+            truth_effective = scan_truth_counts(truth_dir=d)["events_effective"]
             with get_session() as s:
                 store_events = s.execute(
                     select(func.count()).select_from(Event)
@@ -1304,7 +1608,11 @@ def _rebuild_truth_from_store_locked(d: Path) -> dict:
         _write_snapshot(d, name, model)
     _write_snapshot(d, "import_state", ImportState)  # cursors survive the re-emit too
 
-    _write_manifest(d, {"version": 1, "shard_depth": depth, "last_checkpoint_at": _now_iso()})
+    # Read-modify-write: the re-emit owns the layout keys, not the whole
+    # manifest — a verify run's hashes baseline (or any future key) survives.
+    m = _read_manifest(d)
+    m.update({"version": 1, "shard_depth": depth, "last_checkpoint_at": _now_iso()})
+    _write_manifest(d, m)
 
     # Remove stale copies of re-emitted threads left at another shard depth. Their
     # content was just fully re-emitted at ``depth``, so an old-layout copy is pure
