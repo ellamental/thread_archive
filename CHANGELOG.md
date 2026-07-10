@@ -1,6 +1,48 @@
 # Changelog
 
-## 2026-07-10 — third-pass integrity review: retry, fsync, watermark, FTS parity
+## 2026-07-10 — fourth-pass integrity review: vectors survive reindex, content-level verify, guarded re-emit
+
+A fourth review pass focused on data integrity. The live archive was clean
+(shallow verify: zero drift, zero parse errors); the changes below close
+design-level gaps rather than live corruption:
+
+- **A plain `archive reindex` no longer drops the semantic index.** The vector
+  sidecar restore (+ orphan prune) now runs on every reindex; `--vectors` only
+  controls whether new embedding runs and the sidecar is refreshed. Previously
+  the entire vectors block was gated on `--vectors`, so a plain reindex swapped
+  in an index with no `event_vectors` at all.
+- **`archive backup` refreshes the vector sidecar.** The watcher's live cohost
+  embeds into index.db only; the nightly backup now saves the sidecar first, so
+  live-embedded vectors survive an index loss and ride the mirror.
+  `save_vectors_sidecar` is also a no-op when the store holds zero vectors — an
+  empty save never replaces a populated sidecar.
+- **Deep verify compares dedup_keys, not just id membership.** For ids present
+  in both stores, a `dedup_key` disagreement (`events_key_mismatch`) fails
+  verify: it means an index-only mutation the truth never received (a reindex
+  would rewrite it) or corruption on one side.
+- **`verify --hashes`: content-level rot detection.** Every `dedup_key` ends in
+  a hash of its payload's semantic content, so both stores self-validate by
+  re-hashing stored payloads against their own keys — no new state. Report-only
+  (in-place payload repairs leave a legitimate stale-hash baseline; the signal
+  is the count jumping between runs).
+- **`rebuild_truth_from_store` protects itself.** The one operation that
+  overwrites truth from the projection now holds the reindex lock exclusive and
+  refuses to run when the store holds fewer events than the truth's effective
+  count (`force=True` overrides the pre-flight, never the lock). Previously it
+  relied on the operator to hold the lock and would happily re-emit from a
+  stale, partial index.
+- **`archive import-export` is quiesced.** `cmd_import_export` called the
+  importer without the shared ingest lock — the one writer path that could race
+  a reindex. Now locked like `api.import_path`.
+- **Verify reports parse-error locations.** `scan_truth_counts` returns a
+  `parse_error_sample` of `path:line` entries so a future torn-line incident is
+  diagnosable from the nightly log instead of a grep over 6 GB.
+- **Nightly job runs `--deep` weekly.** The launchd backup job passes `--deep`
+  on Sundays, and stamps `logs/last-backup-ok` on success as a dead-man's-switch
+  hook for monitoring.
+
+Still open, deliberately not taken: off-disk backup destination (operator
+decision), crash-window transaction framing, manifest `shard_depth` inference.
 
 A third review pass over the truth store found four residual holes (none had
 bitten — live deep verify was clean before and after) plus a blind spot in

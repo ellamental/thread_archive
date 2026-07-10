@@ -351,6 +351,13 @@ def backup(dest: str, *, home: Optional[str] = None) -> dict:
 
     _checkpoint()  # full: overlays + metadata-update backstop → truth is a complete restore set
     paths = resolve_paths(home)
+    # Refresh the durable vector cache so live-embedded vectors (the watcher's
+    # cohost writes them into index.db only) survive an index loss and ride the
+    # mirror. No-op when the store holds no vectors — an empty save never
+    # replaces a populated sidecar.
+    from .retrieval.vectors import save_vectors_sidecar
+
+    vectors_cached = save_vectors_sidecar(paths.truth_dir)
     dest_path = Path(dest).expanduser()
     dest_path.mkdir(parents=True, exist_ok=True)
     # Delete-sync only when the source looks like a real, checkpointed truth dir —
@@ -379,11 +386,12 @@ def backup(dest: str, *, home: Optional[str] = None) -> dict:
     return {
         "truth_dir": str(paths.truth_dir),
         "dest": str(dest_path),
+        "vectors_cached": vectors_cached,
         **result,
     }
 
 
-def verify(*, home: Optional[str] = None, deep: bool = False) -> dict:
+def verify(*, home: Optional[str] = None, deep: bool = False, hashes: bool = False) -> dict:
     """Integrity check: the JSONL truth parses cleanly and matches the SQLite index.
 
     Scans every per-thread truth file and compares to the projection's counts.
@@ -396,10 +404,19 @@ def verify(*, home: Optional[str] = None, deep: bool = False) -> dict:
     positive drift (index > truth) or any parse error is a real integrity problem.
 
     ``deep=True`` adds an id-level comparison (both directions, below a stable id
-    watermark so in-flight ingest can't false-alarm), knowledge-layer parity, and
-    dangling-reference checks. Slower — it re-reads the whole truth directory and
-    queries the index per thread — but it sees what count parity can't: missing
-    content masked by compensating errors, and exactly which events drifted.
+    watermark so in-flight ingest can't false-alarm), dedup_key parity for ids on
+    both sides, knowledge-layer parity, and dangling-reference checks. Slower — it
+    re-reads the whole truth directory (twice) and queries the index per thread —
+    but it sees what count parity can't: missing content masked by compensating
+    errors, and exactly which events drifted.
+
+    ``hashes=True`` adds content-level self-validation on both stores: each
+    event's ``dedup_key`` ends in a hash of its payload's semantic content, so
+    re-hashing the stored payload and comparing detects silent payload corruption
+    (bit rot, a bad write) with no extra state. Report-only — it never fails
+    ``ok``: a payload-repair pass that rewrites content in place leaves a stale
+    hash behind, so a stable nonzero baseline is expected; the signal is the
+    count *jumping* between runs. CPU-heavy (re-hashes every payload twice).
 
     The shallow comparison is watermark-bounded on both sides too (ids at or
     below the index maxima captured up front), so verify can run against a live
@@ -439,7 +456,91 @@ def verify(*, home: Optional[str] = None, deep: bool = False) -> dict:
     if deep:
         result["deep"] = _verify_deep(watermark)
         result["ok"] = result["ok"] and result["deep"]["ok"]
+    if hashes:
+        result["hashes"] = _verify_hashes(watermark)
     return result
+
+
+def _verify_hashes(watermark: int) -> dict:
+    """Content-level self-validation: re-hash each stored payload against the
+    content hash embedded in its own ``dedup_key`` (its last ``:``-segment; see
+    ``thread_import.event_builder.compute_dedup_key``), on both the truth files
+    and the index. A mismatch means the payload changed since its key was
+    computed — corruption, or an in-place payload repair that didn't recompute
+    the key. Events with no dedup_key (or a key whose tail isn't a hash) are
+    skipped and counted."""
+    import json as _json
+    import re as _re
+
+    from thread_import.event_builder import compute_content_hash
+
+    from .store import get_session
+    from .truth.jsonl_log import THREADS_SUBDIR, _iter_jsonl, log_dir
+
+    hex16 = _re.compile(r"^[0-9a-f]{16}$")
+
+    def _check(payload: dict, dedup_key: str) -> Optional[bool]:
+        """True = hash matches, False = mismatch, None = key has no hash tail."""
+        tail = dedup_key.rsplit(":", 1)[-1]
+        if not hex16.match(tail):
+            return None
+        return compute_content_hash(payload) == tail
+
+    truth_checked = truth_mismatched = truth_skipped = 0
+    truth_sample: list[int] = []
+    threads_dir = log_dir() / THREADS_SUBDIR
+    if threads_dir.exists():
+        for path in threads_dir.rglob("*.jsonl"):
+            for rec in _iter_jsonl(path):
+                if rec.get("type", "event") != "event":
+                    continue
+                ev_id, key = rec.get("id"), rec.get("dedup_key")
+                if ev_id is None or ev_id > watermark or not key:
+                    continue
+                payload = rec.get("payload")
+                verdict = _check(payload, key) if isinstance(payload, dict) else False
+                if verdict is None:
+                    truth_skipped += 1
+                    continue
+                truth_checked += 1
+                if not verdict:
+                    truth_mismatched += 1
+                    if len(truth_sample) < 10:
+                        truth_sample.append(int(ev_id))
+
+    index_checked = index_mismatched = index_skipped = 0
+    index_sample: list[int] = []
+    with get_session() as s:
+        conn = s.connection().connection  # raw sqlite3 — stream, don't materialize
+        cur = conn.execute(
+            "SELECT id, dedup_key, payload FROM events "
+            "WHERE dedup_key IS NOT NULL AND id <= ?", (watermark,)
+        )
+        for ev_id, key, payload_text in cur:
+            try:
+                payload = _json.loads(payload_text)
+            except (TypeError, ValueError):
+                payload = None
+            verdict = _check(payload, key) if isinstance(payload, dict) else False
+            if verdict is None:
+                index_skipped += 1
+                continue
+            index_checked += 1
+            if not verdict:
+                index_mismatched += 1
+                if len(index_sample) < 10:
+                    index_sample.append(int(ev_id))
+
+    return {
+        "truth": {
+            "checked": truth_checked, "mismatched": truth_mismatched,
+            "unhashed_keys": truth_skipped, "mismatch_sample": truth_sample,
+        },
+        "index": {
+            "checked": index_checked, "mismatched": index_mismatched,
+            "unhashed_keys": index_skipped, "mismatch_sample": index_sample,
+        },
+    }
 
 
 def _verify_deep(watermark: int) -> dict:
@@ -456,6 +557,12 @@ def _verify_deep(watermark: int) -> dict:
     residue of a lost-commit re-import, collapsed on reindex) and **missing**
     (no twin: content the index genuinely lacks — recoverable via reindex).
     Index-only ids are the forbidden direction and always fail.
+
+    For ids present on both sides, the stored ``dedup_key`` values are compared
+    (``events_key_mismatch``): a mismatch means the two stores disagree on an
+    event's content identity — an index-only mutation the truth never received
+    (a reindex would rewrite it) or corruption on one side. Reported with a
+    sample, and it fails ``ok``.
 
     The search surface is checked too (both FTS tables are written in the same
     transaction as their events): orphan shadow rows and a shadow↔FTS5 row-count
@@ -499,6 +606,7 @@ def _verify_deep(watermark: int) -> dict:
     # Pass 2 — per-thread diff against the index.
     index_only: list[int] = []
     missing: list[int] = []
+    key_mismatch: list[int] = []
     superseded = 0
     with get_session() as s:
         idx_tids = {
@@ -509,23 +617,27 @@ def _verify_deep(watermark: int) -> dict:
             rows = s.execute(sa_text(
                 "SELECT id, dedup_key FROM events WHERE thread_id = :t AND id <= :wm"),
                 {"t": tid, "wm": watermark}).all()
-            idx_set = {r[0] for r in rows}
+            idx_map = {r[0]: r[1] for r in rows}
             t_set = truth_ids.get(tid, set())
-            index_only.extend(sorted(idx_set - t_set))
-            orphan_ids = t_set - idx_set
-            if orphan_ids:
-                idx_keys = {r[1] for r in rows if r[1]}
-                # Re-read only this thread's files to fetch the orphans' dedup_keys.
-                orphan_keys: dict[int, str | None] = {}
-                for path in thread_files.get(tid, []):
-                    for rec in _iter_jsonl(path):
-                        if rec.get("type", "event") == "event" and rec.get("id") in orphan_ids:
-                            orphan_keys[rec["id"]] = rec.get("dedup_key")
-                for ev_id in sorted(orphan_ids):
-                    if orphan_keys.get(ev_id) and orphan_keys[ev_id] in idx_keys:
-                        superseded += 1
-                    else:
-                        missing.append(ev_id)
+            index_only.extend(sorted(set(idx_map) - t_set))
+            if not t_set:
+                continue
+            # Re-read this thread's files for every truth id's dedup_key: the last
+            # line for an id wins, matching what a reindex would materialize.
+            truth_keys: dict[int, str | None] = {}
+            for path in thread_files.get(tid, []):
+                for rec in _iter_jsonl(path):
+                    if rec.get("type", "event") == "event" and rec.get("id") in t_set:
+                        truth_keys[rec["id"]] = rec.get("dedup_key")
+            idx_keys = {v for v in idx_map.values() if v}
+            for ev_id in sorted(t_set - set(idx_map)):
+                if truth_keys.get(ev_id) and truth_keys[ev_id] in idx_keys:
+                    superseded += 1
+                else:
+                    missing.append(ev_id)
+            for ev_id in sorted(t_set & set(idx_map)):
+                if truth_keys.get(ev_id) != idx_map[ev_id]:
+                    key_mismatch.append(ev_id)
 
         # Knowledge layer: the kg truth log vs its table, by id.
         kg_line_ids = {
@@ -588,7 +700,7 @@ def _verify_deep(watermark: int) -> dict:
                 {"wm": watermark}).scalar() or 0
 
     ok = (
-        not index_only and not missing
+        not index_only and not missing and not key_mismatch
         and kg_index_only == 0
         and dangling_links == 0 and dangling_citations == 0 and dangling_events == 0
         and fts_orphans == 0 and fts_shadow_rows == fts5_rows
@@ -600,6 +712,8 @@ def _verify_deep(watermark: int) -> dict:
         "index_only_sample": index_only[:10],
         "events_missing_from_index": len(missing),
         "missing_sample": missing[:10],
+        "events_key_mismatch": len(key_mismatch),
+        "key_mismatch_sample": key_mismatch[:10],
         "events_superseded_twins": superseded,
         "kg": {"index_only": kg_index_only, "truth_only": kg_truth_only},
         "dangling": {

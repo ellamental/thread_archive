@@ -747,6 +747,7 @@ def scan_truth_counts(
     threads_dir = d / THREADS_SUBDIR
     n_threads = n_events = n_effective = parse_errors = 0
     dup_id_lines = dup_content_lines = 0
+    parse_error_sample: list[str] = []
     if threads_dir.exists():
         for path in threads_dir.rglob("*.jsonl"):
             if thread_id_max is not None:
@@ -759,7 +760,7 @@ def scan_truth_counts(
             seen_ids: set = set()
             seen_keys: set = set()
             with open(path, encoding="utf-8", errors="replace") as fh:
-                for line in fh:
+                for lineno, line in enumerate(fh, 1):
                     line = line.strip()
                     if not line:
                         continue
@@ -767,6 +768,8 @@ def scan_truth_counts(
                         rec = json.loads(line)
                     except ValueError:
                         parse_errors += 1
+                        if len(parse_error_sample) < 10:
+                            parse_error_sample.append(f"{path}:{lineno}")
                         continue
                     if rec.get("type", "event") != "event":
                         continue
@@ -791,6 +794,7 @@ def scan_truth_counts(
         "duplicate_id_lines": dup_id_lines,
         "duplicate_content_lines": dup_content_lines,
         "parse_errors": parse_errors,
+        "parse_error_sample": parse_error_sample,
     }
 
 
@@ -1142,27 +1146,30 @@ def reindex(*, vectors: bool = False) -> dict:
                 from ..retrieval.fts import rebuild_fts
 
                 counts["fts"] = rebuild_fts()
-                if vectors:
-                    # Restore the durable vector cache (the hours-long embed runs
-                    # once, ever), embed only genuinely-new events, then refresh the
-                    # sidecar. Degrades to 0 without the [embeddings] extra — the
-                    # store stays lexical-only.
-                    from ..retrieval import vectors as _vec
+                # Vectors always survive the rebuild: restore the durable sidecar
+                # cache (space-key-guarded; the hours-long embed runs once, ever)
+                # into the build regardless of the ``vectors`` flag — a plain
+                # reindex must not silently swap away the semantic index.
+                # ``vectors=True`` additionally embeds whatever the cache lacks and
+                # refreshes the sidecar. Degrades to 0 without a sidecar or the
+                # [embeddings] extra — the store stays lexical-only.
+                from ..retrieval import vectors as _vec
 
-                    counts["vectors_restored"] = _vec.load_vectors_sidecar(d)
-                    # The sidecar may carry vectors for event ids the rebuild
-                    # collapsed away (superseded same-content twins) — prune them
-                    # so the vector arm never scores rows that can't hydrate.
-                    with loader.begin() as conn:
-                        has_vec = conn.exec_driver_sql(
-                            "SELECT 1 FROM sqlite_master WHERE name='event_vectors'"
-                        ).scalar()
-                        pruned = conn.exec_driver_sql(
-                            "DELETE FROM event_vectors "
-                            "WHERE event_id NOT IN (SELECT id FROM events)"
-                        ).rowcount if has_vec else 0
-                    if pruned:
-                        counts["vectors_pruned"] = pruned
+                counts["vectors_restored"] = _vec.load_vectors_sidecar(d)
+                # The sidecar may carry vectors for event ids the rebuild
+                # collapsed away (superseded same-content twins) — prune them
+                # so the vector arm never scores rows that can't hydrate.
+                with loader.begin() as conn:
+                    has_vec = conn.exec_driver_sql(
+                        "SELECT 1 FROM sqlite_master WHERE name='event_vectors'"
+                    ).scalar()
+                    pruned = conn.exec_driver_sql(
+                        "DELETE FROM event_vectors "
+                        "WHERE event_id NOT IN (SELECT id FROM events)"
+                    ).rowcount if has_vec else 0
+                if pruned:
+                    counts["vectors_pruned"] = pruned
+                if vectors:
                     counts["vectors_embedded"] = _vec.index_events_local(rebuild=False)
                     counts["vectors_cached"] = _vec.save_vectors_sidecar(d)
         except BaseException:
@@ -1217,17 +1224,69 @@ def emit_thread_file(d: Path, thread_id: int, depth: int, thread_record, event_r
     return n_ev
 
 
-def rebuild_truth_from_store() -> dict:
+def rebuild_truth_from_store(*, force: bool = False) -> dict:
     """Re-emit the entire per-thread truth from the current SQLite store.
 
     The inverse of :func:`reindex`: for every thread, (re)write ``threads/<id>.jsonl``
     as its metadata record + ordered events; rewrite the cross-thread snapshots; pick
-    the shard depth for the thread count; set the manifest. Used once to migrate an
+    the shard depth for the thread count; set the manifest. Used to migrate an
     older monolithic ``events.jsonl`` into per-thread files (the old monolith files,
-    if present, are removed). Idempotent — safe to re-run."""
+    if present, are removed), and to finish an index-only repair pass (e.g. the
+    dedup-key backfill) by making the truth match. Idempotent — safe to re-run.
+
+    This is the ONE operation that overwrites truth from the projection — the
+    reverse of the normal flow — so it protects itself: it holds the reindex lock
+    **exclusive** for the duration (no writer can append truth or commit to the
+    index mid-emission; in-tree writers all hold it shared), and it refuses to run
+    when the store holds fewer events than the truth's effective count — re-emitting
+    from a stale or partial index would destroy truth content. ``force=True``
+    overrides the pre-flight only (for a deliberate, understood shrink — e.g. a
+    duplicate-collapse repair); it never skips the lock."""
     d = log_dir()
     (d / THREADS_SUBDIR).mkdir(parents=True, exist_ok=True)
 
+    with _hold_reindex_lock():
+        if not force:
+            from sqlalchemy import func
+
+            # Globally-collapsed effective count (distinct id, then distinct
+            # thread-scoped dedup_key) — unlike scan_truth_counts' per-file
+            # tally, this collapses a stale same-id twin at another shard depth,
+            # so a layout-migration re-emit doesn't trip the guard.
+            seen_ids: set = set()
+            seen_keys: set = set()
+            truth_effective = 0
+            for path in (d / THREADS_SUBDIR).rglob("*.jsonl"):
+                for rec in _iter_jsonl(path):
+                    if rec.get("type", "event") != "event":
+                        continue
+                    ev_id = rec.get("id")
+                    if ev_id in seen_ids:
+                        continue
+                    seen_ids.add(ev_id)
+                    key = (
+                        ("k", rec.get("thread_id"), rec["dedup_key"])
+                        if rec.get("dedup_key") else ("id", ev_id)
+                    )
+                    if key in seen_keys:
+                        continue
+                    seen_keys.add(key)
+                    truth_effective += 1
+            with get_session() as s:
+                store_events = s.execute(
+                    select(func.count()).select_from(Event)
+                ).scalar() or 0
+            if store_events < truth_effective:
+                raise RuntimeError(
+                    f"rebuild_truth_from_store: the store holds {store_events} events "
+                    f"but the truth holds {truth_effective} effective — re-emitting "
+                    "would destroy truth content the index lacks. Run `archive reindex` "
+                    "first (or pass force=True if the shrink is intended)."
+                )
+        return _rebuild_truth_from_store_locked(d)
+
+
+def _rebuild_truth_from_store_locked(d: Path) -> dict:
     with get_session() as s:
         threads = s.execute(select(Thread).order_by(Thread.id)).scalars().all()
         depth = _depth_for(len(threads))

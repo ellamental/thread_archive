@@ -63,10 +63,16 @@ def cmd_import(args: argparse.Namespace) -> int:
 def cmd_import_export(args: argparse.Namespace) -> int:
     from . import api
     from .importers.exports import import_export
+    from .truth import shared_ingest_lock
 
     api.open_archive(args.home)
-    result = import_export(args.path, force=args.force)
-    api.checkpoint(home=args.home)  # snapshot the new threads' metadata to truth
+    # Shared across the truth appends AND the SQLite commits (same coverage as
+    # api.import_path): an unlocked export import racing a reindex can land in the
+    # truth after the rebuild's read point and commit into the inode the swap
+    # replaces. Blocks (bounded by one rebuild) — a one-shot import has no retry.
+    with shared_ingest_lock():
+        result = import_export(args.path, force=args.force)
+        api.checkpoint(home=args.home)  # snapshot the new threads' metadata to truth
     print(
         f"imported export {args.path}: processed={result.processed} "
         f"imported={result.imported} skipped={result.skipped} events={result.events_created}"
@@ -210,7 +216,7 @@ def cmd_backup(args: argparse.Namespace) -> int:
 def cmd_verify(args: argparse.Namespace) -> int:
     from . import api
 
-    res = api.verify(home=args.home, deep=args.deep)
+    res = api.verify(home=args.home, deep=args.deep, hashes=args.hashes)
     t = res["truth"]
     print(
         f"truth: threads={t['threads']} events={t['events']} "
@@ -218,6 +224,8 @@ def cmd_verify(args: argparse.Namespace) -> int:
         f"superseded={t['duplicate_id_lines'] + t['duplicate_content_lines']} "
         f"parse_errors={t['parse_errors']}"
     )
+    if t["parse_errors"]:
+        print(f"       parse error sample: {t['parse_error_sample']}")
     print(f"index: threads={res['index']['threads']} events={res['index']['events']}")
     print(f"drift: threads={res['drift']['threads']:+d} events={res['drift']['events']:+d}")
     if args.deep:
@@ -225,6 +233,7 @@ def cmd_verify(args: argparse.Namespace) -> int:
         print(
             f"deep:  index_only={dp['events_index_only']} "
             f"missing={dp['events_missing_from_index']} "
+            f"key_mismatch={dp['events_key_mismatch']} "
             f"superseded_twins={dp['events_superseded_twins']} "
             f"(watermark {dp['watermark']})"
         )
@@ -245,6 +254,18 @@ def cmd_verify(args: argparse.Namespace) -> int:
             print(f"       missing sample: {dp['missing_sample']}")
         if dp["events_index_only"]:
             print(f"       index-only sample: {dp['index_only_sample']}")
+        if dp["events_key_mismatch"]:
+            print(f"       key-mismatch sample: {dp['key_mismatch_sample']}")
+    if args.hashes:
+        h = res["hashes"]
+        for side in ("truth", "index"):
+            hs = h[side]
+            print(
+                f"hashes[{side}]: checked={hs['checked']} mismatched={hs['mismatched']} "
+                f"unhashed_keys={hs['unhashed_keys']}"
+            )
+            if hs["mismatched"]:
+                print(f"       mismatch sample: {hs['mismatch_sample']}")
     print("OK" if res["ok"] else "DRIFT DETECTED")
     return 0 if res["ok"] else 1
 
@@ -365,7 +386,13 @@ def build_parser() -> argparse.ArgumentParser:
     _add_home_arg(p_verify)
     p_verify.add_argument(
         "--deep", action="store_true",
-        help="id-level truth↔index diff + knowledge-layer and dangling-reference checks (slower)",
+        help="id-level truth↔index diff + dedup_key parity + knowledge-layer and "
+             "dangling-reference checks (slower)",
+    )
+    p_verify.add_argument(
+        "--hashes", action="store_true",
+        help="re-hash every payload against its dedup_key's content hash, both stores "
+             "(rot detection; report-only, CPU-heavy)",
     )
     p_verify.set_defaults(func=cmd_verify)
 

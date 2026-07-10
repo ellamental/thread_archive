@@ -510,7 +510,10 @@ def test_rebuild_truth_removes_stale_other_depth_twin(archive_home) -> None:
     ghost.parent.mkdir(parents=True, exist_ok=True)
     ghost.write_text(json.dumps({"type": "thread", "id": tid + 1000, "name": "ghost"}) + "\n")
 
-    jsonl_log.rebuild_truth_from_store()
+    # The twin's fabricated event id is content the store lacks, so the re-emit's
+    # pre-flight (correctly) refuses without force — this test is about the
+    # re-emit's file handling, so override deliberately.
+    jsonl_log.rebuild_truth_from_store(force=True)
 
     assert not twin.exists(), "stale twin of a re-emitted thread must be removed"
     assert ghost.exists(), "a file for an id the store lacks must be left untouched"

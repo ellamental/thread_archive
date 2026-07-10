@@ -8,9 +8,10 @@ reconnecting its engine on the first pass after a skipped one
 (`watcher/daemon.py:run`). Cross-process reader reconnect for the *MCP read
 servers / cohosted web* (step 5's generation-marker option) remains the open
 follow-up — until then those readers serve the pre-swap inode until they
-reconnect or restart, and a non-watcher writer (the librarian MCP) is not
-quiesced: its mid-reindex writes land in truth + the old index and appear on the
-next reindex. Tests: `tests/test_truth.py` (torn-line tolerance, failed-build
+reconnect or restart. Writers are all quiesced: the watcher, CLI imports
+(`api.import_path`, `cmd_import_export`), and librarian mutations
+(`knowledge/write.py`) each hold the reindex lock shared around their truth
+append + commit. Tests: `tests/test_truth.py` (torn-line tolerance, failed-build
 leaves the old index intact, lock shared-vs-exclusive semantics).
 Scope: `thread_archive` — `truth/jsonl_log.py:reindex`, `watcher/daemon.py`, `config.py`
 Priority: **low** — a follow-up hardening, not a live bug. The collision/dup failure

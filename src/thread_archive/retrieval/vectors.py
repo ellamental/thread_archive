@@ -158,13 +158,24 @@ def index_events_local(
 def save_vectors_sidecar(truth_dir, space_key: Optional[str] = None) -> int:
     """Persist ``event_vectors`` to ``<truth_dir>/vectors.sqlite`` — a durable cache so
     the expensive embed survives ``rm index.db && reindex``. Tagged with the embedding
-    space_key so a model change invalidates it."""
+    space_key so a model change invalidates it.
+
+    A no-op (0) when the live store has no vectors at all: an empty save must never
+    replace a populated sidecar — the cache exists precisely to survive the states
+    (fresh index, vectors not yet restored) that would otherwise gut it."""
     if not is_available():
         return 0
     import os
     from pathlib import Path
 
     from .embed import space_key as _sk
+    with get_session() as s:
+        exists = s.execute(
+            sa_text("SELECT 1 FROM sqlite_master WHERE name = :n"), {"n": "event_vectors"}
+        ).scalar()
+        live = s.execute(sa_text("SELECT count(*) FROM event_vectors")).scalar() if exists else 0
+    if not live:
+        return 0
     sk = space_key or _sk()
     path = Path(truth_dir) / "vectors.sqlite"
     # Build into a temp sidecar and rename over the live one: a crash mid-save must
