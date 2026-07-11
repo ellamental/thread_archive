@@ -16,17 +16,26 @@ no server, no external services, and no ties to any host application.
 
 ## Install
 
+**From PyPI.** Needs Python ≥ 3.11. Installs the `archive` CLI, both MCP servers
+(`archive-mcp`, `archive-librarian-mcp`), and the pre-built web viewer — no node.
+
+```bash
+pip install thread-archive                 # lexical core (+ Leiden community detection)
+pip install 'thread-archive[embeddings]'   # optional: local semantic search (heavy: torch)
+```
+
 **The easy path — clone and let Claude install it.** Clone the repo, open it in Claude
 Code, and say *"install this — follow claude-install.md"*. That guide walks an instance
 through the whole setup: venv, package install, MCP wiring, importing your conversations,
-and curating the topic graph. It's the recommended route.
+and curating the topic graph. It's the recommended route for Claude Code use — the clone
+carries the `.mcp.json` template and the `/librarian` skill, which a pip install doesn't.
 
 ```bash
-git clone <repo-url> thread-archive && cd thread-archive
+git clone https://github.com/ellamental/thread_archive.git thread-archive && cd thread-archive
 claude     # then: "install this, following claude-install.md"
 ```
 
-**Manual path.** Needs Python ≥ 3.11.
+**Manual path (from a clone).**
 
 ```bash
 python3 -m venv .venv
@@ -187,7 +196,7 @@ citation/link — there is no per-thread summary).
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+MIT — see [LICENSE](https://github.com/ellamental/thread_archive/blob/main/LICENSE).
 
 ## Origin
 

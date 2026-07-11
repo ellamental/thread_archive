@@ -28,6 +28,11 @@ from .api import (
     watch,
 )
 
+# Single source of version truth — pyproject declares `dynamic = ["version"]`
+# and hatchling reads it from here at build time.
+# Versioning policy: 0.0.x until there is a stable, deliberately exposed public
+# API; the api.py surface is still free to change without notice. Don't bump
+# past 0.0.x as part of release mechanics.
 __version__ = "0.0.1"
 
 __all__ = [

@@ -2,6 +2,47 @@
 
 ## Unreleased
 
+- PyPI release readiness: version single-sourced from `thread_archive.__version__`
+  (pyproject declares it dynamic); `[project.urls]` added;
+  sdist contents pinned via `[tool.hatch.build.targets.sdist]` `only-include`
+  (hatchling only reads the root `.gitignore`, so `frontend/node_modules` —
+  ignored only by the nested `frontend/.gitignore` — was ballooning the sdist
+  to 17 MB; it and repo-local dirs like `host/` and `.claude/` are now
+  excluded). README gains a `pip install thread-archive` path and the real
+  clone URL. Built distributions land in `dist/` (gitignored) for
+  `twine upload`.
+
+- Integrity hardening (from the self-review in thread 3716422), four gates at
+  the transaction/content seams: (1) the backup mirror traversal now runs under
+  the truth-write mutex, so a copy can never capture a mid-drain partial batch
+  or a pre-rollback append that the shrink guard would then pin in the mirror;
+  (2) `verify --hashes --backup` now *fails* on a mirror hash-mismatch count
+  above the previous run's for that destination (it was report-only), with the
+  same fails-once baseline absorption as the live scan (`backup_hashes`
+  component, `backup_hashes_last` in health); (3) `rebuild_truth_from_store`
+  grew two content pre-flights behind the existing containment gate — it
+  refuses when any store payload fails the content hash in its own dedup_key
+  (a corrupted index row that kept its id/key must not replace the good truth
+  line) and when truth records carry fields the running code's models don't map
+  (an older binary must not lossily re-emit newer truth); `force=True` remains
+  the deliberate override; (4) `repair_truth` self-validates restore candidates
+  the same way — a failing payload is still restored (it's the only copy left)
+  but counted (`restored_hash_mismatches`) and logged, and the next
+  `verify --hashes` reports it. Plus a fifth, report-only seam: reindex counts
+  and logs same-id event content it is about to overwrite in the index
+  (`content_overwrites` + sample ids in its result, salvage or not). A blocking
+  content gate was rejected (below), but for an *unkeyed* event the index row
+  can be the last good copy of a truth line rotted in place, and once the swap
+  lands the two stores agree — cross-store parity can never see it again; the
+  publication report is the last observable moment of the overwrite.
+  Reviewed but deliberately not adopted: a durable per-drain transaction ledger
+  (truth-ahead-of-index is the designed safe direction; dedup collapses
+  resurrections), a *blocking* content-equality reindex gate (would invert
+  truth's authority over the index; cross-store parity in `verify --hashes` is
+  the detector, and the report-only counter above covers the laundering
+  window), and sticky-red-until-acknowledged hash semantics (the fails-once
+  baseline + failure ledger is the documented tradeoff).
+
 - Ingest hardening (from the self-review in thread 3716420): the line-stream
   cursor no longer assumes its source is append-only. The watermark carries a
   sha256 of the bytes it was computed over (`import_state.last_content_hash`), and

@@ -648,7 +648,7 @@ def backup(
     """
     open_archive(home)
     from .truth import checkpoint as _checkpoint
-    from .truth.jsonl_log import _try_rebalance_lock
+    from .truth.jsonl_log import _truth_write_lock, _try_rebalance_lock
 
     _checkpoint()  # full: overlays + metadata-update backstop → truth is a complete restore set
     # Verify AFTER the checkpoint, so verify_ok describes the tree the mirror
@@ -689,9 +689,19 @@ def backup(
     with _try_rebalance_lock() as held:
         # If a rebalance sweep is mid-flight, mirror additively (no deletions):
         # copies of both layouts are safe; stale-path deletion waits for the next run.
-        result = _mirror_dir(
-            paths.truth_dir, dest_path, delete=delete and held, allow_shrink=allow_shrink
-        )
+        #
+        # The truth-write mutex is held for the whole traversal so the mirror is a
+        # drain-consistent snapshot: no append batch can land in (or be rolled back
+        # out of) a truth file between the mirror reading one file and the next.
+        # Without it the copy can capture a mid-drain partial batch — one thread's
+        # file with a transaction's rows and another's without — or a pre-rollback
+        # append that the drain then truncates away, which the shrink guard would
+        # afterwards pin in the mirror as a divergent file. Writers pause for the
+        # traversal; incremental runs copy little, so the pause is brief.
+        with _truth_write_lock():
+            result = _mirror_dir(
+                paths.truth_dir, dest_path, delete=delete and held, allow_shrink=allow_shrink
+            )
     result.update(generations)
 
     # Structural completeness: every source .jsonl must exist at the destination,
@@ -1113,7 +1123,10 @@ def verify(
     is expected staleness (the mirror ages between runs) and is reported as
     ``coverage`` for trending. Combined with ``hashes``, the mirror gets the
     content-level hash scan too — an unchanged destination file is never
-    re-copied, so rot at rest is otherwise invisible forever.
+    re-copied, so rot at rest is otherwise invisible forever. A mirror mismatch
+    count above the previous run's for the same destination (or any mismatch on
+    a first, baseline-less look) fails ``ok`` (``backup_hashes``), with the same
+    fails-once absorption as the live scan.
     ``restore_drill`` is the step beyond this: actually rebuild an index from
     the mirror.
 
@@ -1269,10 +1282,27 @@ def verify(
             # destination file is never re-copied (size+mtime skip), so silent
             # corruption at rest would otherwise persist forever while the
             # parse-and-count scan stays green. No watermark — the mirror is a
-            # point-in-time copy. Report-only, same as the live hashes pass.
-            result["backup"]["hashes"] = _hash_scan_truth_dir(
-                Path(backup).expanduser(), watermark=None
+            # point-in-time copy. Same baseline-delta semantics as the live
+            # hashes pass: a mismatch count *above* the previous run's for this
+            # destination (or any mismatch on a baseline-less first run) fails
+            # ``ok``; recording the new count absorbs it, so the failure fires
+            # once and the ledger keeps its samples.
+            dest_path = Path(backup).expanduser()
+            bh = _hash_scan_truth_dir(dest_path, watermark=None)
+            result["backup"]["hashes"] = bh
+            prev = _read_health().get("backup_hashes_last") or {}
+            prev_count = (
+                prev.get("mismatched") if prev.get("dest") == str(dest_path) else None
             )
+            bh["new_mismatches"] = (
+                bh["mismatched"] > int(prev_count)
+                if prev_count is not None else bool(bh["mismatched"])
+            )
+            if bh["new_mismatches"]:
+                failed.append("backup_hashes")
+            _record_health("backup_hashes_last", {
+                "dest": str(dest_path), "mismatched": bh["mismatched"],
+            })
     result["ok"] = not failed
     result["failed_components"] = failed
     if failed:
@@ -1448,15 +1478,9 @@ def _hash_key_check(payload: object, dedup_key: str) -> Optional[bool]:
     ``dedup_key`` (the last ``:``-segment; see
     ``thread_import.event_builder.compute_dedup_key``); False = mismatch;
     None = the key carries no hash tail (nothing to validate against)."""
-    import re as _re
+    from .truth.jsonl_log import _hash_key_check as _impl
 
-    from thread_import.event_builder import compute_content_hash
-
-    if not _re.match(r"^[0-9a-f]{16}$", dedup_key.rsplit(":", 1)[-1]):
-        return None
-    if not isinstance(payload, dict):
-        return False
-    return compute_content_hash(payload) == dedup_key.rsplit(":", 1)[-1]
+    return _impl(payload, dedup_key)
 
 
 def _hash_scan_truth_dir(truth_dir: Path, watermark: Optional[int]) -> dict:

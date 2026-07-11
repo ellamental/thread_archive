@@ -1619,6 +1619,69 @@ def _committed_regression(index_path: Path, tmp_path: Path) -> dict | None:
     }
 
 
+def _parsed_equal(a: object, b: object) -> bool:
+    """True when two stored payload texts encode the same object. Raw-text
+    inequality alone must not count — the two stores may serialize one object
+    differently across code versions — so candidates are confirmed by parsed
+    comparison. An unparseable side is a real disagreement (that copy is
+    damaged)."""
+    if a == b:
+        return True
+    try:
+        pa = json.loads(a) if isinstance(a, str) else a
+        pb = json.loads(b) if isinstance(b, str) else b
+    except ValueError:
+        return False
+    return pa == pb
+
+
+def _content_divergence(index_path: Path, tmp_path: Path) -> dict | None:
+    """Same-id events whose content disagrees between the current index and the
+    rebuild — publication *visibility*, deliberately not a gate.
+
+    The truth is authoritative: on publish the rebuild's content wins, and the
+    projection disagreeing must not block the swap. But nothing mutates a
+    payload after commit, so a same-id disagreement means one copy is damaged —
+    and for an event with no hash-tailed ``dedup_key`` the live index row can be
+    the last good copy of a truth line rotted in place. Cross-store parity
+    (``verify --hashes``) can only see the disagreement while both copies still
+    exist; the moment the swap lands they agree and the rot is laundered.
+    Publication is therefore the last observable moment of the overwrite: count
+    it and name the ids, so an operator (or the agent that just ran ``archive
+    reindex`` as a routine fix) can adjudicate against a backup generation
+    before the next backup run propagates the new content. Returns ``None``
+    with no readable previous index, else ``{"events": n, "sample": [...]}``."""
+    if not index_path.exists():
+        return None
+    conn = sqlite3.connect(tmp_path)
+    try:
+        try:
+            conn.execute("ATTACH DATABASE ? AS old", (str(index_path),))
+            # Raw-text inequality is the cheap SQL prefilter; each candidate is
+            # confirmed in Python (see _parsed_equal). Streamed, not materialized.
+            cur = conn.execute(
+                "SELECT o.id, o.event_type, o.payload, n.event_type, n.payload "
+                "FROM old.events o JOIN main.events n ON n.id = o.id "
+                "WHERE o.payload IS NOT n.payload OR o.event_type IS NOT n.event_type"
+            )
+            diverged = 0
+            sample: list[int] = []
+            for ev_id, o_type, o_payload, n_type, n_payload in cur:
+                if o_type == n_type and _parsed_equal(o_payload, n_payload):
+                    continue
+                diverged += 1
+                if len(sample) < 10:
+                    sample.append(int(ev_id))
+        except sqlite3.Error as e:
+            # No readable old index — nothing to diverge from; the rebuild IS
+            # the recovery.
+            logger.warning("reindex: cannot content-diff against the previous index (%s)", e)
+            return None
+    finally:
+        conn.close()
+    return {"events": diverged, "sample": sample}
+
+
 def _build_fk_violations(tmp_path: Path) -> list[tuple]:
     """``PRAGMA foreign_key_check`` over the whole build — the relational gate
     behind fail-closed publication. The loader runs FK-OFF with blanket
@@ -1800,7 +1863,17 @@ def reindex(*, vectors: bool = False, salvage: bool = False) -> dict:
     baseline and the gate is skipped — parse errors are still reported. The
     rebuilt file must also pass ``PRAGMA quick_check`` before the swap (never
     overridable) — a build corrupted at the page level must not replace a
-    healthy index."""
+    healthy index.
+
+    **Content divergence is reported, never blocked.** A same-id event whose
+    content disagrees between the old index and the build is counted into the
+    result (``content_overwrites`` + sample ids) and logged at publication
+    (:func:`_content_divergence`): the truth is authoritative and its content
+    wins, but nothing mutates a payload after commit, so a disagreement means
+    one copy is damaged — and once the swap lands the two stores agree and
+    cross-store parity can no longer see it. The report is the last observable
+    moment of the overwrite; adjudicate an unexpected one against a backup
+    generation before the next backup run propagates the published content."""
     d = log_dir()
 
     engine = get_engine()
@@ -1875,6 +1948,21 @@ def reindex(*, vectors: bool = False, salvage: bool = False) -> dict:
                         + "Repair the truth (or restore it from backup), or rerun "
                         "with --salvage to publish the lossy rebuild anyway."
                     )
+            # Report-only, salvage or not: same-id content the publish will
+            # overwrite in the index. The truth wins by design — this is the
+            # last observable moment of the overwrite, not a gate (see
+            # _content_divergence).
+            diverged = _content_divergence(index_path, tmp_path)
+            if diverged and diverged["events"]:
+                counts["content_overwrites"] = diverged["events"]
+                counts["content_overwrite_sample"] = diverged["sample"]
+                logger.warning(
+                    "reindex: publishing content for %d event id(s) that disagrees "
+                    "with the live index (sample: %s) — the truth wins by design; "
+                    "if this is unexpected, adjudicate against a backup generation "
+                    "before the next backup run propagates it",
+                    diverged["events"], diverged["sample"],
+                )
             counts.update(_reconcile_collapsed_citations(d, loader))
 
             # FTS + vectors resolve their engine via get_engine(); point them at
@@ -1996,7 +2084,53 @@ def emit_thread_file(d: Path, thread_id: int, depth: int, thread_record, event_r
     return n_ev
 
 
-def _truth_units_missing_from_store(d: Path) -> tuple[int, list[str]]:
+def _hash_key_check(payload: object, dedup_key: str) -> bool | None:
+    """True = the payload re-hashes to the content hash embedded in its own
+    ``dedup_key`` (the last ``:``-segment; see
+    ``thread_import.event_builder.compute_dedup_key``); False = mismatch;
+    None = the key carries no hash tail (nothing to validate against)."""
+    import re as _re
+
+    from thread_import.event_builder import compute_content_hash
+
+    if not _re.match(r"^[0-9a-f]{16}$", dedup_key.rsplit(":", 1)[-1]):
+        return None
+    if not isinstance(payload, dict):
+        return False
+    return compute_content_hash(payload) == dedup_key.rsplit(":", 1)[-1]
+
+
+def _store_rows_failing_key_hash() -> tuple[int, list[str]]:
+    """Store event rows whose payload no longer re-hashes to the content hash
+    embedded in their own ``dedup_key`` — the content half of the pre-flight
+    behind :func:`rebuild_truth_from_store`. The containment check proves the
+    store holds every truth *unit*; this proves the payloads behind those units
+    are self-consistent, so a corrupted index row (rot, a bad in-place write)
+    that kept its id and key can't be promoted over the good truth line by a
+    re-emit. Returns ``(failing, sample)``."""
+    failing = 0
+    sample: list[str] = []
+    with get_session() as s:
+        conn = s.connection().connection  # raw sqlite3 — stream, don't materialize
+        for ev_id, tid, key, payload_text in conn.execute(
+            "SELECT id, thread_id, dedup_key, payload FROM events "
+            "WHERE dedup_key IS NOT NULL"
+        ):
+            try:
+                payload = (
+                    json.loads(payload_text)
+                    if isinstance(payload_text, str) else payload_text
+                )
+            except ValueError:
+                payload = None
+            if _hash_key_check(payload, key) is False:
+                failing += 1
+                if len(sample) < 10:
+                    sample.append(f"thread {tid}: event {ev_id}")
+    return failing, sample
+
+
+def _truth_units_missing_from_store(d: Path) -> tuple[int, list[str], dict[str, int]]:
     """Content units present in the truth but absent from the store — the
     pre-flight behind :func:`rebuild_truth_from_store`. A *unit* is an event's
     content identity: its ``dedup_key`` (thread-scoped), falling back to the
@@ -2005,12 +2139,30 @@ def _truth_units_missing_from_store(d: Path) -> tuple[int, list[str]]:
     index-only event masking a missing one, swapped payloads behind equal
     totals); containment can't: every effective truth unit must exist in the
     store, or a re-emit would destroy content the index never had. Walked one
-    thread at a time so memory stays bounded. Returns ``(missing, sample)``."""
+    thread at a time so memory stays bounded.
+
+    The same walk collects ``dropped_keys``: fields on truth records (event,
+    thread, kg_event) that the running code's models don't map. ``_coerce``
+    drops them on reload — harmless for the projection — but a re-emit rewrites
+    the truth *without* them, which turns that tolerance into permanent loss;
+    the caller refuses on any. Returns ``(missing, sample, dropped_keys)``
+    where ``dropped_keys`` maps ``"<kind>.<field>"`` to its occurrence count."""
     threads_dir = d / THREADS_SUBDIR
     files_by_stem: dict[str, list[Path]] = {}
     if threads_dir.exists():
         for path in threads_dir.rglob("*.jsonl"):
             files_by_stem.setdefault(path.stem, []).append(path)
+    valid_keys = {
+        "event": {c.key for c in Event.__table__.columns},
+        "thread": {c.key for c in Thread.__table__.columns},
+        "kg_event": {c.key for c in KgEvent.__table__.columns},
+    }
+    dropped: dict[str, int] = {}
+
+    def _note_unknown(kind: str, rec: dict) -> None:
+        for k in rec.keys() - valid_keys[kind] - {"type"}:
+            dropped[f"{kind}.{k}"] = dropped.get(f"{kind}.{k}", 0) + 1
+
     missing = 0
     sample: list[str] = []
     with get_session() as s:
@@ -2023,7 +2175,10 @@ def _truth_units_missing_from_store(d: Path) -> tuple[int, list[str]]:
             units: set = set()
             for path in paths:
                 for rec in _iter_jsonl(path):
-                    if rec.get("type", "event") != "event" or rec.get("id") is None:
+                    kind = rec.get("type", "event")
+                    if kind in valid_keys:
+                        _note_unknown(kind, rec)
+                    if kind != "event" or rec.get("id") is None:
                         continue
                     units.add(rec.get("dedup_key") or ("id", int(rec["id"])))
             if not units:
@@ -2035,7 +2190,10 @@ def _truth_units_missing_from_store(d: Path) -> tuple[int, list[str]]:
             missing += len(units)
             for unit in sorted(map(str, units))[: max(0, 10 - len(sample))]:
                 sample.append(f"thread {tid}: {unit}")
-    return missing, sample
+    if (d / KG_EVENTS_FILE).exists():
+        for rec in _iter_jsonl(d / KG_EVENTS_FILE):
+            _note_unknown("kg_event", rec)
+    return missing, sample, dropped
 
 
 def rebuild_truth_from_store(*, force: bool = False) -> dict:
@@ -2057,8 +2215,18 @@ def rebuild_truth_from_store(*, force: bool = False) -> dict:
     parity, so a missing event can't hide behind an index-only one). A repair
     pass that rewrites payloads in place keeps its units (the ``dedup_key``
     column carries the identity), so the intended use survives the gate.
-    ``force=True`` overrides the pre-flight only (for a deliberate, understood
-    shrink — e.g. a duplicate-collapse repair); it never skips the lock."""
+
+    Two further pre-flights guard the *content* of what gets written: the truth
+    must carry no fields the running code's models don't map (``_coerce``
+    tolerates them on reload, but a re-emit would drop them from the truth
+    forever — an older binary must not lossily rewrite newer truth), and every
+    store payload with a hash-tailed ``dedup_key`` must still re-hash to it
+    (:func:`_store_rows_failing_key_hash` — a corrupted index row that kept its
+    id and key must not replace the good truth line).
+
+    ``force=True`` overrides the pre-flights only (for a deliberate, understood
+    shrink or drop — e.g. a duplicate-collapse repair, or an in-place payload
+    repair that didn't recompute its keys); it never skips the lock."""
     d = log_dir()
     (d / THREADS_SUBDIR).mkdir(parents=True, exist_ok=True)
 
@@ -2070,13 +2238,31 @@ def rebuild_truth_from_store(*, force: bool = False) -> dict:
         with _truth_write_lock():
             pass
         if not force:
-            missing, sample = _truth_units_missing_from_store(d)
+            missing, sample, dropped = _truth_units_missing_from_store(d)
             if missing:
                 raise RuntimeError(
                     f"rebuild_truth_from_store: the store lacks {missing} event(s) "
                     f"the truth holds (sample: {sample}) — re-emitting would destroy "
                     "truth content the index lacks. Run `archive reindex` first "
                     "(or pass force=True if the shrink is intended)."
+                )
+            if dropped:
+                fields = ", ".join(f"{k} ×{v}" for k, v in sorted(dropped.items()))
+                raise RuntimeError(
+                    f"rebuild_truth_from_store: the truth carries field(s) the running "
+                    f"code's models don't map ({fields}) — re-emitting would silently "
+                    "drop them from the truth forever. Run the code version that wrote "
+                    "them (or pass force=True if the drop is intended)."
+                )
+            failing, bad_sample = _store_rows_failing_key_hash()
+            if failing:
+                raise RuntimeError(
+                    f"rebuild_truth_from_store: {failing} store payload(s) fail their "
+                    f"own dedup-key content hash (sample: {bad_sample}) — re-emitting "
+                    "would promote suspect index content over the existing truth. "
+                    "Investigate with `archive verify --hashes` and repair the index "
+                    "(`archive reindex`) first, or pass force=True if the payloads are "
+                    "known-good (an in-place repair that didn't recompute its keys)."
                 )
         return _rebuild_truth_from_store_locked(d)
 

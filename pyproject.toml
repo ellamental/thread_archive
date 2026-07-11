@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "thread-archive"
-version = "0.0.1"
+dynamic = ["version"]
 description = "Serverless-native local archive for AI conversations: JSONL truth log + rebuildable SQLite index, searched and read locally, exposed over MCP."
 readme = "README.md"
 requires-python = ">=3.11"
@@ -34,10 +34,17 @@ dependencies = [
 embeddings = ["sentence-transformers>=3.0", "einops>=0.7"]
 dev = ["pytest>=8.0", "pytest-cov>=5.0", "ruff>=0.6"]
 
+[project.urls]
+Repository = "https://github.com/ellamental/thread_archive"
+Changelog = "https://github.com/ellamental/thread_archive/blob/main/CHANGELOG.md"
+
 [project.scripts]
 archive = "thread_archive.cli:main"
 archive-mcp = "thread_archive.mcp.server:main"
 archive-librarian-mcp = "thread_archive.mcp.librarian:main"
+
+[tool.hatch.version]
+path = "src/thread_archive/__init__.py"
 
 [tool.hatch.build.targets.wheel]
 # thread_import is vendored as a sibling package (a zero-dependency clean island)
@@ -49,6 +56,26 @@ packages = ["src/thread_archive", "src/thread_import"]
 # Under the package dir and tracked, so hatchling includes it by default; declared
 # explicitly so the bundle ships even if static/ is ever gitignored as build output.
 artifacts = ["src/thread_archive/web/static/**/*"]
+
+[tool.hatch.build.targets.sdist]
+# Ship the package sources, tests, docs, and the frontend sources that build the
+# committed web/static bundle. Everything else (host/, .claude/, ci.toml, dev
+# scripts, node_modules — hatchling only reads the ROOT .gitignore, so nested
+# ignore files like frontend/.gitignore do NOT keep node_modules out) stays local.
+only-include = [
+    "src",
+    "tests",
+    "docs",
+    "frontend",
+    "scripts",
+    "CHANGELOG.md",
+    "claude-install.md",
+    ".mcp.json.example",
+]
+exclude = [
+    "frontend/node_modules",
+    "frontend/dist",
+]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

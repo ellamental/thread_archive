@@ -201,3 +201,48 @@ def test_repair_recreates_deleted_thread_file(archive_home, tmp_path):
     recs = [json.loads(ln) for ln in tf.read_text(encoding="utf-8").splitlines()]
     assert recs[0]["type"] == "thread"
     assert ta.verify()["ok"] is True
+
+
+def test_repair_flags_restored_rows_failing_their_key_hash(archive_home, tmp_path):
+    """A restore candidate whose payload no longer re-hashes to its own dedup_key
+    is still restored (the index copy is the only copy left) but counted and
+    sampled, so suspect content is seen rather than silently promoted."""
+    import_cc_session(tmp_path)
+    tf = one_thread_file(archive_home)
+
+    # Rot one index payload in place, then delete its truth line so repair's
+    # containment pass restores it from the index.
+    with get_session() as s:
+        conn = s.connection().connection
+        ev_id = conn.execute(
+            "SELECT id FROM events WHERE dedup_key IS NOT NULL LIMIT 1"
+        ).fetchone()[0]
+        conn.execute(
+            "UPDATE events SET payload = ? WHERE id = ?",
+            ('{"content": "rotted in the index"}', ev_id),
+        )
+        s.commit()
+    lines = [
+        ln for ln in tf.read_text(encoding="utf-8").splitlines()
+        if json.loads(ln).get("id") != ev_id or json.loads(ln).get("type") != "event"
+    ]
+    tf.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    jsonl_log.reset_handles()
+
+    res = ta.repair()
+    assert res["events_restored_from_index"] == 1
+    assert res["restored_hash_mismatches"] == 1
+    assert res["restored_hash_mismatch_sample"] == [ev_id]
+
+    # The row IS in the truth again (preserved, not quarantined)…
+    restored = [
+        json.loads(ln) for ln in tf.read_text(encoding="utf-8").splitlines()
+        if json.loads(ln).get("id") == ev_id and json.loads(ln).get("type") == "event"
+    ]
+    assert len(restored) == 1
+    assert restored[0]["payload"] == {"content": "rotted in the index"}
+
+    # …and the next hashes pass reports it red (new truth-side mismatch).
+    v = ta.verify(hashes=True)
+    assert v["hashes"]["truth"]["mismatched"] == 1
+    assert v["ok"] is False

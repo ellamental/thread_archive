@@ -23,7 +23,10 @@ trains its operator to ignore it, which is worse than the damage.
   truth *from* the projection is exactly right — the index provably holds what
   the truth lost, and the alternative is a reindex regression gate that
   (correctly) refuses to publish. A fragment that was never committed has no
-  index row and restores nothing.
+  index row and restores nothing. Restored event payloads are self-validated
+  against the content hash in their own ``dedup_key``: a failing payload is
+  still restored (the index copy is the only copy left) but counted and logged
+  (``restored_hash_mismatches``), and the next ``verify --hashes`` reports it.
 
 Runs under the exclusive reindex lock — every writer holds it shared around its
 truth append + commit, so the tree is quiescent — and resolves any crashed
@@ -50,6 +53,7 @@ from .jsonl_log import (
     KG_EVENTS_FILE,
     THREADS_SUBDIR,
     _fsync_dir,
+    _hash_key_check,
     _hold_reindex_lock,
     _json_default,
     _row_dict,
@@ -256,6 +260,24 @@ def _repair_locked(d: Path, *, dry_run: bool) -> dict:
         if dry_run:
             return result
 
+        # Restored payloads are self-validated against the content hash in their
+        # own dedup_key. A failing row is still restored — the index copy is the
+        # only copy left, and quarantining data is not this tool's job — but the
+        # count and sample make the suspect content *seen*: the next
+        # ``verify --hashes`` will go red on it as a new truth-side mismatch.
+        hash_mismatched = 0
+        mismatch_sample: list[int] = []
+
+        def _validated(ev) -> dict:
+            nonlocal hash_mismatched
+            rec = _row_dict(ev)
+            key = rec.get("dedup_key")
+            if key and _hash_key_check(rec.get("payload"), key) is False:
+                hash_mismatched += 1
+                if len(mismatch_sample) < 10:
+                    mismatch_sample.append(int(rec["id"]))
+            return rec
+
         for tid in sorted(set(missing_by_tid) | meta_missing):
             records: list[dict] = []
             if tid in meta_missing:
@@ -267,7 +289,7 @@ def _repair_locked(d: Path, *, dry_run: bool) -> dict:
                 rows = s.execute(
                     select(Event).where(Event.id.in_(ids[start:start + 500])).order_by(Event.id)
                 ).scalars()
-                records.extend({"type": "event", **_row_dict(ev)} for ev in rows)
+                records.extend({"type": "event", **_validated(ev)} for ev in rows)
             if records:
                 _append_records(_thread_file(d, tid, depth), records)
                 logger.warning(
@@ -284,6 +306,16 @@ def _repair_locked(d: Path, *, dry_run: bool) -> dict:
                 records.extend({"type": "kg_event", **_row_dict(ev)} for ev in rows)
             _append_records(d / KG_EVENTS_FILE, records)
             logger.warning("repair: restored %d kg event(s) from the index", len(records))
+
+        result["restored_hash_mismatches"] = hash_mismatched
+        if hash_mismatched:
+            result["restored_hash_mismatch_sample"] = mismatch_sample
+            logger.warning(
+                "repair: %d restored payload(s) fail their own dedup-key content hash "
+                "(sample: %s) — restored anyway (the index copy is the only copy); "
+                "the next `verify --hashes` will report them",
+                hash_mismatched, mismatch_sample,
+            )
 
     if result["files_damaged"] or result["events_restored_from_index"] or result["kg_events_restored"]:
         logger.warning("repair: %s", result)

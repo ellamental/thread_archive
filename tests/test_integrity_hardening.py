@@ -277,3 +277,67 @@ def test_record_health_survives_concurrent_writers(archive_home, tmp_path):
     health = _read_health()
     assert set(keys) <= set(health), "no writer's record may be lost"
     assert all(health[k]["n"] == 24 for k in keys)
+
+
+# ── backup mirror is drain-consistent ─────────────────────────────────────────
+def test_backup_mirror_holds_the_truth_write_lock(archive_home, tmp_path, monkeypatch):
+    """The mirror traversal runs under the truth-write mutex, so no append batch
+    can land in (or be rolled back out of) a truth file mid-copy."""
+    import fcntl
+    import os
+
+    import_cc_session(tmp_path)
+    import thread_archive.api as api
+
+    real = api._mirror_dir
+    seen: dict[str, bool] = {}
+
+    def probe(*a, **k):
+        fd = os.open(jsonl_log._truth_write_lock_path(), os.O_RDWR | os.O_CREAT, 0o644)
+        try:
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                fcntl.flock(fd, fcntl.LOCK_UN)
+                seen["held"] = False
+            except OSError:
+                seen["held"] = True
+        finally:
+            os.close(fd)
+        return real(*a, **k)
+
+    monkeypatch.setattr(api, "_mirror_dir", probe)
+    ta.backup(str(tmp_path / "mirror"))
+    assert seen["held"] is True, "the mirror must run inside the truth-write lock"
+
+
+# ── new backup hash mismatches fail verify ────────────────────────────────────
+def test_new_backup_hash_mismatch_fails_verify_once(archive_home, tmp_path):
+    """Rot at rest in the mirror (never re-copied — size+mtime skip) must fail
+    ``verify --hashes --backup``, once, with the same baseline absorption as the
+    live scan."""
+    import_cc_session(tmp_path)
+    mirror = tmp_path / "mirror"
+    ta.backup(str(mirror))
+    res = ta.verify(hashes=True, backup=str(mirror))
+    assert res["ok"] is True  # clean baselines stamped (live + mirror)
+
+    tf = next((mirror / "threads").rglob("*.jsonl"))
+    lines = tf.read_text(encoding="utf-8").splitlines()
+    events = [(i, json.loads(ln)) for i, ln in enumerate(lines)
+              if '"type": "event"' in ln]
+    idx, rec = next((i, r) for i, r in reversed(events) if r.get("dedup_key"))
+    rec["payload"] = {"content": "rotted at rest"}
+    lines[idx] = json.dumps(rec)
+    tf.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+    res = ta.verify(hashes=True, backup=str(mirror))
+    assert res["backup"]["hashes"]["mismatched"] == 1
+    assert res["backup"]["hashes"]["new_mismatches"] is True
+    assert "backup_hashes" in res["failed_components"]
+    assert res["ok"] is False, "mirror rot must fail health"
+    assert res["hashes"]["truth"]["mismatched"] == 0  # the live truth is clean
+
+    # The recorded baseline absorbs the count: seen once, then delta-green.
+    res2 = ta.verify(hashes=True, backup=str(mirror))
+    assert res2["backup"]["hashes"]["new_mismatches"] is False
+    assert res2["ok"] is True
