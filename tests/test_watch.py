@@ -256,3 +256,30 @@ def test_watch_once_holds_shared_ingest_lock(archive_home, monkeypatch, capsys):
     monkeypatch.setattr(Watcher, "poll_once", fake_poll)
     assert cli.main(["watch", "--once"]) == 0
     assert seen["locked"] is True
+
+
+def test_poll_errors_surface_in_health(archive_home) -> None:
+    """A failing source must be visible to `archive status` (health.json), not
+    only to whoever reads the daemon's stderr log — a provider format change
+    could otherwise stall one source's ingest for weeks while status stays green."""
+    import thread_archive as ta
+    from thread_archive.watcher.base import SourceWatcher
+
+    class Broken(SourceWatcher):
+        source_name = "broken-source"
+
+        def poll(self):
+            raise RuntimeError("provider format changed")
+
+        def is_available(self):
+            return True
+
+    w = Watcher(watchers=[Broken()], embed=False)
+    res = w.poll_once()
+    assert res.errors and "broken-source" in res.errors[0]
+
+    rec = ta.status()["last_watch_errors"]
+    assert rec is not None
+    assert rec["count_since_start"] == 1
+    assert "broken-source" in rec["errors"][0]
+    assert rec["at"]

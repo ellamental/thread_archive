@@ -284,9 +284,13 @@ def cmd_verify(args: argparse.Namespace) -> int:
         print(f"       parse error sample: {t['parse_error_sample']}")
     print(
         f"index: threads={res['index']['threads']} events={res['index']['events']} "
+        f"kg_events={res['index']['kg_events']} "
         f"{res['index'].get('check', 'quick_check')}={res['index']['quick_check']}"
     )
-    print(f"drift: threads={res['drift']['threads']:+d} events={res['drift']['events']:+d}")
+    print(
+        f"drift: threads={res['drift']['threads']:+d} events={res['drift']['events']:+d} "
+        f"kg_events={res['drift']['kg_events']:+d}"
+    )
     fts = res["fts"]
     if fts["shadow_rows"] != fts["fts5_rows"] or fts["orphan_rows"]:
         print(
@@ -308,7 +312,8 @@ def cmd_verify(args: argparse.Namespace) -> int:
                 f"{dp['thread_meta_mismatch']} threads, sample {dp['thread_meta_sample']}"
             )
         print(
-            f"       kg index_only={dp['kg']['index_only']} truth_only={dp['kg']['truth_only']}; "
+            f"       kg index_only={dp['kg']['index_only']} truth_only={dp['kg']['truth_only']} "
+            f"content_mismatch={dp['kg']['content_mismatch']}; "
             f"dangling links={dp['dangling']['link_endpoints']} "
             f"citations={dp['dangling']['citation_events']} "
             f"citation_thread_mismatch={dp['dangling']['citation_thread_mismatch']} "
@@ -340,11 +345,16 @@ def cmd_verify(args: argparse.Namespace) -> int:
             )
             if hs["mismatched"]:
                 print(f"       mismatch sample: {hs['mismatch_sample']}")
+        c = h["cross"]
+        print(f"hashes[cross]: compared={c['compared']} mismatched={c['mismatched']}")
+        if c["mismatched"]:
+            print(f"       mismatch sample: {c['mismatch_sample']}")
         if "delta" in h:
             d = h["delta"]
             print(
                 f"hashes delta vs {h['previous']['at']}: "
-                f"truth {d['truth_mismatched']:+d} index {d['index_mismatched']:+d}"
+                f"truth {d['truth_mismatched']:+d} index {d['index_mismatched']:+d} "
+                f"cross {d['cross_mismatched']:+d}"
             )
     if args.backup:
         b = res["backup"]
@@ -357,6 +367,13 @@ def cmd_verify(args: argparse.Namespace) -> int:
                 f"effective={bs['events_effective']} parse_errors={bs['parse_errors']} "
                 f"coverage={b['coverage']:.4f}"
             )
+            if "effective_drop" in b:
+                ed = b["effective_drop"]
+                print(
+                    f"       MIRROR SHRANK: {ed['previous']} → {ed['current']} effective "
+                    f"events since {ed['previous_at']} — the backup lost content "
+                    "between looks; check the mirror before the next run overwrites it"
+                )
             if "hashes" in b:
                 bh = b["hashes"]
                 print(
@@ -365,7 +382,12 @@ def cmd_verify(args: argparse.Namespace) -> int:
                 )
                 if bh["mismatched"]:
                     print(f"       mismatch sample: {bh['mismatch_sample']}")
-    print("OK" if res["ok"] else "DRIFT DETECTED")
+    if res["ok"]:
+        print("OK")
+    else:
+        print(f"FAILED: {', '.join(res['failed_components'])}")
+        if res.get("failure_log"):
+            print(f"       full result appended to {res['failure_log']}")
     return 0 if res["ok"] else 1
 
 
@@ -425,9 +447,14 @@ def cmd_nightly(args: argparse.Namespace) -> int:
     flags = "+".join(k for k in ("deep", "hashes") if esc[k]) or "shallow"
     if "error" in v:
         print(f"verify [{flags}]: ERROR {v['error']}")
-    else:
-        print(f"verify [{flags}]: {'ok' if v['ok'] else 'FAILED'} "
+    elif v["ok"]:
+        print(f"verify [{flags}]: ok "
               f"drift={v['drift']['events']:+d} parse_errors={v['truth']['parse_errors']}")
+    else:
+        print(f"verify [{flags}]: FAILED ({', '.join(v['failed_components'])}) "
+              f"drift={v['drift']['events']:+d} parse_errors={v['truth']['parse_errors']}")
+        if v.get("failure_log"):
+            print(f"       full result appended to {v['failure_log']}")
     if "drill" in res:
         d = res["drill"]
         if "error" in d:
@@ -493,10 +520,13 @@ def cmd_status(args: argparse.Namespace) -> int:
     print(f"indexed: {st['fts_indexed']}")
     v, b = st.get("last_verify"), st.get("last_backup")
     d = st.get("last_restore_drill")
-    print(
-        f"verify:  {'ok' if v['ok'] else 'FAILED'} {v['at']} ({_age(v['at'])})"
-        if v else "verify:  never recorded"
-    )
+    if v and v["ok"]:
+        print(f"verify:  ok {v['at']} ({_age(v['at'])})")
+    elif v:
+        components = ", ".join(v.get("failed", [])) or "see verify-failures.jsonl"
+        print(f"verify:  FAILED ({components}) {v['at']} ({_age(v['at'])})")
+    else:
+        print("verify:  never recorded")
     print(
         f"backup:  {'ok' if b['ok'] else 'FAILED'} → {b['dest']} {b['at']} ({_age(b['at'])})"
         if b else "backup:  never recorded"
@@ -508,6 +538,14 @@ def cmd_status(args: argparse.Namespace) -> int:
         f"{d['at']} ({_age(d['at'])})"
         if d else "drill:   never recorded"
     )
+    w = st.get("last_watch_errors")
+    if w:
+        print(
+            f"watch:   poll errors seen, last at {w['at']} ({_age(w['at'])}), "
+            f"{w.get('count_since_start', '?')} since daemon start"
+        )
+        for err in w.get("errors", [])[:3]:
+            print(f"         {err}")
     return 0
 
 

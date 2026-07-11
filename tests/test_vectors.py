@@ -144,6 +144,67 @@ def test_ensure_index_migrates_prechunk_table(archive_home) -> None:
     assert vectors.index_vectors([(7, "user", 1, _unit((1, 1.0)))]) == 1
 
 
+def test_knn_pools_chunks_before_topk_cut(archive_home) -> None:
+    """Several strong chunks of one long doc count as ONE candidate: with cand=2,
+    doc 2 still surfaces even though doc 1's three chunks all outscore it."""
+    init_db()
+    vectors.ensure_index()
+    a = _unit((0, 1.0))
+    assert vectors.index_vectors([
+        (1, "text", 0, a),
+        (1, "text", 1, _unit((0, 0.99), (1, 0.14))),
+        (1, "text", 2, _unit((0, 0.98), (1, 0.2))),
+        (2, "text", 0, _unit((0, 0.9), (1, 0.44))),
+    ]) == 4
+    res = vectors._knn(a.tolist(), ("text",), cand=2)
+    assert [eid for eid, _, _ in res] == [1, 2]
+    assert round(res[0][2], 2) == 1.0  # doc 1 scored by its best chunk
+
+
+def test_matrix_cache_canonical_key_and_bounded(archive_home) -> None:
+    """Equivalent scopes in different orders share one cache entry, and the cache
+    never grows past its bound (each entry is a full float32 matrix)."""
+    init_db()
+    vectors.ensure_index()
+    assert vectors.index_vectors([(1, "user", _unit((0, 1.0)))]) == 1
+    vectors._MATRIX_CACHE.clear()
+
+    vectors._load_matrix(("user", "text"))
+    vectors._load_matrix(("text", "user"))
+    assert len(vectors._MATRIX_CACHE) == 1
+
+    for cts in (("user",), ("text",), ("title",), ("summary",), ("user", "title")):
+        vectors._load_matrix(cts)
+    assert len(vectors._MATRIX_CACHE) <= vectors._MATRIX_CACHE_MAX
+
+
+def test_exclude_all_embedded_types_sits_semantic_out(archive_home) -> None:
+    """Excluding every embedded type empties the KNN scope → the arm returns None
+    (lexical-only), instead of KNN-ing candidates the filter then discards."""
+    init_db()
+    vectors.ensure_index()
+    assert vectors.index_vectors([(1, "user", _unit((0, 1.0)))]) == 1
+    assert vectors.search("anything", exclude_content_types=["user", "text", "title", "summary"]) is None
+
+
+def test_semantic_arm_sits_out_for_toolname_count_oldest(archive_home, monkeypatch) -> None:
+    """tool_name-scoped searches must not fuse semantic hits (tool docs aren't
+    embedded, so every one would violate the filter); count and oldest are
+    structural shapes the vector arm can only pollute."""
+    from thread_archive import retrieval
+
+    init_db()
+    calls: list = []
+    monkeypatch.setattr(retrieval, "_semantic_hits",
+                        lambda *a, **k: (calls.append(1), None)[1])
+    retrieval.search("some query", tool_name="Bash")
+    retrieval.search("some query", output="count")
+    retrieval.search("some query", sort="oldest")
+    assert calls == []
+    retrieval.search("some query")
+    assert calls == [1]
+
+
 def test_vectors_search_sits_out_when_unindexed(archive_home) -> None:
     init_db()
     vectors.ensure_index()

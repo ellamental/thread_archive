@@ -69,6 +69,32 @@ class Watcher:
         self._embed_more = True
         self._backlog = False
         self._stop = False
+        self._errors_total = 0
+        self._errors_recorded_at: Optional[float] = None
+
+    def _record_errors(self, errors: list[str]) -> None:
+        """Surface poll errors into ``<home>/health.json`` (``watch_errors_last``),
+        throttled to once a minute so a persistently broken source doesn't churn
+        the file every poll. Log lines alone leave a failing source invisible to
+        ``archive status`` and anything watching health — a provider format
+        change could stall one source's ingest for weeks while everything looks
+        green. The record's age is the recency signal; ``count_since_start``
+        distinguishes a one-off from a streak. Fail-soft: recording is advisory
+        and must never take the poll loop down."""
+        self._errors_total += len(errors)
+        now = time.monotonic()
+        if self._errors_recorded_at is not None and now - self._errors_recorded_at < 60:
+            return
+        try:
+            from ..api import _record_health
+
+            _record_health("watch_errors_last", {
+                "count_since_start": self._errors_total,
+                "errors": errors[:5],
+            })
+            self._errors_recorded_at = now
+        except Exception:  # noqa: BLE001 — advisory; the loop must survive
+            logger.exception("watch: could not record poll errors in health.json")
 
     def poll_once(self) -> WatchResult:
         """One poll across every available source. Imported events are durable in the
@@ -83,6 +109,8 @@ class Watcher:
                 logger.warning("%s: poll error: %s", w.source_name, e)
                 total = total + WatchResult(errors=[f"{w.source_name}: poll error: {e}"])
 
+        if total.errors:
+            self._record_errors(total.errors)
         if total.events_created > 0:
             logger.info(
                 "watch: imported %d events (%d items) across sources",

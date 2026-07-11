@@ -68,12 +68,17 @@ _USER_CONTENT_TYPES = ("user",)
 _ASSISTANT_CONTENT_TYPES = ("text",)
 _META_CONTENT_TYPES = ("title", "summary")
 
-# Process-local matrix cache: {(engine_id, cts): (validity_token, ids, ctypes, mat)}.
+# Process-local matrix cache: {(engine_id, cts): (validity_token, ids, ctypes, mat,
+# doc_inverse, doc_rep)}. Keys are canonicalized (sorted cts tuple) so equivalent
+# scopes in different orders share one entry, and the cache is bounded
+# (:data:`_MATRIX_CACHE_MAX`) — each entry is a full float32 matrix, so unbounded
+# scope proliferation would pin hundreds of MB per extra scope.
 # The token includes store-derived counters (row count + max rowid), not just the
 # process-local write version: the embed cohost lives in the *watcher* process, so a
 # long-lived search process (the MCP server) must notice out-of-process vector writes
 # or its semantic arm freezes at whatever was embedded when its matrix first loaded.
 _MATRIX_CACHE: dict = {}
+_MATRIX_CACHE_MAX = 4
 _write_version = 0
 
 
@@ -378,12 +383,12 @@ def _validity_token(s) -> tuple:
 
 def _load_matrix(cts: tuple[str, ...]):
     eng = get_engine()
-    key = (id(eng), cts)
+    key = (id(eng), tuple(sorted(cts)))
     with get_session() as s:
         token = _validity_token(s)
         cached = _MATRIX_CACHE.get(key)
         if cached is not None and cached[0] == token:
-            return cached[1], cached[2], cached[3]
+            return cached[1:]
 
         where = "content_type IN (" + ",".join(":c" + str(i) for i in range(len(cts))) + ")"
         params = {"c" + str(i): c for i, c in enumerate(cts)}
@@ -400,44 +405,58 @@ def _load_matrix(cts: tuple[str, ...]):
     mat = np.vstack(vecs) if vecs else np.empty((0, _DIM), dtype=np.float32)
     ids_arr = np.asarray(ids, dtype=np.int64)
     ct_arr = np.asarray(ctypes, dtype=object)
-    _MATRIX_CACHE[key] = (token, ids_arr, ct_arr, mat)
-    return ids_arr, ct_arr, mat
+    # Per-document grouping for the KNN's chunk max-pool: rows sharing an
+    # (event_id, content_type) are one document. ``doc_inverse`` maps each row to
+    # its doc index; ``doc_rep`` gives one representative row per doc (to recover
+    # the id/ctype). Precomputed here so the per-query pool is a single
+    # ``np.maximum.at`` over the sims, not a python-level group-by.
+    ct_codes = {c: i for i, c in enumerate(sorted(set(ctypes)))}
+    if len(ids_arr):
+        group_key = ids_arr * len(ct_codes) + np.asarray([ct_codes[c] for c in ctypes], dtype=np.int64)
+        _, doc_rep, doc_inverse = np.unique(group_key, return_index=True, return_inverse=True)
+    else:
+        doc_rep = np.empty(0, dtype=np.int64)
+        doc_inverse = np.empty(0, dtype=np.int64)
+    if key not in _MATRIX_CACHE:
+        while len(_MATRIX_CACHE) >= _MATRIX_CACHE_MAX:
+            _MATRIX_CACHE.pop(next(iter(_MATRIX_CACHE)))
+    _MATRIX_CACHE[key] = (token, ids_arr, ct_arr, mat, doc_inverse, doc_rep)
+    return ids_arr, ct_arr, mat, doc_inverse, doc_rep
 
 
 def _knn(qvec, cts: tuple[str, ...], cand: int, allowed_ids=None) -> list[tuple[int, str, float]]:
-    """Brute-force cosine KNN over the cached matrix, **max-pooled per document**:
-    the matrix holds one row per chunk, and a doc's score is its best chunk's, so
-    a long message matches on whichever slice is relevant. ``allowed_ids`` (an
-    int64 ndarray) restricts candidates to those event ids *before* the top-k cut,
-    so a scoped search (one thread, a time window) ranks within its scope instead
-    of hoping the scope survives a corpus-wide top-k."""
-    ids, ct_arr, mat = _load_matrix(cts)
+    """Brute-force cosine KNN over the cached matrix, **max-pooled per document
+    before the top-k cut**: the matrix holds one row per chunk, and a doc's score
+    is its best chunk's, so a long message matches on whichever slice is relevant.
+    Pooling happens before the candidate cutoff — several strong chunks of one
+    long doc must count as ONE candidate, not eat ``cand`` slots that should hold
+    distinct documents. ``allowed_ids`` (an int64 ndarray) restricts candidates to
+    those event ids *before* the top-k cut, so a scoped search (one thread, a time
+    window) ranks within its scope instead of hoping the scope survives a
+    corpus-wide top-k."""
+    ids, ct_arr, mat, doc_inverse, doc_rep = _load_matrix(cts)
     n = len(ids)
     if n == 0:
         return []
     q = _normalize(qvec)
     sims = mat @ q
+    rows = np.arange(n)
     if allowed_ids is not None:
-        keep = np.nonzero(np.isin(ids, allowed_ids))[0]
-        if len(keep) == 0:
+        rows = np.nonzero(np.isin(ids, allowed_ids))[0]
+        if len(rows) == 0:
             return []
-        sub_sims = sims[keep]
-        k = min(cand, len(keep))
-        part = np.argpartition(-sub_sims, k - 1)[:k] if k < len(keep) else np.arange(len(keep))
-        pool = keep[part]
+    # Max-pool chunk sims into per-doc scores (out-of-scope docs stay at -inf).
+    doc_scores = np.full(len(doc_rep), -np.inf, dtype=np.float32)
+    np.maximum.at(doc_scores, doc_inverse[rows], sims[rows].astype(np.float32))
+    live = np.nonzero(doc_scores > -np.inf)[0]
+    k = min(cand, len(live))
+    if k < len(live):
+        part = np.argpartition(-doc_scores[live], k - 1)[:k]
+        pool = live[part]
     else:
-        k = min(cand, n)
-        pool = np.argpartition(-sims, k - 1)[:k] if k < n else np.arange(n)
-    order = sorted(pool, key=lambda i: (-float(sims[i]), int(ids[i])))
-    out: list[tuple[int, str, float]] = []
-    seen: set[tuple[int, str]] = set()
-    for i in order:
-        key = (int(ids[i]), str(ct_arr[i]))
-        if key in seen:  # a lower-scoring chunk of a doc already pooled
-            continue
-        seen.add(key)
-        out.append((key[0], key[1], float(sims[i])))
-    return out
+        pool = live
+    order = sorted(pool, key=lambda d: (-float(doc_scores[d]), int(ids[doc_rep[d]])))
+    return [(int(ids[doc_rep[d]]), str(ct_arr[doc_rep[d]]), float(doc_scores[d])) for d in order]
 
 
 def _in_clause(column: str, values: list, prefix: str, params: dict, negate: bool) -> str:
@@ -470,6 +489,11 @@ def search(
         return None
     ensure_index()
     cts = _scope_content_types(content_types)
+    # Excluded types come out of the KNN scope itself, not just the hydration
+    # WHERE: dropping candidates after the top-k would waste slots on hits the
+    # filter then discards, shrinking the effective pool.
+    if cts and exclude_content_types:
+        cts = [c for c in cts if c not in set(exclude_content_types)]
     if not cts:
         return None
 

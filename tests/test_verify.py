@@ -1,16 +1,20 @@
 """``archive verify`` — every facet of the truth↔index integrity check.
 
-* shallow: parse-scan + count parity, ``PRAGMA quick_check`` on the index, and
-  FTS shadow↔FTS5 parity;
-* ``deep=True``: per-event dedup_key parity, coverage re-extract (splitting
-  genuinely-unindexed from empty-extract), and thread-metadata drift
-  (report-only);
+* shallow: parse-scan + count parity (per-thread files *and* the kg log),
+  ``PRAGMA quick_check`` on the index, and FTS shadow↔FTS5 parity;
+* ``deep=True``: per-event dedup_key parity, kg id + content parity, coverage
+  re-extract (splitting genuinely-unindexed from empty-extract), and
+  thread-metadata drift (report-only);
 * ``hashes=True``: re-hash stored payloads against the content hash embedded in
-  their own dedup_key on both stores, persist a baseline in the manifest and
-  report the delta, and upgrade the index self-check to the full
-  ``integrity_check``;
-* ``backup=DEST``: parse-scan (and with hashes, hash-scan) a mirror;
-* every run records its outcome where ``status`` surfaces it.
+  their own dedup_key on both stores, cross-compare truth↔index payload
+  fingerprints per id (the only check that sees rot in unkeyed payloads),
+  persist a baseline in the manifest and report the delta, and upgrade the
+  index self-check to the full ``integrity_check``;
+* ``backup=DEST``: parse-scan (and with hashes, hash-scan) a mirror, failing on
+  a mirror whose effective count dropped since the previous scan;
+* a red run names its components (``failed_components``), appends its full
+  result to ``verify-failures.jsonl``, and records outcomes where ``status``
+  surfaces them — the escalated tiers' records carry their own verdicts.
 """
 
 from __future__ import annotations
@@ -136,7 +140,139 @@ def test_verify_hashes_persists_baseline_and_reports_delta(archive_home, tmp_pat
 
     second = ta.verify(hashes=True)["hashes"]
     assert second["previous"]["truth_mismatched"] == 0
-    assert second["delta"] == {"truth_mismatched": 0, "index_mismatched": 0}
+    assert second["delta"] == {
+        "truth_mismatched": 0, "index_mismatched": 0, "cross_mismatched": 0,
+    }
+
+
+def test_hashes_cross_store_catches_unkeyed_payload_divergence(archive_home, tmp_path) -> None:
+    """An event with no dedup_key has no self-validation; cross-store parity is
+    what catches its rot — the two stores are redundant copies and must agree,
+    or the next reindex promotes the rotted truth copy over the good row."""
+    import_cc_session(tmp_path)
+    first = ta.verify(hashes=True)["hashes"]["cross"]
+    assert first["compared"] > 0 and first["mismatched"] == 0
+
+    # Strip the key and tamper the payload on the INDEX side only: both
+    # key-hash scans are blind to it (nothing to validate against); only the
+    # truth↔index fingerprint comparison can see the divergence.
+    with get_session() as s:
+        eid = s.execute(text("SELECT min(id) FROM events")).scalar()
+        s.execute(text(
+            "UPDATE events SET dedup_key = NULL, "
+            "payload = '{\"content\": \"rotted\"}' WHERE id = :e"), {"e": eid})
+        s.commit()
+
+    v = ta.verify(hashes=True)
+    assert v["hashes"]["cross"]["mismatched"] >= 1
+    assert eid in v["hashes"]["cross"]["mismatch_sample"]
+    assert v["hashes"]["new_mismatches"] is True
+    assert "hashes" in v["failed_components"]
+    assert v["ok"] is False
+
+    # The stamped baseline absorbs it: unchanged corruption fails exactly once.
+    v2 = ta.verify(hashes=True)
+    assert v2["hashes"]["cross"]["mismatched"] >= 1
+    assert v2["hashes"]["new_mismatches"] is False
+    assert v2["ok"] is True
+
+
+# ── the kg log on the daily tier ──────────────────────────────────────────────
+def test_shallow_verify_scans_kg_log(archive_home, tmp_path) -> None:
+    """A damaged curation-log line fails the daily verify, not just the weekly
+    deep pass — kg_events.jsonl is the curation history's only truth."""
+    import_cc_session(tmp_path)
+    from thread_archive.knowledge.write import create_topic
+
+    create_topic("Auth", "authentication concerns")
+    v = ta.verify()
+    assert v["ok"] is True
+    assert v["truth"]["kg_events"] == 1
+    assert v["drift"]["kg_events"] == 0
+
+    with open(archive_home / "truth" / "kg_events.jsonl", "a", encoding="utf-8") as fh:
+        fh.write("{rot\n")
+    v = ta.verify()
+    assert v["ok"] is False
+    assert "parse_errors" in v["failed_components"]
+
+
+def test_shallow_verify_fails_on_kg_drift(archive_home, tmp_path) -> None:
+    import_cc_session(tmp_path)
+    from thread_archive.knowledge.write import create_topic
+
+    create_topic("Auth")
+    # Empty the log: the table holds a kg event the truth lacks — the forbidden
+    # direction, previously invisible until the deep pass.
+    (archive_home / "truth" / "kg_events.jsonl").write_text("", encoding="utf-8")
+    v = ta.verify()
+    assert v["drift"]["kg_events"] == 1
+    assert "drift_kg_events" in v["failed_components"]
+    assert v["ok"] is False
+
+
+def test_deep_verify_flags_kg_content_mismatch(archive_home, tmp_path) -> None:
+    import_cc_session(tmp_path)
+    from thread_archive.knowledge.write import create_topic
+
+    create_topic("Auth", "authentication concerns")
+    assert ta.verify(deep=True)["deep"]["kg"]["content_mismatch"] == 0
+
+    # An index-side payload mutation the log never received: id parity stays
+    # green, only the content comparison can see it.
+    with get_session() as s:
+        s.execute(text("UPDATE kg_events SET payload = '{\"tampered\": true}'"))
+        s.commit()
+    v = ta.verify(deep=True)
+    assert v["deep"]["kg"]["content_mismatch"] == 1
+    assert v["ok"] is False
+    assert "deep" in v["failed_components"]
+
+
+# ── failure evidence ──────────────────────────────────────────────────────────
+def test_failing_verify_names_components_and_keeps_evidence(archive_home, tmp_path) -> None:
+    """A red verify must be diagnosable after the fact: the result names the
+    failing components and the full result — samples included — lands in the
+    failure ledger. health records booleans; without this, the cause of a red
+    exists for one moment in a discarded dict."""
+    import_cc_session(tmp_path)
+    assert ta.verify()["failed_components"] == []
+    assert not (archive_home / "verify-failures.jsonl").exists()
+
+    corrupt_event_line(one_thread_file(archive_home))
+    v = ta.verify()
+    assert v["ok"] is False
+    assert "parse_errors" in v["failed_components"]
+
+    ledger = archive_home / "verify-failures.jsonl"
+    assert v["failure_log"] == str(ledger)
+    recs = [json.loads(ln) for ln in ledger.read_text(encoding="utf-8").splitlines()]
+    assert recs[-1]["failed_components"] == v["failed_components"]
+    assert recs[-1]["truth"]["parse_errors"] == v["truth"]["parse_errors"]
+    assert recs[-1]["at"]
+    # health carries the component list too, so `status` can say what broke.
+    assert ta.status()["last_verify"]["failed"] == v["failed_components"]
+
+
+def test_escalated_tier_records_carry_their_own_verdict(archive_home, tmp_path) -> None:
+    """A red caused by one component must not force every expensive tier to
+    re-run nightly: the deep/hashes health records carry their own tier's
+    verdict, not the overall one."""
+    import_cc_session(tmp_path)
+    dest = tmp_path / "mirror"
+    ta.backup(str(dest))
+    bf = next((dest / "threads").rglob("*.jsonl"))
+    with open(bf, "a", encoding="utf-8") as fh:
+        fh.write("{rot\n")
+
+    v = ta.verify(deep=True, hashes=True, backup=str(dest))
+    assert v["ok"] is False
+    assert v["failed_components"] == ["backup"]
+    health = json.loads((archive_home / "health.json").read_text(encoding="utf-8"))
+    assert health["verify_last"]["ok"] is False
+    assert health["verify_last"]["failed"] == ["backup"]
+    assert health["verify_deep_last"]["ok"] is True
+    assert health["verify_hashes_last"]["ok"] is True
 
 
 # ── backup mirror checks ──────────────────────────────────────────────────────
@@ -163,6 +299,28 @@ def test_verify_backup_scans_the_mirror(archive_home, tmp_path) -> None:
     res = ta.verify(backup=str(tmp_path / "not-a-mirror"))
     assert res["backup"]["ok"] is False
     assert "error" in res["backup"]
+
+
+def test_verify_backup_fails_on_effective_count_drop(archive_home, tmp_path) -> None:
+    """A mirror whose effective count fell since the last scan lost content —
+    the restore drill's coverage floor only sees drops ≥2% of the archive; the
+    run-over-run diff sees one missing file."""
+    import_cc_session(tmp_path, name="one")
+    import_cc_session(tmp_path, name="two")
+    dest = tmp_path / "mirror"
+    ta.backup(str(dest))
+    assert ta.verify(backup=str(dest))["backup"]["ok"] is True  # records the baseline
+
+    next((dest / "threads").rglob("*.jsonl")).unlink()
+    v = ta.verify(backup=str(dest))
+    assert v["backup"]["ok"] is False
+    drop = v["backup"]["effective_drop"]
+    assert drop["current"] < drop["previous"]
+    assert "backup" in v["failed_components"]
+
+    # Recording the new count absorbs the drop — a deliberate shrink (an
+    # --allow-shrink re-emit) fails exactly one run.
+    assert ta.verify(backup=str(dest))["backup"]["ok"] is True
 
 
 def test_verify_hashes_covers_backup_mirror(archive_home, tmp_path):

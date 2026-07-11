@@ -160,7 +160,9 @@ def search(
     forces the cross-encoder stage on/off (else auto-gated).
 
     ``startswith`` does a structural prefix scan (query text unused). ``sort='oldest'``
-    returns the candidate pool chronologically, bypassing the ranker. ``output='count'``
+    returns the earliest matches chronologically, bypassing the ranker — the lexical
+    scan itself runs oldest-first, so the pool holds the true first mentions rather
+    than a chronological sort of bm25's favourites. ``output='count'``
     returns the whole match pool unranked (the renderer tallies per-thread). With a
     structural shape (browse / startswith / oldest / count) the semantic arm and the
     cross-encoder sit out. ``context_lines`` (default 2; 0 = the raw FTS snippet)
@@ -170,10 +172,14 @@ def search(
     since_r = resolve_relative_date(since) if since else None
     until_r = resolve_relative_date(until) if until else None
 
-    # browse/startswith are structural — there's no lexical MATCH to rank or embed
-    # against, so the semantic arm and the weighted ranker both sit out.
-    structural = startswith is not None or not (query or "").strip()
     is_count = output == "count"
+    # browse/startswith are structural — there's no lexical MATCH to rank or embed
+    # against, so the semantic arm and the weighted ranker both sit out. So do
+    # sort='oldest' and count: the vector arm returns similarity-ranked nearest
+    # neighbours, which can't strengthen a chronological first-mention scan or a
+    # tally of literal matches, only pollute them.
+    structural = (startswith is not None or sort == "oldest" or is_count
+                  or not (query or "").strip())
     # Candidate pool depth. 200 (not limit*5) because reachability dies at the pool
     # boundary: for a high-frequency term over a ~1M-doc index, a relevant-but-old
     # hit past bm25's top-N is unreachable no matter how the ranker weighs it. The
@@ -186,9 +192,16 @@ def search(
         query, thread_id=thread_id, content_types=content_types,
         exclude_content_types=exclude_content_types, limit=over,
         since=since_r, until=until_r, tool_name=tool_name, source=source,
-        startswith=startswith, session=session,
+        # Strict matching for count and oldest: the OR tier would inflate a tally
+        # with partial matches, and in a chronological sort an older partial match
+        # would leapfrog the true first mention.
+        startswith=startswith, oldest_first=sort == "oldest",
+        or_fallback=not (is_count or sort == "oldest"), session=session,
     )
-    semantic = None if structural else _semantic_hits(
+    # A tool_name scope also sits the vector arm out: tool docs aren't embedded
+    # (only user/text/title/summary are), so every semantic hit in a tool-scoped
+    # search would be a hit the filter should have excluded.
+    semantic = None if structural or tool_name else _semantic_hits(
         query, thread_id=thread_id, content_types=content_types,
         exclude_content_types=exclude_content_types, since=since_r, until=until_r,
         over=over, source=source,

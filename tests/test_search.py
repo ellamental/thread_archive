@@ -159,8 +159,12 @@ def test_assistant_text_indexed_once(archive_home) -> None:
     api_request_completed summary that duplicates it)."""
     _seed_corpus(archive_home)
     hits = search("session token")
-    assert len(hits) == 1
-    assert hits[0]["content_type"] == "text"
+    # The full-phrase doc surfaces exactly once (the OR tier may append docs
+    # holding only 'session'; the duplicate-indexing bug would repeat THIS one).
+    exact = [h for h in hits if "session token" in (h["full_content"] or "").lower()]
+    assert len(exact) == 1
+    assert exact[0]["content_type"] == "text"
+    assert hits[0] is exact[0]  # and the full match outranks the partials
 
 
 def test_empty_query_returns_nothing(archive_home) -> None:
@@ -228,6 +232,44 @@ def test_sort_oldest(archive_home) -> None:
     times = [str(h.get("occurred_at") or "") for h in hits]
     assert times == sorted(times)                  # chronological, oldest first
     assert hits[0]["occurred_at"] <= hits[-1]["occurred_at"]
+
+
+# --- OR-fallback tier -------------------------------------------------------
+
+def test_natural_language_or_fallback(archive_home) -> None:
+    """A conversational query whose terms never co-occur still finds the docs
+    holding *some* meaningful term — the strict all-terms MATCH comes up short and
+    the OR tier tops the pool up. Boolean / quoted queries keep their exact
+    semantics (no fallback)."""
+    _seed_corpus(archive_home)
+
+    # 'authentication' exists, 'zzzmissing' nowhere: strict AND is zero-recall.
+    hits = search("authentication zzzmissing")
+    assert hits and any("authentication" in (h["full_content"] or "").lower() for h in hits)
+
+    # Explicit boolean AND means AND — no fallback.
+    assert search("authentication AND zzzmissing") == []
+    # A quoted phrase means that phrase — no fallback.
+    assert search('"authentication zzzmissing"') == []
+    # Stopwords alone don't gate recall: only 'authentication' is meaningful here.
+    assert search("how did we do the authentication zzzmissing")
+
+    # count stays strict: partial matches must not inflate the tally.
+    assert search("authentication zzzmissing", output="count") == []
+
+
+def test_sort_oldest_is_strict_and_chronological(archive_home) -> None:
+    """oldest = earliest strict matches; the OR tier sits out so a partial match
+    can't leapfrog the true first mention, and the lexical scan itself runs
+    oldest-first (pool holds the earliest rows, not bm25's favourites)."""
+    from thread_archive.retrieval import search_events
+
+    _seed_corpus(archive_home)
+    assert search("authentication zzzmissing", sort="oldest") == []
+
+    ordered = search_events("authentication OR database", oldest_first=True)
+    times = [str(h["occurred_at"] or "") for h in ordered]
+    assert ordered and times == sorted(times)
 
 
 # --- context_lines ----------------------------------------------------------

@@ -1103,12 +1103,13 @@ def _maybe_rebalance(d: Path, depth: int) -> int:
 # ── integrity scan (the primitive behind `archive verify`) ───────────────────
 def scan_truth_counts(
     *, event_id_max: int | None = None, thread_id_max: int | None = None,
-    truth_dir: Path | None = None,
+    kg_event_id_max: int | None = None, truth_dir: Path | None = None,
 ) -> dict:
-    """Count threads + event lines across the truth directory, tallying any
-    JSON parse errors. The integrity primitive behind ``archive verify``: a clean
-    archive has these match the SQLite projection's thread/event counts (the
-    JSONL ⊇ SQLite invariant) with zero parse errors.
+    """Count threads + event lines across the truth directory — the per-thread
+    files *and* the curatorial log (``kg_events.jsonl``) — tallying any JSON
+    parse errors. The integrity primitive behind ``archive verify``: a clean
+    archive has these match the SQLite projection's thread/event/kg-event counts
+    (the JSONL ⊇ SQLite invariant) with zero parse errors.
 
     The truth is append-only, so it legitimately accumulates superseded lines the
     projection collapses: a re-appended line for an id it already holds (a crash
@@ -1125,10 +1126,18 @@ def scan_truth_counts(
     thread and its duplicated lines as superseded, matching what a reindex of
     that directory materializes.
 
-    ``event_id_max`` / ``thread_id_max`` bound the scan to ids at or below a
-    stable watermark, so a verify racing live ingest (truth lines land *before*
-    their commit; the index keeps growing while the scan reads files) compares
-    the same committed prefix on both sides instead of false-alarming.
+    ``kg_events`` counts the curatorial log's distinct ids (the file is
+    append-only, so a crash-merge can legitimately duplicate a line; the
+    projection materializes one row per id). Its unparseable lines fold into the
+    same ``parse_errors`` tally and torn-tail/interior split as the per-thread
+    files — the curation truth deserves the same daily scan the conversation
+    truth gets, not a weekly one.
+
+    ``event_id_max`` / ``thread_id_max`` / ``kg_event_id_max`` bound the scan to
+    ids at or below a stable watermark, so a verify racing live ingest (truth
+    lines land *before* their commit; the index keeps growing while the scan
+    reads files) compares the same committed prefix on both sides instead of
+    false-alarming.
 
     ``truth_dir`` scans an explicit directory instead of the live archive's —
     the primitive behind the backup-side check (``archive verify --backup``)."""
@@ -1181,6 +1190,29 @@ def scan_truth_counts(
                         continue
                     seen_keys.add(key)
                     n_effective += 1
+    # The curatorial log: distinct kg-event ids at or below the watermark, its
+    # parse errors folded into the same tally (and torn/interior split) so a
+    # damaged curation line fails the daily verify, not just the weekly deep one.
+    kg_ids: set = set()
+    kg_path = d / KG_EVENTS_FILE
+    if kg_path.exists():
+        with open(kg_path, encoding="utf-8", errors="replace") as fh:
+            for lineno, line in enumerate(fh, 1):
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    rec = json.loads(line)
+                except ValueError:
+                    parse_errors += 1
+                    parse_error_locs.append((str(kg_path), lineno))
+                    if len(parse_error_sample) < 10:
+                        parse_error_sample.append(f"{kg_path}:{lineno}")
+                    continue
+                kg_id = rec.get("id")
+                if kg_id is None or (kg_event_id_max is not None and kg_id > kg_event_id_max):
+                    continue
+                kg_ids.add(int(kg_id))
     # Same split reindex reports: a torn tail (the file's final non-empty line —
     # the residue of a crash mid-append, waiting for `archive repair`) vs. interior
     # damage (a fragment later appends isolated, or corruption of a formerly-good
@@ -1190,6 +1222,7 @@ def scan_truth_counts(
         "threads": len(files_by_stem),
         "events": n_events,
         "events_effective": n_effective,
+        "kg_events": len(kg_ids),
         "duplicate_id_lines": dup_id_lines,
         "duplicate_content_lines": dup_content_lines,
         "parse_errors": parse_errors,

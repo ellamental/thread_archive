@@ -131,6 +131,8 @@ def search_events(
     source: Optional[list[str]] = None,
     startswith: Optional[str] = None,
     *,
+    oldest_first: bool = False,
+    or_fallback: bool = True,
     session: Optional[Session] = None,
 ) -> list[dict]:
     """Lexical search over the FTS5 index → canonical event-hit dicts.
@@ -145,9 +147,24 @@ def search_events(
     caps out on the newest ``limit`` matches. ``startswith`` overrides the query
     mode entirely with a structural prefix scan (content LIKE 'prefix%',
     recency-ordered) — the query text is not matched, only the structural filters.
+
+    A plain natural-language query (no operators, no quotes) is implicitly
+    conjunctive — FTS5 MATCH requires *every* token, stopwords included, so
+    "how did we fix the auth bug" needs all seven words in one document. When
+    the strict pass leaves the pool short, a fallback OR pass over the
+    meaningful (non-stopword) terms tops it up, bm25-ranked, appended *after*
+    the strict hits so full matches keep their rank priority. That's what saves
+    lexical-only installs from hard zero-recall on conversational queries.
+    ``or_fallback=False`` disables the tier — a count tally must stay strict, or
+    partial matches inflate it.
+
+    ``oldest_first`` orders every pass by ``occurred_at ASC`` instead of its
+    ranking order, so the candidate pool holds the *earliest* matching rows —
+    without it, "when was this first discussed" sorts only whatever bm25's
+    top-N happened to keep, which for a frequent term is recency-biased.
     """
     ensure_fts(session)
-    mode, _is_boolean = classify_query(query)
+    mode, is_boolean = classify_query(query)
 
     # Each pass is (match_where, match_params, order, use_match); shared filters
     # are appended to every pass.
@@ -212,7 +229,9 @@ def search_events(
     hits: list[dict] = []
     seen: set[tuple[int, Optional[str]]] = set()
     with use_session(session) as s:
-        for match_where, match_params, order, use_match in passes:
+        def run_pass(match_where: str, match_params: dict, order: str, use_match: bool) -> None:
+            if oldest_first:
+                order = "occurred_at ASC"
             snippet_expr = (
                 "snippet(event_search, 0, '', '', ' … ', 12)" if use_match
                 else "substr(content, 1, 300)"
@@ -245,6 +264,25 @@ def search_events(
                     full_content=r["full_content"] or "",
                     occurred_at_ts=ts,
                 ))
+
+        for p in passes:
+            run_pass(*p)
+
+        # Fallback OR tier for plain natural-language queries (see the docstring):
+        # only when the strict all-terms pass left the pool short, and only over
+        # the meaningful terms (stopwords carry no retrieval signal). Explicit
+        # boolean / quoted / pipe-OR / identifier queries asked for their own
+        # semantics and are left alone.
+        if (or_fallback and startswith is None and mode == "tsquery" and not is_boolean
+                and '"' not in (query or "") and len(hits) < limit):
+            from .rank import search_terms
+
+            terms = [t for t in search_terms(query) if " " not in t]
+            or_q = " OR ".join(_quote_phrase(t) for t in terms)
+            # Skip when the tier would be the strict pass verbatim (single term,
+            # nothing dropped) — same MATCH, nothing new to add.
+            if terms and or_q.lower() != _to_match_query(query).lower():
+                run_pass("event_search MATCH :orq", {"orq": or_q}, _RANK_EXPR, True)
     return hits
 
 

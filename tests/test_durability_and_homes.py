@@ -105,7 +105,7 @@ def test_verify_passes_on_a_clean_archive_and_detects_drift(archive_home) -> Non
     res = ta.verify()
     assert res["ok"] is True
     assert res["truth"]["threads"] == 1 and res["truth"]["parse_errors"] == 0
-    assert res["drift"] == {"threads": 0, "events": 0}
+    assert res["drift"] == {"threads": 0, "events": 0, "kg_events": 0}
 
     # Delete an event from the index only (truth untouched) → positive-ish drift surfaces.
     with get_session() as s:

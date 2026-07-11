@@ -1040,8 +1040,11 @@ def verify(
     The index is compared against ``events_effective`` — the truth's line count
     after collapsing superseded lines (re-appended ids, same-content twins), which
     is exactly what a reindex materializes; the raw line count and the superseded
-    remainder are reported alongside. ``ok`` is True only when the effective counts
-    align, nothing failed to parse, the search surface is in parity (shadow ↔
+    remainder are reported alongside. The curatorial log gets the same daily
+    treatment: ``kg_events.jsonl`` is parse-scanned and its distinct-id count
+    compared to the ``kg_events`` table below a kg watermark. ``ok`` is True only
+    when the effective counts align (events, threads, and kg events), nothing
+    failed to parse, the search surface is in parity (shadow ↔
     FTS5 row counts match with no orphan rows — silently unsearchable content is
     loss in effect, so it's checked on this daily cadence too), and the live
     index carries the full declared schema (:func:`_verify_schema` — ``create_all``
@@ -1054,9 +1057,19 @@ def verify(
     is cleared by ``archive repair``, which quarantines the damaged lines and
     restores any committed content they shadowed from the index.
 
-    Every run records its outcome (``verify_last``: timestamp, ok, drift) in
-    ``<home>/health.json``, surfaced by ``archive status`` — an integrity check
-    that silently stops running must look stale, not healthy.
+    **A red verify names its cause and keeps its evidence.** The result carries
+    ``failed_components`` (exactly which checks failed — ``ok`` is derived from
+    it), the health record carries the same list, and the *full* result of any
+    failing run is appended to ``<home>/verify-failures.jsonl`` — samples
+    included — so a red observed hours later is diagnosable from what it wrote,
+    not from re-running an expensive pass against a store that has moved on.
+
+    Every run records its outcome (``verify_last``: timestamp, ok, drift, the
+    failed components) in ``<home>/health.json``, surfaced by ``archive
+    status`` — an integrity check that silently stops running must look stale,
+    not healthy. The escalated tiers' records (``verify_deep_last`` /
+    ``verify_hashes_last``) carry each tier's *own* verdict, so the nightly age
+    gate re-runs the tier that actually failed rather than both.
 
     ``deep=True`` adds an id-level comparison (both directions, below a stable id
     watermark so in-flight ingest can't false-alarm), dedup_key parity for ids on
@@ -1070,19 +1083,33 @@ def verify(
     re-hashing the stored payload and comparing detects silent payload corruption
     (bit rot, a bad write) with no extra state. The hash covers only the payload's
     *semantic content keys* (``_DEDUP_CONTENT_KEYS``) — corruption in other payload
-    fields (model names, metadata) is invisible to it. A *new* mismatch fails
+    fields (model names, metadata) is invisible to it. Events with no dedup_key
+    at all carry nothing to self-validate against, so the same pass also runs a
+    **cross-store payload parity** check: for every event id present on both
+    sides, the truth line's payload and the index row's payload are canonically
+    hashed and compared (``cross``). Writes flow one way (truth before index;
+    nothing mutates a payload after commit), so the two stores are redundant
+    copies and any disagreement is corruption on one side — this is what makes
+    rot in an *unkeyed* payload detectable at all, instead of parsing clean,
+    passing every count, and being promoted over the good index row by the next
+    reindex. A *new* mismatch (key-hash or cross-store) fails
     ``ok``: each run's counts are persisted in ``manifest.json`` and diffed
     against the previous run's baseline — an increase (or any mismatch on a
     baseline-less first run) means content changed underneath its key since the
     last look, and health must go red until it's seen. The stamped baseline
     absorbs the count, so an acknowledged (e.g. legitimately-repaired-in-place)
-    mismatch fails exactly one run rather than pinning verify red forever.
-    CPU-heavy (re-hashes every payload twice).
+    mismatch fails exactly one run rather than pinning verify red forever — and
+    the failure ledger keeps its samples either way.
+    CPU-heavy (re-hashes every payload on both stores).
 
     ``backup`` scans a backup mirror of the truth directory with the same
     parse-and-count pass as the live truth (no watermark bound — the mirror is a
     point-in-time copy) and reports its counts against the live ones. The backup
-    check fails ``ok`` only on parse errors in the mirror; a lower effective count
+    check fails ``ok`` on parse errors in the mirror, and on a *shrinking
+    mirror*: each run's effective count is recorded in health, and a count lower
+    than the previous run's for the same destination means the mirror lost
+    content between looks (the drill's coverage floor only catches drops ≥2%; a
+    slow leak needs the run-over-run diff). A lower count than the *live* truth
     is expected staleness (the mirror ages between runs) and is reported as
     ``coverage`` for trending. Combined with ``hashes``, the mirror gets the
     content-level hash scan too — an unchanged destination file is never
@@ -1107,14 +1134,16 @@ def verify(
     open_archive(home)
     from sqlalchemy import func, select
 
-    from .store import Event, Thread, get_session
+    from .store import Event, KgEvent, Thread, get_session
     from .truth import scan_truth_counts
 
     with get_session() as s:
         watermark = s.execute(select(func.max(Event.id))).scalar() or 0
         thread_watermark = s.execute(select(func.max(Thread.id))).scalar() or 0
+        kg_watermark = s.execute(select(func.max(KgEvent.id))).scalar() or 0
     truth = scan_truth_counts(
         event_id_max=watermark or None, thread_id_max=thread_watermark or None,
+        kg_event_id_max=kg_watermark or None,
     )
     with get_session() as s:
         thread_q = select(func.count()).select_from(Thread)
@@ -1125,8 +1154,13 @@ def verify(
         if watermark:
             event_q = event_q.where(Event.id <= watermark)
         idx_events = s.execute(event_q).scalar() or 0
+        kg_q = select(func.count()).select_from(KgEvent)
+        if kg_watermark:
+            kg_q = kg_q.where(KgEvent.id <= kg_watermark)
+        idx_kg = s.execute(kg_q).scalar() or 0
     drift_threads = int(idx_threads) - truth["threads"]
     drift_events = int(idx_events) - truth["events_effective"]
+    drift_kg = int(idx_kg) - truth["kg_events"]
     # Self-check of the index file. The daily form is quick_check (reads every
     # page but skips index-content verification — a torn page still shows); the
     # ``hashes`` cadence upgrades to the full integrity_check, which also
@@ -1166,22 +1200,35 @@ def verify(
     # predates a model change runs under-enforced until a reindex — that gap
     # must be seen on the daily cadence, not discovered from its consequences.
     schema = _verify_schema()
+    # ``ok`` is derived from this list at the end — the components and the
+    # verdict cannot disagree, and a red run always names its cause.
+    failed: list[str] = []
+    if drift_threads != 0:
+        failed.append("drift_threads")
+    if drift_events != 0:
+        failed.append("drift_events")
+    if drift_kg != 0:
+        failed.append("drift_kg_events")
+    if truth["parse_errors"]:
+        failed.append("parse_errors")
+    if quick_check != "ok":
+        failed.append("integrity_check" if hashes else "quick_check")
+    if fts_shadow != fts5 or fts_orphans:
+        failed.append("fts_parity")
+    if not schema["ok"]:
+        failed.append("schema")
     result = {
-        "ok": (
-            drift_threads == 0 and drift_events == 0 and truth["parse_errors"] == 0
-            and quick_check == "ok"
-            and fts_shadow == fts5 and fts_orphans == 0
-            and schema["ok"]
-        ),
+        "ok": not failed,
         "schema": schema,
         "truth": truth,
         "index": {
             "threads": int(idx_threads),
             "events": int(idx_events),
+            "kg_events": int(idx_kg),
             "quick_check": quick_check,
             "check": "integrity_check" if hashes else "quick_check",
         },
-        "drift": {"threads": drift_threads, "events": drift_events},
+        "drift": {"threads": drift_threads, "events": drift_events, "kg_events": drift_kg},
         "fts": {
             "shadow_rows": int(fts_shadow),
             "fts5_rows": int(fts5),
@@ -1190,7 +1237,9 @@ def verify(
     }
     if deep:
         result["deep"] = _verify_deep(watermark)
-        result["ok"] = result["ok"] and result["deep"]["ok"]
+        if not result["deep"]["ok"]:
+            failed.append("deep")
+    new_mismatches = False
     if hashes:
         result["hashes"] = _verify_hashes(watermark)
         # Detected corruption must fail health, not just be reported: any *new*
@@ -1198,17 +1247,23 @@ def verify(
         # first, baseline-less run) fails ``ok``. The baseline this run stamps
         # absorbs the count, so the failure fires once and the delta signal
         # stays meaningful — a legitimately-repaired payload's stale hash
-        # doesn't keep verify red forever, but it is *seen* red once.
+        # doesn't keep verify red forever, but it is *seen* red once (and the
+        # failure ledger below keeps its samples).
         h, delta = result["hashes"], result["hashes"].get("delta")
         if delta is not None:
-            new_mismatches = delta["truth_mismatched"] > 0 or delta["index_mismatched"] > 0
+            new_mismatches = any(v > 0 for v in delta.values())
         else:
-            new_mismatches = bool(h["truth"]["mismatched"] or h["index"]["mismatched"])
+            new_mismatches = bool(
+                h["truth"]["mismatched"] or h["index"]["mismatched"]
+                or h["cross"]["mismatched"]
+            )
         result["hashes"]["new_mismatches"] = new_mismatches
-        result["ok"] = result["ok"] and not new_mismatches
+        if new_mismatches:
+            failed.append("hashes")
     if backup is not None:
         result["backup"] = _verify_backup(Path(backup).expanduser(), truth)
-        result["ok"] = result["ok"] and result["backup"]["ok"]
+        if not result["backup"]["ok"]:
+            failed.append("backup")
         if hashes and "scan" in result["backup"]:
             # Content-level rot detection on the mirror too: an unchanged
             # destination file is never re-copied (size+mtime skip), so silent
@@ -1218,6 +1273,16 @@ def verify(
             result["backup"]["hashes"] = _hash_scan_truth_dir(
                 Path(backup).expanduser(), watermark=None
             )
+    result["ok"] = not failed
+    result["failed_components"] = failed
+    if failed:
+        # Keep the evidence: the counts and samples of a failing run exist only
+        # in this dict, and health records booleans. Without the ledger, a red
+        # observed later is undiagnosable except by re-running the whole pass
+        # against a store that has moved on.
+        ledger = _append_verify_failure(result)
+        if ledger:
+            result["failure_log"] = ledger
 
     # Record the outcome in the home's health file so `archive status` (and
     # anything watching it) can see when integrity was last checked and how it
@@ -1231,15 +1296,42 @@ def verify(
         "drift_events": drift_events,
         "drift_threads": drift_threads,
         "parse_errors": truth["parse_errors"],
+        "failed": failed,
     })
     # The escalated tiers get their own records: ``verify_last`` is overwritten
     # by every shallow run, so these are what age-gated schedulers (``nightly``)
-    # read to know when a deep / hashes pass last actually happened.
+    # read to know when a deep / hashes pass last actually happened. Each
+    # carries its own tier's verdict — a red caused by another component must
+    # not force the expensive tiers to re-run every night.
     if deep:
-        _record_health("verify_deep_last", {"ok": bool(result["ok"])})
+        _record_health("verify_deep_last", {"ok": bool(result["deep"]["ok"])})
     if hashes:
-        _record_health("verify_hashes_last", {"ok": bool(result["ok"])})
+        _record_health("verify_hashes_last", {"ok": not new_mismatches})
     return result
+
+
+def _append_verify_failure(result: dict) -> Optional[str]:
+    """Append the full result of a failing verify to ``<home>/verify-failures.jsonl``
+    — the durable evidence a red run leaves behind (health.json holds booleans;
+    the counts and samples live only in the result dict). Append-only and
+    fail-soft: the ledger is advisory, so a write error is logged, never raised.
+    Returns the ledger path, or None when it could not be written."""
+    from datetime import datetime, timezone
+
+    p = resolve_paths().home / "verify-failures.jsonl"
+    try:
+        with open(p, "a", encoding="utf-8") as fh:
+            fh.write(json.dumps(
+                {"at": datetime.now(timezone.utc).isoformat(), **result},
+                default=str,
+            ))
+            fh.write("\n")
+        return str(p)
+    except OSError:
+        import logging
+
+        logging.getLogger(__name__).exception("could not append to verify-failures.jsonl")
+        return None
 
 
 def _verify_schema() -> dict:
@@ -1311,21 +1403,44 @@ def _verify_backup(dest: Path, live_truth: dict) -> dict:
     the live truth, pointed at the mirror. Zero parse errors is the hard
     requirement (a mirror that doesn't parse doesn't restore); the effective-count
     ratio against the live truth (``coverage``) quantifies staleness — it should
-    hover near 1.0 and only ever *rise* between backup runs. A coverage *drop*
-    means the backup lost content relative to its last state — investigate before
-    the next mirror run overwrites anything."""
+    hover near 1.0 and only ever *rise* between backup runs.
+
+    A mirror that *shrank* fails too: each run records the mirror's effective
+    count in health (``backup_scan_last``), and a count below the previous run's
+    for the same destination means the backup lost content between looks —
+    something deleted or truncated mirror files out-of-band. The restore drill's
+    coverage floor only catches drops ≥2% of the archive; the run-over-run diff
+    is what sees a slow leak. Recording the new count absorbs the drop, so —
+    like the hashes baseline — a deliberate shrink (an ``--allow-shrink``
+    re-emit after repair) fails exactly one run instead of pinning verify red."""
     from .truth import scan_truth_counts
 
     if not (dest / "manifest.json").exists() and not (dest / "threads").exists():
         return {"dest": str(dest), "ok": False, "error": "not a truth mirror"}
     scan = scan_truth_counts(truth_dir=dest)
     live_effective = live_truth["events_effective"] or 1
-    return {
+    prev = _read_health().get("backup_scan_last") or {}
+    prev_effective = (
+        prev.get("events_effective") if prev.get("dest") == str(dest) else None
+    )
+    out = {
         "dest": str(dest),
         "ok": scan["parse_errors"] == 0,
         "scan": scan,
         "coverage": round(scan["events_effective"] / live_effective, 6),
     }
+    if prev_effective is not None and scan["events_effective"] < int(prev_effective):
+        out["ok"] = False
+        out["effective_drop"] = {
+            "previous": int(prev_effective),
+            "previous_at": prev.get("at"),
+            "current": scan["events_effective"],
+        }
+    _record_health("backup_scan_last", {
+        "dest": str(dest),
+        "events_effective": scan["events_effective"],
+    })
+    return out
 
 
 def _hash_key_check(payload: object, dedup_key: str) -> Optional[bool]:
@@ -1382,62 +1497,162 @@ def _hash_scan_truth_dir(truth_dir: Path, watermark: Optional[int]) -> dict:
     }
 
 
-def _verify_hashes(watermark: int) -> dict:
-    """Content-level self-validation: re-hash each stored payload against the
-    content hash embedded in its own ``dedup_key`` (its last ``:``-segment; see
-    ``thread_import.event_builder.compute_dedup_key``), on both the truth files
-    and the index. A mismatch means the payload changed since its key was
-    computed — corruption, or an in-place payload repair that didn't recompute
-    the key. Events with a key whose tail isn't a hash are skipped and counted
-    (``unhashed_keys``); events with no dedup_key at all are counted too
-    (``no_key``) — they have zero content self-validation, and the count keeps
-    that boundary visible.
+def _payload_fingerprint(event_type: object, payload: object) -> str:
+    """Canonical content fingerprint of one stored event — the cross-store
+    comparator. Both stores' copies are parsed to Python objects first, so
+    serializer differences (key order, ascii escaping) can't false-positive;
+    timestamps are deliberately excluded (the two stores format them
+    differently)."""
+    import hashlib
 
-    The caller (``verify``) fails ``ok`` when the mismatch count *increased*
+    blob = json.dumps([event_type, payload], sort_keys=True, default=str, ensure_ascii=False)
+    return hashlib.sha256(blob.encode("utf-8")).hexdigest()[:16]
+
+
+def _verify_hashes(watermark: int) -> dict:
+    """Content-level validation of every stored payload, walking truth and index
+    together one thread at a time.
+
+    Two independent checks per event:
+
+    * **Key-hash self-validation** (``truth`` / ``index``): re-hash the stored
+      payload against the content hash embedded in its own ``dedup_key`` (its
+      last ``:``-segment; see ``thread_import.event_builder.compute_dedup_key``).
+      A mismatch means the payload changed since its key was computed —
+      corruption, or an in-place payload repair that didn't recompute the key.
+      Events with a key whose tail isn't a hash are skipped and counted
+      (``unhashed_keys``); events with no dedup_key at all are counted too
+      (``no_key``).
+    * **Cross-store payload parity** (``cross``): for every id present on both
+      sides, compare a canonical fingerprint of (event_type, payload) between
+      the truth line (last line per id — what a reindex materializes) and the
+      index row. Writes flow one way and nothing mutates payloads after commit,
+      so the stores are redundant copies: disagreement is corruption on one
+      side. This is the only check that can see rot in an *unkeyed* payload —
+      a majority of any archive that predates dedup keys — which would
+      otherwise parse clean, pass every count, and be promoted over the good
+      index row by the next reindex.
+
+    The caller (``verify``) fails ``ok`` when any mismatch count *increased*
     since the previous baseline (see ``new_mismatches``); the counts themselves
     are informational."""
     import json as _json
 
     from .store import get_session
-    from .truth.jsonl_log import log_dir
+    from .truth.jsonl_log import (
+        THREADS_SUBDIR,
+        _iter_jsonl,
+        _shard_depth,
+        _thread_file,
+        log_dir,
+    )
 
-    _check = _hash_key_check
+    d = log_dir()
+    threads_dir = d / THREADS_SUBDIR
+    depth = _shard_depth(d)
 
-    truth_scan = _hash_scan_truth_dir(log_dir(), watermark)
-
+    truth_checked = truth_mismatched = truth_unhashed = truth_no_key = 0
+    truth_sample: list[int] = []
     index_checked = index_mismatched = index_skipped = 0
     index_sample: list[int] = []
+    cross_compared = cross_mismatched = 0
+    cross_sample: list[int] = []
+
+    files_by_stem: dict[str, list[Path]] = {}
+    if threads_dir.exists():
+        for path in threads_dir.rglob("*.jsonl"):
+            files_by_stem.setdefault(path.stem, []).append(path)
+    truth_tids: set[int] = set()
+    for stem in files_by_stem:
+        try:
+            truth_tids.add(int(stem))
+        except ValueError:  # pragma: no cover — stray file
+            continue
+
     with get_session() as s:
         conn = s.connection().connection  # raw sqlite3 — stream, don't materialize
         index_no_key = conn.execute(
             "SELECT count(*) FROM events WHERE dedup_key IS NULL AND id <= ?",
             (watermark,),
         ).fetchone()[0]
-        cur = conn.execute(
-            "SELECT id, dedup_key, payload FROM events "
-            "WHERE dedup_key IS NOT NULL AND id <= ?", (watermark,)
-        )
-        for ev_id, key, payload_text in cur:
-            try:
-                payload = _json.loads(payload_text)
-            except (TypeError, ValueError):
-                payload = None
-            verdict = _check(payload, key)
-            if verdict is None:
-                index_skipped += 1
-                continue
-            index_checked += 1
-            if not verdict:
-                index_mismatched += 1
-                if len(index_sample) < 10:
-                    index_sample.append(int(ev_id))
+        idx_tids = {
+            int(r[0]) for r in conn.execute(
+                "SELECT DISTINCT thread_id FROM events WHERE id <= ?", (watermark,)
+            )
+        }
+        for tid in sorted(idx_tids | truth_tids):
+            # Truth side: every line is key-checked; the last line per id wins
+            # the fingerprint (canonical-depth file last, matching reindex).
+            fingerprints: dict[int, str] = {}
+            paths = sorted(files_by_stem.get(str(tid), []))
+            paths.sort(key=lambda p: p == _thread_file(d, tid, depth))
+            for path in paths:
+                for rec in _iter_jsonl(path):
+                    if rec.get("type", "event") != "event":
+                        continue
+                    ev_id, key = rec.get("id"), rec.get("dedup_key")
+                    if ev_id is None or ev_id > watermark:
+                        continue
+                    payload = rec.get("payload")
+                    if not key:
+                        truth_no_key += 1
+                    else:
+                        verdict = _hash_key_check(payload, key)
+                        if verdict is None:
+                            truth_unhashed += 1
+                        else:
+                            truth_checked += 1
+                            if not verdict:
+                                truth_mismatched += 1
+                                if len(truth_sample) < 10:
+                                    truth_sample.append(int(ev_id))
+                    fingerprints[int(ev_id)] = _payload_fingerprint(
+                        rec.get("event_type"), payload
+                    )
+            # Index side of the same thread, plus the cross-store comparison.
+            for ev_id, key, etype, payload_text in conn.execute(
+                "SELECT id, dedup_key, event_type, payload FROM events "
+                "WHERE thread_id = ? AND id <= ?", (tid, watermark)
+            ):
+                try:
+                    payload = (
+                        _json.loads(payload_text)
+                        if isinstance(payload_text, str) else payload_text
+                    )
+                except ValueError:
+                    payload = None
+                if key:
+                    verdict = _hash_key_check(payload, key)
+                    if verdict is None:
+                        index_skipped += 1
+                    else:
+                        index_checked += 1
+                        if not verdict:
+                            index_mismatched += 1
+                            if len(index_sample) < 10:
+                                index_sample.append(int(ev_id))
+                truth_fp = fingerprints.get(int(ev_id))
+                if truth_fp is not None:
+                    cross_compared += 1
+                    if truth_fp != _payload_fingerprint(etype, payload):
+                        cross_mismatched += 1
+                        if len(cross_sample) < 10:
+                            cross_sample.append(int(ev_id))
 
     result = {
-        "truth": truth_scan,
+        "truth": {
+            "checked": truth_checked, "mismatched": truth_mismatched,
+            "unhashed_keys": truth_unhashed, "no_key": truth_no_key,
+            "mismatch_sample": truth_sample,
+        },
         "index": {
             "checked": index_checked, "mismatched": index_mismatched,
             "unhashed_keys": index_skipped, "no_key": int(index_no_key),
             "mismatch_sample": index_sample,
+        },
+        "cross": {
+            "compared": cross_compared, "mismatched": cross_mismatched,
+            "mismatch_sample": cross_sample,
         },
     }
     # The signal is the mismatch count *jumping* between runs, so persist this
@@ -1450,8 +1665,9 @@ def _verify_hashes(watermark: int) -> dict:
 
     baseline = {
         "at": datetime.now(timezone.utc).isoformat(),
-        "truth_mismatched": truth_scan["mismatched"],
+        "truth_mismatched": truth_mismatched,
         "index_mismatched": index_mismatched,
+        "cross_mismatched": cross_mismatched,
     }
     previous: dict = {}
 
@@ -1463,8 +1679,9 @@ def _verify_hashes(watermark: int) -> dict:
     if previous:
         result["previous"] = previous
         result["delta"] = {
-            "truth_mismatched": truth_scan["mismatched"] - int(previous.get("truth_mismatched", 0)),
+            "truth_mismatched": truth_mismatched - int(previous.get("truth_mismatched", 0)),
             "index_mismatched": index_mismatched - int(previous.get("index_mismatched", 0)),
+            "cross_mismatched": cross_mismatched - int(previous.get("cross_mismatched", 0)),
         }
     return result
 
@@ -1502,6 +1719,12 @@ def _verify_deep(watermark: int) -> dict:
     record and the index row) is report-only: an in-flight metadata commit can
     legitimately race the scan, but a persistent mismatch means a missed re-stage —
     and the next reindex would revert the index to the stale truth record.
+
+    The knowledge layer gets the same treatment as events: the kg log and table
+    are id-diffed below a kg watermark captured before any file is read (so a
+    live librarian write can't false-alarm), and ids on both sides are
+    content-compared (``kg.content_mismatch``) — the log is small enough to
+    fingerprint whole, and it is the curation history's only truth.
     """
     import json as _json
 
@@ -1518,6 +1741,15 @@ def _verify_deep(watermark: int) -> dict:
 
     d = log_dir()
     threads_dir = d / THREADS_SUBDIR
+
+    # The kg watermark, captured before any file is read: the kg id-diff below
+    # is otherwise unbounded, and a librarian write landing mid-scan (its truth
+    # line is durable before its commit, but this pass may read the file first)
+    # would false-alarm ``kg_index_only`` against a perfectly healthy archive.
+    with get_session() as s0:
+        kg_watermark = s0.execute(
+            sa_text("SELECT coalesce(max(id), 0) FROM kg_events")
+        ).scalar() or 0
 
     # Pass 1 — truth ids per thread (≤ watermark), which files hold each thread,
     # and the winning (last, in reindex's load order — canonical-depth file
@@ -1604,14 +1836,38 @@ def _verify_deep(watermark: int) -> dict:
                     meta_mismatch.append(int(tid))
                     break
 
-        # Knowledge layer: the kg truth log vs its table, by id.
-        kg_line_ids = {
-            rec.get("id") for rec in _iter_jsonl(d / KG_EVENTS_FILE)
-            if rec.get("id") is not None
+        # Knowledge layer: the kg truth log vs its table, by id — both sides
+        # bounded by the kg watermark captured up front, so a live librarian
+        # write can't false-alarm — plus content parity for ids on both sides
+        # (the kg analogue of the events cross-store check; the log is small
+        # enough to compare whole).
+        kg_recs: dict[int, dict] = {}
+        for rec in _iter_jsonl(d / KG_EVENTS_FILE):
+            rid = rec.get("id")
+            if rid is not None and int(rid) <= kg_watermark:
+                kg_recs[int(rid)] = rec  # last line per id wins, like reindex
+        kg_rows = {
+            int(r[0]): tuple(r) for r in s.execute(sa_text(
+                "SELECT id, event_type, entity_type, entity_id, payload "
+                "FROM kg_events WHERE id <= :wm"), {"wm": kg_watermark})
         }
-        kg_row_ids = {r[0] for r in s.execute(sa_text("SELECT id FROM kg_events"))}
-        kg_index_only = len(kg_row_ids - kg_line_ids)
-        kg_truth_only = len(kg_line_ids - kg_row_ids)
+        kg_index_only = len(set(kg_rows) - set(kg_recs))
+        kg_truth_only = len(set(kg_recs) - set(kg_rows))
+        kg_content_mismatch = 0
+        for rid in set(kg_recs) & set(kg_rows):
+            rec, row = kg_recs[rid], kg_rows[rid]
+            row_payload = row[4]
+            if isinstance(row_payload, str):
+                try:
+                    row_payload = _json.loads(row_payload)
+                except ValueError:
+                    row_payload = None
+            truth_fp = _payload_fingerprint(
+                [rec.get("event_type"), rec.get("entity_type"), rec.get("entity_id")],
+                rec.get("payload"),
+            )
+            if truth_fp != _payload_fingerprint([row[1], row[2], row[3]], row_payload):
+                kg_content_mismatch += 1
 
         # Dangling references.
         dangling_links = s.execute(sa_text(
@@ -1688,7 +1944,7 @@ def _verify_deep(watermark: int) -> dict:
 
     ok = (
         not index_only and not missing and not key_mismatch
-        and kg_index_only == 0
+        and kg_index_only == 0 and kg_content_mismatch == 0
         and dangling_links == 0 and dangling_citations == 0 and dangling_events == 0
         and citation_thread_mismatch == 0
         and fts_orphans == 0 and fts_shadow_rows == fts5_rows and not fts_unindexed
@@ -1705,7 +1961,10 @@ def _verify_deep(watermark: int) -> dict:
         "events_superseded_twins": superseded,
         "thread_meta_mismatch": len(meta_mismatch),
         "thread_meta_sample": meta_mismatch[:10],
-        "kg": {"index_only": kg_index_only, "truth_only": kg_truth_only},
+        "kg": {
+            "index_only": kg_index_only, "truth_only": kg_truth_only,
+            "content_mismatch": kg_content_mismatch, "watermark": int(kg_watermark),
+        },
         "dangling": {
             "link_endpoints": int(dangling_links),
             "citation_events": int(dangling_citations),
@@ -1762,6 +2021,7 @@ def status(*, home: Optional[str] = None) -> dict:
         "last_backup": health.get("backup_last"),
         "last_restore_drill": health.get("restore_drill_last"),
         "last_nightly": health.get("nightly_last"),
+        "last_watch_errors": health.get("watch_errors_last"),
     }
 
 
