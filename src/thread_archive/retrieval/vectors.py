@@ -307,7 +307,19 @@ def save_vectors_sidecar(truth_dir, space_key: Optional[str] = None) -> int:
             n = conn.exec_driver_sql("SELECT count(*) FROM side.event_vectors").scalar()
         finally:
             conn.exec_driver_sql("DETACH DATABASE side")
+    # Same durability bar as the truth writers: the sidecar protects an embed that
+    # takes hours to redo, so it must be on the platter — not just in the page
+    # cache — before the rename publishes it, and the rename itself must survive
+    # power loss (dir fsync).
+    from ..truth.jsonl_log import _fsync_dir
+
+    fd = os.open(tmp, os.O_RDONLY)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
     os.replace(tmp, path)
+    _fsync_dir(Path(truth_dir))
     logger.info("vectors: saved %s vectors to sidecar (space=%s)", n, sk)
     return int(n or 0)
 

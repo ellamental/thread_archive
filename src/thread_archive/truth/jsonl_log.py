@@ -1029,6 +1029,7 @@ def scan_truth_counts(
     n_events = n_effective = parse_errors = 0
     dup_id_lines = dup_content_lines = 0
     parse_error_sample: list[str] = []
+    parse_error_locs: list[tuple[str, int]] = []
     files_by_stem: dict[str, list[Path]] = {}
     if threads_dir.exists():
         for path in threads_dir.rglob("*.jsonl"):
@@ -1052,6 +1053,7 @@ def scan_truth_counts(
                         rec = json.loads(line)
                     except ValueError:
                         parse_errors += 1
+                        parse_error_locs.append((str(path), lineno))
                         if len(parse_error_sample) < 10:
                             parse_error_sample.append(f"{path}:{lineno}")
                         continue
@@ -1071,6 +1073,11 @@ def scan_truth_counts(
                         continue
                     seen_keys.add(key)
                     n_effective += 1
+    # Same split reindex reports: a torn tail (the file's final non-empty line —
+    # the residue of a crash mid-append, waiting for `archive repair`) vs. interior
+    # damage (a fragment later appends isolated, or corruption of a formerly-good
+    # line — repair quarantines it and restores any committed event it shadowed).
+    torn, interior = _classify_parse_errors(parse_error_locs)
     return {
         "threads": len(files_by_stem),
         "events": n_events,
@@ -1078,6 +1085,8 @@ def scan_truth_counts(
         "duplicate_id_lines": dup_id_lines,
         "duplicate_content_lines": dup_content_lines,
         "parse_errors": parse_errors,
+        "parse_errors_torn_tail": len(torn),
+        "parse_errors_interior": len(interior),
         "parse_error_sample": parse_error_sample,
     }
 

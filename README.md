@@ -59,7 +59,9 @@ archive search "<query>"  # search conversations
 archive read <thread_id>  # read a conversation
 archive web               # on-demand local web UI (search + reader); Ctrl-C to stop
 archive reindex           # rebuild index.db from the JSONL truth directory
-archive status            # archive health / counts
+archive verify            # integrity check: truth parses + matches the index
+archive repair            # quarantine damaged truth lines; restore committed content from the index
+archive status            # archive health / counts / last verify + backup outcomes
 ```
 
 ## Layout

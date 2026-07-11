@@ -13,6 +13,7 @@ home. To switch archives, call :func:`close` first.
 
 from __future__ import annotations
 
+import json
 import os
 from pathlib import Path
 from typing import Optional
@@ -77,6 +78,41 @@ def close() -> None:
 
     reset_handles()
     close_engine()
+
+
+# ── operational health records (<home>/health.json) ──────────────────────────
+# When verify / backup last ran and how they went — the staleness signal that
+# tells a dead scheduled job apart from a healthy one. Deliberately OUTSIDE the
+# truth dir: this is install-local operational state, so backups don't mirror it
+# (a restored truth must not claim the source install's health history) and the
+# backup can't dirty the tree it is mirroring.
+def _health_path() -> Path:
+    return resolve_paths().home / "health.json"
+
+
+def _read_health() -> dict:
+    try:
+        return json.loads(_health_path().read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+
+
+def _record_health(key: str, record: dict) -> None:
+    """Set ``key`` to ``record`` (stamped with ``at``) — atomic replace; advisory
+    data, so a failed write logs and never breaks the operation it describes."""
+    from datetime import datetime, timezone
+
+    try:
+        health = _read_health()
+        health[key] = {"at": datetime.now(timezone.utc).isoformat(), **record}
+        p = _health_path()
+        tmp = p.with_name(f"{p.name}.tmp.{os.getpid()}")
+        tmp.write_text(json.dumps(health, indent=2), encoding="utf-8")
+        os.replace(tmp, p)
+    except OSError:
+        import logging
+
+        logging.getLogger(__name__).exception("could not record %s in health.json", key)
 
 
 def search(
@@ -539,6 +575,17 @@ def backup(
     result["mirror_complete"] = missing == 0 and divergent == 0
     result["dest_missing_files"] = missing
     result["dest_divergent_files"] = divergent
+
+    # Record the outcome in the home's health file (surfaced by `archive status`):
+    # a backup agent that quietly stops running is indistinguishable from a
+    # healthy one by its log files alone — the record's age is the signal.
+    _record_health("backup_last", {
+        "dest": str(dest_path),
+        "ok": bool(verify_ok and result["mirror_complete"] and not result["deletions_skipped"]),
+        "verify_ok": verify_ok,
+        "mirror_complete": result["mirror_complete"],
+        "files_copied": result["files_copied"],
+    })
     return {
         "truth_dir": str(paths.truth_dir),
         "dest": str(dest_path),
@@ -562,9 +609,19 @@ def verify(
     after collapsing superseded lines (re-appended ids, same-content twins), which
     is exactly what a reindex materializes; the raw line count and the superseded
     remainder are reported alongside. ``ok`` is True only when the effective counts
-    align and nothing failed to parse. A negative event drift (truth > index) is
-    the *safe* direction — ``archive reindex`` rebuilds the index from truth; a
-    positive drift (index > truth) or any parse error is a real integrity problem.
+    align, nothing failed to parse, and the search surface is in parity (shadow ↔
+    FTS5 row counts match with no orphan rows — silently unsearchable content is
+    loss in effect, so it's checked on this daily cadence too). A negative event
+    drift (truth > index) is the *safe* direction — ``archive reindex`` rebuilds
+    the index from truth; a positive drift (index > truth) or any parse error is a
+    real integrity problem. Parse errors split into ``parse_errors_torn_tail``
+    (the residue of a crash mid-append) and ``parse_errors_interior``; either kind
+    is cleared by ``archive repair``, which quarantines the damaged lines and
+    restores any committed content they shadowed from the index.
+
+    Every run records its outcome (``verify_last``: timestamp, ok, drift) in
+    ``<home>/health.json``, surfaced by ``archive status`` — an integrity check
+    that silently stops running must look stale, not healthy.
 
     ``deep=True`` adds an id-level comparison (both directions, below a stable id
     watermark so in-flight ingest can't false-alarm), dedup_key parity for ids on
@@ -633,10 +690,35 @@ def verify(
     quick_check = "ok" if [r[0] for r in qc_rows] == ["ok"] else "; ".join(
         str(r[0]) for r in qc_rows
     )
+    # Search-surface parity, on the daily cadence (deep re-checks it with more
+    # detail): the FTS shadow and the FTS5 table commit in the same transaction
+    # as their events, so below the watermark the two row counts must match and
+    # no shadow row may point at a missing event. Both are index-internal drift
+    # — a reindex rebuilds them — but silently unsearchable content is loss in
+    # effect, so it must be *seen* daily, not only on the deep cadence.
+    fts_shadow = fts5 = fts_orphans = 0
+    with get_session() as s:
+        conn = s.connection().connection
+        has_fts = conn.execute(
+            "SELECT count(*) FROM sqlite_master WHERE name IN ('events_fts', 'event_search')"
+        ).fetchone()[0] == 2
+        if has_fts and watermark:
+            fts_shadow = conn.execute(
+                "SELECT count(*) FROM events_fts WHERE event_id <= ?", (watermark,)
+            ).fetchone()[0]
+            fts5 = conn.execute(
+                "SELECT count(*) FROM event_search WHERE event_id <= ?", (watermark,)
+            ).fetchone()[0]
+            fts_orphans = conn.execute(
+                "SELECT count(*) FROM events_fts f WHERE f.event_id <= ? "
+                "AND NOT EXISTS(SELECT 1 FROM events e WHERE e.id = f.event_id)",
+                (watermark,),
+            ).fetchone()[0]
     result = {
         "ok": (
             drift_threads == 0 and drift_events == 0 and truth["parse_errors"] == 0
             and quick_check == "ok"
+            and fts_shadow == fts5 and fts_orphans == 0
         ),
         "truth": truth,
         "index": {
@@ -645,6 +727,11 @@ def verify(
             "quick_check": quick_check,
         },
         "drift": {"threads": drift_threads, "events": drift_events},
+        "fts": {
+            "shadow_rows": int(fts_shadow),
+            "fts5_rows": int(fts5),
+            "orphan_rows": int(fts_orphans),
+        },
     }
     if deep:
         result["deep"] = _verify_deep(watermark)
@@ -654,6 +741,20 @@ def verify(
     if backup is not None:
         result["backup"] = _verify_backup(Path(backup).expanduser(), truth)
         result["ok"] = result["ok"] and result["backup"]["ok"]
+
+    # Record the outcome in the home's health file so `archive status` (and
+    # anything watching it) can see when integrity was last checked and how it
+    # went — a verify that silently stops running is indistinguishable from a
+    # healthy one otherwise. Staleness of the timestamp is the primary signal: a
+    # crash mid-verify leaves the previous record standing, and its age says so.
+    _record_health("verify_last", {
+        "ok": bool(result["ok"]),
+        "deep": bool(deep),
+        "hashes": bool(hashes),
+        "drift_events": drift_events,
+        "drift_threads": drift_threads,
+        "parse_errors": truth["parse_errors"],
+    })
     return result
 
 
@@ -807,8 +908,11 @@ def _verify_deep(watermark: int) -> dict:
 
     The search surface is checked too (both FTS tables are written in the same
     transaction as their events): orphan shadow rows and a shadow↔FTS5 row-count
-    mismatch fail; indexable events with no shadow row are reported only, since an
-    event with no extractable text legitimately has none.
+    mismatch fail. Indexable events with no shadow row are re-extracted: one whose
+    payload yields no searchable text legitimately has no row (reported as
+    ``empty_extract_events``); one whose extraction yields text today is silently
+    unfindable (``unindexed_events``) and fails — ``archive reindex`` rebuilds the
+    surface.
 
     Thread *metadata* parity (title/description/summary between the winning truth
     record and the index row) is report-only: an in-flight metadata commit can
@@ -957,10 +1061,14 @@ def _verify_deep(watermark: int) -> dict:
         # (event_search) are written in the same transaction as their events, so
         # below the watermark: no shadow row may point at a missing event (orphans),
         # and the two surfaces must hold the same row count. Coverage — indexable
-        # events with no shadow row — is reported but not failed on: an event whose
-        # payload yields no extractable text legitimately has no row, so a nonzero
-        # count is a signal to investigate, not proof of drift.
-        fts_orphans = fts_shadow_rows = fts5_rows = fts_uncovered = 0
+        # events with no shadow row — is re-extracted event by event to split the
+        # legitimately-empty (a payload that yields no searchable text has no row
+        # by design) from the genuinely unindexed (extraction yields text today,
+        # so the event is silently unfindable — real drift; `archive reindex`
+        # rebuilds the surface). The gap set is small on a healthy archive, so
+        # re-extracting only it stays cheap where re-extracting the corpus isn't.
+        fts_orphans = fts_shadow_rows = fts5_rows = fts_empty_extract = 0
+        fts_unindexed: list[int] = []
         has_fts = s.execute(sa_text(
             "SELECT count(*) FROM sqlite_master WHERE name IN ('events_fts', 'event_search')"
         )).scalar() == 2
@@ -975,21 +1083,31 @@ def _verify_deep(watermark: int) -> dict:
             fts5_rows = s.execute(sa_text(
                 "SELECT count(*) FROM event_search WHERE event_id <= :wm"),
                 {"wm": watermark}).scalar() or 0
-            from .retrieval._extract import INDEXABLE_EVENT_TYPES
+            from .retrieval._extract import INDEXABLE_EVENT_TYPES, extract_fts_content
 
             types = ", ".join(f"'{t}'" for t in INDEXABLE_EVENT_TYPES)
-            fts_uncovered = s.execute(sa_text(
-                f"SELECT count(*) FROM events e WHERE e.id <= :wm "
-                f"AND e.event_type IN ({types}) "
-                "AND NOT EXISTS(SELECT 1 FROM events_fts f WHERE f.event_id = e.id)"),
-                {"wm": watermark}).scalar() or 0
+            cur = s.connection().connection.execute(  # raw sqlite3 — stream the gap set
+                f"SELECT e.id, e.event_type, e.payload FROM events e "  # noqa: S608 — types from INDEXABLE_EVENT_TYPES
+                f"WHERE e.id <= ? AND e.event_type IN ({types}) "
+                "AND NOT EXISTS(SELECT 1 FROM events_fts f WHERE f.event_id = e.id)",
+                (watermark,),
+            )
+            for ev_id, etype, payload_text in cur:
+                try:
+                    payload = _json.loads(payload_text) if isinstance(payload_text, str) else payload_text
+                except ValueError:
+                    payload = None
+                if isinstance(payload, dict) and extract_fts_content(etype, payload):
+                    fts_unindexed.append(int(ev_id))
+                else:
+                    fts_empty_extract += 1
 
     ok = (
         not index_only and not missing and not key_mismatch
         and kg_index_only == 0
         and dangling_links == 0 and dangling_citations == 0 and dangling_events == 0
         and citation_thread_mismatch == 0
-        and fts_orphans == 0 and fts_shadow_rows == fts5_rows
+        and fts_orphans == 0 and fts_shadow_rows == fts5_rows and not fts_unindexed
     )
     return {
         "ok": ok,
@@ -1015,13 +1133,19 @@ def _verify_deep(watermark: int) -> dict:
             "orphan_rows": int(fts_orphans),
             "shadow_rows": int(fts_shadow_rows),
             "fts5_rows": int(fts5_rows),
-            "uncovered_indexable_events": int(fts_uncovered),
+            "unindexed_events": len(fts_unindexed),
+            "unindexed_sample": fts_unindexed[:10],
+            "empty_extract_events": int(fts_empty_extract),
         },
     }
 
 
 def status(*, home: Optional[str] = None) -> dict:
-    """Archive health: paths + thread/event/topic/link/FTS counts."""
+    """Archive health: paths + thread/event/topic/link/FTS counts, plus the
+    operational records — when the last checkpoint, verify, and backup ran and
+    how they went (``last_verify`` / ``last_backup`` from ``<home>/health.json``,
+    written by :func:`verify` / :func:`backup`). Staleness here is the signal
+    that a scheduled integrity job quietly stopped running."""
     paths = open_archive(home)
     from sqlalchemy import func, select
 
@@ -1036,7 +1160,9 @@ def status(*, home: Optional[str] = None) -> dict:
         ).scalar() or 0
         links = s.execute(select(func.count()).select_from(ThreadLink)).scalar() or 0
     from .retrieval.vectors import get_status as _vec_status
+    from .truth.jsonl_log import _read_manifest
 
+    health = _read_health()
     return {
         "home": str(paths.home),
         "truth_dir": str(paths.truth_dir),
@@ -1047,7 +1173,20 @@ def status(*, home: Optional[str] = None) -> dict:
         "links": int(links),
         "fts_indexed": fts_status()["indexed"],
         "vectors_indexed": _vec_status().get("indexed", 0),
+        "last_checkpoint_at": _read_manifest(paths.truth_dir).get("last_checkpoint_at"),
+        "last_verify": health.get("verify_last"),
+        "last_backup": health.get("backup_last"),
     }
+
+
+def repair(*, home: Optional[str] = None, dry_run: bool = False) -> dict:
+    """Quarantine unparseable truth lines and restore committed rows the truth
+    lacks from the live index — the sanctioned path from a red ``verify`` back to
+    green. See :func:`thread_archive.truth.repair.repair_truth`."""
+    open_archive(home)
+    from .truth import repair_truth
+
+    return repair_truth(dry_run=dry_run)
 
 
 def knowledge_status(*, home: Optional[str] = None) -> dict:

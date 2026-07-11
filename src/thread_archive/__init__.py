@@ -18,6 +18,7 @@ from .api import (
     read_thread,
     read_thread_structured,
     reindex,
+    repair,
     search,
     status,
     topic_peers,
@@ -44,4 +45,5 @@ __all__ = [
     "topic_peers",
     "backup",
     "verify",
+    "repair",
 ]

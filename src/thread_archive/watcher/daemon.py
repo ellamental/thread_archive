@@ -116,6 +116,29 @@ class Watcher:
         return (self.embed_enabled and self._embed_more
                 and (self._backlog or (now - last_embed) >= self.embed_interval))
 
+    @staticmethod
+    def _import_state_stamp() -> Optional[tuple]:
+        """Cheap change probe over the source-import watermarks: ``(count, max
+        last_import_at)``. Every ``upsert_import_state`` bumps ``last_import_at``,
+        so this moves on *watermark-only* changes too — an adoption, an empty-
+        content cursor advance — which create no events and so never set the
+        dirty flag, yet still need the maintenance pass to refresh the
+        ``import_state.jsonl`` snapshot (the lost-index recovery seed). ``None``
+        when the probe can't run (the loop falls back to the dirty flag alone)."""
+        from sqlalchemy import func, select
+
+        from ..store import ImportState, get_session
+
+        try:
+            with get_session() as s:
+                return tuple(
+                    s.execute(
+                        select(func.count(), func.max(ImportState.last_import_at))
+                    ).one()
+                )
+        except Exception:  # noqa: BLE001 — a probe failure must not kill the loop
+            return None
+
     def embed_pending(self) -> int:
         """Embed the freshest user/text events still missing a vector (bounded by
         ``embed_batch``). Returns the count embedded — 0 when caught up or when the
@@ -130,7 +153,7 @@ class Watcher:
     def run(self) -> None:
         """Loop forever (until :meth:`stop`): poll every ``interval`` seconds, and run
         maintenance every ``maintenance_interval`` seconds when something was imported
-        since the last maintenance pass.
+        — or a source watermark moved — since the last maintenance pass.
 
         Each pass runs under the *shared* reindex lock (see
         :func:`..truth.try_shared_ingest_lock`): while ``archive reindex`` holds it
@@ -144,6 +167,7 @@ class Watcher:
         last_maintenance = time.monotonic()
         last_embed = time.monotonic()
         dirty = False
+        last_stamp = self._import_state_stamp()
         reconnect = False
         while not self._stop:
             with try_shared_ingest_lock() as acquired:
@@ -167,13 +191,20 @@ class Watcher:
                         self._embed_more = True  # new events to embed
 
                     now = time.monotonic()
-                    if dirty and (now - last_maintenance) >= self.maintenance_interval:
-                        try:
-                            self.maintain()
-                        except Exception as e:  # noqa: BLE001 — upkeep must not kill the loop
-                            logger.warning("watch: maintenance error: %s", e)
+                    if (now - last_maintenance) >= self.maintenance_interval:
+                        # Run when events were imported (dirty) OR when watermarks
+                        # alone moved (see _import_state_stamp) — either changes
+                        # state the maintenance snapshot must capture.
+                        stamp = self._import_state_stamp()
+                        if dirty or (stamp is not None and stamp != last_stamp):
+                            try:
+                                self.maintain()
+                            except Exception as e:  # noqa: BLE001 — upkeep must not kill the loop
+                                logger.warning("watch: maintenance error: %s", e)
+                            dirty = False
                         last_maintenance = now
-                        dirty = False
+                        if stamp is not None:
+                            last_stamp = stamp
 
                     # Vector cohost: embed the freshest missing vectors, bounded per
                     # pass. A filled batch means a backlog — drain again next poll

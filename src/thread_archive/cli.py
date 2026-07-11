@@ -262,12 +262,23 @@ def cmd_verify(args: argparse.Namespace) -> int:
         f"parse_errors={t['parse_errors']}"
     )
     if t["parse_errors"]:
+        print(
+            f"       torn tails={t['parse_errors_torn_tail']} "
+            f"interior={t['parse_errors_interior']} — `archive repair` quarantines "
+            "these and restores any committed content they shadow"
+        )
         print(f"       parse error sample: {t['parse_error_sample']}")
     print(
         f"index: threads={res['index']['threads']} events={res['index']['events']} "
         f"quick_check={res['index']['quick_check']}"
     )
     print(f"drift: threads={res['drift']['threads']:+d} events={res['drift']['events']:+d}")
+    fts = res["fts"]
+    if fts["shadow_rows"] != fts["fts5_rows"] or fts["orphan_rows"]:
+        print(
+            f"fts:   shadow={fts['shadow_rows']} fts5={fts['fts5_rows']} "
+            f"orphans={fts['orphan_rows']} — `archive reindex` rebuilds the search surface"
+        )
     if args.deep:
         dp = res["deep"]
         print(
@@ -294,8 +305,11 @@ def cmd_verify(args: argparse.Namespace) -> int:
         print(
             f"       fts orphans={f['orphan_rows']} "
             f"shadow={f['shadow_rows']} fts5={f['fts5_rows']} "
-            f"uncovered={f['uncovered_indexable_events']}"
+            f"unindexed={f['unindexed_events']} "
+            f"empty_extract={f['empty_extract_events']}"
         )
+        if f["unindexed_events"]:
+            print(f"       unindexed sample: {f['unindexed_sample']}")
         if dp["events_missing_from_index"]:
             print(f"       missing sample: {dp['missing_sample']}")
         if dp["events_index_only"]:
@@ -333,6 +347,45 @@ def cmd_verify(args: argparse.Namespace) -> int:
     return 0 if res["ok"] else 1
 
 
+def cmd_repair(args: argparse.Namespace) -> int:
+    from . import api
+
+    res = api.repair(home=args.home, dry_run=args.dry_run)
+    verb = "would quarantine" if res["dry_run"] else "quarantined"
+    print(
+        f"{verb} {res['fragments_quarantined']} unparseable line(s) "
+        f"across {res['files_damaged']} file(s)"
+    )
+    if res.get("damaged_sample"):
+        print(f"       sample: {res['damaged_sample']}")
+    if res.get("quarantine_file"):
+        print(f"       ledger: {res['quarantine_file']}")
+    verb = "would restore" if res["dry_run"] else "restored"
+    print(
+        f"{verb} from index: {res['events_restored_from_index']} event(s), "
+        f"{res['kg_events_restored']} kg event(s), "
+        f"{res['thread_records_restored']} thread record(s)"
+    )
+    if not res["dry_run"] and res["fragments_quarantined"]:
+        print("note: the repaired files shrank — the next `archive backup` may need --allow-shrink")
+    if not res["dry_run"]:
+        print("run `archive verify` to confirm the archive is clean")
+    return 0
+
+
+def _age(iso: str) -> str:
+    from datetime import datetime, timezone
+
+    try:
+        dt = datetime.fromisoformat(iso)
+    except (TypeError, ValueError):
+        return "?"
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    hours = (datetime.now(timezone.utc) - dt).total_seconds() / 3600
+    return f"{hours / 24:.1f}d ago" if hours >= 48 else f"{hours:.1f}h ago"
+
+
 def cmd_status(args: argparse.Namespace) -> int:
     from . import api
 
@@ -343,6 +396,15 @@ def cmd_status(args: argparse.Namespace) -> int:
     print(f"threads: {st['threads']}")
     print(f"events:  {st['events']}")
     print(f"indexed: {st['fts_indexed']}")
+    v, b = st.get("last_verify"), st.get("last_backup")
+    print(
+        f"verify:  {'ok' if v['ok'] else 'FAILED'} {v['at']} ({_age(v['at'])})"
+        if v else "verify:  never recorded"
+    )
+    print(
+        f"backup:  {'ok' if b['ok'] else 'FAILED'} → {b['dest']} {b['at']} ({_age(b['at'])})"
+        if b else "backup:  never recorded"
+    )
     return 0
 
 
@@ -477,6 +539,18 @@ def build_parser() -> argparse.ArgumentParser:
              "against the live truth",
     )
     p_verify.set_defaults(func=cmd_verify)
+
+    p_repair = sub.add_parser(
+        "repair",
+        help="quarantine unparseable truth lines and restore committed content "
+             "the truth lacks from the index",
+    )
+    _add_home_arg(p_repair)
+    p_repair.add_argument(
+        "--dry-run", action="store_true",
+        help="report what would be quarantined/restored without touching anything",
+    )
+    p_repair.set_defaults(func=cmd_repair)
 
     return parser
 

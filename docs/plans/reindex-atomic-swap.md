@@ -1,18 +1,19 @@
 # Plan: atomic reindex (build-and-swap)
 
-Status: **landed 2026-07-07** — steps 1–4 plus in-process reconnect shipped in
+Status: **landed in full** — steps 1–4 plus in-process reconnect shipped in
 `truth/jsonl_log.py:reindex` (pre-flight disk guard, flock quiesce shared with the
 watcher's pass, build into `index.db.rebuild`, WAL fold, atomic `os.replace`, stale
 sidecar removal), with the watcher holding the lock shared across each pass and
 reconnecting its engine on the first pass after a skipped one
-(`watcher/daemon.py:run`). Cross-process reader reconnect for the *MCP read
-servers / cohosted web* (step 5's generation-marker option) remains the open
-follow-up — until then those readers serve the pre-swap inode until they
-reconnect or restart. Writers are all quiesced: the watcher, CLI imports
-(`api.import_path`, `cmd_import_export`), and librarian mutations
-(`knowledge/write.py`) each hold the reindex lock shared around their truth
-append + commit. Tests: `tests/test_truth.py` (torn-line tolerance, failed-build
-leaves the old index intact, lock shared-vs-exclusive semantics).
+(`watcher/daemon.py:run`). Cross-process reader reconnect (step 5) is landed too:
+`api.open_archive` compares `index.db`'s `(st_dev, st_ino)` on every API call and
+disposes pooled connections when the file was swapped (`api._reconnect_if_swapped`),
+so the MCP read servers and the cohosted web — whose every request passes through
+`open_archive` — converge on the new index on their next call. Writers are all
+quiesced: the watcher, CLI imports (`api.import_path`, `cmd_import_export`), and
+librarian mutations (`knowledge/write.py`) each hold the reindex lock shared around
+their truth append + commit. Tests: `tests/test_truth.py` (torn-line tolerance,
+failed-build leaves the old index intact, lock shared-vs-exclusive semantics).
 Scope: `thread_archive` — `truth/jsonl_log.py:reindex`, `watcher/daemon.py`, `config.py`
 Priority: **low** — a follow-up hardening, not a live bug. The collision/dup failure
 mode is already fixed (see "Relation to the landed fix" below); this only closes the

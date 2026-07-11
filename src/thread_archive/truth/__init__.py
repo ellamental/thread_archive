@@ -20,6 +20,7 @@ from .jsonl_log import (
     unstage_thread,
     write_events,
 )
+from .repair import repair_truth
 
 __all__ = [
     "write_events",
@@ -31,6 +32,7 @@ __all__ = [
     "reindex",
     "rebuild_truth_from_store",
     "log_dir",
+    "repair_truth",
     "reset_handles",
     "scan_truth_counts",
     "shared_ingest_lock",

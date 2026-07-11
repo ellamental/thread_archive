@@ -1,5 +1,47 @@
 # Changelog
 
+## 2026-07-11 — integrity review: repair path, daily FTS parity, operational health records
+
+A data-integrity review pass. The write/recovery core held up (drain intent,
+fail-closed reindex, escalating verify); the findings were operational: damage
+had no sanctioned repair path, search-surface drift was only checked weekly,
+and a dead backup/verify agent was indistinguishable from a healthy one.
+
+- **`archive repair` — the path from a red verify back to green.** Unparseable
+  truth lines (torn crash appends, damaged lines) previously failed `verify`
+  forever, training the operator to ignore red. Repair quarantines each one —
+  bytes preserved — into `truth/quarantine/fragments.jsonl` (fsynced durable
+  before the source file is atomically rewritten without it), then runs a
+  containment restore: any committed `events` / `kg_events` row or thread
+  metadata record the truth lacks is re-emitted from the live index — the one
+  case where writing truth from the projection is exactly right. Runs under the
+  exclusive reindex lock; idempotent; `--dry-run` previews. After excising
+  fragments the next `archive backup` may need `--allow-shrink`.
+- **Verify classifies parse errors** (`parse_errors_torn_tail` /
+  `parse_errors_interior`, the same split reindex reports) and its output
+  points at `archive repair`.
+- **Search-surface parity is checked daily, not just on `--deep`.** Shallow
+  `verify` now fails on shadow↔FTS5 row-count drift and orphan shadow rows —
+  silently unsearchable content is loss in effect. Deep verify re-extracts the
+  uncovered-events gap set to split legitimately-empty extracts
+  (`empty_extract_events`, report-only) from genuinely unindexed events
+  (`unindexed_events`, fails; `archive reindex` rebuilds the surface) — the old
+  `uncovered_indexable_events` count couldn't tell the two apart.
+- **Verify and backup record their outcomes** (`verify_last` / `backup_last`:
+  timestamp, ok, drift/dest) in `<home>/health.json`; `archive status` surfaces
+  both with their age. A scheduled integrity job that quietly stops running now
+  looks stale instead of healthy. Deliberately outside the truth dir: it's
+  install-local operational state, so backups don't mirror it and a restored
+  truth can't claim the source install's health history.
+- **The vector sidecar meets the truth writers' durability bar**: fsynced (file
+  and directory) before the rename publishes it — it guards an embed that takes
+  hours to redo.
+- **Watermark-only import-state changes trigger the maintenance snapshot.** An
+  adoption or empty-content cursor advance creates no events, so it never set
+  the watcher's dirty flag — and the `import_state.jsonl` snapshot (the
+  lost-index recovery seed) could go stale. The maintenance gate now also
+  probes `(count, max last_import_at)` over the watermarks.
+
 ## 2026-07-10 — retrieval review 2: chunked embeddings, drain pacing, scope widening, usage-mined golden set
 
 A second retrieval review pass. The ranking held up; the findings were semantic
