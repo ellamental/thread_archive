@@ -2,6 +2,38 @@
 
 ## Unreleased
 
+- **Verify's index self-check no longer false-alarms "malformed inverted index"
+  (2026-07-11).** Both of today's nightly `verify` failures — the
+  highest-severity alarm the system has, fired twice on a healthy archive —
+  came from running `PRAGMA quick_check` on a pooled connection: FTS5's
+  integrity check consults per-connection segment-structure state, and a
+  connection that lives across the watcher's continuous `event_search` rewrites
+  can report a healthy index as malformed (reproduced 3-of-5 on a warm pool
+  while a simultaneous fresh connection said `ok` every time; likely an
+  upstream SQLite 3.51 bug in the FTS5 xIntegrity path). The pragma now runs on
+  a private, just-opened connection to the engine's own database file
+  (`_api.verify`). Corruption that surfaces as a *raised* `DatabaseError`
+  (rather than result rows) is now also captured as a red `quick_check`
+  verdict instead of crashing verify; locked/can't-open stays an error so
+  environmental trouble can't impersonate corruption. A new test corrupts an
+  index page on disk and requires verify to name `quick_check` red.
+
+- **The package lane now drives the installed `archive-mcp` binary the way a
+  consumer's client does (2026-07-11):** JSON-RPC over stdio against the
+  clean-venv install — tools/list, the first `thread_search` on a virgin home
+  (the regression shape of the first-open schema race below), and search+read
+  over imported data. The lane's CLI lifecycle test also caught up with the
+  retrieval-verb removal (it still called `archive search`/`read`; it now
+  exercises ingest + the durability kit, with retrieval covered via MCP).
+
+- **First search on a virgin archive no longer dies with "table already exists"
+  (2026-07-11).** `init_db`'s `create_all` existence check isn't atomic with its
+  CREATEs, so the MCP server's warm-models search (a background thread at
+  startup) racing the first tool call on an empty home made one of them lose the
+  CREATE and error — breaking the very first `thread_search` of a fresh install.
+  `init_db` now serializes openers in-process and retries a lost cross-process
+  race (`_store/schema.py`).
+
 - **`archive-mcp` cohosts lazy catch-up ingest, and the watcher LaunchAgent
   installs from the package (2026-07-11).** The zero-daemon install path:
   `pip install thread-archive` + `claude mcp add thread-archive -- archive-mcp`

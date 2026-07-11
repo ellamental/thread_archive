@@ -38,6 +38,50 @@ def test_verify_reports_index_quick_check(archive_home, tmp_path) -> None:
     assert res["ok"] is True
 
 
+def test_quick_check_sees_on_disk_page_corruption(archive_home, tmp_path) -> None:
+    """The index self-check judges the real file bytes.
+
+    The pragma runs on a private, just-opened connection (a pooled connection
+    can spuriously flag a healthy FTS5 index after another process's writes),
+    so this pins the flip side: that private connection must be reading the
+    archive's actual index file — page-level corruption on disk has to fail
+    verify, not vanish into a wrong path or a cached view.
+    """
+    import sqlite3
+
+    from thread_archive._config import resolve_paths
+
+    import_cc_session(tmp_path)
+    assert ta.verify()["ok"] is True
+    # Target a secondary index none of verify's own queries read (counts and
+    # watermarks go through primary keys; parity counts through the FTS
+    # tables), so the run reaches the pragma instead of dying earlier — only
+    # the page-level self-check can see this damage.
+    with get_session() as s:
+        rootpage = s.execute(text(
+            "SELECT rootpage FROM sqlite_master "
+            "WHERE name='idx_events_caused_by' AND type='index'"
+        )).fetchone()[0]
+        page_size = s.execute(text("PRAGMA page_size")).fetchone()[0]
+    index_file = resolve_paths().index_path
+    ta.close()  # drop pooled connections; the WAL checkpoints into the main file
+    with open(index_file, "r+b") as f:
+        f.seek((rootpage - 1) * page_size)
+        f.write(b"\x00" * 32)
+    res = ta.verify()
+    assert res["ok"] is False
+    assert "quick_check" in res["failed_components"]
+    assert res["index"]["quick_check"] != "ok"
+    # Repair path for a broken index is a rebuild; prove the file really is
+    # unreadable at the SQLite level too, not just failing our wrapper.
+    conn = sqlite3.connect(index_file)
+    try:
+        qc = [r[0] for r in conn.execute("PRAGMA quick_check(5)").fetchall()]
+    finally:
+        conn.close()
+    assert qc != ["ok"]
+
+
 def test_shallow_verify_fails_on_fts5_drift(archive_home, tmp_path):
     import_cc_session(tmp_path)
     assert ta.verify()["ok"] is True

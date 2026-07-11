@@ -24,9 +24,11 @@ projections, not base tables.
 from __future__ import annotations
 
 import logging
+import threading
 
 from sqlalchemy import text
 from sqlalchemy.engine import Engine
+from sqlalchemy.exc import OperationalError
 
 from . import models  # noqa: F401  (import for side effect: registers tables on Base.metadata)
 from ._base import Base, get_engine
@@ -57,9 +59,26 @@ def _add_missing_columns(engine: Engine) -> None:
                 logger.info("schema: added %s.%s (%s)", table, column, decl)
 
 
+# Concurrent openers race on a virgin store: ``create_all``'s existence check is
+# not atomic with its CREATEs, so two threads (e.g. the MCP server's warm-models
+# search vs. the first tool call) can both see "no tables" and collide. The lock
+# serializes openers in this process; the retry absorbs a racer in another one.
+_init_lock = threading.Lock()
+
+
 def init_db(engine: Engine | None = None) -> None:
     """Create all base tables on ``engine`` (or the active engine), then ALTER in any
-    column a pre-existing index predates. Idempotent."""
+    column a pre-existing index predates. Idempotent and safe under concurrent
+    first-open: a lost CREATE race is retried, not raised."""
     engine = engine or get_engine()
-    Base.metadata.create_all(engine)
-    _add_missing_columns(engine)
+    with _init_lock:
+        for attempt in (1, 2, 3):
+            try:
+                Base.metadata.create_all(engine)
+                break
+            except OperationalError as exc:
+                if "already exists" not in str(exc) or attempt == 3:
+                    raise
+                # Another process created it between check and CREATE; re-run —
+                # create_all skips what now exists and creates the remainder.
+        _add_missing_columns(engine)

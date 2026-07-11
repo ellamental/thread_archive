@@ -104,6 +104,62 @@ def test_init_db_idempotent(tmp_path) -> None:
     eng.dispose()
 
 
+def test_init_db_concurrent_first_open(tmp_path) -> None:
+    # Two threads opening a virgin store at once (the MCP server's warm-models
+    # search racing the first tool call) must both succeed — neither may die on
+    # "table already exists".
+    import threading
+
+    eng = build_engine(_dsn(tmp_path))
+    errors: list[BaseException] = []
+    barrier = threading.Barrier(4)
+
+    def opener() -> None:
+        try:
+            barrier.wait()
+            init_db(eng)
+        except BaseException as exc:  # noqa: BLE001 — collected for the assert
+            errors.append(exc)
+
+    threads = [threading.Thread(target=opener) for _ in range(4)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert not errors
+    with use_engine(eng), get_session() as s:
+        s.add(Thread(name="raced"))
+        s.commit()
+    eng.dispose()
+
+
+def test_init_db_retries_cross_process_create_race(tmp_path, monkeypatch) -> None:
+    # A racer in ANOTHER process can't be serialized by the in-process lock;
+    # init_db must absorb its "already exists" and re-run create_all.
+    from sqlalchemy.exc import OperationalError
+
+    from thread_archive._store import schema as schema_mod
+
+    eng = build_engine(_dsn(tmp_path))
+    real_create_all = schema_mod.Base.metadata.create_all
+    calls = {"n": 0}
+
+    def flaky_create_all(bind, **kw):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            real_create_all(bind, **kw)  # the "other process" wins the race...
+            raise OperationalError("CREATE TABLE threads", {}, Exception("table threads already exists"))
+        return real_create_all(bind, **kw)
+
+    monkeypatch.setattr(schema_mod.Base.metadata, "create_all", flaky_create_all)
+    init_db(eng)  # must not raise
+    assert calls["n"] == 2
+    with use_engine(eng), get_session() as s:
+        s.add(Thread(name="survived"))
+        s.commit()
+    eng.dispose()
+
+
 def test_thread_name_unique(tmp_path) -> None:
     eng = build_engine(_dsn(tmp_path))
     init_db(eng)

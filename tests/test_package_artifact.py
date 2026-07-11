@@ -15,6 +15,7 @@ import json
 import subprocess
 import sys
 import tarfile
+import threading
 import zipfile
 from pathlib import Path
 
@@ -122,7 +123,9 @@ def _run(bin_dir: Path, argv: list[str], home: Path) -> subprocess.CompletedProc
     )
 
 
-def test_installed_cli_lifecycle_import_search_read_verify(installed, tmp_path) -> None:
+def test_installed_cli_lifecycle_import_reindex_verify(installed, tmp_path) -> None:
+    # Retrieval has no CLI verbs (search/read are the MCP tools, exercised
+    # below); the CLI lifecycle is ingest + the durability kit.
     home = tmp_path
     session_file = home / "sess.jsonl"
     session_file.write_text(
@@ -131,19 +134,112 @@ def test_installed_cli_lifecycle_import_search_read_verify(installed, tmp_path) 
     r = _run(installed, ["archive", "import", str(session_file)], home)
     assert r.returncode == 0, r.stderr
 
-    r = _run(installed, ["archive", "search", "packaged lifecycle"], home)
+    r = _run(installed, ["archive", "status"], home)
     assert r.returncode == 0, r.stderr
-    assert "probe" in r.stdout
-
-    r = _run(installed, ["archive", "read", "1"], home)
-    assert r.returncode == 0, r.stderr
-    assert "packaged lifecycle probe" in r.stdout
+    assert "threads: 1" in r.stdout
 
     r = _run(installed, ["archive", "reindex"], home)
     assert r.returncode == 0, r.stderr
 
     r = _run(installed, ["archive", "verify"], home)
     assert r.returncode == 0, f"verify red on a fresh install:\n{r.stdout}\n{r.stderr}"
+
+
+# ── the installed MCP server: the actual consumer path ───────────────────────
+# `claude mcp add thread-archive -- archive-mcp` is the whole advertised setup,
+# so the installed `archive-mcp` binary is driven here the way a client does:
+# JSON-RPC over stdio. Ingest is pinned off so the lane never scans the host's
+# real AI-tool stores.
+
+def _mcp_session(bin_dir: Path, home: Path, requests: list[dict]) -> dict[int, dict]:
+    """Pipe ``requests`` (plus the initialize handshake) into ``archive-mcp``
+    and return responses keyed by request id."""
+    handshake: list[dict] = [
+        {"jsonrpc": "2.0", "id": 1, "method": "initialize",
+         "params": {"protocolVersion": "2024-11-05", "capabilities": {},
+                    "clientInfo": {"name": "package-lane", "version": "0"}}},
+        {"jsonrpc": "2.0", "method": "notifications/initialized"},
+    ]
+    expected = {m["id"] for m in requests if "id" in m} | {1}
+    payload = "".join(json.dumps(m) + "\n" for m in handshake + requests)
+    # stdin must stay open until every response lands — the server treats EOF
+    # as shutdown and drops in-flight requests — so write-all/read-until-done
+    # rather than subprocess.run.
+    proc = subprocess.Popen(
+        [str(bin_dir / "archive-mcp")],
+        stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+        text=True, cwd=str(home),
+        env={"PATH": str(bin_dir), "HOME": str(home),
+             "THREAD_ARCHIVE_HOME": str(home / "archive"),
+             "THREAD_ARCHIVE_MCP_INGEST": "0"},
+    )
+    responses: dict[int, dict] = {}
+    killer = threading.Timer(180, proc.kill)
+    killer.start()
+    try:
+        proc.stdin.write(payload)
+        proc.stdin.flush()
+        while expected - set(responses):
+            line = proc.stdout.readline()
+            if not line:
+                break  # server exited (or was killed by the watchdog)
+            try:
+                msg = json.loads(line)
+            except ValueError:
+                continue
+            if isinstance(msg.get("id"), int):
+                responses[msg["id"]] = msg
+    finally:
+        killer.cancel()
+        proc.stdin.close()
+        proc.wait(timeout=30)
+    assert responses, "archive-mcp produced no JSON-RPC responses"
+    return responses
+
+
+def _tool_result(responses: dict[int, dict], rid: int) -> dict:
+    assert rid in responses, f"no response for request {rid}: {sorted(responses)}"
+    assert "result" in responses[rid], responses[rid]
+    return responses[rid]["result"]
+
+
+def test_installed_mcp_first_search_on_virgin_home(installed, tmp_path) -> None:
+    # The brand-new consumer's first tool call: an EMPTY archive home, a search
+    # racing the server's startup warm thread through first-open schema
+    # creation. Must answer cleanly, never "table already exists".
+    responses = _mcp_session(installed, tmp_path, [
+        {"jsonrpc": "2.0", "id": 2, "method": "tools/list"},
+        {"jsonrpc": "2.0", "id": 3, "method": "tools/call",
+         "params": {"name": "thread_search", "arguments": {"query": "hello world"}}},
+    ])
+    tools = {t["name"] for t in _tool_result(responses, 2)["tools"]}
+    assert {"thread_search", "thread_read"} <= tools
+    search = _tool_result(responses, 3)
+    text = search["content"][0]["text"]
+    assert not search.get("isError"), f"first search on a virgin home errored:\n{text}"
+
+
+def test_installed_mcp_search_and_read_over_imported_data(installed, tmp_path) -> None:
+    home = tmp_path
+    session_file = home / "sess.jsonl"
+    session_file.write_text(
+        "\n".join(json.dumps(x) for x in SESSION) + "\n", encoding="utf-8")
+    r = _run(installed, ["archive", "import", str(session_file)], home)
+    assert r.returncode == 0, r.stderr
+
+    responses = _mcp_session(installed, home, [
+        {"jsonrpc": "2.0", "id": 2, "method": "tools/call",
+         "params": {"name": "thread_search",
+                    "arguments": {"query": "packaged lifecycle"}}},
+        {"jsonrpc": "2.0", "id": 3, "method": "tools/call",
+         "params": {"name": "thread_read", "arguments": {"thread_id": 1}}},
+    ])
+    search = _tool_result(responses, 2)
+    assert not search.get("isError"), search["content"][0]["text"]
+    assert "probe" in search["content"][0]["text"]
+    read = _tool_result(responses, 3)
+    assert not read.get("isError"), read["content"][0]["text"]
+    assert "packaged lifecycle probe" in read["content"][0]["text"]
 
 
 def test_installed_package_is_private_and_asset_complete(installed, tmp_path) -> None:

@@ -1295,9 +1295,37 @@ def verify(
     # ``hashes`` cadence upgrades to the full integrity_check, which also
     # verifies b-tree index content against the tables — the only check that
     # catches a corrupted index silently returning wrong query results.
+    #
+    # The pragma runs on its own just-opened connection, never a pooled one.
+    # FTS5's integrity check consults per-connection segment-structure state,
+    # and a connection that has lived across another process's writes (the
+    # watcher rewrites ``event_search`` segments continuously) can spuriously
+    # report "malformed inverted index" for a healthy index — the same pragma
+    # on a fresh connection to the same file passes. A private connection
+    # checks the same committed bytes without that hazard; it reads the file
+    # the engine is actually bound to, so it judges the same database every
+    # other component of this verify ran against.
     check_pragma = "integrity_check(10)" if hashes else "quick_check(10)"
-    with get_session() as s:
-        qc_rows = s.connection().connection.execute(f"PRAGMA {check_pragma}").fetchall()
+    import sqlite3
+
+    from ._store import get_engine
+
+    index_file = get_engine().url.database
+    qconn = sqlite3.connect(index_file, timeout=5.0)
+    try:
+        # Some page-level damage comes back as result rows, some as a raised
+        # DatabaseError — both are the finding, not a crash: the check must
+        # fail closed with the message, or verify dies on exactly the state
+        # it exists to report. OperationalError (locked / can't open) stays
+        # an error: environmental trouble must not impersonate corruption.
+        try:
+            qc_rows = qconn.execute(f"PRAGMA {check_pragma}").fetchall()
+        except sqlite3.OperationalError:
+            raise
+        except sqlite3.DatabaseError as exc:
+            qc_rows = [(str(exc),)]
+    finally:
+        qconn.close()
     quick_check = "ok" if [r[0] for r in qc_rows] == ["ok"] else "; ".join(
         str(r[0]) for r in qc_rows
     )
