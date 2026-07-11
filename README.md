@@ -80,9 +80,8 @@ archive status            # archive health / counts / last verify + backup + dri
 
 ```text
 src/thread_archive/
-  api.py            # the public Python library surface (thread_archive.*)
+  _api.py           # internal coordination layer the CLI / MCP / web call into
   cli.py            # the `archive` command
-  manifest.py       # thread-family product manifest hook (python -m thread_archive.manifest)
   _config.py        # truth dir + index path resolution
   _store/           # SQLite store + schema
   _truth/           # JSONL truth log + reindex
@@ -94,21 +93,20 @@ src/thread_archive/
   _web/             # `archive web`: stdlib server + the built viewer (static/)
   _thread_import/   # vendored provider parsers (a clean, dependency-free island)
 frontend/           # the viewer's React+Vite source (dev-only; builds into _web/static/)
-host/               # `archive watch` LaunchAgent (live ingest)
+host/               # LaunchAgents (live ingest, nightly backup) + the family-manifest writer
 scripts/            # operator tools (e.g. the librarian backfill driver)
 tests/install/      # isolated Docker install test + fixtures
 ```
 
 ## Stability
 
-The version stays 0.0.x until a stable API is deliberately exposed. Until then
-the supported surface is exactly:
+There is deliberately **no public Python API** — you talk to the archive
+through its tools, and programmatic read access goes through the documented
+stores themselves (`index.db` is plain SQLite; the truth directory is
+documented JSONL). The supported surface is exactly:
 
-- the functions in `thread_archive.__all__` (see `api.py`) — small, but still
-  free to change without notice at 0.0.x;
 - the `archive` CLI and the two MCP servers (`archive-mcp`,
   `archive-librarian-mcp`);
-- `python -m thread_archive.manifest` (the thread-family manifest hook);
 - **the on-disk truth format** — versioned by `manifest.json`'s `version` and
   specified in [docs/format.md](docs/format.md). Data written by one release
   stays readable by the next; a reader refuses a truth directory newer than it
@@ -159,8 +157,8 @@ wins; ids that were never imported are skipped, not fatal.
   in the JSONL truth *before* their commit (no checkpoint in the hot loop). Ships as a
   macOS LaunchAgent (`host/`), so no external service is needed.
 - **Declares itself** — the installer writes the thread-family manifest
-  `<home>/product.json` (`python -m thread_archive.manifest`; `make install-agent`
-  runs it), so family consumers discover the archive by enumeration. Spec:
+  `<home>/product.json` (`host/write-manifest.py`; `make install-agent` runs
+  it), so family consumers discover the archive by enumeration. Spec:
   `docs/spec/product-json.md` in the thread monorepo.
 - **Searches locally** — FTS5 lexical (boolean / phrase / pipe-OR / code-identifier),
   optionally fused with local semantic vectors and a cross-encoder re-rank; plus
@@ -199,7 +197,7 @@ curation power. Client config:
 There are exactly two kinds of thread: imported **conversations** and curated **topics**
 (`thread_type='topic'`). A topic is modeled as a thread on purpose — so the graph's edges
 (`thread_links`) and message→topic citations (`topic_messages`) reference one id space.
-Reads/analytics live in `thread_archive.knowledge` — PageRank,
+Reads/analytics live in the knowledge layer (`_knowledge/`) — PageRank,
 communities (**Leiden**, the algorithm Neo4j GDS ran, with a networkx-Louvain fail-soft
 fallback), bridges, peers.
 

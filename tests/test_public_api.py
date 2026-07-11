@@ -1,71 +1,42 @@
 """Ratchet the public API boundary.
 
-The package's public surface is exactly: ``thread_archive.__all__`` (the api.py
-re-exports), the ``archive`` CLI, the two MCP server commands, the manifest
-hook, and the on-disk truth format (docs/format.md). Everything else is a
-private, underscore-prefixed module. These tests make widening the surface a
-deliberate act (edit the pinned list here) instead of a naming accident.
+The package deliberately exposes **no public Python API**. Its public surface
+is exactly: the ``archive`` CLI, the two MCP server commands, and the on-disk
+truth format (docs/format.md). Everything else — the ``_api`` coordination
+layer included — is a private, underscore-prefixed module. These tests make
+widening the surface a deliberate act (edit the pinned sets here) instead of a
+naming accident.
 """
 
 from __future__ import annotations
 
-import inspect
 from pathlib import Path
 
 import thread_archive
-from thread_archive import api
 
-# The full advertised Python surface. Adding a name here is an API commitment —
-# it must survive until a deliberate deprecation, even at 0.0.x.
-PUBLIC_API = [
-    "__version__",
-    "open_archive",
-    "close",
-    "search",
-    "read_thread",
-    "read_thread_structured",
-    "import_path",
-    "reindex",
-    "embed",
-    "checkpoint",
-    "watch",
-    "status",
-    "knowledge_status",
-    "bridge_topics",
-    "topic_peers",
-    "backup",
-    "verify",
-    "repair",
-    "restore_drill",
-    "nightly",
-]
+# The full advertised Python surface: the version, nothing else. Adding a name
+# here is an API commitment — it must survive until a deliberate deprecation.
+PUBLIC_API = ["__version__"]
 
-# The only modules allowed to live at a public (non-underscore) name: the
-# library surface, the CLI entry point, and the family-manifest hook
-# (advertised as `python -m thread_archive.manifest`).
-PUBLIC_MODULES = {"api", "cli", "manifest"}
+# The only module allowed to live at a public (non-underscore) name: the CLI
+# entry point. Installer machinery (the family manifest writer) lives in host/,
+# outside the package — it needs a repo checkout and is never shipped.
+PUBLIC_MODULES = {"cli"}
 
 
 def test_all_is_exactly_the_pinned_surface() -> None:
     assert sorted(thread_archive.__all__) == sorted(PUBLIC_API)
 
 
-def test_every_advertised_name_resolves_and_is_callable() -> None:
-    for name in PUBLIC_API:
-        obj = getattr(thread_archive, name)
-        if name != "__version__":
-            assert callable(obj), name
-
-
-def test_every_public_def_in_api_is_exported() -> None:
-    # api.py is the surface module: a public-named function there that isn't
-    # re-exported is a boundary leak (it looks supported but isn't advertised).
-    public_defs = {
+def test_no_function_reexports_on_the_package() -> None:
+    # The package namespace must not quietly re-grow a function surface: every
+    # callable a consumer could find on `thread_archive` must be pinned above.
+    leaked = {
         name
-        for name, obj in vars(api).items()
-        if inspect.isfunction(obj) and obj.__module__ == api.__name__ and not name.startswith("_")
+        for name in vars(thread_archive)
+        if not name.startswith("_") and callable(getattr(thread_archive, name))
     }
-    assert public_defs == set(PUBLIC_API) - {"__version__"}
+    assert not leaked, leaked
 
 
 def test_no_unsanctioned_public_modules() -> None:

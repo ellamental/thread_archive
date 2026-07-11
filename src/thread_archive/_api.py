@@ -1,6 +1,8 @@
-"""The public Python API for thread-archive.
+"""The internal coordination layer for thread-archive.
 
-The native surface (the MCP server and CLI are built on top of these). Each call
+Private, like every underscore-prefixed module — the CLI, the MCP servers, and
+the web viewer are built on top of these functions; nothing outside the package
+may import them. Each call
 opens the archive — resolves the home, ensures its directories, pins it for the
 process, and initializes the SQLite engine + schema — then dispatches into the
 store / importers / search / truth / watch layers. Internal imports are lazy so

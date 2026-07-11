@@ -10,7 +10,7 @@
 
 from __future__ import annotations
 
-import thread_archive as ta
+from thread_archive import _api as ta
 from thread_archive._truth import jsonl_log
 
 from .helpers import import_cc_session

@@ -1,7 +1,7 @@
 """The ``archive web`` server: a socket-free router + a thin stdlib HTTP adapter.
 
 The whole read surface the UI needs already exists as the plain Python library
-(:mod:`thread_archive.api`): ``search`` / ``read_thread`` / ``status``. This is a
+(:mod:`thread_archive._api`): ``search`` / ``read_thread`` / ``status``. This is a
 skin over it — no ranking/fusion logic is duplicated here. :func:`route` is a pure
 ``(method, path, params) -> (status, content_type, body, headers)`` function so
 tests drive it without opening a socket. :func:`serve` runs it in the foreground
@@ -21,7 +21,7 @@ from pathlib import Path
 from typing import Optional
 from urllib.parse import parse_qs, urlparse
 
-from .. import api
+from .. import _api as api
 
 STATIC_DIR = (Path(__file__).parent / "static").resolve()
 
@@ -184,7 +184,7 @@ def route(method: str, path: str, params: dict) -> Response:
     if method != "GET":
         return _text(405, "method not allowed")
 
-    # ---- JSON API: thin wrappers over thread_archive.api ----
+    # ---- JSON API: thin wrappers over thread_archive._api ----
     if path == "/api/health":
         # Cheap liveness for probes (the family manifest's health URL).
         # /api/status is the real survey but counts the whole index — seconds,

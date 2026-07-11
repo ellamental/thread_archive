@@ -21,7 +21,7 @@ import pytest
 from sqlalchemy import event as sa_event
 from sqlalchemy import text
 
-import thread_archive as ta
+from thread_archive import _api as ta
 from thread_archive._store import Event, get_engine, get_session
 from thread_archive._truth import jsonl_log
 
@@ -241,7 +241,7 @@ def test_backup_checkpoints_before_verifying(archive_home, tmp_path, monkeypatch
     import_cc_session(tmp_path)
     calls: list[str] = []
 
-    import thread_archive.api as api
+    import thread_archive._api as api
     from thread_archive import _truth as truth
 
     real_checkpoint, real_verify = truth.checkpoint, api.verify
@@ -260,7 +260,7 @@ def test_backup_checkpoints_before_verifying(archive_home, tmp_path, monkeypatch
 # ── health.json concurrency ───────────────────────────────────────────────────
 def test_record_health_survives_concurrent_writers(archive_home, tmp_path):
     ta.open_archive()
-    from thread_archive.api import _read_health, _record_health
+    from thread_archive._api import _read_health, _record_health
 
     keys = [f"writer_{i}" for i in range(8)]
 
@@ -287,7 +287,7 @@ def test_backup_mirror_holds_the_truth_write_lock(archive_home, tmp_path, monkey
     import os
 
     import_cc_session(tmp_path)
-    import thread_archive.api as api
+    import thread_archive._api as api
 
     real = api._mirror_dir
     seen: dict[str, bool] = {}

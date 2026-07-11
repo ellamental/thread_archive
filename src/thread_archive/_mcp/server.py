@@ -1,7 +1,7 @@
 """Library-native MCP server.
 
 Exposes ``thread_search`` + ``thread_read`` as MCP tools that call the
-:mod:`thread_archive.api` library functions directly — no web framework, no HTTP,
+:mod:`thread_archive._api` library functions directly — no web framework, no HTTP,
 no route layer. The server is library-native: it dispatches straight to the API
 functions in-process.
 
@@ -21,7 +21,7 @@ from typing import Optional
 
 from mcp.server.fastmcp import FastMCP
 
-from .. import api
+from .. import _api as api
 from .._retrieval import format_results, warm_models
 from .._retrieval.format import _query_terms, _term_hit_count
 

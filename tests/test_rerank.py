@@ -159,7 +159,7 @@ def test_warm_reports_the_load_outcome(monkeypatch) -> None:
 def test_warm_models_never_raises(monkeypatch) -> None:
     # A stage that blows up must not propagate — warming is best-effort startup work. Every
     # stage is stubbed to raise (and the dummy search stubbed out) so the suite stays model-free.
-    from thread_archive import api
+    from thread_archive import _api as api
 
     def _raise(*a, **k):
         raise RuntimeError("torch exploded")

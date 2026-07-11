@@ -47,7 +47,7 @@ install-agent:
 	-launchctl bootout gui/$(UID)/$(LABEL) 2>/dev/null
 	@sleep 3   # let bootout settle before bootstrap (avoids 'Bootstrap failed: 5: Input/output error')
 	launchctl bootstrap gui/$(UID) $(PLIST)
-	$(REPO)/.venv/bin/python -m thread_archive.manifest
+	$(REPO)/.venv/bin/python $(CURDIR)/write-manifest.py
 	@echo "installed (RunAtLoad=true; the watcher starts automatically)."
 	@echo "to reload after a code edit:  make restart"
 	@echo "to tail:                      make logs"
@@ -55,10 +55,11 @@ install-agent:
 # (Re)write the family manifest alone — <home>/product.json, the discovery
 # record consumers glob for (spec: docs/spec/product-json.md in the thread
 # monorepo). install-agent already does this; use this target after a version
-# bump or a path change without reloading the agent.
+# bump or a path change without reloading the agent. `make manifest WEB=0`
+# omits the console/health surfaces (a box with no watcher agent serving :8787).
 manifest:
 	@test -x $(ENTRY) || { echo "missing $(ENTRY) — run 'pip install -e .' into the repo venv first"; exit 1; }
-	$(REPO)/.venv/bin/python -m thread_archive.manifest
+	$(REPO)/.venv/bin/python $(CURDIR)/write-manifest.py $(if $(filter 0,$(WEB)),--no-web)
 
 uninstall-agent:
 	-launchctl bootout gui/$(UID)/$(LABEL)

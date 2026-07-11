@@ -1,16 +1,24 @@
-"""Write the thread-family manifest — ``<home>/product.json``.
+"""Write the thread-family manifest — ``<archive home>/product.json``.
 
 Every installed thread-family product declares itself with one small JSON file
 in its home directory; discovery is enumeration (a consumer globs
 ``~/.thread/*/product.json``), no registry. Spec: ``docs/spec/product-json.md``
-in the thread monorepo. The manifest is machine state — written by the
-installer (``make install-agent`` runs ``python -m thread_archive.manifest``),
-never hand-edited, never checked in.
+in the thread monorepo.
+
+This is installer machinery, not library code: it lives in ``host/`` (never
+packaged — see ``pyproject.toml``'s sdist ``only-include``) because it depends
+on a repo checkout, resolving the MCP server commands out of the repo venv. The
+manifest is machine state — written by ``make install-agent`` / ``make
+manifest``, never hand-edited, never checked in.
 
 The ``console`` / ``health`` surfaces point at the cohosted viewer the watcher
 agent serves on :8787 (``archive watch`` — the process ``install-agent``
-installs), so this writer declares them. A box running only ad-hoc imports
-(no agent) can pass ``--no-web`` to omit them.
+installs), so this writer declares them. A box running only ad-hoc imports (no
+agent) can pass ``--no-web`` to omit them.
+
+Run it with the repo venv's python:
+
+    .venv/bin/python host/write-manifest.py [--home DIR] [--no-web]
 """
 
 from __future__ import annotations
@@ -23,9 +31,9 @@ import os
 import tempfile
 from pathlib import Path
 
-from ._config import resolve_paths
+from thread_archive._config import resolve_paths
 
-REPO_ROOT = Path(__file__).resolve().parents[2]
+REPO_ROOT = Path(__file__).resolve().parents[1]
 
 WEB_BASE = "http://127.0.0.1:8787"
 
@@ -62,7 +70,7 @@ def build_manifest(*, home: str | None = None, web: bool = True) -> tuple[Path, 
     manifest["mcp"] = [m for m in mcp if Path(m["command"]).exists()] or None
     if manifest["mcp"] is None:
         del manifest["mcp"]
-    manifest["written_by"] = "thread-archive install (python -m thread_archive.manifest)"
+    manifest["written_by"] = "thread-archive install (host/write-manifest.py)"
     manifest["written_at"] = datetime.datetime.now(datetime.timezone.utc).isoformat(
         timespec="seconds"
     )
@@ -87,7 +95,7 @@ def write_manifest(*, home: str | None = None, web: bool = True) -> Path:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
-        prog="python -m thread_archive.manifest",
+        prog="host/write-manifest.py",
         description="write the thread-family product.json manifest",
     )
     parser.add_argument("--home", default=None, help="archive home (default: resolved)")

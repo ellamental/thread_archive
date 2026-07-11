@@ -8,8 +8,9 @@ the truth dir) is a derived embedding cache — both are rebuildable, neither is
 truth. A `cp`/`rsync` of the truth directory *is* the backup; `archive reindex`
 reconstructs everything else from it.
 
-The format is part of the package's public surface: the Python API may churn
-freely at 0.0.x, but data written by one release must stay readable by the
+The format is part of the package's public surface — the package exposes no
+public Python API, so alongside the CLI and MCP tools this document is the
+durability promise: data written by one release must stay readable by the
 next.
 
 ## Versioning

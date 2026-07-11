@@ -115,7 +115,7 @@ def warm_models() -> None:
     # cache is keyed by content-type scope; a mismatched scope would prime a matrix the
     # real query never touches).
     try:
-        from .. import api
+        from .. import _api as api
 
         api.search(_WARM_QUERY, limit=1, content_types=["user", "title", "summary"])
     except Exception:  # noqa: BLE001 — a store that isn't ready just warms the models, not the caches

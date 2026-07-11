@@ -32,7 +32,7 @@ dependencies = [
 # (pulls torch); the base install is lexical-only. einops is needed by nomic's
 # trust_remote_code model.
 embeddings = ["sentence-transformers>=3.0", "einops>=0.7"]
-dev = ["pytest>=8.0", "pytest-cov>=5.0", "ruff>=0.6"]
+dev = ["pytest>=8.0", "pytest-cov>=5.0", "ruff>=0.6", "build>=1.2"]
 
 [project.urls]
 Repository = "https://github.com/ellamental/thread_archive"
@@ -79,7 +79,13 @@ exclude = [
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = "-q"
+# The default run is every lane except `package` (wheel/sdist build + clean-venv
+# install — minutes, not seconds; run it with `-m package` or via its ci.toml row).
+addopts = "-q --strict-markers -m 'not package'"
+markers = [
+    "integration: opens real sockets or spawns real subprocesses; deselect (-m 'not integration') for a fully hermetic run, e.g. in a no-network sandbox",
+    "package: builds the wheel/sdist and installs into a throwaway venv; slow, selected explicitly with -m package",
+]
 
 # The family lint bar (same shape as the thread monorepo products): pycodestyle +
 # pyflakes + import sort, long lines tolerated. Gated by the ruff row in ci.toml.

@@ -39,7 +39,7 @@ from thread_archive._retrieval.fts import index_events
 from thread_archive._store import use_session
 from thread_archive._store.models import Event, EventFts
 from thread_archive._truth.jsonl_log import append_event_row
-from thread_archive.api import open_archive
+from thread_archive._api import open_archive
 
 HERE = Path(__file__).parent
 PLAN_PATH = HERE / "repair_grok_tool_names_plan_20260704.json"

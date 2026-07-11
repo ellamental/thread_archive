@@ -2,6 +2,25 @@
 
 ## Unreleased
 
+- The family-manifest writer left the package: `thread_archive/manifest.py` is
+  now `host/write-manifest.py`. It was the one member of the public surface that
+  made no sense to a `pip install` consumer — a thread-family integration point,
+  and one that resolved its MCP command paths from a repo checkout (meaningless
+  under `site-packages`, where it silently emitted a manifest with no `mcp`
+  block). `host/` is installer machinery and is never packaged, which is exactly
+  what this is; `make install-agent` and `make manifest` (add `WEB=0` for
+  `--no-web`) call it there. `cli` is now the only public module name.
+
+- The public Python API is gone — deliberately. `api.py` became `_api.py`, a
+  private coordination layer the CLI, MCP servers, and web viewer call into;
+  `thread_archive.__all__` shrank to `__version__`. Nothing outside the repo
+  imported the Python surface, and the durability promise was always the
+  on-disk truth format, not function signatures. The supported surface is now
+  exactly: the `archive` CLI, the two MCP servers, and the truth format
+  (docs/format.md). Programmatic read access goes through the
+  documented stores (index.db is plain SQLite; truth is documented JSONL).
+  The ratchet test now pins the surface at empty.
+
 - The public surface is now locked down to what's deliberately advertised:
   every internal subpackage is underscore-private (`_store`, `_truth`,
   `_retrieval`, `_knowledge`, `_importers`, `_watcher`, `_mcp`, `_web`,

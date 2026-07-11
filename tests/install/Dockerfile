@@ -4,9 +4,11 @@
 # ambient state. Build context is the repo root (see run_install_test.sh):
 #   docker build -f tests/install/Dockerfile -t thread-archive-install-test .
 #
-# It installs the package + dev extra, runs the full unit suite, then the end-to-end
-# install check (import every provider -> reindex -> search) on a synthetic corpus (or an
-# obfuscated real one mounted at /work/fixtures).
+# It builds the wheel and installs THAT (never `pip install -e .` — an editable install
+# runs from the checkout and can't catch a schema, web asset, or entry point missing
+# from the artifact), runs the full unit suite against the installed package, then the
+# end-to-end install check (import every provider -> reindex -> search) on a synthetic
+# corpus (or an obfuscated real one mounted at /work/fixtures).
 FROM python:3.12-slim
 
 # build-essential covers any source build of the Leiden C extensions (igraph/leidenalg
@@ -19,8 +21,10 @@ WORKDIR /app
 COPY . /app
 
 RUN python -m venv /opt/venv \
-    && /opt/venv/bin/pip install --upgrade pip \
-    && /opt/venv/bin/pip install -e '.[dev]'
+    && /opt/venv/bin/pip install --upgrade pip build \
+    && /opt/venv/bin/python -m build --wheel --outdir /tmp/dist /app \
+    && /opt/venv/bin/pip install "$(ls /tmp/dist/*.whl)" \
+    && /opt/venv/bin/pip install pytest pytest-cov ruff
 
 ENV PATH="/opt/venv/bin:$PATH" \
     THREAD_ARCHIVE_HOME=/root/.thread/archive

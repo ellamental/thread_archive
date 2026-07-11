@@ -13,7 +13,7 @@ import sqlite3
 
 from sqlalchemy import text
 
-import thread_archive as ta
+from thread_archive import _api as ta
 from thread_archive._store import get_session
 
 from .helpers import import_cc_session

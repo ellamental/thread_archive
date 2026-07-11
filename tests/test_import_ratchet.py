@@ -18,6 +18,8 @@ from pathlib import Path
 
 import pytest
 
+import pytest
+
 SRC = Path(__file__).resolve().parent.parent / "src"
 
 # Top-level modules that must never appear in our source tree.
@@ -82,6 +84,7 @@ def test_no_banned_imports(path: Path) -> None:
     )
 
 
+@pytest.mark.integration
 def test_fresh_import_pulls_no_banned_modules() -> None:
     """A fresh `import thread_archive` (in an isolated subprocess, so other tests'
     imports of the external `mcp` SDK can't pollute the check) must not pull in a

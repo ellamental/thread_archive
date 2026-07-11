@@ -25,7 +25,7 @@ from typing import Optional
 
 from mcp.server.fastmcp import FastMCP
 
-from .. import api
+from .. import _api as api
 from .._knowledge import write as _write
 
 mcp = FastMCP("thread-archive-librarian")

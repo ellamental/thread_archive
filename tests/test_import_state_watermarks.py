@@ -15,7 +15,7 @@ import json
 
 from sqlalchemy import select
 
-import thread_archive as ta
+from thread_archive import _api as ta
 from thread_archive._store import ImportState, get_session
 
 from .helpers import append_jsonl, cc_assistant, cc_user, import_cc_session, write_jsonl

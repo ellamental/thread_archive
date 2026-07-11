@@ -21,7 +21,7 @@ import json
 import pytest
 from sqlalchemy import text
 
-import thread_archive as ta
+from thread_archive import _api as ta
 from thread_archive._knowledge.write import add_topic_evidence, create_topic
 from thread_archive._store import get_session
 from thread_archive._truth import jsonl_log, rebuild_truth_from_store

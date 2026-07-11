@@ -45,7 +45,7 @@ def test_index_events_local_incremental_cap_and_order(archive_home, monkeypatch)
     newest-first. Stubs the embed backend so no model is needed."""
     import json
 
-    import thread_archive as ta
+    from thread_archive import _api as ta
     from thread_archive._retrieval import embed as E
 
     monkeypatch.setattr(E, "is_available", lambda: True)
@@ -88,7 +88,7 @@ def test_index_events_local_chunks_long_docs_and_tops_up(archive_home, monkeypat
     topped up in place."""
     import json
 
-    import thread_archive as ta
+    from thread_archive import _api as ta
     from thread_archive._retrieval import embed as E
 
     monkeypatch.setattr(E, "is_available", lambda: True)

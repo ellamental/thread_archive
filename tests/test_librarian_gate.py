@@ -16,6 +16,10 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
+pytestmark = pytest.mark.integration
+
 HOOK = Path(__file__).resolve().parent.parent / ".claude" / "hooks" / "librarian-gate.py"
 
 READ = "mcp__thread-archive-librarian__thread_user_messages"

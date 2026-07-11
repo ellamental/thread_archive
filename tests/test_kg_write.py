@@ -17,7 +17,7 @@ from datetime import datetime, timezone
 import pytest
 from sqlalchemy import func, select
 
-import thread_archive as ta
+from thread_archive import _api as ta
 from thread_archive._knowledge import (
     add_topic_evidence,
     create_topic,

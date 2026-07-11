@@ -54,7 +54,7 @@ def _has_claimable_work(home: str | None) -> bool:
     """True if any unreviewed conversation is free to claim (not held by a live lease).
     Imported, not shelled — a cheap direct query against the same store + claim file the
     workers use."""
-    import thread_archive as ta
+    from thread_archive import _api as ta
     from thread_archive._knowledge._claims import has_claimable_work
 
     ta.open_archive(home)

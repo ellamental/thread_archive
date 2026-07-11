@@ -30,7 +30,7 @@ def _fail(msg: str) -> None:
 
 
 def run(fixtures_dir: str | None, home: str | None, keep: bool) -> int:
-    import thread_archive as ta
+    from thread_archive import _api as ta
 
     work = Path(tempfile.mkdtemp(prefix="thread-archive-e2e-"))
     corpus = Path(fixtures_dir) if fixtures_dir else work / "fixtures"

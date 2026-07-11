@@ -37,7 +37,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
 from sqlalchemy import text as sa_text  # noqa: E402
 
-from thread_archive import api  # noqa: E402
+from thread_archive import _api as api  # noqa: E402
 from thread_archive._store import use_session  # noqa: E402
 
 RECALL_KS = (1, 5, 10, 20)

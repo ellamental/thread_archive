@@ -2,7 +2,7 @@
 
 Datasette-shaped: one CLI command starts a tiny stdlib HTTP server bound to
 localhost, serves a single self-contained page (search + reader), and exposes a
-few JSON endpoints that call straight into :mod:`thread_archive.api`. It is not a
+few JSON endpoints that call straight into :mod:`thread_archive._api`. It is not a
 daemon — it runs in the foreground and dies on Ctrl-C — and pulls in no new
 dependency (stdlib only), so the package stays serverless and Python-only.
 """

@@ -71,7 +71,7 @@ Also write the thread-family manifest — the discovery record other thread
 products glob for (harmless if none are installed):
 
 ```bash
-"$REPO/.venv/bin/python" -m thread_archive.manifest --no-web
+"$REPO/.venv/bin/python" "$REPO/host/write-manifest.py" --no-web
 ```
 
 (Drop `--no-web` if you also install the live-ingest LaunchAgent from `host/`

@@ -1,4 +1,4 @@
-"""The ``archive`` command — a thin CLI over the :mod:`thread_archive.api` surface."""
+"""The ``archive`` command — a thin CLI over the :mod:`thread_archive._api` surface."""
 
 from __future__ import annotations
 
@@ -41,7 +41,7 @@ def _self_throttle() -> None:
 
 
 def cmd_import(args: argparse.Namespace) -> int:
-    from . import api
+    from . import _api as api
     from ._importers import DB_SCANNERS, LINE_STREAM_IMPORTERS
 
     provider = args.provider or "claude-code"
@@ -61,7 +61,7 @@ def cmd_import(args: argparse.Namespace) -> int:
 
 
 def cmd_import_export(args: argparse.Namespace) -> int:
-    from . import api
+    from . import _api as api
     from ._importers.exports import import_export
     from ._truth import shared_ingest_lock
 
@@ -83,7 +83,7 @@ def cmd_import_export(args: argparse.Namespace) -> int:
 def cmd_watch(args: argparse.Namespace) -> int:
     import logging
 
-    from . import api
+    from . import _api as api
     from ._watcher import Watcher
 
     # Configure logging so the daemon's import/maintenance activity actually lands
@@ -151,7 +151,7 @@ def cmd_watch(args: argparse.Namespace) -> int:
 
 
 def cmd_search(args: argparse.Namespace) -> int:
-    from . import api
+    from . import _api as api
     from ._retrieval import format_results
 
     hits = api.search(args.query, home=args.home, limit=args.limit)
@@ -160,7 +160,7 @@ def cmd_search(args: argparse.Namespace) -> int:
 
 
 def cmd_read(args: argparse.Namespace) -> int:
-    from . import api
+    from . import _api as api
 
     print(api.read_thread(
         args.thread_id, home=args.home,
@@ -179,7 +179,7 @@ def cmd_web(args: argparse.Namespace) -> int:
 
 
 def cmd_reindex(args: argparse.Namespace) -> int:
-    from . import api
+    from . import _api as api
 
     _self_throttle()  # a rebuild is background work — don't bog the interactive machine
     paths = resolve_paths(args.home)
@@ -198,7 +198,7 @@ def cmd_reindex(args: argparse.Namespace) -> int:
 
 
 def cmd_embed(args: argparse.Namespace) -> int:
-    from . import api
+    from . import _api as api
 
     print("embedding missing vectors (rebuild=%s)..." % args.rebuild, flush=True)
     res = api.embed(home=args.home, rebuild=args.rebuild, max_events=args.limit,
@@ -208,7 +208,7 @@ def cmd_embed(args: argparse.Namespace) -> int:
 
 
 def cmd_backup(args: argparse.Namespace) -> int:
-    from . import api
+    from . import _api as api
 
     res = api.backup(
         args.dest, home=args.home,
@@ -265,7 +265,7 @@ def cmd_backup(args: argparse.Namespace) -> int:
 
 
 def cmd_verify(args: argparse.Namespace) -> int:
-    from . import api
+    from . import _api as api
 
     res = api.verify(home=args.home, deep=args.deep, hashes=args.hashes, backup=args.backup)
     t = res["truth"]
@@ -392,7 +392,7 @@ def cmd_verify(args: argparse.Namespace) -> int:
 
 
 def cmd_restore_drill(args: argparse.Namespace) -> int:
-    from . import api
+    from . import _api as api
 
     print(f"restore drill: rebuilding an index from {args.dest} in a throwaway home...", flush=True)
     res = api.restore_drill(args.dest, home=args.home, keep_home=args.keep_home)
@@ -428,7 +428,7 @@ def cmd_restore_drill(args: argparse.Namespace) -> int:
 
 
 def cmd_nightly(args: argparse.Namespace) -> int:
-    from . import api
+    from . import _api as api
 
     print(f"nightly pipeline: backup → verify → restore drill ({args.dest})", flush=True)
     res = api.nightly(
@@ -470,7 +470,7 @@ def cmd_nightly(args: argparse.Namespace) -> int:
 
 
 def cmd_repair(args: argparse.Namespace) -> int:
-    from . import api
+    from . import _api as api
 
     res = api.repair(home=args.home, dry_run=args.dry_run)
     verb = "would quarantine" if res["dry_run"] else "quarantined"
@@ -509,7 +509,7 @@ def _age(iso: str) -> str:
 
 
 def cmd_status(args: argparse.Namespace) -> int:
-    from . import api
+    from . import _api as api
 
     st = api.status(home=args.home)
     print(f"home:    {st['home']}")

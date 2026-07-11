@@ -20,7 +20,7 @@ import json
 
 from sqlalchemy import select, text
 
-import thread_archive as ta
+from thread_archive import _api as ta
 from thread_archive._store import Event, get_session
 
 USER = {"type": "user", "uuid": "u1", "timestamp": "2026-01-01T10:00:00Z",
@@ -197,7 +197,7 @@ def test_backup_deletion_bound_blocks_gutted_source_mirror(archive_home, tmp_pat
     assert res["mirror_complete"] is True
 
     # Lower the bound so this small fixture can trip it, then gut the source.
-    from thread_archive import api
+    from thread_archive import _api as api
     monkeypatch.setattr(api, "_MIRROR_DELETE_FLOOR", 0)
     monkeypatch.setattr(api, "_MIRROR_DELETE_MAX_FRACTION", 0.0)
     for p in (archive_home / "truth" / "threads").rglob("*.jsonl"):

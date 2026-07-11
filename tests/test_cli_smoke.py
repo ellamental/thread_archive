@@ -28,7 +28,7 @@ def test_all_subcommands_present() -> None:
 def test_embed_cli_dispatches(monkeypatch, capsys) -> None:
     """`archive embed` wires to api.embed (the incremental vector catch-up). The
     embed backend is stubbed so the smoke test never loads torch."""
-    from thread_archive import api
+    from thread_archive import _api as api
 
     seen = {}
     monkeypatch.setattr(api, "embed", lambda **kw: seen.update(kw) or {"embedded": 4})

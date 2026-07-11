@@ -23,7 +23,7 @@ from __future__ import annotations
 
 import json
 
-import thread_archive as ta
+from thread_archive import _api as ta
 from thread_archive._truth import jsonl_log
 
 USER = {"type": "user", "uuid": "u1", "timestamp": "2026-01-01T10:00:00Z",

@@ -285,7 +285,7 @@ def test_poll_errors_surface_in_health(archive_home) -> None:
     """A failing source must be visible to `archive status` (health.json), not
     only to whoever reads the daemon's stderr log — a provider format change
     could otherwise stall one source's ingest for weeks while status stays green."""
-    import thread_archive as ta
+    from thread_archive import _api as ta
     from thread_archive._watcher.base import SourceWatcher
 
     class Broken(SourceWatcher):

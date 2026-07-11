@@ -1,4 +1,4 @@
-"""The ``archive web`` surface — the socket-free router over thread_archive.api.
+"""The ``archive web`` surface — the socket-free router over thread_archive._api.
 
 The HTTP adapter is a thin stdlib shim; the logic lives in :func:`route`, which is
 pure ``(method, path, params) -> (status, content_type, body, headers)``. These
@@ -9,7 +9,9 @@ from __future__ import annotations
 
 import json
 
-import thread_archive as ta
+import pytest
+
+from thread_archive import _api as ta
 from thread_archive._web import route
 
 USER = {"type": "user", "uuid": "u1", "timestamp": "2026-01-01T10:00:00Z",
@@ -194,8 +196,6 @@ def test_built_assets_served(archive_home):
 
     assets = Path(server.STATIC_DIR) / "assets"
     if not assets.is_dir():
-        import pytest
-
         pytest.skip("frontend not built (no static/assets)")
     js = next((p for p in assets.iterdir() if p.suffix == ".js"), None)
     assert js is not None, "no built JS asset found"
@@ -329,6 +329,7 @@ def test_archive_link_missing_id_400(archive_home):
     assert status == 400
 
 
+@pytest.mark.integration
 def test_serve_in_thread_cohosts(archive_home):
     # the watcher's cohost path: a background server answering over a real socket
     import urllib.request
