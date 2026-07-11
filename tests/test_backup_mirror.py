@@ -187,8 +187,8 @@ def test_backup_trims_torn_tail_and_leaves_no_tmp(archive_home, tmp_path):
 
 # ── generations ───────────────────────────────────────────────────────────────
 def _age_generation(dest, stamp="20200101T000000Z"):
-    """Rename the newest generation to an old date so the one-per-day gate
-    lets the next backup snapshot again."""
+    """Rename the newest generation to an old date, pinning it apart from the
+    generations later runs create."""
     gens = dest / _GENERATIONS_SUBDIR
     newest = sorted(p for p in gens.iterdir() if p.is_dir())[-1]
     aged = gens / stamp
@@ -212,10 +212,13 @@ def test_backup_snapshots_pre_run_state_as_generation(archive_home, tmp_path):
     gen_files = {p.relative_to(gen) for p in gen.rglob("*.jsonl")}
     assert gen_files == mirror_files
 
-    # One generation per UTC day: an immediate re-run doesn't snapshot again.
+    # One generation per run: every overwrite has its pre-state preserved —
+    # a second (bad) same-day backup can't destroy the day's only pre-state.
     res3 = ta.backup(str(dest))
-    assert res3["generation_created"] is None
-    assert res3["generations_kept"] == 1
+    assert res3["generation_created"]
+    assert res3["generation_created"] != res2["generation_created"]
+    # Retention coalesces by day, never within one: both survive.
+    assert res3["generations_kept"] == 2
 
 
 def test_generation_content_survives_mirror_overwrite(archive_home, tmp_path):

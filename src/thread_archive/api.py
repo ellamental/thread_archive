@@ -98,17 +98,28 @@ def _read_health() -> dict:
 
 
 def _record_health(key: str, record: dict) -> None:
-    """Set ``key`` to ``record`` (stamped with ``at``) — atomic replace; advisory
-    data, so a failed write logs and never breaks the operation it describes."""
+    """Set ``key`` to ``record`` (stamped with ``at``) — a locked read-modify-
+    write (exclusive flock on ``health.json.lock``, same discipline as the
+    manifest's): concurrent completions (a verify racing a backup, the nightly's
+    stages) each own different keys, and an unlocked whole-file replace would
+    lose whichever writer published first. Advisory data, so a failed write
+    logs and never breaks the operation it describes."""
+    import fcntl
     from datetime import datetime, timezone
 
     try:
-        health = _read_health()
-        health[key] = {"at": datetime.now(timezone.utc).isoformat(), **record}
         p = _health_path()
-        tmp = p.with_name(f"{p.name}.tmp.{os.getpid()}")
-        tmp.write_text(json.dumps(health, indent=2), encoding="utf-8")
-        os.replace(tmp, p)
+        p.parent.mkdir(parents=True, exist_ok=True)
+        fd = os.open(p.with_name(f"{p.name}.lock"), os.O_RDWR | os.O_CREAT, 0o644)
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX)
+            health = _read_health()
+            health[key] = {"at": datetime.now(timezone.utc).isoformat(), **record}
+            tmp = p.with_name(f"{p.name}.tmp.{os.getpid()}")
+            tmp.write_text(json.dumps(health, indent=2), encoding="utf-8")
+            os.replace(tmp, p)
+        finally:
+            os.close(fd)  # closing the fd releases the flock
     except OSError:
         import logging
 
@@ -522,15 +533,19 @@ def _snapshot_generation(dest: Path) -> dict:
     Hardlinks make a generation nearly free (the truth is append-mostly, and
     the mirror only ever publishes destination files via whole-file rename —
     ``_atomic_copy`` — so a snapshot's linked inodes are never mutated by later
-    runs; deletions just unlink the mirror's name). At most one generation per
-    UTC day. The snapshot is built under a dot-tmp name and renamed into place,
-    so a killed run never leaves a directory that looks like a complete
-    generation.
+    runs; deletions just unlink the mirror's name). One generation per run —
+    every overwrite of the mirror has a pre-state snapshot, so a second (bad)
+    backup on the same day can't destroy the day's only pre-state. The
+    snapshot is built under a dot-tmp name and renamed into place (the gens
+    dir fsynced after), so a killed run never leaves a directory that looks
+    like a complete generation and a published one survives power loss.
 
-    Retention: the newest ``_GEN_KEEP_RECENT`` generations, plus the newest
-    generation of each distinct month until ``_GEN_KEEP_MONTHS`` months are
-    covered. Failure to snapshot degrades to the pre-generations behavior
-    (reported, never blocks the mirror itself)."""
+    Retention coalesces by day, never within one: every generation from the
+    newest ``_GEN_KEEP_RECENT`` distinct UTC days is kept (pruning a same-day
+    sibling would discard exactly the pre-bad-run state generations exist
+    for), plus the newest generation of each distinct month until
+    ``_GEN_KEEP_MONTHS`` months are covered. Failure to snapshot degrades to
+    the pre-generations behavior (reported, never blocks the mirror itself)."""
     import logging
     import shutil
     from datetime import datetime, timezone
@@ -544,36 +559,46 @@ def _snapshot_generation(dest: Path) -> dict:
         shutil.rmtree(stale, ignore_errors=True)
     now = datetime.now(timezone.utc)
     names = sorted((p.name for p in gens.iterdir() if p.is_dir()), reverse=True)
-    if not (names and names[0].startswith(now.strftime("%Y%m%d"))):
-        name = now.strftime("%Y%m%dT%H%M%SZ")
-        tmp = gens / f".tmp-{name}"
-        try:
-            linked = 0
-            for sp in dest.rglob("*"):
-                if sp.is_dir():
-                    continue
-                rel = sp.relative_to(dest)
-                if rel.parts[0] == _GENERATIONS_SUBDIR:
-                    continue
-                gp = tmp / rel
-                gp.parent.mkdir(parents=True, exist_ok=True)
-                try:
-                    os.link(sp, gp)
-                except OSError:  # filesystem without hardlinks — take the copy cost
-                    shutil.copy2(sp, gp)
-                linked += 1
-            os.rename(tmp, gens / name)
-            out["generation_created"] = name
-            out["generation_files"] = linked
-            names.insert(0, name)
-        except OSError as e:  # snapshot is protection, not the backup itself
-            shutil.rmtree(tmp, ignore_errors=True)
-            out["generation_error"] = str(e)
-            logging.getLogger(__name__).exception("backup: generation snapshot failed")
-    keep = set(names[:_GEN_KEEP_RECENT])
+    name = now.strftime("%Y%m%dT%H%M%SZ")
+    while name in names:  # two runs within a second — still one gen per run
+        name += "x"
+    tmp = gens / f".tmp-{name}"
+    try:
+        linked = 0
+        for sp in dest.rglob("*"):
+            if sp.is_dir():
+                continue
+            rel = sp.relative_to(dest)
+            if rel.parts[0] == _GENERATIONS_SUBDIR:
+                continue
+            gp = tmp / rel
+            gp.parent.mkdir(parents=True, exist_ok=True)
+            try:
+                os.link(sp, gp)
+            except OSError:  # filesystem without hardlinks — take the copy cost
+                shutil.copy2(sp, gp)
+            linked += 1
+        os.rename(tmp, gens / name)
+        from .truth.jsonl_log import _fsync_dir
+
+        _fsync_dir(gens)  # the publishing rename itself must survive power loss
+        out["generation_created"] = name
+        out["generation_files"] = linked
+        names.insert(0, name)
+        names.sort(reverse=True)
+    except OSError as e:  # snapshot is protection, not the backup itself
+        shutil.rmtree(tmp, ignore_errors=True)
+        out["generation_error"] = str(e)
+        logging.getLogger(__name__).exception("backup: generation snapshot failed")
+    # Coalesce by day, never within one (see docstring).
+    days: list[str] = []
+    for n in names:  # newest first
+        if n[:8] not in days:
+            days.append(n[:8])
+    keep = {n for n in names if n[:8] in set(days[:_GEN_KEEP_RECENT])}
     months = {n[:6] for n in keep}
-    for n in names[_GEN_KEEP_RECENT:]:
-        if n[:6] not in months and len(months) < _GEN_KEEP_MONTHS:
+    for n in names:
+        if n not in keep and n[:6] not in months and len(months) < _GEN_KEEP_MONTHS:
             keep.add(n)
             months.add(n[:6])
     for n in names:
@@ -625,11 +650,14 @@ def backup(
     from .truth import checkpoint as _checkpoint
     from .truth.jsonl_log import _try_rebalance_lock
 
+    _checkpoint()  # full: overlays + metadata-update backstop → truth is a complete restore set
+    # Verify AFTER the checkpoint, so verify_ok describes the tree the mirror
+    # actually copies — a verdict on the pre-checkpoint state could bless (or
+    # smear) a different truth than the one being backed up.
     verify_ok = True
     if verify_first:
         verify_ok = bool(verify(home=home)["ok"])
 
-    _checkpoint()  # full: overlays + metadata-update backstop → truth is a complete restore set
     paths = resolve_paths(home)
     # Refresh the durable vector cache so live-embedded vectors (the watcher's
     # cohost writes them into index.db only) survive an index loss and ride the
@@ -1013,9 +1041,12 @@ def verify(
     after collapsing superseded lines (re-appended ids, same-content twins), which
     is exactly what a reindex materializes; the raw line count and the superseded
     remainder are reported alongside. ``ok`` is True only when the effective counts
-    align, nothing failed to parse, and the search surface is in parity (shadow ↔
+    align, nothing failed to parse, the search surface is in parity (shadow ↔
     FTS5 row counts match with no orphan rows — silently unsearchable content is
-    loss in effect, so it's checked on this daily cadence too). A negative event
+    loss in effect, so it's checked on this daily cadence too), and the live
+    index carries the full declared schema (:func:`_verify_schema` — ``create_all``
+    never retrofits columns/indexes/constraints onto existing tables, so an
+    under-enforced index must be seen and reindexed). A negative event
     drift (truth > index) is the *safe* direction — ``archive reindex`` rebuilds
     the index from truth; a positive drift (index > truth) or any parse error is a
     real integrity problem. Parse errors split into ``parse_errors_torn_tail``
@@ -1039,12 +1070,14 @@ def verify(
     re-hashing the stored payload and comparing detects silent payload corruption
     (bit rot, a bad write) with no extra state. The hash covers only the payload's
     *semantic content keys* (``_DEDUP_CONTENT_KEYS``) — corruption in other payload
-    fields (model names, metadata) is invisible to it. Report-only — it never fails
-    ``ok``: a payload-repair pass that rewrites content in place leaves a stale
-    hash behind, so a stable nonzero baseline is expected; the signal is the
-    count *jumping* between runs, so the previous run's counts are persisted in
-    ``manifest.json`` and each run reports the delta. CPU-heavy (re-hashes every
-    payload twice).
+    fields (model names, metadata) is invisible to it. A *new* mismatch fails
+    ``ok``: each run's counts are persisted in ``manifest.json`` and diffed
+    against the previous run's baseline — an increase (or any mismatch on a
+    baseline-less first run) means content changed underneath its key since the
+    last look, and health must go red until it's seen. The stamped baseline
+    absorbs the count, so an acknowledged (e.g. legitimately-repaired-in-place)
+    mismatch fails exactly one run rather than pinning verify red forever.
+    CPU-heavy (re-hashes every payload twice).
 
     ``backup`` scans a backup mirror of the truth directory with the same
     parse-and-count pass as the live truth (no watermark bound — the mirror is a
@@ -1129,12 +1162,18 @@ def verify(
                 "AND NOT EXISTS(SELECT 1 FROM events e WHERE e.id = f.event_id)",
                 (watermark,),
             ).fetchone()[0]
+    # Declared-schema parity (cheap PRAGMA introspection): a live index that
+    # predates a model change runs under-enforced until a reindex — that gap
+    # must be seen on the daily cadence, not discovered from its consequences.
+    schema = _verify_schema()
     result = {
         "ok": (
             drift_threads == 0 and drift_events == 0 and truth["parse_errors"] == 0
             and quick_check == "ok"
             and fts_shadow == fts5 and fts_orphans == 0
+            and schema["ok"]
         ),
+        "schema": schema,
         "truth": truth,
         "index": {
             "threads": int(idx_threads),
@@ -1154,6 +1193,19 @@ def verify(
         result["ok"] = result["ok"] and result["deep"]["ok"]
     if hashes:
         result["hashes"] = _verify_hashes(watermark)
+        # Detected corruption must fail health, not just be reported: any *new*
+        # mismatch since the previous baseline (or any mismatch at all on a
+        # first, baseline-less run) fails ``ok``. The baseline this run stamps
+        # absorbs the count, so the failure fires once and the delta signal
+        # stays meaningful — a legitimately-repaired payload's stale hash
+        # doesn't keep verify red forever, but it is *seen* red once.
+        h, delta = result["hashes"], result["hashes"].get("delta")
+        if delta is not None:
+            new_mismatches = delta["truth_mismatched"] > 0 or delta["index_mismatched"] > 0
+        else:
+            new_mismatches = bool(h["truth"]["mismatched"] or h["index"]["mismatched"])
+        result["hashes"]["new_mismatches"] = new_mismatches
+        result["ok"] = result["ok"] and not new_mismatches
     if backup is not None:
         result["backup"] = _verify_backup(Path(backup).expanduser(), truth)
         result["ok"] = result["ok"] and result["backup"]["ok"]
@@ -1188,6 +1240,68 @@ def verify(
     if hashes:
         _record_health("verify_hashes_last", {"ok": bool(result["ok"])})
     return result
+
+
+def _verify_schema() -> dict:
+    """Live index schema vs the declared models — the under-enforcement check.
+
+    Startup schema provisioning is ``create_all`` only: it creates *missing
+    tables* but never retrofits new columns, indexes, or constraints onto
+    existing ones, so a live index created before a model change can silently
+    run under-enforced (e.g. the ``(thread_id, dedup_key)`` unique index absent
+    → DB-level dedup off) until the next reindex. Introspects the live SQLite
+    schema against ``Base.metadata`` directly — no stored version stamp to
+    drift — and reports missing columns, named indexes, and unique constraints
+    (matched by column set; SQLite realizes them as auto-named unique indexes).
+    Extra live-side objects are ignored: an older/foreign index must still
+    open. Anything missing fails ``verify``'s ``ok`` — the fix is ``archive
+    reindex``, which builds a fresh index with the full declared schema."""
+    from sqlalchemy import UniqueConstraint as _UC
+
+    from .store import Base, get_session
+
+    missing_tables: list[str] = []
+    missing_columns: list[str] = []
+    missing_indexes: list[str] = []
+    missing_uniques: list[str] = []
+    with get_session() as s:
+        conn = s.connection().connection  # raw sqlite3
+        live_tables = {
+            r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")
+        }
+        for table in Base.metadata.tables.values():
+            if table.name not in live_tables:
+                missing_tables.append(table.name)
+                continue
+            live_cols = {r[1] for r in conn.execute(f"PRAGMA table_info({table.name})")}
+            missing_columns += [
+                f"{table.name}.{c.name}" for c in table.columns if c.name not in live_cols
+            ]
+            index_list = conn.execute(f"PRAGMA index_list({table.name})").fetchall()
+            live_index_names = {r[1] for r in index_list}
+            missing_indexes += [
+                str(idx.name) for idx in table.indexes if idx.name not in live_index_names
+            ]
+            live_unique_colsets = {
+                frozenset(
+                    r[2] for r in conn.execute(f"PRAGMA index_info({row[1]})") if r[2]
+                )
+                for row in index_list
+                if row[2]  # unique flag
+            }
+            for uc in table.constraints:
+                if not isinstance(uc, _UC):
+                    continue
+                cols = frozenset(c.name for c in uc.columns)
+                if cols not in live_unique_colsets:
+                    missing_uniques.append(f"{table.name}({', '.join(sorted(cols))})")
+    return {
+        "ok": not (missing_tables or missing_columns or missing_indexes or missing_uniques),
+        "missing_tables": missing_tables,
+        "missing_columns": missing_columns,
+        "missing_indexes": missing_indexes,
+        "missing_unique_constraints": missing_uniques,
+    }
 
 
 def _verify_backup(dest: Path, live_truth: dict) -> dict:
@@ -1277,7 +1391,11 @@ def _verify_hashes(watermark: int) -> dict:
     the key. Events with a key whose tail isn't a hash are skipped and counted
     (``unhashed_keys``); events with no dedup_key at all are counted too
     (``no_key``) — they have zero content self-validation, and the count keeps
-    that boundary visible."""
+    that boundary visible.
+
+    The caller (``verify``) fails ``ok`` when the mismatch count *increased*
+    since the previous baseline (see ``new_mismatches``); the counts themselves
+    are informational."""
     import json as _json
 
     from .store import get_session

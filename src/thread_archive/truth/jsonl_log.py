@@ -784,11 +784,84 @@ def _drain_before_commit(session: Session) -> None:
             _clear_intent()  # the batch is undone; the frame must not outlive it
             raise
         _clear_intent()  # inside the lock: an intent is never visible outside its batch
+        # Remember what this drain appended (per file: baseline → post-drain size)
+        # so a COMMIT failure *after* the drain can compensate (see
+        # _undo_drain_on_rollback). Cleared on successful commit.
+        session.info[_DRAINED] = {
+            path: (size, path.stat().st_size) for path, size in baselines.items()
+        }
+
+
+# A successful drain's footprint, kept on the session until its COMMIT lands:
+# {path: (baseline_size_or_None, post_drain_size)}. The compensation seam for
+# the one atomicity gap the drain leaves open — truth is written and fsynced
+# before the SQLite COMMIT, so a COMMIT that then fails (disk full, a
+# constraint enforced at the final flush, busy timeout) leaves the batch in the
+# truth with no projection row. That is the *safe* direction (JSONL ⊇ SQLite),
+# but it isn't atomic: a later reindex materializes the uncommitted batch.
+_DRAINED = "_jsonl_drained"
+
+
+@event.listens_for(Session, "after_commit")
+def _forget_drain_on_commit(session: Session) -> None:
+    session.info.pop(_DRAINED, None)
 
 
 @event.listens_for(Session, "after_rollback")
 def _discard_on_rollback(session: Session) -> None:
     session.info.pop(_PENDING, None)
+
+
+@event.listens_for(Session, "after_transaction_end")
+def _compensate_failed_commit(session: Session, transaction) -> None:
+    # The root transaction ending with the drain footprint still present means
+    # the COMMIT never landed (a successful one pops it in after_commit, which
+    # fires first). after_transaction_end — not after_rollback — is the hook
+    # that actually fires on every such path: a commit that raises mid-flight
+    # ends via the session context manager's close(), which never emits
+    # after_rollback.
+    if transaction.parent is None and _DRAINED in session.info:
+        _undo_drain(session)
+
+
+def _undo_drain(session: Session) -> None:
+    """Best-effort compensation when a COMMIT failed after its drain succeeded:
+    truncate each touched truth file back to its pre-drain baseline, so the
+    truth doesn't keep a transaction SQLite rejected (which reindex would
+    otherwise resurrect, and which — for metadata records — carries no fresh
+    event id for recovery to reconcile against).
+
+    Only provably-safe undos run: under the exclusive truth-write lock, a file
+    is rolled back only if its current size still equals the drain's post-drain
+    size — any other writer's append since (sizes differ) leaves the file
+    alone, degrading to the documented JSONL ⊇ SQLite behavior. Failure here is
+    logged, never raised: the transaction is already over and the leftover
+    truth rows are the benign direction (dedup collapses a re-import)."""
+    drained: dict[Path, tuple[int | None, int]] | None = session.info.pop(_DRAINED, None)
+    if not drained:
+        return
+    try:
+        with _truth_write_lock():
+            for path, (baseline, post_size) in drained.items():
+                try:
+                    if not path.exists() or path.stat().st_size != post_size:
+                        continue  # someone else appended (or repaired) — leave it
+                    fh = _handles.pop(str(path), None)
+                    if fh is not None and not fh.closed:
+                        fh.close()
+                    if baseline is None:
+                        path.unlink(missing_ok=True)  # the drain created it
+                        _fsync_dir(path.parent)
+                    else:
+                        with open(path, "rb+") as rb:
+                            rb.truncate(baseline)
+                            os.fsync(rb.fileno())
+                except OSError:  # pragma: no cover — compensation is best-effort
+                    logger.exception(
+                        "truth: could not undo drained batch in %s after rollback", path
+                    )
+    except OSError:  # pragma: no cover — lock unavailable; leave the safe direction
+        logger.exception("truth: post-rollback drain compensation skipped")
 
 
 # ── checkpoint (cross-thread snapshots + metadata-update backstop) ───────────
@@ -1458,16 +1531,28 @@ def _committed_regression(index_path: Path, tmp_path: Path) -> dict | None:
     The gate behind fail-closed publication: every event and kg-event id the
     live index holds must survive into the build — an event may instead survive
     as a same-content twin (same ``(thread_id, dedup_key)`` under another id;
-    dedup collapse legitimately re-keys those). Anything else missing means the
-    truth lost committed content (a damaged line, a deleted file) and the swap
-    would make the loss permanent-by-default. Returns ``None`` when there is no
-    readable previous index to diff against (a fresh restore has no baseline)."""
+    dedup collapse legitimately re-keys those). Threads are checked by id too:
+    an event-less thread lost to a name-conflict ``OR REPLACE`` (or a deleted
+    truth file) has no event row to trip the event diff. Anything else missing
+    means the truth lost committed content (a damaged line, a deleted file) and
+    the swap would make the loss permanent-by-default. Returns ``None`` when
+    there is no readable previous index to diff against (a fresh restore has no
+    baseline)."""
     if not index_path.exists():
         return None
     conn = sqlite3.connect(tmp_path)
     try:
         try:
             conn.execute("ATTACH DATABASE ? AS old", (str(index_path),))
+            lost_threads = conn.execute(
+                "SELECT count(*) FROM old.threads o "
+                "WHERE NOT EXISTS(SELECT 1 FROM main.threads n WHERE n.id = o.id)"
+            ).fetchone()[0]
+            thread_sample = [r[0] for r in conn.execute(
+                "SELECT o.id FROM old.threads o "
+                "WHERE NOT EXISTS(SELECT 1 FROM main.threads n WHERE n.id = o.id) "
+                "ORDER BY o.id LIMIT 10"
+            ).fetchall()] if lost_threads else []
             lost_events = conn.execute(
                 "SELECT count(*) FROM old.events o "
                 "WHERE NOT EXISTS(SELECT 1 FROM main.events n WHERE n.id = o.id) "
@@ -1494,7 +1579,29 @@ def _committed_regression(index_path: Path, tmp_path: Path) -> dict | None:
             return None
     finally:
         conn.close()
-    return {"events": int(lost_events), "event_sample": sample, "kg_events": int(lost_kg)}
+    return {
+        "events": int(lost_events), "event_sample": sample,
+        "kg_events": int(lost_kg),
+        "threads": int(lost_threads), "thread_sample": thread_sample,
+    }
+
+
+def _build_fk_violations(tmp_path: Path) -> list[tuple]:
+    """``PRAGMA foreign_key_check`` over the whole build — the relational gate
+    behind fail-closed publication. The loader runs FK-OFF with blanket
+    ``INSERT OR REPLACE``, so a load-order accident can delete a parent row
+    while its children survive (``threads.name`` is UNIQUE: two thread records
+    sharing a name make OR REPLACE silently drop one thread and orphan its
+    events). ``quick_check`` is page-level and cannot see that. Every declared
+    FK targets ``threads`` — deliberately-soft references (citations to
+    events) carry no FK, so this gate can never refuse a rebuild over the
+    dangling citations ``verify --deep`` tolerates by design. Returns up to 20
+    ``(table, rowid, parent, fkid)`` rows."""
+    conn = sqlite3.connect(tmp_path)
+    try:
+        return conn.execute("PRAGMA foreign_key_check").fetchmany(20)
+    finally:
+        conn.close()
 
 
 def _files_for_thread(d: Path, thread_id: int) -> list[Path]:
@@ -1644,9 +1751,15 @@ def reindex(*, vectors: bool = False, salvage: bool = False) -> dict:
     never block the recovery primitive. What must never happen instead is a
     swap that silently *loses committed records*, so before publishing the
     build is diffed against the current index (:func:`_committed_regression`):
-    any event or kg-event the old index holds that the rebuild lacks — by id,
-    and for events with no same-content twin surviving under another id —
-    aborts the swap (the old index stays live) and the error names the loss. A
+    any event, kg-event, or thread the old index holds that the rebuild lacks —
+    by id, and for events with no same-content twin surviving under another id —
+    aborts the swap (the old index stays live) and the error names the loss.
+    The build must also pass ``PRAGMA foreign_key_check``
+    (:func:`_build_fk_violations`) — the FK-OFF OR REPLACE load can orphan
+    children when conflicting parent records collide, and a structurally
+    inconsistent build must not be published. Deliberately-soft references
+    (citations to events) carry no FK, so the gate never blocks the tolerated
+    dangling-citation case; ``salvage=True`` overrides it like the loss gate. A
     crash fragment was never committed (truth is fsynced before its COMMIT), so
     it can't trip the gate; a damaged committed line always does. ``salvage=True``
     is the deliberate override: publish the lossy rebuild anyway. With no
@@ -1715,19 +1828,20 @@ def reindex(*, vectors: bool = False, salvage: bool = False) -> dict:
             counts["parse_errors_interior"] = len(interior)
             if not salvage:
                 lost = _committed_regression(index_path, tmp_path)
-                if lost is not None and (lost["events"] or lost["kg_events"]):
+                if lost is not None and (lost["events"] or lost["kg_events"] or lost["threads"]):
                     err_sample = ", ".join(f"{p}:{ln}" for p, ln in interior[:5])
                     raise RuntimeError(
                         f"reindex: the rebuild would lose {lost['events']} committed "
-                        f"event(s) and {lost['kg_events']} curation event(s) the "
-                        f"current index holds (event sample: {lost['event_sample']}) "
+                        f"event(s), {lost['kg_events']} curation event(s) and "
+                        f"{lost['threads']} thread(s) the current index holds "
+                        f"(event sample: {lost['event_sample']}; thread sample: "
+                        f"{lost['thread_sample']}) "
                         "— refusing to publish; the old index was left in place. "
                         + (f"Likely cause: {len(interior)} damaged truth line(s) "
                            f"({err_sample}). " if interior else "")
                         + "Repair the truth (or restore it from backup), or rerun "
                         "with --salvage to publish the lossy rebuild anyway."
                     )
-
             counts.update(_reconcile_collapsed_citations(d, loader))
 
             # FTS + vectors resolve their engine via get_engine(); point them at
@@ -1767,6 +1881,24 @@ def reindex(*, vectors: bool = False, salvage: bool = False) -> dict:
             _unlink_build(tmp_path)  # the old index was never touched
             raise
         loader.dispose()
+
+        # Relational gate on the FINISHED build (after the reconciliation pass
+        # has run its deterministic repairs): the FK-OFF OR REPLACE load can
+        # orphan children when conflicting parent records collide, and a
+        # structurally inconsistent build must not be published. Salvage
+        # overrides, like the loss gate.
+        if not salvage:
+            fk_violations = _build_fk_violations(tmp_path)
+            if fk_violations:
+                _unlink_build(tmp_path)
+                raise RuntimeError(
+                    "reindex: the rebuild is relationally inconsistent — "
+                    f"foreign_key_check reported {len(fk_violations)} violation(s) "
+                    f"(sample: {fk_violations[:5]}) — refusing to publish; the old "
+                    "index was left in place. Likely cause: conflicting thread "
+                    "records in the truth (OR REPLACE dropped a parent row). "
+                    "Repair the truth, or rerun with --salvage to publish anyway."
+                )
 
         # Page-level gate: a build file corrupted on disk (a bad write during the
         # hours-long rebuild) must not replace a healthy index. Before the WAL
