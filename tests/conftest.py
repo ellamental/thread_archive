@@ -23,10 +23,10 @@ import pytest
 
 @pytest.fixture(autouse=True)
 def _isolate_archive(tmp_path, monkeypatch):
-    from thread_archive import config
-    from thread_archive.retrieval import embed, rerank
-    from thread_archive.store import _base
-    from thread_archive.truth import jsonl_log
+    from thread_archive import _config as config
+    from thread_archive._retrieval import embed, rerank
+    from thread_archive._store import _base
+    from thread_archive._truth import jsonl_log
 
     # Default home for any test that doesn't set its own (archive_home / --home).
     monkeypatch.setenv(config.ENV_HOME, str(tmp_path / "_home"))
@@ -56,7 +56,7 @@ def archive_home(tmp_path, monkeypatch):
     this only overrides the home location and hands the test the directory so it can
     inspect ``truth/`` and ``index.db``.
     """
-    from thread_archive import config
+    from thread_archive import _config as config
 
     home = tmp_path / "arc"
     home.mkdir(parents=True, exist_ok=True)

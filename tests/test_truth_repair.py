@@ -21,9 +21,9 @@ import pytest
 from sqlalchemy import select
 
 import thread_archive as ta
-from thread_archive.store import Event, Thread, get_session, init_db
-from thread_archive.truth import jsonl_log, scan_truth_counts
-from thread_archive.truth.repair import FRAGMENTS_FILE, QUARANTINE_SUBDIR
+from thread_archive._store import Event, Thread, get_session, init_db
+from thread_archive._truth import jsonl_log, scan_truth_counts
+from thread_archive._truth.repair import FRAGMENTS_FILE, QUARANTINE_SUBDIR
 
 from .helpers import corrupt_event_line, event_count, import_cc_session, one_thread_file
 

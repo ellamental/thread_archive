@@ -14,7 +14,7 @@ import json
 from sqlalchemy import text
 
 import thread_archive as ta
-from thread_archive.store import get_session
+from thread_archive._store import get_session
 
 
 def cc_user(name: str = "sess", content: str | None = None) -> dict:
@@ -63,7 +63,7 @@ def event_count() -> int:
 def corrupt_event_line(tf, marker: str = '{"type": "event", "id": corrupted beyond') -> str:
     """Replace the file's first event line with an unparseable one; returns the
     original line so the test can assert on what was lost."""
-    from thread_archive.truth import jsonl_log
+    from thread_archive._truth import jsonl_log
 
     lines = tf.read_text(encoding="utf-8").splitlines()
     idx = next(i for i, ln in enumerate(lines) if '"type": "event"' in ln)

@@ -8,8 +8,8 @@ import json
 
 from sqlalchemy import func, select
 
-from thread_archive.importers import import_cowork_session_incremental
-from thread_archive.store import Event, Thread, get_session, init_db
+from thread_archive._importers import import_cowork_session_incremental
+from thread_archive._store import Event, Thread, get_session, init_db
 
 
 def _write_jsonl(path, lines) -> None:

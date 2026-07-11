@@ -9,8 +9,8 @@ import sqlite3
 
 from sqlalchemy import select
 
-from thread_archive.store import Event, get_session, init_db
-from thread_archive.watcher import ClaudeCodeWatcher, Watcher, cursor_watcher
+from thread_archive._store import Event, get_session, init_db
+from thread_archive._watcher import ClaudeCodeWatcher, Watcher, cursor_watcher
 
 USER = {"type": "user", "uuid": "u1", "timestamp": "2026-01-01T10:00:00Z",
         "cwd": "/proj", "message": {"role": "user", "content": "hello watcher"}}
@@ -75,9 +75,9 @@ def test_cloth_watcher_detects_imports_and_self_gates(archive_home, tmp_path) ->
     the default set, and self-gates (inert, process-free) when the cloth home is absent."""
     from sqlalchemy import select
 
-    from thread_archive.store import Thread
-    from thread_archive.watcher import cloth_watcher
-    from thread_archive.watcher.sources import default_watchers
+    from thread_archive._store import Thread
+    from thread_archive._watcher import cloth_watcher
+    from thread_archive._watcher.sources import default_watchers
 
     assert "cloth" in [w.source_name for w in default_watchers()]
     assert not cloth_watcher(threads_dir=tmp_path / "no-cloth-here").is_available()
@@ -175,7 +175,7 @@ def test_watcher_maintenance_writes_manifest_not_overlays(archive_home, tmp_path
 def test_watcher_embed_pending_delegates_bounded(archive_home, monkeypatch) -> None:
     """embed_pending() drains the freshest gap, bounded by embed_batch — it asks the
     incremental embedder for the newest missing vectors, capped."""
-    from thread_archive.retrieval import vectors as V
+    from thread_archive._retrieval import vectors as V
 
     seen = {}
     monkeypatch.setattr(
@@ -234,8 +234,8 @@ def test_watch_once_holds_shared_ingest_lock(archive_home, monkeypatch, capsys):
     import os
 
     from thread_archive import cli
-    from thread_archive.truth.jsonl_log import _reindex_lock_path
-    from thread_archive.watcher.base import WatchResult
+    from thread_archive._truth.jsonl_log import _reindex_lock_path
+    from thread_archive._watcher.base import WatchResult
 
     seen = {}
 
@@ -263,7 +263,7 @@ def test_failed_items_inside_a_db_scan_surface_too(archive_home, tmp_path, monke
     a caught failure that only reaches the log leaves the scan looking like a clean
     "nothing new" — the source stays green while a conversation is missing. The failure
     has to ride out to the poll's errors."""
-    from thread_archive.importers import cursor as cursor_importer
+    from thread_archive._importers import cursor as cursor_importer
 
     init_db()
     db = tmp_path / "state.vscdb"
@@ -286,7 +286,7 @@ def test_poll_errors_surface_in_health(archive_home) -> None:
     only to whoever reads the daemon's stderr log — a provider format change
     could otherwise stall one source's ingest for weeks while status stays green."""
     import thread_archive as ta
-    from thread_archive.watcher.base import SourceWatcher
+    from thread_archive._watcher.base import SourceWatcher
 
     class Broken(SourceWatcher):
         source_name = "broken-source"

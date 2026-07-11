@@ -82,21 +82,40 @@ archive status            # archive health / counts / last verify + backup + dri
 src/thread_archive/
   api.py            # the public Python library surface (thread_archive.*)
   cli.py            # the `archive` command
-  config.py         # truth dir + index path resolution
-  store/            # SQLite store + schema
-  truth/            # JSONL truth log + reindex
-  importers/        # incremental import orchestration
-  retrieval/        # FTS5 + vector search, read reconstruction
-  knowledge/        # topic graph: event-sourced curation + Leiden analytics
-  watcher/          # local-source watcher (self-feeding ingest)
-  mcp/              # library-native MCP servers (read + librarian)
-  web/              # `archive web`: stdlib server + the built viewer (static/)
-  _thread_import/   # vendored provider parsers (a clean, dependency-free island; private)
-frontend/           # the viewer's React+Vite source (dev-only; builds into web/static/)
+  manifest.py       # thread-family product manifest hook (python -m thread_archive.manifest)
+  _config.py        # truth dir + index path resolution
+  _store/           # SQLite store + schema
+  _truth/           # JSONL truth log + reindex
+  _importers/       # incremental import orchestration
+  _retrieval/       # FTS5 + vector search, read reconstruction
+  _knowledge/       # topic graph: event-sourced curation + Leiden analytics
+  _watcher/         # local-source watcher (self-feeding ingest)
+  _mcp/             # library-native MCP servers (read + librarian)
+  _web/             # `archive web`: stdlib server + the built viewer (static/)
+  _thread_import/   # vendored provider parsers (a clean, dependency-free island)
+frontend/           # the viewer's React+Vite source (dev-only; builds into _web/static/)
 host/               # `archive watch` LaunchAgent (live ingest)
 scripts/            # operator tools (e.g. the librarian backfill driver)
 tests/install/      # isolated Docker install test + fixtures
 ```
+
+## Stability
+
+The version stays 0.0.x until a stable API is deliberately exposed. Until then
+the supported surface is exactly:
+
+- the functions in `thread_archive.__all__` (see `api.py`) — small, but still
+  free to change without notice at 0.0.x;
+- the `archive` CLI and the two MCP servers (`archive-mcp`,
+  `archive-librarian-mcp`);
+- `python -m thread_archive.manifest` (the thread-family manifest hook);
+- **the on-disk truth format** — versioned by `manifest.json`'s `version` and
+  specified in [docs/format.md](docs/format.md). Data written by one release
+  stays readable by the next; a reader refuses a truth directory newer than it
+  understands.
+
+Every underscore-prefixed module is private. `tests/test_public_api.py`
+ratchets the boundary.
 
 ## Web viewer
 

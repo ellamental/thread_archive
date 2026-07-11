@@ -11,7 +11,7 @@ from __future__ import annotations
 import asyncio
 import json
 
-from thread_archive.mcp import librarian as L
+from thread_archive._mcp import librarian as L
 
 from .helpers import import_cc_session
 

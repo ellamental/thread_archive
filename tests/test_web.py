@@ -10,7 +10,7 @@ from __future__ import annotations
 import json
 
 import thread_archive as ta
-from thread_archive.web import route
+from thread_archive._web import route
 
 USER = {"type": "user", "uuid": "u1", "timestamp": "2026-01-01T10:00:00Z",
         "cwd": "/proj", "message": {"role": "user", "content": "hello webview"}}
@@ -44,7 +44,7 @@ def _claude_code_session_uuid(archive_home):
     seeded thread — the kind of id an editor would resolve via archive-link."""
     from sqlalchemy import select
 
-    from thread_archive.store import ImportState, get_session
+    from thread_archive._store import ImportState, get_session
 
     ta.open_archive(str(archive_home))
     with get_session() as s:
@@ -57,7 +57,7 @@ def _seed_cloth(archive_home, uuid="27056da6-8578-4a8c-ab90-d634702dc42d"):
     """Import a minimal cloth session the way the watcher does — source_id is the bare
     session uuid (the file stem, no prefix). Returns the uuid a paster would drop into
     ``/archive/<uuid>`` and the archive thread id it seeded."""
-    from thread_archive.importers import import_cloth_session_incremental
+    from thread_archive._importers import import_cloth_session_incremental
 
     f = archive_home / f"{uuid}.jsonl"
     lines = [
@@ -75,7 +75,7 @@ def _seed_codex(archive_home, uuid="019f33d1-3e87-7a42-bab1-489d754fd0df"):
     """Import a minimal codex session the way the watcher does — source_id is the
     rollout filename stem ``rollout-{ts}-{uuid}`` (dash-joined, no colon). Returns the
     bare ``uuid`` an editor's archive-link passes and the archive thread id it seeded."""
-    from thread_archive.importers import import_codex_session_incremental
+    from thread_archive._importers import import_codex_session_incremental
 
     stem = f"rollout-2026-07-05T14-46-18-{uuid}"
     f = archive_home / f"{stem}.jsonl"
@@ -190,7 +190,7 @@ def test_built_assets_served(archive_home):
     # with a js/css content type, not the SPA fallback HTML.
     from pathlib import Path
 
-    from thread_archive.web import server
+    from thread_archive._web import server
 
     assets = Path(server.STATIC_DIR) / "assets"
     if not assets.is_dir():
@@ -333,7 +333,7 @@ def test_serve_in_thread_cohosts(archive_home):
     # the watcher's cohost path: a background server answering over a real socket
     import urllib.request
 
-    from thread_archive.web import serve_in_thread
+    from thread_archive._web import serve_in_thread
 
     _seed(archive_home)
     ta.open_archive(str(archive_home))

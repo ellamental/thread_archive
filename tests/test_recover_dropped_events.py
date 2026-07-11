@@ -9,11 +9,11 @@ import json
 
 from sqlalchemy import delete, select
 
-from thread_archive.importers import import_session_incremental
-from thread_archive.retrieval.fts import index_events
-from thread_archive.scripts.recover_dropped_events import RECOVERABLE_TYPES, plan_thread
-from thread_archive.store import Event, get_session, init_db
-from thread_archive.truth import write_events
+from thread_archive._importers import import_session_incremental
+from thread_archive._retrieval.fts import index_events
+from thread_archive._scripts.recover_dropped_events import RECOVERABLE_TYPES, plan_thread
+from thread_archive._store import Event, get_session, init_db
+from thread_archive._truth import write_events
 
 
 def _write_jsonl(path, lines) -> None:

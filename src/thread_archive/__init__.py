@@ -1,8 +1,19 @@
 """thread-archive: a serverless-native local archive for AI conversations.
 
 JSONL is the durable truth log; SQLite is a rebuildable projection. One storage
-path, no server backends. The public Python surface is below (see :mod:`.api`);
-the MCP server (:mod:`.mcp.server`) and the ``archive`` CLI are built on it.
+path, no server backends.
+
+The public surface is exactly:
+
+* the names in ``__all__`` below (re-exported from :mod:`.api`),
+* the ``archive`` CLI (:mod:`.cli`),
+* the two MCP servers (``archive-mcp`` / ``archive-librarian-mcp``),
+* the manifest hook (``python -m thread_archive.manifest``),
+* and the on-disk truth format (``docs/format.md``, versioned by
+  ``manifest.json``'s ``version``).
+
+Every underscore-prefixed module is private and may change without notice.
+``tests/test_public_api.py`` ratchets this boundary.
 """
 
 from __future__ import annotations
@@ -12,6 +23,7 @@ from .api import (
     bridge_topics,
     checkpoint,
     close,
+    embed,
     import_path,
     knowledge_status,
     nightly,
@@ -44,6 +56,7 @@ __all__ = [
     "read_thread_structured",
     "import_path",
     "reindex",
+    "embed",
     "checkpoint",
     "watch",
     "status",

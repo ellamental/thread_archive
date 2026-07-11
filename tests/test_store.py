@@ -14,7 +14,7 @@ from datetime import datetime, timezone
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 
-from thread_archive.store import (
+from thread_archive._store import (
     Event,
     ImportState,
     Thread,

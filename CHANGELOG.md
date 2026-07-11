@@ -2,6 +2,25 @@
 
 ## Unreleased
 
+- The public surface is now locked down to what's deliberately advertised:
+  every internal subpackage is underscore-private (`_store`, `_truth`,
+  `_retrieval`, `_knowledge`, `_importers`, `_watcher`, `_mcp`, `_web`,
+  `_scripts`, `_config`), leaving only `api`, `cli`, and `manifest` at public
+  names. `api.embed` (the `archive embed` backend) joined `__all__` — it was
+  the one public-named api function not re-exported. A ratchet test
+  (`tests/test_public_api.py`) pins `__all__`, the api-module surface, and the
+  set of public module names, so widening the API is an edit to a pinned list,
+  never a naming accident. README gained a Stability section stating the
+  supported surface.
+
+- The truth storage format is now versioned and specified: `docs/format.md`
+  documents the truth directory (manifest, per-thread files, sharding, record
+  shapes, dedup-key form, overlays, kg log, import cursors), the manifest's
+  existing `version: 1` is declared as the format version with a bump policy
+  (only for changes an existing reader would misinterpret), and readers now
+  *refuse* a truth directory declaring a newer version (`TruthFormatError`)
+  instead of guessing at unknown layout semantics.
+
 - The vendored provider-parser island moved from a public top-level
   `thread_import` package to `thread_archive._thread_import` — a pip install
   no longer plants a second, generically named public package in

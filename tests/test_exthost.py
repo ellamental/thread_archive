@@ -12,10 +12,10 @@ import json
 
 from sqlalchemy import select
 
-import thread_archive.watcher.exthost as ex
-from thread_archive.importers._state import create_thread
-from thread_archive.store import Event, get_session, init_db
-from thread_archive.watcher.exthost import ExthostWatcher
+import thread_archive._watcher.exthost as ex
+from thread_archive._importers._state import create_thread
+from thread_archive._store import Event, get_session, init_db
+from thread_archive._watcher.exthost import ExthostWatcher
 
 CWD = "/proj"
 SESSION = "sess-123-abc"

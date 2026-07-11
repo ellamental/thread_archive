@@ -10,10 +10,10 @@ from __future__ import annotations
 
 import json
 
-from thread_archive.importers import import_session_incremental
-from thread_archive.retrieval import read_thread, search
-from thread_archive.store import _base, get_engine, init_db
-from thread_archive.truth import jsonl_log, reindex
+from thread_archive._importers import import_session_incremental
+from thread_archive._retrieval import read_thread, search
+from thread_archive._store import _base, get_engine, init_db
+from thread_archive._truth import jsonl_log, reindex
 
 
 def _write_cc(path, lines) -> None:
@@ -87,7 +87,7 @@ def test_source_filter(archive_home) -> None:
     resolves it through an indexed subquery on threads.source."""
     from sqlalchemy import update
 
-    from thread_archive.store import Thread, use_session
+    from thread_archive._store import Thread, use_session
 
     _seed_corpus(archive_home)
     # both fixture threads import as 'claude-code'; relabel the db thread to 'cursor'
@@ -176,7 +176,7 @@ def test_empty_query_returns_nothing(archive_home) -> None:
 # --- match-quality signal ---------------------------------------------------
 
 def test_quality_verdict_logic() -> None:
-    from thread_archive.retrieval.format import _search_quality, _term_hit_count
+    from thread_archive._retrieval.format import _search_quality, _term_hit_count
 
     # term matching: ≥4 chars substring, <4 chars word-boundary, each term once
     assert _term_hit_count("the authentication flow", ["authentication"]) == 1
@@ -193,7 +193,7 @@ def test_quality_verdict_logic() -> None:
 
 
 def test_quality_signal_rendered(archive_home) -> None:
-    from thread_archive.retrieval import format_results
+    from thread_archive._retrieval import format_results
 
     _seed_corpus(archive_home)
     # rerank=False forces the lexical verdict (a 2-term query auto-reranks to
@@ -212,7 +212,7 @@ def test_quality_signal_rendered(archive_home) -> None:
 def test_output_count_and_linkable(archive_home) -> None:
     import json as _json
 
-    from thread_archive.retrieval import format_results
+    from thread_archive._retrieval import format_results
 
     _seed_corpus(archive_home)
     cnt = format_results(search("get_session", output="count"), "get_session", output="count")
@@ -262,7 +262,7 @@ def test_sort_oldest_is_strict_and_chronological(archive_home) -> None:
     """oldest = earliest strict matches; the OR tier sits out so a partial match
     can't leapfrog the true first mention, and the lexical scan itself runs
     oldest-first (pool holds the earliest rows, not bm25's favourites)."""
-    from thread_archive.retrieval import search_events
+    from thread_archive._retrieval import search_events
 
     _seed_corpus(archive_home)
     assert search("authentication zzzmissing", sort="oldest") == []
@@ -275,7 +275,7 @@ def test_sort_oldest_is_strict_and_chronological(archive_home) -> None:
 # --- context_lines ----------------------------------------------------------
 
 def test_context_lines(archive_home) -> None:
-    from thread_archive.retrieval._context import extract_context_lines
+    from thread_archive._retrieval._context import extract_context_lines
 
     block = extract_context_lines("line one\nhas the AUTH term\nline three\nfour", "auth", 1)
     rows = block.split("\n")
@@ -284,7 +284,7 @@ def test_context_lines(archive_home) -> None:
     assert rows[2].startswith("    3: ")
 
     _seed_corpus(archive_home)
-    from thread_archive.retrieval import format_results
+    from thread_archive._retrieval import format_results
     out = format_results(search("authentication", content_types=["user"], context_lines=2),
                          "authentication")
     assert ">>>" in out                            # context block replaced the snippet
@@ -293,7 +293,7 @@ def test_context_lines(archive_home) -> None:
 # --- context_events ---------------------------------------------------------
 
 def test_context_events(archive_home) -> None:
-    from thread_archive.retrieval._context import parse_context_events_spec
+    from thread_archive._retrieval._context import parse_context_events_spec
 
     assert parse_context_events_spec("3") == (3, 3, None)
     assert parse_context_events_spec("0:1") == (0, 1, None)

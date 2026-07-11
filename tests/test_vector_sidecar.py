@@ -14,7 +14,7 @@ import sqlite3
 from sqlalchemy import text
 
 import thread_archive as ta
-from thread_archive.store import get_session
+from thread_archive._store import get_session
 
 from .helpers import import_cc_session
 
@@ -25,7 +25,7 @@ def _event_ids() -> list[int]:
 
 
 def _index_fake_vectors(event_ids: list[int]) -> None:
-    from thread_archive.retrieval.vectors import index_vectors
+    from thread_archive._retrieval.vectors import index_vectors
 
     assert index_vectors(
         (eid, "user", [float(eid % 7 + 1)] * 768) for eid in event_ids
@@ -38,7 +38,7 @@ def _vector_count() -> int:
 
 
 def test_plain_reindex_restores_sidecar_and_prunes_orphans(archive_home, tmp_path) -> None:
-    from thread_archive.retrieval.vectors import save_vectors_sidecar
+    from thread_archive._retrieval.vectors import save_vectors_sidecar
 
     import_cc_session(tmp_path)
     ids = _event_ids()
@@ -54,7 +54,7 @@ def test_plain_reindex_restores_sidecar_and_prunes_orphans(archive_home, tmp_pat
 
 
 def test_empty_save_never_clobbers_a_populated_sidecar(archive_home, tmp_path) -> None:
-    from thread_archive.retrieval.vectors import save_vectors_sidecar
+    from thread_archive._retrieval.vectors import save_vectors_sidecar
 
     import_cc_session(tmp_path)
     _index_fake_vectors(_event_ids())

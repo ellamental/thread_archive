@@ -22,8 +22,8 @@ from sqlalchemy import event as sa_event
 from sqlalchemy import text
 
 import thread_archive as ta
-from thread_archive.store import Event, get_engine, get_session
-from thread_archive.truth import jsonl_log
+from thread_archive._store import Event, get_engine, get_session
+from thread_archive._truth import jsonl_log
 
 from .helpers import event_count, import_cc_session, one_thread_file
 
@@ -242,7 +242,7 @@ def test_backup_checkpoints_before_verifying(archive_home, tmp_path, monkeypatch
     calls: list[str] = []
 
     import thread_archive.api as api
-    from thread_archive import truth
+    from thread_archive import _truth as truth
 
     real_checkpoint, real_verify = truth.checkpoint, api.verify
     monkeypatch.setattr(

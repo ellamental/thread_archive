@@ -18,7 +18,7 @@ import json
 from sqlalchemy import select
 
 import thread_archive as ta
-from thread_archive.store import Event, ImportState, get_session
+from thread_archive._store import Event, ImportState, get_session
 
 from .helpers import append_jsonl, cc_assistant, cc_user, event_count, write_jsonl
 

@@ -18,7 +18,7 @@ import os
 from pathlib import Path
 from typing import Optional
 
-from .config import ENV_HOME, ArchivePaths, resolve_paths
+from ._config import ENV_HOME, ArchivePaths, resolve_paths
 
 # (st_dev, st_ino) of index.db at the last open_archive — swap detection.
 _index_ident: Optional[tuple[int, int]] = None
@@ -41,7 +41,7 @@ def _reconnect_if_swapped(paths: ArchivePaths) -> None:
         return
     ident = (st.st_dev, st.st_ino)
     if _index_ident is not None and ident != _index_ident:
-        from .store import get_engine
+        from ._store import get_engine
 
         get_engine().dispose()
     _index_ident = ident
@@ -57,10 +57,10 @@ def open_archive(home: Optional[str] = None) -> ArchivePaths:
     """
     paths = resolve_paths(home).ensure()
     target = paths.sqlalchemy_url
-    from .store import active_dsn, init_db, init_engine
+    from ._store import active_dsn, init_db, init_engine
 
     if active_dsn() is not None and active_dsn() != target:
-        from .truth import reset_handles
+        from ._truth import reset_handles
 
         reset_handles()  # stale handles point at the previous home's files
     # Pin the home so engine + truth + search resolve consistently for the process.
@@ -73,8 +73,8 @@ def open_archive(home: Optional[str] = None) -> ArchivePaths:
 
 def close() -> None:
     """Dispose the engine so a different archive can be opened."""
-    from .store import close_engine
-    from .truth import reset_handles
+    from ._store import close_engine
+    from ._truth import reset_handles
 
     reset_handles()
     close_engine()
@@ -154,7 +154,7 @@ def search(
     forces the cross-encoder stage (else auto-gated to conceptual queries when the
     ``[embeddings]`` extra is present)."""
     open_archive(home)
-    from .retrieval import search as _search
+    from ._retrieval import search as _search
 
     return _search(
         query,
@@ -196,9 +196,9 @@ def read_thread(
     size-budgeted (``max_chars``, default ~48k). ``tool_results`` (default off) adds
     tool output under each call in ``full``. ``summary`` swaps in a summary view:
     ``True``/``'toc'`` = compact TOC, ``'short'`` / ``'indexed'`` = the stored thread
-    summaries; see :func:`thread_archive.retrieval.read_thread` for the full contract."""
+    summaries; see :func:`thread_archive._retrieval.read_thread` for the full contract."""
     open_archive(home)
-    from .retrieval import read_thread as _read
+    from ._retrieval import read_thread as _read
 
     return _read(
         thread_id,
@@ -223,9 +223,9 @@ def read_thread_structured(
     """Reconstruct a thread as structured messages (typed render blocks) for the web
     viewer. ``thread_id`` accepts an integer thread id or a provider session id.
     Returns ``{thread_id, title, source, messages}``; see
-    :func:`thread_archive.retrieval.read_thread_structured`."""
+    :func:`thread_archive._retrieval.read_thread_structured`."""
     open_archive(home)
-    from .retrieval import read_thread_structured as _read
+    from ._retrieval import read_thread_structured as _read
 
     return _read(thread_id, include_thinking=include_thinking, include_tools=include_tools)
 
@@ -240,9 +240,9 @@ def import_path(path, *, home: Optional[str] = None, provider: str = "claude-cod
     overlays, so it does not rewrite those snapshots.
     """
     open_archive(home)
-    from .importers import DB_SCANNERS, LINE_STREAM_IMPORTERS
-    from .truth import checkpoint as _checkpoint
-    from .truth import shared_ingest_lock
+    from ._importers import DB_SCANNERS, LINE_STREAM_IMPORTERS
+    from ._truth import checkpoint as _checkpoint
+    from ._truth import shared_ingest_lock
 
     p = Path(path)
     # Held shared across the truth append AND the SQLite commit: an unlocked import
@@ -269,7 +269,7 @@ def reindex(*, home: Optional[str] = None, vectors: bool = False, salvage: bool 
     and the error names the loss; ``salvage=True`` publishes the lossy rebuild
     anyway. Crash artifacts (torn lines that never committed) never block."""
     open_archive(home)
-    from .truth import reindex as _reindex
+    from ._truth import reindex as _reindex
 
     return _reindex(vectors=vectors, salvage=salvage)
 
@@ -289,7 +289,7 @@ def embed(
     freshest gap first (recent threads become semantically findable soonest). No-op
     without the ``[embeddings]`` extra. Returns ``{'embedded': n}``."""
     open_archive(home)
-    from .retrieval.vectors import index_events_local
+    from ._retrieval.vectors import index_events_local
 
     n = index_events_local(rebuild=rebuild, max_events=max_events, newest_first=newest_first)
     return {"embedded": n}
@@ -298,7 +298,7 @@ def embed(
 def checkpoint(*, home: Optional[str] = None) -> dict:
     """Snapshot the mutable authored tables (threads) to the JSONL truth log."""
     open_archive(home)
-    from .truth import checkpoint as _checkpoint
+    from ._truth import checkpoint as _checkpoint
 
     return _checkpoint()
 
@@ -306,8 +306,8 @@ def checkpoint(*, home: Optional[str] = None) -> dict:
 def watch(*, home: Optional[str] = None, interval: float = 5.0, once: bool = False):
     """Watch local AI-tool stores and import incrementally. Blocks unless ``once``."""
     open_archive(home)
-    from .truth import shared_ingest_lock
-    from .watcher import Watcher
+    from ._truth import shared_ingest_lock
+    from ._watcher import Watcher
 
     watcher = Watcher(interval=interval)
     if once:
@@ -417,7 +417,7 @@ def _mirror_dir(
     until it is investigated. ``allow_shrink=True`` is the deliberate override for
     an understood re-emit (``rebuild_truth_from_store`` legitimately rewrites files
     smaller)."""
-    from .truth.jsonl_log import _fsync_dir
+    from ._truth.jsonl_log import _fsync_dir
 
     copied = total = deleted = skipped = shrinks = 0
     shrink_sample: list[str] = []
@@ -494,7 +494,7 @@ def _split_rehomed_twins(src: Path, dest: Path, doomed: list[Path]) -> tuple[lis
     destination's copy of that canonical file is at least as large as the stale
     one — the rebalance sweep moves/merges whole files, so a genuine re-home can
     never leave the canonical copy smaller."""
-    from .truth.jsonl_log import THREADS_SUBDIR, _shard_depth, _thread_relpath
+    from ._truth.jsonl_log import THREADS_SUBDIR, _shard_depth, _thread_relpath
 
     depth = _shard_depth(src)
     twins: list[Path] = []
@@ -579,7 +579,7 @@ def _snapshot_generation(dest: Path) -> dict:
                 shutil.copy2(sp, gp)
             linked += 1
         os.rename(tmp, gens / name)
-        from .truth.jsonl_log import _fsync_dir
+        from ._truth.jsonl_log import _fsync_dir
 
         _fsync_dir(gens)  # the publishing rename itself must survive power loss
         out["generation_created"] = name
@@ -647,8 +647,8 @@ def backup(
     generation) actually restores.
     """
     open_archive(home)
-    from .truth import checkpoint as _checkpoint
-    from .truth.jsonl_log import _truth_write_lock, _try_rebalance_lock
+    from ._truth import checkpoint as _checkpoint
+    from ._truth.jsonl_log import _truth_write_lock, _try_rebalance_lock
 
     _checkpoint()  # full: overlays + metadata-update backstop → truth is a complete restore set
     # Verify AFTER the checkpoint, so verify_ok describes the tree the mirror
@@ -663,7 +663,7 @@ def backup(
     # cohost writes them into index.db only) survive an index loss and ride the
     # mirror. No-op when the store holds no vectors — an empty save never
     # replaces a populated sidecar.
-    from .retrieval.vectors import save_vectors_sidecar
+    from ._retrieval.vectors import save_vectors_sidecar
 
     vectors_cached = save_vectors_sidecar(paths.truth_dir)
     dest_path = Path(dest).expanduser()
@@ -769,7 +769,7 @@ def restore_drill(
     import time
 
     paths = open_archive(home)
-    from .truth import scan_truth_counts
+    from ._truth import scan_truth_counts
 
     dest_path = Path(dest).expanduser()
     if not (dest_path / "threads").exists():
@@ -778,7 +778,7 @@ def restore_drill(
     started = time.monotonic()
     from sqlalchemy import func, select
 
-    from .store import Event, get_session
+    from ._store import Event, get_session
 
     with get_session() as s:
         live_events = s.execute(select(func.count()).select_from(Event)).scalar() or 0
@@ -793,7 +793,7 @@ def restore_drill(
             ignore=shutil.ignore_patterns(_GENERATIONS_SUBDIR, ".*.tmp-*"),
         )
         open_archive(str(drill_home))
-        from .truth import reindex as _reindex
+        from ._truth import reindex as _reindex
 
         try:
             counts = _reindex()
@@ -1003,7 +1003,7 @@ def _drill_smoke(home: str, *, expect_content: bool) -> dict:
 
     from sqlalchemy import text as _sa_text
 
-    from .store import get_session as _get_session
+    from ._store import get_session as _get_session
 
     out: dict = {"ok": not expect_content, "read_ok": False, "search_ok": False}
     if not expect_content:
@@ -1147,8 +1147,8 @@ def verify(
     open_archive(home)
     from sqlalchemy import func, select
 
-    from .store import Event, KgEvent, Thread, get_session
-    from .truth import scan_truth_counts
+    from ._store import Event, KgEvent, Thread, get_session
+    from ._truth import scan_truth_counts
 
     with get_session() as s:
         watermark = s.execute(select(func.max(Event.id))).scalar() or 0
@@ -1380,7 +1380,7 @@ def _verify_schema() -> dict:
     reindex``, which builds a fresh index with the full declared schema."""
     from sqlalchemy import UniqueConstraint as _UC
 
-    from .store import Base, get_session
+    from ._store import Base, get_session
 
     missing_tables: list[str] = []
     missing_columns: list[str] = []
@@ -1443,7 +1443,7 @@ def _verify_backup(dest: Path, live_truth: dict) -> dict:
     is what sees a slow leak. Recording the new count absorbs the drop, so —
     like the hashes baseline — a deliberate shrink (an ``--allow-shrink``
     re-emit after repair) fails exactly one run instead of pinning verify red."""
-    from .truth import scan_truth_counts
+    from ._truth import scan_truth_counts
 
     if not (dest / "manifest.json").exists() and not (dest / "threads").exists():
         return {"dest": str(dest), "ok": False, "error": "not a truth mirror"}
@@ -1478,7 +1478,7 @@ def _hash_key_check(payload: object, dedup_key: str) -> Optional[bool]:
     ``dedup_key`` (the last ``:``-segment; see
     ``thread_archive._thread_import.event_builder.compute_dedup_key``); False = mismatch;
     None = the key carries no hash tail (nothing to validate against)."""
-    from .truth.jsonl_log import _hash_key_check as _impl
+    from ._truth.jsonl_log import _hash_key_check as _impl
 
     return _impl(payload, dedup_key)
 
@@ -1490,7 +1490,7 @@ def _hash_scan_truth_dir(truth_dir: Path, watermark: Optional[int]) -> dict:
     in-flight ingest to bound out). ``no_key`` counts events with no dedup_key
     at all: they carry nothing to validate against, so they are invisible to
     this check — the count keeps that coverage boundary visible."""
-    from .truth.jsonl_log import THREADS_SUBDIR, _iter_jsonl
+    from ._truth.jsonl_log import THREADS_SUBDIR, _iter_jsonl
 
     checked = mismatched = skipped = no_key = 0
     sample: list[int] = []
@@ -1562,8 +1562,8 @@ def _verify_hashes(watermark: int) -> dict:
     are informational."""
     import json as _json
 
-    from .store import get_session
-    from .truth.jsonl_log import (
+    from ._store import get_session
+    from ._truth.jsonl_log import (
         THREADS_SUBDIR,
         _iter_jsonl,
         _shard_depth,
@@ -1685,7 +1685,7 @@ def _verify_hashes(watermark: int) -> dict:
     # must not lose this baseline, nor vice versa.
     from datetime import datetime, timezone
 
-    from .truth.jsonl_log import update_manifest
+    from ._truth.jsonl_log import update_manifest
 
     baseline = {
         "at": datetime.now(timezone.utc).isoformat(),
@@ -1754,8 +1754,8 @@ def _verify_deep(watermark: int) -> dict:
 
     from sqlalchemy import text as sa_text
 
-    from .store import get_session
-    from .truth.jsonl_log import (
+    from ._store import get_session
+    from ._truth.jsonl_log import (
         KG_EVENTS_FILE,
         THREADS_SUBDIR,
         _iter_jsonl,
@@ -1947,7 +1947,7 @@ def _verify_deep(watermark: int) -> dict:
             fts5_rows = s.execute(sa_text(
                 "SELECT count(*) FROM event_search WHERE event_id <= :wm"),
                 {"wm": watermark}).scalar() or 0
-            from .retrieval._extract import INDEXABLE_EVENT_TYPES, extract_fts_content
+            from ._retrieval._extract import INDEXABLE_EVENT_TYPES, extract_fts_content
 
             types = ", ".join(f"'{t}'" for t in INDEXABLE_EVENT_TYPES)
             cur = s.connection().connection.execute(  # raw sqlite3 — stream the gap set
@@ -2016,8 +2016,8 @@ def status(*, home: Optional[str] = None) -> dict:
     paths = open_archive(home)
     from sqlalchemy import func, select
 
-    from .retrieval import fts_status
-    from .store import Event, Thread, ThreadLink, get_session
+    from ._retrieval import fts_status
+    from ._store import Event, Thread, ThreadLink, get_session
 
     with get_session() as s:
         threads = s.execute(select(func.count()).select_from(Thread)).scalar() or 0
@@ -2026,8 +2026,8 @@ def status(*, home: Optional[str] = None) -> dict:
             select(func.count()).select_from(Thread).where(Thread.thread_type == "topic")
         ).scalar() or 0
         links = s.execute(select(func.count()).select_from(ThreadLink)).scalar() or 0
-    from .retrieval.vectors import get_status as _vec_status
-    from .truth.jsonl_log import _read_manifest
+    from ._retrieval.vectors import get_status as _vec_status
+    from ._truth.jsonl_log import _read_manifest
 
     health = _read_health()
     return {
@@ -2052,9 +2052,9 @@ def status(*, home: Optional[str] = None) -> dict:
 def repair(*, home: Optional[str] = None, dry_run: bool = False) -> dict:
     """Quarantine unparseable truth lines and restore committed rows the truth
     lacks from the live index — the sanctioned path from a red ``verify`` back to
-    green. See :func:`thread_archive.truth.repair.repair_truth`."""
+    green. See :func:`thread_archive._truth.repair.repair_truth`."""
     open_archive(home)
-    from .truth import repair_truth
+    from ._truth import repair_truth
 
     return repair_truth(dry_run=dry_run)
 
@@ -2062,7 +2062,7 @@ def repair(*, home: Optional[str] = None, dry_run: bool = False) -> dict:
 def knowledge_status(*, home: Optional[str] = None) -> dict:
     """Topic-graph status: node/community/component counts (empty until topics exist)."""
     open_archive(home)
-    from .knowledge import get_status
+    from ._knowledge import get_status
 
     return get_status()
 
@@ -2070,7 +2070,7 @@ def knowledge_status(*, home: Optional[str] = None) -> dict:
 def bridge_topics(*, home: Optional[str] = None, limit: int = 20) -> list[dict]:
     """Highest-betweenness topics — the structural bridges between communities."""
     open_archive(home)
-    from .knowledge import get_bridge_topics
+    from ._knowledge import get_bridge_topics
 
     return get_bridge_topics(limit=limit)
 
@@ -2078,6 +2078,6 @@ def bridge_topics(*, home: Optional[str] = None, limit: int = 20) -> list[dict]:
 def topic_peers(thread_id: int, *, home: Optional[str] = None, limit: int = 5) -> list[dict]:
     """Topics in the same community as ``thread_id``, highest-pagerank first."""
     open_archive(home)
-    from .knowledge import get_community_peers
+    from ._knowledge import get_community_peers
 
     return get_community_peers(thread_id, limit=limit)

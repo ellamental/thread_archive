@@ -10,9 +10,9 @@ from __future__ import annotations
 
 import json
 
-from thread_archive.importers import import_codex_session_incremental
-from thread_archive.retrieval.read import read_thread, read_thread_structured
-from thread_archive.store import init_db
+from thread_archive._importers import import_codex_session_incremental
+from thread_archive._retrieval.read import read_thread, read_thread_structured
+from thread_archive._store import init_db
 
 
 def _write_jsonl(path, lines) -> None:
@@ -145,7 +145,7 @@ def test_codex_hidden_blocks_stay_hidden_in_the_string_transcript(archive_home) 
 def test_non_codex_preserved_blocks_are_untouched(archive_home) -> None:
     """The codex rules are keyed on the ``codex_`` block-type prefix — another provider's
     preserved block still renders under its own type."""
-    from thread_archive.retrieval.read import _content_block_view
+    from thread_archive._retrieval.read import _content_block_view
 
     payload = {"block_type": "redacted_thinking", "data": {"type": "redacted_thinking", "text": "hm"}}
     assert _content_block_view(payload, {"hm"}) == ("redacted_thinking", "hm")

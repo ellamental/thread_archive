@@ -24,7 +24,7 @@ from __future__ import annotations
 import json
 
 import thread_archive as ta
-from thread_archive.truth import jsonl_log
+from thread_archive._truth import jsonl_log
 
 USER = {"type": "user", "uuid": "u1", "timestamp": "2026-01-01T10:00:00Z",
         "cwd": "/proj", "message": {"role": "user", "content": "hello intent"}}

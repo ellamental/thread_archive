@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta
 
-from thread_archive.retrieval import embed, rank, rerank, warm_models
+from thread_archive._retrieval import embed, rank, rerank, warm_models
 
 
 def _hit(eid, content, ct="user", occurred_at=None, rrf=0.0):

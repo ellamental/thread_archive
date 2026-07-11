@@ -48,9 +48,9 @@ def test_status_runs_on_empty_home(tmp_path, capsys: pytest.CaptureFixture[str])
 def test_reindex_cli_runs_in_isolated_home(tmp_path, monkeypatch, capsys) -> None:
     """`archive reindex` wires to the truth-log reindex. Always pass --home so a
     CLI test never touches the real ~/.thread/archive."""
-    from thread_archive import config
-    from thread_archive.store import _base
-    from thread_archive.truth import jsonl_log
+    from thread_archive import _config as config
+    from thread_archive._store import _base
+    from thread_archive._truth import jsonl_log
 
     monkeypatch.delenv(config.ENV_HOME, raising=False)
     monkeypatch.delenv(config.ENV_TRUTH, raising=False)

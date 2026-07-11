@@ -16,11 +16,11 @@ import json
 
 from sqlalchemy import select
 
-from thread_archive.importers.exports import (
+from thread_archive._importers.exports import (
     _xai_conversation_messages,
     import_xai_export,
 )
-from thread_archive.store import Event, Thread, get_session, init_db
+from thread_archive._store import Event, Thread, get_session, init_db
 
 
 def _events():
@@ -145,7 +145,7 @@ def test_failed_conversation_preserved_as_stub(archive_home, monkeypatch) -> Non
     init_db()
     root = _write_xai(archive_home, payload)
 
-    import thread_archive.importers.exports as exports_mod
+    import thread_archive._importers.exports as exports_mod
 
     real_assemble = exports_mod.assemble_events
     calls = {"n": 0}
@@ -182,7 +182,7 @@ def test_failed_conversation_stub_idempotent(archive_home, monkeypatch) -> None:
     init_db()
     root = _write_xai(archive_home, payload)
 
-    import thread_archive.importers.exports as exports_mod
+    import thread_archive._importers.exports as exports_mod
 
     real_assemble = exports_mod.assemble_events
 

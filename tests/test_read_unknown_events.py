@@ -10,8 +10,8 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from thread_archive.retrieval.read import read_thread, read_thread_structured
-from thread_archive.store import Event, Thread, init_db, use_session
+from thread_archive._retrieval.read import read_thread, read_thread_structured
+from thread_archive._store import Event, Thread, init_db, use_session
 
 
 def _dt(minute: int) -> datetime:

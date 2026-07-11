@@ -1,7 +1,7 @@
 """The knowledge materializer's fold, tested directly at ``apply_event``.
 
 test_kg_write.py proves the fold end-to-end through the curatorial write layer;
-these tests pin :func:`thread_archive.knowledge.materialize.apply_event` itself —
+these tests pin :func:`thread_archive._knowledge.materialize.apply_event` itself —
 the exact function both the live write and the reindex replay call — against a tmp
 store, using transient event objects shaped like replayed log rows:
 
@@ -21,8 +21,8 @@ from types import SimpleNamespace
 
 from sqlalchemy import select
 
-from thread_archive.knowledge.materialize import apply_event
-from thread_archive.store import Thread, ThreadLink, TopicMessage, get_session, init_db
+from thread_archive._knowledge.materialize import apply_event
+from thread_archive._store import Thread, ThreadLink, TopicMessage, get_session, init_db
 
 T1 = datetime(2026, 1, 1, 12, 0, 0, tzinfo=timezone.utc)
 T2 = datetime(2026, 1, 2, 12, 0, 0, tzinfo=timezone.utc)
@@ -124,7 +124,7 @@ def test_merge_drops_the_self_loop_edge(archive_home) -> None:
 def test_unknown_event_type_is_skipped_not_fatal(archive_home, caplog) -> None:
     """A replay must survive events written by a newer producer."""
     _seed_topics(1)
-    with caplog.at_level("WARNING", logger="thread_archive.knowledge.materialize"):
+    with caplog.at_level("WARNING", logger="thread_archive._knowledge.materialize"):
         with get_session() as s:
             apply_event(s, _ev("topic.exploded", {"anything": 1}))
             s.commit()

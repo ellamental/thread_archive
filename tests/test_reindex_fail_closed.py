@@ -22,9 +22,9 @@ import pytest
 from sqlalchemy import text
 
 import thread_archive as ta
-from thread_archive.knowledge.write import add_topic_evidence, create_topic
-from thread_archive.store import get_session
-from thread_archive.truth import jsonl_log, rebuild_truth_from_store
+from thread_archive._knowledge.write import add_topic_evidence, create_topic
+from thread_archive._store import get_session
+from thread_archive._truth import jsonl_log, rebuild_truth_from_store
 
 from .helpers import event_count, import_cc_session, one_thread_file
 

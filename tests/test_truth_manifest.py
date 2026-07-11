@@ -11,7 +11,7 @@
 from __future__ import annotations
 
 import thread_archive as ta
-from thread_archive.truth import jsonl_log
+from thread_archive._truth import jsonl_log
 
 from .helpers import import_cc_session
 
@@ -90,3 +90,23 @@ def test_update_manifest_preserves_foreign_keys(archive_home, tmp_path):
     m = jsonl_log._read_manifest(d)
     assert m["custom_key"] == "survives"
     assert "hashes_baseline" in m
+
+
+def test_future_format_version_is_refused(archive_home, tmp_path) -> None:
+    # A reader must never interpret a newer truth layout with old assumptions
+    # (sharding or record semantics may have changed) — it refuses instead.
+    import json
+
+    import pytest
+
+    import_cc_session(tmp_path)
+    d = archive_home / "truth"
+    jsonl_log.checkpoint()
+
+    m = json.loads((d / "manifest.json").read_text(encoding="utf-8"))
+    assert m["version"] == jsonl_log.TRUTH_FORMAT_VERSION
+
+    m["version"] = jsonl_log.TRUTH_FORMAT_VERSION + 1
+    (d / "manifest.json").write_text(json.dumps(m), encoding="utf-8")
+    with pytest.raises(jsonl_log.TruthFormatError):
+        jsonl_log._read_manifest(d)

@@ -9,9 +9,9 @@ import zipfile
 
 from sqlalchemy import select
 
-from thread_archive.store import Thread, get_session, init_db
-from thread_archive.watcher import ExportDropWatcher
-from thread_archive.watcher.sources import default_watchers
+from thread_archive._store import Thread, get_session, init_db
+from thread_archive._watcher import ExportDropWatcher
+from thread_archive._watcher.sources import default_watchers
 
 # A minimal but valid claude.ai conversation (batch/export shape).
 _CONV = {
@@ -152,7 +152,7 @@ def test_failed_import_is_quarantined(archive_home, monkeypatch) -> None:
     dumps = archive_home / "dumps"
     _claude_batch_dir(dumps, "claude-export")
 
-    from thread_archive.watcher import export_drop
+    from thread_archive._watcher import export_drop
 
     def _boom(path, **kw):
         raise RuntimeError("corrupt bundle")

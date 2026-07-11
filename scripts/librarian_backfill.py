@@ -55,7 +55,7 @@ def _has_claimable_work(home: str | None) -> bool:
     Imported, not shelled — a cheap direct query against the same store + claim file the
     workers use."""
     import thread_archive as ta
-    from thread_archive.knowledge._claims import has_claimable_work
+    from thread_archive._knowledge._claims import has_claimable_work
 
     ta.open_archive(home)
     return has_claimable_work()

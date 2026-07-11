@@ -23,7 +23,7 @@ import os
 import tempfile
 from pathlib import Path
 
-from .config import resolve_paths
+from ._config import resolve_paths
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 

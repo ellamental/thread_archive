@@ -15,8 +15,8 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from thread_archive.retrieval import read_thread, resolve_thread_ref
-from thread_archive.store import Event, Thread, TopicMessage, init_db, use_session
+from thread_archive._retrieval import read_thread, resolve_thread_ref
+from thread_archive._store import Event, Thread, TopicMessage, init_db, use_session
 
 _COMPACTION = "This session is being continued from a previous conversation. Summary: blah."
 

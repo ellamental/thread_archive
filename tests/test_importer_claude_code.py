@@ -9,9 +9,9 @@ import json
 
 from sqlalchemy import delete, select
 
-from thread_archive.importers import import_session_incremental
-from thread_archive.store import Event, ImportState, Thread, _base, get_session, init_db
-from thread_archive.truth import checkpoint, jsonl_log, reindex
+from thread_archive._importers import import_session_incremental
+from thread_archive._store import Event, ImportState, Thread, _base, get_session, init_db
+from thread_archive._truth import checkpoint, jsonl_log, reindex
 
 USER = {
     "type": "user",
@@ -312,7 +312,7 @@ def test_metadata_survives_reindex(archive_home) -> None:
     import_session_incremental(f, "proj:s1")
     checkpoint()
 
-    from thread_archive.store import get_engine
+    from thread_archive._store import get_engine
     get_engine().dispose()
     jsonl_log.reset_handles()
     _base.close_engine()
@@ -493,7 +493,7 @@ def test_import_then_checkpoint_reindex_is_lossless(archive_home) -> None:
         before_title = before_thread.title
 
     # Nuke the index; truth is the only surviving copy.
-    from thread_archive.store import get_engine
+    from thread_archive._store import get_engine
 
     get_engine().dispose()
     jsonl_log.reset_handles()

@@ -13,13 +13,13 @@ import json
 
 from sqlalchemy import select, update
 
-from thread_archive.importers import import_session_incremental
-from thread_archive.scripts.backfill_recompute import (
+from thread_archive._importers import import_session_incremental
+from thread_archive._scripts.backfill_recompute import (
     _RECOMPUTE_SAFE,
     plan_thread,
 )
-from thread_archive.scripts.backfill_reconcile import _norm_key
-from thread_archive.store import Event, get_session, init_db
+from thread_archive._scripts.backfill_reconcile import _norm_key
+from thread_archive._store import Event, get_session, init_db
 
 LINES = [
     {"type": "user", "uuid": "u1", "timestamp": "2026-01-01T10:00:00Z", "sessionId": "s1",
@@ -87,7 +87,7 @@ def test_recompute_is_idempotent(archive_home) -> None:
 
 def test_denamespace_strips_legacy_prefix(archive_home) -> None:
     """A ``{thread_id}:``-prefixed key is stripped back to the current bare form."""
-    from thread_archive.scripts.denamespace_dedup_keys import plan_thread as deprefix_plan
+    from thread_archive._scripts.denamespace_dedup_keys import plan_thread as deprefix_plan
 
     init_db()
     f = archive_home / "s.jsonl"
@@ -115,7 +115,7 @@ def test_collapse_deletes_keyed_reimport_beside_null_key_original(archive_home) 
     """The lost-watermark shape: a pre-dedup-era thread (NULL keys) gets re-imported,
     landing every turn again as keyed rows. ``--collapse`` must key the originals,
     delete the re-imported copies, and leave the thread single-copy + fully keyed."""
-    from thread_archive.scripts.backfill_recompute import run as recompute_run
+    from thread_archive._scripts.backfill_recompute import run as recompute_run
 
     init_db()
     f = archive_home / "s.jsonl"

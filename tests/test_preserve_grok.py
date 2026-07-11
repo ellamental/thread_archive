@@ -4,7 +4,7 @@ Each test drives the real importer over a fixture ``chat_history.jsonl`` that co
 one of the droppable grok record shapes (system line, context-only user turn,
 synthetic/injected user turn, unmodeled line type) and proves the record lands as
 at least one event, with its content and raw line preserved. See the drop-site
-guards in ``thread_archive.importers.grok``.
+guards in ``thread_archive._importers.grok``.
 """
 
 from __future__ import annotations
@@ -13,8 +13,8 @@ import json
 
 from sqlalchemy import select
 
-from thread_archive.importers import import_grok_session_incremental
-from thread_archive.store import Event, get_session, init_db
+from thread_archive._importers import import_grok_session_incremental
+from thread_archive._store import Event, get_session, init_db
 
 
 def _write_grok_session(archive_home, lines) -> "object":

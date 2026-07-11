@@ -7,12 +7,12 @@ import json
 
 from sqlalchemy import select
 
-from thread_archive.importers.exports import (
+from thread_archive._importers.exports import (
     classify_export,
     import_claude_ai_export,
     import_xai_export,
 )
-from thread_archive.store import Event, Thread, get_session, init_db
+from thread_archive._store import Event, Thread, get_session, init_db
 
 
 def test_claude_ai_export_import(archive_home) -> None:

@@ -9,8 +9,8 @@ import json
 
 from sqlalchemy import select
 
-from thread_archive.importers import import_codex_session_incremental
-from thread_archive.store import Event, get_session, init_db
+from thread_archive._importers import import_codex_session_incremental
+from thread_archive._store import Event, get_session, init_db
 
 
 def _write_jsonl(path, lines) -> None:

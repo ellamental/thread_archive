@@ -15,11 +15,11 @@ import json
 
 from sqlalchemy import update
 
-from thread_archive.importers import import_session_incremental
-from thread_archive.retrieval import index_thread_meta, rebuild_fts, search
-from thread_archive.retrieval._classify import resolve_relative_date
-from thread_archive.retrieval.rank import match_window
-from thread_archive.store import Thread, init_db, use_session
+from thread_archive._importers import import_session_incremental
+from thread_archive._retrieval import index_thread_meta, rebuild_fts, search
+from thread_archive._retrieval._classify import resolve_relative_date
+from thread_archive._retrieval.rank import match_window
+from thread_archive._store import Thread, init_db, use_session
 
 
 def _write_cc(path, lines) -> None:

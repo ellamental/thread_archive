@@ -6,7 +6,7 @@ import asyncio
 import json
 
 import thread_archive as ta
-from thread_archive.mcp.server import mcp, thread_read, thread_search
+from thread_archive._mcp.server import mcp, thread_read, thread_search
 
 USER = {"type": "user", "uuid": "u1", "timestamp": "2026-01-01T10:00:00Z",
         "cwd": "/proj", "message": {"role": "user", "content": "hello mcp"}}

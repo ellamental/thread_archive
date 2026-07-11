@@ -16,7 +16,7 @@ import json
 from sqlalchemy import select
 
 import thread_archive as ta
-from thread_archive.store import ImportState, get_session
+from thread_archive._store import ImportState, get_session
 
 from .helpers import append_jsonl, cc_assistant, cc_user, import_cc_session, write_jsonl
 
@@ -80,8 +80,8 @@ def test_maintenance_checkpoint_snapshots_import_state(archive_home, tmp_path) -
 
 
 def test_import_state_stamp_moves_on_watermark_only_change(archive_home, tmp_path):
-    from thread_archive.importers._state import upsert_import_state
-    from thread_archive.watcher.daemon import Watcher
+    from thread_archive._importers._state import upsert_import_state
+    from thread_archive._watcher.daemon import Watcher
 
     import_cc_session(tmp_path)
     stamp1 = Watcher._import_state_stamp()

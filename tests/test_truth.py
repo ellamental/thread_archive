@@ -12,8 +12,8 @@ from datetime import datetime, timezone
 
 from sqlalchemy import delete, select
 
-from thread_archive.store import Event, Thread, _base, get_engine, get_session, init_db
-from thread_archive.truth import jsonl_log
+from thread_archive._store import Event, Thread, _base, get_engine, get_session, init_db
+from thread_archive._truth import jsonl_log
 
 # archive_home fixture lives in tests/conftest.py
 
@@ -527,7 +527,7 @@ def test_discard_new_thread_leaves_no_ghost_truth_record(archive_home) -> None:
     no row, and no staged truth record for the drain to write — the ghost file
     that ``verify`` counts as drift and the next reindex resurrects as an empty
     thread. Staged rows for OTHER threads must survive the unstage untouched."""
-    from thread_archive.importers._state import create_thread, discard_new_thread
+    from thread_archive._importers._state import create_thread, discard_new_thread
 
     init_db()
     with get_session() as s:

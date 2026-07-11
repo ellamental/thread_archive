@@ -11,9 +11,9 @@ import sqlite3
 
 from sqlalchemy import func, select
 
-from thread_archive.importers import import_claude_science_db
-from thread_archive.store import Event, Thread, get_session, init_db
-from thread_archive.watcher import ClaudeScienceWatcher, discover_claude_science_dbs
+from thread_archive._importers import import_claude_science_db
+from thread_archive._store import Event, Thread, get_session, init_db
+from thread_archive._watcher import ClaudeScienceWatcher, discover_claude_science_dbs
 
 ORG = "org-uuid-1"
 
@@ -200,6 +200,6 @@ def test_watcher_discovers_mtime_gates_and_self_gates(archive_home, tmp_path) ->
 
 
 def test_watcher_in_default_set() -> None:
-    from thread_archive.watcher.sources import default_watchers
+    from thread_archive._watcher.sources import default_watchers
 
     assert "claude-science" in [w.source_name for w in default_watchers()]

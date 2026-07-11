@@ -21,8 +21,8 @@ from datetime import datetime, timezone
 
 from sqlalchemy import select
 
-from thread_archive.importers import import_opencode_db
-from thread_archive.store import Event, get_session, init_db
+from thread_archive._importers import import_opencode_db
+from thread_archive._store import Event, get_session, init_db
 
 # A session timestamp far enough in the past that it always reads as abandoned
 # (> 24h since last update); and one at "now" that always reads as live.

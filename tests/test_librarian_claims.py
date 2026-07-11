@@ -14,9 +14,9 @@ from datetime import datetime, timezone
 from sqlalchemy import select
 
 import thread_archive as ta
-from thread_archive.knowledge import add_topic_evidence, create_topic, review_queue
-from thread_archive.knowledge._claims import claim_review_batch, claims_path, has_claimable_work
-from thread_archive.store import Event, Thread, get_session
+from thread_archive._knowledge import add_topic_evidence, create_topic, review_queue
+from thread_archive._knowledge._claims import claim_review_batch, claims_path, has_claimable_work
+from thread_archive._store import Event, Thread, get_session
 
 NOW = datetime(2026, 1, 1, 12, 0, 0, tzinfo=timezone.utc)
 

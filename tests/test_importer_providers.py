@@ -12,7 +12,7 @@ import sqlite3
 
 from sqlalchemy import select
 
-from thread_archive.importers import (
+from thread_archive._importers import (
     import_antigravity_session_incremental,
     import_cloth_session_incremental,
     import_codex_session_incremental,
@@ -20,7 +20,7 @@ from thread_archive.importers import (
     import_grok_session_incremental,
     import_opencode_db,
 )
-from thread_archive.store import Event, Thread, get_session, init_db
+from thread_archive._store import Event, Thread, get_session, init_db
 
 
 def _event_count() -> int:
@@ -205,7 +205,7 @@ def test_cursor_full_reimport_does_not_restack_null_dedup_key(archive_home) -> N
 
     # Recreate the backfill condition: strip dedup_keys (as the PG-seeded rows had)
     # and clear the import cursor so the next scan is a full re-import from index 0.
-    from thread_archive.store import ImportState
+    from thread_archive._store import ImportState
     with get_session() as s:
         s.query(Event).update({Event.dedup_key: None})
         s.query(ImportState).filter(ImportState.source == "cursor").delete()

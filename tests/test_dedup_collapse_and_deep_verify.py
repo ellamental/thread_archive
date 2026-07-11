@@ -21,7 +21,7 @@ import json
 from sqlalchemy import select, text
 
 import thread_archive as ta
-from thread_archive.store import Event, get_session
+from thread_archive._store import Event, get_session
 
 USER = {"type": "user", "uuid": "u1", "timestamp": "2026-01-01T10:00:00Z",
         "cwd": "/proj", "message": {"role": "user", "content": "hello dedup"}}
@@ -224,7 +224,7 @@ def test_append_handles_survive_truth_reemit(archive_home, tmp_path) -> None:
     append handle from before the re-emit must not keep writing to the dead file
     (lines would vanish from truth while their commits survive — the forbidden
     direction, and exactly what deep verify's index_only counts)."""
-    from thread_archive.truth.jsonl_log import rebuild_truth_from_store
+    from thread_archive._truth.jsonl_log import rebuild_truth_from_store
 
     f = tmp_path / "sess.jsonl"
     _write_cc(f, [USER, ASSISTANT])

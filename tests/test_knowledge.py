@@ -8,8 +8,8 @@ populates as the curatorial layer writes topics/links, surviving a reindex.
 from __future__ import annotations
 
 import thread_archive as ta
-from thread_archive import knowledge
-from thread_archive.store import Thread, ThreadLink, get_session, init_db
+from thread_archive import _knowledge as knowledge
+from thread_archive._store import Thread, ThreadLink, get_session, init_db
 
 
 def _seed_two_communities() -> None:

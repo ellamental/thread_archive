@@ -22,8 +22,8 @@ import shutil
 from sqlalchemy import text
 
 import thread_archive as ta
-from thread_archive.store import get_session
-from thread_archive.truth import jsonl_log
+from thread_archive._store import get_session
+from thread_archive._truth import jsonl_log
 
 from .helpers import import_cc_session, one_thread_file
 

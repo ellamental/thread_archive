@@ -7,7 +7,7 @@ has to be migrated in after the fact.
 
 Unlike a service-based watcher that POSTs each changed session path to a backend
 ingest route, this one runs entirely local: it calls the importer directly
-(`thread_archive.importers`) and writes straight to the JSONL truth + SQLite index.
+(`thread_archive._importers`) and writes straight to the JSONL truth + SQLite index.
 No backend, no peer mesh, no health server — just change-detect → import.
 
 The plist runs `archive watch --web`, so this always-on process also **cohosts the

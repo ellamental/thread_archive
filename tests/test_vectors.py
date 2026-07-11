@@ -9,8 +9,8 @@ from __future__ import annotations
 
 import numpy as np
 
-from thread_archive.retrieval import _rrf_merge, vectors
-from thread_archive.store import init_db
+from thread_archive._retrieval import _rrf_merge, vectors
+from thread_archive._store import init_db
 
 
 def _unit(*nonzero) -> np.ndarray:
@@ -46,7 +46,7 @@ def test_index_events_local_incremental_cap_and_order(archive_home, monkeypatch)
     import json
 
     import thread_archive as ta
-    from thread_archive.retrieval import embed as E
+    from thread_archive._retrieval import embed as E
 
     monkeypatch.setattr(E, "is_available", lambda: True)
     monkeypatch.setattr(E, "embed_documents", lambda docs: [_unit((0, 1.0)) for _ in docs])
@@ -89,7 +89,7 @@ def test_index_events_local_chunks_long_docs_and_tops_up(archive_home, monkeypat
     import json
 
     import thread_archive as ta
-    from thread_archive.retrieval import embed as E
+    from thread_archive._retrieval import embed as E
 
     monkeypatch.setattr(E, "is_available", lambda: True)
     monkeypatch.setattr(E, "embed_documents", lambda docs: [_unit((0, 1.0)) for _ in docs])
@@ -112,7 +112,7 @@ def test_index_events_local_chunks_long_docs_and_tops_up(archive_home, monkeypat
     # Simulate the pre-chunking state: the long doc has only its chunk-0 vector.
     from sqlalchemy import text as sa_text
 
-    from thread_archive.store import get_session
+    from thread_archive._store import get_session
     with get_session() as s:
         s.execute(sa_text("DELETE FROM event_vectors WHERE chunk > 0"))
         s.commit()
@@ -125,7 +125,7 @@ def test_ensure_index_migrates_prechunk_table(archive_home) -> None:
     init_db()
     from sqlalchemy import text as sa_text
 
-    from thread_archive.store import get_session
+    from thread_archive._store import get_session
     with get_session() as s:
         s.execute(sa_text(
             "CREATE TABLE event_vectors (event_id INTEGER NOT NULL, content_type TEXT NOT NULL, "
@@ -191,7 +191,7 @@ def test_semantic_arm_sits_out_for_toolname_count_oldest(archive_home, monkeypat
     """tool_name-scoped searches must not fuse semantic hits (tool docs aren't
     embedded, so every one would violate the filter); count and oldest are
     structural shapes the vector arm can only pollute."""
-    from thread_archive import retrieval
+    from thread_archive import _retrieval as retrieval
 
     init_db()
     calls: list = []

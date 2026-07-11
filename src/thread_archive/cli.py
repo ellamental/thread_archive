@@ -6,7 +6,7 @@ import argparse
 import sys
 
 from . import __version__
-from .config import resolve_paths
+from ._config import resolve_paths
 
 
 def _add_home_arg(p: argparse.ArgumentParser) -> None:
@@ -42,7 +42,7 @@ def _self_throttle() -> None:
 
 def cmd_import(args: argparse.Namespace) -> int:
     from . import api
-    from .importers import DB_SCANNERS, LINE_STREAM_IMPORTERS
+    from ._importers import DB_SCANNERS, LINE_STREAM_IMPORTERS
 
     provider = args.provider or "claude-code"
     if provider not in LINE_STREAM_IMPORTERS and provider not in DB_SCANNERS:
@@ -62,8 +62,8 @@ def cmd_import(args: argparse.Namespace) -> int:
 
 def cmd_import_export(args: argparse.Namespace) -> int:
     from . import api
-    from .importers.exports import import_export
-    from .truth import shared_ingest_lock
+    from ._importers.exports import import_export
+    from ._truth import shared_ingest_lock
 
     api.open_archive(args.home)
     # Shared across the truth appends AND the SQLite commits (same coverage as
@@ -84,7 +84,7 @@ def cmd_watch(args: argparse.Namespace) -> int:
     import logging
 
     from . import api
-    from .watcher import Watcher
+    from ._watcher import Watcher
 
     # Configure logging so the daemon's import/maintenance activity actually lands
     # in the log files (launchd routes stderr to watcher-stderr.log). Without this
@@ -103,7 +103,7 @@ def cmd_watch(args: argparse.Namespace) -> int:
     )
 
     if args.once:
-        from .truth import shared_ingest_lock
+        from ._truth import shared_ingest_lock
 
         # Same coverage as api.watch(once=True): the poll appends truth and
         # commits, so it must hold the reindex lock shared — an unlocked
@@ -128,15 +128,15 @@ def cmd_watch(args: argparse.Namespace) -> int:
     # with the watcher's writes (see store._base).
     httpd = None
     if args.web:
-        from .web import serve_in_thread
+        from ._web import serve_in_thread
 
         httpd = serve_in_thread(host=args.web_host, port=args.web_port)
-        logging.getLogger("thread_archive.watcher").info(
+        logging.getLogger("thread_archive._watcher").info(
             "cohosting web viewer on http://%s:%s", args.web_host, args.web_port
         )
 
     available = [w.source_name for w in watcher.available()]
-    logging.getLogger("thread_archive.watcher").info(
+    logging.getLogger("thread_archive._watcher").info(
         "watching %d sources %s every %ss (maintenance every %.0fs)",
         len(available), available, args.interval, watcher.maintenance_interval,
     )
@@ -152,7 +152,7 @@ def cmd_watch(args: argparse.Namespace) -> int:
 
 def cmd_search(args: argparse.Namespace) -> int:
     from . import api
-    from .retrieval import format_results
+    from ._retrieval import format_results
 
     hits = api.search(args.query, home=args.home, limit=args.limit)
     print(format_results(hits, args.query))
@@ -172,7 +172,7 @@ def cmd_read(args: argparse.Namespace) -> int:
 
 
 def cmd_web(args: argparse.Namespace) -> int:
-    from .web import serve
+    from ._web import serve
 
     serve(host=args.host, port=args.port, open_browser=not args.no_open, home=args.home)
     return 0
@@ -557,7 +557,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--version", action="version", version=f"thread-archive {__version__}")
     sub = parser.add_subparsers(dest="command", metavar="<command>")
 
-    from .importers import PROVIDERS  # registry is the single source of truth for choices
+    from ._importers import PROVIDERS  # registry is the single source of truth for choices
 
     p_import = sub.add_parser("import", help="import a transcript or provider store")
     _add_home_arg(p_import)

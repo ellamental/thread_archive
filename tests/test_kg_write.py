@@ -18,7 +18,7 @@ import pytest
 from sqlalchemy import func, select
 
 import thread_archive as ta
-from thread_archive.knowledge import (
+from thread_archive._knowledge import (
     add_topic_evidence,
     create_topic,
     link_threads,
@@ -28,9 +28,9 @@ from thread_archive.knowledge import (
     topic_search,
     unlink_threads,
 )
-from thread_archive.knowledge._community import detect_communities, leiden_available
-from thread_archive.store import Event, KgEvent, Thread, ThreadLink, TopicMessage, get_session
-from thread_archive.truth.jsonl_log import KG_EVENTS_FILE
+from thread_archive._knowledge._community import detect_communities, leiden_available
+from thread_archive._store import Event, KgEvent, Thread, ThreadLink, TopicMessage, get_session
+from thread_archive._truth.jsonl_log import KG_EVENTS_FILE
 
 NOW = datetime(2026, 1, 1, 12, 0, 0, tzinfo=timezone.utc)
 

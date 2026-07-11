@@ -11,8 +11,8 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from thread_archive.retrieval import read_thread_structured
-from thread_archive.store import Event, Thread, init_db, use_session
+from thread_archive._retrieval import read_thread_structured
+from thread_archive._store import Event, Thread, init_db, use_session
 
 
 def _dt(minute: int, second: int = 0) -> datetime:

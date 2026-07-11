@@ -18,9 +18,9 @@ import sqlite3
 
 from sqlalchemy import select
 
-from thread_archive.importers import import_cursor_db
-from thread_archive.importers.cursor import _cursor_to_normalized
-from thread_archive.store import Event, Thread, get_session, init_db
+from thread_archive._importers import import_cursor_db
+from thread_archive._importers.cursor import _cursor_to_normalized
+from thread_archive._store import Event, Thread, get_session, init_db
 
 
 def _events():
@@ -182,7 +182,7 @@ def test_composer_import_blowup_preserved_as_stub(archive_home, monkeypatch) -> 
     conn.commit()
     conn.close()
 
-    import thread_archive.importers.cursor as cursor_mod
+    import thread_archive._importers.cursor as cursor_mod
 
     def _boom(*a, **k):
         raise RuntimeError("simulated importer failure")

@@ -40,8 +40,8 @@ Changelog = "https://github.com/ellamental/thread_archive/blob/main/CHANGELOG.md
 
 [project.scripts]
 archive = "thread_archive.cli:main"
-archive-mcp = "thread_archive.mcp.server:main"
-archive-librarian-mcp = "thread_archive.mcp.librarian:main"
+archive-mcp = "thread_archive._mcp.server:main"
+archive-librarian-mcp = "thread_archive._mcp.librarian:main"
 
 [tool.hatch.version]
 path = "src/thread_archive/__init__.py"
@@ -55,7 +55,7 @@ packages = ["src/thread_archive"]
 # web/static/, which is committed and packaged so `pip install` needs no node.
 # Under the package dir and tracked, so hatchling includes it by default; declared
 # explicitly so the bundle ships even if static/ is ever gitignored as build output.
-artifacts = ["src/thread_archive/web/static/**/*"]
+artifacts = ["src/thread_archive/_web/static/**/*"]
 
 [tool.hatch.build.targets.sdist]
 # Ship the package sources, tests, docs, and the frontend sources that build the
