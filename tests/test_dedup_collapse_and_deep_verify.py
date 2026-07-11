@@ -22,7 +22,6 @@ from sqlalchemy import select, text
 
 import thread_archive as ta
 from thread_archive.store import Event, get_session
-from thread_archive.truth import jsonl_log
 
 USER = {"type": "user", "uuid": "u1", "timestamp": "2026-01-01T10:00:00Z",
         "cwd": "/proj", "message": {"role": "user", "content": "hello dedup"}}

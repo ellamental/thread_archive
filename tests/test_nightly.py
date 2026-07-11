@@ -9,7 +9,6 @@ the rebuilt archive actually reads and searches.
 from __future__ import annotations
 
 import json
-import os
 
 import thread_archive as ta
 from thread_archive import api
