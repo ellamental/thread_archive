@@ -137,3 +137,134 @@ def test_nightly_skips_heartbeat_without_family_logs_dir(
     monkeypatch.setenv("THREAD_ARCHIVE_HEARTBEAT_DIR", str(hb_dir))
     assert ta.nightly(str(tmp_path / "mirror"))["ok"] is True
     assert not hb_dir.exists()
+
+
+# ── Stage retirement: a failed stage re-proven out of band ───────────────────
+# The pipeline is ~1h (drill-dominated), so if only another full nightly could
+# retire a fault, an archive that was fixed AND proven fixed would keep telling
+# Ella her memory is unprotected until 04:00. `_pipeline_verdict` retires a
+# failed stage on a later, at-least-as-strong green run — with the strength
+# comparison as the guard that keeps a cheap check from laundering an expensive
+# red.
+
+def _nightly_rec(failed, *, at="2026-01-02T04:00:00+00:00", deep=False, hashes=False):
+    return {"at": at, "ok": not failed, "failed_stages": list(failed),
+            "deep": deep, "hashes": hashes, "drill": True}
+
+
+LATER = "2026-01-02T09:00:00+00:00"
+EARLIER = "2026-01-02T03:00:00+00:00"
+
+
+def test_verdict_retires_a_verify_reproven_at_equal_tier():
+    health = {
+        "nightly_last": _nightly_rec(["verify"], deep=True, hashes=True),
+        "verify_last": {"at": LATER, "ok": True,
+                        "deep": True, "hashes": True, "backup": True},
+    }
+    v = api._pipeline_verdict(health)
+    assert v["ok"] is True
+    assert v["failed_stages"] == [] and v["recovered_stages"] == ["verify"]
+
+
+def test_verdict_keeps_a_deep_failure_a_basic_verify_cannot_speak_to():
+    # The false-green this whole mechanism has to refuse: the nightly's deep +
+    # hashes + mirror-scan verify failed; a bare `archive verify` passed after
+    # it. The cheap run tested none of the tiers that broke.
+    health = {
+        "nightly_last": _nightly_rec(["verify"], deep=True, hashes=True),
+        "verify_last": {"at": LATER, "ok": True,
+                        "deep": False, "hashes": False, "backup": False},
+    }
+    v = api._pipeline_verdict(health)
+    assert v["ok"] is False and v["failed_stages"] == ["verify"]
+
+
+def test_verdict_keeps_a_deep_failure_when_the_mirror_went_unscanned():
+    # --deep --hashes but no --backup: the nightly parse-scans the mirror
+    # whenever deep is due, so a rerun that skipped it is NOT equal-strength.
+    health = {
+        "nightly_last": _nightly_rec(["verify"], deep=True, hashes=True),
+        "verify_last": {"at": LATER, "ok": True,
+                        "deep": True, "hashes": True, "backup": False},
+    }
+    assert api._pipeline_verdict(health)["failed_stages"] == ["verify"]
+
+
+def test_verdict_ignores_a_green_run_that_predates_the_failure():
+    health = {
+        "nightly_last": _nightly_rec(["verify"], deep=True, hashes=True),
+        "verify_last": {"at": EARLIER, "ok": True,
+                        "deep": True, "hashes": True, "backup": True},
+    }
+    assert api._pipeline_verdict(health)["failed_stages"] == ["verify"]
+
+
+def test_verdict_retires_drill_and_backup_on_a_later_green_run():
+    health = {
+        "nightly_last": _nightly_rec(["backup", "restore-drill"]),
+        "backup_last": {"at": LATER, "ok": True},
+        "restore_drill_last": {"at": LATER, "ok": True},
+    }
+    v = api._pipeline_verdict(health)
+    assert v["ok"] is True
+    assert sorted(v["recovered_stages"]) == ["backup", "restore-drill"]
+
+
+def test_verdict_retires_only_the_stages_actually_reproven():
+    health = {
+        "nightly_last": _nightly_rec(["verify", "restore-drill"]),
+        "verify_last": {"at": LATER, "ok": True,
+                        "deep": False, "hashes": False, "backup": False},
+    }
+    v = api._pipeline_verdict(health)
+    assert v["ok"] is False
+    assert v["failed_stages"] == ["restore-drill"]
+    assert v["recovered_stages"] == ["verify"]
+
+
+def test_verdict_never_retires_on_a_red_rerun():
+    health = {
+        "nightly_last": _nightly_rec(["verify"]),
+        "verify_last": {"at": LATER, "ok": False, "deep": True,
+                        "hashes": True, "backup": True},
+    }
+    assert api._pipeline_verdict(health)["failed_stages"] == ["verify"]
+
+
+def test_a_passing_verify_clears_the_heartbeat_a_failed_nightly_left(
+    archive_home, tmp_path, monkeypatch,
+):
+    # End to end, the case that motivates all of the above: the nightly failed
+    # at verify, an operator re-ran verify at full strength, it passed — the
+    # monitor's heartbeat must say so without waiting out another pipeline.
+    _seed(archive_home)
+    hb_dir = tmp_path / "_family_logs"
+    hb_dir.mkdir()
+    monkeypatch.setenv("THREAD_ARCHIVE_HEARTBEAT_DIR", str(hb_dir))
+    dest = str(tmp_path / "mirror")
+    ta.backup(dest)  # a real mirror for the deep tier's scan to find
+
+    beat_path = hb_dir / "archive-nightly.heartbeat"
+    nightly_at = "2026-01-02T04:00:00+00:00"
+    api._record_health("nightly_last", {
+        "dest": dest, "ok": False, "failed_stages": ["verify"],
+        "deep": True, "hashes": True, "drill": True,
+    })
+    # _record_health stamps `at` itself; pin the nightly into the past so the
+    # verify below unambiguously postdates it.
+    health = json.loads((archive_home / "health.json").read_text())
+    health["nightly_last"]["at"] = nightly_at
+    (archive_home / "health.json").write_text(json.dumps(health))
+    api._stamp_heartbeat()
+    assert json.loads(beat_path.read_text())["ok"] is False
+
+    res = ta.verify(deep=True, hashes=True, backup=dest)
+    assert res["ok"] is True
+
+    beat = json.loads(beat_path.read_text())
+    assert beat["ok"] is True
+    assert beat["failed_stages"] == [] and beat["recovered_stages"] == ["verify"]
+    # ...and the freshness anchor still points at the NIGHTLY, not at the verify
+    # that just rewrote the file — else a rerun would mask a dead 04:00 job.
+    assert beat["nightly_at"] == nightly_at

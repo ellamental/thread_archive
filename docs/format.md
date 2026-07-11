@@ -9,9 +9,11 @@ truth. A `cp`/`rsync` of the truth directory *is* the backup; `archive reindex`
 reconstructs everything else from it.
 
 The format is part of the package's public surface — the package exposes no
-public Python API, so alongside the CLI and MCP tools this document is the
-durability promise: data written by one release must stay readable by the
-next.
+public Python API, so alongside the CLI's promised verbs and the MCP tools
+this document is the durability promise: data written by one release must
+stay readable by the next. The CLI's durability verbs (`backup`, `verify`,
+`restore-drill`, `reindex`, `repair`) are the enforcement half of this
+promise and carry the same stability commitment as the format itself.
 
 ## Versioning
 

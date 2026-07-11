@@ -733,6 +733,7 @@ def backup(
         "files_copied": result["files_copied"],
         "same_device": same_device,
     })
+    _stamp_heartbeat()
     return {
         "truth_dir": str(paths.truth_dir),
         "dest": str(dest_path),
@@ -830,6 +831,7 @@ def restore_drill(
         "coverage": result.get("coverage"),
         "seconds": result["seconds"],
     })
+    _stamp_heartbeat()
     return result
 
 
@@ -856,6 +858,141 @@ def _health_is_due(key: str, every_days: float) -> bool:
     if at.tzinfo is None:
         at = at.replace(tzinfo=timezone.utc)
     return (datetime.now(timezone.utc) - at).total_seconds() >= every_days * 86400
+
+
+# Each pipeline stage, mapped to the health record that a later, out-of-band run
+# of that same stage writes. This is what lets a stage's failure be *retired* by
+# evidence rather than only by another full nightly.
+_STAGE_RECORD = {
+    "backup": "backup_last",
+    "verify": "verify_last",
+    "restore-drill": "restore_drill_last",
+}
+
+
+def _parse_at(value: object) -> Optional[float]:
+    """Epoch seconds from a health/heartbeat ``at`` stamp; None if absent or bad."""
+    from datetime import datetime, timezone
+
+    if not isinstance(value, str):
+        return None
+    try:
+        at = datetime.fromisoformat(value)
+    except ValueError:
+        return None
+    if at.tzinfo is None:
+        at = at.replace(tzinfo=timezone.utc)
+    return at.timestamp()
+
+
+def _stage_recovered(stage: str, nightly: dict, health: dict) -> bool:
+    """Has ``stage`` — which failed in the last nightly — since been proven good?
+
+    True only when that stage's own health record is green, **postdates** the
+    nightly that failed, and came from a check **at least as strong** as the one
+    that failed.
+
+    Strength is what makes this safe, and it matters for verify alone: the
+    nightly escalates verify on age gates (``deep``, ``hashes``, and the mirror
+    parse-scan, which rides ``--backup`` exactly when deep is due). A later
+    *basic* verify passing says nothing about a deep tier that failed, so
+    clearing on it would be a false green — the cheap check laundering the
+    expensive red. Requiring ≥ strength is the whole guard; without it this
+    function is a bug, not a feature.
+    """
+    rec = health.get(_STAGE_RECORD.get(stage, ""))
+    if not isinstance(rec, dict) or not rec.get("ok"):
+        return False
+    when, nightly_at = _parse_at(rec.get("at")), _parse_at(nightly.get("at"))
+    if when is None or nightly_at is None or when <= nightly_at:
+        return False
+    if stage != "verify":
+        return True
+    # The nightly's verify parse-scans the mirror exactly when its deep tier is
+    # due, so `deep` gates the backup-scan requirement as well as its own.
+    deep = bool(nightly.get("deep"))
+    for tier, required in (("deep", deep), ("hashes", bool(nightly.get("hashes"))),
+                           ("backup", deep)):
+        if required and not rec.get(tier):
+            return False
+    return True
+
+
+def _pipeline_verdict(health: Optional[dict] = None) -> dict:
+    """The pipeline's state **now** — not merely a transcript of the last nightly.
+
+    The last nightly's failed stages, minus every stage a later at-least-as-strong
+    run has since proven good.
+
+    Without this, the *only* thing that can retire a fault is another full nightly
+    (~1h, restore-drill dominated). An operator who fixes the cause and proves it
+    fixed — at a stronger tier than the one that failed — still faces a board
+    asserting the archive is unprotected until 04:00 comes around. That is a stale
+    alarm on the one signal that says whether Ella's memory is recoverable, and a
+    signal that keeps crying after the fire is out is one that stops being read.
+    """
+    health = _read_health() if health is None else health
+    nightly = health.get("nightly_last") or {}
+    failed = [s for s in (nightly.get("failed_stages") or []) if isinstance(s, str)]
+    recovered = [s for s in failed if _stage_recovered(s, nightly, health)]
+    unresolved = [s for s in failed if s not in recovered]
+    return {
+        "ran": bool(nightly),
+        "ok": not unresolved,
+        "failed_stages": unresolved,
+        "recovered_stages": recovered,
+        "nightly_at": nightly.get("at"),
+        "dest": nightly.get("dest"),
+    }
+
+
+def _stamp_heartbeat() -> None:
+    """Publish the pipeline verdict to the family-monitor heartbeat.
+
+    thread-monitor freshness-checks periodic jobs via ``~/.thread/logs`` (the
+    shared heartbeat ground — it never reads sibling products' private stores, so
+    health.json alone is invisible to it). This file is therefore the entire
+    contract, and it carries the two independent facts the monitor needs:
+
+    - ``nightly_at`` — when the nightly last *ran*. The monitor anchors its
+      staleness check on this field, **not** on the file's mtime, because every
+      out-of-band stage run below rewrites the file: mtime would report "a run
+      happened" on a box whose nightly job has been dead for a week.
+    - ``ok`` / ``failed_stages`` — the verdict with recovered stages retired, so a
+      proven out-of-band fix clears the board without waiting out another pipeline.
+
+    Stamped on every nightly completion whatever the outcome, and again whenever a
+    stage is re-run on its own. Fail-soft, and skipped entirely when the dir does
+    not exist (an install outside the thread family has no monitor to feed) or when
+    no nightly has ever run (the monitor reads an absent heartbeat as "awaiting
+    first run" — a lone stage run must not pre-empt that). The env override exists
+    so tests never stamp the real box's heartbeat.
+    """
+    from datetime import datetime, timezone
+
+    hb_dir = Path(
+        os.environ.get("THREAD_ARCHIVE_HEARTBEAT_DIR")
+        or Path.home() / ".thread" / "logs"
+    )
+    if not hb_dir.is_dir():
+        return
+    verdict = _pipeline_verdict()
+    if not verdict["ran"]:
+        return
+    try:
+        (hb_dir / "archive-nightly.heartbeat").write_text(
+            json.dumps({
+                "at": datetime.now(timezone.utc).isoformat(),
+                "nightly_at": verdict["nightly_at"],
+                "ok": verdict["ok"],
+                "failed_stages": verdict["failed_stages"],
+                "recovered_stages": verdict["recovered_stages"],
+                "dest": verdict["dest"],
+            }) + "\n",
+            encoding="utf-8",
+        )
+    except OSError:
+        pass
 
 
 def _notify(url: str, message: str) -> Optional[str]:
@@ -957,33 +1094,10 @@ def nightly(
         "hashes": hashes_due,
         "drill": drill,
     })
-    # Family-monitor heartbeat: thread-monitor freshness-checks periodic jobs
-    # via ~/.thread/logs (the shared heartbeat ground — it never reads sibling
-    # products' private stores, so health.json alone is invisible to it).
-    # Stamped on every completion whatever the outcome: mtime staleness means
-    # "the job stopped running," the content carries how the last run went.
-    # Fail-soft, and skipped entirely when the dir doesn't exist (an install
-    # outside the thread family has no monitor to feed). The env override
-    # exists so tests never stamp the real box's heartbeat.
-    hb_dir = Path(
-        os.environ.get("THREAD_ARCHIVE_HEARTBEAT_DIR")
-        or Path.home() / ".thread" / "logs"
-    )
-    if hb_dir.is_dir():
-        try:
-            from datetime import datetime, timezone
-
-            (hb_dir / "archive-nightly.heartbeat").write_text(
-                json.dumps({
-                    "at": datetime.now(timezone.utc).isoformat(),
-                    "ok": result["ok"],
-                    "failed_stages": failed,
-                    "dest": result["dest"],
-                }) + "\n",
-                encoding="utf-8",
-            )
-        except OSError:
-            pass
+    # Publish the verdict to the family-monitor heartbeat (see _stamp_heartbeat):
+    # stamped on every completion whatever the outcome, and the `nightly_last`
+    # record written just above is what it anchors its freshness field on.
+    _stamp_heartbeat()
     if failed and notify_url:
         result["notify_error"] = _notify(
             notify_url,
@@ -1321,10 +1435,15 @@ def verify(
     # went — a verify that silently stops running is indistinguishable from a
     # healthy one otherwise. Staleness of the timestamp is the primary signal: a
     # crash mid-verify leaves the previous record standing, and its age says so.
+    # `deep` / `hashes` / `backup` are the run's TIER, not decoration: they are
+    # what `_stage_recovered` compares against the tier of a verify that failed,
+    # so a basic pass can never retire a deep-tier red. `backup` records whether
+    # the mirror was parse-scanned — the check a bare `archive verify` skips.
     _record_health("verify_last", {
         "ok": bool(result["ok"]),
         "deep": bool(deep),
         "hashes": bool(hashes),
+        "backup": bool(backup),
         "drift_events": drift_events,
         "drift_threads": drift_threads,
         "parse_errors": truth["parse_errors"],
@@ -1339,6 +1458,9 @@ def verify(
         _record_health("verify_deep_last", {"ok": bool(result["deep"]["ok"])})
     if hashes:
         _record_health("verify_hashes_last", {"ok": not new_mismatches})
+    # A verify run on its own is how a failed nightly's verify stage gets retired
+    # — republish the verdict so a proven fix reaches the monitor now, not at 04:00.
+    _stamp_heartbeat()
     return result
 
 

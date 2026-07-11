@@ -1,4 +1,15 @@
-"""The ``archive`` command — a thin CLI over the :mod:`thread_archive._api` surface."""
+"""The ``archive`` command — a thin CLI over the :mod:`thread_archive._api` surface.
+
+The CLI's stability promise is tiered (``tests/test_public_api.py`` ratchets
+the verb sets). **Promised**: the service verbs the LaunchAgents run
+(``watch``, ``nightly``) and the durability kit that enforces the truth-format
+promise (``backup``, ``verify``, ``restore-drill``, ``reindex``, ``repair``,
+``status``) — daemons, cron, and the monitor's heartbeat contract stand on
+these. **Convenience, no stability promise**: ``import`` / ``import-export``
+(flags track the importer registry), ``search`` / ``read`` (the MCP tools are
+retrieval's promised surface), ``web`` (subsumed by ``watch --web``), and
+``embed`` (``watch``'s vector cohost handles the steady state).
+"""
 
 from __future__ import annotations
 
@@ -549,17 +560,28 @@ def cmd_status(args: argparse.Namespace) -> int:
     return 0
 
 
+# Suffixed onto every convenience verb's help line; the promised verbs carry no
+# marker. tests/test_public_api.py asserts the marker and the pinned verb tiers
+# agree, so reclassifying a verb means updating both together.
+UNSTABLE_MARKER = "[unstable]"
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="archive",
         description="Serverless-native local archive for AI conversations (JSONL truth + SQLite index).",
+        epilog=f"Commands marked {UNSTABLE_MARKER} are conveniences whose names and flags "
+               "may change without notice; the unmarked verbs are the promised, "
+               "stable surface (retrieval's promised surface is the MCP tools).",
     )
     parser.add_argument("--version", action="version", version=f"thread-archive {__version__}")
     sub = parser.add_subparsers(dest="command", metavar="<command>")
 
     from ._importers import PROVIDERS  # registry is the single source of truth for choices
 
-    p_import = sub.add_parser("import", help="import a transcript or provider store")
+    p_import = sub.add_parser(
+        "import", help=f"import a transcript or provider store {UNSTABLE_MARKER}"
+    )
     _add_home_arg(p_import)
     p_import.add_argument("path", help="transcript file (claude-code/codex/grok/antigravity/cloth) or DB (cursor/opencode)")
     p_import.add_argument(
@@ -571,7 +593,8 @@ def build_parser() -> argparse.ArgumentParser:
     p_import.set_defaults(func=cmd_import)
 
     p_import_export = sub.add_parser(
-        "import-export", help="import a downloaded claude.ai / xAI account export (ZIP or dir)"
+        "import-export",
+        help=f"import a downloaded claude.ai / xAI account export (ZIP or dir) {UNSTABLE_MARKER}",
     )
     _add_home_arg(p_import_export)
     p_import_export.add_argument("path", help="export ZIP file or unzipped directory")
@@ -595,13 +618,13 @@ def build_parser() -> argparse.ArgumentParser:
                          help="max events embedded per cohost pass (default 512)")
     p_watch.set_defaults(func=cmd_watch)
 
-    p_search = sub.add_parser("search", help="search conversations")
+    p_search = sub.add_parser("search", help=f"search conversations {UNSTABLE_MARKER}")
     _add_home_arg(p_search)
     p_search.add_argument("query")
     p_search.add_argument("--limit", type=int, default=10)
     p_search.set_defaults(func=cmd_search)
 
-    p_read = sub.add_parser("read", help="read a conversation")
+    p_read = sub.add_parser("read", help=f"read a conversation {UNSTABLE_MARKER}")
     _add_home_arg(p_read)
     p_read.add_argument("thread_id", help="integer thread id, or a provider session uuid (source_id)")
     p_read.add_argument("--mode", choices=["user", "chat", "full"], default=None,
@@ -619,7 +642,9 @@ def build_parser() -> argparse.ArgumentParser:
                         help="resume from the turn after this event id")
     p_read.set_defaults(func=cmd_read)
 
-    p_web = sub.add_parser("web", help="serve the local search + reader web UI (Ctrl-C to stop)")
+    p_web = sub.add_parser(
+        "web", help=f"serve the local search + reader web UI (Ctrl-C to stop) {UNSTABLE_MARKER}"
+    )
     _add_home_arg(p_web)
     p_web.add_argument("--host", default="127.0.0.1", help="bind host (default: 127.0.0.1)")
     p_web.add_argument("--port", type=int, default=8787, help="bind port (default: 8787)")
@@ -636,7 +661,10 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_reindex.set_defaults(func=cmd_reindex)
 
-    p_embed = sub.add_parser("embed", help="embed user/text events missing a vector (incremental catch-up)")
+    p_embed = sub.add_parser(
+        "embed",
+        help=f"embed user/text events missing a vector (incremental catch-up) {UNSTABLE_MARKER}",
+    )
     _add_home_arg(p_embed)
     p_embed.add_argument("--rebuild", action="store_true", help="re-embed everything, not just the gap")
     p_embed.add_argument("--limit", type=int, default=None, help="cap events embedded this run")

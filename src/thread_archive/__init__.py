@@ -5,7 +5,13 @@ path, no server backends.
 
 There is deliberately **no public Python API**. The public surface is exactly:
 
-* the ``archive`` CLI (:mod:`.cli`),
+* the ``archive`` CLI (:mod:`.cli`) — its **promised verbs**: the service
+  commands the LaunchAgents run (``watch``, ``nightly``) and the durability
+  kit that enforces the format promise (``backup``, ``verify``,
+  ``restore-drill``, ``reindex``, ``repair``, ``status``). The other
+  subcommands (``import``, ``import-export``, ``search``, ``read``, ``web``,
+  ``embed``) are conveniences with no stability promise — retrieval's
+  promised surface is the MCP tools,
 * the two MCP servers (``archive-mcp`` / ``archive-librarian-mcp``),
 * and the on-disk truth format (``docs/format.md``, versioned by
   ``manifest.json``'s ``version``) — the actual durability promise: data

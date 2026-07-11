@@ -2,6 +2,47 @@
 
 ## Unreleased
 
+- **The CLI's stability promise is now tiered (2026-07-11).** Usage data showed
+  the CLI's real consumers are the LaunchAgents (`watch`, `nightly`), the
+  cron backup script, and agent-run triage — not interactive humans — so the
+  promise now names verbs instead of blanket-covering `build_parser()`.
+  Promised: the service verbs (`watch`, `nightly`) and the durability kit
+  (`backup`, `verify`, `restore-drill`, `reindex`, `repair`, `status`).
+  Convenience, free to change: `import`, `import-export`, `search`, `read`,
+  `web`, `embed` — retrieval's promised surface is the MCP tools.
+  `tests/test_public_api.py` ratchets the two verb sets so a new subcommand
+  must be deliberately classified. Convenience verbs carry an `[unstable]`
+  marker on their `archive --help` lines (the docker-style convention).
+  Underscore-prefixing the verbs was considered — Python's `_name` is exactly
+  this "no stability guarantee" designator — and rejected because the
+  convention doesn't transfer to CLIs: underscore commands in the wild are
+  hidden machine plumbing (cobra's `__complete`), so `archive _search` would
+  read as "not for you" rather than "use at your own risk," and the rename
+  breaks existing invocations for a signal the help marker delivers in place.
+  A ratchet asserts the markers match the pinned sets verb-for-verb.
+
+- **A proven-fixed stage retires its own failure (2026-07-11).** The only thing
+  that could clear a failed nightly was another full nightly (~1h, restore-drill
+  dominated), so an archive that had been fixed *and re-verified at full strength*
+  went on announcing itself unprotected until 04:00 came around. `nightly` now
+  publishes a **verdict** rather than a transcript: `_pipeline_verdict` takes the
+  last nightly's `failed_stages` and subtracts every stage a later, at-least-as-
+  strong run has since proven good, and `_stamp_heartbeat` republishes it — called
+  from `verify` / `backup` / `restore_drill` as well as `nightly`, so re-running a
+  stage on its own clears the board.
+  The strength comparison is the guard, and it matters for verify alone: the
+  nightly escalates verify on age gates (`deep`, `hashes`, and the mirror
+  parse-scan, which rides `--backup` exactly when deep is due), so a later *basic*
+  verify passing says nothing about a deep tier that failed. `verify_last` now
+  records its tier (`deep` / `hashes` / `backup`) for that comparison to read;
+  without it, a cheap green would launder an expensive red. A rerun weaker than
+  the check that failed retires nothing — by design.
+  The heartbeat gained `nightly_at` (when the pipeline last *ran*) alongside `at`
+  (when the file was last written), because those stopped being the same fact the
+  moment a lone stage rerun could rewrite it: thread-monitor anchors its
+  "backups have stopped happening" staleness check on `nightly_at`, so a hand-run
+  verify can no longer mask a dead 04:00 job.
+
 - The test suite grew the boundaries a review flagged as untested — the places
   where reality differs from the in-process synthetic environment:
   - A **package lane** (`tests/test_package_artifact.py`, `-m package`,
