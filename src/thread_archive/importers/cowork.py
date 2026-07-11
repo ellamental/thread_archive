@@ -27,7 +27,7 @@ from thread_import import DefaultEventBuilder
 from thread_import.parsers.claude_code import ClaudeCodeParser
 
 from ..store import get_session
-from ._read import read_session_lines
+from ._read import parse_session_lines, read_source_bytes
 from ._result import IncrementalImportResult
 from .claude_code import _import_cc
 
@@ -82,23 +82,25 @@ def import_cowork_session_incremental(
 
     parser = parser or ClaudeCodeParser()
     builder = builder or DefaultEventBuilder()
-    current_file_size = audit_path.stat().st_size
+    # The cursor proves its append against the raw file bytes; the lines it cursors are
+    # the normalized ones (a 1:1 map over the parsed lines, so the counts stay aligned).
+    source_bytes = read_source_bytes(audit_path)
     # A bare-scalar JSONL line parses to a non-dict; skip it so `.get()` can't crash.
     lines = [
         _normalize_cowork_line(ln)
-        for ln in read_session_lines(audit_path)
+        for ln in parse_session_lines(source_bytes, audit_path.name)
         if isinstance(ln, dict)
     ]
     title = _read_cowork_title(Path(metadata_path)) if metadata_path is not None else None
 
     if session is not None:
         return _import_cc(
-            session, source_id, lines, current_file_size, parser, builder,
+            session, source_id, lines, source_bytes, parser, builder,
             source=SOURCE, title_override=title,
         )
     with get_session() as s:
         result = _import_cc(
-            s, source_id, lines, current_file_size, parser, builder,
+            s, source_id, lines, source_bytes, parser, builder,
             source=SOURCE, title_override=title,
         )
         s.commit()

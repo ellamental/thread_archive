@@ -48,6 +48,7 @@ def adopt_if_unwatermarked(
     thread_id: Optional[int],
     total_lines: int,
     file_size: int,
+    content_hash: Optional[str] = None,
 ) -> bool:
     """Guard against re-importing a thread whose ingest cursor was lost.
 
@@ -77,6 +78,7 @@ def adopt_if_unwatermarked(
         thread_id=thread_id,
         last_line_count=total_lines,
         last_file_size=file_size,
+        last_content_hash=content_hash,
         last_message_uuid=None,
     )
     return True
@@ -217,8 +219,14 @@ def upsert_import_state(
     last_line_count: int,
     last_file_size: int,
     last_message_uuid: Optional[str],
+    last_content_hash: Optional[str] = None,
 ) -> ImportState:
-    """Insert or update the ``(source, source_id)`` watermark (no commit)."""
+    """Insert or update the ``(source, source_id)`` watermark (no commit).
+
+    ``last_content_hash`` is the digest of the source bytes this watermark was
+    computed over — the file sources pass it so the next poll can prove the cursor
+    still points into the same content; the DB-backed sources leave it None.
+    """
     state = get_import_state(session, source, source_id)
     if state is None:
         state = ImportState(source=source, source_id=source_id)
@@ -226,6 +234,7 @@ def upsert_import_state(
     state.thread_id = thread_id
     state.last_line_count = last_line_count
     state.last_file_size = last_file_size
+    state.last_content_hash = last_content_hash
     state.last_message_uuid = last_message_uuid
     state.last_import_at = datetime.now(timezone.utc)
     return state

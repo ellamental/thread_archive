@@ -2,6 +2,29 @@
 
 ## Unreleased
 
+- Ingest hardening (from the self-review in thread 3716420): the line-stream
+  cursor no longer assumes its source is append-only. The watermark carries a
+  sha256 of the bytes it was computed over (`import_state.last_content_hash`), and
+  each poll re-hashes the file's prefix to prove the imported lines are still the
+  file's first lines — a mismatch rewinds to line 0 and re-imports, dedup_key
+  collapsing what's already held. This closes three silent-loss paths that all
+  looked like "nothing changed" to the old size-equality check: a line rewritten
+  to the same serialized length, a truncate-and-regrow between polls, and — the
+  sharp one — a malformed *interior* line later repaired, which shifted every
+  later line's index out from under a cursor that counts parsed, not physical,
+  lines. A torn final line still reads as the append it is, not a rewrite.
+- A turn split across polls stays one turn: the assistant reply whose user line
+  landed in an earlier poll now inherits that turn's `stream_id` instead of
+  opening its own.
+- Per-item failures inside the Cursor / OpenCode / Claude Science DB scans reach
+  the watcher's health instead of only the log — a caught-and-logged failure left
+  the scan looking like a clean "nothing new" while a conversation was missing.
+- The import loop asks the index only about the dedup keys it built this pass,
+  rather than loading every key in the thread — a poll of a long session no longer
+  pays for the whole session's history.
+- `init_db` ALTERs in columns added after a table shipped (`create_all` only ever
+  issues `CREATE TABLE`, so a live index never grew one). Missing *indexes* stay
+  with verify/reindex.
 - A red verify names its cause and keeps its evidence: results carry
   `failed_components`, the full result of any failing run is appended to
   `<home>/verify-failures.jsonl`, and the deep/hashes health records now carry

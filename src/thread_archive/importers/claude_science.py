@@ -34,7 +34,7 @@ from __future__ import annotations
 import json
 import logging
 import sqlite3
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
@@ -87,6 +87,8 @@ class ClaudeScienceDbScanResult:
     frames_processed: int
     frames_imported: int
     events_created: int
+    frames_failed: int = 0
+    errors: list[str] = field(default_factory=list)
 
 
 def _iso_from_ms(ms: int) -> str:
@@ -314,10 +316,15 @@ def import_claude_science_db(db_path, org_uuid: str) -> ClaudeScienceDbScanResul
                 if result.events_created > 0:
                     summary.frames_imported += 1
                     summary.events_created += result.events_created
-            except Exception:  # noqa: BLE001 — one bad frame must not stop the scan
+            except Exception as e:  # noqa: BLE001 — one bad frame must not stop the scan
+                # Counted out to the watcher, not just logged — see the same guard in
+                # opencode: a silently-skipped frame reads as "nothing new" and leaves
+                # `archive status` green while a conversation is missing.
                 logger.exception(
                     "import_claude_science_db: frame %s failed; skipping", frame_id[:8]
                 )
+                summary.frames_failed += 1
+                summary.errors.append(f"frame {frame_id[:8]}: {e}")
     finally:
         conn.close()
     return summary

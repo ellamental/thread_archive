@@ -217,6 +217,13 @@ class ImportState(Base):
     Each ``(source, source_id)`` pair tracks how far into a session file we have
     imported (line count, file size, last message uuid) so duplicate polls do not
     re-import unchanged content.
+
+    ``last_content_hash`` is what makes the cursor a *proof* rather than an
+    observation: the sha256 of the exact file bytes the line cursor was computed
+    over. A poll re-hashes the current file's first ``last_file_size`` bytes and
+    resumes only if they still match — otherwise the source was rewritten under the
+    cursor and the file re-imports from line 0 (see :mod:`..importers._cursor`).
+    NULL on the DB-backed sources, whose cursor is a row count, not a file offset.
     """
 
     __tablename__ = "import_state"
@@ -229,6 +236,7 @@ class ImportState(Base):
     )
     last_line_count: Mapped[int] = mapped_column(default=0, server_default=text("0"))
     last_file_size: Mapped[int] = mapped_column(default=0, server_default=text("0"))
+    last_content_hash: Mapped[str | None] = mapped_column(Text, default=None)
     last_message_uuid: Mapped[str | None] = mapped_column(Text, default=None)
     last_import_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
     created_at: Mapped[datetime] = mapped_column(

@@ -8,6 +8,12 @@ lives in one function, :func:`assemble_events`.
 Idempotence is enforced on the ``dedup_key`` the builder computes (timestamp-free,
 content-inclusive, scoped per thread). A re-import — even one that re-reads
 already-imported lines after a watermark loss — adds nothing.
+
+A turn straddles polls: the user line can land in one poll and its assistant reply in
+the next. So both of the loop's carried anchors are seeded from what the thread
+already holds — the stream id (:func:`_last_stream_id`) and, for the providers that
+pass it, the timestamp (``base_prev_ts``). Without that seed the continuing assistant
+turn would open its own stream and orphan itself from the user turn it answers.
 """
 
 from __future__ import annotations
@@ -15,7 +21,7 @@ from __future__ import annotations
 import logging
 import uuid
 from datetime import datetime
-from typing import Optional
+from typing import Iterable, Optional
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
@@ -27,14 +33,44 @@ from ..truth import write_events
 
 logger = logging.getLogger(__name__)
 
+# SQLite's default host-parameter ceiling is 999; stay well under it per IN (...).
+_KEY_CHUNK = 500
 
-def _existing_dedup_keys(session: Session, thread_id: int) -> set[str]:
-    rows = session.execute(
-        select(Event.dedup_key).where(
-            Event.thread_id == thread_id, Event.dedup_key.is_not(None)
-        )
-    ).scalars().all()
-    return set(rows)
+
+def _existing_dedup_keys(
+    session: Session, thread_id: int, keys: Optional[Iterable[str]] = None
+) -> set[str]:
+    """Which of ``keys`` the thread already holds — or *all* its keys when ``keys``
+    is None.
+
+    The import loop asks only about the keys it built this pass. Loading every key in
+    the thread instead makes each poll of a long session pay for the whole session's
+    history, which is the shape of quadratic work on a transcript that grows by a line
+    at a time.
+    """
+    stmt = select(Event.dedup_key).where(
+        Event.thread_id == thread_id, Event.dedup_key.is_not(None)
+    )
+    if keys is None:
+        return set(session.execute(stmt).scalars().all())
+
+    candidates = list(keys)
+    found: set[str] = set()
+    for i in range(0, len(candidates), _KEY_CHUNK):
+        chunk = candidates[i : i + _KEY_CHUNK]
+        found.update(session.execute(stmt.where(Event.dedup_key.in_(chunk))).scalars().all())
+    return found
+
+
+def _last_stream_id(session: Session, thread_id: int) -> Optional[str]:
+    """The stream id of the thread's newest event — the open turn a continuing
+    assistant message belongs to. None on a thread with no events yet."""
+    return session.execute(
+        select(Event.stream_id)
+        .where(Event.thread_id == thread_id)
+        .order_by(Event.id.desc())
+        .limit(1)
+    ).scalars().first()
 
 
 def _anchor_event(events: list, event_type: str):
@@ -109,13 +145,13 @@ def assemble_events(
     if not messages:
         return 0, None
 
-    seen = _existing_dedup_keys(session, thread_id)
-    batch: list[Event] = []
     last_uuid: Optional[str] = None
-    current_stream_id: Optional[str] = None
     prev_occurred_at: Optional[datetime] = base_prev_ts
-    skip_until_next_user = False
+    # Seed from the thread's open turn so an assistant reply that arrives in a later
+    # poll than its user line joins that turn instead of stranding itself in a new one.
+    current_stream_id: Optional[str] = _last_stream_id(session, thread_id)
 
+    built: list[tuple[str, list]] = []
     for msg in messages:
         role = msg.get("role", "")
         # The parser emits the provider id as `provider_message_id`; older CC line
@@ -133,13 +169,9 @@ def assemble_events(
             events = builder.build_events(
                 msg, current_stream_id, str(uuid.uuid4()), prev_occurred_at=prev_occurred_at
             )
-        elif role == "system":
-            events = builder.build_events(
-                msg, current_stream_id or str(uuid.uuid4()), prev_occurred_at=prev_occurred_at
-            )
         else:
-            # A role the builder doesn't specifically model (tool/function/developer/
-            # model/… from non-CC harnesses). Preserve the turn rather than drop it.
+            # 'system', or a role the builder doesn't specifically model (tool/function/
+            # developer/model/… from non-CC harnesses). Preserve the turn, don't drop it.
             events = builder.build_events(
                 msg, current_stream_id or str(uuid.uuid4()), prev_occurred_at=prev_occurred_at
             )
@@ -148,7 +180,15 @@ def assemble_events(
             # Advance the anchor even for deduped messages so a later new message
             # inherits a monotonic time (never a silent now()).
             prev_occurred_at = events[-1].occurred_at
+        built.append((role, events))
 
+    seen = _existing_dedup_keys(
+        session, thread_id, {te.dedup_key for _, evs in built for te in evs if te.dedup_key}
+    )
+    batch: list[Event] = []
+    skip_until_next_user = False
+
+    for role, events in built:
         # Cross-pass message-level dedup (continuation/fork merge only): skip a turn
         # whose anchor (content + timestamp) is already in the thread.
         if cross_pass_dedup:

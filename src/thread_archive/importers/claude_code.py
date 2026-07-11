@@ -1,10 +1,11 @@
 """Claude Code incremental import.
 
 Reduced to the conversation-archive essentials and run as a single atomic
-transaction. The watermark logic: a file-size early-out skips an unchanged file
-cheaply, and a line-count cursor (``new_lines = all_lines[start_line:]``) feeds only
-the grown tail into the importer. Idempotence across re-reads is guaranteed by the
-dedup_key membership check in :func:`import_lines`.
+transaction. The watermark logic lives in :mod:`._cursor`: a content digest proves the
+file was only appended to, and the line cursor (``new_lines = all_lines[start_line:]``)
+then feeds just the grown tail into the importer — a source rewritten under the cursor
+rewinds and re-imports whole instead. Idempotence across re-reads (and across a
+rewind) is guaranteed by the dedup_key membership check in :func:`import_lines`.
 
 **Atomicity:** the whole import — thread create, events, watermark — commits in one
 session, so "the watermark advances only after a successful import" holds by
@@ -27,8 +28,9 @@ from thread_import.parsers.claude_code import ClaudeCodeParser
 
 from ..store import Thread, get_session
 from ._continuation import resolve_continuation_thread
+from ._cursor import resolve_source_cursor
 from ._events import import_lines
-from ._read import read_session_lines
+from ._read import parse_session_lines, read_source_bytes
 from ._result import IncrementalImportResult
 from ._sidecar import import_sidecar_lines, read_sidecar_lines
 from ._state import (
@@ -104,7 +106,7 @@ def _import_cc(
     session,
     source_id: str,
     all_lines: list[dict],
-    current_file_size: int,
+    source_bytes: bytes,
     parser: ClaudeCodeParser,
     builder: DefaultEventBuilder,
     *,
@@ -112,9 +114,13 @@ def _import_cc(
     title_override: Optional[str] = None,
 ) -> IncrementalImportResult:
     import_state = get_import_state(session, source, source_id)
+    cursor = resolve_source_cursor(import_state, source_bytes, source=source, source_id=source_id)
+    current_file_size = len(source_bytes)
 
-    # File-size watermark: nothing appended → nothing to do.
-    if import_state and import_state.last_file_size == current_file_size:
+    if cursor.unchanged and import_state:
+        # Byte-identical to the last import. Stamp the digest if this watermark predates
+        # it, so the next poll's append proof has something to check against.
+        import_state.last_content_hash = cursor.content_hash
         return IncrementalImportResult(
             lines_processed=0,
             events_created=0,
@@ -124,19 +130,16 @@ def _import_cc(
         )
 
     total_lines = len(all_lines)
-    start_line = import_state.last_line_count if import_state else 0
-    if import_state and current_file_size < import_state.last_file_size:
-        # The source file shrank — it was rewritten, not appended. The line cursor
-        # indexes into content that no longer exists; left alone, rewritten content
-        # would silently never import (and every poll would re-read the file just to
-        # early-out). Rewind and re-import from the top: the dedup_key membership
-        # check collapses everything already held, so only genuinely-new content lands.
-        logger.warning(
-            "%s %s: source shrank (%d → %d bytes) — rewinding cursor, re-importing",
-            source, source_id, import_state.last_file_size, current_file_size,
-        )
-        start_line = 0
+    start_line = cursor.start_line
     if start_line >= total_lines:
+        # The file changed but yielded no new parsed lines (a torn tail line the writer
+        # hasn't finished; a rewrite down to nothing). Advance size + digest so the
+        # completed line still reads as an append next poll — the line cursor tracks
+        # what actually parsed, so the line itself imports then.
+        if import_state:
+            import_state.last_line_count = total_lines
+            import_state.last_file_size = current_file_size
+            import_state.last_content_hash = cursor.content_hash
         return IncrementalImportResult(
             lines_processed=0,
             events_created=0,
@@ -158,6 +161,7 @@ def _import_cc(
     if import_state is None and adopt_if_unwatermarked(
         session, source=source, source_id=source_id,
         thread_id=thread_id, total_lines=total_lines, file_size=current_file_size,
+        content_hash=cursor.content_hash,
     ):
         return IncrementalImportResult(0, 0, thread_id or 0, False, None)
 
@@ -225,6 +229,7 @@ def _import_cc(
         thread_id=thread_id or None,
         last_line_count=total_lines,
         last_file_size=current_file_size,
+        last_content_hash=cursor.content_hash,
         last_message_uuid=last_uuid,
     )
 
@@ -264,12 +269,12 @@ def import_session_incremental(
 
     parser = parser or ClaudeCodeParser()
     builder = builder or DefaultEventBuilder()
-    current_file_size = session_path.stat().st_size
-    all_lines = read_session_lines(session_path)
+    source_bytes = read_source_bytes(session_path)
+    all_lines = parse_session_lines(source_bytes, session_path.name)
     sidecar_lines = read_sidecar_lines(session_path)
 
     def _run(s) -> IncrementalImportResult:
-        result = _import_cc(s, source_id, all_lines, current_file_size, parser, builder, source=source)
+        result = _import_cc(s, source_id, all_lines, source_bytes, parser, builder, source=source)
         # The hook-context sidecar has its own line-count cursor, independent of the
         # session file's size watermark — so a grown sidecar imports even when the
         # main file is unchanged (and _import_cc returned early).

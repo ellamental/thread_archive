@@ -2,7 +2,7 @@
 antigravity).
 
 All three read one JSONL transcript and differ only in provider-specific steps
-supplied as callbacks. The orchestration — file-size watermark, line-count cursor,
+supplied as callbacks. The orchestration — the append-proving cursor (:mod:`._cursor`),
 thread resolve/create, empty-thread cleanup, watermark persist — is identical and
 lives here. Runs as one atomic transaction (events + watermark commit together)
 when no session is passed.
@@ -15,7 +15,8 @@ from pathlib import Path
 from typing import Callable, Optional
 
 from ..store import get_session
-from ._read import read_session_lines
+from ._cursor import resolve_source_cursor
+from ._read import parse_session_lines, read_source_bytes
 from ._result import IncrementalImportResult
 from ._state import (
     adopt_if_unwatermarked,
@@ -36,7 +37,7 @@ def _run(
     source_id: str,
     session_path: Path,
     all_lines: list[dict],
-    current_file_size: int,
+    source_bytes: bytes,
     prepare,
     has_importable_content,
     make_title,
@@ -44,24 +45,26 @@ def _run(
     make_source_metadata,
 ) -> IncrementalImportResult:
     import_state = get_import_state(session, source, source_id)
+    cursor = resolve_source_cursor(import_state, source_bytes, source=source, source_id=source_id)
+    current_file_size = len(source_bytes)
 
-    if import_state and import_state.last_file_size == current_file_size:
+    if cursor.unchanged and import_state:
+        # Byte-identical to the last import; stamp the digest if the watermark predates it.
+        import_state.last_content_hash = cursor.content_hash
         return IncrementalImportResult(
             0, 0, import_state.thread_id or 0, False, import_state.last_message_uuid
         )
 
     total_lines = len(all_lines)
-    start_line = import_state.last_line_count if import_state else 0
-    if import_state and current_file_size < import_state.last_file_size:
-        # Shrunk = rewritten, not appended: the cursor indexes into content that no
-        # longer exists, so rewound content would silently never import. Re-import
-        # from the top — dedup_key membership collapses everything already held.
-        logger.warning(
-            "%s %s: source shrank (%d → %d bytes) — rewinding cursor, re-importing",
-            source, source_id, import_state.last_file_size, current_file_size,
-        )
-        start_line = 0
+    start_line = cursor.start_line
     if start_line >= total_lines:
+        # Changed bytes, no new parsed lines (a torn tail the writer hasn't finished).
+        # Carry size + digest forward so the completed line reads as an append next
+        # poll; the line cursor tracks what parsed, so that line lands then.
+        if import_state:
+            import_state.last_line_count = total_lines
+            import_state.last_file_size = current_file_size
+            import_state.last_content_hash = cursor.content_hash
         return IncrementalImportResult(
             0,
             0,
@@ -83,6 +86,7 @@ def _run(
     if import_state is None and adopt_if_unwatermarked(
         session, source=source, source_id=source_id,
         thread_id=thread_id, total_lines=total_lines, file_size=current_file_size,
+        content_hash=cursor.content_hash,
     ):
         return IncrementalImportResult(0, 0, thread_id or 0, False, None)
 
@@ -98,6 +102,7 @@ def _run(
                 thread_id=None,
                 last_line_count=total_lines,
                 last_file_size=current_file_size,
+                last_content_hash=cursor.content_hash,
                 last_message_uuid=None,
             )
             return IncrementalImportResult(len(new_lines), 0, 0, False)
@@ -125,6 +130,7 @@ def _run(
         thread_id=thread_id or None,
         last_line_count=total_lines,
         last_file_size=current_file_size,
+        last_content_hash=cursor.content_hash,
         last_message_uuid=last_uuid,
     )
 
@@ -163,15 +169,15 @@ def import_line_stream_session(
     if not session_path.exists():
         raise FileNotFoundError(not_found_msg)
 
-    current_file_size = session_path.stat().st_size
-    all_lines = read_session_lines(session_path)
+    source_bytes = read_source_bytes(session_path)
+    all_lines = parse_session_lines(source_bytes, session_path.name)
 
     kwargs = dict(
         source=source,
         source_id=source_id,
         session_path=session_path,
         all_lines=all_lines,
-        current_file_size=current_file_size,
+        source_bytes=source_bytes,
         prepare=prepare,
         has_importable_content=has_importable_content,
         make_title=make_title,

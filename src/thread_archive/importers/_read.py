@@ -7,10 +7,17 @@ scrubbed of null bytes + lone UTF-16 surrogates at the ingest boundary — sourc
 JSONL is written by external (JS/TS) processes that can slice strings on UTF-16
 boundaries and leave an orphaned surrogate, which then fails ``json.dumps`` on the
 write path.
+
+The importers read the file's **bytes** once (:func:`read_source_bytes`) and parse
+from that buffer (:func:`parse_session_lines`), because the same buffer is what
+:mod:`._cursor` digests to prove the source was appended to rather than rewritten.
+Reading twice would race a live writer: the bytes the cursor verified must be the
+bytes the lines were parsed from.
 """
 
 from __future__ import annotations
 
+import io
 import json
 import logging
 from pathlib import Path
@@ -41,19 +48,35 @@ def sanitize_payload(obj: Any) -> Any:
     return obj
 
 
+def read_source_bytes(session_path: Path) -> bytes:
+    """The transcript's raw bytes — the one read the importers do per poll."""
+    return Path(session_path).read_bytes()
+
+
+def parse_session_lines(data: bytes, name: str = "<transcript>") -> list[dict]:
+    """Parse every line of a JSONL transcript's bytes; skip (log) bad lines.
+
+    ``io.StringIO(..., newline=None)`` gives the same universal-newline line split
+    as ``open()`` in text mode: only ``\\n`` (post-translation) ends a line, so a
+    raw U+2028 inside a JSON string doesn't tear a valid line in half the way
+    ``str.splitlines()`` would.
+    """
+    lines: list[dict] = []
+    parse_errors = 0
+    text = data.decode("utf-8", errors="replace")
+    for line_num, line in enumerate(io.StringIO(text, newline=None), 1):
+        if line.strip():
+            try:
+                lines.append(sanitize_payload(json.loads(line)))
+            except json.JSONDecodeError as e:
+                parse_errors += 1
+                logger.warning("%s:%d — JSON parse error: %s", name, line_num, e)
+    if parse_errors:
+        logger.warning("%s: %d lines skipped due to parse errors", name, parse_errors)
+    return lines
+
+
 def read_session_lines(session_path: Path) -> list[dict]:
     """Read + parse every line of a JSONL transcript; skip (log) bad lines."""
     session_path = Path(session_path)
-    lines: list[dict] = []
-    parse_errors = 0
-    with open(session_path, "r", encoding="utf-8", errors="replace") as f:
-        for line_num, line in enumerate(f, 1):
-            if line.strip():
-                try:
-                    lines.append(sanitize_payload(json.loads(line)))
-                except json.JSONDecodeError as e:
-                    parse_errors += 1
-                    logger.warning("%s:%d — JSON parse error: %s", session_path.name, line_num, e)
-    if parse_errors:
-        logger.warning("%s: %d lines skipped due to parse errors", session_path.name, parse_errors)
-    return lines
+    return parse_session_lines(read_source_bytes(session_path), session_path.name)

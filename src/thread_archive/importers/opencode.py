@@ -31,7 +31,7 @@ from __future__ import annotations
 
 import json
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
@@ -57,6 +57,8 @@ class OpenCodeDbScanResult:
     sessions_processed: int
     sessions_imported: int
     events_created: int
+    sessions_failed: int = 0
+    errors: list[str] = field(default_factory=list)
 
 
 def import_opencode_db(db_path) -> OpenCodeDbScanResult:
@@ -140,8 +142,14 @@ def import_opencode_db(db_path) -> OpenCodeDbScanResult:
             if result.events_created > 0:
                 summary.sessions_imported += 1
                 summary.events_created += result.events_created
-        except Exception:
+        except Exception as e:  # noqa: BLE001 — one bad session must not stop the scan
+            # Counted and carried out to the watcher, not just logged: a scan that
+            # reports only "nothing new" makes a failed session indistinguishable from
+            # an unchanged one, and `archive status` stays green while content is
+            # missing. The session's watermark never advanced, so it retries.
             logger.exception("import_opencode_db: session %s failed; skipping", session_id[:12])
+            summary.sessions_failed += 1
+            summary.errors.append(f"session {session_id[:12]}: {e}")
     return summary
 
 

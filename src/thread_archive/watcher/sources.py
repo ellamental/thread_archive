@@ -229,6 +229,17 @@ def cloth_watcher(threads_dir: Optional[Path] = None) -> _RglobWatcher:
 # ── DB (single live SQLite) watchers ────────────────────────────────────────
 
 
+def _scan_errors(source_name: str, scan) -> list[str]:
+    """A DB scan's per-item failures, tagged with the source, for the poll's errors.
+
+    The scanners catch per-item failures so one bad conversation can't abort the scan —
+    but a caught failure that only reaches the log is a conversation the archive doesn't
+    have and doesn't know it doesn't have. Carrying them here puts them in the daemon's
+    ``health.json`` (``watch_errors_last``), so a failing item shows up in ``archive
+    status`` instead of reading as "nothing new"."""
+    return [f"{source_name}: {e}" for e in (getattr(scan, "errors", None) or [])]
+
+
 class _DbScanWatcher(SourceWatcher):
     """Detects mtime changes on a single live SQLite DB and runs a scan importer."""
 
@@ -270,7 +281,11 @@ class _DbScanWatcher(SourceWatcher):
             scan = self._scanner(self.db_path)
         except Exception as e:  # noqa: BLE001
             return WatchResult(errors=[f"{self._name}: scan failed: {e}"])
-        # Fingerprint only after a successful scan, so a failure retries.
+        # Fingerprint only after a successful scan, so a failure retries. Per-item
+        # failures inside the scan don't hold the fingerprint back — a permanently
+        # broken row would then re-scan the whole DB every poll forever — but they do
+        # ride out as errors, and the item itself retries on the DB's next change
+        # (its own watermark never advanced).
         self._last_mtime = current
 
         fields = vars(scan)
@@ -280,6 +295,7 @@ class _DbScanWatcher(SourceWatcher):
             sources_checked=processed,
             items_imported=imported,
             events_created=scan.events_created,
+            errors=_scan_errors(self._name, scan),
         )
 
 
@@ -473,6 +489,7 @@ class ClaudeScienceWatcher(SourceWatcher):
                     sources_checked=scan.frames_processed,
                     items_imported=scan.frames_imported,
                     events_created=scan.events_created,
+                    errors=_scan_errors(f"claude-science {org_uuid[:8]}", scan),
                 )
             except Exception as e:  # noqa: BLE001 — one bad org DB must not stop the poll
                 msg = f"claude-science scan failed for {org_uuid}: {e}"

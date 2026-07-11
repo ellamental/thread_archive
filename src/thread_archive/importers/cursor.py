@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import json
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
@@ -37,6 +37,8 @@ class CursorDbScanResult:
     composers_processed: int
     composers_imported: int
     events_created: int
+    composers_failed: int = 0
+    errors: list[str] = field(default_factory=list)
 
 
 def import_cursor_db(db_path) -> CursorDbScanResult:
@@ -121,12 +123,15 @@ def import_cursor_db(db_path) -> CursorDbScanResult:
                 summary.composers_imported += 1
                 summary.events_created += result.events_created
         except Exception as e:
-            # One composer blowing up must not skip it silently. Log the traceback
-            # AND preserve a stub thread carrying its id + raw + error so the failed
-            # conversation stays visible in the archive and re-exportable.
+            # One composer blowing up must not skip it silently. Log the traceback,
+            # count it out to the watcher's health, AND preserve a stub thread carrying
+            # its id + raw + error so the failed conversation stays visible in the
+            # archive and re-exportable.
             logger.exception(
                 "import_cursor_db: composer %s failed; preserving stub", composer_id[:8]
             )
+            summary.composers_failed += 1
+            summary.errors.append(f"composer {composer_id[:8]}: {e}")
             try:
                 _import_cursor_error_stub(composer_id, composer_data, composer_bubbles, e)
             except Exception:

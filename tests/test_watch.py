@@ -258,6 +258,29 @@ def test_watch_once_holds_shared_ingest_lock(archive_home, monkeypatch, capsys):
     assert seen["locked"] is True
 
 
+def test_failed_items_inside_a_db_scan_surface_too(archive_home, tmp_path, monkeypatch) -> None:
+    """A DB scan catches per-item failures so one bad conversation can't abort it. But
+    a caught failure that only reaches the log leaves the scan looking like a clean
+    "nothing new" — the source stays green while a conversation is missing. The failure
+    has to ride out to the poll's errors."""
+    from thread_archive.importers import cursor as cursor_importer
+
+    init_db()
+    db = tmp_path / "state.vscdb"
+    _make_cursor_db(db)
+
+    def boom(**kwargs):
+        raise RuntimeError("composer shape changed")
+
+    monkeypatch.setattr(cursor_importer, "import_cursor_from_payload", boom)
+
+    res = cursor_watcher(db_path=db).poll()
+
+    assert res.events_created == 0
+    assert res.errors and "cursor" in res.errors[0]
+    assert "composer shape changed" in res.errors[0]
+
+
 def test_poll_errors_surface_in_health(archive_home) -> None:
     """A failing source must be visible to `archive status` (health.json), not
     only to whoever reads the daemon's stderr log — a provider format change
