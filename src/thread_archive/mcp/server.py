@@ -26,11 +26,12 @@ from ..retrieval import format_results, warm_models
 
 mcp = FastMCP("thread-archive")
 
-# The agent-facing default search scope: USER messages only — the most intentional
-# signal of what a thread was about. Assistant text, tool calls/results, and thinking
-# are opt-in (pass an explicit content_type), and content_type='all' clears the filter
-# to search everything. Mirrors the archive backend's thread_search default.
-DEFAULT_SEARCH_CONTENT_TYPES = ("user",)
+# The agent-facing default search scope: USER messages plus the thread-meta docs
+# (title + stored summary) — the intentional signals of what a thread was about.
+# Assistant text, tool calls/results, and thinking are opt-in (pass an explicit
+# content_type), and content_type='all' clears the filter to search everything.
+# Mirrors the archive backend's thread_search default.
+DEFAULT_SEARCH_CONTENT_TYPES = ("user", "title", "summary")
 
 
 @mcp.tool()
@@ -60,14 +61,16 @@ def thread_search(
     nearest-neighbour guesses and the log likely lacks it, so rephrase or switch
     store rather than piling on synonyms.
 
-    By default only USER messages are searched — what Ella actually said, the
-    strongest signal of what a thread was about. Assistant text, tool calls/results,
-    and thinking are opt-in: pass ``content_type='all'`` to search everything, or a
-    specific ``content_type`` (text/thinking/tool/tool_result/...) to target one.
+    By default USER messages, thread titles, and stored thread summaries are
+    searched — the strongest signals of what a thread was about. Assistant text,
+    tool calls/results, and thinking are opt-in: pass ``content_type='all'`` to
+    search everything, or a specific ``content_type``
+    (text/thinking/tool/tool_result/...) to target one.
 
     Query grammar: natural language, "quoted phrases", boolean AND/OR/NOT,
     pipe-OR (a|b), and code identifiers (get_session, a.b.c). Filter by
-    ``thread_id``, ``content_type`` (default user-only; 'all' searches everything),
+    ``thread_id``, ``content_type`` (default user+title+summary; 'all' searches
+    everything),
     ``exclude_content_type`` (comma-separated types to drop), ``tool_name``,
     ``source`` (comma-separated providers, e.g. 'claude-code,cursor'), and a
     ``since``/``until`` window (ISO timestamp or '7d').

@@ -185,12 +185,18 @@ def _read_manifest(d: Path) -> dict:
 
 def _write_manifest(d: Path, m: dict) -> None:
     d.mkdir(parents=True, exist_ok=True)
-    tmp = _manifest_path(d).with_suffix(".json.tmp")
-    with open(tmp, "w", encoding="utf-8") as fh:
-        fh.write(json.dumps(m, indent=2))
-        fh.flush()
-        os.fsync(fh.fileno())  # durable before the rename makes it visible
-    os.replace(tmp, _manifest_path(d))
+    # Per-process tmp name: manifest writers (watcher maintenance, a manual
+    # checkpoint, a backup) aren't otherwise serialized, and two processes
+    # sharing one tmp path would interleave writes and publish a torn manifest.
+    tmp = _manifest_path(d).with_name(f"manifest.json.tmp.{os.getpid()}")
+    try:
+        with open(tmp, "w", encoding="utf-8") as fh:
+            fh.write(json.dumps(m, indent=2))
+            fh.flush()
+            os.fsync(fh.fileno())  # durable before the rename makes it visible
+        os.replace(tmp, _manifest_path(d))
+    finally:
+        tmp.unlink(missing_ok=True)  # no-op after the rename; clears a failed write
     _fsync_dir(d)  # the rename itself must survive power loss
 
 
@@ -548,6 +554,7 @@ def _recover_crashed_drain() -> None:
                 fh.close()
             if baseline is None:
                 path.unlink(missing_ok=True)  # the batch created it — no ghost thread file
+                _fsync_dir(path.parent)
             else:
                 with open(path, "rb+") as rb:
                     rb.truncate(baseline)
@@ -725,6 +732,10 @@ def _drain_before_commit(session: Session) -> None:
         except BaseException:
             # Truncate-to-baseline is safe under the write lock: no other writer
             # can have appended to these files since the baseline was taken.
+            # Each undo is fsynced: the intent clear below is not, so an
+            # un-durable truncate surviving a power loss alongside a durably
+            # cleared intent would resurrect the partial batch with no frame
+            # left to roll it back.
             for path, size in baselines.items():
                 try:
                     fh = _handles.pop(str(path), None)
@@ -732,9 +743,11 @@ def _drain_before_commit(session: Session) -> None:
                         fh.close()  # drop any buffered partial write with the handle
                     if size is None:
                         path.unlink(missing_ok=True)  # we created it — no ghost thread file
+                        _fsync_dir(path.parent)
                     else:
                         with open(path, "rb+") as rb:
                             rb.truncate(size)
+                            os.fsync(rb.fileno())
                 except OSError:  # pragma: no cover — rollback is best-effort
                     logger.exception("truth: could not roll back partial append to %s", path)
             _clear_intent()  # the batch is undone; the frame must not outlive it
@@ -1070,6 +1083,40 @@ def scan_truth_counts(
 
 
 # ── reindex (rebuild the SQLite projection from the JSONL truth) ─────────────
+def _final_nonempty_lineno(path: Path) -> int | None:
+    """Line number of the file's last non-empty line (None when unreadable/empty).
+    The classifier for parse errors: an unparseable FINAL line is the accepted
+    crash artifact (a torn last append — the same fragment
+    :func:`_repair_torn_tail` newline-isolates); an unparseable line anywhere
+    else is interior corruption."""
+    last = None
+    try:
+        with open(path, encoding="utf-8", errors="replace") as fh:
+            for lineno, line in enumerate(fh, 1):
+                if line.strip():
+                    last = lineno
+    except OSError:
+        return None
+    return last
+
+
+def _classify_parse_errors(
+    errors: list[tuple[str, int]],
+) -> tuple[list[tuple[str, int]], list[tuple[str, int]]]:
+    """Split recorded parse errors into ``(torn_tails, interior)``. A torn tail —
+    the file's final non-empty line — is the expected residue of a crash
+    mid-append and never blocks recovery; anything interior means the truth was
+    corrupted some other way and must be looked at, not silently dropped."""
+    torn: list[tuple[str, int]] = []
+    interior: list[tuple[str, int]] = []
+    last_by_path: dict[str, int | None] = {}
+    for path, lineno in errors:
+        if path not in last_by_path:
+            last_by_path[path] = _final_nonempty_lineno(Path(path))
+        (torn if lineno == last_by_path[path] else interior).append((path, lineno))
+    return torn, interior
+
+
 def _iter_jsonl(path: Path, *, errors: list[tuple[str, int]] | None = None):
     """Yield parsed records from a JSONL file, skipping unparseable lines.
 
@@ -1361,6 +1408,148 @@ def _hold_reindex_lock() -> Generator[None, None, None]:
         os.close(fd)
 
 
+def _committed_regression(index_path: Path, tmp_path: Path) -> dict | None:
+    """Committed records the rebuild would lose, diffed against the current index.
+
+    The gate behind fail-closed publication: every event and kg-event id the
+    live index holds must survive into the build — an event may instead survive
+    as a same-content twin (same ``(thread_id, dedup_key)`` under another id;
+    dedup collapse legitimately re-keys those). Anything else missing means the
+    truth lost committed content (a damaged line, a deleted file) and the swap
+    would make the loss permanent-by-default. Returns ``None`` when there is no
+    readable previous index to diff against (a fresh restore has no baseline)."""
+    if not index_path.exists():
+        return None
+    conn = sqlite3.connect(tmp_path)
+    try:
+        try:
+            conn.execute("ATTACH DATABASE ? AS old", (str(index_path),))
+            lost_events = conn.execute(
+                "SELECT count(*) FROM old.events o "
+                "WHERE NOT EXISTS(SELECT 1 FROM main.events n WHERE n.id = o.id) "
+                "AND (o.dedup_key IS NULL OR NOT EXISTS("
+                "  SELECT 1 FROM main.events n "
+                "  WHERE n.thread_id = o.thread_id AND n.dedup_key = o.dedup_key))"
+            ).fetchone()[0]
+            sample = [r[0] for r in conn.execute(
+                "SELECT o.id FROM old.events o "
+                "WHERE NOT EXISTS(SELECT 1 FROM main.events n WHERE n.id = o.id) "
+                "AND (o.dedup_key IS NULL OR NOT EXISTS("
+                "  SELECT 1 FROM main.events n "
+                "  WHERE n.thread_id = o.thread_id AND n.dedup_key = o.dedup_key)) "
+                "ORDER BY o.id LIMIT 10"
+            ).fetchall()] if lost_events else []
+            lost_kg = conn.execute(
+                "SELECT count(*) FROM old.kg_events o "
+                "WHERE NOT EXISTS(SELECT 1 FROM main.kg_events n WHERE n.id = o.id)"
+            ).fetchone()[0]
+        except sqlite3.Error as e:
+            # An unreadable / pre-schema old index is no baseline — the rebuild
+            # IS the recovery. Never let the gate itself block it.
+            logger.warning("reindex: cannot diff against the previous index (%s)", e)
+            return None
+    finally:
+        conn.close()
+    return {"events": int(lost_events), "event_sample": sample, "kg_events": int(lost_kg)}
+
+
+def _files_for_thread(d: Path, thread_id: int) -> list[Path]:
+    """Every truth file for ``thread_id`` — its canonical-depth file plus any
+    stale twin at another shard depth."""
+    threads_dir = d / THREADS_SUBDIR
+    if not threads_dir.exists():
+        return []
+    return list(threads_dir.rglob(f"{int(thread_id)}.jsonl"))
+
+
+def _reconcile_collapsed_citations(d: Path, engine) -> dict:
+    """Post-load reconciliation of citation → event references in the build.
+
+    Dedup collapse (OR REPLACE + the ``(thread_id, dedup_key)`` unique index)
+    keeps one row per content identity; when the *discarded* twin's id was cited
+    (``topic_messages.event_id``), the citation would dangle even though the
+    content it cites survived under the other id. The truth still holds the
+    discarded id's line, so its ``dedup_key`` recovers the surviving row: the
+    citation is repointed to it — or dropped when the topic already cites the
+    survivor (same content, same topic, one citation). A citation whose event
+    has no surviving twin is left dangling for ``verify --deep`` to report.
+
+    Citations whose recorded ``thread_id`` disagrees with the cited event's
+    actual thread are aligned to the event — the event row is authoritative and
+    the column is derived (a wrong value came from an unvalidated write or a
+    stale snapshot seed).
+
+    Both repairs are deterministic functions of the truth directory, so
+    re-running them on every reindex lands on the same projection; the truth
+    log itself is never rewritten here. Returns the (nonzero) counts."""
+    with engine.begin() as conn:
+        dangling = conn.exec_driver_sql(
+            "SELECT m.id, m.topic_id, m.event_id, m.thread_id FROM topic_messages m "
+            "WHERE m.archived_at IS NULL "
+            "AND NOT EXISTS(SELECT 1 FROM events e WHERE e.id = m.event_id)"
+        ).fetchall()
+    repointed = dropped = 0
+    if dangling:
+        # dedup_key of each discarded id, recovered from its thread's truth
+        # file(s). dedup_key is thread-scoped (same content in two threads
+        # shares a key), so the survivor lookup stays scoped to the thread.
+        wanted_by_thread: dict[int, set[int]] = {}
+        for _, _, ev_id, tid in dangling:
+            wanted_by_thread.setdefault(int(tid), set()).add(int(ev_id))
+        keys: dict[int, str] = {}
+        for tid, wanted in wanted_by_thread.items():
+            for path in _files_for_thread(d, tid):
+                for rec in _iter_jsonl(path):
+                    if (
+                        rec.get("type", "event") == "event"
+                        and rec.get("id") in wanted and rec.get("dedup_key")
+                    ):
+                        keys[int(rec["id"])] = rec["dedup_key"]
+        with engine.begin() as conn:
+            for row_id, topic_id, ev_id, tid in dangling:
+                key = keys.get(int(ev_id))
+                if not key:
+                    continue
+                survivor = conn.exec_driver_sql(
+                    "SELECT id FROM events WHERE thread_id = ? AND dedup_key = ?",
+                    (int(tid), key),
+                ).fetchone()
+                if survivor is None:
+                    continue
+                already = conn.exec_driver_sql(
+                    "SELECT 1 FROM topic_messages WHERE topic_id = ? AND event_id = ?",
+                    (int(topic_id), int(survivor[0])),
+                ).fetchone()
+                if already is not None:
+                    conn.exec_driver_sql(
+                        "DELETE FROM topic_messages WHERE id = ?", (int(row_id),)
+                    )
+                    dropped += 1
+                else:
+                    conn.exec_driver_sql(
+                        "UPDATE topic_messages SET event_id = ? WHERE id = ?",
+                        (int(survivor[0]), int(row_id)),
+                    )
+                    repointed += 1
+    with engine.begin() as conn:
+        aligned = conn.exec_driver_sql(
+            "UPDATE topic_messages SET thread_id = "
+            "(SELECT e.thread_id FROM events e WHERE e.id = topic_messages.event_id) "
+            "WHERE EXISTS(SELECT 1 FROM events e WHERE e.id = topic_messages.event_id "
+            "AND e.thread_id != topic_messages.thread_id)"
+        ).rowcount
+    out: dict = {}
+    if repointed:
+        out["citations_repointed"] = repointed
+    if dropped:
+        out["citations_dropped"] = dropped
+    if aligned:
+        out["citations_thread_aligned"] = aligned
+    if out:
+        logger.warning("reindex: citation reconciliation %s", out)
+    return out
+
+
 def _fold_wal(path: Path) -> None:
     """Fold any leftover ``-wal`` into the main file and drop the sidecars, so a
     rename moves one complete, self-contained database."""
@@ -1379,7 +1568,7 @@ def _unlink_build(tmp_path: Path) -> None:
         p.unlink(missing_ok=True)
 
 
-def reindex(*, vectors: bool = False) -> dict:
+def reindex(*, vectors: bool = False, salvage: bool = False) -> dict:
     """Rebuild the SQLite store from the JSONL truth directory — build-and-swap.
 
     The recovery primitive: build a complete new index (schema, per-thread files,
@@ -1399,11 +1588,29 @@ def reindex(*, vectors: bool = False) -> dict:
     dependency-agnostic inserts need no ordering and the conversation truth-log
     listeners never fire; the kg-event replay runs through a Session on that same
     engine but stages nothing, so it likewise can't re-write the truth it reads.
-    Loads are **INSERT OR REPLACE** (last-wins) and unparseable truth lines are
-    skipped and counted (``parse_errors``) rather than aborting — a torn last line
-    from a crash mid-append can't block recovery. The JSONL is authoritative and
+    Loads are **INSERT OR REPLACE** (last-wins). The JSONL is authoritative and
     replayed as-is — including any dangling reference; integrity was the writer's
-    job."""
+    job.
+
+    **Publication fails closed on committed-content loss.** Unparseable truth
+    lines are skipped and counted (``parse_errors``, split into
+    ``parse_errors_torn_tail`` — the file's final line, a torn last append — and
+    ``parse_errors_interior``): crash artifacts are expected residue (an
+    isolated torn fragment stays an unparseable interior line forever) and must
+    never block the recovery primitive. What must never happen instead is a
+    swap that silently *loses committed records*, so before publishing the
+    build is diffed against the current index (:func:`_committed_regression`):
+    any event or kg-event the old index holds that the rebuild lacks — by id,
+    and for events with no same-content twin surviving under another id —
+    aborts the swap (the old index stays live) and the error names the loss. A
+    crash fragment was never committed (truth is fsynced before its COMMIT), so
+    it can't trip the gate; a damaged committed line always does. ``salvage=True``
+    is the deliberate override: publish the lossy rebuild anyway. With no
+    readable previous index (the ``rm index.db`` recovery flow) there is no
+    baseline and the gate is skipped — parse errors are still reported. The
+    rebuilt file must also pass ``PRAGMA quick_check`` before the swap (never
+    overridable) — a build corrupted at the page level must not replace a
+    healthy index."""
     d = log_dir()
 
     engine = get_engine()
@@ -1456,6 +1663,29 @@ def reindex(*, vectors: bool = False) -> dict:
             counts["import_state"] = _carry_import_state(index_path, loader)
             counts["kg_events"] = _replay_kg_events(d, loader, errors=parse_errors)
 
+            # Fail closed on committed-content loss (see docstring): crash
+            # fragments never block recovery, but a rebuild missing records the
+            # current index holds must not be published over it.
+            torn_tails, interior = _classify_parse_errors(parse_errors)
+            counts["parse_errors_torn_tail"] = len(torn_tails)
+            counts["parse_errors_interior"] = len(interior)
+            if not salvage:
+                lost = _committed_regression(index_path, tmp_path)
+                if lost is not None and (lost["events"] or lost["kg_events"]):
+                    err_sample = ", ".join(f"{p}:{ln}" for p, ln in interior[:5])
+                    raise RuntimeError(
+                        f"reindex: the rebuild would lose {lost['events']} committed "
+                        f"event(s) and {lost['kg_events']} curation event(s) the "
+                        f"current index holds (event sample: {lost['event_sample']}) "
+                        "— refusing to publish; the old index was left in place. "
+                        + (f"Likely cause: {len(interior)} damaged truth line(s) "
+                           f"({err_sample}). " if interior else "")
+                        + "Repair the truth (or restore it from backup), or rerun "
+                        "with --salvage to publish the lossy rebuild anyway."
+                    )
+
+            counts.update(_reconcile_collapsed_citations(d, loader))
+
             # FTS + vectors resolve their engine via get_engine(); point them at
             # the build for the block.
             with use_engine(loader):
@@ -1493,6 +1723,22 @@ def reindex(*, vectors: bool = False) -> dict:
             _unlink_build(tmp_path)  # the old index was never touched
             raise
         loader.dispose()
+
+        # Page-level gate: a build file corrupted on disk (a bad write during the
+        # hours-long rebuild) must not replace a healthy index. Before the WAL
+        # fold, and read-write: a WAL-mode database refuses a read-only open
+        # once its sidecars are gone.
+        qconn = sqlite3.connect(tmp_path)
+        try:
+            qc = [r[0] for r in qconn.execute("PRAGMA quick_check(10)").fetchall()]
+        finally:
+            qconn.close()
+        if qc != ["ok"]:
+            _unlink_build(tmp_path)
+            raise RuntimeError(
+                f"reindex: rebuilt index failed quick_check ({'; '.join(map(str, qc))}) "
+                "— the old index was left in place"
+            )
         _fold_wal(tmp_path)
 
         # Publish: dispose the live engine's pools first (its connections point at
@@ -1541,6 +1787,48 @@ def emit_thread_file(d: Path, thread_id: int, depth: int, thread_record, event_r
     return n_ev
 
 
+def _truth_units_missing_from_store(d: Path) -> tuple[int, list[str]]:
+    """Content units present in the truth but absent from the store — the
+    pre-flight behind :func:`rebuild_truth_from_store`. A *unit* is an event's
+    content identity: its ``dedup_key`` (thread-scoped), falling back to the
+    event id when the key is NULL — the same collapse ``scan_truth_counts`` and
+    the reindex loader apply. Count parity can hide compensating errors (an
+    index-only event masking a missing one, swapped payloads behind equal
+    totals); containment can't: every effective truth unit must exist in the
+    store, or a re-emit would destroy content the index never had. Walked one
+    thread at a time so memory stays bounded. Returns ``(missing, sample)``."""
+    threads_dir = d / THREADS_SUBDIR
+    files_by_stem: dict[str, list[Path]] = {}
+    if threads_dir.exists():
+        for path in threads_dir.rglob("*.jsonl"):
+            files_by_stem.setdefault(path.stem, []).append(path)
+    missing = 0
+    sample: list[str] = []
+    with get_session() as s:
+        conn = s.connection().connection  # raw sqlite3 — stream, don't materialize
+        for stem, paths in files_by_stem.items():
+            try:
+                tid = int(stem)
+            except ValueError:  # pragma: no cover — stray file
+                continue
+            units: set = set()
+            for path in paths:
+                for rec in _iter_jsonl(path):
+                    if rec.get("type", "event") != "event" or rec.get("id") is None:
+                        continue
+                    units.add(rec.get("dedup_key") or ("id", int(rec["id"])))
+            if not units:
+                continue
+            for ev_id, key in conn.execute(
+                "SELECT id, dedup_key FROM events WHERE thread_id = ?", (tid,)
+            ):
+                units.discard(key or ("id", int(ev_id)))
+            missing += len(units)
+            for unit in sorted(map(str, units))[: max(0, 10 - len(sample))]:
+                sample.append(f"thread {tid}: {unit}")
+    return missing, sample
+
+
 def rebuild_truth_from_store(*, force: bool = False) -> dict:
     """Re-emit the entire per-thread truth from the current SQLite store.
 
@@ -1555,10 +1843,13 @@ def rebuild_truth_from_store(*, force: bool = False) -> dict:
     reverse of the normal flow — so it protects itself: it holds the reindex lock
     **exclusive** for the duration (no writer can append truth or commit to the
     index mid-emission; in-tree writers all hold it shared), and it refuses to run
-    when the store holds fewer events than the truth's effective count — re-emitting
-    from a stale or partial index would destroy truth content. ``force=True``
-    overrides the pre-flight only (for a deliberate, understood shrink — e.g. a
-    duplicate-collapse repair); it never skips the lock."""
+    unless the store *contains* every effective content unit the truth holds
+    (:func:`_truth_units_missing_from_store` — per-unit containment, not count
+    parity, so a missing event can't hide behind an index-only one). A repair
+    pass that rewrites payloads in place keeps its units (the ``dedup_key``
+    column carries the identity), so the intended use survives the gate.
+    ``force=True`` overrides the pre-flight only (for a deliberate, understood
+    shrink — e.g. a duplicate-collapse repair); it never skips the lock."""
     d = log_dir()
     (d / THREADS_SUBDIR).mkdir(parents=True, exist_ok=True)
 
@@ -1570,22 +1861,13 @@ def rebuild_truth_from_store(*, force: bool = False) -> dict:
         with _truth_write_lock():
             pass
         if not force:
-            from sqlalchemy import func
-
-            # Effective count after collapsing superseded lines — including a
-            # stale same-id twin at another shard depth, so a layout-migration
-            # re-emit doesn't trip the guard.
-            truth_effective = scan_truth_counts(truth_dir=d)["events_effective"]
-            with get_session() as s:
-                store_events = s.execute(
-                    select(func.count()).select_from(Event)
-                ).scalar() or 0
-            if store_events < truth_effective:
+            missing, sample = _truth_units_missing_from_store(d)
+            if missing:
                 raise RuntimeError(
-                    f"rebuild_truth_from_store: the store holds {store_events} events "
-                    f"but the truth holds {truth_effective} effective — re-emitting "
-                    "would destroy truth content the index lacks. Run `archive reindex` "
-                    "first (or pass force=True if the shrink is intended)."
+                    f"rebuild_truth_from_store: the store lacks {missing} event(s) "
+                    f"the truth holds (sample: {sample}) — re-emitting would destroy "
+                    "truth content the index lacks. Run `archive reindex` first "
+                    "(or pass force=True if the shrink is intended)."
                 )
         return _rebuild_truth_from_store_locked(d)
 

@@ -1,5 +1,103 @@
 # Changelog
 
+## 2026-07-10 — retrieval review: thread-meta docs, canonical time bounds, recall fixes
+
+A retrieval-focused review pass (thread: this one) — the pipeline's architecture
+held up; the findings were coverage and filter-correctness gaps.
+
+- **Thread titles + stored summaries are now searchable** (`index_thread_meta`):
+  indexed as `thread_meta` docs (content_type `title`/`summary`) anchored to the
+  thread's first indexed event, in both the FTS shadow and the embedded vector
+  pools, so "find the thread about X" works when X never appears in a message.
+  Synced diff-based from the watcher's maintenance pass; derived on `reindex`;
+  the MCP default search scope grew from `user` to `user,title,summary`.
+- **Canonical time-bound format.** `event_search.occurred_at` was written in
+  two formats (ISO-`T`+offset from incremental indexing vs. space-separated
+  naive from rebuild), and since/until bounds resolved to a third — lexicographic
+  comparison silently dropped boundary-day hits. Both write paths and the bound
+  resolver now emit one canonical form (naive UTC, space-separated); live rows
+  were normalized in place.
+- **`exclude_from_search` is actually enforced** (327 threads were flagged but
+  still searchable). Both arms and the meta docs honor it; an explicit
+  `thread_id` scope still bypasses it deliberately.
+- **Code-identifier / pipe-OR recall past the recency cap**: those modes ran a
+  single substring-LIKE pass ordered newest-first, so any identifier with more
+  recent mentions than the fetch pool made *old* hits unreachable. They now
+  federate two passes — a phrase-MATCH (bm25, whole corpus, rides the index)
+  plus the substring LIKE for within-token matches.
+- **Scoped semantic search pre-masks the KNN**: thread/time/source filters
+  restrict the candidate set before the top-k cut instead of after, so a
+  narrow scope ranks within itself rather than hoping to survive a corpus-wide
+  top-k. The vector arm previously could return nothing for a thread-scoped
+  query despite in-scope vectors.
+- **Cross-encoder scores the match-centred window** of long docs, not the head.
+- **The vector-matrix cache notices out-of-process writes.** Its validity token
+  now includes store-derived counters (row count + max rowid), so a long-lived
+  search process (the MCP server) picks up vectors the watcher's embed cohost
+  writes; previously the token was a process-local version and the semantic arm
+  froze at whatever was embedded when the matrix first loaded.
+- **`output='count'` labels a capped tally** (`N+ (tally capped)`) instead of
+  presenting the 1000-row fetch cap as an exact total.
+- **Retrieval eval harness** (`scripts/retrieval_eval.py`): MRR / recall@k over
+  a hand-golden JSONL or a zero-curation title→thread protocol (meta docs
+  excluded from eval searches so the title never matches itself), reported
+  per query shape — ranking changes are now measurable. Baseline on the live
+  corpus at this change (100 title queries, thread-level): MRR 0.479,
+  R@1/5/10/20 = 0.34/0.68/0.76/0.81.
+
+## 2026-07-10 — seventh-pass integrity review: fail-closed publication, citation integrity
+
+A seventh review pass (thread 3716392), focused on write paths that could
+silently degrade data: reindex published lossy rebuilds, dedup collapse could
+strand citations, backups overwrote their last good copy in place, and
+knowledge writes accepted references to nothing (39 live citations carried a
+wrong `thread_id`).
+
+- **Reindex fails closed on committed-content loss.** Before the swap, the
+  build is diffed against the current index (`_committed_regression`): any
+  event (with no same-content twin surviving under another id) or kg-event the
+  old index holds that the rebuild lacks aborts publication — the old index
+  stays live and the error names the loss. Crash artifacts (torn lines that
+  never committed) can't trip the gate, so the recovery primitive stays
+  recovery; `--salvage` is the deliberate override. Parse errors are now
+  classified (`parse_errors_torn_tail` / `parse_errors_interior`) and the
+  rebuilt file must pass `PRAGMA quick_check` before it may replace a healthy
+  index. The CLI prints a refusal cleanly and exits 1.
+- **Citations survive dedup collapse.** When OR REPLACE discards a cited
+  event id in favor of its same-content twin, reindex now repoints the
+  citation to the survivor (or drops it when the topic already cites the
+  survivor); citations whose recorded `thread_id` disagrees with the cited
+  event's actual thread are realigned (the event row is authoritative). Both
+  repairs are deterministic from the truth and re-run on every reindex.
+- **Knowledge writes validate their references**: `add_topic_evidence`
+  requires a real topic, a real event, and the event's actual thread;
+  `link_threads` requires existing endpoints. The materializer derives a
+  citation's `thread_id` from the cited event, payload as fallback. Deep
+  verify reports (and fails on) `citation_thread_mismatch`.
+- **`rebuild_truth_from_store` gates on content containment**, not count
+  parity: every effective truth unit (`dedup_key`, id-fallback) must exist in
+  the store, so a missing event can no longer hide behind an index-only one
+  keeping the totals equal.
+- **Backup copies publish atomically** (same-dir temp + fsync + rename +
+  dir-fsync): a crash or disk-full mid-copy can't leave a partial destination
+  or destroy the previous good copy. Append-only truth copies are trimmed to
+  the last newline, so a copy racing a live append is a clean, parseable
+  prefix — mirror files always parse.
+- **`archive watch --once` holds the shared ingest lock** (the CLI path
+  bypassed it; `api.watch(once=True)` already locked), closing the window
+  where a one-shot poll could append truth past a rebuild's read point.
+- **Durability seams**: the in-process drain rollback fsyncs its truncates and
+  dir-fsyncs its unlinks (matching crash recovery); manifest writers use
+  per-process temp names so concurrent checkpoints can't publish a torn
+  manifest.
+
+Not adopted from the review: first-wins id policy on natural-key conflicts
+(the surviving id must match what the live index holds — citation repointing
+fixes the stranded-reference problem without re-keying); full deep parity as
+the `rebuild_truth_from_store` gate (would block its designed repair use);
+backup generations (a destination-side decision — worth considering
+separately).
+
 ## 2026-07-10 — sixth-pass integrity review: both-layouts twins, verify cadence
 
 A sixth review pass, focused on what happens when a thread's truth file exists

@@ -57,9 +57,24 @@ def classify_query(query: str) -> tuple[str, bool]:
     return "tsquery", False
 
 
+def canonical_time_bound(dt: datetime) -> str:
+    """Format a datetime in the store's canonical timestamp form: naive UTC,
+    space-separated (``YYYY-MM-DD HH:MM:SS.ffffff``) — the form SQLite renders
+    DateTime columns in and the FTS ``occurred_at`` strings hold, so lexicographic
+    comparison against stored values is correct. An aware datetime is converted to
+    UTC; a naive one is taken as already UTC."""
+    if dt.tzinfo:
+        dt = dt.astimezone(timezone.utc).replace(tzinfo=None)
+    return dt.strftime("%Y-%m-%d %H:%M:%S.%f")
+
+
 def resolve_relative_date(value: str) -> str:
-    """Resolve a relative ``<N>d`` window (e.g. '7d') to an ISO timestamp N days
-    before now; any other value passes through unchanged."""
+    """Resolve a ``since``/``until`` bound to the canonical stored form (see
+    :func:`canonical_time_bound`). Accepts a relative ``<N>d`` window (e.g. '7d')
+    or any ISO timestamp; an unparseable value passes through unchanged."""
     if value.endswith("d") and value[:-1].isdigit():
-        return (datetime.now(timezone.utc) - timedelta(days=int(value[:-1]))).isoformat()
-    return value
+        return canonical_time_bound(datetime.now(timezone.utc) - timedelta(days=int(value[:-1])))
+    try:
+        return canonical_time_bound(datetime.fromisoformat(value.replace("Z", "+00:00")))
+    except ValueError:
+        return value

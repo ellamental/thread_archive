@@ -103,9 +103,17 @@ def cmd_watch(args: argparse.Namespace) -> int:
     )
 
     if args.once:
-        result = watcher.poll_once()
-        if result.events_created > 0:
-            watcher.maintain()  # one upkeep pass (rebalance/manifest) for the one-shot
+        from .truth import shared_ingest_lock
+
+        # Same coverage as api.watch(once=True): the poll appends truth and
+        # commits, so it must hold the reindex lock shared — an unlocked
+        # one-shot racing a reindex can land truth after the rebuild's read
+        # point and commit into the inode the swap replaces. Blocking (bounded
+        # by one rebuild): a one-shot has no later pass to retry on.
+        with shared_ingest_lock():
+            result = watcher.poll_once()
+            if result.events_created > 0:
+                watcher.maintain()  # one upkeep pass (rebalance/manifest) for the one-shot
         print(
             f"watch: checked {result.sources_checked} sources, "
             f"imported {result.items_imported} items ({result.events_created} events)",
@@ -176,7 +184,13 @@ def cmd_reindex(args: argparse.Namespace) -> int:
     _self_throttle()  # a rebuild is background work — don't bog the interactive machine
     paths = resolve_paths(args.home)
     print(f"reindexing {paths.index_path} from {paths.truth_dir} (vectors={args.vectors}, throttled)")
-    counts = api.reindex(home=args.home, vectors=args.vectors)
+    try:
+        counts = api.reindex(home=args.home, vectors=args.vectors, salvage=args.salvage)
+    except RuntimeError as e:
+        # A refused publication (corrupt truth lines, failed quick_check, no disk
+        # room) — operator guidance, not a stack trace. The old index is intact.
+        print(f"reindex refused: {e}", file=sys.stderr)
+        return 1
     for name, n in counts.items():
         print(f"  {name:16} {n:>9}")
     print("done")
@@ -272,6 +286,7 @@ def cmd_verify(args: argparse.Namespace) -> int:
             f"       kg index_only={dp['kg']['index_only']} truth_only={dp['kg']['truth_only']}; "
             f"dangling links={dp['dangling']['link_endpoints']} "
             f"citations={dp['dangling']['citation_events']} "
+            f"citation_thread_mismatch={dp['dangling']['citation_thread_mismatch']} "
             f"events={dp['dangling']['event_threads']}; "
             f"dup_pairs={dp['duplicate_content_pairs_index']}"
         )
@@ -411,6 +426,11 @@ def build_parser() -> argparse.ArgumentParser:
     p_reindex = sub.add_parser("reindex", help="rebuild index.db from the JSONL truth directory")
     _add_home_arg(p_reindex)
     p_reindex.add_argument("--vectors", action="store_true", help="also rebuild local vectors")
+    p_reindex.add_argument(
+        "--salvage", action="store_true",
+        help="publish the rebuild even if it loses committed records the current "
+             "index holds (the default refuses and keeps the old index)",
+    )
     p_reindex.set_defaults(func=cmd_reindex)
 
     p_embed = sub.add_parser("embed", help="embed user/text events missing a vector (incremental catch-up)")

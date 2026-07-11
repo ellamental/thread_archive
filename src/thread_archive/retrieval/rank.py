@@ -26,9 +26,13 @@ import re
 from datetime import datetime
 
 # Per-content-type relevance multiplier — user messages are the most intentional,
-# tool/thinking the noisiest.
+# tool/thinking the noisiest. Thread-meta docs (title/summary) rank like the
+# intentional kinds they distill: a title is aboutness itself, a summary is the
+# thread's own digest.
 _CONTENT_TYPE_WEIGHT = {
+    "title": 1.5,
     "user": 1.5,
+    "summary": 1.2,
     "text": 1.2,
     "tool_result": 0.8,
     "tool": 0.5,
@@ -108,6 +112,22 @@ def should_rerank(query: str, terms: list[str]) -> bool:
     if re.search(r"[_]|::|(?<=\w)\.(?=\w)", q):
         return False
     return len(terms) >= 2
+
+
+def match_window(content: str, terms: list[str], chars: int) -> str:
+    """The ~``chars``-wide slice of ``content`` centred on the earliest term match —
+    what a cross-encoder should score. Feeding it the doc *head* mis-scores any hit
+    whose relevant text sits mid-message; centring keeps the match (plus a third of
+    the window as lead-in) inside the scored span. Head of the doc when nothing
+    matches (conceptual queries may share no literal term with the target)."""
+    if not content or len(content) <= chars:
+        return content
+    low = content.lower()
+    pos = min((p for p in (low.find(t) for t in terms) if p >= 0), default=-1)
+    if pos <= chars // 3:  # no match, or match already inside a head window
+        return content[:chars]
+    start = min(pos - chars // 3, len(content) - chars)
+    return content[start:start + chars]
 
 
 def dedup_results(results: list[dict]) -> list[dict]:

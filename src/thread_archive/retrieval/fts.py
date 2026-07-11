@@ -22,7 +22,7 @@ from sqlalchemy import text as sa_text
 from sqlalchemy.orm import Session
 
 from ..store import Event, EventFts, use_session
-from ._classify import classify_query
+from ._classify import canonical_time_bound, classify_query
 from ._extract import INDEXABLE_EVENT_TYPES, extract_fts_content
 
 logger = logging.getLogger(__name__)
@@ -114,6 +114,11 @@ def _in_clause(column: str, values: list, prefix: str, params: dict, negate: boo
     return column + op + ",".join(names) + ")"
 
 
+def _quote_phrase(text_: str) -> str:
+    """A cleaned text span as one FTS5 phrase term."""
+    return '"' + text_.replace('"', "") + '"'
+
+
 def search_events(
     query: str,
     thread_id: Optional[int] = None,
@@ -130,97 +135,116 @@ def search_events(
 ) -> list[dict]:
     """Lexical search over the FTS5 index → canonical event-hit dicts.
 
-    Query mode (shared classifier): pipe-OR and code-identifier shapes match by
-    substring LIKE (un-stemmed, recency-ordered); natural-language / boolean /
-    quoted-phrase queries run FTS5 MATCH (bm25-ranked). ``startswith`` overrides the
-    query mode entirely with a structural prefix scan (content LIKE 'prefix%',
+    Query mode (shared classifier): natural-language / boolean / quoted-phrase
+    queries run FTS5 MATCH (bm25-ranked). Pipe-OR and code-identifier shapes run
+    TWO passes, merged: a phrase MATCH (the tokenizer splits ``get_session`` into
+    ``get session``, so the quoted phrase rides the index, bm25-ranked over the
+    whole corpus) plus a substring LIKE over the most recent matches (catches
+    within-token substrings MATCH can't see). The MATCH pass is what keeps *old*
+    hits reachable for common identifiers — a single recency-ordered LIKE pass
+    caps out on the newest ``limit`` matches. ``startswith`` overrides the query
+    mode entirely with a structural prefix scan (content LIKE 'prefix%',
     recency-ordered) — the query text is not matched, only the structural filters.
     """
     ensure_fts(session)
     mode, _is_boolean = classify_query(query)
 
-    params: dict = {"lim": limit}
+    # Each pass is (match_where, match_params, order, use_match); shared filters
+    # are appended to every pass.
+    passes: list[tuple[str, dict, str, bool]] = []
     if startswith is not None:
         # Structural prefix scan — wildcards in the prefix are escaped so it matches
         # a literal prefix (the reference left them unescaped; this hardens it).
-        where = ["content LIKE :sw ESCAPE '\\'"]
-        params["sw"] = _like_prefix(startswith)
-        order, use_match = "occurred_at DESC", False
+        passes.append(("content LIKE :sw ESCAPE '\\'", {"sw": _like_prefix(startswith)},
+                       "occurred_at DESC", False))
     elif mode == "or":
         terms = [_clean_query_text(t) for t in (query or "").split("|")]
         terms = [t for t in terms if t]
         if not terms:
             return []
+        match_q = " OR ".join(_quote_phrase(t) for t in terms)
+        passes.append(("event_search MATCH :q", {"q": match_q}, _RANK_EXPR, True))
+        like_params: dict = {}
         ors = []
         for i, term in enumerate(terms):
-            params["or" + str(i)] = "%" + term + "%"
+            like_params["or" + str(i)] = "%" + term + "%"
             ors.append("content LIKE :or" + str(i))
-        where = ["(" + " OR ".join(ors) + ")"]
-        order, use_match = "occurred_at DESC", False
+        passes.append(("(" + " OR ".join(ors) + ")", like_params, "occurred_at DESC", False))
     elif mode == "code":
-        where = ["content LIKE :codepat"]
-        params["codepat"] = "%" + _clean_query_text(query) + "%"
-        order, use_match = "occurred_at DESC", False
+        clean = _clean_query_text(query)
+        passes.append(("event_search MATCH :q", {"q": _quote_phrase(clean)}, _RANK_EXPR, True))
+        passes.append(("content LIKE :codepat", {"codepat": "%" + clean + "%"},
+                       "occurred_at DESC", False))
     else:
-        where = ["event_search MATCH :q"]
-        params["q"] = _to_match_query(query)
-        order, use_match = _RANK_EXPR, True
+        passes.append(("event_search MATCH :q", {"q": _to_match_query(query)}, _RANK_EXPR, True))
 
+    shared: list[str] = []
+    shared_params: dict = {"lim": limit}
     if thread_id is not None:
-        where.append("thread_id = :tid")
-        params["tid"] = thread_id
+        shared.append("thread_id = :tid")
+        shared_params["tid"] = thread_id
+    else:
+        # Honor the per-thread search blacklist (threads.exclude_from_search).
+        # An explicit thread_id scope is deliberate and bypasses it.
+        shared.append("thread_id NOT IN (SELECT id FROM threads WHERE exclude_from_search)")
     if tool_name:
-        where.append("tool_name = :tool")
-        params["tool"] = tool_name
+        shared.append("tool_name = :tool")
+        shared_params["tool"] = tool_name
     if content_types:
-        where.append(_in_clause("content_type", content_types, "ct", params, negate=False))
+        shared.append(_in_clause("content_type", content_types, "ct", shared_params, negate=False))
     if exclude_content_types:
-        where.append(_in_clause("content_type", exclude_content_types, "xct", params, negate=True))
+        shared.append(_in_clause("content_type", exclude_content_types, "xct", shared_params, negate=True))
     if source:
         # event_search carries thread_id but not source; constrain to threads of
         # the named provider(s) via an indexed subquery (idx_threads_source). An
         # empty match yields no rows rather than invalid SQL.
-        where.append(
+        shared.append(
             "thread_id IN (SELECT id FROM threads WHERE "
-            + _in_clause("source", source, "src", params, negate=False) + ")"
+            + _in_clause("source", source, "src", shared_params, negate=False) + ")"
         )
     if since:
-        where.append("occurred_at >= :since")
-        params["since"] = since
+        shared.append("occurred_at >= :since")
+        shared_params["since"] = since
     if until:
-        where.append("occurred_at <= :until")
-        params["until"] = until
-
-    snippet_expr = (
-        "snippet(event_search, 0, '', '', ' … ', 12)" if use_match else "substr(content, 1, 300)"
-    )
-    sql = sa_text(
-        "SELECT event_id, thread_id, event_type, content_type, occurred_at, "
-        + snippet_expr + " AS snippet, content AS full_content "
-        "FROM event_search WHERE " + " AND ".join(where) +
-        " ORDER BY " + order + " LIMIT :lim"
-    )
-    with use_session(session) as s:
-        rows = s.execute(sql, params).mappings().all()
+        shared.append("occurred_at <= :until")
+        shared_params["until"] = until
 
     hits: list[dict] = []
-    for r in rows:
-        ts = 0
-        oa = r["occurred_at"]
-        if oa:
-            try:
-                ts = int(datetime.fromisoformat(str(oa)).timestamp())
-            except ValueError:
+    seen: set[tuple[int, Optional[str]]] = set()
+    with use_session(session) as s:
+        for match_where, match_params, order, use_match in passes:
+            snippet_expr = (
+                "snippet(event_search, 0, '', '', ' … ', 12)" if use_match
+                else "substr(content, 1, 300)"
+            )
+            sql = sa_text(
+                "SELECT event_id, thread_id, event_type, content_type, occurred_at, "
+                + snippet_expr + " AS snippet, content AS full_content "
+                "FROM event_search WHERE " + " AND ".join([match_where] + shared) +
+                " ORDER BY " + order + " LIMIT :lim"
+            )
+            rows = s.execute(sql, {**shared_params, **match_params}).mappings().all()
+            for r in rows:
+                key = (r["event_id"], r["content_type"])
+                if key in seen:
+                    continue
+                seen.add(key)
                 ts = 0
-        hits.append(build_event_hit(
-            event_id=r["event_id"],
-            thread_id=r["thread_id"],
-            event_type=r["event_type"],
-            content_type=r["content_type"],
-            snippet=r["snippet"] or "",
-            full_content=r["full_content"] or "",
-            occurred_at_ts=ts,
-        ))
+                oa = r["occurred_at"]
+                if oa:
+                    try:
+                        ts = int(datetime.fromisoformat(str(oa)).timestamp())
+                    except ValueError:
+                        ts = 0
+                hits.append(build_event_hit(
+                    event_id=r["event_id"],
+                    thread_id=r["thread_id"],
+                    event_type=r["event_type"],
+                    content_type=r["content_type"],
+                    snippet=r["snippet"] or "",
+                    full_content=r["full_content"] or "",
+                    occurred_at_ts=ts,
+                ))
     return hits
 
 
@@ -229,6 +253,147 @@ _INSERT_SEARCH = sa_text(
     "(content, event_id, thread_id, event_type, content_type, tool_name, occurred_at) "
     "VALUES (:content, :event_id, :thread_id, :event_type, :content_type, :tool_name, :occurred_at)"
 )
+
+# Thread-meta docs: the thread's title and short summary, indexed as searchable
+# docs so "find the thread about X" works when X never appears verbatim in a
+# message. Rows carry event_type='thread_meta' and content_type 'title'/'summary',
+# anchored to the thread's first indexed event so every hit keeps a real
+# [thread/event] anchor (reading from it lands at the thread's opening).
+THREAD_META_EVENT_TYPE = "thread_meta"
+THREAD_META_CONTENT_TYPES = ("title", "summary")
+
+
+def _thread_meta_desired(s: Session, thread_ids: Optional[list[int]]) -> dict[tuple[int, str], str]:
+    """The meta docs that *should* exist: ``(thread_id, content_type) → content``.
+    Conversations only (topics have their own librarian search surface), search-
+    excluded threads omitted, empty title/summary omitted."""
+    where = "t.thread_type = 'conversation' AND NOT t.exclude_from_search"
+    params: dict = {}
+    if thread_ids is not None:
+        if not thread_ids:
+            return {}
+        where += " AND " + _in_clause("t.id", list(thread_ids), "tid", params, negate=False)
+    rows = s.execute(
+        sa_text("SELECT t.id, t.title, t.summary FROM threads t WHERE " + where), params
+    ).all()
+    desired: dict[tuple[int, str], str] = {}
+    for tid, title, summary in rows:
+        if title and title.strip():
+            desired[(tid, "title")] = title.strip()
+        if summary and summary.strip():
+            desired[(tid, "summary")] = summary.strip()
+    return desired
+
+
+def index_thread_meta(session: Optional[Session] = None, thread_ids: Optional[list[int]] = None) -> int:
+    """Sync thread titles + short summaries into the FTS surface (shadow + FTS5)
+    as thread-meta docs. Diff-based: an unchanged thread writes nothing, a changed
+    title/summary replaces its rows (and drops its stale vector so the embed cohost
+    re-embeds it), a vanished one is deleted. ``thread_ids=None`` syncs every
+    thread — cheap enough for the watcher's maintenance cadence. Returns the
+    number of rows written."""
+    ensure_fts(session)
+    with use_session(session) as s:
+        desired = _thread_meta_desired(s, thread_ids)
+
+        params: dict = {"met": THREAD_META_EVENT_TYPE}
+        scope = ""
+        if thread_ids is not None:
+            if not thread_ids:
+                return 0
+            scope = " AND " + _in_clause("thread_id", list(thread_ids), "tid", params, negate=False)
+        existing = {
+            (r.thread_id, r.content_type): (r.id, r.event_id, r.content)
+            for r in s.execute(
+                sa_text(
+                    "SELECT id, event_id, thread_id, content_type, content FROM events_fts "
+                    "WHERE event_type = :met" + scope
+                ),
+                params,
+            )
+        }
+
+        stale = [k for k, (_, _, content) in existing.items() if desired.get(k) != content]
+        fresh = [k for k, content in desired.items() if existing.get(k, (None, None, None))[2] != content]
+        if not stale and not fresh:
+            return 0
+
+        # Anchor each thread at its first indexed event; a thread with no indexed
+        # events gets no meta docs (nothing to anchor a read to).
+        need_anchor = sorted({tid for tid, _ in fresh})
+        anchors: dict[int, tuple[int, Optional[str]]] = {}
+        for chunk_start in range(0, len(need_anchor), 500):
+            chunk = need_anchor[chunk_start:chunk_start + 500]
+            aparams: dict = {"met": THREAD_META_EVENT_TYPE}
+            rows = s.execute(
+                sa_text(
+                    "SELECT f.thread_id, MIN(f.event_id) FROM events_fts f "
+                    "WHERE f.event_type != :met AND "
+                    + _in_clause("f.thread_id", chunk, "tid", aparams, negate=False)
+                    + " GROUP BY f.thread_id"
+                ),
+                aparams,
+            ).all()
+            eids = [eid for _, eid in rows]
+            oparams: dict = {}
+            occurred = dict(
+                s.execute(
+                    sa_text(
+                        "SELECT id, occurred_at FROM events WHERE "
+                        + _in_clause("id", eids, "eid", oparams, negate=False)
+                    ),
+                    oparams,
+                ).all()
+            ) if eids else {}
+            for tid, eid in rows:
+                anchors[tid] = (eid, str(occurred[eid]) if occurred.get(eid) else None)
+
+        # Probe once instead of catching mid-transaction: a failed statement would
+        # poison the session (lexical-only installs have no vector table).
+        have_vectors = bool(s.execute(
+            sa_text("SELECT 1 FROM sqlite_master WHERE name = :n"), {"n": "event_vectors"}
+        ).scalar())
+
+        written = 0
+        for key in stale:
+            tid, ct = key
+            rid, old_eid, _ = existing[key]
+            s.execute(sa_text("DELETE FROM events_fts WHERE id = :rid"), {"rid": rid})
+            s.execute(
+                sa_text(
+                    "DELETE FROM event_search WHERE event_type = :met "
+                    "AND thread_id = :tid AND content_type = :ct"
+                ),
+                {"met": THREAD_META_EVENT_TYPE, "tid": tid, "ct": ct},
+            )
+            # Drop the doc's vector so the embed cohost's missing-vector anti-join
+            # re-embeds the replacement (or forgets a removed doc).
+            if have_vectors:
+                s.execute(
+                    sa_text("DELETE FROM event_vectors WHERE event_id = :eid AND content_type = :ct"),
+                    {"eid": old_eid, "ct": ct},
+                )
+        for key in fresh:
+            tid, ct = key
+            if tid not in anchors:
+                continue
+            eid, oa = anchors[tid]
+            content = desired[key]
+            s.add(EventFts(
+                event_id=eid, thread_id=tid, event_type=THREAD_META_EVENT_TYPE,
+                content=content, content_type=ct, tool_name=None,
+            ))
+            s.execute(_INSERT_SEARCH, {
+                "content": content, "event_id": eid, "thread_id": tid,
+                "event_type": THREAD_META_EVENT_TYPE, "content_type": ct,
+                "tool_name": None, "occurred_at": oa,
+            })
+            written += 1
+        if session is None:
+            s.commit()
+    if written or stale:
+        logger.info("index_thread_meta: wrote %d meta docs (%d removed)", written, len(stale))
+    return written
 
 
 def index_events(session: Session, events: list) -> int:
@@ -244,7 +409,10 @@ def index_events(session: Session, events: list) -> int:
         if ev.event_type not in INDEXABLE_EVENT_TYPES:
             continue
         payload = ev.payload if isinstance(ev.payload, dict) else json.loads(ev.payload)
-        oa = ev.occurred_at.isoformat() if ev.occurred_at else None
+        # Canonical form (naive-UTC, space-separated) so incremental rows collate
+        # with rebuilt rows — rebuild_fts copies events.occurred_at as SQLite
+        # rendered it, and the since/until bounds are resolved to the same form.
+        oa = canonical_time_bound(ev.occurred_at) if ev.occurred_at else None
         for content, content_type, tool_name in extract_fts_content(ev.event_type, payload):
             tn = tool_name[:200] if tool_name else None
             session.add(EventFts(
@@ -311,6 +479,11 @@ def rebuild_fts(session: Optional[Session] = None) -> int:
             "FROM events_fts f JOIN events e ON e.id = f.event_id "
             "WHERE f.content IS NOT NULL AND f.content != ''"
         ))
+
+        # 3. Derive the thread-meta docs (titles + summaries). The shadow refill
+        #    above dropped them, so the sync sees a clean slate and writes them all.
+        index_thread_meta(s)
+
         count = s.execute(sa_text("SELECT count(*) FROM event_search")).scalar() or 0
         if own:
             s.commit()

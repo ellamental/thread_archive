@@ -31,7 +31,7 @@ from typing import Callable
 
 from sqlalchemy import delete, select, update
 
-from ..store import Thread, ThreadLink, TopicMessage
+from ..store import Event, Thread, ThreadLink, TopicMessage
 
 logger = logging.getLogger(__name__)
 
@@ -124,11 +124,16 @@ def _link_deleted(session, p: dict, ev) -> None:
 # ── evidence (message → topic citations) ──────────────────────────────────────
 def _evidence_added(session, p: dict, ev) -> None:
     topic_id, event_id = int(p["topic_id"]), int(p["event_id"])
+    # The cited event's own row is authoritative for the thread; the payload
+    # value is the fallback for a citation whose event the store doesn't hold
+    # (a dangling reference replayed from an older, unvalidated write). Looked
+    # up before the row is added — a query would autoflush the incomplete row.
+    cited = session.get(Event, event_id)
     row = _find_evidence(session, topic_id, event_id)
     if row is None:
         row = TopicMessage(topic_id=topic_id, event_id=event_id, created_at=ev.occurred_at)
         session.add(row)
-    row.thread_id = int(p["thread_id"])
+    row.thread_id = int(cited.thread_id) if cited is not None else int(p["thread_id"])
     row.quote = p.get("quote", "")
     row.actor = p.get("actor") or getattr(ev, "actor", "librarian")
     row.created_by_thread_id = getattr(ev, "actor_thread_id", None)

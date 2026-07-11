@@ -18,6 +18,10 @@ from sqlalchemy import text as sa_text
 from ..store import use_session
 from . import rank as _rank
 
+# output='count' wants a true tally, so the pipeline over-fetches to this cap; a
+# pool that reaches it was truncated and the tally renders as a floor ("N+").
+COUNT_FETCH_CAP = 1000
+
 
 def _hit_text(h: dict) -> str:
     return h.get("full_content") or h.get("snippet") or ""
@@ -70,8 +74,10 @@ def _format_count(hits: list[dict], query: str) -> str:
         corpus = s.execute(
             sa_text("SELECT count(*), count(DISTINCT thread_id) FROM event_search")
         ).one()
+    capped = len(hits) >= COUNT_FETCH_CAP
+    total = f"{len(hits)}+ (tally capped)" if capped else str(len(hits))
     lines = [
-        f"Total: {len(hits)} results across {len(thread_counts)} threads",
+        f"Total: {total} results across {len(thread_counts)} threads",
         f"  (corpus: {corpus[0]:,} indexed events, {corpus[1]:,} threads)",
     ]
     for tid, count in thread_counts.most_common():

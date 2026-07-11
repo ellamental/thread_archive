@@ -86,11 +86,21 @@ class Watcher:
 
     def maintain(self) -> dict:
         """Cheap periodic upkeep: shard rebalance + thread-metadata backstop + manifest
-        watermark. Deliberately *not* the cross-thread overlay snapshots — conversation
-        ingest never changes those, so the live path leaves them untouched."""
+        watermark + the thread-meta search docs (titles/summaries → FTS). Deliberately
+        *not* the cross-thread overlay snapshots — conversation ingest never changes
+        those, so the live path leaves them untouched."""
+        from ..retrieval.fts import index_thread_meta
         from ..truth import checkpoint
 
         counts = checkpoint(snapshots=False)
+        # Sync title/summary search docs (diff-based — unchanged threads write
+        # nothing). Catches both fresh imports and out-of-band summary writes.
+        try:
+            meta = index_thread_meta()
+            if meta:
+                counts = {**counts, "thread_meta_docs": meta}
+        except Exception as e:  # noqa: BLE001 — upkeep must not kill the loop
+            logger.warning("watch: thread-meta index error: %s", e)
         logger.info("watch: maintenance %s", counts)
         return counts
 

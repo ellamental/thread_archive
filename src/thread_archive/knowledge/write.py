@@ -217,9 +217,13 @@ def link_threads(
     actor_thread_id: Optional[int] = None, session: Optional[Session] = None,
 ) -> dict:
     """Create (or update) a directed link between two threads/topics. Idempotent on
-    ``(source, target, link_type)``."""
+    ``(source, target, link_type)``. Both endpoints must exist — the kg log is
+    truth, and a link to a nonexistent thread would dangle on every replay."""
     own = session is None
     with use_session(session) as s:
+        for tid in (source_id, target_id):
+            if s.get(Thread, int(tid)) is None:
+                raise ValueError(f"no thread with id {tid} — link endpoints must exist")
         ev = _emit(
             s, event_type="link.created", entity_type="link",
             entity_id=f"{int(source_id)}:{int(target_id)}:{link_type}",
@@ -272,9 +276,25 @@ def add_topic_evidence(
     session: Optional[Session] = None,
 ) -> dict:
     """Cite a conversation message as evidence for a topic. Idempotent on
-    ``(topic_id, event_id)``."""
+    ``(topic_id, event_id)``.
+
+    Validated before anything is emitted: the topic must exist (and be a topic),
+    the event must exist, and ``thread_id`` must be the cited event's actual
+    thread — a citation is a claim about a real message, and the kg log is truth,
+    so a bad reference must be rejected here rather than replayed forever."""
     own = session is None
     with use_session(session) as s:
+        _require_topic(s, topic_id)
+        cited = s.get(Event, int(event_id))
+        if cited is None:
+            raise ValueError(
+                f"no event with id {event_id} — citations must reference a real archived message"
+            )
+        if int(cited.thread_id) != int(thread_id):
+            raise ValueError(
+                f"event {event_id} belongs to thread {cited.thread_id}, not {thread_id} — "
+                "check which message you meant to cite"
+            )
         ev = _emit(
             s, event_type="evidence.added", entity_type="topic_message",
             entity_id=f"{int(topic_id)}:{int(event_id)}",

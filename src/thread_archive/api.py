@@ -19,7 +19,6 @@ from typing import Optional
 
 from .config import ENV_HOME, ArchivePaths, resolve_paths
 
-
 # (st_dev, st_ino) of index.db at the last open_archive — swap detection.
 _index_ident: Optional[tuple[int, int]] = None
 
@@ -195,7 +194,8 @@ def import_path(path, *, home: Optional[str] = None, provider: str = "claude-cod
     """
     open_archive(home)
     from .importers import DB_SCANNERS, LINE_STREAM_IMPORTERS
-    from .truth import checkpoint as _checkpoint, shared_ingest_lock
+    from .truth import checkpoint as _checkpoint
+    from .truth import shared_ingest_lock
 
     p = Path(path)
     # Held shared across the truth append AND the SQLite commit: an unlocked import
@@ -214,12 +214,17 @@ def import_path(path, *, home: Optional[str] = None, provider: str = "claude-cod
     return result
 
 
-def reindex(*, home: Optional[str] = None, vectors: bool = False) -> dict:
-    """Rebuild index.db (relational + FTS) from the JSONL truth directory."""
+def reindex(*, home: Optional[str] = None, vectors: bool = False, salvage: bool = False) -> dict:
+    """Rebuild index.db (relational + FTS) from the JSONL truth directory.
+
+    Fails closed when the rebuild would lose committed records the current index
+    holds (damaged truth lines, a deleted thread file) — the old index stays live
+    and the error names the loss; ``salvage=True`` publishes the lossy rebuild
+    anyway. Crash artifacts (torn lines that never committed) never block."""
     open_archive(home)
     from .truth import reindex as _reindex
 
-    return _reindex(vectors=vectors)
+    return _reindex(vectors=vectors, salvage=salvage)
 
 
 def embed(
@@ -286,12 +291,52 @@ def _is_append_only_truth(rel: Path) -> bool:
     ) and rel.suffix == ".jsonl"
 
 
+def _atomic_copy(sp: Path, dp: Path, *, trim_to_newline: bool) -> None:
+    """Copy ``sp`` over ``dp`` with no destructive window: the bytes land in a
+    same-directory temp file, fsynced, then an atomic rename publishes them — a
+    crash or disk-full mid-copy can never leave ``dp`` partial or destroy its
+    previous good copy. ``copy2`` under the hood, so mtime rides along and the
+    mirror's unchanged-skip keeps working.
+
+    ``trim_to_newline`` (append-only truth files) drops an unterminated final
+    fragment from the copy: the mirror doesn't quiesce writers, so a copy racing
+    a live append can catch half a line — trimmed to the last newline, every
+    published backup copy is a clean, parseable prefix of its source, and the
+    full line arrives with the next run."""
+    import shutil
+
+    tmp = dp.parent / f".{dp.name}.tmp-{os.getpid()}"
+    try:
+        shutil.copy2(sp, tmp)
+        with open(tmp, "rb+") as fh:
+            size = fh.seek(0, os.SEEK_END)
+            if trim_to_newline and size:
+                fh.seek(-1, os.SEEK_END)
+                if fh.read(1) != b"\n":
+                    pos, last_nl = size, -1
+                    while pos > 0:
+                        step = min(65536, pos)
+                        fh.seek(pos - step)
+                        idx = fh.read(step).rfind(b"\n")
+                        if idx >= 0:
+                            last_nl = pos - step + idx
+                            break
+                        pos -= step
+                    fh.truncate(last_nl + 1)
+            os.fsync(fh.fileno())
+        os.replace(tmp, dp)
+    except BaseException:
+        tmp.unlink(missing_ok=True)
+        raise
+
+
 def _mirror_dir(
     src: Path, dest: Path, *, delete: bool = False, allow_shrink: bool = False
 ) -> dict:
     """Incrementally mirror ``src`` into ``dest`` (skip files unchanged by size +
-    mtime). ``copy2`` preserves mtime so a re-run copies only what changed — the
-    truth dir is append-mostly, so a periodic backup moves little.
+    mtime). Each file is published atomically (:func:`_atomic_copy`), preserving
+    mtime so a re-run copies only what changed — the truth dir is append-mostly,
+    so a periodic backup moves little.
 
     ``delete=True`` makes it a true mirror: destination files with no source
     counterpart are removed (and emptied directories pruned). Without it the mirror
@@ -319,14 +364,16 @@ def _mirror_dir(
     until it is investigated. ``allow_shrink=True`` is the deliberate override for
     an understood re-emit (``rebuild_truth_from_store`` legitimately rewrites files
     smaller)."""
-    import shutil
+    from .truth.jsonl_log import _fsync_dir
 
     copied = total = deleted = skipped = shrinks = 0
     shrink_sample: list[str] = []
+    synced_dirs: set[Path] = set()
     for sp in src.rglob("*"):
         if sp.is_dir():
             continue
-        dp = dest / sp.relative_to(src)
+        rel = sp.relative_to(src)
+        dp = dest / rel
         if dp.exists():
             ss, ds = sp.stat(), dp.stat()
             if ss.st_size == ds.st_size and int(ss.st_mtime) <= int(ds.st_mtime):
@@ -334,16 +381,19 @@ def _mirror_dir(
             if (
                 not allow_shrink
                 and ss.st_size < ds.st_size
-                and _is_append_only_truth(sp.relative_to(src))
+                and _is_append_only_truth(rel)
             ):
                 shrinks += 1
                 if len(shrink_sample) < 10:
-                    shrink_sample.append(str(sp.relative_to(src)))
+                    shrink_sample.append(str(rel))
                 continue
         dp.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(sp, dp)
+        _atomic_copy(sp, dp, trim_to_newline=_is_append_only_truth(rel))
         copied += 1
-        total += sp.stat().st_size
+        total += dp.stat().st_size
+        synced_dirs.add(dp.parent)
+    for sd in synced_dirs:
+        _fsync_dir(sd)  # the renames that published this pass's copies must stick
     twins_deleted = 0
     if delete:
         dest_files = [dp for dp in dest.rglob("*") if not dp.is_dir()]
@@ -886,6 +936,14 @@ def _verify_deep(watermark: int) -> dict:
             "WHERE m.archived_at IS NULL "  # tombstoned evidence is history, not a live ref
             "AND NOT EXISTS(SELECT 1 FROM events e WHERE e.id = m.event_id)"
         )).scalar() or 0
+        # A live citation whose recorded thread disagrees with the cited event's
+        # actual thread: the column is derived from the event, so disagreement
+        # means an unvalidated write or a stale snapshot seed. Reindex realigns
+        # these (citation reconciliation), so a persistent count means rot.
+        citation_thread_mismatch = s.execute(sa_text(
+            "SELECT count(*) FROM topic_messages m JOIN events e ON e.id = m.event_id "
+            "WHERE m.archived_at IS NULL AND m.thread_id != e.thread_id"
+        )).scalar() or 0
         dangling_events = s.execute(sa_text(
             "SELECT count(*) FROM events e "
             "WHERE NOT EXISTS(SELECT 1 FROM threads t WHERE t.id = e.thread_id)"
@@ -930,6 +988,7 @@ def _verify_deep(watermark: int) -> dict:
         not index_only and not missing and not key_mismatch
         and kg_index_only == 0
         and dangling_links == 0 and dangling_citations == 0 and dangling_events == 0
+        and citation_thread_mismatch == 0
         and fts_orphans == 0 and fts_shadow_rows == fts5_rows
     )
     return {
@@ -948,6 +1007,7 @@ def _verify_deep(watermark: int) -> dict:
         "dangling": {
             "link_endpoints": int(dangling_links),
             "citation_events": int(dangling_citations),
+            "citation_thread_mismatch": int(citation_thread_mismatch),
             "event_threads": int(dangling_events),
         },
         "duplicate_content_pairs_index": int(dup_pairs),

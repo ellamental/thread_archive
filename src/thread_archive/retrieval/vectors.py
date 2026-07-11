@@ -6,8 +6,8 @@ the vectors live in the archive SQLite DB beside the data. Vectors are float32 a
 unit-normalized, so cosine = dot product; at single-user scale the matrix loads once
 and a query is a single BLAS matvec (~ms).
 
-Populated from the ``events_fts`` shadow's ``user`` / ``text`` pools via the
-``[embeddings]`` provider (:mod:`.embed`). Cached durably in a ``vectors.sqlite``
+Populated from the ``events_fts`` shadow's ``user`` / ``text`` / ``title`` /
+``summary`` pools via the ``[embeddings]`` provider (:mod:`.embed`). Cached durably in a ``vectors.sqlite``
 sidecar so the hours-long embed survives ``rm index.db && reindex``. Degrades to
 lexical-only when the extra isn't installed or nothing's indexed.
 """
@@ -33,11 +33,17 @@ _CREATE_VEC = (
     "vec BLOB NOT NULL, PRIMARY KEY (event_id, content_type))"
 )
 
-# Embedded content-type pools: user → default pool; text → scoped assistant pool.
+# Embedded content-type pools: user → default pool; text → scoped assistant pool;
+# title/summary → the thread-meta docs (thread-level aboutness).
 _USER_CONTENT_TYPES = ("user",)
 _ASSISTANT_CONTENT_TYPES = ("text",)
+_META_CONTENT_TYPES = ("title", "summary")
 
-# Process-local matrix cache: {(engine_id, cts): (write_version, ids, ctypes, mat)}.
+# Process-local matrix cache: {(engine_id, cts): (validity_token, ids, ctypes, mat)}.
+# The token includes store-derived counters (row count + max rowid), not just the
+# process-local write version: the embed cohost lives in the *watcher* process, so a
+# long-lived search process (the MCP server) must notice out-of-process vector writes
+# or its semantic arm freezes at whatever was embedded when its matrix first loaded.
 _MATRIX_CACHE: dict = {}
 _write_version = 0
 
@@ -70,7 +76,7 @@ def _normalize(v) -> "np.ndarray":
 
 
 def _scope_content_types(content_types: Optional[list[str]]) -> Optional[list[str]]:
-    embedded = _USER_CONTENT_TYPES + _ASSISTANT_CONTENT_TYPES
+    embedded = _USER_CONTENT_TYPES + _ASSISTANT_CONTENT_TYPES + _META_CONTENT_TYPES
     if content_types:
         cts = [c for c in content_types if c in embedded]
     else:
@@ -110,7 +116,7 @@ def index_events_local(
     max_events: int | None = None,
     newest_first: bool = False,
 ) -> int:
-    """Compute event vectors in-process from the FTS shadow (user/text pools).
+    """Compute event vectors in-process from the FTS shadow (user/text/title/summary pools).
 
     ``rebuild=False`` only embeds events missing a vector (anti-join — safe to
     re-run). ``max_events`` caps how many events a single call embeds — the live
@@ -136,7 +142,8 @@ def index_events_local(
         "SELECT f.event_id AS eid, f.content_type AS ct, group_concat(f.content, ' ') AS content "
         "FROM events_fts f "
         "LEFT JOIN event_vectors v ON v.event_id = f.event_id AND v.content_type = f.content_type "
-        "WHERE f.content_type IN ('user', 'text') AND f.content IS NOT NULL AND f.content != ''"
+        "WHERE f.content_type IN ('user', 'text', 'title', 'summary') "
+        "AND f.content IS NOT NULL AND f.content != ''"
         + missing +
         f" GROUP BY f.event_id, f.content_type ORDER BY f.event_id {order}" + limit
     )
@@ -235,19 +242,30 @@ def _bump_version() -> None:
     _write_version += 1
 
 
+def _validity_token(s) -> tuple:
+    """Cheap cross-process staleness probe for the matrix cache. Catches inserts
+    (max rowid grows) and deletes (count shrinks); an in-place upsert of an existing
+    row is invisible, which the in-process ``_write_version`` covers."""
+    row = s.execute(
+        sa_text("SELECT count(*), coalesce(max(rowid), 0) FROM event_vectors")
+    ).one()
+    return (_write_version, int(row[0]), int(row[1]))
+
+
 def _load_matrix(cts: tuple[str, ...]):
     eng = get_engine()
     key = (id(eng), cts)
-    cached = _MATRIX_CACHE.get(key)
-    if cached is not None and cached[0] == _write_version:
-        return cached[1], cached[2], cached[3]
-
-    where = "content_type IN (" + ",".join(":c" + str(i) for i in range(len(cts))) + ")"
-    params = {"c" + str(i): c for i, c in enumerate(cts)}
-    ids: list[int] = []
-    ctypes: list[str] = []
-    vecs: list[np.ndarray] = []
     with get_session() as s:
+        token = _validity_token(s)
+        cached = _MATRIX_CACHE.get(key)
+        if cached is not None and cached[0] == token:
+            return cached[1], cached[2], cached[3]
+
+        where = "content_type IN (" + ",".join(":c" + str(i) for i in range(len(cts))) + ")"
+        params = {"c" + str(i): c for i, c in enumerate(cts)}
+        ids: list[int] = []
+        ctypes: list[str] = []
+        vecs: list[np.ndarray] = []
         result = s.execute(
             sa_text("SELECT event_id, content_type, vec FROM event_vectors WHERE " + where), params,
         )
@@ -258,20 +276,33 @@ def _load_matrix(cts: tuple[str, ...]):
     mat = np.vstack(vecs) if vecs else np.empty((0, _DIM), dtype=np.float32)
     ids_arr = np.asarray(ids, dtype=np.int64)
     ct_arr = np.asarray(ctypes, dtype=object)
-    _MATRIX_CACHE[key] = (_write_version, ids_arr, ct_arr, mat)
+    _MATRIX_CACHE[key] = (token, ids_arr, ct_arr, mat)
     return ids_arr, ct_arr, mat
 
 
-def _knn(qvec, cts: tuple[str, ...], cand: int) -> list[tuple[int, str, float]]:
+def _knn(qvec, cts: tuple[str, ...], cand: int, allowed_ids=None) -> list[tuple[int, str, float]]:
+    """Brute-force cosine KNN over the cached matrix. ``allowed_ids`` (an int64
+    ndarray) restricts candidates to those event ids *before* the top-k cut, so a
+    scoped search (one thread, a time window) ranks within its scope instead of
+    hoping the scope survives a corpus-wide top-k."""
     ids, ct_arr, mat = _load_matrix(cts)
     n = len(ids)
     if n == 0:
         return []
     q = _normalize(qvec)
     sims = mat @ q
-    k = min(cand, n)
-    part = np.argpartition(-sims, k - 1)[:k] if k < n else np.arange(n)
-    order = sorted(part, key=lambda i: (-float(sims[i]), int(ids[i])))
+    if allowed_ids is not None:
+        keep = np.nonzero(np.isin(ids, allowed_ids))[0]
+        if len(keep) == 0:
+            return []
+        sub_sims = sims[keep]
+        k = min(cand, len(keep))
+        part = np.argpartition(-sub_sims, k - 1)[:k] if k < len(keep) else np.arange(len(keep))
+        pool = keep[part]
+    else:
+        k = min(cand, n)
+        pool = np.argpartition(-sims, k - 1)[:k] if k < n else np.arange(n)
+    order = sorted(pool, key=lambda i: (-float(sims[i]), int(ids[i])))
     return [(int(ids[i]), str(ct_arr[i]), float(sims[i])) for i in order]
 
 
@@ -322,9 +353,36 @@ def search(
     if not qvec:
         return None
 
+    # A scoped search (one thread / time window / source) pre-masks the KNN to the
+    # in-scope event ids, so ranking happens *within* the scope — a corpus-wide
+    # top-k could miss the scope entirely. Unscoped searches skip the id query.
     selective = thread_id is not None or since is not None or until is not None or bool(source)
-    cand = max(limit * 20, 500) if selective else max(limit * 3, 100)
-    candidates = _knn(qvec, tuple(cts), cand)
+    allowed_ids = None
+    if selective:
+        awhere = []
+        aparams: dict = {}
+        ajoin = "FROM events e"
+        if thread_id is not None:
+            awhere.append("e.thread_id = :tid")
+            aparams["tid"] = thread_id
+        if since:
+            awhere.append("e.occurred_at >= :since")
+            aparams["since"] = since
+        if until:
+            awhere.append("e.occurred_at <= :until")
+            aparams["until"] = until
+        if source:
+            ajoin += " JOIN threads t ON t.id = e.thread_id"
+            awhere.append(_in_clause("t.source", source, "src", aparams, negate=False))
+        with get_session() as s:
+            allowed = [int(r[0]) for r in s.execute(
+                sa_text("SELECT e.id " + ajoin + " WHERE " + " AND ".join(awhere)), aparams,
+            )]
+        if not allowed:
+            return []
+        allowed_ids = np.asarray(allowed, dtype=np.int64)
+    cand = max(limit * 3, 100)
+    candidates = _knn(qvec, tuple(cts), cand, allowed_ids=allowed_ids)
     if not candidates:
         return []
     sim_by: dict[tuple[int, str], float] = {(eid, ct): sim for eid, ct, sim in candidates}
@@ -335,6 +393,9 @@ def search(
     if thread_id is not None:
         where.append("f.thread_id = :tid")
         params["tid"] = thread_id
+    else:
+        # Honor the per-thread search blacklist; an explicit thread scope bypasses it.
+        where.append("f.thread_id NOT IN (SELECT id FROM threads WHERE exclude_from_search)")
     if exclude_content_types:
         where.append(_in_clause("f.content_type", exclude_content_types, "xct", params, negate=True))
     if since:

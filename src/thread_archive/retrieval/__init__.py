@@ -22,14 +22,11 @@ from ..store import Thread, use_session
 from . import rank as _rank
 from ._classify import resolve_relative_date
 from ._context import extract_context_lines, get_context_events, parse_context_events_spec
-from .format import format_results
-from .fts import ensure_fts, fts_status, index_events, rebuild_fts, search_events
+from .format import COUNT_FETCH_CAP, format_results
+from .fts import ensure_fts, fts_status, index_events, index_thread_meta, rebuild_fts, search_events
 from .read import read_thread, read_thread_structured, resolve_thread_ref
 
 logger = logging.getLogger(__name__)
-
-# output='count' wants a true tally, so over-fetch far past the page size.
-_COUNT_FETCH_CAP = 1000
 
 
 def _enrich_thread_titles(hits: list[dict], *, session: Optional[Session] = None) -> None:
@@ -113,14 +110,14 @@ def warm_models() -> None:
 
     # Run one throwaway search end to end: it loads the vector matrix and runs a first
     # cross-encoder inference, both of which cache process-globally for the real queries.
-    # Scope it to user-only ('user') — the agent surface's default (mcp.server's
-    # DEFAULT_SEARCH_CONTENT_TYPES), so the matrix this primes is keyed the same as the real
-    # queries reuse (the matrix cache is keyed by content-type scope; a mismatched scope
-    # would prime a matrix the real query never touches).
+    # Scope it to the agent surface's default (mcp.server's DEFAULT_SEARCH_CONTENT_TYPES),
+    # so the matrix this primes is keyed the same as the real queries reuse (the matrix
+    # cache is keyed by content-type scope; a mismatched scope would prime a matrix the
+    # real query never touches).
     try:
         from .. import api
 
-        api.search(_WARM_QUERY, limit=1, content_types=["user"])
+        api.search(_WARM_QUERY, limit=1, content_types=["user", "title", "summary"])
     except Exception:  # noqa: BLE001 — a store that isn't ready just warms the models, not the caches
         logger.debug("warm_models: dummy warm search skipped", exc_info=True)
 
@@ -177,7 +174,7 @@ def search(
     # against, so the semantic arm and the weighted ranker both sit out.
     structural = startswith is not None or not (query or "").strip()
     is_count = output == "count"
-    over = max(limit, _COUNT_FETCH_CAP) if is_count else max(limit * 5, 50)
+    over = max(limit, COUNT_FETCH_CAP) if is_count else max(limit * 5, 50)
 
     terms = _rank.search_terms(query)
 
@@ -216,9 +213,14 @@ def search(
         if do_rerank:
             from . import rerank as _rerank
 
+            # Score the match-centred window, not the doc head — a long hit whose
+            # relevant text sits mid-message would otherwise be scored on its intro.
             reordered = _rerank.rerank(
                 query, ranked,
-                get_text=lambda r: (r.get("full_content") or r.get("snippet") or ""),
+                get_text=lambda r: _rank.match_window(
+                    r.get("full_content") or r.get("snippet") or "",
+                    terms, _rerank.RERANK_DOC_CHARS,
+                ),
             )
             if reordered is not None:
                 ranked, did_rerank = reordered, True
@@ -253,6 +255,7 @@ __all__ = [
     "resolve_thread_ref",
     "rebuild_fts",
     "index_events",
+    "index_thread_meta",
     "ensure_fts",
     "fts_status",
     "format_results",
