@@ -45,6 +45,7 @@ CLI_VERBS = {
     "restore-drill",
     "nightly",
     "repair",
+    "daemon",
 }
 
 

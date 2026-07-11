@@ -5,6 +5,12 @@ Exposes ``thread_search`` + ``thread_read`` as MCP tools that call the
 no route layer. The server is library-native: it dispatches straight to the API
 functions in-process.
 
+The *tools* are read-only, but the server process also cohosts lazy catch-up
+ingest (see :func:`_maybe_catch_up` and :mod:`.._watcher.lazy`): a throttled
+background pass at startup and around tool calls keeps the archive current
+with no daemon installed, and degrades to a no-op flock probe when the
+always-on watcher owns ingest. ``THREAD_ARCHIVE_MCP_INGEST=0`` disables it.
+
 The archive home comes from ``$THREAD_ARCHIVE_HOME`` (set by the MCP client
 config), else ``~/.thread/archive``. Run with::
 
@@ -16,7 +22,10 @@ package is ``thread_archive._mcp`` and never shadows it.
 
 from __future__ import annotations
 
+import logging
+import os
 import threading
+import time
 from typing import Optional
 
 from mcp.server.fastmcp import FastMCP
@@ -25,7 +34,50 @@ from .. import _api as api
 from .._retrieval import format_results, warm_models
 from .._retrieval.format import _query_terms, _term_hit_count
 
+logger = logging.getLogger(__name__)
+
 mcp = FastMCP("thread-archive")
+
+# ── lazy catch-up ingest ──────────────────────────────────────────────────────
+# The zero-daemon freshness path: the server runs a background catch-up pass at
+# startup and (throttled) around tool calls, so a bare `claude mcp add …
+# archive-mcp` searches a current archive without any LaunchAgent installed.
+# Cross-process safety lives in the pass itself (see _watcher.lazy): the
+# ingest-owner flock makes every pass a no-op probe while the always-on watcher
+# daemon — or another server's pass — owns ingest. THREAD_ARCHIVE_MCP_INGEST=0
+# turns the whole behaviour off.
+_INGEST_MIN_INTERVAL = 300.0  # seconds between catch-up attempts in this process
+_ingest_last = 0.0  # monotonic time of the last attempt (0 = never)
+_ingest_running = threading.Lock()  # one in-flight catch-up per process
+
+
+def _maybe_catch_up() -> None:
+    """Kick a background catch-up pass, throttled. Never blocks the caller and
+    never raises — retrieval must work identically with ingest disabled, owned
+    by another process, or broken."""
+    global _ingest_last
+    if os.environ.get("THREAD_ARCHIVE_MCP_INGEST", "1").strip().lower() in (
+        "0", "false", "no", "off",
+    ):
+        return
+    now = time.monotonic()
+    if _ingest_last and now - _ingest_last < _INGEST_MIN_INTERVAL:
+        return
+    if not _ingest_running.acquire(blocking=False):
+        return  # a catch-up is already in flight in this process
+    _ingest_last = now
+
+    def _run() -> None:
+        try:
+            from .._watcher import catch_up_once
+
+            catch_up_once()
+        except Exception:  # noqa: BLE001 — advisory; retrieval must not care
+            logger.exception("lazy catch-up ingest failed")
+        finally:
+            _ingest_running.release()
+
+    threading.Thread(target=_run, name="archive-lazy-ingest", daemon=True).start()
 
 # The agent-facing default search scope: USER messages plus the thread-meta docs
 # (title + stored summary) — the intentional signals of what a thread was about.
@@ -109,6 +161,7 @@ def thread_search(
     re-rank on/off (else auto-gated to conceptual queries when the ``[embeddings]``
     extra is installed).
     """
+    _maybe_catch_up()
     # Default scope is user messages only; an explicit type targets it, and
     # content_type='all' clears the filter to search everything (see the constant).
     if content_type == "all":
@@ -219,6 +272,7 @@ def thread_read(
         after_event: Resume reading from the turn AFTER this event id (overrides
             offset). Robust way to continue from where a previous read stopped.
     """
+    _maybe_catch_up()
     return api.read_thread(
         thread_id,
         limit=limit,
@@ -242,6 +296,10 @@ def main() -> None:
     # so it never holds up interpreter exit; warm_models is fail-soft (a missing extra / load
     # failure just restores the old lazy behaviour).
     threading.Thread(target=warm_models, name="archive-warm-models", daemon=True).start()
+    # Startup catch-up: whatever landed in the local stores since the last
+    # ingest (by any process) is searchable by the time the first query
+    # arrives — or shortly after; the pass is additive, never blocking.
+    _maybe_catch_up()
     mcp.run()
 
 

@@ -188,7 +188,29 @@ class Watcher:
         exclusive for its build-and-swap, the pass is skipped entirely — poll,
         maintenance, and embed all write to the truth and/or the index, and a write
         landing mid-rebuild would silently miss the swapped-in index. Sources replay
-        from their own import state, so skipped passes lose nothing."""
+        from their own import state, so skipped passes lose nothing.
+
+        The loop holds the ingest-owner lock (see :mod:`.lazy`) for its whole
+        lifetime, so MCP servers' lazy catch-up passes degrade to no-op flock
+        probes while a daemon is alive. Advisory: if another owner already holds
+        it (a second daemon — a misconfig, or a lazy pass mid-flight) the loop
+        logs and runs anyway rather than dying into launchd's restart throttle."""
+        import os
+
+        from .lazy import acquire_ingest_owner
+
+        owner_fd = acquire_ingest_owner()
+        if owner_fd is None:
+            logger.warning(
+                "watch: another process holds the ingest-owner lock — running anyway"
+            )
+        try:
+            self._run_loop()
+        finally:
+            if owner_fd is not None:
+                os.close(owner_fd)  # closing the fd releases the flock
+
+    def _run_loop(self) -> None:
         from .._truth import try_shared_ingest_lock
 
         self._stop = False

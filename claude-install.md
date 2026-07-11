@@ -84,8 +84,11 @@ An empty archive has nothing to search or curate. Two ways to get conversations 
 
 - **Watch local AI-tool stores** (Claude Code, Cursor, Codex, … on this machine):
   ```bash
-  .venv/bin/archive watch --once     # one pass; or `archive watch` to run continuously
+  .venv/bin/archive watch --once     # one pass; or `archive daemon install` (macOS) for always-on
   ```
+  (Even without either, `archive-mcp` cohosts a lazy catch-up ingest pass at
+  startup and around tool calls — the first `thread_search` after wiring the
+  MCP triggers the initial import on its own.)
 - **Import an export or transcript** the human points you at:
   ```bash
   .venv/bin/archive import <path> --provider <claude-code|codex|grok|antigravity|cursor|opencode>

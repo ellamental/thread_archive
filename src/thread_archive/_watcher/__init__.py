@@ -14,6 +14,7 @@ from __future__ import annotations
 from .base import SourceWatcher, WatchResult
 from .daemon import Watcher
 from .export_drop import ExportDropWatcher
+from .lazy import catch_up_once, try_ingest_owner_lock
 from .exthost import ExthostWatcher
 from .sources import (
     ClaudeCodeWatcher,
@@ -33,6 +34,8 @@ __all__ = [
     "Watcher",
     "SourceWatcher",
     "WatchResult",
+    "catch_up_once",
+    "try_ingest_owner_lock",
     "default_watchers",
     "discover_claude_dirs",
     "discover_claude_science_dbs",

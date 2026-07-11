@@ -24,6 +24,27 @@ pip install thread-archive                 # lexical core (+ Leiden community de
 pip install 'thread-archive[embeddings]'   # optional: local semantic search (heavy: torch)
 ```
 
+Then wire the search MCP into your client and you're done:
+
+```bash
+claude mcp add thread-archive -- archive-mcp
+```
+
+That's the whole install: `archive-mcp` cohosts **lazy catch-up ingest** — a
+background pass at startup and (throttled) around tool calls imports whatever
+landed in your local AI-tool stores since the last pass — so the first
+`thread_search` already sees your conversations, no daemon required. The
+upgrade to always-fresh (plus the persistent web viewer at :8787) is one
+command, macOS:
+
+```bash
+archive daemon install     # LaunchAgent: always-on watcher + web viewer
+```
+
+With the daemon installed, the MCP servers' lazy passes degrade to no-op lock
+probes — exactly one process ingests at a time, however many Claude Code
+sessions are open.
+
 **The easy path — clone and let Claude install it.** Clone the repo, open it in Claude
 Code, and say *"install this — follow claude-install.md"*. That guide walks an instance
 through the whole setup: venv, package install, MCP wiring, importing your conversations,
@@ -71,6 +92,7 @@ archive backup <dest>     # mirror the truth dir (keeps hardlink generations und
 archive restore-drill <dest>  # prove the backup restores: rebuild an index from the mirror + smoke read/search
 archive nightly <dest>    # the scheduled pipeline: backup → verify (age-gated escalation) → restore drill
 archive status            # archive health / counts / last verify + backup + drill outcomes
+archive daemon <action>   # macOS: install/uninstall/restart/status the always-on watcher LaunchAgent
 ```
 
 The CLI is private operational tooling (see Stability below) — the process
@@ -93,9 +115,10 @@ src/thread_archive/
   _watcher/         # local-source watcher (self-feeding ingest)
   _mcp/             # library-native MCP servers (read + librarian)
   _web/             # read-only viewer: stdlib server + built bundle (cohosted by `watch --web`)
+  _launchd.py       # `archive daemon`: generates + loads the watcher LaunchAgent (macOS)
   _thread_import/   # vendored provider parsers (a clean, dependency-free island)
 frontend/           # the viewer's React+Vite source (dev-only; builds into _web/static/)
-host/               # LaunchAgents (live ingest, nightly backup) + the family-manifest writer
+host/               # operator layer: Makefile over `archive daemon`, backup agent, family-manifest writer
 scripts/            # operator tools (e.g. the librarian backfill driver)
 tests/install/      # isolated Docker install test + fixtures
 ```
@@ -152,8 +175,10 @@ wins; ids that were never imported are skipped, not fatal.
   `cc-exthost` watcher also recovers mid-turn Claude Code steering messages that never
   reach the session JSONL.
 - **Self-feeds** — the watcher tails local stores and ingests incrementally; events land
-  in the JSONL truth *before* their commit (no checkpoint in the hot loop). Ships as a
-  macOS LaunchAgent (`host/`), so no external service is needed.
+  in the JSONL truth *before* their commit (no checkpoint in the hot loop). Zero-daemon
+  by default (`archive-mcp` cohosts lazy catch-up ingest), with a one-command macOS
+  LaunchAgent upgrade (`archive daemon install`) for always-fresh — no external service
+  either way.
 - **Declares itself** — the installer writes the thread-family manifest
   `<home>/product.json` (`host/write-manifest.py`; `make install-agent` runs
   it), so family consumers discover the archive by enumeration. Spec:
@@ -168,8 +193,10 @@ wins; ids that were never imported are skipped, not fatal.
 
 ## MCP
 
-Two servers, split read from write. **`thread-archive`** (`archive-mcp`) is the
-read-only surface — `thread_search` / `thread_read`. **`thread-archive-librarian`**
+Two servers, split read from write. **`thread-archive`** (`archive-mcp`) serves the
+read-only tools — `thread_search` / `thread_read` — and cohosts lazy catch-up
+ingest in its own process (throttled, cross-process-safe via the ingest-owner
+lock; `THREAD_ARCHIVE_MCP_INGEST=0` disables it). **`thread-archive-librarian`**
 (`archive-librarian-mcp`) is the curatorial *write* surface — topic/link/citation
 writes + the reads a librarian needs (`review_queue`, `topic_search`,
 `thread_user_messages`). Keeping them separate means a read-only client never gets

@@ -4,8 +4,9 @@
 is the retrieval MCP tools plus the truth format (see the package docstring);
 this CLI is the process seam launchd, cron, and operators use to run the
 private machinery — ingest (``import``, ``import-export``, ``watch``,
-``embed``) and the durability kit (``backup``, ``verify``, ``restore-drill``,
-``reindex``, ``repair``, ``status``, ``nightly``). Verbs may change without
+``embed``), the durability kit (``backup``, ``verify``, ``restore-drill``,
+``reindex``, ``repair``, ``status``, ``nightly``), and the LaunchAgent
+lifecycle (``daemon``). Verbs may change without
 external notice, but they are *wired into* the LaunchAgent plists, lab's cron
 script, the /ci skill, and the monitor's heartbeat contract — renaming one
 means updating those in the same change (``tests/test_public_api.py`` pins the
@@ -163,6 +164,27 @@ def cmd_watch(args: argparse.Namespace) -> int:
     finally:
         if httpd is not None:
             httpd.server_close()
+    return 0
+
+
+def cmd_daemon(args: argparse.Namespace) -> int:
+    from . import _launchd
+
+    if args.action == "install":
+        plist = _launchd.install_watcher(args.home, web=args.web, web_port=args.web_port)
+        print(f"installed {_launchd.WATCHER_LABEL} ({plist})")
+        print("the watcher is always-on (RunAtLoad); `archive daemon status` to check,")
+        print("`archive daemon restart` to apply a code edit.")
+        if args.web:
+            print(f"web viewer: http://127.0.0.1:{args.web_port}")
+    elif args.action == "uninstall":
+        _launchd.uninstall_watcher()
+        print(f"uninstalled {_launchd.WATCHER_LABEL}")
+    elif args.action == "restart":
+        _launchd.restart_watcher()
+        print(f"restarted {_launchd.WATCHER_LABEL}")
+    else:  # status
+        print(_launchd.watcher_status())
     return 0
 
 
@@ -686,6 +708,26 @@ def build_parser() -> argparse.ArgumentParser:
         help="report what would be quarantined/restored without touching anything",
     )
     p_repair.set_defaults(func=cmd_repair)
+
+    p_daemon = sub.add_parser(
+        "daemon",
+        help="manage the always-on watcher LaunchAgent (macOS): the upgrade "
+             "from lazy MCP-cohosted ingest to always-fresh",
+    )
+    _add_home_arg(p_daemon)
+    p_daemon.add_argument(
+        "action", choices=["install", "uninstall", "restart", "status"],
+        help="install writes the plist (pointing at this environment's `archive`) "
+             "and (re)loads the agent; restart applies a code edit to the running agent",
+    )
+    p_daemon.add_argument(
+        "--no-web", dest="web", action="store_false",
+        help="don't cohost the web viewer in the watcher process",
+    )
+    p_daemon.add_argument(
+        "--web-port", type=int, default=8787, help="cohosted viewer port (default 8787)"
+    )
+    p_daemon.set_defaults(func=cmd_daemon)
 
     return parser
 

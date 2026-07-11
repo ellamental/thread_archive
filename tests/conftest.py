@@ -38,6 +38,10 @@ def _isolate_archive(tmp_path, monkeypatch):
     # The librarian backfill worker id activates claim-on-read; never let an ambient one
     # leak into a test that expects a plain queue read.
     monkeypatch.delenv("THREAD_ARCHIVE_LIBRARIAN_WORKER", raising=False)
+    # The MCP server cohosts lazy catch-up ingest around its tools — in a test
+    # that would background-import the machine's REAL AI-tool stores and repoint
+    # the engine mid-suite. Off; test_lazy_ingest.py exercises it with stubs.
+    monkeypatch.setenv("THREAD_ARCHIVE_MCP_INGEST", "0")
     # Model-free suite: no real torch model may load, regardless of installed extras.
     monkeypatch.setattr(embed, "is_available", lambda: False)
     monkeypatch.setattr(rerank, "is_available", lambda: False)

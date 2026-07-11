@@ -2,6 +2,25 @@
 
 ## Unreleased
 
+- **`archive-mcp` cohosts lazy catch-up ingest, and the watcher LaunchAgent
+  installs from the package (2026-07-11).** The zero-daemon install path:
+  `pip install thread-archive` + `claude mcp add thread-archive -- archive-mcp`
+  is now the whole setup — the MCP server runs a throttled background ingest
+  pass at startup and around tool calls (`_watcher/lazy.py`;
+  `THREAD_ARCHIVE_MCP_INGEST=0` disables), so search sees current
+  conversations with nothing else installed. Cross-process safety is a new
+  ingest-owner flock (`<home>/.ingest-owner.lock`): a lazy pass runs only
+  while holding it exclusively, and the watcher daemon holds it for its whole
+  lifetime — so with the daemon alive (or several MCP servers racing), exactly
+  one process ingests and the rest skip, losing nothing (sources replay from
+  import state; dedup_key collapses any overlap).
+  The always-fresh upgrade is now `archive daemon install|uninstall|restart|
+  status` (`_launchd.py`, macOS-only): the plist is generated in-package,
+  pointing at the installed `archive` console script — no repo checkout, no
+  sed. `host/Makefile` delegates its watcher targets to the verb (its template
+  plist is deleted; the Makefile's remaining value-add is the thread-family
+  manifest and the backup agent). Mac-only is a deliberate product decision.
+
 - **The public API is narrowed to exactly two things (2026-07-11): the
   retrieval MCP tools (`thread_search` / `thread_read`, served by
   `archive-mcp`) and the on-disk truth format (docs/format.md).** Everything

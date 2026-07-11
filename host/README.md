@@ -1,9 +1,16 @@
-# host/ — the live-ingest LaunchAgent
+# host/ — the live-ingest LaunchAgent (operator flow)
 
 `archive watch`, packaged as a macOS LaunchAgent. This is what makes the archive
 **self-feeding**: it polls the local AI-tool stores and imports new conversation
 content the moment it lands — no external service feeds the archive, and nothing
 has to be migrated in after the fact.
+
+The LaunchAgent itself is installed by the package — `archive daemon install`
+(`src/thread_archive/_launchd.py` generates and loads the plist; no template
+here). This directory is the **operator layer on top**: the Makefile wraps the
+daemon verb and additionally writes the thread-family manifest
+(`write-manifest.py`, which needs the repo checkout and never ships), plus the
+nightly backup agent's plist.
 
 Unlike a service-based watcher that POSTs each changed session path to a backend
 ingest route, this one runs entirely local: it calls the importer directly
@@ -113,12 +120,15 @@ Science connector + grants, needing no code here.
 
 ```bash
 cd host
-make install-agent     # materialize the plist + bootstrap the agent
+make install-agent     # `archive daemon install` + write the family manifest
 make logs              # tail
 make status            # is it loaded? pid?
 make restart           # after a code edit
 make uninstall-agent
 ```
+
+(Outside the monorepo, `archive daemon install` alone is the whole install —
+the Makefile's only addition is the family manifest.)
 
 Requires the `archive` console script in the repo venv (`pip install -e .` at the
 repo root). Logs go to `~/.thread/archive/logs/`. The agent writes to the default
