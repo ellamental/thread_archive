@@ -17,7 +17,7 @@ from thread_archive.importers._events import assemble_events
 from thread_archive.importers._state import create_thread
 from thread_archive.retrieval._extract import INDEXABLE_EVENT_TYPES, extract_fts_content
 from thread_archive.store import Event, get_session, init_db
-from thread_import import DefaultEventBuilder
+from thread_archive._thread_import import DefaultEventBuilder
 
 
 def test_unknown_assistant_block_is_preserved() -> None:

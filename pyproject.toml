@@ -47,10 +47,10 @@ archive-librarian-mcp = "thread_archive.mcp.librarian:main"
 path = "src/thread_archive/__init__.py"
 
 [tool.hatch.build.targets.wheel]
-# thread_import is vendored as a sibling package (a zero-dependency clean island)
-# so the archive owns its provider parsers with no external dependency.
-# See src/thread_import/.
-packages = ["src/thread_archive", "src/thread_import"]
+# Provider parsers live in thread_archive._thread_import — a vendored,
+# zero-dependency clean island, kept private (no public top-level package)
+# until its API is deliberately exposed.
+packages = ["src/thread_archive"]
 # The web viewer ships pre-built: frontend/ (node, dev-only) builds into
 # web/static/, which is committed and packaged so `pip install` needs no node.
 # Under the package dir and tracked, so hatchling includes it by default; declared

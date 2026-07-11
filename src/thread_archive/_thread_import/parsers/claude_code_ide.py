@@ -12,7 +12,7 @@ module level (no deferred import — there is no circular-import cycle).
 import re
 from typing import Any, Dict, List, Optional, Tuple
 
-from thread_import.timestamps import parse_timestamp, parse_timestamp_iso
+from thread_archive._thread_import.timestamps import parse_timestamp, parse_timestamp_iso
 
 
 def _parse_iso_timestamp(ts: Any) -> Optional[str]:

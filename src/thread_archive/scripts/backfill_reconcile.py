@@ -37,9 +37,9 @@ from typing import Any, Iterator, Optional
 
 from sqlalchemy import select, update
 
-from thread_import import DefaultEventBuilder
-from thread_import.event_builder import compute_content_hash
-from thread_import.parsers.claude_code import ClaudeCodeParser
+from thread_archive._thread_import import DefaultEventBuilder
+from thread_archive._thread_import.event_builder import compute_content_hash
+from thread_archive._thread_import.parsers.claude_code import ClaudeCodeParser
 
 from ..importers._read import read_session_lines
 from ..store import Event, ImportState, get_session

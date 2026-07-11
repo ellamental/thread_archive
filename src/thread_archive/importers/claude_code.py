@@ -23,8 +23,8 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Any, Optional
 
-from thread_import import DefaultEventBuilder
-from thread_import.parsers.claude_code import ClaudeCodeParser
+from thread_archive._thread_import import DefaultEventBuilder
+from thread_archive._thread_import.parsers.claude_code import ClaudeCodeParser
 
 from ..store import Thread, get_session
 from ._continuation import resolve_continuation_thread

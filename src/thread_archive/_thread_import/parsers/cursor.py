@@ -63,7 +63,7 @@ Tool Calls
 
 from typing import Any, Dict, List, Optional, cast
 
-from thread_import.timestamps import parse_timestamp_iso
+from thread_archive._thread_import.timestamps import parse_timestamp_iso
 
 from . import cursor_blocks
 from .base import (

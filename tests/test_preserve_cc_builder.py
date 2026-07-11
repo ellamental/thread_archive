@@ -11,8 +11,8 @@ These pin the fixes that close known drop-holes:
 
 from __future__ import annotations
 
-from thread_import import DefaultEventBuilder
-from thread_import.parsers.claude_code import ClaudeCodeParser
+from thread_archive._thread_import import DefaultEventBuilder
+from thread_archive._thread_import.parsers.claude_code import ClaudeCodeParser
 
 
 def _build(msg: dict) -> list:

@@ -30,7 +30,7 @@ from ._state import lookup_parent_thread
 from ._titles import _user_content_texts
 
 if TYPE_CHECKING:
-    from thread_import.parsers.claude_code import ClaudeCodeParser
+    from thread_archive._thread_import.parsers.claude_code import ClaudeCodeParser
 
 _PARENT_JSONL_RE = re.compile(r"/([0-9a-f-]{36})\.jsonl")
 

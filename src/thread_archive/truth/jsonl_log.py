@@ -2087,11 +2087,11 @@ def emit_thread_file(d: Path, thread_id: int, depth: int, thread_record, event_r
 def _hash_key_check(payload: object, dedup_key: str) -> bool | None:
     """True = the payload re-hashes to the content hash embedded in its own
     ``dedup_key`` (the last ``:``-segment; see
-    ``thread_import.event_builder.compute_dedup_key``); False = mismatch;
+    ``thread_archive._thread_import.event_builder.compute_dedup_key``); False = mismatch;
     None = the key carries no hash tail (nothing to validate against)."""
     import re as _re
 
-    from thread_import.event_builder import compute_content_hash
+    from thread_archive._thread_import.event_builder import compute_content_hash
 
     if not _re.match(r"^[0-9a-f]{16}$", dedup_key.rsplit(":", 1)[-1]):
         return None

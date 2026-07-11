@@ -39,8 +39,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
-from thread_import import DefaultEventBuilder
-from thread_import.parsers.claude_code import ClaudeCodeParser
+from thread_archive._thread_import import DefaultEventBuilder
+from thread_archive._thread_import.parsers.claude_code import ClaudeCodeParser
 
 from ..importers._events import import_lines
 from ..importers._state import get_thread_by_source

@@ -41,8 +41,8 @@ from typing import Iterator, Optional
 
 from sqlalchemy import select
 
-from thread_import import DefaultEventBuilder
-from thread_import.parsers.claude_code import ClaudeCodeParser
+from thread_archive._thread_import import DefaultEventBuilder
+from thread_archive._thread_import.parsers.claude_code import ClaudeCodeParser
 
 from ..importers._events import _to_event
 from ..importers._read import read_session_lines

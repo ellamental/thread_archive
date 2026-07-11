@@ -11,12 +11,12 @@ ordering path never mixes naive and aware datetimes.
 
 from datetime import datetime, timezone
 
-from thread_import.parsers.chatgpt import (
+from thread_archive._thread_import.parsers.chatgpt import (
     _extract_create_time_iso,
     _extract_update_time_iso,
 )
-from thread_import.parsers.chatgpt_content import extract_text_from_content
-from thread_import.timestamps import parse_timestamp, parse_timestamp_iso
+from thread_archive._thread_import.parsers.chatgpt_content import extract_text_from_content
+from thread_archive._thread_import.timestamps import parse_timestamp, parse_timestamp_iso
 
 
 def test_create_time_epoch_is_aware_utc():

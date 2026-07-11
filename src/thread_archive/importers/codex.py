@@ -10,7 +10,7 @@ import json
 import logging
 from typing import Any, Optional
 
-from thread_import import DefaultEventBuilder
+from thread_archive._thread_import import DefaultEventBuilder
 
 from ._events import assemble_events
 from ._line_stream import import_line_stream_session

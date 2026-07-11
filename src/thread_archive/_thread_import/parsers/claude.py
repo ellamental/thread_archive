@@ -45,7 +45,7 @@ Legacy Text Field
 
 from typing import Any, Dict, List, Optional, Union, cast
 
-from thread_import.timestamps import parse_timestamp_iso
+from thread_archive._thread_import.timestamps import parse_timestamp_iso
 
 from .base import (
     ContentBlock,

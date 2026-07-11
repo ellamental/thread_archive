@@ -25,8 +25,8 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Optional
 
-from thread_import.parsers.pipeline.interfaces import RawMessage
-from thread_import.parsers.transformers import ToolCoalescingTransformer
+from thread_archive._thread_import.parsers.pipeline.interfaces import RawMessage
+from thread_archive._thread_import.parsers.transformers import ToolCoalescingTransformer
 
 
 def _msg(

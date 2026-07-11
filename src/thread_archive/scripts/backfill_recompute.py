@@ -46,7 +46,7 @@ from typing import Any, Optional
 from sqlalchemy import func, select, update
 from sqlalchemy import text as sa_text
 
-from thread_import.event_builder import compute_content_hash, compute_dedup_key
+from thread_archive._thread_import.event_builder import compute_content_hash, compute_dedup_key
 
 from ..store import Event, ImportState, get_session
 from .backfill_reconcile import _norm_key, _pmid

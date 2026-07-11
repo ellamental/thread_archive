@@ -1476,7 +1476,7 @@ def _verify_backup(dest: Path, live_truth: dict) -> dict:
 def _hash_key_check(payload: object, dedup_key: str) -> Optional[bool]:
     """True = the payload re-hashes to the content hash embedded in its own
     ``dedup_key`` (the last ``:``-segment; see
-    ``thread_import.event_builder.compute_dedup_key``); False = mismatch;
+    ``thread_archive._thread_import.event_builder.compute_dedup_key``); False = mismatch;
     None = the key carries no hash tail (nothing to validate against)."""
     from .truth.jsonl_log import _hash_key_check as _impl
 
@@ -1541,7 +1541,7 @@ def _verify_hashes(watermark: int) -> dict:
 
     * **Key-hash self-validation** (``truth`` / ``index``): re-hash the stored
       payload against the content hash embedded in its own ``dedup_key`` (its
-      last ``:``-segment; see ``thread_import.event_builder.compute_dedup_key``).
+      last ``:``-segment; see ``thread_archive._thread_import.event_builder.compute_dedup_key``).
       A mismatch means the payload changed since its key was computed —
       corruption, or an in-place payload repair that didn't recompute the key.
       Events with a key whose tail isn't a hash are skipped and counted

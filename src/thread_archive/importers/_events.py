@@ -26,7 +26,7 @@ from typing import Iterable, Optional
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from thread_import import DefaultEventBuilder
+from thread_archive._thread_import import DefaultEventBuilder
 
 from ..store import Event
 from ..truth import write_events

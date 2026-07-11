@@ -1,7 +1,7 @@
 """Event builder for converting NormalizedMessage to Thread events.
 
 This module provides the single source of truth for transforming
-NormalizedMessage objects (from thread_import) into ThreadEvent objects
+NormalizedMessage objects (from thread_archive._thread_import) into ThreadEvent objects
 that can be written to the Thread event log.
 
 The EventBuilder protocol decouples event creation from database writes,
@@ -15,7 +15,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Mapping, Optional, Protocol, cast
 
-from thread_import.timestamps import parse_timestamp
+from thread_archive._thread_import.timestamps import parse_timestamp
 
 from .parsers.base import NormalizedMessage
 

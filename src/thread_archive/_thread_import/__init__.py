@@ -1,6 +1,9 @@
 """
 Thread Import Package
 
+Private to thread_archive (hence the underscore): a vendored, dependency-free
+parsing island. Not part of the package's public API until deliberately exposed.
+
 Parsing library for importing conversations from AI services into Thread:
 - Claude Code: Direct from ~/.claude/projects/*.jsonl
 - Cursor: Direct from state.vscdb

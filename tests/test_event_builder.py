@@ -28,8 +28,8 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from thread_import import DefaultEventBuilder
-from thread_import.event_builder import compute_dedup_key
+from thread_archive._thread_import import DefaultEventBuilder
+from thread_archive._thread_import.event_builder import compute_dedup_key
 
 T0 = datetime(2026, 1, 1, 10, 0, 0, tzinfo=timezone.utc)
 
@@ -370,7 +370,7 @@ def test_every_built_event_carries_a_dedup_key() -> None:
 
 
 def test_thread_event_occurred_at_default_is_utc_aware() -> None:
-    from thread_import.event_builder import ThreadEvent
+    from thread_archive._thread_import.event_builder import ThreadEvent
 
     ev = ThreadEvent(event_type="x", payload={}, stream_id="s")
     assert ev.occurred_at.tzinfo is not None

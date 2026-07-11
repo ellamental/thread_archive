@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- The vendored provider-parser island moved from a public top-level
+  `thread_import` package to `thread_archive._thread_import` — a pip install
+  no longer plants a second, generically named public package in
+  site-packages, and the parser API stays private until it's deliberately
+  exposed.
+
 - PyPI release readiness: version single-sourced from `thread_archive.__version__`
   (pyproject declares it dynamic); `[project.urls]` added;
   sdist contents pinned via `[tool.hatch.build.targets.sdist]` `only-include`

@@ -23,8 +23,8 @@ import logging
 from pathlib import Path
 from typing import Optional
 
-from thread_import import DefaultEventBuilder
-from thread_import.parsers.claude_code import ClaudeCodeParser
+from thread_archive._thread_import import DefaultEventBuilder
+from thread_archive._thread_import.parsers.claude_code import ClaudeCodeParser
 
 from ..store import get_session
 from ._read import parse_session_lines, read_source_bytes

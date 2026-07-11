@@ -91,7 +91,7 @@ src/thread_archive/
   watcher/          # local-source watcher (self-feeding ingest)
   mcp/              # library-native MCP servers (read + librarian)
   web/              # `archive web`: stdlib server + the built viewer (static/)
-src/thread_import/  # vendored provider parsers (a clean, dependency-free island)
+  _thread_import/   # vendored provider parsers (a clean, dependency-free island; private)
 frontend/           # the viewer's React+Vite source (dev-only; builds into web/static/)
 host/               # `archive watch` LaunchAgent (live ingest)
 scripts/            # operator tools (e.g. the librarian backfill driver)

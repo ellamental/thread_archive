@@ -12,8 +12,8 @@ from __future__ import annotations
 import re
 from typing import Any, Optional
 
-from thread_import.parsers.base import NormalizedMessage
-from thread_import.parsers.claude_code import ClaudeCodeParser
+from thread_archive._thread_import.parsers.base import NormalizedMessage
+from thread_archive._thread_import.parsers.claude_code import ClaudeCodeParser
 
 # CC records a slash-command invocation as a user turn whose content is
 # ``<command-name>/x</command-name>`` (plus optional args). The parser strips those

@@ -18,7 +18,7 @@ from typing import Optional
 
 from sqlalchemy.orm import Session
 
-from thread_import.event_builder import compute_dedup_key
+from thread_archive._thread_import.event_builder import compute_dedup_key
 
 from ..store import Event
 from ..truth import write_events

@@ -1,4 +1,4 @@
-"""Public API for thread_import.
+"""Public API for thread_archive._thread_import.
 
 This module defines the interfaces that consumers (like backend/importer.py)
 should use to access archive data. The key principle is that consumers never
