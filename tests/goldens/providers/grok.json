@@ -1,0 +1,177 @@
+[
+ {
+  "description": null,
+  "name": "grok:grok-sess",
+  "source": "grok",
+  "source_id": "grok-sess",
+  "source_metadata": {
+   "created_at": "2026-01-01T10:00:00Z",
+   "cwd": "/proj",
+   "model": "grok-4",
+   "provider": "grok",
+   "session_id": "grok-sess"
+  },
+  "title": "hello grok golden",
+  "type": "thread"
+ },
+ {
+  "api_call": null,
+  "dedup_key": "c=eb826403b0d58011:user_message_sent::eb826403b0d58011",
+  "event_type": "user_message_sent",
+  "occurred_at": "2026-01-01T10:00:00+00:00",
+  "payload": {
+   "content": "<user_query>hello grok golden</user_query>",
+   "provider_data": {
+    "provider_message_id": ""
+   },
+   "timestamp_inferred": true,
+   "timestamp_source": "inferred_prev_turn"
+  },
+  "stream": "s0",
+  "type": "event"
+ },
+ {
+  "api_call": "c0",
+  "dedup_key": "c=7321c8bb3a514f6f:api_request_started::7321c8bb3a514f6f",
+  "event_type": "api_request_started",
+  "occurred_at": "2026-01-01T10:00:00+00:00",
+  "payload": {
+   "model": "grok-4",
+   "provider_data": {
+    "provider_message_id": ""
+   },
+   "timestamp_inferred": true,
+   "timestamp_source": "inferred_prev_turn"
+  },
+  "stream": "s0",
+  "type": "event"
+ },
+ {
+  "api_call": "c0",
+  "dedup_key": "c=bd0e7c2c15fd2b2d:text_complete:blk=0:bd0e7c2c15fd2b2d",
+  "event_type": "text_complete",
+  "occurred_at": "2026-01-01T10:00:00+00:00",
+  "payload": {
+   "block_index": 0,
+   "text": "checking a file",
+   "timestamp_inferred": true,
+   "timestamp_source": "inferred_prev_turn"
+  },
+  "stream": "s0",
+  "type": "event"
+ },
+ {
+  "api_call": "c0",
+  "dedup_key": "c=146a27ad67bc9470:tool_use_complete:tool=call1:146a27ad67bc9470",
+  "event_type": "tool_use_complete",
+  "occurred_at": "2026-01-01T10:00:00+00:00",
+  "payload": {
+   "block_index": 1,
+   "input": {
+    "path": "/x"
+   },
+   "timestamp_inferred": true,
+   "timestamp_source": "inferred_prev_turn",
+   "tool_call_id": "call1",
+   "tool_name": "unknown"
+  },
+  "stream": "s0",
+  "type": "event"
+ },
+ {
+  "api_call": "c0",
+  "dedup_key": "c=90e6d2083b23ce9f:tool_execution_completed:tool=call1:90e6d2083b23ce9f",
+  "event_type": "tool_execution_completed",
+  "occurred_at": "2026-01-01T10:00:00+00:00",
+  "payload": {
+   "is_error": false,
+   "output": "contents of x",
+   "timestamp_inferred": true,
+   "timestamp_source": "inferred_prev_turn",
+   "tool_call_id": "call1",
+   "tool_name": "unknown"
+  },
+  "stream": "s0",
+  "type": "event"
+ },
+ {
+  "api_call": "c0",
+  "dedup_key": "c=579fd5861f59093d:api_request_completed::579fd5861f59093d",
+  "event_type": "api_request_completed",
+  "occurred_at": "2026-01-01T10:00:00+00:00",
+  "payload": {
+   "content_blocks": [
+    {
+     "text": "checking a file",
+     "type": "text"
+    },
+    {
+     "id": "call1",
+     "input": {
+      "path": "/x"
+     },
+     "name": "unknown",
+     "type": "tool_use"
+    }
+   ],
+   "input_tokens": 0,
+   "model": "grok-4",
+   "output_tokens": 0,
+   "stop_reason": "end_turn",
+   "thinking_tokens": 0,
+   "timestamp_inferred": true,
+   "timestamp_source": "inferred_prev_turn"
+  },
+  "stream": "s0",
+  "type": "event"
+ },
+ {
+  "api_call": "c0",
+  "dedup_key": "c=44136fa355b3678a:stream_completed::44136fa355b3678a",
+  "event_type": "stream_completed",
+  "occurred_at": "2026-01-01T10:00:00+00:00",
+  "payload": {
+   "timestamp_inferred": true,
+   "timestamp_source": "inferred_prev_turn"
+  },
+  "stream": "s0",
+  "type": "event"
+ },
+ {
+  "api_call": "c1",
+  "dedup_key": "c=749b1d631c33fc17:text_complete:blk=0:749b1d631c33fc17",
+  "event_type": "text_complete",
+  "occurred_at": "2026-01-01T10:00:00+00:00",
+  "payload": {
+   "block_index": 0,
+   "text": "done \u2014 hi from grok",
+   "timestamp_inferred": true,
+   "timestamp_source": "inferred_prev_turn"
+  },
+  "stream": "s0",
+  "type": "event"
+ },
+ {
+  "api_call": "c1",
+  "dedup_key": "c=bbdaee32223b9e94:api_request_completed::bbdaee32223b9e94",
+  "event_type": "api_request_completed",
+  "occurred_at": "2026-01-01T10:00:00+00:00",
+  "payload": {
+   "content_blocks": [
+    {
+     "text": "done \u2014 hi from grok",
+     "type": "text"
+    }
+   ],
+   "input_tokens": 0,
+   "model": "grok-4",
+   "output_tokens": 0,
+   "stop_reason": "end_turn",
+   "thinking_tokens": 0,
+   "timestamp_inferred": true,
+   "timestamp_source": "inferred_prev_turn"
+  },
+  "stream": "s0",
+  "type": "event"
+ }
+]

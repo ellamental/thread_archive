@@ -1,0 +1,134 @@
+[
+ {
+  "description": null,
+  "name": "antigravity:ag-conv",
+  "source": "antigravity",
+  "source_id": "ag-conv",
+  "source_metadata": null,
+  "title": "fix the golden bug",
+  "type": "thread"
+ },
+ {
+  "api_call": null,
+  "dedup_key": "2026-01-01T10:00:00Z:user_message_sent::b51406889d8dc35c",
+  "event_type": "user_message_sent",
+  "occurred_at": "2026-01-01T10:00:00+00:00",
+  "payload": {
+   "content": "fix the golden bug",
+   "provider_data": {
+    "provider_message_id": "2026-01-01T10:00:00Z"
+   }
+  },
+  "stream": "s0",
+  "type": "event"
+ },
+ {
+  "api_call": "c0",
+  "dedup_key": "2026-01-01T10:00:02Z:api_request_started::3ef7824d3781af32",
+  "event_type": "api_request_started",
+  "occurred_at": "2026-01-01T10:00:02+00:00",
+  "payload": {
+   "model": "gemini",
+   "provider_data": {
+    "provider_message_id": "2026-01-01T10:00:02Z"
+   }
+  },
+  "stream": "s0",
+  "type": "event"
+ },
+ {
+  "api_call": "c0",
+  "dedup_key": "2026-01-01T10:00:02Z:tool_execution_completed:tool=agorphan-0:de253a181901127a",
+  "event_type": "tool_execution_completed",
+  "occurred_at": "2026-01-01T10:00:02+00:00",
+  "payload": {
+   "is_error": false,
+   "output": "grep -r golden",
+   "tool_call_id": "agorphan-0",
+   "tool_name": "tool_call"
+  },
+  "stream": "s0",
+  "type": "event"
+ },
+ {
+  "api_call": "c0",
+  "dedup_key": "2026-01-01T10:00:02Z:api_request_completed::5be4b2715e1d9e1d",
+  "event_type": "api_request_completed",
+  "occurred_at": "2026-01-01T10:00:02+00:00",
+  "payload": {
+   "content_blocks": [],
+   "input_tokens": 0,
+   "model": "gemini",
+   "output_tokens": 0,
+   "stop_reason": "end_turn",
+   "thinking_tokens": 0
+  },
+  "stream": "s0",
+  "type": "event"
+ },
+ {
+  "api_call": "c0",
+  "dedup_key": "2026-01-01T10:00:02Z:stream_completed::44136fa355b3678a",
+  "event_type": "stream_completed",
+  "occurred_at": "2026-01-01T10:00:02+00:00",
+  "payload": {},
+  "stream": "s0",
+  "type": "event"
+ },
+ {
+  "api_call": "c1",
+  "dedup_key": "2026-01-01T10:00:05Z:api_request_started::3ef7824d3781af32",
+  "event_type": "api_request_started",
+  "occurred_at": "2026-01-01T10:00:05+00:00",
+  "payload": {
+   "model": "gemini",
+   "provider_data": {
+    "provider_message_id": "2026-01-01T10:00:05Z"
+   }
+  },
+  "stream": "s0",
+  "type": "event"
+ },
+ {
+  "api_call": "c1",
+  "dedup_key": "2026-01-01T10:00:05Z:text_complete:blk=0:4eafc5f7faa21eca",
+  "event_type": "text_complete",
+  "occurred_at": "2026-01-01T10:00:05+00:00",
+  "payload": {
+   "block_index": 0,
+   "text": "On it \u2014 fixed the golden bug."
+  },
+  "stream": "s0",
+  "type": "event"
+ },
+ {
+  "api_call": "c1",
+  "dedup_key": "2026-01-01T10:00:05Z:api_request_completed::3d4b72e37659f948",
+  "event_type": "api_request_completed",
+  "occurred_at": "2026-01-01T10:00:05+00:00",
+  "payload": {
+   "content_blocks": [
+    {
+     "text": "On it \u2014 fixed the golden bug.",
+     "type": "text"
+    }
+   ],
+   "input_tokens": 0,
+   "model": "gemini",
+   "output_tokens": 0,
+   "stop_reason": "end_turn",
+   "thinking_tokens": 0
+  },
+  "stream": "s0",
+  "type": "event"
+ },
+ {
+  "api_call": "c1",
+  "dedup_key": "2026-01-01T10:00:05Z:stream_completed::44136fa355b3678a",
+  "event_type": "stream_completed",
+  "occurred_at": "2026-01-01T10:00:05+00:00",
+  "payload": {},
+  "stream": "s0",
+  "type": "event"
+ }
+]

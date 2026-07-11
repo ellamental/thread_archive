@@ -32,11 +32,35 @@ name = "frontend-typecheck"
 argv = ["npx", "tsc", "--noEmit"]
 cwd = "frontend"
 
+# Component behavior (Vitest + Testing Library over jsdom): block rendering,
+# loading/error/empty states, search grouping, uuid→thread redirects. Same
+# which-gated npx as the typecheck row.
+[[suite]]
+name = "frontend-test"
+argv = ["npx", "vitest", "run"]
+cwd = "frontend"
+
 [[suite]]
 name = "pytest"
-# Coverage is measured, not gated: the term report rides every sweep's output so
-# blind spots stay visible, but only test failures turn the row red.
+# Branch coverage rides every sweep: the term report keeps blind spots visible in
+# the row output, and the JSON report feeds the coverage-gate row below.
 argv = ["{repo}/.venv/bin/pytest", "-q", "--tb=short", "-p", "no:cacheprovider",
-        "--cov=src", "--cov-report=term"]
+        "--cov=src", "--cov-branch", "--cov-report=term", "--cov-report=json:coverage.json"]
 # cwd omitted = repo root, so it resolves testpaths=["tests"] from pyproject.
 timeout = 1800
+
+# Per-package coverage floors (a regression ratchet, not a target — floors and
+# rationale live in the script). Reads the JSON the pytest row just wrote, so it
+# must stay ordered after that row.
+[[suite]]
+name = "coverage-gate"
+argv = ["{repo}/.venv/bin/python", "{repo}/scripts/coverage_gate.py", "{repo}/coverage.json"]
+
+# The release lane: build the wheel + sdist, prove their contents, install the
+# wheel into a clean venv, and run the real CLI lifecycle from it. Deselected
+# from the default pytest run (see pyproject addopts), so it gets its own row.
+[[suite]]
+name = "package"
+argv = ["{repo}/.venv/bin/pytest", "-q", "--tb=short", "-p", "no:cacheprovider",
+        "-m", "package", "--no-cov", "tests/test_package_artifact.py"]
+timeout = 1200

@@ -1,0 +1,83 @@
+[
+ {
+  "description": null,
+  "name": "codex:codex-sess",
+  "source": "codex",
+  "source_id": "codex-sess",
+  "source_metadata": {
+   "cwd": "/proj"
+  },
+  "title": "hello codex golden",
+  "type": "thread"
+ },
+ {
+  "api_call": null,
+  "dedup_key": "t1:user_message_sent::7fa5c66471fc03d5",
+  "event_type": "user_message_sent",
+  "occurred_at": "2026-01-01T10:00:00+00:00",
+  "payload": {
+   "content": "hello codex golden",
+   "provider_data": {
+    "provider_message_id": "t1"
+   }
+  },
+  "stream": "s0",
+  "type": "event"
+ },
+ {
+  "api_call": "c0",
+  "dedup_key": "2026-01-01T10:00:05Z:api_request_started::bdd69fb9b1e861bf",
+  "event_type": "api_request_started",
+  "occurred_at": "2026-01-01T10:00:05+00:00",
+  "payload": {
+   "model": "gpt-5",
+   "provider_data": {
+    "provider_message_id": "2026-01-01T10:00:05Z"
+   }
+  },
+  "stream": "s0",
+  "type": "event"
+ },
+ {
+  "api_call": "c0",
+  "dedup_key": "2026-01-01T10:00:05Z:text_complete:blk=0:9174c9fde3b8a2b8",
+  "event_type": "text_complete",
+  "occurred_at": "2026-01-01T10:00:05+00:00",
+  "payload": {
+   "block_index": 0,
+   "text": "hi from codex"
+  },
+  "stream": "s0",
+  "type": "event"
+ },
+ {
+  "api_call": "c0",
+  "dedup_key": "2026-01-01T10:00:05Z:api_request_completed::e026df9aabb159aa",
+  "event_type": "api_request_completed",
+  "occurred_at": "2026-01-01T10:00:05+00:00",
+  "payload": {
+   "content_blocks": [
+    {
+     "text": "hi from codex",
+     "type": "text"
+    }
+   ],
+   "input_tokens": 0,
+   "model": "gpt-5",
+   "output_tokens": 0,
+   "stop_reason": "end_turn",
+   "thinking_tokens": 0
+  },
+  "stream": "s0",
+  "type": "event"
+ },
+ {
+  "api_call": "c0",
+  "dedup_key": "2026-01-01T10:00:05Z:stream_completed::44136fa355b3678a",
+  "event_type": "stream_completed",
+  "occurred_at": "2026-01-01T10:00:05+00:00",
+  "payload": {},
+  "stream": "s0",
+  "type": "event"
+ }
+]

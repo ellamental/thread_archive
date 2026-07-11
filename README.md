@@ -41,7 +41,7 @@ claude     # then: "install this, following claude-install.md"
 python3 -m venv .venv
 .venv/bin/pip install -e .                 # lexical core (+ Leiden community detection)
 .venv/bin/pip install -e '.[embeddings]'   # optional: local semantic search (heavy: torch)
-.venv/bin/pytest tests/ -q                 # confirm green
+.venv/bin/pytest tests/ -q                 # confirm green (add `-m package` for the wheel/sdist release lane)
 
 # wire the two MCP servers into this clone's .mcp.json (absolute venv paths)
 sed "s|ABSOLUTE_REPO_PATH|$(pwd)|g" .mcp.json.example > .mcp.json

@@ -1,0 +1,258 @@
+[
+ {
+  "description": "hello golden",
+  "name": "claude-code:proj:s1",
+  "source": "claude-code",
+  "source_id": "proj:s1",
+  "source_metadata": {
+   "cwd": "/proj",
+   "project_dir": "proj"
+  },
+  "title": "hello golden",
+  "type": "thread"
+ },
+ {
+  "api_call": null,
+  "dedup_key": "u1:user_message_sent::5ede893c5d5d2634",
+  "event_type": "user_message_sent",
+  "occurred_at": "2026-01-01T10:00:00+00:00",
+  "payload": {
+   "content": "hello golden",
+   "provider_data": {
+    "provider_message_id": "u1"
+   }
+  },
+  "stream": "s0",
+  "type": "event"
+ },
+ {
+  "api_call": null,
+  "dedup_key": "u_ide:ide_context:blk=0:80fc13b325bf0fe5",
+  "event_type": "ide_context",
+  "occurred_at": "2026-01-01T10:00:01+00:00",
+  "payload": {
+   "block_index": 0,
+   "content": "def foo(): pass",
+   "context_type": "selection"
+  },
+  "stream": "s1",
+  "type": "event"
+ },
+ {
+  "api_call": "c0",
+  "dedup_key": "a1:api_request_started::a3c6dafbc20bf17a",
+  "event_type": "api_request_started",
+  "occurred_at": "2026-01-01T10:00:05+00:00",
+  "payload": {
+   "model": "claude-opus-4",
+   "provider_data": {
+    "provider_message_id": "a1"
+   }
+  },
+  "stream": "s1",
+  "type": "event"
+ },
+ {
+  "api_call": "c0",
+  "dedup_key": "a1:thinking_complete:blk=0:d4af0fa89bfadbf7",
+  "event_type": "thinking_complete",
+  "occurred_at": "2026-01-01T10:00:05+00:00",
+  "payload": {
+   "block_index": 0,
+   "text": "let me think"
+  },
+  "stream": "s1",
+  "type": "event"
+ },
+ {
+  "api_call": "c0",
+  "dedup_key": "a1:text_complete:blk=1:ed0bc48e930edf8f",
+  "event_type": "text_complete",
+  "occurred_at": "2026-01-01T10:00:05+00:00",
+  "payload": {
+   "block_index": 1,
+   "text": "running it now"
+  },
+  "stream": "s1",
+  "type": "event"
+ },
+ {
+  "api_call": "c0",
+  "dedup_key": "a1:tool_use_complete:tool=tu1:ada53f152e1ceb53",
+  "event_type": "tool_use_complete",
+  "occurred_at": "2026-01-01T10:00:05+00:00",
+  "payload": {
+   "block_index": 2,
+   "input": {
+    "command": "ls"
+   },
+   "tool_call_id": "tu1",
+   "tool_name": "Bash"
+  },
+  "stream": "s1",
+  "type": "event"
+ },
+ {
+  "api_call": "c0",
+  "dedup_key": "a1:content_block:blk=3:8f854449d32ce383",
+  "event_type": "content_block",
+  "occurred_at": "2026-01-01T10:00:05+00:00",
+  "payload": {
+   "block_index": 3,
+   "block_type": "server_tool_use",
+   "data": {
+    "raw": {
+     "id": "srv1",
+     "input": {
+      "query": "q"
+     },
+     "name": "web_search",
+     "type": "server_tool_use"
+    },
+    "seq": 3,
+    "type": "server_tool_use"
+   }
+  },
+  "stream": "s1",
+  "type": "event"
+ },
+ {
+  "api_call": "c0",
+  "dedup_key": "a1:api_request_completed::66ba089c5df5dd18",
+  "event_type": "api_request_completed",
+  "occurred_at": "2026-01-01T10:00:05+00:00",
+  "payload": {
+   "content_blocks": [
+    {
+     "thinking": "let me think",
+     "type": "thinking"
+    },
+    {
+     "text": "running it now",
+     "type": "text"
+    },
+    {
+     "id": "tu1",
+     "input": {
+      "command": "ls"
+     },
+     "name": "Bash",
+     "type": "tool_use"
+    },
+    {
+     "raw": {
+      "id": "srv1",
+      "input": {
+       "query": "q"
+      },
+      "name": "web_search",
+      "type": "server_tool_use"
+     },
+     "seq": 3,
+     "type": "server_tool_use"
+    }
+   ],
+   "input_tokens": 0,
+   "model": "claude-opus-4",
+   "output_tokens": 0,
+   "stop_reason": null,
+   "thinking_tokens": 0
+  },
+  "stream": "s1",
+  "type": "event"
+ },
+ {
+  "api_call": "c0",
+  "dedup_key": "a1:stream_completed::44136fa355b3678a",
+  "event_type": "stream_completed",
+  "occurred_at": "2026-01-01T10:00:05+00:00",
+  "payload": {},
+  "stream": "s1",
+  "type": "event"
+ },
+ {
+  "api_call": null,
+  "dedup_key": "u2:tool_execution_completed:tool=tu1:d887c444c25914b9",
+  "event_type": "tool_execution_completed",
+  "occurred_at": "2026-01-01T10:00:06+00:00",
+  "payload": {
+   "is_error": false,
+   "output": "file.txt",
+   "tool_call_id": "tu1",
+   "tool_name": "unknown"
+  },
+  "stream": "s2",
+  "type": "event"
+ },
+ {
+  "api_call": "c1",
+  "dedup_key": "a2:api_request_started::a3c6dafbc20bf17a",
+  "event_type": "api_request_started",
+  "occurred_at": "2026-01-01T10:00:08+00:00",
+  "payload": {
+   "model": "claude-opus-4",
+   "provider_data": {
+    "provider_message_id": "a2"
+   }
+  },
+  "stream": "s2",
+  "type": "event"
+ },
+ {
+  "api_call": "c1",
+  "dedup_key": "a2:text_complete:blk=0:96d217cd84fde7f2",
+  "event_type": "text_complete",
+  "occurred_at": "2026-01-01T10:00:08+00:00",
+  "payload": {
+   "block_index": 0,
+   "text": "one file"
+  },
+  "stream": "s2",
+  "type": "event"
+ },
+ {
+  "api_call": "c1",
+  "dedup_key": "a2:api_request_completed::623efb5950f7fa09",
+  "event_type": "api_request_completed",
+  "occurred_at": "2026-01-01T10:00:08+00:00",
+  "payload": {
+   "content_blocks": [
+    {
+     "text": "one file",
+     "type": "text"
+    }
+   ],
+   "input_tokens": 0,
+   "model": "claude-opus-4",
+   "output_tokens": 0,
+   "stop_reason": null,
+   "thinking_tokens": 0
+  },
+  "stream": "s2",
+  "type": "event"
+ },
+ {
+  "api_call": "c1",
+  "dedup_key": "a2:stream_completed::44136fa355b3678a",
+  "event_type": "stream_completed",
+  "occurred_at": "2026-01-01T10:00:08+00:00",
+  "payload": {},
+  "stream": "s2",
+  "type": "event"
+ },
+ {
+  "description": "hello golden",
+  "name": "claude-code:proj:s1",
+  "source": "claude-code",
+  "source_id": "proj:s1",
+  "source_metadata": {
+   "cwd": "/proj",
+   "models": [
+    "claude-opus-4"
+   ],
+   "project_dir": "proj"
+  },
+  "title": "hello golden",
+  "type": "thread"
+ }
+]

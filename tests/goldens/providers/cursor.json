@@ -1,0 +1,184 @@
+[
+ {
+  "description": null,
+  "name": "cursor:compgold",
+  "source": "cursor",
+  "source_id": "compgold",
+  "source_metadata": null,
+  "title": "Golden Cursor Chat",
+  "type": "thread"
+ },
+ {
+  "api_call": null,
+  "dedup_key": "b1:user_message_sent::1cd60085626604ff",
+  "event_type": "user_message_sent",
+  "occurred_at": "2023-11-14T22:13:20+00:00",
+  "payload": {
+   "content": "hello cursor golden",
+   "provider_data": {
+    "provider_message_id": "b1"
+   }
+  },
+  "stream": "s0",
+  "type": "event"
+ },
+ {
+  "api_call": "c0",
+  "dedup_key": "b2:api_request_started::2b7f37af77a4b68a",
+  "event_type": "api_request_started",
+  "occurred_at": "2023-11-14T22:13:21+00:00",
+  "payload": {
+   "model": "cursor",
+   "provider_data": {
+    "provider_message_id": "b2"
+   }
+  },
+  "stream": "s0",
+  "type": "event"
+ },
+ {
+  "api_call": "c0",
+  "dedup_key": "b2:text_complete:blk=0:211cf3b8dc6e0a42",
+  "event_type": "text_complete",
+  "occurred_at": "2023-11-14T22:13:21+00:00",
+  "payload": {
+   "block_index": 0,
+   "text": "reading it"
+  },
+  "stream": "s0",
+  "type": "event"
+ },
+ {
+  "api_call": "c0",
+  "dedup_key": "b2:tool_use_complete:tool=toolu_g1:28c13f5a3bfb7a0f",
+  "event_type": "tool_use_complete",
+  "occurred_at": "2023-11-14T22:13:21+00:00",
+  "payload": {
+   "block_index": 1,
+   "input": {
+    "targetFile": "/x"
+   },
+   "tool_call_id": "toolu_g1",
+   "tool_name": "read_file"
+  },
+  "stream": "s0",
+  "type": "event"
+ },
+ {
+  "api_call": "c0",
+  "dedup_key": "b2:tool_execution_completed:tool=toolu_g1:422248093e962f38",
+  "event_type": "tool_execution_completed",
+  "occurred_at": "2023-11-14T22:13:21+00:00",
+  "payload": {
+   "is_error": false,
+   "output": "{\"contents\": \"golden contents\"}",
+   "tool_call_id": "toolu_g1",
+   "tool_name": "read_file"
+  },
+  "stream": "s0",
+  "type": "event"
+ },
+ {
+  "api_call": "c0",
+  "dedup_key": "b2:api_request_completed::4a9a31467285272b",
+  "event_type": "api_request_completed",
+  "occurred_at": "2023-11-14T22:13:21+00:00",
+  "payload": {
+   "content_blocks": [
+    {
+     "text": "reading it",
+     "type": "text"
+    },
+    {
+     "id": "toolu_g1",
+     "input": {
+      "targetFile": "/x"
+     },
+     "name": "read_file",
+     "type": "tool_use"
+    }
+   ],
+   "input_tokens": 0,
+   "model": "cursor",
+   "output_tokens": 0,
+   "stop_reason": "end_turn",
+   "thinking_tokens": 0
+  },
+  "stream": "s0",
+  "type": "event"
+ },
+ {
+  "api_call": "c0",
+  "dedup_key": "b2:stream_completed::44136fa355b3678a",
+  "event_type": "stream_completed",
+  "occurred_at": "2023-11-14T22:13:21+00:00",
+  "payload": {},
+  "stream": "s0",
+  "type": "event"
+ },
+ {
+  "api_call": "c1",
+  "dedup_key": "b3:api_request_started::2b7f37af77a4b68a",
+  "event_type": "api_request_started",
+  "occurred_at": "2023-11-14T22:13:21+00:00",
+  "payload": {
+   "model": "cursor",
+   "provider_data": {
+    "provider_message_id": "b3"
+   },
+   "timestamp_inferred": true,
+   "timestamp_source": "inferred_prev_turn"
+  },
+  "stream": "s0",
+  "type": "event"
+ },
+ {
+  "api_call": "c1",
+  "dedup_key": "b3:text_complete:blk=0:e38f6d773e016314",
+  "event_type": "text_complete",
+  "occurred_at": "2023-11-14T22:13:21+00:00",
+  "payload": {
+   "block_index": 0,
+   "text": "hi from cursor",
+   "timestamp_inferred": true,
+   "timestamp_source": "inferred_prev_turn"
+  },
+  "stream": "s0",
+  "type": "event"
+ },
+ {
+  "api_call": "c1",
+  "dedup_key": "b3:api_request_completed::cc1d9c7fa758334a",
+  "event_type": "api_request_completed",
+  "occurred_at": "2023-11-14T22:13:21+00:00",
+  "payload": {
+   "content_blocks": [
+    {
+     "text": "hi from cursor",
+     "type": "text"
+    }
+   ],
+   "input_tokens": 0,
+   "model": "cursor",
+   "output_tokens": 0,
+   "stop_reason": "end_turn",
+   "thinking_tokens": 0,
+   "timestamp_inferred": true,
+   "timestamp_source": "inferred_prev_turn"
+  },
+  "stream": "s0",
+  "type": "event"
+ },
+ {
+  "api_call": "c1",
+  "dedup_key": "b3:stream_completed::44136fa355b3678a",
+  "event_type": "stream_completed",
+  "occurred_at": "2023-11-14T22:13:21+00:00",
+  "payload": {
+   "timestamp_inferred": true,
+   "timestamp_source": "inferred_prev_turn"
+  },
+  "stream": "s0",
+  "type": "event"
+ }
+]

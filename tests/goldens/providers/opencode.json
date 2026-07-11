@@ -1,0 +1,86 @@
+[
+ {
+  "description": null,
+  "name": "opencode:sgold",
+  "source": "opencode",
+  "source_id": "sgold",
+  "source_metadata": {
+   "agent": "build",
+   "directory": "/proj",
+   "opencode_session_id": "sgold",
+   "provider": "opencode"
+  },
+  "title": "Golden OpenCode Session",
+  "type": "thread"
+ },
+ {
+  "api_call": null,
+  "dedup_key": "m1:user_message_sent::597aaeeadfc49f71",
+  "event_type": "user_message_sent",
+  "occurred_at": "2023-11-14T22:13:20+00:00",
+  "payload": {
+   "content": "hello opencode golden",
+   "provider_data": {
+    "provider_message_id": "m1"
+   }
+  },
+  "stream": "s0",
+  "type": "event"
+ },
+ {
+  "api_call": "c0",
+  "dedup_key": "m2:api_request_started::87e6fd526a33d1c8",
+  "event_type": "api_request_started",
+  "occurred_at": "2023-11-14T22:13:21+00:00",
+  "payload": {
+   "model": "oai/gpt",
+   "provider_data": {
+    "provider_message_id": "m2"
+   }
+  },
+  "stream": "s0",
+  "type": "event"
+ },
+ {
+  "api_call": "c0",
+  "dedup_key": "m2:text_complete:blk=0:6c6e3d32be6cb375",
+  "event_type": "text_complete",
+  "occurred_at": "2023-11-14T22:13:21+00:00",
+  "payload": {
+   "block_index": 0,
+   "text": "hi from opencode"
+  },
+  "stream": "s0",
+  "type": "event"
+ },
+ {
+  "api_call": "c0",
+  "dedup_key": "m2:api_request_completed::954ba55154267db8",
+  "event_type": "api_request_completed",
+  "occurred_at": "2023-11-14T22:13:21+00:00",
+  "payload": {
+   "content_blocks": [
+    {
+     "text": "hi from opencode",
+     "type": "text"
+    }
+   ],
+   "input_tokens": 0,
+   "model": "oai/gpt",
+   "output_tokens": 0,
+   "stop_reason": "end_turn",
+   "thinking_tokens": 0
+  },
+  "stream": "s0",
+  "type": "event"
+ },
+ {
+  "api_call": "c0",
+  "dedup_key": "m2:stream_completed::44136fa355b3678a",
+  "event_type": "stream_completed",
+  "occurred_at": "2023-11-14T22:13:21+00:00",
+  "payload": {},
+  "stream": "s0",
+  "type": "event"
+ }
+]

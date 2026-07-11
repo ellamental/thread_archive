@@ -2,6 +2,38 @@
 
 ## Unreleased
 
+- The test suite grew the boundaries a review flagged as untested — the places
+  where reality differs from the in-process synthetic environment:
+  - A **package lane** (`tests/test_package_artifact.py`, `-m package`,
+    deselected from the default run) builds the wheel + sdist, asserts their
+    contents (vendored parsers, provider JSON schemas, pre-built web assets, no
+    stray top-level packages), installs the wheel into a clean venv, and runs
+    the real `archive` CLI lifecycle from it. The Docker install test now
+    builds and installs the wheel instead of `pip install -e`.
+  - A **multiprocess durability suite** (`tests/test_multiprocess_durability.py`)
+    exercises the flock/fsync/drain-intent protocol with real processes:
+    writers SIGKILLed at each drain window (via `tests/mp_child.py`), four
+    concurrent importers, and a same-session import race — each converging to a
+    verified, single-copy store.
+  - **Provider goldens** (`tests/test_provider_goldens.py` +
+    `tests/goldens/providers/`): every importer's full normalized truth output
+    is locked against a reviewed golden file (regenerate with
+    `UPDATE_GOLDENS=1`), so an importer change shows as a reviewable diff.
+  - **Migration/repair script tests** (`tests/test_migration_scripts.py`) cover
+    the run()/apply/backup/idempotence paths of the `_scripts` migrations,
+    including `repair_grok_tool_names` (previously 0% — its committed plan file
+    doubles as the fixture).
+  - **Frontend component tests** (Vitest + Testing Library, `npm test` /
+    the `frontend-test` CI row): block rendering, loading/error/empty states,
+    search grouping, uuid→thread redirects, model grouping. Previously the SPA
+    only had a typecheck.
+  - **Coverage became a gate**: the CI pytest row measures branch coverage and
+    `scripts/coverage_gate.py` (its own CI row) enforces per-package floors — a
+    regression ratchet calibrated just under measured coverage, instead of one
+    global threshold that dormant vendored parser code would render meaningless.
+  - Pytest markers with `--strict-markers`: `integration` (real sockets /
+    subprocesses; deselectable for hermetic sandboxes) and `package`.
+
 - The family-manifest writer left the package: `thread_archive/manifest.py` is
   now `host/write-manifest.py`. It was the one member of the public surface that
   made no sense to a `pip install` consumer — a thread-family integration point,

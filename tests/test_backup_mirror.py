@@ -26,8 +26,8 @@ from __future__ import annotations
 import json
 
 from thread_archive import _api as ta
-from thread_archive._truth import jsonl_log, scan_truth_counts
 from thread_archive._api import _GENERATIONS_SUBDIR
+from thread_archive._truth import jsonl_log, scan_truth_counts
 
 from .helpers import event_count, import_cc_session, one_thread_file
 
