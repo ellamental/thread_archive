@@ -14,7 +14,6 @@ from __future__ import annotations
 
 import json
 import threading
-import webbrowser
 from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -286,29 +285,6 @@ class _Handler(BaseHTTPRequestHandler):
 
     def log_message(self, *args):  # keep the foreground console quiet
         pass
-
-
-def serve(
-    *,
-    host: str = "127.0.0.1",
-    port: int = 8787,
-    open_browser: bool = True,
-    home: Optional[str] = None,
-) -> None:
-    """Serve the viewer in the foreground until interrupted. Pins the archive home
-    for the process so every api.* call resolves to the same store."""
-    api.open_archive(home)
-    httpd = ThreadingHTTPServer((host, port), _Handler)
-    url = f"http://{host}:{port}/"
-    print(f"thread-archive web: serving {url}  (Ctrl-C to stop)", flush=True)
-    if open_browser:
-        threading.Timer(0.5, lambda: webbrowser.open(url)).start()
-    try:
-        httpd.serve_forever()
-    except KeyboardInterrupt:
-        print("\nstopped.", flush=True)
-    finally:
-        httpd.server_close()
 
 
 def serve_in_thread(*, host: str = "127.0.0.1", port: int = 8787) -> ThreadingHTTPServer:

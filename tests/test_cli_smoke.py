@@ -18,10 +18,11 @@ def test_help_runs(capsys: pytest.CaptureFixture[str]) -> None:
 def test_all_subcommands_present() -> None:
     parser = build_parser()
     # Reach into the subparsers action to assert the full command surface is wired.
+    # (test_public_api.py owns the boundary ratchet; this is the wiring smoke.)
     sub = next(a for a in parser._actions if hasattr(a, "choices") and a.choices)
     assert set(sub.choices) == {
-        "import", "import-export", "watch", "search", "read", "reindex", "embed",
-        "status", "backup", "verify", "repair", "restore-drill", "nightly", "web",
+        "import", "import-export", "watch", "reindex", "embed",
+        "status", "backup", "verify", "repair", "restore-drill", "nightly",
     }
 
 

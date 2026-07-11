@@ -95,8 +95,10 @@ Then confirm it landed:
 
 ```bash
 .venv/bin/archive status            # threads / events / indexed counts
-.venv/bin/archive search "<something you know is in there>"
 ```
+
+(Search lives in the MCP tools, not the CLI — once Claude Code is restarted
+with the config below, `thread_search` is the smoke test for retrieval.)
 
 The SQLite index is built during import; if it ever looks wrong, `archive reindex`
 rebuilds it losslessly from the JSONL truth.

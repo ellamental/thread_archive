@@ -2,24 +2,24 @@
 
 ## Unreleased
 
-- **The CLI's stability promise is now tiered (2026-07-11).** Usage data showed
-  the CLI's real consumers are the LaunchAgents (`watch`, `nightly`), the
-  cron backup script, and agent-run triage — not interactive humans — so the
-  promise now names verbs instead of blanket-covering `build_parser()`.
-  Promised: the service verbs (`watch`, `nightly`) and the durability kit
-  (`backup`, `verify`, `restore-drill`, `reindex`, `repair`, `status`).
-  Convenience, free to change: `import`, `import-export`, `search`, `read`,
-  `web`, `embed` — retrieval's promised surface is the MCP tools.
-  `tests/test_public_api.py` ratchets the two verb sets so a new subcommand
-  must be deliberately classified. Convenience verbs carry an `[unstable]`
-  marker on their `archive --help` lines (the docker-style convention).
-  Underscore-prefixing the verbs was considered — Python's `_name` is exactly
-  this "no stability guarantee" designator — and rejected because the
-  convention doesn't transfer to CLIs: underscore commands in the wild are
-  hidden machine plumbing (cobra's `__complete`), so `archive _search` would
-  read as "not for you" rather than "use at your own risk," and the rename
-  breaks existing invocations for a signal the help marker delivers in place.
-  A ratchet asserts the markers match the pinned sets verb-for-verb.
+- **The public API is narrowed to exactly two things (2026-07-11): the
+  retrieval MCP tools (`thread_search` / `thread_read`, served by
+  `archive-mcp`) and the on-disk truth format (docs/format.md).** Everything
+  else is now declared private support machinery — the `archive` CLI, the
+  librarian MCP server, the web viewer, and all Python modules. Not ready ≠
+  not shipped: the private pieces keep running (launchd, cron, and the /ci
+  skill drive the CLI), they just carry no external stability promise; more
+  surface gets exposed deliberately as it matures.
+  As part of the same narrowing, `archive search`, `archive read`, and
+  `archive web` are removed (with `_web.serve`, the foreground server only
+  `web` called): retrieval traffic belongs to the public MCP tools, and the
+  viewer's persistent URL was already the watcher's (`archive watch --web`),
+  so the standalone verbs were extra doors onto the same surface. The CLI
+  keeps only ingest (`import`, `import-export`, `watch`, `embed`) and the
+  durability kit (`backup`, `verify`, `restore-drill`, `reindex`, `repair`,
+  `status`, `nightly`). `tests/test_public_api.py` pins the verb set — as
+  internal-wiring coordination (plists, cron, skills reference these verbs),
+  not as public API — and pins the *absence* of retrieval verbs.
 
 - **A proven-fixed stage retires its own failure (2026-07-11).** The only thing
   that could clear a failed nightly was another full nightly (~1h, restore-drill

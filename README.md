@@ -64,9 +64,6 @@ topic graph — `/librarian` interactively, or for a large backlog the bulk driv
 ```bash
 archive import <path>     # import a transcript / provider store
 archive watch             # watch local AI-tool stores and import incrementally
-archive search "<query>"  # search conversations
-archive read <thread_id>  # read a conversation
-archive web               # on-demand local web UI (search + reader); Ctrl-C to stop
 archive reindex           # rebuild index.db from the JSONL truth directory
 archive verify            # integrity check: truth parses + matches the index
 archive repair            # quarantine damaged truth lines; restore committed content from the index
@@ -75,6 +72,11 @@ archive restore-drill <dest>  # prove the backup restores: rebuild an index from
 archive nightly <dest>    # the scheduled pipeline: backup → verify (age-gated escalation) → restore drill
 archive status            # archive health / counts / last verify + backup + drill outcomes
 ```
+
+The CLI is private operational tooling (see Stability below) — the process
+seam the LaunchAgents, cron, and operators use. Retrieval deliberately has no
+CLI verbs: search and read are the public `archive-mcp` tools, and the web
+viewer is cohosted by `archive watch --web`.
 
 ## Layout
 
@@ -90,7 +92,7 @@ src/thread_archive/
   _knowledge/       # topic graph: event-sourced curation + Leiden analytics
   _watcher/         # local-source watcher (self-feeding ingest)
   _mcp/             # library-native MCP servers (read + librarian)
-  _web/             # `archive web`: stdlib server + the built viewer (static/)
+  _web/             # read-only viewer: stdlib server + built bundle (cohosted by `watch --web`)
   _thread_import/   # vendored provider parsers (a clean, dependency-free island)
 frontend/           # the viewer's React+Vite source (dev-only; builds into _web/static/)
 host/               # LaunchAgents (live ingest, nightly backup) + the family-manifest writer
@@ -100,43 +102,39 @@ tests/install/      # isolated Docker install test + fixtures
 
 ## Stability
 
-There is deliberately **no public Python API** — you talk to the archive
-through its tools, and programmatic read access goes through the documented
-stores themselves (`index.db` is plain SQLite; the truth directory is
-documented JSONL). The supported surface is exactly:
+The public API is exactly two things:
 
-- the `archive` CLI and the two MCP servers (`archive-mcp`,
-  `archive-librarian-mcp`);
+- **the retrieval MCP tools** — `thread_search` and `thread_read`, served by
+  `archive-mcp`;
 - **the on-disk truth format** — versioned by `manifest.json`'s `version` and
   specified in [docs/format.md](docs/format.md). Data written by one release
   stays readable by the next; a reader refuses a truth directory newer than it
-  understands.
+  understands. Programmatic read access to the documented stores (`index.db`
+  is plain SQLite; the truth directory is documented JSONL) rides on this
+  contract.
 
-Every underscore-prefixed module is private. `tests/test_public_api.py`
-ratchets the boundary.
+Everything else is private support machinery and may change without notice:
+the `archive` CLI, the librarian MCP server, the web viewer, and every
+Python module — there is **no public Python API**. More surface gets exposed
+deliberately as it matures. `tests/test_public_api.py` ratchets the boundary.
 
 ## Web viewer
 
-`archive web` serves a local search + reader UI over the same library surface
-(`search` / `read_thread_structured` / `status`) — a stdlib HTTP server (no extra
-runtime dependency, not a daemon: Ctrl-C stops it) handing out a pre-built React
-bundle plus a few JSON endpoints. **Runtime is node-free**: the bundle is built
-ahead of time and committed under `web/static/`, so `pip install` never touches
-node. Node is a *build*-only tool.
+The always-on watcher cohosts a local search + reader UI: `archive watch --web`
+(the shipped LaunchAgent passes it) serves at `http://127.0.0.1:8787` — a stdlib
+HTTP server handing out a pre-built React bundle plus a few JSON endpoints, in
+the watcher's *own* process. One process, one SQLite engine — the viewer reads
+concurrently with the watcher's writes, which WAL makes safe (`store/_base.py`).
+No second daemon, and no standalone `web` verb: the viewer exists where the
+persistent URL is.
+
+**Runtime is node-free**: the bundle is built ahead of time and committed under
+`web/static/`, so `pip install` never touches node. Node is a *build*-only tool:
 
 ```bash
-archive web                       # serve at http://127.0.0.1:8787, open a browser
-archive web --port 9000 --no-open
-
 # rebuild the bundle after editing the frontend (node only here):
 cd frontend && npm install && npm run build   # → ../src/thread_archive/web/static/
 ```
-
-**Persistent URL — the watcher cohosts it.** `archive web` is on-demand (Ctrl-C
-stops it), so for a stable address the always-on watcher serves the viewer in its
-*own* process: `archive watch --web` (the shipped LaunchAgent passes it). One
-process, one SQLite engine — the viewer reads concurrently with the watcher's
-writes, which WAL makes safe (`store/_base.py`). No second daemon.
 
 **Archive-links.** With that persistent server, the archive owns the editor
 "open this conversation" link itself: `GET /api/archive-link?id=<session-uuid>&source=claude-code`
