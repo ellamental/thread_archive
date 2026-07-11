@@ -32,6 +32,13 @@ def _get(path, **params):
     return status, ctype, payload
 
 
+def _get_multi(path, **params):
+    """Like :func:`_get` but each param is already a list — for repeated keys."""
+    status, ctype, body, _ = route("GET", path, {k: list(v) for k, v in params.items()})
+    payload = json.loads(body) if ctype.startswith("application/json") else body
+    return status, ctype, payload
+
+
 def _claude_code_session_uuid(archive_home):
     """The session uuid the claude-code importer recorded in ImportState for the
     seeded thread — the kind of id an editor would resolve via archive-link."""
@@ -272,11 +279,49 @@ def test_archive_link_source_narrows_to_provider(archive_home):
     assert status == 404
 
 
+def test_archive_link_skips_unresolvable_candidates(archive_home):
+    # what the codex webview actually hands us: a turn id and a client-created
+    # thread id that look exactly like a session uuid and resolve to nothing,
+    # ranked ahead of the real one. The caller cannot tell them apart — the
+    # archive can, so the first candidate that was really imported wins.
+    uuid, tid = _seed_codex(archive_home)
+    turn_id = "019f51d0-f529-7f41-8331-adff4d0c9d3b"
+    status, _, body, headers = route(
+        "GET",
+        "/api/archive-link",
+        {"id": [turn_id, uuid], "source": ["codex"], "redirect": ["1"]},
+    )
+    assert status == 302
+    assert headers["Location"] == f"/archive/{tid}"
+
+
+def test_archive_link_candidate_order_wins(archive_home):
+    # two real threads among the candidates: the caller's ranking decides, so the
+    # thread the user is looking at (ranked first) beats a stale one behind it.
+    cloth_uuid, cloth_tid = _seed_cloth(archive_home)
+    codex_uuid, codex_tid = _seed_codex(archive_home)
+    status, _, payload = _get_multi("/api/archive-link", id=[cloth_uuid, codex_uuid])
+    assert status == 200
+    assert payload["thread_id"] == cloth_tid
+    assert payload["id"] == cloth_uuid
+    assert cloth_tid != codex_tid
+
+
 def test_archive_link_unknown_is_404(archive_home):
     _seed(archive_home)
     status, _, payload = _get("/api/archive-link", id="no-such-uuid")
     assert status == 404
     assert "error" in payload
+
+
+def test_archive_link_all_candidates_unknown_is_404(archive_home):
+    # every id the webview could see was a turn/draft: 404 naming what was tried,
+    # not a redirect into some unrelated thread.
+    _seed_codex(archive_home)
+    status, _, payload = _get_multi("/api/archive-link", id=["no-such-uuid", "also-not-real"])
+    assert status == 404
+    assert "no-such-uuid" in payload["error"]
+    assert "also-not-real" in payload["error"]
 
 
 def test_archive_link_missing_id_400(archive_home):

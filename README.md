@@ -61,7 +61,10 @@ archive web               # on-demand local web UI (search + reader); Ctrl-C to 
 archive reindex           # rebuild index.db from the JSONL truth directory
 archive verify            # integrity check: truth parses + matches the index
 archive repair            # quarantine damaged truth lines; restore committed content from the index
-archive status            # archive health / counts / last verify + backup outcomes
+archive backup <dest>     # mirror the truth dir (keeps hardlink generations under <dest>/.generations)
+archive restore-drill <dest>  # prove the backup restores: rebuild an index from the mirror + smoke read/search
+archive nightly <dest>    # the scheduled pipeline: backup → verify (age-gated escalation) → restore drill
+archive status            # archive health / counts / last verify + backup + drill outcomes
 ```
 
 ## Layout
@@ -113,7 +116,9 @@ writes, which WAL makes safe (`store/_base.py`). No second daemon.
 "open this conversation" link itself: `GET /api/archive-link?id=<session-uuid>&source=claude-code`
 resolves the session to its thread via `ImportState` and returns `{thread_id, url}`,
 or `&redirect=1` → a `302` to `/archive/<id>`. (Local — no separate backend
-involved.)
+involved.) `id` may repeat — a caller that cannot tell which uuid it holds is the
+session id sends every candidate, best guess first, and the first that resolves
+wins; ids that were never imported are skipped, not fatal.
 
 ## What it does
 

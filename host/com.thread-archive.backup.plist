@@ -2,16 +2,18 @@
 <!-- Template — `make install-backup-agent DEST=<path>` substitutes __REPO__,
      __DEST__, and __LOGDIR__ at install time. Do not install this file verbatim.
 
-     Runs `archive backup <DEST> && archive verify` on a daily schedule: mirror the
-     JSONL truth dir to a backup destination (point it at a DIFFERENT disk/machine —
-     for pre-retention history the truth log is the only copy), then integrity-check
-     that the truth parses and matches the index. The verify escalates on a cadence:
-     Sundays add the deep flag (id-level truth/index diff) and the backup flag pointed
-     at DEST (parse-scan the mirror — a backup that doesn't parse doesn't restore);
-     the 1st of the month adds the hashes flag (payload self-validation against the
-     content hash embedded in each dedup_key — the bit-rot check). The flag list is
-     built via `set` positional parameters so a DEST containing spaces survives word
-     splitting. -->
+     Runs `archive nightly <DEST>` on a daily schedule — the whole protection
+     pipeline as one command: mirror the JSONL truth dir to DEST (point it at a
+     DIFFERENT disk/machine — for pre-retention history the truth log is the only
+     copy), integrity-verify the live archive (the deep and hashes tiers fold in
+     on age gates tracked in health.json, so a missed or failed escalated pass
+     reruns the next night instead of waiting for the calendar), then a full
+     restore drill every night (rebuild an index from the mirror in a throwaway
+     home and smoke-read/search it — the proof the backup restores). Every stage
+     runs and records its outcome in <home>/health.json; any stage failure POSTs
+     to lab's /api/notify. A job that stops running entirely leaves those records
+     stale — thread-monitor's archive-backup check alerts on that; this plist
+     only has to run. -->
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
@@ -20,9 +22,11 @@
 
     <key>ProgramArguments</key>
     <array>
-        <string>/bin/sh</string>
-        <string>-c</string>
-        <string>set --; [ "$(date +%u)" = 7 ] &amp;&amp; set -- --deep --backup '__DEST__'; [ "$(date +%d)" = 01 ] &amp;&amp; set -- "$@" --hashes; __REPO__/.venv/bin/archive backup '__DEST__' &amp;&amp; __REPO__/.venv/bin/archive verify "$@"</string>
+        <string>__REPO__/.venv/bin/archive</string>
+        <string>nightly</string>
+        <string>__DEST__</string>
+        <string>--notify-url</string>
+        <string>http://127.0.0.1:8002/api/notify</string>
     </array>
 
     <key>WorkingDirectory</key>

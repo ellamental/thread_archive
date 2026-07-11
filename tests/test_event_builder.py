@@ -367,3 +367,10 @@ def test_every_built_event_carries_a_dedup_key() -> None:
     )
     assert all(e.dedup_key for e in events)
     assert len({e.dedup_key for e in events}) == len(events)  # and they're distinct
+
+
+def test_thread_event_occurred_at_default_is_utc_aware() -> None:
+    from thread_import.event_builder import ThreadEvent
+
+    ev = ThreadEvent(event_type="x", payload={}, stream_id="s")
+    assert ev.occurred_at.tzinfo is not None

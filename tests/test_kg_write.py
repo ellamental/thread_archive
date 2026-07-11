@@ -257,3 +257,22 @@ def test_leiden_is_the_engine(archive_home):
     ta.open_archive()
     create_topic("solo")
     assert ta.knowledge_status()["community_engine"] == "leiden"
+
+
+def test_kg_writes_reject_bad_references(archive_home) -> None:
+    """Citations need a real topic, a real event, and the event's actual thread;
+    links need existing endpoints."""
+    ta.open_archive()
+    tid, ev_id = _seed_conversation()
+    topic = create_topic("Validation Test")["topic_id"]
+
+    add_topic_evidence(topic, ev_id, tid, "valid cite")  # the happy path still works
+
+    with pytest.raises(ValueError, match="no event"):
+        add_topic_evidence(topic, 99_999_999, tid, "q")
+    with pytest.raises(ValueError, match="belongs to thread"):
+        add_topic_evidence(topic, ev_id, tid + 1, "q")
+    with pytest.raises(ValueError, match="no topic"):
+        add_topic_evidence(99_999_999, ev_id, tid, "q")
+    with pytest.raises(ValueError, match="link endpoints"):
+        link_threads(topic, 99_999_999)

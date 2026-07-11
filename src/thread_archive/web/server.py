@@ -79,6 +79,16 @@ def _first(params: dict, key: str) -> Optional[str]:
     return v if v else None
 
 
+def _repeated(params: dict, key: str, limit: int = 10) -> list[str]:
+    """Every value given for ``key``, in order, deduped and capped."""
+    seen: list[str] = []
+    for v in params.get(key, []):
+        v = (v or "").strip()
+        if v and v not in seen:
+            seen.append(v)
+    return seen[:limit]
+
+
 def _int(params: dict, key: str, default: int) -> int:
     try:
         return int(params.get(key, [default])[0])
@@ -186,16 +196,25 @@ def route(method: str, path: str, params: dict) -> Response:
         return _ok(api.status())
 
     if path == "/api/archive-link":
-        link_id = _first(params, "id")
-        if not link_id:
+        # ``id`` may repeat: a caller that cannot tell which of the uuids it can
+        # see is the session id sends every candidate, best guess first, and the
+        # archive — the only party that knows what was actually imported — picks
+        # the first that resolves. An editor webview holds ids for turns, drafts
+        # and client-side threads that look exactly like a session uuid and can
+        # never resolve; making them harmless beats guessing right.
+        link_ids = _repeated(params, "id")
+        if not link_ids:
             return _text(400, "missing id")
-        tid = resolve_archive_link(link_id, _first(params, "source"))
-        if tid is None:
-            return 404, "application/json", json.dumps({"error": f"no thread for id={link_id}"}).encode(), {}
-        url = f"/archive/{tid}"
-        if _bool(params, "redirect", False):
-            return _redirect(url)
-        return _ok({"thread_id": tid, "url": url})
+        source = _first(params, "source")
+        for link_id in link_ids:
+            tid = resolve_archive_link(link_id, source)
+            if tid is not None:
+                url = f"/archive/{tid}"
+                if _bool(params, "redirect", False):
+                    return _redirect(url)
+                return _ok({"thread_id": tid, "url": url, "id": link_id})
+        tried = ", ".join(link_ids)
+        return 404, "application/json", json.dumps({"error": f"no thread for id={tried}"}).encode(), {}
 
     if path == "/api/search":
         q = (_first(params, "q") or "").strip()

@@ -5,6 +5,15 @@ both must be reset around every test so state never leaks between tests. Critica
 every test is defaulted to a *throwaway* home so nothing can ever touch the real
 ``~/.thread/archive`` (the global engine lazily resolves its DSN from ``$THREAD_ARCHIVE_HOME``,
 so an un-homed test would otherwise create the real default).
+
+The suite is also pinned **model-free**: the embed/rerank availability gates are
+forced off so no test can cold-load the torch models just because the venv happens
+to have the ``[embeddings]`` extra installed. Without the pin, any ``search()``
+whose query trips the rerank gate loads the real cross-encoder in-process — a
+100-second stall — and search-path tests exercise different code depending on
+which extras are installed. Tests that cover the vector/rerank machinery opt back
+in per-test with their own monkeypatches (see ``test_vectors.py``,
+``test_rerank.py``), which override this default.
 """
 
 from __future__ import annotations
@@ -15,6 +24,7 @@ import pytest
 @pytest.fixture(autouse=True)
 def _isolate_archive(tmp_path, monkeypatch):
     from thread_archive import config
+    from thread_archive.retrieval import embed, rerank
     from thread_archive.store import _base
     from thread_archive.truth import jsonl_log
 
@@ -22,9 +32,15 @@ def _isolate_archive(tmp_path, monkeypatch):
     monkeypatch.setenv(config.ENV_HOME, str(tmp_path / "_home"))
     monkeypatch.delenv(config.ENV_TRUTH, raising=False)
     monkeypatch.delenv(config.ENV_INDEX, raising=False)
+    # The nightly pipeline stamps a family-monitor heartbeat in ~/.thread/logs
+    # when that dir exists; a test run must never touch the real box's beat.
+    monkeypatch.setenv("THREAD_ARCHIVE_HEARTBEAT_DIR", str(tmp_path / "_family_logs"))
     # The librarian backfill worker id activates claim-on-read; never let an ambient one
     # leak into a test that expects a plain queue read.
     monkeypatch.delenv("THREAD_ARCHIVE_LIBRARIAN_WORKER", raising=False)
+    # Model-free suite: no real torch model may load, regardless of installed extras.
+    monkeypatch.setattr(embed, "is_available", lambda: False)
+    monkeypatch.setattr(rerank, "is_available", lambda: False)
     _base.close_engine()
     jsonl_log.reset_handles()
     yield

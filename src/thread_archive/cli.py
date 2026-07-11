@@ -216,6 +216,20 @@ def cmd_backup(args: argparse.Namespace) -> int:
     )
     mb = res["bytes_copied"] / (1024 * 1024)
     print(f"backed up {res['truth_dir']} → {res['dest']}: {res['files_copied']} files ({mb:.1f} MB copied)")
+    if res.get("generation_created"):
+        print(
+            f"generation: pre-run state preserved as .generations/{res['generation_created']} "
+            f"({res.get('generations_kept', '?')} kept, {res.get('generations_pruned', 0)} pruned)"
+        )
+    if res.get("generation_error"):
+        print(f"WARNING: generation snapshot failed ({res['generation_error']}) — "
+              "this run had no pre-overwrite recovery margin")
+    if res.get("same_device"):
+        print(
+            "WARNING: the backup destination is on the SAME filesystem as the "
+            "archive — one disk failure takes both copies (and every generation). "
+            "Point it at a different disk/machine, or add an off-machine leg."
+        )
     if not res["verify_ok"]:
         print(
             "WARNING: pre-backup verify FAILED — the source truth has integrity "
@@ -270,7 +284,7 @@ def cmd_verify(args: argparse.Namespace) -> int:
         print(f"       parse error sample: {t['parse_error_sample']}")
     print(
         f"index: threads={res['index']['threads']} events={res['index']['events']} "
-        f"quick_check={res['index']['quick_check']}"
+        f"{res['index'].get('check', 'quick_check')}={res['index']['quick_check']}"
     )
     print(f"drift: threads={res['drift']['threads']:+d} events={res['drift']['events']:+d}")
     fts = res["fts"]
@@ -322,7 +336,7 @@ def cmd_verify(args: argparse.Namespace) -> int:
             hs = h[side]
             print(
                 f"hashes[{side}]: checked={hs['checked']} mismatched={hs['mismatched']} "
-                f"unhashed_keys={hs['unhashed_keys']}"
+                f"unhashed_keys={hs['unhashed_keys']} no_key={hs['no_key']}"
             )
             if hs["mismatched"]:
                 print(f"       mismatch sample: {hs['mismatch_sample']}")
@@ -343,7 +357,88 @@ def cmd_verify(args: argparse.Namespace) -> int:
                 f"effective={bs['events_effective']} parse_errors={bs['parse_errors']} "
                 f"coverage={b['coverage']:.4f}"
             )
+            if "hashes" in b:
+                bh = b["hashes"]
+                print(
+                    f"backup hashes: checked={bh['checked']} mismatched={bh['mismatched']} "
+                    f"unhashed_keys={bh['unhashed_keys']} no_key={bh['no_key']}"
+                )
+                if bh["mismatched"]:
+                    print(f"       mismatch sample: {bh['mismatch_sample']}")
     print("OK" if res["ok"] else "DRIFT DETECTED")
+    return 0 if res["ok"] else 1
+
+
+def cmd_restore_drill(args: argparse.Namespace) -> int:
+    from . import api
+
+    print(f"restore drill: rebuilding an index from {args.dest} in a throwaway home...", flush=True)
+    res = api.restore_drill(args.dest, home=args.home, keep_home=args.keep_home)
+    if "error" in res:
+        print(f"FAILED: {res['error']}")
+    if "mirror" in res:
+        m = res["mirror"]
+        print(
+            f"mirror: threads={m['threads']} effective={m['events_effective']} "
+            f"parse_errors={m['parse_errors']}"
+        )
+    if "rebuilt" in res:
+        r = res["rebuilt"]
+        print(
+            f"rebuilt: threads={r['threads']} events={r['events']} fts={r.get('fts')} "
+            f"coverage={res.get('coverage', 0):.4f} of live"
+        )
+    if "smoke" in res:
+        sm = res["smoke"]
+        if sm.get("skipped"):
+            print(f"smoke:  skipped ({sm['skipped']})")
+        else:
+            print(
+                f"smoke:  read={'ok' if sm.get('read_ok') else 'FAILED'} "
+                f"search={'ok' if sm.get('search_ok') else 'FAILED'}"
+                + (f" (token {sm['token']!r})" if sm.get("token") else "")
+                + (f" error: {sm['error']}" if sm.get("error") else "")
+            )
+    if res.get("drill_home"):
+        print(f"drill home kept: {res['drill_home']}")
+    print(f"{'OK' if res.get('ok') else 'RESTORE DRILL FAILED'} ({res.get('seconds', '?')}s)")
+    return 0 if res.get("ok") else 1
+
+
+def cmd_nightly(args: argparse.Namespace) -> int:
+    from . import api
+
+    print(f"nightly pipeline: backup → verify → restore drill ({args.dest})", flush=True)
+    res = api.nightly(
+        args.dest, home=args.home, notify_url=args.notify_url,
+        allow_shrink=args.allow_shrink, drill=args.drill,
+    )
+    b = res["backup"]
+    if "error" in b:
+        print(f"backup: ERROR {b['error']}")
+    else:
+        mb = b["bytes_copied"] / (1024 * 1024)
+        print(f"backup: {b['files_copied']} files ({mb:.1f} MB copied)"
+              + (" [SAME DEVICE as archive]" if b.get("same_device") else ""))
+    esc = res["escalations"]
+    v = res["verify"]
+    flags = "+".join(k for k in ("deep", "hashes") if esc[k]) or "shallow"
+    if "error" in v:
+        print(f"verify [{flags}]: ERROR {v['error']}")
+    else:
+        print(f"verify [{flags}]: {'ok' if v['ok'] else 'FAILED'} "
+              f"drift={v['drift']['events']:+d} parse_errors={v['truth']['parse_errors']}")
+    if "drill" in res:
+        d = res["drill"]
+        if "error" in d:
+            print(f"restore drill: ERROR {d['error']}")
+        else:
+            print(f"restore drill: {'ok' if d.get('ok') else 'FAILED'} "
+                  f"coverage={d.get('coverage', 0):.4f} ({d.get('seconds', '?')}s)")
+    if res.get("notify_error"):
+        print(f"notify: could not deliver failure notification ({res['notify_error']})")
+    print("NIGHTLY OK" if res["ok"]
+          else f"NIGHTLY FAILED: {', '.join(res['failed_stages'])}")
     return 0 if res["ok"] else 1
 
 
@@ -397,6 +492,7 @@ def cmd_status(args: argparse.Namespace) -> int:
     print(f"events:  {st['events']}")
     print(f"indexed: {st['fts_indexed']}")
     v, b = st.get("last_verify"), st.get("last_backup")
+    d = st.get("last_restore_drill")
     print(
         f"verify:  {'ok' if v['ok'] else 'FAILED'} {v['at']} ({_age(v['at'])})"
         if v else "verify:  never recorded"
@@ -404,6 +500,13 @@ def cmd_status(args: argparse.Namespace) -> int:
     print(
         f"backup:  {'ok' if b['ok'] else 'FAILED'} → {b['dest']} {b['at']} ({_age(b['at'])})"
         if b else "backup:  never recorded"
+    )
+    if b and b.get("same_device"):
+        print("         WARNING: backup destination is on the same filesystem as the archive")
+    print(
+        f"drill:   {'ok' if d['ok'] else 'FAILED'} coverage={d.get('coverage')} "
+        f"{d['at']} ({_age(d['at'])})"
+        if d else "drill:   never recorded"
     )
     return 0
 
@@ -539,6 +642,41 @@ def build_parser() -> argparse.ArgumentParser:
              "against the live truth",
     )
     p_verify.set_defaults(func=cmd_verify)
+
+    p_drill = sub.add_parser(
+        "restore-drill",
+        help="prove a backup restores: rebuild a full index from the mirror in "
+             "a throwaway home and compare counts",
+    )
+    _add_home_arg(p_drill)
+    p_drill.add_argument("dest", help="backup mirror to restore from")
+    p_drill.add_argument(
+        "--keep-home", action="store_true",
+        help="keep the throwaway home (inspect the restored index) instead of deleting it",
+    )
+    p_drill.set_defaults(func=cmd_restore_drill)
+
+    p_nightly = sub.add_parser(
+        "nightly",
+        help="scheduled pipeline: backup → verify (age-gated deep/hashes "
+             "escalation) → restore drill, with per-stage health records",
+    )
+    _add_home_arg(p_nightly)
+    p_nightly.add_argument("dest", help="backup destination dir (a different disk/machine)")
+    p_nightly.add_argument(
+        "--notify-url", default=None, metavar="URL",
+        help="POST {title, message} here when any stage fails "
+             "(lab's /api/notify shape); silence still needs a staleness watcher",
+    )
+    p_nightly.add_argument(
+        "--allow-shrink", action="store_true",
+        help="pass through to the backup stage (after a deliberate truth re-emit)",
+    )
+    p_nightly.add_argument(
+        "--no-drill", dest="drill", action="store_false",
+        help="skip the restore drill stage",
+    )
+    p_nightly.set_defaults(func=cmd_nightly)
 
     p_repair = sub.add_parser(
         "repair",

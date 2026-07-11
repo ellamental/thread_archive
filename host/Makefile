@@ -24,8 +24,9 @@ ENTRY     := $(REPO)/.venv/bin/archive
 # Logs live next to the data (the archive home), not in the repo.
 LOG_DIR   := $(HOME)/.thread/archive/logs
 
-# Scheduled backup+verify job (daily). DEST is the backup destination — pass it on
-# the command line and point it at a DIFFERENT disk/machine:
+# Scheduled nightly protection pipeline (`archive nightly`: backup → verify →
+# restore drill). DEST is the backup destination — pass it on the command line
+# and point it at a DIFFERENT disk/machine:
 #   make install-backup-agent DEST=/Volumes/Backup/thread_archive
 BACKUP_PLIST_SRC := com.thread-archive.backup.plist
 BACKUP_LABEL     := com.thread-archive.backup
@@ -86,7 +87,7 @@ install-backup-agent:
 	-launchctl bootout gui/$(UID)/$(BACKUP_LABEL) 2>/dev/null
 	@sleep 3
 	launchctl bootstrap gui/$(UID) $(BACKUP_PLIST)
-	@echo "installed $(BACKUP_LABEL) — backs up to $(DEST) daily at 04:00, then verifies."
+	@echo "installed $(BACKUP_LABEL) — nightly at 04:00: backup to $(DEST), verify, restore drill."
 
 uninstall-backup-agent:
 	-launchctl bootout gui/$(UID)/$(BACKUP_LABEL)

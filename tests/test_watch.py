@@ -225,3 +225,34 @@ def test_watcher_available_filters_missing_sources(archive_home, tmp_path) -> No
     available = [w.source_name for w in watcher.available()]
     assert "claude-code" in available
     assert "cursor" not in available
+
+
+def test_watch_once_holds_shared_ingest_lock(archive_home, monkeypatch, capsys):
+    """``archive watch --once`` holds the shared ingest lock like every other
+    truth writer, so a concurrent exclusive reindex can't interleave."""
+    import fcntl
+    import os
+
+    from thread_archive import cli
+    from thread_archive.truth.jsonl_log import _reindex_lock_path
+    from thread_archive.watcher.base import WatchResult
+
+    seen = {}
+
+    def fake_poll(self):
+        # A shared holder must block an exclusive probe (distinct fd = distinct
+        # flock owner, even in-process).
+        fd = os.open(_reindex_lock_path(), os.O_RDWR | os.O_CREAT)
+        try:
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                seen["locked"] = False
+            except OSError:
+                seen["locked"] = True
+        finally:
+            os.close(fd)
+        return WatchResult()
+
+    monkeypatch.setattr(Watcher, "poll_once", fake_poll)
+    assert cli.main(["watch", "--once"]) == 0
+    assert seen["locked"] is True

@@ -1,5 +1,112 @@
 # Changelog
 
+## 2026-07-11 — test suite: model-free pin, behavior-named integrity files
+
+- **The unit suite is now pinned model-free.** `conftest.py` forces the
+  embed/rerank availability gates off, so no test can cold-load the torch
+  models just because the venv has the `[embeddings]` extra installed.
+  Previously, any `search()` whose query tripped the rerank gate loaded the
+  real cross-encoder in-process — one test stalled ~100s and the search path
+  under test differed between hosts with and without the extra. Full suite:
+  ~2min → ~8s. Vector/rerank tests opt back in with per-test monkeypatches,
+  as they already did.
+- **The `test_integrity_review4`–`9` and `test_integrity_fixes` files were
+  redistributed by behavior** into `test_backup_mirror`, `test_verify`,
+  `test_reindex_fail_closed`, `test_truth_repair`,
+  `test_import_state_watermarks`, `test_shard_twins`, `test_truth_manifest`,
+  and `test_vector_sidecar` (plus three tests folded into `test_watch`,
+  `test_kg_write`, `test_event_builder`). Same tests, no logic changes — the
+  files were named for the review pass that produced them, which made a
+  guarantee's tests unfindable by filename. Their copy-pasted claude-code
+  session factories now live in `tests/helpers.py`.
+- **Coverage is measured on every CI sweep** (`pytest-cov` joins the dev
+  group; the ci.toml pytest row adds `--cov=src --cov-report=term`). Measured,
+  not gated: only test failures turn the row red. Baseline: 70%.
+- **The librarian MCP server has tests** (`test_mcp_librarian.py`) — it was
+  the one production surface at 0% coverage. They pin the registered tool set,
+  the JSON-string in/out contract, the full curate loop (queue → read → topic
+  → cite → thread leaves the queue), and the `Error:`-string-not-raise
+  contract on bad curation input.
+
+## 2026-07-11 — nightly restore drills + `archive nightly`
+
+The restore drill moves from monthly to nightly, and the scheduled job becomes
+one command. `archive nightly <dest>` runs backup → verify → restore-drill
+with no short-circuit (a failed backup no longer costs the night's integrity
+check and drill), records each stage's outcome separately in health.json
+(`nightly_last` joins the per-stage records), and POSTs failed stage names to
+`--notify-url`. Verify escalation is age-gated instead of calendar-gated: the
+deep tier (+ mirror parse-scan) folds in when `verify_deep_last` is missing,
+stale (7d), or failed; hashes likewise (30d) — a machine that was off on the
+scheduled day escalates the next night instead of a month later. The backup
+plist template now just invokes `archive nightly` (the old shell date-math
+chain, plus the notify/stamp additions that lived only in the installed copy,
+are subsumed). The drill gains a smoke pass — read the newest thread and run
+a search for a token drawn from the FTS shadow against the rebuilt index —
+so `ok` means "usable," not just "materialized." `archive backup` flags a
+destination on the same filesystem as the truth dir (`same_device`, warned in
+the CLI and recorded in health.json — a same-disk mirror dies with the disk).
+`archive status` now shows the drill record. Completion stamps
+`~/.thread/logs/archive-nightly.heartbeat` (outcome + mtime; dir must exist,
+`THREAD_ARCHIVE_HEARTBEAT_DIR` overrides) so thread-monitor's new
+archive-backup check can alert on a pipeline that stops running — the half of
+"alert when drills aren't running/succeeding" the job itself can't cover.
+
+## 2026-07-11 — archive-link resolves a candidate list
+
+`GET /api/archive-link` now accepts a repeated `id` param: the caller sends every
+uuid it might be holding, best guess first, and the first one that was actually
+imported wins; ids that resolve to nothing are skipped rather than fatal, and a
+404 names everything tried. Editors can't reliably pick the session id out of the
+uuids their own UI holds — the Codex webview mints look-alike UUIDv7 ids for
+turns, drafts and client-side threads — and the archive is the only party that
+knows which ids are real. Single-`id` behaviour is unchanged.
+
+## 2026-07-11 — ninth-pass integrity review: backup generations, restore drill, mirror rot detection
+
+A data-integrity review pass focused on the backup side: the write path held
+up; what remained was that the *last copy* was a single rolling mirror, never
+rehearsed, and never checked for rot at rest.
+
+- **Backup generations.** Before each mirror run overwrites anything, the
+  destination's current state is preserved as a hardlink snapshot under
+  `<dest>/.generations/<stamp>/` — the recovery margin for destruction the
+  in-run guards can't see (same-size corruption, a mistaken `--allow-shrink`,
+  a bad repair propagating). Nearly free: the mirror only publishes
+  destination files by whole-file rename, so linked inodes are never mutated.
+  One generation per UTC day; retention keeps the newest 7 plus the newest per
+  month up to 6 months; the subtree is exempt from delete-sync and its cap.
+- **`archive restore-drill DEST`** — the missing last step past
+  `verify --backup`: copy the mirror to a throwaway home, `reindex` from it
+  (per-thread load, kg replay, FTS, vector-sidecar restore, quick_check), and
+  compare what materialized against the mirror's own scan *and* the live
+  archive (`coverage` ≥ 0.98 gates ok — a gutted mirror restores
+  internally-consistent but short, and must fail). Outcome recorded in
+  `health.json` (`restore_drill_last`). Scheduled monthly (the 15th) in the
+  backup LaunchAgent.
+- **`verify --hashes --backup DEST` hash-scans the mirror too.** An unchanged
+  destination file is never re-copied (size+mtime skip), so payload rot at
+  rest was invisible forever — the parse scan stays green on corruption that
+  keeps JSON valid. Report-only, same as the live hashes pass. Scheduled: the
+  1st of the month now also gets `--deep --backup` (previously Sundays only),
+  so the monthly hashes run covers the mirror.
+- **`verify --hashes` upgrades the index self-check to full
+  `PRAGMA integrity_check`** (daily runs keep `quick_check`): the full form
+  also verifies b-tree index content against tables — the only check that
+  catches a corrupted index silently returning wrong query results.
+- **Manifest read-modify-write is serialized** (`update_manifest`, a leaf
+  flock on `<home>/.manifest.lock`): checkpoint's stamp, the rebalance depth
+  bump, the re-emit, and verify's hashes baseline can no longer lose each
+  other's keys to a stale whole-file replace, structurally rather than by
+  re-read timing.
+- **Hash-scan coverage boundary is visible**: events with no `dedup_key` have
+  zero content self-validation; every hash scan now reports their count
+  (`no_key`) alongside `unhashed_keys`.
+
+Deliberately not taken this pass (operator decision, standing): an
+offsite/second-disk backup destination — the mirror currently lives on the
+same physical disk as the archive, which remains the dominant residual risk.
+
 ## 2026-07-11 — integrity review: repair path, daily FTS parity, operational health records
 
 A data-integrity review pass. The write/recovery core held up (drain intent,

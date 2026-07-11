@@ -317,6 +317,12 @@ def watch(*, home: Optional[str] = None, interval: float = 5.0, once: bool = Fal
 _MIRROR_DELETE_FLOOR = 64
 _MIRROR_DELETE_MAX_FRACTION = 0.25
 
+# Destination-side generation snapshots: hardlink copies of the mirror's state,
+# taken before each backup run overwrites it. See _snapshot_generation.
+_GENERATIONS_SUBDIR = ".generations"
+_GEN_KEEP_RECENT = 7
+_GEN_KEEP_MONTHS = 6
+
 
 def _is_append_only_truth(rel: Path) -> bool:
     """True for truth files that only ever grow in normal operation: the per-thread
@@ -432,7 +438,13 @@ def _mirror_dir(
         _fsync_dir(sd)  # the renames that published this pass's copies must stick
     twins_deleted = 0
     if delete:
-        dest_files = [dp for dp in dest.rglob("*") if not dp.is_dir()]
+        # The generations subtree is destination-only state (hardlink snapshots
+        # of prior mirror runs) — never a deletion candidate, and never counted
+        # toward the deletion cap's denominator.
+        dest_files = [
+            dp for dp in dest.rglob("*")
+            if not dp.is_dir() and dp.relative_to(dest).parts[0] != _GENERATIONS_SUBDIR
+        ]
         doomed = [dp for dp in dest_files if not (src / dp.relative_to(dest)).exists()]
         if doomed:
             twins, doomed = _split_rehomed_twins(src, dest, doomed)
@@ -499,6 +511,79 @@ def _split_rehomed_twins(src: Path, dest: Path, doomed: list[Path]) -> tuple[lis
     return twins, rest
 
 
+def _snapshot_generation(dest: Path) -> dict:
+    """Hardlink-snapshot the mirror's current state into
+    ``<dest>/.generations/<UTC stamp>/`` — taken *before* the mirror run
+    overwrites it, so each generation is the destination as the previous run
+    left it. The rolling mirror alone propagates destruction: same-size
+    corruption, a mistaken ``--allow-shrink``, or a bad repair overwrites the
+    only other copy on the next nightly run. Generations make that recoverable.
+
+    Hardlinks make a generation nearly free (the truth is append-mostly, and
+    the mirror only ever publishes destination files via whole-file rename —
+    ``_atomic_copy`` — so a snapshot's linked inodes are never mutated by later
+    runs; deletions just unlink the mirror's name). At most one generation per
+    UTC day. The snapshot is built under a dot-tmp name and renamed into place,
+    so a killed run never leaves a directory that looks like a complete
+    generation.
+
+    Retention: the newest ``_GEN_KEEP_RECENT`` generations, plus the newest
+    generation of each distinct month until ``_GEN_KEEP_MONTHS`` months are
+    covered. Failure to snapshot degrades to the pre-generations behavior
+    (reported, never blocks the mirror itself)."""
+    import logging
+    import shutil
+    from datetime import datetime, timezone
+
+    out: dict = {"generation_created": None, "generations_pruned": 0}
+    if not (dest / "manifest.json").exists():
+        return out  # first run: nothing at the destination to preserve
+    gens = dest / _GENERATIONS_SUBDIR
+    gens.mkdir(exist_ok=True)
+    for stale in gens.glob(".tmp-*"):  # a killed snapshot's half-built tree
+        shutil.rmtree(stale, ignore_errors=True)
+    now = datetime.now(timezone.utc)
+    names = sorted((p.name for p in gens.iterdir() if p.is_dir()), reverse=True)
+    if not (names and names[0].startswith(now.strftime("%Y%m%d"))):
+        name = now.strftime("%Y%m%dT%H%M%SZ")
+        tmp = gens / f".tmp-{name}"
+        try:
+            linked = 0
+            for sp in dest.rglob("*"):
+                if sp.is_dir():
+                    continue
+                rel = sp.relative_to(dest)
+                if rel.parts[0] == _GENERATIONS_SUBDIR:
+                    continue
+                gp = tmp / rel
+                gp.parent.mkdir(parents=True, exist_ok=True)
+                try:
+                    os.link(sp, gp)
+                except OSError:  # filesystem without hardlinks — take the copy cost
+                    shutil.copy2(sp, gp)
+                linked += 1
+            os.rename(tmp, gens / name)
+            out["generation_created"] = name
+            out["generation_files"] = linked
+            names.insert(0, name)
+        except OSError as e:  # snapshot is protection, not the backup itself
+            shutil.rmtree(tmp, ignore_errors=True)
+            out["generation_error"] = str(e)
+            logging.getLogger(__name__).exception("backup: generation snapshot failed")
+    keep = set(names[:_GEN_KEEP_RECENT])
+    months = {n[:6] for n in keep}
+    for n in names[_GEN_KEEP_RECENT:]:
+        if n[:6] not in months and len(months) < _GEN_KEEP_MONTHS:
+            keep.add(n)
+            months.add(n[:6])
+    for n in names:
+        if n not in keep:
+            shutil.rmtree(gens / n, ignore_errors=True)
+            out["generations_pruned"] += 1
+    out["generations_kept"] = len(keep)
+    return out
+
+
 def backup(
     dest: str,
     *,
@@ -529,6 +614,12 @@ def backup(
     on files it copied and only flags missing or divergent copies. Append-only
     truth files are additionally shrink-guarded (see :func:`_mirror_dir`);
     ``allow_shrink=True`` overrides after a deliberate truth re-emit.
+
+    Before the mirror touches anything, the destination's current state is
+    preserved as a hardlink generation under ``<dest>/.generations/``
+    (:func:`_snapshot_generation`) — the recovery margin for destruction the
+    in-run guards can't see. ``archive restore-drill`` proves the mirror (or a
+    generation) actually restores.
     """
     open_archive(home)
     from .truth import checkpoint as _checkpoint
@@ -549,16 +640,31 @@ def backup(
     vectors_cached = save_vectors_sidecar(paths.truth_dir)
     dest_path = Path(dest).expanduser()
     dest_path.mkdir(parents=True, exist_ok=True)
+    # A destination on the same filesystem as the truth dir protects against a
+    # bad write, not against the disk: one device failure (or a stolen machine)
+    # takes source, mirror, and every hardlink generation together. Report-only
+    # — a same-disk mirror still beats none — but the flag rides the result and
+    # the health record so `archive status` and anything watching health.json
+    # can keep saying so until a real second copy exists.
+    try:
+        same_device = os.stat(dest_path).st_dev == os.stat(paths.truth_dir).st_dev
+    except OSError:
+        same_device = None
     # Delete-sync only when the source looks like a real, checkpointed truth dir —
     # a mirror of an empty/foreign source must never strip a good backup — and only
     # when it verified clean (a sick source mirrors additively; see docstring).
     delete = (paths.truth_dir / "manifest.json").exists() and verify_ok
+    # Preserve the destination's pre-run state as a hardlink generation BEFORE
+    # the mirror overwrites it — the recovery margin for anything the guards
+    # can't see (same-size corruption, a mistaken --allow-shrink, a bad repair).
+    generations = _snapshot_generation(dest_path)
     with _try_rebalance_lock() as held:
         # If a rebalance sweep is mid-flight, mirror additively (no deletions):
         # copies of both layouts are safe; stale-path deletion waits for the next run.
         result = _mirror_dir(
             paths.truth_dir, dest_path, delete=delete and held, allow_shrink=allow_shrink
         )
+    result.update(generations)
 
     # Structural completeness: every source .jsonl must exist at the destination,
     # at ≥ its size at copy time (append-only files may have grown since).
@@ -585,14 +691,312 @@ def backup(
         "verify_ok": verify_ok,
         "mirror_complete": result["mirror_complete"],
         "files_copied": result["files_copied"],
+        "same_device": same_device,
     })
     return {
         "truth_dir": str(paths.truth_dir),
         "dest": str(dest_path),
         "vectors_cached": vectors_cached,
         "verify_ok": verify_ok,
+        "same_device": same_device,
         **result,
     }
+
+
+def restore_drill(
+    dest: str, *, home: Optional[str] = None, keep_home: bool = False
+) -> dict:
+    """Prove the backup actually restores: rebuild a full index from the mirror
+    in a throwaway home and check what materialized against the mirror's own scan.
+
+    ``verify --backup`` parses and counts the mirror; this is the missing last
+    step — an end-to-end rehearsal of the recovery path (copy the truth dir,
+    ``reindex`` from it: schema, per-thread load, kg replay, FTS, the vector
+    sidecar restore, quick_check). ``ok`` means the mirror parsed clean, the
+    rebuilt index materialized exactly the mirror's effective counts, the
+    restored archive covers the live one (``coverage`` = rebuilt events / live
+    events ≥ 0.98 — the mirror is minutes old when the scheduled drill runs, so
+    materially lower means the backup restores to less than the archive it is
+    supposed to protect), and a smoke pass (:func:`_drill_smoke`) proved the
+    rebuilt archive actually *reads and searches*, not just materializes.
+    Heavy (a full index build) — sized for the nightly 04:00 window, where
+    ``archive nightly`` runs it after every backup.
+
+    The drill home is a temp directory (``keep_home=True`` keeps it for
+    inspection, e.g. to point a reader at the restored index); the live archive
+    is reopened before returning, and the outcome lands in ``health.json``
+    (``restore_drill_last``) so a drill that stops running looks stale."""
+    import shutil
+    import tempfile
+    import time
+
+    paths = open_archive(home)
+    from .truth import scan_truth_counts
+
+    dest_path = Path(dest).expanduser()
+    if not (dest_path / "threads").exists():
+        return {"dest": str(dest_path), "ok": False, "error": "not a truth mirror"}
+    live_home = str(paths.home)
+    started = time.monotonic()
+    from sqlalchemy import func, select
+
+    from .store import Event, get_session
+
+    with get_session() as s:
+        live_events = s.execute(select(func.count()).select_from(Event)).scalar() or 0
+    scan = scan_truth_counts(truth_dir=dest_path)
+    result: dict = {"dest": str(dest_path), "mirror": scan, "live_events": int(live_events)}
+    drill_home = Path(tempfile.mkdtemp(prefix="thread-archive-restore-drill-"))
+    try:
+        # The generations subtree and any half-published mirror temp files are
+        # destination bookkeeping, not truth — the drill restores the mirror.
+        shutil.copytree(
+            dest_path, drill_home / "truth",
+            ignore=shutil.ignore_patterns(_GENERATIONS_SUBDIR, ".*.tmp-*"),
+        )
+        open_archive(str(drill_home))
+        from .truth import reindex as _reindex
+
+        try:
+            counts = _reindex()
+        except RuntimeError as e:  # a refused/failed rebuild IS the drill's finding
+            result.update({"ok": False, "error": str(e)})
+            counts = None
+        if counts is not None:
+            result["rebuilt"] = counts
+            result["coverage"] = round(counts["events"] / (live_events or 1), 6)
+            result["smoke"] = _drill_smoke(
+                str(drill_home), expect_content=counts["events"] > 0
+            )
+            result["ok"] = (
+                scan["parse_errors"] == 0
+                and counts["events"] == scan["events_effective"]
+                and counts["threads"] == scan["threads"]
+                and result["coverage"] >= 0.98
+                and result["smoke"]["ok"]
+            )
+    finally:
+        close()
+        if keep_home:
+            result["drill_home"] = str(drill_home)
+        else:
+            shutil.rmtree(drill_home, ignore_errors=True)
+        open_archive(live_home)
+    result["seconds"] = round(time.monotonic() - started, 1)
+    _record_health("restore_drill_last", {
+        "dest": str(dest_path),
+        "ok": bool(result.get("ok")),
+        "events": scan["events_effective"],
+        "coverage": result.get("coverage"),
+        "seconds": result["seconds"],
+    })
+    return result
+
+
+# Age gates for the escalated verify tiers `nightly` folds in on top of its
+# nightly backup + shallow verify + restore drill.
+_DEEP_EVERY_DAYS = 7
+_HASHES_EVERY_DAYS = 30
+
+
+def _health_is_due(key: str, every_days: float) -> bool:
+    """True when health record ``key`` is missing, unparseable, stale, or was
+    not ok — the age gate that replaces weekday/day-of-month schedule math: a
+    missed (machine off) or failed escalated pass makes the *next* nightly run
+    pick it up, instead of waiting for the calendar to come around again."""
+    from datetime import datetime, timezone
+
+    rec = _read_health().get(key)
+    try:
+        at = datetime.fromisoformat(rec["at"])
+    except (TypeError, KeyError, ValueError):
+        return True
+    if not rec.get("ok"):
+        return True
+    if at.tzinfo is None:
+        at = at.replace(tzinfo=timezone.utc)
+    return (datetime.now(timezone.utc) - at).total_seconds() >= every_days * 86400
+
+
+def _notify(url: str, message: str) -> Optional[str]:
+    """POST a notification (lab's ``/api/notify`` shape: ``{title, message}``).
+    Fail-soft — returns an error string instead of raising: health.json and the
+    job log are the durable record; the push is best-effort."""
+    import urllib.request
+
+    body = json.dumps({"title": "thread-archive", "message": message}).encode()
+    req = urllib.request.Request(
+        url, data=body, headers={"Content-Type": "application/json"}
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=5):
+            return None
+    except Exception as e:
+        return f"{type(e).__name__}: {e}"
+
+
+def nightly(
+    dest: str,
+    *,
+    home: Optional[str] = None,
+    notify_url: Optional[str] = None,
+    allow_shrink: bool = False,
+    drill: bool = True,
+) -> dict:
+    """The scheduled protection pipeline, as one command: ``backup`` → ``verify``
+    (with age-gated escalation) → ``restore_drill`` — every night.
+
+    Replaces a shell chain of the three commands. The differences that matter:
+
+    - **Every stage runs** (no ``&&`` short-circuit): a failed backup must not
+      also cost the night's integrity check and drill — each stage's outcome is
+      recorded separately (its own health.json record plus ``nightly_last``),
+      so an alert can say *which* stage broke while the others' green stays
+      visible.
+    - **Escalation is age-gated, not calendar-gated**: the deep verify (+ the
+      mirror parse-scan) folds in when ``verify_deep_last`` is missing, older
+      than ``_DEEP_EVERY_DAYS``, or failed; ``--hashes`` likewise on
+      ``_HASHES_EVERY_DAYS``. A machine that was off on the scheduled day runs
+      the escalated pass on its next nightly instead of a month later.
+    - **The drill is nightly.** The restore path is code and the code changes
+      daily; a restore-path regression must surface the next morning, not up
+      to a month later. ~10 min of nice'd 4 a.m. work at current size.
+    - **Failure notifies** (``notify_url``, lab's ``/api/notify`` shape) with
+      the failed stage names. The "never ran at all" case is the monitor's to
+      catch, from the staleness of the health.json records this writes.
+
+    Returns per-stage results plus ``ok`` / ``failed_stages``.
+    """
+    open_archive(home)
+    failed: list[str] = []
+    result: dict = {"dest": str(Path(dest).expanduser())}
+
+    try:
+        b = backup(dest, home=home, allow_shrink=allow_shrink)
+        backup_ok = bool(
+            b["verify_ok"] and b["mirror_complete"] and not b["deletions_skipped"]
+        )
+    except Exception as e:
+        b, backup_ok = {"error": f"{type(e).__name__}: {e}"}, False
+    result["backup"] = b
+    if not backup_ok:
+        failed.append("backup")
+
+    deep_due = _health_is_due("verify_deep_last", _DEEP_EVERY_DAYS)
+    hashes_due = _health_is_due("verify_hashes_last", _HASHES_EVERY_DAYS)
+    result["escalations"] = {"deep": deep_due, "hashes": hashes_due}
+    try:
+        v = verify(
+            home=home, deep=deep_due, hashes=hashes_due,
+            backup=str(dest) if deep_due else None,
+        )
+        verify_ok = bool(v["ok"])
+    except Exception as e:
+        v, verify_ok = {"error": f"{type(e).__name__}: {e}"}, False
+    result["verify"] = v
+    if not verify_ok:
+        failed.append("verify")
+
+    if drill:
+        try:
+            d = restore_drill(dest, home=home)
+            drill_ok = bool(d.get("ok"))
+        except Exception as e:
+            d, drill_ok = {"error": f"{type(e).__name__}: {e}"}, False
+        result["drill"] = d
+        if not drill_ok:
+            failed.append("restore-drill")
+
+    result["ok"] = not failed
+    result["failed_stages"] = failed
+    _record_health("nightly_last", {
+        "dest": result["dest"],
+        "ok": result["ok"],
+        "failed_stages": failed,
+        "deep": deep_due,
+        "hashes": hashes_due,
+        "drill": drill,
+    })
+    # Family-monitor heartbeat: thread-monitor freshness-checks periodic jobs
+    # via ~/.thread/logs (the shared heartbeat ground — it never reads sibling
+    # products' private stores, so health.json alone is invisible to it).
+    # Stamped on every completion whatever the outcome: mtime staleness means
+    # "the job stopped running," the content carries how the last run went.
+    # Fail-soft, and skipped entirely when the dir doesn't exist (an install
+    # outside the thread family has no monitor to feed). The env override
+    # exists so tests never stamp the real box's heartbeat.
+    hb_dir = Path(
+        os.environ.get("THREAD_ARCHIVE_HEARTBEAT_DIR")
+        or Path.home() / ".thread" / "logs"
+    )
+    if hb_dir.is_dir():
+        try:
+            from datetime import datetime, timezone
+
+            (hb_dir / "archive-nightly.heartbeat").write_text(
+                json.dumps({
+                    "at": datetime.now(timezone.utc).isoformat(),
+                    "ok": result["ok"],
+                    "failed_stages": failed,
+                    "dest": result["dest"],
+                }) + "\n",
+                encoding="utf-8",
+            )
+        except OSError:
+            pass
+    if failed and notify_url:
+        result["notify_error"] = _notify(
+            notify_url,
+            f"nightly backup pipeline FAILED at: {', '.join(failed)} — "
+            "see `archive status`, health.json, and ~/.thread/archive/logs/backup-*.log",
+        )
+    return result
+
+
+def _drill_smoke(home: str, *, expect_content: bool) -> dict:
+    """Exercise the restored archive the way a reader would — the last gap
+    between "the index materialized" and "the archive is usable." Reads the
+    newest indexed thread and searches for a token drawn from the FTS shadow's
+    own stored content (the exact corpus ``event_search`` matches against, so a
+    hit is guaranteed when the search surface works). A rebuilt index whose
+    read path or search surface is broken must fail the drill here, not on the
+    first real restore. Runs against the drill home while it is still open."""
+    import re as _re
+
+    from sqlalchemy import text as _sa_text
+
+    from .store import get_session as _get_session
+
+    out: dict = {"ok": not expect_content, "read_ok": False, "search_ok": False}
+    if not expect_content:
+        return out
+    try:
+        with _get_session() as s:
+            rows = s.execute(_sa_text(
+                "SELECT thread_id, content FROM events_fts "
+                "WHERE content != '' ORDER BY event_id DESC LIMIT 50"
+            )).fetchall()
+        tid = token = None
+        for thread_id, content in rows:
+            token = next(iter(_re.findall(r"[A-Za-z]{4,}", content or "")), None)
+            if token:
+                tid = thread_id
+                break
+        if tid is None:
+            # No sampleable token (empty FTS surface would already fail the
+            # count checks; all-non-Latin content just isn't sampleable here).
+            out["ok"] = True
+            out["skipped"] = "no sampleable token in the newest FTS rows"
+            return out
+        text = read_thread(tid, home=home, mode="chat", limit=20)
+        out["read_ok"] = bool(text and text.strip())
+        out["token"] = token
+        out["search_ok"] = bool(search(token, home=home, limit=5, rerank=False))
+        out["ok"] = out["read_ok"] and out["search_ok"]
+    except Exception as e:  # a crash in the read/search path IS the finding
+        out["error"] = f"{type(e).__name__}: {e}"
+        out["ok"] = False
+    return out
 
 
 def verify(
@@ -647,10 +1051,17 @@ def verify(
     point-in-time copy) and reports its counts against the live ones. The backup
     check fails ``ok`` only on parse errors in the mirror; a lower effective count
     is expected staleness (the mirror ages between runs) and is reported as
-    ``coverage`` for trending.
+    ``coverage`` for trending. Combined with ``hashes``, the mirror gets the
+    content-level hash scan too — an unchanged destination file is never
+    re-copied, so rot at rest is otherwise invisible forever.
+    ``restore_drill`` is the step beyond this: actually rebuild an index from
+    the mirror.
 
     The SQLite file itself gets a ``PRAGMA quick_check`` — page-level index
     corruption is otherwise invisible until a query happens to touch a bad page.
+    On the ``hashes`` cadence this upgrades to the full ``integrity_check``,
+    which also verifies b-tree index content against the tables (the only check
+    that catches a corrupted index silently returning wrong query results).
     The index is rebuildable, so a failure here means ``archive reindex``, not
     data loss — but it must be *seen*.
 
@@ -683,10 +1094,14 @@ def verify(
         idx_events = s.execute(event_q).scalar() or 0
     drift_threads = int(idx_threads) - truth["threads"]
     drift_events = int(idx_events) - truth["events_effective"]
-    # Page-level self-check of the index file. quick_check reads every page but
-    # skips index-content verification — the cheap form; a torn page still shows.
+    # Self-check of the index file. The daily form is quick_check (reads every
+    # page but skips index-content verification — a torn page still shows); the
+    # ``hashes`` cadence upgrades to the full integrity_check, which also
+    # verifies b-tree index content against the tables — the only check that
+    # catches a corrupted index silently returning wrong query results.
+    check_pragma = "integrity_check(10)" if hashes else "quick_check(10)"
     with get_session() as s:
-        qc_rows = s.connection().connection.execute("PRAGMA quick_check(10)").fetchall()
+        qc_rows = s.connection().connection.execute(f"PRAGMA {check_pragma}").fetchall()
     quick_check = "ok" if [r[0] for r in qc_rows] == ["ok"] else "; ".join(
         str(r[0]) for r in qc_rows
     )
@@ -725,6 +1140,7 @@ def verify(
             "threads": int(idx_threads),
             "events": int(idx_events),
             "quick_check": quick_check,
+            "check": "integrity_check" if hashes else "quick_check",
         },
         "drift": {"threads": drift_threads, "events": drift_events},
         "fts": {
@@ -741,6 +1157,15 @@ def verify(
     if backup is not None:
         result["backup"] = _verify_backup(Path(backup).expanduser(), truth)
         result["ok"] = result["ok"] and result["backup"]["ok"]
+        if hashes and "scan" in result["backup"]:
+            # Content-level rot detection on the mirror too: an unchanged
+            # destination file is never re-copied (size+mtime skip), so silent
+            # corruption at rest would otherwise persist forever while the
+            # parse-and-count scan stays green. No watermark — the mirror is a
+            # point-in-time copy. Report-only, same as the live hashes pass.
+            result["backup"]["hashes"] = _hash_scan_truth_dir(
+                Path(backup).expanduser(), watermark=None
+            )
 
     # Record the outcome in the home's health file so `archive status` (and
     # anything watching it) can see when integrity was last checked and how it
@@ -755,6 +1180,13 @@ def verify(
         "drift_threads": drift_threads,
         "parse_errors": truth["parse_errors"],
     })
+    # The escalated tiers get their own records: ``verify_last`` is overwritten
+    # by every shallow run, so these are what age-gated schedulers (``nightly``)
+    # read to know when a deep / hashes pass last actually happened.
+    if deep:
+        _record_health("verify_deep_last", {"ok": bool(result["ok"])})
+    if hashes:
+        _record_health("verify_hashes_last", {"ok": bool(result["ok"])})
     return result
 
 
@@ -782,57 +1214,87 @@ def _verify_backup(dest: Path, live_truth: dict) -> dict:
     }
 
 
-def _verify_hashes(watermark: int) -> dict:
-    """Content-level self-validation: re-hash each stored payload against the
-    content hash embedded in its own ``dedup_key`` (its last ``:``-segment; see
-    ``thread_import.event_builder.compute_dedup_key``), on both the truth files
-    and the index. A mismatch means the payload changed since its key was
-    computed — corruption, or an in-place payload repair that didn't recompute
-    the key. Events with no dedup_key (or a key whose tail isn't a hash) are
-    skipped and counted."""
-    import json as _json
+def _hash_key_check(payload: object, dedup_key: str) -> Optional[bool]:
+    """True = the payload re-hashes to the content hash embedded in its own
+    ``dedup_key`` (the last ``:``-segment; see
+    ``thread_import.event_builder.compute_dedup_key``); False = mismatch;
+    None = the key carries no hash tail (nothing to validate against)."""
     import re as _re
 
     from thread_import.event_builder import compute_content_hash
 
-    from .store import get_session
-    from .truth.jsonl_log import THREADS_SUBDIR, _iter_jsonl, log_dir
+    if not _re.match(r"^[0-9a-f]{16}$", dedup_key.rsplit(":", 1)[-1]):
+        return None
+    if not isinstance(payload, dict):
+        return False
+    return compute_content_hash(payload) == dedup_key.rsplit(":", 1)[-1]
 
-    hex16 = _re.compile(r"^[0-9a-f]{16}$")
 
-    def _check(payload: dict, dedup_key: str) -> Optional[bool]:
-        """True = hash matches, False = mismatch, None = key has no hash tail."""
-        tail = dedup_key.rsplit(":", 1)[-1]
-        if not hex16.match(tail):
-            return None
-        return compute_content_hash(payload) == tail
+def _hash_scan_truth_dir(truth_dir: Path, watermark: Optional[int]) -> dict:
+    """Re-hash every event payload in a truth directory against its dedup_key's
+    embedded content hash. The scan half of ``verify --hashes``, reusable
+    against a backup mirror (``watermark=None`` — a point-in-time copy has no
+    in-flight ingest to bound out). ``no_key`` counts events with no dedup_key
+    at all: they carry nothing to validate against, so they are invisible to
+    this check — the count keeps that coverage boundary visible."""
+    from .truth.jsonl_log import THREADS_SUBDIR, _iter_jsonl
 
-    truth_checked = truth_mismatched = truth_skipped = 0
-    truth_sample: list[int] = []
-    threads_dir = log_dir() / THREADS_SUBDIR
+    checked = mismatched = skipped = no_key = 0
+    sample: list[int] = []
+    threads_dir = truth_dir / THREADS_SUBDIR
     if threads_dir.exists():
         for path in threads_dir.rglob("*.jsonl"):
             for rec in _iter_jsonl(path):
                 if rec.get("type", "event") != "event":
                     continue
                 ev_id, key = rec.get("id"), rec.get("dedup_key")
-                if ev_id is None or ev_id > watermark or not key:
+                if ev_id is None or (watermark is not None and ev_id > watermark):
                     continue
-                payload = rec.get("payload")
-                verdict = _check(payload, key) if isinstance(payload, dict) else False
+                if not key:
+                    no_key += 1
+                    continue
+                verdict = _hash_key_check(rec.get("payload"), key)
                 if verdict is None:
-                    truth_skipped += 1
+                    skipped += 1
                     continue
-                truth_checked += 1
+                checked += 1
                 if not verdict:
-                    truth_mismatched += 1
-                    if len(truth_sample) < 10:
-                        truth_sample.append(int(ev_id))
+                    mismatched += 1
+                    if len(sample) < 10:
+                        sample.append(int(ev_id))
+    return {
+        "checked": checked, "mismatched": mismatched,
+        "unhashed_keys": skipped, "no_key": no_key, "mismatch_sample": sample,
+    }
+
+
+def _verify_hashes(watermark: int) -> dict:
+    """Content-level self-validation: re-hash each stored payload against the
+    content hash embedded in its own ``dedup_key`` (its last ``:``-segment; see
+    ``thread_import.event_builder.compute_dedup_key``), on both the truth files
+    and the index. A mismatch means the payload changed since its key was
+    computed — corruption, or an in-place payload repair that didn't recompute
+    the key. Events with a key whose tail isn't a hash are skipped and counted
+    (``unhashed_keys``); events with no dedup_key at all are counted too
+    (``no_key``) — they have zero content self-validation, and the count keeps
+    that boundary visible."""
+    import json as _json
+
+    from .store import get_session
+    from .truth.jsonl_log import log_dir
+
+    _check = _hash_key_check
+
+    truth_scan = _hash_scan_truth_dir(log_dir(), watermark)
 
     index_checked = index_mismatched = index_skipped = 0
     index_sample: list[int] = []
     with get_session() as s:
         conn = s.connection().connection  # raw sqlite3 — stream, don't materialize
+        index_no_key = conn.execute(
+            "SELECT count(*) FROM events WHERE dedup_key IS NULL AND id <= ?",
+            (watermark,),
+        ).fetchone()[0]
         cur = conn.execute(
             "SELECT id, dedup_key, payload FROM events "
             "WHERE dedup_key IS NOT NULL AND id <= ?", (watermark,)
@@ -842,7 +1304,7 @@ def _verify_hashes(watermark: int) -> dict:
                 payload = _json.loads(payload_text)
             except (TypeError, ValueError):
                 payload = None
-            verdict = _check(payload, key) if isinstance(payload, dict) else False
+            verdict = _check(payload, key)
             if verdict is None:
                 index_skipped += 1
                 continue
@@ -853,35 +1315,39 @@ def _verify_hashes(watermark: int) -> dict:
                     index_sample.append(int(ev_id))
 
     result = {
-        "truth": {
-            "checked": truth_checked, "mismatched": truth_mismatched,
-            "unhashed_keys": truth_skipped, "mismatch_sample": truth_sample,
-        },
+        "truth": truth_scan,
         "index": {
             "checked": index_checked, "mismatched": index_mismatched,
-            "unhashed_keys": index_skipped, "mismatch_sample": index_sample,
+            "unhashed_keys": index_skipped, "no_key": int(index_no_key),
+            "mismatch_sample": index_sample,
         },
     }
     # The signal is the mismatch count *jumping* between runs, so persist this
     # run's counts in the manifest and surface the previous run's for comparison.
+    # Locked read-modify-write: a checkpoint stamping its own keys concurrently
+    # must not lose this baseline, nor vice versa.
     from datetime import datetime, timezone
 
-    from .truth.jsonl_log import _read_manifest, _write_manifest
+    from .truth.jsonl_log import update_manifest
 
-    m = _read_manifest(log_dir())
-    previous = m.get("hashes_baseline")
-    if previous is not None:
-        result["previous"] = previous
-        result["delta"] = {
-            "truth_mismatched": truth_mismatched - int(previous.get("truth_mismatched", 0)),
-            "index_mismatched": index_mismatched - int(previous.get("index_mismatched", 0)),
-        }
-    m["hashes_baseline"] = {
+    baseline = {
         "at": datetime.now(timezone.utc).isoformat(),
-        "truth_mismatched": truth_mismatched,
+        "truth_mismatched": truth_scan["mismatched"],
         "index_mismatched": index_mismatched,
     }
-    _write_manifest(log_dir(), m)
+    previous: dict = {}
+
+    def _stamp(m: dict) -> None:
+        previous.update(m.get("hashes_baseline") or {})
+        m["hashes_baseline"] = baseline
+
+    update_manifest(log_dir(), _stamp)
+    if previous:
+        result["previous"] = previous
+        result["delta"] = {
+            "truth_mismatched": truth_scan["mismatched"] - int(previous.get("truth_mismatched", 0)),
+            "index_mismatched": index_mismatched - int(previous.get("index_mismatched", 0)),
+        }
     return result
 
 
@@ -1176,6 +1642,8 @@ def status(*, home: Optional[str] = None) -> dict:
         "last_checkpoint_at": _read_manifest(paths.truth_dir).get("last_checkpoint_at"),
         "last_verify": health.get("verify_last"),
         "last_backup": health.get("backup_last"),
+        "last_restore_drill": health.get("restore_drill_last"),
+        "last_nightly": health.get("nightly_last"),
     }
 
 

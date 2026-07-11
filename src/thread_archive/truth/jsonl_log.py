@@ -200,6 +200,37 @@ def _write_manifest(d: Path, m: dict) -> None:
     _fsync_dir(d)  # the rename itself must survive power loss
 
 
+# Serializes manifest read-modify-write across processes. The manifest carries
+# keys owned by different writers (shard_depth: checkpoint/rebalance; hashes
+# baseline: verify), and concurrent whole-file replaces would lose whichever
+# writer published first. Leaf lock: mutators run pure, nothing else is
+# acquired while it is held, so it can nest inside any other lock safely.
+MANIFEST_LOCK_FILE = ".manifest.lock"
+
+
+def _manifest_lock_path() -> Path:
+    from ..config import resolve_paths
+
+    return resolve_paths().home / MANIFEST_LOCK_FILE
+
+
+def update_manifest(d: Path, mutate) -> dict:
+    """Atomically read-modify-write the manifest: ``mutate(m)`` edits the dict in
+    place under an exclusive flock, so no concurrent writer's keys are lost to a
+    stale read. Returns the manifest as written."""
+    path = _manifest_lock_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd = os.open(path, os.O_RDWR | os.O_CREAT, 0o644)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        m = _read_manifest(d)
+        mutate(m)
+        _write_manifest(d, m)
+        return m
+    finally:
+        os.close(fd)  # closing the fd releases the flock
+
+
 def _shard_depth(d: Path) -> int:
     return int(_read_manifest(d).get("shard_depth", 0))
 
@@ -849,14 +880,16 @@ def checkpoint(*, snapshots: bool = True) -> dict:
     # its record inline (``record_thread``); this pass is only the backstop.
     checkpoint_started_at = _now_iso()
     counts["threads_updated"] = _checkpoint_changed_threads(d, depth, m.get("last_checkpoint_at"))
-    # Re-read once more before writing: the backstop pass takes time, and the
-    # manifest is shared state (shard depth from a concurrent sweep, a verify
-    # run's hashes baseline). Mutate only this checkpoint's own keys on a fresh
-    # copy so a foreign key written mid-pass survives.
-    m = _read_manifest(d)
-    m["shard_depth"] = max(depth, int(m.get("shard_depth", 0)))
-    m["last_checkpoint_at"] = checkpoint_started_at
-    _write_manifest(d, m)
+    # Locked read-modify-write: the backstop pass takes time, and the manifest
+    # is shared state (shard depth from a concurrent sweep, a verify run's
+    # hashes baseline). Mutating only this checkpoint's own keys under the
+    # manifest lock means a foreign key written mid-pass survives.
+
+    def _stamp(m: dict) -> None:
+        m["shard_depth"] = max(depth, int(m.get("shard_depth", 0)))
+        m["last_checkpoint_at"] = checkpoint_started_at
+
+    update_manifest(d, _stamp)
     logger.info("jsonl_log checkpoint(snapshots=%s): %s", snapshots, counts)
     return counts
 
@@ -960,8 +993,10 @@ def _maybe_rebalance(d: Path, depth: int) -> int:
             depth = max(depth, int(m.get("shard_depth", 0)))  # fresh under the lock
             target = max(depth, _depth_for(n))
             if target > depth:
-                m["shard_depth"] = target
-                _write_manifest(d, m)  # durable BEFORE any file moves (see docstring)
+                # Locked RMW, durable BEFORE any file moves (see docstring).
+                update_manifest(d, lambda m: m.__setitem__(
+                    "shard_depth", max(target, int(m.get("shard_depth", 0)))
+                ))
             # List under the lock — a sweep that completed between the count above
             # and our acquisition has already re-homed what we would move again.
             misplaced: list[tuple[Path, Path]] = []
@@ -1899,11 +1934,11 @@ def _rebuild_truth_from_store_locked(d: Path) -> dict:
         _write_snapshot(d, name, model)
     _write_snapshot(d, "import_state", ImportState)  # cursors survive the re-emit too
 
-    # Read-modify-write: the re-emit owns the layout keys, not the whole
+    # Locked read-modify-write: the re-emit owns the layout keys, not the whole
     # manifest — a verify run's hashes baseline (or any future key) survives.
-    m = _read_manifest(d)
-    m.update({"version": 1, "shard_depth": depth, "last_checkpoint_at": _now_iso()})
-    _write_manifest(d, m)
+    update_manifest(d, lambda m: m.update(
+        {"version": 1, "shard_depth": depth, "last_checkpoint_at": _now_iso()}
+    ))
 
     # Remove stale copies of re-emitted threads left at another shard depth. Their
     # content was just fully re-emitted at ``depth``, so an old-layout copy is pure

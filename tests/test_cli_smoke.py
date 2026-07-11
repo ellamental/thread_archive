@@ -21,7 +21,7 @@ def test_all_subcommands_present() -> None:
     sub = next(a for a in parser._actions if hasattr(a, "choices") and a.choices)
     assert set(sub.choices) == {
         "import", "import-export", "watch", "search", "read", "reindex", "embed",
-        "status", "backup", "verify", "repair", "web",
+        "status", "backup", "verify", "repair", "restore-drill", "nightly", "web",
     }
 
 

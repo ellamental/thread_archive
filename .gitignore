@@ -28,5 +28,9 @@ __pycache__/
 # Private even after obfuscation — never commit it.
 tests/install/fixtures-real/
 
+# coverage data (pytest --cov; the CI pytest row reports coverage per run)
+/.coverage
+/.coverage.*
+
 # os
 .DS_Store

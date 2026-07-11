@@ -34,6 +34,9 @@ cwd = "frontend"
 
 [[suite]]
 name = "pytest"
-argv = ["{repo}/.venv/bin/pytest", "-q", "--tb=short", "-p", "no:cacheprovider"]
+# Coverage is measured, not gated: the term report rides every sweep's output so
+# blind spots stay visible, but only test failures turn the row red.
+argv = ["{repo}/.venv/bin/pytest", "-q", "--tb=short", "-p", "no:cacheprovider",
+        "--cov=src", "--cov-report=term"]
 # cwd omitted = repo root, so it resolves testpaths=["tests"] from pyproject.
 timeout = 1800
