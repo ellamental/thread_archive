@@ -1,5 +1,40 @@
 # Changelog
 
+## 2026-07-10 — retrieval review 2: chunked embeddings, drain pacing, scope widening, usage-mined golden set
+
+A second retrieval review pass. The ranking held up; the findings were semantic
+recall holes and freshness gaps.
+
+- **Long documents are chunked into the vector space.** One vector per
+  2048-char slice (up to 8 per doc), keyed `(event_id, content_type, chunk)`,
+  KNN max-pooled per document — previously a doc was one vector truncated at
+  the embed cap, leaving everything past 2048 chars (~10.7k user/text docs)
+  semantically invisible. `event_vectors` migrates in place (existing vectors
+  become chunk 0); the cohost's anti-join counts chunks, so formerly
+  truncation-embedded long docs re-enter as pending and top up on their own.
+  Pre-chunking vector sidecars still restore (as chunk 0).
+- **The embed cohost drains a backlog at poll cadence** instead of one batch
+  per `embed_interval` — a bulk write (summarizer backfill, re-embed) used to
+  drain at ~6k vectors/hour with the GPU idle; now it's minutes. The interval
+  still paces the idle probe.
+- **MCP `thread_search` auto-widens a dry default scope.** When no query term
+  lands in the top hit under user/title/summary, it retries once with
+  assistant text (where conclusions live) and prefixes a note — the retry the
+  quality-signal note used to ask of the agent, internalized. Explicit
+  `content_type` is never second-guessed.
+- **Ranking-signal honesty**: stopwords no longer count toward term density or
+  the K/N match-quality verdict (`quality=strong` was inflatable by
+  "how/did/the"); the cross-encoder gate now skips only *identifier-dominated*
+  queries, so a conceptual question that mentions an identifier still reranks;
+  the candidate pool floor rose 50→200 (bm25's top-50 boundary made
+  relevant-but-old hits for common terms unreachable).
+- **Golden set mined from real usage** (`scripts/golden_from_usage.py`):
+  archived `thread_search`→`thread_read` sequences are implicit relevance
+  judgments (a read counts only if its thread id appears in the search's own
+  result text). Written to `~/.thread/archive/golden-queries.jsonl` — home,
+  not repo, because the queries are real data. Feeds `retrieval_eval.py
+  --golden`.
+
 ## 2026-07-10 — retrieval review: thread-meta docs, canonical time bounds, recall fixes
 
 A retrieval-focused review pass (thread: this one) — the pipeline's architecture

@@ -2,9 +2,10 @@
 
 Two golden-set modes:
 
-- ``--golden golden.jsonl``: hand-curated pairs, one JSON object per line —
-  ``{"query": "...", "thread_id": N}`` (thread-level relevance) or
-  ``{"query": "...", "event_id": N}`` (event-level). Comments (# lines) allowed.
+- ``--golden golden.jsonl``: curated or usage-mined pairs, one JSON object per
+  line — ``{"query": "...", "thread_id": N}`` / ``{"query": "...",
+  "thread_ids": [N, ...]}`` (thread-level relevance, any listed thread counts)
+  or ``{"query": "...", "event_id": N}`` (event-level). Comments (#) allowed.
 - ``--auto-titles N``: a zero-curation protocol — sample N titled conversation
   threads, use each *title* as the query, and score whether the thread's own
   content ranks. Thread-meta docs (title/summary) are excluded from the searched
@@ -17,7 +18,10 @@ per query-shape (so a lexical regression can't hide behind semantic wins).
 Read-only. Run against the live archive:
 
     .venv/bin/python scripts/retrieval_eval.py --auto-titles 200
-    .venv/bin/python scripts/retrieval_eval.py --golden docs/golden-queries.jsonl
+    .venv/bin/python scripts/retrieval_eval.py --golden ~/.thread/archive/golden-queries.jsonl
+
+The golden set is mined from real usage by ``golden_from_usage.py`` (and lives in
+the archive home because its queries are real, sometimes personal, data).
 """
 
 from __future__ import annotations
@@ -51,8 +55,8 @@ def load_golden(path: str) -> list[dict]:
         if not line or line.startswith("#"):
             continue
         row = json.loads(line)
-        if "query" not in row or not ("thread_id" in row or "event_id" in row):
-            raise SystemExit(f"golden row needs 'query' and 'thread_id' or 'event_id': {row}")
+        if "query" not in row or not ("thread_id" in row or "thread_ids" in row or "event_id" in row):
+            raise SystemExit(f"golden row needs 'query' and 'thread_id(s)' or 'event_id': {row}")
         cases.append(row)
     return cases
 
@@ -98,12 +102,14 @@ def evaluate(cases: list[dict], *, limit: int, rerank, content_type) -> dict:
         )
         latencies.append(time.monotonic() - t0)
 
+        relevant_threads = set(case.get("thread_ids") or
+                               ([case["thread_id"]] if "thread_id" in case else []))
         rank = 0  # 0 = not found within limit
         for i, h in enumerate(hits, start=1):
             if "event_id" in case:
                 found = h["event_id"] == case["event_id"]
             else:
-                found = h["thread_id"] == case["thread_id"]
+                found = h["thread_id"] in relevant_threads
             if found:
                 rank = i
                 break

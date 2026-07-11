@@ -197,6 +197,23 @@ def test_watcher_embed_cohost_flags_default_on() -> None:
     assert off.embed_enabled is False
 
 
+def test_watcher_embed_backlog_drains_every_cycle() -> None:
+    """The idle probe waits out embed_interval, but a draining backlog (last pass
+    filled its batch) runs the cohost every poll cycle — a bulk write becomes
+    searchable in minutes, not hours."""
+    w = Watcher([], embed_interval=300.0)
+    assert w._backlog is False
+    # idle: not due until the interval elapses
+    assert w._embed_due(now=10.0, last_embed=5.0) is False
+    assert w._embed_due(now=310.0, last_embed=5.0) is True
+    # backlog: due immediately, interval ignored
+    w._backlog = True
+    assert w._embed_due(now=10.0, last_embed=5.0) is True
+    # nothing pending / cohost off: never due
+    w._embed_more = False
+    assert w._embed_due(now=10.0, last_embed=5.0) is False
+
+
 def test_watcher_available_filters_missing_sources(archive_home, tmp_path) -> None:
     projects = tmp_path / "projects"
     _write_cc(projects, "p", "s", [USER, ASSISTANT])

@@ -174,7 +174,11 @@ def search(
     # against, so the semantic arm and the weighted ranker both sit out.
     structural = startswith is not None or not (query or "").strip()
     is_count = output == "count"
-    over = max(limit, COUNT_FETCH_CAP) if is_count else max(limit * 5, 50)
+    # Candidate pool depth. 200 (not limit*5) because reachability dies at the pool
+    # boundary: for a high-frequency term over a ~1M-doc index, a relevant-but-old
+    # hit past bm25's top-N is unreachable no matter how the ranker weighs it. The
+    # pool is cheap (one indexed FTS scan + one matvec); ranking 200 is microseconds.
+    over = max(limit, COUNT_FETCH_CAP) if is_count else max(limit * 5, 200)
 
     terms = _rank.search_terms(query)
 

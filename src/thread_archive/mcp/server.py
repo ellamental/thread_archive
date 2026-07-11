@@ -23,6 +23,7 @@ from mcp.server.fastmcp import FastMCP
 
 from .. import api
 from ..retrieval import format_results, warm_models
+from ..retrieval.format import _query_terms, _term_hit_count
 
 mcp = FastMCP("thread-archive")
 
@@ -32,6 +33,25 @@ mcp = FastMCP("thread-archive")
 # content_type), and content_type='all' clears the filter to search everything.
 # Mirrors the archive backend's thread_search default.
 DEFAULT_SEARCH_CONTENT_TYPES = ("user", "title", "summary")
+
+# Where the default scope widens to when it comes up dry: assistant text is where
+# conclusions/decisions live (see thread_read's mode docs), so a query the asking
+# side can't answer gets one automatic retry against it. One retry, only on the
+# default scope, only when no query term landed — an explicit content_type is a
+# deliberate choice and is never second-guessed.
+WIDENED_SEARCH_CONTENT_TYPES = DEFAULT_SEARCH_CONTENT_TYPES + ("text",)
+
+
+def _default_scope_is_weak(hits: list[dict], query: str) -> bool:
+    """True when a default-scope result set warrants the one-shot widen to
+    assistant text: no hits at all, or no query term appears in the top hit
+    (nearest-neighbour guesses)."""
+    terms = _query_terms(query)
+    if not terms:
+        return False
+    if not hits:
+        return True
+    return _term_hit_count(hits[0].get("full_content") or hits[0].get("snippet") or "", terms) == 0
 
 
 @mcp.tool()
@@ -62,9 +82,11 @@ def thread_search(
     store rather than piling on synonyms.
 
     By default USER messages, thread titles, and stored thread summaries are
-    searched — the strongest signals of what a thread was about. Assistant text,
-    tool calls/results, and thinking are opt-in: pass ``content_type='all'`` to
-    search everything, or a specific ``content_type``
+    searched — the strongest signals of what a thread was about. When that scope
+    comes up dry (no query term in the top hit), the search retries once with
+    assistant text included and says so in the output. Assistant text,
+    tool calls/results, and thinking are otherwise opt-in: pass
+    ``content_type='all'`` to search everything, or a specific ``content_type``
     (text/thinking/tool/tool_result/...) to target one.
 
     Query grammar: natural language, "quoted phrases", boolean AND/OR/NOT,
@@ -97,24 +119,46 @@ def thread_search(
         content_types = list(DEFAULT_SEARCH_CONTENT_TYPES)
     exclude = [c.strip() for c in exclude_content_type.split(",") if c.strip()] if exclude_content_type else None
     sources = [s.strip() for s in source.split(",") if s.strip()] if source else None
-    hits = api.search(
-        query,
-        limit=limit,
-        thread_id=thread_id,
-        content_types=content_types,
-        exclude_content_types=exclude,
-        since=since,
-        until=until,
-        tool_name=tool_name,
-        source=sources,
-        startswith=startswith,
-        sort=sort,
-        output=output,
-        context_lines=context_lines,
-        context_events=context_events,
-        rerank=rerank,
-    )
-    return format_results(hits, query, output=output)
+
+    def _run(cts):
+        return api.search(
+            query,
+            limit=limit,
+            thread_id=thread_id,
+            content_types=cts,
+            exclude_content_types=exclude,
+            since=since,
+            until=until,
+            tool_name=tool_name,
+            source=sources,
+            startswith=startswith,
+            sort=sort,
+            output=output,
+            context_lines=context_lines,
+            context_events=context_events,
+            rerank=rerank,
+        )
+
+    hits = _run(content_types)
+
+    # One-shot scope widen: a default-scope search whose top hit contains no query
+    # term (or that found nothing) retries once with assistant text included —
+    # conclusions live there, and internalizing the retry saves the agent a
+    # round-trip the quality note would otherwise ask of it. Ranked/plain output
+    # only: structural shapes (browse/startswith/oldest/count/linkable) have no
+    # match signal to judge weakness by.
+    widened = False
+    ranked_shape = bool((query or "").strip()) and startswith is None and sort is None and output is None
+    if content_type is None and ranked_shape and _default_scope_is_weak(hits, query):
+        wide_hits = _run(list(WIDENED_SEARCH_CONTENT_TYPES))
+        if wide_hits and not _default_scope_is_weak(wide_hits, query):
+            hits, widened = wide_hits, True
+
+    rendered = format_results(hits, query, output=output)
+    if widened:
+        rendered = ("note: no keyword match in the default scope (user/title/summary) — "
+                    "results below include assistant text\n" + rendered)
+    return rendered
 
 
 @mcp.tool()

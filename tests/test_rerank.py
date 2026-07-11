@@ -35,15 +35,29 @@ def test_search_terms_quoted_phrase_is_one_term() -> None:
     assert "login flow" in terms and "auth" in terms
 
 
+def test_search_terms_drops_stopwords() -> None:
+    # Function words don't count toward density or the K/N quality verdict.
+    assert rank.search_terms("how did we fix the auth bug") == ["fix", "auth", "bug"]
+    # …but an all-stopword query keeps its terms (weak signal beats none)
+    assert rank.search_terms("what is this") == ["what", "is", "this"]
+    # quoted phrases survive even when made of stopwords
+    assert "what is" in rank.search_terms('"what is" auth')
+
+
 # ── should_rerank gate ────────────────────────────────────────────────────────
 def test_should_rerank_gates_to_conceptual_multiterm() -> None:
     assert rank.should_rerank("memory leak", ["memory", "leak"]) is True
     # single term — too little signal to re-rank
     assert rank.should_rerank("authentication", ["authentication"]) is False
-    # pipe-OR / quoted / code-identifier shapes the lexical arm already nails
+    # pipe-OR / quoted / identifier-dominated shapes the lexical arm already nails
     assert rank.should_rerank("memory | leak", ["memory", "leak"]) is False
     assert rank.should_rerank('"login flow"', ["login flow"]) is False
     assert rank.should_rerank("get_session pool", ["get_session", "pool"]) is False
+    # a conceptual question that merely *mentions* an identifier still reranks
+    assert rank.should_rerank(
+        "why thread_search misses old threads",
+        ["why", "thread_search", "misses", "old", "threads"],
+    ) is True
 
 
 # ── dedup ─────────────────────────────────────────────────────────────────────

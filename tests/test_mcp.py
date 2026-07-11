@@ -70,19 +70,36 @@ def test_mcp_search_new_filters(archive_home) -> None:
 
 def test_mcp_search_defaults_to_user_only(archive_home) -> None:
     """Bare thread_search scopes to USER messages; assistant text is opt-in via
-    content_type='all' (or the specific type). Mirrors the archive backend default."""
+    content_type='all' (or the specific type) — except the one-shot dry-scope
+    widen, covered by its own test. Mirrors the archive backend default."""
     f = archive_home / "sess.jsonl"
     _write_cc(f, [USER, ASSISTANT])  # USER: "hello mcp"; ASSISTANT: "hi from mcp"
     ta.import_path(f)
 
-    # default scope: the assistant's text is NOT returned
-    assert "hi from mcp" not in thread_search("from mcp")
+    # default scope answers the query with the user hit — assistant text stays out
+    assert "hi from mcp" not in thread_search("mcp")
     # 'all' clears the filter → assistant text now found
     assert "hi from mcp" in thread_search("from mcp", content_type="all")
     # an explicit type targets it directly
     assert "hi from mcp" in thread_search("from mcp", content_type="text")
     # the user message is always reachable under the default
     assert "hello mcp" in thread_search("hello mcp")
+
+
+def test_mcp_search_widens_to_text_when_default_scope_dry(archive_home) -> None:
+    """A default-scope search with no keyword match retries once with assistant
+    text included (and says so); an explicit content_type never widens."""
+    f = archive_home / "sess.jsonl"
+    _write_cc(f, [USER, ASSISTANT])  # USER: "hello mcp"; ASSISTANT: "hi from mcp"
+    ta.import_path(f)
+
+    # "hi" appears only in assistant text → default scope is dry → auto-widen
+    out = thread_search("hi")
+    assert "hi from mcp" in out
+    assert out.startswith("note: no keyword match in the default scope")
+    # an explicit scope is a deliberate choice — no widen, no note
+    narrow = thread_search("hi", content_type="user")
+    assert "hi from mcp" not in narrow and "note: no keyword match" not in narrow
 
 
 def test_mcp_search_rendering(archive_home) -> None:

@@ -58,10 +58,16 @@ class Watcher:
         # ``embed_batch`` so a backlog drains over cycles without stalling the loop,
         # and it no-ops without the [embeddings] extra. ``_embed_more`` starts True so
         # a pre-existing backlog drains on its own, then idles until new imports land.
+        # ``embed_interval`` paces the *idle probe*; while a backlog is draining
+        # (``_backlog`` — the last pass filled its batch) the cohost runs every poll
+        # cycle instead, so a bulk write (a summarizer backfill, a re-embed) is
+        # searchable in minutes, not hours. Each pass stays batch-bounded, so the
+        # shared ingest lock is never held long.
         self.embed_enabled = embed
         self.embed_interval = embed_interval
         self.embed_batch = embed_batch
         self._embed_more = True
+        self._backlog = False
         self._stop = False
 
     def poll_once(self) -> WatchResult:
@@ -103,6 +109,12 @@ class Watcher:
             logger.warning("watch: thread-meta index error: %s", e)
         logger.info("watch: maintenance %s", counts)
         return counts
+
+    def _embed_due(self, now: float, last_embed: float) -> bool:
+        """Cohost gate: something to embed, and either a draining backlog (run
+        every poll cycle) or the idle probe interval elapsed."""
+        return (self.embed_enabled and self._embed_more
+                and (self._backlog or (now - last_embed) >= self.embed_interval))
 
     def embed_pending(self) -> int:
         """Embed the freshest user/text events still missing a vector (bounded by
@@ -163,17 +175,18 @@ class Watcher:
                         last_maintenance = now
                         dirty = False
 
-                    # Vector cohost on the slow cadence: embed the freshest missing
-                    # vectors. Bounded per pass, so if the cap was hit there's likely
-                    # more — keep the flag set to drain again next cycle; clear it
-                    # once caught up so we idle.
-                    if (self.embed_enabled and self._embed_more
-                            and (now - last_embed) >= self.embed_interval):
+                    # Vector cohost: embed the freshest missing vectors, bounded per
+                    # pass. A filled batch means a backlog — drain again next poll
+                    # cycle rather than waiting out the idle interval; once a pass
+                    # comes back short, fall back to the slow probe cadence.
+                    if self._embed_due(now, last_embed):
                         try:
                             n = self.embed_pending()
-                            self._embed_more = n >= self.embed_batch
+                            self._backlog = n >= self.embed_batch
+                            self._embed_more = self._backlog
                         except Exception as e:  # noqa: BLE001 — embedding must not kill the loop
                             logger.warning("watch: embed error: %s", e)
+                            self._backlog = False
                             self._embed_more = False  # don't hot-loop a persistent failure
                         last_embed = now
 

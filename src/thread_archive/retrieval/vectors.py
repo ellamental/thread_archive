@@ -6,6 +6,14 @@ the vectors live in the archive SQLite DB beside the data. Vectors are float32 a
 unit-normalized, so cosine = dot product; at single-user scale the matrix loads once
 and a query is a single BLAS matvec (~ms).
 
+Long documents are **chunked**: a doc is embedded as one vector per
+:data:`CHUNK_CHARS`-char slice (up to :data:`MAX_CHUNKS`), keyed
+``(event_id, content_type, chunk)``, and the KNN max-pools per document — the
+best-matching chunk speaks for the doc. Without this, everything past the embed
+cap of a long message is semantically invisible (the embed provider truncates),
+and the vocab-mismatch queries the vector arm exists for are exactly the ones
+that can't fall back to keywords.
+
 Populated from the ``events_fts`` shadow's ``user`` / ``text`` / ``title`` /
 ``summary`` pools via the ``[embeddings]`` provider (:mod:`.embed`). Cached durably in a ``vectors.sqlite``
 sidecar so the hours-long embed survives ``rm index.db && reindex``. Degrades to
@@ -22,6 +30,7 @@ import numpy as np
 from sqlalchemy import text as sa_text
 
 from ..store import get_engine, get_session
+from .embed import EMBEDDING_CHAR_CAP
 from .fts import build_event_hit
 
 logger = logging.getLogger(__name__)
@@ -29,9 +38,29 @@ logger = logging.getLogger(__name__)
 _DIM = 768
 _CREATE_VEC = (
     "CREATE TABLE event_vectors ("
-    "event_id INTEGER NOT NULL, content_type TEXT NOT NULL, dim INTEGER NOT NULL, "
-    "vec BLOB NOT NULL, PRIMARY KEY (event_id, content_type))"
+    "event_id INTEGER NOT NULL, content_type TEXT NOT NULL, "
+    "chunk INTEGER NOT NULL DEFAULT 0, dim INTEGER NOT NULL, "
+    "vec BLOB NOT NULL, PRIMARY KEY (event_id, content_type, chunk))"
 )
+
+# Document chunking: one vector per CHUNK_CHARS-char slice, at most MAX_CHUNKS per
+# doc (16k chars — beyond that is tool-dump territory the embedded pools exclude
+# anyway). CHUNK_CHARS equals the embed provider's input cap so a chunk is
+# embedded whole, never re-truncated. The expected-chunk-count formula
+# ``min(MAX_CHUNKS, ceil(len/CHUNK_CHARS))`` is duplicated in SQL by the drain's
+# anti-join (:func:`index_events_local`) — the two MUST stay identical or the
+# cohost re-embeds the same docs forever.
+CHUNK_CHARS = EMBEDDING_CHAR_CAP
+MAX_CHUNKS = 8
+
+
+def _chunk(content: str) -> list[str]:
+    """Split ``content`` into the embed slices (non-overlapping, CHUNK_CHARS each,
+    capped at MAX_CHUNKS). Always at least one chunk for non-empty content."""
+    return [
+        content[i:i + CHUNK_CHARS]
+        for i in range(0, min(len(content), MAX_CHUNKS * CHUNK_CHARS), CHUNK_CHARS)
+    ] or [content]
 
 # Embedded content-type pools: user → default pool; text → scoped assistant pool;
 # title/summary → the thread-meta docs (thread-level aboutness).
@@ -56,7 +85,8 @@ def is_available() -> bool:
 
 
 def ensure_index() -> bool:
-    """Create the ``event_vectors`` table if absent. Idempotent."""
+    """Create the ``event_vectors`` table if absent; migrate a pre-chunking table
+    (no ``chunk`` column) in place, existing vectors becoming chunk 0. Idempotent."""
     if not is_available():
         return False
     with get_session() as s:
@@ -66,6 +96,21 @@ def ensure_index() -> bool:
         if not exists:
             s.execute(sa_text(_CREATE_VEC))
             s.commit()
+            return True
+        cols = {r[1] for r in s.execute(sa_text("PRAGMA table_info(event_vectors)"))}
+        if "chunk" not in cols:
+            # SQLite can't extend a PRIMARY KEY in place: rebuild the table around
+            # the chunked key, carrying every existing vector over as chunk 0.
+            s.execute(sa_text("ALTER TABLE event_vectors RENAME TO event_vectors_prechunk"))
+            s.execute(sa_text(_CREATE_VEC))
+            s.execute(sa_text(
+                "INSERT INTO event_vectors (event_id, content_type, chunk, dim, vec) "
+                "SELECT event_id, content_type, 0, dim, vec FROM event_vectors_prechunk"
+            ))
+            s.execute(sa_text("DROP TABLE event_vectors_prechunk"))
+            s.commit()
+            _bump_version()
+            logger.info("vectors: migrated event_vectors to the chunked schema")
     return True
 
 
@@ -85,29 +130,58 @@ def _scope_content_types(content_types: Optional[list[str]]) -> Optional[list[st
 
 
 def index_vectors(records) -> int:
-    """Upsert ``(event_id, content_type, vector)`` rows into ``event_vectors``."""
+    """Upsert vector rows into ``event_vectors``. Each record is
+    ``(event_id, content_type, vector)`` (chunk 0) or
+    ``(event_id, content_type, chunk, vector)``."""
     if not is_available():
         return 0
     ensure_index()
     rows = []
-    for event_id, content_type, vec in records:
+    for rec in records:
+        event_id, content_type, chunk, vec = rec if len(rec) == 4 else (rec[0], rec[1], 0, rec[2])
         arr = _normalize(np.asarray(vec, dtype=np.float32))
         if arr.shape[0] != _DIM:
             logger.warning("vectors: skipping event %s — dim %d != %d", event_id, arr.shape[0], _DIM)
             continue
-        rows.append({"eid": int(event_id), "ct": str(content_type),
+        rows.append({"eid": int(event_id), "ct": str(content_type), "chunk": int(chunk),
                      "dim": int(arr.shape[0]), "vec": arr.tobytes()})
     if not rows:
         return 0
     with get_session() as s:
         s.execute(sa_text(
-            "INSERT INTO event_vectors (event_id, content_type, dim, vec) "
-            "VALUES (:eid, :ct, :dim, :vec) "
-            "ON CONFLICT (event_id, content_type) DO UPDATE SET dim = excluded.dim, vec = excluded.vec"
+            "INSERT INTO event_vectors (event_id, content_type, chunk, dim, vec) "
+            "VALUES (:eid, :ct, :chunk, :dim, :vec) "
+            "ON CONFLICT (event_id, content_type, chunk) "
+            "DO UPDATE SET dim = excluded.dim, vec = excluded.vec"
         ), rows)
         s.commit()
     _bump_version()
     return len(rows)
+
+
+def _write_doc_vectors(docs: list[tuple[int, str, list]]) -> None:
+    """Replace each doc's vector set: delete every chunk row for the
+    ``(event_id, content_type)``, insert the new chunk vectors. One transaction —
+    a doc is never left half-chunked."""
+    with get_session() as s:
+        for eid, ct, vecs in docs:
+            s.execute(
+                sa_text("DELETE FROM event_vectors WHERE event_id = :eid AND content_type = :ct"),
+                {"eid": int(eid), "ct": str(ct)},
+            )
+            for chunk_idx, vec in enumerate(vecs):
+                arr = _normalize(np.asarray(vec, dtype=np.float32))
+                if arr.shape[0] != _DIM:
+                    logger.warning("vectors: skipping event %s — dim %d != %d",
+                                   eid, arr.shape[0], _DIM)
+                    continue
+                s.execute(sa_text(
+                    "INSERT INTO event_vectors (event_id, content_type, chunk, dim, vec) "
+                    "VALUES (:eid, :ct, :chunk, :dim, :vec)"
+                ), {"eid": int(eid), "ct": str(ct), "chunk": chunk_idx,
+                    "dim": int(arr.shape[0]), "vec": arr.tobytes()})
+        s.commit()
+    _bump_version()
 
 
 def index_events_local(
@@ -116,14 +190,17 @@ def index_events_local(
     max_events: int | None = None,
     newest_first: bool = False,
 ) -> int:
-    """Compute event vectors in-process from the FTS shadow (user/text/title/summary pools).
+    """Compute event vectors in-process from the FTS shadow (user/text/title/summary
+    pools), one vector per :data:`CHUNK_CHARS` chunk (long docs get several).
 
-    ``rebuild=False`` only embeds events missing a vector (anti-join — safe to
-    re-run). ``max_events`` caps how many events a single call embeds — the live
-    cohost bounds each pass so a backlog drains over cycles without stalling ingest;
-    ``newest_first`` drains the freshest gap first, which is what keeps recent-thread
-    *semantic* recall current (the lexical arm already covers fresh threads). No-op
-    (0) when the store isn't SQLite or the embed backend is absent.
+    ``rebuild=False`` only embeds docs with fewer vectors than their content needs
+    (anti-join on the chunk count — safe to re-run, and it picks up formerly
+    truncation-embedded long docs as pending). ``max_events`` caps how many *docs*
+    a single call embeds — the live cohost bounds each pass so a backlog drains
+    over cycles without stalling ingest; ``newest_first`` drains the freshest gap
+    first, which is what keeps recent-thread *semantic* recall current (the lexical
+    arm already covers fresh threads). Returns docs embedded. No-op (0) when the
+    store isn't SQLite or the embed backend is absent.
     """
     if not is_available():
         return 0
@@ -135,30 +212,61 @@ def index_events_local(
         return 0
     ensure_index()
 
-    missing = "" if rebuild else " AND v.event_id IS NULL"
+    # Pending = docs whose stored vector count is short of what their length needs.
+    # The SQL mirrors _chunk()'s count — min(MAX_CHUNKS, ceil(len/CHUNK_CHARS)) —
+    # over the same concatenated content; if the two formulas diverge the cohost
+    # loops on the same docs forever, so change them together.
+    missing = ("" if rebuild else
+               " HAVING coalesce(v.nv, 0) < min(:mx, "
+               "(length(group_concat(f.content, ' ')) + :cc - 1) / :cc)")
     order = "DESC" if newest_first else "ASC"
     limit = " LIMIT :cap" if max_events else ""
     sql = sa_text(
         "SELECT f.event_id AS eid, f.content_type AS ct, group_concat(f.content, ' ') AS content "
         "FROM events_fts f "
-        "LEFT JOIN event_vectors v ON v.event_id = f.event_id AND v.content_type = f.content_type "
+        "LEFT JOIN (SELECT event_id, content_type, count(*) AS nv FROM event_vectors "
+        "           GROUP BY event_id, content_type) v "
+        "  ON v.event_id = f.event_id AND v.content_type = f.content_type "
         "WHERE f.content_type IN ('user', 'text', 'title', 'summary') "
         "AND f.content IS NOT NULL AND f.content != ''"
-        + missing +
-        f" GROUP BY f.event_id, f.content_type ORDER BY f.event_id {order}" + limit
+        f" GROUP BY f.event_id, f.content_type{missing}"
+        f" ORDER BY f.event_id {order}" + limit
     )
-    params = {"cap": int(max_events)} if max_events else {}
+    params: dict = {} if rebuild else {"mx": MAX_CHUNKS, "cc": CHUNK_CHARS}
+    if max_events:
+        params["cap"] = int(max_events)
     with get_session() as s:
         pending = [(r.eid, r.ct, r.content) for r in s.execute(sql, params)]
 
     total = 0
-    for start in range(0, len(pending), batch_size):
-        chunk = pending[start:start + batch_size]
-        vecs = embed_documents([c for _, _, c in chunk])
+    batch: list[tuple[int, str, list[str]]] = []
+    batch_chunks = 0
+
+    def _flush() -> bool:
+        nonlocal total, batch, batch_chunks
+        if not batch:
+            return True
+        texts = [t for _, _, chunks in batch for t in chunks]
+        vecs = embed_documents(texts)
         if not vecs:
             logger.warning("vectors.index_events_local: embed returned None — stopping at %d", total)
-            break
-        total += index_vectors((eid, ct, vec) for (eid, ct, _), vec in zip(chunk, vecs))
+            return False
+        docs, pos = [], 0
+        for eid, ct, chunks in batch:
+            docs.append((eid, ct, vecs[pos:pos + len(chunks)]))
+            pos += len(chunks)
+        _write_doc_vectors(docs)
+        total += len(docs)
+        batch, batch_chunks = [], 0
+        return True
+
+    for eid, ct, content in pending:
+        chunks = _chunk(content)
+        batch.append((eid, ct, chunks))
+        batch_chunks += len(chunks)
+        if batch_chunks >= batch_size and not _flush():
+            return total
+    _flush()
     return total
 
 
@@ -225,9 +333,13 @@ def load_vectors_sidecar(truth_dir, space_key: Optional[str] = None) -> int:
             if have != want:
                 logger.info("vector sidecar space %r != current %r — re-embedding", have, want)
                 return 0
+            # A pre-chunking sidecar has no ``chunk`` column; its rows restore as
+            # chunk 0 (the cohost then tops up long docs' remaining chunks).
+            side_cols = {r[1] for r in conn.exec_driver_sql("PRAGMA side.table_info(event_vectors)")}
+            chunk_col = "chunk" if "chunk" in side_cols else "0"
             conn.exec_driver_sql(
-                "INSERT OR IGNORE INTO event_vectors (event_id, content_type, dim, vec) "
-                "SELECT event_id, content_type, dim, vec FROM side.event_vectors"
+                "INSERT OR IGNORE INTO event_vectors (event_id, content_type, chunk, dim, vec) "
+                f"SELECT event_id, content_type, {chunk_col}, dim, vec FROM side.event_vectors"
             )
             n = conn.exec_driver_sql("SELECT count(*) FROM event_vectors").scalar()
         finally:
@@ -281,10 +393,12 @@ def _load_matrix(cts: tuple[str, ...]):
 
 
 def _knn(qvec, cts: tuple[str, ...], cand: int, allowed_ids=None) -> list[tuple[int, str, float]]:
-    """Brute-force cosine KNN over the cached matrix. ``allowed_ids`` (an int64
-    ndarray) restricts candidates to those event ids *before* the top-k cut, so a
-    scoped search (one thread, a time window) ranks within its scope instead of
-    hoping the scope survives a corpus-wide top-k."""
+    """Brute-force cosine KNN over the cached matrix, **max-pooled per document**:
+    the matrix holds one row per chunk, and a doc's score is its best chunk's, so
+    a long message matches on whichever slice is relevant. ``allowed_ids`` (an
+    int64 ndarray) restricts candidates to those event ids *before* the top-k cut,
+    so a scoped search (one thread, a time window) ranks within its scope instead
+    of hoping the scope survives a corpus-wide top-k."""
     ids, ct_arr, mat = _load_matrix(cts)
     n = len(ids)
     if n == 0:
@@ -303,7 +417,15 @@ def _knn(qvec, cts: tuple[str, ...], cand: int, allowed_ids=None) -> list[tuple[
         k = min(cand, n)
         pool = np.argpartition(-sims, k - 1)[:k] if k < n else np.arange(n)
     order = sorted(pool, key=lambda i: (-float(sims[i]), int(ids[i])))
-    return [(int(ids[i]), str(ct_arr[i]), float(sims[i])) for i in order]
+    out: list[tuple[int, str, float]] = []
+    seen: set[tuple[int, str]] = set()
+    for i in order:
+        key = (int(ids[i]), str(ct_arr[i]))
+        if key in seen:  # a lower-scoring chunk of a doc already pooled
+            continue
+        seen.add(key)
+        out.append((key[0], key[1], float(sims[i])))
+    return out
 
 
 def _in_clause(column: str, values: list, prefix: str, params: dict, negate: bool) -> str:

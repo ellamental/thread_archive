@@ -11,7 +11,7 @@ The production ranker. The federation produces a pool; this turns it into an ord
   3. :func:`should_rerank` gates the latency-bearing cross-encoder head re-rank
      (:mod:`.rerank`) to *conceptual* multi-term queries — the vocab-mismatch ones
      where the bi-encoder ranks the target mid-list. Keyword shapes (OR / quoted /
-     code-identifier / single-term) the lexical arm already nails are skipped.
+     identifier-dominated / single-term) the lexical arm already nails are skipped.
 
 The weights are the production values, with their evidence: recency 1.0 (the first
 call made on production click data — the corpus skews to OLD threads, so a recency
@@ -56,6 +56,18 @@ _SEARCH_RECENCY_WEIGHT = 1.0
 # the in-process re-rank stage quick.
 RERANK_POOL = 24
 
+# Function words carry no relevance signal, so they're dropped from the *ranking*
+# term set (density, phrase, the K/N match-quality verdict) — otherwise "how did we
+# fix the auth bug" scores hits on "how/did/we/the" and the quality header inflates.
+# The FTS MATCH itself is untouched (bm25 already discounts common terms); this only
+# shapes what the scorer and the trust signal count. An all-stopword query keeps its
+# terms — better a weak signal than none.
+_STOPWORDS = frozenset(
+    "a an and are as at be but by did do does for from had has have how i in is it "
+    "its me my of on or our so that the their then there these this to was we "
+    "were what when where which who why will with you your".split()
+)
+
 
 def recency_score(occurred_at, now: datetime | None = None) -> int:
     """0–20 exponential-decay recency score (half-life ~3 days). Datetime or ISO
@@ -81,10 +93,19 @@ def _parse_naive_dt(val) -> datetime | None:
         return None
 
 
+def _drop_stopwords(terms: list[str]) -> list[str]:
+    """Filter function words out of a ranking term set; keep the set intact when
+    filtering would empty it (an all-stopword query still needs *some* signal).
+    Multi-word phrase terms (from quoted spans) always survive."""
+    kept = [t for t in terms if " " in t or t not in _STOPWORDS]
+    return kept or terms
+
+
 def search_terms(query: str) -> list[str]:
     """Lowercased ranking terms for ``query`` — the term set the density/phrase
     scorer matches against. Identifier-style words (``help_think``) are preserved
-    intact; quoted spans become one phrase term each; AND/OR/NOT/pipe are dropped."""
+    intact; quoted spans become one phrase term each; AND/OR/NOT/pipe and
+    function words (:data:`_STOPWORDS`) are dropped."""
     if not query or not query.strip():
         return []
     if re.search(r'\b(AND|OR|NOT)\b|".*?"|\*$', query):
@@ -94,24 +115,31 @@ def search_terms(query: str) -> list[str]:
         terms = phrases + words
         if not terms:
             terms = [t.lower() for t in query.split() if t not in ("AND", "OR", "NOT")]
-        return terms
+        return _drop_stopwords(terms)
     q = re.sub(r"(?<=\w)-(?=\w)", " ", query)
     q = re.sub(r"[:\^()\[\]{}]", " ", q)
     q = re.sub(r"\s+", " ", q).strip()
-    return [t.lower() for t in q.split()]
+    return _drop_stopwords([t.lower() for t in q.split()])
+
+
+_IDENTIFIER_RE = re.compile(r"[_]|::|(?<=\w)\.(?=\w)")
 
 
 def should_rerank(query: str, terms: list[str]) -> bool:
     """Gate the cross-encoder re-rank to *conceptual* multi-term queries. Skip the
     keyword shapes the lexical arm already nails: pipe-OR, quoted exact phrases,
-    code identifiers (``_`` / ``::`` / dotted), and single-term queries. A false
-    positive only costs latency (the re-rank is fail-soft), never results."""
+    identifier-dominated queries, and single-term queries. A query that merely
+    *mentions* an identifier inside a conceptual question ("why thread_search
+    misses old threads") still reranks — only when identifier terms make up half
+    or more of the terms is the lexical arm trusted outright. A false positive
+    only costs latency (the re-rank is fail-soft), never results."""
     q = (query or "").strip()
     if "|" in q or '"' in q:
         return False
-    if re.search(r"[_]|::|(?<=\w)\.(?=\w)", q):
+    if len(terms) < 2:
         return False
-    return len(terms) >= 2
+    code_terms = sum(1 for t in terms if _IDENTIFIER_RE.search(t))
+    return code_terms * 2 < len(terms)
 
 
 def match_window(content: str, terms: list[str], chars: int) -> str:
