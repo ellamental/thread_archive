@@ -91,9 +91,9 @@ class Watcher:
         if self._errors_recorded_at is not None and now - self._errors_recorded_at < 60:
             return
         try:
-            from .._api import _record_health
+            from .._ops.health import record_health
 
-            _record_health("watch_errors_last", {
+            record_health("watch_errors_last", {
                 "count_since_start": self._errors_total,
                 "errors": errors[:5],
             })

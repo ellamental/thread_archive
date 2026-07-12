@@ -36,8 +36,8 @@ class text_default(expression.FunctionElement):
     def __init__(self, value: str, cast: str = "text"):
         self.value = value
         # `cast` is accepted for call-site parity with a `::text`-cast spelling;
-        # unused on SQLite.
-        self.cast = cast
+        # unused on SQLite (and not stored: it would shadow FunctionElement.cast()).
+        del cast
         super().__init__()
 
 

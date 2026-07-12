@@ -26,7 +26,7 @@ from __future__ import annotations
 import json
 
 from thread_archive import _api as ta
-from thread_archive._api import _GENERATIONS_SUBDIR
+from thread_archive._ops.backup import _GENERATIONS_SUBDIR
 from thread_archive._truth import jsonl_log, scan_truth_counts
 
 from .helpers import event_count, import_cc_session, one_thread_file
@@ -60,12 +60,12 @@ def test_backup_deletes_files_the_source_no_longer_has(archive_home, tmp_path) -
 
 
 def test_mirror_deletes_rehomed_twins_beyond_cap(archive_home, tmp_path, monkeypatch) -> None:
-    from thread_archive import _api as api
+    import thread_archive._ops.backup as ops_backup
 
     # Cap at zero: every non-twin deletion is skipped, so anything that DOES get
     # deleted went through the twin exemption.
-    monkeypatch.setattr(api, "_MIRROR_DELETE_FLOOR", 0)
-    monkeypatch.setattr(api, "_MIRROR_DELETE_MAX_FRACTION", 0.0)
+    monkeypatch.setattr(ops_backup, "_MIRROR_DELETE_FLOOR", 0)
+    monkeypatch.setattr(ops_backup, "_MIRROR_DELETE_MAX_FRACTION", 0.0)
 
     for name in ("one", "two"):
         import_cc_session(tmp_path, name=name)
@@ -97,11 +97,11 @@ def test_mirror_deletes_rehomed_twins_beyond_cap(archive_home, tmp_path, monkeyp
 
 
 def test_backup_cli_fails_on_skipped_deletions(archive_home, tmp_path, monkeypatch) -> None:
-    from thread_archive import _api as api
+    import thread_archive._ops.backup as ops_backup
     from thread_archive.cli import main
 
-    monkeypatch.setattr(api, "_MIRROR_DELETE_FLOOR", 0)
-    monkeypatch.setattr(api, "_MIRROR_DELETE_MAX_FRACTION", 0.0)
+    monkeypatch.setattr(ops_backup, "_MIRROR_DELETE_FLOOR", 0)
+    monkeypatch.setattr(ops_backup, "_MIRROR_DELETE_MAX_FRACTION", 0.0)
 
     import_cc_session(tmp_path)
     dest = tmp_path / "dest"

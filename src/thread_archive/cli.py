@@ -584,7 +584,8 @@ def build_parser() -> argparse.ArgumentParser:
     p_import.set_defaults(func=cmd_import)
 
     p_import_export = sub.add_parser(
-        "import-export", help="import a downloaded claude.ai / xAI account export (ZIP or dir)"
+        "import-export",
+        help="import a downloaded claude.ai / ChatGPT / xAI account export (ZIP or dir)",
     )
     _add_home_arg(p_import_export)
     p_import_export.add_argument("path", help="export ZIP file or unzipped directory")

@@ -20,22 +20,24 @@ No backend, no peer mesh, no health server — just change-detect → import.
 The plist runs `archive watch --web`, so this always-on process also **cohosts the
 read viewer** (http://127.0.0.1:8787) in the same process — giving the viewer and
 the archive-link endpoint a persistent URL without a second daemon. The web reader
-runs concurrently with the watcher's writes; WAL makes that safe (`store/_base.py`).
+runs concurrently with the watcher's writes; WAL makes that safe (`_store/_base.py`).
 
 ## What it watches
 
-The seven providers with importers, at their default home-dir locations:
+The nine providers with importers, at their default home-dir locations:
 
-| provider     | store                                                        |
-|--------------|--------------------------------------------------------------|
-| claude-code  | `~/.claude*/projects/**/*.jsonl` (+ `*/subagents/*.jsonl`)   |
-| codex        | `~/.codex/sessions/**/*.jsonl`                               |
-| grok         | `~/.grok/sessions/**/chat_history.jsonl`                     |
-| antigravity  | `~/.gemini/antigravity-cli/brain/**/transcript.jsonl`       |
-| cloth        | `~/.cloth/threads/*.jsonl` (Claude-Code-shaped harness)      |
-| cursor       | Cursor `state.vscdb` (SQLite, mtime-gated)                   |
-| opencode     | `~/.local/share/opencode/opencode.db` (SQLite, WAL-gated)    |
-| cc-exthost   | VS Code exthost log — recovers lost Claude Code steering msgs |
+| provider       | store                                                        |
+|----------------|--------------------------------------------------------------|
+| claude-code    | `~/.claude*/projects/**/*.jsonl` (+ `*/subagents/*.jsonl`)   |
+| codex          | `~/.codex/sessions/**/*.jsonl`                               |
+| grok           | `~/.grok/sessions/**/chat_history.jsonl`                     |
+| antigravity    | `~/.gemini/antigravity-cli/brain/**/transcript.jsonl`       |
+| cloth          | `~/.cloth/threads/*.jsonl` (Claude-Code-shaped harness)      |
+| cursor         | Cursor `state.vscdb` (SQLite, mtime-gated)                   |
+| opencode       | `~/.local/share/opencode/opencode.db` (SQLite, WAL-gated)    |
+| cowork         | `~/Library/Application Support/Claude/local-agent-mode-sessions/` |
+| claude-science | `~/.claude-science/orgs/*/operon-cli.db` (SQLite, WAL-gated) |
+| cc-exthost     | VS Code exthost log — recovers lost Claude Code steering msgs |
 
 A `(mtime_ns, size)` fingerprint skips unchanged files, so an idle system is a
 no-op. Thread identity is `(source, source_id)` and re-reads are idempotent on

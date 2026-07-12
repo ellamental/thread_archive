@@ -47,7 +47,7 @@ dependencies = [
 # (pulls torch); the base install is lexical-only. einops is needed by nomic's
 # trust_remote_code model.
 embeddings = ["sentence-transformers>=3.0", "einops>=0.7"]
-dev = ["pytest>=8.0", "pytest-cov>=5.0", "ruff>=0.6", "build>=1.2"]
+dev = ["pytest>=8.0", "pytest-cov>=5.0", "ruff>=0.6", "mypy>=1.11", "build>=1.2"]
 
 [project.urls]
 Repository = "https://github.com/ellamental/thread_archive"
@@ -73,14 +73,14 @@ path = "src/thread_archive/__init__.py"
 # until its API is deliberately exposed.
 packages = ["src/thread_archive"]
 # The web viewer ships pre-built: frontend/ (node, dev-only) builds into
-# web/static/, which is committed and packaged so `pip install` needs no node.
+# _web/static/, which is committed and packaged so `pip install` needs no node.
 # Under the package dir and tracked, so hatchling includes it by default; declared
 # explicitly so the bundle ships even if static/ is ever gitignored as build output.
 artifacts = ["src/thread_archive/_web/static/**/*"]
 
 [tool.hatch.build.targets.sdist]
 # Ship the package sources, tests, docs, and the frontend sources that build the
-# committed web/static bundle. Everything else (host/, .claude/, ci.toml, dev
+# committed _web/static bundle. Everything else (host/, .claude/, ci.toml, dev
 # scripts, node_modules — hatchling only reads the ROOT .gitignore, so nested
 # ignore files like frontend/.gitignore do NOT keep node_modules out) stays local.
 only-include = [
@@ -116,3 +116,20 @@ line-length = 120
 [tool.ruff.lint]
 select = ["E", "F", "I", "W"]
 ignore = ["E501"]
+
+# The type gate (the mypy row in ci.toml). Default mypy strictness over the
+# living code; the overrides below are a RATCHET, not a policy — each listed
+# module predates the gate and is excluded until someone types it. Shrink the
+# list; never grow it.
+[tool.mypy]
+files = ["src/thread_archive"]
+ignore_missing_imports = true  # leidenalg / igraph / mcp ship no stubs
+
+[[tool.mypy.overrides]]
+module = [
+    "thread_archive._thread_import.*",  # vendored parser island — typing it is its own project
+    "thread_archive._scripts.*",        # one-shot operator/migration scripts
+    "thread_archive._truth.jsonl_log",  # delicate durability code; type deliberately, not mechanically
+    "thread_archive._ops.verify",       # same
+]
+ignore_errors = true

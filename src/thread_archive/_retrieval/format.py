@@ -27,7 +27,7 @@ def _hit_text(h: dict) -> str:
     return h.get("full_content") or h.get("snippet") or ""
 
 
-def _term_hit_count(content: str, terms: list[str]) -> int:
+def term_hit_count(content: str, terms: list[str]) -> int:
     """How many of ``terms`` literally appear in ``content``. Terms ≥4 chars match
     by substring; shorter terms must hit a word boundary (so 'go' doesn't match
     'good'). Each term counts at most once."""
@@ -63,7 +63,7 @@ def _search_quality(top_hit_count: int, n_terms: int, did_rerank: bool):
     return ("partial", "only some query terms matched the top hit — scan before trusting")
 
 
-def _query_terms(query: str) -> list[str]:
+def query_terms(query: str) -> list[str]:
     """Ranking terms minus the pipe-OR token (which isn't a content term)."""
     return [t for t in _rank.search_terms(query) if t and t != "|"]
 
@@ -108,10 +108,10 @@ def format_results(hits: list[dict], query: str, *, output: str | None = None) -
     if not hits:
         return f'No results for "{query}".'
 
-    terms = _query_terms(query)
+    terms = query_terms(query)
     n_terms = len(terms)
     did_rerank = bool(hits[0].get("_did_rerank"))
-    verdict = _search_quality(_term_hit_count(_hit_text(hits[0]), terms), n_terms, did_rerank) if n_terms else None
+    verdict = _search_quality(term_hit_count(_hit_text(hits[0]), terms), n_terms, did_rerank) if n_terms else None
 
     header = f'{len(hits)} result(s) for "{query}"'
     if verdict:
@@ -126,7 +126,7 @@ def format_results(hits: list[dict], query: str, *, output: str | None = None) -
         ct = h.get("content_type") or h["event_type"]
         head = f"[{h['thread_id']}/{h['event_id']}] {title} · {ct}"
         if n_terms:
-            k = _term_hit_count(_hit_text(h), terms)
+            k = term_hit_count(_hit_text(h), terms)
             head += f" · {k}/{n_terms}"
             if k == 0:
                 head += " (semantic)"

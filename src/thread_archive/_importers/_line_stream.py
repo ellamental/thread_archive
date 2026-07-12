@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import Callable, Optional
+from typing import Any, Callable, Optional
 
 from .._store import get_session
 from ._cursor import resolve_source_cursor
@@ -151,10 +151,10 @@ def import_line_stream_session(
     session=None,
     not_found_msg: str,
     has_importable_content: Callable[[list[dict]], bool],
-    make_title: Callable[[list[dict], object], str],
+    make_title: Callable[[list[dict], Any], str],
     import_lines: Callable[..., tuple[int, Optional[str]]],
-    prepare: Optional[Callable[[list[dict], Path], object]] = None,
-    make_source_metadata: Optional[Callable[[object], Optional[dict]]] = None,
+    prepare: Optional[Callable[[list[dict], Path], Any]] = None,
+    make_source_metadata: Optional[Callable[[Any], Optional[dict]]] = None,
 ) -> IncrementalImportResult:
     """Import a single-JSONL line-stream provider transcript incrementally.
 

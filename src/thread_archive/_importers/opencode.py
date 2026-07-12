@@ -471,7 +471,7 @@ def _opencode_to_normalized(msg: dict[str, Any]) -> dict[str, Any]:
         # `user_attachment`; any other message role too). The builder's generic
         # `message` path keeps content_blocks verbatim; we also stash the raw parts in
         # provider_data so nothing is lost even on the lossier system path.
-        blocks = [p for p in msg.get("parts", []) if isinstance(p, dict)]
+        blocks: list[dict[str, Any]] = [p for p in msg.get("parts", []) if isinstance(p, dict)]
         return {
             "role": role or "unknown",
             "created_at": _opencode_iso(msg.get("created_at")),
@@ -481,7 +481,7 @@ def _opencode_to_normalized(msg: dict[str, Any]) -> dict[str, Any]:
             "provider_data": {"provider": "opencode", "role": role, "opencode_parts": blocks},
         }
 
-    blocks: list[dict[str, Any]] = []
+    blocks = []
     for seg in msg.get("segments", []):
         kind = seg.get("kind")
         ts = _opencode_iso(seg.get("ts"))

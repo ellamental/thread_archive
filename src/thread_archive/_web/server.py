@@ -1,13 +1,13 @@
-"""The ``archive web`` server: a socket-free router + a thin stdlib HTTP adapter.
+"""The web viewer's server: a socket-free router + a thin stdlib HTTP adapter.
 
 The whole read surface the UI needs already exists as the plain Python library
 (:mod:`thread_archive._api`): ``search`` / ``read_thread`` / ``status``. This is a
 skin over it — no ranking/fusion logic is duplicated here. :func:`route` is a pure
 ``(method, path, params) -> (status, content_type, body, headers)`` function so
-tests drive it without opening a socket. :func:`serve` runs it in the foreground
-(``archive web``); :func:`serve_in_thread` runs it in a background daemon thread so
-the always-on ``archive watch`` process can cohost the viewer (one process, one
-engine) — that's how the read surface gets a persistent URL with no extra daemon.
+tests drive it without opening a socket. :func:`serve_in_thread` runs it in a
+background daemon thread so the always-on ``archive watch --web`` process can
+cohost the viewer (one process, one engine) — that's how the read surface gets a
+persistent URL with no extra daemon or standalone web verb.
 """
 
 from __future__ import annotations

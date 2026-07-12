@@ -21,8 +21,15 @@ path_prepend = ["{repo}/.venv/bin", "{home}/.local/share/fnm/aliases/default/bin
 name = "ruff"
 argv = ["{repo}/.venv/bin/ruff", "check", "."]
 
+# The Python type gate (config in pyproject [tool.mypy]) — the same bar the
+# frontend already has via tsc. The per-module ignore_errors overrides in
+# pyproject are a ratchet: modules that predate the gate, excluded until typed.
+[[suite]]
+name = "mypy"
+argv = ["{repo}/.venv/bin/mypy"]
+
 # Frontend type gate. Deliberately `tsc --noEmit`, NOT `npm run build`: vite
-# builds into the COMMITTED src/thread_archive/web/static (the SPA ships
+# builds into the COMMITTED src/thread_archive/_web/static (the SPA ships
 # pre-built), so a CI build would rewrite tracked hash-named assets on every
 # sweep. Types are the drift that bites silently; the build itself is exercised
 # by `archive web` development. npx is which-gated, so a host without node

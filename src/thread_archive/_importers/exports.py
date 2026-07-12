@@ -1,4 +1,4 @@
-"""Bulk provider-export import: claude.ai + xAI (Grok) account exports.
+"""Bulk provider-export import: claude.ai + ChatGPT + xAI (Grok) account exports.
 
 A manual, downloaded **account export** is a different shape from the live CLI
 stores the watcher tails — a ZIP (or unzipped batch directory) of *all* a user's
@@ -8,13 +8,17 @@ own thread, reusing the shared parse → :func:`assemble_events` write path.
 - **claude.ai** (Settings → Account → Export Data): a ZIP with ``conversations.json``
   (+ ``memories``/``projects``/``users``) at the root, or the newer
   ``data-…-batch-NNNN/`` directory form. Threads land as ``source='claude'``.
+- **ChatGPT** (Settings → Data Controls → Export Data): a ZIP with
+  ``conversations.json`` (+ ``chat.html``/``user.json``) at the root. Threads land
+  as ``source='chatgpt'``. Both providers name the file ``conversations.json``, so
+  :func:`classify_export` tells them apart by sibling files, falling back to the
+  conversation shape itself (claude.ai: ``chat_messages``; ChatGPT: ``mapping``).
 - **xAI/Grok** (Settings → Data Controls → Download Your Data): a tree with
   ``…/export_data/<uuid>/prod-grok-backend.json``. Threads land as ``source='grok'``
   (the conversation UUIDs are disjoint from the Grok-CLI session UUIDs).
 
-The loaders below are pure file-shape readers; the vendored ``ClaudeParser``
-does the claude.ai normalization. (ChatGPT exports are out of scope — the
-parser is vendored but unwired.)
+The loaders below are pure file-shape readers; the vendored ``ClaudeParser`` /
+``ChatGPTParser`` do the per-provider normalization.
 """
 
 from __future__ import annotations
@@ -28,6 +32,7 @@ from pathlib import Path
 from typing import Optional
 
 from thread_archive._thread_import import DefaultEventBuilder
+from thread_archive._thread_import.parsers.chatgpt import ChatGPTParser
 from thread_archive._thread_import.parsers.claude import ClaudeParser
 
 from .._store import get_session
@@ -57,23 +62,65 @@ class ExportImportResult:
 
 _XAI_MARKER = "prod-grok-backend.json"
 
+# claude.ai and ChatGPT exports BOTH ship a root ``conversations.json``, so the
+# filename alone cannot classify — a ChatGPT export read as claude.ai matches
+# zero conversations and looks like a successful empty import. Sibling files
+# disambiguate cheaply (exact basenames: ChatGPT ships ``user.json``, claude.ai
+# ``users.json``); when no marker is present, the conversation shape itself is
+# the tiebreak (claude.ai: ``chat_messages``; ChatGPT: ``mapping``).
+_CHATGPT_SIBLINGS = {"chat.html", "user.json", "message_feedback.json"}
+_CLAUDE_SIBLINGS = {"users.json", "projects.json", "memories.json"}
+
+
+def _sniff_conversations_shape(conversations: object) -> Optional[str]:
+    """``'claude'`` | ``'chatgpt'`` | None from a parsed ``conversations.json``."""
+    if isinstance(conversations, list):
+        for conv in conversations:
+            if isinstance(conv, dict):
+                if "chat_messages" in conv:
+                    return "claude"
+                if "mapping" in conv:
+                    return "chatgpt"
+    return None
+
+
+def _classify_conversations_json(basenames: set[str], read_conversations) -> Optional[str]:
+    """Shared claude-vs-ChatGPT call for a bundle with a root ``conversations.json``:
+    sibling markers first (no parse), else parse and sniff the conversation shape.
+    ``read_conversations`` is a thunk returning the parsed JSON (or raising)."""
+    if basenames & _CHATGPT_SIBLINGS:
+        return "chatgpt"
+    if basenames & _CLAUDE_SIBLINGS:
+        return "claude"
+    try:
+        return _sniff_conversations_shape(read_conversations())
+    except (OSError, ValueError, KeyError):
+        return None
+
 
 def classify_export(path: Path) -> Optional[str]:
-    """``'claude'`` | ``'xai'`` | None for an export ZIP or directory."""
+    """``'claude'`` | ``'chatgpt'`` | ``'xai'`` | None for an export ZIP or directory."""
     path = Path(path)
     if path.is_dir():
         if (path / "conversations.json").exists():
-            return "claude"
+            siblings = {e.name for e in path.iterdir() if e.is_file()}
+            return _classify_conversations_json(
+                siblings,
+                lambda: json.loads((path / "conversations.json").read_text(encoding="utf-8")),
+            )
         if any(True for _ in path.rglob(_XAI_MARKER)):
             return "xai"
         return None
     if zipfile.is_zipfile(path):
         with zipfile.ZipFile(path, "r") as zf:
             names = zf.namelist()
-        if any(n.rsplit("/", 1)[-1] == _XAI_MARKER for n in names):
-            return "xai"
-        if any(n.rsplit("/", 1)[-1] == "conversations.json" for n in names):
-            return "claude"
+            if any(n.rsplit("/", 1)[-1] == _XAI_MARKER for n in names):
+                return "xai"
+            if "conversations.json" in names:
+                basenames = {n.rsplit("/", 1)[-1] for n in names}
+                return _classify_conversations_json(
+                    basenames, lambda: json.loads(zf.read("conversations.json"))
+                )
     return None
 
 
@@ -165,6 +212,63 @@ def import_claude_ai_export(
             result, parser_messages=lambda s=single: parser.parse_export(s),
             source="claude", source_id=source_id, title=title,
             source_metadata={"provider": "claude", "surface": "web"},
+            builder=builder, force=force, raw=conv,
+        )
+    return result
+
+
+# ── ChatGPT export loaders ───────────────────────────────────────────────────
+
+
+def _load_chatgpt_export(path: Path) -> list:
+    """The conversation list from a ChatGPT export (ZIP or unzipped directory)."""
+    if path.is_dir():
+        conversations_path = path / "conversations.json"
+        if not conversations_path.exists():
+            raise FileNotFoundError(f"ChatGPT export missing conversations.json: {path}")
+        data = json.loads(conversations_path.read_text(encoding="utf-8"))
+    else:
+        with zipfile.ZipFile(path, "r") as zf:
+            data = json.loads(zf.read("conversations.json"))
+    return data if isinstance(data, list) else []
+
+
+def _chatgpt_sort_ts(conv: dict) -> float:
+    """Newest-first sort key: ``update_time`` / ``create_time`` are epoch floats in
+    ChatGPT exports; anything unparseable sorts oldest rather than raising."""
+    for key in ("update_time", "create_time"):
+        v = conv.get(key)
+        if isinstance(v, (int, float)):
+            return float(v)
+    return 0.0
+
+
+def import_chatgpt_export(
+    path, *, force: bool = False, limit: Optional[int] = None
+) -> ExportImportResult:
+    """Import a ChatGPT account export (ZIP or dir). Threads → source='chatgpt'."""
+    path = Path(path)
+    if not path.exists():
+        raise FileNotFoundError(f"Export not found: {path}")
+
+    conversations = _load_chatgpt_export(path)
+    parser = ChatGPTParser()
+    builder = DefaultEventBuilder()
+    result = ExportImportResult()
+
+    non_empty = [c for c in conversations if isinstance(c, dict) and c.get("mapping")]
+    non_empty.sort(key=_chatgpt_sort_ts, reverse=True)
+    if limit:
+        non_empty = non_empty[:limit]
+    result.processed = len(non_empty)
+
+    for conv in non_empty:
+        source_id = conv.get("id") or conv.get("conversation_id") or ""
+        title = conv.get("title") or "Untitled"
+        result = _import_one(
+            result, parser_messages=lambda c=conv: parser.parse_export([c]),
+            source="chatgpt", source_id=source_id, title=title,
+            source_metadata={"provider": "chatgpt", "surface": "web"},
             builder=builder, force=force, raw=conv,
         )
     return result
@@ -380,10 +484,13 @@ def _import_one(
 
 
 def import_export(path, *, force: bool = False) -> ExportImportResult:
-    """Auto-classify a claude.ai / xAI export and import it. Raises on unknown shape."""
+    """Auto-classify a claude.ai / ChatGPT / xAI export and import it. Raises on
+    unknown shape."""
     kind = classify_export(Path(path))
     if kind == "claude":
         return import_claude_ai_export(path, force=force)
+    if kind == "chatgpt":
+        return import_chatgpt_export(path, force=force)
     if kind == "xai":
         return import_xai_export(path, force=force)
-    raise ValueError(f"Unrecognized export (not claude.ai or xAI): {path}")
+    raise ValueError(f"Unrecognized export (not claude.ai, ChatGPT, or xAI): {path}")

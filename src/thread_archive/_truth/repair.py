@@ -298,12 +298,12 @@ def _repair_locked(d: Path, *, dry_run: bool) -> dict:
         if missing_kg:
             records = []
             for start in range(0, len(missing_kg), 500):
-                rows = s.execute(
+                kg_rows = s.execute(
                     select(KgEvent)
                     .where(KgEvent.id.in_(missing_kg[start:start + 500]))
                     .order_by(KgEvent.id)
                 ).scalars()
-                records.extend({"type": "kg_event", **_row_dict(ev)} for ev in rows)
+                records.extend({"type": "kg_event", **_row_dict(ev)} for ev in kg_rows)
             _append_records(d / KG_EVENTS_FILE, records)
             logger.warning("repair: restored %d kg event(s) from the index", len(records))
 

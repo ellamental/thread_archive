@@ -1,8 +1,8 @@
 """Drop-folder watcher: auto-import account exports left in ``<home>/dumps/``.
 
 Unlike the per-provider watchers that tail a tool's *live* store, this one watches a
-human-driven **drop zone**. You download a claude.ai or xAI (Grok) account export — a
-ZIP (or unzipped batch directory) of *all* your conversations — drop it into
+human-driven **drop zone**. You download a claude.ai, ChatGPT, or xAI (Grok) account
+export — a ZIP (or unzipped batch directory) of *all* your conversations — drop it into
 ``~/.thread/archive/dumps/``, and the watcher imports it on the next poll and clears it.
 
 Serverless by construction: it calls the in-process bulk importer
@@ -20,8 +20,11 @@ Lifecycle of one dropped export:
   JSONL truth before each commit.
 - **Clear on success.** A clean import *deletes* the dropped file/dir — the data now lives
   in the truth log (which is itself the backup), so the download is redundant.
-- **Quarantine on failure.** An unrecognized shape, or an import that raises, is moved to
-  ``dumps/failed/`` — never deleted, never hot-retried — so the failure is visible.
+- **Quarantine on failure.** An unrecognized shape, an import that raises, or an import
+  that processed zero conversations (a recognized container whose contents didn't match
+  the expected shape — deleting it would destroy the user's download over nothing) is
+  moved to ``dumps/failed/`` — never deleted, never hot-retried — so the failure is
+  visible.
 """
 
 from __future__ import annotations
@@ -33,6 +36,7 @@ from typing import Iterator, Optional
 
 from .._importers.exports import (
     classify_export,
+    import_chatgpt_export,
     import_claude_ai_export,
     import_xai_export,
 )
@@ -45,7 +49,7 @@ QUARANTINE_DIRNAME = "failed"
 
 
 class ExportDropWatcher(SourceWatcher):
-    """Imports claude.ai / xAI account exports dropped into ``<home>/dumps/``.
+    """Imports claude.ai / ChatGPT / xAI account exports dropped into ``<home>/dumps/``.
 
     Detection + dedup + import + cleanup, all in-process: a settled export is imported
     via the local bulk importer, then deleted on success or quarantined on failure.
@@ -121,7 +125,7 @@ class ExportDropWatcher(SourceWatcher):
         kind = classify_export(path)
         if kind is None:
             logger.warning(
-                "export-drop: %s is not a recognized claude.ai / xAI export — quarantining",
+                "export-drop: %s is not a recognized claude.ai / ChatGPT / xAI export — quarantining",
                 name,
             )
             self._quarantine(path)
@@ -131,9 +135,14 @@ class ExportDropWatcher(SourceWatcher):
 
         logger.info("export-drop: importing %s export %s", kind, name)
         try:
-            res = (
-                import_xai_export(path) if kind == "xai" else import_claude_ai_export(path)
-            )
+            # Global-name dispatch (not a dict captured at import time), so tests
+            # can monkeypatch the importer functions on this module.
+            if kind == "xai":
+                res = import_xai_export(path)
+            elif kind == "chatgpt":
+                res = import_chatgpt_export(path)
+            else:
+                res = import_claude_ai_export(path)
         except Exception as e:  # noqa: BLE001 — one bad export must not stop the loop
             logger.error(
                 "export-drop: import failed for %s: %s — quarantining", name, e
@@ -141,6 +150,21 @@ class ExportDropWatcher(SourceWatcher):
             self._quarantine(path)
             return WatchResult(
                 sources_checked=1, errors=[f"export-drop: import error for {name}: {e}"]
+            )
+
+        if res.processed == 0:
+            # The container was recognized but nothing inside matched the expected
+            # conversation shape — a misclassification or a format change. Deleting
+            # would destroy the user's download over an import of nothing; keep it
+            # inspectable instead.
+            logger.warning(
+                "export-drop: %s classified as %s but contained no importable "
+                "conversations — quarantining", name, kind,
+            )
+            self._quarantine(path)
+            return WatchResult(
+                sources_checked=1,
+                errors=[f"export-drop: {name} ({kind}) had no importable conversations"],
             )
 
         logger.info(

@@ -2,6 +2,44 @@
 
 ## Unreleased
 
+- **ChatGPT account exports import (2026-07-11).** The vendored ChatGPT parser
+  is now wired into the bulk export importer: `classify_export` tells the two
+  `conversations.json` providers apart (sibling files first — ChatGPT ships
+  `chat.html`/`user.json`, claude.ai `users.json` — then the conversation shape
+  itself: `chat_messages` vs `mapping`), and `import_chatgpt_export` lands
+  threads as `source='chatgpt'`. Previously a ChatGPT ZIP dropped into
+  `dumps/` was misclassified as claude.ai, imported **zero** conversations,
+  and was then deleted as a "successful" import — the setup wizard was
+  advertising a drop the pipeline destroyed. The drop watcher also gained a
+  guard for the general shape of that failure: a recognized export whose
+  import processes zero conversations is quarantined to `dumps/failed/`, never
+  deleted.
+
+- **The durability kit moved to `_ops/` (2026-07-11).** `_api.py` had grown to
+  ~2,200 lines, three-quarters of it backup/verify/nightly implementation; the
+  implementations now live in `_ops/backup.py`, `_ops/verify.py`,
+  `_ops/nightly.py`, and `_ops/health.py`, with `_api` re-exporting the public
+  entry points so the coordination surface is unchanged. No behavior change.
+
+- **Python type gate (2026-07-11).** A `mypy` row joined ci.toml (config in
+  pyproject `[tool.mypy]`), matching the type bar the frontend already had via
+  `tsc`. ~40 mechanical annotation fixes landed with it; modules that predate
+  the gate (`_thread_import.*`, `_scripts.*`, `_truth.jsonl_log`,
+  `_ops.verify`) are excluded via per-module overrides — a ratchet list to
+  shrink, not policy.
+
+- **Dead vendored code removed (2026-07-11).** `_thread_import/exporters/`
+  (CursorExporter + kv/parse mixins, ~1,000 lines) had no consumers and no
+  tests; deleted.
+
+- **Hygiene (2026-07-11).** `coverage.json` untracked (it was committed *and*
+  gitignored, so every CI sweep dirtied the tree); a stale-name sweep after the
+  `web/`→`_web/` rename and the `archive web` verb removal (README, pyproject
+  and ci.toml comments, frontend package.json/vite.config/api.ts, host README);
+  the landed `docs/plans/reindex-atomic-swap.md` plan deleted (its rationale
+  lives in the `jsonl_log` docstrings); `save_config` now fsyncs before its
+  rename like every other durable write; CLI verb→api dispatch tests added.
+
 - **Homebrew tap published (2026-07-11):**
   `brew install ellamental/thread-archive/thread-archive` (or `brew tap
   ellamental/thread-archive` then `brew install thread-archive`). The tap

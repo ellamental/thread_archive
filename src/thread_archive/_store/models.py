@@ -276,7 +276,7 @@ class ThreadLink(Base):
         ForeignKey("threads.id", ondelete="SET NULL"), default=None
     )
     evidence: Mapped[str | None] = mapped_column(Text, default=None)
-    observation_ids: Mapped[list[int] | None] = mapped_column("observation_ids", ARRAY(Integer), nullable=True)
+    observation_ids: Mapped[list[int] | None] = mapped_column("observation_ids", ARRAY(Integer()), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         "created_at", DateTime(timezone=True), nullable=False, server_default=now_default()
     )

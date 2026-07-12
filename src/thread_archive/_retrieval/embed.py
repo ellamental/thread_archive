@@ -112,7 +112,7 @@ def _pin_offline_if_cached() -> None:
     os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
     const = sys.modules.get("huggingface_hub.constants")
     if const is not None:
-        const.HF_HUB_OFFLINE = True
+        setattr(const, "HF_HUB_OFFLINE", True)
 
 
 def _load():

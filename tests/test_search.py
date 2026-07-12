@@ -176,13 +176,13 @@ def test_empty_query_returns_nothing(archive_home) -> None:
 # --- match-quality signal ---------------------------------------------------
 
 def test_quality_verdict_logic() -> None:
-    from thread_archive._retrieval.format import _search_quality, _term_hit_count
+    from thread_archive._retrieval.format import _search_quality, term_hit_count
 
     # term matching: ≥4 chars substring, <4 chars word-boundary, each term once
-    assert _term_hit_count("the authentication flow", ["authentication"]) == 1
-    assert _term_hit_count("goodbye world", ["go"]) == 0       # boundary, not substring
-    assert _term_hit_count("let's go now", ["go"]) == 1
-    assert _term_hit_count("auth auth auth", ["auth"]) == 1     # distinct count
+    assert term_hit_count("the authentication flow", ["authentication"]) == 1
+    assert term_hit_count("goodbye world", ["go"]) == 0       # boundary, not substring
+    assert term_hit_count("let's go now", ["go"]) == 1
+    assert term_hit_count("auth auth auth", ["auth"]) == 1     # distinct count
 
     assert _search_quality(0, 0, False) is None                # no terms → no verdict
     assert _search_quality(9, 3, True)[0] == "semantic"        # rerank wins outright

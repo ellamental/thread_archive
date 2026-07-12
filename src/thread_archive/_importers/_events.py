@@ -52,13 +52,16 @@ def _existing_dedup_keys(
         Event.thread_id == thread_id, Event.dedup_key.is_not(None)
     )
     if keys is None:
-        return set(session.execute(stmt).scalars().all())
+        return {k for k in session.execute(stmt).scalars() if k is not None}
 
     candidates = list(keys)
     found: set[str] = set()
     for i in range(0, len(candidates), _KEY_CHUNK):
         chunk = candidates[i : i + _KEY_CHUNK]
-        found.update(session.execute(stmt.where(Event.dedup_key.in_(chunk))).scalars().all())
+        found.update(
+            k for k in session.execute(stmt.where(Event.dedup_key.in_(chunk))).scalars()
+            if k is not None
+        )
     return found
 
 

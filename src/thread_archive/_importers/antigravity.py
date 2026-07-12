@@ -163,7 +163,7 @@ def _build_antigravity_messages(
     tool_seq = 0
 
     def new_assistant(ts: Optional[str]) -> dict[str, Any]:
-        turn = {
+        turn: dict[str, Any] = {
             "role": "assistant",
             "created_at": ts,
             "content_text": "",

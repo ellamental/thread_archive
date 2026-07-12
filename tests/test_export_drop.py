@@ -168,6 +168,69 @@ def test_failed_import_is_quarantined(archive_home, monkeypatch) -> None:
     assert (dumps / "failed" / "claude-export").exists()
 
 
+def test_zero_processed_import_is_quarantined_not_deleted(archive_home, monkeypatch) -> None:
+    """A recognized export whose import processes zero conversations (a
+    misclassification or a provider format change) is quarantined — deleting it
+    would destroy the user's download over an import of nothing."""
+    init_db()
+    dumps = archive_home / "dumps"
+    export_dir = _claude_batch_dir(dumps, "claude-export")
+
+    from thread_archive._importers.exports import ExportImportResult
+    from thread_archive._watcher import export_drop
+
+    def _empty(path, **kw):
+        return ExportImportResult()  # processed=0: nothing matched the shape
+
+    monkeypatch.setattr(export_drop, "import_claude_ai_export", _empty)
+
+    w = ExportDropWatcher(dumps_dir=dumps)
+    w.poll()              # settle
+    r = w.poll()          # import → processed=0 → quarantine
+    assert r.items_imported == 0 and r.errors
+
+    assert not export_dir.exists()
+    assert (dumps / "failed" / "claude-export").exists()
+    assert _claude_count() == 0
+
+
+def test_dropped_chatgpt_zip_imports_as_chatgpt(archive_home) -> None:
+    """The historical failure shape: a ChatGPT export ZIP (which also carries a
+    root ``conversations.json``) must import as ChatGPT — not classify as
+    claude.ai, import nothing, and be deleted."""
+    init_db()
+    dumps = archive_home / "dumps"
+    dumps.mkdir(parents=True, exist_ok=True)
+    conv = {
+        "id": "gconv-drop", "title": "Dropped GPT Chat",
+        "create_time": 1767261600.0, "update_time": 1767261610.0,
+        "current_node": "n1",
+        "mapping": {
+            "root": {"id": "root", "parent": None, "children": ["n1"], "message": None},
+            "n1": {"id": "n1", "parent": "root", "children": [], "message": {
+                "id": "n1", "author": {"role": "user"}, "create_time": 1767261600.0,
+                "content": {"content_type": "text", "parts": ["dropped chatgpt message"]},
+                "status": "finished_successfully", "metadata": {},
+            }},
+        },
+    }
+    path = dumps / "chatgpt-export.zip"
+    with zipfile.ZipFile(path, "w") as zf:
+        zf.writestr("conversations.json", json.dumps([conv]))
+        zf.writestr("chat.html", "<html></html>")
+        zf.writestr("user.json", json.dumps({"id": "u1"}))
+
+    w = ExportDropWatcher(dumps_dir=dumps)
+    w.poll()              # settle
+    r = w.poll()          # classify → chatgpt → import → delete
+    assert r.items_imported == 1 and not r.errors
+    assert not path.exists()
+
+    with get_session() as s:
+        t = s.execute(select(Thread).where(Thread.source == "chatgpt")).scalar_one()
+        assert t.source_id == "gconv-drop"
+
+
 # ── idempotency + wiring ─────────────────────────────────────────────────────
 
 

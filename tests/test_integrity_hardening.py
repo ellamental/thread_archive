@@ -241,16 +241,16 @@ def test_backup_checkpoints_before_verifying(archive_home, tmp_path, monkeypatch
     import_cc_session(tmp_path)
     calls: list[str] = []
 
-    import thread_archive._api as api
+    import thread_archive._ops.backup as ops_backup
     from thread_archive import _truth as truth
 
-    real_checkpoint, real_verify = truth.checkpoint, api.verify
+    real_checkpoint, real_verify = truth.checkpoint, ops_backup.verify
     monkeypatch.setattr(
         truth, "checkpoint",
         lambda *a, **k: (calls.append("checkpoint"), real_checkpoint(*a, **k))[1],
     )
     monkeypatch.setattr(
-        api, "verify",
+        ops_backup, "verify",
         lambda *a, **k: (calls.append("verify"), real_verify(*a, **k))[1],
     )
     ta.backup(str(tmp_path / "mirror"))
@@ -260,7 +260,8 @@ def test_backup_checkpoints_before_verifying(archive_home, tmp_path, monkeypatch
 # ── health.json concurrency ───────────────────────────────────────────────────
 def test_record_health_survives_concurrent_writers(archive_home, tmp_path):
     ta.open_archive()
-    from thread_archive._api import _read_health, _record_health
+    from thread_archive._ops.health import read_health as _read_health
+    from thread_archive._ops.health import record_health as _record_health
 
     keys = [f"writer_{i}" for i in range(8)]
 
@@ -287,9 +288,9 @@ def test_backup_mirror_holds_the_truth_write_lock(archive_home, tmp_path, monkey
     import os
 
     import_cc_session(tmp_path)
-    import thread_archive._api as api
+    import thread_archive._ops.backup as ops_backup
 
-    real = api._mirror_dir
+    real = ops_backup._mirror_dir
     seen: dict[str, bool] = {}
 
     def probe(*a, **k):
@@ -305,7 +306,7 @@ def test_backup_mirror_holds_the_truth_write_lock(archive_home, tmp_path, monkey
             os.close(fd)
         return real(*a, **k)
 
-    monkeypatch.setattr(api, "_mirror_dir", probe)
+    monkeypatch.setattr(ops_backup, "_mirror_dir", probe)
     ta.backup(str(tmp_path / "mirror"))
     assert seen["held"] is True, "the mirror must run inside the truth-write lock"
 

@@ -1,10 +1,13 @@
 """Incremental import: provider transcripts → events (over the JSONL truth seam).
 
-Two shapes: single-file line-stream importers (Claude Code, Codex, Grok,
-Antigravity, cloth) and SQLite-DB scanners (Cursor, OpenCode). All converge on the
-same ``assemble_events`` build → dedup → write loop, and all are atomic per unit of
-import. (cloth is Claude-Code-shaped, so its importer delegates to the claude_code
-path under ``source="cloth"``.)
+Three shapes: single-file line-stream importers (Claude Code, Codex, Grok,
+Antigravity, cloth, Cowork), SQLite-DB scanners (Cursor, OpenCode, Claude
+Science), and bulk account-export importers (claude.ai, ChatGPT, xAI — see
+:mod:`.exports`). All converge on the same ``assemble_events`` build → dedup →
+write loop, and all are atomic per unit of import. (cloth is Claude-Code-shaped,
+so its importer delegates to the claude_code path under ``source="cloth"``.
+Cowork and Claude Science take per-source dispatch arguments, so the watcher
+drives them directly rather than through the registries below.)
 """
 
 from __future__ import annotations

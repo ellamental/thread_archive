@@ -1,5 +1,5 @@
-// The viewer's data layer: typed fetches against the four JSON endpoints the
-// stdlib `archive web` server exposes. No client framework state — plain fetch.
+// The viewer's data layer: typed fetches against the JSON endpoints the cohosted
+// stdlib server (`archive watch --web`) exposes. No client framework state — plain fetch.
 
 export interface Status {
   threads: number

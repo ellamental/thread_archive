@@ -40,6 +40,170 @@ def test_embed_cli_dispatches(monkeypatch, capsys) -> None:
     assert "embedded 4" in capsys.readouterr().out
 
 
+# ── verb → api dispatch (stubbed: arg mapping + exit codes, no real work) ─────
+# The verbs are wired into LaunchAgent plists, cron, and the monitor's heartbeat
+# contract, so a silent arg-mapping regression hurts operationally. Each test
+# stubs the api function and asserts the CLI passes exactly what it parsed.
+
+_BACKUP_OK = {
+    "truth_dir": "t", "dest": "d", "files_copied": 3, "bytes_copied": 1024,
+    "verify_ok": True, "deletions_skipped": 0, "shrinks_skipped": 0,
+    "mirror_complete": True,
+}
+
+
+def test_backup_cli_dispatches(monkeypatch, capsys) -> None:
+    from thread_archive import _api as api
+
+    seen = {}
+    monkeypatch.setattr(
+        api, "backup", lambda dest, **kw: seen.update(dest=dest, **kw) or dict(_BACKUP_OK)
+    )
+    rc = main(["backup", "/dest", "--allow-shrink", "--no-verify", "--home", "/h"])
+    assert rc == 0
+    assert seen == {"dest": "/dest", "home": "/h", "allow_shrink": True, "verify_first": False}
+    assert "backed up" in capsys.readouterr().out
+
+
+def test_backup_cli_fails_on_incomplete_mirror(monkeypatch, capsys) -> None:
+    from thread_archive import _api as api
+
+    bad = {**_BACKUP_OK, "mirror_complete": False,
+           "dest_missing_files": 2, "dest_divergent_files": 0}
+    monkeypatch.setattr(api, "backup", lambda dest, **kw: bad)
+    rc = main(["backup", "/dest"])
+    assert rc == 1
+    assert "MIRROR INCOMPLETE" in capsys.readouterr().out
+
+
+_VERIFY_OK = {
+    "ok": True,
+    "truth": {"threads": 1, "events": 2, "events_effective": 2,
+              "duplicate_id_lines": 0, "duplicate_content_lines": 0, "parse_errors": 0},
+    "index": {"threads": 1, "events": 2, "kg_events": 0,
+              "quick_check": "ok", "check": "quick_check"},
+    "drift": {"threads": 0, "events": 0, "kg_events": 0},
+    "fts": {"shadow_rows": 2, "fts5_rows": 2, "orphan_rows": 0},
+}
+
+
+def test_verify_cli_dispatches(monkeypatch, capsys) -> None:
+    from thread_archive import _api as api
+
+    tiers = {
+        **_VERIFY_OK,
+        "deep": {
+            "ok": True, "watermark": 2, "events_index_only": 0, "index_only_sample": [],
+            "events_missing_from_index": 0, "missing_sample": [],
+            "events_key_mismatch": 0, "key_mismatch_sample": [],
+            "events_superseded_twins": 0, "thread_meta_mismatch": 0, "thread_meta_sample": [],
+            "kg": {"index_only": 0, "truth_only": 0, "content_mismatch": 0, "watermark": 0},
+            "dangling": {"link_endpoints": 0, "citation_events": 0,
+                         "citation_thread_mismatch": 0, "event_threads": 0},
+            "duplicate_content_pairs_index": 0,
+            "fts": {"orphan_rows": 0, "shadow_rows": 2, "fts5_rows": 2,
+                    "unindexed_events": 0, "unindexed_sample": [], "empty_extract_events": 0},
+        },
+        "hashes": {
+            "truth": {"checked": 2, "mismatched": 0, "unhashed_keys": 0, "no_key": 0,
+                      "mismatch_sample": []},
+            "index": {"checked": 2, "mismatched": 0, "unhashed_keys": 0, "no_key": 0,
+                      "mismatch_sample": []},
+            "cross": {"compared": 2, "mismatched": 0, "mismatch_sample": []},
+        },
+        "backup": {"dest": "/mirror", "ok": True, "coverage": 1.0,
+                   "scan": {"threads": 1, "events_effective": 2, "parse_errors": 0}},
+    }
+    seen = {}
+    monkeypatch.setattr(api, "verify", lambda **kw: seen.update(kw) or tiers)
+    rc = main(["verify", "--deep", "--hashes", "--backup", "/mirror", "--home", "/h"])
+    assert rc == 0
+    assert seen == {"home": "/h", "deep": True, "hashes": True, "backup": "/mirror"}
+    out = capsys.readouterr().out
+    assert "deep:" in out and "hashes[cross]" in out and "backup[/mirror]" in out
+
+
+def test_verify_cli_exit_codes(monkeypatch, capsys) -> None:
+    from thread_archive import _api as api
+
+    monkeypatch.setattr(api, "verify", lambda **kw: dict(_VERIFY_OK))
+    assert main(["verify"]) == 0
+    assert "OK" in capsys.readouterr().out
+
+    failed = {**_VERIFY_OK, "ok": False, "failed_components": ["drift_events"]}
+    monkeypatch.setattr(api, "verify", lambda **kw: failed)
+    assert main(["verify"]) == 1
+    assert "FAILED: drift_events" in capsys.readouterr().out
+
+
+def test_restore_drill_cli_dispatches(monkeypatch, capsys) -> None:
+    from thread_archive import _api as api
+
+    seen = {}
+    monkeypatch.setattr(
+        api, "restore_drill",
+        lambda dest, **kw: seen.update(dest=dest, **kw) or {"ok": True, "seconds": 1.0},
+    )
+    rc = main(["restore-drill", "/mirror", "--keep-home", "--home", "/h"])
+    assert rc == 0
+    assert seen == {"dest": "/mirror", "home": "/h", "keep_home": True}
+    assert "OK" in capsys.readouterr().out
+
+
+_NIGHTLY_OK = {
+    "backup": {"files_copied": 1, "bytes_copied": 0},
+    "escalations": {"deep": False, "hashes": False},
+    "verify": {"ok": True, "drift": {"events": 0}, "truth": {"parse_errors": 0}},
+    "ok": True,
+    "failed_stages": [],
+}
+
+
+def test_nightly_cli_dispatches(monkeypatch, capsys) -> None:
+    from thread_archive import _api as api
+
+    seen = {}
+    monkeypatch.setattr(
+        api, "nightly", lambda dest, **kw: seen.update(dest=dest, **kw) or dict(_NIGHTLY_OK)
+    )
+    rc = main(["nightly", "/dest", "--notify-url", "http://n", "--allow-shrink",
+               "--no-drill", "--home", "/h"])
+    assert rc == 0
+    assert seen == {"dest": "/dest", "home": "/h", "notify_url": "http://n",
+                    "allow_shrink": True, "drill": False}
+    assert "NIGHTLY OK" in capsys.readouterr().out
+
+
+def test_nightly_cli_fails_with_stage_names(monkeypatch, capsys) -> None:
+    from thread_archive import _api as api
+
+    failed = {**_NIGHTLY_OK, "ok": False, "failed_stages": ["backup", "verify"],
+              "verify": {"error": "boom"}, "backup": {"error": "boom"}}
+    monkeypatch.setattr(api, "nightly", lambda dest, **kw: failed)
+    rc = main(["nightly", "/dest"])
+    assert rc == 1
+    assert "NIGHTLY FAILED: backup, verify" in capsys.readouterr().out
+
+
+def test_repair_cli_dispatches(monkeypatch, capsys) -> None:
+    from thread_archive import _api as api
+
+    seen = {}
+    res = {"dry_run": True, "fragments_quarantined": 0, "files_damaged": 0,
+           "events_restored_from_index": 0, "kg_events_restored": 0,
+           "thread_records_restored": 0}
+    monkeypatch.setattr(api, "repair", lambda **kw: seen.update(kw) or res)
+    rc = main(["repair", "--dry-run", "--home", "/h"])
+    assert rc == 0
+    assert seen == {"home": "/h", "dry_run": True}
+    assert "would quarantine" in capsys.readouterr().out
+
+
+def test_import_rejects_unknown_provider() -> None:
+    with pytest.raises(SystemExit):
+        main(["import", "/nonexistent", "--provider", "not-a-provider"])
+
+
 def test_status_runs_on_empty_home(tmp_path, capsys: pytest.CaptureFixture[str]) -> None:
     rc = main(["status", "--home", str(tmp_path / "arc")])
     assert rc == 0

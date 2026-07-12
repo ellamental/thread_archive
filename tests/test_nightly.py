@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import json
 
-from thread_archive import _api as api
+import thread_archive._ops.health as ops_health
 from thread_archive import _api as ta
 
 USER = {"type": "user", "uuid": "u1", "timestamp": "2026-01-01T10:00:00Z",
@@ -68,7 +68,7 @@ def test_nightly_failed_deep_pass_reruns_next_night(archive_home, tmp_path):
     _seed(archive_home)
     dest = str(tmp_path / "mirror")
     ta.nightly(dest)
-    api._record_health("verify_deep_last", {"ok": False})
+    ops_health.record_health("verify_deep_last", {"ok": False})
     assert ta.nightly(dest)["escalations"]["deep"] is True
 
 
@@ -83,9 +83,10 @@ def test_nightly_stage_failure_runs_remaining_stages_and_notifies(
     def boom(*a, **k):
         raise OSError("disk on fire")
 
-    monkeypatch.setattr(api, "backup", boom)
+    import thread_archive._ops.nightly as ops_nightly
+    monkeypatch.setattr(ops_nightly, "backup", boom)
     sent: list[str] = []
-    monkeypatch.setattr(api, "_notify", lambda url, msg: sent.append((url, msg)) and None)
+    monkeypatch.setattr(ops_nightly, "_notify", lambda url, msg: sent.append((url, msg)) and None)
 
     res = ta.nightly(str(tmp_path / "mirror"), notify_url="http://x/api/notify")
 
@@ -162,7 +163,7 @@ def test_verdict_retires_a_verify_reproven_at_equal_tier():
         "verify_last": {"at": LATER, "ok": True,
                         "deep": True, "hashes": True, "backup": True},
     }
-    v = api._pipeline_verdict(health)
+    v = ops_health.pipeline_verdict(health)
     assert v["ok"] is True
     assert v["failed_stages"] == [] and v["recovered_stages"] == ["verify"]
 
@@ -176,7 +177,7 @@ def test_verdict_keeps_a_deep_failure_a_basic_verify_cannot_speak_to():
         "verify_last": {"at": LATER, "ok": True,
                         "deep": False, "hashes": False, "backup": False},
     }
-    v = api._pipeline_verdict(health)
+    v = ops_health.pipeline_verdict(health)
     assert v["ok"] is False and v["failed_stages"] == ["verify"]
 
 
@@ -188,7 +189,7 @@ def test_verdict_keeps_a_deep_failure_when_the_mirror_went_unscanned():
         "verify_last": {"at": LATER, "ok": True,
                         "deep": True, "hashes": True, "backup": False},
     }
-    assert api._pipeline_verdict(health)["failed_stages"] == ["verify"]
+    assert ops_health.pipeline_verdict(health)["failed_stages"] == ["verify"]
 
 
 def test_verdict_ignores_a_green_run_that_predates_the_failure():
@@ -197,7 +198,7 @@ def test_verdict_ignores_a_green_run_that_predates_the_failure():
         "verify_last": {"at": EARLIER, "ok": True,
                         "deep": True, "hashes": True, "backup": True},
     }
-    assert api._pipeline_verdict(health)["failed_stages"] == ["verify"]
+    assert ops_health.pipeline_verdict(health)["failed_stages"] == ["verify"]
 
 
 def test_verdict_retires_drill_and_backup_on_a_later_green_run():
@@ -206,7 +207,7 @@ def test_verdict_retires_drill_and_backup_on_a_later_green_run():
         "backup_last": {"at": LATER, "ok": True},
         "restore_drill_last": {"at": LATER, "ok": True},
     }
-    v = api._pipeline_verdict(health)
+    v = ops_health.pipeline_verdict(health)
     assert v["ok"] is True
     assert sorted(v["recovered_stages"]) == ["backup", "restore-drill"]
 
@@ -217,7 +218,7 @@ def test_verdict_retires_only_the_stages_actually_reproven():
         "verify_last": {"at": LATER, "ok": True,
                         "deep": False, "hashes": False, "backup": False},
     }
-    v = api._pipeline_verdict(health)
+    v = ops_health.pipeline_verdict(health)
     assert v["ok"] is False
     assert v["failed_stages"] == ["restore-drill"]
     assert v["recovered_stages"] == ["verify"]
@@ -229,7 +230,7 @@ def test_verdict_never_retires_on_a_red_rerun():
         "verify_last": {"at": LATER, "ok": False, "deep": True,
                         "hashes": True, "backup": True},
     }
-    assert api._pipeline_verdict(health)["failed_stages"] == ["verify"]
+    assert ops_health.pipeline_verdict(health)["failed_stages"] == ["verify"]
 
 
 def test_a_passing_verify_clears_the_heartbeat_a_failed_nightly_left(
@@ -247,7 +248,7 @@ def test_a_passing_verify_clears_the_heartbeat_a_failed_nightly_left(
 
     beat_path = hb_dir / "archive-nightly.heartbeat"
     nightly_at = "2026-01-02T04:00:00+00:00"
-    api._record_health("nightly_last", {
+    ops_health.record_health("nightly_last", {
         "dest": dest, "ok": False, "failed_stages": ["verify"],
         "deep": True, "hashes": True, "drill": True,
     })
@@ -256,7 +257,7 @@ def test_a_passing_verify_clears_the_heartbeat_a_failed_nightly_left(
     health = json.loads((archive_home / "health.json").read_text())
     health["nightly_last"]["at"] = nightly_at
     (archive_home / "health.json").write_text(json.dumps(health))
-    api._stamp_heartbeat()
+    ops_health.stamp_heartbeat()
     assert json.loads(beat_path.read_text())["ok"] is False
 
     res = ta.verify(deep=True, hashes=True, backup=dest)

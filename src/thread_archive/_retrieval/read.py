@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import json
 import os
+from collections.abc import Sequence
 from datetime import datetime
 from typing import Container, Optional
 
@@ -216,7 +217,7 @@ def _assistant_block(et: str, p: dict, rendered_text: Container[str]) -> Optiona
     return {"type": "unknown", "event_type": et, "content": _unknown_payload_text(p)}
 
 
-def _slot_queued_events(events: list[Event]) -> list[Event]:
+def _slot_queued_events(events: Sequence[Event]) -> list[Event]:
     """Relocate backfilled events into their chronological slot.
 
     Two kinds of event can arrive with a tail-end ``Event.id`` that the id-ordered
@@ -236,7 +237,7 @@ def _slot_queued_events(events: list[Event]) -> list[Event]:
         or ev.event_type == "model_change"
     ]
     if not queued:
-        return events
+        return list(events)
     rest = [ev for ev in events if ev not in queued]
     for q in sorted(queued, key=lambda e: (e.occurred_at, e.id)):
         pos = 0

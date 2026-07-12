@@ -109,11 +109,16 @@ def load_config(home: str | os.PathLike[str] | None = None) -> dict:
 
 
 def save_config(cfg: dict, home: str | os.PathLike[str] | None = None) -> Path:
-    """Write the config atomically (tmp + rename). Returns the path."""
+    """Write the config atomically and durably (tmp + fsync + rename). Returns the
+    path. The fsync matters here like everywhere else in the archive: a source
+    opt-out that vanishes in a power loss silently re-enables ingest."""
     path = config_path(home)
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_name(path.name + ".tmp")
-    tmp.write_text(json.dumps(cfg, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    with open(tmp, "w", encoding="utf-8") as fh:
+        fh.write(json.dumps(cfg, indent=2, sort_keys=True) + "\n")
+        fh.flush()
+        os.fsync(fh.fileno())
     tmp.replace(path)
     return path
 

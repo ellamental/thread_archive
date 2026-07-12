@@ -3,7 +3,7 @@
   "private": true,
   "version": "0.1.0",
   "type": "module",
-  "description": "Built into ../src/thread_archive/web/static and served by `archive web`.",
+  "description": "Built into ../src/thread_archive/_web/static and served by the watcher's cohosted viewer (`archive watch --web`).",
   "scripts": {
     "dev": "vite",
     "build": "tsc --noEmit && vite build",

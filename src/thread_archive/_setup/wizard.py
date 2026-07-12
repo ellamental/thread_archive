@@ -47,11 +47,12 @@ SOURCE_LABELS = {
 
 
 def _fmt_bytes(n: int) -> str:
+    x = float(n)
     for unit in ("B", "KB", "MB", "GB", "TB"):
-        if n < 1024 or unit == "TB":
-            return f"{n:.0f} {unit}" if unit == "B" else f"{n:.1f} {unit}"
-        n /= 1024
-    return f"{n:.1f} TB"  # pragma: no cover — unreachable
+        if x < 1024 or unit == "TB":
+            return f"{x:.0f} {unit}" if unit == "B" else f"{x:.1f} {unit}"
+        x /= 1024
+    return f"{x:.1f} TB"  # pragma: no cover — unreachable
 
 
 def _fmt_when(mtime: Optional[float]) -> str:

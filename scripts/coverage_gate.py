@@ -24,19 +24,20 @@ from pathlib import Path
 
 # package (top-level dir/module under src/thread_archive/) -> minimum percent
 FLOORS = {
-    "_api": 85.0,
-    "_importers": 72.0,
+    "_api": 81.0,  # thin dispatch layer since the _ops extraction (its old ops mass measured with it)
+    "_importers": 74.0,
     "_knowledge": 85.0,
     "_mcp": 90.0,
+    "_ops": 86.0,  # the durability kit (extracted from _api)
     "_retrieval": 76.0,
     "_scripts": 70.0,
     "_store": 94.0,
-    "_thread_import": 36.0,  # dormant provider surfaces; kept from decaying further
+    "_thread_import": 49.0,  # dormant provider surfaces; kept from decaying further
     "_truth": 87.0,
-    "_watcher": 67.0,
-    "_web": 84.0,
-    "cli": 40.0,  # known-weak: most CLI cover is via main() dispatch tests
-    "TOTAL": 66.0,
+    "_watcher": 72.0,
+    "_web": 90.0,
+    "cli": 61.0,  # verb→api dispatch tests cover the arg mapping; heavy verbs run via smoke
+    "TOTAL": 71.0,
 }
 
 

@@ -32,7 +32,7 @@ from mcp.server.fastmcp import FastMCP
 
 from .. import _api as api
 from .._retrieval import format_results, warm_models
-from .._retrieval.format import _query_terms, _term_hit_count
+from .._retrieval.format import query_terms, term_hit_count
 
 logger = logging.getLogger(__name__)
 
@@ -98,12 +98,12 @@ def _default_scope_is_weak(hits: list[dict], query: str) -> bool:
     """True when a default-scope result set warrants the one-shot widen to
     assistant text: no hits at all, or no query term appears in the top hit
     (nearest-neighbour guesses)."""
-    terms = _query_terms(query)
+    terms = query_terms(query)
     if not terms:
         return False
     if not hits:
         return True
-    return _term_hit_count(hits[0].get("full_content") or hits[0].get("snippet") or "", terms) == 0
+    return term_hit_count(hits[0].get("full_content") or hits[0].get("snippet") or "", terms) == 0
 
 
 @mcp.tool()

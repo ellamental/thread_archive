@@ -123,6 +123,7 @@ src/thread_archive/
   _config.py        # truth dir + index path resolution, config.json (source opt-outs)
   _store/           # SQLite store + schema
   _truth/           # JSONL truth log + reindex
+  _ops/             # durability kit: backup/mirror + restore drill, verify tiers, nightly, health records
   _importers/       # incremental import orchestration
   _retrieval/       # FTS5 + vector search, read reconstruction
   _knowledge/       # topic graph: event-sourced curation + Leiden analytics
@@ -162,16 +163,16 @@ The always-on watcher cohosts a local search + reader UI: `archive watch --web`
 (the shipped LaunchAgent passes it) serves at `http://127.0.0.1:8787` — a stdlib
 HTTP server handing out a pre-built React bundle plus a few JSON endpoints, in
 the watcher's *own* process. One process, one SQLite engine — the viewer reads
-concurrently with the watcher's writes, which WAL makes safe (`store/_base.py`).
+concurrently with the watcher's writes, which WAL makes safe (`_store/_base.py`).
 No second daemon, and no standalone `web` verb: the viewer exists where the
 persistent URL is.
 
 **Runtime is node-free**: the bundle is built ahead of time and committed under
-`web/static/`, so `pip install` never touches node. Node is a *build*-only tool:
+`_web/static/`, so `pip install` never touches node. Node is a *build*-only tool:
 
 ```bash
 # rebuild the bundle after editing the frontend (node only here):
-cd frontend && npm install && npm run build   # → ../src/thread_archive/web/static/
+cd frontend && npm install && npm run build   # → ../src/thread_archive/_web/static/
 ```
 
 **Archive-links.** With that persistent server, the archive owns the editor

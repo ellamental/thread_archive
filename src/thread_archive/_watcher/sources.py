@@ -297,7 +297,7 @@ class _DbScanWatcher(SourceWatcher):
         # One live SQLite DB: size + activity mtime. No conversation count —
         # counting means opening and understanding the provider's schema, and
         # the discovery pass is stat-only by contract.
-        if not self.is_available():
+        if self.db_path is None or not self.is_available():
             return SourceDiscovery(name=self._name, available=False)
         try:
             st = self.db_path.stat()
@@ -568,9 +568,9 @@ def default_watchers() -> list[SourceWatcher]:
     messages first (establishing their dedup_keys), so the exthost pass only has the
     genuinely-lost steering messages left to write.
 
-    The export-drop watcher rides the same loop: it imports any claude.ai / xAI account
-    export dropped into ``<home>/dumps/`` (a human-driven drop zone, not a live store),
-    so a one-time bulk export needs no separate command."""
+    The export-drop watcher rides the same loop: it imports any claude.ai / ChatGPT /
+    xAI account export dropped into ``<home>/dumps/`` (a human-driven drop zone, not a
+    live store), so a one-time bulk export needs no separate command."""
     from .export_drop import ExportDropWatcher
     from .exthost import ExthostWatcher
 

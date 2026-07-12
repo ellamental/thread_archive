@@ -374,15 +374,16 @@ def index_thread_meta(session: Optional[Session] = None, thread_ids: Optional[li
             ).all()
             eids = [eid for _, eid in rows]
             oparams: dict = {}
-            occurred = dict(
-                s.execute(
+            occurred: dict = {
+                row[0]: row[1]
+                for row in s.execute(
                     sa_text(
                         "SELECT id, occurred_at FROM events WHERE "
                         + _in_clause("id", eids, "eid", oparams, negate=False)
                     ),
                     oparams,
-                ).all()
-            ) if eids else {}
+                )
+            } if eids else {}
             for tid, eid in rows:
                 anchors[tid] = (eid, str(occurred[eid]) if occurred.get(eid) else None)
 
@@ -482,7 +483,7 @@ def rebuild_fts(session: Optional[Session] = None) -> int:
         #    read-cursor during the writes.
         s.execute(delete(EventFts))
         s.flush()
-        fts_table = EventFts.__table__
+        fts_table = EventFts
         conn = s.connection()
         last_id = 0
         while True:
