@@ -2,6 +2,24 @@
 
 ## Unreleased
 
+- **`thread_archive` — first-run setup and the human status view (2026-07-11).**
+  The consumer front door the pip story was missing: `pip install
+  thread-archive` then `thread_archive` runs an interactive setup that
+  *discovers* the machine's conversation stores (stat-only dry run: counts,
+  sizes, date ranges — new `SourceWatcher.discover()`), shows what it found
+  and where copies will live before touching anything, imports with per-source
+  narration (importer log noise routed to `<home>/logs/setup.log`), then
+  offers the launchd watcher and MCP wiring (`claude mcp add` run for you at
+  user scope, or the JSON block printed for any other client). Every step is
+  skippable; choices persist in the new `<home>/config.json`, and disabled
+  sources are honored by every ingest path (daemon, lazy MCP catch-up,
+  `archive watch`) via `enabled_watchers()`. Re-running lands on a status
+  view; `thread_archive setup` re-enters the flow; `--yes` is the
+  non-interactive twin (a non-TTY run without it only prints guidance — and
+  checking "is this set up?" no longer scaffolds an empty home as a side
+  effect). Both `thread_archive` and `thread-archive` console scripts ship.
+  `archive` stays the operator seam.
+
 - **Verify's index self-check no longer false-alarms "malformed inverted index"
   (2026-07-11).** Both of today's nightly `verify` failures — the
   highest-severity alarm the system has, fired twice on a healthy archive —

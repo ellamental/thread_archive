@@ -27,9 +27,32 @@ from .._importers import (
     import_opencode_db,
     import_session_incremental,
 )
-from .base import SourceWatcher, WatchResult
+from .base import SourceDiscovery, SourceWatcher, WatchResult
 
 logger = logging.getLogger(__name__)
+
+
+def _stat_discovery(name: str, paths: Iterator[Path]) -> SourceDiscovery:
+    """Fold a stream of store files into a :class:`SourceDiscovery` — stat only."""
+    items = 0
+    total = 0
+    earliest: Optional[float] = None
+    latest: Optional[float] = None
+    for p in paths:
+        try:
+            st = p.stat()
+        except OSError:
+            continue
+        if st.st_size == 0:
+            continue
+        items += 1
+        total += st.st_size
+        earliest = st.st_mtime if earliest is None else min(earliest, st.st_mtime)
+        latest = st.st_mtime if latest is None else max(latest, st.st_mtime)
+    return SourceDiscovery(
+        name=name, available=items > 0, items=items, bytes=total,
+        earliest=earliest, latest=latest,
+    )
 
 
 def discover_claude_dirs() -> list[Path]:
@@ -60,6 +83,9 @@ class FileSessionWatcher(SourceWatcher):
 
     def _import(self, path: Path, source_id: str):
         raise NotImplementedError
+
+    def discover(self) -> SourceDiscovery:
+        return _stat_discovery(self.source_name, (p for p, _ in self._iter_files()))
 
     def poll(self) -> WatchResult:
         result = WatchResult()
@@ -267,6 +293,22 @@ class _DbScanWatcher(SourceWatcher):
                 mtimes.append(wal.stat().st_mtime)
         return max(mtimes)
 
+    def discover(self) -> SourceDiscovery:
+        # One live SQLite DB: size + activity mtime. No conversation count —
+        # counting means opening and understanding the provider's schema, and
+        # the discovery pass is stat-only by contract.
+        if not self.is_available():
+            return SourceDiscovery(name=self._name, available=False)
+        try:
+            st = self.db_path.stat()
+            mtime = self._current_mtime() or st.st_mtime
+            return SourceDiscovery(
+                name=self._name, available=True, items=None, bytes=st.st_size,
+                earliest=None, latest=mtime,
+            )
+        except OSError:
+            return SourceDiscovery(name=self._name, available=False)
+
     def poll(self) -> WatchResult:
         try:
             current = self._current_mtime()
@@ -369,6 +411,11 @@ class CoworkWatcher(SourceWatcher):
     def is_available(self) -> bool:
         return bool(discover_cowork_session_dirs())
 
+    def discover(self) -> SourceDiscovery:
+        return _stat_discovery(
+            self.source_name, (audit for audit, _, _ in self._iter_sessions())
+        )
+
     def _iter_sessions(self) -> Iterator[tuple[Path, str, Optional[Path]]]:
         for org_dir in discover_cowork_session_dirs():
             user_uuid = org_dir.parent.name
@@ -458,6 +505,14 @@ class ClaudeScienceWatcher(SourceWatcher):
     def is_available(self) -> bool:
         return bool(discover_claude_science_dbs(self._base))
 
+    def discover(self) -> SourceDiscovery:
+        # Per-org live DBs: sizes + activity mtimes; org count isn't a
+        # conversation count, so items stays None (stat-only contract).
+        dbs = discover_claude_science_dbs(self._base)
+        report = _stat_discovery(self.source_name, (db for db, _ in dbs))
+        report.items = None
+        return report
+
     @staticmethod
     def _current_mtime(db_path: Path) -> Optional[float]:
         try:
@@ -532,3 +587,30 @@ def default_watchers() -> list[SourceWatcher]:
         ExportDropWatcher(),
         ExthostWatcher(),
     ]
+
+
+# The mechanism watchers, as distinct from provider *sources*: export-drop only
+# reads the archive's own <home>/dumps drop zone (consented by construction),
+# and cc-exthost recovers claude-code steering messages — it follows the
+# claude-code source rather than being a store of its own. Setup presents
+# provider sources only; these two ride along.
+_MECHANISM_SOURCES = frozenset({"export-drop", "cc-exthost"})
+
+
+def provider_watchers() -> list[SourceWatcher]:
+    """The consumer-facing provider sources (default set minus the mechanisms)."""
+    return [w for w in default_watchers() if w.source_name not in _MECHANISM_SOURCES]
+
+
+def enabled_watchers(home=None) -> list[SourceWatcher]:
+    """``default_watchers()`` minus sources disabled in ``<home>/config.json``.
+
+    The single choke point where operator source opt-outs (see
+    :func:`.._config.source_enabled`) reach every ingest path — the daemon, the
+    lazy MCP catch-up, ``archive watch`` — all of which construct their watcher
+    set here. No config file means the full default set.
+    """
+    from .._config import load_config, source_enabled
+
+    cfg = load_config(home)
+    return [w for w in default_watchers() if source_enabled(cfg, w.source_name)]

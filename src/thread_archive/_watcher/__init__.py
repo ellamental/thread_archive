@@ -11,11 +11,11 @@ store simply costs nothing.
 
 from __future__ import annotations
 
-from .base import SourceWatcher, WatchResult
+from .base import SourceDiscovery, SourceWatcher, WatchResult
 from .daemon import Watcher
 from .export_drop import ExportDropWatcher
-from .lazy import catch_up_once, try_ingest_owner_lock
 from .exthost import ExthostWatcher
+from .lazy import catch_up_once, try_ingest_owner_lock
 from .sources import (
     ClaudeCodeWatcher,
     ClaudeScienceWatcher,
@@ -26,17 +26,22 @@ from .sources import (
     default_watchers,
     discover_claude_dirs,
     discover_claude_science_dbs,
+    enabled_watchers,
     grok_watcher,
     opencode_watcher,
+    provider_watchers,
 )
 
 __all__ = [
     "Watcher",
+    "SourceDiscovery",
     "SourceWatcher",
     "WatchResult",
     "catch_up_once",
     "try_ingest_owner_lock",
     "default_watchers",
+    "enabled_watchers",
+    "provider_watchers",
     "discover_claude_dirs",
     "discover_claude_science_dbs",
     "ClaudeCodeWatcher",

@@ -99,6 +99,9 @@ def test_wheel_declares_all_entry_points(dist) -> None:
     assert "archive = thread_archive.cli:main" in ep
     assert "archive-mcp = " in ep
     assert "archive-librarian-mcp = " in ep
+    # The human front door, both spellings.
+    assert "thread_archive = thread_archive._setup:main" in ep
+    assert "thread-archive = thread_archive._setup:main" in ep
 
 
 def test_sdist_ships_sources_and_tests_but_no_node_modules(dist) -> None:

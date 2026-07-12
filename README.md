@@ -16,40 +16,42 @@ no server, no external services, and no ties to any host application.
 
 ## Install
 
-**From PyPI.** Needs Python ≥ 3.11. Installs the `archive` CLI, both MCP servers
-(`archive-mcp`, `archive-librarian-mcp`), and the pre-built web viewer — no node.
+Needs Python ≥ 3.11. Installs the `thread_archive` setup command, the
+`archive` operator CLI, both MCP servers (`archive-mcp`,
+`archive-librarian-mcp`), and the pre-built web viewer — no node.
 
 ```bash
 pip install thread-archive                 # lexical core (+ Leiden community detection)
 pip install 'thread-archive[embeddings]'   # optional: local semantic search (heavy: torch)
+thread_archive                             # then: run setup
 ```
 
-Then wire the search MCP into your client and you're done:
+`thread_archive` is the front door. On first run it discovers this machine's
+conversation stores and shows what it found — counts, sizes, date ranges —
+*before* touching anything, then asks: import (all, a selection, or skip),
+install the always-on watcher (macOS LaunchAgent; includes the web viewer at
+:8787), and wire the MCP servers into detected clients (the `claude` CLI, or
+it prints the JSON block for any other client). Every choice is skippable and
+persists in `<home>/config.json`; a disabled source stays disabled across
+every ingest path. Re-running `thread_archive` shows status; `thread_archive
+setup` revisits the choices. Non-interactive (agents, scripts):
+`thread_archive --yes` accepts every default — without `--yes`, a non-TTY run
+only prints guidance and never ingests.
 
-```bash
-claude mcp add thread-archive -- archive-mcp
-```
+Skipped the watcher? Still covered: `archive-mcp` cohosts **lazy catch-up
+ingest** — a background pass at startup and (throttled) around tool calls
+imports whatever landed in your local AI-tool stores since the last pass. On
+a fresh archive give the first pass a minute to chew before expecting search
+hits; the watcher install (`thread_archive setup`, or `archive daemon
+install`) is the always-fresh upgrade. With the daemon installed, the MCP
+servers' lazy passes degrade to no-op lock probes — exactly one process
+ingests at a time, however many Claude Code sessions are open.
 
-That's the whole install: `archive-mcp` cohosts **lazy catch-up ingest** — a
-background pass at startup and (throttled) around tool calls imports whatever
-landed in your local AI-tool stores since the last pass — so the first
-`thread_search` already sees your conversations, no daemon required. The
-upgrade to always-fresh (plus the persistent web viewer at :8787) is one
-command, macOS:
-
-```bash
-archive daemon install     # LaunchAgent: always-on watcher + web viewer
-```
-
-With the daemon installed, the MCP servers' lazy passes degrade to no-op lock
-probes — exactly one process ingests at a time, however many Claude Code
-sessions are open.
-
-**The easy path — clone and let Claude install it.** Clone the repo, open it in Claude
-Code, and say *"install this — follow claude-install.md"*. That guide walks an instance
-through the whole setup: venv, package install, MCP wiring, importing your conversations,
-and curating the topic graph. It's the recommended route for Claude Code use — the clone
-carries the `.mcp.json` template and the `/librarian` skill, which a pip install doesn't.
+**The clone path — for curation.** Clone the repo, open it in Claude Code, and
+say *"install this — follow claude-install.md"*. The clone carries what a pip
+install doesn't: the `.mcp.json` template and the `/librarian` skill (+ its
+enforcement hook) that drives topic-graph curation. Take this route when you
+want the knowledge layer worked, not just search.
 
 ```bash
 git clone https://github.com/ellamental/thread_archive.git thread-archive && cd thread-archive
@@ -82,6 +84,11 @@ topic graph — `/librarian` interactively, or for a large backlog the bulk driv
 
 ## CLI
 
+Two commands, split human from operator. **`thread_archive`** is the human
+front door — first-run setup (discover → consent → import → watcher → MCP
+wiring), then the status view; `thread_archive setup` re-enters the flow.
+**`archive`** is the operator seam:
+
 ```bash
 archive import <path>     # import a transcript / provider store
 archive watch             # watch local AI-tool stores and import incrementally
@@ -106,7 +113,8 @@ viewer is cohosted by `archive watch --web`.
 src/thread_archive/
   _api.py           # internal coordination layer the CLI / MCP / web call into
   cli.py            # the `archive` command
-  _config.py        # truth dir + index path resolution
+  _setup/           # the `thread_archive` command: first-run setup + status
+  _config.py        # truth dir + index path resolution, config.json (source opt-outs)
   _store/           # SQLite store + schema
   _truth/           # JSONL truth log + reindex
   _importers/       # incremental import orchestration
@@ -137,8 +145,8 @@ The public API is exactly two things:
   contract.
 
 Everything else is private support machinery and may change without notice:
-the `archive` CLI, the librarian MCP server, the web viewer, and every
-Python module — there is **no public Python API**. More surface gets exposed
+the `thread_archive` and `archive` CLIs, the librarian MCP server, the web
+viewer, and every Python module — there is **no public Python API**. More surface gets exposed
 deliberately as it matures. `tests/test_public_api.py` ratchets the boundary.
 
 ## Web viewer

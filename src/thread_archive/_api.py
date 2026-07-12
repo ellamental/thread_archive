@@ -311,7 +311,7 @@ def watch(*, home: Optional[str] = None, interval: float = 5.0, once: bool = Fal
     from ._truth import shared_ingest_lock
     from ._watcher import Watcher
 
-    watcher = Watcher(interval=interval)
+    watcher = Watcher(home=home, interval=interval)
     if once:
         # run() takes the shared reindex lock per pass; a one-shot poll needs the
         # same coverage (blocking — it has no next pass to retry on).

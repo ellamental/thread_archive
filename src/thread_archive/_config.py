@@ -11,15 +11,23 @@ A single archive lives under one *home* directory:
         topic_messages.jsonl  # cross-thread overlay (topic evidence, folded from kg_events)
       index.db            # SQLite projection, rebuildable from truth/ via `archive reindex`
       dumps/              # drop zone: account exports dropped here are auto-imported
+      config.json         # operator choices (source opt-outs, setup state); absent = all defaults
 
 `home` resolves from ``THREAD_ARCHIVE_HOME`` (env), else ``~/.thread/archive``
 (the family's ``~/.thread/<product>/`` namespace; ``~/.thread_archive``
 survives as a compat symlink on some boxes).
 Truth and index paths can be overridden individually (e.g. for tests).
+
+``config.json`` is the durable form of the choices a user makes in the
+``thread_archive`` setup flow — which sources to ingest, what setup decided —
+and every ingest path (the watcher daemon, lazy MCP catch-up, ``archive
+watch``) consults it via :func:`source_enabled`. A missing or unreadable file
+means "all defaults": every source enabled, exactly the pre-config behavior.
 """
 
 from __future__ import annotations
 
+import json
 import os
 from dataclasses import dataclass
 from pathlib import Path
@@ -76,3 +84,43 @@ def resolve_paths(
         else Path(os.environ.get(ENV_INDEX, base / "index.db")).expanduser()
     )
     return ArchivePaths(home=base, truth_dir=truth, index_path=index)
+
+
+# ── config.json: durable operator choices ────────────────────────────────────
+
+CONFIG_FILE = "config.json"
+
+
+def config_path(home: str | os.PathLike[str] | None = None) -> Path:
+    return resolve_paths(home).home / CONFIG_FILE
+
+
+def load_config(home: str | os.PathLike[str] | None = None) -> dict:
+    """The parsed config, or ``{}`` when absent/unreadable (all defaults).
+
+    Fail-soft on purpose: a corrupt config file must degrade to default
+    behavior (ingest everything), never take an ingest path down.
+    """
+    try:
+        data = json.loads(config_path(home).read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def save_config(cfg: dict, home: str | os.PathLike[str] | None = None) -> Path:
+    """Write the config atomically (tmp + rename). Returns the path."""
+    path = config_path(home)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text(json.dumps(cfg, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    tmp.replace(path)
+    return path
+
+
+def source_enabled(cfg: dict, source_name: str) -> bool:
+    """Whether a source watcher may ingest. Unlisted sources default to enabled."""
+    entry = cfg.get("sources", {}).get(source_name, {})
+    if not isinstance(entry, dict):
+        return True
+    return bool(entry.get("enabled", True))

@@ -97,7 +97,7 @@ def catch_up_once(
         from .daemon import Watcher
 
         api.open_archive(home)
-        watcher = Watcher(watchers, embed=embed, embed_batch=embed_batch)
+        watcher = Watcher(watchers, home=home, embed=embed, embed_batch=embed_batch)
         # Blocking shared lock, like `watch --once`: a one-shot pass has no
         # later cycle to retry on, so it waits out an in-flight reindex.
         with shared_ingest_lock():

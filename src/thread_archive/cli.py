@@ -113,6 +113,7 @@ def cmd_watch(args: argparse.Namespace) -> int:
 
     api.open_archive(args.home)
     watcher = Watcher(
+        home=args.home,
         interval=args.interval,
         embed=args.embed,
         embed_interval=args.embed_interval,

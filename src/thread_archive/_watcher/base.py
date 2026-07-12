@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
+from typing import Optional
 
 
 @dataclass
@@ -24,6 +25,21 @@ class WatchResult:
         )
 
 
+@dataclass
+class SourceDiscovery:
+    """What a dry-run look at one source's store found — stat-only, no content
+    parse, no import. ``items`` is a session/conversation count where the store
+    exposes one cheaply (per-session-file sources), else ``None``; timestamps
+    are file mtimes (unix seconds), the honest cheap proxy for activity range."""
+
+    name: str
+    available: bool
+    items: Optional[int] = None
+    bytes: int = 0
+    earliest: Optional[float] = None
+    latest: Optional[float] = None
+
+
 class SourceWatcher(ABC):
     """Watches one kind of local AI-tool store and imports new content."""
 
@@ -41,3 +57,9 @@ class SourceWatcher(ABC):
     def is_available(self) -> bool:
         """True if this source's paths exist on this system."""
         ...
+
+    def discover(self) -> SourceDiscovery:
+        """Cheap dry-run report of what this source's store holds (see
+        :class:`SourceDiscovery`). Base form: availability only; watchers that
+        can stat their stores cheaply override with counts/sizes/ranges."""
+        return SourceDiscovery(name=self.source_name, available=self.is_available())

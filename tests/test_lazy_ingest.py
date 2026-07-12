@@ -69,8 +69,8 @@ def test_daemon_run_holds_owner_lock_for_its_lifetime(archive_home) -> None:
 
 
 def test_mcp_maybe_catch_up_throttles_and_respects_env(archive_home, monkeypatch) -> None:
-    from thread_archive._mcp import server
     from thread_archive import _watcher
+    from thread_archive._mcp import server
 
     calls = []
 

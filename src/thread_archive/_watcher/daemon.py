@@ -23,7 +23,7 @@ import time
 from typing import Optional
 
 from .base import SourceWatcher, WatchResult
-from .sources import default_watchers
+from .sources import enabled_watchers
 
 logger = logging.getLogger(__name__)
 
@@ -37,19 +37,24 @@ class Watcher:
     ``interval`` is the poll cadence; ``maintenance_interval`` is the (much slower)
     cadence for the cheap upkeep pass (shard rebalance + manifest watermark + the
     metadata-update backstop). Ingest durability does not depend on either cadence.
+
+    With no explicit ``watchers``, the set is the default providers minus any
+    the operator disabled in ``<home>/config.json`` (see
+    :func:`.sources.enabled_watchers`); ``home`` only locates that config.
     """
 
     def __init__(
         self,
         watchers: Optional[list[SourceWatcher]] = None,
         *,
+        home: Optional[str] = None,
         interval: float = 5.0,
         maintenance_interval: float = 300.0,
         embed: bool = True,
         embed_interval: float = 300.0,
         embed_batch: int = 512,
     ) -> None:
-        self.watchers = watchers if watchers is not None else default_watchers()
+        self.watchers = watchers if watchers is not None else enabled_watchers(home)
         self.interval = interval
         self.maintenance_interval = maintenance_interval
         # Live vector cohost: keep the semantic arm current with ingest so recent
