@@ -138,7 +138,8 @@ The public API is exactly two things:
 - **the retrieval MCP tools** — `thread_search` and `thread_read`, served by
   `archive-mcp`;
 - **the on-disk truth format** — versioned by `manifest.json`'s `version` and
-  specified in [docs/format.md](docs/format.md). Data written by one release
+  specified in [docs/format.md](https://github.com/ellamental/thread_archive/blob/main/docs/format.md).
+  Data written by one release
   stays readable by the next; a reader refuses a truth directory newer than it
   understands. Programmatic read access to the documented stores (`index.db`
   is plain SQLite; the truth directory is documented JSONL) rides on this

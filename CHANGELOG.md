@@ -1,6 +1,8 @@
 # Changelog
 
-## Unreleased
+## 0.0.2 — 2026-07-11
+
+First release published to PyPI: `pip install thread-archive`.
 
 - **`thread_archive` — first-run setup and the human status view (2026-07-11).**
   The consumer front door the pip story was missing: `pip install

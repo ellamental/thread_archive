@@ -12,6 +12,21 @@ license = "MIT"
 license-files = ["LICENSE"]
 authors = [{ name = "Ella" }]
 keywords = ["archive", "conversations", "sqlite", "jsonl", "mcp", "serverless"]
+# No License classifier: the SPDX `license` expression above is the PEP 639
+# source of truth, and backends reject mixing the two.
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "Operating System :: MacOS",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Text Processing :: Indexing",
+    "Topic :: Utilities",
+]
 
 # One storage/runtime path: JSONL + SQLite. No server backends behind extras.
 # (Non-Negotiable #1.) numpy/networkx are for the optional vector + knowledge
