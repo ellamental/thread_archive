@@ -76,6 +76,12 @@ class Watcher:
         self._stop = False
         self._errors_total = 0
         self._errors_recorded_at: Optional[float] = None
+        from datetime import datetime, timezone
+
+        self._started_at = datetime.now(timezone.utc).isoformat()
+        self._passes = 0
+        self._source_totals: dict[str, dict[str, int]] = {}
+        self._heartbeat_recorded_at: Optional[float] = None
 
     def _record_errors(self, errors: list[str]) -> None:
         """Surface poll errors into ``<home>/health.json`` (``watch_errors_last``),
@@ -101,6 +107,52 @@ class Watcher:
         except Exception:  # noqa: BLE001 — advisory; the loop must survive
             logger.exception("watch: could not record poll errors in health.json")
 
+    def _bump_source(self, name: str, r: WatchResult) -> None:
+        """Fold one watcher's poll result into the per-source running totals."""
+        t = self._source_totals.setdefault(name, {
+            "checked": 0, "items": 0, "events": 0,
+            "lines": 0, "parse_errors": 0, "errors": 0,
+        })
+        t["checked"] += r.sources_checked
+        t["items"] += r.items_imported
+        t["events"] += r.events_created
+        t["lines"] += r.lines_processed
+        t["parse_errors"] += r.parse_errors
+        t["errors"] += len(r.errors)
+
+    def _record_pass(self) -> None:
+        """Surface ingest liveness into ``health.json`` (``watch_pass_last``),
+        throttled like :meth:`_record_errors`. Errors already get recorded, but
+        errors alone leave silence ambiguous: a healthy quiet loop and a wedged
+        (or dead) one look identical to ``archive status``. This record's age
+        disambiguates, and its per-source cumulative counters (checked / items /
+        events / lines / parse_errors / errors since process start) are the yield
+        accounting a capture audit reads — a source whose ``lines`` climb while
+        ``events`` stay flat is a parser gone blind. Fail-soft: advisory, must
+        never take the poll loop down."""
+        now = time.monotonic()
+        if (self._heartbeat_recorded_at is not None
+                and now - self._heartbeat_recorded_at < 300):
+            return
+        try:
+            import os
+
+            from .._ops.health import record_health
+
+            record_health("watch_pass_last", {
+                "pid": os.getpid(),
+                "started_at": self._started_at,
+                "passes": self._passes,
+                "sources": {
+                    name: dict(t)
+                    for name, t in sorted(self._source_totals.items())
+                    if any(t.values())
+                },
+            })
+            self._heartbeat_recorded_at = now
+        except Exception:  # noqa: BLE001 — advisory; the loop must survive
+            logger.exception("watch: could not record pass heartbeat in health.json")
+
     def poll_once(self) -> WatchResult:
         """One poll across every available source. Imported events are durable in the
         truth log on commit (inline) — this does not checkpoint."""
@@ -109,11 +161,15 @@ class Watcher:
             try:
                 if not w.is_available():
                     continue
-                total = total + w.poll()
+                r = w.poll()
             except Exception as e:  # noqa: BLE001 — a broken source must not stop the loop
                 logger.warning("%s: poll error: %s", w.source_name, e)
-                total = total + WatchResult(errors=[f"{w.source_name}: poll error: {e}"])
+                r = WatchResult(errors=[f"{w.source_name}: poll error: {e}"])
+            self._bump_source(w.source_name, r)
+            total = total + r
 
+        self._passes += 1
+        self._record_pass()
         if total.errors:
             self._record_errors(total.errors)
         if total.events_created > 0:

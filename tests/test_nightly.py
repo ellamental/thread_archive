@@ -56,6 +56,22 @@ def test_nightly_green_run_records_everything(archive_home, tmp_path, monkeypatc
     assert beat["ok"] is True and beat["failed_stages"] == []
 
 
+def test_nightly_coverage_stage_is_wired(archive_home, tmp_path, monkeypatch):
+    # conftest no-ops the coverage stage (it enumerates real stores); re-patch a
+    # failing stub to assert the stage runs, fails the night, and records.
+    import thread_archive._ops.nightly as ops_nightly
+
+    _seed(archive_home)
+    monkeypatch.setattr(
+        ops_nightly, "check_coverage",
+        lambda **kw: {"ok": False, "failed": ["stub went dark"]},
+    )
+    res = ta.nightly(str(tmp_path / "mirror"))
+    assert "coverage" in res["failed_stages"]
+    assert res["coverage"]["failed"] == ["stub went dark"]
+    assert _health(archive_home)["nightly_last"]["failed_stages"] == ["coverage"]
+
+
 def test_nightly_escalation_is_age_gated(archive_home, tmp_path):
     _seed(archive_home)
     dest = str(tmp_path / "mirror")

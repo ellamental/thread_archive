@@ -253,11 +253,17 @@ def _snapshot_generation(dest: Path) -> dict:
     if not (dest / "manifest.json").exists():
         return out  # first run: nothing at the destination to preserve
     gens = dest / _GENERATIONS_SUBDIR
-    gens.mkdir(exist_ok=True)
-    for stale in gens.glob(".tmp-*"):  # a killed snapshot's half-built tree
-        shutil.rmtree(stale, ignore_errors=True)
     now = datetime.now(timezone.utc)
-    names = sorted((p.name for p in gens.iterdir() if p.is_dir()), reverse=True)
+    try:
+        gens.mkdir(exist_ok=True)
+        for stale in gens.glob(".tmp-*"):  # a killed snapshot's half-built tree
+            shutil.rmtree(stale, ignore_errors=True)
+        names = sorted((p.name for p in gens.iterdir() if p.is_dir()), reverse=True)
+    except OSError as e:  # an unusable gens dir (degraded network dest, name
+        # rejected by the share) — snapshot is protection, not the backup itself
+        out["generation_error"] = str(e)
+        logging.getLogger(__name__).exception("backup: generation snapshot failed")
+        return out
     name = now.strftime("%Y%m%dT%H%M%SZ")
     while name in names:  # two runs within a second — still one gen per run
         name += "x"

@@ -2,6 +2,40 @@
 
 ## Unreleased
 
+- **Capture blind-spot detection (2026-07-12).** The loud capture failures
+  (exceptions) already reached `watch_errors_last`; the silent class — content
+  consumed without a trace, sources gone dark without an error, a wedged
+  ingest loop indistinguishable from a quiet day — had no detector. Four
+  mechanisms, all reconciling the two ledgers that already existed (what the
+  store says happened vs what the archive ingested): (1) parse-dropped line
+  counts now ride import results into the watch loop's accounting instead of
+  dying in the log; (2) a capture-skip ledger (`<home>/capture-skips.jsonl`)
+  records every watermark advance past never-imported lines, making zero-yield
+  consumption auditable and reversible while the source file survives; (3) a
+  watch-pass heartbeat (`watch_pass_last` in health.json, throttled, with
+  per-source cumulative yield counters) disambiguates a healthy quiet loop
+  from a dead one; (4) `archive coverage` — a new nightly stage after the
+  drill — reconciles each enabled source's store against the archive:
+  went-dark (store missing with real imported history) and stale-ingest
+  (store activity newer than the newest archived *event*, deliberately not
+  the watermark, so watermark-advancing zero-yield drift still trips it) fail
+  the night; never-ingested warns; disabled/unwatched sources report ages
+  only. Live SQLite stores are exempt from staleness (mtime churn without
+  content — `store_mtime_tracks_content`). Found along the way: the CC parser
+  already preserves unknown line types verbatim, so type-drift cannot consume
+  content on the claude-code path; the consuming paths are the line-stream
+  providers' importable-content gates, which the ledger now covers.
+
+- **Generation snapshots degrade instead of failing the backup stage
+  (2026-07-12).** `_snapshot_generation`'s dest-side setup (`mkdir` of
+  `.generations/`, the stale-tmp sweep) ran outside its degrade path, so a
+  degraded network destination could fail the whole backup stage with a
+  `PermissionError` — violating the function's own contract that a snapshot
+  failure is reported but never blocks the mirror. First observed on the
+  FrezFamily SMB dest during a stale-mount window. Setup errors now report as
+  `generation_error` like link-time errors. (The share's missing-hardlink
+  support was already handled: `os.link` falls back to `shutil.copy2`.)
+
 - **Store-contamination incident (2026-07-11) cleaned up; reconciliation drops
   unanchored citations (2026-07-12).** A test-suite run on 2026-07-11 ~23:21Z,
   before the `_isolate_archive` autouse sandbox landed in `tests/conftest.py`

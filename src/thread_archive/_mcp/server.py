@@ -252,7 +252,9 @@ def thread_read(
     ``offset``, or resume from an event with ``after_event``). To open a search hit,
     pass its event id as ``around_event``: the read contains that event's whole turn,
     plus ``context_turns`` turns before and after (default 1), and marks the matching
-    step with ``match:<event_id>``. A focused read defaults to readable ``chat`` mode;
+    step with ``match:<event_id>`` (a hit on an event the transcript hides still opens
+    the turn at its position, just without the marker). A focused read defaults to
+    readable ``chat`` mode;
     choose ``full`` when the hit is thinking/tool content. ``summary`` picks a
     summary view instead of the transcript: ``true``/``'toc'`` = a compact per-message
     TOC; ``'short'`` = the thread's stored short summary (a few sentences);

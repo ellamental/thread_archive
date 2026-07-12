@@ -324,6 +324,18 @@ def test_around_event_default_is_chat_but_explicit_mode_wins(archive_home) -> No
     assert "TOOLOUTPUT" in full and "match:4" in full
 
 
+def test_around_event_hidden_event_falls_back_to_position(archive_home) -> None:
+    # A search hit can be an event the transcript hides (lifecycle noise, codex
+    # machinery). Opening it must land on the turn at its position, not error.
+    corpus = list(_CORPUS)
+    corpus.insert(9, ("progress", {"status": "working"}, 8))  # hidden: _SKIP_TYPES
+    tid = _seed(corpus)
+    out = read_thread(tid, around_event=10, context_turns=0)
+    assert "focused on event 10 in turn 2" in _header(out)
+    assert "second question about database" in out
+    assert "match:" not in out  # the hit itself isn't rendered, so no marker
+
+
 def test_around_event_validation(archive_home) -> None:
     tid = _seed()
     assert "was not found in thread" in read_thread(tid, around_event=999)

@@ -196,6 +196,22 @@ def _age_generation(dest, stamp="20200101T000000Z"):
     return aged
 
 
+def test_backup_degrades_when_generations_dir_is_unusable(archive_home, tmp_path):
+    """Snapshot failure must never block the mirror itself — a degraded network
+    destination (or a share that rejects the dot-dir name) reports
+    ``generation_error`` and the backup still completes."""
+    import_cc_session(tmp_path)
+    dest = tmp_path / "mirror"
+    ta.backup(str(dest))
+
+    # Occupy the generations path with a file: mkdir(exist_ok=True) raises.
+    (dest / _GENERATIONS_SUBDIR).write_text("not a directory")
+    res = ta.backup(str(dest))
+    assert res["generation_error"]
+    assert res["generation_created"] is None
+    assert res["mirror_complete"]  # the mirror itself was never blocked
+
+
 def test_backup_snapshots_pre_run_state_as_generation(archive_home, tmp_path):
     import_cc_session(tmp_path)
     dest = tmp_path / "mirror"

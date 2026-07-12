@@ -9,11 +9,18 @@ from typing import Optional
 
 @dataclass
 class WatchResult:
-    """Result of a single poll iteration."""
+    """Result of a single poll iteration.
+
+    ``lines_processed`` / ``parse_errors`` carry the file sources' yield
+    accounting (new source lines fed to the importer; lines dropped as
+    unparseable) so the watch loop's health record can expose capture-side
+    loss — the DB-scan sources have no line notion and leave them 0."""
 
     sources_checked: int = 0
     items_imported: int = 0
     events_created: int = 0
+    lines_processed: int = 0
+    parse_errors: int = 0
     errors: list[str] = field(default_factory=list)
 
     def __add__(self, other: "WatchResult") -> "WatchResult":
@@ -21,6 +28,8 @@ class WatchResult:
             sources_checked=self.sources_checked + other.sources_checked,
             items_imported=self.items_imported + other.items_imported,
             events_created=self.events_created + other.events_created,
+            lines_processed=self.lines_processed + other.lines_processed,
+            parse_errors=self.parse_errors + other.parse_errors,
             errors=self.errors + other.errors,
         )
 
@@ -42,6 +51,13 @@ class SourceDiscovery:
 
 class SourceWatcher(ABC):
     """Watches one kind of local AI-tool store and imports new content."""
+
+    #: True when the store's file mtimes move only on content writes (per-session
+    #: transcript files), so "store mtime newer than the newest archived event" is
+    #: evidence of missed capture. False for live SQLite stores, whose mtimes churn
+    #: without new conversations (app launches, vacuum) — the capture-coverage
+    #: check exempts those from its staleness comparison.
+    store_mtime_tracks_content: bool = False
 
     @property
     @abstractmethod

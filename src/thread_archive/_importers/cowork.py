@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import json
 import logging
+from dataclasses import replace
 from pathlib import Path
 from typing import Optional
 
@@ -27,7 +28,7 @@ from thread_archive._thread_import import DefaultEventBuilder
 from thread_archive._thread_import.parsers.claude_code import ClaudeCodeParser
 
 from .._store import get_session
-from ._read import parse_session_lines, read_source_bytes
+from ._read import parse_session_lines_counted, read_source_bytes
 from ._result import IncrementalImportResult
 from .claude_code import _import_cc
 
@@ -86,22 +87,20 @@ def import_cowork_session_incremental(
     # the normalized ones (a 1:1 map over the parsed lines, so the counts stay aligned).
     source_bytes = read_source_bytes(audit_path)
     # A bare-scalar JSONL line parses to a non-dict; skip it so `.get()` can't crash.
-    lines = [
-        _normalize_cowork_line(ln)
-        for ln in parse_session_lines(source_bytes, audit_path.name)
-        if isinstance(ln, dict)
-    ]
+    parsed, parse_errors = parse_session_lines_counted(source_bytes, audit_path.name)
+    lines = [_normalize_cowork_line(ln) for ln in parsed if isinstance(ln, dict)]
     title = _read_cowork_title(Path(metadata_path)) if metadata_path is not None else None
 
     if session is not None:
-        return _import_cc(
+        result = _import_cc(
             session, source_id, lines, source_bytes, parser, builder,
             source=SOURCE, title_override=title,
         )
+        return replace(result, parse_errors=parse_errors) if parse_errors else result
     with get_session() as s:
         result = _import_cc(
             s, source_id, lines, source_bytes, parser, builder,
             source=SOURCE, title_override=title,
         )
         s.commit()
-        return result
+        return replace(result, parse_errors=parse_errors) if parse_errors else result

@@ -44,6 +44,7 @@ CLI_VERBS = {
     "verify",
     "restore-drill",
     "nightly",
+    "coverage",
     "repair",
     "daemon",
 }

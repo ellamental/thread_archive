@@ -27,6 +27,7 @@ from ._config import ENV_HOME, ArchivePaths, resolve_paths
 
 # The durability kit, re-exported (see docstring).
 from ._ops.backup import backup, restore_drill  # noqa: F401
+from ._ops.coverage import check_coverage  # noqa: F401
 from ._ops.health import read_health  # noqa: F401
 from ._ops.nightly import nightly  # noqa: F401
 from ._ops.verify import verify  # noqa: F401
@@ -330,6 +331,8 @@ def status(*, home: Optional[str] = None) -> dict:
         "last_restore_drill": health.get("restore_drill_last"),
         "last_nightly": health.get("nightly_last"),
         "last_watch_errors": health.get("watch_errors_last"),
+        "last_watch_pass": health.get("watch_pass_last"),
+        "last_coverage": health.get("coverage_last"),
     }
 
 

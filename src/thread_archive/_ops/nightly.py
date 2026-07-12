@@ -1,4 +1,5 @@
-"""The scheduled protection pipeline: backup → verify (escalated) → restore drill."""
+"""The scheduled protection pipeline: backup → verify (escalated) → restore drill
+→ capture coverage."""
 
 from __future__ import annotations
 
@@ -7,6 +8,7 @@ from pathlib import Path
 from typing import Optional
 
 from .backup import backup, restore_drill
+from .coverage import check_coverage
 from .health import read_health, record_health, stamp_heartbeat
 from .verify import verify
 
@@ -63,7 +65,8 @@ def nightly(
     drill: bool = True,
 ) -> dict:
     """The scheduled protection pipeline, as one command: ``backup`` → ``verify``
-    (with age-gated escalation) → ``restore_drill`` — every night.
+    (with age-gated escalation) → ``restore_drill`` → capture ``coverage`` —
+    every night.
 
     Replaces a shell chain of the three commands. The differences that matter:
 
@@ -127,6 +130,19 @@ def nightly(
         result["drill"] = d
         if not drill_ok:
             failed.append("restore-drill")
+
+    # Capture coverage: the stores reconciled against the archive (see
+    # _ops.coverage). The other stages protect what was captured; this one
+    # asserts capture itself is still whole — a source gone dark or ingest
+    # gone stale fails the night like any integrity break.
+    try:
+        c = check_coverage(home=home)
+        coverage_ok = bool(c.get("ok"))
+    except Exception as e:
+        c, coverage_ok = {"error": f"{type(e).__name__}: {e}"}, False
+    result["coverage"] = c
+    if not coverage_ok:
+        failed.append("coverage")
 
     result["ok"] = not failed
     result["failed_stages"] = failed

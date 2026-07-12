@@ -42,6 +42,14 @@ def _isolate_archive(tmp_path, monkeypatch):
     # that would background-import the machine's REAL AI-tool stores and repoint
     # the engine mid-suite. Off; test_lazy_ingest.py exercises it with stubs.
     monkeypatch.setenv("THREAD_ARCHIVE_MCP_INGEST", "0")
+    # Same discipline for the nightly's capture-coverage stage: it enumerates
+    # the machine's REAL AI-tool stores (enabled_watchers + discover), which a
+    # test must never do. Green no-op here; test_capture_coverage.py exercises
+    # the real check with stub watchers, and test_nightly.py re-patches its own
+    # stub to assert the stage wiring.
+    from thread_archive._ops import nightly as _nightly
+
+    monkeypatch.setattr(_nightly, "check_coverage", lambda **kw: {"ok": True})
     # Model-free suite: no real torch model may load, regardless of installed extras.
     monkeypatch.setattr(embed, "is_available", lambda: False)
     monkeypatch.setattr(rerank, "is_available", lambda: False)

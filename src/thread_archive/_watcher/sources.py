@@ -74,6 +74,8 @@ class FileSessionWatcher(SourceWatcher):
     with ``.events_created`` / ``.thread_id`` / ``.is_new_thread``).
     """
 
+    store_mtime_tracks_content = True  # per-session transcript files
+
     def __init__(self) -> None:
         # Per-file (mtime_ns, size) fingerprints, pruned each poll to files on disk.
         self._seen: dict[str, tuple[int, int]] = {}
@@ -114,6 +116,8 @@ class FileSessionWatcher(SourceWatcher):
                     sources_checked=1,
                     items_imported=1 if imp.events_created > 0 else 0,
                     events_created=imp.events_created,
+                    lines_processed=imp.lines_processed,
+                    parse_errors=imp.parse_errors,
                 )
             except Exception as e:  # noqa: BLE001 — one bad file must not stop the poll
                 msg = f"{self.source_name} import error for {source_id}: {e}"
@@ -401,6 +405,8 @@ class CoworkWatcher(SourceWatcher):
     ones directly. source_id is ``{user_uuid}:{org_uuid}:{session_id}``; the human
     title comes from the sibling ``local_{id}.json``."""
 
+    store_mtime_tracks_content = True  # per-session audit.jsonl files
+
     def __init__(self) -> None:
         self._seen: dict[str, tuple[int, int]] = {}
 
@@ -454,6 +460,8 @@ class CoworkWatcher(SourceWatcher):
                     sources_checked=1,
                     items_imported=1 if imp.events_created > 0 else 0,
                     events_created=imp.events_created,
+                    lines_processed=imp.lines_processed,
+                    parse_errors=imp.parse_errors,
                 )
             except Exception as e:  # noqa: BLE001 — one bad session must not stop the poll
                 msg = f"cowork import error for {source_id}: {e}"

@@ -595,7 +595,9 @@ def read_thread(
     CHUNKED footer naming the next offset. ``after_event`` resumes from the turn after
     an event id. ``around_event`` opens a search result in its containing turn plus
     ``context_turns`` turns on each side; it overrides offset/after-event pagination
-    and defaults to the readable ``chat`` view when no mode is explicit. ``summary``
+    and defaults to the readable ``chat`` view when no mode is explicit. A hit on an
+    event the transcript hides opens the turn at its position (with no ``match:``
+    marker, since the event itself isn't rendered). ``summary``
     picks a summary view instead of the transcript —
     ``True``/``'toc'`` = compact per-message TOC, ``'short'`` = the stored short
     summary (``Thread.summary``), ``'indexed'`` = the stored indexed summary
@@ -653,7 +655,20 @@ def read_thread(
                 focus_turn = i
                 break
         if focus_turn is None:
-            return f"Event {around_event} was not found in thread {thread_id}."
+            # The event may exist but be hidden from the transcript (lifecycle noise,
+            # codex machinery, text deduped against an already-rendered turn) — search
+            # indexes some of those, so a real hit id can be absent from every step.
+            # Fall back to its position: the last turn with a rendered event before it.
+            if any(ev.id == around_event for ev in events):
+                focus_turn = 0
+                for i, turn in enumerate(turns):
+                    if any(
+                        (eid or 0) <= around_event
+                        for st in turn for eid in st.get("event_ids", [st["id"]])
+                    ):
+                        focus_turn = i
+            else:
+                return f"Event {around_event} was not found in thread {thread_id}."
         if context_turns < 0:
             return "context_turns must be zero or greater."
         offset = max(0, focus_turn - context_turns)

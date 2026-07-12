@@ -30,9 +30,10 @@ from .._store import Thread, get_session
 from ._continuation import resolve_continuation_thread
 from ._cursor import resolve_source_cursor
 from ._events import import_lines
-from ._read import parse_session_lines, read_source_bytes
+from ._read import parse_session_lines_counted, read_source_bytes
 from ._result import IncrementalImportResult
 from ._sidecar import import_sidecar_lines, read_sidecar_lines
+from ._skip_ledger import record_skip
 from ._state import (
     adopt_if_unwatermarked,
     create_thread,
@@ -201,11 +202,20 @@ def _import_cc(
 
     # A freshly-created thread that imported nothing (no importable content) is
     # cleaned up so we don't leave an empty thread behind — row AND staged truth
-    # record, so no ghost threads/<id>.jsonl survives the commit.
+    # record, so no ghost threads/<id>.jsonl survives the commit. The watermark
+    # still advances past these lines below, consuming them for good — so the
+    # consumption goes on the capture-skip ledger (see ._skip_ledger): correct
+    # for a metadata-only session, and the only audit trail if the parser has
+    # gone blind to a changed format.
     if is_new_thread and events_created == 0:
         discard_new_thread(session, thread_id)
         thread_id = 0
         is_new_thread = False
+        record_skip(
+            source, source_id,
+            lines_skipped=len(new_lines), lines_total=total_lines,
+            reason="empty_import_discarded",
+        )
     elif thread_id and events_created:
         # Keep metadata current. New threads already carry title/description from
         # create; an existing thread re-syncs a rename / AI title and backfills a
@@ -270,7 +280,7 @@ def import_session_incremental(
     parser = parser or ClaudeCodeParser()
     builder = builder or DefaultEventBuilder()
     source_bytes = read_source_bytes(session_path)
-    all_lines = parse_session_lines(source_bytes, session_path.name)
+    all_lines, parse_errors = parse_session_lines_counted(source_bytes, session_path.name)
     sidecar_lines = read_sidecar_lines(session_path)
 
     def _run(s) -> IncrementalImportResult:
@@ -282,6 +292,8 @@ def import_session_incremental(
             n = import_sidecar_lines(s, result.thread_id, source_id, sidecar_lines)
             if n:
                 result = replace(result, events_created=result.events_created + n)
+        if parse_errors:
+            result = replace(result, parse_errors=parse_errors)
         return result
 
     if session is not None:

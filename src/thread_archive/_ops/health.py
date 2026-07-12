@@ -68,6 +68,7 @@ _STAGE_RECORD = {
     "backup": "backup_last",
     "verify": "verify_last",
     "restore-drill": "restore_drill_last",
+    "coverage": "coverage_last",
 }
 
 

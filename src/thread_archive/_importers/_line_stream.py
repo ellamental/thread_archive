@@ -11,13 +11,15 @@ when no session is passed.
 from __future__ import annotations
 
 import logging
+from dataclasses import replace
 from pathlib import Path
 from typing import Any, Callable, Optional
 
 from .._store import get_session
 from ._cursor import resolve_source_cursor
-from ._read import parse_session_lines, read_source_bytes
+from ._read import parse_session_lines_counted, read_source_bytes
 from ._result import IncrementalImportResult
+from ._skip_ledger import record_skip
 from ._state import (
     adopt_if_unwatermarked,
     create_thread,
@@ -94,7 +96,15 @@ def _run(
     if thread_id is None:
         if not has_importable_content(new_lines):
             # Nothing worth a thread — record the watermark so the watcher doesn't
-            # re-scan, and stop.
+            # re-scan, and stop. The advance consumes these lines for good, so it
+            # goes on the capture-skip ledger (see ._skip_ledger): correct for a
+            # metadata-only session, and the only audit trail if it was actually
+            # a parser gone blind to a changed format.
+            record_skip(
+                source, source_id,
+                lines_skipped=len(new_lines), lines_total=total_lines,
+                reason="no_importable_content",
+            )
             upsert_import_state(
                 session,
                 source=source,
@@ -170,7 +180,7 @@ def import_line_stream_session(
         raise FileNotFoundError(not_found_msg)
 
     source_bytes = read_source_bytes(session_path)
-    all_lines = parse_session_lines(source_bytes, session_path.name)
+    all_lines, parse_errors = parse_session_lines_counted(source_bytes, session_path.name)
 
     kwargs = dict(
         source=source,
@@ -186,8 +196,8 @@ def import_line_stream_session(
     )
 
     if session is not None:
-        return _run(session, **kwargs)
+        return replace(_run(session, **kwargs), parse_errors=parse_errors)
     with get_session() as s:
         result = _run(s, **kwargs)
         s.commit()
-        return result
+        return replace(result, parse_errors=parse_errors)

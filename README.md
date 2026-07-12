@@ -99,8 +99,9 @@ archive verify            # integrity check: truth parses + matches the index
 archive repair            # quarantine damaged truth lines; restore committed content from the index
 archive backup <dest>     # mirror the truth dir (keeps hardlink generations under <dest>/.generations)
 archive restore-drill <dest>  # prove the backup restores: rebuild an index from the mirror + smoke read/search
-archive nightly <dest>    # the scheduled pipeline: backup → verify (age-gated escalation) → restore drill
-archive status            # archive health / counts / last verify + backup + drill outcomes
+archive nightly <dest>    # the scheduled pipeline: backup → verify (age-gated escalation) → restore drill → coverage
+archive coverage          # capture-coverage check: source stores reconciled against the archive
+archive status            # archive health / counts / last verify + backup + drill + coverage outcomes
 archive daemon <action>   # macOS: install/uninstall/restart/status the always-on watcher LaunchAgent
 ```
 

@@ -5,8 +5,8 @@ is the retrieval MCP tools plus the truth format (see the package docstring);
 this CLI is the process seam launchd, cron, and operators use to run the
 private machinery — ingest (``import``, ``import-export``, ``watch``,
 ``embed``), the durability kit (``backup``, ``verify``, ``restore-drill``,
-``reindex``, ``repair``, ``status``, ``nightly``), and the LaunchAgent
-lifecycle (``daemon``). Verbs may change without
+``reindex``, ``repair``, ``status``, ``nightly``, ``coverage``), and the
+LaunchAgent lifecycle (``daemon``). Verbs may change without
 external notice, but they are *wired into* the LaunchAgent plists, lab's cron
 script, the /ci skill, and the monitor's heartbeat contract — renaming one
 means updating those in the same change (``tests/test_public_api.py`` pins the
@@ -549,6 +549,32 @@ def cmd_status(args: argparse.Namespace) -> int:
         f"{d['at']} ({_age(d['at'])})"
         if d else "drill:   never recorded"
     )
+    c = st.get("last_coverage")
+    if c and c["ok"]:
+        print(
+            f"coverage: ok ({c.get('sources_checked', '?')} sources) "
+            f"{c['at']} ({_age(c['at'])})"
+        )
+    elif c:
+        print(f"coverage: FAILED {c['at']} ({_age(c['at'])})")
+        for msg in (c.get("failed") or [])[:3]:
+            print(f"         {msg}")
+    else:
+        print("coverage: never recorded")
+    p = st.get("last_watch_pass")
+    if p:
+        srcs = p.get("sources") or {}
+        events = sum(t.get("events", 0) for t in srcs.values())
+        parse_errors = sum(t.get("parse_errors", 0) for t in srcs.values())
+        line = (
+            f"ingest:  last pass {p['at']} ({_age(p['at'])}), "
+            f"{events} events since pass-owner start"
+        )
+        if parse_errors:
+            line += f", {parse_errors} PARSE ERRORS (see capture-skips.jsonl + logs)"
+        print(line)
+    else:
+        print("ingest:  no pass recorded")
     w = st.get("last_watch_errors")
     if w:
         print(
@@ -558,6 +584,37 @@ def cmd_status(args: argparse.Namespace) -> int:
         for err in w.get("errors", [])[:3]:
             print(f"         {err}")
     return 0
+
+
+def cmd_coverage(args: argparse.Namespace) -> int:
+    from . import _api as api
+
+    r = api.check_coverage(home=args.home)
+    for name, s in sorted(r["sources"].items()):
+        state = s.get("failed") or s.get("warning") or "ok"
+        print(
+            f"{name:<16} {state:<16} store_latest={s['store_latest'] or '-'} "
+            f"newest_event={s['newest_event_at'] or '-'} history={s['history']}"
+        )
+    for name, s in sorted(r["disabled"].items()):
+        print(f"{name:<16} {'disabled':<16} history={s['history']}")
+    for name, s in sorted(r["unwatched"].items()):
+        print(f"{name:<16} {'unwatched':<16} newest_event={s['newest_event_at'] or '-'}")
+    sk = r["skips"]
+    if sk["total"]:
+        print(
+            f"skips: {sk['total']} ledger records, {sk['recent']} in last "
+            f"{sk['days']:.0f}d ({sk['recent_lines']} lines) — capture-skips.jsonl"
+        )
+    for msg in r["warnings"]:
+        print(f"warning: {msg}")
+    if r["ok"]:
+        print("OK")
+    else:
+        print("FAILED:")
+        for msg in r["failed"]:
+            print(f"  {msg}")
+    return 0 if r["ok"] else 1
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -626,6 +683,13 @@ def build_parser() -> argparse.ArgumentParser:
     p_embed.add_argument("--newest-first", action="store_true",
                          help="embed the freshest gap first (recent threads findable soonest)")
     p_embed.set_defaults(func=cmd_embed)
+
+    p_coverage = sub.add_parser(
+        "coverage",
+        help="capture-coverage check: source stores reconciled against the archive",
+    )
+    _add_home_arg(p_coverage)
+    p_coverage.set_defaults(func=cmd_coverage)
 
     p_status = sub.add_parser("status", help="archive health / paths / counts")
     _add_home_arg(p_status)

@@ -53,8 +53,13 @@ def read_source_bytes(session_path: Path) -> bytes:
     return Path(session_path).read_bytes()
 
 
-def parse_session_lines(data: bytes, name: str = "<transcript>") -> list[dict]:
+def parse_session_lines_counted(data: bytes, name: str = "<transcript>") -> tuple[list[dict], int]:
     """Parse every line of a JSONL transcript's bytes; skip (log) bad lines.
+
+    Returns ``(lines, parse_errors)``. The count is how many source lines were
+    dropped as unparseable — a dropped line is content the archive will never
+    hold, so the importers carry the count out on their results (it feeds the
+    watcher's health accounting) instead of it dying in the log.
 
     ``io.StringIO(..., newline=None)`` gives the same universal-newline line split
     as ``open()`` in text mode: only ``\\n`` (post-translation) ends a line, so a
@@ -73,7 +78,12 @@ def parse_session_lines(data: bytes, name: str = "<transcript>") -> list[dict]:
                 logger.warning("%s:%d — JSON parse error: %s", name, line_num, e)
     if parse_errors:
         logger.warning("%s: %d lines skipped due to parse errors", name, parse_errors)
-    return lines
+    return lines, parse_errors
+
+
+def parse_session_lines(data: bytes, name: str = "<transcript>") -> list[dict]:
+    """:func:`parse_session_lines_counted` for callers that don't track the count."""
+    return parse_session_lines_counted(data, name)[0]
 
 
 def read_session_lines(session_path: Path) -> list[dict]:
