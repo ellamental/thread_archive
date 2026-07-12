@@ -119,6 +119,7 @@ def format_results(hits: list[dict], query: str, *, output: str | None = None) -
     lines = [header]
     if verdict and verdict[1]:
         lines.append(f"  note: {verdict[1]}")
+    lines.append("  open a hit: thread_read(thread_id, around_event=event_id)")
     lines.append("")
 
     for h in hits:

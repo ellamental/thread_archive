@@ -152,6 +152,8 @@ def read_thread(
     tool_results: bool = False,
     max_chars: int = 0,
     after_event: Optional[int] = None,
+    around_event: Optional[int] = None,
+    context_turns: int = 1,
 ) -> str:
     """Reconstruct a conversation thread as a readable transcript.
 
@@ -161,7 +163,9 @@ def read_thread(
     size-budgeted (``max_chars``, default ~48k). ``tool_results`` (default off) adds
     tool output under each call in ``full``. ``summary`` swaps in a summary view:
     ``True``/``'toc'`` = compact TOC, ``'short'`` / ``'indexed'`` = the stored thread
-    summaries; see :func:`thread_archive._retrieval.read_thread` for the full contract."""
+    summaries. ``around_event`` opens a search-result event with
+    ``context_turns`` turns of surrounding context; see
+    :func:`thread_archive._retrieval.read_thread` for the full contract."""
     open_archive(home)
     from ._retrieval import read_thread as _read
 
@@ -175,6 +179,8 @@ def read_thread(
         tool_results=tool_results,
         max_chars=max_chars,
         after_event=after_event,
+        around_event=around_event,
+        context_turns=context_turns,
     )
 
 

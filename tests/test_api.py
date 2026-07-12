@@ -31,6 +31,9 @@ def test_public_surface_round_trip(archive_home) -> None:
     transcript = ta.read_thread(thread_id)
     assert "[USER" in transcript and "hello library" in transcript
 
+    focused = ta.read_thread(thread_id, around_event=hits[0]["event_id"], context_turns=0)
+    assert "match:" in focused and "hi from the assistant" in focused
+
     st = ta.status()
     assert st["threads"] == 1
     assert st["events"] > 0

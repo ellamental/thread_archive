@@ -2,7 +2,8 @@
 
 Pins the standalone ``read_thread`` to the monorepo ``thread_read`` behavior:
 default user-only, ``mode`` = user/chat/full, turn pagination (limit/offset/
-after_event), a ~48k char budget with a CHUNKED footer, and the ``summary`` views
+after_event), search-result focus (around_event/context_turns), a ~48k char budget
+with a CHUNKED footer, and the ``summary`` views
 (TOC, plus the stored short/indexed thread summaries behind a feature flag).
 Tool *results* are never rendered (calls only), matching the monorepo.
 
@@ -290,6 +291,43 @@ def test_after_event_resumes_next_turn(archive_home) -> None:
     assert "showing 2-3" in _header(out)
     assert "first question" not in out
     assert "second question about database" in out
+
+
+def test_around_event_opens_containing_turn(archive_home) -> None:
+    tid = _seed()
+    out = read_thread(tid, around_event=8, context_turns=0)
+    assert "focused on event 8 in turn 2, showing 2-2" in _header(out)
+    assert "second question about database" in out
+    assert "answer two preamble" in out and "answer two conclusion" in out
+    assert "match:8" in out
+    assert "first question about authentication" not in out
+    assert "[COMPACTION" not in out
+
+
+def test_around_event_defaults_to_one_surrounding_turn(archive_home) -> None:
+    tid = _seed()
+    out = read_thread(tid, around_event=6)
+    assert "showing 1-3" in _header(out)
+    assert "first question about authentication" in out
+    assert "second question about database" in out
+    assert "[COMPACTION" in out
+
+
+def test_around_event_default_is_chat_but_explicit_mode_wins(archive_home) -> None:
+    tid = _seed()
+    focused = read_thread(tid, around_event=1, context_turns=0)
+    assert "here is the first answer" in focused
+    assert "[tool: Bash" not in focused
+    user = read_thread(tid, around_event=1, context_turns=0, mode="user")
+    assert "here is the first answer" not in user
+    full = read_thread(tid, around_event=4, context_turns=0, mode="full", tool_results=True)
+    assert "TOOLOUTPUT" in full and "match:4" in full
+
+
+def test_around_event_validation(archive_home) -> None:
+    tid = _seed()
+    assert "was not found in thread" in read_thread(tid, around_event=999)
+    assert "zero or greater" in read_thread(tid, around_event=1, context_turns=-1)
 
 
 def test_max_chars_budget_and_footer_hint_in_full(archive_home) -> None:

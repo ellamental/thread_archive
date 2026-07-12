@@ -225,6 +225,8 @@ def thread_read(
     tool_results: bool = False,
     max_chars: int = 0,
     after_event: Optional[int] = None,
+    around_event: Optional[int] = None,
+    context_turns: int = 1,
 ) -> str:
     """Read a thread's conversation, reconstructed from the event log.
 
@@ -247,7 +249,11 @@ def thread_read(
     The read is size-budgeted (~48k chars), so it never silently overflows the MCP
     output cap: a thread bigger than one chunk ends in a CHUNKED footer naming the
     exact offset to read next (that's pagination, not lost data — page with
-    ``offset``, or resume from an event with ``after_event``). ``summary`` picks a
+    ``offset``, or resume from an event with ``after_event``). To open a search hit,
+    pass its event id as ``around_event``: the read contains that event's whole turn,
+    plus ``context_turns`` turns before and after (default 1), and marks the matching
+    step with ``match:<event_id>``. A focused read defaults to readable ``chat`` mode;
+    choose ``full`` when the hit is thinking/tool content. ``summary`` picks a
     summary view instead of the transcript: ``true``/``'toc'`` = a compact per-message
     TOC; ``'short'`` = the thread's stored short summary (a few sentences);
     ``'indexed'`` = the stored indexed summary (structured, with event anchors) —
@@ -271,6 +277,9 @@ def thread_read(
             boundary once hit and the footer points at the next offset. Default: ~48k.
         after_event: Resume reading from the turn AFTER this event id (overrides
             offset). Robust way to continue from where a previous read stopped.
+        around_event: Open this search-result event in its containing turn with
+            surrounding conversation. Overrides offset and after_event.
+        context_turns: Turns to include before and after around_event. Default: 1.
     """
     _maybe_catch_up()
     return api.read_thread(
@@ -283,6 +292,8 @@ def thread_read(
         tool_results=tool_results,
         max_chars=max_chars,
         after_event=after_event,
+        around_event=around_event,
+        context_turns=context_turns,
     )
 
 

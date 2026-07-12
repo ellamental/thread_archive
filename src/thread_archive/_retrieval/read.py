@@ -8,7 +8,8 @@ tool_execution_*) plus lifecycle/summary events (api_request_*, stream_completed
 
 :func:`read_thread` is the string transcript surface (CLI / MCP). It mirrors the
 monorepo ``thread_read`` contract: a ``mode`` view knob (user / chat / full),
-turn-based pagination (``limit`` / ``offset`` / ``after_event``), a per-chunk
+turn-based pagination (``limit`` / ``offset`` / ``after_event``), focused reads
+around a search-result event (``around_event`` / ``context_turns``), a per-chunk
 ``max_chars`` budget with a CHUNKED footer, and ``summary`` for the summary views
 (true/'toc' = compact TOC; 'short' / 'indexed' = the stored thread summaries). The
 default view is ``user`` — only the user turns, the cheap signal — exactly as the
@@ -270,6 +271,7 @@ def _build_steps(events: list[Event]) -> list[dict]:
             steps.append({
                 "role": "user",
                 "id": ev.id,
+                "event_ids": [ev.id],
                 "ts": ev.occurred_at,
                 "content": content,
                 "is_compaction": content.startswith(_COMPACTION_PREFIX),
@@ -286,6 +288,7 @@ def _build_steps(events: list[Event]) -> list[dict]:
                 steps.append({
                     "role": p.get("role") or "message",
                     "id": ev.id,
+                    "event_ids": [ev.id],
                     "ts": ev.occurred_at,
                     "content": content,
                     "is_compaction": False,
@@ -298,10 +301,15 @@ def _build_steps(events: list[Event]) -> list[dict]:
             # back onto that step rather than spawning an orphan result-only step.
             if cur is None and is_result and steps and steps[-1]["role"] == "assistant":
                 steps[-1]["blocks"].append(block)
+                steps[-1]["event_ids"].append(ev.id)
             else:
                 if cur is None:
-                    cur = {"role": "assistant", "id": ev.id, "ts": ev.occurred_at, "blocks": []}
+                    cur = {
+                        "role": "assistant", "id": ev.id, "event_ids": [],
+                        "ts": ev.occurred_at, "blocks": [],
+                    }
                 cur["blocks"].append(block)
+                cur["event_ids"].append(ev.id)
         if et == "text_complete" and cur is not None:
             steps.append(cur)
             cur = None
@@ -343,15 +351,27 @@ def _format_result_block(block: dict) -> str:
     return f"[result] {out}"
 
 
-def _format_step(step: dict, *, strip_tools: bool, strip_thinking: bool, include_results: bool) -> str:
+def _format_step(
+    step: dict,
+    *,
+    strip_tools: bool,
+    strip_thinking: bool,
+    include_results: bool,
+    focus_event: Optional[int] = None,
+) -> str:
     """Format one step as ``[USER ...]`` / ``[ASSISTANT ...]`` text, honoring strips.
 
     Tool result/error blocks render only when ``include_results`` is set *and* tools
     aren't stripped (a result with its call hidden would be context-free)."""
     ts = _fmt_ts(step["ts"])
+    focus = (
+        f" match:{focus_event}"
+        if focus_event is not None and focus_event in step.get("event_ids", [step["id"]])
+        else ""
+    )
     if "content" in step:  # user, or a preserved non-standard-role turn
         label = "USER" if step["role"] == "user" else step["role"].upper()
-        return f"[{label} {ts} event:{step['id']}] {step['content']}"
+        return f"[{label} {ts} event:{step['id']}{focus}] {step['content']}"
     parts = []
     for b in step.get("blocks", []):
         bt = b.get("type")
@@ -385,7 +405,7 @@ def _format_step(step: dict, *, strip_tools: bool, strip_thinking: bool, include
                 c = b.get("content", "").strip()
                 parts.append(f"[{b.get('event_type')}]" + (f" {c}" if c else ""))
     content = "\n" + "\n".join(parts) if parts else ""
-    return f"[ASSISTANT {ts} event:{step['id']}]{content}"
+    return f"[ASSISTANT {ts} event:{step['id']}{focus}]{content}"
 
 
 def _group_steps_into_turns(steps: list[dict]) -> list[list[dict]]:
@@ -403,7 +423,7 @@ def _group_steps_into_turns(steps: list[dict]) -> list[list[dict]]:
 
 
 def _accumulate_turns(remaining, limit, max_chars, *, strip_tools, strip_thinking,
-                      include_results, user_only):
+                      include_results, user_only, focus_event=None):
     """Accumulate turns into one chunk until the char budget (or turn limit) is hit.
     Returns ``(formatted_steps, turns_consumed, total_chars)`` — ``turns_consumed``
     counts every turn advanced past (incl. compaction placeholders), so
@@ -423,7 +443,7 @@ def _accumulate_turns(remaining, limit, max_chars, *, strip_tools, strip_thinkin
             continue
         turn_formatted = [
             _format_step(s, strip_tools=strip_tools, strip_thinking=strip_thinking,
-                         include_results=include_results)
+                         include_results=include_results, focus_event=focus_event)
             for s in turn
             if not (user_only and s["role"] != "user")
         ]
@@ -558,6 +578,8 @@ def read_thread(
     tool_results: bool = False,
     max_chars: int = 0,
     after_event: Optional[int] = None,
+    around_event: Optional[int] = None,
+    context_turns: int = 1,
     session: Optional[Session] = None,
 ) -> str:
     """Read a thread's conversation as a transcript, reconstructed from its events.
@@ -571,7 +593,10 @@ def read_thread(
     (where calls are shown). The read is paginated by turns and size-budgeted at
     ``max_chars`` (default ~48k chars): a thread bigger than one chunk ends in a
     CHUNKED footer naming the next offset. ``after_event`` resumes from the turn after
-    an event id; ``summary`` picks a summary view instead of the transcript —
+    an event id. ``around_event`` opens a search result in its containing turn plus
+    ``context_turns`` turns on each side; it overrides offset/after-event pagination
+    and defaults to the readable ``chat`` view when no mode is explicit. ``summary``
+    picks a summary view instead of the transcript —
     ``True``/``'toc'`` = compact per-message TOC, ``'short'`` = the stored short
     summary (``Thread.summary``), ``'indexed'`` = the stored indexed summary
     (``Thread.indexed_summary``, structured, with event anchors). ``user_only`` is a
@@ -611,13 +636,30 @@ def read_thread(
             thread, steps, limit if limit and limit > 0 else 200, offset, session=session
         )
 
-    resolved_user_only, strip_tools, strip_thinking = resolve_read_view(mode, user_only)
+    # A focused search-result read should show the exchange around the hit, not only
+    # the asking side. An explicit mode/user_only remains authoritative.
+    effective_mode = (
+        "chat" if around_event is not None and mode is None and user_only is None else mode
+    )
+    resolved_user_only, strip_tools, strip_thinking = resolve_read_view(effective_mode, user_only)
     budget = max_chars if max_chars and max_chars > 0 else DEFAULT_READ_CHAR_BUDGET
 
     turns = _group_steps_into_turns(steps)
 
+    focus_turn: Optional[int] = None
+    if around_event is not None:
+        for i, turn in enumerate(turns):
+            if any(around_event in st.get("event_ids", [st["id"]]) for st in turn):
+                focus_turn = i
+                break
+        if focus_turn is None:
+            return f"Event {around_event} was not found in thread {thread_id}."
+        if context_turns < 0:
+            return "context_turns must be zero or greater."
+        offset = max(0, focus_turn - context_turns)
+
     # after_event → offset: resume from the turn AFTER the last turn at/with that id.
-    if after_event is not None:
+    if around_event is None and after_event is not None:
         last_before = -1
         for i, turn in enumerate(turns):
             if any((st["id"] or 0) <= after_event for st in turn):
@@ -627,13 +669,30 @@ def read_thread(
     total = len(turns)
     if offset < 0:
         offset = max(0, total + offset)
-    remaining = turns[offset:]
+    requested_end = (
+        min(total, focus_turn + context_turns + 1) if focus_turn is not None else total
+    )
+    remaining = turns[offset:requested_end]
+    page_limit = len(remaining) if focus_turn is not None else limit
 
     page, consumed, total_chars = _accumulate_turns(
-        remaining, limit, budget,
+        remaining, page_limit, budget,
         strip_tools=strip_tools, strip_thinking=strip_thinking,
         include_results=tool_results, user_only=resolved_user_only,
+        focus_event=around_event,
     )
+
+    # A huge preceding context turn must never consume the budget before the match.
+    # If that happened, drop only the preceding context and retry from the focus.
+    if focus_turn is not None and offset + consumed <= focus_turn:
+        offset = focus_turn
+        remaining = turns[offset:requested_end]
+        page, consumed, total_chars = _accumulate_turns(
+            remaining, len(remaining), budget,
+            strip_tools=strip_tools, strip_thinking=strip_thinking,
+            include_results=tool_results, user_only=resolved_user_only,
+            focus_event=around_event,
+        )
 
     if not page:
         if offset > 0:
@@ -644,16 +703,21 @@ def read_thread(
 
     next_offset = offset + consumed
     label = "user turns" if resolved_user_only else "turns"
+    focus_note = (
+        f", focused on event {around_event} in turn {focus_turn + 1}"
+        if focus_turn is not None else ""
+    )
     header = (
         f"# Thread {thread_id}: {thread.title or thread.name or '(untitled)'}\n"
         f"Created: {_fmt_ts(thread.inserted_at)}\n"
-        f"Messages: {total} {label}, showing {offset + 1}-{next_offset} (~{total_chars} chars)\n\n"
+        f"Messages: {total} {label}{focus_note}, showing {offset + 1}-{next_offset} "
+        f"(~{total_chars} chars)\n\n"
     )
     body = "\n\n".join(page)
 
     footer = ""
-    if next_offset < total:
-        remaining_turns = total - next_offset
+    if next_offset < requested_end:
+        remaining_turns = requested_end - next_offset
         cont = f"thread_id={thread_id}, offset={next_offset}"
         if not resolved_user_only:
             cont += ", user_only=false"

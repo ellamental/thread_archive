@@ -32,6 +32,7 @@ def test_mcp_registers_two_tools() -> None:
             "output", "context_lines", "context_events"} <= set(search_props)
     read_props = by_name["thread_read"].inputSchema["properties"]
     assert "thread_id" in read_props
+    assert {"around_event", "context_turns"} <= set(read_props)
     # summary is bool | str: true/'toc' = TOC, 'short'/'indexed' = stored summaries
     summary_types = {v["type"] for v in read_props["summary"]["anyOf"]}
     assert summary_types == {"boolean", "string"}
@@ -50,6 +51,10 @@ def test_mcp_tools_query_the_archive(archive_home) -> None:
     thread_id = ta.search("hello")[0]["thread_id"]
     transcript = thread_read(thread_id)
     assert "[USER" in transcript and "hello mcp" in transcript
+
+    event_id = ta.search("hello")[0]["event_id"]
+    focused = thread_read(thread_id, around_event=event_id, context_turns=0)
+    assert f"match:{event_id}" in focused and "hi from mcp" in focused
 
 
 def test_mcp_search_new_filters(archive_home) -> None:
