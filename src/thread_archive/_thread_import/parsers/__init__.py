@@ -6,13 +6,11 @@ message format with unified content_blocks schema.
 
 ## Architecture
 
-The parser system uses a pipeline pattern with clear boundaries:
+The parser system has clear boundaries:
 
 1. **Types** (`types/`): TypedDict schemas for provider input formats
 2. **Config** (`config/`): Provider-specific configuration (ProviderConfig)
-3. **Pipeline** (`pipeline/`): Composable parse -> transform -> normalize -> validate
-4. **Validators** (`validators/`): Pluggable validation rules
-5. **Transformers** (`transformers/`): Message transformations (coalescing, etc.)
+3. **Validators** (`validators/`): Pluggable validation rules
 
 ## Content Block Types
 
@@ -74,24 +72,6 @@ from .config import (
     get_provider_config,
 )
 from .cursor import CursorParser
-
-# Pipeline infrastructure
-from .pipeline import (
-    Normalizer,
-    Parser,
-    ParserPipeline,
-    RawMessage,
-    Transformer,
-    Validator,
-)
-
-# Transformers
-from .transformers import (
-    ActivePathTransformer,
-    IDEContextTransformer,
-    ThinkingMergeTransformer,
-    ToolCoalescingTransformer,
-)
 
 # Validators
 from .validators import (
@@ -161,24 +141,12 @@ __all__ = [
     "CLAUDE_CODE_CONFIG",
     "CURSOR_CONFIG",
     "get_provider_config",
-    # Pipeline infrastructure
-    "RawMessage",
-    "Parser",
-    "Transformer",
-    "Normalizer",
-    "Validator",
-    "ParserPipeline",
     # Validators
     "BaseValidator",
     "ThinkingBlockValidator",
     "ReferentialIntegrityValidator",
     "TypeValidator",
     "ContentValidator",
-    # Transformers
-    "ToolCoalescingTransformer",
-    "ActivePathTransformer",
-    "ThinkingMergeTransformer",
-    "IDEContextTransformer",
     # Parsers (legacy interface)
     "ChatGPTParser",
     "ClaudeParser",

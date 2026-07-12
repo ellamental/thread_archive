@@ -65,9 +65,9 @@ def compute_dedup_key(provider_message_id: str, event_type: str, payload: dict) 
 class ThreadEvent:
     """Portable event representation - not tied to DB schema.
 
-    This mirrors backend/event_log.py's Event but is independent
-    of the database layer, allowing event creation logic to be
-    tested without database access.
+    Mirrors the store's Event shape but is independent of the
+    database layer, allowing event creation logic to be tested
+    without database access.
     """
     event_type: str
     payload: dict

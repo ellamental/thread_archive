@@ -14,14 +14,10 @@ Architecture:
 - EventBuilder: Converts NormalizedMessage to Thread events
 """
 
-from .api import ConversationMeta, ImportSource
 from .event_builder import DefaultEventBuilder, EventBuilder, ThreadEvent
 from .parsers import ChatGPTParser, ClaudeCodeParser, ClaudeParser, ProviderParser, get_parser
 
 __all__ = [
-    # API
-    "ImportSource",
-    "ConversationMeta",
     # Event Building
     "EventBuilder",
     "DefaultEventBuilder",

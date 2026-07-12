@@ -104,6 +104,35 @@ def test_reindex_repoints_citation_to_surviving_twin(archive_home, tmp_path):
     assert ta.verify(deep=True)["deep"]["dangling"]["citation_events"] == 0
 
 
+# ── unanchored citations ──────────────────────────────────────────────────────
+def test_reindex_drops_citation_whose_referents_are_both_gone(archive_home, tmp_path):
+    import_cc_session(tmp_path)
+    with get_session() as s:
+        ev_id, tid = s.execute(text("SELECT id, thread_id FROM events LIMIT 1")).one()
+    topic = create_topic("Unanchored Test")["topic_id"]
+    add_topic_evidence(topic, ev_id, tid, "quote")
+
+    # The cited thread leaves the truth entirely — the shape of a quarantined
+    # contamination. The citation has no surviving twin to repoint to and no
+    # parent for its declared thread FK; left in place it would make every
+    # future rebuild fail the relational gate.
+    d = archive_home / "truth"
+    path = next(p for p in (d / "threads").rglob(f"{tid}.jsonl"))
+    path.unlink()
+    jsonl_log.reset_handles()
+
+    with pytest.raises(RuntimeError, match="would lose"):
+        ta.reindex()  # deliberate removal still fail-closes without salvage
+    counts = ta.reindex(salvage=True)
+    assert counts.get("citations_dropped_unanchored") == 1
+
+    with get_session() as s:
+        assert s.execute(text("PRAGMA foreign_key_check")).fetchall() == []
+        assert s.execute(text(
+            "SELECT count(*) FROM topic_messages WHERE topic_id = :t"),
+            {"t": topic}).scalar() == 0
+
+
 # ── citation thread realignment ───────────────────────────────────────────────
 def test_reindex_aligns_citation_thread_with_event(archive_home, tmp_path):
     import_cc_session(tmp_path)

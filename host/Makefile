@@ -24,8 +24,13 @@ LOG_DIR   := $(HOME)/.thread/archive/logs
 
 # Scheduled nightly protection pipeline (`archive nightly`: backup → verify →
 # restore drill). DEST is the backup destination — pass it on the command line
-# and point it at a DIFFERENT disk/machine:
+# and point it at a DIFFERENT disk/machine. For a network DEST, also pass
+# MOUNT_URL (the smb:// URL of the volume containing DEST) so run-nightly.sh
+# can remount it before each run — needs the share's password saved in the
+# login keychain (Finder ⌘K, "Remember this password in my keychain"):
 #   make install-backup-agent DEST=/Volumes/Backup/thread_archive
+#   make install-backup-agent DEST="/Volumes/NAS/backups/thread_archive" MOUNT_URL="smb://user@host/NAS"
+MOUNT_URL ?=
 BACKUP_PLIST_SRC := com.thread-archive.backup.plist
 BACKUP_LABEL     := com.thread-archive.backup
 BACKUP_PLIST     := $(HOME)/Library/LaunchAgents/$(BACKUP_LABEL).plist
@@ -73,6 +78,7 @@ install-backup-agent:
 	@test -x $(ENTRY) || { echo "missing $(ENTRY) — run 'pip install -e .' into the repo venv first"; exit 1; }
 	@mkdir -p $(LOG_DIR) $(dir $(BACKUP_PLIST))
 	sed -e 's#__REPO__#$(REPO)#g' -e 's#__LOGDIR__#$(LOG_DIR)#g' -e 's#__DEST__#$(DEST)#g' \
+	    -e 's#__MOUNT_URL__#$(MOUNT_URL)#g' \
 	    $(BACKUP_PLIST_SRC) > $(BACKUP_PLIST)
 	-launchctl bootout gui/$(UID)/$(BACKUP_LABEL) 2>/dev/null
 	@sleep 3

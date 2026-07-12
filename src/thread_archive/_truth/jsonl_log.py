@@ -1744,7 +1744,13 @@ def _reconcile_collapsed_citations(d: Path, engine) -> dict:
     discarded id's line, so its ``dedup_key`` recovers the surviving row: the
     citation is repointed to it — or dropped when the topic already cites the
     survivor (same content, same topic, one citation). A citation whose event
-    has no surviving twin is left dangling for ``verify --deep`` to report.
+    has no surviving twin is left dangling for ``verify --deep`` to report —
+    but only while its *thread* still exists. When the cited thread is gone
+    from the build too (a quarantined contamination, a deliberately removed
+    thread), nothing in the store anchors the row: there is no twin to repoint
+    to and no parent for its declared ``thread_id`` FK, so the relational gate
+    would refuse the rebuild over it. Such a citation is dropped, archived or
+    not — the gate stays reserved for genuine loader accidents.
 
     Citations whose recorded ``thread_id`` disagrees with the cited event's
     actual thread are aligned to the event — the event row is authoritative and
@@ -1804,6 +1810,13 @@ def _reconcile_collapsed_citations(d: Path, engine) -> dict:
                     )
                     repointed += 1
     with engine.begin() as conn:
+        unanchored = conn.exec_driver_sql(
+            "DELETE FROM topic_messages "
+            "WHERE thread_id IS NOT NULL "
+            "AND NOT EXISTS(SELECT 1 FROM events e WHERE e.id = topic_messages.event_id) "
+            "AND NOT EXISTS(SELECT 1 FROM threads t WHERE t.id = topic_messages.thread_id)"
+        ).rowcount
+    with engine.begin() as conn:
         aligned = conn.exec_driver_sql(
             "UPDATE topic_messages SET thread_id = "
             "(SELECT e.thread_id FROM events e WHERE e.id = topic_messages.event_id) "
@@ -1815,6 +1828,8 @@ def _reconcile_collapsed_citations(d: Path, engine) -> dict:
         out["citations_repointed"] = repointed
     if dropped:
         out["citations_dropped"] = dropped
+    if unanchored:
+        out["citations_dropped_unanchored"] = unanchored
     if aligned:
         out["citations_thread_aligned"] = aligned
     if out:
@@ -1853,8 +1868,8 @@ def reindex(*, vectors: bool = False, salvage: bool = False) -> dict:
     event lands in the truth mid-build and silently misses the new index. In-process
     readers reconnect on the next ``get_engine()`` call (the live engine's pools are
     disposed before the swap); *cross-process* readers keep serving the old inode
-    until they reconnect or restart — the accepted stale-read window (see
-    docs/plans/reindex-atomic-swap.md for the follow-up).
+    until they reconnect or restart — an accepted stale-read window (long-lived
+    readers converge via :func:`thread_archive._api._reconnect_if_swapped`).
 
     Bulk loading targets the build file through a **FK-OFF Core** loader so
     dependency-agnostic inserts need no ordering and the conversation truth-log

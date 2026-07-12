@@ -73,9 +73,6 @@ def test_wheel_carries_the_whole_runtime(dist) -> None:
     assert "thread_archive/cli.py" in names
     # the vendored parser island ships inside the package
     assert "thread_archive/_thread_import/__init__.py" in names
-    # provider JSON schemas are data files — the easiest thing to lose in packaging
-    assert any(n.startswith("thread_archive/_thread_import/schemas/") and n.endswith(".json")
-               for n in names)
     # the pre-built web viewer ships so `pip install` needs no node
     assert "thread_archive/_web/static/index.html" in names
     assert any(n.startswith("thread_archive/_web/static/assets/") and n.endswith(".js")

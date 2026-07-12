@@ -18,19 +18,15 @@ no server, no external services, and no ties to any host application.
 
 Installs the `thread_archive` setup command, the `archive` operator CLI,
 both MCP servers (`archive-mcp`, `archive-librarian-mcp`), and the pre-built
-web viewer — no node. pip needs Python ≥ 3.11; Homebrew brings its own.
+web viewer — no node. pip needs Python ≥ 3.11.
 
 ```bash
-brew install ellamental/thread-archive/thread-archive   # macOS (Homebrew tap)
-# or
-pip install thread-archive                 # lexical core (+ Leiden community detection)
-pip install 'thread-archive[embeddings]'   # optional: local semantic search (heavy: torch)
+pip install git+https://github.com/ellamental/thread_archive.git   # lexical core (+ Leiden community detection)
+# optional: local semantic search (heavy: torch)
+pip install 'thread-archive[embeddings] @ git+https://github.com/ellamental/thread_archive.git'
 
 thread_archive                             # then: run setup
 ```
-
-The `[embeddings]` extra is pip-only — the brew formula installs the lexical
-core.
 
 `thread_archive` is the front door. On first run it discovers this machine's
 conversation stores and shows what it found — counts, sizes, date ranges —

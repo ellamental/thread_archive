@@ -1,8 +1,11 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!-- Template — `make install-backup-agent DEST=<path>` substitutes __REPO__,
-     __DEST__, and __LOGDIR__ at install time. Do not install this file verbatim.
+     __DEST__, __MOUNT_URL__, and __LOGDIR__ at install time. Do not install
+     this file verbatim.
 
-     Runs `archive nightly <DEST>` on a daily schedule — the whole protection
+     Runs `archive nightly <DEST>` (via host/run-nightly.sh, which first
+     remounts a network DEST's volume — see that script) on a daily schedule —
+     the whole protection
      pipeline as one command: mirror the JSONL truth dir to DEST (point it at a
      DIFFERENT disk/machine — for pre-retention history the truth log is the only
      copy), integrity-verify the live archive (the deep and hashes tiers fold in
@@ -22,9 +25,10 @@
 
     <key>ProgramArguments</key>
     <array>
-        <string>__REPO__/.venv/bin/archive</string>
-        <string>nightly</string>
+        <string>/bin/sh</string>
+        <string>__REPO__/host/run-nightly.sh</string>
         <string>__DEST__</string>
+        <string>__MOUNT_URL__</string>
         <string>--notify-url</string>
         <string>http://127.0.0.1:8002/api/notify</string>
     </array>

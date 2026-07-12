@@ -2,6 +2,43 @@
 
 ## Unreleased
 
+- **Store-contamination incident (2026-07-11) cleaned up; reconciliation drops
+  unanchored citations (2026-07-12).** A test-suite run on 2026-07-11 ~23:21Z,
+  before the `_isolate_archive` autouse sandbox landed in `tests/conftest.py`
+  that evening, leaked into the live store in two directions: 3,220 truth
+  lines (9 real Claude Code sessions re-imported under fixture-allocated
+  thread ids 2/3/5/6, all duplicating conversations already archived under
+  their real ids — including 951 event-id collisions with the ancient threads
+  those files belonged to) and one synthetic `grok:conv-ok` fixture thread
+  written into the live index (id 3716440 + 5 events; the watcher's next
+  checkpoint then snapshotted its thread record into truth). The nightly
+  caught it: shallow verify flagged the drift and the restore drill's
+  relational gate refused the rebuild. Cleanup: rogue truth lines quarantined
+  to `truth/quarantine/rogue-import-20260711/` under the truth-write lock, a
+  salvage reindex dropped the fixture events, and a librarian pass's two
+  citations of the fixture event (added while the damage was live) exposed a
+  reconciliation gap — a citation whose event *and* thread are both gone from
+  a rebuild kept a dangling declared `thread_id` FK that would fail every
+  future rebuild's relational gate. `_reconcile_collapsed_citations` now
+  drops such unanchored citations (archived or not), reported as
+  `citations_dropped_unanchored`; event-only dangles stay tolerated for
+  `verify --deep` to report, as designed.
+
+- **More dead vendored code removed (2026-07-11).** Same sweep as the
+  exporters deletion: `_thread_import/schemas/` (JSON-schema validation, zero
+  consumers), `_thread_import/api.py` (`ConversationMeta`/`ImportSource`, zero
+  consumers), and `parsers/pipeline/` + `parsers/transformers/` (the
+  `ParserPipeline` architecture was never instantiated by any live parser;
+  `ToolCoalescingTransformer`'s tests went with it). The wheel no longer ships
+  the schema JSON data files. Also fixed a stale docstring pointer in
+  `jsonl_log.reindex` to the deleted reindex-atomic-swap plan, and two
+  parent-project references (`apps.chat_import`, `backend/event_log.py`) in
+  the vendored island's docstrings.
+
+- **Web viewer caches hashed assets (2026-07-11).** `assets/*` (Vite
+  content-hashed filenames) now serve with `Cache-Control: public,
+  max-age=31536000, immutable`, so reloads stop re-fetching the bundle.
+
 - **ChatGPT account exports import (2026-07-11).** The vendored ChatGPT parser
   is now wired into the bulk export importer: `classify_export` tells the two
   `conversations.json` providers apart (sibling files first — ChatGPT ships

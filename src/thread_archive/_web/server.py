@@ -66,11 +66,11 @@ def _redirect(url: str) -> Response:
     return 302, "text/plain; charset=utf-8", b"", {"Location": url}
 
 
-def _serve_file(p: Path) -> Response:
+def _serve_file(p: Path, *, headers: Optional[dict] = None) -> Response:
     if not p.is_file():
         return _text(404, "not found")
     ctype = _CTYPES.get(p.suffix.lower(), "application/octet-stream")
-    return 200, ctype, p.read_bytes(), {}
+    return 200, ctype, p.read_bytes(), headers or {}
 
 
 def _first(params: dict, key: str) -> Optional[str]:
@@ -258,7 +258,13 @@ def route(method: str, path: str, params: dict) -> Response:
     if rel:
         candidate = (STATIC_DIR / rel).resolve()
         if (candidate == STATIC_DIR or STATIC_DIR in candidate.parents) and candidate.is_file():
-            return _serve_file(candidate)
+            # Vite emits content-hashed filenames under assets/ — a changed file
+            # gets a new URL, so the browser may cache these forever.
+            cache = (
+                {"Cache-Control": "public, max-age=31536000, immutable"}
+                if rel.startswith("assets/") else None
+            )
+            return _serve_file(candidate, headers=cache)
 
     # ---- SPA fallback: every other path renders the app shell (client routing) ----
     return _serve_file(STATIC_DIR / "index.html")
