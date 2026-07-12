@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+- **Homebrew tap published (2026-07-11):**
+  `brew install ellamental/thread-archive/thread-archive` (or `brew tap
+  ellamental/thread-archive` then `brew install thread-archive`). The tap
+  (github.com/ellamental/homebrew-thread-archive) carries a virtualenv
+  formula over the PyPI sdist, dependencies as prebuilt wheels installed
+  hermetically into the keg. The `[embeddings]` extra stays pip-only.
+
 ## 0.0.2 — 2026-07-11
 
 First release published to PyPI: `pip install thread-archive`.
