@@ -967,19 +967,59 @@ def _verify_deep(watermark: int) -> dict:
                 {"wm": watermark}).scalar() or 0
             from .._retrieval._extract import INDEXABLE_EVENT_TYPES, extract_fts_content
 
+            # api_request_completed is twin-gated at index time (see the NB in
+            # _extract.INDEXABLE_EVENT_TYPES): its absence from the surface is by
+            # design when a granular twin — by api_call_id, or by text anywhere in
+            # the thread's indexed text/thinking rows — already carries the
+            # content. Only an arc whose text is findable NOWHERE is drift.
+            arc_seen_cache: dict = {}
+
+            def _arc_covered(thread_id, api_call_id, payload) -> bool:
+                if api_call_id is None:
+                    return True  # the gate never indexes these — by design
+                twin = s.execute(sa_text(
+                    "SELECT 1 FROM events WHERE api_call_id = :ac "
+                    "AND event_type IN ('text_complete','thinking_complete') LIMIT 1"),
+                    {"ac": api_call_id}).scalar()
+                if twin:
+                    return True
+                if thread_id not in arc_seen_cache:
+                    if len(arc_seen_cache) > 64:
+                        arc_seen_cache.clear()
+                    rows = s.execute(sa_text(
+                        "SELECT content FROM events_fts WHERE thread_id = :t "
+                        "AND content_type IN ('text','thinking')"), {"t": thread_id}).scalars()
+                    arc_seen_cache[thread_id] = {(c or "").strip() for c in rows} - {""}
+                seen = arc_seen_cache[thread_id]
+                tuples = extract_fts_content("api_request_completed", payload)
+                if not tuples:
+                    # No content_blocks — the indexer stitches the call's raw
+                    # deltas instead; judge coverage of the same stitched text.
+                    from .._retrieval.fts import stitch_delta_tuples
+
+                    tuples = [t[:3] for t in stitch_delta_tuples(s, api_call_id)]
+                return all(not c.strip() or c.strip() in seen for c, _, _ in tuples)
+
             types = ", ".join(f"'{t}'" for t in INDEXABLE_EVENT_TYPES)
             cur = s.connection().connection.execute(  # raw sqlite3 — stream the gap set
-                f"SELECT e.id, e.event_type, e.payload FROM events e "  # noqa: S608 — types from INDEXABLE_EVENT_TYPES
+                f"SELECT e.id, e.thread_id, e.api_call_id, e.event_type, e.payload FROM events e "  # noqa: S608 — types from INDEXABLE_EVENT_TYPES
                 f"WHERE e.id <= ? AND e.event_type IN ({types}) "
                 "AND NOT EXISTS(SELECT 1 FROM events_fts f WHERE f.event_id = e.id)",
                 (watermark,),
             )
-            for ev_id, etype, payload_text in cur:
+            for ev_id, ev_tid, ev_ac, etype, payload_text in cur:
                 try:
                     payload = _json.loads(payload_text) if isinstance(payload_text, str) else payload_text
                 except ValueError:
                     payload = None
-                if isinstance(payload, dict) and extract_fts_content(etype, payload):
+                if not isinstance(payload, dict):
+                    fts_empty_extract += 1
+                elif etype == "api_request_completed":
+                    if _arc_covered(ev_tid, ev_ac, payload):
+                        fts_empty_extract += 1
+                    else:
+                        fts_unindexed.append(int(ev_id))
+                elif extract_fts_content(etype, payload):
                     fts_unindexed.append(int(ev_id))
                 else:
                     fts_empty_extract += 1

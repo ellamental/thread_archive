@@ -15,17 +15,21 @@ from typing import Optional
 
 # Event types that carry searchable content (must match the dispatch below).
 #
-# NB: ``api_request_completed`` is deliberately *not* indexed. thread-archive never
-# live-streams — every assistant turn is *imported* via DefaultEventBuilder, which
-# emits the granular text_complete / thinking_complete events alongside an
-# api_request_completed summary that duplicates them. Indexing both double-counts
-# the same text, so we index the granular events and drop the summary. (A
-# live-streaming path would need the summary, since its stream emits text_delta
-# rather than text_complete — but that path doesn't apply here.)
+# NB: assistant text reaches the archive two ways, and exactly one of them may be
+# indexed per api_call. File importers (DefaultEventBuilder) emit granular
+# text_complete / thinking_complete twins beside an api_request_completed summary
+# that duplicates them; live-capture sources (cloth, loom, needle, officiant, …)
+# emit token text_delta events — never indexed — and the assembled turn exists
+# only in the summary's content_blocks. So the granular twins are indexed
+# unconditionally, and api_request_completed is indexed ONLY for api_calls with
+# no twin — a gate the callers apply (see fts.index_events / rebuild_fts), since
+# it needs context beyond one event. Indexing both would double-count; indexing
+# neither loses every live-captured assistant turn.
 INDEXABLE_EVENT_TYPES = [
     "user_message_sent",
     "text_complete",
     "thinking_complete",
+    "api_request_completed",  # twin-gated by the callers — see NB above
     "tool_use_started",
     "tool_use_complete",
     "tool_execution_completed",

@@ -435,6 +435,105 @@ def index_thread_meta(session: Optional[Session] = None, thread_ids: Optional[li
     return written
 
 
+# The twins whose presence gates api_request_completed indexing (see the NB in
+# _extract.INDEXABLE_EVENT_TYPES): index the summary ONLY for api_calls with no
+# granular twin — matched by api_call_id, then by text (a doubly captured thread
+# carries the file importer's twins under different api_call_ids than the live
+# stream's summaries). The same rule, by the same names, drives what the reader
+# synthesizes (read._absorb_stream_deltas) — search hits and rendered transcripts
+# must agree on whose copy of the text exists.
+_ARC_TWIN_TYPES = ("text_complete", "thinking_complete")
+
+
+def _twin_texts(session: Session, thread_id: int) -> set[str]:
+    """The (stripped) texts of a thread's granular complete events."""
+    rows = session.execute(
+        select(Event.payload).where(
+            Event.thread_id == thread_id, Event.event_type.in_(_ARC_TWIN_TYPES)
+        )
+    ).scalars()
+    out: set[str] = set()
+    for payload in rows:
+        p = payload if isinstance(payload, dict) else json.loads(payload)
+        t = (p.get("text") or "").strip()
+        if t:
+            out.add(t)
+    return out
+
+
+def stitch_delta_tuples(session: Session, api_call_id: str) -> list:
+    """``(content, content_type, tool_name, anchor_event_id)`` tuples stitched
+    from a call's raw delta events — the fallback when its
+    ``api_request_completed`` carries no ``content_blocks`` (some recovery paths
+    don't reconstruct them), or never arrived at all, so the text exists nowhere
+    else. Mirrors the reader's stitch in ``read._synthesize_completes``:
+    concatenate per ``block_index``, in order. ``anchor_event_id`` is each
+    block's last delta event — the anchor arc-less calls index and render
+    under; calls that do have a summary anchor there instead (the caller's
+    choice)."""
+    rows = session.execute(
+        select(Event.id, Event.event_type, Event.payload)
+        .where(Event.api_call_id == api_call_id, Event.event_type.in_(("text_delta", "thinking_delta")))
+        .order_by(Event.id)
+    ).all()
+    runs: dict = {}  # block_index -> [event_type, [texts], last_delta_id]
+    for eid, et, payload in rows:
+        p = payload if isinstance(payload, dict) else json.loads(payload)
+        run = runs.setdefault(p.get("block_index", 0), [et, [], eid])
+        run[1].append(p.get("text", ""))
+        run[2] = eid
+    out = []
+    for _, (et, texts, anchor) in sorted(runs.items()):
+        text = "".join(texts)
+        if text.strip():
+            out.append((text, "thinking" if et == "thinking_delta" else "text", None, anchor))
+    return out
+
+
+def _gate_arc_tuples(
+    session: Session,
+    *,
+    api_call_id: Optional[str],
+    thread_id: int,
+    tuples: list,
+    twin_text_cache: dict,
+    twinned_calls: Optional[set] = None,
+) -> list:
+    """Apply the twin gate to an ``api_request_completed`` event's extracted
+    tuples: nothing when the api_call has a granular twin; otherwise only the
+    blocks no twin in the thread already carries. Emitted texts join the cache
+    set, so a duplicated summary can't index twice. ``twinned_calls`` is the
+    precomputed twin api_call_id set (rebuild); absent, the twin-call check is
+    one indexed query (incremental)."""
+    if api_call_id is None:
+        return []  # can't prove no twin — never risk double-counting
+    if twinned_calls is not None:
+        if api_call_id in twinned_calls:
+            return []
+    elif session.execute(
+        select(Event.id)
+        .where(Event.api_call_id == api_call_id, Event.event_type.in_(_ARC_TWIN_TYPES))
+        .limit(1)
+    ).first():
+        return []
+    if not tuples:
+        # A summary with no content_blocks: the call's text exists only as raw
+        # deltas — stitch them, anchored (by the caller) to this summary event.
+        tuples = [(c, ct, tn) for c, ct, tn, _ in stitch_delta_tuples(session, api_call_id)]
+    if thread_id not in twin_text_cache:
+        if len(twin_text_cache) > 64:
+            twin_text_cache.clear()
+        twin_text_cache[thread_id] = _twin_texts(session, thread_id)
+    seen = twin_text_cache[thread_id]
+    out = []
+    for content, content_type, tool_name in tuples:
+        key = content.strip()
+        if key and key not in seen:
+            seen.add(key)
+            out.append((content, content_type, tool_name))
+    return out
+
+
 def index_events(session: Session, events: list) -> int:
     """Index a batch of just-written events into the FTS surface (shadow + FTS5).
 
@@ -444,6 +543,7 @@ def index_events(session: Session, events: list) -> int:
     """
     ensure_fts(session)
     indexed = 0
+    twin_text_cache: dict = {}
     for ev in events:
         if ev.event_type not in INDEXABLE_EVENT_TYPES:
             continue
@@ -452,7 +552,14 @@ def index_events(session: Session, events: list) -> int:
         # with rebuilt rows — rebuild_fts copies events.occurred_at as SQLite
         # rendered it, and the since/until bounds are resolved to the same form.
         oa = canonical_time_bound(ev.occurred_at) if ev.occurred_at else None
-        for content, content_type, tool_name in extract_fts_content(ev.event_type, payload):
+        tuples = extract_fts_content(ev.event_type, payload)
+        if ev.event_type == "api_request_completed":
+            # The batch's own twins are visible to the queries via autoflush.
+            tuples = _gate_arc_tuples(
+                session, api_call_id=ev.api_call_id, thread_id=ev.thread_id,
+                tuples=tuples, twin_text_cache=twin_text_cache,
+            )
+        for content, content_type, tool_name in tuples:
             tn = tool_name[:200] if tool_name else None
             session.add(EventFts(
                 event_id=ev.id, thread_id=ev.thread_id, event_type=ev.event_type,
@@ -485,10 +592,21 @@ def rebuild_fts(session: Optional[Session] = None) -> int:
         s.flush()
         fts_table = EventFts
         conn = s.connection()
+        # The twin gate's call-id side, precomputed once (one indexed scan)
+        # instead of a query per api_request_completed row.
+        twinned_calls = set(
+            s.execute(
+                select(Event.api_call_id)
+                .where(Event.event_type.in_(_ARC_TWIN_TYPES), Event.api_call_id.isnot(None))
+                .distinct()
+            ).scalars()
+        )
+        twin_text_cache: dict = {}
         last_id = 0
         while True:
             rows = s.execute(
-                select(Event.id, Event.thread_id, Event.event_type, Event.payload)
+                select(Event.id, Event.thread_id, Event.event_type, Event.payload,
+                       Event.api_call_id)
                 .where(Event.event_type.in_(INDEXABLE_EVENT_TYPES), Event.id > last_id)
                 .order_by(Event.id)
                 .limit(5000)
@@ -496,10 +614,16 @@ def rebuild_fts(session: Optional[Session] = None) -> int:
             if not rows:
                 break
             batch = []
-            for eid, tid, etype, payload in rows:
+            for eid, tid, etype, payload, api_call_id in rows:
                 last_id = eid
                 p = payload if isinstance(payload, dict) else json.loads(payload)
-                for content, content_type, tool_name in extract_fts_content(etype, p):
+                tuples = extract_fts_content(etype, p)
+                if etype == "api_request_completed":
+                    tuples = _gate_arc_tuples(
+                        s, api_call_id=api_call_id, thread_id=tid, tuples=tuples,
+                        twin_text_cache=twin_text_cache, twinned_calls=twinned_calls,
+                    )
+                for content, content_type, tool_name in tuples:
                     batch.append({
                         "event_id": eid, "thread_id": tid, "event_type": etype,
                         "content": content, "content_type": content_type,
@@ -507,6 +631,47 @@ def rebuild_fts(session: Optional[Session] = None) -> int:
                     })
             if batch:
                 conn.execute(insert(fts_table), batch)
+
+        # 1b. Arc-less calls: a stream killed before its api_request_completed
+        # arrived left deltas with no summary event for the main loop to hang
+        # rows on. Stitch each such call's text and anchor it at the block's
+        # last delta event — the same anchor the reader renders these under.
+        # Rebuild-only on purpose: incrementally, "the summary never arrives"
+        # is only knowable in hindsight, and indexing early would double up
+        # when it does arrive.
+        arc_calls = set(
+            s.execute(
+                select(Event.api_call_id)
+                .where(Event.event_type == "api_request_completed", Event.api_call_id.isnot(None))
+                .distinct()
+            ).scalars()
+        )
+        orphan_calls = s.execute(
+            select(Event.api_call_id, Event.thread_id)
+            .where(Event.event_type.in_(("text_delta", "thinking_delta")), Event.api_call_id.isnot(None))
+            .distinct()
+        ).all()
+        orphan_batch = []
+        for ac, tid in orphan_calls:
+            if ac in arc_calls or ac in twinned_calls:
+                continue
+            if tid not in twin_text_cache:
+                if len(twin_text_cache) > 64:
+                    twin_text_cache.clear()
+                twin_text_cache[tid] = _twin_texts(s, tid)
+            seen = twin_text_cache[tid]
+            for content, content_type, tool_name, anchor in stitch_delta_tuples(s, ac):
+                key = content.strip()
+                if key and key not in seen:
+                    seen.add(key)
+                    orphan_batch.append({
+                        "event_id": anchor, "thread_id": tid,
+                        "event_type": "text_delta" if content_type == "text" else "thinking_delta",
+                        "content": content, "content_type": content_type,
+                        "tool_name": tool_name,
+                    })
+        if orphan_batch:
+            conn.execute(insert(fts_table), orphan_batch)
 
         # 2. (Re)build the FTS5 table from the shadow.
         s.execute(sa_text("DELETE FROM event_search"))

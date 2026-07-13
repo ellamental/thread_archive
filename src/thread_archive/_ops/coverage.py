@@ -23,7 +23,12 @@ coverage is their reconciliation:
   either a first import still in flight, or a hole.
 - **report-only**: sources disabled in config, and archive sources with no
   watcher at all (export-based providers age between manual drops; that is
-  expected, so their age is shown, never red).
+  expected, so their age is shown, never red). Disabled sources report their
+  store's current activity alongside their import history: a deliberate
+  opt-out's store staying active is normal, but a source disabled by
+  *accident* (a config bug, a wizard regression) has no other surface where
+  its unarchived activity shows — visibility here is what keeps the
+  sanctioned off switch from doubling as a silent capture hole.
 
 Runs nightly as a pipeline stage (recording ``coverage_last``; an out-of-band
 green run retires a red nightly stage, see :mod:`.health`) and on demand via
@@ -94,13 +99,17 @@ def check_coverage(
     *,
     home: Optional[str] = None,
     watchers: Optional[list] = None,
+    all_watchers: Optional[list] = None,
     grace_hours: float = GRACE_HOURS,
     min_history: int = MIN_HISTORY_FOR_DARK,
 ) -> dict:
     """Reconcile every enabled source's store against the archive (see module
     docstring for the checks). Returns the full report; records a compact
     ``coverage_last`` in health.json. ``watchers`` overrides the enabled set
-    (tests inject stubs)."""
+    (tests inject stubs); ``all_watchers`` overrides the full known set the
+    disabled/unwatched reporting is computed against — when only ``watchers``
+    is injected it doubles as the full set, so a stub-driven test never
+    discovers the real machine's stores."""
     from .._api import open_archive
     from .._importers._skip_ledger import summarize_skips
     from .._watcher.sources import (
@@ -112,6 +121,10 @@ def check_coverage(
     open_archive(home)
     if watchers is None:
         watchers = enabled_watchers(home)
+        if all_watchers is None:
+            all_watchers = default_watchers()
+    if all_watchers is None:
+        all_watchers = watchers
     watchers = [w for w in watchers if w.source_name not in _MECHANISM_SOURCES]
 
     history, newest_event = _archive_side()
@@ -170,12 +183,18 @@ def check_coverage(
     # no watcher (manual/export-based, plus historical providers). Never red.
     enabled_names = {w.source_name for w in watchers}
     disabled = {}
-    for w in default_watchers():
+    for w in all_watchers:
         n = w.source_name
         if n not in enabled_names and n not in _MECHANISM_SOURCES:
             hist_count, last_import = history.get(n, (0, None))
-            disabled[n] = {"history": hist_count, "last_import_at": _iso(last_import)}
-    watcher_names = {w.source_name for w in default_watchers()}
+            d = w.discover()
+            disabled[n] = {
+                "history": hist_count,
+                "last_import_at": _iso(last_import),
+                "store_items": d.items,
+                "store_latest": _iso(d.latest),
+            }
+    watcher_names = {w.source_name for w in all_watchers}
     unwatched = {
         source: {"newest_event_at": _iso(epoch)}
         for source, epoch in sorted(newest_event.items())

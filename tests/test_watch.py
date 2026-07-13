@@ -306,3 +306,50 @@ def test_poll_errors_surface_in_health(archive_home) -> None:
     assert rec["count_since_start"] == 1
     assert "broken-source" in rec["errors"][0]
     assert rec["at"]
+
+
+def test_locked_out_commit_self_heals_on_next_poll(archive_home, tmp_path, monkeypatch) -> None:
+    """A commit that dies with SQLITE_BUSY mid-poll (a maintenance transaction
+    holding the write lock past busy_timeout) must cost exactly one poll of
+    latency: the events+watermark transaction rolls back together, the error
+    rides the poll result, and the next poll re-imports to exactly-once —
+    truth (which is written ahead of the commit) and index agree afterward."""
+    import sqlalchemy.orm
+
+    from thread_archive import _api as ta
+
+    init_db()
+    projects = tmp_path / "projects"
+    f = _write_cc(projects, "myproj", "sess", [USER, ASSISTANT])
+    w = ClaudeCodeWatcher(projects_dirs=[projects])
+    assert w.poll().items_imported == 1
+    n1 = _event_count()
+
+    user2 = {**USER, "uuid": "u2", "timestamp": "2026-01-01T10:01:00Z",
+             "message": {"role": "user", "content": "the locked-out turn"}}
+    f.write_text("\n".join(json.dumps(ln) for ln in [USER, ASSISTANT, user2]) + "\n",
+                 encoding="utf-8")
+
+    real_commit = sqlalchemy.orm.Session.commit
+    state = {"failed": 0}
+
+    def flaky_commit(self):
+        state["failed"] += 1
+        self.rollback()
+        raise sqlite3.OperationalError("database is locked")
+
+    monkeypatch.setattr(sqlalchemy.orm.Session, "commit", flaky_commit)
+    r_fail = w.poll()
+    monkeypatch.setattr(sqlalchemy.orm.Session, "commit", real_commit)
+
+    assert state["failed"] >= 1
+    assert r_fail.errors and "database is locked" in r_fail.errors[0]
+    assert _event_count() == n1  # nothing half-landed in the index
+
+    r_heal = w.poll()
+    assert r_heal.events_created > 0
+    assert _event_count() == n1 + 1  # exactly the one new event, once
+
+    ta.checkpoint()
+    v = ta.verify()
+    assert v["ok"], v  # truth and index converged (truth-ahead is collapsed)

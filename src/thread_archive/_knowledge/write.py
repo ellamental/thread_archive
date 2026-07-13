@@ -40,20 +40,20 @@ def _now() -> datetime:
 
 
 def _locked_write(fn):
-    """Run an own-session mutation under the shared reindex lock.
+    """Run a mutation under the shared reindex lock — unconditionally.
 
     Every mutating function here appends truth (a ``KgEvent``, sometimes a thread
     record) and commits; racing a reindex unlocked, that write can land after the
     rebuild's read point and commit into the database inode the swap replaces.
-    When the caller passes its own ``session`` it owns the transaction boundary —
-    and must hold the lock around it itself."""
+    A caller-supplied ``session`` gets the lock too — nested shared holds coexist
+    (flock SH + SH), so there is no unlocked path to misuse. (A session *created*
+    before the lock may still ride a pre-swap connection; open sessions inside
+    the locked call, which every in-tree caller does.)"""
 
     @functools.wraps(fn)
     def wrapper(*args, session: Optional[Session] = None, **kwargs):
-        if session is not None:
-            return fn(*args, session=session, **kwargs)
         with shared_ingest_lock():
-            return fn(*args, session=None, **kwargs)
+            return fn(*args, session=session, **kwargs)
 
     return wrapper
 

@@ -14,10 +14,12 @@ from ._base import (
     get_engine,
     get_session,
     init_engine,
+    reconnect_if_swapped,
     use_engine,
     use_session,
 )
 from .models import Event, EventFts, ImportState, KgEvent, Thread, ThreadLink, TopicMessage
+from .resolve import resolve_session_source_id
 from .schema import init_db
 
 __all__ = [
@@ -31,9 +33,12 @@ __all__ = [
     "use_session",
     "use_engine",
     "close_engine",
+    "reconnect_if_swapped",
     "dml_rowcount",
     # schema
     "init_db",
+    # session-id resolution
+    "resolve_session_source_id",
     # models
     "Thread",
     "Event",

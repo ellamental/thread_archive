@@ -74,6 +74,7 @@ from .._store import (
     get_engine,
     get_session,
     init_db,
+    reconnect_if_swapped,
     use_engine,
 )
 
@@ -945,7 +946,16 @@ def checkpoint(*, snapshots: bool = True) -> dict:
     (conversation import only appends events; the overlays are the migration seed plus
     the append-only ``kg_events`` log), so the watcher uses the cheap maintenance form
     on its cadence instead of rewriting tens of MB every few seconds. The full form
-    (overlays included) is for explicit pre-backup / pre-reindex / post-curation use."""
+    (overlays included) is for explicit pre-backup / pre-reindex / post-curation use.
+
+    Self-locking: the truth appends + manifest watermark advance here must never
+    race a reindex, so the shared ingest lock is taken *inside* — a caller
+    already holding it shared just nests (flock SH + SH coexist)."""
+    with shared_ingest_lock():
+        return _checkpoint_locked(snapshots=snapshots)
+
+
+def _checkpoint_locked(*, snapshots: bool = True) -> dict:
     d = log_dir()
     (d / THREADS_SUBDIR).mkdir(parents=True, exist_ok=True)
     m = _read_manifest(d)
@@ -1543,6 +1553,10 @@ def try_shared_ingest_lock() -> Generator[bool, None, None]:
         except OSError:
             yield False
             return
+        # A reindex may have swapped index.db since this process last looked;
+        # holding the shared lock, the identity observed here holds until
+        # release, so reconnecting now is exactly once and exactly right.
+        reconnect_if_swapped()
         yield True
     finally:
         os.close(fd)  # closing the fd releases the flock
@@ -1558,12 +1572,20 @@ def shared_ingest_lock() -> Generator[None, None, None]:
     cross-process writer must hold this (or the try- variant) around its truth
     append **and** the SQLite commit: an unlocked write can append truth after the
     rebuild's read point and commit into the database inode the swap replaces —
-    present in the truth, silently absent from the new index."""
+    present in the truth, silently absent from the new index.
+
+    Acquire also runs the index-swap reconnect: the blocking wait is precisely
+    the window in which a reindex swaps ``index.db``, so an engine bound before
+    the wait points at the orphaned pre-swap inode by the time the lock is
+    granted. Nested shared holds are safe (flock SH coexists with SH, same
+    process included), so helpers like :func:`checkpoint` take this lock
+    themselves rather than trusting callers to."""
     path = _reindex_lock_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     fd = os.open(path, os.O_RDWR | os.O_CREAT, 0o644)
     try:
         fcntl.flock(fd, fcntl.LOCK_SH)
+        reconnect_if_swapped()
         yield
     finally:
         os.close(fd)  # closing the fd releases the flock

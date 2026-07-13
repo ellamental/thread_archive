@@ -23,7 +23,6 @@ from thread_archive._watcher.daemon import Watcher
 
 from .helpers import cc_assistant, cc_user, import_cc_session, write_jsonl
 
-
 # ── stubs ────────────────────────────────────────────────────────────────────
 
 
@@ -272,3 +271,19 @@ def test_out_of_band_coverage_run_retires_nightly_stage(archive_home):
     verdict = pipeline_verdict()
     assert verdict["ok"]
     assert verdict["recovered_stages"] == ["coverage"]
+
+
+def test_disabled_source_reports_store_activity(archive_home):
+    """A source disabled in config stays report-only (never red), but its
+    store's current activity must be visible in the report: the sanctioned
+    off switch is also the one path by which a config bug could silently
+    stop capture, and this block is the only surface where that shows."""
+    now = time.time()
+    enabled = StubWatcher("live-source", latest=now)
+    off = StubWatcher("opted-out", items=7, latest=now)
+    report = check_coverage(watchers=[enabled], all_watchers=[enabled, off])
+    assert report["ok"]
+    assert "opted-out" in report["disabled"]
+    entry = report["disabled"]["opted-out"]
+    assert entry["store_items"] == 7
+    assert entry["store_latest"] is not None

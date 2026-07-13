@@ -36,9 +36,21 @@ from ._extract import _block_search_text
 # Lifecycle / duplicate-summary events that carry no standalone transcript text.
 _SKIP_TYPES = frozenset({
     "api_request_started",
-    "api_request_completed",  # its content is already in text_complete/thinking_complete
+    # Its content renders via text_complete/thinking_complete — the importer's twins,
+    # or the ones _absorb_stream_deltas synthesizes for live-capture streams.
+    "api_request_completed",
     "stream_completed",
     "tool_loaded",
+    # Absorbed into synthesized completes by _absorb_stream_deltas; a stray one
+    # (no api_call_id at all) is token noise, never a renderable block.
+    "text_delta",
+    "thinking_delta",
+    # Duplicates tool_use_complete (same tool_name/input, minus the outcome).
+    "tool_execution_started",
+    # A dedup marker — its content is the duplicate_of event, already rendered.
+    "archived_duplicate",
+    # Hook bookkeeping (hook_name + verdict metadata) — machinery, not conversation.
+    "hook_context",
     # Pure session bookkeeping the source parser marks visually-hidden — not content.
     # Rendering them (as "QUEUE_OPERATION"/"FILE_SNAPSHOT" boxes) is just noise.
     "queue_operation",
@@ -107,26 +119,23 @@ def resolve_thread_ref(s: Session, ref: int | str) -> Optional[int]:
     provider **session id** — the uuid/source_id a tool like claude-code knows a
     conversation by. An integer (or all-digit) ref resolves as a primary-key lookup
     first, preserving the original ``thread_id`` contract exactly; anything that
-    isn't an existing PK falls back to a ``source_id`` match — exact, **or** the
-    separator-suffix forms the watcher stores: ``{project}:{uuid}`` (claude-code, ``:``)
-    and ``rollout-{ts}-{uuid}`` (codex, ``-``). Mirrors the web's
-    ``resolve_archive_link``. Newest thread wins; None when nothing matches."""
+    isn't an existing PK resolves as a session id via the shared
+    :func:`thread_archive._store.resolve.resolve_session_source_id` — the
+    ``Thread.source_id`` ∪ ``ImportState`` union the web viewer's
+    ``resolve_archive_link`` also uses. The union matters: a compaction
+    continuation's session uuid exists only in ``ImportState`` (its events merge
+    into the original thread, but its watermark is its own), and that uuid is
+    exactly what an agent inside the continued session holds. None when nothing
+    matches."""
     if isinstance(ref, int) or (isinstance(ref, str) and ref.isdigit()):
         tid = int(ref)
         if s.get(Thread, tid) is not None:
             return tid
         # A digit ref that isn't a PK may still be a numeric provider session id
         # (e.g. grok), so fall through to source_id resolution.
-    ref = str(ref)
-    return s.execute(
-        select(Thread.id)
-        .where(
-            (Thread.source_id == ref)
-            | (Thread.source_id.like(f"%:{ref}"))
-            | (Thread.source_id.like(f"%-{ref}"))
-        )
-        .order_by(Thread.updated_at.desc())
-    ).scalars().first()
+    from .._store import resolve_session_source_id
+
+    return resolve_session_source_id(s, str(ref))
 
 
 # Default per-read character budget for the budgeted "view" read (the thread_read
@@ -212,6 +221,11 @@ def _assistant_block(et: str, p: dict, rendered_text: Container[str]) -> Optiona
     if et == "ide_context":
         return {"type": "ide_context", "context_type": p.get("context_type") or "context",
                 "file_path": p.get("file_path"), "content": p.get("content", "")}
+    if et == "model_change":
+        # A `/model` switch — genuine context (the structured path renders it as a
+        # divider); one legible line here instead of an [unknown] JSON dump.
+        to = p.get("to")
+        return {"type": "text", "content": f"[model → {to}]"} if to else None
     if et in _SKIP_TYPES:
         return None  # lifecycle / duplicate-summary noise — deliberately hidden
     # Any other unrecognized type: surface it rather than silently dropping it.
@@ -248,6 +262,125 @@ def _slot_queued_events(events: Sequence[Event]) -> list[Event]:
                 pos = i + 1
         rest.insert(pos, q)
     return rest
+
+
+_DELTA_TYPES = frozenset({"text_delta", "thinking_delta"})
+_COMPLETE_TWINS = frozenset({"text_complete", "thinking_complete"})
+
+
+def _synthesize_completes(arc: Optional[Event], deltas: list[Event], seen_texts: set[str]) -> list:
+    """Complete-twin stand-ins for one api_call that has none of its own.
+
+    Prefer the assembled ``content_blocks`` on the ``api_request_completed``
+    summary (byte-identical to the concatenated deltas, and already in model
+    block order); fall back to concatenating the deltas by ``block_index`` when
+    the summary is missing (a stream that died mid-call). ``seen_texts`` is the
+    thread's real complete-twin texts: a block already carried by one — a doubly
+    captured turn, where the file importer's twin sits under a *different*
+    api_call_id than the live stream's summary — is skipped, and every emitted
+    text joins the set so duplicate summaries can't synthesize twice. Each
+    stand-in carries a real event id — the summary's, which is also the id the
+    FTS indexer files this content under, so search hits and ``around_event``
+    anchors line up."""
+    from types import SimpleNamespace
+
+    out: list = []
+    ts = deltas[0].occurred_at if deltas else (arc.occurred_at if arc else None)
+    blocks: list[tuple[str, str, int]] = []  # (event_type, text, anchor_id)
+    if arc is not None and (_payload(arc).get("content_blocks") or None):
+        for block in _payload(arc)["content_blocks"]:
+            bt = block.get("type")
+            if bt == "thinking" and (block.get("thinking") or "").strip():
+                blocks.append(("thinking_complete", block["thinking"], arc.id))
+            elif bt == "text" and (block.get("text") or "").strip():
+                blocks.append(("text_complete", block["text"], arc.id))
+    else:
+        # No content_blocks to lean on: stitch the deltas back together per
+        # block. Anchor at the summary event when one exists — that's the id
+        # the FTS indexer files the stitched text under (stitch_delta_tuples),
+        # so search hits land on the rendered block; a call with no summary at
+        # all (killed mid-stream) anchors at its last delta.
+        runs: dict = {}  # block_index -> [event_type, [texts], last_delta_id]
+        for d in deltas:
+            p = _payload(d)
+            run = runs.setdefault(p.get("block_index", 0), [d.event_type, [], d.id])
+            run[1].append(p.get("text", ""))
+            run[2] = d.id
+        for _, (det, texts, last_id) in sorted(runs.items()):
+            text = "".join(texts)
+            if text.strip():
+                et = "thinking_complete" if det == "thinking_delta" else "text_complete"
+                blocks.append((et, text, arc.id if arc is not None else last_id))
+    for et, text, anchor in blocks:
+        key = text.strip()
+        if key in seen_texts:
+            continue  # already rendered by a real twin elsewhere in the thread
+        seen_texts.add(key)
+        out.append(SimpleNamespace(
+            id=anchor, event_type=et, payload={"text": text},
+            occurred_at=ts, api_call_id=arc.api_call_id if arc else None,
+        ))
+    return out
+
+
+def _absorb_stream_deltas(events: Sequence[Event]) -> list:
+    """Give the renderers one assistant vocabulary across capture styles.
+
+    File importers emit per-block ``text_complete``/``thinking_complete`` twins
+    beside each ``api_request_completed``; live-capture sources (cloth, loom,
+    needle, officiant, …) emit token ``text_delta``/``thinking_delta`` events —
+    or nothing granular at all — and the assembled turn exists only in the
+    summary's ``content_blocks``. For every api_call with no complete-twin,
+    synthesize the twins — slotted just before the ``api_request_completed``,
+    where an importer's twins sit — and drop the raw deltas either way. Without
+    this, a live-captured thread renders as user turns with empty
+    ``[ASSISTANT]`` headers in ``chat`` and as thousands of per-token lines in
+    ``full``. Twin-detection is by api_call_id *and* by text (``seen_texts`` in
+    :func:`_synthesize_completes`): a doubly captured thread has real twins
+    under different api_call_ids than the stream's summaries."""
+    twinned_calls = set()
+    twin_texts: set[str] = set()
+    for ev in events:
+        if ev.event_type in _COMPLETE_TWINS:
+            if ev.api_call_id:
+                twinned_calls.add(ev.api_call_id)
+            t = (_payload(ev).get("text") or "").strip()
+            if t:
+                twin_texts.add(t)
+
+    def _untwinned_arc(ev) -> bool:
+        return (
+            ev.event_type == "api_request_completed"
+            and ev.api_call_id is not None
+            and ev.api_call_id not in twinned_calls
+        )
+
+    deltas: dict[str, list[Event]] = {}
+    arcs = set()
+    for ev in events:
+        ac = ev.api_call_id
+        if ev.event_type in _DELTA_TYPES and ac and ac not in twinned_calls:
+            deltas.setdefault(ac, []).append(ev)
+        elif ev.event_type == "api_request_completed" and ac:
+            arcs.add(ac)
+    if not deltas and not any(_untwinned_arc(ev) for ev in events):
+        return list(events)
+    # Calls whose summary never arrived (killed mid-stream) synthesize at their
+    # last delta's slot instead of an arc's.
+    tail_of_orphan = {evs[-1].id: ac for ac, evs in deltas.items() if ac not in arcs}
+    out: list = []
+    for ev in events:
+        if _untwinned_arc(ev):
+            out.extend(_synthesize_completes(ev, deltas.get(ev.api_call_id or "", []), twin_texts))
+            out.append(ev)
+            continue
+        if ev.event_type in _DELTA_TYPES:
+            ac = tail_of_orphan.get(ev.id)
+            if ac is not None:
+                out.extend(_synthesize_completes(None, deltas[ac], twin_texts))
+            continue  # deltas never pass through raw
+        out.append(ev)
+    return out
 
 
 def _build_steps(events: list[Event]) -> list[dict]:
@@ -631,7 +764,7 @@ def read_thread(
             select(Event).where(Event.thread_id == thread_id).order_by(Event.id)
         ).scalars().all()
 
-    steps = _build_steps(_slot_queued_events(events))
+    steps = _build_steps(_absorb_stream_deltas(_slot_queued_events(events)))
 
     if summary_kind == "toc":
         return _thread_read_summary(
@@ -930,7 +1063,7 @@ def read_thread_structured(
         events = s.execute(
             select(Event).where(Event.thread_id == resolved).order_by(Event.id)
         ).scalars().all()
-    events = _slot_queued_events(events)
+    events = _absorb_stream_deltas(_slot_queued_events(events))
     rendered_text = _rendered_text(events)
 
     messages: list[dict] = []

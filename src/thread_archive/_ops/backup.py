@@ -255,7 +255,8 @@ def _snapshot_generation(dest: Path) -> dict:
     gens = dest / _GENERATIONS_SUBDIR
     now = datetime.now(timezone.utc)
     try:
-        gens.mkdir(exist_ok=True)
+        if not gens.is_dir():  # not exist_ok=True: smbfs answers EPERM, not
+            gens.mkdir()  # EEXIST, for mkdir of an existing dir
         for stale in gens.glob(".tmp-*"):  # a killed snapshot's half-built tree
             shutil.rmtree(stale, ignore_errors=True)
         names = sorted((p.name for p in gens.iterdir() if p.is_dir()), reverse=True)
@@ -280,8 +281,12 @@ def _snapshot_generation(dest: Path) -> dict:
             gp.parent.mkdir(parents=True, exist_ok=True)
             try:
                 os.link(sp, gp)
-            except OSError:  # filesystem without hardlinks — take the copy cost
-                shutil.copy2(sp, gp)
+            except OSError:  # filesystem without hardlinks — take the copy cost.
+                # copyfile, not copy2: a generation is a restore source, so only
+                # content matters (retention is keyed by the generation dir's
+                # name), and metadata replication EPERMs on network mirrors
+                # (smbfs refuses reads of system xattrs like com.apple.provenance).
+                shutil.copyfile(sp, gp)
             linked += 1
         os.rename(tmp, gens / name)
         from .._truth.jsonl_log import _fsync_dir
@@ -498,8 +503,12 @@ def restore_drill(
     try:
         # The generations subtree and any half-published mirror temp files are
         # destination bookkeeping, not truth — the drill restores the mirror.
+        # copyfile, not the default copy2: the drill consumes JSONL content
+        # only, and metadata replication EPERMs on network mirrors (smbfs
+        # refuses reads of system xattrs like com.apple.provenance).
         shutil.copytree(
             dest_path, drill_home / "truth",
+            copy_function=shutil.copyfile,
             ignore=shutil.ignore_patterns(_GENERATIONS_SUBDIR, ".*.tmp-*"),
         )
         open_archive(str(drill_home))

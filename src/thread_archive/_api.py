@@ -32,32 +32,6 @@ from ._ops.health import read_health  # noqa: F401
 from ._ops.nightly import nightly  # noqa: F401
 from ._ops.verify import verify  # noqa: F401
 
-# (st_dev, st_ino) of index.db at the last open_archive — swap detection.
-_index_ident: Optional[tuple[int, int]] = None
-
-
-def _reconnect_if_swapped(paths: ArchivePaths) -> None:
-    """Dispose pooled connections when ``index.db`` was atomically replaced.
-
-    ``reindex`` publishes by renaming a freshly built database over ``index.db``;
-    another process's pooled connections keep the *old inode* open — their reads are
-    frozen at the pre-swap state and their commits write a file nothing else can see.
-    Every API call passes through :func:`open_archive`, so comparing the file identity
-    here makes long-lived processes (the librarian MCP, the web app) converge on the
-    new index on their next call."""
-    global _index_ident
-    try:
-        st = os.stat(paths.index_path)
-    except OSError:
-        _index_ident = None
-        return
-    ident = (st.st_dev, st.st_ino)
-    if _index_ident is not None and ident != _index_ident:
-        from ._store import get_engine
-
-        get_engine().dispose()
-    _index_ident = ident
-
 
 def open_archive(home: Optional[str] = None) -> ArchivePaths:
     """Open (and initialize) the archive at ``home`` (env / default if None).
@@ -69,7 +43,7 @@ def open_archive(home: Optional[str] = None) -> ArchivePaths:
     """
     paths = resolve_paths(home).ensure()
     target = paths.sqlalchemy_url
-    from ._store import active_dsn, init_db, init_engine
+    from ._store import active_dsn, init_db, init_engine, reconnect_if_swapped
 
     if active_dsn() is not None and active_dsn() != target:
         from ._truth import reset_handles
@@ -78,7 +52,12 @@ def open_archive(home: Optional[str] = None) -> ArchivePaths:
     # Pin the home so engine + truth + search resolve consistently for the process.
     os.environ[ENV_HOME] = str(paths.home)
     init_engine(target)  # rebuilds when the DSN changed
-    _reconnect_if_swapped(paths)
+    # Read-path convergence: long-lived processes (the librarian MCP, the web
+    # app) pass through here on every call, so a reindex's index.db swap is
+    # picked up on the next call. Writers get the authoritative check on
+    # ingest-lock *acquire* (see _truth.shared_ingest_lock) — this one runs
+    # before any blocking wait and can go stale during it.
+    reconnect_if_swapped()
     init_db()
     return paths
 

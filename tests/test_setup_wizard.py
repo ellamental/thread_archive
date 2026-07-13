@@ -254,3 +254,20 @@ def test_fmt_helpers() -> None:
     assert wizard._fmt_when(None) == "?"
     assert wizard._fmt_when(time.time() - 60) == "today"
     assert wizard._fmt_range(None, None) == ""
+
+
+def test_wholesale_import_skip_writes_no_opt_outs(archive_home, monkeypatch) -> None:
+    """Skipping the import step entirely is not an opt-out: every discovered
+    source must stay enabled (unlisted) for later ingest paths. Only an
+    explicit per-source "no" in the edit pass may write enabled=False —
+    pinned here so a wizard regression can't silently mass-disable capture."""
+    monkeypatch.setattr(wizard, "_interactive", lambda args: True)
+    monkeypatch.setattr(
+        wizard, "_ask", lambda prompt, *, default, interactive: "s"
+    )
+    fakes = [FakeWatcher("claude-code"), FakeWatcher("cursor")]
+    rc = wizard.run_setup(_args("setup", "--skip-watcher", "--skip-mcp"), watchers=fakes)
+    assert rc == 0
+    assert all(f.polled == 0 for f in fakes)  # nothing imported
+    cfg = json.loads((archive_home / "config.json").read_text())
+    assert cfg.get("sources", {}) == {}  # no opt-outs written; absence = enabled

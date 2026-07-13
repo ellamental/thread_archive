@@ -158,6 +158,13 @@ def _cap(text: str) -> str:
 
 
 def _encode(prefixed: list[str]):
+    # The documented degrade contract: is_available() False means the vector
+    # arm sits out entirely. Checked here — not just in warm()/indexing — so a
+    # caller that reaches encoding directly (query embedding via
+    # vectors.search) honors it too, and a test or --lexical-only run that
+    # stubs availability off can never cold-load a real model.
+    if not is_available():
+        return None
     model = _load()
     if model is None:
         return None

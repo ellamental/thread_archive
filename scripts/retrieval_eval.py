@@ -143,10 +143,30 @@ def main() -> None:
     ap.add_argument("--limit", type=int, default=20, help="results per query (recall ceiling)")
     ap.add_argument("--rerank", choices=["auto", "on", "off"], default="auto",
                     help="cross-encoder head re-rank (default: the pipeline's auto-gate)")
+    ap.add_argument("--lexical-only", action="store_true",
+                    help="evaluate the FTS arm alone (semantic + rerank arms off) — "
+                    "the search a core install without the [embeddings] extra gets. "
+                    "The CI gate instead runs the fused pipeline with --rerank off: "
+                    "the production path minus the cross-encoder, whose per-query "
+                    "inference would multiply the row's runtime")
     ap.add_argument("--content-type", default=None,
                     help="restrict the searched scope to one content type")
     ap.add_argument("--json", action="store_true", help="emit the report as JSON")
+    gate = ap.add_argument_group(
+        "gate", "regression floors — any breach exits 1 (the CI row sets these; "
+        "floors are a ratchet calibrated under measured values, not a target)"
+    )
+    gate.add_argument("--min-mrr", type=float, default=None)
+    gate.add_argument("--min-recall10", type=float, default=None)
+    gate.add_argument("--min-recall20", type=float, default=None)
     args = ap.parse_args()
+
+    if args.lexical_only:
+        from thread_archive._retrieval import embed
+        from thread_archive._retrieval import rerank as rerank_mod
+
+        embed.is_available = lambda: False  # type: ignore[method-assign]
+        rerank_mod.is_available = lambda: False  # type: ignore[method-assign]
 
     api.open_archive()
     cases = load_golden(args.golden) if args.golden else sample_title_cases(args.auto_titles, args.seed)
@@ -158,12 +178,24 @@ def main() -> None:
 
     if args.json:
         print(json.dumps(report, indent=2))
-        return
-    print(f"cases: {report['n']}   MRR: {report['mrr']:.3f}   "
-          + "   ".join(f"R@{k}: {v:.3f}" for k, v in report["recall"].items()))
-    print(f"latency p50: {report['latency_p50_ms']:.0f} ms")
-    for shape, stats in report["per_shape"].items():
-        print(f"  {shape:>15}: n={stats['n']:<4} MRR={stats['mrr']:.3f}")
+    else:
+        print(f"cases: {report['n']}   MRR: {report['mrr']:.3f}   "
+              + "   ".join(f"R@{k}: {v:.3f}" for k, v in report["recall"].items()))
+        print(f"latency p50: {report['latency_p50_ms']:.0f} ms")
+        for shape, stats in report["per_shape"].items():
+            print(f"  {shape:>15}: n={stats['n']:<4} MRR={stats['mrr']:.3f}")
+
+    breaches = []
+    if args.min_mrr is not None and report["mrr"] < args.min_mrr:
+        breaches.append(f"MRR {report['mrr']:.3f} < floor {args.min_mrr}")
+    if args.min_recall10 is not None and report["recall"][10] < args.min_recall10:
+        breaches.append(f"recall@10 {report['recall'][10]:.3f} < floor {args.min_recall10}")
+    if args.min_recall20 is not None and report["recall"][20] < args.min_recall20:
+        breaches.append(f"recall@20 {report['recall'][20]:.3f} < floor {args.min_recall20}")
+    if breaches:
+        for b in breaches:
+            print(f"RETRIEVAL GATE BREACH: {b}", file=sys.stderr)
+        raise SystemExit(1)
 
 
 if __name__ == "__main__":

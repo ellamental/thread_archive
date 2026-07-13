@@ -140,39 +140,28 @@ def _list_threads(*, limit: int, q: Optional[str]) -> list[dict]:
 
 
 def resolve_archive_link(link_id: str, source: Optional[str] = None) -> Optional[int]:
-    """Resolve a provider session id to its archive thread id, via ``ImportState``.
+    """Resolve a provider session id to its archive thread id.
 
     This is the archive-link lookup an editor needs ("I have a session uuid, open the
     conversation"), and the same lookup that lets a bare uuid be pasted straight into
-    ``/archive/<uuid>``. The id passed is the tail of a longer ``source_id`` the watcher
-    stored, joined by a provider-specific separator: claude-code stores ``{project}:{uuid}``
-    (``:``), codex stores the rollout filename stem ``rollout-{ts}-{uuid}`` (``-``), and
-    cloth stores the bare session uuid. So we match exact **or** either separator-suffix —
-    a bare uuid finds ``{project}:{uuid}``, ``rollout-…-{uuid}``, *and* the bare cloth uuid.
-    ``source`` narrows the search to one provider (an editor knows its own); omit it (None)
-    to resolve across every provider — what pasting a bare uuid as a thread id wants, since
-    the paster rarely knows which harness it came from. Newest import wins. Owned here: the
-    watcher cohosts the persistent server, so the archive serves its own editor
-    links."""
-    from sqlalchemy import select
-
-    from .._store import ImportState, get_session
+    ``/archive/<uuid>``. Resolution is the shared
+    :func:`thread_archive._store.resolve.resolve_session_source_id` union —
+    ``Thread.source_id`` (export importers never write ``ImportState``) plus the
+    ``ImportState`` watermarks (a compaction continuation's uuid lives only there) —
+    the same union the MCP reader uses, so both surfaces answer alike.
+    Deliberately **no** integer primary-key branch: callers spray candidate ids
+    that are expected not to resolve (see ``/api/archive-link``), and an all-digit
+    junk candidate must never land on an unrelated PK. ``source`` narrows to one
+    provider (an editor knows its own); omit it to resolve across every provider.
+    Owned here: the watcher cohosts the persistent server, so the archive serves
+    its own editor links."""
+    from .._store import get_session, resolve_session_source_id
 
     api.open_archive()
-    stmt = (
-        select(ImportState.thread_id)
-        .where(ImportState.thread_id.isnot(None))
-        .where(
-            (ImportState.source_id == link_id)
-            | (ImportState.source_id.like(f"%:{link_id}"))
-            | (ImportState.source_id.like(f"%-{link_id}"))
-        )
-        .order_by(ImportState.last_import_at.desc())
-    )
-    if source:
-        stmt = stmt.where(ImportState.source == source.replace("_", "-"))
     with get_session() as s:
-        return s.execute(stmt).scalars().first()
+        return resolve_session_source_id(
+            s, link_id, source=source.replace("_", "-") if source else None
+        )
 
 
 # ---------------------------------------------------------------------------

@@ -3,7 +3,9 @@
 
 from __future__ import annotations
 
+import errno
 import json
+import sys
 from pathlib import Path
 from typing import Optional
 
@@ -37,6 +39,33 @@ def _health_is_due(key: str, every_days: float) -> bool:
     if at.tzinfo is None:
         at = at.replace(tzinfo=timezone.utc)
     return (datetime.now(timezone.utc) - at).total_seconds() >= every_days * 86400
+
+
+def _stage_error(e: Exception) -> str:
+    """Format a stage exception, naming macOS TCC when the shape matches.
+
+    EPERM (errno 1 — distinct from a unix permission denial's EACCES 13) from
+    plain file operations on macOS is the signature of a TCC privacy denial:
+    a launchd job without its own grant gets a blanket EPERM on gated paths
+    (network volumes especially) while the identical operation succeeds from
+    an interactive shell, whose terminal app holds the grant. Without the
+    hint, the failure reads as filesystem breakage and gets debugged at the
+    wrong layer."""
+    msg = f"{type(e).__name__}: {e}"
+    if (
+        sys.platform == "darwin"
+        and isinstance(e, PermissionError)
+        and e.errno == errno.EPERM
+    ):
+        msg += (
+            " [EPERM on macOS is usually a TCC privacy denial for this process"
+            " context: background (launchd) jobs need their own grant — for a"
+            " network-volume dest, System Settings → Privacy & Security →"
+            " Files & Folders → Network Volumes for the job's interpreter."
+            " The same operation succeeding in an interactive shell confirms"
+            " the diagnosis.]"
+        )
+    return msg
 
 
 def _notify(url: str, message: str) -> Optional[str]:
@@ -101,7 +130,7 @@ def nightly(
             b["verify_ok"] and b["mirror_complete"] and not b["deletions_skipped"]
         )
     except Exception as e:
-        b, backup_ok = {"error": f"{type(e).__name__}: {e}"}, False
+        b, backup_ok = {"error": _stage_error(e)}, False
     result["backup"] = b
     if not backup_ok:
         failed.append("backup")
@@ -116,7 +145,7 @@ def nightly(
         )
         verify_ok = bool(v["ok"])
     except Exception as e:
-        v, verify_ok = {"error": f"{type(e).__name__}: {e}"}, False
+        v, verify_ok = {"error": _stage_error(e)}, False
     result["verify"] = v
     if not verify_ok:
         failed.append("verify")
@@ -126,7 +155,7 @@ def nightly(
             d = restore_drill(dest, home=home)
             drill_ok = bool(d.get("ok"))
         except Exception as e:
-            d, drill_ok = {"error": f"{type(e).__name__}: {e}"}, False
+            d, drill_ok = {"error": _stage_error(e)}, False
         result["drill"] = d
         if not drill_ok:
             failed.append("restore-drill")
@@ -139,7 +168,7 @@ def nightly(
         c = check_coverage(home=home)
         coverage_ok = bool(c.get("ok"))
     except Exception as e:
-        c, coverage_ok = {"error": f"{type(e).__name__}: {e}"}, False
+        c, coverage_ok = {"error": _stage_error(e)}, False
     result["coverage"] = c
     if not coverage_ok:
         failed.append("coverage")

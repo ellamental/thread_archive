@@ -285,3 +285,42 @@ def test_a_passing_verify_clears_the_heartbeat_a_failed_nightly_left(
     # ...and the freshness anchor still points at the NIGHTLY, not at the verify
     # that just rewrote the file — else a rerun would mask a dead 04:00 job.
     assert beat["nightly_at"] == nightly_at
+
+
+def test_stage_error_names_tcc_on_darwin_eperm(monkeypatch):
+    """EPERM from a file op is reported with the macOS-TCC hint; EACCES (a
+    plain unix permission denial) and non-permission errors stay unadorned —
+    the hint must not fire where the diagnosis doesn't apply."""
+    import errno as errno_mod
+
+    from thread_archive._ops.nightly import _stage_error
+
+    monkeypatch.setattr("thread_archive._ops.nightly.sys.platform", "darwin")
+    eperm = PermissionError(errno_mod.EPERM, "Operation not permitted", "/Volumes/NAS/x")
+    assert "TCC" in _stage_error(eperm)
+    eacces = PermissionError(errno_mod.EACCES, "Permission denied", "/tmp/x")
+    assert "TCC" not in _stage_error(eacces)
+    assert "TCC" not in _stage_error(RuntimeError("boom"))
+    monkeypatch.setattr("thread_archive._ops.nightly.sys.platform", "linux")
+    assert "TCC" not in _stage_error(eperm)
+
+
+def test_nightly_backup_stage_reports_tcc_hint(archive_home, tmp_path, monkeypatch):
+    """A backup stage dying on EPERM (the launchd-without-grant shape) carries
+    the TCC hint into the stage's recorded error, where notify/health readers
+    see it."""
+    import errno as errno_mod
+
+    _seed(archive_home)
+    monkeypatch.setattr("thread_archive._ops.nightly.sys.platform", "darwin")
+
+    def _eperm_backup(*a, **k):
+        raise PermissionError(errno_mod.EPERM, "Operation not permitted",
+                              str(tmp_path / "dest" / ".generations"))
+
+    monkeypatch.setattr("thread_archive._ops.nightly.backup", _eperm_backup)
+    from thread_archive._ops.nightly import nightly
+
+    result = nightly(str(tmp_path / "dest"), drill=False)
+    assert "backup" in result["failed_stages"]
+    assert "TCC" in result["backup"]["error"]

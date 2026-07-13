@@ -448,3 +448,39 @@ def test_resolve_newest_thread_wins(archive_home) -> None:
         s.commit()
     with use_session() as s:
         assert resolve_thread_ref(s, _UUID) == 21
+
+
+def test_resolve_via_import_state_watermark(archive_home) -> None:
+    """A session uuid known only to ImportState resolves — the compaction-continuation
+    shape: the continuation's events merge into the original thread (no Thread row
+    carries its uuid) but its watermark is its own. That uuid is exactly what an agent
+    inside the continued session holds and passes to thread_read."""
+    from thread_archive._store import ImportState
+
+    cont_uuid = "cccccccc-1111-2222-3333-444444444444"
+    tid = _seed(tid=30, source_id=f"proj:{_UUID}")
+    with use_session() as s:
+        s.add(ImportState(source="claude-code", source_id=f"proj:{cont_uuid}",
+                          thread_id=tid, last_import_at=_dt(6)))
+        s.commit()
+    with use_session() as s:
+        assert resolve_thread_ref(s, cont_uuid) == tid            # bare-uuid suffix
+        assert resolve_thread_ref(s, f"proj:{cont_uuid}") == tid  # exact watermark
+
+
+def test_resolvers_agree_across_surfaces(archive_home) -> None:
+    """The MCP reader and the web viewer's archive-link answer alike for the same
+    session id — whether it lives in Thread.source_id or only in ImportState."""
+    from thread_archive._store import ImportState
+    from thread_archive._web import resolve_archive_link
+
+    is_only = "dddddddd-1111-2222-3333-444444444444"
+    tid = _seed(tid=31, source_id=f"proj:{_UUID}")
+    with use_session() as s:
+        s.add(ImportState(source="claude-code", source_id=f"proj:{is_only}",
+                          thread_id=tid, last_import_at=_dt(6)))
+        s.commit()
+    for ref in (_UUID, is_only):
+        with use_session() as s:
+            assert resolve_thread_ref(s, ref) == tid
+        assert resolve_archive_link(ref) == tid

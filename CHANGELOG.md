@@ -2,6 +2,132 @@
 
 ## Unreleased
 
+- **Retrieval quality is CI-gated (2026-07-13).** Search-quality drift was the
+  one regression class nothing watched: verify proves no byte is lost, but a
+  ranking change that quietly craters recall passed every gate (the
+  live-capture FTS gap sat through every green nightly), and the eval harness
+  ran only when someone remembered. A `retrieval-gate` ci.toml row now runs
+  `scripts/retrieval_eval.py --auto-titles 100 --rerank off` against the live
+  archive on every sweep (read-only, ~2.5 min) and fails on floor breach —
+  MRR ≥ 0.40, recall@10 ≥ 0.62, a ratchet calibrated under measured (0.464 /
+  0.710). The harness grew the floor args (`--min-mrr`, `--min-recall10`,
+  `--min-recall20`; breach → exit 1) and a `--lexical-only` mode measuring
+  the extra-less core install. Found while wiring it: `embed._encode` never
+  consulted `is_available()`, so the module's documented degrade contract —
+  availability off means the vector arm sits out — didn't hold at the one
+  seam that matters in a populated home, query embedding via
+  `vectors.search` (the model-free test suite never noticed because an empty
+  vector store short-circuits earlier). The check now lives in `_encode`
+  itself, pinned by test; measured full-pipeline reference numbers from the
+  same calibration: fused + rerank MRR 0.421 / recall@10 0.705 at 9.2s p50
+  per query, fused sans rerank 0.464 / 0.710 at ~1.4s p50.
+
+- **The NAS nightly's failures were macOS TCC, not smbfs — and stage errors
+  now say so (2026-07-13).** Every post-07-12 nightly against the FrezFamily
+  NAS failed backup + restore-drill with EPERM on ordinary operations
+  (scandir of `.generations/`, reading the mirror's `kg_events.jsonl`,
+  creating dot-tmp files) that all succeed from an interactive shell.
+  Reproduced under a launchd-submitted job: macOS TCC blanket-denies
+  network-volume access to background job contexts that lack their own grant
+  — the terminal app's grant covers interactive shells, which is exactly why
+  the 07-12 session's hand-run drill passed while every 04:00 run failed.
+  Fixing it needs a one-time System Settings grant (Privacy & Security →
+  Files & Folders → Network Volumes) for the job's interpreter; what the code
+  can do is stop the misdiagnosis: nightly stage errors are formatted through
+  `_stage_error`, which recognizes the EPERM-on-darwin shape (errno 1, vs a
+  real permission denial's EACCES) and appends the TCC diagnosis and fix to
+  the error that rides health.json and the failure notification.
+
+- **Writers ride out maintenance transactions instead of erroring
+  (2026-07-13).** The watcher's `database is locked` poll errors (44 in the
+  log, in bursts on 4 days) all coincide with in-place maintenance writes —
+  an FTS rebuild over the full corpus holds SQLite's write lock for minutes,
+  and the store's 5s `busy_timeout` was sized for ordinary commits.
+  `busy_timeout` is now 60s: under WAL only writers ever wait, so the read
+  path is untouched, and a blocked ingest converges instead of failing into
+  health and retrying a poll later. The failure was never lossy — events and
+  watermark commit as one transaction, truth is written ahead, dedup collapses
+  the retry — but that self-heal contract was design-implied and untested;
+  `test_locked_out_commit_self_heals_on_next_poll` now pins it (a commit
+  killed by SQLITE_BUSY costs exactly one poll of latency, index converges to
+  exactly-once, verify green).
+
+- **The sanctioned off switch can't double as a silent capture hole
+  (2026-07-13).** Coverage's report-only `disabled` block now stats each
+  disabled source's store (items + latest activity) alongside its import
+  history: a deliberate opt-out's store staying active is normal, but a
+  source disabled by accident — a config bug, a wizard regression — had no
+  surface where its unarchived activity showed. Still never red (intent
+  isn't machine-decidable); the hardening is visibility plus write-path
+  pins: skipping the wizard's import step wholesale writes zero opt-outs
+  (only an explicit per-source "no" may write `enabled: false`), and the
+  full watcher set is injectable (`all_watchers`) so stub-driven coverage
+  tests never discover the real machine's stores.
+
+- **The parser island's failure behavior is pinned (2026-07-13).** The
+  provider goldens lock each importer's output for well-formed input;
+  `tests/test_parser_robustness.py` now locks what happens to damaged input,
+  across all five line-stream providers (claude-code, cloth, codex, grok,
+  antigravity): a truncated or junk line never aborts the intact lines
+  around it, garbage never fabricates events, parse drops are counted where
+  the pipeline accounts for them, unknown line types don't abort (and on
+  claude-code are preserved as events), and a damaged-then-repaired file
+  re-imports to convergence through the content-hash cursor rewind — no
+  duplicates, nothing pinned past the repair. All 27 cases passed on
+  arrival; the suite exists so a parser refactor can't quietly regress the
+  properties that happened to be true.
+
+- **Live-capture assistant text is searchable and readable (2026-07-13).** 402
+  threads (cloth, loom, needle, officiant, librarian, …) stored assistant text
+  only as `text_delta`/`thinking_delta` token events plus the assembled
+  `api_request_completed.content_blocks` summary — none of which the FTS
+  extractor indexed or the readers rendered: `thread_search` couldn't surface a
+  word those agents said, `mode='chat'` showed empty `[ASSISTANT]` headers, and
+  `mode='full'` rendered per-token lines. One rule now serves both surfaces: an
+  api_call's content comes from its `text_complete`/`thinking_complete` twins
+  when they exist, else from the summary — matched by api_call_id *and* by text,
+  because a doubly captured session (file import + live stream) carries the
+  twins under different api_call_ids than the stream's summaries. Reader side:
+  `read._absorb_stream_deltas` synthesizes the twins (or stitches orphan deltas
+  from a stream killed mid-call); index side: a twin gate in `fts.index_events`
+  / `rebuild_fts` plus a rebuild-only sweep for arc-less calls (a stream killed
+  before its summary arrived indexes its stitched text at the block's last
+  delta event — the reader's anchor for the same text), with deep verify's
+  coverage check taught the same rule. Backfill was an in-place `rebuild_fts` —
+  no truth change, no reindex; 401 of the 402 threads now carry assistant text
+  in FTS (the 402nd has only whitespace deltas, nothing to index). Also
+  classified the formerly-`unknown` machinery types (`hook_context`,
+  `tool_execution_started`, `archived_duplicate` → skipped; `model_change` →
+  one legible line).
+
+- **Writers reconnect to a swapped index.db on ingest-lock acquire
+  (2026-07-13).** `reindex` publishes by renaming a fresh build over
+  `index.db`; the swap check lived only in `open_archive`, which a one-shot
+  writer runs *before* blocking on `shared_ingest_lock()` — and the blocking
+  wait is precisely the window in which the swap happens, so an import that
+  started during a reindex reported success while committing into the orphaned
+  pre-swap inode (durable in truth, absent from the live index; reproduced
+  end-to-end). The identity check (`_store.reconnect_if_swapped`) now runs on
+  every ingest-lock acquire — both variants — where the shared hold guarantees
+  it stays valid; `open_archive` keeps a copy for read-path convergence, the
+  daemon's hand-rolled reconnect flag is gone (it also missed any reindex that
+  fit inside one poll sleep), `checkpoint()` is self-locking (closing the
+  nightly backup's unlocked call), and `_knowledge`'s `_locked_write` lost its
+  caller-session lock bypass (nested shared flocks coexist, so there is nothing
+  the bypass was needed for).
+
+- **One session-id resolver (2026-07-13).** The MCP reader resolved session
+  uuids via `Thread.source_id` only; the web viewer's `resolve_archive_link`
+  via `ImportState` only — and neither table is a superset (export importers
+  never write ImportState; a claude-code compaction continuation's uuid exists
+  only there, and that continuation uuid is exactly what an agent inside the
+  session holds), so 98 live session ids resolved in the viewer but returned
+  "not found" from `thread_read`. Both now resolve through
+  `_store.resolve.resolve_session_source_id` — Thread first, watermarks second,
+  one separator-suffix matcher — with a cross-surface contract test. The web
+  path deliberately keeps no integer-PK branch (its callers spray candidate ids
+  that must never land on an unrelated PK).
+
 - **Capture blind-spot detection (2026-07-12).** The loud capture failures
   (exceptions) already reached `watch_errors_last`; the silent class — content
   consumed without a trace, sources gone dark without an error, a wedged
@@ -26,15 +152,19 @@
   content on the claude-code path; the consuming paths are the line-stream
   providers' importable-content gates, which the ledger now covers.
 
-- **Generation snapshots degrade instead of failing the backup stage
-  (2026-07-12).** `_snapshot_generation`'s dest-side setup (`mkdir` of
-  `.generations/`, the stale-tmp sweep) ran outside its degrade path, so a
-  degraded network destination could fail the whole backup stage with a
-  `PermissionError` — violating the function's own contract that a snapshot
-  failure is reported but never blocks the mirror. First observed on the
-  FrezFamily SMB dest during a stale-mount window. Setup errors now report as
-  `generation_error` like link-time errors. (The share's missing-hardlink
-  support was already handled: `os.link` falls back to `shutil.copy2`.)
+- **Backup kit works on SMB destinations (2026-07-12).** Three smbfs
+  incompatibilities found bringing up the FrezFamily NAS dest, each failing a
+  nightly stage: (1) `mkdir(exist_ok=True)` of an existing `.generations/`
+  returns EPERM (not EEXIST) on smbfs, failing the backup stage every run
+  after the first — replaced with an `is_dir()` guard, and the whole dest-side
+  snapshot setup moved inside the degrade path so an unusable gens dir reports
+  `generation_error` instead of failing the stage (its own documented
+  contract); (2) the restore drill's `copytree` (and the generation snapshot's
+  no-hardlink fallback) used `copy2`, whose metadata replication EPERMs
+  reading system xattrs (`com.apple.provenance`) off smbfs — both now copy
+  content only (`copyfile`; generations and drills consume JSONL content,
+  and generation retention is keyed by directory name, not file mtime);
+  (3) hardlink-less shares were already handled by the copy fallback.
 
 - **Store-contamination incident (2026-07-11) cleaned up; reconciliation drops
   unanchored citations (2026-07-12).** A test-suite run on 2026-07-11 ~23:21Z,

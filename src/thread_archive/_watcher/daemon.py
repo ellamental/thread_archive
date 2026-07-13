@@ -279,23 +279,15 @@ class Watcher:
         last_embed = time.monotonic()
         dirty = False
         last_stamp = self._import_state_stamp()
-        reconnect = False
         while not self._stop:
+            # Acquire runs the index-swap reconnect (reconnect_if_swapped): if a
+            # reindex replaced index.db — even one that fit entirely inside a
+            # sleep between passes — pooled connections are disposed before this
+            # pass touches the store.
             with try_shared_ingest_lock() as acquired:
                 if not acquired:
                     logger.info("watch: reindex in progress — skipping ingest pass")
-                    reconnect = True
                 else:
-                    if reconnect:
-                        # A reindex ran while we skipped: index.db was atomically
-                        # replaced, so our pooled connections point at the orphaned
-                        # old inode. Dispose them — the next connection reopens the
-                        # path and lands on the new file.
-                        from .._store import get_engine
-
-                        get_engine().dispose()
-                        logger.info("watch: reconnected to the reindexed index")
-                        reconnect = False
                     result = self.poll_once()
                     if result.events_created > 0:
                         dirty = True

@@ -6,7 +6,8 @@ guard — on the embedded store there is no alembic, so ``create_all`` / ``reind
 
 PRAGMAs: WAL so concurrent readers don't block the single writer; ``foreign_keys``
 ON (SQLite defaults them off) to match the schema's FK intent; a ``busy_timeout``
-so a brief writer lock waits instead of erroring.
+long enough that a writer blocked behind an in-place maintenance transaction
+waits it out instead of erroring.
 
 The ``use_engine`` ContextVar override is preserved verbatim: it's the seam the
 serverless search relies on to point the whole query path at one index file for a
@@ -17,6 +18,7 @@ carried into search-federation worker threads via ``copy_context``.
 from __future__ import annotations
 
 import contextvars
+import os
 from collections.abc import Generator
 from contextlib import contextmanager
 from typing import Any, cast
@@ -63,7 +65,13 @@ def _attach_sqlite_pragmas(engine: Engine, *, enforce_fk: bool = True) -> None:
         cur = dbapi_conn.cursor()
         cur.execute("PRAGMA journal_mode=WAL")
         cur.execute("PRAGMA foreign_keys=ON" if enforce_fk else "PRAGMA foreign_keys=OFF")
-        cur.execute("PRAGMA busy_timeout=5000")
+        # Sized to ride out an in-place maintenance transaction (rebuild_fts
+        # over the full corpus holds the write lock for minutes) rather than
+        # a normal commit. Under WAL only writers wait — readers are never
+        # blocked — so a long timeout costs nothing on the read path, and a
+        # blocked writer that waits here converges instead of erroring into
+        # health and retrying a poll later.
+        cur.execute("PRAGMA busy_timeout=60000")
         cur.close()
 
 
@@ -102,6 +110,45 @@ def init_engine(dsn: str | None = None) -> None:
 def active_dsn() -> str | None:
     """The DSN the module-global engine is bound to, or None if uninitialized."""
     return str(_engine.url) if _engine is not None else None
+
+
+# (dsn, st_dev, st_ino) of the global engine's database file at the last swap
+# check — reindex publishes by renaming a fresh build over index.db, and pooled
+# connections keep the *old inode* open: reads freeze at the pre-swap state and
+# commits land in a file nothing else can see.
+_index_ident: tuple[str, int, int] | None = None
+
+
+def reconnect_if_swapped() -> None:
+    """Dispose pooled connections when the global engine's database file was
+    atomically replaced.
+
+    Called from ``open_archive`` (read-path convergence) and — critically — on
+    every ingest-lock *acquire* (``_truth.shared_ingest_lock`` and its try-
+    variant): a writer blocks on that lock for the whole duration of a running
+    reindex, so any identity check done before the wait is stale by the time
+    the lock is granted. Checking under the lock is sound — the swap needs the
+    exclusive side, so the identity observed here holds until release. Only the
+    module-global engine is checked; a ``use_engine`` override (e.g. reindex's
+    own loader) is never disposed from here."""
+    global _index_ident
+    if _engine is None:
+        _index_ident = None
+        return
+    db = _engine.url.database
+    if not db:  # pragma: no cover — non-file DSN (":memory:")
+        return
+    try:
+        st = os.stat(db)
+    except OSError:
+        _index_ident = None
+        return
+    ident = (str(_engine.url), st.st_dev, st.st_ino)
+    # Same database file, different inode = a reindex published over it. A DSN
+    # change is a home switch — init_engine already rebuilt the pool for that.
+    if _index_ident is not None and _index_ident[0] == ident[0] and _index_ident != ident:
+        _engine.dispose()
+    _index_ident = ident
 
 
 def get_engine() -> Engine:

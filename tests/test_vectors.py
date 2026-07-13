@@ -228,3 +228,19 @@ def test_rrf_merge_fuses_and_carries_semantic() -> None:
     two = next(h for h in merged if h["event_id"] == 2)
     assert two["_semantic"] == 0.91    # semantic provenance carried onto the fused hit
     assert all("_rrf" in h for h in merged)
+
+
+def test_encode_honors_availability_stub(monkeypatch):
+    """embed's documented degrade contract — is_available() False means the
+    vector arm sits out — must hold at the encode seam itself: query embedding
+    reaches _encode directly (vectors.search), and a stubbed-off availability
+    (conftest's model-free pin, --lexical-only) must never cold-load a model."""
+    from thread_archive._retrieval import embed
+
+    monkeypatch.setattr(embed, "is_available", lambda: False)
+    monkeypatch.setattr(
+        embed, "_load",
+        lambda: (_ for _ in ()).throw(AssertionError("model load attempted")),
+    )
+    assert embed.embed_query("anything at all") is None
+    assert embed.embed_documents(["doc"]) is None
