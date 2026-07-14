@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- **`DEFAULT_HOME` resolves at call time (2026-07-14).** It was frozen at import, so it
+  answered with whatever `$HOME` said then — `_config.default_home()` now.
+
+- **`$HOME` itself is now redirected, not just `THREAD_ARCHIVE_HOME` (2026-07-14).**
+  The conftest pinned the archive's own home env var but left `$HOME` alone, so
+  anything resolving `Path.home()` by another route (`DEFAULT_HOME`, the launchd paths,
+  `~/.thread/logs`) still pointed at the real machine. It is redirected at conftest
+  **import** now — before the modules that freeze those paths into constants are
+  imported, which a fixture would be far too late to do. A third house ratchet,
+  `tests/meta/test_isolation.py` (lockstepped with the others), enforces it.
+
 - **A meta section, and the declared dependency surface is now enforced
   (2026-07-14).** New `tests/meta/` carries the two house ratchets.
   `test_dependency_tiers.py` holds the import law: the stdlib and the product's

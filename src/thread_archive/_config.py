@@ -36,7 +36,11 @@ ENV_HOME = "THREAD_ARCHIVE_HOME"
 ENV_TRUTH = "THREAD_ARCHIVE_TRUTH_DIR"
 ENV_INDEX = "THREAD_ARCHIVE_INDEX"
 
-DEFAULT_HOME = Path.home() / ".thread" / "archive"
+# Resolved per call, never frozen into a constant: the store location is
+# configuration (THREAD_ARCHIVE_HOME, a test's sandbox), and a constant captures
+# whatever $HOME said at import and then ignores it.
+def default_home() -> Path:
+    return Path.home() / ".thread" / "archive"
 
 
 @dataclass(frozen=True)
@@ -70,7 +74,7 @@ def resolve_paths(
     index_path: str | os.PathLike[str] | None = None,
 ) -> ArchivePaths:
     """Resolve archive paths from explicit args, then env, then defaults."""
-    base = Path(home) if home is not None else Path(os.environ.get(ENV_HOME, DEFAULT_HOME))
+    base = Path(home) if home is not None else Path(os.environ.get(ENV_HOME) or default_home())
     base = base.expanduser()
 
     truth = (

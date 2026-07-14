@@ -18,7 +18,28 @@ in per-test with their own monkeypatches (see ``test_vectors.py``,
 
 from __future__ import annotations
 
+import atexit
+import os
+import shutil
+import tempfile
+from pathlib import Path
+
 import pytest
+
+# The throwaway machine. $HOME is redirected at import time, not in a fixture: a
+# module that resolves its store location at import (``DEFAULT_HOME``) bakes
+# whatever $HOME says at that moment, and a fixture runs long after. conftest is
+# imported before the test modules that import thread_archive, so this is the home
+# it bakes against. tests/meta/test_isolation.py enforces the result.
+_SANDBOX_HOME = Path(tempfile.mkdtemp(prefix="thread-archive-test-home-"))
+os.environ["HOME"] = str(_SANDBOX_HOME)
+atexit.register(shutil.rmtree, _SANDBOX_HOME, ignore_errors=True)
+
+
+@pytest.fixture(autouse=True)
+def _isolate_home(monkeypatch):
+    """Re-pin ``$HOME`` per test, so one that rewrites it can't leak into the next."""
+    monkeypatch.setenv("HOME", str(_SANDBOX_HOME))
 
 
 @pytest.fixture(autouse=True)
