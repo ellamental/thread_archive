@@ -319,3 +319,54 @@ def test_startswith(archive_home) -> None:
 
     # LIKE wildcards in the prefix are escaped → literal, so '%' matches nothing extra
     assert search("", startswith="Authentication%") == []
+
+
+def test_match_rank_order_streams_without_external_sort(archive_home) -> None:
+    """The MATCH passes must sort via FTS5's internal rank order (``ORDER BY
+    rank``), not an expression like ``bm25(event_search)``: an expression sort
+    builds a temp B-tree and evaluates the SELECT list — snippet() above all —
+    for every matching row, which over a ~1M-doc index turns a broad OR query
+    into seconds. The plan shape is the contract: no external sort step."""
+    from sqlalchemy import text as sa_text
+
+    from thread_archive._retrieval.fts import _RANK_EXPR
+    from thread_archive._store import get_session
+
+    _seed_corpus(archive_home)
+    sql = (
+        "EXPLAIN QUERY PLAN "
+        "SELECT event_id, snippet(event_search, 0, '', '', ' … ', 12) AS snippet, "
+        "content AS full_content FROM event_search "
+        "WHERE event_search MATCH '\"authentication\" OR \"login\"' "
+        "AND thread_id NOT IN (SELECT id FROM threads WHERE exclude_from_search) "
+        "ORDER BY " + _RANK_EXPR + " LIMIT 200"
+    )
+    with get_session() as s:
+        plan = " | ".join(str(row) for row in s.execute(sa_text(sql)))
+    assert "TEMP B-TREE" not in plan, plan
+
+
+def test_substring_like_pass_only_runs_on_pool_shortfall(archive_home) -> None:
+    """The code-shape substring LIKE is a full-table scan, so it only runs when
+    the phrase-MATCH pass left the candidate pool short. Saturated pool → the
+    within-token-substring-only doc stays unreachable; short pool → the LIKE
+    still catches it (the case the pass exists for)."""
+    from thread_archive._retrieval import search_events
+
+    init_db()
+    f = archive_home / "code.jsonl"
+    _write_cc(f, _cc_turn("u1", "a1", "please call get_session for the pool",
+                          "the megaget_sessionizer helper wraps it", 1))
+    import_session_incremental(f, "proj:code")
+
+    # Pool short of limit: both the exact-token phrase hit and the LIKE-only
+    # within-token substring hit ("mega·get_session·izer") surface.
+    contents = {h["full_content"] for h in search_events("get_session", limit=10)}
+    assert any("call get_session" in c for c in contents)
+    assert any("megaget_sessionizer" in c for c in contents)
+
+    # Pool already full from the phrase pass: the LIKE scan is skipped, so the
+    # substring-only doc can't displace or extend a saturated pool.
+    hits = search_events("get_session", limit=1)
+    assert len(hits) == 1
+    assert "megaget_sessionizer" not in (hits[0]["full_content"] or "")

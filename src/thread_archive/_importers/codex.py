@@ -27,9 +27,12 @@ def import_codex_session_incremental(session_path, source_id: str, *, session=No
     ``response_item.function_call*`` / ``custom_tool_call*`` are tool events.
     """
 
-    def _do_import(sess, thread_id, all_lines, new_lines, meta):
+    def _do_import(sess, thread_id, all_lines, new_lines, _meta):
         call_names, call_inputs = _codex_call_maps(all_lines)
-        messages = _build_codex_messages(new_lines, meta, call_names, call_inputs)
+        prior_lines = all_lines[: len(all_lines) - len(new_lines)]
+        messages = _build_codex_messages(
+            new_lines, _codex_model(prior_lines), call_names, call_inputs
+        )
         return assemble_events(sess, thread_id, messages, DefaultEventBuilder())
 
     return import_line_stream_session(
@@ -55,10 +58,44 @@ def _codex_session_meta(lines: list[dict]) -> dict[str, Any]:
     return {}
 
 
-def _codex_model(meta: dict[str, Any]) -> str:
-    model = meta.get("model")
-    if isinstance(model, str) and model.strip():
-        return model.strip()
+def _codex_line_model(line: dict) -> Optional[str]:
+    """The model a codex line names, or None when it names none.
+
+    Codex declares the serving model per *turn*, not once per session: each turn
+    opens with a ``turn_context`` (``payload.model``), and a mid-session switch
+    emits an ``event_msg``/``thread_settings_applied``
+    (``payload.thread_settings.model``). ``session_meta`` names a model only on
+    older CLIs, so it is a fallback, not the source — reading it alone leaves every
+    turn attributed to a bare ``"codex"``.
+    """
+    payload = line.get("payload")
+    if not isinstance(payload, dict):
+        return None
+    line_type = line.get("type")
+    if line_type == "turn_context":
+        named = payload.get("model")
+    elif line_type == "event_msg" and payload.get("type") == "thread_settings_applied":
+        settings = payload.get("thread_settings")
+        named = settings.get("model") if isinstance(settings, dict) else None
+    elif line_type == "session_meta":
+        named = payload.get("model")
+    else:
+        return None
+    return named.strip() if isinstance(named, str) and named.strip() else None
+
+
+def _codex_model(prior_lines: list[dict]) -> str:
+    """The model in effect entering a chunk: the last one named before it.
+
+    An incremental import resumes mid-session, so the turn that named the model can
+    sit behind the watermark — hence the scan back over the lines already imported.
+    """
+    for line in reversed(prior_lines):
+        if not isinstance(line, dict):
+            continue
+        named = _codex_line_model(line)
+        if named:
+            return named
     return "codex"
 
 
@@ -258,9 +295,9 @@ def _codex_assistant_block(
         # A `message` response_item, web-search results, images, or any future kind.
         return _codex_preserved_block(line_type, payload_type, payload, ts)
 
-    # `session_meta` is consumed as thread metadata (cwd/title/model) upstream; any
-    # OTHER line type (turn_context, compacted, a future kind) is preserved so no
-    # provider record is silently dropped on import.
+    # `session_meta` is consumed as thread metadata (cwd/title) upstream; any OTHER
+    # line type (turn_context, compacted, a future kind) is preserved so no provider
+    # record is silently dropped on import.
     if line_type == "session_meta":
         return None
     return _codex_preserved_block(line_type, payload_type, payload, ts)
@@ -268,13 +305,17 @@ def _codex_assistant_block(
 
 def _build_codex_messages(
     lines: list[dict],
-    meta: dict[str, Any],
+    model: str,
     call_names: dict[str, str],
     call_inputs: dict[str, dict[str, Any]],
 ) -> list[dict[str, Any]]:
-    """Assemble codex's interleaved line stream into canonical NormalizedMessages."""
+    """Assemble codex's interleaved line stream into canonical NormalizedMessages.
+
+    ``model`` is the model entering the chunk; the lines themselves re-declare it
+    per turn (see :func:`_codex_line_model`), so it is tracked as the stream is
+    walked and each assistant turn carries the model that actually served it.
+    """
     messages: list[dict[str, Any]] = []
-    model = _codex_model(meta)
     cur: Optional[dict[str, Any]] = None
 
     def flush() -> None:
@@ -305,6 +346,15 @@ def _build_codex_messages(
         line_type = line.get("type")
         payload_type = payload.get("type")
         ts = line.get("timestamp")
+
+        named = _codex_line_model(line)
+        if named and named != model:
+            model = named
+            if cur is not None:
+                # The turn's own context line lands mid-message (codex opens a turn
+                # with task_started, then turn_context), so correct the turn already
+                # in flight rather than only the ones after it.
+                cur["provider_data"]["model"] = model
 
         if line_type == "event_msg" and payload_type == "user_message":
             user_msg = _codex_user_message(payload, ts)

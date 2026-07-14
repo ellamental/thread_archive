@@ -2,6 +2,47 @@
 
 ## Unreleased
 
+- **Search is ~5× faster; same results (2026-07-13).** Stage-profiling the
+  production pipeline over the eval's own queries showed the cost was never
+  the models: the lexical arm was p50 3.0s / p90 11.7s per query while the
+  whole vector arm ran ~160ms. Two causes, both in `fts.py`. (1) Every MATCH
+  pass sorted with `ORDER BY bm25(event_search)` — an expression sort, so
+  SQLite built a temp B-tree and evaluated the SELECT list (snippet()
+  re-tokenizes the doc) for *every* matching row; a broad OR-fallback query
+  matches 200k–600k docs of the ~1M-doc index, costing 2.3s p50 / 6.7s p90
+  per query. `ORDER BY rank` is the same bm25 ordering but engages FTS5's
+  internal rank-sort, streaming the LIMIT rows out without the external sort:
+  385ms p50 with snippet, provably identical result sets (verified
+  set-for-set over the eval queries). (2) The code/pipe-OR shapes'
+  substring-LIKE pass is a 2–3s full-table scan that ran even when the
+  phrase-MATCH pass had already filled the 200-candidate pool; it now runs
+  only on pool shortfall — still always for the rare identifiers it exists
+  to catch. The cross-encoder stage (`rerank.py`) loads fp16 on
+  accelerators and predicts in batches of 8 (one big batch pads every pair
+  to the longest doc): ~4.5s → ~1.6s per reranked query at scores whose
+  ordering is bit-identical to fp32 (zero pairwise flips over real pools).
+  Measured end to end on the gate protocol: fused sans rerank p50 1313ms →
+  591ms (floors hold; MRR 0.515 / recall@10 0.710 on the current sample);
+  full pipeline with rerank 9.2s → 2965ms p50 at flat quality (MRR 0.463 /
+  recall@10 0.740). Agents feel this directly — `thread_search` reranked
+  conceptual queries at ~9s before. Pinned by test: the MATCH plan shape
+  (no external sort) and the LIKE shortfall gate, both in test_search.py.
+  Every archived Codex turn read `model: "codex"` — a placeholder, not a model.
+  The importer resolved the model from `session_meta.model`, and Codex (>= 0.144,
+  at least) no longer puts one there: it names the serving model per *turn*, in
+  `turn_context.model`, plus a `thread_settings_applied` line on a mid-session
+  switch. Those lines were preserved verbatim as content blocks (Archivist, not
+  Filter — the data was never lost), but nothing lifted them into the event
+  payload, so the one field that answers "which model wrote this?" was a constant
+  across the whole provider. Found via a thread where Codex was asked its own
+  context limit, couldn't answer from its rollout, web-searched, and guessed wrong
+  (claimed GPT-5-Codex/400k; it was `gpt-5.6-sol` at a 258,400-token window). The
+  model is now tracked as the line stream is walked — seeded, for an incremental
+  resume, from the last model named behind the watermark — and a turn whose
+  `task_started` precedes its own `turn_context` is corrected in flight rather
+  than left on the stale value. Turns imported before this keep `"codex"`; their
+  real model is still recoverable from the preserved `codex_turn_context` blocks.
+
 - **Retrieval quality is CI-gated (2026-07-13).** Search-quality drift was the
   one regression class nothing watched: verify proves no byte is lost, but a
   ranking change that quietly craters recall passed every gate (the

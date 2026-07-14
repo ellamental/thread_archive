@@ -36,6 +36,12 @@ logger = logging.getLogger(__name__)
 RERANK_DOC_CHARS = 1500
 _MODEL_NAME = os.environ.get("THREAD_ARCHIVE_RERANK_MODEL", "BAAI/bge-reranker-v2-m3")
 
+# Inference batch size for predict(). Latency here is padding-bound: one big batch
+# pads every (query, doc) pair to the batch's longest doc, so a single long hit
+# makes the whole pool pay its length. Small batches bound the padding waste —
+# measured on MPS over real 24-doc pools, 8 beats 32 by ~2× at identical scores.
+_PREDICT_BATCH_SIZE = 8
+
 _model = None
 _load_failed = False
 # Serializes _load() so a background warm (mcp.server) and a concurrent first conceptual
@@ -94,7 +100,16 @@ def _load():
             from sentence_transformers import CrossEncoder
 
             device = _device()
-            _model = CrossEncoder(_MODEL_NAME, device=device)
+            model_kwargs = {}
+            if device.startswith(("mps", "cuda")):
+                # fp16 on an accelerator: ~2× the inference speed at scores whose
+                # ordering is indistinguishable from fp32 (measured over real
+                # pools: zero pairwise rank flips). CPU stays fp32 — fp16 there
+                # is emulated and slower.
+                import torch
+
+                model_kwargs["torch_dtype"] = torch.float16
+            _model = CrossEncoder(_MODEL_NAME, device=device, model_kwargs=model_kwargs)
             logger.info("rerank: loaded %s (device=%s)", _MODEL_NAME, device)
             return _model
         except Exception as e:  # noqa: BLE001
@@ -124,7 +139,7 @@ def rerank_scores(query: str, docs: list[str]) -> list[float] | None:
         return None
     try:
         pairs = [[query, (d or "")[:RERANK_DOC_CHARS]] for d in docs]
-        scores = model.predict(pairs)
+        scores = model.predict(pairs, batch_size=_PREDICT_BATCH_SIZE, show_progress_bar=False)
         return [float(s) for s in scores]
     except Exception as e:  # noqa: BLE001
         logger.debug("rerank failed (%s) — caller keeps original order", e)

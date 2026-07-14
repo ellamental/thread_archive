@@ -36,8 +36,15 @@ _CREATE_FTS = (
     "tokenize = 'porter unicode61')"
 )
 
-# Plain FTS5 bm25 (more-negative = better).
-_RANK_EXPR = "bm25(event_search)"
+# Plain FTS5 bm25 (more-negative = better) — via the hidden ``rank`` column, NOT
+# a literal ``bm25(event_search)`` expression. The two order identically (rank IS
+# bm25 by default), but only ``ORDER BY rank`` engages FTS5's internal rank-sort
+# (xBestIndex flag; EXPLAIN shows ``INDEX ...:M`` with no temp B-tree), so the
+# SELECT list — snippet() above all — is evaluated for the LIMIT rows that come
+# out, not for every matching row going into an external sort. Over this ~1M-doc
+# index a broad OR query matches 200k–600k docs; the expression form pays a
+# per-match bm25()+snippet() sort (seconds), the rank form streams (~0.4s).
+_RANK_EXPR = "rank"
 
 
 def build_event_hit(
@@ -144,7 +151,8 @@ def search_events(
     whole corpus) plus a substring LIKE over the most recent matches (catches
     within-token substrings MATCH can't see). The MATCH pass is what keeps *old*
     hits reachable for common identifiers — a single recency-ordered LIKE pass
-    caps out on the newest ``limit`` matches. ``startswith`` overrides the query
+    caps out on the newest ``limit`` matches. The LIKE pass is a full-table scan,
+    so it only runs when the MATCH pass left the pool short (see the pass list). ``startswith`` overrides the query
     mode entirely with a structural prefix scan (content LIKE 'prefix%',
     recency-ordered) — the query text is not matched, only the structural filters.
 
@@ -166,34 +174,39 @@ def search_events(
     ensure_fts(session)
     mode, is_boolean = classify_query(query)
 
-    # Each pass is (match_where, match_params, order, use_match); shared filters
-    # are appended to every pass.
-    passes: list[tuple[str, dict, str, bool]] = []
+    # Each pass is (match_where, match_params, order, use_match, fallback); shared
+    # filters are appended to every pass. A fallback pass is a substring LIKE — a
+    # full-table scan (seconds over a ~1M-doc index; ``content`` has no index that
+    # can serve an infix LIKE) — so it only runs when the MATCH pass ahead of it
+    # left the candidate pool short: it exists to catch within-token substrings
+    # MATCH can't see, and when the exact-token phrase already fills the pool
+    # those can't displace anything the scan is worth seconds for.
+    passes: list[tuple[str, dict, str, bool, bool]] = []
     if startswith is not None:
         # Structural prefix scan — wildcards in the prefix are escaped so it matches
         # a literal prefix (the reference left them unescaped; this hardens it).
         passes.append(("content LIKE :sw ESCAPE '\\'", {"sw": _like_prefix(startswith)},
-                       "occurred_at DESC", False))
+                       "occurred_at DESC", False, False))
     elif mode == "or":
         terms = [_clean_query_text(t) for t in (query or "").split("|")]
         terms = [t for t in terms if t]
         if not terms:
             return []
         match_q = " OR ".join(_quote_phrase(t) for t in terms)
-        passes.append(("event_search MATCH :q", {"q": match_q}, _RANK_EXPR, True))
+        passes.append(("event_search MATCH :q", {"q": match_q}, _RANK_EXPR, True, False))
         like_params: dict = {}
         ors = []
         for i, term in enumerate(terms):
             like_params["or" + str(i)] = "%" + term + "%"
             ors.append("content LIKE :or" + str(i))
-        passes.append(("(" + " OR ".join(ors) + ")", like_params, "occurred_at DESC", False))
+        passes.append(("(" + " OR ".join(ors) + ")", like_params, "occurred_at DESC", False, True))
     elif mode == "code":
         clean = _clean_query_text(query)
-        passes.append(("event_search MATCH :q", {"q": _quote_phrase(clean)}, _RANK_EXPR, True))
+        passes.append(("event_search MATCH :q", {"q": _quote_phrase(clean)}, _RANK_EXPR, True, False))
         passes.append(("content LIKE :codepat", {"codepat": "%" + clean + "%"},
-                       "occurred_at DESC", False))
+                       "occurred_at DESC", False, True))
     else:
-        passes.append(("event_search MATCH :q", {"q": _to_match_query(query)}, _RANK_EXPR, True))
+        passes.append(("event_search MATCH :q", {"q": _to_match_query(query)}, _RANK_EXPR, True, False))
 
     shared: list[str] = []
     shared_params: dict = {"lim": limit}
@@ -265,8 +278,10 @@ def search_events(
                     occurred_at_ts=ts,
                 ))
 
-        for p in passes:
-            run_pass(*p)
+        for match_where, match_params, order, use_match, fallback in passes:
+            if fallback and len(hits) >= limit:
+                continue
+            run_pass(match_where, match_params, order, use_match)
 
         # Fallback OR tier for plain natural-language queries (see the docstring):
         # only when the strict all-terms pass left the pool short, and only over

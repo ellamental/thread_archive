@@ -65,6 +65,80 @@ def test_codex_import_and_idempotent(archive_home) -> None:
     assert _event_count() == n
 
 
+# Codex >= 0.144 drops `model` from session_meta and names the serving model per
+# turn: `turn_context` opens a turn, `thread_settings_applied` announces a switch.
+CODEX_PER_TURN = [
+    {"type": "session_meta", "timestamp": "2026-01-01T10:00:00Z",
+     "payload": {"id": "sess", "cwd": "/proj", "model_provider": "openai"}},
+    {"type": "event_msg", "timestamp": "2026-01-01T10:00:01Z",
+     "payload": {"type": "user_message", "message": "first turn", "turn_id": "t1"}},
+    {"type": "event_msg", "timestamp": "2026-01-01T10:00:02Z",
+     "payload": {"type": "task_started", "turn_id": "t1", "model_context_window": 258400}},
+    {"type": "turn_context", "timestamp": "2026-01-01T10:00:03Z",
+     "payload": {"turn_id": "t1", "model": "gpt-5.6-sol", "reasoning_effort": "high"}},
+    {"type": "event_msg", "timestamp": "2026-01-01T10:00:04Z",
+     "payload": {"type": "agent_message", "message": "answered by sol"}},
+]
+
+CODEX_MODEL_SWITCH = [
+    {"type": "event_msg", "timestamp": "2026-01-01T10:01:00Z",
+     "payload": {"type": "user_message", "message": "second turn", "turn_id": "t2"}},
+    {"type": "event_msg", "timestamp": "2026-01-01T10:01:01Z",
+     "payload": {"type": "thread_settings_applied",
+                 "thread_settings": {"model": "gpt-5.6-thinking", "reasoning_effort": "high"}}},
+    {"type": "turn_context", "timestamp": "2026-01-01T10:01:02Z",
+     "payload": {"turn_id": "t2", "model": "gpt-5.6-thinking"}},
+    {"type": "event_msg", "timestamp": "2026-01-01T10:01:03Z",
+     "payload": {"type": "agent_message", "message": "answered by thinking"}},
+]
+
+
+def _codex_models() -> list[str]:
+    """Model on each api_request_started, in event order."""
+    with get_session() as s:
+        events = s.execute(
+            select(Event)
+            .where(Event.event_type == "api_request_started")
+            .order_by(Event.id)
+        ).scalars().all()
+    return [e.payload["model"] for e in events]
+
+
+def test_codex_model_comes_from_turn_context(archive_home) -> None:
+    init_db()
+    f = archive_home / "codex.jsonl"
+    _write_jsonl(f, CODEX_PER_TURN)
+
+    import_codex_session_incremental(f, "codex-sess")
+
+    # Every assistant turn — including the one whose task_started precedes its own
+    # turn_context — is attributed to the model that served it, not a bare "codex".
+    assert _codex_models() == ["gpt-5.6-sol"]
+
+
+def test_codex_model_switch_and_resume_past_watermark(archive_home) -> None:
+    init_db()
+    f = archive_home / "codex.jsonl"
+    _write_jsonl(f, CODEX_PER_TURN)
+    import_codex_session_incremental(f, "codex-sess")
+
+    # An append that switches model mid-session.
+    _write_jsonl(f, CODEX_PER_TURN + CODEX_MODEL_SWITCH)
+    import_codex_session_incremental(f, "codex-sess")
+    assert _codex_models() == ["gpt-5.6-sol", "gpt-5.6-thinking"]
+
+    # A third turn declares no model of its own: it inherits the switched-to model
+    # from lines that are already behind the import watermark.
+    _write_jsonl(f, CODEX_PER_TURN + CODEX_MODEL_SWITCH + [
+        {"type": "event_msg", "timestamp": "2026-01-01T10:02:00Z",
+         "payload": {"type": "user_message", "message": "third turn", "turn_id": "t3"}},
+        {"type": "event_msg", "timestamp": "2026-01-01T10:02:01Z",
+         "payload": {"type": "agent_message", "message": "still thinking"}},
+    ])
+    import_codex_session_incremental(f, "codex-sess")
+    assert _codex_models() == ["gpt-5.6-sol", "gpt-5.6-thinking", "gpt-5.6-thinking"]
+
+
 # ── cloth ───────────────────────────────────────────────────────────────────
 
 CLOTH = [
