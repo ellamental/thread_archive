@@ -2,6 +2,23 @@
 
 ## Unreleased
 
+- **The viewer's tests fail on an unmocked request, and hold a coverage floor
+  (2026-07-14).** The frontend suite faked network with
+  `vi.stubGlobal('fetch', …)`: one global stub answered *every* URL the component
+  asked for, so nothing could tell a request the test meant to make from a stray
+  one, and a component that started fetching something new kept its tests green.
+  Network is now faked at the MSW seam (`src/test/mswServer.ts`, helpers in
+  `src/test/msw.ts`) with `onUnhandledRequest: 'error'`, matching lab/web. That
+  guard alone isn't enough here — the viewer's components catch their own fetch
+  errors and render an error state (`Sidebar` swallows outright), so MSW
+  rejecting an unmatched request can still leave a test passing; a
+  `request:unhandled` recorder in the setup file reds the test in `afterEach`,
+  which is the case that was passing silently. Coverage rides the CI row:
+  `frontend-test` passes `--coverage`, gating the lines floor in
+  `frontend/vite.config.ts` (75, under the measured 75.58% — a ratchet, not a
+  target; `Sidebar`, `StatusBar`, `Landing` and `App` are the untested surface
+  it's waiting on). A plain local `vitest run` stays fast and ungated.
+
 - **Search is ~5× faster; same results (2026-07-13).** Stage-profiling the
   production pipeline over the eval's own queries showed the cost was never
   the models: the lexical arm was p50 3.0s / p90 11.7s per query while the
@@ -27,6 +44,8 @@
   recall@10 0.740). Agents feel this directly — `thread_search` reranked
   conceptual queries at ~9s before. Pinned by test: the MATCH plan shape
   (no external sort) and the LIKE shortfall gate, both in test_search.py.
+
+- **Codex turns are attributed to the model that served them (2026-07-13).**
   Every archived Codex turn read `model: "codex"` — a placeholder, not a model.
   The importer resolved the model from `session_meta.model`, and Codex (>= 0.144,
   at least) no longer puts one there: it names the serving model per *turn*, in
@@ -40,8 +59,25 @@
   model is now tracked as the line stream is walked — seeded, for an incremental
   resume, from the last model named behind the watermark — and a turn whose
   `task_started` precedes its own `turn_context` is corrected in flight rather
-  than left on the stale value. Turns imported before this keep `"codex"`; their
-  real model is still recoverable from the preserved `codex_turn_context` blocks.
+  than left on the stale value.
+
+- **…and the 931 turns already archived under the placeholder are repaired
+  (2026-07-14).** `_scripts/backfill_codex_model.py` re-attributes them in place
+  across all 36 codex threads: 472 `gpt-5.6-sol`, 459 `gpt-5.5`, none left
+  unresolved. Threads carrying preserved `turn_context` blocks answer for
+  themselves; threads imported before that preservation existed (which dropped the
+  lines entirely) are answered from the on-disk rollout, whose model changes are
+  matched to turns *by the clock* — an old import drew its turn boundaries around
+  a different set of lines, so its message ids need not be the ones a replay
+  computes, but both records share a timeline. Where both sources can answer they
+  agreed on every turn; a disagreement is skipped, never tie-broken. Because
+  `model` is a dedup-content key, each patched event's `dedup_key` is re-hashed
+  onto its new payload — the identity a fresh import now computes, so re-importing
+  one of these sessions dedups against the repaired rows instead of doubling the
+  thread (pinned by test). Store and truth are rewritten together under the
+  reindex lock, the truth line-by-line with every other line passed through
+  verbatim; `verify` is clean (3,590,488 events, zero drift) and no row's payload
+  fails to re-hash to its key. Row-level undo record committed beside the script.
 
 - **Retrieval quality is CI-gated (2026-07-13).** Search-quality drift was the
   one regression class nothing watched: verify proves no byte is lost, but a

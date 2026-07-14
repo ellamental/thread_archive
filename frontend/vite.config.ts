@@ -22,5 +22,21 @@ export default defineConfig({
   test: {
     environment: 'jsdom',
     setupFiles: './src/test/setup.ts',
+    coverage: {
+      provider: 'v8',
+      reporter: ['text', 'text-summary'],
+      include: ['src/**/*.{ts,tsx}'],
+      // Test scaffolding and the Vite entry shim carry no behavior worth covering.
+      exclude: ['src/test/**', 'src/main.tsx'],
+      // Floor, not target: sits just under the measured 75.58% lines, so a
+      // regression reds the suite without making the number a thing to chase.
+      // Only fires under --coverage, which only the CI row passes — a plain
+      // local `npx vitest run` stays fast and ungated. Lines only, the same one
+      // ratchet lab/web holds; the shell components (Sidebar, StatusBar,
+      // Landing, App) are the untested surface the number is waiting on.
+      thresholds: {
+        lines: 75,
+      },
+    },
   },
 })

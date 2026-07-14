@@ -40,11 +40,15 @@ argv = ["npx", "tsc", "--noEmit"]
 cwd = "frontend"
 
 # Component behavior (Vitest + Testing Library over jsdom): block rendering,
-# loading/error/empty states, search grouping, uuid→thread redirects. Same
-# which-gated npx as the typecheck row.
+# loading/error/empty states, search grouping, uuid→thread redirects. Network is
+# faked at the MSW seam with `onUnhandledRequest: 'error'`, so an unmocked fetch
+# fails the row rather than passing quietly. Same which-gated npx as the
+# typecheck row. --coverage so the lines floor in frontend/vite.config.ts gates
+# here (the frontend analog of the coverage-gate row below); a plain local
+# `vitest run` stays fast and ungated.
 [[suite]]
 name = "frontend-test"
-argv = ["npx", "vitest", "run"]
+argv = ["npx", "vitest", "run", "--coverage"]
 cwd = "frontend"
 
 [[suite]]
