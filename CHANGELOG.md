@@ -2,6 +2,23 @@
 
 ## Unreleased
 
+- **A meta section, and the declared dependency surface is now enforced
+  (2026-07-14).** New `tests/meta/` carries the two house ratchets.
+  `test_dependency_tiers.py` holds the import law: the stdlib and the product's
+  own package are free, a distribution in `project.dependencies` is free, an
+  optional extra or a sibling thread product is importable **fail-soft only**
+  (under a `try` handling `ImportError`, degrading when absent — dependency
+  tier 3), and anything else is not importable at all. A package that is merely
+  present in the venv because some other dependency dragged it in is a
+  transitive, not a dependency. `test_no_global_patch.py` freezes
+  string-target `patch("a.b.c")` at a baseline that only shrinks — the leaky
+  form that replaces a symbol process-wide and survives no refactor.
+  This surfaced a real gap: `_retrieval/embed.py` and `_retrieval/rerank.py`
+  import `torch` directly (to pick the device and the fp16 dtype) but nothing
+  declared it — it was arriving as a transitive of sentence-transformers. It is
+  now declared in the `embeddings` extra, where it belongs. The single-path
+  import ratchet moved into `tests/meta/` alongside the house pair.
+
 - **The viewer's tests fail on an unmocked request, and hold a coverage floor
   (2026-07-14).** The frontend suite faked network with
   `vi.stubGlobal('fetch', …)`: one global stub answered *every* URL the component

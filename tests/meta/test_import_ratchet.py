@@ -18,7 +18,7 @@ from pathlib import Path
 
 import pytest
 
-SRC = Path(__file__).resolve().parent.parent / "src"
+SRC = Path(__file__).resolve().parents[2] / "src"
 
 # Top-level modules that must never appear in our source tree.
 BANNED_TOP_LEVEL = frozenset(
