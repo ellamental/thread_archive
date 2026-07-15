@@ -1075,7 +1075,9 @@ def read_thread_structured(
     ``thread_id`` accepts an integer thread id or a provider session id, same as
     :func:`read_thread` (see :func:`resolve_thread_ref`). Returns
     ``{thread_id, title, source, messages}`` where ``messages`` is a list of
-    ``{role, blocks, meta}`` — same-role events grouped into a message, but an assistant
+    ``{role, blocks, event_ids, meta}`` — same-role events grouped into a message
+    (``event_ids`` names the source events, so the viewer can deep-link a search hit
+    to its message), but an assistant
     turn's tool loop is split at each api_request boundary so every model inference (one
     tool-call/response iteration) is its own message. Each block is a typed dict
     (:func:`_structured_event`); ``meta`` is per-message info (timestamp, and for
@@ -1136,7 +1138,7 @@ def read_thread_structured(
             continue
         role, block = rendered
         if split or current is None or current["role"] != role:
-            current = {"role": role, "blocks": [], "meta": _new_meta(role, ev)}
+            current = {"role": role, "blocks": [], "event_ids": [], "meta": _new_meta(role, ev)}
             if role == "assistant":
                 for pet, pp in pending:
                     _fold_request(current["meta"], pet, pp)
@@ -1144,6 +1146,10 @@ def read_thread_structured(
             split = False
             messages.append(current)
         current["blocks"].append(block)
+        # The events this message's blocks came from — lets the viewer resolve a
+        # search hit's event id to its message (deep-link + highlight).
+        if ev.id is not None and ev.id not in current["event_ids"]:
+            current["event_ids"].append(ev.id)
 
     return {
         "thread_id": thread.id,

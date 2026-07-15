@@ -13,7 +13,6 @@ cross-encoder arms sit out and search is lexical-only (still through the ranker)
 from __future__ import annotations
 
 import logging
-import os
 from typing import Optional
 
 from sqlalchemy import select
@@ -21,7 +20,6 @@ from sqlalchemy.orm import Session
 
 from .._store import Thread, use_session
 from . import rank as _rank
-from . import topical as _topical
 from ._classify import resolve_relative_date
 from ._context import extract_context_lines, get_context_events, parse_context_events_spec
 from ._types import EventHit
@@ -48,8 +46,8 @@ def _rrf_merge(result_lists: list[list[EventHit]], limit: int, k: int = 60) -> l
     """Reciprocal-rank fusion of several ranked hit lists, keyed by
     (event_id, content_type). RRF score = Σ 1/(k + rank), **normalized to [0,1]**
     (÷ peak) so the ranker's ``fusion_weight`` is calibrated against it. The arm
-    provenance (``_semantic`` cosine, ``_topical`` subject weight) is carried onto
-    the fused hit even when an earlier arm's copy is the one kept."""
+    provenance (``_semantic`` cosine) is carried onto the fused hit even when an
+    earlier arm's copy is the one kept."""
     scores: dict = {}
     chosen: dict = {}
     for lst in result_lists:
@@ -58,10 +56,8 @@ def _rrf_merge(result_lists: list[list[EventHit]], limit: int, k: int = 60) -> l
             scores[key] = scores.get(key, 0.0) + 1.0 / (k + rank + 1)
             if key not in chosen:
                 chosen[key] = h
-            else:
-                for provenance in ("_semantic", "_topical"):
-                    if provenance in h and provenance not in chosen[key]:
-                        chosen[key][provenance] = h[provenance]
+            elif "_semantic" in h and "_semantic" not in chosen[key]:
+                chosen[key]["_semantic"] = h["_semantic"]
     peak = max(scores.values()) if scores else 0.0
     ranked = sorted(chosen, key=lambda key: (-scores[key], chosen[key]["event_id"]))
     out = []
@@ -157,17 +153,14 @@ def search(
     context_lines: int = 2,
     context_events: Optional[str] = None,
     rerank: Optional[bool] = None,
-    topical: Optional[bool] = None,
     session: Optional[Session] = None,
 ) -> list[EventHit]:
     """Search over conversation events through the production pipeline: lexical FTS5
-    + optional semantic vectors + optional topic-bridged recall → RRF fusion → dedup
-    → weighted lexical rank → optional cross-encoder head re-rank. Returns event-hit
-    dicts with the thread title enriched. ``since``/``until`` accept ISO timestamps or a relative ``<N>d``
+    + optional semantic vectors → RRF fusion → dedup → weighted lexical rank →
+    optional cross-encoder head re-rank. Returns event-hit dicts with the thread
+    title enriched. ``since``/``until`` accept ISO timestamps or a relative ``<N>d``
     window; ``source`` restricts to threads of the named provider(s); ``rerank``
-    forces the cross-encoder stage on/off (else auto-gated). ``topical`` forces the
-    topic-bridged recall arm on/off (else on by default, off for structural /
-    tool-scoped shapes and when the subject graph is empty).
+    forces the cross-encoder stage on/off (else auto-gated).
 
     ``startswith`` does a structural prefix scan (query text unused). ``sort='oldest'``
     returns the earliest matches chronologically, bypassing the ranker — the lexical
@@ -217,23 +210,9 @@ def search(
         over=over, source=source,
     )
 
-    # Topic-bridged recall: follow the lexical+vector seed pool through the subject
-    # graph to the subject-linked conversations neither term nor vector could reach.
-    # Sits out on structural / tool-scoped shapes (like the vector arm) and when
-    # disabled. It reads the seed's ranking, so it fuses AFTER a first merge.
-    use_topical = (topical if topical is not None else _topical.enabled()) and not (structural or tool_name)
-    topical_arm = None
-    if use_topical:
-        seed_pool = _rrf_merge([lexical, semantic], over) if semantic else lexical
-        topical_arm = _topical.topical_hits(
-            seed_pool, content_types=content_types, exclude_content_types=exclude_content_types,
-            since=since_r, until=until_r, source=source, session=session,
-        ) or None
-
-    # Fuse the arms into a wide pool (keeps _rrf agreement + _semantic/_topical
-    # provenance), then dedup byte-identical hits before ranking.
-    arms = [lexical] + [a for a in (semantic, topical_arm) if a]
-    fused = _rrf_merge(arms, over) if len(arms) > 1 else arms[0]
+    # Fuse the arms into a wide pool (keeps _rrf agreement + _semantic provenance),
+    # then dedup byte-identical hits before ranking.
+    fused = _rrf_merge([lexical, semantic], over) if semantic else lexical
     fused = _rank.dedup_results(fused)
 
     did_rerank = False
@@ -253,13 +232,7 @@ def search(
         # re-order the head, else straight to `limit`.
         do_rerank = _do_rerank(query, terms, rerank)
         rank_to = max(limit, _rank.RERANK_POOL) if do_rerank else limit
-        # The subject-linkage weight is call-time tunable (ops override / eval sweep);
-        # absent the env var the ranker's shipped default applies.
-        rank_kwargs: dict = {}
-        _tw = os.environ.get("THREAD_ARCHIVE_TOPICAL_WEIGHT")
-        if _tw is not None:
-            rank_kwargs["topical_weight"] = float(_tw)
-        ranked = _rank.rank_search_results(fused, terms, rank_to, **rank_kwargs)
+        ranked = _rank.rank_search_results(fused, terms, rank_to)
         # Cross-encoder head re-rank (gated, fail-soft): scores (query, content)
         # jointly and floats the true target up. None → keep lexical order.
         if do_rerank:

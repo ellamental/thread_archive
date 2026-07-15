@@ -1,7 +1,7 @@
 // The thread reader: loading / error / empty states, uuid → thread redirect
 // via /api/archive-link, the per-thread model header, and same-model runs
 // merging into one labelled group.
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { render, screen } from '@testing-library/react'
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
 import { ThreadView } from '../components/ThreadView'
@@ -91,5 +91,34 @@ describe('ThreadView', () => {
     renderAt('/archive/5')
     await screen.findByText('hi')
     expect(requests[0]).toBe('/api/thread/5?thinking=0&tools=1')
+  })
+
+  it('highlights and scrolls to the message a search hit deep-linked (?e=)', async () => {
+    const scrolled = vi.fn()
+    window.HTMLElement.prototype.scrollIntoView = scrolled
+    mswJson('/api/thread/:id', thread([
+      { ...asst('earlier turn', 'opus'), event_ids: [11] },
+      { ...asst('the hit turn', 'opus'), event_ids: [12] },
+    ]))
+    renderAt('/archive/5?e=12')
+    const msg = (await screen.findByText('the hit turn')).closest('.msg')
+    expect(msg).toHaveClass('hit-target')
+    expect(msg).toHaveAttribute('id', 'focus-event')
+    expect(scrolled).toHaveBeenCalled()
+    // the non-target message is untouched
+    expect(screen.getByText('earlier turn').closest('.msg')).not.toHaveClass('hit-target')
+  })
+
+  it('falls back to the nearest preceding message when the hit event is hidden', async () => {
+    // e.g. a hit on thinking content while the thinking toggle is off: the exact
+    // event renders no block, so the reader lands on the closest visible turn.
+    window.HTMLElement.prototype.scrollIntoView = vi.fn()
+    mswJson('/api/thread/:id', thread([
+      { ...asst('first', 'opus'), event_ids: [11] },
+      { ...asst('second', 'opus'), event_ids: [14] },
+    ]))
+    renderAt('/archive/5?e=15')
+    const msg = (await screen.findByText('second')).closest('.msg')
+    expect(msg).toHaveClass('hit-target')
   })
 })

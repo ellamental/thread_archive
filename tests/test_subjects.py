@@ -67,7 +67,7 @@ def _seed(archive_home):
 
 def test_subjects_rank_by_coverage_then_specificity(archive_home) -> None:
     ids = _seed(archive_home)
-    hits = search("widget", topical=False)
+    hits = search("widget")
     subs = _subjects.subjects_for_results(hits)
     by_id = {t: (title, chats) for t, title, chats in subs}
 
@@ -84,14 +84,14 @@ def test_subjects_rank_by_coverage_then_specificity(archive_home) -> None:
 def test_no_subjects_without_evidence(archive_home) -> None:
     init_db()
     _chat(archive_home, "a", "the widget alpha design", 1)
-    hits = search("widget", topical=False)
+    hits = search("widget")
     assert _subjects.subjects_for_results(hits) == []
     assert _subjects.format_subjects_line([]) is None
 
 
 def test_lens_is_fail_soft(archive_home, monkeypatch) -> None:
     _seed(archive_home)
-    hits = search("widget", topical=False)
+    hits = search("widget")
 
     def _boom(*a, **k):
         raise RuntimeError("subject graph exploded")
@@ -102,7 +102,7 @@ def test_lens_is_fail_soft(archive_home, monkeypatch) -> None:
 
 def test_format_results_shows_subjects_line(archive_home, monkeypatch) -> None:
     _seed(archive_home)
-    hits = search("widget", topical=False)
+    hits = search("widget")
     assert "subjects:" in format_results(hits, "widget")
 
     # THREAD_ARCHIVE_SUBJECTS=0 is the kill switch — the line is omitted.

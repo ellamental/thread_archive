@@ -5,7 +5,7 @@ is the retrieval MCP tools plus the truth format (see the package docstring);
 this CLI is the process seam launchd, cron, and operators use to run the
 private machinery — ingest (``import``, ``import-export``, ``watch``,
 ``embed``), the durability kit (``backup``, ``verify``, ``restore-drill``,
-``reindex``, ``repair``, ``status``, ``nightly``, ``coverage``), and the
+``restore``, ``reindex``, ``repair``, ``status``, ``nightly``, ``coverage``), and the
 LaunchAgent lifecycle (``daemon``). Verbs may change without
 external notice, but they are *wired into* the LaunchAgent plists, lab's cron
 script, the /ci skill, and the monitor's heartbeat contract — renaming one
@@ -502,6 +502,53 @@ def cmd_restore_drill(args: argparse.Namespace) -> int:
     return 0 if res.get("ok") else 1
 
 
+def cmd_restore(args: argparse.Namespace) -> int:
+    from . import _api as api
+
+    if args.list_generations:
+        gens = api.list_generations(args.dest)
+        if not gens:
+            print("no generations retained at this mirror (the head is the only restore point)")
+        for g in gens:
+            print(g)
+        return 0
+    if not args.to:
+        print("restore: --to <home> is required (or --list-generations)")
+        return 2
+    src = f"{args.dest} (generation {args.generation})" if args.generation else args.dest
+    print(f"restore: rebuilding {args.to} from {src}...", flush=True)
+    res = api.restore(
+        args.dest, args.to, generation=args.generation,
+        replace=args.replace, allow_parse_errors=args.allow_parse_errors,
+    )
+    if "mirror" in res:
+        m = res["mirror"]
+        print(
+            f"mirror: threads={m['threads']} effective={m['events_effective']} "
+            f"parse_errors={m['parse_errors']}"
+        )
+    if "rebuilt" in res:
+        r = res["rebuilt"]
+        print(f"rebuilt: threads={r['threads']} events={r['events']} fts={r.get('fts')}")
+    sm = res.get("smoke")
+    if sm:
+        if sm.get("skipped"):
+            print(f"smoke:  skipped ({sm['skipped']})")
+        else:
+            print(
+                f"smoke:  read={'ok' if sm.get('read_ok') else 'FAILED'} "
+                f"search={'ok' if sm.get('search_ok') else 'FAILED'}"
+                + (f" error: {sm['error']}" if sm.get("error") else "")
+            )
+    if res.get("damaged_home"):
+        print(f"previous home set aside (preserved): {res['damaged_home']}")
+    if res.get("error"):
+        print(f"FAILED: {res['error']}")
+    print(f"{'OK — restored to ' + str(args.to) if res.get('ok') else 'RESTORE FAILED'} "
+          f"({res.get('seconds', '?')}s)")
+    return 0 if res.get("ok") else 1
+
+
 def cmd_nightly(args: argparse.Namespace) -> int:
     from . import _api as api
 
@@ -715,10 +762,16 @@ def cmd_status(args: argparse.Namespace) -> int:
             print(f"nightly: FAILED ({stages}) → {n.get('dest')} {n['at']} ({_age(n['at'])})")
     c = st.get("last_coverage")
     if c and c["ok"]:
+        # Warnings (stale exports, never-ingested stores) are capture holes in the
+        # making — a green check must not swallow them.
+        warns = c.get("warnings") or []
+        qualifier = f", {len(warns)} warning(s)" if warns else ""
         print(
-            f"coverage: ok ({c.get('sources_checked', '?')} sources) "
+            f"coverage: ok ({c.get('sources_checked', '?')} sources{qualifier}) "
             f"{c['at']} ({_age(c['at'])})"
         )
+        for msg in warns[:3]:
+            print(f"         {msg}")
     elif c:
         print(f"coverage: FAILED {c['at']} ({_age(c['at'])})")
         for msg in (c.get("failed") or [])[:3]:
@@ -911,6 +964,32 @@ def build_parser() -> argparse.ArgumentParser:
         help="keep the throwaway home (inspect the restored index) instead of deleting it",
     )
     p_drill.set_defaults(func=cmd_restore_drill)
+
+    p_restore = sub.add_parser(
+        "restore",
+        help="restore a real archive home from a backup mirror: staged rebuild, "
+             "verify, then atomic publish (the drill proves; this restores)",
+    )
+    p_restore.add_argument("dest", help="backup mirror to restore from")
+    p_restore.add_argument("--to", default=None, metavar="HOME",
+                           help="home directory to restore into")
+    p_restore.add_argument(
+        "--generation", default=None, metavar="STAMP",
+        help="restore this retained pre-run snapshot instead of the mirror head",
+    )
+    p_restore.add_argument(
+        "--list-generations", action="store_true",
+        help="list the mirror's retained restore points and exit",
+    )
+    p_restore.add_argument(
+        "--replace", action="store_true",
+        help="set aside a non-empty target home (preserved as <home>.damaged-<stamp>)",
+    )
+    p_restore.add_argument(
+        "--allow-parse-errors", action="store_true",
+        help="restore a mirror whose scan has parse errors (a flawed copy beats none)",
+    )
+    p_restore.set_defaults(func=cmd_restore)
 
     p_nightly = sub.add_parser(
         "nightly",

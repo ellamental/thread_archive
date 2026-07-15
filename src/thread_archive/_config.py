@@ -55,9 +55,18 @@ class ArchivePaths:
     index_path: Path
 
     def ensure(self) -> "ArchivePaths":
-        """Create the home + truth directories if absent. Idempotent."""
-        self.home.mkdir(parents=True, exist_ok=True)
-        self.truth_dir.mkdir(parents=True, exist_ok=True)
+        """Create the home + truth directories if absent; keep both private (0700).
+
+        The archive is full conversation content — group/other must not be able
+        to traverse into it, whatever mode individual files carry. Re-asserted on
+        every open so a loosened or pre-existing home self-heals. Fail-soft on
+        the chmod: opening an archive we can't own must not fail the open."""
+        for d in (self.home, self.truth_dir):
+            d.mkdir(parents=True, exist_ok=True)
+            try:
+                d.chmod(0o700)
+            except OSError:
+                pass
         return self
 
     @property

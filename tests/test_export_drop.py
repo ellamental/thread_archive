@@ -10,7 +10,7 @@ import zipfile
 
 from sqlalchemy import select
 
-from thread_archive._store import Thread, get_session, init_db
+from thread_archive._store import Event, Thread, get_session, init_db
 from thread_archive._watcher import ExportDropWatcher
 from thread_archive._watcher.sources import default_watchers
 
@@ -290,7 +290,8 @@ def test_dropped_chatgpt_zip_imports_as_chatgpt(archive_home) -> None:
 
 def test_redropping_same_content_imports_nothing_but_still_clears(archive_home) -> None:
     """Re-dropping already-imported content (any name) imports 0 conversations — the
-    importer dedups by source id — and the redundant drop is still cleared."""
+    event-level dedup collapses everything already held — and the redundant drop is
+    still cleared."""
     init_db()
     dumps = archive_home / "dumps"
     _claude_batch_dir(dumps, "export-a")
@@ -302,7 +303,7 @@ def test_redropping_same_content_imports_nothing_but_still_clears(archive_home) 
 
     again = _claude_batch_dir(dumps, "export-b")  # same conv uuid, different dir name
     w.poll()              # settle
-    r = w.poll()          # import → all skipped (already present)
+    r = w.poll()          # import → all unchanged, nothing new lands
     assert r.items_imported == 0
     assert _claude_count() == 1
     assert not again.exists()
@@ -310,6 +311,45 @@ def test_redropping_same_content_imports_nothing_but_still_clears(archive_home) 
     # a full re-export supersedes it, so imported/claude/ holds exactly the latest.
     assert (dumps / "imported" / "claude" / "export-b").exists()
     assert not (dumps / "imported" / "claude" / "export-a").exists()
+
+
+def test_redropped_export_merges_a_grown_conversation(archive_home) -> None:
+    """A conversation that gained messages since the last export must gain exactly its
+    new tail in the SAME thread on redrop — the preservation case a recurring account
+    re-export exists for. Skipping it because the conversation id already exists would
+    silently lose every message added to an old conversation."""
+    init_db()
+    dumps = archive_home / "dumps"
+    _claude_batch_dir(dumps, "export-a")
+
+    w = ExportDropWatcher(dumps_dir=dumps)
+    w.poll()
+    w.poll()
+    assert _claude_count() == 1
+
+    grown = {
+        **_CONV,
+        "updated_at": "2026-01-02T09:00:00Z",
+        "chat_messages": _CONV["chat_messages"] + [
+            {"uuid": "m3", "sender": "human", "text": "a follow-up after the first export",
+             "content": [{"type": "text", "text": "a follow-up after the first export"}],
+             "created_at": "2026-01-02T09:00:00Z"},
+        ],
+    }
+    _claude_batch_dir(dumps, "export-b", conv=grown)
+    w.poll()              # settle
+    r = w.poll()          # import → the grown conversation merges its tail
+    assert r.items_imported == 1
+    assert r.events_created >= 1
+    assert _claude_count() == 1, "the grown conversation forked a second thread"
+
+    with get_session() as s:
+        thread = s.execute(select(Thread).where(Thread.source == "claude")).scalars().one()
+        contents = [e.payload.get("content") for e in s.execute(
+            select(Event).where(Event.thread_id == thread.id)
+        ).scalars()]
+    assert "a follow-up after the first export" in contents
+    assert contents.count("hello from a dropped export") == 1, "redrop duplicated old events"
 
 
 def test_retention_is_bounded_to_latest_per_kind(archive_home) -> None:

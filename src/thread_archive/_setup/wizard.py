@@ -495,7 +495,12 @@ def print_status(args: argparse.Namespace) -> int:
     _say("thread_archive — archive status")
     _say()
     _say(f"  home:     {st['home']}")
-    _say(f"  archive:  {st['threads']:,} conversations · {st['events']:,} events · {st['fts_indexed']:,} indexed")
+    # Topic threads are curation artifacts, not conversations — counting them as
+    # conversations overstates what was actually preserved.
+    topics = st.get("topics", 0)
+    convs = st["threads"] - topics
+    topics_part = f" · {topics:,} topics" if topics else ""
+    _say(f"  archive:  {convs:,} conversations{topics_part} · {st['events']:,} events · {st['fts_indexed']:,} indexed")
     if sys.platform == "darwin":
         _say(f"  watcher:  {'running' if _watcher_running(args.home) else 'not running — `thread_archive setup` offers it'}")
     disabled = sorted(
@@ -510,6 +515,14 @@ def print_status(args: argparse.Namespace) -> int:
         _say("  backup:   never recorded — a copy of truth/ IS the backup")
     if v:
         _say(f"  verify:   {'ok' if v['ok'] else 'FAILED'} {_age(v['at'])}")
+    # The scheduled pipeline's verdict outranks the ad-hoc backup line above: a
+    # green same-disk mirror must not mask a red offsite nightly.
+    n = st.get("last_nightly")
+    if n and not n.get("ok"):
+        stages = ", ".join(n.get("failed_stages") or []) or "see logs/backup-stdout.log"
+        _say(f"  nightly:  FAILED ({stages}) {_age(n['at'])} → {n.get('dest')} — `archive status` has detail")
+    elif n:
+        _say(f"  nightly:  ok {_age(n['at'])} → {n.get('dest')}")
     if sys.platform == "darwin":
         if _backup_running(args.home):
             from .. import _launchd

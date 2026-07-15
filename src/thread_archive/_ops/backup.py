@@ -582,6 +582,161 @@ def restore_drill(
     return result
 
 
+def list_generations(dest: str) -> list[str]:
+    """The mirror's retained pre-run snapshots, newest first (see
+    :func:`_snapshot_generation`). Each name is a UTC stamp restorable via
+    ``restore(..., generation=name)``; an empty list means the mirror has no
+    generations yet (fewer than two backup runs, or a dest that can't snapshot)."""
+    gens = Path(dest).expanduser() / _GENERATIONS_SUBDIR
+    if not gens.is_dir():
+        return []
+    return sorted(
+        (p.name for p in gens.iterdir() if p.is_dir() and not p.name.startswith(".")),
+        reverse=True,
+    )
+
+
+def restore(
+    dest: str,
+    to: str,
+    *,
+    generation: Optional[str] = None,
+    replace: bool = False,
+    allow_parse_errors: bool = False,
+) -> dict:
+    """Restore a *real* archive home from a backup mirror — the productized
+    recovery path (:func:`restore_drill` proves the mirror restores; this one
+    actually restores it).
+
+    The sequence is preflight → staged rebuild → verify → atomic publish:
+
+    - **Preflight.** The source (the mirror head, or ``<mirror>/.generations/<generation>``
+      when a generation is named) must be a truth mirror; its scan must parse
+      clean (``allow_parse_errors=True`` restores a dirty mirror anyway — in a
+      real disaster a flawed copy beats none, but that is an explicit choice).
+      A non-empty target home is refused without ``replace=True``.
+    - **Staged rebuild.** The mirror is copied into a staging home *next to* the
+      target (same filesystem, so publication is a rename), and a full
+      ``reindex`` builds the index there. Nothing at the target is touched yet.
+    - **Verify.** The rebuilt counts must equal the mirror scan's effective
+      counts, and the smoke pass (:func:`_drill_smoke`) must prove the staged
+      archive reads and searches. A staging home that fails verification is
+      deleted and reported — the target is never replaced with a dud.
+    - **Publish.** With ``replace``, the existing home is moved aside to
+      ``<home>.damaged-<stamp>`` — preserved, never deleted — then the staging
+      home renames into place. A post-publish reopen re-counts events as a
+      final sanity check.
+
+    Returns a report dict (``ok``, mirror scan, rebuilt counts, smoke, the
+    damaged-home path when one was set aside, seconds) and records
+    ``restore_last`` in the restored home's health.json. Leaves the process's
+    archive pointed at the restored home."""
+    import shutil
+    import time
+    from datetime import datetime, timezone
+
+    from .._api import close, open_archive
+    from .._truth import scan_truth_counts
+
+    started = time.monotonic()
+    dest_path = Path(dest).expanduser()
+    source = dest_path / _GENERATIONS_SUBDIR / generation if generation else dest_path
+    result: dict = {"dest": str(dest_path), "generation": generation, "to": to, "ok": False}
+    if not (source / "threads").exists():
+        result["error"] = f"not a truth mirror: {source}"
+        return result
+
+    scan = scan_truth_counts(truth_dir=source)
+    result["mirror"] = scan
+    if scan["parse_errors"] and not allow_parse_errors:
+        result["error"] = (
+            f"mirror has {scan['parse_errors']} parse error(s) — restore refused "
+            f"(allow_parse_errors=True restores it anyway)"
+        )
+        return result
+
+    to_path = Path(to).expanduser()
+    if to_path.exists() and any(to_path.iterdir()) and not replace:
+        result["error"] = f"target home {to_path} is not empty — pass replace=True to set it aside"
+        return result
+
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    to_path.parent.mkdir(parents=True, exist_ok=True)
+    staging = to_path.parent / f".{to_path.name}.restoring-{stamp}"
+    try:
+        # copyfile (not copy2) for the same reason as the drill: metadata
+        # replication EPERMs on network mirrors.
+        shutil.copytree(
+            source, staging / "truth",
+            copy_function=shutil.copyfile,
+            ignore=shutil.ignore_patterns(_GENERATIONS_SUBDIR, ".*.tmp-*"),
+        )
+        staging.chmod(0o700)
+        open_archive(str(staging))
+        from .._truth import reindex as _reindex
+
+        try:
+            counts = _reindex()
+        except RuntimeError as e:
+            result["error"] = f"reindex failed: {e}"
+            counts = None
+        if counts is not None:
+            result["rebuilt"] = counts
+            result["smoke"] = _drill_smoke(str(staging), expect_content=counts["events"] > 0)
+            verified = (
+                counts["events"] == scan["events_effective"]
+                and counts["threads"] == scan["threads"]
+                and result["smoke"]["ok"]
+            )
+            if not verified:
+                result["error"] = (
+                    "staged rebuild failed verification (counts or smoke) — "
+                    "target left untouched"
+                )
+                counts = None
+        close()
+        if counts is None:
+            shutil.rmtree(staging, ignore_errors=True)
+            return result
+
+        # Publish: set a damaged home aside (never delete), rename staging in.
+        if to_path.exists():
+            damaged = to_path.with_name(f"{to_path.name}.damaged-{stamp}")
+            os.rename(to_path, damaged)
+            result["damaged_home"] = str(damaged)
+        os.rename(staging, to_path)
+    except Exception as e:  # noqa: BLE001 — the report is the contract; never half-raise
+        close()
+        shutil.rmtree(staging, ignore_errors=True)
+        result["error"] = f"{type(e).__name__}: {e}"
+        return result
+
+    # Post-publish sanity: the renamed home opens and holds what staging held.
+    open_archive(str(to_path))
+    from sqlalchemy import func, select
+
+    from .._store import Event, get_session
+
+    with get_session() as s:
+        published = s.execute(select(func.count()).select_from(Event)).scalar() or 0
+    result["ok"] = published == scan["events_effective"]
+    if not result["ok"]:
+        result["error"] = (
+            f"post-publish count mismatch: {published} events at {to_path}, "
+            f"expected {scan['events_effective']}"
+        )
+    result["seconds"] = round(time.monotonic() - started, 1)
+    record_health("restore_last", {
+        "dest": str(dest_path),
+        "generation": generation,
+        "to": str(to_path),
+        "ok": bool(result["ok"]),
+        "events": scan["events_effective"],
+        "seconds": result["seconds"],
+    })
+    return result
+
+
 def _drill_smoke(home: str, *, expect_content: bool) -> dict:
     """Exercise the restored archive the way a reader would — the last gap
     between "the index materialized" and "the archive is usable." Reads the

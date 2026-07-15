@@ -66,6 +66,9 @@ export interface Message {
   // own role string (e.g. 'tool', 'developer'), so this isn't a closed set.
   role: string
   blocks: Block[]
+  // Source events of this message's blocks — resolves a search hit's event id
+  // to its message for deep-link + highlight.
+  event_ids?: number[]
   meta?: MessageMeta
 }
 

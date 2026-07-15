@@ -353,6 +353,18 @@ def main() -> None:
     _maybe_catch_up()
 
     if args.http:
+        # Refuse a non-loopback bind unless THREAD_ARCHIVE_MCP_NONLOCAL=1 — the same
+        # guard the web viewer applies, for the same reason: this server is
+        # unauthenticated full read of the archive, so exposing it beyond the
+        # machine must be a deliberate act, not a typo'd --host.
+        if args.host not in ("127.0.0.1", "::1", "localhost") and (
+            os.environ.get("THREAD_ARCHIVE_MCP_NONLOCAL") != "1"
+        ):
+            parser.error(
+                f"refusing non-loopback bind {args.host!r}: archive-mcp has no auth and "
+                f"serves the full archive. Set THREAD_ARCHIVE_MCP_NONLOCAL=1 to expose "
+                f"it deliberately."
+            )
         # Stateless + JSON responses: each request is self-contained (no held-open per-client
         # SSE stream or server-side session to track across many agents), and the read-only
         # tools have nothing to push back. run() reads these off mcp.settings at start.

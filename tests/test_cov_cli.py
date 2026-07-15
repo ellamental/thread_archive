@@ -791,6 +791,22 @@ def test_status_all_ok(monkeypatch, capsys) -> None:
     assert "e3" in out and "e4" not in out
 
 
+def test_status_green_coverage_still_shows_warnings(monkeypatch, capsys) -> None:
+    # A stale export is a capture hole in the making; a green coverage check must
+    # not swallow the warning that says so.
+    old = "2026-07-10T00:00:00+00:00"
+    st = _status_base(
+        last_coverage={"ok": True, "sources_checked": 6, "at": old,
+                       "warnings": ["chatgpt-export: last export 127d ago"]},
+    )
+    monkeypatch.setattr(api, "status", lambda **kw: st)
+    rc = main(["status", "--home", "/h"])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "coverage: ok (6 sources, 1 warning(s))" in out
+    assert "chatgpt-export: last export 127d ago" in out
+
+
 def test_status_same_device_notes_external_coverage(monkeypatch, capsys) -> None:
     # A same-filesystem mirror on a Time-Machine-covered disk reports the real
     # posture (covered externally) instead of implying an unprotected archive.

@@ -16,8 +16,9 @@ Lifecycle of one dropped export:
   upload is never imported half-written.
 - **Import.** A recognized export imports each conversation as its own thread — inline in
   the poll (a rare, human-initiated event, so blocking the loop briefly is acceptable),
-  idempotent per conversation (a re-run skips threads already present), durable in the
-  JSONL truth before each commit.
+  idempotent per conversation (a redrop merges: a conversation that grew since the last
+  export gains exactly its new messages in the existing thread, an unchanged one imports
+  nothing), durable in the JSONL truth before each commit.
 - **Retain on clean success.** A drop is not deleted at the moment of import — the
   importer normalizes into the JSONL truth, but normalization is lossy in ways the
   importer can't always see (attachments/images/branch structure a parser doesn't yet
@@ -148,12 +149,18 @@ class ExportDropWatcher(SourceWatcher):
         try:
             # Global-name dispatch (not a dict captured at import time), so tests
             # can monkeypatch the importer functions on this module.
+            #
+            # force=True: an account export is a full dump, so a redrop must *merge*
+            # conversations that grew since the last export. Without force the importer
+            # skips every already-present conversation id outright — new messages in an
+            # old conversation would never land. The event-level dedup makes force safe:
+            # an unchanged conversation imports nothing.
             if kind == "xai":
-                res = import_xai_export(path)
+                res = import_xai_export(path, force=True)
             elif kind == "chatgpt":
-                res = import_chatgpt_export(path)
+                res = import_chatgpt_export(path, force=True)
             else:
-                res = import_claude_ai_export(path)
+                res = import_claude_ai_export(path, force=True)
         except Exception as e:  # noqa: BLE001 — one bad export must not stop the loop
             logger.error(
                 "export-drop: import failed for %s: %s — quarantining", name, e

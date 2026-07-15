@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- **Usage-mined golden retrieval eval removed (2026-07-15).** The 599-case golden
+  set (search→read pairs mined by `golden_from_usage.py`), the miner, its tests,
+  and `retrieval_eval.py --golden` are gone: the mined pairs assumed a
+  click-on-a-result usage pattern that isn't how the archive's results actually
+  get used, so the numbers weren't meaningful. The CI retrieval gate is unchanged —
+  it runs the `--auto-titles` protocol, which never used the golden set.
+
 - **The format-drift alarm detects drift again (2026-07-15).** Every recent
   validation-drift record (315/315 over the prior week) was the claude-code parser
   flagging its own deliberate preservation block types (`unknown_line`, `attachment`,

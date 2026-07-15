@@ -6,8 +6,6 @@ Covers the uncovered edges of the non-vector retrieval cluster:
     absorption (content_blocks / stitched deltas / arc-less orphans), result-block
     gluing, tool/result truncation, the summary TOC edges, focused-read budget
     retry, and the structured (web-viewer) renderer's toggles and marker types.
-  * ``topical`` — seed→subject weighting edges, peer widening (and its fail-soft),
-    the evidence-query scope filters, and the empty/no-op guards.
   * ``_extract`` — every extractor's content/empty branches, block-text scrubbing,
     frontmatter stripping, and the mcp/heredoc tool-use path.
   * ``_codex`` — each preserved-block renderer, the machinery/echo hides, and the
@@ -24,10 +22,7 @@ from __future__ import annotations
 import json
 from datetime import datetime, timezone
 
-from thread_archive import _knowledge as knowledge
-from thread_archive._importers import import_session_incremental
 from thread_archive._retrieval import search
-from thread_archive._retrieval import topical as _topical
 from thread_archive._retrieval._codex import (
     codex_kind,
     render_codex_block,
@@ -346,6 +341,20 @@ def test_structured_thinking_and_tool_toggles(archive_home) -> None:
     assert any(b["type"] == "tool_error" and b["error"] == "kaboom" for b in blocks)
 
 
+def test_structured_messages_carry_their_event_ids(archive_home) -> None:
+    # The viewer resolves a search hit's event id to its message for deep-link +
+    # highlight — every rendered block's source event must be named on its message.
+    tid = _seed([
+        ("user_message_sent", {"content": "q"}, 1),
+        ("text_complete", {"text": "public answer"}, 2),
+    ])
+    msgs = read_thread_structured(tid)["messages"]
+    assert [m["role"] for m in msgs] == ["user", "assistant"]
+    all_ids = [eid for m in msgs for eid in m["event_ids"]]
+    assert len(all_ids) == 2 and len(set(all_ids)) == 2
+    assert all(isinstance(eid, int) for eid in all_ids)
+
+
 def test_structured_empty_text_and_context_summary_variants(archive_home) -> None:
     tid = _seed([
         ("user_message_sent", {"content": "   "}, 1),   # empty user → no block
@@ -589,104 +598,6 @@ def test_codex_unknown_kind_raw_dump_and_truncation() -> None:
     circular["me"] = circular
     _l2, text2 = _render("weird", circular)
     assert text2  # produced something, did not raise
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-# topical.py
-# ══════════════════════════════════════════════════════════════════════════════
-
-def _write_turn(path, uid, aid, user_text, asst_text, day):
-    lines = [
-        {"type": "user", "uuid": uid, "timestamp": f"2026-01-{day:02d}T10:00:00Z",
-         "sessionId": "s", "message": {"role": "user", "content": user_text}},
-        {"type": "assistant", "uuid": aid, "timestamp": f"2026-01-{day:02d}T10:00:05Z",
-         "message": {"role": "assistant", "model": "claude-opus-4",
-                     "content": [{"type": "text", "text": asst_text}]}},
-    ]
-    path.write_text("\n".join(json.dumps(ln) for ln in lines) + "\n", encoding="utf-8")
-
-
-def _seed_linked_chats(archive_home):
-    """Two disjoint-vocabulary chats linked under one subject. Returns (seed, b_thread)."""
-    init_db()
-    fa = archive_home / "a.jsonl"
-    _write_turn(fa, "ua", "aa", "the aardvark migration plan for winter",
-                "Aardvarks migrate south along the ridge.", 1)
-    import_session_incremental(fa, "proj:a")
-    fb = archive_home / "b.jsonl"
-    _write_turn(fb, "ub", "ab", "flibbertigibbet quixotic zephyr protocol",
-                "The zephyr protocol handshake completes in three steps.", 2)
-    import_session_incremental(fb, "proj:b")
-
-    a = search("aardvark", topical=False)[0]
-    b = search("flibbertigibbet", topical=False)[0]
-    topic = knowledge.create_topic("Field Notes")
-    tid = topic["topic_id"]
-    knowledge.add_topic_evidence(tid, a["event_id"], a["thread_id"], "aardvark")
-    knowledge.add_topic_evidence(tid, b["event_id"], b["thread_id"], "zephyr")
-    knowledge.reset_cache()
-    return [a], b["thread_id"]
-
-
-def test_topical_empty_seed_and_no_subject_weights(archive_home) -> None:
-    init_db()
-    assert _topical.topical_hits([]) == []
-    # a seed whose hits carry no thread_id yields no subject weights → no hits
-    with get_session() as s:
-        assert _topical._subject_weights_from_seed([{"event_id": 1}], s) == {}
-
-
-def test_topical_bridges_and_honours_filters(archive_home) -> None:
-    seed, b_thread = _seed_linked_chats(archive_home)
-    base = {h["thread_id"] for h in _topical.topical_hits(seed)}
-    assert b_thread in base
-    # each scope filter runs its clause and still keeps the (user-content) bridge
-    assert b_thread in {h["thread_id"] for h in _topical.topical_hits(
-        seed, content_types=["user"])}
-    assert b_thread in {h["thread_id"] for h in _topical.topical_hits(
-        seed, exclude_content_types=["thinking"])}
-    assert b_thread in {h["thread_id"] for h in _topical.topical_hits(
-        seed, since="2020-01-01", until="2030-01-01")}
-    assert b_thread in {h["thread_id"] for h in _topical.topical_hits(
-        seed, source=["claude-code"])}
-    # a provider nobody has → the bridge drops out (source clause excludes it)
-    assert b_thread not in {h["thread_id"] for h in _topical.topical_hits(
-        seed, source=["chatgpt"])}
-
-
-def test_topical_gather_candidates_no_topics(archive_home) -> None:
-    init_db()
-    with get_session() as s:
-        assert _topical._gather_candidates(
-            {}, seen_keys=set(), content_types=None, exclude_content_types=None,
-            since=None, until=None, source=None, session=s) == []
-
-
-def test_topical_peers_disabled(archive_home, monkeypatch) -> None:
-    seed, b_thread = _seed_linked_chats(archive_home)
-    monkeypatch.setenv("THREAD_ARCHIVE_TOPICAL_PEERS", "0")
-    assert not _topical._peers_enabled()
-    # arm still works with peer-widening skipped
-    assert b_thread in {h["thread_id"] for h in _topical.topical_hits(seed)}
-
-
-def test_topical_widen_to_peers_inherits_weight(archive_home, monkeypatch) -> None:
-    monkeypatch.setattr(knowledge, "community_members_for",
-                        lambda bridges: {1: [3, 4]})
-    widened = _topical._widen_to_peers({1: 1.0, 2: 0.5})
-    # peers inherit bridge weight × PEER_DECAY
-    assert widened[3] == 1.0 * _topical.PEER_DECAY
-    assert widened[4] == 1.0 * _topical.PEER_DECAY
-    assert widened[1] == 1.0  # bridge weights preserved
-    # empty peers → topic_w returned untouched
-    monkeypatch.setattr(knowledge, "community_members_for", lambda bridges: {})
-    assert _topical._widen_to_peers({7: 1.0}) == {7: 1.0}
-
-
-def test_topical_widen_fail_soft_when_knowledge_absent(archive_home, monkeypatch) -> None:
-    # The knowledge layer is optional; an import failure must not break the arm.
-    monkeypatch.delattr(knowledge, "community_members_for")
-    assert _topical._widen_to_peers({1: 1.0}) == {1: 1.0}
 
 
 # ══════════════════════════════════════════════════════════════════════════════

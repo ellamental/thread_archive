@@ -40,6 +40,23 @@ def _now():
     return datetime(2026, 1, 1, 10, 0, 0, tzinfo=timezone.utc)
 
 
+def test_home_is_private_and_self_heals_to_0700(tmp_path) -> None:
+    # Conversation content is personal data: the home and truth dirs must be
+    # owner-only, and a loosened mode must heal on the next open.
+    import stat
+
+    from thread_archive._config import resolve_paths
+
+    home = tmp_path / "private"
+    paths = resolve_paths(str(home)).ensure()
+    assert stat.S_IMODE(paths.home.stat().st_mode) == 0o700
+    assert stat.S_IMODE(paths.truth_dir.stat().st_mode) == 0o700
+
+    paths.home.chmod(0o755)
+    resolve_paths(str(home)).ensure()
+    assert stat.S_IMODE(paths.home.stat().st_mode) == 0o700
+
+
 def test_home_switch_does_not_split_the_archive(tmp_path) -> None:
     home_a = tmp_path / "A"
     home_b = tmp_path / "B"

@@ -186,6 +186,8 @@ export function Message({
   message,
   hueForModel,
   continued,
+  highlighted,
+  anchorId,
 }: {
   message: Msg
   hueForModel?: Record<string, number>
@@ -194,6 +196,10 @@ export function Message({
   // into the panel above, so a same-model turn reads as one stream and only a model
   // switch or role change starts a fresh, labelled bubble.
   continued?: boolean
+  // This message holds the search hit the reader arrived by (?e= deep link) —
+  // accented so the eye lands on the matching turn, not the top of the thread.
+  highlighted?: boolean
+  anchorId?: string
 }) {
   const [open, setOpen] = useState(false)
   const [raw, setRaw] = useState(false)
@@ -214,7 +220,11 @@ export function Message({
   const hue = model ? (hueForModel?.[model] ?? modelHue(model)) : undefined
   return (
     <div
-      className={'msg ' + message.role + (hue != null ? ' has-model' : '') + (continued ? ' cont' : '')}
+      id={anchorId}
+      className={
+        'msg ' + message.role + (hue != null ? ' has-model' : '') + (continued ? ' cont' : '') +
+        (highlighted ? ' hit-target' : '')
+      }
       style={hue != null ? hueStyle(hue) : undefined}
     >
       {!continued && <div className="role">{message.role}</div>}

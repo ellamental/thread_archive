@@ -90,6 +90,8 @@ h1.title { font-size: 19px; margin: 0 0 4px; }
    corners — so the run reads as one card with hairline dividers, and a model switch,
    which breaks the run, starts a fresh labelled bubble that visibly stands apart. */
 .msg.cont { margin-top: 0; border-top: none; border-top-left-radius: 0; border-top-right-radius: 0; padding-top: 4px; }
+/* The message a search hit deep-linked to (?e=) — accented so the eye lands on it. */
+.msg.hit-target { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent-soft); }
 .msg:has(+ .msg.cont) { border-bottom-left-radius: 0; border-bottom-right-radius: 0; }
 
 /* markdown */

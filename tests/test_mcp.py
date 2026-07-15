@@ -6,6 +6,8 @@ import asyncio
 import json
 import sys
 
+import pytest
+
 from thread_archive import _api as ta
 from thread_archive._mcp import server
 from thread_archive._mcp.server import mcp, thread_read, thread_search
@@ -185,16 +187,34 @@ def test_main_stdio_default_neither_warms_nor_http(monkeypatch) -> None:
 
 def test_main_http_warms_and_serves_streamable(monkeypatch) -> None:
     run_calls = _drive_main(
-        monkeypatch, ["archive-mcp", "--http", "--host", "1.2.3.4", "--port", "9999"]
+        monkeypatch, ["archive-mcp", "--http", "--host", "localhost", "--port", "9999"]
     )
     assert run_calls == [("streamable-http",)]
     # --http applies the loopback-share settings and warms the model stack.
-    assert mcp.settings.host == "1.2.3.4"
+    assert mcp.settings.host == "localhost"
     assert mcp.settings.port == 9999
     assert mcp.settings.stateless_http is True
     assert mcp.settings.json_response is True
     warm = [t for t in _RecordingThread.instances if t.name == "archive-warm-models"]
     assert len(warm) == 1 and warm[0].started and warm[0].daemon is True
+
+
+def test_main_http_refuses_nonloopback_host_without_optin(monkeypatch, capsys) -> None:
+    # The server is unauthenticated full read of the archive: binding beyond
+    # loopback must be an explicit opt-in, exactly like the web viewer.
+    monkeypatch.delenv("THREAD_ARCHIVE_MCP_NONLOCAL", raising=False)
+    with pytest.raises(SystemExit):
+        _drive_main(monkeypatch, ["archive-mcp", "--http", "--host", "1.2.3.4"])
+    assert "refusing non-loopback bind" in capsys.readouterr().err
+
+
+def test_main_http_nonloopback_host_with_optin(monkeypatch) -> None:
+    monkeypatch.setenv("THREAD_ARCHIVE_MCP_NONLOCAL", "1")
+    run_calls = _drive_main(
+        monkeypatch, ["archive-mcp", "--http", "--host", "1.2.3.4", "--port", "9999"]
+    )
+    assert run_calls == [("streamable-http",)]
+    assert mcp.settings.host == "1.2.3.4"
 
 
 def test_main_stdio_warms_when_env_opts_in(monkeypatch) -> None:

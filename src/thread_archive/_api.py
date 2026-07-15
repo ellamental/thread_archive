@@ -29,7 +29,7 @@ if TYPE_CHECKING:
     from ._retrieval._types import EventHit
 
 # The durability kit, re-exported (see docstring).
-from ._ops.backup import backup, restore_drill  # noqa: F401
+from ._ops.backup import backup, list_generations, restore, restore_drill  # noqa: F401
 from ._ops.coverage import check_coverage  # noqa: F401
 from ._ops.health import read_health  # noqa: F401
 from ._ops.nightly import nightly  # noqa: F401
@@ -92,11 +92,10 @@ def search(
     context_lines: int = 2,
     context_events: Optional[str] = None,
     rerank: Optional[bool] = None,
-    topical: Optional[bool] = None,
 ) -> "list[EventHit]":
     """Federated search over conversation events (lexical FTS5 + optional semantic
-    vectors + optional topic-bridged recall → RRF fusion → weighted rank → optional
-    cross-encoder re-rank). Returns enriched event-hit dicts. ``source`` restricts to threads of the named
+    vectors → RRF fusion → weighted rank → optional cross-encoder re-rank).
+    Returns enriched event-hit dicts. ``source`` restricts to threads of the named
     provider(s); ``startswith`` does a structural prefix scan; ``sort='oldest'``
     returns the pool chronologically; ``output`` ('count'/'linkable') and
     ``context_lines`` / ``context_events`` shape what each hit carries; ``rerank``
@@ -121,7 +120,6 @@ def search(
         context_lines=context_lines,
         context_events=context_events,
         rerank=rerank,
-        topical=topical,
     )
 
 

@@ -783,6 +783,27 @@ def test_print_status_with_backup_and_verify_records(archive_home, monkeypatch, 
     assert "schedule: nightly backup" in out
 
 
+def test_print_status_red_nightly_and_topic_split(archive_home, monkeypatch, capsys) -> None:
+    # The scheduled pipeline's verdict must be visible next to a green ad-hoc
+    # backup, and topic threads must not be counted as conversations.
+    _force_darwin(monkeypatch)
+    monkeypatch.setattr(wizard, "_watcher_running", lambda home=None: True)
+    monkeypatch.setattr(wizard, "_backup_running", lambda home=None: True)
+    monkeypatch.setattr(_launchd, "backup_agent_dest", lambda: "/Volumes/B/arc")
+    fake_status = {
+        "home": str(archive_home), "threads": 10, "topics": 4, "events": 12, "fts_indexed": 9,
+        "last_backup": {"ok": True, "at": "2026-07-14T04:00:00+00:00", "dest": "/Volumes/B/arc"},
+        "last_nightly": {"ok": False, "at": "2026-07-15T04:00:00+00:00",
+                         "dest": "/Volumes/B/arc", "failed_stages": ["backup", "restore-drill"]},
+    }
+    monkeypatch.setattr(_api, "status", lambda home=None: fake_status)
+    assert wizard.print_status(_args("status")) == 0
+    out = capsys.readouterr().out
+    assert "6 conversations · 4 topics" in out
+    assert "backup:   ok" in out
+    assert "nightly:  FAILED (backup, restore-drill)" in out
+
+
 # ── _setup_completed ──────────────────────────────────────────────────────────
 
 

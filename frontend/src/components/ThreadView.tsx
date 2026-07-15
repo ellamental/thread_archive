@@ -1,8 +1,23 @@
 import { useEffect, useState } from 'react'
-import { useNavigate, useParams } from 'react-router-dom'
+import { useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import { api, type StructuredThread } from '../api'
 import { Message } from './Message'
 import { assignHues, hueStyle } from '../modelColor'
+
+// The message holding the deep-linked event (?e= from a search hit). Exact
+// membership wins; otherwise the last message that starts at-or-before the event —
+// a hit on content the current toggles hide (e.g. thinking while thinking is off)
+// still lands the reader at the right point in the conversation.
+function targetMessageIndex(data: StructuredThread, eventId: number): number {
+  if (isNaN(eventId)) return -1
+  let nearest = -1
+  for (let i = 0; i < data.messages.length; i++) {
+    const ids = data.messages[i].event_ids ?? []
+    if (ids.includes(eventId)) return i
+    if (ids.some((id) => id <= eventId)) nearest = i
+  }
+  return nearest
+}
 
 // The distinct models that answered anywhere in the thread, in first-seen order —
 // listed on the header line, color-coded to match their messages below.
@@ -23,6 +38,8 @@ export function ThreadView() {
   // silently truncate "27056da6-…" to 27056 and open the wrong thread.
   const isNumeric = !!id && /^\d+$/.test(id)
   const threadId = isNumeric ? parseInt(id as string, 10) : NaN
+  const [params] = useSearchParams()
+  const focusEvent = params.get('e') ? parseInt(params.get('e') as string, 10) : NaN
   const [thinking, setThinking] = useState(false)
   const [tools, setTools] = useState(true)
   const [data, setData] = useState<StructuredThread | null>(null)
@@ -47,12 +64,18 @@ export function ThreadView() {
       .catch((e) => setErr(String(e.message ?? e)))
   }, [threadId, thinking, tools])
 
+  useEffect(() => {
+    if (!data || isNaN(focusEvent)) return
+    document.getElementById('focus-event')?.scrollIntoView({ block: 'center' })
+  }, [data, focusEvent])
+
   if (err) return <div className="wrap"><div className="empty">read error: {err}</div></div>
   if (!isNumeric) return <div className="wrap"><div className="empty">resolving {id}…</div></div>
   if (!data) return <div className="wrap"><div className="empty">loading thread {threadId}…</div></div>
 
   const models = threadModels(data)
   const hues = assignHues(models)
+  const focusIdx = targetMessageIndex(data, focusEvent)
 
   return (
     <div className="wrap">
@@ -91,7 +114,16 @@ export function ThreadView() {
             prev.role === m.role &&
             (m.role !== 'assistant' ||
               (m.meta?.models?.[0] ?? null) === (prev.meta?.models?.[0] ?? null))
-          return <Message key={i} message={m} hueForModel={hues} continued={continued} />
+          return (
+            <Message
+              key={i}
+              message={m}
+              hueForModel={hues}
+              continued={continued}
+              highlighted={i === focusIdx}
+              anchorId={i === focusIdx ? 'focus-event' : undefined}
+            />
+          )
         })
       )}
     </div>

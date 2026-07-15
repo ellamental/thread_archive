@@ -3,17 +3,24 @@
 import { describe, expect, it } from 'vitest'
 import { render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { MemoryRouter, Route, Routes } from 'react-router-dom'
+import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom'
 import { SearchView } from '../components/SearchView'
 import type { SearchHit } from '../api'
 import { mswError, mswJson, mswPending } from './msw'
+
+// Stub thread page that echoes where it was opened, so hit-click tests can
+// assert the deep-link (?e=<event_id>) and not just that navigation happened.
+function ThreadStub() {
+  const loc = useLocation()
+  return <div>THREAD PAGE {loc.pathname + loc.search}</div>
+}
 
 function renderAt(url: string) {
   return render(
     <MemoryRouter initialEntries={[url]}>
       <Routes>
         <Route path="/search" element={<SearchView />} />
-        <Route path="/archive/:id" element={<div>THREAD PAGE</div>} />
+        <Route path="/archive/:id" element={<ThreadStub />} />
       </Routes>
     </MemoryRouter>,
   )
@@ -69,14 +76,14 @@ describe('SearchView', () => {
     expect(screen.queryByText('semantic')).not.toBeInTheDocument()
   })
 
-  it('navigates to the thread when a hit is clicked', async () => {
+  it('navigates to the thread at the matching event when a hit is clicked', async () => {
     const user = userEvent.setup()
     mswJson('/api/search', {
-      query: 'x', hits: [hit({ event_id: 1, thread_id: 42, thread_title: 'Target' })],
+      query: 'x', hits: [hit({ event_id: 9, thread_id: 42, thread_title: 'Target' })],
     })
     renderAt('/search?q=x')
     await user.click(await screen.findByText('a snippet'))
-    expect(screen.getByText('THREAD PAGE')).toBeInTheDocument()
+    expect(screen.getByText('THREAD PAGE /archive/42?e=9')).toBeInTheDocument()
   })
 
   it('badges semantic hits', async () => {

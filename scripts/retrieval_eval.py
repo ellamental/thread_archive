@@ -1,27 +1,17 @@
 """Retrieval eval harness — measure search quality so ranking changes are measurable.
 
-Two golden-set modes:
+``--auto-titles N`` is a zero-curation protocol: sample N titled conversation
+threads, use each *title* as the query, and score whether the thread's own
+content ranks. Thread-meta docs (title/summary) are excluded from the searched
+scope so the eval never matches the query against itself; what's measured is
+whether the thread's *messages* are reachable from its title's vocabulary.
 
-- ``--golden golden.jsonl``: curated or usage-mined pairs, one JSON object per
-  line — ``{"query": "...", "thread_id": N}`` / ``{"query": "...",
-  "thread_ids": [N, ...]}`` (thread-level relevance, any listed thread counts)
-  or ``{"query": "...", "event_id": N}`` (event-level). Comments (#) allowed.
-- ``--auto-titles N``: a zero-curation protocol — sample N titled conversation
-  threads, use each *title* as the query, and score whether the thread's own
-  content ranks. Thread-meta docs (title/summary) are excluded from the searched
-  scope so the eval never matches the query against itself; what's measured is
-  whether the thread's *messages* are reachable from its title's vocabulary.
-
-Reports MRR and recall@1/5/10/20 over the chosen relevance level, overall and
+Reports MRR and recall@1/5/10/20 at thread-level relevance, overall and
 per query-shape (so a lexical regression can't hide behind semantic wins).
 
 Read-only. Run against the live archive:
 
     .venv/bin/python scripts/retrieval_eval.py --auto-titles 200
-    .venv/bin/python scripts/retrieval_eval.py --golden ~/.thread/archive/golden-queries.jsonl
-
-The golden set is mined from real usage by ``golden_from_usage.py`` (and lives in
-the archive home because its queries are real, sometimes personal, data).
 """
 
 from __future__ import annotations
@@ -42,23 +32,9 @@ from thread_archive._store import use_session  # noqa: E402
 
 RECALL_KS = (1, 5, 10, 20)
 
-# Meta docs are excluded from every eval search: in --auto-titles the query IS the
-# title (self-match would saturate the metrics), and a hand-golden set should
-# measure message reachability on both sides of the meta-doc feature.
+# Meta docs are excluded from every eval search: the query IS the title, so a
+# self-match would saturate the metrics.
 EXCLUDE_META = ["title", "summary"]
-
-
-def load_golden(path: str) -> list[dict]:
-    cases = []
-    for line in Path(path).read_text().splitlines():
-        line = line.strip()
-        if not line or line.startswith("#"):
-            continue
-        row = json.loads(line)
-        if "query" not in row or not ("thread_id" in row or "thread_ids" in row or "event_id" in row):
-            raise SystemExit(f"golden row needs 'query' and 'thread_id(s)' or 'event_id': {row}")
-        cases.append(row)
-    return cases
 
 
 def sample_title_cases(n: int, seed: int) -> list[dict]:
@@ -102,15 +78,9 @@ def evaluate(cases: list[dict], *, limit: int, rerank, content_type) -> dict:
         )
         latencies.append(time.monotonic() - t0)
 
-        relevant_threads = set(case.get("thread_ids") or
-                               ([case["thread_id"]] if "thread_id" in case else []))
         rank = 0  # 0 = not found within limit
         for i, h in enumerate(hits, start=1):
-            if "event_id" in case:
-                found = h["event_id"] == case["event_id"]
-            else:
-                found = h["thread_id"] in relevant_threads
-            if found:
+            if h["thread_id"] == case["thread_id"]:
                 rank = i
                 break
         rr = 1.0 / rank if rank else 0.0
@@ -135,10 +105,8 @@ def evaluate(cases: list[dict], *, limit: int, rerank, content_type) -> dict:
 
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    src = ap.add_mutually_exclusive_group(required=True)
-    src.add_argument("--golden", help="path to a golden-set JSONL")
-    src.add_argument("--auto-titles", type=int, metavar="N",
-                     help="sample N thread titles as queries (thread-level relevance)")
+    ap.add_argument("--auto-titles", type=int, metavar="N", required=True,
+                    help="sample N thread titles as queries (thread-level relevance)")
     ap.add_argument("--seed", type=int, default=7, help="sampling seed for --auto-titles")
     ap.add_argument("--limit", type=int, default=20, help="results per query (recall ceiling)")
     ap.add_argument("--rerank", choices=["auto", "on", "off"], default="auto",
@@ -169,7 +137,7 @@ def main() -> None:
         rerank_mod.is_available = lambda: False  # type: ignore[method-assign]
 
     api.open_archive()
-    cases = load_golden(args.golden) if args.golden else sample_title_cases(args.auto_titles, args.seed)
+    cases = sample_title_cases(args.auto_titles, args.seed)
     if not cases:
         raise SystemExit("no eval cases")
     rerank = None if args.rerank == "auto" else (args.rerank == "on")

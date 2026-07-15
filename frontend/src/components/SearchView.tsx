@@ -64,7 +64,11 @@ export function SearchView() {
               </span>
             </button>
             {g.hits.map((h) => (
-              <button className="hit" key={h.event_id} onClick={() => navigate('/archive/' + g.threadId)}>
+              <button
+                className="hit"
+                key={h.event_id}
+                onClick={() => navigate(`/archive/${g.threadId}?e=${h.event_id}`)}
+              >
                 <div className="snip">{h.snippet || h.full_content.slice(0, 280)}</div>
                 <div className="meta">
                   {h.content_type && <span className="badge">{h.content_type}</span>}

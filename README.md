@@ -106,6 +106,8 @@ archive verify            # integrity check: truth parses + matches the index
 archive repair            # quarantine damaged truth lines; restore committed content from the index
 archive backup <dest>     # mirror the truth dir (keeps hardlink generations under <dest>/.generations)
 archive restore-drill <dest>  # prove the backup restores: rebuild an index from the mirror + smoke read/search
+archive restore <mirror> --to <home>  # actually restore: staged rebuild + verify, then atomic publish
+                          #   (--generation <stamp> picks a retained snapshot; --list-generations shows them)
 archive nightly <dest>    # the scheduled pipeline: backup → verify (age-gated escalation) → restore drill → coverage
 archive coverage          # capture-coverage check: source stores reconciled against the archive
 archive redact <thread>   # crypto-shred events (--events for a subset): content out of truth, index,
