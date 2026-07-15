@@ -13,6 +13,8 @@ persistent URL with no extra daemon or standalone web verb.
 from __future__ import annotations
 
 import json
+import logging
+import os
 import threading
 from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -23,6 +25,14 @@ from urllib.parse import parse_qs, urlparse
 from .. import _api as api
 
 STATIC_DIR = (Path(__file__).parent / "static").resolve()
+
+log = logging.getLogger(__name__)
+
+# The viewer has no auth and serves full search/read over the archive, so it
+# binds loopback only. A non-loopback bind exposes the memory-of-record to the
+# network and needs the explicit env opt-in checked in serve_in_thread.
+_LOOPBACK_HOSTS = frozenset({"127.0.0.1", "::1", "localhost"})
+_NONLOCAL_OPTIN = "THREAD_ARCHIVE_WEB_NONLOCAL"
 
 # Content types for the built bundle (vite emits hashed assets/*.js|css + fonts).
 _CTYPES = {
@@ -267,9 +277,12 @@ class _Handler(BaseHTTPRequestHandler):
         parsed = urlparse(self.path)
         try:
             status, ctype, body, headers = route("GET", parsed.path, parse_qs(parsed.query))
-        except Exception as exc:  # noqa: BLE001 — isolate per request; never kill the loop
+        except Exception:  # noqa: BLE001 — isolate per request; never kill the loop
+            # Detail stays server-side: exception text can carry paths/SQL/query
+            # internals, and the body goes to whoever reached the port.
+            log.exception("web request failed: %s", parsed.path)
             status, ctype, headers = 500, "application/json", {}
-            body = json.dumps({"error": str(exc)}).encode()
+            body = json.dumps({"error": "internal error"}).encode()
         self.send_response(status)
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(body)))
@@ -288,7 +301,16 @@ def serve_in_thread(*, host: str = "127.0.0.1", port: int = 8787) -> ThreadingHT
     For ``archive watch --web``: the always-on watcher process cohosts the read
     surface so there's a persistent URL without a second daemon. Assumes the caller
     already opened the archive (the watcher does). The thread is a daemon, so it dies
-    with the process; the caller may ``server_close()`` on shutdown for a clean stop."""
+    with the process; the caller may ``server_close()`` on shutdown for a clean stop.
+
+    Refuses a non-loopback ``host`` unless ``THREAD_ARCHIVE_WEB_NONLOCAL=1``: the
+    viewer is unauthenticated full read of the archive, so exposing it beyond the
+    machine must be a deliberate act, not a typo'd ``--web-host``."""
+    if host not in _LOOPBACK_HOSTS and os.environ.get(_NONLOCAL_OPTIN) != "1":
+        raise ValueError(
+            f"refusing non-loopback bind {host!r}: the viewer has no auth and serves "
+            f"the full archive. Set {_NONLOCAL_OPTIN}=1 to expose it deliberately."
+        )
     httpd = ThreadingHTTPServer((host, port), _Handler)
     threading.Thread(target=httpd.serve_forever, name="archive-web", daemon=True).start()
     return httpd

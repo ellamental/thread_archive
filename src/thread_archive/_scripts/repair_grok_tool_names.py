@@ -41,9 +41,11 @@ from thread_archive._store import use_session
 from thread_archive._store.models import Event, EventFts
 from thread_archive._truth.jsonl_log import append_event_row
 
-HERE = Path(__file__).parent
-PLAN_PATH = HERE / "repair_grok_tool_names_plan_20260704.json"
-BACKUP_PATH = HERE / f"repair_grok_tool_names_backup_{datetime.now(timezone.utc):%Y%m%dT%H%M%SZ}.json"
+# Undo/plan dumps live in host/repair-dumps (outside the package tree, so they
+# never ship in the wheel — tests/meta/test_package_tree.py ratchets this).
+DUMPS_DIR = Path(__file__).resolve().parents[3] / "host" / "repair-dumps"
+PLAN_PATH = DUMPS_DIR / "repair_grok_tool_names_plan_20260704.json"
+BACKUP_PATH = DUMPS_DIR / f"repair_grok_tool_names_backup_{datetime.now(timezone.utc):%Y%m%dT%H%M%SZ}.json"
 
 
 def canonical_json(payload) -> str:

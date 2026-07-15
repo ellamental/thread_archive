@@ -346,3 +346,36 @@ def test_serve_in_thread_cohosts(archive_home):
     finally:
         httpd.shutdown()
         httpd.server_close()
+
+
+def test_non_loopback_bind_refused(monkeypatch):
+    # the viewer is unauthenticated full read; a stray --web-host must not expose it
+    from thread_archive._web import serve_in_thread
+
+    monkeypatch.delenv("THREAD_ARCHIVE_WEB_NONLOCAL", raising=False)
+    for host in ("0.0.0.0", "192.168.1.10"):
+        with pytest.raises(ValueError, match="non-loopback"):
+            serve_in_thread(host=host, port=0)
+
+
+def test_error_body_is_generic(monkeypatch):
+    # exception detail (paths, SQL, query internals) stays server-side
+    import urllib.error
+    import urllib.request
+
+    from thread_archive._web import server
+
+    def boom(method, path, params):
+        raise RuntimeError("secret detail: /Users/somebody/private.db")
+
+    monkeypatch.setattr(server, "route", boom)
+    httpd = server.serve_in_thread(host="127.0.0.1", port=0)
+    try:
+        port = httpd.server_address[1]
+        with pytest.raises(urllib.error.HTTPError) as excinfo:
+            urllib.request.urlopen(f"http://127.0.0.1:{port}/api/status", timeout=5)
+        assert excinfo.value.code == 500
+        assert json.loads(excinfo.value.read()) == {"error": "internal error"}
+    finally:
+        httpd.shutdown()
+        httpd.server_close()

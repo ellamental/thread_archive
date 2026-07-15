@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from collections.abc import Sequence
 from datetime import datetime
 from typing import Container, Optional
@@ -149,6 +150,29 @@ DEFAULT_READ_CHAR_BUDGET = 48000
 _COMPACTION_PREFIX = "This session is being continued from a previous conversation"
 
 _USER_TYPES = frozenset({"user_message_sent", "thread_message_sent"})
+
+# Grok / xAI-shaped harnesses wrap the operator's actual prompt in a
+# ``<user_query>`` tag and inject ``<user_info>`` / ``<environment>`` /
+# ``<system-reminder>`` context around it. The importer keeps the whole turn as
+# the event's truth (capture everything), so the readers surface just the query
+# span for the human-facing transcript — the same span the importer uses to derive
+# the thread title.
+_USER_QUERY_RE = re.compile(r"<user_query>\s*(.*?)\s*</user_query>", re.DOTALL)
+
+
+def _display_user_content(content: str) -> str:
+    """Unwrap a ``<user_query>…</user_query>`` span for the readable transcript.
+
+    Both readers (the CLI/MCP string transcript and the web viewer's structured
+    blocks) render the query span rather than the raw wrapper + injected context.
+    The untouched original stays on the event and in the viewer's raw view; a turn
+    with no query span is returned as-is."""
+    match = _USER_QUERY_RE.search(content)
+    if match:
+        inner = match.group(1).strip()
+        if inner:
+            return inner
+    return content
 
 
 def _fmt_ts(dt) -> str:
@@ -406,7 +430,7 @@ def _build_steps(events: list[Event]) -> list[dict]:
                 "id": ev.id,
                 "event_ids": [ev.id],
                 "ts": ev.occurred_at,
-                "content": content,
+                "content": _display_user_content(content),
                 "is_compaction": content.startswith(_COMPACTION_PREFIX),
             })
             continue
@@ -939,7 +963,9 @@ def _structured_event(
 
     if et in ("user_message_sent", "thread_message_sent"):
         content = p.get("content", "")
-        return ("user", {"type": "text", "text": content}) if content.strip() else None
+        if not content.strip():
+            return None
+        return ("user", {"type": "text", "text": _display_user_content(content)})
     if et == "text_complete":
         text = p.get("text", "")
         return ("assistant", {"type": "text", "text": text}) if text.strip() else None

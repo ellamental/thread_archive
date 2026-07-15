@@ -2,6 +2,23 @@
 
 ## Unreleased
 
+- **Repair undo dumps no longer ship in the wheel (2026-07-14).** The one-shot
+  `_scripts` had accumulated ~450 KB of `*_backup_*` / `*_plan_*` operator dumps
+  inside the package tree, and hatch packages everything under
+  `src/thread_archive` — the 0.0.2 wheel carried ~206 KB of them. They live in
+  `host/repair-dumps/` now, `repair_grok_tool_names.py` writes there by default,
+  and a new house ratchet (`tests/meta/test_package_tree.py`) fails the suite if
+  a dump lands back inside `src/` (and holds `_scripts/` to Python-only).
+  Surfaced by a Grok review of the product (thread 3716490).
+
+- **Web viewer: generic 500 body + loopback bind guard (2026-07-14).** The
+  cohosted viewer returned `str(exc)` to the client on error (exception text can
+  carry paths/SQL) and would bind any `--web-host` silently, though it is
+  unauthenticated full read of the archive. Error bodies are now a fixed
+  `{"error": "internal error"}` with the detail logged server-side, and
+  `serve_in_thread` refuses a non-loopback host unless
+  `THREAD_ARCHIVE_WEB_NONLOCAL=1` makes the exposure deliberate. Same review.
+
 - **`DEFAULT_HOME` resolves at call time (2026-07-14).** It was frozen at import, so it
   answered with whatever `$HOME` said then — `_config.default_home()` now.
 

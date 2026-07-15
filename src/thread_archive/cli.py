@@ -656,7 +656,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_watch.add_argument("--once", action="store_true", help="poll once and exit")
     p_watch.add_argument("--interval", type=float, default=5.0, help="poll interval in seconds")
     p_watch.add_argument("--web", action="store_true", help="cohost the web viewer (persistent URL)")
-    p_watch.add_argument("--web-host", default="127.0.0.1", help="cohosted viewer bind host")
+    p_watch.add_argument("--web-host", default="127.0.0.1", help="cohosted viewer bind host (non-loopback refused unless THREAD_ARCHIVE_WEB_NONLOCAL=1)")
     p_watch.add_argument("--web-port", type=int, default=8787, help="cohosted viewer bind port")
     p_watch.add_argument("--no-embed", dest="embed", action="store_false",
                          help="disable the live vector cohost (no semantic-index upkeep)")
