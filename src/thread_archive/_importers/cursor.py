@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import json
 import logging
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
@@ -19,6 +19,7 @@ from typing import Any, Optional
 from thread_archive._thread_import import DefaultEventBuilder
 
 from .._store import ImportState, get_session
+from ._result import DbScanResult
 from ._events import assemble_events
 from ._state import (
     create_thread,
@@ -38,16 +39,7 @@ class CursorImportResult:
     is_new_thread: bool
 
 
-@dataclass
-class CursorDbScanResult:
-    composers_processed: int
-    composers_imported: int
-    events_created: int
-    composers_failed: int = 0
-    errors: list[str] = field(default_factory=list)
-
-
-def import_cursor_db(db_path) -> CursorDbScanResult:
+def import_cursor_db(db_path) -> DbScanResult:
     """Open a Cursor ``state.vscdb`` and import every composer in it."""
     import sqlite3
 
@@ -63,7 +55,7 @@ def import_cursor_db(db_path) -> CursorDbScanResult:
         if not conn.execute(
             "SELECT name FROM sqlite_master WHERE type='table' AND name='cursorDiskKV'"
         ).fetchone():
-            return CursorDbScanResult(0, 0, 0)
+            return DbScanResult()
 
         for key, value in conn.execute(
             "SELECT key, value FROM cursorDiskKV WHERE key LIKE 'composerData:%'"
@@ -115,9 +107,9 @@ def import_cursor_db(db_path) -> CursorDbScanResult:
     finally:
         conn.close()
 
-    summary = CursorDbScanResult(0, 0, 0)
+    summary = DbScanResult()
     for composer_id, composer_data in composers.items():
-        summary.composers_processed += 1
+        summary.processed += 1
         composer_bubbles = {
             k: v for k, v in bubbles.items() if k.startswith(f"{composer_id}:")
         }
@@ -126,7 +118,7 @@ def import_cursor_db(db_path) -> CursorDbScanResult:
                 composer_id=composer_id, composer_data=composer_data, bubbles=composer_bubbles
             )
             if result.events_created > 0:
-                summary.composers_imported += 1
+                summary.imported += 1
                 summary.events_created += result.events_created
         except Exception as e:
             # One composer blowing up must not skip it silently. Log the traceback,
@@ -136,7 +128,7 @@ def import_cursor_db(db_path) -> CursorDbScanResult:
             logger.exception(
                 "import_cursor_db: composer %s failed; preserving stub", composer_id[:8]
             )
-            summary.composers_failed += 1
+            summary.failed += 1
             summary.errors.append(f"composer {composer_id[:8]}: {e}")
             try:
                 _import_cursor_error_stub(composer_id, composer_data, composer_bubbles, e)

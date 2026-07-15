@@ -34,7 +34,7 @@ from __future__ import annotations
 import json
 import logging
 import sqlite3
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
@@ -43,6 +43,7 @@ from thread_archive._thread_import import DefaultEventBuilder
 from thread_archive._thread_import.parsers.claude_code import ClaudeCodeParser
 
 from .._store import get_session
+from ._result import DbScanResult
 from ._events import import_lines
 from ._state import (
     adopt_if_unwatermarked,
@@ -80,15 +81,6 @@ class ClaudeScienceImportResult:
     events_created: int
     thread_id: int
     is_new_thread: bool
-
-
-@dataclass
-class ClaudeScienceDbScanResult:
-    frames_processed: int
-    frames_imported: int
-    events_created: int
-    frames_failed: int = 0
-    errors: list[str] = field(default_factory=list)
 
 
 def _iso_from_ms(ms: int) -> str:
@@ -272,12 +264,12 @@ _FRAME_COLUMNS = (
 )
 
 
-def import_claude_science_db(db_path, org_uuid: str) -> ClaudeScienceDbScanResult:
+def import_claude_science_db(db_path, org_uuid: str) -> DbScanResult:
     """Open a Claude Science ``operon-cli.db`` (read-only) and import every frame in
     it under ``org_uuid``. The DB is live, so we open it ``mode=ro`` with a busy
     timeout and never write to it."""
     db_path = Path(db_path)
-    summary = ClaudeScienceDbScanResult(0, 0, 0)
+    summary = DbScanResult()
     parser = ClaudeCodeParser()
     builder = DefaultEventBuilder()
 
@@ -308,13 +300,13 @@ def import_claude_science_db(db_path, org_uuid: str) -> ClaudeScienceDbScanResul
             ).fetchall()
             if not message_rows:
                 continue
-            summary.frames_processed += 1
+            summary.processed += 1
             try:
                 result = import_claude_science_frame(
                     org_uuid, frame, message_rows, parser, builder
                 )
                 if result.events_created > 0:
-                    summary.frames_imported += 1
+                    summary.imported += 1
                     summary.events_created += result.events_created
             except Exception as e:  # noqa: BLE001 — one bad frame must not stop the scan
                 # Counted out to the watcher, not just logged — see the same guard in
@@ -323,7 +315,7 @@ def import_claude_science_db(db_path, org_uuid: str) -> ClaudeScienceDbScanResul
                 logger.exception(
                     "import_claude_science_db: frame %s failed; skipping", frame_id[:8]
                 )
-                summary.frames_failed += 1
+                summary.failed += 1
                 summary.errors.append(f"frame {frame_id[:8]}: {e}")
     finally:
         conn.close()

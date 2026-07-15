@@ -6,6 +6,7 @@ JSONL is truth; this SQLite store is the rebuildable projection.
 from __future__ import annotations
 
 from ._base import (
+    ArchiveSession,
     Base,
     active_dsn,
     build_engine,
@@ -24,6 +25,7 @@ from .schema import init_db
 
 __all__ = [
     # engine + session
+    "ArchiveSession",
     "Base",
     "build_engine",
     "init_engine",

@@ -23,7 +23,6 @@ lexical-only when the extra isn't installed or nothing's indexed.
 from __future__ import annotations
 
 import logging
-from datetime import datetime
 from typing import Optional
 
 import numpy as np
@@ -580,18 +579,11 @@ def search(
         sim = sim_by.get((r["event_id"], r["content_type"]))
         if sim is None:
             continue
-        ts = 0
-        oa = r["occurred_at"]
-        if oa:
-            try:
-                ts = int(datetime.fromisoformat(str(oa)).timestamp())
-            except ValueError:
-                ts = 0
         content = r["full_content"] or ""
         hit = build_event_hit(
             event_id=r["event_id"], thread_id=r["thread_id"], event_type=r["event_type"],
             content_type=r["content_type"], snippet=content[:300], full_content=content,
-            occurred_at_ts=ts,
+            occurred_at=r["occurred_at"],
         )
         hit["_semantic"] = round(float(sim), 4)
         hydrated.append((sim, hit))

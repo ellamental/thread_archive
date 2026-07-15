@@ -97,8 +97,8 @@ def test_imports_root_and_subagent_excludes_uploads_and_demo(archive_home, tmp_p
 
     scan = import_claude_science_db(db, ORG)
     # Two importable frames (root + child); uploads has no messages, demo is filtered.
-    assert scan.frames_processed == 2
-    assert scan.frames_imported == 2
+    assert scan.processed == 2
+    assert scan.imported == 2
     assert scan.events_created > 0
 
     with get_session() as s:

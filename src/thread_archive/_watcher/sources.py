@@ -271,14 +271,28 @@ def _scan_errors(source_name: str, scan) -> list[str]:
 
 
 class _DbScanWatcher(SourceWatcher):
-    """Detects mtime changes on a single live SQLite DB and runs a scan importer."""
+    """Detects mtime changes on live SQLite DBs and runs a scan importer on each
+    changed one.
+
+    The subclass seam is ``_targets()``: it yields ``(db_path, scan, label)`` —
+    the DB to fingerprint, a zero-arg callable running its scan (returning a
+    :class:`.._importers.DbScanResult`), and the label its errors carry. The
+    base form watches one fixed-path DB (Cursor / OpenCode); a subclass may
+    discover DBs dynamically each poll (Claude Science's per-org DBs). The
+    fingerprint (DB mtime, and the ``-wal``'s where watched — writes can land
+    in the WAL with the main file's mtime untouched) advances only after a
+    successful scan, so a failed scan retries. Per-item failures inside a scan
+    don't hold the fingerprint back — a permanently broken row would then
+    re-scan the whole DB every poll forever — but they do ride out as errors,
+    and the item itself retries on the DB's next change (its own watermark
+    never advanced)."""
 
     def __init__(self, db_path: Optional[Path], name: str, scanner: Callable, *, watch_wal: bool = False) -> None:
         self.db_path = db_path
         self._name = name
         self._scanner = scanner
         self._watch_wal = watch_wal
-        self._last_mtime: Optional[float] = None
+        self._last_mtime: dict[str, float] = {}
 
     @property
     def source_name(self) -> str:
@@ -287,62 +301,73 @@ class _DbScanWatcher(SourceWatcher):
     def is_available(self) -> bool:
         return self.db_path is not None and self.db_path.exists()
 
-    def _current_mtime(self) -> Optional[float]:
-        if not self.db_path or not self.db_path.exists():
+    def _targets(self) -> Iterator[tuple[Optional[Path], Callable, str]]:
+        yield self.db_path, (lambda: self._scanner(self.db_path)), self._name
+
+    def _current_mtime(self, db_path: Optional[Path]) -> Optional[float]:
+        if not db_path or not db_path.exists():
             return None
-        mtimes = [self.db_path.stat().st_mtime]
+        mtimes = [db_path.stat().st_mtime]
         if self._watch_wal:
-            wal = self.db_path.with_name(self.db_path.name + "-wal")
+            wal = db_path.with_name(db_path.name + "-wal")
             if wal.exists():
                 mtimes.append(wal.stat().st_mtime)
         return max(mtimes)
 
     def discover(self) -> SourceDiscovery:
-        # One live SQLite DB: size + activity mtime. No conversation count —
+        # Live SQLite DBs: sizes + activity mtimes. No conversation count —
         # counting means opening and understanding the provider's schema, and
         # the discovery pass is stat-only by contract.
-        if self.db_path is None or not self.is_available():
-            return SourceDiscovery(name=self._name, available=False)
-        try:
-            st = self.db_path.stat()
-            mtime = self._current_mtime() or st.st_mtime
-            return SourceDiscovery(
-                name=self._name, available=True, items=None, bytes=st.st_size,
-                earliest=None, latest=mtime,
-            )
-        except OSError:
-            return SourceDiscovery(name=self._name, available=False)
+        report = _stat_discovery(
+            self.source_name, (db for db, _, _ in self._targets() if db is not None)
+        )
+        report.items = None
+        if self._watch_wal:
+            # WAL-aware activity: recent writes can sit in the -wal alone.
+            for db, _, _ in self._targets():
+                try:
+                    mtime = self._current_mtime(db)
+                except OSError:
+                    continue
+                if mtime is not None:
+                    report.latest = max(report.latest or 0.0, mtime)
+        return report
 
     def poll(self) -> WatchResult:
-        try:
-            current = self._current_mtime()
-        except OSError as e:
-            return WatchResult(errors=[f"{self._name}: cannot stat db: {e}"])
-        if current is None:
-            return WatchResult(errors=[f"{self._name}: database not found"])
-        if self._last_mtime == current:
-            return WatchResult()
-
-        try:
-            scan = self._scanner(self.db_path)
-        except Exception as e:  # noqa: BLE001
-            return WatchResult(errors=[f"{self._name}: scan failed: {e}"])
-        # Fingerprint only after a successful scan, so a failure retries. Per-item
-        # failures inside the scan don't hold the fingerprint back — a permanently
-        # broken row would then re-scan the whole DB every poll forever — but they do
-        # ride out as errors, and the item itself retries on the DB's next change
-        # (its own watermark never advanced).
-        self._last_mtime = current
-
-        fields = vars(scan)
-        processed = next((v for k, v in fields.items() if k.endswith("_processed")), 0)
-        imported = next((v for k, v in fields.items() if k.endswith("_imported")), 0)
-        return WatchResult(
-            sources_checked=processed,
-            items_imported=imported,
-            events_created=scan.events_created,
-            errors=_scan_errors(self._name, scan),
-        )
+        result = WatchResult()
+        seen_this_poll: set[str] = set()
+        for db_path, scan_fn, label in self._targets():
+            try:
+                current = self._current_mtime(db_path)
+            except OSError as e:
+                result = result + WatchResult(errors=[f"{label}: cannot stat db: {e}"])
+                continue
+            if current is None:
+                result = result + WatchResult(errors=[f"{label}: database not found"])
+                continue
+            key = str(db_path.resolve())
+            seen_this_poll.add(key)
+            if self._last_mtime.get(key) == current:
+                result = result + WatchResult(sources_checked=1)
+                continue
+            try:
+                scan = scan_fn()
+            except Exception as e:  # noqa: BLE001 — one bad DB must not stop the poll
+                logger.warning("%s scan failed: %s", label, e)
+                result = result + WatchResult(errors=[f"{label}: scan failed: {e}"])
+                continue
+            # Fingerprint only after a successful scan, so a failure retries.
+            self._last_mtime[key] = current
+            result = result + WatchResult(
+                sources_checked=scan.processed,
+                items_imported=scan.imported,
+                events_created=scan.events_created,
+                errors=_scan_errors(label, scan),
+            )
+        # Prune fingerprints for DBs no longer present.
+        if seen_this_poll:
+            self._last_mtime = {k: v for k, v in self._last_mtime.items() if k in seen_this_poll}
+        return result
 
 
 def cursor_watcher(db_path: Optional[Path] = None) -> _DbScanWatcher:
@@ -400,15 +425,15 @@ def discover_cowork_session_dirs() -> list[Path]:
     return dirs
 
 
-class CoworkWatcher(SourceWatcher):
+class CoworkWatcher(FileSessionWatcher):
     """Watches Cowork ``audit.jsonl`` logs across all org dirs and imports the grown
     ones directly. source_id is ``{user_uuid}:{org_uuid}:{session_id}``; the human
-    title comes from the sibling ``local_{id}.json``."""
-
-    store_mtime_tracks_content = True  # per-session audit.jsonl files
+    title comes from the sibling ``local_{id}.json`` — remembered per source_id at
+    iteration time, the one per-file extra the shared poll loop doesn't carry."""
 
     def __init__(self) -> None:
-        self._seen: dict[str, tuple[int, int]] = {}
+        super().__init__()
+        self._metadata: dict[str, Optional[Path]] = {}
 
     @property
     def source_name(self) -> str:
@@ -416,11 +441,6 @@ class CoworkWatcher(SourceWatcher):
 
     def is_available(self) -> bool:
         return bool(discover_cowork_session_dirs())
-
-    def discover(self) -> SourceDiscovery:
-        return _stat_discovery(
-            self.source_name, (audit for audit, _, _ in self._iter_sessions())
-        )
 
     def _iter_sessions(self) -> Iterator[tuple[Path, str, Optional[Path]]]:
         for org_dir in discover_cowork_session_dirs():
@@ -437,39 +457,13 @@ class CoworkWatcher(SourceWatcher):
                 metadata_path = org_dir / f"{session_dir.name}.json"
                 yield audit_path, source_id, (metadata_path if metadata_path.exists() else None)
 
-    def poll(self) -> WatchResult:
-        result = WatchResult()
-        seen_this_poll: set[str] = set()
+    def _iter_files(self) -> Iterator[tuple[Path, str]]:
         for audit_path, source_id, metadata_path in self._iter_sessions():
-            try:
-                st = audit_path.stat()
-            except OSError:
-                continue
-            if st.st_size == 0:
-                continue
-            resolved = str(audit_path.resolve())
-            fingerprint = (st.st_mtime_ns, st.st_size)
-            seen_this_poll.add(resolved)
-            if self._seen.get(resolved) == fingerprint:
-                result = result + WatchResult(sources_checked=1)
-                continue
-            try:
-                imp = import_cowork_session_incremental(audit_path, source_id, metadata_path)
-                self._seen[resolved] = fingerprint
-                result = result + WatchResult(
-                    sources_checked=1,
-                    items_imported=1 if imp.events_created > 0 else 0,
-                    events_created=imp.events_created,
-                    lines_processed=imp.lines_processed,
-                    parse_errors=imp.parse_errors,
-                )
-            except Exception as e:  # noqa: BLE001 — one bad session must not stop the poll
-                msg = f"cowork import error for {source_id}: {e}"
-                logger.warning(msg)
-                result = result + WatchResult(sources_checked=1, errors=[msg])
-        if seen_this_poll:
-            self._seen = {k: v for k, v in self._seen.items() if k in seen_this_poll}
-        return result
+            self._metadata[source_id] = metadata_path
+            yield audit_path, source_id
+
+    def _import(self, path: Path, source_id: str):
+        return import_cowork_session_incremental(path, source_id, self._metadata.get(source_id))
 
 
 # ── Claude Science (per-org SQLite DB of conversation frames) ────────────────
@@ -494,74 +488,28 @@ def discover_claude_science_dbs(base: Optional[Path] = None) -> list[tuple[Path,
     return out
 
 
-class ClaudeScienceWatcher(SourceWatcher):
+class ClaudeScienceWatcher(_DbScanWatcher):
     """Watches every org's ``operon-cli.db`` and imports its conversation frames.
 
-    Like the Cursor/OpenCode DB watchers it mtime-gates a live SQLite DB wholesale
-    (DB **and** its ``-wal``, since writes can land in the WAL with the main file's
-    mtime untouched), but it discovers DBs dynamically each poll — as cowork does for
-    its org dirs — so an org created after startup is picked up without a restart."""
+    The dynamic-discovery form of the DB-scan watcher: DBs are found each poll —
+    as cowork does for its org dirs — so an org created after startup is picked
+    up without a restart. WAL-watched, since frame writes can land in the WAL
+    with the main file's mtime untouched."""
 
     def __init__(self, base: Optional[Path] = None) -> None:
+        super().__init__(None, "claude-science", import_claude_science_db, watch_wal=True)
         self._base = base
-        self._last_mtime: dict[str, float] = {}
-
-    @property
-    def source_name(self) -> str:
-        return "claude-science"
 
     def is_available(self) -> bool:
         return bool(discover_claude_science_dbs(self._base))
 
-    def discover(self) -> SourceDiscovery:
-        # Per-org live DBs: sizes + activity mtimes; org count isn't a
-        # conversation count, so items stays None (stat-only contract).
-        dbs = discover_claude_science_dbs(self._base)
-        report = _stat_discovery(self.source_name, (db for db, _ in dbs))
-        report.items = None
-        return report
-
-    @staticmethod
-    def _current_mtime(db_path: Path) -> Optional[float]:
-        try:
-            mtimes = [db_path.stat().st_mtime]
-        except OSError:
-            return None
-        wal = db_path.with_name(db_path.name + "-wal")
-        if wal.exists():
-            mtimes.append(wal.stat().st_mtime)
-        return max(mtimes)
-
-    def poll(self) -> WatchResult:
-        result = WatchResult()
-        seen_this_poll: set[str] = set()
+    def _targets(self) -> Iterator[tuple[Optional[Path], Callable, str]]:
         for db_path, org_uuid in discover_claude_science_dbs(self._base):
-            key = str(db_path.resolve())
-            seen_this_poll.add(key)
-            mtime = self._current_mtime(db_path)
-            if mtime is None:
-                continue
-            if self._last_mtime.get(key) == mtime:
-                result = result + WatchResult(sources_checked=1)
-                continue
-            try:
-                scan = import_claude_science_db(db_path, org_uuid)
-                # Fingerprint only after a successful scan, so a failure retries.
-                self._last_mtime[key] = mtime
-                result = result + WatchResult(
-                    sources_checked=scan.frames_processed,
-                    items_imported=scan.frames_imported,
-                    events_created=scan.events_created,
-                    errors=_scan_errors(f"claude-science {org_uuid[:8]}", scan),
-                )
-            except Exception as e:  # noqa: BLE001 — one bad org DB must not stop the poll
-                msg = f"claude-science scan failed for {org_uuid}: {e}"
-                logger.warning(msg)
-                result = result + WatchResult(sources_checked=1, errors=[msg])
-        # Prune fingerprints for org DBs no longer present.
-        if seen_this_poll:
-            self._last_mtime = {k: v for k, v in self._last_mtime.items() if k in seen_this_poll}
-        return result
+            yield (
+                db_path,
+                (lambda db=db_path, org=org_uuid: self._scanner(db, org)),
+                f"claude-science {org_uuid[:8]}",
+            )
 
 
 def default_watchers() -> list[SourceWatcher]:

@@ -31,7 +31,7 @@ from __future__ import annotations
 
 import json
 import logging
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
@@ -39,6 +39,7 @@ from typing import Any, Optional
 from thread_archive._thread_import import DefaultEventBuilder
 
 from .._store import ImportState, get_session
+from ._result import DbScanResult
 from ._events import assemble_events
 from ._state import (
     create_thread,
@@ -58,16 +59,7 @@ class OpenCodeImportResult:
     is_new_thread: bool
 
 
-@dataclass
-class OpenCodeDbScanResult:
-    sessions_processed: int
-    sessions_imported: int
-    events_created: int
-    sessions_failed: int = 0
-    errors: list[str] = field(default_factory=list)
-
-
-def import_opencode_db(db_path) -> OpenCodeDbScanResult:
+def import_opencode_db(db_path) -> DbScanResult:
     """Open an OpenCode ``opencode.db`` and import every session in it."""
     import sqlite3
 
@@ -87,7 +79,7 @@ def import_opencode_db(db_path) -> OpenCodeDbScanResult:
             )
         }
         if not {"session", "message", "part"} <= have:
-            return OpenCodeDbScanResult(0, 0, 0)
+            return DbScanResult()
 
         for sid, project_id, parent_id, title, directory, t_created, t_updated, agent in conn.execute(
             "SELECT id, project_id, parent_id, title, directory, time_created, "
@@ -135,9 +127,9 @@ def import_opencode_db(db_path) -> OpenCodeDbScanResult:
     finally:
         conn.close()
 
-    summary = OpenCodeDbScanResult(0, 0, 0)
+    summary = DbScanResult()
     for session_id, session_data in sessions.items():
-        summary.sessions_processed += 1
+        summary.processed += 1
         try:
             result = import_opencode_from_payload(
                 session_id=session_id,
@@ -146,7 +138,7 @@ def import_opencode_db(db_path) -> OpenCodeDbScanResult:
                 parts_by_message=parts_by_message,
             )
             if result.events_created > 0:
-                summary.sessions_imported += 1
+                summary.imported += 1
                 summary.events_created += result.events_created
         except Exception as e:  # noqa: BLE001 — one bad session must not stop the scan
             # Counted and carried out to the watcher, not just logged: a scan that
@@ -154,7 +146,7 @@ def import_opencode_db(db_path) -> OpenCodeDbScanResult:
             # an unchanged one, and `archive status` stays green while content is
             # missing. The session's watermark never advanced, so it retries.
             logger.exception("import_opencode_db: session %s failed; skipping", session_id[:12])
-            summary.sessions_failed += 1
+            summary.failed += 1
             summary.errors.append(f"session {session_id[:12]}: {e}")
     return summary
 

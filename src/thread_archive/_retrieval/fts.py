@@ -56,10 +56,21 @@ def build_event_hit(
     content_type: Optional[str],
     snippet: str,
     full_content: str,
-    occurred_at_ts: int,
+    occurred_at: Optional[str],
 ) -> dict:
     """One event search hit in the canonical shape. ``thread_title`` is enriched
-    by the caller."""
+    by the caller. ``occurred_at`` is the stored column text (canonical naive
+    form); it parses to a naive datetime — a stray offset-carrying value is
+    normalized to local-naive so every hit's datetime compares against the rest."""
+    dt: Optional[datetime] = None
+    if occurred_at:
+        try:
+            dt = datetime.fromisoformat(str(occurred_at))
+        except ValueError:
+            dt = None
+        else:
+            if dt.tzinfo is not None:
+                dt = dt.astimezone().replace(tzinfo=None)
     return {
         "event_id": event_id,
         "thread_id": thread_id,
@@ -68,7 +79,7 @@ def build_event_hit(
         "content_type": content_type,
         "snippet": snippet,
         "full_content": full_content,
-        "occurred_at": datetime.fromtimestamp(occurred_at_ts) if occurred_at_ts else None,
+        "occurred_at": dt,
     }
 
 
@@ -312,13 +323,6 @@ def search_events(
                 if key in seen:
                     continue
                 seen.add(key)
-                ts = 0
-                oa = r["occurred_at"]
-                if oa:
-                    try:
-                        ts = int(datetime.fromisoformat(str(oa)).timestamp())
-                    except ValueError:
-                        ts = 0
                 hits.append(build_event_hit(
                     event_id=r["event_id"],
                     thread_id=r["thread_id"],
@@ -326,7 +330,7 @@ def search_events(
                     content_type=r["content_type"],
                     snippet=r["snippet"] or "",
                     full_content=r["full_content"] or "",
-                    occurred_at_ts=ts,
+                    occurred_at=r["occurred_at"],
                 ))
 
         for match_where, match_params, order, use_match, fallback in passes:
@@ -511,6 +515,17 @@ def index_thread_meta(session: Optional[Session] = None, thread_ids: Optional[li
 _ARC_TWIN_TYPES = ("text_complete", "thinking_complete")
 
 
+def _cached_twin_texts(session: Session, thread_id: int, cache: dict) -> set[str]:
+    """The thread's twin-text set via the per-run cache — the one place the
+    cache's bound (drop everything past 64 threads; a rebuild walks threads in
+    id-clusters, so evicting wholesale is cheap and simple) is enforced."""
+    if thread_id not in cache:
+        if len(cache) > 64:
+            cache.clear()
+        cache[thread_id] = _twin_texts(session, thread_id)
+    return cache[thread_id]
+
+
 def _twin_texts(session: Session, thread_id: int) -> set[str]:
     """The (stripped) texts of a thread's granular complete events."""
     rows = session.execute(
@@ -586,11 +601,7 @@ def _gate_arc_tuples(
         # A summary with no content_blocks: the call's text exists only as raw
         # deltas — stitch them, anchored (by the caller) to this summary event.
         tuples = [(c, ct, tn) for c, ct, tn, _ in stitch_delta_tuples(session, api_call_id)]
-    if thread_id not in twin_text_cache:
-        if len(twin_text_cache) > 64:
-            twin_text_cache.clear()
-        twin_text_cache[thread_id] = _twin_texts(session, thread_id)
-    seen = twin_text_cache[thread_id]
+    seen = _cached_twin_texts(session, thread_id, twin_text_cache)
     out = []
     for content, content_type, tool_name in tuples:
         key = content.strip()
@@ -721,11 +732,7 @@ def rebuild_fts(session: Optional[Session] = None) -> int:
         for ac, tid in orphan_calls:
             if ac in arc_calls or ac in twinned_calls:
                 continue
-            if tid not in twin_text_cache:
-                if len(twin_text_cache) > 64:
-                    twin_text_cache.clear()
-                twin_text_cache[tid] = _twin_texts(s, tid)
-            seen = twin_text_cache[tid]
+            seen = _cached_twin_texts(s, tid, twin_text_cache)
             for content, content_type, tool_name, anchor in stitch_delta_tuples(s, ac):
                 key = content.strip()
                 if key and key not in seen:

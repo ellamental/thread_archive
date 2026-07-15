@@ -73,7 +73,7 @@ def test_unknown_bubble_type_preserved_as_message_event(archive_home) -> None:
     conn.close()
 
     scan = import_cursor_db(db)
-    assert scan.composers_imported == 1
+    assert scan.imported == 1
 
     events = _events()
     msgs = [p for (t, p) in events if t == "message"]

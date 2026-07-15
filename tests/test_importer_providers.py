@@ -253,15 +253,15 @@ def test_cursor_db_scan_and_idempotent(archive_home) -> None:
     _make_cursor_db(db)
 
     scan = import_cursor_db(db)
-    assert scan.composers_processed == 1
-    assert scan.composers_imported == 1
+    assert scan.processed == 1
+    assert scan.imported == 1
     assert scan.events_created > 0
     n = _event_count()
     thread = _thread_for("cursor")
     assert thread.title == "My Cursor Chat"
 
     scan2 = import_cursor_db(db)
-    assert scan2.composers_imported == 0  # lastUpdatedAt < last_import → skipped
+    assert scan2.imported == 0  # lastUpdatedAt < last_import → skipped
     assert _event_count() == n
 
 
@@ -381,13 +381,13 @@ def test_opencode_db_scan_and_idempotent(archive_home) -> None:
     _make_opencode_db(db)
 
     scan = import_opencode_db(db)
-    assert scan.sessions_processed == 1
-    assert scan.sessions_imported == 1
+    assert scan.processed == 1
+    assert scan.imported == 1
     assert scan.events_created > 0
     n = _event_count()
     thread = _thread_for("opencode")
     assert thread.title == "My OpenCode Session"
 
     scan2 = import_opencode_db(db)
-    assert scan2.sessions_imported == 0  # time_updated < last_import → skipped
+    assert scan2.imported == 0  # time_updated < last_import → skipped
     assert _event_count() == n

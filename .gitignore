@@ -11,6 +11,11 @@ __pycache__/
 .ruff_cache/
 .mypy_cache/
 
+# Xcode/SwiftPM DerivedData. Archive has no native build of its own; a `.build/`
+# here only appears when a sibling mac Makefile is invoked with the wrong cwd —
+# ignored so that stray output never clutters this repo's status.
+.build/
+
 # Archive data lives in the user's home (~/.thread/archive), NEVER in the repo.
 # These are belt-and-suspenders in case a run is pointed at the repo by mistake.
 # All anchored to the repo root so they can't shadow the source tree (e.g. the

@@ -34,6 +34,20 @@ class Base(DeclarativeBase):
     pass
 
 
+class ArchiveSession(Session):
+    """The archive's own Session class — the type every archive write path uses.
+
+    The truth-log listeners (the before-commit drain and its commit/rollback
+    compensation, see :mod:`.._truth.jsonl_log`) are registered on THIS class,
+    not on ``sqlalchemy.orm.Session``: the archive is a library, and class-level
+    listeners on the base ``Session`` would fire for every SQLAlchemy session in
+    a host process. Constructing a session any other way opts out of the truth
+    drain entirely, so every archive session must come from :func:`get_session`
+    (or construct ``ArchiveSession`` directly)."""
+
+    pass
+
+
 _engine: Engine | None = None
 
 # Context-scoped engine override (see module docstring). Default None = use the
@@ -173,7 +187,7 @@ def get_session() -> Generator[Session, None, None]:
 
     Does not commit on exit — callers commit explicitly.
     """
-    with Session(get_engine()) as session:
+    with ArchiveSession(get_engine()) as session:
         yield session
 
 

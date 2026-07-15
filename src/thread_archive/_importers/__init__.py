@@ -12,11 +12,10 @@ drives them directly rather than through the registries below.)
 
 from __future__ import annotations
 
-from ._result import IncrementalImportResult
+from ._result import DbScanResult, IncrementalImportResult
 from .antigravity import import_antigravity_session_incremental
 from .claude_code import import_session_incremental
 from .claude_science import (
-    ClaudeScienceDbScanResult,
     ClaudeScienceImportResult,
     import_claude_science_db,
     import_claude_science_frame,
@@ -25,14 +24,12 @@ from .cloth import import_cloth_session_incremental
 from .codex import import_codex_session_incremental
 from .cowork import import_cowork_session_incremental
 from .cursor import (
-    CursorDbScanResult,
     CursorImportResult,
     import_cursor_db,
     import_cursor_from_payload,
 )
 from .grok import import_grok_session_incremental
 from .opencode import (
-    OpenCodeDbScanResult,
     OpenCodeImportResult,
     import_opencode_db,
     import_opencode_from_payload,
@@ -59,6 +56,7 @@ DB_SCANNERS = {
 PROVIDERS = list(LINE_STREAM_IMPORTERS) + list(DB_SCANNERS)
 
 __all__ = [
+    "DbScanResult",
     "IncrementalImportResult",
     "import_session_incremental",
     "import_cloth_session_incremental",
@@ -67,7 +65,6 @@ __all__ = [
     "import_claude_science_db",
     "import_claude_science_frame",
     "ClaudeScienceImportResult",
-    "ClaudeScienceDbScanResult",
     "import_grok_session_incremental",
     "import_antigravity_session_incremental",
     "import_cursor_db",
@@ -75,9 +72,7 @@ __all__ = [
     "import_opencode_db",
     "import_opencode_from_payload",
     "CursorImportResult",
-    "CursorDbScanResult",
     "OpenCodeImportResult",
-    "OpenCodeDbScanResult",
     "LINE_STREAM_IMPORTERS",
     "DB_SCANNERS",
     "PROVIDERS",
