@@ -211,6 +211,25 @@ def test_status_runs_on_empty_home(tmp_path, capsys: pytest.CaptureFixture[str])
     assert "home:" in out and "truth:" in out and "index:" in out
 
 
+def test_coverage_cli_renders_validation_drift(monkeypatch, capsys) -> None:
+    """`archive coverage` surfaces the validation-drift ledger volume — the durable
+    operator surface for parser format drift, not just daemon logs."""
+    from thread_archive import _api as api
+
+    result = {
+        "ok": True, "failed": [], "warnings": [],
+        "sources": {}, "disabled": {}, "unwatched": {},
+        "skips": {"total": 0, "recent": 0, "recent_lines": 0, "days": 7.0},
+        "drift": {"total": 3, "recent": 2, "recent_findings": 5, "days": 7.0},
+    }
+    monkeypatch.setattr(api, "check_coverage", lambda **kw: result)
+    rc = main(["coverage", "--home", "/h"])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "validation drift: 3 ledger records, 2 in last 7d (5 findings)" in out
+    assert "validation-drift.jsonl" in out
+
+
 def test_reindex_cli_runs_in_isolated_home(tmp_path, monkeypatch, capsys) -> None:
     """`archive reindex` wires to the truth-log reindex. Always pass --home so a
     CLI test never touches the real ~/.thread/archive."""

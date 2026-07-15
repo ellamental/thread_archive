@@ -84,12 +84,6 @@ from .chatgpt_content import (
 )
 from .config import CHATGPT_CONFIG, ProviderConfig
 from .types.chatgpt import ChatGPTConversation, ChatGPTExport
-from .validators import (
-    ContentValidator,
-    ReferentialIntegrityValidator,
-    ThinkingBlockValidator,
-    TypeValidator,
-)
 
 # Content types that indicate thinking/reasoning messages
 THINKING_CONTENT_TYPES = {"thoughts", "analysis", "reasoning_recap"}
@@ -156,7 +150,6 @@ class ChatGPTParser(ProviderParser):
 
     Uses the pipeline architecture with:
     - PROVIDER_CONFIG: ChatGPT-specific configuration (thinking expectations, etc.)
-    - Validators: ThinkingBlockValidator, ReferentialIntegrityValidator, etc.
     - Types: ChatGPTExport, ChatGPTConversation for typed input
 
     ## Explicit Field Mappings
@@ -231,17 +224,6 @@ class ChatGPTParser(ProviderParser):
             ),
         ),
     ]
-
-    def __init__(self, strict: bool = False):
-        """Initialize the ChatGPT parser."""
-        super().__init__(strict=strict)
-        # Initialize validators from the new architecture
-        self._validators = [
-            ThinkingBlockValidator(self.PROVIDER_CONFIG, strict=strict),
-            ReferentialIntegrityValidator(self.PROVIDER_CONFIG, strict=strict),
-            TypeValidator(self.PROVIDER_CONFIG, strict=strict),
-            ContentValidator(self.PROVIDER_CONFIG, strict=strict),
-        ]
 
     def parse_export(
         self, data: Union[ChatGPTExport, List[ChatGPTConversation], Any]
@@ -693,6 +675,3 @@ class ChatGPTParser(ProviderParser):
             return int(ts * 1_000_000)
         except (ValueError, OverflowError):
             return None
-
-    # parse_export_with_validation is inherited from ProviderParser (shared logic
-    # driving self._validators); no provider-specific override needed.

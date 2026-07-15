@@ -30,6 +30,15 @@ def test_search_terms_preserves_identifiers_and_splits_words() -> None:
     assert rank.search_terms("") == []
 
 
+def test_search_terms_strips_backtick_fencing() -> None:
+    # Backticks are markdown a user wraps around an identifier — not part of the
+    # token. Stripped, so the density scorer credits the bare identifier in prose,
+    # not only backtick-wrapped occurrences (`thread_search` must rank like it).
+    assert rank.search_terms("`thread_search`") == ["thread_search"]
+    assert rank.search_terms("`get_session`") == ["get_session"]
+    assert rank.search_terms("`thread:foo`") == ["thread", "foo"]
+
+
 def test_search_terms_quoted_phrase_is_one_term() -> None:
     terms = rank.search_terms('auth "login flow"')
     assert "login flow" in terms and "auth" in terms

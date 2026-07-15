@@ -83,12 +83,6 @@ from .claude_code_ide import (
     _timestamp_to_order,
 )
 from .config import CLAUDE_CODE_CONFIG, ProviderConfig
-from .validators import (
-    ContentValidator,
-    ReferentialIntegrityValidator,
-    ThinkingBlockValidator,
-    TypeValidator,
-)
 
 
 class ClaudeCodeParser(ProviderParser):
@@ -100,7 +94,6 @@ class ClaudeCodeParser(ProviderParser):
 
     Uses the pipeline architecture with:
     - PROVIDER_CONFIG: Claude Code-specific configuration (model_specific thinking)
-    - Validators: ThinkingBlockValidator, ReferentialIntegrityValidator, etc.
     - Types: ClaudeCodeExport, ClaudeCodeSession for typed input
 
     ## How to Use
@@ -124,17 +117,6 @@ class ClaudeCodeParser(ProviderParser):
 
     # Provider-specific configuration (thinking/validation expectations)
     PROVIDER_CONFIG: ProviderConfig = CLAUDE_CODE_CONFIG
-
-    def __init__(self, strict: bool = False):
-        """Initialize the Claude Code parser."""
-        super().__init__(strict=strict)
-        # Initialize validators from the new architecture
-        self._validators = [
-            ThinkingBlockValidator(self.PROVIDER_CONFIG, strict=strict),
-            ReferentialIntegrityValidator(self.PROVIDER_CONFIG, strict=strict),
-            TypeValidator(self.PROVIDER_CONFIG, strict=strict),
-            ContentValidator(self.PROVIDER_CONFIG, strict=strict),
-        ]
 
     def parse_export(self, data: Any) -> List[NormalizedMessage]:
         """
@@ -173,9 +155,6 @@ class ClaudeCodeParser(ProviderParser):
             return self._parse_session_lines(data, None)
 
         return []
-
-    # parse_export_with_validation is inherited from ProviderParser (shared logic
-    # driving self._validators); no provider-specific override needed.
 
     def _parse_jsonl(
         self, jsonl: str, session_id: Optional[str] = None
@@ -1020,16 +999,6 @@ class ClaudeCodeParser(ProviderParser):
         _blocks.merge_chain(root, children_of, to_remove)
 
 
-# Session discovery/loading helpers live in claude_code_sessions; re-exported
-# here so existing ``claude_code.<name>`` access keeps resolving to the same
-# objects.
-from .claude_code_sessions import (  # noqa: E402
-    find_claude_code_sessions,
-    load_claude_code_session,
-)
-
 __all__ = [
     "ClaudeCodeParser",
-    "find_claude_code_sessions",
-    "load_claude_code_session",
 ]

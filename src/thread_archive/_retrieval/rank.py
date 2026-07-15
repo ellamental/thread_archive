@@ -122,6 +122,11 @@ def search_terms(query: str) -> list[str]:
     function words (:data:`_STOPWORDS`) are dropped."""
     if not query or not query.strip():
         return []
+    # Backticks are markdown fencing a user wraps around an identifier
+    # (`thread_search`), never part of the token. Strip them so the density scorer
+    # credits the bare identifier wherever it appears, not only backtick-wrapped
+    # occurrences — the FTS tokenizer already ignores them; this aligns ranking.
+    query = query.replace("`", " ")
     if re.search(r'\b(AND|OR|NOT)\b|".*?"|\*$', query):
         phrases = [m.strip().lower() for m in re.findall(r'"([^"]+)"', query) if m.strip()]
         outside = re.sub(r'"[^"]*"', " ", query)

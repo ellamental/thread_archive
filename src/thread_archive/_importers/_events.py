@@ -27,9 +27,11 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from thread_archive._thread_import import DefaultEventBuilder
+from thread_archive._thread_import.parsers.validators import validate_messages
 
 from .._store import Event
 from .._truth import write_events
+from ._validation_ledger import record_drift
 
 logger = logging.getLogger(__name__)
 
@@ -227,6 +229,39 @@ def assemble_events(
     return len(batch), last_uuid
 
 
+def log_parse_validation(
+    messages: list,
+    *,
+    provider: str,
+    conversation_id: str,
+    batch_safe: bool,
+) -> None:
+    """Run the parser-output validators over ``messages`` and log any issue found.
+
+    Validation is an observability signal, never a gate: an unknown block type or
+    role the parser has gone blind to, a missing timestamp — each is logged and the
+    import proceeds untouched (a red validator must never drop a real turn). Every
+    parse of a *slice* passes ``batch_safe=True`` — the incremental path polls a
+    growing session a slice at a time, so the whole-conversation aggregate checks
+    ("no user messages", "0% thinking") would false-fire on a tail; only the
+    format-drift checks, which hold on any slice, run. A bulk account-export import
+    parses a *complete* conversation and passes ``False`` to run the full set."""
+    if not messages:
+        return
+    context = validate_messages(
+        messages, conversation_id, provider, batch_safe=batch_safe
+    )
+    for issue in context.errors:
+        logger.warning("parse-validation error [%s %s]: %s", provider, conversation_id, issue)
+    for issue in context.warnings:
+        logger.warning("parse-validation [%s %s]: %s", provider, conversation_id, issue)
+    findings = list(context.errors) + list(context.warnings)
+    if findings:
+        # Durable, queryable trail so the coverage check / nightly can surface drift
+        # volume — the log line alone is ephemeral. Advisory + fail-soft.
+        record_drift(provider, conversation_id, findings=findings, batch_safe=batch_safe)
+
+
 def import_lines(
     session: Session,
     thread_id: int,
@@ -244,4 +279,10 @@ def import_lines(
         "sessions": [{"session_id": "incremental", "project": "incremental", "lines": lines}],
     }
     messages = parser.parse_export(session_data)
+    log_parse_validation(
+        messages,
+        provider="claude-code",
+        conversation_id=source_id or "incremental",
+        batch_safe=True,
+    )
     return assemble_events(session, thread_id, messages, builder, cross_pass_dedup=cross_pass_dedup)

@@ -112,6 +112,7 @@ def check_coverage(
     discovers the real machine's stores."""
     from .._api import open_archive
     from .._importers._skip_ledger import summarize_skips
+    from .._importers._validation_ledger import summarize_drift
     from .._watcher.sources import (
         _MECHANISM_SOURCES,
         default_watchers,
@@ -202,6 +203,7 @@ def check_coverage(
     }
 
     skips = summarize_skips()
+    drift = summarize_drift()
     result = {
         "ok": not failed,
         "failed": failed,
@@ -210,6 +212,7 @@ def check_coverage(
         "disabled": disabled,
         "unwatched": unwatched,
         "skips": skips,
+        "drift": drift,
     }
     record_health("coverage_last", {
         "ok": result["ok"],
@@ -217,6 +220,7 @@ def check_coverage(
         "warnings": warnings,
         "sources_checked": len(sources),
         "skips_recent": skips["recent"],
+        "drift_recent": drift["recent"],
     })
     stamp_heartbeat()
     return result

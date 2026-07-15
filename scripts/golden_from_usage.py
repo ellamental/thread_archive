@@ -27,6 +27,7 @@ import argparse
 import json
 import re
 import sys
+from itertools import groupby
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
@@ -46,21 +47,44 @@ _READ_NAME = re.compile(r"thread[_-]read$")
 _CLICK_WINDOW_EVENTS = 60
 
 
-def _tool_rows():
-    """Every search/read tool-use and search tool-result row, session-ordered:
-    ``(event_id, session_thread_id, content_type, tool_name, result_content,
-    input_dict)``."""
+def _search_read_calls(s):
+    """Every thread_search / thread_read tool-**call**, session-then-event ordered:
+    ``(session_thread_id, event_id, kind, tool_call_id, input_dict)`` where ``kind``
+    is ``'search'`` or ``'read'``. Calls only — results are fetched per session by
+    :func:`_session_results`, since providers label the result rows inconsistently."""
     sql = sa_text(
-        "SELECT f.event_id, f.thread_id, f.content_type, f.tool_name, f.content, e.payload "
+        "SELECT f.thread_id, f.event_id, f.tool_name, e.payload "
         "FROM events_fts f JOIN events e ON e.id = f.event_id "
-        "WHERE f.content_type IN ('tool', 'tool_result') "
+        "WHERE f.content_type = 'tool' "
         "AND (f.tool_name LIKE '%thread%search%' OR f.tool_name LIKE '%thread%read%') "
         "ORDER BY f.thread_id, f.event_id"
     )
-    with use_session() as s:
-        for eid, tid, ct, tool, content, payload in s.execute(sql):
-            p = payload if isinstance(payload, dict) else json.loads(payload or "{}")
-            yield eid, tid, ct, tool or "", content or "", p.get("input") or {}
+    for tid, eid, tool, payload in s.execute(sql):
+        tool = tool or ""
+        if _SEARCH_NAME.search(tool):
+            kind = "search"
+        elif _READ_NAME.search(tool):
+            kind = "read"
+        else:
+            continue  # LIKE over-matches (topic_search, thread-read-file, …); regex decides
+        p = payload if isinstance(payload, dict) else json.loads(payload or "{}")
+        yield tid, eid, kind, p.get("tool_call_id"), (p.get("input") or {})
+
+
+def _session_results(s, tid: int) -> dict[str, str]:
+    """``{tool_call_id: result_content}`` for one session. A search's result row is
+    paired back to its call by ``tool_call_id`` — the provider-neutral link — because
+    the dominant archive format (Claude Code) leaves tool_result rows named
+    ``'unknown'``, so matching results by tool_name would drop ~all of them."""
+    rows = s.execute(
+        sa_text(
+            "SELECT json_extract(e.payload, '$.tool_call_id'), f.content "
+            "FROM events_fts f JOIN events e ON e.id = f.event_id "
+            "WHERE f.thread_id = :t AND f.content_type = 'tool_result'"
+        ),
+        {"t": tid},
+    )
+    return {cid: (content or "") for cid, content in rows if cid}
 
 
 def _valid_targets() -> set[int]:
@@ -99,44 +123,40 @@ def mine(min_query_terms: int) -> list[dict]:
     cases: list[dict] = []
     seen: set[tuple[str, int]] = set()
 
-    session = None
-    # Recent searches in the current session: (event_id, query, [result texts]).
-    recent: list[list] = []
-
-    for eid, tid, ct, tool, content, tool_input in _tool_rows():
-        if tid != session:
-            session, recent = tid, []
-
-        if _SEARCH_NAME.search(tool):
-            if ct == "tool":
-                query = tool_input.get("query")
-                if isinstance(query, str) and query.strip() and "startswith" not in tool_input:
-                    recent.append([eid, query.strip(), []])
-                    recent[:] = recent[-8:]
-            elif ct == "tool_result" and recent:
-                # A search's output lands after its call; attach to the newest
-                # search still missing a result, else the newest outright.
-                target = next((r for r in reversed(recent) if not r[2]), recent[-1])
-                target[2].append(content)
-            continue
-
-        if _READ_NAME.search(tool) and ct == "tool":
-            read_tid = _target_thread(tool_input.get("thread_id"), by_source)
-            if read_tid is None or read_tid == tid or read_tid not in valid:
+    with use_session() as s:
+        for tid, group in groupby(_search_read_calls(s), key=lambda r: r[0]):
+            group = list(group)
+            # Skip the result fetch for sessions that can't yield a click pair.
+            if not (any(g[2] == "search" for g in group) and any(g[2] == "read" for g in group)):
                 continue
-            id_re = re.compile(r"\b" + str(read_tid) + r"\b")
-            for s_eid, query, results in reversed(recent):
-                if eid - s_eid > _CLICK_WINDOW_EVENTS:
-                    break
-                if not any(id_re.search(r) for r in results):
+            results = _session_results(s, tid)
+
+            # Recent searches in this session: [event_id, query, result_text].
+            recent: list[list] = []
+            for _tid, eid, kind, cid, tool_input in group:
+                if kind == "search":
+                    query = tool_input.get("query")
+                    if isinstance(query, str) and query.strip() and "startswith" not in tool_input:
+                        recent.append([eid, query.strip(), results.get(cid or "", "")])
+                        recent[:] = recent[-8:]
                     continue
-                if len(query.split()) < min_query_terms:
-                    break
-                key = (query.lower(), read_tid)
-                if key not in seen:
-                    seen.add(key)
-                    cases.append({"query": query, "thread_id": read_tid})
-                break  # credit the nearest qualifying search only
+
+                read_tid = _target_thread(tool_input.get("thread_id"), by_source)
+                if read_tid is None or read_tid == tid or read_tid not in valid:
+                    continue
+                id_re = re.compile(r"\b" + str(read_tid) + r"\b")
+                for s_eid, query, result_text in reversed(recent):
+                    if eid - s_eid > _CLICK_WINDOW_EVENTS:
+                        break
+                    if not id_re.search(result_text):
+                        continue
+                    if len(query.split()) < min_query_terms:
+                        break
+                    key = (query.lower(), read_tid)
+                    if key not in seen:
+                        seen.add(key)
+                        cases.append({"query": query, "thread_id": read_tid})
+                    break  # credit the nearest qualifying search only
 
     # One case per query, every clicked thread relevant — separate rows would
     # score each click's siblings as misses.

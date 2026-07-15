@@ -55,12 +55,6 @@ from .base import (
 )
 from .config import CLAUDE_CONFIG, ProviderConfig
 from .types.claude import ClaudeConversation, ClaudeExport
-from .validators import (
-    ContentValidator,
-    ReferentialIntegrityValidator,
-    ThinkingBlockValidator,
-    TypeValidator,
-)
 
 
 def _parse_claude_timestamp(ts: Optional[str]) -> Optional[str]:
@@ -119,7 +113,6 @@ class ClaudeParser(ProviderParser):
 
     Uses the pipeline architecture with:
     - PROVIDER_CONFIG: Claude-specific configuration (thinking="never", no branching)
-    - Validators: ThinkingBlockValidator, ContentValidator, etc.
     - Types: ClaudeExport, ClaudeConversation for typed input
 
     ## Explicit Field Mappings
@@ -172,17 +165,6 @@ class ClaudeParser(ProviderParser):
             ),
         ),
     ]
-
-    def __init__(self, strict: bool = False):
-        """Initialize the Claude parser."""
-        super().__init__(strict=strict)
-        # Initialize validators from the new architecture
-        self._validators = [
-            ThinkingBlockValidator(self.PROVIDER_CONFIG, strict=strict),
-            ReferentialIntegrityValidator(self.PROVIDER_CONFIG, strict=strict),
-            TypeValidator(self.PROVIDER_CONFIG, strict=strict),
-            ContentValidator(self.PROVIDER_CONFIG, strict=strict),
-        ]
 
     def parse_export(
         self, data: Union[ClaudeExport, List[ClaudeConversation], Any]
@@ -414,6 +396,3 @@ class ClaudeParser(ProviderParser):
         if text and isinstance(text, str):
             return self.create_text_block(text, seq)
         return None
-
-    # parse_export_with_validation is inherited from ProviderParser (shared logic
-    # driving self._validators); no provider-specific override needed.

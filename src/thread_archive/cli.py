@@ -626,6 +626,12 @@ def cmd_coverage(args: argparse.Namespace) -> int:
             f"skips: {sk['total']} ledger records, {sk['recent']} in last "
             f"{sk['days']:.0f}d ({sk['recent_lines']} lines) — capture-skips.jsonl"
         )
+    dr = r["drift"]
+    if dr["total"]:
+        print(
+            f"validation drift: {dr['total']} ledger records, {dr['recent']} in last "
+            f"{dr['days']:.0f}d ({dr['recent_findings']} findings) — validation-drift.jsonl"
+        )
     for msg in r["warnings"]:
         print(f"warning: {msg}")
     if r["ok"]:

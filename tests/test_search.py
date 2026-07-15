@@ -98,6 +98,20 @@ def test_residual_fts_syntax_error_retries_quoted(archive_home, monkeypatch) -> 
     assert hits == []  # retried as '"NOT" "login"' → empty, no raise
 
 
+def test_fts_special_punctuation_returns_rather_than_raise(archive_home) -> None:
+    """FTS5 metacharacters — colon (column filter), ``*`` (prefix), ``^`` (initial
+    token), parens, ``NEAR()`` — are quoted per-token, so a query carrying them can
+    never raise an OperationalError out of MATCH. A ``field:``-style query is the
+    common one (``thread:``, ``file.py:42``, ``TODO:``)."""
+    _seed_corpus(archive_home)
+    for q in ("thread:", "login:", "col:val", "col:val AND login", "a:b:c",
+              "*", "foo*", "a^b", "(login)", "NEAR(a b)", "get_session:"):
+        assert isinstance(search(q), list)  # must not raise
+    # a trailing colon is a token separator, not a failed column filter: the term
+    # still matches the content it would without the colon.
+    assert {h["thread_id"] for h in search("login:")} == {h["thread_id"] for h in search("login")}
+
+
 def test_underscore_identifier_matches_literally(archive_home) -> None:
     """The code-mode substring LIKE escapes ``_`` — ``get_session`` must not
     wildcard-match ``getXsession``."""

@@ -43,7 +43,6 @@ from .base import (
     FieldMapping,
     FileBlock,
     ImageBlock,
-    ImportResult,
     NormalizedMessage,
     ProviderParser,
     SystemContextBlock,
@@ -51,7 +50,6 @@ from .base import (
     ThinkingBlock,
     ToolResultBlock,
     ToolUseBlock,
-    ValidationContext,
     ValidationSeverity,
 )
 
@@ -114,10 +112,8 @@ __all__ = [
     "ProviderParser",
     "NormalizedMessage",
     "ContentBlock",
-    "ImportResult",
     # Field mapping infrastructure
     "FieldMapping",
-    "ValidationContext",
     "ValidationSeverity",
     # Block types
     "TextBlock",

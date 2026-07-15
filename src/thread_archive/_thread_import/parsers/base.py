@@ -7,8 +7,6 @@ Defines the unified ContentBlock schema used across all providers:
 
 Also provides explicit field mapping infrastructure for semantic correctness:
 - FieldMapping: Declares how provider fields map to our model
-- ValidationContext: Tracks validation state across conversation import
-- ImportResult: Rich result with messages, errors, warnings, and coverage stats
 
 Validation is handled by pluggable validators in validators/.
 """
@@ -17,7 +15,7 @@ import hashlib
 import json
 import math
 from abc import ABC, abstractmethod
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from enum import Enum
 from typing import Any, Callable, Dict, List, Literal, Optional, TypedDict, Union
 
@@ -258,92 +256,6 @@ class FieldMapping:
             return self.default
 
 
-@dataclass
-class ValidationContext:
-    """
-    Tracks validation state across a conversation import.
-
-    This context is passed through as messages are processed, allowing
-    validation rules to reason about the conversation as a whole.
-    """
-
-    conversation_id: str
-    source_provider: str
-    first_user_msg_seen: bool = False
-    first_user_msg_has_context: bool = False
-    message_count: int = 0
-    assistant_msg_count: int = 0
-    assistant_msgs_with_thinking: int = 0
-    assistant_msgs_with_tools: int = 0
-    # Model-specific tracking for fine-grained validation
-    thinking_required_msgs: int = 0  # Messages where thinking is required
-    thinking_required_msgs_with_thinking: int = 0
-    warnings: List[str] = field(default_factory=list)
-    errors: List[str] = field(default_factory=list)
-
-    def add_error(self, msg: str) -> None:
-        """Add a fatal validation error."""
-        self.errors.append(msg)
-
-    def add_warning(self, msg: str) -> None:
-        """Add a non-fatal validation warning."""
-        self.warnings.append(msg)
-
-    def add_issue(self, msg: str, severity: ValidationSeverity) -> None:
-        """Add an issue with specified severity."""
-        if severity == ValidationSeverity.error:
-            self.add_error(msg)
-        else:
-            self.add_warning(msg)
-
-    @property
-    def has_errors(self) -> bool:
-        """Check if any fatal errors occurred."""
-        return len(self.errors) > 0
-
-
-@dataclass
-class ImportResult:
-    """
-    Rich result from parsing a provider export.
-
-    Contains the parsed messages plus validation diagnostics and coverage stats.
-    """
-
-    messages: List["NormalizedMessage"]
-    validation_errors: List[str] = field(default_factory=list)
-    validation_warnings: List[str] = field(default_factory=list)
-    field_coverage: Dict[str, float] = field(default_factory=dict)
-    conversations_processed: int = 0
-    messages_processed: int = 0
-
-    @property
-    def success(self) -> bool:
-        """Check if import succeeded (no fatal errors)."""
-        return len(self.validation_errors) == 0
-
-    def merge(self, other: "ImportResult") -> "ImportResult":
-        """Merge another ImportResult into this one."""
-        self.messages.extend(other.messages)
-        self.validation_errors.extend(other.validation_errors)
-        self.validation_warnings.extend(other.validation_warnings)
-        self.conversations_processed += other.conversations_processed
-        self.messages_processed += other.messages_processed
-        # Merge field coverage (average)
-        for field_name, coverage in other.field_coverage.items():
-            if field_name in self.field_coverage:
-                # Weighted average based on message count
-                total = self.messages_processed + other.messages_processed
-                if total > 0:
-                    self.field_coverage[field_name] = (
-                        self.field_coverage[field_name] * self.messages_processed
-                        + coverage * other.messages_processed
-                    ) / total
-            else:
-                self.field_coverage[field_name] = coverage
-        return self
-
-
 # =============================================================================
 # Normalized Message Schema
 # =============================================================================
@@ -395,7 +307,6 @@ class ProviderParser(ABC):
 
     And implement:
     - parse_export() - Parse provider data into normalized messages
-    - parse_export_with_validation() - Parse with full validation (optional override)
     """
 
     # Override in subclasses
@@ -410,12 +321,6 @@ class ProviderParser(ABC):
             strict: If True, validation warnings become errors
         """
         self.strict = strict
-        # Concrete subclasses populate this with provider-specific validators;
-        # parse_export_with_validation drives them. Local import avoids the
-        # parsers.base <-> parsers.validators load-time cycle.
-        from .validators import BaseValidator
-
-        self._validators: List["BaseValidator"] = []
 
     @abstractmethod
     def parse_export(self, data: Any) -> List[NormalizedMessage]:
@@ -435,90 +340,6 @@ class ProviderParser(ABC):
         - message_order: int - Ordering within conversation
         """
         pass
-
-    def parse_export_with_validation(self, data: Any) -> ImportResult:
-        """Parse with validation using pluggable validators from validators/.
-
-        Subclasses initialize ``self._validators`` in ``__init__``; this shared
-        implementation drives them. Override only for genuinely provider-specific
-        validation flow.
-        """
-        # Local import avoids the parsers.base <-> parsers.validators import cycle
-        # (validators import NormalizedMessage from this module at module load).
-        from .validators import ValidationContext
-
-        messages = self.parse_export(data)
-
-        # Group messages by conversation
-        conversations: Dict[str, List[NormalizedMessage]] = {}
-        for msg in messages:
-            conv_id = msg.get("provider_conversation_id", "unknown")
-            if conv_id not in conversations:
-                conversations[conv_id] = []
-            conversations[conv_id].append(msg)
-
-        # Validate each conversation using new validators
-        all_errors: List[str] = []
-        all_warnings: List[str] = []
-
-        for conv_id, conv_messages in conversations.items():
-            context = ValidationContext(
-                conversation_id=conv_id,
-                source_provider=self.PROVIDER_NAME,
-                strict=self.strict,
-            )
-
-            # Sort by message_order
-            sorted_msgs = sorted(
-                conv_messages, key=lambda m: m.get("message_order") or 0
-            )
-
-            # Run each validator
-            for validator in self._validators:
-                validator.validate(sorted_msgs, context)
-
-            all_errors.extend(context.errors)
-            all_warnings.extend(context.warnings)
-
-        # Calculate field coverage
-        field_coverage = self._calculate_field_coverage(messages)
-
-        return ImportResult(
-            messages=messages,
-            validation_errors=all_errors,
-            validation_warnings=all_warnings,
-            field_coverage=field_coverage,
-            conversations_processed=len(conversations),
-            messages_processed=len(messages),
-        )
-
-    def _calculate_field_coverage(
-        self, messages: List[NormalizedMessage]
-    ) -> Dict[str, float]:
-        """Calculate the percentage of messages with each field populated."""
-        if not messages:
-            return {}
-
-        # Fields to track
-        tracked_fields = [
-            "created_at",
-            "updated_at",
-            "content_text",
-            "content_blocks",
-            "provider_parent_id",
-            "message_order",
-        ]
-
-        coverage: Dict[str, int] = {f: 0 for f in tracked_fields}
-        total = len(messages)
-
-        for msg in messages:
-            for field_name in tracked_fields:
-                value = msg.get(field_name)  # type: ignore
-                if value is not None and value != "" and value != []:
-                    coverage[field_name] += 1
-
-        return {f: count / total for f, count in coverage.items()}
 
     def apply_field_mappings(
         self, raw_data: Dict[str, Any], mappings: Optional[List[FieldMapping]] = None

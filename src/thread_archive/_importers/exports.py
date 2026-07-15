@@ -37,7 +37,7 @@ from thread_archive._thread_import.parsers.claude import ClaudeParser
 from thread_archive._thread_import.timestamps import parse_timestamp
 
 from .._store import get_session
-from ._events import assemble_events
+from ._events import assemble_events, log_parse_validation
 from ._state import (
     create_thread,
     discard_new_thread,
@@ -46,6 +46,18 @@ from ._state import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _parsed(parser, data, *, provider: str, conversation_id: str) -> list:
+    """Parse one full export conversation via its ProviderParser, log the
+    whole-conversation validation (never rejects), and return the messages for the
+    shared write path. Grok stays out — its hand-built passthrough turns aren't
+    NormalizedMessages, so the universal type checks would only cry false drift."""
+    messages = parser.parse_export(data)
+    log_parse_validation(
+        messages, provider=provider, conversation_id=conversation_id, batch_safe=False
+    )
+    return messages
 
 
 @dataclass
@@ -210,7 +222,10 @@ def import_claude_ai_export(
             "users": bundle["users"],
         }
         result = _import_one(
-            result, parser_messages=lambda s=single: parser.parse_export(s),
+            result,
+            parser_messages=lambda s=single, sid=source_id: _parsed(
+                parser, s, provider="claude", conversation_id=sid
+            ),
             source="claude", source_id=source_id, title=title,
             source_metadata={"provider": "claude", "surface": "web"},
             builder=builder, force=force, raw=conv,
@@ -267,7 +282,10 @@ def import_chatgpt_export(
         source_id = conv.get("id") or conv.get("conversation_id") or ""
         title = conv.get("title") or "Untitled"
         result = _import_one(
-            result, parser_messages=lambda c=conv: parser.parse_export([c]),
+            result,
+            parser_messages=lambda c=conv, sid=source_id: _parsed(
+                parser, [c], provider="chatgpt", conversation_id=sid
+            ),
             source="chatgpt", source_id=source_id, title=title,
             source_metadata={"provider": "chatgpt", "surface": "web"},
             builder=builder, force=force, raw=conv,
