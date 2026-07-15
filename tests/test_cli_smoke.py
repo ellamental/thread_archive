@@ -227,6 +227,83 @@ def test_daemon_backup_rejects_bad_at() -> None:
         main(["daemon", "install", "--backup", "--dest", "/d", "--at", "9pm"])
 
 
+def test_redact_cli_dispatches(monkeypatch, capsys) -> None:
+    from thread_archive import _api as api
+
+    seen = {}
+    res = {"events_redacted": 2, "thread_id": 7, "key_id": "k1",
+           "topic_quotes_scrubbed": 1, "kg_quotes_scrubbed": 0,
+           "notes": ["provider store keeps its plaintext"]}
+    monkeypatch.setattr(
+        api, "redact",
+        lambda thread_id, event_ids, **kw: seen.update(
+            thread_id=thread_id, event_ids=event_ids, **kw) or res,
+    )
+    rc = main(["redact", "7", "--events", "3,5", "--reason", "pii", "--home", "/h"])
+    assert rc == 0
+    assert seen == {"thread_id": 7, "event_ids": [3, 5], "reason": "pii", "home": "/h"}
+    out = capsys.readouterr().out
+    assert "redacted 2 event(s) in thread 7 under key k1" in out
+    assert "scrubbed 1 topic quote(s)" in out
+    assert "note: provider store keeps its plaintext" in out
+    assert "unredact k1" in out
+
+
+def test_redact_cli_without_thread_prints_usage() -> None:
+    assert main(["redact"]) == 2
+
+
+def test_redact_list_dispatches(monkeypatch, capsys) -> None:
+    from thread_archive import _api as api
+
+    monkeypatch.setattr(api, "redactions", lambda **kw: [])
+    assert main(["redact", "--list"]) == 0
+    assert "no redactions" in capsys.readouterr().out
+
+    row = {"key_id": "k1", "thread_id": 7, "event_ids": [3, 5], "status": "redacted",
+           "key": "held", "redacted_at": "2026-07-15T00:00:00Z", "reason": "pii"}
+    monkeypatch.setattr(api, "redactions", lambda **kw: [row])
+    assert main(["redact", "--list"]) == 0
+    out = capsys.readouterr().out
+    assert "k1  thread 7  2 event(s)" in out and "reason: pii" in out
+
+
+def test_redact_key_lifecycle_dispatches(monkeypatch, capsys) -> None:
+    """--show-key / --forget / --restore-key each map onto their api function;
+    --forget without --yes refuses, since an unescrowed key is the content."""
+    from thread_archive import _api as api
+
+    seen = {}
+    monkeypatch.setattr(api, "redact_show_key", lambda kid, **kw: seen.update(show=kid) or "b64==")
+    assert main(["redact", "--show-key", "k1"]) == 0
+    assert seen["show"] == "k1" and "b64==" in capsys.readouterr().out
+
+    assert main(["redact", "--forget", "k1"]) == 2
+    assert "refusing" in capsys.readouterr().out
+
+    monkeypatch.setattr(api, "redact_forget_key", lambda kid, **kw: seen.update(forget=kid))
+    assert main(["redact", "--forget", "k1", "--yes"]) == 0
+    assert seen["forget"] == "k1"
+
+    monkeypatch.setattr(
+        api, "redact_restore_key", lambda kid, key, **kw: seen.update(restore=(kid, key))
+    )
+    assert main(["redact", "--restore-key", "k1", "b64=="]) == 0
+    assert seen["restore"] == ("k1", "b64==")
+
+
+def test_unredact_cli_dispatches(monkeypatch, capsys) -> None:
+    from thread_archive import _api as api
+
+    seen = {}
+    res = {"events_restored": 2, "thread_id": 7, "notes": []}
+    monkeypatch.setattr(api, "unredact", lambda kid, **kw: seen.update(kid=kid, **kw) or res)
+    rc = main(["unredact", "k1", "--home", "/h"])
+    assert rc == 0
+    assert seen == {"kid": "k1", "home": "/h"}
+    assert "restored 2 event(s) in thread 7" in capsys.readouterr().out
+
+
 def test_import_rejects_unknown_provider() -> None:
     with pytest.raises(SystemExit):
         main(["import", "/nonexistent", "--provider", "not-a-provider"])
