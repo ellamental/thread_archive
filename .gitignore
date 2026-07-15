@@ -34,6 +34,11 @@ __pycache__/
 # Private even after obfuscation — never commit it.
 tests/install/fixtures-real/
 
+# Live-repair undo records: real transcript/tool payloads from this host's
+# archive. Operator data, never repository content — tracking one publishes
+# private conversations. tests/meta/test_package_tree.py gates this in CI.
+/host/repair-dumps/
+
 # coverage data (pytest --cov; the CI pytest row reports coverage per run,
 # and writes coverage.json for the coverage-gate row)
 /.coverage
