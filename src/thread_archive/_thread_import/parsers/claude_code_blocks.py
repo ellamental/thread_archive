@@ -123,11 +123,11 @@ def user_content_blocks_from_list(
 def parse_xml_function_calls(
     raw_content: str, seq: int
 ) -> Tuple[List[Dict[str, Any]], List[str], int]:
-    """Parse old-format <function_calls> XML from string content.
+    """Parse <function_calls> XML from string content.
 
-    Old Claude Code sessions (pre-2026) stored tool calls as XML text
-    within the assistant response string. This splits the string into
-    interleaved text and tool_use content blocks.
+    Some Claude Code sessions encode tool calls as XML text within the
+    assistant response string. This splits the string into interleaved
+    text and tool_use content blocks.
 
     Returns:
         (content_blocks, content_text_parts, updated_seq)
@@ -232,7 +232,7 @@ def assistant_content(
     """Build (content_blocks, content_text_parts) for an assistant message.
 
     Handles both the list-of-blocks shape (thinking/text/tool_use/unknown)
-    and the legacy string shape (plain or old-format <function_calls> XML).
+    and the string shape (plain text or inline <function_calls> XML).
     """
     content_blocks: List[ContentBlock] = []
     content_text_parts: List[str] = []

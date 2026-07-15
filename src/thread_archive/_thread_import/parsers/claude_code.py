@@ -122,7 +122,7 @@ class ClaudeCodeParser(ProviderParser):
 
     PROVIDER_NAME = "claude-code"
 
-    # Provider configuration (replaces centralized PROVIDER_EXPECTATIONS)
+    # Provider-specific configuration (thinking/validation expectations)
     PROVIDER_CONFIG: ProviderConfig = CLAUDE_CODE_CONFIG
 
     def __init__(self, strict: bool = False):

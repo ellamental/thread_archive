@@ -79,8 +79,7 @@ class ThreadEvent:
 
     # Deterministic natural-key identity (timestamp-free, content-inclusive),
     # set by build_events. Bare (not thread-id-prefixed) — dedup is thread-scoped
-    # by the importer's WHERE clause. Observe-only until the dedup constraint
-    # lands; see compute_dedup_key.
+    # by the importer's WHERE clause. See compute_dedup_key.
     dedup_key: Optional[str] = None
 
     # Metadata for tracking
@@ -182,8 +181,8 @@ class DefaultEventBuilder:
         if prev_occurred_at is not None:
             # Inherit the prior turn's time — monotonic, not invented.
             return prev_occurred_at, "inferred_prev_turn"
-        # No timestamp anywhere. Flag it loudly so it's queryable; the planned
-        # escalation is an importer-level hard-fail/notify (Decision 2).
+        # No timestamp anywhere. Fabricate one and flag it loudly via the reason
+        # string so a timestamp-less message stays queryable rather than silently ordered.
         return datetime.now(timezone.utc), "fabricated_no_source"
 
     # Text-only content from tool loading confirmations (not real user messages)

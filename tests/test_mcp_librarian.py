@@ -64,6 +64,9 @@ def test_librarian_error_contract_is_a_string_not_a_raise(archive_home) -> None:
     assert L.topic_rename(99_999_999, "x").startswith("Error:")
     assert L.topic_archive(99_999_999).startswith("Error:")
     assert L.topic_merge(topic, 99_999_999).startswith("Error:")
+    # Link/cite validate their endpoints and must honor the same string contract.
+    assert L.topic_link(99_999_999, 88_888_888).startswith("Error:")  # endpoints must exist
+    assert L.topic_cite(topic, 99_999_999, 88_888_888, "q").startswith("Error:")  # event must exist
 
 
 def test_librarian_rename_and_archive(archive_home) -> None:

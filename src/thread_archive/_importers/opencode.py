@@ -189,9 +189,9 @@ def _run_opencode(session, session_id, session_data, messages, parts_by_message)
     base_ts = _parse_opencode_timestamp(session_data.get("time_created")) or datetime.now(timezone.utc)
     normalized = [_opencode_to_normalized(m) for m in new_messages]
     # cross_pass_dedup: see cursor.py — a full re-scan must not re-stack duplicate
-    # events against NULL-dedup_key backfill rows (the Postgres-seeded March 2026
-    # backfill). The message-level content+timestamp check skips already-present
-    # turns regardless of dedup_key.
+    # events against rows with a NULL dedup_key (a bulk-seeded row can carry one).
+    # The message-level content+timestamp check skips already-present turns
+    # regardless of dedup_key.
     events_created, _ = assemble_events(
         session, thread_id, normalized, DefaultEventBuilder(),
         base_prev_ts=base_ts, cross_pass_dedup=True,

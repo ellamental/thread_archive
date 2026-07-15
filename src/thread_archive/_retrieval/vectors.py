@@ -199,8 +199,9 @@ def index_events_local(
     pools), one vector per :data:`CHUNK_CHARS` chunk (long docs get several).
 
     ``rebuild=False`` only embeds docs with fewer vectors than their content needs
-    (anti-join on the chunk count — safe to re-run, and it picks up formerly
-    truncation-embedded long docs as pending). ``max_events`` caps how many *docs*
+    (anti-join on the chunk count — safe to re-run, and it picks up under-embedded
+    long docs, those with fewer vectors than their content needs, as pending).
+    ``max_events`` caps how many *docs*
     a single call embeds — the live cohost bounds each pass so a backlog drains
     over cycles without stalling ingest; ``newest_first`` drains the freshest gap
     first, which is what keeps recent-thread *semantic* recall current (the lexical

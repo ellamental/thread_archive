@@ -13,17 +13,17 @@ The production ranker. The federation produces a pool; this turns it into an ord
      where the bi-encoder ranks the target mid-list. Keyword shapes (OR / quoted /
      identifier-dominated / single-term) the lexical arm already nails are skipped.
 
-The weights are the production values, with their evidence: recency 1.0 (the first
-call made on production click data — the corpus skews to OLD threads, so a recency
-boost buries what users actually read), fusion 50.0 (the MRR optimum once the vector
-arm joined), content-type from ``_CONTENT_TYPE_WEIGHT`` (user > text > tool_result …).
+The weights are the production values, with their rationale: recency 1.0 (the
+corpus skews to OLD threads, so a strong recency boost buries what users actually
+read), fusion 50.0 (the MRR optimum for the fused lexical+vector ranking),
+content-type from ``_CONTENT_TYPE_WEIGHT`` (user > text > tool_result …).
 """
 
 from __future__ import annotations
 
 import math
 import re
-from datetime import datetime
+from datetime import datetime, timezone
 
 from ._types import EventHit
 
@@ -48,9 +48,8 @@ _CONTENT_TYPE_WEIGHT = {
 # vocab-mismatch hit the vector arm surfaced would sink regardless of its rank.
 _SEARCH_FUSION_WEIGHT = 50.0
 
-# Recency weight — dropped 10.0→1.0 on production click data (the first decision
-# made on real searches-that-led-to-reads). The corpus skews to OLD threads; a
-# recency boost buries what users actually read. 1.0 keeps a mild recent tiebreaker.
+# Recency weight 1.0 — the corpus skews to OLD threads, so a strong recency boost
+# buries what users actually read; 1.0 keeps a mild recent tiebreaker.
 _SEARCH_RECENCY_WEIGHT = 1.0
 
 # Cross-encoder re-rank pool — how many ranked candidates to feed the reranker
@@ -78,7 +77,10 @@ def recency_score(occurred_at, now: datetime | None = None) -> int:
     if dt is None:
         return 0
     if now is None:
-        now = datetime.now()
+        # occurred_at is stored and parsed as naive-UTC (see _parse_naive_dt), so
+        # the clock we diff against must be naive-UTC too — a naive-local now() would
+        # skew every event's age by the local UTC offset.
+        now = datetime.now(timezone.utc).replace(tzinfo=None)
     age_hours = max(0, (now - dt).total_seconds() / 3600)
     return max(1, int(20 * math.exp(-age_hours / 72)))
 
@@ -193,7 +195,7 @@ def rank_search_results(
     """Re-rank ``results`` by term density, phrase proximity, recency, content-type,
     and cross-backend fusion (``_rrf``). The production scorer — see the module
     docstring for the weight evidence. Returns the top ``limit``."""
-    now = now or datetime.now()
+    now = now or datetime.now(timezone.utc).replace(tzinfo=None)  # naive-UTC, matching occurred_at
     ct_weights = content_type_weights if content_type_weights is not None else _CONTENT_TYPE_WEIGHT
     term_patterns = {t: re.compile(r"\b" + re.escape(t) + r"\b") for t in terms if len(t) < 4}
 

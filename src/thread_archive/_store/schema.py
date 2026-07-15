@@ -55,7 +55,17 @@ def _add_missing_columns(engine: Engine) -> None:
             for column, decl in columns.items():
                 if column in have:
                     continue
-                conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {column} {decl}"))
+                try:
+                    conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {column} {decl}"))
+                except OperationalError as exc:
+                    # The daemon and MCP server open the store concurrently at start,
+                    # so another process can win the ADD between our PRAGMA read and
+                    # this ALTER — the column now exists, the same idempotent outcome
+                    # this function targets, so absorb the race (mirroring init_db's
+                    # "already exists" handling). Any other OperationalError is real.
+                    if "duplicate column name" not in str(exc).lower():
+                        raise
+                    continue
                 logger.info("schema: added %s.%s (%s)", table, column, decl)
 
 
@@ -69,7 +79,8 @@ _init_lock = threading.Lock()
 def init_db(engine: Engine | None = None) -> None:
     """Create all base tables on ``engine`` (or the active engine), then ALTER in any
     column a pre-existing index predates. Idempotent and safe under concurrent
-    first-open: a lost CREATE race is retried, not raised."""
+    first-open: a lost CREATE race is retried and a lost ADD-COLUMN race is
+    absorbed, not raised."""
     engine = engine or get_engine()
     with _init_lock:
         for attempt in (1, 2, 3):

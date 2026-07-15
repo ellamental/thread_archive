@@ -170,7 +170,7 @@ class ChatGPTParser(ProviderParser):
 
     PROVIDER_NAME = "chatgpt"
 
-    # Provider configuration (replaces centralized PROVIDER_EXPECTATIONS)
+    # Provider-specific configuration (thinking/validation expectations)
     PROVIDER_CONFIG: ProviderConfig = CHATGPT_CONFIG
 
     # Explicit field mappings with semantic documentation

@@ -144,7 +144,7 @@ class CursorParser(ProviderParser):
 
     PROVIDER_NAME = "cursor"
 
-    # Provider configuration (replaces centralized PROVIDER_EXPECTATIONS)
+    # Provider-specific configuration (thinking/validation expectations)
     PROVIDER_CONFIG: ProviderConfig = CURSOR_CONFIG
 
     # Explicit field mappings with semantic documentation

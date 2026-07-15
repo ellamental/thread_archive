@@ -31,9 +31,9 @@ _CROSS_THREAD: dict[str, type] = {"thread_links": ThreadLink, "topic_messages": 
 
 # The curatorial event log (see KgEvent): an append-only file of every topic/link/
 # evidence mutation. It is the *source of truth* for the knowledge layer — the
-# thread_links / topic_messages projections are folded from it on reindex. Any
-# legacy _CROSS_THREAD snapshot is treated as a reindex seed the replay reconciles
-# on top (upsert + tombstone), so the two coexist during the snapshot→log transition.
+# thread_links / topic_messages projections are folded from it on reindex. A
+# _CROSS_THREAD snapshot, if present, is treated as a reindex seed the replay
+# reconciles on top (upsert + tombstone).
 KG_EVENTS_FILE = "kg_events.jsonl"
 
 # Flat until a directory would exceed this many files, then shard by id buckets.
@@ -272,17 +272,36 @@ def _datetime_cols(model: type) -> set[str]:
     return {c.key for c in model.__table__.columns if isinstance(c.type, DateTime)}  # type: ignore[attr-defined]
 
 
+_EPOCH = datetime(1970, 1, 1, tzinfo=timezone.utc)
+
+
 def _coerce(model: type, row: dict) -> dict:
     """Reverse :func:`_json_default` for reload: ISO strings → datetime so the
     SQLite DateTime columns round-trip as the live writer wrote them. Keys not
     mapped on the model are dropped, so a truth log written under an older schema
-    (columns since removed) still reloads cleanly into the current projection."""
-    valid = {c.key for c in model.__table__.columns}
+    (columns since removed) still reloads cleanly into the current projection.
+
+    A rotted datetime value (bit-flip at rest, a truncated write that still parsed
+    as JSON) must not abort the whole reindex — the recovery primitive has to keep
+    every parseable record, matching :func:`_iter_jsonl`'s tolerance of torn lines.
+    An unparseable value is logged and replaced: NULL where the column allows it,
+    the Unix epoch where it doesn't (a recognizable sentinel that satisfies NOT
+    NULL and sorts the salvaged record to the far past rather than dropping it)."""
+    columns = model.__table__.columns
+    valid = {c.key for c in columns}
     row = {k: v for k, v in row.items() if k in valid}
     for key in _datetime_cols(model):
         val = row.get(key)
         if isinstance(val, str):
-            row[key] = datetime.fromisoformat(val)
+            try:
+                row[key] = datetime.fromisoformat(val)
+            except ValueError:
+                fallback = None if columns[key].nullable else _EPOCH
+                logger.warning(
+                    "truth: unparseable datetime %s.%s=%r — substituting %s",
+                    model.__name__, key, val, "null" if fallback is None else "epoch",
+                )
+                row[key] = fallback
     return row
 
 

@@ -169,6 +169,12 @@ def thread_search(
     extra is installed).
     """
     _maybe_catch_up()
+    # Bound caller-supplied sizing before it reaches the engine: limit drives a
+    # candidate pool of max(limit*5, 200) rows, so an unclamped value forces a
+    # multi-million-row FTS scan. The web layer clamps to the same [1, 500] for
+    # exactly this reason; context_lines is a per-hit window, bounded likewise.
+    limit = max(1, min(int(limit), 500))
+    context_lines = max(0, min(int(context_lines), 50))
     # Default scope is user messages only; an explicit type targets it, and
     # content_type='all' clears the filter to search everything (see the constant).
     if content_type == "all":

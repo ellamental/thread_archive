@@ -10,7 +10,7 @@ Also provides explicit field mapping infrastructure for semantic correctness:
 - ValidationContext: Tracks validation state across conversation import
 - ImportResult: Rich result with messages, errors, warnings, and coverage stats
 
-Validation is now handled by pluggable validators in validators/.
+Validation is handled by pluggable validators in validators/.
 """
 
 import hashlib
@@ -24,7 +24,6 @@ from typing import Any, Callable, Dict, List, Literal, Optional, TypedDict, Unio
 # =============================================================================
 # Content Block Schema Version
 # =============================================================================
-# See apps/chat_import/migrations/content_blocks.py for migration logic
 CURRENT_CONTENT_BLOCKS_VERSION = 1
 
 

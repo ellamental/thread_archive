@@ -249,8 +249,8 @@ def search_events(
     # those can't displace anything the scan is worth seconds for.
     passes: list[_Pass] = []
     if startswith is not None:
-        # Structural prefix scan — wildcards in the prefix are escaped so it matches
-        # a literal prefix (the reference left them unescaped; this hardens it).
+        # Structural prefix scan — wildcards in the prefix are escaped (ESCAPE '\')
+        # so a % or _ in user input matches literally rather than as a LIKE wildcard.
         passes.append(_Pass("content LIKE :sw ESCAPE '\\'", {"sw": _like_prefix(startswith)},
                             order="occurred_at DESC", use_match=False))
     elif mode == "or":

@@ -219,6 +219,10 @@ def verify(
                 "AND NOT EXISTS(SELECT 1 FROM events e WHERE e.id = f.event_id)",
                 (watermark,),
             ).fetchone()[0]
+    # A populated index with no search surface at all is silently unsearchable —
+    # the parity check above only fires when the tables exist, so this is the
+    # separate signal that the whole FTS layer is gone (a reindex rebuilds it).
+    fts_missing = bool(watermark) and not has_fts
     # Declared-schema parity (cheap PRAGMA introspection): a live index that
     # predates a model change runs under-enforced until a reindex — that gap
     # must be seen on the daily cadence, not discovered from its consequences.
@@ -238,6 +242,8 @@ def verify(
         failed.append("integrity_check" if hashes else "quick_check")
     if fts_shadow != fts5 or fts_orphans:
         failed.append("fts_parity")
+    if fts_missing:
+        failed.append("fts_missing")
     if not schema["ok"]:
         failed.append("schema")
     result = {
@@ -256,6 +262,7 @@ def verify(
             "shadow_rows": int(fts_shadow),
             "fts5_rows": int(fts5),
             "orphan_rows": int(fts_orphans),
+            "missing": fts_missing,
         },
     }
     if deep:

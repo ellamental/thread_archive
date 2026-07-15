@@ -213,11 +213,11 @@ def _run_cursor(session, composer_id, composer_data, bubbles) -> CursorImportRes
 
     normalized = [_cursor_to_normalized(m) for m in new_messages]
     # cross_pass_dedup: a full re-scan of an already-imported composer (import_state
-    # reset, or a manual migration re-run) must be a no-op even against rows the
-    # dedup_key can't see — e.g. the March 2026 backfill seeded from Postgres carries
-    # NULL dedup_key, so a re-import stacked duplicate events. The message-level
-    # (content + timestamp) existence check skips any turn already present regardless
-    # of dedup_key, mirroring the claude-code continuation guard.
+    # reset, or a manual re-run) must be a no-op even against rows the dedup_key
+    # can't see — a bulk-seeded row can carry a NULL dedup_key, so keying only on it
+    # would let a re-import stack duplicate events. The message-level (content +
+    # timestamp) existence check skips any turn already present regardless of
+    # dedup_key, mirroring the claude-code continuation guard.
     events_created, _ = assemble_events(
         session, thread_id, normalized, DefaultEventBuilder(), cross_pass_dedup=True
     )

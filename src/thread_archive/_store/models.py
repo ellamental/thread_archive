@@ -179,9 +179,9 @@ class Event(Base):
             sqlite_where=text("dedup_key IS NOT NULL"),
             postgresql_where=text("(dedup_key IS NOT NULL)"),
         ),
-        # Persistent id high-water across DELETE — see the Thread note. This is the
-        # column that bit us: the live watcher mints event ids on insert, so a reindex
-        # running against a live watcher must not be able to recycle a historical id.
+        # Persistent id high-water across DELETE — see the Thread note. The live
+        # watcher mints event ids on insert, so a reindex running against a live
+        # watcher must not be able to recycle a historical id.
         {"sqlite_autoincrement": True},
     )
 
@@ -363,8 +363,8 @@ class KgEvent(Base):
         Index("idx_kg_events_actor_thread", "actor_thread_id"),
         Index("idx_kg_events_correlation", "correlation_id", postgresql_where=text("(correlation_id IS NOT NULL)")),
         # Persistent id high-water across DELETE — see the Thread note. The librarian
-        # mints kg-event ids on insert; without this, a reindex that emptied the table
-        # let the next curation write restart ids from 1 and collide (the kg_events
-        # id=1 dup that aborted reindex).
+        # mints kg-event ids on insert; without this, a reindex that empties the table
+        # would let the next curation write restart ids from 1 and collide with a
+        # historical id.
         {"sqlite_autoincrement": True},
     )

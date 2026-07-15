@@ -117,8 +117,11 @@ def topic_link(
     """Link two threads/topics (idempotent on source+target+link_type). ``link_type`` is
     e.g. related / implements / example-of / contrast / supersedes / works_on."""
     api.open_archive()
-    return _dump(_write.link_threads(
-        source_id, target_id, link_type, strength=strength, evidence=evidence))
+    try:
+        return _dump(_write.link_threads(
+            source_id, target_id, link_type, strength=strength, evidence=evidence))
+    except ValueError as e:
+        return f"Error: {e}"
 
 
 @mcp.tool()
@@ -133,7 +136,10 @@ def topic_cite(topic_id: int, event_id: int, thread_id: int, quote: str) -> str:
     """Cite a conversation message (``event_id`` in ``thread_id``) as evidence for a
     topic. Idempotent on (topic_id, event_id)."""
     api.open_archive()
-    return _dump(_write.add_topic_evidence(topic_id, event_id, thread_id, quote))
+    try:
+        return _dump(_write.add_topic_evidence(topic_id, event_id, thread_id, quote))
+    except ValueError as e:
+        return f"Error: {e}"
 
 
 @mcp.tool()

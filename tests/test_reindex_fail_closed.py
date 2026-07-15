@@ -67,6 +67,38 @@ def test_reindex_tolerates_torn_final_line(archive_home, tmp_path):
     assert event_count() == before
 
 
+def test_reindex_tolerates_corrupt_datetime_value(archive_home, tmp_path):
+    # A truth line that is valid JSON but carries a rotted datetime (bit-flip at
+    # rest, a truncated write that still parsed) must not abort the whole reindex —
+    # the recovery primitive keeps every parseable record. The salvaged event loads
+    # with a sentinel (epoch) timestamp on the NOT NULL column, not dropped, and it
+    # is not a parse error (the JSON parsed cleanly).
+    import_cc_session(tmp_path)
+    before = event_count()
+
+    tf = one_thread_file(archive_home)
+    lines = tf.read_text(encoding="utf-8").splitlines()
+    corrupted_id = None
+    for i, line in enumerate(lines):
+        rec = json.loads(line)
+        if rec.get("type") == "event":
+            rec["occurred_at"] = "not-a-real-timestamp"
+            corrupted_id = rec["id"]
+            lines[i] = json.dumps(rec)
+            break
+    assert corrupted_id is not None
+    tf.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    jsonl_log.reset_handles()
+
+    counts = ta.reindex()  # must not raise, and must not drop the event
+    assert counts["parse_errors_interior"] == 0
+    assert event_count() == before
+    with get_session() as s:
+        occurred = s.execute(text(
+            "SELECT occurred_at FROM events WHERE id = :i"), {"i": corrupted_id}).scalar()
+    assert str(occurred).startswith("1970-01-01")  # epoch sentinel for the rotted value
+
+
 # ── citation survives dedup collapse ──────────────────────────────────────────
 def test_reindex_repoints_citation_to_surviving_twin(archive_home, tmp_path):
     import_cc_session(tmp_path)

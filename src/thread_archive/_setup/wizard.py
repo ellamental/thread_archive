@@ -379,7 +379,7 @@ def _watcher_running(home: Optional[str] = None) -> bool:
     except OSError:  # pragma: no cover — launchctl missing
         return False
     try:
-        plist = plistlib.loads(_launchd._plist_path().read_bytes())
+        plist = plistlib.loads(_launchd._plist_path(_launchd.WATCHER_LABEL).read_bytes())
         agent_home = plist.get("EnvironmentVariables", {}).get("THREAD_ARCHIVE_HOME")
     except (OSError, plistlib.InvalidFileException):
         return True  # loaded, plist unreadable — assume the default wiring

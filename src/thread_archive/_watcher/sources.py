@@ -242,12 +242,12 @@ def antigravity_watcher(brain_dir: Optional[Path] = None) -> _RglobWatcher:
 
 def cloth_watcher(threads_dir: Optional[Path] = None) -> _RglobWatcher:
     # cloth writes Claude-Code-shaped JSONL to ~/.thread/cloth/threads/<stem>.jsonl — one file
-    # per CLI session, ``source_id = "<stem>"``. Modern cloth names files by session
-    # uuid (already globally unique), so the source_id is the bare stem — no prefix.
-    # (Legacy numeric stems like ``1``/``22`` land bare too; they namespace under
+    # per CLI session, ``source_id = "<stem>"``. cloth names files by session uuid
+    # (already globally unique), so the source_id is the bare stem — no prefix.
+    # (Bare numeric stems like ``1``/``22`` land bare too; they namespace under
     # source='cloth' for import, and only collide with an integer thread PK on *read*,
-    # which is an accepted tradeoff for the near-dead numeric era.) CLOTH_HOME relocates
-    # the store. This is the sole live cloth store the standalone archive ingests.
+    # an accepted tradeoff.) CLOTH_HOME relocates the store. This is the sole live
+    # cloth store the standalone archive ingests.
     import os
 
     root = threads_dir or (Path(os.environ.get("CLOTH_HOME") or Path.home() / ".thread" / "cloth").expanduser() / "threads")

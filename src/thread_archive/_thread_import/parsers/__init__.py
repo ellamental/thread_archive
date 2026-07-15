@@ -56,7 +56,7 @@ from .base import (
     ValidationSeverity,
 )
 
-# Existing parsers (legacy interface, still functional)
+# Provider parsers (ProviderParser subclasses, one per provider)
 from .chatgpt import ChatGPTParser
 from .claude import ClaudeParser
 from .claude_code import ClaudeCodeParser

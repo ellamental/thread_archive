@@ -133,7 +133,7 @@ class ClaudeParser(ProviderParser):
 
     PROVIDER_NAME = "claude"
 
-    # Provider configuration (replaces centralized PROVIDER_EXPECTATIONS)
+    # Provider-specific configuration (thinking/validation expectations)
     PROVIDER_CONFIG: ProviderConfig = CLAUDE_CONFIG
 
     # Explicit field mappings with semantic documentation
