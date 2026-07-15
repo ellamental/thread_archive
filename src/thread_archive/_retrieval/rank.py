@@ -25,6 +25,8 @@ import math
 import re
 from datetime import datetime
 
+from ._types import EventHit
+
 # Per-content-type relevance multiplier — user messages are the most intentional,
 # tool/thinking the noisiest. Thread-meta docs (title/summary) rank like the
 # intentional kinds they distill: a title is aboutness itself, a summary is the
@@ -158,7 +160,7 @@ def match_window(content: str, terms: list[str], chars: int) -> str:
     return content[start:start + chars]
 
 
-def dedup_results(results: list[dict]) -> list[dict]:
+def dedup_results(results: list[EventHit]) -> list[EventHit]:
     """Collapse byte-identical hits before ranking. The same logical message can
     land as two events (streaming re-emits a text block), which the
     (event_id, content_type) federation dedup misses. Key on (thread_id, content)
@@ -166,7 +168,7 @@ def dedup_results(results: list[dict]) -> list[dict]:
     if len(results) <= 1:
         return results
     seen: set[tuple] = set()
-    out: list[dict] = []
+    out: list[EventHit] = []
     for r in results:
         key = (r.get("thread_id"), (r.get("full_content") or r.get("snippet") or "").strip())
         if key in seen:
@@ -177,7 +179,7 @@ def dedup_results(results: list[dict]) -> list[dict]:
 
 
 def rank_search_results(
-    results: list[dict],
+    results: list[EventHit],
     terms: list[str],
     limit: int,
     *,
@@ -187,7 +189,7 @@ def rank_search_results(
     fusion_weight: float = _SEARCH_FUSION_WEIGHT,
     content_type_weights: dict[str, float] | None = None,
     now: datetime | None = None,
-) -> list[dict]:
+) -> list[EventHit]:
     """Re-rank ``results`` by term density, phrase proximity, recency, content-type,
     and cross-backend fusion (``_rrf``). The production scorer — see the module
     docstring for the weight evidence. Returns the top ``limit``."""
@@ -195,7 +197,7 @@ def rank_search_results(
     ct_weights = content_type_weights if content_type_weights is not None else _CONTENT_TYPE_WEIGHT
     term_patterns = {t: re.compile(r"\b" + re.escape(t) + r"\b") for t in terms if len(t) < 4}
 
-    def combined_score(result: dict) -> float:
+    def combined_score(result: EventHit) -> float:
         content = (result.get("full_content", "") or "").lower()
         content_len = max(len(content), 1)
         term_count = sum(
@@ -219,7 +221,7 @@ def rank_search_results(
                         phrase_bonus = 1.0
 
         recency = recency_score(result.get("occurred_at", ""), now)
-        ct_weight = ct_weights.get(result.get("content_type", "text"), 1.0)
+        ct_weight = ct_weights.get(result.get("content_type") or "", 1.0)
         rrf = result.get("_rrf", 0.0) or 0.0
         return (density * density_weight + phrase_bonus * phrase_weight
                 + recency * recency_weight + rrf * fusion_weight) * ct_weight

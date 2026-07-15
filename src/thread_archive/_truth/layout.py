@@ -9,6 +9,7 @@ overview: :mod:`.jsonl_log`.
 
 from __future__ import annotations
 
+import copy
 import fcntl
 import json
 import logging
@@ -87,6 +88,25 @@ def _manifest_path(d: Path) -> Path:
     return d / "manifest.json"
 
 
+# Parsed-manifest cache, keyed by the file's exact identity (path, mtime_ns,
+# inode, size). The drain reads the shard depth on every commit batch, so the
+# manifest would otherwise be opened and JSON-parsed a few times a second under
+# live ingest. _write_manifest publishes by os.replace (new inode, new mtime),
+# so any write — this process's or another's — changes the key and forces a
+# re-read; the no-manifest / corrupt-manifest paths are never cached (their
+# result depends on directory layout, not on a file this key can witness).
+# Unsynchronized on purpose: a racing refresh just parses twice.
+_manifest_cache: tuple[tuple[str, int, int, int], dict] | None = None
+
+
+def _manifest_stat_key(p: Path) -> tuple[str, int, int, int] | None:
+    try:
+        st = p.stat()
+    except OSError:
+        return None
+    return (str(p), st.st_mtime_ns, st.st_ino, st.st_size)
+
+
 def _infer_shard_depth(d: Path) -> int:
     """Infer the shard depth from the directory shape — the fallback when the
     manifest is unreadable. A sharded layout is unmistakable: ``threads/`` contains
@@ -117,7 +137,11 @@ def _infer_shard_depth(d: Path) -> int:
 
 
 def _read_manifest(d: Path) -> dict:
+    global _manifest_cache
     p = _manifest_path(d)
+    key = _manifest_stat_key(p)
+    if key is not None and _manifest_cache is not None and _manifest_cache[0] == key:
+        return copy.deepcopy(_manifest_cache[1])
     if p.exists():
         try:
             m = json.loads(p.read_text(encoding="utf-8"))
@@ -136,6 +160,8 @@ def _read_manifest(d: Path) -> dict:
                     f"code reads version {TRUTH_FORMAT_VERSION}. Upgrade thread-archive "
                     "to a release that supports it."
                 )
+            if key is not None:
+                _manifest_cache = (key, copy.deepcopy(m))
             return m
     depth = _infer_shard_depth(d)
     if depth:

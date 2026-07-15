@@ -14,6 +14,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Optional
 
@@ -25,6 +26,7 @@ from sqlalchemy.orm import Session
 from .._store import Event, EventFts, use_session
 from ._classify import canonical_time_bound, classify_query
 from ._extract import INDEXABLE_EVENT_TYPES, extract_fts_content
+from ._types import EventHit
 
 logger = logging.getLogger(__name__)
 
@@ -57,7 +59,7 @@ def build_event_hit(
     snippet: str,
     full_content: str,
     occurred_at: Optional[str],
-) -> dict:
+) -> EventHit:
     """One event search hit in the canonical shape. ``thread_title`` is enriched
     by the caller. ``occurred_at`` is the stored column text (canonical naive
     form); it parses to a naive datetime — a stray offset-carrying value is
@@ -175,6 +177,21 @@ def _quote_phrase(text_: str) -> str:
     return '"' + text_.replace('"', "") + '"'
 
 
+@dataclass(frozen=True)
+class _Pass:
+    """One candidate-gathering pass of :func:`search_events`: a WHERE fragment
+    plus its bound params, the ORDER BY, whether the fragment is an FTS5 MATCH
+    (drives the snippet expression and the fts5-syntax-error retry), and whether
+    the pass is a fallback — a substring LIKE full-table scan that only runs when
+    the passes before it left the candidate pool short."""
+
+    where: str
+    params: dict = field(default_factory=dict)
+    order: str = _RANK_EXPR
+    use_match: bool = True
+    is_fallback: bool = False
+
+
 def search_events(
     query: str,
     thread_id: Optional[int] = None,
@@ -190,7 +207,7 @@ def search_events(
     oldest_first: bool = False,
     or_fallback: bool = True,
     session: Optional[Session] = None,
-) -> list[dict]:
+) -> list[EventHit]:
     """Lexical search over the FTS5 index → canonical event-hit dicts.
 
     Query mode (shared classifier): natural-language / boolean / quoted-phrase
@@ -230,32 +247,33 @@ def search_events(
     # left the candidate pool short: it exists to catch within-token substrings
     # MATCH can't see, and when the exact-token phrase already fills the pool
     # those can't displace anything the scan is worth seconds for.
-    passes: list[tuple[str, dict, str, bool, bool]] = []
+    passes: list[_Pass] = []
     if startswith is not None:
         # Structural prefix scan — wildcards in the prefix are escaped so it matches
         # a literal prefix (the reference left them unescaped; this hardens it).
-        passes.append(("content LIKE :sw ESCAPE '\\'", {"sw": _like_prefix(startswith)},
-                       "occurred_at DESC", False, False))
+        passes.append(_Pass("content LIKE :sw ESCAPE '\\'", {"sw": _like_prefix(startswith)},
+                            order="occurred_at DESC", use_match=False))
     elif mode == "or":
         terms = [_clean_query_text(t) for t in (query or "").split("|")]
         terms = [t for t in terms if t]
         if not terms:
             return []
         match_q = " OR ".join(_quote_phrase(t) for t in terms)
-        passes.append(("event_search MATCH :q", {"q": match_q}, _RANK_EXPR, True, False))
+        passes.append(_Pass("event_search MATCH :q", {"q": match_q}))
         like_params: dict = {}
         ors = []
         for i, term in enumerate(terms):
             like_params["or" + str(i)] = _like_substring(term)
             ors.append("content LIKE :or" + str(i) + " ESCAPE '\\'")
-        passes.append(("(" + " OR ".join(ors) + ")", like_params, "occurred_at DESC", False, True))
+        passes.append(_Pass("(" + " OR ".join(ors) + ")", like_params,
+                            order="occurred_at DESC", use_match=False, is_fallback=True))
     elif mode == "code":
         clean = _clean_query_text(query)
-        passes.append(("event_search MATCH :q", {"q": _quote_phrase(clean)}, _RANK_EXPR, True, False))
-        passes.append(("content LIKE :codepat ESCAPE '\\'", {"codepat": _like_substring(clean)},
-                       "occurred_at DESC", False, True))
+        passes.append(_Pass("event_search MATCH :q", {"q": _quote_phrase(clean)}))
+        passes.append(_Pass("content LIKE :codepat ESCAPE '\\'", {"codepat": _like_substring(clean)},
+                            order="occurred_at DESC", use_match=False, is_fallback=True))
     else:
-        passes.append(("event_search MATCH :q", {"q": _to_match_query(query)}, _RANK_EXPR, True, False))
+        passes.append(_Pass("event_search MATCH :q", {"q": _to_match_query(query)}))
 
     shared: list[str] = []
     shared_params: dict = {"lim": limit}
@@ -288,35 +306,34 @@ def search_events(
         shared.append("occurred_at <= :until")
         shared_params["until"] = until
 
-    hits: list[dict] = []
+    hits: list[EventHit] = []
     seen: set[tuple[int, Optional[str]]] = set()
     with use_session(session) as s:
-        def run_pass(match_where: str, match_params: dict, order: str, use_match: bool) -> None:
-            if oldest_first:
-                order = "occurred_at ASC"
+        def run_pass(p: _Pass) -> None:
+            order = "occurred_at ASC" if oldest_first else p.order
             snippet_expr = (
-                "snippet(event_search, 0, '', '', ' … ', 12)" if use_match
+                "snippet(event_search, 0, '', '', ' … ', 12)" if p.use_match
                 else "substr(content, 1, 300)"
             )
             sql = sa_text(
                 "SELECT event_id, thread_id, event_type, content_type, occurred_at, "
                 + snippet_expr + " AS snippet, content AS full_content "
-                "FROM event_search WHERE " + " AND ".join([match_where] + shared) +
+                "FROM event_search WHERE " + " AND ".join([p.where] + shared) +
                 " ORDER BY " + order + " LIMIT :lim"
             )
             try:
-                rows = s.execute(sql, {**shared_params, **match_params}).mappings().all()
+                rows = s.execute(sql, {**shared_params, **p.params}).mappings().all()
             except OperationalError as exc:
                 # A residual fts5 syntax error (a shape _to_match_query's
                 # validation didn't catch) retries once with every MATCH param
                 # demoted to the everything-quoted form — a malformed query
                 # returns results-or-empty, never a raw OperationalError.
                 msg = str(exc.orig).lower()
-                if not use_match or ("fts5" not in msg and "unterminated string" not in msg):
+                if not p.use_match or ("fts5" not in msg and "unterminated string" not in msg):
                     raise
-                logger.warning("FTS5 rejected MATCH %r; retrying fully quoted", match_params)
+                logger.warning("FTS5 rejected MATCH %r; retrying fully quoted", p.params)
                 retry = {k: _quote_all_tokens(v) if isinstance(v, str) else v
-                         for k, v in match_params.items()}
+                         for k, v in p.params.items()}
                 rows = s.execute(sql, {**shared_params, **retry}).mappings().all()
             for r in rows:
                 key = (r["event_id"], r["content_type"])
@@ -333,10 +350,10 @@ def search_events(
                     occurred_at=r["occurred_at"],
                 ))
 
-        for match_where, match_params, order, use_match, fallback in passes:
-            if fallback and len(hits) >= limit:
+        for p in passes:
+            if p.is_fallback and len(hits) >= limit:
                 continue
-            run_pass(match_where, match_params, order, use_match)
+            run_pass(p)
 
         # Fallback OR tier for plain natural-language queries (see the docstring):
         # only when the strict all-terms pass left the pool short, and only over
@@ -352,7 +369,7 @@ def search_events(
             # Skip when the tier would be the strict pass verbatim (single term,
             # nothing dropped) — same MATCH, nothing new to add.
             if terms and or_q.lower() != _to_match_query(query).lower():
-                run_pass("event_search MATCH :orq", {"orq": or_q}, _RANK_EXPR, True)
+                run_pass(_Pass("event_search MATCH :orq", {"orq": or_q}))
     return hits
 
 
@@ -361,6 +378,32 @@ _INSERT_SEARCH = sa_text(
     "(content, event_id, thread_id, event_type, content_type, tool_name, occurred_at) "
     "VALUES (:content, :event_id, :thread_id, :event_type, :content_type, :tool_name, :occurred_at)"
 )
+
+
+def _write_doc(
+    session: Session,
+    *,
+    event_id: int,
+    thread_id: int,
+    event_type: str,
+    content: str,
+    content_type: Optional[str],
+    tool_name: Optional[str],
+    occurred_at: Optional[str],
+) -> None:
+    """Write one search doc to BOTH surfaces — an ``events_fts`` shadow row and an
+    ``event_search`` FTS5 row. The single incremental-write seam that keeps the
+    two from drifting; ``rebuild_fts`` is the one exception (it bulk-loads the
+    shadow and derives ``event_search`` from it in one INSERT…SELECT)."""
+    session.add(EventFts(
+        event_id=event_id, thread_id=thread_id, event_type=event_type,
+        content=content, content_type=content_type, tool_name=tool_name,
+    ))
+    session.execute(_INSERT_SEARCH, {
+        "content": content, "event_id": event_id, "thread_id": thread_id,
+        "event_type": event_type, "content_type": content_type,
+        "tool_name": tool_name, "occurred_at": occurred_at,
+    })
 
 # Thread-meta docs: the thread's title and short summary, indexed as searchable
 # docs so "find the thread about X" works when X never appears verbatim in a
@@ -487,16 +530,10 @@ def index_thread_meta(session: Optional[Session] = None, thread_ids: Optional[li
             if tid not in anchors:
                 continue
             eid, oa = anchors[tid]
-            content = desired[key]
-            s.add(EventFts(
-                event_id=eid, thread_id=tid, event_type=THREAD_META_EVENT_TYPE,
-                content=content, content_type=ct, tool_name=None,
-            ))
-            s.execute(_INSERT_SEARCH, {
-                "content": content, "event_id": eid, "thread_id": tid,
-                "event_type": THREAD_META_EVENT_TYPE, "content_type": ct,
-                "tool_name": None, "occurred_at": oa,
-            })
+            _write_doc(
+                s, event_id=eid, thread_id=tid, event_type=THREAD_META_EVENT_TYPE,
+                content=desired[key], content_type=ct, tool_name=None, occurred_at=oa,
+            )
             written += 1
         if session is None:
             s.commit()
@@ -637,16 +674,11 @@ def index_events(session: Session, events: list) -> int:
                 tuples=tuples, twin_text_cache=twin_text_cache,
             )
         for content, content_type, tool_name in tuples:
-            tn = tool_name[:200] if tool_name else None
-            session.add(EventFts(
-                event_id=ev.id, thread_id=ev.thread_id, event_type=ev.event_type,
-                content=content, content_type=content_type, tool_name=tn,
-            ))
-            session.execute(_INSERT_SEARCH, {
-                "content": content, "event_id": ev.id, "thread_id": ev.thread_id,
-                "event_type": ev.event_type, "content_type": content_type,
-                "tool_name": tn, "occurred_at": oa,
-            })
+            _write_doc(
+                session, event_id=ev.id, thread_id=ev.thread_id, event_type=ev.event_type,
+                content=content, content_type=content_type,
+                tool_name=tool_name[:200] if tool_name else None, occurred_at=oa,
+            )
             indexed += 1
     return indexed
 

@@ -29,6 +29,7 @@ import numpy as np
 from sqlalchemy import text as sa_text
 
 from .._store import get_engine, get_session
+from ._types import EventHit
 from .embed import EMBEDDING_CHAR_CAP
 from .fts import build_event_hit
 
@@ -478,7 +479,7 @@ def search(
     tool_name: Optional[str] = None,
     exclude_content_types: Optional[list[str]] = None,
     source: Optional[list[str]] = None,
-) -> Optional[list[dict]]:
+) -> Optional[list[EventHit]]:
     """Embedded semantic search: embed the query, brute-force cosine KNN, hydrate.
 
     Returns None when this isn't SQLite, the scope has no embedded pool, nothing's
@@ -574,7 +575,7 @@ def search(
     with get_session() as s:
         rows = s.execute(sql, params).mappings().all()
 
-    hydrated: list[tuple[float, dict]] = []
+    hydrated: list[tuple[float, EventHit]] = []
     for r in rows:
         sim = sim_by.get((r["event_id"], r["content_type"]))
         if sim is None:

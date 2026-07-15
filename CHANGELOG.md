@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+- **Shared MCP server: one HTTP daemon instead of a model per client (2026-07-14).**
+  `archive-mcp` loads a ~3 GB retrieval stack, and stdio MCP spawns one server per
+  connecting client — N agents meant N resident copies (24 live copies ≈ 70 GB of
+  footprint, mostly swap/compressed). `archive-mcp --http --host H --port P` now
+  serves streamable-HTTP (stateless, JSON responses) so every client shares one
+  always-on server. `archive daemon install --mcp` installs it as
+  `com.thread-archive.mcp` (default `127.0.0.1:8788`), and clients point their
+  `thread-archive` MCP entry at `http://127.0.0.1:8788/mcp` (`type: "http"`) instead
+  of the stdio command. Stdio stays the default when no daemon is installed, so
+  `claude mcp add … archive-mcp` keeps working standalone. `_launchd.py` now manages
+  both the watcher and MCP agents through shared install/uninstall/restart/status
+  helpers.
+
 - **`_truth.jsonl_log` split into focused submodules (2026-07-14).** The 2,400-line
   truth module now lives as `layout` (paths/manifest/sharding/serialization),
   `locks` (the three flock families), `drain` (append handles + staged writes +

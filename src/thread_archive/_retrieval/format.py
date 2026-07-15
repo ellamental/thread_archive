@@ -17,13 +17,14 @@ from sqlalchemy import text as sa_text
 
 from .._store import use_session
 from . import rank as _rank
+from ._types import EventHit
 
 # output='count' wants a true tally, so the pipeline over-fetches to this cap; a
 # pool that reaches it was truncated and the tally renders as a floor ("N+").
 COUNT_FETCH_CAP = 1000
 
 
-def _hit_text(h: dict) -> str:
+def _hit_text(h: EventHit) -> str:
     return h.get("full_content") or h.get("snippet") or ""
 
 
@@ -68,7 +69,7 @@ def query_terms(query: str) -> list[str]:
     return [t for t in _rank.search_terms(query) if t and t != "|"]
 
 
-def _format_count(hits: list[dict], query: str) -> str:
+def _format_count(hits: list[EventHit], query: str) -> str:
     thread_counts = Counter(h["thread_id"] for h in hits)
     with use_session() as s:
         corpus = s.execute(
@@ -86,7 +87,7 @@ def _format_count(hits: list[dict], query: str) -> str:
     return "\n".join(lines)
 
 
-def _format_linkable(hits: list[dict]) -> str:
+def _format_linkable(hits: list[EventHit]) -> str:
     out = []
     for h in hits:
         entry = {
@@ -100,7 +101,7 @@ def _format_linkable(hits: list[dict]) -> str:
     return json.dumps(out, indent=2)
 
 
-def format_results(hits: list[dict], query: str, *, output: str | None = None) -> str:
+def format_results(hits: list[EventHit], query: str, *, output: str | None = None) -> str:
     if output == "count":
         return _format_count(hits, query)
     if output == "linkable":

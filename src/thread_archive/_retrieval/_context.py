@@ -22,6 +22,7 @@ from sqlalchemy import text as sa_text
 from sqlalchemy.orm import Session
 
 from .._store import use_session
+from ._types import EventHit
 from .fts import _in_clause
 
 # Dropped before picking the line to centre context on, so a query like "how does
@@ -95,7 +96,7 @@ def _neighbors(s: Session, tid: int, eid: int, op: str, order: str,
 
 
 def get_context_events(
-    hits: list[dict],
+    hits: list[EventHit],
     before: int,
     after: int,
     content_types: Optional[list[str]] = None,

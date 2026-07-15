@@ -171,6 +171,26 @@ def cmd_watch(args: argparse.Namespace) -> int:
 def cmd_daemon(args: argparse.Namespace) -> int:
     from . import _launchd
 
+    if args.mcp:
+        # The shared MCP server: one always-on streamable-HTTP server all clients
+        # connect to (point each client's MCP config at the URL below), instead of
+        # a per-client stdio subprocess each loading its own retrieval model.
+        if args.action == "install":
+            plist = _launchd.install_mcp(args.home, host=args.http_host, port=args.http_port)
+            print(f"installed {_launchd.MCP_LABEL} ({plist})")
+            print(f"shared MCP server: http://{args.http_host}:{args.http_port}/mcp")
+            print("point every client's MCP config at that URL "
+                  '(type "http") instead of the archive-mcp stdio command.')
+        elif args.action == "uninstall":
+            _launchd.uninstall_mcp()
+            print(f"uninstalled {_launchd.MCP_LABEL}")
+        elif args.action == "restart":
+            _launchd.restart_mcp()
+            print(f"restarted {_launchd.MCP_LABEL}")
+        else:  # status
+            print(_launchd.mcp_status())
+        return 0
+
     if args.action == "install":
         plist = _launchd.install_watcher(args.home, web=args.web, web_port=args.web_port)
         print(f"installed {_launchd.WATCHER_LABEL} ({plist})")
@@ -777,21 +797,37 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_daemon = sub.add_parser(
         "daemon",
-        help="manage the always-on watcher LaunchAgent (macOS): the upgrade "
-             "from lazy MCP-cohosted ingest to always-fresh",
+        help="manage the always-on archive LaunchAgents (macOS): the watcher "
+             "(the upgrade from lazy MCP-cohosted ingest to always-fresh), or "
+             "with --mcp the shared MCP server (one HTTP server for all clients)",
     )
     _add_home_arg(p_daemon)
     p_daemon.add_argument(
         "action", choices=["install", "uninstall", "restart", "status"],
-        help="install writes the plist (pointing at this environment's `archive`) "
-             "and (re)loads the agent; restart applies a code edit to the running agent",
+        help="install writes the plist (pointing at this environment's console "
+             "script) and (re)loads the agent; restart applies a code edit to the "
+             "running agent",
+    )
+    p_daemon.add_argument(
+        "--mcp", action="store_true",
+        help="target the shared MCP server agent (com.thread-archive.mcp) instead "
+             "of the watcher",
     )
     p_daemon.add_argument(
         "--no-web", dest="web", action="store_false",
-        help="don't cohost the web viewer in the watcher process",
+        help="watcher only: don't cohost the web viewer in the watcher process",
     )
     p_daemon.add_argument(
         "--web-port", type=int, default=8787, help="cohosted viewer port (default 8787)"
+    )
+    from ._launchd import MCP_DEFAULT_HOST, MCP_DEFAULT_PORT
+    p_daemon.add_argument(
+        "--http-host", default=MCP_DEFAULT_HOST,
+        help="--mcp only: shared MCP server bind host (default 127.0.0.1)",
+    )
+    p_daemon.add_argument(
+        "--http-port", type=int, default=MCP_DEFAULT_PORT,
+        help="--mcp only: shared MCP server bind port (default 8788)",
     )
     p_daemon.set_defaults(func=cmd_daemon)
 

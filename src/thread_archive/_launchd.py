@@ -1,17 +1,26 @@
-"""LaunchAgent management for the always-on watcher — private machinery.
+"""LaunchAgent management for the archive daemons — private machinery.
 
-``archive daemon install`` materializes the watcher's LaunchAgent plist from
-inside the package — pointing at the installed ``archive`` console script,
-wherever this Python environment put it — and loads it. No repo checkout, no
-Makefile, no sed: this is the "upgrade to always-fresh" step after a plain
-``pip install thread-archive``, and it is what ``host/Makefile install-agent``
-delegates to for the operator flow (which adds the thread-family manifest on
-top; the manifest writer stays in ``host/``, repo-only by design).
+``archive daemon install`` materializes a LaunchAgent plist from inside the
+package — pointing at the installed console script, wherever this Python
+environment put it — and loads it. No repo checkout, no Makefile, no sed: this
+is the "upgrade to always-fresh" step after a plain ``pip install
+thread-archive``, and it is what ``host/Makefile install-agent`` delegates to
+for the operator flow (which adds the thread-family manifest on top; the
+manifest writer stays in ``host/``, repo-only by design).
 
-macOS only, deliberately (launchd is the product's process manager). The
-plist mirrors what the watcher needs and nothing else: run at login in the
-Aqua session (the watched stores live in the user's home), restart on crash,
-logs under ``<archive home>/logs``.
+Two agents live here:
+
+* the **watcher** (``com.thread-archive.watcher``) — the always-on live-ingest
+  process, which also cohosts the read-only web viewer;
+* the **MCP server** (``com.thread-archive.mcp``) — one shared, always-on
+  streamable-HTTP server all agents connect to, so a single ~3 GB retrieval
+  model stays resident instead of one process per connecting client. Without
+  it, ``archive-mcp`` runs per-client over stdio (each client its own model).
+
+macOS only, deliberately (launchd is the product's process manager). Each
+plist mirrors what its agent needs and nothing else: run at login in the Aqua
+session (the archive home and watched stores live in the user's home), logs
+under ``<archive home>/logs``.
 """
 
 from __future__ import annotations
@@ -25,6 +34,12 @@ from pathlib import Path
 from typing import Optional
 
 WATCHER_LABEL = "com.thread-archive.watcher"
+MCP_LABEL = "com.thread-archive.mcp"
+
+# The shared MCP server's default loopback bind. Adjacent to the watcher's web
+# viewer (8787); every client's MCP config points here.
+MCP_DEFAULT_HOST = "127.0.0.1"
+MCP_DEFAULT_PORT = 8788
 
 
 def _require_darwin() -> None:
@@ -32,21 +47,22 @@ def _require_darwin() -> None:
         raise SystemExit("archive daemon: launchd management is macOS-only")
 
 
-def _plist_path() -> Path:
-    return Path.home() / "Library" / "LaunchAgents" / f"{WATCHER_LABEL}.plist"
+def _plist_path(label: str) -> Path:
+    return Path.home() / "Library" / "LaunchAgents" / f"{label}.plist"
 
 
-def _entry_path() -> Path:
-    """The ``archive`` console script this environment installed — the thing
-    the plist must point at (launchd won't inherit a venv)."""
-    candidate = Path(sys.executable).with_name("archive")
+def _entry_path(name: str = "archive") -> Path:
+    """A console script this environment installed (e.g. ``archive`` or
+    ``archive-mcp``) — the thing the plist must point at (launchd won't inherit
+    a venv)."""
+    candidate = Path(sys.executable).with_name(name)
     if candidate.is_file():
         return candidate
-    found = shutil.which("archive")
+    found = shutil.which(name)
     if found:
         return Path(found)
     raise SystemExit(
-        "archive daemon: cannot find the `archive` console script next to "
+        f"archive daemon: cannot find the `{name}` console script next to "
         f"{sys.executable} or on PATH — is the package installed in this environment?"
     )
 
@@ -90,6 +106,40 @@ def watcher_plist(
     }
 
 
+def mcp_plist(
+    entry: Path,
+    log_dir: Path,
+    *,
+    home: Optional[str] = None,
+    host: str = MCP_DEFAULT_HOST,
+    port: int = MCP_DEFAULT_PORT,
+) -> dict:
+    """The shared-MCP-server LaunchAgent as a plist dict (pure — no filesystem,
+    no launchctl). ``entry`` is the ``archive-mcp`` console script."""
+    env = {
+        "PATH": f"{entry.parent}:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin",
+    }
+    if home:
+        env["THREAD_ARCHIVE_HOME"] = home
+    return {
+        "Label": MCP_LABEL,
+        "ProgramArguments": [str(entry), "--http", "--host", host, "--port", str(port)],
+        "RunAtLoad": True,
+        "LimitLoadToSessionType": "Aqua",
+        # Always keep it up — many live clients depend on this one server, so
+        # restart on any exit, not only a crash. ThrottleInterval caps a crash
+        # loop.
+        "KeepAlive": True,
+        "ThrottleInterval": 5,
+        # It serves interactive tool calls; don't let App Nap stall responses.
+        "ProcessType": "Standard",
+        "WorkingDirectory": str(Path.home()),
+        "StandardOutPath": str(log_dir / "mcp-stdout.log"),
+        "StandardErrorPath": str(log_dir / "mcp-stderr.log"),
+        "EnvironmentVariables": env,
+    }
+
+
 def _uid() -> int:
     import os
 
@@ -102,10 +152,8 @@ def _launchctl(*args: str, check: bool = False) -> subprocess.CompletedProcess:
     )
 
 
-def install_watcher(
-    home: Optional[str] = None, *, web: bool = True, web_port: int = 8787
-) -> Path:
-    """Write the plist and (re)load the agent. Returns the plist path.
+def _install_agent(label: str, plist_dict: dict, home: Optional[str]) -> Path:
+    """Write ``label``'s plist and (re)load the agent. Returns the plist path.
 
     Idempotent: an existing agent is booted out first, so re-running after an
     upgrade or a config change is the supported way to apply it.
@@ -113,18 +161,15 @@ def install_watcher(
     _require_darwin()
     from ._config import resolve_paths
 
-    entry = _entry_path()
     log_dir = resolve_paths(home).home / "logs"
     # launchd won't mkdir StandardOutPath's parent — a missing dir fails the
     # load silently.
     log_dir.mkdir(parents=True, exist_ok=True)
-    plist = _plist_path()
+    plist = _plist_path(label)
     plist.parent.mkdir(parents=True, exist_ok=True)
-    plist.write_bytes(
-        plistlib.dumps(watcher_plist(entry, log_dir, home=home, web=web, web_port=web_port))
-    )
+    plist.write_bytes(plistlib.dumps(plist_dict))
     domain = f"gui/{_uid()}"
-    if _launchctl("bootout", f"{domain}/{WATCHER_LABEL}").returncode == 0:
+    if _launchctl("bootout", f"{domain}/{label}").returncode == 0:
         # Let bootout settle before bootstrap (avoids 'Bootstrap failed: 5:
         # Input/output error').
         time.sleep(3)
@@ -136,32 +181,88 @@ def install_watcher(
     return plist
 
 
-def uninstall_watcher() -> None:
+def _uninstall_agent(label: str) -> None:
     _require_darwin()
-    _launchctl("bootout", f"gui/{_uid()}/{WATCHER_LABEL}")
-    _plist_path().unlink(missing_ok=True)
+    _launchctl("bootout", f"gui/{_uid()}/{label}")
+    _plist_path(label).unlink(missing_ok=True)
 
 
-def restart_watcher() -> None:
+def _restart_agent(label: str) -> None:
     """Apply a code edit: kick the running agent (the plist itself is only
     re-read on install)."""
     _require_darwin()
-    result = _launchctl("kickstart", "-k", f"gui/{_uid()}/{WATCHER_LABEL}")
+    result = _launchctl("kickstart", "-k", f"gui/{_uid()}/{label}")
     if result.returncode != 0:
         raise SystemExit(
             f"archive daemon: launchctl kickstart failed: {result.stderr.strip()}"
         )
 
 
-def watcher_status() -> str:
+def _agent_status(label: str) -> str:
     """A short human-readable status: state/pid/program, or 'not loaded'."""
     _require_darwin()
-    result = _launchctl("print", f"gui/{_uid()}/{WATCHER_LABEL}")
+    result = _launchctl("print", f"gui/{_uid()}/{label}")
     if result.returncode != 0:
-        return f"{WATCHER_LABEL}: not loaded"
+        return f"{label}: not loaded"
     lines = [
         ln.strip()
         for ln in result.stdout.splitlines()
         if any(k in ln for k in ("state =", "pid =", "program ="))
     ]
-    return "\n".join([WATCHER_LABEL, *lines])
+    return "\n".join([label, *lines])
+
+
+def install_watcher(
+    home: Optional[str] = None, *, web: bool = True, web_port: int = 8787
+) -> Path:
+    """Write the watcher plist and (re)load the agent. Returns the plist path."""
+    entry = _entry_path("archive")
+    from ._config import resolve_paths
+
+    log_dir = resolve_paths(home).home / "logs"
+    return _install_agent(
+        WATCHER_LABEL,
+        watcher_plist(entry, log_dir, home=home, web=web, web_port=web_port),
+        home,
+    )
+
+
+def uninstall_watcher() -> None:
+    _uninstall_agent(WATCHER_LABEL)
+
+
+def restart_watcher() -> None:
+    _restart_agent(WATCHER_LABEL)
+
+
+def watcher_status() -> str:
+    return _agent_status(WATCHER_LABEL)
+
+
+def install_mcp(
+    home: Optional[str] = None,
+    *,
+    host: str = MCP_DEFAULT_HOST,
+    port: int = MCP_DEFAULT_PORT,
+) -> Path:
+    """Write the shared-MCP-server plist and (re)load the agent. Returns the
+    plist path."""
+    entry = _entry_path("archive-mcp")
+    from ._config import resolve_paths
+
+    log_dir = resolve_paths(home).home / "logs"
+    return _install_agent(
+        MCP_LABEL, mcp_plist(entry, log_dir, home=home, host=host, port=port), home
+    )
+
+
+def uninstall_mcp() -> None:
+    _uninstall_agent(MCP_LABEL)
+
+
+def restart_mcp() -> None:
+    _restart_agent(MCP_LABEL)
+
+
+def mcp_status() -> str:
+    return _agent_status(MCP_LABEL)

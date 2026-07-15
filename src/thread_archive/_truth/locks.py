@@ -40,6 +40,14 @@ def _truth_write_lock_path() -> Path:
 
 @contextmanager
 def _truth_write_lock() -> Generator[None, None, None]:
+    """Hold the truth-write mutex (exclusive flock), resolving any crashed
+    drain's leftover intent first.
+
+    The exclusion is cross-process AND cross-thread: each acquisition opens its
+    own fd, and flock locks conflict between separate open file descriptions
+    even within one process. That in-process serialization is load-bearing —
+    the drain's module state (the ``_handles`` LRU, the intent file) has no
+    threading.Lock of its own and relies on this mutex for it."""
     path = _truth_write_lock_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     fd = os.open(path, os.O_RDWR | os.O_CREAT, 0o644)

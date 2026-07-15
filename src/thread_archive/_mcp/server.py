@@ -12,9 +12,14 @@ with no daemon installed, and degrades to a no-op flock probe when the
 always-on watcher owns ingest. ``THREAD_ARCHIVE_MCP_INGEST=0`` disables it.
 
 The archive home comes from ``$THREAD_ARCHIVE_HOME`` (set by the MCP client
-config), else ``~/.thread/archive``. Run with::
+config), else ``~/.thread/archive``. Run per-client over stdio (the default)::
 
     python -m thread_archive._mcp.server
+
+or as one shared always-on server over streamable-HTTP, so many agents share a
+single resident model instead of one 3 GB process each::
+
+    archive-mcp --http --host 127.0.0.1 --port 8788
 
 ``import mcp`` below is the external MCP SDK (top-level absolute import); this
 package is ``thread_archive._mcp`` and never shadows it.
@@ -22,6 +27,7 @@ package is ``thread_archive._mcp`` and never shadows it.
 
 from __future__ import annotations
 
+import argparse
 import logging
 import os
 import threading
@@ -32,6 +38,7 @@ from mcp.server.fastmcp import FastMCP
 
 from .. import _api as api
 from .._retrieval import format_results, warm_models
+from .._retrieval._types import EventHit
 from .._retrieval.format import query_terms, term_hit_count
 
 logger = logging.getLogger(__name__)
@@ -94,7 +101,7 @@ DEFAULT_SEARCH_CONTENT_TYPES = ("user", "title", "summary")
 WIDENED_SEARCH_CONTENT_TYPES = DEFAULT_SEARCH_CONTENT_TYPES + ("text",)
 
 
-def _default_scope_is_weak(hits: list[dict], query: str) -> bool:
+def _default_scope_is_weak(hits: "list[EventHit]", query: str) -> bool:
     """True when a default-scope result set warrants the one-shot widen to
     assistant text: no hits at all, or no query term appears in the top hit
     (nearest-neighbour guesses)."""
@@ -300,6 +307,21 @@ def thread_read(
 
 
 def main() -> None:
+    # stdio (default) is one server per client — every connecting agent spawns its own
+    # process, and this one loads the ~3 GB embedding + cross-encoder stack. --http instead
+    # serves streamable-HTTP on one loopback port so every agent shares a single always-on
+    # server (one model resident, not one per client); the LaunchAgent runs that mode and the
+    # MCP client config points at the URL. Stdio stays the default so `claude mcp add …
+    # archive-mcp` and `python -m thread_archive._mcp.server` keep working with no daemon.
+    parser = argparse.ArgumentParser(prog="archive-mcp", description=__doc__)
+    parser.add_argument(
+        "--http", action="store_true",
+        help="serve streamable-HTTP (shared, always-on) instead of per-client stdio",
+    )
+    parser.add_argument("--host", default="127.0.0.1", help="HTTP bind host (--http only)")
+    parser.add_argument("--port", type=int, default=8788, help="HTTP bind port (--http only)")
+    args = parser.parse_args()
+
     # Warm the embedding + cross-encoder models on a background daemon thread. The cold load
     # is tens of seconds; when it lands inside the first conceptual search it can exceed the
     # client's MCP request timeout (cloth defaults to 60s), which surfaces to the model as a
@@ -313,7 +335,18 @@ def main() -> None:
     # ingest (by any process) is searchable by the time the first query
     # arrives — or shortly after; the pass is additive, never blocking.
     _maybe_catch_up()
-    mcp.run()
+
+    if args.http:
+        # Stateless + JSON responses: each request is self-contained (no held-open per-client
+        # SSE stream or server-side session to track across many agents), and the read-only
+        # tools have nothing to push back. run() reads these off mcp.settings at start.
+        mcp.settings.host = args.host
+        mcp.settings.port = args.port
+        mcp.settings.stateless_http = True
+        mcp.settings.json_response = True
+        mcp.run("streamable-http")
+    else:
+        mcp.run()
 
 
 if __name__ == "__main__":

@@ -182,6 +182,27 @@ DRAIN_INTENT_FILE = ".drain.intent"
 _INTENT_TABLES = {"event": "events", "kg_event": "kg_events"}
 
 
+def _rollback_file(path: Path, baseline: int | None) -> None:
+    """Roll one truth file back to its pre-batch baseline: drop the cached append
+    handle (with any buffered partial write), then truncate to ``baseline`` — or
+    unlink when the batch created the file (``baseline is None``), so no ghost
+    thread file survives. The undo is fsynced (file or dirent), so it is at least
+    as durable as the appends it removes. The one rollback primitive shared by
+    the in-process drain rollback, crashed-drain recovery, and the failed-COMMIT
+    compensation — their guards differ, the undo must not. Callers hold the
+    truth-write lock; OSErrors propagate for each caller's own policy."""
+    fh = _handles.pop(str(path), None)
+    if fh is not None and not fh.closed:
+        fh.close()
+    if baseline is None:
+        path.unlink(missing_ok=True)
+        _fsync_dir(path.parent)
+    else:
+        with open(path, "rb+") as rb:
+            rb.truncate(baseline)
+            os.fsync(rb.fileno())
+
+
 def _intent_path() -> Path:
     from .._config import resolve_paths
 
@@ -332,16 +353,7 @@ def _recover_crashed_drain() -> None:
                     path,
                 )
                 continue
-            fh = _handles.pop(str(path), None)
-            if fh is not None and not fh.closed:
-                fh.close()
-            if baseline is None:
-                path.unlink(missing_ok=True)  # the batch created it — no ghost thread file
-                _fsync_dir(path.parent)
-            else:
-                with open(path, "rb+") as rb:
-                    rb.truncate(baseline)
-                    os.fsync(rb.fileno())
+            _rollback_file(path, baseline)
             rolled_back += 1
         logger.warning(
             "truth: recovered crashed drain txn=%s — %d file(s) rolled back to baseline%s",
@@ -492,16 +504,7 @@ def _drain_before_commit(session: Session) -> None:
             # left to roll it back.
             for path, size in baselines.items():
                 try:
-                    fh = _handles.pop(str(path), None)
-                    if fh is not None and not fh.closed:
-                        fh.close()  # drop any buffered partial write with the handle
-                    if size is None:
-                        path.unlink(missing_ok=True)  # we created it — no ghost thread file
-                        _fsync_dir(path.parent)
-                    else:
-                        with open(path, "rb+") as rb:
-                            rb.truncate(size)
-                            os.fsync(rb.fileno())
+                    _rollback_file(path, size)
                 except OSError:  # pragma: no cover — rollback is best-effort
                     logger.exception("truth: could not roll back partial append to %s", path)
             _clear_intent()  # the batch is undone; the frame must not outlive it
@@ -592,16 +595,7 @@ def _undo_drain(session: Session) -> None:
                 try:
                     if not path.exists() or path.stat().st_size != post_size:
                         continue  # someone else appended (or repaired) — leave it
-                    fh = _handles.pop(str(path), None)
-                    if fh is not None and not fh.closed:
-                        fh.close()
-                    if baseline is None:
-                        path.unlink(missing_ok=True)  # the drain created it
-                        _fsync_dir(path.parent)
-                    else:
-                        with open(path, "rb+") as rb:
-                            rb.truncate(baseline)
-                            os.fsync(rb.fileno())
+                    _rollback_file(path, baseline)
                 except OSError:  # pragma: no cover — compensation is best-effort
                     logger.exception(
                         "truth: could not undo drained batch in %s after rollback", path

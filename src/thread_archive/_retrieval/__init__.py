@@ -22,6 +22,7 @@ from .._store import Thread, use_session
 from . import rank as _rank
 from ._classify import resolve_relative_date
 from ._context import extract_context_lines, get_context_events, parse_context_events_spec
+from ._types import EventHit
 from .format import COUNT_FETCH_CAP, format_results
 from .fts import ensure_fts, fts_status, index_events, index_thread_meta, rebuild_fts, search_events
 from .read import read_thread, read_thread_structured, resolve_thread_ref
@@ -29,7 +30,7 @@ from .read import read_thread, read_thread_structured, resolve_thread_ref
 logger = logging.getLogger(__name__)
 
 
-def _enrich_thread_titles(hits: list[dict], *, session: Optional[Session] = None) -> None:
+def _enrich_thread_titles(hits: list[EventHit], *, session: Optional[Session] = None) -> None:
     """Fill ``thread_title`` on hits from the threads table (one query)."""
     if not hits:
         return
@@ -41,7 +42,7 @@ def _enrich_thread_titles(hits: list[dict], *, session: Optional[Session] = None
         h["thread_title"] = titles.get(h["thread_id"])
 
 
-def _rrf_merge(result_lists: list[list[dict]], limit: int, k: int = 60) -> list[dict]:
+def _rrf_merge(result_lists: list[list[EventHit]], limit: int, k: int = 60) -> list[EventHit]:
     """Reciprocal-rank fusion of several ranked hit lists, keyed by
     (event_id, content_type). RRF score = Σ 1/(k + rank), **normalized to [0,1]**
     (÷ peak) so the ranker's ``fusion_weight`` is calibrated against it. The semantic
@@ -152,7 +153,7 @@ def search(
     context_events: Optional[str] = None,
     rerank: Optional[bool] = None,
     session: Optional[Session] = None,
-) -> list[dict]:
+) -> list[EventHit]:
     """Search over conversation events through the production pipeline: lexical FTS5
     + optional semantic vectors → RRF fusion → dedup → weighted lexical rank →
     optional cross-encoder head re-rank. Returns event-hit dicts with the thread

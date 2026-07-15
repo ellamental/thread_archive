@@ -21,9 +21,12 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
 
 from ._config import ENV_HOME, ArchivePaths, resolve_paths
+
+if TYPE_CHECKING:
+    from ._retrieval._types import EventHit
 
 # The durability kit, re-exported (see docstring).
 from ._ops.backup import backup, restore_drill  # noqa: F401
@@ -89,7 +92,7 @@ def search(
     context_lines: int = 2,
     context_events: Optional[str] = None,
     rerank: Optional[bool] = None,
-) -> list[dict]:
+) -> "list[EventHit]":
     """Federated search over conversation events (lexical FTS5 + optional semantic
     vectors → RRF fusion → weighted rank → optional cross-encoder re-rank). Returns
     enriched event-hit dicts. ``source`` restricts to threads of the named
