@@ -243,7 +243,6 @@ class ClaudeParser(ProviderParser):
                 updated_at_iso = mapped_fields.get("updated_at")
 
                 raw_content_blocks = msg.get("content", [])
-                # Note: attachments and files available in msg if needed
 
                 # Convert Claude content blocks to normalized format
                 content_blocks = self._normalize_content_blocks(
@@ -254,6 +253,14 @@ class ClaudeParser(ProviderParser):
                 # If no text from blocks, use the top-level text field
                 if not content_text and text:
                     content_text = text
+
+                # claude.ai attaches uploads two ways — `attachments` (documents whose
+                # text is extracted into `extracted_content`) and `files` (image/binary
+                # uploads referenced by name/uuid). Both were dropped on import; preserve
+                # each as its own block (after the text extraction above, so they don't
+                # perturb the primary text) so the upload survives in truth.
+                content_blocks.extend(
+                    self._attachment_blocks(cast(Dict[str, Any], msg), start_seq=len(content_blocks)))
 
                 # Message order (use index since Claude doesn't provide explicit ordering)
                 # Semantic: Claude messages are ordered by position in array, not by timestamp
@@ -289,6 +296,39 @@ class ClaudeParser(ProviderParser):
                 messages.append(msg_record)
 
         return messages
+
+    def _attachment_blocks(self, msg: Dict[str, Any], start_seq: int) -> List[ContentBlock]:
+        """Preserved blocks for claude.ai ``attachments`` and ``files`` on a message.
+
+        ``attachments`` are uploaded documents whose text the provider extracted into
+        ``extracted_content`` (kept so the document text stays searchable and
+        re-exportable); ``files`` are image/binary uploads referenced by name/uuid (the
+        bytes live outside the export JSON, so the reference is what's preserved). The
+        full raw entry rides under ``data`` so nothing is lost; a message with neither
+        yields no blocks."""
+        blocks: List[ContentBlock] = []
+        seq = start_seq
+        for att in msg.get("attachments") or []:
+            if not isinstance(att, dict):
+                continue
+            blocks.append(cast(ContentBlock, {
+                "type": "attachment",
+                "file_name": att.get("file_name"),
+                "data": att,
+                "seq": seq,
+            }))
+            seq += 1
+        for f in msg.get("files") or []:
+            if not isinstance(f, dict):
+                continue
+            blocks.append(cast(ContentBlock, {
+                "type": "file",
+                "file_name": f.get("file_name"),
+                "data": f,
+                "seq": seq,
+            }))
+            seq += 1
+        return blocks
 
     def _normalize_content_blocks(
         self,

@@ -18,13 +18,18 @@ Lifecycle of one dropped export:
   the poll (a rare, human-initiated event, so blocking the loop briefly is acceptable),
   idempotent per conversation (a re-run skips threads already present), durable in the
   JSONL truth before each commit.
-- **Clear on success.** A clean import *deletes* the dropped file/dir — the data now lives
-  in the truth log (which is itself the backup), so the download is redundant.
-- **Quarantine on failure.** An unrecognized shape, an import that raises, or an import
-  that processed zero conversations (a recognized container whose contents didn't match
-  the expected shape — deleting it would destroy the user's download over nothing) is
-  moved to ``dumps/failed/`` — never deleted, never hot-retried — so the failure is
-  visible.
+- **Retain on clean success.** A drop is **never deleted** — the importer normalizes into
+  the JSONL truth, but normalization is lossy in ways the importer can't always see
+  (attachments/images/branch structure a parser doesn't yet carry), so the original
+  download is the only place that content still exists. A fully clean import moves the
+  drop into ``dumps/imported/`` instead of deleting it, so a normalization gap can never
+  cost the user their export; the operator can prune ``imported/`` once satisfied.
+- **Quarantine on failure or partial loss.** An unrecognized shape, an import that raises,
+  an import that processed zero conversations (a recognized container whose contents
+  didn't match the expected shape), or an import where **any** conversation errored (those
+  are preserved as stub threads, but the export needs a look) is moved to ``dumps/failed/``
+  — never deleted, never hot-retried — so the problem is visible and the drop is re-importable
+  after a fix.
 """
 
 from __future__ import annotations
@@ -44,8 +49,10 @@ from .base import SourceWatcher, WatchResult
 
 logger = logging.getLogger(__name__)
 
-# Reserved subdir for exports that don't cleanly import; skipped when scanning.
+# Reserved subdirs, both skipped when scanning: exports that need attention go to
+# ``failed/``; cleanly-imported exports are retained (never deleted) in ``imported/``.
 QUARANTINE_DIRNAME = "failed"
+IMPORTED_DIRNAME = "imported"
 
 
 class ExportDropWatcher(SourceWatcher):
@@ -62,6 +69,7 @@ class ExportDropWatcher(SourceWatcher):
             dumps_dir = resolve_paths().dumps_dir
         self.dumps_dir = Path(dumps_dir)
         self.quarantine_dir = self.dumps_dir / QUARANTINE_DIRNAME
+        self.imported_dir = self.dumps_dir / IMPORTED_DIRNAME
         # Create the drop zone so there's always an obvious place to drop exports.
         try:
             self.dumps_dir.mkdir(parents=True, exist_ok=True)
@@ -106,15 +114,15 @@ class ExportDropWatcher(SourceWatcher):
     def _candidates(self) -> Iterator[Path]:
         """Top-level zips and export directories in the drop zone, sorted by name.
 
-        Skips dotfiles and the ``failed/`` quarantine subdir (so quarantined exports are
-        never rescanned)."""
+        Skips dotfiles and the reserved ``failed/`` and ``imported/`` subdirs (so
+        quarantined and retained exports are never rescanned)."""
         if not self.dumps_dir.exists():
             return
         for entry in sorted(self.dumps_dir.iterdir(), key=lambda p: p.name):
             if entry.name.startswith("."):
                 continue
             if entry.is_dir():
-                if entry.name == QUARANTINE_DIRNAME:
+                if entry.name in (QUARANTINE_DIRNAME, IMPORTED_DIRNAME):
                     continue
                 yield entry
             elif entry.is_file() and entry.suffix.lower() == ".zip":
@@ -167,41 +175,63 @@ class ExportDropWatcher(SourceWatcher):
                 errors=[f"export-drop: {name} ({kind}) had no importable conversations"],
             )
 
+        if res.errored:
+            # Some conversations raised and were preserved as stub threads (raw +
+            # error) — the data isn't lost, but the export needs a look and a re-import
+            # after the parser is fixed. Quarantine so it's visible, don't delete.
+            logger.warning(
+                "export-drop: imported %s with %d errored conversation(s) "
+                "(processed=%d imported=%d skipped=%d events=%d) — quarantining for review",
+                name, res.errored, res.processed, res.imported, res.skipped, res.events_created,
+            )
+            self._move_into(self.quarantine_dir, path)
+            return WatchResult(
+                sources_checked=1,
+                items_imported=res.imported,
+                events_created=res.events_created,
+                errors=[
+                    f"export-drop: {name} imported with {res.errored} errored "
+                    f"conversation(s) preserved as stubs — quarantined for review"
+                ],
+            )
+
         logger.info(
-            "export-drop: imported %s — processed=%d imported=%d skipped=%d events=%d; removing",
+            "export-drop: imported %s — processed=%d imported=%d skipped=%d events=%d; retaining",
             name, res.processed, res.imported, res.skipped, res.events_created,
         )
-        self._remove(path)
+        self._retain(path)
         return WatchResult(
             sources_checked=1,
             items_imported=res.imported,
             events_created=res.events_created,
         )
 
-    def _remove(self, path: Path) -> None:
-        """Delete an imported export. The truth log holds the data, so this is safe."""
-        try:
-            if path.is_dir():
-                shutil.rmtree(path)
-            else:
-                path.unlink()
-        except OSError as e:  # pragma: no cover
-            logger.warning(
-                "export-drop: could not remove %s after import: %s", path.name, e
-            )
+    def _retain(self, path: Path) -> None:
+        """Move a cleanly-imported export into ``dumps/imported/`` — never delete it.
+
+        Normalization is lossy in ways the importer can't detect, so the original
+        download is kept as the last line of defense; the operator prunes it once the
+        import is trusted."""
+        self._move_into(self.imported_dir, path)
 
     def _quarantine(self, path: Path) -> None:
-        """Move an export that didn't import into ``dumps/failed/`` (never delete)."""
+        """Move an export that needs attention into ``dumps/failed/`` (never delete)."""
+        self._move_into(self.quarantine_dir, path)
+
+    def _move_into(self, dest_dir: Path, path: Path) -> None:
+        """Collision-safe move of a settled drop into one of the reserved subdirs."""
         try:
-            self.quarantine_dir.mkdir(parents=True, exist_ok=True)
-            dest = self.quarantine_dir / path.name
+            dest_dir.mkdir(parents=True, exist_ok=True)
+            dest = dest_dir / path.name
             n = 1
             while dest.exists():
-                dest = self.quarantine_dir / f"{path.name}.{n}"
+                dest = dest_dir / f"{path.name}.{n}"
                 n += 1
             shutil.move(str(path), str(dest))
         except OSError as e:  # pragma: no cover
-            logger.warning("export-drop: could not quarantine %s: %s", path.name, e)
+            logger.warning(
+                "export-drop: could not move %s into %s: %s", path.name, dest_dir.name, e
+            )
 
 
 def _settle_signal(path: Path) -> tuple:

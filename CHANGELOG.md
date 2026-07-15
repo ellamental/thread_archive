@@ -2,6 +2,23 @@
 
 ## Unreleased
 
+- **Account exports are never deleted, and import loses less (2026-07-15).** The drop
+  watcher used to delete an export whenever it processed ≥1 conversation — even when
+  some conversations errored, and even when normalization silently dropped
+  attachments/images/branch structure the parser didn't carry. A dropped export now
+  moves into `dumps/imported/` on a fully clean import (retained, never deleted — the
+  operator prunes it once satisfied) and into `dumps/failed/` when any conversation
+  errored (preserved as stubs, but the export needs a look). The original download is
+  the last copy of anything normalization drops, so it survives regardless. Alongside,
+  three import-fidelity gaps are closed: ChatGPT `image_asset_pointer` parts are
+  preserved (an image-only turn kept its pointer in truth instead of vanishing whole);
+  ChatGPT's conversation *tree* — each event's `branch.parent_id` and an
+  `active_path: false` marker on off-active-path (regenerated) replies — reaches truth
+  so branches are reconstructable; and claude.ai `attachments` (with their extracted
+  text) + `files` uploads are kept as `content_block` events instead of being ignored.
+  New end-to-end goldens (`tests/goldens/providers/chatgpt-web.json`, `claude-web.json`)
+  lock all three.
+
 ## 0.0.3 — 2026-07-15
 
 Distribution moves to clone-install (the brief PyPI/Homebrew run is retired): `pip install -e .` from a clone, or `pip

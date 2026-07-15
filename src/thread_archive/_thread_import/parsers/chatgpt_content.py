@@ -12,7 +12,7 @@ Kept in a sibling module (not on the class) purely to keep chatgpt.py lean; the
 class retains every method the base interface, registry, or tests reference.
 """
 
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, cast
 
 from .base import ContentBlock, ProviderParser
 
@@ -164,21 +164,41 @@ def append_text_content(blocks: List[ContentBlock], content: Any, seq: int) -> i
 
 
 def append_image_parts(blocks: List[ContentBlock], content: Any, seq: int) -> int:
-    """Append image blocks from multimodal content parts."""
-    if isinstance(content, dict):
-        parts = content.get("parts", [])
-        for part in parts:
-            if isinstance(part, dict):
-                # Image part
-                if part.get("content_type", "").startswith("image/"):
-                    img_block: ContentBlock = {
-                        "type": "image",
-                        "asset_pointer": part.get("asset_pointer"),
-                        "mime_type": part.get("content_type"),
-                        "seq": seq,
-                    }
-                    blocks.append(img_block)
-                    seq += 1
+    """Append image blocks from multimodal content parts.
+
+    ChatGPT emits two image shapes and this must catch both: an inline ``image/*``
+    part, and — far more common — an ``image_asset_pointer`` part whose ``content_type``
+    is the literal string ``"image_asset_pointer"`` and whose ``asset_pointer`` is a
+    ``file-service://`` / ``sediment://`` reference to an uploaded or generated image.
+    The pointer (plus size/dimensions) is preserved so the reference survives in truth
+    even though the bytes live outside the export; missing the pointer shape drops
+    image-only turns entirely (no text, no block → the whole turn vanishes on import)."""
+    if not isinstance(content, dict):
+        return seq
+    for part in content.get("parts", []):
+        if not isinstance(part, dict):
+            continue
+        ctype = part.get("content_type") or ""
+        is_image = (
+            ctype.startswith("image/")
+            or ctype == "image_asset_pointer"
+            or bool(part.get("asset_pointer"))
+        )
+        if not is_image:
+            continue
+        img_block: ContentBlock = {
+            "type": "image",
+            "asset_pointer": part.get("asset_pointer"),
+            "mime_type": ctype or None,
+            "seq": seq,
+        }
+        # The bytes aren't in the export; keep the dimensional metadata that is, so a
+        # later re-download / audit can match the pointer to what it pointed at.
+        meta = {k: part[k] for k in ("size_bytes", "width", "height") if part.get(k) is not None}
+        if meta:
+            cast(Dict[str, Any], img_block)["metadata"] = meta
+        blocks.append(img_block)
+        seq += 1
     return seq
 
 

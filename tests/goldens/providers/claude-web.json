@@ -1,0 +1,199 @@
+[
+ {
+  "description": null,
+  "name": "claude:claude-web-gold",
+  "source": "claude",
+  "source_id": "claude-web-gold",
+  "source_metadata": {
+   "provider": "claude",
+   "surface": "web"
+  },
+  "title": "Golden Claude Web Chat",
+  "type": "thread"
+ },
+ {
+  "api_call": null,
+  "dedup_key": "m1:user_message_sent::34ad558518cc195b",
+  "event_type": "user_message_sent",
+  "occurred_at": "2026-01-01T10:00:00+00:00",
+  "payload": {
+   "content": "here are my notes",
+   "provider_data": {
+    "provider_message_id": "m1"
+   }
+  },
+  "stream": "s0",
+  "type": "event"
+ },
+ {
+  "api_call": null,
+  "dedup_key": "m1:content_block:blk=1:a616a09b05f51bb3",
+  "event_type": "content_block",
+  "occurred_at": "2026-01-01T10:00:00+00:00",
+  "payload": {
+   "block_index": 1,
+   "block_type": "attachment",
+   "data": {
+    "data": {
+     "extracted_content": "the extracted text of my notes",
+     "file_name": "notes.txt",
+     "file_size": 30,
+     "file_type": "text/plain"
+    },
+    "file_name": "notes.txt",
+    "seq": 1,
+    "type": "attachment"
+   }
+  },
+  "stream": "s0",
+  "type": "event"
+ },
+ {
+  "api_call": "c0",
+  "dedup_key": "m2:api_request_started::aa9f7a1721a87f45",
+  "event_type": "api_request_started",
+  "occurred_at": "2026-01-01T10:00:10+00:00",
+  "payload": {
+   "model": "unknown",
+   "provider_data": {
+    "provider_message_id": "m2"
+   }
+  },
+  "stream": "s0",
+  "type": "event"
+ },
+ {
+  "api_call": "c0",
+  "dedup_key": "m2:text_complete:blk=0:9f9b32e9c37a67f5",
+  "event_type": "text_complete",
+  "occurred_at": "2026-01-01T10:00:10+00:00",
+  "payload": {
+   "block_index": 0,
+   "text": "thanks, I read your notes"
+  },
+  "stream": "s0",
+  "type": "event"
+ },
+ {
+  "api_call": "c0",
+  "dedup_key": "m2:api_request_completed::e084117c6d81b580",
+  "event_type": "api_request_completed",
+  "occurred_at": "2026-01-01T10:00:10+00:00",
+  "payload": {
+   "content_blocks": [
+    {
+     "text": "thanks, I read your notes",
+     "type": "text"
+    }
+   ],
+   "input_tokens": 0,
+   "model": "unknown",
+   "output_tokens": 0,
+   "stop_reason": "end_turn",
+   "thinking_tokens": 0
+  },
+  "stream": "s0",
+  "type": "event"
+ },
+ {
+  "api_call": "c0",
+  "dedup_key": "m2:stream_completed::44136fa355b3678a",
+  "event_type": "stream_completed",
+  "occurred_at": "2026-01-01T10:00:10+00:00",
+  "payload": {},
+  "stream": "s0",
+  "type": "event"
+ },
+ {
+  "api_call": null,
+  "dedup_key": "m3:user_message_sent::9a6be7e4f0b9cf25",
+  "event_type": "user_message_sent",
+  "occurred_at": "2026-01-01T10:00:20+00:00",
+  "payload": {
+   "content": "and a picture",
+   "provider_data": {
+    "provider_message_id": "m3"
+   }
+  },
+  "stream": "s1",
+  "type": "event"
+ },
+ {
+  "api_call": null,
+  "dedup_key": "m3:content_block:blk=1:0bc93b0d7c479864",
+  "event_type": "content_block",
+  "occurred_at": "2026-01-01T10:00:20+00:00",
+  "payload": {
+   "block_index": 1,
+   "block_type": "file",
+   "data": {
+    "data": {
+     "file_kind": "image",
+     "file_name": "diagram.png",
+     "file_uuid": "file-DIAGRAM"
+    },
+    "file_name": "diagram.png",
+    "seq": 1,
+    "type": "file"
+   }
+  },
+  "stream": "s1",
+  "type": "event"
+ },
+ {
+  "api_call": "c1",
+  "dedup_key": "m4:api_request_started::aa9f7a1721a87f45",
+  "event_type": "api_request_started",
+  "occurred_at": "2026-01-01T10:00:30+00:00",
+  "payload": {
+   "model": "unknown",
+   "provider_data": {
+    "provider_message_id": "m4"
+   }
+  },
+  "stream": "s1",
+  "type": "event"
+ },
+ {
+  "api_call": "c1",
+  "dedup_key": "m4:text_complete:blk=0:f893f7c6e33c3d81",
+  "event_type": "text_complete",
+  "occurred_at": "2026-01-01T10:00:30+00:00",
+  "payload": {
+   "block_index": 0,
+   "text": "nice diagram"
+  },
+  "stream": "s1",
+  "type": "event"
+ },
+ {
+  "api_call": "c1",
+  "dedup_key": "m4:api_request_completed::9e5f9b33104bf28f",
+  "event_type": "api_request_completed",
+  "occurred_at": "2026-01-01T10:00:30+00:00",
+  "payload": {
+   "content_blocks": [
+    {
+     "text": "nice diagram",
+     "type": "text"
+    }
+   ],
+   "input_tokens": 0,
+   "model": "unknown",
+   "output_tokens": 0,
+   "stop_reason": "end_turn",
+   "thinking_tokens": 0
+  },
+  "stream": "s1",
+  "type": "event"
+ },
+ {
+  "api_call": "c1",
+  "dedup_key": "m4:stream_completed::44136fa355b3678a",
+  "event_type": "stream_completed",
+  "occurred_at": "2026-01-01T10:00:30+00:00",
+  "payload": {},
+  "stream": "s1",
+  "type": "event"
+ }
+]

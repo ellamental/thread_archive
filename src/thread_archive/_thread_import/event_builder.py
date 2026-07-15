@@ -152,16 +152,48 @@ class DefaultEventBuilder:
             events = self._build_generic_message_events(message, stream_id, occurred_at)
 
         provider_message_id = message.get("provider_message_id", "") or ""
+        branch = self._branch_metadata(message)
         for event in events:
             # Flag any event whose time wasn't a real source timestamp, so a
             # gap stays visible (never a silent now()).
             if ts_provenance is not None:
                 event.payload.setdefault("timestamp_inferred", True)
                 event.payload.setdefault("timestamp_source", ts_provenance)
+            # Carry conversation-tree structure (a parent link / off-path marker) into
+            # the payload so branched providers stay reconstructable from truth. Not in
+            # the dedup content keys, so it never perturbs identity — a re-import of the
+            # same turn keeps its key.
+            if branch:
+                event.payload.setdefault("branch", branch)
             event.dedup_key = compute_dedup_key(
                 provider_message_id, event.event_type, event.payload
             )
         return events
+
+    @staticmethod
+    def _branch_metadata(message: NormalizedMessage) -> dict:
+        """The message's place in a branching conversation, when it has one.
+
+        ChatGPT's export is a conversation *tree*: a node can have several children
+        (regenerations), so the flat event order can't recover which reply followed
+        which prompt, nor which branch is the active one. Its ``provider_parent_id`` +
+        ``is_active_path`` (nodes off the ``current_node`` path are ``False``) were
+        parsed but never persisted, so the tree couldn't be rebuilt from truth. Persist
+        them so it can.
+
+        Scoped to ChatGPT deliberately: a provider whose log is already a linear
+        transcript gains nothing from a ``parent_id`` on every event (its order implies
+        the chain), and Claude Code's sidechain structure is a separate format decision,
+        not folded in here."""
+        if message.get("source_provider") != "chatgpt":
+            return {}
+        branch: dict = {}
+        parent_id = message.get("provider_parent_id")
+        if parent_id:
+            branch["parent_id"] = parent_id
+        if message.get("is_active_path") is False:
+            branch["active_path"] = False
+        return branch
 
     def _resolve_occurred_at(
         self,
@@ -396,16 +428,31 @@ class DefaultEventBuilder:
 
     @staticmethod
     def _extract_user_images(content_blocks: list) -> list:
-        """Extract base64 image blocks into the live UserMessagePayload.images shape."""
+        """Extract user-turn image blocks into the UserMessagePayload.images shape.
+
+        Two shapes are preserved: inline base64 images (``source.data`` → ``data``),
+        and pointer-only references (ChatGPT ``asset_pointer``, whose bytes live outside
+        the export) → ``asset_pointer``. Keeping the pointer means an image-only turn
+        survives with a recoverable reference instead of collapsing to ``images: []``."""
         images = []
         for b in content_blocks:
-            if isinstance(b, dict) and b.get("type") == "image":
-                source = b.get("source", {})
-                if source.get("type") == "base64" and source.get("data"):
-                    images.append({
-                        "media_type": source.get("media_type", "image/png"),
-                        "data": source["data"],
-                    })
+            if not (isinstance(b, dict) and b.get("type") == "image"):
+                continue
+            source = b.get("source", {})
+            if isinstance(source, dict) and source.get("type") == "base64" and source.get("data"):
+                images.append({
+                    "media_type": source.get("media_type", "image/png"),
+                    "data": source["data"],
+                })
+            elif b.get("asset_pointer") or b.get("url"):
+                ref = {"media_type": b.get("mime_type") or "image"}
+                if b.get("asset_pointer"):
+                    ref["asset_pointer"] = b["asset_pointer"]
+                if b.get("url"):
+                    ref["url"] = b["url"]
+                if b.get("metadata"):
+                    ref["metadata"] = b["metadata"]
+                images.append(ref)
         return images
 
     @staticmethod

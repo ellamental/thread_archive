@@ -1,5 +1,6 @@
 """The export-drop watcher: account exports dropped into ``<home>/dumps/`` settle,
-import, then get deleted on success or quarantined on failure.
+import, then get retained in ``imported/`` on a clean import or quarantined in
+``failed/`` on any problem — the drop is never deleted.
 """
 
 from __future__ import annotations
@@ -52,10 +53,10 @@ def _claude_count():
         return len(s.execute(select(Thread).where(Thread.source == "claude")).scalars().all())
 
 
-# ── settle + import + delete ─────────────────────────────────────────────────
+# ── settle + import + retain ─────────────────────────────────────────────────
 
 
-def test_dropped_batch_dir_settles_imports_and_is_deleted(archive_home) -> None:
+def test_dropped_batch_dir_settles_imports_and_is_retained(archive_home) -> None:
     init_db()
     dumps = archive_home / "dumps"
     export_dir = _claude_batch_dir(dumps, "claude-export")
@@ -68,21 +69,24 @@ def test_dropped_batch_dir_settles_imports_and_is_deleted(archive_home) -> None:
     assert _claude_count() == 0
     assert export_dir.exists()
 
-    # Second poll: signal unchanged → settled → import, then delete the drop.
+    # Second poll: signal unchanged → settled → import, then retain (never delete).
     r2 = w.poll()
     assert r2.items_imported == 1 and r2.events_created > 0
     assert _claude_count() == 1
     assert not export_dir.exists()
+    # The original download is kept in imported/, not destroyed — normalization loss
+    # can never cost the user their export.
+    assert (dumps / "imported" / "claude-export").exists()
 
     with get_session() as s:
         t = s.execute(select(Thread).where(Thread.source == "claude")).scalar_one()
         assert t.title == "Dropped Web Chat" and t.source_id == "conv-1"
 
-    # Empty drop zone → later polls are no-ops.
+    # The retained copy isn't rescanned; later polls are no-ops.
     assert w.poll().items_imported == 0
 
 
-def test_dropped_zip_imports_and_is_deleted(archive_home) -> None:
+def test_dropped_zip_imports_and_is_retained(archive_home) -> None:
     init_db()
     dumps = archive_home / "dumps"
     z = _claude_zip(dumps, "claude-export.zip")
@@ -92,6 +96,7 @@ def test_dropped_zip_imports_and_is_deleted(archive_home) -> None:
     r = w.poll()          # import
     assert r.items_imported == 1
     assert not z.exists()
+    assert (dumps / "imported" / "claude-export.zip").exists()
     assert _claude_count() == 1
 
 
@@ -119,6 +124,7 @@ def test_still_copying_file_is_not_imported_until_stable(archive_home) -> None:
     r_done = w.poll()  # signal B == B → settled
     assert r_done.items_imported == 1
     assert not z.exists()
+    assert (dumps / "imported" / "growing.zip").exists()
 
 
 # ── failure handling: quarantine, never delete ───────────────────────────────
@@ -194,6 +200,34 @@ def test_zero_processed_import_is_quarantined_not_deleted(archive_home, monkeypa
     assert _claude_count() == 0
 
 
+def test_partially_errored_import_is_quarantined_not_retained(archive_home, monkeypatch) -> None:
+    """An import where some conversations errored (preserved as stubs) is quarantined
+    for review — not retained as if clean, and above all not deleted. Sol's finding:
+    the watcher used to clear the export whenever it processed ≥1 conversation, even
+    when some errored."""
+    init_db()
+    dumps = archive_home / "dumps"
+    export_dir = _claude_batch_dir(dumps, "claude-export")
+
+    from thread_archive._importers.exports import ExportImportResult
+    from thread_archive._watcher import export_drop
+
+    def _partial(path, **kw):
+        # processed>0 with a stubbed-out errored conversation: the old code deleted this.
+        return ExportImportResult(processed=2, imported=1, skipped=0, events_created=3, errored=1)
+
+    monkeypatch.setattr(export_drop, "import_claude_ai_export", _partial)
+
+    w = ExportDropWatcher(dumps_dir=dumps)
+    w.poll()              # settle
+    r = w.poll()          # import → errored>0 → quarantine
+    assert r.items_imported == 1 and r.errors
+
+    assert not export_dir.exists()
+    assert (dumps / "failed" / "claude-export").exists()
+    assert not (dumps / "imported" / "claude-export").exists()
+
+
 def test_dropped_chatgpt_zip_imports_as_chatgpt(archive_home) -> None:
     """The historical failure shape: a ChatGPT export ZIP (which also carries a
     root ``conversations.json``) must import as ChatGPT — not classify as
@@ -222,9 +256,10 @@ def test_dropped_chatgpt_zip_imports_as_chatgpt(archive_home) -> None:
 
     w = ExportDropWatcher(dumps_dir=dumps)
     w.poll()              # settle
-    r = w.poll()          # classify → chatgpt → import → delete
+    r = w.poll()          # classify → chatgpt → import → retain
     assert r.items_imported == 1 and not r.errors
     assert not path.exists()
+    assert (dumps / "imported" / "chatgpt-export.zip").exists()
 
     with get_session() as s:
         t = s.execute(select(Thread).where(Thread.source == "chatgpt")).scalar_one()
@@ -252,6 +287,8 @@ def test_redropping_same_content_imports_nothing_but_still_clears(archive_home) 
     assert r.items_imported == 0
     assert _claude_count() == 1
     assert not again.exists()
+    # A redundant re-drop is still retained, not deleted.
+    assert (dumps / "imported" / "export-b").exists()
 
 
 def test_default_watchers_includes_export_drop(archive_home) -> None:

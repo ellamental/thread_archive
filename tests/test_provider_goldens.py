@@ -41,6 +41,10 @@ from thread_archive._importers import (
     import_opencode_db,
     import_session_incremental,
 )
+from thread_archive._importers.exports import (
+    import_chatgpt_export,
+    import_claude_ai_export,
+)
 from thread_archive._store import init_db
 
 GOLDEN_DIR = Path(__file__).parent / "goldens" / "providers"
@@ -119,6 +123,72 @@ ANTIGRAVITY = [
     {"step_index": 2, "source": "MODEL", "type": "PLANNER_RESPONSE", "status": "done",
      "created_at": "2026-01-01T10:00:05Z", "content": "On it — fixed the golden bug."},
 ]
+
+# ChatGPT account-export conversation with the two shapes prior imports lost: a
+# branch (a regenerated assistant reply off the active path — n1 has two children,
+# `current_node` reaches only a1) and an image-only user turn carrying an
+# `image_asset_pointer` (no text — the whole turn used to vanish on import). Locks:
+# every node's `branch.parent_id`, `branch.active_path: false` on the off-path reply,
+# and the preserved asset_pointer on the image turn's user_message_sent.
+CHATGPT_EXPORT = [{
+    "id": "gpt-conv-gold", "title": "Golden GPT Chat",
+    "create_time": 1767261600.0, "update_time": 1767261660.0,
+    "current_node": "a2",
+    "mapping": {
+        "root": {"id": "root", "parent": None, "children": ["n1"], "message": None},
+        "n1": {"id": "n1", "parent": "root", "children": ["a1", "a1b"], "message": {
+            "id": "n1", "author": {"role": "user"}, "create_time": 1767261600.0,
+            "content": {"content_type": "text", "parts": ["what's 2+2?"]},
+            "status": "finished_successfully", "metadata": {}}},
+        "a1": {"id": "a1", "parent": "n1", "children": ["nimg"], "message": {
+            "id": "a1", "author": {"role": "assistant"}, "create_time": 1767261605.0,
+            "content": {"content_type": "text", "parts": ["4"]},
+            "status": "finished_successfully", "metadata": {"model_slug": "gpt-4o"}}},
+        "a1b": {"id": "a1b", "parent": "n1", "children": [], "message": {
+            "id": "a1b", "author": {"role": "assistant"}, "create_time": 1767261607.0,
+            "content": {"content_type": "text", "parts": ["It's four."]},
+            "status": "finished_successfully", "metadata": {"model_slug": "gpt-4o"}}},
+        "nimg": {"id": "nimg", "parent": "a1", "children": ["a2"], "message": {
+            "id": "nimg", "author": {"role": "user"}, "create_time": 1767261610.0,
+            "content": {"content_type": "multimodal_text", "parts": [
+                {"content_type": "image_asset_pointer",
+                 "asset_pointer": "file-service://file-GOLD",
+                 "size_bytes": 12345, "width": 640, "height": 480}]},
+            "status": "finished_successfully", "metadata": {}}},
+        "a2": {"id": "a2", "parent": "nimg", "children": [], "message": {
+            "id": "a2", "author": {"role": "assistant"}, "create_time": 1767261615.0,
+            "content": {"content_type": "text", "parts": ["Nice image!"]},
+            "status": "finished_successfully", "metadata": {"model_slug": "gpt-4o"}}},
+    },
+}]
+
+# claude.ai account-export conversation exercising the two upload shapes prior imports
+# dropped: an `attachments` entry (a document whose text is in `extracted_content`) and
+# a `files` entry (an image referenced by name/uuid, bytes outside the JSON). Locks that
+# both survive as their own content_block events in truth.
+CLAUDE_WEB = [{
+    "uuid": "claude-web-gold", "name": "Golden Claude Web Chat",
+    "created_at": "2026-01-01T10:00:00Z", "updated_at": "2026-01-01T10:01:00Z",
+    "chat_messages": [
+        {"uuid": "m1", "sender": "human", "text": "here are my notes",
+         "content": [{"type": "text", "text": "here are my notes"}],
+         "created_at": "2026-01-01T10:00:00Z",
+         "attachments": [{"file_name": "notes.txt", "file_type": "text/plain",
+                          "file_size": 30, "extracted_content": "the extracted text of my notes"}],
+         "files": []},
+        {"uuid": "m2", "sender": "assistant", "text": "thanks, I read your notes",
+         "content": [{"type": "text", "text": "thanks, I read your notes"}],
+         "created_at": "2026-01-01T10:00:10Z"},
+        {"uuid": "m3", "sender": "human", "text": "and a picture",
+         "content": [{"type": "text", "text": "and a picture"}],
+         "created_at": "2026-01-01T10:00:20Z",
+         "attachments": [],
+         "files": [{"file_name": "diagram.png", "file_kind": "image", "file_uuid": "file-DIAGRAM"}]},
+        {"uuid": "m4", "sender": "assistant", "text": "nice diagram",
+         "content": [{"type": "text", "text": "nice diagram"}],
+         "created_at": "2026-01-01T10:00:30Z"},
+    ],
+}]
 
 
 def _make_cursor_db(path: Path) -> None:
@@ -298,3 +368,23 @@ def test_opencode_golden(archive_home) -> None:
     _make_opencode_db(db)
     import_opencode_db(db)
     _check_golden("opencode", str(archive_home))
+
+
+def test_chatgpt_web_export_golden(archive_home) -> None:
+    init_db()
+    export_dir = archive_home / "chatgpt-export"
+    export_dir.mkdir()
+    (export_dir / "conversations.json").write_text(json.dumps(CHATGPT_EXPORT), encoding="utf-8")
+    (export_dir / "user.json").write_text(json.dumps({"id": "u1"}), encoding="utf-8")
+    import_chatgpt_export(export_dir)
+    _check_golden("chatgpt-web", str(archive_home))
+
+
+def test_claude_web_export_golden(archive_home) -> None:
+    init_db()
+    export_dir = archive_home / "claude-web-export"
+    export_dir.mkdir()
+    (export_dir / "conversations.json").write_text(json.dumps(CLAUDE_WEB), encoding="utf-8")
+    (export_dir / "users.json").write_text(json.dumps([{"uuid": "user-1"}]), encoding="utf-8")
+    import_claude_ai_export(export_dir)
+    _check_golden("claude-web", str(archive_home))

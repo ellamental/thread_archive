@@ -1,0 +1,286 @@
+[
+ {
+  "description": null,
+  "name": "chatgpt:gpt-conv-gold",
+  "source": "chatgpt",
+  "source_id": "gpt-conv-gold",
+  "source_metadata": {
+   "provider": "chatgpt",
+   "surface": "web"
+  },
+  "title": "Golden GPT Chat",
+  "type": "thread"
+ },
+ {
+  "api_call": null,
+  "dedup_key": "n1:user_message_sent::ae7085e29c8b1e4f",
+  "event_type": "user_message_sent",
+  "occurred_at": "2026-01-01T10:00:00+00:00",
+  "payload": {
+   "branch": {
+    "parent_id": "root"
+   },
+   "content": "what's 2+2?",
+   "provider_data": {
+    "provider_message_id": "n1"
+   }
+  },
+  "stream": "s0",
+  "type": "event"
+ },
+ {
+  "api_call": "c0",
+  "dedup_key": "a1:api_request_started::b809030caf4b51f6",
+  "event_type": "api_request_started",
+  "occurred_at": "2026-01-01T10:00:05+00:00",
+  "payload": {
+   "branch": {
+    "parent_id": "n1"
+   },
+   "model": "gpt-4o",
+   "provider_data": {
+    "provider_message_id": "a1"
+   }
+  },
+  "stream": "s0",
+  "type": "event"
+ },
+ {
+  "api_call": "c0",
+  "dedup_key": "a1:text_complete:blk=0:dde37c0db745d1a2",
+  "event_type": "text_complete",
+  "occurred_at": "2026-01-01T10:00:05+00:00",
+  "payload": {
+   "block_index": 0,
+   "branch": {
+    "parent_id": "n1"
+   },
+   "text": "4"
+  },
+  "stream": "s0",
+  "type": "event"
+ },
+ {
+  "api_call": "c0",
+  "dedup_key": "a1:api_request_completed::0b82743491d3cba1",
+  "event_type": "api_request_completed",
+  "occurred_at": "2026-01-01T10:00:05+00:00",
+  "payload": {
+   "branch": {
+    "parent_id": "n1"
+   },
+   "content_blocks": [
+    {
+     "text": "4",
+     "type": "text"
+    }
+   ],
+   "input_tokens": 0,
+   "model": "gpt-4o",
+   "output_tokens": 0,
+   "stop_reason": "end_turn",
+   "thinking_tokens": 0
+  },
+  "stream": "s0",
+  "type": "event"
+ },
+ {
+  "api_call": "c0",
+  "dedup_key": "a1:stream_completed::44136fa355b3678a",
+  "event_type": "stream_completed",
+  "occurred_at": "2026-01-01T10:00:05+00:00",
+  "payload": {
+   "branch": {
+    "parent_id": "n1"
+   }
+  },
+  "stream": "s0",
+  "type": "event"
+ },
+ {
+  "api_call": "c1",
+  "dedup_key": "a1b:api_request_started::b809030caf4b51f6",
+  "event_type": "api_request_started",
+  "occurred_at": "2026-01-01T10:00:07+00:00",
+  "payload": {
+   "branch": {
+    "active_path": false,
+    "parent_id": "n1"
+   },
+   "model": "gpt-4o",
+   "provider_data": {
+    "provider_message_id": "a1b"
+   }
+  },
+  "stream": "s0",
+  "type": "event"
+ },
+ {
+  "api_call": "c1",
+  "dedup_key": "a1b:text_complete:blk=0:0eb46d077874870f",
+  "event_type": "text_complete",
+  "occurred_at": "2026-01-01T10:00:07+00:00",
+  "payload": {
+   "block_index": 0,
+   "branch": {
+    "active_path": false,
+    "parent_id": "n1"
+   },
+   "text": "It's four."
+  },
+  "stream": "s0",
+  "type": "event"
+ },
+ {
+  "api_call": "c1",
+  "dedup_key": "a1b:api_request_completed::504467b85091f7ff",
+  "event_type": "api_request_completed",
+  "occurred_at": "2026-01-01T10:00:07+00:00",
+  "payload": {
+   "branch": {
+    "active_path": false,
+    "parent_id": "n1"
+   },
+   "content_blocks": [
+    {
+     "text": "It's four.",
+     "type": "text"
+    }
+   ],
+   "input_tokens": 0,
+   "model": "gpt-4o",
+   "output_tokens": 0,
+   "stop_reason": "end_turn",
+   "thinking_tokens": 0
+  },
+  "stream": "s0",
+  "type": "event"
+ },
+ {
+  "api_call": "c1",
+  "dedup_key": "a1b:stream_completed::44136fa355b3678a",
+  "event_type": "stream_completed",
+  "occurred_at": "2026-01-01T10:00:07+00:00",
+  "payload": {
+   "branch": {
+    "active_path": false,
+    "parent_id": "n1"
+   }
+  },
+  "stream": "s0",
+  "type": "event"
+ },
+ {
+  "api_call": null,
+  "dedup_key": "nimg:user_message_sent::a74952184927abba",
+  "event_type": "user_message_sent",
+  "occurred_at": "2026-01-01T10:00:10+00:00",
+  "payload": {
+   "branch": {
+    "parent_id": "a1"
+   },
+   "content": "",
+   "content_type": "multimodal",
+   "images": [
+    {
+     "asset_pointer": "file-service://file-GOLD",
+     "media_type": "image_asset_pointer",
+     "metadata": {
+      "height": 480,
+      "size_bytes": 12345,
+      "width": 640
+     }
+    }
+   ],
+   "provider_data": {
+    "provider_message_id": "nimg"
+   }
+  },
+  "stream": "s1",
+  "type": "event"
+ },
+ {
+  "api_call": "c2",
+  "dedup_key": "a2:api_request_started::b809030caf4b51f6",
+  "event_type": "api_request_started",
+  "occurred_at": "2026-01-01T10:00:15+00:00",
+  "payload": {
+   "branch": {
+    "parent_id": "nimg"
+   },
+   "model": "gpt-4o",
+   "provider_data": {
+    "provider_message_id": "a2"
+   }
+  },
+  "stream": "s1",
+  "type": "event"
+ },
+ {
+  "api_call": "c2",
+  "dedup_key": "a2:text_complete:blk=0:00308cae7328e1b5",
+  "event_type": "text_complete",
+  "occurred_at": "2026-01-01T10:00:15+00:00",
+  "payload": {
+   "block_index": 0,
+   "branch": {
+    "parent_id": "nimg"
+   },
+   "text": "Nice image!"
+  },
+  "stream": "s1",
+  "type": "event"
+ },
+ {
+  "api_call": "c2",
+  "dedup_key": "a2:api_request_completed::c5cfa15f6a29dc4a",
+  "event_type": "api_request_completed",
+  "occurred_at": "2026-01-01T10:00:15+00:00",
+  "payload": {
+   "branch": {
+    "parent_id": "nimg"
+   },
+   "content_blocks": [
+    {
+     "text": "Nice image!",
+     "type": "text"
+    }
+   ],
+   "input_tokens": 0,
+   "model": "gpt-4o",
+   "output_tokens": 0,
+   "stop_reason": "end_turn",
+   "thinking_tokens": 0
+  },
+  "stream": "s1",
+  "type": "event"
+ },
+ {
+  "api_call": "c2",
+  "dedup_key": "a2:stream_completed::44136fa355b3678a",
+  "event_type": "stream_completed",
+  "occurred_at": "2026-01-01T10:00:15+00:00",
+  "payload": {
+   "branch": {
+    "parent_id": "nimg"
+   }
+  },
+  "stream": "s1",
+  "type": "event"
+ },
+ {
+  "description": null,
+  "name": "chatgpt:gpt-conv-gold",
+  "source": "chatgpt",
+  "source_id": "gpt-conv-gold",
+  "source_metadata": {
+   "models": [
+    "gpt-4o"
+   ],
+   "provider": "chatgpt",
+   "surface": "web"
+  },
+  "title": "Golden GPT Chat",
+  "type": "thread"
+ }
+]
