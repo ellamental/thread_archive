@@ -2,6 +2,36 @@
 
 ## Unreleased
 
+- **The format-drift alarm detects drift again (2026-07-15).** Every recent
+  validation-drift record (315/315 over the prior week) was the claude-code parser
+  flagging its own deliberate preservation block types (`unknown_line`, `attachment`,
+  `model_change`) — self-noise that buried any real signal. Those types are now
+  registered as expected, and the real signal got sharper: an `unknown_line` block
+  whose *line kind* isn't one the parser knowingly preserves (`last-prompt`,
+  `ai-title`, `custom-title`, `mode`, `file-history-delta`) files a finding naming
+  the new line type specifically.
+
+- **`archive status` shows the nightly pipeline's verdict (2026-07-15).** A red
+  nightly (e.g. the offsite stage failing on a TCC denial) was invisible in status
+  while an ad-hoc same-disk mirror showed "backup: ok" — the one line that says
+  whether the archive survives disk loss lived only in health.json. Status now
+  prints `nightly: ok/FAILED (stages) → dest`. The same-filesystem backup warning
+  is also rethought: offsite is opt-in and the archive can't assume it knows the
+  machine's whole posture, so the shouty WARNING is now a factual note — and when
+  the disk is covered by a detectable external backup (Time Machine, via `tmutil`),
+  the note says so instead of implying the archive is unprotected.
+
+- **Coverage warns when an account-export source goes stale (2026-07-15).** claude.ai
+  and ChatGPT reach the archive only via manual exports; nothing nudged when the
+  last drop aged out (chatgpt sat 127 days stale, silently). `archive coverage` now
+  warns (never red) when an export-fed source's newest event exceeds 45 days;
+  disabling the source in config.json silences it.
+
+- **Store write timeout raised 60s → 300s (2026-07-15).** Bulk maintenance
+  (full-corpus FTS rebuilds, repair/backfill migrations) holds the SQLite write
+  lock for several minutes; 60s was undersized for exactly that case and errored
+  35 watcher imports into health during the 07-12 migration window.
+
 - **Reindex survives an archive that mixes full and event-only thread files
   (2026-07-15).** `reindex` bulk-loads each batch of thread records with one
   `INSERT OR REPLACE` executemany, which SQLAlchemy compiles from the first row's

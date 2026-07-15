@@ -264,6 +264,40 @@ def test_coverage_reports_unwatched_sources(archive_home, tmp_path):
     assert r["unwatched"]["chatgpt"]["newest_event_at"] is not None
 
 
+def test_coverage_warns_on_stale_export_fed_source(archive_home, tmp_path):
+    # chatgpt/claude reach the archive only via manual account exports; aging
+    # past the window is a coverage hole with no other surface — warn, never red.
+    f = tmp_path / "chatgpt-like.jsonl"
+    write_jsonl(f, [cc_user("st"), cc_assistant("st")])  # fixture events are old
+    ta.open_archive()
+    import_session_incremental(f, "st-1", source="chatgpt")
+    r = check_coverage(watchers=[])
+    assert r["ok"]
+    assert r["unwatched"]["chatgpt"]["warning"] == "export_stale"
+    assert any("account export is stale" in msg for msg in r["warnings"])
+
+    # A generous-enough window keeps it quiet.
+    r = check_coverage(watchers=[], export_stale_days=365 * 50)
+    assert "warning" not in r["unwatched"]["chatgpt"]
+    assert not r["warnings"]
+
+
+def test_coverage_export_staleness_respects_config_opt_out(archive_home, tmp_path):
+    import json as _json
+
+    from thread_archive._config import resolve_paths
+
+    f = tmp_path / "chatgpt-like.jsonl"
+    write_jsonl(f, [cc_user("od"), cc_assistant("od")])
+    ta.open_archive()
+    import_session_incremental(f, "od-1", source="chatgpt")
+    cfg_path = resolve_paths().home / "config.json"
+    cfg_path.write_text(_json.dumps({"sources": {"chatgpt": {"enabled": False}}}))
+    r = check_coverage(watchers=[])
+    assert "warning" not in r["unwatched"]["chatgpt"]
+    assert not r["warnings"]
+
+
 def test_out_of_band_coverage_run_retires_nightly_stage(archive_home):
     record_health("nightly_last", {"ok": False, "failed_stages": ["coverage"]})
     assert pipeline_verdict()["failed_stages"] == ["coverage"]

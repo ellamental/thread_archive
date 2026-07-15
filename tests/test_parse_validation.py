@@ -59,6 +59,34 @@ def test_unknown_block_type_surfaces_as_drift(caplog, archive_home):
     assert any("Unknown content block type 'wobble'" in m for m in _validation_logs(caplog))
 
 
+def test_parser_preservation_block_types_are_not_drift(caplog, archive_home):
+    # The claude-code parser deliberately emits attachment / model_change /
+    # unknown_line blocks as preservation records. Its own output must not
+    # saturate the drift ledger — that noise buried real drift for weeks.
+    msgs = [
+        _msg("system", block_type="attachment"),
+        _msg("user", block_type="model_change"),
+    ]
+    msgs.append(_msg("system", block_type="unknown_line"))
+    msgs[-1]["content_blocks"][0]["line_type"] = "ai-title"
+    with caplog.at_level(logging.WARNING, logger=_EVENTS_LOGGER):
+        log_parse_validation(msgs, provider="claude-code", conversation_id="c1", batch_safe=True)
+    assert _validation_logs(caplog) == []
+
+
+def test_genuinely_new_line_type_is_drift_named_specifically(caplog, archive_home):
+    # An unknown_line whose line_type the parser has never declared IS the
+    # drift signal — and the finding names the new line kind, not the wrapper.
+    msgs = [_msg("system", block_type="unknown_line")]
+    msgs[0]["content_blocks"][0]["line_type"] = "holo-transcript"
+    with caplog.at_level(logging.WARNING, logger=_EVENTS_LOGGER):
+        log_parse_validation(msgs, provider="claude-code", conversation_id="c1", batch_safe=True)
+    assert any(
+        "Unmodeled source line type 'holo-transcript'" in m for m in _validation_logs(caplog)
+    )
+    assert not any("'unknown_line'" in m for m in _validation_logs(caplog))
+
+
 def test_empty_messages_is_a_noop(caplog):
     with caplog.at_level(logging.WARNING, logger=_EVENTS_LOGGER):
         log_parse_validation([], provider="claude-code", conversation_id="c1", batch_safe=True)

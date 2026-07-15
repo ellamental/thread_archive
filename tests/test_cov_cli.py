@@ -765,18 +765,23 @@ def test_status_all_ok(monkeypatch, capsys) -> None:
         last_verify={"ok": True, "at": old},
         last_backup={"ok": True, "dest": "/vol/bak", "at": old, "same_device": True},
         last_restore_drill={"ok": True, "coverage": 0.99, "at": old},
+        last_nightly={"ok": True, "dest": "/vol/bak", "at": old},
         last_coverage={"ok": True, "sources_checked": 6, "at": old},
         last_watch_pass={"at": old, "sources": {"cc": {"events": 3, "parse_errors": 2}}},
         last_watch_errors={"at": old, "count_since_start": 4,
                            "errors": ["e1", "e2", "e3", "e4"]},
     )
     monkeypatch.setattr(api, "status", lambda **kw: st)
+    from thread_archive._ops import backup as backup_mod
+    monkeypatch.setattr(backup_mod, "external_disk_coverage", lambda p: None)
     rc = main(["status", "--home", "/h"])
     assert rc == 0
     out = capsys.readouterr().out
     assert "verify:  ok" in out
     assert "backup:  ok → /vol/bak" in out
-    assert "same filesystem as the archive" in out
+    assert "shares the archive's filesystem" in out
+    assert "not disk loss" in out
+    assert "nightly: ok → /vol/bak" in out
     assert "drill:   ok coverage=0.99" in out
     assert "coverage: ok (6 sources)" in out
     assert "3 events since pass-owner start" in out
@@ -786,12 +791,31 @@ def test_status_all_ok(monkeypatch, capsys) -> None:
     assert "e3" in out and "e4" not in out
 
 
+def test_status_same_device_notes_external_coverage(monkeypatch, capsys) -> None:
+    # A same-filesystem mirror on a Time-Machine-covered disk reports the real
+    # posture (covered externally) instead of implying an unprotected archive.
+    old = "2026-07-10T00:00:00+00:00"
+    st = _status_base(
+        last_backup={"ok": True, "dest": "/vol/bak", "at": old, "same_device": True},
+    )
+    monkeypatch.setattr(api, "status", lambda **kw: st)
+    from thread_archive._ops import backup as backup_mod
+    monkeypatch.setattr(backup_mod, "external_disk_coverage", lambda p: "Time Machine")
+    rc = main(["status"])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "covered externally by Time Machine" in out
+    assert "not disk loss" not in out
+
+
 def test_status_all_failed(monkeypatch, capsys) -> None:
     old = "2026-07-10T00:00:00+00:00"
     st = _status_base(
         last_verify={"ok": False, "failed": ["drift"], "at": old},
         last_backup={"ok": False, "dest": "/vol/bak", "at": old},
         last_restore_drill={"ok": False, "coverage": 0.1, "at": old},
+        last_nightly={"ok": False, "dest": "/vol/off",
+                      "failed_stages": ["backup", "restore-drill"], "at": old},
         last_coverage={"ok": False, "at": old, "failed": ["m1", "m2", "m3", "m4"]},
         last_watch_pass={"at": old, "sources": {}},
     )
@@ -801,6 +825,7 @@ def test_status_all_failed(monkeypatch, capsys) -> None:
     out = capsys.readouterr().out
     assert "verify:  FAILED (drift)" in out
     assert "backup:  FAILED → /vol/bak" in out
+    assert "nightly: FAILED (backup, restore-drill) → /vol/off" in out
     assert "drill:   FAILED" in out
     assert "coverage: FAILED" in out
     assert "m1" in out and "m3" in out and "m4" not in out  # capped at 3

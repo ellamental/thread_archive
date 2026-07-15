@@ -23,7 +23,10 @@ coverage is their reconciliation:
   either a first import still in flight, or a hole.
 - **report-only**: sources disabled in config, and archive sources with no
   watcher at all (export-based providers age between manual drops; that is
-  expected, so their age is shown, never red). Disabled sources report their
+  expected, so their age is shown, never red — except that a known export-fed
+  source aging past ``EXPORT_STALE_DAYS`` earns a *warning*: the archive can't
+  watch a provider's servers, so "time to drop a fresh export" has no other
+  surface). Disabled sources report their
   store's current activity alongside their import history: a deliberate
   opt-out's store staying active is normal, but a source disabled by
   *accident* (a config bug, a wizard regression) has no other surface where
@@ -48,6 +51,12 @@ GRACE_HOURS = 6.0
 # Sessions of imported history before a missing store reads as "went dark"
 # rather than "was never really used here".
 MIN_HISTORY_FOR_DARK = 5
+# Sources fed only by manual account exports — no watcher can exist for them, so
+# they age between drops by design. Past this window the aging is a coverage
+# hole worth a warning: everything since the last export exists only on the
+# provider's servers. Disabling the source in config.json silences it.
+EXPORT_FED_SOURCES = {"claude": "claude.ai", "chatgpt": "ChatGPT"}
+EXPORT_STALE_DAYS = 45.0
 
 
 def _iso(epoch: Optional[float]) -> Optional[str]:
@@ -102,6 +111,7 @@ def check_coverage(
     all_watchers: Optional[list] = None,
     grace_hours: float = GRACE_HOURS,
     min_history: int = MIN_HISTORY_FOR_DARK,
+    export_stale_days: float = EXPORT_STALE_DAYS,
 ) -> dict:
     """Reconcile every enabled source's store against the archive (see module
     docstring for the checks). Returns the full report; records a compact
@@ -196,11 +206,30 @@ def check_coverage(
                 "store_latest": _iso(d.latest),
             }
     watcher_names = {w.source_name for w in all_watchers}
-    unwatched = {
-        source: {"newest_event_at": _iso(epoch)}
-        for source, epoch in sorted(newest_event.items())
-        if source and source not in watcher_names
-    }
+    from .._config import load_config, source_enabled
+
+    cfg = load_config(home)
+    now = datetime.now(timezone.utc).timestamp()
+    unwatched: dict[str, dict] = {}
+    for source, epoch in sorted(newest_event.items()):
+        if not source or source in watcher_names:
+            continue
+        uw_entry: dict = {"newest_event_at": _iso(epoch)}
+        label = EXPORT_FED_SOURCES.get(source)
+        if (
+            label
+            and epoch is not None
+            and source_enabled(cfg, source)
+            and now - epoch > export_stale_days * 86400
+        ):
+            uw_entry["warning"] = "export_stale"
+            warnings.append(
+                f"{source} account export is stale: newest archived event is "
+                f"{(now - epoch) / 86400:.0f}d old — conversations since then exist "
+                f"only on {label}'s servers (drop a fresh export, or disable the "
+                "source in config.json)"
+            )
+        unwatched[source] = uw_entry
 
     skips = summarize_skips()
     drift = summarize_drift()

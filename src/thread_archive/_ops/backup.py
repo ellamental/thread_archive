@@ -34,6 +34,37 @@ _GEN_KEEP_RECENT = 7
 _GEN_KEEP_MONTHS = 6
 
 
+def external_disk_coverage(path: Path) -> Optional[str]:
+    """Name the external whole-disk backup covering ``path``, or None.
+
+    A same-filesystem mirror protects against bad writes, not disk loss — but
+    the machine may already carry disk-loss protection the archive didn't set
+    up (opt-in offsite is a choice, not a requirement). Where that protection
+    is detectable, name it so status can report the true posture instead of
+    warning about a gap that doesn't exist. Today this detects macOS Time
+    Machine (``tmutil``): a configured destination with ``path`` not excluded.
+    Fail-soft: any probe error reads as "not detected"."""
+    import platform
+    import subprocess
+
+    if platform.system() != "Darwin":
+        return None
+    try:
+        dests = subprocess.run(
+            ["tmutil", "destinationinfo"], capture_output=True, text=True, timeout=10
+        )
+        if dests.returncode != 0 or "No destinations configured" in dests.stdout:
+            return None
+        excluded = subprocess.run(
+            ["tmutil", "isexcluded", str(path)], capture_output=True, text=True, timeout=10
+        )
+        if excluded.returncode == 0 and "[Included]" in excluded.stdout:
+            return "Time Machine"
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return None
+
+
 def _is_append_only_truth(rel: Path) -> bool:
     """True for truth files that only ever grow in normal operation: the per-thread
     files and the curatorial event log. The cross-thread overlay snapshots and

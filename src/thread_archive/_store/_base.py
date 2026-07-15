@@ -80,12 +80,14 @@ def _attach_sqlite_pragmas(engine: Engine, *, enforce_fk: bool = True) -> None:
         cur.execute("PRAGMA journal_mode=WAL")
         cur.execute("PRAGMA foreign_keys=ON" if enforce_fk else "PRAGMA foreign_keys=OFF")
         # Sized to ride out an in-place maintenance transaction (rebuild_fts
-        # over the full corpus holds the write lock for minutes) rather than
-        # a normal commit. Under WAL only writers wait — readers are never
-        # blocked — so a long timeout costs nothing on the read path, and a
-        # blocked writer that waits here converges instead of erroring into
-        # health and retrying a poll later.
-        cur.execute("PRAGMA busy_timeout=60000")
+        # over the full corpus, a bulk repair/backfill) which can hold the
+        # write lock for several minutes — 60s demonstrably wasn't enough and
+        # errored watcher imports into health during exactly those windows.
+        # Under WAL only writers wait — readers are never blocked — so a long
+        # timeout costs nothing on the read path, and a blocked writer that
+        # waits here converges instead of erroring into health and retrying a
+        # poll later.
+        cur.execute("PRAGMA busy_timeout=300000")
         cur.close()
 
 

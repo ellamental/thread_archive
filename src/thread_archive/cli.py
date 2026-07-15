@@ -679,12 +679,40 @@ def cmd_status(args: argparse.Namespace) -> int:
         if b else "backup:  never recorded"
     )
     if b and b.get("same_device"):
-        print("         WARNING: backup destination is on the same filesystem as the archive")
+        # A same-filesystem mirror is a legitimate opt-in posture (and the disk
+        # may carry protection the archive didn't set up — Time Machine, etc.),
+        # so this is a note, not an alarm. Name external coverage when we can
+        # detect it; otherwise state plainly what the mirror does and doesn't do.
+        from pathlib import Path
+
+        from ._ops.backup import external_disk_coverage
+
+        covered_by = external_disk_coverage(Path(st["truth_dir"]))
+        if covered_by:
+            print(
+                "         note: backup shares the archive's filesystem; "
+                f"disk loss is covered externally by {covered_by}"
+            )
+        else:
+            print(
+                "         note: backup shares the archive's filesystem — it protects "
+                "against bad writes, not disk loss"
+            )
     print(
         f"drill:   {'ok' if d['ok'] else 'FAILED'} coverage={d.get('coverage')} "
         f"{d['at']} ({_age(d['at'])})"
         if d else "drill:   never recorded"
     )
+    n = st.get("last_nightly")
+    if n:
+        # The nightly is the scheduled protection pipeline (opt-in; only ever
+        # printed once one has run). Its verdict is the headline: a green
+        # ad-hoc backup line above must not mask a red pipeline.
+        if n.get("ok"):
+            print(f"nightly: ok → {n.get('dest')} {n['at']} ({_age(n['at'])})")
+        else:
+            stages = ", ".join(n.get("failed_stages", [])) or "see logs/backup-stdout.log"
+            print(f"nightly: FAILED ({stages}) → {n.get('dest')} {n['at']} ({_age(n['at'])})")
     c = st.get("last_coverage")
     if c and c["ok"]:
         print(
@@ -735,7 +763,8 @@ def cmd_coverage(args: argparse.Namespace) -> int:
     for name, s in sorted(r["disabled"].items()):
         print(f"{name:<16} {'disabled':<16} history={s['history']}")
     for name, s in sorted(r["unwatched"].items()):
-        print(f"{name:<16} {'unwatched':<16} newest_event={s['newest_event_at'] or '-'}")
+        state = s.get("warning") or "unwatched"
+        print(f"{name:<16} {state:<16} newest_event={s['newest_event_at'] or '-'}")
     sk = r["skips"]
     if sk["total"]:
         print(

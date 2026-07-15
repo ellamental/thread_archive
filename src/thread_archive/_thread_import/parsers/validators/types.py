@@ -26,6 +26,9 @@ KNOWN_BLOCK_TYPES: Set[str] = {
     "ide_context",
     "queue_operation",
     "progress",
+    "attachment",
+    "model_change",
+    "unknown_line",
 }
 
 
@@ -45,6 +48,7 @@ class TypeValidator(BaseValidator):
         """Validate types across all messages."""
         unknown_roles: Set[str] = set()
         unknown_block_types: Set[str] = set()
+        unmodeled_line_types: Set[str] = set()
 
         for msg in messages:
             role = msg.get("role", "")
@@ -68,6 +72,15 @@ class TypeValidator(BaseValidator):
                     ):
                         # Provider has restricted set - warn about unexpected
                         unknown_block_types.add(block_type)
+                # An unknown_line block is the parser's verbatim preservation of
+                # a line kind it doesn't model. Kinds the parser knowingly
+                # preserves (config.expected_unmodeled_line_types) are fine; any
+                # other kind means the provider grew a new line type — the
+                # actual format-drift signal, named specifically.
+                if block_type == "unknown_line":
+                    line_type = block.get("line_type") or "unknown"
+                    if line_type not in self.config.expected_unmodeled_line_types:
+                        unmodeled_line_types.add(line_type)
 
         # Report unknown types
         for role in sorted(unknown_roles):
@@ -82,6 +95,14 @@ class TypeValidator(BaseValidator):
             self._add_issue(
                 context,
                 f"Unknown content block type '{block_type}' - "
+                f"possible format change or new feature",
+                ValidationSeverity.warning,
+            )
+
+        for line_type in sorted(unmodeled_line_types):
+            self._add_issue(
+                context,
+                f"Unmodeled source line type '{line_type}' preserved verbatim - "
                 f"possible format change or new feature",
                 ValidationSeverity.warning,
             )

@@ -34,6 +34,11 @@ class ProviderConfig:
         has_parent_references: Whether messages have parent references
         expected_roles: Valid role values for this provider
         expected_block_types: Valid content block types for this provider
+        expected_unmodeled_line_types: Source line kinds the parser deliberately
+            preserves verbatim (as ``unknown_line`` blocks) without modeling —
+            known bookkeeping, not drift. An ``unknown_line`` block whose
+            ``line_type`` is NOT in this set is the drift signal: a line kind
+            the provider added that the parser has never seen.
         timestamp_format: How timestamps are formatted in exports
             - "unix_seconds": Unix timestamp in seconds
             - "unix_millis": Unix timestamp in milliseconds
@@ -50,6 +55,7 @@ class ProviderConfig:
         default_factory=lambda: {"user", "assistant", "system"}
     )
     expected_block_types: Set[str] = field(default_factory=set)
+    expected_unmodeled_line_types: Set[str] = field(default_factory=set)
     timestamp_format: Literal["unix_seconds", "unix_millis", "iso", "mixed"] = "mixed"
 
     def requires_thinking(self, model: Optional[str]) -> bool:
@@ -168,6 +174,19 @@ CLAUDE_CODE_CONFIG = ProviderConfig(
         "image",  # pasted screenshots/images in a Claude Code session
         "queue_operation",  # Claude Code's message-queue feature (queued while the agent works)
         "progress",  # hook/tool progress telemetry (e.g. PostToolUse hook callbacks)
+        "attachment",  # non-queued_command attachment sub-kinds, preserved as hidden system records
+        "model_change",  # a manual /model switch, preserved so the archive can show it
+        "unknown_line",  # verbatim preservation of an unmodeled line kind (see below)
+    },
+    # Line kinds the parser knowingly preserves verbatim without modeling:
+    # session-state bookkeeping (titles are consumed separately by the importer's
+    # _titles helpers). An unknown_line block outside this set is real drift.
+    expected_unmodeled_line_types={
+        "last-prompt",  # resume bookkeeping: copy of the latest prompt + leaf uuid
+        "ai-title",  # the auto-titler's current title (importer reads it for the thread title)
+        "custom-title",  # a user rename (wins over ai-title; importer reads it too)
+        "mode",  # permission-mode switches (normal/plan/…)
+        "file-history-delta",  # file-backup bookkeeping, sibling of file-history-snapshot
     },
     timestamp_format="iso",
 )
