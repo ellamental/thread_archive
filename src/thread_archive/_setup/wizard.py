@@ -4,9 +4,9 @@ The consumer front door: install the package, run ``thread_archive``, and the
 product explains itself — it discovers the machine's conversation stores and
 shows what it found *before* touching anything, states exactly where copies
 will live (local only), imports with consent and narration, then offers the
-always-on watcher and MCP wiring. Every step can be skipped, and decisions
-persist in ``<home>/config.json`` (see :mod:`.._config`) where every ingest
-path respects them.
+always-on watcher, a scheduled nightly backup, and MCP wiring. Every step can
+be skipped, and decisions persist in ``<home>/config.json`` (see
+:mod:`.._config`) where every ingest path respects them.
 
 ``archive`` remains the operator seam (backup / verify / nightly / daemon);
 this command owns setup and status only — retrieval stays with the MCP tools
@@ -24,6 +24,7 @@ import logging
 import sys
 import time
 from datetime import datetime
+from pathlib import Path
 from typing import Optional
 
 from .. import __version__
@@ -91,6 +92,17 @@ def _ask(prompt: str, *, default: str, interactive: bool) -> str:
     except EOFError:
         return default
     return raw or default
+
+
+def _ask_path(prompt: str, *, interactive: bool) -> str:
+    """A path prompt. Unlike :func:`_ask` it preserves case (a filesystem path
+    is case-sensitive); empty string on skip / EOF / non-TTY."""
+    if not interactive:
+        return ""
+    try:
+        return input(prompt).strip()
+    except EOFError:
+        return ""
 
 
 # ── the setup flow ───────────────────────────────────────────────────────────
@@ -194,11 +206,15 @@ def run_setup(args: argparse.Namespace, watchers: Optional[list] = None) -> int:
     cfg["setup"]["watcher"] = _offer_watcher(args, interactive)
     _say()
 
-    # 5. MCP wiring.
+    # 5. The scheduled nightly backup.
+    cfg["setup"]["backup"] = _offer_backup(args, interactive)
+    _say()
+
+    # 6. MCP wiring.
     cfg["setup"]["clients"] = {"claude": _offer_mcp(args, interactive)}
     _say()
 
-    # 6. Done.
+    # 7. Done.
     cfg["setup"]["completed_at"] = datetime.now().astimezone().isoformat(timespec="seconds")
     save_config(cfg, args.home)
     _say("Done. Ask your agent: \"what have we discussed about …?\"")
@@ -308,6 +324,57 @@ def _offer_watcher(args: argparse.Namespace, interactive: bool) -> str:
     return "launchd"
 
 
+def _offer_backup(args: argparse.Namespace, interactive: bool) -> dict:
+    """Offer to schedule the nightly durability pipeline (backup → verify →
+    restore drill). Returns the recorded outcome: ``{"status": ...}`` plus a
+    ``dest`` when one is known."""
+    if args.skip_backup:
+        _say("Nightly backup skipped (--skip-backup).")
+        return {"status": "skipped"}
+    if sys.platform != "darwin":
+        _say("Keep it safe: scheduled nightly backup ships for macOS only right now.")
+        _say("  Back up by hand anytime with `archive backup <dest>` (a copy of truth/ IS")
+        _say("  the backup), or point your own scheduler at `archive nightly <dest>`.")
+        return {"status": "unavailable"}
+
+    from .. import _launchd
+
+    # An already-loaded backup agent is left untouched — this is what keeps the
+    # wizard from clobbering an operator-installed pipeline (e.g. the host/ layer's
+    # NAS backup with its own remount + notify wiring) on a re-run.
+    if _backup_running(args.home):
+        dest = _launchd.backup_agent_dest()
+        _say("Keep it safe: a nightly backup job is already installed"
+             + (f" → {dest}." if dest else "."))
+        return {"status": "already-installed", **({"dest": dest} if dest else {})}
+
+    _say("Keep it safe? A nightly job (launchd) mirrors the archive to a second disk,")
+    _say("verifies it, and proves it restores — the durability kit, on a schedule.")
+    dest = args.backup_dest or _ask_path(
+        "  Where should nightly backups go? A path on a DIFFERENT disk\n"
+        "  (an external drive, a mounted NAS folder), or [Enter] to skip  > ",
+        interactive=interactive,
+    )
+    if not dest:
+        _say("  Skipped — back up anytime with `archive backup <dest>`; "
+             "`thread_archive setup` to revisit.")
+        return {"status": "skipped"}
+    dest_path = Path(dest).expanduser()
+    if not dest_path.is_absolute():
+        dest_path = dest_path.resolve()
+    try:
+        _launchd.install_backup(str(dest_path), args.home)
+    except SystemExit as e:
+        _say(f"  Could not schedule backup: {e}")
+        _say("  Back up by hand with `archive backup <dest>`, or "
+             "`archive daemon install --backup --dest <path>` to retry.")
+        return {"status": "failed"}
+    _say(f"  Scheduled — nightly at 04:00 → {dest_path}: backup, verify, restore drill.")
+    _say("  `thread_archive` shows the last run's result; point it at a DIFFERENT disk")
+    _say("  than the archive so one failure can't take both copies.")
+    return {"status": "launchd", "dest": str(dest_path)}
+
+
 def _offer_mcp(args: argparse.Namespace, interactive: bool) -> str:
     """Offer to wire detected MCP clients. Returns the recorded outcome."""
     from . import clients
@@ -387,6 +454,34 @@ def _watcher_running(home: Optional[str] = None) -> bool:
     return agent_paths.home == resolve_paths(home).home
 
 
+def _backup_running(home: Optional[str] = None) -> bool:
+    """Whether the launchd nightly-backup agent is loaded AND covers *this* home
+    (per-user agent; a loaded agent pointed at a different ``THREAD_ARCHIVE_HOME``
+    must not read as covering the home being asked about). An agent whose plist
+    sets no home env — the ``host/`` install shape — is read as the default
+    wiring, so the wizard treats the operator's pipeline as already covering the
+    default home and leaves it alone."""
+    if sys.platform != "darwin":
+        return False
+    import plistlib
+
+    from .. import _launchd
+
+    try:
+        proc = _launchd._launchctl("print", f"gui/{_launchd._uid()}/{_launchd.BACKUP_LABEL}")
+        if proc.returncode != 0:
+            return False
+    except OSError:  # pragma: no cover — launchctl missing
+        return False
+    try:
+        plist = plistlib.loads(_launchd._plist_path(_launchd.BACKUP_LABEL).read_bytes())
+        agent_home = plist.get("EnvironmentVariables", {}).get("THREAD_ARCHIVE_HOME")
+    except (OSError, plistlib.InvalidFileException):
+        return True  # loaded, plist unreadable — assume the default wiring
+    agent_paths = resolve_paths(agent_home)
+    return agent_paths.home == resolve_paths(home).home
+
+
 # ── status ───────────────────────────────────────────────────────────────────
 
 
@@ -412,9 +507,19 @@ def print_status(args: argparse.Namespace) -> int:
     if b:
         _say(f"  backup:   {'ok' if b['ok'] else 'FAILED'} {_age(b['at'])} → {b['dest']}")
     else:
-        _say("  backup:   never recorded — `archive backup <dest>` (a copy of truth/ IS the backup)")
+        _say("  backup:   never recorded — a copy of truth/ IS the backup")
     if v:
         _say(f"  verify:   {'ok' if v['ok'] else 'FAILED'} {_age(v['at'])}")
+    if sys.platform == "darwin":
+        if _backup_running(args.home):
+            from .. import _launchd
+
+            dest = _launchd.backup_agent_dest()
+            _say("  schedule: nightly backup + verify + restore-drill installed"
+                 + (f" → {dest}" if dest else ""))
+        else:
+            _say("  schedule: no nightly backup — `thread_archive setup` offers it "
+                 "(or `archive daemon install --backup --dest <path>`)")
     _say()
     _say("  search/read: the archive-mcp tools · web viewer: http://127.0.0.1:8787 (with the watcher)")
     _say("  re-run setup: thread_archive setup · operator CLI: archive --help")
@@ -457,6 +562,9 @@ def build_parser() -> argparse.ArgumentParser:
                         help="archive home dir (default: $THREAD_ARCHIVE_HOME or ~/.thread/archive)")
     parser.add_argument("--skip-import", action="store_true", help="setup: don't import now")
     parser.add_argument("--skip-watcher", action="store_true", help="setup: don't offer the watcher")
+    parser.add_argument("--skip-backup", action="store_true", help="setup: don't offer nightly backup")
+    parser.add_argument("--backup-dest", default=None, metavar="PATH",
+                        help="setup: schedule nightly backups to PATH without prompting")
     parser.add_argument("--skip-mcp", action="store_true", help="setup: don't offer MCP wiring")
     parser.add_argument("--version", action="version", version=f"thread-archive {__version__}")
     return parser

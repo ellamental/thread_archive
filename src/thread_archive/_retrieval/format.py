@@ -17,6 +17,7 @@ from sqlalchemy import text as sa_text
 
 from .._store import use_session
 from . import rank as _rank
+from . import subjects as _subjects
 from ._types import EventHit
 
 # output='count' wants a true tally, so the pipeline over-fetches to this cap; a
@@ -120,6 +121,10 @@ def format_results(hits: list[EventHit], query: str, *, output: str | None = Non
     lines = [header]
     if verdict and verdict[1]:
         lines.append(f"  note: {verdict[1]}")
+    if _subjects.enabled():
+        subj_line = _subjects.format_subjects_line(_subjects.subjects_for_results(hits))
+        if subj_line:  # the topic graph as orientation: what subjects these hits cluster under
+            lines.append(subj_line)
     lines.append("  open a hit: thread_read(thread_id, around_event=event_id)")
     lines.append("")
 

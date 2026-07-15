@@ -46,6 +46,8 @@ CLI_VERBS = {
     "nightly",
     "coverage",
     "repair",
+    "redact",
+    "unredact",
     "daemon",
 }
 

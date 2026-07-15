@@ -2,24 +2,100 @@
 
 ## Unreleased
 
-- **Topic-bridged recall: the subject graph as a third search arm (2026-07-15).**
-  `thread_search` now federates a third arm alongside lexical FTS5 and semantic
-  vectors: `_retrieval.topical` follows the lexical+vector seed pool through the
-  `topic_messages` links to the *other* conversations evidenced under the same
-  subject — optionally out to the subjects' Leiden community peers — and fuses them
-  in via RRF, so a chat that shares a subject with a hit but none of the query's
-  words (invisible to a term index, mid-list to a bi-encoder) becomes reachable.
-  A subject-linkage term (`_topical`) joins the ranker, IDF-damped by subject
-  breadth so a broad, stopword-like subject can't reorder the head; only a specific
-  subject's vouch lifts a hit, to roughly the tier of a strong lexical match. On the
-  usage-mined golden set this raises multi-target recall@5 (0.118→0.176) and
-  coverage@5 (0.078→0.137) with no regression at depth, and holds the auto-titles
-  retrieval-gate with wide headroom (MRR 0.57, recall@10 0.77 vs the 0.40/0.62
-  floors). Fail-soft and a strict no-op when the subject graph is empty, so it can
-  never break lexical search. On by default; `THREAD_ARCHIVE_TOPICAL=0` disables the
-  arm and `THREAD_ARCHIVE_TOPICAL_WEIGHT` tunes its rank weight (the eval's sweep
-  knob). The weight is tuned in-sample on a 17-case golden set — growing that set
-  (via `golden_from_usage.py`) is the prerequisite to raising it with confidence.
+- **Release process recorded (2026-07-15).** `docs/releasing.md` defines the
+  end-to-end release for the clone-install distribution model: preflight
+  (full suite + the `-m package` lane + GitHub CI), changelog compression of
+  this section into a dated release heading, the single-sourced version bump
+  in `thread_archive.__version__`, the `Release X.Y.Z` commit + annotated
+  `vX.Y.Z` tag pushed to GitHub, an outside-in `pip install git+…@vX.Y.Z`
+  verification, and rolling the local editable install (reinstall on
+  dep/entry-point changes, `archive daemon restart`). Agent-run end to end,
+  release commit and tag included — the monorepo's no-commit rule doesn't
+  apply in this standalone repo's release flow.
+
+- **Nightly backup is productized — the setup wizard schedules it (2026-07-15).**
+  The durability kit (backup → verify → restore-drill, via `archive nightly`)
+  was operator-only: a plain `pip install thread-archive` + `thread_archive`
+  wired the watcher and MCP but left backups *unscheduled* unless the user read
+  the operator section and hand-wrote a launchd/cron job — a shipped archive
+  with no second copy. Setup now asks **"where should nightly backups go?"** the
+  same way it offers the watcher, and installs a `com.thread-archive.backup`
+  LaunchAgent (daily 04:00, `ProcessType Background`) that runs `archive nightly
+  <dest>` straight from the package — new `_launchd.backup_plist` /
+  `install_backup`, mirroring the watcher builder. `archive daemon install
+  --backup --dest <path> [--at HH:MM] [--notify-url URL]` is the operator verb
+  (uninstall/restart/status too), and `thread_archive` status gained a
+  `schedule:` line showing whether the job is installed alongside the last run's
+  verdict. The offer **skips when a backup agent is already loaded**, so a
+  re-run never clobbers an operator-installed pipeline (e.g. the `host/` NAS
+  backup with its own SMB remount + notify wiring). macOS-only (launchd is the
+  scheduler); off-macOS the offer points at the manual `archive backup <dest>`.
+  Package + wizard handle **local dests** (a second disk, an already-mounted
+  volume) — network shares that drop their mount between runs, and the TCC grant
+  a background job needs to touch them, stay the `host/` layer's
+  `run-nightly.sh` remount concern.
+
+- **Redaction: crypto-shredding without deleting history (2026-07-15).**
+  `archive redact <thread> [--events ids]` gets content *out* of the archive
+  everywhere it lives — the truth lines (every superseded duplicate included),
+  the index rows and their free-page images (`secure_delete` + WAL truncate),
+  the FTS shadow + FTS5 docs, live and sidecar embeddings, citation quotes
+  (topic_messages, kg_events evidence), and thread title/summary when they
+  derive from the redacted content — while the truth log keeps its shape:
+  event ids and dedup keys survive (so re-import cannot resurrect the
+  plaintext), verify stays green, and the redaction itself is recorded history
+  in the new append-only `truth/redactions.jsonl`. The plaintext is not
+  destroyed: it is AES-256-GCM-encrypted into a recovery bundle on that
+  record, keyed by a fresh per-redaction key in `<home>/keyring.json` —
+  deliberately outside the truth dir, so backups mirror ciphertext only.
+  Three states from one mechanism: reversible (`archive unredact <key_id>`),
+  escrowed (`redact --show-key` then `--forget --yes`; `--restore-key` brings
+  it back), and forgotten (key destroyed everywhere = crypto-erasure). Readers
+  render redacted events as `[redacted]`, never a silent gap. Deliberate
+  limits, printed as notes: the original provider store keeps its plaintext,
+  and pre-existing backup generations hold it until re-mirrored. Adds
+  `cryptography` to the base dependencies.
+
+- **The topic graph becomes a lens over results, not a lever on them (2026-07-15).**
+  `thread_search` now surfaces a `subjects:` line — the subjects the result set
+  clusters under, named from the topic graph via `_retrieval.subjects`: it maps the
+  hits to the subjects they're evidenced under (`topic_messages`), ranks by coverage
+  across the results, and damps broad stopword-like subjects by specificity (IDF over
+  how many chats a subject links corpus-wide). This is orientation an embedding can't
+  give — a bi-encoder returns similar chats, not *named subjects to pivot on* — and it
+  annotates without touching order, so it can't regress ranking; a wrong label is
+  cheap and visible where a silently-buried hit would be expensive and invisible.
+  Fail-soft, strict no-op on an empty graph; `THREAD_ARCHIVE_SUBJECTS=0` omits it.
+
+  This replaces the recall *arm* (federating the subject graph as a third RRF arm to
+  reorder results) as the topic graph's job in search. **The arm is now off by
+  default** (`THREAD_ARCHIVE_TOPICAL=1` re-enables it for A/B): re-tuned on a golden
+  set grown from 17 → 599 usage-mined cases, its recall lift is within noise — the
+  semantic arm already bridges the vocabulary mismatch a topic link would, so
+  silently reordering results via the graph buys nothing measurable to justify its
+  per-search cost. (The earlier "+0.059 recall@5" was 17-case overfit; it did not
+  replicate out-of-sample.) The arm, its ranker term, and `community_members_for`
+  remain for the record and for A/B, but the graph's load-bearing search use is the
+  lens.
+
+- **Golden miner: pair search results to calls by `tool_call_id` (2026-07-15).**
+  `scripts/golden_from_usage.py` matched a search's result row to its call by
+  re-matching the tool name — but the dominant archive format (Claude Code) labels
+  `tool_result` rows `tool_name='unknown'`, so ~97% of searches lost their result
+  text and could never be mined, capping the golden set at 17. Pairing by
+  `tool_call_id` (the provider-neutral link, present on both call and result
+  payloads) recovers them: the mined set grows to **599 cases** (131 multi-target),
+  and it's *higher-precision* too — the old name+position attach misattributed
+  results under interleaved/parallel tool calls, manufacturing false click-throughs
+  that the id pairing rejects. `tests/test_golden_miner.py` pins the behavior.
+
+- **Ranking strips backtick fencing (2026-07-15).** A query pasted as an
+  inline-code identifier — `` `thread_search` `` — kept its backticks in the ranking
+  term set, so the density scorer credited only backtick-wrapped occurrences and
+  under-ranked plain-prose mentions (the FTS arm already tokenizes backticks away, so
+  candidates were found but ordered wrong). `search_terms` now strips them, so
+  `` `thread_search` `` ranks like `thread_search`. Also added a regression test for
+  FTS special punctuation (colon/`*`/`^`/parens/`NEAR()`) never raising out of MATCH.
 
 - **Shared MCP server: one HTTP daemon instead of a model per client (2026-07-14).**
   `archive-mcp` loads a ~3 GB retrieval stack, and stdio MCP spawns one server per
@@ -422,12 +498,10 @@
   lives in the `jsonl_log` docstrings); `save_config` now fsyncs before its
   rename like every other durable write; CLI verb→api dispatch tests added.
 
-- **Homebrew tap published (2026-07-11):**
-  `brew install ellamental/thread-archive/thread-archive` (or `brew tap
-  ellamental/thread-archive` then `brew install thread-archive`). The tap
-  (github.com/ellamental/homebrew-thread-archive) carries a virtualenv
-  formula over the PyPI sdist, dependencies as prebuilt wheels installed
-  hermetically into the keg. The `[embeddings]` extra stays pip-only.
+- **Distribution is clone-install only.** The PyPI package and the Homebrew
+  tap (both briefly live after 0.0.2) are retired; installing means cloning
+  the repo (`pip install -e .`) or `pip install git+<repo-url>@vX.Y.Z`.
+  Releases are the annotated `vX.Y.Z` tags per `docs/releasing.md`.
 
 ## 0.0.2 — 2026-07-11
 

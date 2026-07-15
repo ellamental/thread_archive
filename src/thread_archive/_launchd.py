@@ -8,7 +8,7 @@ thread-archive``, and it is what ``host/Makefile install-agent`` delegates to
 for the operator flow (which adds the thread-family manifest on top; the
 manifest writer stays in ``host/``, repo-only by design).
 
-Two agents live here:
+Three agents live here:
 
 * the **watcher** (``com.thread-archive.watcher``) — the always-on live-ingest
   process, which also cohosts the read-only web viewer;
@@ -16,6 +16,13 @@ Two agents live here:
   streamable-HTTP server all agents connect to, so a single ~3 GB retrieval
   model stays resident instead of one process per connecting client. Without
   it, ``archive-mcp`` runs per-client over stdio (each client its own model).
+* the **nightly backup** (``com.thread-archive.backup``) — the scheduled
+  durability pipeline (``archive nightly <dest>``: mirror the JSONL truth →
+  integrity verify → restore drill), on a daily ``StartCalendarInterval``. Its
+  ``dest`` must be a path launchd can reach unattended — a local second disk or
+  an already-mounted volume; network shares that drop their mount between runs
+  (and the TCC grant a background job needs to touch them) are the operator
+  ``host/`` layer's concern (see ``host/run-nightly.sh``), not this builder's.
 
 macOS only, deliberately (launchd is the product's process manager). Each
 plist mirrors what its agent needs and nothing else: run at login in the Aqua
@@ -35,6 +42,12 @@ from typing import Optional
 
 WATCHER_LABEL = "com.thread-archive.watcher"
 MCP_LABEL = "com.thread-archive.mcp"
+BACKUP_LABEL = "com.thread-archive.backup"
+
+# When the nightly-backup agent fires (local time). 04:00 keeps it clear of the
+# working day; launchd runs it on wake if the box was asleep at the mark.
+BACKUP_DEFAULT_HOUR = 4
+BACKUP_DEFAULT_MINUTE = 0
 
 # The shared MCP server's default loopback bind. Adjacent to the watcher's web
 # viewer (8787); every client's MCP config points here.
@@ -136,6 +149,52 @@ def mcp_plist(
         "WorkingDirectory": str(Path.home()),
         "StandardOutPath": str(log_dir / "mcp-stdout.log"),
         "StandardErrorPath": str(log_dir / "mcp-stderr.log"),
+        "EnvironmentVariables": env,
+    }
+
+
+def backup_plist(
+    entry: Path,
+    log_dir: Path,
+    dest: str,
+    *,
+    home: Optional[str] = None,
+    hour: int = BACKUP_DEFAULT_HOUR,
+    minute: int = BACKUP_DEFAULT_MINUTE,
+    notify_url: Optional[str] = None,
+) -> dict:
+    """The nightly-backup LaunchAgent as a plist dict (pure — no filesystem, no
+    launchctl).
+
+    Runs ``archive nightly <dest>`` on a daily ``StartCalendarInterval`` — the
+    whole durability pipeline (mirror the JSONL truth to ``dest`` → integrity
+    verify → restore drill) as one scheduled command. ``dest`` must be a path
+    launchd can reach unattended at the fire time; the network-share remount is
+    the ``host/`` layer's concern, not this builder's (see the module docstring).
+    """
+    args = [str(entry), "nightly", dest]
+    if notify_url:
+        args += ["--notify-url", notify_url]
+    env = {
+        # The entry's own bin dir first so `archive` resolves its interpreter.
+        "PATH": f"{entry.parent}:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin",
+    }
+    if home:
+        env["THREAD_ARCHIVE_HOME"] = home
+    return {
+        "Label": BACKUP_LABEL,
+        "ProgramArguments": args,
+        # A scheduled one-shot: fire daily, don't keep it resident. launchd runs
+        # a missed fire on the next wake, so a run landing mid-morning (box asleep
+        # at the mark) is normal, not a fault.
+        "StartCalendarInterval": {"Hour": int(hour), "Minute": int(minute)},
+        "RunAtLoad": False,
+        "LimitLoadToSessionType": "Aqua",
+        # I/O-bound and not latency-sensitive: let it run nice.
+        "ProcessType": "Background",
+        "WorkingDirectory": str(Path.home()),
+        "StandardOutPath": str(log_dir / "backup-stdout.log"),
+        "StandardErrorPath": str(log_dir / "backup-stderr.log"),
         "EnvironmentVariables": env,
     }
 
@@ -266,3 +325,57 @@ def restart_mcp() -> None:
 
 def mcp_status() -> str:
     return _agent_status(MCP_LABEL)
+
+
+def install_backup(
+    dest: str,
+    home: Optional[str] = None,
+    *,
+    hour: int = BACKUP_DEFAULT_HOUR,
+    minute: int = BACKUP_DEFAULT_MINUTE,
+    notify_url: Optional[str] = None,
+) -> Path:
+    """Write the nightly-backup plist and (re)load the agent. Returns the plist
+    path."""
+    entry = _entry_path("archive")
+    from ._config import resolve_paths
+
+    log_dir = resolve_paths(home).home / "logs"
+    return _install_agent(
+        BACKUP_LABEL,
+        backup_plist(
+            entry, log_dir, dest, home=home, hour=hour, minute=minute,
+            notify_url=notify_url,
+        ),
+        home,
+    )
+
+
+def uninstall_backup() -> None:
+    _uninstall_agent(BACKUP_LABEL)
+
+
+def restart_backup() -> None:
+    _restart_agent(BACKUP_LABEL)
+
+
+def backup_status() -> str:
+    return _agent_status(BACKUP_LABEL)
+
+
+def backup_agent_dest() -> Optional[str]:
+    """The ``dest`` the installed backup agent runs against, or ``None`` when no
+    plist is present or it isn't the package-generated shape (e.g. the ``host/``
+    ``run-nightly.sh`` wrapper form, whose dest lives inside the wrapper's args).
+    Reads the plist on disk, so it reflects the agent even when it isn't loaded."""
+    if sys.platform != "darwin":
+        return None
+    try:
+        plist = plistlib.loads(_plist_path(BACKUP_LABEL).read_bytes())
+    except (OSError, plistlib.InvalidFileException):
+        return None
+    args = plist.get("ProgramArguments", [])
+    try:
+        return args[args.index("nightly") + 1]
+    except (ValueError, IndexError):
+        return None

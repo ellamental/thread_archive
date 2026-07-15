@@ -40,6 +40,20 @@ KG_EVENTS_FILE = "kg_events.jsonl"
 _FLAT_MAX = int(os.environ.get("THREAD_ARCHIVE_SHARD_FLAT_MAX", "16384"))
 _BUCKET = 256  # children per shard level
 
+# A redacted event payload: content replaced by a marker envelope
+# ``{"_redacted": {"key_id": ..., "at": ...}}``. The encrypted original lives on
+# the matching record in ``truth/redactions.jsonl``; the key in
+# ``<home>/keyring.json`` (outside the truth dir — backups mirror ciphertext
+# only). See :mod:`thread_archive._ops.redact`. Truth vocabulary, so readers
+# (hash checks, renderers) can recognize the shape without importing the
+# redaction machinery.
+REDACTED_PAYLOAD_KEY = "_redacted"
+
+
+def is_redacted_payload(payload: object) -> bool:
+    """True when ``payload`` is a redaction marker envelope rather than content."""
+    return isinstance(payload, dict) and REDACTED_PAYLOAD_KEY in payload
+
 
 # ── config ──────────────────────────────────────────────────────────────────
 def log_dir() -> Path:

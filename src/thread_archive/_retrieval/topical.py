@@ -53,9 +53,13 @@ MAX_CANDIDATES = 200
 
 
 def enabled() -> bool:
-    """Master switch. On by default; ``THREAD_ARCHIVE_TOPICAL=0`` forces the arm
-    out (the baseline for an A/B on the retrieval eval, and the prod kill switch)."""
-    return os.environ.get("THREAD_ARCHIVE_TOPICAL", "1") != "0"
+    """Master switch. **Off by default**: on the usage-mined golden set the arm's
+    recall lift is within noise — the semantic arm already bridges the vocabulary
+    mismatch a topic link would, so silently reordering results via the subject
+    graph buys nothing measurable to justify its per-search cost. The mechanism is
+    kept behind ``THREAD_ARCHIVE_TOPICAL=1`` for A/B on the eval; the topic graph's
+    load-bearing use is the relevant-subjects lens (:mod:`.subjects`), not this."""
+    return os.environ.get("THREAD_ARCHIVE_TOPICAL", "0") == "1"
 
 
 def _peers_enabled() -> bool:

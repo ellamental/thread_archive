@@ -40,6 +40,7 @@ dependencies = [
     "leidenalg>=0.10",  # Leiden community detection (well-connected communities)
     "python-igraph>=0.11",  # leidenalg's graph backend
     "mcp>=1.0",
+    "cryptography>=42",  # AES-GCM for redaction's recovery bundles (_ops/redact.py)
 ]
 
 [project.optional-dependencies]

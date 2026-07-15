@@ -330,6 +330,59 @@ def repair(*, home: Optional[str] = None, dry_run: bool = False) -> dict:
     return repair_truth(dry_run=dry_run)
 
 
+def redact(
+    thread_id: int, event_ids: Optional[list[int]] = None, *,
+    reason: Optional[str] = None, home: Optional[str] = None,
+) -> dict:
+    """Crypto-shred events: content replaced by a marker everywhere it lives, the
+    original encrypted into ``truth/redactions.jsonl`` under a fresh key in
+    ``<home>/keyring.json``. See :mod:`thread_archive._ops.redact`."""
+    open_archive(home)
+    from ._ops.redact import redact_events
+
+    return redact_events(thread_id, event_ids, reason=reason)
+
+
+def unredact(key_id: str, *, home: Optional[str] = None) -> dict:
+    """Restore a redaction from its encrypted bundle (key must be in the keyring)."""
+    open_archive(home)
+    from ._ops.redact import unredact as _unredact
+
+    return _unredact(key_id)
+
+
+def redactions(*, home: Optional[str] = None) -> list[dict]:
+    """Every redaction with its lifecycle state (active/unredacted, key present/absent)."""
+    open_archive(home)
+    from ._ops.redact import redaction_statuses
+
+    return redaction_statuses()
+
+
+def redact_show_key(key_id: str, *, home: Optional[str] = None) -> str:
+    """The base64 key material, for escrow off this machine."""
+    open_archive(home)
+    from ._ops.redact import show_key
+
+    return show_key(key_id)
+
+
+def redact_forget_key(key_id: str, *, home: Optional[str] = None) -> dict:
+    """Remove a key from the keyring — crypto-erasure if it was never escrowed."""
+    open_archive(home)
+    from ._ops.redact import forget_key
+
+    return forget_key(key_id)
+
+
+def redact_restore_key(key_id: str, key_b64: str, *, home: Optional[str] = None) -> dict:
+    """Put an escrowed key back (validated against the record's ciphertext)."""
+    open_archive(home)
+    from ._ops.redact import restore_key
+
+    return restore_key(key_id, key_b64)
+
+
 def knowledge_status(*, home: Optional[str] = None) -> dict:
     """Topic-graph status: node/community/component counts (empty until topics exist)."""
     open_archive(home)

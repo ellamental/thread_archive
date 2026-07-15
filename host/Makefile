@@ -23,11 +23,24 @@ ENTRY     := $(REPO)/.venv/bin/archive
 LOG_DIR   := $(HOME)/.thread/archive/logs
 
 # Scheduled nightly protection pipeline (`archive nightly`: backup → verify →
-# restore drill). DEST is the backup destination — pass it on the command line
-# and point it at a DIFFERENT disk/machine. For a network DEST, also pass
-# MOUNT_URL (the smb:// URL of the volume containing DEST) so run-nightly.sh
-# can remount it before each run — needs the share's password saved in the
-# login keychain (Finder ⌘K, "Remember this password in my keychain"):
+# restore drill), agent `com.thread-archive.backup`. DEST is the backup
+# destination — pass it on the command line and point it at a DIFFERENT
+# disk/machine.
+#
+# This target wraps the pipeline in run-nightly.sh (network-share remount) and
+# points --notify-url at lab. For a plain LOCAL DEST with no remount, the package
+# installs the same agent directly — `archive daemon install --backup --dest
+# <path>`, and the `thread_archive` setup wizard offers it — so reach for this
+# target specifically when DEST is a network share (MOUNT_URL) or you want lab's
+# notify + the family manifest.
+#
+# For a network DEST, pass MOUNT_URL (the smb:// URL of the volume containing
+# DEST) so run-nightly.sh can remount it before each run — needs the share's
+# password saved in the login keychain (Finder ⌘K, "Remember this password in
+# my keychain") AND, because a background launchd job hits macOS TCC on network
+# volumes, a Files & Folders → Network Volumes grant for the job's interpreter
+# (System Settings → Privacy & Security); without it the backup stage gets EPERM
+# and `archive nightly` names the TCC cause in its notify:
 #   make install-backup-agent DEST=/Volumes/Backup/thread_archive
 #   make install-backup-agent DEST="/Volumes/NAS/backups/thread_archive" MOUNT_URL="smb://user@host/NAS"
 MOUNT_URL ?=

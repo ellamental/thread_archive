@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from thread_archive._launchd import WATCHER_LABEL, watcher_plist
+from thread_archive._launchd import BACKUP_LABEL, WATCHER_LABEL, backup_plist, watcher_plist
 
 ENTRY = Path("/opt/venv/bin/archive")
 LOG_DIR = Path("/data/arc/logs")
@@ -39,3 +39,26 @@ def test_watcher_plist_home_and_web_options() -> None:
     assert "THREAD_ARCHIVE_HOME" not in default["EnvironmentVariables"]
     custom_port = watcher_plist(ENTRY, LOG_DIR, web_port=9000)
     assert "9000" in custom_port["ProgramArguments"]
+
+
+def test_backup_plist_shape() -> None:
+    p = backup_plist(ENTRY, LOG_DIR, "/Volumes/Backup/arc")
+    assert p["Label"] == BACKUP_LABEL
+    assert p["ProgramArguments"] == [str(ENTRY), "nightly", "/Volumes/Backup/arc"]
+    # A scheduled one-shot, not a resident agent: fire daily, don't RunAtLoad.
+    assert p["StartCalendarInterval"] == {"Hour": 4, "Minute": 0}
+    assert p["RunAtLoad"] is False
+    assert "KeepAlive" not in p
+    assert p["ProcessType"] == "Background"  # nice'd, I/O-bound
+    assert p["StandardOutPath"] == str(LOG_DIR / "backup-stdout.log")
+    assert p["EnvironmentVariables"]["PATH"].startswith(f"{ENTRY.parent}:")
+
+
+def test_backup_plist_options() -> None:
+    p = backup_plist(
+        ENTRY, LOG_DIR, "/Volumes/Backup/arc",
+        home="/data/arc", hour=2, minute=30, notify_url="http://127.0.0.1:8002/api/notify",
+    )
+    assert p["EnvironmentVariables"]["THREAD_ARCHIVE_HOME"] == "/data/arc"
+    assert p["StartCalendarInterval"] == {"Hour": 2, "Minute": 30}
+    assert p["ProgramArguments"][-2:] == ["--notify-url", "http://127.0.0.1:8002/api/notify"]

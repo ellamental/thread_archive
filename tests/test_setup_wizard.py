@@ -11,11 +11,13 @@ installs or `claude mcp add` runs.
 from __future__ import annotations
 
 import json
+import sys
 import time
 
 import pytest
 
 from thread_archive import _config as config
+from thread_archive import _launchd
 from thread_archive._setup import clients, wizard
 from thread_archive._watcher import enabled_watchers, provider_watchers
 from thread_archive._watcher.base import SourceDiscovery, SourceWatcher, WatchResult
@@ -153,7 +155,7 @@ def test_non_tty_without_yes_does_no_work(archive_home, capsys) -> None:
 
 def test_yes_setup_imports_and_records(archive_home, capsys) -> None:
     fakes = [FakeWatcher("claude-code"), FakeWatcher("codex", available=False)]
-    rc = wizard.run_setup(_args("setup", "--yes", "--skip-watcher", "--skip-mcp"), watchers=fakes)
+    rc = wizard.run_setup(_args("setup", "--yes", "--skip-watcher", "--skip-backup", "--skip-mcp"), watchers=fakes)
     assert rc == 0
     assert fakes[0].polled == 1 and fakes[1].polled == 0  # only the found store imports
     out = capsys.readouterr().out
@@ -173,7 +175,7 @@ def test_edit_selection_persists_opt_outs(archive_home, monkeypatch, capsys) -> 
         wizard, "_ask", lambda prompt, *, default, interactive: next(answers, default)
     )
     fakes = [FakeWatcher("claude-code"), FakeWatcher("cursor")]
-    rc = wizard.run_setup(_args("setup", "--skip-watcher", "--skip-mcp"), watchers=fakes)
+    rc = wizard.run_setup(_args("setup", "--skip-watcher", "--skip-backup", "--skip-mcp"), watchers=fakes)
     assert rc == 0
     assert fakes[0].polled == 0 and fakes[1].polled == 1
     cfg = json.loads((archive_home / "config.json").read_text())
@@ -194,7 +196,7 @@ def test_edit_to_zero_disables_every_source(archive_home, monkeypatch, capsys) -
         wizard, "_ask", lambda prompt, *, default, interactive: next(answers, default)
     )
     fakes = [FakeWatcher("claude-code"), FakeWatcher("cursor")]
-    rc = wizard.run_setup(_args("setup", "--skip-watcher", "--skip-mcp"), watchers=fakes)
+    rc = wizard.run_setup(_args("setup", "--skip-watcher", "--skip-backup", "--skip-mcp"), watchers=fakes)
     assert rc == 0
     assert fakes[0].polled == 0 and fakes[1].polled == 0
     cfg = json.loads((archive_home / "config.json").read_text())
@@ -206,7 +208,7 @@ def test_edit_to_zero_disables_every_source(archive_home, monkeypatch, capsys) -
 def test_skip_import_keeps_sources_enabled(archive_home, capsys) -> None:
     fakes = [FakeWatcher("claude-code")]
     rc = wizard.run_setup(
-        _args("setup", "--yes", "--skip-import", "--skip-watcher", "--skip-mcp"), watchers=fakes
+        _args("setup", "--yes", "--skip-import", "--skip-watcher", "--skip-backup", "--skip-mcp"), watchers=fakes
     )
     assert rc == 0 and fakes[0].polled == 0
     cfg = json.loads((archive_home / "config.json").read_text())
@@ -215,8 +217,9 @@ def test_skip_import_keeps_sources_enabled(archive_home, capsys) -> None:
 
 def test_bare_rerun_lands_on_status(archive_home, monkeypatch, capsys) -> None:
     monkeypatch.setattr(wizard, "_watcher_running", lambda home=None: False)
+    monkeypatch.setattr(wizard, "_backup_running", lambda home=None: False)
     wizard.run_setup(
-        _args("setup", "--yes", "--skip-import", "--skip-watcher", "--skip-mcp"), watchers=[]
+        _args("setup", "--yes", "--skip-import", "--skip-watcher", "--skip-backup", "--skip-mcp"), watchers=[]
     )
     capsys.readouterr()
     assert wizard.main([]) == 0
@@ -227,9 +230,90 @@ def test_bare_rerun_lands_on_status(archive_home, monkeypatch, capsys) -> None:
 
 def test_status_command(archive_home, monkeypatch, capsys) -> None:
     monkeypatch.setattr(wizard, "_watcher_running", lambda home=None: False)
+    monkeypatch.setattr(wizard, "_backup_running", lambda home=None: False)
     assert wizard.main(["status"]) == 0
     out = capsys.readouterr().out
     assert "0 conversations" in out and "all enabled" in out
+    if sys.platform == "darwin":
+        assert "no nightly backup" in out  # the promoted CTA, not buried in passing
+
+
+# ── the nightly-backup offer ──────────────────────────────────────────────────
+#
+# Never a real launchctl install: install_backup is monkeypatched to record its
+# args, and _backup_running / sys.platform are forced so the flow is exercised on
+# any host (the offer is macOS-only in production).
+
+
+def _force_darwin(monkeypatch) -> None:
+    monkeypatch.setattr(wizard.sys, "platform", "darwin")
+
+
+def test_offer_backup_skipped_flag(archive_home) -> None:
+    out = wizard._offer_backup(_args("setup", "--skip-backup"), interactive=False)
+    assert out == {"status": "skipped"}
+
+
+def test_offer_backup_installs_from_dest_flag(archive_home, monkeypatch, capsys) -> None:
+    _force_darwin(monkeypatch)
+    monkeypatch.setattr(wizard, "_backup_running", lambda home=None: False)
+    recorded = {}
+    monkeypatch.setattr(
+        _launchd, "install_backup",
+        lambda dest, home=None, **kw: recorded.update(dest=dest, home=home),
+    )
+    out = wizard._offer_backup(
+        _args("setup", "--yes", "--backup-dest", "/Volumes/Backup/arc"), interactive=False
+    )
+    assert out == {"status": "launchd", "dest": "/Volumes/Backup/arc"}
+    assert recorded["dest"] == "/Volumes/Backup/arc"
+    assert "Scheduled" in capsys.readouterr().out
+
+
+def test_offer_backup_already_installed_is_left_alone(archive_home, monkeypatch, capsys) -> None:
+    # The guard that stops a wizard re-run from clobbering an operator-installed
+    # pipeline (e.g. the host/ NAS backup): a loaded agent → no install call.
+    _force_darwin(monkeypatch)
+    monkeypatch.setattr(wizard, "_backup_running", lambda home=None: True)
+    monkeypatch.setattr(_launchd, "backup_agent_dest", lambda: "/Volumes/NAS/arc")
+    called = []
+    monkeypatch.setattr(
+        _launchd, "install_backup", lambda *a, **k: called.append(a)
+    )
+    out = wizard._offer_backup(_args("setup", "--yes"), interactive=False)
+    assert out == {"status": "already-installed", "dest": "/Volumes/NAS/arc"}
+    assert not called  # never re-installed over the existing agent
+    assert "already installed" in capsys.readouterr().out
+
+
+def test_offer_backup_yes_without_dest_skips(archive_home, monkeypatch) -> None:
+    # --yes has no destination to invent: it must skip, never install to a guess.
+    _force_darwin(monkeypatch)
+    monkeypatch.setattr(wizard, "_backup_running", lambda home=None: False)
+    monkeypatch.setattr(
+        _launchd, "install_backup",
+        lambda *a, **k: pytest.fail("must not install without a dest"),
+    )
+    out = wizard._offer_backup(_args("setup", "--yes"), interactive=False)
+    assert out == {"status": "skipped"}
+
+
+def test_offer_backup_non_darwin_is_unavailable(archive_home, monkeypatch) -> None:
+    monkeypatch.setattr(wizard.sys, "platform", "linux")
+    out = wizard._offer_backup(_args("setup"), interactive=False)
+    assert out == {"status": "unavailable"}
+
+
+def test_setup_records_backup_outcome(archive_home, monkeypatch, capsys) -> None:
+    # End to end through run_setup: the offer's verdict lands in config under
+    # setup.backup, the sibling of setup.watcher.
+    monkeypatch.setattr(wizard, "_offer_backup", lambda args, interactive: {"status": "skipped"})
+    rc = wizard.run_setup(
+        _args("setup", "--yes", "--skip-import", "--skip-watcher", "--skip-mcp"), watchers=[]
+    )
+    assert rc == 0
+    cfg = json.loads((archive_home / "config.json").read_text())
+    assert cfg["setup"]["backup"] == {"status": "skipped"}
 
 
 # ── client wiring ────────────────────────────────────────────────────────────
@@ -245,7 +329,7 @@ def test_mcp_config_block_names_both_servers() -> None:
 def test_setup_prints_config_when_no_client_found(archive_home, monkeypatch, capsys) -> None:
     monkeypatch.setattr(clients, "claude_cli", lambda: None)
     rc = wizard.run_setup(
-        _args("setup", "--yes", "--skip-import", "--skip-watcher"), watchers=[]
+        _args("setup", "--yes", "--skip-import", "--skip-watcher", "--skip-backup"), watchers=[]
     )
     assert rc == 0
     out = capsys.readouterr().out
@@ -276,7 +360,7 @@ def test_wholesale_import_skip_writes_no_opt_outs(archive_home, monkeypatch) -> 
         wizard, "_ask", lambda prompt, *, default, interactive: "s"
     )
     fakes = [FakeWatcher("claude-code"), FakeWatcher("cursor")]
-    rc = wizard.run_setup(_args("setup", "--skip-watcher", "--skip-mcp"), watchers=fakes)
+    rc = wizard.run_setup(_args("setup", "--skip-watcher", "--skip-backup", "--skip-mcp"), watchers=fakes)
     assert rc == 0
     assert all(f.polled == 0 for f in fakes)  # nothing imported
     cfg = json.loads((archive_home / "config.json").read_text())

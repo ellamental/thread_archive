@@ -34,6 +34,18 @@ def _add_home_arg(p: argparse.ArgumentParser) -> None:
     )
 
 
+def _parse_hhmm(s: str) -> tuple[int, int]:
+    """Parse an ``HH:MM`` schedule string into ``(hour, minute)``."""
+    try:
+        hh, mm = s.split(":")
+        h, m = int(hh), int(mm)
+    except (ValueError, AttributeError):
+        raise SystemExit(f"archive daemon: --at must be HH:MM (got {s!r})")
+    if not (0 <= h < 24 and 0 <= m < 60):
+        raise SystemExit(f"archive daemon: --at must be HH:MM (got {s!r})")
+    return h, m
+
+
 def _self_throttle() -> None:
     """Drop this process to background priority so a full rebuild never starves the
     interactive machine. CPU via ``nice``; on macOS also throttle disk I/O (the FTS
@@ -189,6 +201,38 @@ def cmd_daemon(args: argparse.Namespace) -> int:
             print(f"restarted {_launchd.MCP_LABEL}")
         else:  # status
             print(_launchd.mcp_status())
+        return 0
+
+    if args.backup:
+        # The scheduled durability pipeline (backup → verify → restore drill) as
+        # a launchd agent — the productized form of what host/ wires by hand.
+        # install needs --dest (a different disk / an already-mounted volume).
+        if args.action == "install":
+            if not args.dest:
+                print(
+                    "archive daemon install --backup needs --dest <path> "
+                    "(a different disk/machine)",
+                    file=sys.stderr,
+                )
+                return 2
+            hour, minute = _parse_hhmm(args.at)
+            plist = _launchd.install_backup(
+                args.dest, args.home, hour=hour, minute=minute,
+                notify_url=args.notify_url,
+            )
+            print(f"installed {_launchd.BACKUP_LABEL} ({plist})")
+            print(
+                f"nightly at {hour:02d}:{minute:02d} → {args.dest}: "
+                "backup, verify, restore drill."
+            )
+        elif args.action == "uninstall":
+            _launchd.uninstall_backup()
+            print(f"uninstalled {_launchd.BACKUP_LABEL}")
+        elif args.action == "restart":
+            _launchd.restart_backup()
+            print(f"restarted {_launchd.BACKUP_LABEL}")
+        else:  # status
+            print(_launchd.backup_status())
         return 0
 
     if args.action == "install":
@@ -526,6 +570,78 @@ def cmd_repair(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_redact(args: argparse.Namespace) -> int:
+    from . import _api as api
+
+    if args.list_:
+        rows = api.redactions(home=args.home)
+        if not rows:
+            print("no redactions")
+            return 0
+        for r in rows:
+            scope = f"{len(r['event_ids'])} event(s)" if r["event_ids"] else "whole thread"
+            reason = f"  reason: {r['reason']}" if r.get("reason") else ""
+            print(
+                f"{r['key_id']}  thread {r['thread_id']}  {scope}  "
+                f"{r['status']}, key {r['key']}  {r.get('redacted_at', '?')}{reason}"
+            )
+        return 0
+    if args.show_key:
+        print(api.redact_show_key(args.show_key, home=args.home))
+        print(
+            "escrow this somewhere off this machine, then `archive redact "
+            f"--forget {args.show_key} --yes` removes it from the keyring",
+            file=sys.stderr,
+        )
+        return 0
+    if args.forget:
+        if not args.yes:
+            print(
+                "refusing: --forget removes the key — if it was never escrowed "
+                "(--show-key) the content is unrecoverable forever. Add --yes to proceed."
+            )
+            return 2
+        api.redact_forget_key(args.forget, home=args.home)
+        print(f"key {args.forget} removed from the keyring")
+        return 0
+    if args.restore_key:
+        kid, key_b64 = args.restore_key
+        api.redact_restore_key(kid, key_b64, home=args.home)
+        print(f"key {kid} restored to the keyring — `archive unredact {kid}` will now work")
+        return 0
+    if args.thread is None:
+        print("usage: archive redact <thread_id> [--events IDS] [--reason ...] "
+              "(or --list / --show-key / --forget / --restore-key)")
+        return 2
+    event_ids = [int(e) for e in args.events.split(",")] if args.events else None
+    res = api.redact(int(args.thread), event_ids, reason=args.reason, home=args.home)
+    print(
+        f"redacted {res['events_redacted']} event(s) in thread {res['thread_id']}"
+        + (f" under key {res['key_id']}" if res.get("key_id") else "")
+    )
+    if res.get("topic_quotes_scrubbed") or res.get("kg_quotes_scrubbed"):
+        print(
+            f"scrubbed {res.get('topic_quotes_scrubbed', 0)} topic quote(s), "
+            f"{res.get('kg_quotes_scrubbed', 0)} kg quote(s)"
+        )
+    for note in res.get("notes", []):
+        print(f"note: {note}")
+    if res.get("key_id"):
+        print(f"reverse with `archive unredact {res['key_id']}`; "
+              f"escrow with `archive redact --show-key {res['key_id']}`")
+    return 0
+
+
+def cmd_unredact(args: argparse.Namespace) -> int:
+    from . import _api as api
+
+    res = api.unredact(args.key_id, home=args.home)
+    print(f"restored {res['events_restored']} event(s) in thread {res['thread_id']}")
+    for note in res.get("notes", []):
+        print(f"note: {note}")
+    return 0
+
+
 def _age(iso: str) -> str:
     from datetime import datetime, timezone
 
@@ -801,11 +917,50 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_repair.set_defaults(func=cmd_repair)
 
+    p_redact = sub.add_parser(
+        "redact",
+        help="crypto-shred events: content replaced by a marker everywhere it "
+             "lives, the original encrypted into truth/redactions.jsonl under a "
+             "revocable key in <home>/keyring.json",
+    )
+    _add_home_arg(p_redact)
+    p_redact.add_argument("thread", nargs="?", help="thread id")
+    p_redact.add_argument(
+        "--events", help="comma-separated event ids (default: the whole thread)"
+    )
+    p_redact.add_argument("--reason", help="recorded on the redaction record")
+    p_redact.add_argument(
+        "--list", dest="list_", action="store_true",
+        help="list redactions with their lifecycle state",
+    )
+    p_redact.add_argument(
+        "--show-key", metavar="KEY_ID",
+        help="print a key's base64 material for escrow off this machine",
+    )
+    p_redact.add_argument(
+        "--forget", metavar="KEY_ID",
+        help="remove a key from the keyring (with --yes); crypto-erasure if never escrowed",
+    )
+    p_redact.add_argument(
+        "--restore-key", nargs=2, metavar=("KEY_ID", "KEY_B64"),
+        help="put an escrowed key back so `archive unredact` can use it",
+    )
+    p_redact.add_argument("--yes", action="store_true", help="confirm --forget")
+    p_redact.set_defaults(func=cmd_redact)
+
+    p_unredact = sub.add_parser(
+        "unredact", help="restore redacted events from their encrypted bundle"
+    )
+    _add_home_arg(p_unredact)
+    p_unredact.add_argument("key_id", help="the redaction's key id (see `archive redact --list`)")
+    p_unredact.set_defaults(func=cmd_unredact)
+
     p_daemon = sub.add_parser(
         "daemon",
         help="manage the always-on archive LaunchAgents (macOS): the watcher "
              "(the upgrade from lazy MCP-cohosted ingest to always-fresh), or "
-             "with --mcp the shared MCP server (one HTTP server for all clients)",
+             "with --mcp the shared MCP server (one HTTP server for all clients), "
+             "or with --backup the scheduled nightly durability pipeline",
     )
     _add_home_arg(p_daemon)
     p_daemon.add_argument(
@@ -818,6 +973,24 @@ def build_parser() -> argparse.ArgumentParser:
         "--mcp", action="store_true",
         help="target the shared MCP server agent (com.thread-archive.mcp) instead "
              "of the watcher",
+    )
+    p_daemon.add_argument(
+        "--backup", action="store_true",
+        help="target the nightly-backup agent (com.thread-archive.backup): the "
+             "scheduled backup → verify → restore-drill pipeline (`archive nightly`)",
+    )
+    p_daemon.add_argument(
+        "--dest", default=None, metavar="PATH",
+        help="--backup install only: backup destination dir (a different disk/machine)",
+    )
+    p_daemon.add_argument(
+        "--at", default="04:00", metavar="HH:MM",
+        help="--backup install only: daily fire time, local (default 04:00)",
+    )
+    p_daemon.add_argument(
+        "--notify-url", default=None, metavar="URL",
+        help="--backup install only: POST {title, message} on any stage failure "
+             "(lab's /api/notify shape)",
     )
     p_daemon.add_argument(
         "--no-web", dest="web", action="store_false",

@@ -36,8 +36,11 @@ thread_archive                             # then: run setup
 conversation stores and shows what it found — counts, sizes, date ranges —
 *before* touching anything, then asks: import (all, a selection, or skip),
 install the always-on watcher (macOS LaunchAgent; includes the web viewer at
-:8787), and wire the MCP servers into detected clients (the `claude` CLI, or
-it prints the JSON block for any other client). Every choice is skippable and
+:8787), **schedule a nightly backup** (a second question — *where should
+backups go?* — that installs the daily backup → verify → restore-drill pipeline
+to a disk you name), and wire the MCP servers into detected clients (the
+`claude` CLI, or it prints the JSON block for any other client). Every choice is
+skippable and
 persists in `<home>/config.json`; a disabled source stays disabled across
 every ingest path. Re-running `thread_archive` shows status; `thread_archive
 setup` revisits the choices. Non-interactive (agents, scripts):
@@ -105,8 +108,13 @@ archive backup <dest>     # mirror the truth dir (keeps hardlink generations und
 archive restore-drill <dest>  # prove the backup restores: rebuild an index from the mirror + smoke read/search
 archive nightly <dest>    # the scheduled pipeline: backup → verify (age-gated escalation) → restore drill → coverage
 archive coverage          # capture-coverage check: source stores reconciled against the archive
+archive redact <thread>   # crypto-shred events (--events for a subset): content out of truth, index,
+                          #   search, quotes; the original encrypted under a revocable per-redaction key
+archive unredact <key_id> # restore a redaction from its encrypted bundle (key still in the keyring)
 archive status            # archive health / counts / last verify + backup + drill + coverage outcomes
-archive daemon <action>   # macOS: install/uninstall/restart/status the always-on watcher LaunchAgent
+archive daemon <action>   # macOS: install/uninstall/restart/status a LaunchAgent — the always-on
+                          #   watcher (default), --mcp the shared server, or --backup the nightly
+                          #   pipeline (`daemon install --backup --dest <path> [--at HH:MM]`)
 ```
 
 The CLI is private operational tooling (see Stability below) — the process
@@ -131,7 +139,7 @@ src/thread_archive/
   _watcher/         # local-source watcher (self-feeding ingest)
   _mcp/             # library-native MCP servers (read + librarian)
   _web/             # read-only viewer: stdlib server + built bundle (cohosted by `watch --web`)
-  _launchd.py       # `archive daemon`: generates + loads the watcher LaunchAgent (macOS)
+  _launchd.py       # `archive daemon`: generates + loads the watcher / MCP / nightly-backup LaunchAgents (macOS)
   _thread_import/   # vendored provider parsers (a clean, dependency-free island)
 frontend/           # the viewer's React+Vite source (dev-only; builds into _web/static/)
 host/               # operator layer: Makefile over `archive daemon`, backup agent, family-manifest writer
@@ -157,6 +165,9 @@ Everything else is private support machinery and may change without notice:
 the `thread_archive` and `archive` CLIs, the librarian MCP server, the web
 viewer, and every Python module — there is **no public Python API**. More surface gets exposed
 deliberately as it matures. `tests/test_public_api.py` ratchets the boundary.
+
+Releases (changelog compression, version bump, release commit, annotated tag)
+follow [docs/releasing.md](https://github.com/ellamental/thread_archive/blob/main/docs/releasing.md).
 
 ## Web viewer
 
@@ -205,6 +216,13 @@ wins; ids that were never imported are skipped, not fatal.
   transcript reconstruction for reading.
 - **Rebuilds losslessly** — `rm index.db && archive reindex` reconstructs the entire
   index from the JSONL truth; a `cp`/`rsync` of the truth dir *is* the backup.
+- **Redacts without deleting history** — `archive redact` crypto-shreds content
+  (truth lines, index rows and free pages, search docs, vectors, citation quotes,
+  derived titles) into an encrypted bundle on the append-only redaction log, keyed
+  by `<home>/keyring.json` (outside the truth dir — backups mirror ciphertext
+  only). Reversible while the key is held (`archive unredact`); escrow the key off
+  the machine (`--show-key` + `--forget`) or destroy it for crypto-erasure. The
+  original provider store keeps its own copy — redaction covers the archive.
 - **Curatable** — an event-sourced topic graph with Leiden communities (see below),
   driven on demand by the `/librarian` skill.
 

@@ -23,7 +23,7 @@ def test_all_subcommands_present() -> None:
     assert set(sub.choices) == {
         "import", "import-export", "watch", "reindex", "embed",
         "status", "backup", "verify", "repair", "restore-drill", "nightly",
-        "coverage", "daemon",
+        "coverage", "redact", "unredact", "daemon",
     }
 
 
@@ -197,6 +197,34 @@ def test_repair_cli_dispatches(monkeypatch, capsys) -> None:
     assert rc == 0
     assert seen == {"home": "/h", "dry_run": True}
     assert "would quarantine" in capsys.readouterr().out
+
+
+def test_daemon_backup_install_dispatches(monkeypatch, capsys) -> None:
+    from thread_archive import _launchd
+
+    seen = {}
+    monkeypatch.setattr(
+        _launchd, "install_backup",
+        lambda dest, home=None, **kw: seen.update(dest=dest, home=home, **kw)
+        or "/plist/com.thread-archive.backup.plist",
+    )
+    rc = main(["daemon", "install", "--backup", "--dest", "/Volumes/Backup/arc",
+               "--at", "02:30", "--home", "/h"])
+    assert rc == 0
+    assert seen == {"dest": "/Volumes/Backup/arc", "home": "/h",
+                    "hour": 2, "minute": 30, "notify_url": None}
+    assert "nightly at 02:30" in capsys.readouterr().out
+
+
+def test_daemon_backup_install_requires_dest(capsys) -> None:
+    rc = main(["daemon", "install", "--backup"])
+    assert rc == 2
+    assert "needs --dest" in capsys.readouterr().err
+
+
+def test_daemon_backup_rejects_bad_at() -> None:
+    with pytest.raises(SystemExit):
+        main(["daemon", "install", "--backup", "--dest", "/d", "--at", "9pm"])
 
 
 def test_import_rejects_unknown_provider() -> None:

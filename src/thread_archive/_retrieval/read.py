@@ -31,6 +31,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from .._store import Event, Thread, TopicMessage, use_session
+from .._truth.layout import is_redacted_payload
 from ._codex import codex_kind, render_codex_block
 from ._extract import _block_search_text
 
@@ -61,7 +62,12 @@ _SKIP_TYPES = frozenset({
 
 
 def _payload(ev: Event) -> dict:
-    return ev.payload if isinstance(ev.payload, dict) else json.loads(ev.payload)
+    p = ev.payload if isinstance(ev.payload, dict) else json.loads(ev.payload)
+    if is_redacted_payload(p):
+        # Redacted content renders as a visible placeholder, never a silent gap —
+        # the text keys cover every renderer that reads one.
+        return {"content": "[redacted]", "text": "[redacted]", **p}
+    return p
 
 
 def _unknown_payload_text(payload: dict) -> str:

@@ -81,6 +81,7 @@ from .layout import (
     _CROSS_THREAD,
     KG_EVENTS_FILE,
     MANIFEST_LOCK_FILE,
+    REDACTED_PAYLOAD_KEY,
     THREADS_SUBDIR,
     TRUTH_FORMAT_VERSION,
     TruthFormatError,
@@ -103,6 +104,7 @@ from .layout import (
     _thread_file,
     _thread_relpath,
     _write_manifest,
+    is_redacted_payload,
     log_dir,
     update_manifest,
 )

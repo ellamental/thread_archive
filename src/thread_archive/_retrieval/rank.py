@@ -53,13 +53,12 @@ _SEARCH_FUSION_WEIGHT = 50.0
 _SEARCH_RECENCY_WEIGHT = 1.0
 
 # Subject-linkage weight, applied to log1p(``_topical``) — how hard a subject-graph
-# vouch lifts a hit the lexical arm ranks low or misses (the topic arm's payoff).
-# Calibrated so a *specific* subject's vouch (``_topical`` already IDF-damped for
-# subject breadth) scores a subject-linked chat in the neighbourhood of a strong
-# lexical hit — no more: a broad subject links everything and must not reorder the
-# head. On the usage-mined golden set this lifts multi-target recall@5 without
-# denting the deeper-recall / auto-titles gate; ``search()`` reads
-# ``THREAD_ARCHIVE_TOPICAL_WEIGHT`` at call time to override it (the eval's sweep knob).
+# vouch lifts a hit when the topic-bridged recall arm is enabled. Only in force when
+# ``THREAD_ARCHIVE_TOPICAL=1`` (the arm is off by default: its recall lift on the
+# golden set is within noise, the semantic arm already covering the vocabulary
+# bridge). Calibrated so a *specific* subject's vouch (``_topical`` already IDF-damped
+# for subject breadth) scores a subject-linked chat near a strong lexical hit, no
+# more; ``search()`` reads ``THREAD_ARCHIVE_TOPICAL_WEIGHT`` at call time to override.
 _SEARCH_TOPICAL_WEIGHT = 150.0
 
 # Cross-encoder re-rank pool — how many ranked candidates to feed the reranker
