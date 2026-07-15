@@ -2,6 +2,47 @@
 
 ## Unreleased
 
+- **Export redrops now merge grown conversations (2026-07-15).** The drop watcher
+  imported account exports without `force`, so a conversation that gained messages
+  since the last export was skipped outright — a recurring ChatGPT/claude.ai/xAI
+  export captured new conversations but silently missed new messages in old ones.
+  The watcher now forces the import; event-level dedup keeps unchanged
+  conversations at zero new events, and a grown one gains exactly its tail in the
+  same thread.
+
+- **`archive restore` exists (2026-07-15).** Recovery was a drill plus a by-hand
+  procedure (copy truth, pick a generation, make a home, reindex). `archive
+  restore <mirror> --to <home>` now does the real thing: preflight (mirror scan,
+  parse-error refusal, non-empty-target refusal), staged rebuild on the target's
+  filesystem, count + smoke verification, then atomic publication — a replaced
+  home is set aside as `<home>.damaged-<stamp>`, never deleted.
+  `--generation`/`--list-generations` select a retained pre-run snapshot.
+
+- **Topical ranking arm deleted (2026-07-15).** The topic-bridged recall arm
+  (`_retrieval/topical.py`, its RRF fusion seam, `_topical` ranking term, and
+  the `THREAD_ARCHIVE_TOPICAL*` flags) is gone — it was off by default with no
+  measured lift, and ranking was never the graph's point. The subjects lens is
+  unchanged: topic links still orient reads; they no longer reorder search.
+
+- **`thread_archive status` tells the same truth as the operator status
+  (2026-07-15).** The setup-facing status now shows the nightly pipeline's
+  verdict (a red offsite run was invisible behind a green ad-hoc backup line),
+  counts topic threads separately instead of inflating "conversations", and the
+  operator `archive status` prints coverage warnings even when the check is
+  green (a 127-day-stale export hid behind `coverage: ok`).
+
+- **Search hits deep-link to their event (2026-07-15).** A viewer search-hit
+  click opened the thread at the top; it now lands on the matching turn,
+  scrolled into view and accented (`?e=<event_id>`; structured messages carry
+  their source `event_ids`). A hit whose content the current toggles hide falls
+  back to the nearest visible turn.
+
+- **Privacy hardening (2026-07-15).** The archive home and truth dir are created
+  and self-healed to `0700` (the live home was `755` with world-readable JSONL),
+  and the MCP HTTP server refuses a non-loopback `--host` without
+  `THREAD_ARCHIVE_MCP_NONLOCAL=1` — the same guard, and the same reason, as the
+  web viewer.
+
 - **Usage-mined golden retrieval eval removed (2026-07-15).** The 599-case golden
   set (search→read pairs mined by `golden_from_usage.py`), the miner, its tests,
   and `retrieval_eval.py --golden` are gone: the mined pairs assumed a
