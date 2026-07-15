@@ -29,6 +29,6 @@ from __future__ import annotations
 # Versioning policy: 0.0.x while the public API is the retrieval MCP tools +
 # the truth format only; everything else is free to change without notice.
 # Don't bump past 0.0.x as part of release mechanics.
-__version__ = "0.0.2"
+__version__ = "0.0.3"
 
 __all__ = ["__version__"]
