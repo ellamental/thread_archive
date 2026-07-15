@@ -35,6 +35,12 @@ _SANDBOX_HOME = Path(tempfile.mkdtemp(prefix="thread-archive-test-home-"))
 os.environ["HOME"] = str(_SANDBOX_HOME)
 atexit.register(shutil.rmtree, _SANDBOX_HOME, ignore_errors=True)
 
+# XDG base dirs must follow the redirect: an inherited XDG_CONFIG_HOME (GitHub's
+# runners export one) still names the real ~/.config, and an explicit XDG var
+# outranks $HOME for anything XDG-aware. Dropped, they re-derive from the sandbox.
+for _xdg in ("XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_STATE_HOME", "XDG_CACHE_HOME"):
+    os.environ.pop(_xdg, None)
+
 
 @pytest.fixture(autouse=True)
 def _isolate_home(monkeypatch):
