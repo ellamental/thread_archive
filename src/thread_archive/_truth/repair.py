@@ -55,6 +55,7 @@ from .jsonl_log import (
     _fsync_dir,
     _hash_key_check,
     _hold_reindex_lock,
+    _iter_jsonl,
     _json_default,
     _row_dict,
     _shard_depth,
@@ -201,37 +202,23 @@ def _repair_locked(d: Path, *, dry_run: bool) -> dict:
     # verify, so it must converge on verify-green regardless of how the drift arose.
     truth_event_ids: dict[int, set[int]] = {}
     tids_with_meta: set[int] = set()
+    # log=False: a freshly-quarantined torn line was already logged by the rewrite
+    # above (and dry-run deliberately tolerates it) — don't warn about it again here.
     for path in (sorted(threads_dir.rglob("*.jsonl")) if threads_dir.exists() else []):
-        with open(path, encoding="utf-8", errors="replace") as fh:
-            for line in fh:
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    rec = json.loads(line)
-                except ValueError:
-                    continue  # freshly-quarantined already; dry-run tolerates
-                kind = rec.get("type", "event")
-                if kind == "thread":
-                    if rec.get("id") is not None:
-                        tids_with_meta.add(int(rec["id"]))
-                elif kind == "event":
-                    ev_id, tid = rec.get("id"), rec.get("thread_id")
-                    if ev_id is not None and tid is not None:
-                        truth_event_ids.setdefault(int(tid), set()).add(int(ev_id))
+        for rec in _iter_jsonl(path, log=False):
+            kind = rec.get("type", "event")
+            if kind == "thread":
+                if rec.get("id") is not None:
+                    tids_with_meta.add(int(rec["id"]))
+            elif kind == "event":
+                ev_id, tid = rec.get("id"), rec.get("thread_id")
+                if ev_id is not None and tid is not None:
+                    truth_event_ids.setdefault(int(tid), set()).add(int(ev_id))
     kg_line_ids: set[int] = set()
     if (d / KG_EVENTS_FILE).exists():
-        with open(d / KG_EVENTS_FILE, encoding="utf-8", errors="replace") as fh:
-            for line in fh:
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    rec = json.loads(line)
-                except ValueError:
-                    continue
-                if rec.get("id") is not None:
-                    kg_line_ids.add(int(rec["id"]))
+        for rec in _iter_jsonl(d / KG_EVENTS_FILE, log=False):
+            if rec.get("id") is not None:
+                kg_line_ids.add(int(rec["id"]))
 
     depth = _shard_depth(d)
     empty: set[int] = set()

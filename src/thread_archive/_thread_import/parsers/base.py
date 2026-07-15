@@ -259,22 +259,6 @@ class FieldMapping:
 
 
 @dataclass
-class SemanticCheck:
-    """
-    Defines a semantic validation rule that spans messages.
-
-    Unlike FieldMapping which extracts values, SemanticCheck validates
-    higher-level requirements like "first user message must have context".
-    """
-
-    name: str
-    description: str
-    applies_to: str  # "first_user_message", "assistant_messages", "all_messages", etc.
-    severity: ValidationSeverity
-    check_fn: Optional[Callable[["NormalizedMessage", "ValidationContext"], bool]] = None
-
-
-@dataclass
 class ValidationContext:
     """
     Tracks validation state across a conversation import.
@@ -408,7 +392,6 @@ class ProviderParser(ABC):
     Subclasses should define:
     - PROVIDER_NAME: str - Identifier for this provider
     - FIELD_MAPPINGS: List[FieldMapping] - Explicit field mappings (optional, for new-style parsers)
-    - SEMANTIC_CHECKS: List[SemanticCheck] - Semantic validation rules (optional)
 
     And implement:
     - parse_export() - Parse provider data into normalized messages
@@ -418,7 +401,6 @@ class ProviderParser(ABC):
     # Override in subclasses
     PROVIDER_NAME: str = "unknown"
     FIELD_MAPPINGS: List[FieldMapping] = []
-    SEMANTIC_CHECKS: List[SemanticCheck] = []
 
     def __init__(self, strict: bool = False):
         """

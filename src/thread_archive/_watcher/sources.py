@@ -27,7 +27,7 @@ from .._importers import (
     import_opencode_db,
     import_session_incremental,
 )
-from .base import SourceDiscovery, SourceWatcher, WatchResult
+from .base import SourceDiscovery, SourceWatcher, WatchResult, fingerprint_poll
 
 logger = logging.getLogger(__name__)
 
@@ -89,45 +89,38 @@ class FileSessionWatcher(SourceWatcher):
     def discover(self) -> SourceDiscovery:
         return _stat_discovery(self.source_name, (p for p, _ in self._iter_files()))
 
+    def _probe(self, target: tuple[Path, str]):
+        session_file, _ = target
+        try:
+            st = session_file.stat()
+        except OSError:
+            return None  # unstattable → skip silently, don't retain a fingerprint
+        if st.st_size == 0:
+            return None  # empty file (mid-create) → skip until it has content
+        return str(session_file.resolve()), (st.st_mtime_ns, st.st_size)
+
+    def _work(self, target: tuple[Path, str]) -> WatchResult:
+        session_file, source_id = target
+        imp = self._import(session_file, source_id)
+        return WatchResult(
+            sources_checked=1,
+            items_imported=1 if imp.events_created > 0 else 0,
+            events_created=imp.events_created,
+            lines_processed=imp.lines_processed,
+            parse_errors=imp.parse_errors,
+        )
+
+    def _import_error(self, target: tuple[Path, str], exc: Exception) -> WatchResult:
+        _, source_id = target
+        msg = f"{self.source_name} import error for {source_id}: {exc}"
+        logger.warning(msg)
+        return WatchResult(sources_checked=1, errors=[msg])
+
     def poll(self) -> WatchResult:
-        result = WatchResult()
-        seen_this_poll: set[str] = set()
-
-        for session_file, source_id in self._iter_files():
-            try:
-                st = session_file.stat()
-            except OSError:
-                continue
-            if st.st_size == 0:
-                continue
-
-            resolved = str(session_file.resolve())
-            fingerprint = (st.st_mtime_ns, st.st_size)
-            seen_this_poll.add(resolved)
-            if self._seen.get(resolved) == fingerprint:
-                result = result + WatchResult(sources_checked=1)
-                continue
-
-            try:
-                imp = self._import(session_file, source_id)
-                # Fingerprint only after a successful import, so a failure retries.
-                self._seen[resolved] = fingerprint
-                result = result + WatchResult(
-                    sources_checked=1,
-                    items_imported=1 if imp.events_created > 0 else 0,
-                    events_created=imp.events_created,
-                    lines_processed=imp.lines_processed,
-                    parse_errors=imp.parse_errors,
-                )
-            except Exception as e:  # noqa: BLE001 — one bad file must not stop the poll
-                msg = f"{self.source_name} import error for {source_id}: {e}"
-                logger.warning(msg)
-                result = result + WatchResult(sources_checked=1, errors=[msg])
-
-        # Prune fingerprints for files no longer present.
-        if seen_this_poll:
-            self._seen = {k: v for k, v in self._seen.items() if k in seen_this_poll}
-        return result
+        return fingerprint_poll(
+            self._iter_files(), self._seen,
+            probe=self._probe, work=self._work, on_error=self._import_error,
+        )
 
 
 class ClaudeCodeWatcher(FileSessionWatcher):
@@ -333,41 +326,38 @@ class _DbScanWatcher(SourceWatcher):
                     report.latest = max(report.latest or 0.0, mtime)
         return report
 
+    def _probe(self, target: tuple[Optional[Path], Callable, str]):
+        db_path, _, label = target
+        try:
+            current = self._current_mtime(db_path)
+        except OSError as e:
+            return WatchResult(errors=[f"{label}: cannot stat db: {e}"])
+        if current is None or db_path is None:
+            return WatchResult(errors=[f"{label}: database not found"])
+        return str(db_path.resolve()), current
+
+    def _work(self, target: tuple[Optional[Path], Callable, str]) -> WatchResult:
+        _, scan_fn, label = target
+        scan = scan_fn()
+        return WatchResult(
+            sources_checked=scan.processed,
+            items_imported=scan.imported,
+            events_created=scan.events_created,
+            errors=_scan_errors(label, scan),
+        )
+
+    def _scan_error(
+        self, target: tuple[Optional[Path], Callable, str], exc: Exception
+    ) -> WatchResult:
+        _, _, label = target
+        logger.warning("%s scan failed: %s", label, exc)
+        return WatchResult(errors=[f"{label}: scan failed: {exc}"])
+
     def poll(self) -> WatchResult:
-        result = WatchResult()
-        seen_this_poll: set[str] = set()
-        for db_path, scan_fn, label in self._targets():
-            try:
-                current = self._current_mtime(db_path)
-            except OSError as e:
-                result = result + WatchResult(errors=[f"{label}: cannot stat db: {e}"])
-                continue
-            if current is None or db_path is None:
-                result = result + WatchResult(errors=[f"{label}: database not found"])
-                continue
-            key = str(db_path.resolve())
-            seen_this_poll.add(key)
-            if self._last_mtime.get(key) == current:
-                result = result + WatchResult(sources_checked=1)
-                continue
-            try:
-                scan = scan_fn()
-            except Exception as e:  # noqa: BLE001 — one bad DB must not stop the poll
-                logger.warning("%s scan failed: %s", label, e)
-                result = result + WatchResult(errors=[f"{label}: scan failed: {e}"])
-                continue
-            # Fingerprint only after a successful scan, so a failure retries.
-            self._last_mtime[key] = current
-            result = result + WatchResult(
-                sources_checked=scan.processed,
-                items_imported=scan.imported,
-                events_created=scan.events_created,
-                errors=_scan_errors(label, scan),
-            )
-        # Prune fingerprints for DBs no longer present.
-        if seen_this_poll:
-            self._last_mtime = {k: v for k, v in self._last_mtime.items() if k in seen_this_poll}
-        return result
+        return fingerprint_poll(
+            self._targets(), self._last_mtime,
+            probe=self._probe, work=self._work, on_error=self._scan_error,
+        )
 
 
 def cursor_watcher(db_path: Optional[Path] = None) -> _DbScanWatcher:

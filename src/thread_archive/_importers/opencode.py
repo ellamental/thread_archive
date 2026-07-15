@@ -37,6 +37,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 from thread_archive._thread_import import DefaultEventBuilder
+from thread_archive._thread_import.timestamps import parse_timestamp
 
 from .._store import ImportState, get_session
 from ._events import assemble_events
@@ -526,10 +527,6 @@ def _opencode_to_normalized(msg: dict[str, Any]) -> dict[str, Any]:
 
 def _parse_opencode_timestamp(ts: Any) -> Optional[datetime]:
     """OpenCode timestamps are integer milliseconds since epoch."""
-    if not isinstance(ts, (int, float)):
-        return None
-    try:
-        seconds = ts / 1000 if ts > 1e12 else ts
-        return datetime.fromtimestamp(seconds, tz=timezone.utc)
-    except (ValueError, OSError):
-        return None
+    if not isinstance(ts, (int, float)) or isinstance(ts, bool):
+        return None  # numbers only — a stray string here is not an opencode time
+    return parse_timestamp(ts)

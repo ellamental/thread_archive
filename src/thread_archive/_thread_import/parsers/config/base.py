@@ -173,30 +173,11 @@ CLAUDE_CODE_CONFIG = ProviderConfig(
 )
 
 
-CURSOR_CONFIG = ProviderConfig(
-    provider_name="cursor",
-    thinking_expectation="model_specific",
-    thinking_exempt_models=_COMMON_EXEMPT_MODELS,
-    has_branching=False,
-    has_parent_references=False,
-    expected_roles={"user", "assistant", "system", "tool"},
-    expected_block_types={
-        "text",
-        "thinking",
-        "tool_use",
-        "tool_result",
-        "code",
-    },
-    timestamp_format="mixed",  # Can be ISO string or Unix timestamp
-)
-
-
 # Registry of all provider configs
 _PROVIDER_CONFIGS: Dict[str, ProviderConfig] = {
     "chatgpt": CHATGPT_CONFIG,
     "claude": CLAUDE_CONFIG,
     "claude-code": CLAUDE_CODE_CONFIG,
-    "cursor": CURSOR_CONFIG,
 }
 
 

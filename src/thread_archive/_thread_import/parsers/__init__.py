@@ -46,7 +46,6 @@ from .base import (
     ImportResult,
     NormalizedMessage,
     ProviderParser,
-    SemanticCheck,
     SystemContextBlock,
     TextBlock,
     ThinkingBlock,
@@ -66,12 +65,10 @@ from .config import (
     CHATGPT_CONFIG,
     CLAUDE_CODE_CONFIG,
     CLAUDE_CONFIG,
-    CURSOR_CONFIG,
     ProviderConfig,
     ThinkingExpectation,
     get_provider_config,
 )
-from .cursor import CursorParser
 
 # Validators
 from .validators import (
@@ -87,7 +84,6 @@ PARSER_CLASSES: dict[str, Type[ProviderParser]] = {
     "chatgpt": ChatGPTParser,
     "claude": ClaudeParser,
     "claude-code": ClaudeCodeParser,
-    "cursor": CursorParser,
     # Add more providers here:
     # 'gemini': GeminiParser,
     # 'copilot': CopilotParser,
@@ -102,7 +98,7 @@ def get_parser(provider: str, strict: bool = False) -> ProviderParser:
     Get a parser instance for a provider.
 
     Args:
-        provider: Provider name (chatgpt, claude, cursor)
+        provider: Provider name (chatgpt, claude, claude-code)
         strict: If True, validation warnings become errors
 
     Returns:
@@ -121,7 +117,6 @@ __all__ = [
     "ImportResult",
     # Field mapping infrastructure
     "FieldMapping",
-    "SemanticCheck",
     "ValidationContext",
     "ValidationSeverity",
     # Block types
@@ -139,7 +134,6 @@ __all__ = [
     "CHATGPT_CONFIG",
     "CLAUDE_CONFIG",
     "CLAUDE_CODE_CONFIG",
-    "CURSOR_CONFIG",
     "get_provider_config",
     # Validators
     "BaseValidator",
@@ -151,7 +145,6 @@ __all__ = [
     "ChatGPTParser",
     "ClaudeParser",
     "ClaudeCodeParser",
-    "CursorParser",
     "PARSER_CLASSES",
     "PROVIDERS",
     "get_parser",

@@ -12,11 +12,11 @@ from __future__ import annotations
 import json
 import logging
 from dataclasses import dataclass
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
 
 from thread_archive._thread_import import DefaultEventBuilder
+from thread_archive._thread_import.timestamps import parse_timestamp_iso
 
 from .._store import ImportState, get_session
 from ._events import assemble_events
@@ -328,22 +328,10 @@ def _build_cursor_messages(
 
 
 def _cursor_iso(ts: Any) -> Optional[str]:
-    if isinstance(ts, (int, float)):
-        try:
-            secs = ts / 1000 if ts > 1e12 else ts
-            return datetime.fromtimestamp(secs, tz=timezone.utc).isoformat()
-        except (ValueError, OSError):
-            return None
-    if isinstance(ts, str) and ts:
-        s = ts[:-1] + "+00:00" if ts.endswith("Z") else ts
-        try:
-            dt = datetime.fromisoformat(s)
-        except ValueError:
-            return None
-        if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=timezone.utc)
-        return dt.isoformat()
-    return None
+    # Cursor stores either epoch-ms numbers or ISO strings; both normalize to the
+    # canonical aware-UTC ISO form (the ms/1e12 threshold and offset-less→UTC
+    # coercion live in parse_timestamp).
+    return parse_timestamp_iso(ts)
 
 
 def _cursor_tool_blocks(tc: dict[str, Any]) -> list[dict[str, Any]]:

@@ -339,14 +339,19 @@ def _classify_parse_errors(
     return torn, interior
 
 
-def _iter_jsonl(path: Path, *, errors: list[tuple[str, int]] | None = None):
+def _iter_jsonl(
+    path: Path, *, errors: list[tuple[str, int]] | None = None, log: bool = True
+):
     """Yield parsed records from a JSONL file, skipping unparseable lines.
 
     A torn line (a crash mid-append) must not kill :func:`reindex` — the recovery
     primitive has to recover everything parseable, with the same tolerance
     ``archive verify`` (:func:`scan_truth_counts`) already has. Every skipped line
     is logged, and recorded on ``errors`` as ``(path, lineno)`` when given, so
-    reindex can report the count instead of silently dropping."""
+    reindex can report the count instead of silently dropping. Pass ``log=False``
+    for a second pass over lines ``scan_truth_counts`` already logged/classified on
+    this run (verify's deep scan, repair's containment read), so the same torn line
+    isn't warned about twice."""
     if not path.exists():
         return
     with open(path, encoding="utf-8", errors="replace") as fh:
@@ -357,7 +362,8 @@ def _iter_jsonl(path: Path, *, errors: list[tuple[str, int]] | None = None):
             try:
                 yield json.loads(line)
             except ValueError:
-                logger.warning("truth: skipping unparseable line %s:%d", path, lineno)
+                if log:
+                    logger.warning("truth: skipping unparseable line %s:%d", path, lineno)
                 if errors is not None:
                     errors.append((str(path), lineno))
 

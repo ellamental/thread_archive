@@ -24,7 +24,7 @@ def test_thread_import_is_not_a_top_level_package() -> None:
         import thread_import  # noqa: F401
 
 
-@pytest.mark.parametrize("provider", ["chatgpt", "claude", "claude-code", "cursor"])
+@pytest.mark.parametrize("provider", ["chatgpt", "claude", "claude-code"])
 def test_every_provider_parser_instantiates(provider: str) -> None:
     from thread_archive._thread_import import get_parser
 

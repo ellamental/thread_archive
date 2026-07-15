@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 from thread_archive._thread_import import DefaultEventBuilder
+from thread_archive._thread_import.timestamps import parse_timestamp
 
 from ._events import assemble_events
 from ._line_stream import import_line_stream_session
@@ -61,25 +62,15 @@ def import_grok_session_incremental(session_path, source_id: str, *, session=Non
 
 
 def _parse_grok_timestamp(ts: Any) -> Optional[datetime]:
-    if not isinstance(ts, str) or not ts:
-        return None
-    try:
-        return datetime.fromisoformat(ts[:-1] + "+00:00" if ts.endswith("Z") else ts)
-    except (ValueError, TypeError):
-        return None
+    # Grok metadata carries ISO strings only here; a number is not a valid value
+    # for this field (numeric epochs come through _grok_unix_ts).
+    return parse_timestamp(ts) if isinstance(ts, str) else None
 
 
 def _grok_unix_ts(v: Any) -> Optional[datetime]:
-    if isinstance(v, bool):
-        return None
-    if isinstance(v, (int, float)):
-        try:
-            return datetime.fromtimestamp(v, tz=timezone.utc)
-        except (ValueError, OSError, OverflowError):
-            return None
-    if isinstance(v, str):
-        return _parse_grok_timestamp(v)
-    return None
+    # Grok event timestamps are epoch-seconds or ISO strings; parse_timestamp
+    # rejects bools and coerces both forms to aware-UTC.
+    return parse_timestamp(v)
 
 
 def _grok_session_meta(session_dir: Path) -> dict[str, Any]:

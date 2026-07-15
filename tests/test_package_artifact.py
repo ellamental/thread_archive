@@ -253,7 +253,7 @@ def test_installed_package_is_private_and_asset_complete(installed, tmp_path) ->
         "assert (Path(server.STATIC_DIR) / 'index.html').is_file(), 'viewer shell missing'\n"
         "assert any(p.suffix == '.js' for p in assets.iterdir()), 'built JS missing'\n"
         "from thread_archive._thread_import import get_parser\n"
-        "for prov in ('chatgpt', 'claude', 'claude-code', 'cursor'):\n"
+        "for prov in ('chatgpt', 'claude', 'claude-code'):\n"
         "    assert get_parser(prov) is not None, prov\n"
         "try:\n"
         "    import thread_import\n"

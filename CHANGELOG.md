@@ -2,6 +2,25 @@
 
 ## Unreleased
 
+- **Topic-bridged recall: the subject graph as a third search arm (2026-07-15).**
+  `thread_search` now federates a third arm alongside lexical FTS5 and semantic
+  vectors: `_retrieval.topical` follows the lexical+vector seed pool through the
+  `topic_messages` links to the *other* conversations evidenced under the same
+  subject — optionally out to the subjects' Leiden community peers — and fuses them
+  in via RRF, so a chat that shares a subject with a hit but none of the query's
+  words (invisible to a term index, mid-list to a bi-encoder) becomes reachable.
+  A subject-linkage term (`_topical`) joins the ranker, IDF-damped by subject
+  breadth so a broad, stopword-like subject can't reorder the head; only a specific
+  subject's vouch lifts a hit, to roughly the tier of a strong lexical match. On the
+  usage-mined golden set this raises multi-target recall@5 (0.118→0.176) and
+  coverage@5 (0.078→0.137) with no regression at depth, and holds the auto-titles
+  retrieval-gate with wide headroom (MRR 0.57, recall@10 0.77 vs the 0.40/0.62
+  floors). Fail-soft and a strict no-op when the subject graph is empty, so it can
+  never break lexical search. On by default; `THREAD_ARCHIVE_TOPICAL=0` disables the
+  arm and `THREAD_ARCHIVE_TOPICAL_WEIGHT` tunes its rank weight (the eval's sweep
+  knob). The weight is tuned in-sample on a 17-case golden set — growing that set
+  (via `golden_from_usage.py`) is the prerequisite to raising it with confidence.
+
 - **Shared MCP server: one HTTP daemon instead of a model per client (2026-07-14).**
   `archive-mcp` loads a ~3 GB retrieval stack, and stdio MCP spawns one server per
   connecting client — N agents meant N resident copies (24 live copies ≈ 70 GB of

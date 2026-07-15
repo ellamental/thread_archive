@@ -34,6 +34,7 @@ from typing import Optional
 from thread_archive._thread_import import DefaultEventBuilder
 from thread_archive._thread_import.parsers.chatgpt import ChatGPTParser
 from thread_archive._thread_import.parsers.claude import ClaudeParser
+from thread_archive._thread_import.timestamps import parse_timestamp
 
 from .._store import get_session
 from ._events import assemble_events
@@ -298,6 +299,11 @@ def _load_xai_export(path: Path) -> list:
 
 
 def _xai_parse_time(v) -> Optional[datetime]:
+    # xai/grok export ``create_time``: Mongo extended-JSON ``{$date: …}``, an
+    # epoch-ms number (xai's own rule: ``>1e11`` means milliseconds), or an ISO
+    # string. Each is reduced to seconds-or-string and canonicalized to aware-UTC
+    # by parse_timestamp; after the ms→s divide the value is sub-1e12, so the
+    # core's own ms heuristic never re-triggers on it.
     if isinstance(v, dict):
         inner = v.get("$date")
         if isinstance(inner, dict):
@@ -305,19 +311,15 @@ def _xai_parse_time(v) -> Optional[datetime]:
         if inner is None:
             return None
         try:
-            return datetime.fromtimestamp(int(inner) / 1000, tz=timezone.utc)
-        except (TypeError, ValueError, OSError):
+            return parse_timestamp(int(inner) / 1000)
+        except (TypeError, ValueError):
             return None
+    if isinstance(v, bool):
+        return None
     if isinstance(v, (int, float)):
-        try:
-            return datetime.fromtimestamp(v / 1000 if v > 1e11 else v, tz=timezone.utc)
-        except (ValueError, OSError):
-            return None
+        return parse_timestamp(v / 1000 if v > 1e11 else v)
     if isinstance(v, str):
-        try:
-            return datetime.fromisoformat(v.replace("Z", "+00:00"))
-        except ValueError:
-            return None
+        return parse_timestamp(v)
     return None
 
 

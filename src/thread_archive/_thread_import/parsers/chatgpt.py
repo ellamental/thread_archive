@@ -70,8 +70,6 @@ from .base import (
     FieldMapping,
     NormalizedMessage,
     ProviderParser,
-    SemanticCheck,
-    ValidationSeverity,
 )
 from .chatgpt_content import (
     append_image_parts,
@@ -231,28 +229,6 @@ class ChatGPTParser(ProviderParser):
                 "Extracted from message.metadata.model_slug in ChatGPT's structure. "
                 "Only present on assistant messages."
             ),
-        ),
-    ]
-
-    # Semantic checks for ChatGPT-specific requirements
-    SEMANTIC_CHECKS = [
-        SemanticCheck(
-            name="user_context_on_first_message",
-            description=(
-                "First user message should have user context (custom instructions, "
-                "memory, etc.) from user_editable_context or model_editable_context blocks"
-            ),
-            applies_to="first_user_message",
-            severity=ValidationSeverity.error,
-        ),
-        SemanticCheck(
-            name="thinking_on_assistant_messages",
-            description=(
-                "Assistant messages from o1/o3 models should have thinking blocks. "
-                "Not required for older models, so this is a warning not an error."
-            ),
-            applies_to="assistant_messages",
-            severity=ValidationSeverity.warning,
         ),
     ]
 

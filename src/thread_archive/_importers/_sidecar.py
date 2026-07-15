@@ -19,6 +19,7 @@ from typing import Optional
 from sqlalchemy.orm import Session
 
 from thread_archive._thread_import.event_builder import compute_dedup_key
+from thread_archive._thread_import.timestamps import parse_timestamp
 
 from .._store import Event
 from .._truth import write_events
@@ -62,12 +63,8 @@ def import_sidecar_lines(
         ts_str = entry.get("ts")
         prompt = entry.get("prompt")
 
-        occurred_at: Optional[datetime] = None
-        if ts_str:
-            try:
-                occurred_at = datetime.fromisoformat(ts_str)
-            except (ValueError, TypeError):
-                pass
+        # aware-UTC, matching the fabricated fallback below and every other write.
+        occurred_at: Optional[datetime] = parse_timestamp(ts_str) if ts_str else None
 
         payload: dict = {"hook_name": hook_name, "context": context}
         if prompt:

@@ -808,28 +808,22 @@ def _verify_deep(watermark: int) -> dict:
     truth_meta: dict[int, dict] = {}
     if threads_dir.exists():
         for path in thread_file_load_order(d):
-            with open(path, encoding="utf-8", errors="replace") as fh:
-                for line in fh:
-                    line = line.strip()
-                    if not line:
-                        continue
-                    try:
-                        rec = _json.loads(line)
-                    except ValueError:
-                        continue
-                    if rec.get("type", "event") == "thread":
-                        if rec.get("id") is not None:
-                            truth_meta[int(rec["id"])] = rec
-                        continue
-                    if rec.get("type", "event") != "event":
-                        continue
-                    ev_id, tid = rec.get("id"), rec.get("thread_id")
-                    if ev_id is None or tid is None or ev_id > watermark:
-                        continue
-                    truth_ids.setdefault(int(tid), set()).add(int(ev_id))
-                    files = thread_files.setdefault(int(tid), [])
-                    if path not in files:
-                        files.append(path)
+            # log=False: scan_truth_counts already logged/classified any torn line
+            # on this same run — re-logging here would double-count it.
+            for rec in _iter_jsonl(path, log=False):
+                if rec.get("type", "event") == "thread":
+                    if rec.get("id") is not None:
+                        truth_meta[int(rec["id"])] = rec
+                    continue
+                if rec.get("type", "event") != "event":
+                    continue
+                ev_id, tid = rec.get("id"), rec.get("thread_id")
+                if ev_id is None or tid is None or ev_id > watermark:
+                    continue
+                truth_ids.setdefault(int(tid), set()).add(int(ev_id))
+                files = thread_files.setdefault(int(tid), [])
+                if path not in files:
+                    files.append(path)
 
     # Pass 2 — per-thread diff against the index.
     index_only: list[int] = []

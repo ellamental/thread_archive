@@ -3,8 +3,8 @@
 Two halves over a pure-graph spine (networkx, no Neo4j, no graph server):
 
 * **read / analytics** (:mod:`.graph`) — the in-process topic graph: PageRank,
-  communities (Leiden when the ``[graph]`` extra is present, networkx Louvain as a
-  fail-soft fallback), bridges, peers.
+  communities (Leiden via the base ``leidenalg`` + ``python-igraph``, networkx
+  Louvain as a fail-soft fallback), bridges, peers.
 * **write / curation** (:mod:`.write`, :mod:`.materialize`) — the librarian's hands:
   create topics, link threads, cite evidence. Every mutation is an append-only
   ``KgEvent`` folded into the projection, so the operation history survives.
@@ -16,6 +16,7 @@ archive works without this layer.
 from __future__ import annotations
 
 from .graph import (
+    community_members_for,
     get_bridge_topics,
     get_community_peers,
     get_community_topic_ids,
@@ -46,6 +47,7 @@ __all__ = [
     "get_topic_graph_meta",
     "get_community_topic_ids",
     "get_community_peers",
+    "community_members_for",
     "get_bridge_topics",
     "get_unconnected_topics",
     "get_status",

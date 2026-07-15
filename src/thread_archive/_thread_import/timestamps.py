@@ -22,6 +22,11 @@ def parse_timestamp(ts: Optional[Union[str, int, float]], *, default: Optional[d
     if ts is None or ts == "":
         return default
 
+    # A bool is an int subclass, so `isinstance(ts, int)` below would read True/False
+    # as epoch 1/0 (→ 1970). A boolean is never a timestamp — reject it explicitly.
+    if isinstance(ts, bool):
+        return default
+
     # ISO string
     if isinstance(ts, str):
         try:

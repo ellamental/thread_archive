@@ -9,7 +9,6 @@ from .base import (
     CHATGPT_CONFIG,
     CLAUDE_CODE_CONFIG,
     CLAUDE_CONFIG,
-    CURSOR_CONFIG,
     ProviderConfig,
     ThinkingExpectation,
     get_provider_config,
@@ -21,6 +20,5 @@ __all__ = [
     "CHATGPT_CONFIG",
     "CLAUDE_CONFIG",
     "CLAUDE_CODE_CONFIG",
-    "CURSOR_CONFIG",
     "get_provider_config",
 ]

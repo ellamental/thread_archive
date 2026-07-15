@@ -52,8 +52,6 @@ from .base import (
     FieldMapping,
     NormalizedMessage,
     ProviderParser,
-    SemanticCheck,
-    ValidationSeverity,
 )
 from .config import CLAUDE_CONFIG, ProviderConfig
 from .types.claude import ClaudeConversation, ClaudeExport
@@ -172,28 +170,6 @@ class ClaudeParser(ProviderParser):
                 "Primary text content. In Claude, this is a top-level field that "
                 "may exist alongside or instead of content blocks."
             ),
-        ),
-    ]
-
-    # Semantic checks for Claude-specific requirements
-    SEMANTIC_CHECKS = [
-        SemanticCheck(
-            name="user_context_on_first_message",
-            description=(
-                "First user message should have user context. In Claude, this often "
-                "comes from project memory or the memories.json file in the export."
-            ),
-            applies_to="first_user_message",
-            severity=ValidationSeverity.error,
-        ),
-        SemanticCheck(
-            name="thinking_on_assistant_messages",
-            description=(
-                "Claude 3.5+ Sonnet messages should have thinking blocks when using "
-                "extended thinking. Not all conversations use this feature."
-            ),
-            applies_to="assistant_messages",
-            severity=ValidationSeverity.warning,
         ),
     ]
 

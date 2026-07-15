@@ -35,12 +35,12 @@ import json
 import logging
 import sqlite3
 from dataclasses import dataclass
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
 
 from thread_archive._thread_import import DefaultEventBuilder
 from thread_archive._thread_import.parsers.claude_code import ClaudeCodeParser
+from thread_archive._thread_import.timestamps import parse_timestamp_iso
 
 from .._store import get_session
 from ._events import import_lines
@@ -83,10 +83,6 @@ class ClaudeScienceImportResult:
     is_new_thread: bool
 
 
-def _iso_from_ms(ms: int) -> str:
-    return datetime.fromtimestamp(ms / 1000, tz=timezone.utc).isoformat()
-
-
 def _synthesize_line(frame_id: str, idx: int, msg: dict, model: Optional[str], base_ms: int) -> Optional[dict]:
     """Turn one ``frame_messages`` row into a Claude-Code-shaped JSONL line.
 
@@ -107,7 +103,8 @@ def _synthesize_line(frame_id: str, idx: int, msg: dict, model: Optional[str], b
     return {
         "type": role,
         "uuid": msg.get("_uuid") or f"{frame_id}:{idx}",
-        "timestamp": _iso_from_ms(base_ms + idx * _STEP_MS),
+        # base_ms is epoch-ms; parse_timestamp treats sub-1e12 floats as seconds.
+        "timestamp": parse_timestamp_iso((base_ms + idx * _STEP_MS) / 1000),
         "sessionId": frame_id,
         "message": message,
     }

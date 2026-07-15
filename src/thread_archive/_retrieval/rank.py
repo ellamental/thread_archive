@@ -52,6 +52,16 @@ _SEARCH_FUSION_WEIGHT = 50.0
 # buries what users actually read; 1.0 keeps a mild recent tiebreaker.
 _SEARCH_RECENCY_WEIGHT = 1.0
 
+# Subject-linkage weight, applied to log1p(``_topical``) — how hard a subject-graph
+# vouch lifts a hit the lexical arm ranks low or misses (the topic arm's payoff).
+# Calibrated so a *specific* subject's vouch (``_topical`` already IDF-damped for
+# subject breadth) scores a subject-linked chat in the neighbourhood of a strong
+# lexical hit — no more: a broad subject links everything and must not reorder the
+# head. On the usage-mined golden set this lifts multi-target recall@5 without
+# denting the deeper-recall / auto-titles gate; ``search()`` reads
+# ``THREAD_ARCHIVE_TOPICAL_WEIGHT`` at call time to override it (the eval's sweep knob).
+_SEARCH_TOPICAL_WEIGHT = 150.0
+
 # Cross-encoder re-rank pool — how many ranked candidates to feed the reranker
 # before cutting to ``limit``. Wide enough to cover recall@20, small enough to keep
 # the in-process re-rank stage quick.
@@ -189,12 +199,14 @@ def rank_search_results(
     density_weight: float = 100.0,
     phrase_weight: float = 50.0,
     fusion_weight: float = _SEARCH_FUSION_WEIGHT,
+    topical_weight: float = _SEARCH_TOPICAL_WEIGHT,
     content_type_weights: dict[str, float] | None = None,
     now: datetime | None = None,
 ) -> list[EventHit]:
     """Re-rank ``results`` by term density, phrase proximity, recency, content-type,
-    and cross-backend fusion (``_rrf``). The production scorer — see the module
-    docstring for the weight evidence. Returns the top ``limit``."""
+    cross-backend fusion (``_rrf``), and subject-linkage (``_topical``). The
+    production scorer — see the module docstring for the weight evidence. Returns
+    the top ``limit``."""
     now = now or datetime.now(timezone.utc).replace(tzinfo=None)  # naive-UTC, matching occurred_at
     ct_weights = content_type_weights if content_type_weights is not None else _CONTENT_TYPE_WEIGHT
     term_patterns = {t: re.compile(r"\b" + re.escape(t) + r"\b") for t in terms if len(t) < 4}
@@ -225,8 +237,13 @@ def rank_search_results(
         recency = recency_score(result.get("occurred_at", ""), now)
         ct_weight = ct_weights.get(result.get("content_type") or "", 1.0)
         rrf = result.get("_rrf", 0.0) or 0.0
+        # Subject-linkage: log-damped so a chat linked from many strong seeds lifts
+        # without a runaway; a chat FTS can't reach but the subject graph vouches
+        # for rides this term the way a vocab-mismatch hit rides fusion.
+        topical = math.log1p(result.get("_topical", 0.0) or 0.0)
         return (density * density_weight + phrase_bonus * phrase_weight
-                + recency * recency_weight + rrf * fusion_weight) * ct_weight
+                + recency * recency_weight + rrf * fusion_weight
+                + topical * topical_weight) * ct_weight
 
     ranked = sorted(enumerate(results), key=lambda x: (-combined_score(x[1]), x[0]))
     return [r for _, r in ranked[:limit]]

@@ -4,7 +4,10 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from typing import Optional
+from typing import Callable, Iterable, Optional, TypeVar, Union
+
+T = TypeVar("T")
+F = TypeVar("F")
 
 
 @dataclass
@@ -32,6 +35,51 @@ class WatchResult:
             parse_errors=self.parse_errors + other.parse_errors,
             errors=self.errors + other.errors,
         )
+
+
+def fingerprint_poll(
+    targets: Iterable[T],
+    seen: dict[str, F],
+    *,
+    probe: Callable[[T], Union[tuple[str, F], "WatchResult", None]],
+    work: Callable[[T], "WatchResult"],
+    on_error: Callable[[T, Exception], "WatchResult"],
+) -> "WatchResult":
+    """One fingerprint-skip poll pass, shared by the file- and db-scan sources.
+
+    For each target, ``probe`` returns ``(key, fingerprint)`` to consider it, a
+    :class:`WatchResult` to fold in and skip (a pre-work error or skip that still
+    reports), or ``None`` to skip silently. A target whose fingerprint still
+    matches ``seen`` is counted (``sources_checked=1``) and skipped; otherwise
+    ``work`` runs and its fingerprint is advanced **only after ``work`` returns**
+    — a raise routes to ``on_error`` and leaves the fingerprint stale so the next
+    poll retries the target. Fingerprints for targets no longer present are pruned.
+    ``seen`` is the caller's per-instance fingerprint cache, mutated in place."""
+    result = WatchResult()
+    seen_this_poll: set[str] = set()
+    for target in targets:
+        probed = probe(target)
+        if probed is None:
+            continue
+        if isinstance(probed, WatchResult):
+            result = result + probed
+            continue
+        key, fingerprint = probed
+        seen_this_poll.add(key)
+        if seen.get(key) == fingerprint:
+            result = result + WatchResult(sources_checked=1)
+            continue
+        try:
+            done = work(target)
+        except Exception as e:  # noqa: BLE001 — one bad target must not stop the poll
+            result = result + on_error(target, e)
+            continue
+        seen[key] = fingerprint  # advance only after a successful unit of work
+        result = result + done
+    if seen_this_poll:
+        for key in [k for k in seen if k not in seen_this_poll]:
+            del seen[key]
+    return result
 
 
 @dataclass

@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import asyncio
 import json
+import sys
 
 from thread_archive import _api as ta
+from thread_archive._mcp import server
 from thread_archive._mcp.server import mcp, thread_read, thread_search
 
 USER = {"type": "user", "uuid": "u1", "timestamp": "2026-01-01T10:00:00Z",
@@ -143,3 +145,59 @@ def test_mcp_call_tool_dispatch(archive_home) -> None:
     # normalize to text and assert the hit shows up.
     text = json.dumps(result, default=str)
     assert "hello mcp" in text
+
+
+class _RecordingThread:
+    """Stand-in for ``threading.Thread`` that records the warm-models decision
+    without spawning anything — ``main()``'s warm branch is what we're pinning."""
+
+    instances: list["_RecordingThread"] = []
+
+    def __init__(self, target=None, name=None, daemon=None):
+        self.target, self.name, self.daemon = target, name, daemon
+        self.started = False
+        _RecordingThread.instances.append(self)
+
+    def start(self):
+        self.started = True
+
+
+def _drive_main(monkeypatch, argv):
+    """Run ``server.main()`` with argv, stubbing the three things that would
+    block or do real work: the model warm thread, catch-up ingest, and the
+    server run-loop. Returns the recorded ``mcp.run`` transport args."""
+    _RecordingThread.instances = []
+    run_calls: list[tuple] = []
+    monkeypatch.setattr(sys, "argv", argv)
+    monkeypatch.setattr(server.threading, "Thread", _RecordingThread)
+    monkeypatch.setattr(server, "_maybe_catch_up", lambda: None)
+    monkeypatch.setattr(server.mcp, "run", lambda *a: run_calls.append(a))
+    server.main()
+    return run_calls
+
+
+def test_main_stdio_default_neither_warms_nor_http(monkeypatch) -> None:
+    run_calls = _drive_main(monkeypatch, ["archive-mcp"])
+    # stdio default: run() with no transport arg, and no warm thread started.
+    assert run_calls == [()]
+    assert not any(t.name == "archive-warm-models" for t in _RecordingThread.instances)
+
+
+def test_main_http_warms_and_serves_streamable(monkeypatch) -> None:
+    run_calls = _drive_main(
+        monkeypatch, ["archive-mcp", "--http", "--host", "1.2.3.4", "--port", "9999"]
+    )
+    assert run_calls == [("streamable-http",)]
+    # --http applies the loopback-share settings and warms the model stack.
+    assert mcp.settings.host == "1.2.3.4"
+    assert mcp.settings.port == 9999
+    assert mcp.settings.stateless_http is True
+    assert mcp.settings.json_response is True
+    warm = [t for t in _RecordingThread.instances if t.name == "archive-warm-models"]
+    assert len(warm) == 1 and warm[0].started and warm[0].daemon is True
+
+
+def test_main_stdio_warms_when_env_opts_in(monkeypatch) -> None:
+    monkeypatch.setenv("THREAD_ARCHIVE_MCP_WARM", "1")
+    _drive_main(monkeypatch, ["archive-mcp"])
+    assert any(t.name == "archive-warm-models" for t in _RecordingThread.instances)

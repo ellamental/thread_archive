@@ -174,6 +174,27 @@ def get_community_peers(thread_id: int, limit: int = 5) -> list[dict]:
             for t in peers[:limit]]
 
 
+def community_members_for(topic_ids: list[int]) -> dict[int, list[int]]:
+    """For each of ``topic_ids`` that sits in a community, its co-member topics
+    (excluding itself), highest-pagerank first. Topics with no community are
+    omitted. Empty dict when the graph is unavailable/empty — callers stay
+    graph-agnostic. The retrieval topic arm uses this to widen the subjects a
+    query matched to their sibling subjects."""
+    proj = _projection()
+    if proj is None or not topic_ids:
+        return {}
+    out: dict[int, list[int]] = {}
+    for tid in topic_ids:
+        cid = proj.community.get(tid)
+        if cid is None:
+            continue
+        members = [m for m in proj.members.get(cid, []) if m != tid]
+        if members:
+            members.sort(key=lambda m: (-proj.pagerank.get(m, 0.0), m))
+            out[tid] = members
+    return out
+
+
 def get_bridge_topics(limit: int = 20) -> list[dict]:
     """Highest-betweenness topics — structural bridges between communities."""
     proj = _projection()
