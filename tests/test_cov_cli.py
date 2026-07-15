@@ -593,6 +593,45 @@ def test_restore_drill_failure_with_smoke(monkeypatch, capsys) -> None:
     assert "RESTORE DRILL FAILED (1.0s)" in out
 
 
+# ── restore: skipped-smoke, damaged home, and failure branches ────────────────
+# The real restore path (mirror + rebuilt + working smoke + OK line) is driven
+# end-to-end in test_restore.py; these stub api.restore to reach the formatting
+# branches a happy restore can't produce.
+
+
+def test_restore_skipped_smoke_and_damaged_home(monkeypatch, capsys) -> None:
+    res = {
+        "ok": True, "seconds": 2.0,
+        "mirror": {"threads": 1, "events_effective": 1, "parse_errors": 0},
+        "rebuilt": {"threads": 1, "events": 1, "fts": 1},
+        "smoke": {"skipped": "no models installed"},
+        "damaged_home": "/h/x.damaged-2026-07-15T00-00-00",
+    }
+    monkeypatch.setattr(api, "restore", lambda dest, to, **kw: res)
+    rc = main(["restore", "/mirror", "--to", "/h/x", "--replace"])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "mirror: threads=1" in out
+    assert "rebuilt: threads=1 events=1 fts=1" in out
+    assert "smoke:  skipped (no models installed)" in out
+    assert "previous home set aside (preserved): /h/x.damaged-2026-07-15T00-00-00" in out
+    assert "OK — restored to /h/x (2.0s)" in out
+
+
+def test_restore_failed_no_mirror_no_smoke_error(monkeypatch, capsys) -> None:
+    """A failed restore with neither mirror nor rebuilt scanned, no smoke, and an
+    error — the pure failure surface, from a named generation."""
+    res = {"ok": False, "seconds": 1.0, "error": "rebuild aborted"}
+    monkeypatch.setattr(api, "restore", lambda dest, to, **kw: res)
+    rc = main(["restore", "/mirror", "--to", "/h/x", "--generation", "2026-07-14T00-00-00"])
+    assert rc == 1
+    out = capsys.readouterr().out
+    assert "generation 2026-07-14T00-00-00" in out  # the generation-qualified src line
+    assert "mirror:" not in out and "rebuilt:" not in out
+    assert "FAILED: rebuild aborted" in out
+    assert "RESTORE FAILED (1.0s)" in out
+
+
 # ── nightly: full report, drill error ─────────────────────────────────────────
 
 

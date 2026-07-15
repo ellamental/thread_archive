@@ -10,6 +10,7 @@ mirror in a throwaway home and prove it reads and searches.
 
 from __future__ import annotations
 
+import filecmp
 import os
 from pathlib import Path
 from typing import Optional
@@ -159,7 +160,18 @@ def _mirror_dir(
         dp = dest / rel
         if dp.exists():
             ss, ds = sp.stat(), dp.stat()
-            if ss.st_size == ds.st_size and int(ss.st_mtime) <= int(ds.st_mtime):
+            # Skip unchanged files. The mtime check (truncated to whole seconds so
+            # a coarse-resolution mirror filesystem doesn't force a recopy every
+            # run) is the fast path for the append-only bulk. But the checkpoint
+            # rewrites the full-rewrite overlays (manifest.json, import_state.jsonl,
+            # the knowledge-layer files) on every backup — identical content, fresh
+            # mtime — so a same-size file whose mtime reads newer is byte-compared
+            # before recopying: an identical rewrite must not churn the mirror (and,
+            # across a one-second boundary, spuriously report a non-incremental run).
+            if ss.st_size == ds.st_size and (
+                int(ss.st_mtime) <= int(ds.st_mtime)
+                or filecmp.cmp(sp, dp, shallow=False)
+            ):
                 continue
             if (
                 not allow_shrink

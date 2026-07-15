@@ -108,6 +108,23 @@ def test_restore_from_a_generation(archive_home, tmp_path) -> None:
     assert ta.status(home=str(head_home))["events"] > before
 
 
+def test_restore_cli_into_fresh_home(archive_home, tmp_path, capsys) -> None:
+    from thread_archive.cli import main
+
+    import_cc_session(tmp_path)
+    dest = tmp_path / "bk"
+    ta.backup(str(dest))
+
+    new_home = tmp_path / "recovered"
+    assert main(["restore", str(dest), "--to", str(new_home)]) == 0
+    out = capsys.readouterr().out
+    assert f"rebuilding {new_home}" in out
+    assert "mirror:" in out and "rebuilt:" in out
+    assert f"OK — restored to {new_home}" in out
+    # The formatting summarizes a genuinely working restore.
+    assert ta.search("sess", home=str(new_home))
+
+
 def test_restore_cli_list_generations(archive_home, tmp_path, capsys) -> None:
     from thread_archive.cli import main
 
@@ -116,6 +133,24 @@ def test_restore_cli_list_generations(archive_home, tmp_path, capsys) -> None:
     ta.backup(str(dest))
     assert main(["restore", str(dest), "--list-generations"]) == 0
     assert "no generations retained" in capsys.readouterr().out
+
+
+def test_restore_cli_list_generations_shows_retained(archive_home, tmp_path, capsys) -> None:
+    from thread_archive.cli import main
+
+    import_cc_session(tmp_path)
+    dest = tmp_path / "bk"
+    ta.backup(str(dest))
+    # A second backup run snapshots the first run's state as a retained generation.
+    import_cc_session(tmp_path, name="later")
+    ta.backup(str(dest))
+    gens = ta.list_generations(str(dest))
+    assert gens, "second backup run should have retained a generation"
+
+    assert main(["restore", str(dest), "--list-generations"]) == 0
+    out = capsys.readouterr().out
+    assert gens[0] in out
+    assert "no generations retained" not in out
 
 
 def test_restore_cli_requires_a_target(archive_home, tmp_path, capsys) -> None:
