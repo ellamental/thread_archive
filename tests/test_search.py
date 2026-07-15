@@ -75,6 +75,69 @@ def test_query_mode_battery(archive_home) -> None:
     assert search("get_session")
 
 
+def test_malformed_boolean_queries_return_rather_than_raise(archive_home) -> None:
+    """Operator misuse and unbalanced quotes demote to fully-quoted literals —
+    results or empty, never a raw FTS5 OperationalError out of search."""
+    _seed_corpus(archive_home)
+    for q in ("NOT login", "login AND", "login OR OR token", '"login flow',
+              "AND", '"', "login OR NOT token", "session AND NOT login"):
+        assert isinstance(search(q), list)  # must not raise
+    # valid boolean shapes keep their operator semantics
+    assert search("authentication AND login")
+    assert not search("authentication AND nonexistentterm")
+
+
+def test_residual_fts_syntax_error_retries_quoted(archive_home, monkeypatch) -> None:
+    """A MATCH expression FTS5 still rejects (past the builder's validation)
+    retries once with the everything-quoted form instead of propagating."""
+    from thread_archive._retrieval import fts as fts_mod
+
+    _seed_corpus(archive_home)
+    monkeypatch.setattr(fts_mod, "_to_match_query", lambda q: 'NOT "login"')
+    hits = fts_mod.search_events("login", or_fallback=False)
+    assert hits == []  # retried as '"NOT" "login"' → empty, no raise
+
+
+def test_underscore_identifier_matches_literally(archive_home) -> None:
+    """The code-mode substring LIKE escapes ``_`` — ``get_session`` must not
+    wildcard-match ``getXsession``."""
+    _seed_corpus(archive_home)
+    f3 = archive_home / "like.jsonl"
+    _write_cc(f3, _cc_turn("u3", "a3", "tell me about the getXsession wrapper",
+                           "getXsession wraps the legacy pool.", 3))
+    import_session_incremental(f3, "proj:like")
+
+    hits = search("get_session")
+    assert hits
+    assert all("getXsession" not in (h["full_content"] or "") for h in hits)
+    # the literal identifier still matches
+    assert any("get_session" in (h["full_content"] or "") for h in hits)
+
+
+def test_oldest_sort_missing_timestamp_sorts_last(archive_home, monkeypatch) -> None:
+    """``sort='oldest'``: a hit with no parseable ``occurred_at`` lands after the
+    dated hits, not first (an empty key would sort before every date)."""
+    from datetime import datetime
+
+    import thread_archive._retrieval as retrieval
+    from thread_archive._store import init_db
+
+    init_db()
+
+    def _hit(eid, occurred_at):
+        return {
+            "event_id": eid, "thread_id": 1, "thread_title": None,
+            "event_type": "user_message_sent", "content_type": "user",
+            "snippet": f"hit {eid}", "full_content": f"hit {eid}",
+            "occurred_at": occurred_at,
+        }
+
+    fake = [_hit(1, None), _hit(2, datetime(2026, 1, 2)), _hit(3, datetime(2026, 1, 1))]
+    monkeypatch.setattr(retrieval, "search_events", lambda *a, **kw: list(fake))
+    hits = retrieval.search("anything", sort="oldest")
+    assert [h["event_id"] for h in hits] == [3, 2, 1]
+
+
 def test_content_type_filter(archive_home) -> None:
     _seed_corpus(archive_home)
     # 'authentication' appears in both a user message and an assistant text block

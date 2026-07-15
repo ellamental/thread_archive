@@ -20,7 +20,13 @@ from thread_archive._thread_import import DefaultEventBuilder
 
 from .._store import ImportState, get_session
 from ._events import assemble_events
-from ._state import create_thread, get_import_state, get_thread_by_source, upsert_import_state
+from ._state import (
+    create_thread,
+    get_import_state,
+    get_thread_by_source,
+    last_import_epoch_ms,
+    upsert_import_state,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -239,8 +245,7 @@ def _cursor_composer_unchanged(import_state: Optional[ImportState], composer_dat
     if not (import_state and import_state.last_import_at):
         return False
     last_updated_ms = composer_data.get("lastUpdatedAt", 0)
-    last_import_ms = import_state.last_import_at.timestamp() * 1000
-    return last_updated_ms <= last_import_ms
+    return last_updated_ms <= last_import_epoch_ms(import_state)
 
 
 def _cursor_resolve_thread(session, import_state, source_id, composer_data) -> tuple[int, bool]:

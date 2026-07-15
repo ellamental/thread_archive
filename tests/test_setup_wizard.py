@@ -24,13 +24,23 @@ from thread_archive._watcher.sources import ClaudeCodeWatcher, cursor_watcher, g
 # ── config.json ──────────────────────────────────────────────────────────────
 
 
-def test_load_config_absent_and_corrupt_mean_defaults(archive_home) -> None:
-    assert config.load_config() == {}
+def test_load_config_absent_and_corrupt_mean_defaults(archive_home, caplog) -> None:
+    # Absent is the normal pre-setup state: silent defaults.
+    with caplog.at_level("ERROR", logger="thread_archive._config"):
+        assert config.load_config() == {}
+    assert not caplog.records
+    # A corrupt file silently re-enabling every opted-out source would be a
+    # privacy hazard — it must degrade to defaults BUT log at error.
     config.config_path().write_text("{not json")
-    assert config.load_config() == {}
+    with caplog.at_level("ERROR", logger="thread_archive._config"):
+        assert config.load_config() == {}
+    assert any("ALL defaults" in r.message for r in caplog.records)
+    caplog.clear()
     # A non-dict document also degrades to defaults rather than exploding.
     config.config_path().write_text('["list"]')
-    assert config.load_config() == {}
+    with caplog.at_level("ERROR", logger="thread_archive._config"):
+        assert config.load_config() == {}
+    assert any("ALL defaults" in r.message for r in caplog.records)
 
 
 def test_save_config_roundtrip(archive_home) -> None:

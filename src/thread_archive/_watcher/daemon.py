@@ -279,55 +279,73 @@ class Watcher:
         last_embed = time.monotonic()
         dirty = False
         last_stamp = self._import_state_stamp()
+        consecutive_errors = 0
         while not self._stop:
-            # Acquire runs the index-swap reconnect (reconnect_if_swapped): if a
-            # reindex replaced index.db — even one that fit entirely inside a
-            # sleep between passes — pooled connections are disposed before this
-            # pass touches the store.
-            with try_shared_ingest_lock() as acquired:
-                if not acquired:
-                    logger.info("watch: reindex in progress — skipping ingest pass")
-                else:
-                    result = self.poll_once()
-                    if result.events_created > 0:
-                        dirty = True
-                        self._embed_more = True  # new events to embed
+            # The whole pass is guarded: an exception escaping here (the lock
+            # acquisition's index-swap reconnect, a poll bug) would otherwise
+            # exit the process, and launchd's KeepAlive restarts it every few
+            # seconds with all source fingerprints reset — a hot re-scan loop on
+            # exactly the faults (disk full, index swap mid-flight) most likely
+            # to persist. Survive instead, with exponential backoff.
+            try:
+                # Acquire runs the index-swap reconnect (reconnect_if_swapped): if a
+                # reindex replaced index.db — even one that fit entirely inside a
+                # sleep between passes — pooled connections are disposed before this
+                # pass touches the store.
+                with try_shared_ingest_lock() as acquired:
+                    if not acquired:
+                        logger.info("watch: reindex in progress — skipping ingest pass")
+                    else:
+                        result = self.poll_once()
+                        if result.events_created > 0:
+                            dirty = True
+                            self._embed_more = True  # new events to embed
 
-                    now = time.monotonic()
-                    if (now - last_maintenance) >= self.maintenance_interval:
-                        # Run when events were imported (dirty) OR when watermarks
-                        # alone moved (see _import_state_stamp) — either changes
-                        # state the maintenance snapshot must capture.
-                        stamp = self._import_state_stamp()
-                        if dirty or (stamp is not None and stamp != last_stamp):
+                        now = time.monotonic()
+                        if (now - last_maintenance) >= self.maintenance_interval:
+                            # Run when events were imported (dirty) OR when watermarks
+                            # alone moved (see _import_state_stamp) — either changes
+                            # state the maintenance snapshot must capture.
+                            stamp = self._import_state_stamp()
+                            if dirty or (stamp is not None and stamp != last_stamp):
+                                try:
+                                    self.maintain()
+                                except Exception as e:  # noqa: BLE001 — upkeep must not kill the loop
+                                    logger.warning("watch: maintenance error: %s", e)
+                                dirty = False
+                            last_maintenance = now
+                            if stamp is not None:
+                                last_stamp = stamp
+
+                        # Vector cohost: embed the freshest missing vectors, bounded per
+                        # pass. A filled batch means a backlog — drain again next poll
+                        # cycle rather than waiting out the idle interval; once a pass
+                        # comes back short, fall back to the slow probe cadence.
+                        if self._embed_due(now, last_embed):
                             try:
-                                self.maintain()
-                            except Exception as e:  # noqa: BLE001 — upkeep must not kill the loop
-                                logger.warning("watch: maintenance error: %s", e)
-                            dirty = False
-                        last_maintenance = now
-                        if stamp is not None:
-                            last_stamp = stamp
-
-                    # Vector cohost: embed the freshest missing vectors, bounded per
-                    # pass. A filled batch means a backlog — drain again next poll
-                    # cycle rather than waiting out the idle interval; once a pass
-                    # comes back short, fall back to the slow probe cadence.
-                    if self._embed_due(now, last_embed):
-                        try:
-                            n = self.embed_pending()
-                            self._backlog = n >= self.embed_batch
-                            self._embed_more = self._backlog
-                        except Exception as e:  # noqa: BLE001 — embedding must not kill the loop
-                            logger.warning("watch: embed error: %s", e)
-                            self._backlog = False
-                            self._embed_more = False  # don't hot-loop a persistent failure
-                        last_embed = now
+                                n = self.embed_pending()
+                                self._backlog = n >= self.embed_batch
+                                self._embed_more = self._backlog
+                            except Exception as e:  # noqa: BLE001 — embedding must not kill the loop
+                                logger.warning("watch: embed error: %s", e)
+                                self._backlog = False
+                                self._embed_more = False  # don't hot-loop a persistent failure
+                            last_embed = now
+            except Exception:  # noqa: BLE001 — the loop must outlive any one pass
+                consecutive_errors += 1
+                delay = min(self.interval * (2 ** min(consecutive_errors, 6)), 300.0)
+                logger.exception(
+                    "watch: ingest pass failed (%d in a row) — backing off %.0fs",
+                    consecutive_errors, delay,
+                )
+            else:
+                consecutive_errors = 0
+                delay = self.interval
 
             # Sleep in short slices so stop() is responsive.
             slept = 0.0
-            while slept < self.interval and not self._stop:
-                time.sleep(min(0.5, self.interval - slept))
+            while slept < delay and not self._stop:
+                time.sleep(min(0.5, delay - slept))
                 slept += 0.5
 
     def stop(self) -> None:

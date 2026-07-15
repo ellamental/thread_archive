@@ -78,6 +78,7 @@ def _semantic_hits(query, *, thread_id, content_types, exclude_content_types, si
             source=source,
         )
     except Exception:  # noqa: BLE001 — vector arm must never break lexical search
+        logger.exception("semantic arm failed; search continues lexical-only")
         return None
 
 
@@ -216,7 +217,12 @@ def search(
     if is_count:
         ranked = fused  # whole match pool, unranked — the renderer tallies it
     elif sort == "oldest":
-        ranked = sorted(fused, key=lambda r: str(r.get("occurred_at") or ""))[:limit]
+        # Hits with no parseable timestamp sort LAST — an empty key would sort
+        # before every real date and crowd the head with undatable hits.
+        ranked = sorted(
+            fused,
+            key=lambda r: (r.get("occurred_at") is None, str(r.get("occurred_at") or "")),
+        )[:limit]
     elif structural:
         ranked = fused[:limit]  # structural recency order from the scan
     else:

@@ -34,6 +34,29 @@ log = logging.getLogger(__name__)
 _LOOPBACK_HOSTS = frozenset({"127.0.0.1", "::1", "localhost"})
 _NONLOCAL_OPTIN = "THREAD_ARCHIVE_WEB_NONLOCAL"
 
+
+def _host_allowed(host: Optional[str]) -> bool:
+    """Whether a request's Host header names this loopback server.
+
+    DNS-rebinding defense: a malicious page can point its own domain at 127.0.0.1
+    and read the archive through the victim's browser — but the browser still sends
+    that domain as Host, so requiring a loopback name blocks it. Handles the
+    ``host:port`` and bracketed ``[::1]:port`` forms; an absent/empty Host is
+    rejected (every real browser and HTTP/1.1 client sends one)."""
+    if not host:
+        return False
+    host = host.strip()
+    if host.startswith("["):  # [::1] or [::1]:8787
+        end = host.find("]")
+        if end == -1:
+            return False
+        name = host[1:end]
+    elif host.count(":") == 1:  # host:port (a bare ::1 has two colons)
+        name = host.rsplit(":", 1)[0]
+    else:
+        name = host
+    return name.lower() in _LOOPBACK_HOSTS
+
 # Content types for the built bundle (vite emits hashed assets/*.js|css + fonts).
 _CTYPES = {
     ".html": "text/html; charset=utf-8",
@@ -98,11 +121,16 @@ def _repeated(params: dict, key: str, limit: int = 10) -> list[str]:
     return seen[:limit]
 
 
-def _int(params: dict, key: str, default: int) -> int:
+def _int(params: dict, key: str, default: int, *, lo: int = 1, hi: int = 500) -> int:
+    """Parse an int query param, clamped to ``[lo, hi]``. Unparseable values fall
+    back to ``default``. The clamp is load protection: a negative limit reaches
+    SQLite as ``LIMIT -1`` (unlimited) and a huge one is an unbounded read, and the
+    viewer is unauthenticated, so no request gets to pick an unbounded value."""
     try:
-        return int(params.get(key, [default])[0])
+        v = int(params.get(key, [default])[0])
     except (TypeError, ValueError):
-        return default
+        v = default
+    return max(lo, min(hi, v))
 
 
 def _bool(params: dict, key: str, default: bool) -> bool:
@@ -274,6 +302,17 @@ def route(method: str, path: str, params: dict) -> Response:
 # ---------------------------------------------------------------------------
 class _Handler(BaseHTTPRequestHandler):
     def do_GET(self):  # noqa: N802 — stdlib dispatch name
+        # DNS-rebinding defense (see _host_allowed). The deliberate non-loopback
+        # opt-in also disables the check: an exposed server is reached by a
+        # non-loopback name by definition.
+        if not _host_allowed(self.headers.get("Host")) and os.environ.get(_NONLOCAL_OPTIN) != "1":
+            body = b"forbidden: bad Host header"
+            self.send_response(403)
+            self.send_header("Content-Type", "text/plain; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
         parsed = urlparse(self.path)
         try:
             status, ctype, body, headers = route("GET", parsed.path, parse_qs(parsed.query))

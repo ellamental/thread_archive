@@ -41,7 +41,7 @@ def import_grok_session_incremental(session_path, source_id: str, *, session=Non
         prompt_times = _grok_prompt_ts_map(session_dir, source_id)
         base_ts = _parse_grok_timestamp(meta.get("created_at")) or datetime.now(timezone.utc)
         messages = _build_grok_messages(
-            new_lines, meta, tool_times, prompt_times,
+            new_lines, meta, tool_times, prompt_times, source_id,
             prefix_lines=all_lines[: len(all_lines) - len(new_lines)],
         )
         return assemble_events(sess, thread_id, messages, DefaultEventBuilder(), base_prev_ts=base_ts)
@@ -313,7 +313,7 @@ def _grok_iso(dt: Optional[datetime]) -> Optional[str]:
 
 
 def _grok_build_user_message(
-    text: str, query: str, prompt_times: dict[str, list[datetime]], meta: dict[str, Any]
+    text: str, query: str, prompt_times: dict[str, list[datetime]], meta: dict[str, Any], pmid: str
 ) -> dict[str, Any]:
     """Build a user NormalizedMessage carrying the FULL user-line text.
 
@@ -333,7 +333,7 @@ def _grok_build_user_message(
         "created_at": _grok_iso(_grok_pop_prompt_ts(prompt_times, query or text)),
         "content_text": text,
         "content_blocks": [],
-        "provider_message_id": "",
+        "provider_message_id": pmid,
         "provider_data": provider_data,
     }
 
@@ -343,6 +343,7 @@ def _grok_preserve_line(
     meta: dict[str, Any],
     *,
     block_type: str,
+    pmid: str,
     extra_provider_data: Optional[dict[str, Any]] = None,
 ) -> dict[str, Any]:
     """Preserve a grok line the modeled path would otherwise silently drop.
@@ -367,7 +368,7 @@ def _grok_preserve_line(
         "created_at": None,
         "content_text": text,
         "content_blocks": [{"type": block_type, "text": text}],
-        "provider_message_id": "",
+        "provider_message_id": pmid,
         "provider_data": provider_data,
     }
 
@@ -379,6 +380,7 @@ def _grok_build_assistant_message(
     tool_names: dict[str, str],
     model_default: str,
     meta: dict[str, Any],
+    pmid: str,
 ) -> Optional[dict[str, Any]]:
     content = line.get("content")
     content = content if isinstance(content, str) else (str(content) if content else "")
@@ -417,7 +419,7 @@ def _grok_build_assistant_message(
         "created_at": _grok_iso(start_ts),
         "content_text": "",
         "content_blocks": blocks,
-        "provider_message_id": "",
+        "provider_message_id": pmid,
         "provider_data": {**_grok_provider_data(meta, "assistant"), "model": model},
     }
 
@@ -448,6 +450,7 @@ def _grok_fold_tool_result(
     tool_names: dict[str, str],
     model_default: str,
     meta: dict[str, Any],
+    pmid: str,
 ) -> Optional[dict[str, Any]]:
     block = _grok_tool_result_block(line, tool_times, tool_names)
     if block is None:
@@ -458,7 +461,7 @@ def _grok_fold_tool_result(
             "created_at": block["start_timestamp"],
             "content_text": "",
             "content_blocks": [],
-            "provider_message_id": "",
+            "provider_message_id": pmid,
             "provider_data": {**_grok_provider_data(meta, "assistant"), "model": model_default},
         }
     cur["content_blocks"].append(block)
@@ -473,7 +476,7 @@ def _grok_accumulate_thinking(pending_thinking: Optional[str], line: dict) -> Op
 
 
 def _grok_user_turn(
-    line: dict, prompt_times: dict[str, list[datetime]], meta: dict[str, Any]
+    line: dict, prompt_times: dict[str, list[datetime]], meta: dict[str, Any], pmid: str
 ) -> Optional[dict[str, Any]]:
     """Build the normalized message for a genuine (non-synthetic) user line.
 
@@ -486,7 +489,7 @@ def _grok_user_turn(
     if text_content is None or not text_content.strip():
         return None
     query = _grok_extract_query(text_content)
-    return _grok_build_user_message(text_content, query, prompt_times, meta)
+    return _grok_build_user_message(text_content, query, prompt_times, meta, pmid)
 
 
 def _harvest_tool_names(lines: list[dict]) -> dict[str, str]:
@@ -514,15 +517,24 @@ def _build_grok_messages(
     meta: dict[str, Any],
     tool_times: dict[str, dict[str, Any]],
     prompt_times: dict[str, list[datetime]],
+    source_id: str,
     prefix_lines: list[dict] | None = None,
 ) -> list[dict[str, Any]]:
     """Assemble grok's interleaved line stream into canonical NormalizedMessages.
 
     ``prefix_lines`` is the file's already-imported prefix: it seeds the
-    tool-name map so results split across increments still resolve."""
+    tool-name map so results split across increments still resolve, and offsets
+    the positional provider_message_id (``{source_id}:{absolute_line_index}``)
+    minted for each message from the parsed line that opens it. grok lines carry
+    no id of their own, and an empty pmid makes the dedup key content-only —
+    identical repeated turns ("continue", "y") would collapse to one event. The
+    absolute index is stable: the cursor (:mod:`._cursor`) proves the file is
+    append-only and rewinds re-import from line 0, so an already-minted index
+    never shifts."""
     messages: list[dict[str, Any]] = []
     model_default = _grok_model(meta)
     tool_names: dict[str, str] = _harvest_tool_names(prefix_lines or [])
+    line_offset = len(prefix_lines or [])
     pending_thinking: Optional[str] = None
     cur: Optional[dict[str, Any]] = None
 
@@ -532,10 +544,11 @@ def _build_grok_messages(
             messages.append(cur)
         cur = None
 
-    for line in new_lines:
+    for idx, line in enumerate(new_lines):
         if not isinstance(line, dict):
             continue
         line_type = line.get("type")
+        pmid = f"{source_id}:{line_offset + idx}"
 
         if line_type == "system":
             # Grok system lines/prompts are real records — preserve them as a tagged
@@ -543,7 +556,7 @@ def _build_grok_messages(
             # first so ordering holds, but don't reset pending thinking: a system
             # line isn't a turn boundary and mustn't discard dangling reasoning.
             flush()
-            messages.append(_grok_preserve_line(line, meta, block_type="grok_system"))
+            messages.append(_grok_preserve_line(line, meta, block_type="grok_system", pmid=pmid))
             continue
 
         if line_type == "user":
@@ -553,7 +566,7 @@ def _build_grok_messages(
                 # in-progress assistant/thinking state alone.
                 flush()
                 messages.append(_grok_preserve_line(
-                    line, meta, block_type="grok_synthetic_user",
+                    line, meta, block_type="grok_synthetic_user", pmid=pmid,
                     extra_provider_data={
                         "synthetic": True,
                         "synthetic_reason": line.get("synthetic_reason"),
@@ -561,7 +574,7 @@ def _build_grok_messages(
                     },
                 ))
                 continue
-            user_msg = _grok_user_turn(line, prompt_times, meta)
+            user_msg = _grok_user_turn(line, prompt_times, meta, pmid)
             if user_msg is None:
                 continue
             flush()
@@ -575,7 +588,7 @@ def _build_grok_messages(
 
         if line_type == "assistant":
             built = _grok_build_assistant_message(
-                line, pending_thinking, tool_times, tool_names, model_default, meta
+                line, pending_thinking, tool_times, tool_names, model_default, meta, pmid
             )
             if built is None:
                 continue
@@ -585,7 +598,9 @@ def _build_grok_messages(
             continue
 
         if line_type == "tool_result":
-            cur = _grok_fold_tool_result(line, cur, tool_times, tool_names, model_default, meta)
+            cur = _grok_fold_tool_result(
+                line, cur, tool_times, tool_names, model_default, meta, pmid
+            )
             continue
 
         # Any other grok line type (outside {system,user,reasoning,assistant,
@@ -593,7 +608,7 @@ def _build_grok_messages(
         # Preserve the raw line as a tagged event instead of silently ignoring it.
         flush()
         messages.append(
-            _grok_preserve_line(line, meta, block_type=f"grok_{line_type or 'unknown'}")
+            _grok_preserve_line(line, meta, block_type=f"grok_{line_type or 'unknown'}", pmid=pmid)
         )
 
     flush()

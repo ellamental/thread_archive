@@ -1,7 +1,9 @@
 """Integrity hardening: the guarantees behind the drain/reindex/verify seams.
 
 - a COMMIT that fails *after* its truth drain is compensated: the drained batch
-  is truncated back out of the truth (no resurrection on reindex)
+  is truncated back out of the truth (no resurrection on reindex) — but only
+  when the commit provably didn't land; a landed-but-error-reported commit
+  keeps its records
 - reindex refuses to publish a build that lost committed threads, or one that is
   relationally inconsistent (foreign_key_check), with --salvage as the override
 - a *new* hash mismatch fails ``verify(hashes=True)``'s ``ok`` (once — the
@@ -110,6 +112,46 @@ def test_compensation_leaves_files_another_writer_touched(archive_home, tmp_path
     content = tf.read_text(encoding="utf-8")
     assert "foreign" in content, "the interleaved writer's record must survive"
     assert "doomed" in content, "size changed — the undo must not have run"
+
+
+def test_compensation_keeps_records_when_the_commit_actually_landed(
+    archive_home, tmp_path
+):
+    """A raised COMMIT is not proof the transaction didn't land (an I/O error can
+    surface after the WAL frames are durable). The undo probes the batch's ids
+    against the live index and must keep the truth records when the commit is
+    found to have taken effect — truncating them would leave index ⊃ truth."""
+    import_cc_session(tmp_path)
+    tf = one_thread_file(archive_home)
+    events_before = event_count()
+    with get_session() as s:
+        tid = s.execute(text("SELECT id FROM threads")).scalar()
+
+    engine = get_engine()
+
+    def _commit_then_report_failure(conn):
+        # The DBAPI commit succeeds; the driver still reports an error.
+        conn.connection.driver_connection.commit()
+        raise RuntimeError("simulated post-durability commit error")
+
+    sa_event.listen(engine, "commit", _commit_then_report_failure)
+    try:
+        with pytest.raises(Exception, match="post-durability commit error"):
+            with get_session() as s:
+                jsonl_log.write_events(s, [Event(
+                    thread_id=tid, stream_id="x", event_type="user_message_sent",
+                    payload={"text": "landed"}, occurred_at=_now(),
+                    dedup_key="landed-1",
+                )])
+                s.commit()
+    finally:
+        sa_event.remove(engine, "commit", _commit_then_report_failure)
+    engine.dispose()
+
+    # The commit landed, so the index holds the row — and the truth must too.
+    assert event_count() == events_before + 1
+    assert "landed" in tf.read_text(encoding="utf-8")
+    assert ta.verify()["ok"] is True
 
 
 # ── reindex structural gates ──────────────────────────────────────────────────

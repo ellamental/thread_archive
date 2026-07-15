@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from typing import Any, Optional
 
 from thread_archive._thread_import import DefaultEventBuilder
@@ -225,6 +226,37 @@ def _codex_tool_use_block(
     }
 
 
+_CODEX_EXIT_LINE_RE = re.compile(r"(?:Process exited with code|Exit code:)\s*(-?\d+)\s*$")
+
+
+def _codex_output_is_error(output: str) -> bool:
+    """True only on an unambiguous failure signal in a codex tool output.
+
+    ``function_call_output`` / ``custom_tool_call_output`` payloads carry no
+    structured error flag; the exit status lives in the output text's wrapper
+    header — a ``Process exited with code N`` / ``Exit code: N`` line within the
+    first few lines — or, for JSON-shaped outputs, an integer ``exit_code``
+    (top-level or under ``metadata``). Only the header is checked so an output
+    merely *quoting* an exit-code line deep in its body can't mark the call
+    failed; anything ambiguous stays a success."""
+    for line in output.splitlines()[:6]:
+        m = _CODEX_EXIT_LINE_RE.match(line.strip())
+        if m:
+            return int(m.group(1)) != 0
+    if output.startswith("{"):
+        try:
+            parsed = json.loads(output)
+        except json.JSONDecodeError:
+            return False
+        if isinstance(parsed, dict):
+            exit_code = parsed.get("exit_code")
+            if exit_code is None and isinstance(parsed.get("metadata"), dict):
+                exit_code = parsed["metadata"].get("exit_code")
+            if isinstance(exit_code, int) and not isinstance(exit_code, bool):
+                return exit_code != 0
+    return False
+
+
 def _codex_tool_result_block(
     payload: dict[str, Any], ts: Optional[str], call_names: dict[str, str],
 ) -> Optional[dict[str, Any]]:
@@ -239,7 +271,7 @@ def _codex_tool_result_block(
         "tool_use_id": call_id,
         "name": call_names.get(call_id, "unknown"),
         "content": output,
-        "is_error": False,
+        "is_error": _codex_output_is_error(output),
         "start_timestamp": ts,
     }
 

@@ -97,3 +97,43 @@ def test_import_state_stamp_moves_on_watermark_only_change(archive_home, tmp_pat
         s.commit()
     stamp2 = Watcher._import_state_stamp()
     assert stamp2 != stamp1
+
+
+def test_unchanged_checks_read_naive_last_import_as_utc() -> None:
+    """``last_import_at`` is written aware-UTC but SQLite round-trips it naive; the
+    cursor/opencode unchanged-checks must read the naive value as UTC. Reading it
+    as local time overstates the watermark by the UTC offset in a negative-offset
+    zone, so source updates landing within |offset| hours after an import were
+    marked "unchanged" and never imported."""
+    import os
+    import time
+    from datetime import datetime, timedelta, timezone
+
+    from thread_archive._importers.cursor import _cursor_composer_unchanged
+    from thread_archive._importers.opencode import _opencode_session_unchanged
+
+    orig_tz = os.environ.get("TZ")
+    os.environ["TZ"] = "America/New_York"  # UTC-5/-4: naive-as-local reads 4-5h high
+    time.tzset()
+    try:
+        now = datetime.now(timezone.utc)
+        # As SQLite hands it back: the UTC instant, tzinfo stripped.
+        state = ImportState(
+            source="cursor", source_id="tz",
+            last_import_at=(now - timedelta(hours=2)).replace(tzinfo=None),
+        )
+        updated_after_ms = (now - timedelta(hours=1)).timestamp() * 1000
+        assert not _cursor_composer_unchanged(state, {"lastUpdatedAt": updated_after_ms}), \
+            "update after the last import misread as unchanged (naive UTC taken as local)"
+        assert not _opencode_session_unchanged(state, {"time_updated": updated_after_ms})
+
+        # An update that genuinely predates the import still reads unchanged.
+        older_ms = (now - timedelta(hours=3)).timestamp() * 1000
+        assert _cursor_composer_unchanged(state, {"lastUpdatedAt": older_ms})
+        assert _opencode_session_unchanged(state, {"time_updated": older_ms})
+    finally:
+        if orig_tz is None:
+            os.environ.pop("TZ", None)
+        else:
+            os.environ["TZ"] = orig_tz
+        time.tzset()

@@ -437,6 +437,21 @@ def test_resolve_thread_ref_unit(archive_home) -> None:
         assert resolve_thread_ref(s, "nope") is None
 
 
+def test_resolve_ref_underscore_matches_literally(archive_home) -> None:
+    """A ref's ``_`` is escaped in the suffix LIKE — unescaped it would act as a
+    single-char wildcard and silently resolve to the WRONG thread."""
+    _seed(tid=40, source_id="proj:abcXdef")
+    with use_session() as s:
+        assert resolve_thread_ref(s, "abc_def") is None  # no wildcard match
+    with use_session() as s:
+        s.add(Thread(id=41, name="t41", title="literal", thread_type="conversation",
+                     source="claude-code", source_id="proj:abc_def",
+                     inserted_at=_dt(0), updated_at=_dt(2)))
+        s.commit()
+    with use_session() as s:
+        assert resolve_thread_ref(s, "abc_def") == 41
+
+
 def test_resolve_newest_thread_wins(archive_home) -> None:
     """Two threads sharing a source_id → the most recently updated resolves."""
     _seed(tid=20, source_id=_UUID, updated_minute=1)

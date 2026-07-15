@@ -40,7 +40,13 @@ from thread_archive._thread_import import DefaultEventBuilder
 
 from .._store import ImportState, get_session
 from ._events import assemble_events
-from ._state import create_thread, get_import_state, get_thread_by_source, upsert_import_state
+from ._state import (
+    create_thread,
+    get_import_state,
+    get_thread_by_source,
+    last_import_epoch_ms,
+    upsert_import_state,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -214,8 +220,7 @@ def _opencode_session_unchanged(import_state: Optional[ImportState], session_dat
     if not (import_state and import_state.last_import_at):
         return False
     time_updated_ms = session_data.get("time_updated") or 0
-    last_import_ms = import_state.last_import_at.timestamp() * 1000
-    return time_updated_ms <= last_import_ms
+    return time_updated_ms <= last_import_epoch_ms(import_state)
 
 
 def _opencode_resolve_thread(session, import_state, session_id, source_id, session_data) -> tuple[int, bool]:

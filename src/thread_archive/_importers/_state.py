@@ -204,6 +204,17 @@ def set_thread_models_from_events(session: Session, thread_id: int) -> list[str]
     return models
 
 
+def last_import_epoch_ms(state: ImportState) -> float:
+    """Epoch millis of ``state.last_import_at``. The stamp is written aware-UTC
+    but SQLite round-trips it naive, so a naive value IS UTC — calling
+    ``.timestamp()`` on it directly would read it as local time and skew every
+    watermark comparison by the machine's UTC offset."""
+    dt = state.last_import_at
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.timestamp() * 1000
+
+
 def get_import_state(session: Session, source: str, source_id: str) -> Optional[ImportState]:
     return session.execute(
         select(ImportState).where(ImportState.source == source, ImportState.source_id == source_id)

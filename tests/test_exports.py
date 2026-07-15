@@ -56,6 +56,51 @@ def test_claude_ai_export_import(archive_home) -> None:
     assert again.imported == 0 and again.skipped == 1
 
 
+def test_claude_ai_export_force_reimports_into_existing_thread(archive_home) -> None:
+    """``force=True`` on an already-imported conversation must reuse the existing
+    thread (the thread name is unique — a second create_thread raises and used to
+    leave a junk "(import error)" stub with nothing re-imported) and let dedup
+    collapse the repeats, so only genuinely-new events land."""
+    init_db()
+    export_dir = archive_home / "claude_export"
+    export_dir.mkdir()
+    conv = {
+        "uuid": "conv-f", "name": "Forced Chat",
+        "created_at": "2026-01-01T10:00:00Z", "updated_at": "2026-01-01T10:00:10Z",
+        "chat_messages": [
+            {"uuid": "m1", "sender": "human", "text": "first question",
+             "content": [{"type": "text", "text": "first question"}],
+             "created_at": "2026-01-01T10:00:00Z"},
+        ],
+    }
+    path = export_dir / "conversations.json"
+    path.write_text(json.dumps([conv]), encoding="utf-8")
+    assert import_claude_ai_export(export_dir).imported == 1
+
+    # The source grew a message; a forced re-import must land it in the SAME thread.
+    conv["chat_messages"].append(
+        {"uuid": "m2", "sender": "human", "text": "second question",
+         "content": [{"type": "text", "text": "second question"}],
+         "created_at": "2026-01-01T10:00:05Z"},
+    )
+    path.write_text(json.dumps([conv]), encoding="utf-8")
+    again = import_claude_ai_export(export_dir, force=True)
+    assert again.imported == 1 and again.errored == 0
+
+    with get_session() as s:
+        threads = s.execute(select(Thread).where(Thread.source == "claude")).scalars().all()
+        assert [t.source_id for t in threads] == ["conv-f"], "force re-import left a stub thread"
+        contents = [e.payload.get("content") for e in s.execute(
+            select(Event).where(Event.thread_id == threads[0].id)
+        ).scalars()]
+    assert contents.count("first question") == 1, "force re-import duplicated existing events"
+    assert "second question" in contents
+
+    # Forcing an unchanged conversation collapses entirely: nothing new, no stub.
+    third = import_claude_ai_export(export_dir, force=True)
+    assert third.imported == 0 and third.skipped == 1 and third.errored == 0
+
+
 def test_xai_export_import(archive_home) -> None:
     init_db()
     export_dir = archive_home / "xai_export" / "ttl" / "30d" / "export_data" / "user-uuid"

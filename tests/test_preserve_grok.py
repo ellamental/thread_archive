@@ -94,6 +94,43 @@ def test_grok_user_context_is_not_stripped_or_dropped(archive_home) -> None:
     assert any("stay terse" in c for c in user_texts), "context-only user turn was dropped"
 
 
+def test_grok_identical_repeated_turns_are_not_collapsed(archive_home) -> None:
+    """Identical repeated turns ("continue", "y") must all survive import: grok
+    lines carry no provider id, so the pmid is minted positionally
+    (``{source_id}:{line_index}``) — without it the dedup key is content-only and
+    the repeats silently collapse to one event."""
+    init_db()
+    turn = [
+        {"type": "user", "content": [{"type": "text", "text": "<user_query>continue</user_query>"}]},
+        {"type": "assistant", "content": "ok", "tool_calls": []},
+    ]
+    f = _write_grok_session(archive_home, turn * 2)
+
+    r = import_grok_session_incremental(f, "grok-sess")
+    assert r.events_created > 0
+
+    def _counts() -> tuple[int, int]:
+        events = _events()
+        users = [p for t, p in events if t == "user_message_sent"]
+        assistants = [p for t, p in events if t == "api_request_completed"]
+        return len(users), len(assistants)
+
+    assert _counts() == (2, 2), "identical repeated turns dedup-collapsed"
+
+    # Idempotent: a re-read of the same lines adds nothing.
+    r2 = import_grok_session_incremental(f, "grok-sess")
+    assert r2.events_created == 0
+    assert _counts() == (2, 2)
+
+    # An appended identical repeat still imports as its own turn.
+    with open(f, "a", encoding="utf-8") as handle:
+        for ln in turn:
+            handle.write(json.dumps(ln) + "\n")
+    r3 = import_grok_session_incremental(f, "grok-sess")
+    assert r3.events_created > 0
+    assert _counts() == (3, 3), "appended identical turn dedup-collapsed"
+
+
 def test_grok_synthetic_user_turn_preserved_and_tagged(archive_home) -> None:
     """A synthetic/injected user turn is kept AND tagged with its reason + raw
     line rather than dropped."""

@@ -455,14 +455,23 @@ def _import_one(
             if not messages:
                 result.skipped += 1
                 return result
-            thread_id = create_thread(
-                s, source=source, source_id=source_id,
-                title=title[:100] if title else None, source_metadata=source_metadata,
-            )
+            if existing and existing.id is not None:
+                # force re-import: the thread name is unique, so reuse the existing
+                # thread and let the dedup_key check collapse what it already holds —
+                # only genuinely-new events land.
+                is_new_thread = False
+                thread_id = existing.id
+            else:
+                is_new_thread = True
+                thread_id = create_thread(
+                    s, source=source, source_id=source_id,
+                    title=title[:100] if title else None, source_metadata=source_metadata,
+                )
             n, _ = assemble_events(s, thread_id, messages, builder)
             if n == 0:
-                # Row AND staged truth record — no ghost threads/<id>.jsonl on commit.
-                discard_new_thread(s, thread_id)
+                if is_new_thread:
+                    # Row AND staged truth record — no ghost threads/<id>.jsonl on commit.
+                    discard_new_thread(s, thread_id)
                 result.skipped += 1
             else:
                 set_thread_models_from_events(s, thread_id)

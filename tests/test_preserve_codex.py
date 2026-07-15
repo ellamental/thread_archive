@@ -83,6 +83,50 @@ def test_codex_preserves_unknown_event_msg(archive_home) -> None:
     assert "codex_token_count" in types, "unknown event_msg kind was dropped"
 
 
+def test_codex_tool_failures_import_as_errors(archive_home) -> None:
+    """A tool output whose wrapper header carries a nonzero exit status must land
+    as ``tool_execution_error``, not a success — but only on the unambiguous
+    signals: a header ``Process exited with code N`` / ``Exit code: N`` line or a
+    JSON output with integer ``exit_code``. An output merely quoting an exit-code
+    line deep in its body stays a success."""
+    init_db()
+    f = archive_home / "codex.jsonl"
+
+    def call(cid: str) -> dict:
+        return {"type": "response_item", "timestamp": "2026-01-01T10:00:01Z",
+                "payload": {"type": "function_call", "call_id": cid, "name": "shell",
+                            "arguments": "{}"}}
+
+    def result(cid: str, output: str) -> dict:
+        return {"type": "response_item", "timestamp": "2026-01-01T10:00:02Z",
+                "payload": {"type": "function_call_output", "call_id": cid, "output": output}}
+
+    quoted_deep = "Wall time: 0.1 seconds\nOutput:\n" + "\n" * 5 + "Process exited with code 1"
+    _write_jsonl(f, [
+        {"type": "event_msg", "timestamp": "2026-01-01T10:00:00Z",
+         "payload": {"type": "user_message", "message": "run stuff", "turn_id": "t1"}},
+        call("c1"), result("c1", "Chunk ID: a\nWall time: 0.0 seconds\n"
+                                 "Process exited with code 1\nOriginal token count: 5\n"
+                                 "Output:\nzsh: command not found"),
+        call("c2"), result("c2", "Chunk ID: b\nWall time: 0.0 seconds\n"
+                                 "Process exited with code 0\nOriginal token count: 5\n"
+                                 "Output:\nfine"),
+        call("c3"), result("c3", quoted_deep),
+        call("c4"), result("c4", '{"exit_code":2,"output":"boom"}'),
+        call("c5"), result("c5", "Exit code: 1\nWall time: 0.2 seconds\nOutput:\nnope"),
+    ])
+
+    r = import_codex_session_incremental(f, "codex-errors")
+    assert r.events_created > 0
+
+    with get_session() as s:
+        rows = s.execute(select(Event.event_type, Event.payload)).all()
+    errored = {p["tool_call_id"] for t, p in rows if t == "tool_execution_error"}
+    completed = {p["tool_call_id"] for t, p in rows if t == "tool_execution_completed"}
+    assert errored == {"c1", "c4", "c5"}
+    assert completed == {"c2", "c3"}
+
+
 def _all_event_ids() -> list[int]:
     with get_session() as s:
         return [i for (i,) in s.execute(select(Event.id))]

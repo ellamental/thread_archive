@@ -16,13 +16,13 @@
  },
  {
   "api_call": null,
-  "dedup_key": "c=eb826403b0d58011:user_message_sent::eb826403b0d58011",
+  "dedup_key": "grok-sess:0:user_message_sent::eb826403b0d58011",
   "event_type": "user_message_sent",
   "occurred_at": "2026-01-01T10:00:00+00:00",
   "payload": {
    "content": "<user_query>hello grok golden</user_query>",
    "provider_data": {
-    "provider_message_id": ""
+    "provider_message_id": "grok-sess:0"
    },
    "timestamp_inferred": true,
    "timestamp_source": "inferred_prev_turn"
@@ -32,13 +32,13 @@
  },
  {
   "api_call": "c0",
-  "dedup_key": "c=7321c8bb3a514f6f:api_request_started::7321c8bb3a514f6f",
+  "dedup_key": "grok-sess:2:api_request_started::7321c8bb3a514f6f",
   "event_type": "api_request_started",
   "occurred_at": "2026-01-01T10:00:00+00:00",
   "payload": {
    "model": "grok-4",
    "provider_data": {
-    "provider_message_id": ""
+    "provider_message_id": "grok-sess:2"
    },
    "timestamp_inferred": true,
    "timestamp_source": "inferred_prev_turn"
@@ -48,7 +48,7 @@
  },
  {
   "api_call": "c0",
-  "dedup_key": "c=bd0e7c2c15fd2b2d:text_complete:blk=0:bd0e7c2c15fd2b2d",
+  "dedup_key": "grok-sess:2:text_complete:blk=0:bd0e7c2c15fd2b2d",
   "event_type": "text_complete",
   "occurred_at": "2026-01-01T10:00:00+00:00",
   "payload": {
@@ -62,7 +62,7 @@
  },
  {
   "api_call": "c0",
-  "dedup_key": "c=146a27ad67bc9470:tool_use_complete:tool=call1:146a27ad67bc9470",
+  "dedup_key": "grok-sess:2:tool_use_complete:tool=call1:146a27ad67bc9470",
   "event_type": "tool_use_complete",
   "occurred_at": "2026-01-01T10:00:00+00:00",
   "payload": {
@@ -80,7 +80,7 @@
  },
  {
   "api_call": "c0",
-  "dedup_key": "c=90e6d2083b23ce9f:tool_execution_completed:tool=call1:90e6d2083b23ce9f",
+  "dedup_key": "grok-sess:2:tool_execution_completed:tool=call1:90e6d2083b23ce9f",
   "event_type": "tool_execution_completed",
   "occurred_at": "2026-01-01T10:00:00+00:00",
   "payload": {
@@ -96,7 +96,7 @@
  },
  {
   "api_call": "c0",
-  "dedup_key": "c=579fd5861f59093d:api_request_completed::579fd5861f59093d",
+  "dedup_key": "grok-sess:2:api_request_completed::579fd5861f59093d",
   "event_type": "api_request_completed",
   "occurred_at": "2026-01-01T10:00:00+00:00",
   "payload": {
@@ -127,7 +127,7 @@
  },
  {
   "api_call": "c0",
-  "dedup_key": "c=44136fa355b3678a:stream_completed::44136fa355b3678a",
+  "dedup_key": "grok-sess:2:stream_completed::44136fa355b3678a",
   "event_type": "stream_completed",
   "occurred_at": "2026-01-01T10:00:00+00:00",
   "payload": {
@@ -139,7 +139,23 @@
  },
  {
   "api_call": "c1",
-  "dedup_key": "c=749b1d631c33fc17:text_complete:blk=0:749b1d631c33fc17",
+  "dedup_key": "grok-sess:4:api_request_started::7321c8bb3a514f6f",
+  "event_type": "api_request_started",
+  "occurred_at": "2026-01-01T10:00:00+00:00",
+  "payload": {
+   "model": "grok-4",
+   "provider_data": {
+    "provider_message_id": "grok-sess:4"
+   },
+   "timestamp_inferred": true,
+   "timestamp_source": "inferred_prev_turn"
+  },
+  "stream": "s0",
+  "type": "event"
+ },
+ {
+  "api_call": "c1",
+  "dedup_key": "grok-sess:4:text_complete:blk=0:749b1d631c33fc17",
   "event_type": "text_complete",
   "occurred_at": "2026-01-01T10:00:00+00:00",
   "payload": {
@@ -153,7 +169,7 @@
  },
  {
   "api_call": "c1",
-  "dedup_key": "c=bbdaee32223b9e94:api_request_completed::bbdaee32223b9e94",
+  "dedup_key": "grok-sess:4:api_request_completed::bbdaee32223b9e94",
   "event_type": "api_request_completed",
   "occurred_at": "2026-01-01T10:00:00+00:00",
   "payload": {
@@ -168,6 +184,18 @@
    "output_tokens": 0,
    "stop_reason": "end_turn",
    "thinking_tokens": 0,
+   "timestamp_inferred": true,
+   "timestamp_source": "inferred_prev_turn"
+  },
+  "stream": "s0",
+  "type": "event"
+ },
+ {
+  "api_call": "c1",
+  "dedup_key": "grok-sess:4:stream_completed::44136fa355b3678a",
+  "event_type": "stream_completed",
+  "occurred_at": "2026-01-01T10:00:00+00:00",
+  "payload": {
    "timestamp_inferred": true,
    "timestamp_source": "inferred_prev_turn"
   },

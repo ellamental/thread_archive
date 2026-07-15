@@ -30,10 +30,14 @@ _SESSION_ID_SEPARATORS = (":", "-")
 
 
 def source_id_matches(col, ref: str):
-    """SQL predicate: ``col`` equals ``ref`` or ends in ``<separator><ref>``."""
+    """SQL predicate: ``col`` equals ``ref`` or ends in ``<separator><ref>``.
+
+    LIKE wildcards in the ref are escaped so it matches literally — an
+    unescaped ``_`` would let a ref silently resolve to the wrong thread."""
     cond = col == ref
+    escaped = ref.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
     for sep in _SESSION_ID_SEPARATORS:
-        cond = cond | col.like(f"%{sep}{ref}")
+        cond = cond | col.like(f"%{sep}{escaped}", escape="\\")
     return cond
 
 

@@ -358,6 +358,95 @@ def test_non_loopback_bind_refused(monkeypatch):
             serve_in_thread(host=host, port=0)
 
 
+def test_host_header_parsing():
+    # DNS-rebinding defense: only loopback names pass, port-stripped, including the
+    # bracketed IPv6 form; absent/empty/malformed Hosts are rejected.
+    from thread_archive._web.server import _host_allowed
+
+    for host in ("localhost", "localhost:8787", "127.0.0.1", "127.0.0.1:8787",
+                 "::1", "[::1]", "[::1]:8787", "LOCALHOST:8787"):
+        assert _host_allowed(host), host
+    for host in (None, "", "evil.example", "evil.example:8787", "localhost.evil.example",
+                 "10.0.0.5:8787", "[::1", "[2001:db8::1]:8787"):
+        assert not _host_allowed(host), host
+
+
+@pytest.mark.integration
+def test_rebound_host_rejected(archive_home, monkeypatch):
+    # a DNS-rebound page reaches 127.0.0.1 but its Host is the attacker's domain —
+    # the adapter must 403 it before routing; real loopback Hosts still pass.
+    import http.client
+
+    from thread_archive._web import serve_in_thread
+
+    _seed(archive_home)
+    ta.open_archive(str(archive_home))
+    monkeypatch.delenv("THREAD_ARCHIVE_WEB_NONLOCAL", raising=False)
+    httpd = serve_in_thread(host="127.0.0.1", port=0)
+    try:
+        port = httpd.server_address[1]
+
+        def status_for(host):
+            conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+            try:
+                if host is None:
+                    conn.putrequest("GET", "/api/status", skip_host=True)
+                    conn.endheaders()
+                else:
+                    conn.request("GET", "/api/status", headers={"Host": host})
+                return conn.getresponse().status
+            finally:
+                conn.close()
+
+        assert status_for(f"localhost:{port}") == 200
+        assert status_for(f"[::1]:{port}") == 200
+        assert status_for("evil.example") == 403
+        assert status_for(None) == 403
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+
+
+def test_search_limit_clamped(archive_home, monkeypatch):
+    # limit=-1 would reach SQLite as LIMIT -1 (unlimited); huge values are an
+    # unbounded read. Both clamp to [1, 500] before touching the api.
+    from thread_archive._web import server
+
+    _seed(archive_home)
+    seen = {}
+
+    def fake_search(q, **kwargs):
+        seen["limit"] = kwargs["limit"]
+        return []
+
+    monkeypatch.setattr(server.api, "search", fake_search)
+    status, _, _ = _get("/api/search", q="hello", limit=-1)
+    assert status == 200 and seen["limit"] == 1
+    _get("/api/search", q="hello", limit=999999)
+    assert seen["limit"] == 500
+    _get("/api/search", q="hello", limit=40)
+    assert seen["limit"] == 40
+    _get("/api/search", q="hello", limit="not-a-number")
+    assert seen["limit"] == 30  # the default
+
+
+def test_threads_limit_clamped(archive_home, monkeypatch):
+    from thread_archive._web import server
+
+    _seed(archive_home)
+    seen = {}
+
+    def fake_list(*, limit, q):
+        seen["limit"] = limit
+        return []
+
+    monkeypatch.setattr(server, "_list_threads", fake_list)
+    status, _, _ = _get("/api/threads", limit=-1)
+    assert status == 200 and seen["limit"] == 1
+    _get("/api/threads", limit=999999)
+    assert seen["limit"] == 500
+
+
 def test_error_body_is_generic(monkeypatch):
     # exception detail (paths, SQL, query internals) stays server-side
     import urllib.error

@@ -28,9 +28,12 @@ means "all defaults": every source enabled, exactly the pre-config behavior.
 from __future__ import annotations
 
 import json
+import logging
 import os
 from dataclasses import dataclass
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
 
 ENV_HOME = "THREAD_ARCHIVE_HOME"
 ENV_TRUTH = "THREAD_ARCHIVE_TRUTH_DIR"
@@ -103,13 +106,32 @@ def load_config(home: str | os.PathLike[str] | None = None) -> dict:
     """The parsed config, or ``{}`` when absent/unreadable (all defaults).
 
     Fail-soft on purpose: a corrupt config file must degrade to default
-    behavior (ingest everything), never take an ingest path down.
+    behavior (ingest everything), never take an ingest path down. But only a
+    *missing* file is silent — a file that exists and won't parse flips every
+    source opt-out (possibly a privacy choice) back to enabled, so it logs at
+    error on every load until someone fixes or removes it.
     """
+    path = config_path(home)
     try:
-        data = json.loads(config_path(home).read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
         return {}
-    return data if isinstance(data, dict) else {}
+    except (OSError, json.JSONDecodeError):
+        logger.error(
+            "config: %s exists but could not be read/parsed — ALL defaults apply "
+            "(every source enabled, opt-outs ignored)",
+            path,
+            exc_info=True,
+        )
+        return {}
+    if not isinstance(data, dict):
+        logger.error(
+            "config: %s does not hold a JSON object — ALL defaults apply "
+            "(every source enabled, opt-outs ignored)",
+            path,
+        )
+        return {}
+    return data
 
 
 def save_config(cfg: dict, home: str | os.PathLike[str] | None = None) -> Path:

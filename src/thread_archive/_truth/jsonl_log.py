@@ -383,9 +383,13 @@ def _handle(path: Path) -> TextIO:
     while len(_handles) > _MAX_OPEN_HANDLES:
         _, old = _handles.popitem(last=False)
         try:
+            # Nothing buffered can be lost here — every append flushes its line
+            # (see _append_line) and durability comes from _fsync_handle, which
+            # reopens an evicted path by fd. Still loud: a failing close() in the
+            # truth layer is a disk telling us something.
             old.close()
         except (OSError, ValueError):  # pragma: no cover
-            pass
+            logger.warning("truth: error closing evicted append handle", exc_info=True)
     return fh
 
 
@@ -810,16 +814,20 @@ def _drain_before_commit(session: Session) -> None:
             _clear_intent()  # the batch is undone; the frame must not outlive it
             raise
         _clear_intent()  # inside the lock: an intent is never visible outside its batch
-        # Remember what this drain appended (per file: baseline → post-drain size)
-        # so a COMMIT failure *after* the drain can compensate (see
-        # _undo_drain_on_rollback). Cleared on successful commit.
+        # Remember what this drain appended (per file: baseline, post-drain size,
+        # and the batch's (kind, id) pairs) so a COMMIT failure *after* the drain
+        # can compensate (see _undo_drain). The ids let the compensation probe the
+        # live index for the commit, exactly as crashed-drain recovery does.
+        # Cleared on successful commit.
         session.info[_DRAINED] = {
-            path: (size, path.stat().st_size) for path, size in baselines.items()
+            path: (size, path.stat().st_size, ids_by_path[path])
+            for path, size in baselines.items()
         }
 
 
 # A successful drain's footprint, kept on the session until its COMMIT lands:
-# {path: (baseline_size_or_None, post_drain_size)}. The compensation seam for
+# {path: (baseline_size_or_None, post_drain_size, [(kind, id), …])}. The
+# compensation seam for
 # the one atomicity gap the drain leaves open — truth is written and fsynced
 # before the SQLite COMMIT, so a COMMIT that then fails (disk full, a
 # constraint enforced at the final flush, busy timeout) leaves the batch in the
@@ -857,18 +865,37 @@ def _undo_drain(session: Session) -> None:
     otherwise resurrect, and which — for metadata records — carries no fresh
     event id for recovery to reconcile against).
 
+    A raised COMMIT is not proof the transaction didn't land: an I/O error can
+    surface after the WAL frames are already durable, leaving the commit
+    effective while the driver reports failure. Truncating then would delete
+    truth the index holds — index ⊃ truth, the forbidden direction — so the
+    undo first probes the batch's freshly-inserted ids against the live index,
+    exactly as :func:`_recover_crashed_drain` does. Only a provably-uncommitted
+    batch is rolled back; a committed or undecidable one keeps its records (the
+    safe direction — dedup collapses a re-import, and checkpoint re-emits
+    metadata).
+
     Only provably-safe undos run: under the exclusive truth-write lock, a file
     is rolled back only if its current size still equals the drain's post-drain
     size — any other writer's append since (sizes differ) leaves the file
     alone, degrading to the documented JSONL ⊇ SQLite behavior. Failure here is
     logged, never raised: the transaction is already over and the leftover
     truth rows are the benign direction (dedup collapses a re-import)."""
-    drained: dict[Path, tuple[int | None, int]] | None = session.info.pop(_DRAINED, None)
+    drained: dict[Path, tuple[int | None, int, list]] | None = session.info.pop(_DRAINED, None)
     if not drained:
+        return
+    committed = _intent_committed([{"ids": ids} for _, _, ids in drained.values()])
+    if committed is not False:
+        logger.warning(
+            "truth: COMMIT failed after its drain but %s — keeping the drained records",
+            "the transaction landed in the index"
+            if committed
+            else "the outcome cannot be determined",
+        )
         return
     try:
         with _truth_write_lock():
-            for path, (baseline, post_size) in drained.items():
+            for path, (baseline, post_size, _ids) in drained.items():
                 try:
                     if not path.exists() or path.stat().st_size != post_size:
                         continue  # someone else appended (or repaired) — leave it

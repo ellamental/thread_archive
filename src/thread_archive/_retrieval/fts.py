@@ -19,6 +19,7 @@ from typing import Optional
 
 from sqlalchemy import delete, insert, select
 from sqlalchemy import text as sa_text
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session
 
 from .._store import Event, EventFts, use_session
@@ -83,16 +84,43 @@ def ensure_fts(session: Optional[Session] = None) -> None:
                 s.commit()
 
 
+def _quote_all_tokens(text_: str) -> str:
+    """Every whitespace token as a quoted FTS5 phrase term — no operators, no
+    syntax, so the expression can never raise. The demotion target for malformed
+    boolean shapes and the retry form for a residual fts5 syntax error."""
+    toks = []
+    for tok in re.findall(r"\S+", text_ or ""):
+        inner = tok.replace('"', "")
+        if inner:
+            toks.append('"' + inner + '"')
+    return " ".join(toks) or '""'
+
+
 def _to_match_query(query: str) -> str:
     """Translate a natural-language / boolean / quoted-phrase query into a safe
     FTS5 MATCH expression. AND/OR/NOT and "quoted phrases" pass through; every
-    other token is emitted quoted so stray punctuation can't raise a syntax error."""
+    other token is emitted quoted so stray punctuation can't raise a syntax error.
+
+    Malformed boolean shapes — an unbalanced quote, a leading/trailing operator,
+    or adjacent operators (FTS5's NOT is binary, so ``AND NOT`` is a syntax error
+    too) — can't compile as operators, so they demote to the fully-quoted literal
+    form instead of raising out of MATCH."""
     out: list[str] = []
+    ops: list[bool] = []
     for tok in re.findall(r'"[^"]*"|\S+', query or ""):
-        if tok in ("AND", "OR", "NOT") or tok.startswith('"'):
+        if tok in ("AND", "OR", "NOT"):
             out.append(tok)
+            ops.append(True)
+        elif tok.startswith('"'):
+            if len(tok) < 2 or not tok.endswith('"'):
+                return _quote_all_tokens(query)  # unbalanced quote
+            out.append(tok)
+            ops.append(False)
         else:
             out.append('"' + tok.replace('"', "") + '"')
+            ops.append(False)
+    if ops and (ops[0] or ops[-1] or any(a and b for a, b in zip(ops, ops[1:]))):
+        return _quote_all_tokens(query)
     return " ".join(out) or '""'
 
 
@@ -104,11 +132,21 @@ def _clean_query_text(query: str) -> str:
     return re.sub(r"\s+", " ", clean).strip()
 
 
+def _escape_like(text_: str) -> str:
+    """Escape LIKE wildcards (``\\`` ``%`` ``_``) so the text matches literally;
+    pair with ``ESCAPE '\\'`` in the SQL. Identifier queries are full of ``_`` —
+    unescaped, ``get_session`` would match ``getXsession``."""
+    return text_.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
 def _like_prefix(prefix: str) -> str:
-    """Escape LIKE wildcards (``\\`` ``%`` ``_``) so ``startswith`` matches a literal
-    prefix; pair with ``ESCAPE '\\'`` in the SQL."""
-    escaped = prefix.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
-    return escaped + "%"
+    """A ``startswith`` LIKE pattern matching a literal prefix."""
+    return _escape_like(prefix) + "%"
+
+
+def _like_substring(term: str) -> str:
+    """A substring LIKE pattern matching a literal infix."""
+    return "%" + _escape_like(term) + "%"
 
 
 def _in_clause(column: str, values: list, prefix: str, params: dict, negate: bool) -> str:
@@ -197,13 +235,13 @@ def search_events(
         like_params: dict = {}
         ors = []
         for i, term in enumerate(terms):
-            like_params["or" + str(i)] = "%" + term + "%"
-            ors.append("content LIKE :or" + str(i))
+            like_params["or" + str(i)] = _like_substring(term)
+            ors.append("content LIKE :or" + str(i) + " ESCAPE '\\'")
         passes.append(("(" + " OR ".join(ors) + ")", like_params, "occurred_at DESC", False, True))
     elif mode == "code":
         clean = _clean_query_text(query)
         passes.append(("event_search MATCH :q", {"q": _quote_phrase(clean)}, _RANK_EXPR, True, False))
-        passes.append(("content LIKE :codepat", {"codepat": "%" + clean + "%"},
+        passes.append(("content LIKE :codepat ESCAPE '\\'", {"codepat": _like_substring(clean)},
                        "occurred_at DESC", False, True))
     else:
         passes.append(("event_search MATCH :q", {"q": _to_match_query(query)}, _RANK_EXPR, True, False))
@@ -255,7 +293,20 @@ def search_events(
                 "FROM event_search WHERE " + " AND ".join([match_where] + shared) +
                 " ORDER BY " + order + " LIMIT :lim"
             )
-            rows = s.execute(sql, {**shared_params, **match_params}).mappings().all()
+            try:
+                rows = s.execute(sql, {**shared_params, **match_params}).mappings().all()
+            except OperationalError as exc:
+                # A residual fts5 syntax error (a shape _to_match_query's
+                # validation didn't catch) retries once with every MATCH param
+                # demoted to the everything-quoted form — a malformed query
+                # returns results-or-empty, never a raw OperationalError.
+                msg = str(exc.orig).lower()
+                if not use_match or ("fts5" not in msg and "unterminated string" not in msg):
+                    raise
+                logger.warning("FTS5 rejected MATCH %r; retrying fully quoted", match_params)
+                retry = {k: _quote_all_tokens(v) if isinstance(v, str) else v
+                         for k, v in match_params.items()}
+                rows = s.execute(sql, {**shared_params, **retry}).mappings().all()
             for r in rows:
                 key = (r["event_id"], r["content_type"])
                 if key in seen:

@@ -154,6 +154,38 @@ def test_watcher_poll_once_is_inline_durable(archive_home, tmp_path) -> None:
     assert not (archive_home / "truth" / "manifest.json").exists()
 
 
+def test_watcher_run_loop_survives_a_failing_pass(archive_home, caplog) -> None:
+    """An exception escaping the pass body (lock acquisition, a poll bug) must
+    not exit the loop — process death means launchd restarts every few seconds
+    with all source fingerprints reset, a hot re-scan loop on persistent faults.
+    The loop logs, backs off, and keeps going; a healing pass resets the backoff."""
+    import threading
+    import time
+
+    init_db()
+    w = Watcher([], interval=0.01)
+    calls = {"n": 0}
+
+    def flaky_poll_once():
+        calls["n"] += 1
+        if calls["n"] <= 2:
+            raise RuntimeError("simulated pass failure")
+        return type(w).poll_once(w)
+
+    w.poll_once = flaky_poll_once
+    t = threading.Thread(target=w._run_loop)
+    with caplog.at_level("ERROR", logger="thread_archive._watcher.daemon"):
+        t.start()
+        deadline = time.monotonic() + 5.0
+        while calls["n"] < 4 and time.monotonic() < deadline:
+            time.sleep(0.01)
+        w.stop()
+        t.join(timeout=5.0)
+    assert not t.is_alive()
+    assert calls["n"] >= 4, "the loop must survive failing passes and keep polling"
+    assert sum("ingest pass failed" in r.getMessage() for r in caplog.records) == 2
+
+
 def test_watcher_maintenance_writes_manifest_not_overlays(archive_home, tmp_path) -> None:
     """maintain() runs the cheap upkeep (manifest/rebalance) but does NOT rewrite the
     cross-thread overlay snapshots — conversation ingest never changes them."""
