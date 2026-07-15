@@ -274,7 +274,11 @@ class Watcher:
     def _run_loop(self) -> None:
         from .._truth import try_shared_ingest_lock
 
-        self._stop = False
+        # _stop is initialized in __init__ and deliberately NOT reset here: run()
+        # acquires the owner lock before this call, so the loop is observable as
+        # started (a caller can already see the lock held and call stop()) before
+        # _run_loop begins. Resetting _stop here would clobber that stop() and
+        # leave the daemon running past a join. A fresh run needs a fresh Watcher.
         last_maintenance = time.monotonic()
         last_embed = time.monotonic()
         dirty = False

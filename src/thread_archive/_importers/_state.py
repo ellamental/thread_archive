@@ -210,6 +210,8 @@ def last_import_epoch_ms(state: ImportState) -> float:
     ``.timestamp()`` on it directly would read it as local time and skew every
     watermark comparison by the machine's UTC offset."""
     dt = state.last_import_at
+    if dt is None:
+        return 0.0
     if dt.tzinfo is None:
         dt = dt.replace(tzinfo=timezone.utc)
     return dt.timestamp() * 1000

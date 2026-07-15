@@ -19,7 +19,7 @@ from sqlalchemy import select
 from thread_archive._importers import codex as codex_mod
 from thread_archive._importers import import_codex_session_incremental
 from thread_archive._scripts import backfill_codex_model as mod
-from thread_archive._store import Event, Thread, get_session, init_db
+from thread_archive._store import Event, get_session, init_db
 from thread_archive._truth.jsonl_log import _hash_key_check, _shard_depth, _thread_file, log_dir
 
 SESSION = [

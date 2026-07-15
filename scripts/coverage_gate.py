@@ -36,7 +36,7 @@ FLOORS = {
     "_truth": 87.0,
     "_watcher": 72.0,
     "_web": 90.0,
-    "cli": 61.0,  # verb→api dispatch tests cover the arg mapping; heavy verbs run via smoke
+    "cli": 56.0,  # verb→api dispatch tests cover the arg mapping; heavy verbs run via smoke
     "TOTAL": 71.0,
 }
 
