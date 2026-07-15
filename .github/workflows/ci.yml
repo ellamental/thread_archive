@@ -1,0 +1,118 @@
+# The public CI gate on GitHub. Mirrors the documented quality bar (README →
+# "confirm green") for anyone without the local thread-ci: ruff + mypy + the
+# pytest suite with its coverage floor, plus the frontend typecheck/tests and the
+# wheel/sdist release lane.
+#
+# The one ci.toml row deliberately absent is retrieval-gate: it scores search
+# quality against THIS machine's live ~/.thread/archive, which no runner has. It
+# stays a local/thread-ci gate.
+#
+# The suite is model-free (conftest forces the embed/rerank availability gates
+# off), so CI installs only the base + [dev] deps — never the heavy [embeddings]
+# (torch) extra.
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# A newer push to the same branch/PR supersedes an in-flight run.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # The Python bar. The matrix proves the suite runs across every supported
+  # interpreter (pyproject requires-python >=3.11, classifiers 3.11–3.13); the
+  # single-version quality gates (ruff, mypy, coverage floor) run only on the
+  # primary leg, whose calibration they're pinned to.
+  python:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12", "3.13"]
+    env:
+      PRIMARY: "3.13"
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      - name: Install
+        run: pip install -e ".[dev]"
+
+      - name: Ruff
+        if: matrix.python-version == env.PRIMARY
+        run: ruff check .
+
+      - name: Mypy
+        if: matrix.python-version == env.PRIMARY
+        run: mypy
+
+      # Coverage rides every leg (blind spots stay visible in the term report);
+      # the JSON report feeds the coverage-gate step on the primary leg.
+      - name: Pytest
+        run: >
+          pytest -q --tb=short -p no:cacheprovider
+          --cov=src --cov-branch
+          --cov-report=term --cov-report=json:coverage.json
+
+      - name: Coverage floors
+        if: matrix.python-version == env.PRIMARY
+        run: python scripts/coverage_gate.py coverage.json
+
+  # The web viewer's gates. tsc --noEmit (not a build — the SPA ships pre-built
+  # into the committed _web/static) plus the Vitest component suite with its
+  # coverage floor.
+  frontend:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install
+        run: npm ci
+
+      - name: Typecheck
+        run: npx tsc --noEmit
+
+      - name: Test
+        run: npx vitest run --coverage
+
+  # The release lane: build the wheel + sdist, prove their contents, install the
+  # wheel into a clean venv, and run the real CLI lifecycle from it. Slow enough
+  # to be deselected from the default pytest run (pyproject addopts), so it's its
+  # own job.
+  package:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      - name: Install
+        run: pip install -e ".[dev]"
+
+      - name: Package
+        run: >
+          pytest -q --tb=short -p no:cacheprovider
+          -m package --no-cov tests/test_package_artifact.py

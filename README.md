@@ -1,5 +1,9 @@
 # thread-archive
 
+[![CI](https://github.com/ellamental/thread_archive/actions/workflows/ci.yml/badge.svg)](https://github.com/ellamental/thread_archive/actions/workflows/ci.yml)
+[![Python](https://img.shields.io/badge/python-3.11%20|%203.12%20|%203.13-blue)](https://github.com/ellamental/thread_archive)
+[![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
+
 A serverless-native, single-user local archive for AI conversations.
 
 It watches local AI-tool stores, imports provider transcripts into one event
