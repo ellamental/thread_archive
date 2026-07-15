@@ -156,6 +156,26 @@ def scan_truth_counts(
     }
 
 
+def _insert_or_replace(conn, table, rows: list[dict]) -> None:
+    """Bulk ``INSERT OR REPLACE`` a batch whose rows need not share a key-set.
+
+    Core executemany compiles one statement from the first row's keys and binds
+    every row against it, so a batch mixing dicts with different keys raises
+    ``StatementError``. That mix is real: :func:`_coerce` keeps only the keys a
+    record actually carries, so a synthesized minimal thread stub (``{id, name}``)
+    lands next to a full thread record, and a record written under a since-changed
+    schema lands next to a current one. Group by key-set so each executemany is
+    homogeneous — every column absent from a group still gets its model default.
+    Each id appears at most once per load, so the OR-REPLACE result is
+    order-independent across groups."""
+    stmt = insert(table).prefix_with("OR REPLACE")
+    groups: dict[frozenset[str], list[dict]] = {}
+    for row in rows:
+        groups.setdefault(frozenset(row), []).append(row)
+    for group in groups.values():
+        conn.execute(stmt, group)
+
+
 def _load_table(
     model: type, path: Path, engine, batch: int = 5000,
     *, errors: list[tuple[str, int]] | None = None,
@@ -170,7 +190,7 @@ def _load_table(
         if not buf:
             return
         with engine.begin() as conn:
-            conn.execute(insert(table).prefix_with("OR REPLACE"), buf)
+            _insert_or_replace(conn, table, buf)
         total += len(buf)
         buf.clear()
 
@@ -228,12 +248,12 @@ def _load_thread_files(
         nonlocal nt, ne
         if thread_buf:
             with engine.begin() as conn:
-                conn.execute(insert(Thread.__table__).prefix_with("OR REPLACE"), thread_buf)
+                _insert_or_replace(conn, Thread.__table__, thread_buf)
             nt += len(thread_buf)
             thread_buf.clear()
         if event_buf:
             with engine.begin() as conn:
-                conn.execute(insert(Event.__table__).prefix_with("OR REPLACE"), event_buf)
+                _insert_or_replace(conn, Event.__table__, event_buf)
             ne += len(event_buf)
             event_buf.clear()
 

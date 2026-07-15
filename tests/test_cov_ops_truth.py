@@ -591,6 +591,35 @@ def test_reindex_synthesizes_missing_thread_record(archive_home, tmp_path):
     assert event_count() == before      # every event survived
 
 
+def test_reindex_mixes_full_and_event_only_thread_files(archive_home, tmp_path):
+    """A load batch that mixes a full ``type:thread`` record with an event-only
+    file (metadata stripped) must not crash on the heterogeneous key-sets of the
+    ``INSERT OR REPLACE`` — the synthesized stub carries only ``{id, name}`` while
+    the full record carries every column. Both threads and all events survive."""
+    import_cc_session(tmp_path, "full")
+    import_cc_session(tmp_path, "stub")
+    before = event_count()
+
+    files = sorted((archive_home / "truth" / jsonl_log.THREADS_SUBDIR).rglob("*.jsonl"))
+    assert len(files) == 2  # two distinct threads land in one reindex batch
+    stub_file = files[-1]
+    stub_tid = int(stub_file.stem)
+    kept = [
+        ln for ln in stub_file.read_text(encoding="utf-8").splitlines()
+        if json.loads(ln).get("type", "event") != "thread"
+    ]
+    stub_file.write_text("\n".join(kept) + "\n", encoding="utf-8")
+    jsonl_log.reset_handles()
+
+    ta.reindex()  # heterogeneous thread_buf: a full record next to a {id, name} stub
+
+    with get_session() as s:
+        names = dict(s.execute(text("SELECT id, name FROM threads")).all())
+    assert len(names) == 2                          # neither thread dropped
+    assert names[stub_tid] == f"thread:{stub_tid}"  # event-only file → synthesized stub
+    assert event_count() == before                  # every event survived
+
+
 def test_reindex_with_vectors_flag_is_noop_without_embeddings(archive_home, tmp_path):
     """``reindex(vectors=True)`` runs the embed/cache arm; with the model gate off
     it reports zero rather than cold-loading torch."""

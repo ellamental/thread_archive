@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- **Reindex survives an archive that mixes full and event-only thread files
+  (2026-07-15).** `reindex` bulk-loads each batch of thread records with one
+  `INSERT OR REPLACE` executemany, which SQLAlchemy compiles from the first row's
+  keys and binds every row against. A synthesized minimal thread stub
+  (`{id, name}` — standing in for a thread file whose `type:thread` metadata line
+  was lost to a crash between an import commit and its checkpoint) carries a
+  different key-set than a full record, so a batch holding both raised
+  `StatementError` and aborted the whole rebuild. Rows are now grouped by key-set
+  so each executemany is homogeneous — which also covers records written under a
+  since-changed schema landing next to current ones.
+
 - **The watcher daemon converges to ingest ownership even after a lost startup race
   (2026-07-15).** The daemon takes the ingest-owner lock so lazy catch-up passes degrade
   to no-op probes while it's alive. It used to try exactly once at startup and, if a
@@ -25,10 +36,11 @@
   watcher used to delete an export whenever it processed ≥1 conversation — even when
   some conversations errored, and even when normalization silently dropped
   attachments/images/branch structure the parser didn't carry. A dropped export now
-  moves into `dumps/imported/` on a fully clean import (retained, never deleted — the
-  operator prunes it once satisfied) and into `dumps/failed/` when any conversation
-  errored (preserved as stubs, but the export needs a look). The original download is
-  the last copy of anything normalization drops, so it survives regardless. Alongside,
+  moves into `dumps/imported/<kind>/` on a fully clean import — kept as the recovery
+  copy, bounded to the most recent per kind (a full re-export supersedes the last, so
+  the pile can't grow) — and into `dumps/failed/` when any conversation errored
+  (preserved as stubs, but the export needs a look). The original download is the last
+  copy of anything normalization drops, so it survives regardless. Alongside,
   three import-fidelity gaps are closed: ChatGPT `image_asset_pointer` parts are
   preserved (an image-only turn kept its pointer in truth instead of vanishing whole);
   ChatGPT's conversation *tree* — each event's `branch.parent_id` and an

@@ -48,6 +48,25 @@ def _claude_zip(parent, name, conv=_CONV):
     return path
 
 
+def _chatgpt_batch_dir(parent, name):
+    d = parent / name
+    d.mkdir(parents=True)
+    conv = {
+        "id": "gpt-x", "title": "GPT", "create_time": 1767261600.0, "update_time": 1767261610.0,
+        "current_node": "n1",
+        "mapping": {
+            "root": {"id": "root", "parent": None, "children": ["n1"], "message": None},
+            "n1": {"id": "n1", "parent": "root", "children": [], "message": {
+                "id": "n1", "author": {"role": "user"}, "create_time": 1767261600.0,
+                "content": {"content_type": "text", "parts": ["hi gpt"]},
+                "status": "finished_successfully", "metadata": {}}},
+        },
+    }
+    (d / "conversations.json").write_text(json.dumps([conv]), encoding="utf-8")
+    (d / "user.json").write_text(json.dumps({"id": "u1"}), encoding="utf-8")
+    return d
+
+
 def _claude_count():
     with get_session() as s:
         return len(s.execute(select(Thread).where(Thread.source == "claude")).scalars().all())
@@ -287,8 +306,37 @@ def test_redropping_same_content_imports_nothing_but_still_clears(archive_home) 
     assert r.items_imported == 0
     assert _claude_count() == 1
     assert not again.exists()
-    # A redundant re-drop is still retained, not deleted.
-    assert (dumps / "imported" / "export-b").exists()
+    # The newer drop is retained; the older retained one of the same kind is pruned —
+    # a full re-export supersedes it, so imported/claude/ holds exactly the latest.
+    assert (dumps / "imported" / "claude" / "export-b").exists()
+    assert not (dumps / "imported" / "claude" / "export-a").exists()
+
+
+def test_retention_is_bounded_to_latest_per_kind(archive_home) -> None:
+    """imported/ keeps only the most-recent export per kind: a re-export prunes the
+    prior one of the same kind (a full account export supersedes it), while a different
+    provider's retained copy is left untouched — so retention stays bounded, not a pile."""
+    init_db()
+    dumps = archive_home / "dumps"
+    w = ExportDropWatcher(dumps_dir=dumps)
+
+    def settle_and_import():
+        w.poll()  # record settle signal
+        w.poll()  # signal unchanged → import
+
+    _claude_batch_dir(dumps, "claude-1", conv={**_CONV, "uuid": "conv-A", "name": "A"})
+    settle_and_import()
+    _chatgpt_batch_dir(dumps, "chatgpt-1")
+    settle_and_import()
+    assert (dumps / "imported" / "claude" / "claude-1").exists()
+    assert (dumps / "imported" / "chatgpt" / "chatgpt-1").exists()
+
+    # A second claude export supersedes the first claude one — but not the chatgpt one.
+    _claude_batch_dir(dumps, "claude-2", conv={**_CONV, "uuid": "conv-B", "name": "B"})
+    settle_and_import()
+    assert (dumps / "imported" / "claude" / "claude-2").exists()
+    assert not (dumps / "imported" / "claude" / "claude-1").exists()
+    assert (dumps / "imported" / "chatgpt" / "chatgpt-1").exists()
 
 
 def test_default_watchers_includes_export_drop(archive_home) -> None:
