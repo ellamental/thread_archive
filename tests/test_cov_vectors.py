@@ -70,7 +70,10 @@ def test_embed_device_falls_back_to_cpu_without_torch(monkeypatch) -> None:
 
 
 def test_embed_is_available_true_when_extra_present(monkeypatch) -> None:
+    import importlib.util as ilu
+
     monkeypatch.setattr(embed, "is_available", _REAL_EMBED_IS_AVAILABLE)
+    monkeypatch.setattr(ilu, "find_spec", lambda name: object())  # extra present
     monkeypatch.setattr(embed, "_load_failed", False)
     assert embed.is_available() is True
 
@@ -334,6 +337,7 @@ def test_rerank_is_available_variants(monkeypatch) -> None:
     import importlib.util as ilu
 
     monkeypatch.setattr(rerank, "is_available", _REAL_RERANK_IS_AVAILABLE)
+    monkeypatch.setattr(ilu, "find_spec", lambda n: object())  # extra present
     monkeypatch.setattr(rerank, "_load_failed", False)
     assert rerank.is_available() is True
     monkeypatch.setattr(rerank, "_load_failed", True)

@@ -115,8 +115,9 @@ def _bindir(tmp_path, monkeypatch) -> Path:
 # ══════════════════════════════════════════════════════════════════════════════
 
 
-def test_require_darwin_gate() -> None:
-    # On this darwin host the gate is a no-op; forced off-mac it aborts.
+def test_require_darwin_gate(monkeypatch) -> None:
+    # Forced on-mac the gate is a no-op; forced off-mac it aborts (next test).
+    monkeypatch.setattr(_launchd.sys, "platform", "darwin")
     _launchd._require_darwin()  # does not raise on darwin
 
 
