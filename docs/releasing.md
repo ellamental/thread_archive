@@ -34,11 +34,11 @@ while work happens — each written for reviewers of that day's change, dates
 and narration included. Releasing rewrites them for readers of the release:
 
 - Retitle `## Unreleased` to `## X.Y.Z — YYYY-MM-DD`.
-- Compress: one tight bullet per user-visible change, present tense, no
-  per-bullet dates, no thread references unless they carry real context.
-  Group related in-flight entries into one bullet. Drop pure-hygiene noise
-  that no user or operator will ever act on. (The `0.0.1` section is the
-  calibration example.)
+- Compress hard: **~10 lines per version, max**, wrapped at **120 characters**.
+  One tight bullet per theme (group related in-flight entries), present tense,
+  no per-bullet dates, no thread references. Drop pure-hygiene noise that no
+  user or operator will ever act on. The full stories live in git history and
+  the conversation archive; the changelog is the index, not the record.
 - Open a fresh empty `## Unreleased` above it.
 
 ## 3. Version bump

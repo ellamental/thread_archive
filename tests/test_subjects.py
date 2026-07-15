@@ -12,12 +12,13 @@ from __future__ import annotations
 
 import json
 
+from sqlalchemy import select
+
 from thread_archive import _knowledge as knowledge
 from thread_archive._importers import import_session_incremental
 from thread_archive._retrieval import format_results, search
 from thread_archive._retrieval import subjects as _subjects
 from thread_archive._store import Event, get_session, init_db
-from sqlalchemy import select
 
 
 def _chat(archive_home, name: str, user_text: str, day: int) -> tuple[int, int]:
@@ -49,7 +50,7 @@ def _seed(archive_home):
     init_db()
     a = _chat(archive_home, "a", "the widget alpha design", 1)
     b = _chat(archive_home, "b", "the widget beta rollout", 2)
-    c = _chat(archive_home, "c", "the widget gamma review", 3)
+    _chat(archive_home, "c", "the widget gamma review", 3)  # in the result set, linked to no subject
     pad = [_chat(archive_home, f"p{i}", f"unrelated kazoo topic {i}", 4 + i) for i in range(3)]
 
     narrow = knowledge.create_topic("Narrow Subject")["topic_id"]
