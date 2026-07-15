@@ -14,13 +14,14 @@ import json
 from datetime import datetime, timezone
 
 import pytest
-from sqlalchemy import select, text as sa_text, update
+from sqlalchemy import select, update
+from sqlalchemy import text as sa_text
 
+from thread_archive._importers import codex as codex_mod
 from thread_archive._importers import (
     import_codex_session_incremental,
     import_session_incremental,
 )
-from thread_archive._importers import codex as codex_mod
 from thread_archive._store import Event, ImportState, Thread, get_session, init_db
 from thread_archive._thread_import.event_builder import compute_dedup_key
 
@@ -188,7 +189,7 @@ def test_recompute_threads_with_null_keys_respects_limit(archive_home) -> None:
 
 def test_recompute_multiple_anchor_pmids_warns(archive_home) -> None:
     """A group whose anchors disagree on provider_message_id can't be keyed — warned."""
-    tid = _seed_recompute_thread(archive_home, [
+    _seed_recompute_thread(archive_home, [
         {"stream_id": "st", "api_call_id": "c", "event_type": "api_request_started",
          "payload": {"provider_data": {"provider_message_id": "pm1"}}, "dedup_key": "k-a1"},
         {"stream_id": "st", "api_call_id": "c", "event_type": "api_request_started",
@@ -262,7 +263,7 @@ def test_recompute_collapse_no_anchor_twin(archive_home) -> None:
     k_key = compute_dedup_key("", "tool_execution_completed", payload)
     T = datetime(2026, 1, 1, 10, 0, 0, tzinfo=timezone.utc)
     # N (null) seeded first so it has the lower id and becomes the doomed copy.
-    tid = _seed_recompute_thread(archive_home, [
+    _seed_recompute_thread(archive_home, [
         {"stream_id": "stN", "api_call_id": "cN", "event_type": "tool_execution_completed",
          "payload": dict(payload), "dedup_key": None, "occurred_at": T},
         # a same-type decoy at a different time must be skipped, not matched
@@ -279,7 +280,7 @@ def test_recompute_collapse_no_anchor_twin(archive_home) -> None:
 
 def test_recompute_no_anchor_without_collapse_leaves_null(archive_home) -> None:
     """Same shape, collapse off: an anchor-less NULL is simply left NULL (no_anchor)."""
-    tid = _seed_recompute_thread(archive_home, [
+    _seed_recompute_thread(archive_home, [
         {"stream_id": "stN", "api_call_id": "cN", "event_type": "tool_execution_completed",
          "payload": {"tool_call_id": "tu1", "content": "output"}, "dedup_key": None},
     ])
@@ -736,7 +737,7 @@ def test_codex_rollout_timeline_reads_change_points(archive_home) -> None:
 
 
 def test_codex_apply_with_backup(archive_home, tmp_path) -> None:
-    tid = _seed_codex(archive_home)
+    _seed_codex(archive_home)
     backup = tmp_path / "codex-backup.jsonl"
     totals = cx.run(apply=True, backup_path=backup)
     assert totals.get("write_errors", 0) == 0
@@ -747,7 +748,7 @@ def test_codex_apply_with_backup(archive_home, tmp_path) -> None:
 def test_codex_rerun_after_apply_finds_no_placeholders(archive_home) -> None:
     """Once repaired, every MODEL_EVENT carries a real name — the thread holds no
     placeholder, so a re-run plans nothing (the 'nothing to do' skip)."""
-    tid = _seed_codex(archive_home)
+    _seed_codex(archive_home)
     cx.run(apply=True)
     again = cx.run(apply=True)
     assert again.get("threads_with_placeholder", 0) == 0
@@ -781,7 +782,7 @@ def test_codex_rollout_index_from_available_watcher(archive_home, monkeypatch) -
 
 
 def test_codex_run_counts_rollout_errors(archive_home, monkeypatch) -> None:
-    tid = _seed_codex(archive_home, source_id="s1")
+    _seed_codex(archive_home, source_id="s1")
     bad = archive_home / "rollout.jsonl"
     bad.write_text("{}\n", encoding="utf-8")
     monkeypatch.setattr(cx, "rollout_index", lambda: {"s1": bad})
@@ -836,7 +837,7 @@ def test_codex_main_dry_and_apply(archive_home, capsys) -> None:
 def test_codex_main_reports_conflicts_and_rollout_errors(archive_home, monkeypatch, capsys) -> None:
     """A rollout that both disagrees (conflict) and, for a second thread, is
     unreadable (rollout error) surfaces both footer lines in ``main``."""
-    tid = _seed_codex(archive_home, source_id="s1", name="a.jsonl")
+    _seed_codex(archive_home, source_id="s1", name="a.jsonl")
     # rollout names a different model for s1's turn → conflict; s-missing raises
     lying = [dict(ln, payload=dict(ln["payload"], model="gpt-9-imaginary"))
              if ln["type"] == "turn_context" else ln for ln in CODEX_SESSION]

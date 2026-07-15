@@ -1,12 +1,12 @@
 """Per-package coverage floors over a pytest-cov JSON report.
 
-A single global threshold would be noise here: the vendored parser surface
-(``_thread_import``) carries large dormant provider paths that drag the
-aggregate, while the packages that guard the memory-of-record (truth, store,
-importers) must never quietly lose coverage. So each top-level package gets its
-own floor, set a couple of points under its measured branch coverage — a
-ratchet against regression, not an aspiration. When real tests push a package
-up, raise its floor to follow.
+A single global threshold would be noise here: packages differ in how much of
+their surface a suite can reach, and a lone aggregate lets a sharp drop in one
+package hide behind slack in another — the packages that guard the
+memory-of-record (truth, store, importers) must never quietly lose coverage. So
+each top-level package gets its own floor, set a few points under its measured
+branch coverage — a ratchet against regression, not an aspiration. When real
+tests push a package up, raise its floor to follow.
 
 Coverage percent = (covered_lines + covered_branches) / (statements + branches),
 i.e. branch coverage, matching ``--cov-branch``.
@@ -24,20 +24,20 @@ from pathlib import Path
 
 # package (top-level dir/module under src/thread_archive/) -> minimum percent
 FLOORS = {
-    "_api": 81.0,  # thin dispatch layer since the _ops extraction (its old ops mass measured with it)
-    "_importers": 74.0,
-    "_knowledge": 85.0,
-    "_mcp": 90.0,
-    "_ops": 86.0,  # the durability kit (extracted from _api)
-    "_retrieval": 76.0,
-    "_scripts": 70.0,
-    "_store": 94.0,
-    "_thread_import": 49.0,  # dormant provider surfaces; kept from decaying further
-    "_truth": 87.0,
-    "_watcher": 72.0,
-    "_web": 90.0,
-    "cli": 56.0,  # verb→api dispatch tests cover the arg mapping; heavy verbs run via smoke
-    "TOTAL": 71.0,
+    "_api": 90.0,  # thin dispatch layer over the private machinery
+    "_importers": 92.0,
+    "_knowledge": 90.0,
+    "_mcp": 92.0,
+    "_ops": 90.0,  # the durability kit
+    "_retrieval": 94.0,
+    "_scripts": 93.0,
+    "_store": 95.0,
+    "_thread_import": 92.0,  # vendored provider parsers, exercised end-to-end by the parser + golden suites
+    "_truth": 93.0,
+    "_watcher": 94.0,
+    "_web": 92.0,
+    "cli": 96.0,  # full verb→api dispatch coverage; heavy verbs stubbed at the api seam
+    "TOTAL": 93.0,
 }
 
 

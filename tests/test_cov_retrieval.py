@@ -40,16 +40,15 @@ from thread_archive._retrieval._extract import (
     _to_str,
     extract_fts_content,
 )
-from thread_archive._retrieval import fts as fts_mod
 from thread_archive._retrieval.fts import (
+    _cached_twin_texts,
+    _gate_arc_tuples,
     build_event_hit,
     fts_status,
     index_thread_meta,
     rebuild_fts,
     search_events,
     stitch_delta_tuples,
-    _cached_twin_texts,
-    _gate_arc_tuples,
 )
 from thread_archive._retrieval.read import (
     _fmt_hm,

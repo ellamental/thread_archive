@@ -15,13 +15,13 @@ import sqlite3
 
 from sqlalchemy import select
 
+import thread_archive._importers.cursor as cursor_mod
 from thread_archive._importers import (
     import_codex_session_incremental,
     import_cursor_db,
     import_cursor_from_payload,
     import_grok_session_incremental,
 )
-import thread_archive._importers.cursor as cursor_mod
 from thread_archive._importers.codex import (
     _build_codex_messages,
     _codex_assistant_block,

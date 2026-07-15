@@ -21,15 +21,15 @@ from datetime import datetime, timezone
 import pytest
 from sqlalchemy import delete, select
 
+from thread_archive._importers import _titles as titles
+from thread_archive._importers import antigravity as ag
+from thread_archive._importers import claude_science as cs
+from thread_archive._importers import exports as ex
 from thread_archive._importers import (
     import_antigravity_session_incremental,
     import_claude_science_db,
     import_opencode_db,
 )
-from thread_archive._importers import _titles as titles
-from thread_archive._importers import antigravity as ag
-from thread_archive._importers import claude_science as cs
-from thread_archive._importers import exports as ex
 from thread_archive._importers import opencode as oc
 from thread_archive._importers.claude_science import import_claude_science_frame
 from thread_archive._importers.opencode import import_opencode_from_payload
@@ -42,7 +42,6 @@ from thread_archive._store import (
     get_session,
     init_db,
 )
-
 
 # ══════════════════════════════════════════════════════════════════════════════
 # _titles.py — pure title/description derivation
@@ -1092,8 +1091,10 @@ def test_cs_db_incremental_append(archive_home, tmp_path) -> None:
     with get_session() as s:
         contents = s.execute(select(Event.payload)).scalars().all()
         threads = s.execute(select(Thread).where(Thread.source == "claude-science")).scalars().all()
+        n2 = len(s.execute(select(Event.id)).scalars().all())
     assert any(p.get("content") == "q2" for p in contents)
     assert len(threads) == 1  # imported into the SAME thread, no duplicate
+    assert n2 == n1 + scan.events_created  # pure append: nothing re-imported or dropped
 
 
 def test_cs_db_no_frames_table_returns_empty(archive_home, tmp_path) -> None:

@@ -21,7 +21,6 @@ from sqlalchemy import text
 from thread_archive import _api as ta
 from thread_archive._ops import backup as bk
 from thread_archive._ops import redact as rd
-from thread_archive._ops.verify import verify
 from thread_archive._store import get_session
 from thread_archive._truth import drain, jsonl_log, rebuild, scan_truth_counts
 

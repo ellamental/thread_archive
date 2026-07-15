@@ -15,7 +15,6 @@ from __future__ import annotations
 
 import builtins
 import contextlib
-import json
 import plistlib
 import subprocess
 import time

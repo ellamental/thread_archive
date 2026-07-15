@@ -25,9 +25,9 @@ from pathlib import Path
 import pytest
 from sqlalchemy import select
 
+import thread_archive._ops.health as health
 import thread_archive._retrieval.fts as fts
 import thread_archive._retrieval.vectors as vectors
-import thread_archive._ops.health as health
 import thread_archive._truth as truth
 import thread_archive._watcher.exthost as ex
 import thread_archive._watcher.lazy as lazy

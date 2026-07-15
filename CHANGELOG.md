@@ -2,6 +2,25 @@
 
 ## Unreleased
 
+- **The watcher daemon converges to ingest ownership even after a lost startup race
+  (2026-07-15).** The daemon takes the ingest-owner lock so lazy catch-up passes degrade
+  to no-op probes while it's alive. It used to try exactly once at startup and, if a
+  transient holder (a lazy pass mid-flight) had it, run lockless for its whole life —
+  breaking that guarantee and letting lazy passes run concurrently. It now re-attempts
+  the lock each poll until it holds it, then keeps it for its lifetime. (Fixes a flaky
+  `test_daemon_run_holds_owner_lock_for_its_lifetime`, which raced the daemon for the
+  lock at startup.)
+
+- **Test coverage raised past 90% (2026-07-15).** Branch coverage of the package
+  rose from ~81% to 96%, and the per-package `coverage_gate.py` floors were lifted
+  to match (every package now floored at ≥90%). New suites cover the CLI verb→api
+  dispatch surface, the setup wizard + LaunchAgent lifecycle, the semantic-search
+  layer (vectors/embed/rerank, with the models faked so no torch loads), the
+  grok/codex/cursor/exports/opencode importers and the vendored
+  claude-code/chatgpt/claude export parsers, the watcher poll loop, the
+  backfill/recover migration scripts, and the durability-kit edge branches
+  (verify/redact/backup/rebuild/drain/repair).
+
 - **Account exports are never deleted, and import loses less (2026-07-15).** The drop
   watcher used to delete an export whenever it processed ≥1 conversation — even when
   some conversations errored, and even when normalization silently dropped

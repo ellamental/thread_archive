@@ -18,12 +18,15 @@ Lifecycle of one dropped export:
   the poll (a rare, human-initiated event, so blocking the loop briefly is acceptable),
   idempotent per conversation (a re-run skips threads already present), durable in the
   JSONL truth before each commit.
-- **Retain on clean success.** A drop is **never deleted** — the importer normalizes into
-  the JSONL truth, but normalization is lossy in ways the importer can't always see
-  (attachments/images/branch structure a parser doesn't yet carry), so the original
-  download is the only place that content still exists. A fully clean import moves the
-  drop into ``dumps/imported/`` instead of deleting it, so a normalization gap can never
-  cost the user their export; the operator can prune ``imported/`` once satisfied.
+- **Retain on clean success.** A drop is not deleted at the moment of import — the
+  importer normalizes into the JSONL truth, but normalization is lossy in ways the
+  importer can't always see (attachments/images/branch structure a parser doesn't yet
+  carry), so the original download is the only place that content still exists. A fully
+  clean import moves the drop into ``dumps/imported/<kind>/`` as the recovery copy. Only
+  the **most recent export per kind** is kept: an account export is a full dump, so the
+  next clean import of the same kind supersedes the last as the recovery source and the
+  older one is pruned — the safety net stays, disk use stays bounded (no ever-growing
+  pile from a weekly re-export).
 - **Quarantine on failure or partial loss.** An unrecognized shape, an import that raises,
   an import that processed zero conversations (a recognized container whose contents
   didn't match the expected shape), or an import where **any** conversation errored (those
@@ -199,27 +202,36 @@ class ExportDropWatcher(SourceWatcher):
             "export-drop: imported %s — processed=%d imported=%d skipped=%d events=%d; retaining",
             name, res.processed, res.imported, res.skipped, res.events_created,
         )
-        self._retain(path)
+        self._retain(path, kind)
         return WatchResult(
             sources_checked=1,
             items_imported=res.imported,
             events_created=res.events_created,
         )
 
-    def _retain(self, path: Path) -> None:
-        """Move a cleanly-imported export into ``dumps/imported/`` — never delete it.
+    def _retain(self, path: Path, kind: str) -> None:
+        """Keep a cleanly-imported export as the recovery copy — bounded to one per kind.
 
-        Normalization is lossy in ways the importer can't detect, so the original
-        download is kept as the last line of defense; the operator prunes it once the
-        import is trusted."""
-        self._move_into(self.imported_dir, path)
+        Normalization is lossy in ways the importer can't detect, so the source download
+        is kept as the last line of defense. It's not deleted at import time; instead it
+        moves into ``dumps/imported/<kind>/`` and *then* any older retained export of the
+        same kind is pruned — a full account export supersedes the previous one, so a
+        recurring re-export replaces rather than accumulates."""
+        kind_dir = self.imported_dir / kind
+        dest = self._move_into(kind_dir, path)
+        if dest is None:
+            return  # move failed; the drop stays put and is retried — nothing pruned
+        for entry in kind_dir.iterdir():
+            if entry != dest:
+                self._prune(entry)
 
     def _quarantine(self, path: Path) -> None:
         """Move an export that needs attention into ``dumps/failed/`` (never delete)."""
         self._move_into(self.quarantine_dir, path)
 
-    def _move_into(self, dest_dir: Path, path: Path) -> None:
-        """Collision-safe move of a settled drop into one of the reserved subdirs."""
+    def _move_into(self, dest_dir: Path, path: Path) -> Optional[Path]:
+        """Collision-safe move of a settled drop into a reserved subdir; the final
+        destination path, or ``None`` if the move failed (the drop is left in place)."""
         try:
             dest_dir.mkdir(parents=True, exist_ok=True)
             dest = dest_dir / path.name
@@ -228,10 +240,25 @@ class ExportDropWatcher(SourceWatcher):
                 dest = dest_dir / f"{path.name}.{n}"
                 n += 1
             shutil.move(str(path), str(dest))
+            return dest
         except OSError as e:  # pragma: no cover
             logger.warning(
                 "export-drop: could not move %s into %s: %s", path.name, dest_dir.name, e
             )
+            return None
+
+    def _prune(self, path: Path) -> None:
+        """Delete a retained export that a newer one of the same kind has superseded.
+
+        Only ever called on an already-retained copy in ``imported/`` — never on a drop
+        at import time — so this can't be the thing that loses an unimported download."""
+        try:
+            if path.is_dir():
+                shutil.rmtree(path)
+            else:
+                path.unlink()
+        except OSError as e:  # pragma: no cover
+            logger.warning("export-drop: could not prune superseded export %s: %s", path.name, e)
 
 
 def _settle_signal(path: Path) -> tuple:

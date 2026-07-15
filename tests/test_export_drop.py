@@ -74,9 +74,9 @@ def test_dropped_batch_dir_settles_imports_and_is_retained(archive_home) -> None
     assert r2.items_imported == 1 and r2.events_created > 0
     assert _claude_count() == 1
     assert not export_dir.exists()
-    # The original download is kept in imported/, not destroyed — normalization loss
-    # can never cost the user their export.
-    assert (dumps / "imported" / "claude-export").exists()
+    # The original download is kept in imported/<kind>/, not destroyed — normalization
+    # loss can never cost the user their export.
+    assert (dumps / "imported" / "claude" / "claude-export").exists()
 
     with get_session() as s:
         t = s.execute(select(Thread).where(Thread.source == "claude")).scalar_one()
@@ -96,7 +96,7 @@ def test_dropped_zip_imports_and_is_retained(archive_home) -> None:
     r = w.poll()          # import
     assert r.items_imported == 1
     assert not z.exists()
-    assert (dumps / "imported" / "claude-export.zip").exists()
+    assert (dumps / "imported" / "claude" / "claude-export.zip").exists()
     assert _claude_count() == 1
 
 
@@ -124,7 +124,7 @@ def test_still_copying_file_is_not_imported_until_stable(archive_home) -> None:
     r_done = w.poll()  # signal B == B → settled
     assert r_done.items_imported == 1
     assert not z.exists()
-    assert (dumps / "imported" / "growing.zip").exists()
+    assert (dumps / "imported" / "claude" / "growing.zip").exists()
 
 
 # ── failure handling: quarantine, never delete ───────────────────────────────
@@ -259,7 +259,7 @@ def test_dropped_chatgpt_zip_imports_as_chatgpt(archive_home) -> None:
     r = w.poll()          # classify → chatgpt → import → retain
     assert r.items_imported == 1 and not r.errors
     assert not path.exists()
-    assert (dumps / "imported" / "chatgpt-export.zip").exists()
+    assert (dumps / "imported" / "chatgpt" / "chatgpt-export.zip").exists()
 
     with get_session() as s:
         t = s.execute(select(Thread).where(Thread.source == "chatgpt")).scalar_one()

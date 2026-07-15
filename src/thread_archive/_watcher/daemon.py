@@ -74,6 +74,12 @@ class Watcher:
         self._embed_more = True
         self._backlog = False
         self._stop = False
+        # The ingest-owner lock fd (see :mod:`.lazy`), held for the loop's
+        # lifetime. None until acquired: the loop re-attempts each pass until it
+        # holds it, so a startup lost to a transient holder (a lazy pass mid-
+        # flight) still converges to ownership rather than running lockless for
+        # the daemon's whole life.
+        self._owner_fd: Optional[int] = None
         self._errors_total = 0
         self._errors_recorded_at: Optional[float] = None
         from datetime import datetime, timezone
@@ -255,24 +261,35 @@ class Watcher:
         lifetime, so MCP servers' lazy catch-up passes degrade to no-op flock
         probes while a daemon is alive. Advisory: if another owner already holds
         it (a second daemon — a misconfig, or a lazy pass mid-flight) the loop
-        logs and runs anyway rather than dying into launchd's restart throttle."""
-        import os
-
+        logs and runs anyway rather than dying into launchd's restart throttle,
+        and keeps re-attempting each pass so a *transient* holder never leaves
+        it running lockless for good (see :meth:`_run_loop`)."""
         from .lazy import acquire_ingest_owner
 
-        owner_fd = acquire_ingest_owner()
-        if owner_fd is None:
+        self._owner_fd = acquire_ingest_owner()
+        if self._owner_fd is None:
             logger.warning(
                 "watch: another process holds the ingest-owner lock — running anyway"
             )
         try:
             self._run_loop()
         finally:
-            if owner_fd is not None:
-                os.close(owner_fd)  # closing the fd releases the flock
+            self._release_owner()
+
+    def _release_owner(self) -> None:
+        """Release the ingest-owner lock if held; idempotent. Closing the fd
+        releases the flock. Called from both :meth:`run`'s finally and this
+        loop's, so a direct ``_run_loop`` caller (tests) never leaks the fd it
+        acquired."""
+        if self._owner_fd is not None:
+            import os
+
+            os.close(self._owner_fd)
+            self._owner_fd = None
 
     def _run_loop(self) -> None:
         from .._truth import try_shared_ingest_lock
+        from .lazy import acquire_ingest_owner
 
         # _stop is initialized in __init__ and deliberately NOT reset here: run()
         # acquires the owner lock before this call, so the loop is observable as
@@ -284,73 +301,83 @@ class Watcher:
         dirty = False
         last_stamp = self._import_state_stamp()
         consecutive_errors = 0
-        while not self._stop:
-            # The whole pass is guarded: an exception escaping here (the lock
-            # acquisition's index-swap reconnect, a poll bug) would otherwise
-            # exit the process, and launchd's KeepAlive restarts it every few
-            # seconds with all source fingerprints reset — a hot re-scan loop on
-            # exactly the faults (disk full, index swap mid-flight) most likely
-            # to persist. Survive instead, with exponential backoff.
-            try:
-                # Acquire runs the index-swap reconnect (reconnect_if_swapped): if a
-                # reindex replaced index.db — even one that fit entirely inside a
-                # sleep between passes — pooled connections are disposed before this
-                # pass touches the store.
-                with try_shared_ingest_lock() as acquired:
-                    if not acquired:
-                        logger.info("watch: reindex in progress — skipping ingest pass")
-                    else:
-                        result = self.poll_once()
-                        if result.events_created > 0:
-                            dirty = True
-                            self._embed_more = True  # new events to embed
+        try:
+            while not self._stop:
+                # The whole pass is guarded: an exception escaping here (the lock
+                # acquisition's index-swap reconnect, a poll bug) would otherwise
+                # exit the process, and launchd's KeepAlive restarts it every few
+                # seconds with all source fingerprints reset — a hot re-scan loop on
+                # exactly the faults (disk full, index swap mid-flight) most likely
+                # to persist. Survive instead, with exponential backoff.
+                try:
+                    # Take ownership if we don't hold it yet. The daemon owns the
+                    # ingest-owner lock for its lifetime; a startup that lost the
+                    # race to a transient holder (a lazy pass mid-flight) keeps
+                    # re-attempting here until it wins, so lazy passes go back to
+                    # degrading to no-op probes. Once held it's a cheap None-check.
+                    if self._owner_fd is None:
+                        self._owner_fd = acquire_ingest_owner()
+                    # Acquire runs the index-swap reconnect (reconnect_if_swapped): if a
+                    # reindex replaced index.db — even one that fit entirely inside a
+                    # sleep between passes — pooled connections are disposed before this
+                    # pass touches the store.
+                    with try_shared_ingest_lock() as acquired:
+                        if not acquired:
+                            logger.info("watch: reindex in progress — skipping ingest pass")
+                        else:
+                            result = self.poll_once()
+                            if result.events_created > 0:
+                                dirty = True
+                                self._embed_more = True  # new events to embed
 
-                        now = time.monotonic()
-                        if (now - last_maintenance) >= self.maintenance_interval:
-                            # Run when events were imported (dirty) OR when watermarks
-                            # alone moved (see _import_state_stamp) — either changes
-                            # state the maintenance snapshot must capture.
-                            stamp = self._import_state_stamp()
-                            if dirty or (stamp is not None and stamp != last_stamp):
+                            now = time.monotonic()
+                            if (now - last_maintenance) >= self.maintenance_interval:
+                                # Run when events were imported (dirty) OR when watermarks
+                                # alone moved (see _import_state_stamp) — either changes
+                                # state the maintenance snapshot must capture.
+                                stamp = self._import_state_stamp()
+                                if dirty or (stamp is not None and stamp != last_stamp):
+                                    try:
+                                        self.maintain()
+                                    except Exception as e:  # noqa: BLE001 — upkeep must not kill the loop
+                                        logger.warning("watch: maintenance error: %s", e)
+                                    dirty = False
+                                last_maintenance = now
+                                if stamp is not None:
+                                    last_stamp = stamp
+
+                            # Vector cohost: embed the freshest missing vectors, bounded per
+                            # pass. A filled batch means a backlog — drain again next poll
+                            # cycle rather than waiting out the idle interval; once a pass
+                            # comes back short, fall back to the slow probe cadence.
+                            if self._embed_due(now, last_embed):
                                 try:
-                                    self.maintain()
-                                except Exception as e:  # noqa: BLE001 — upkeep must not kill the loop
-                                    logger.warning("watch: maintenance error: %s", e)
-                                dirty = False
-                            last_maintenance = now
-                            if stamp is not None:
-                                last_stamp = stamp
+                                    n = self.embed_pending()
+                                    self._backlog = n >= self.embed_batch
+                                    self._embed_more = self._backlog
+                                except Exception as e:  # noqa: BLE001 — embedding must not kill the loop
+                                    logger.warning("watch: embed error: %s", e)
+                                    self._backlog = False
+                                    self._embed_more = False  # don't hot-loop a persistent failure
+                                last_embed = now
+                except Exception:  # noqa: BLE001 — the loop must outlive any one pass
+                    consecutive_errors += 1
+                    delay = min(self.interval * (2 ** min(consecutive_errors, 6)), 300.0)
+                    logger.exception(
+                        "watch: ingest pass failed (%d in a row) — backing off %.0fs",
+                        consecutive_errors, delay,
+                    )
+                else:
+                    consecutive_errors = 0
+                    delay = self.interval
 
-                        # Vector cohost: embed the freshest missing vectors, bounded per
-                        # pass. A filled batch means a backlog — drain again next poll
-                        # cycle rather than waiting out the idle interval; once a pass
-                        # comes back short, fall back to the slow probe cadence.
-                        if self._embed_due(now, last_embed):
-                            try:
-                                n = self.embed_pending()
-                                self._backlog = n >= self.embed_batch
-                                self._embed_more = self._backlog
-                            except Exception as e:  # noqa: BLE001 — embedding must not kill the loop
-                                logger.warning("watch: embed error: %s", e)
-                                self._backlog = False
-                                self._embed_more = False  # don't hot-loop a persistent failure
-                            last_embed = now
-            except Exception:  # noqa: BLE001 — the loop must outlive any one pass
-                consecutive_errors += 1
-                delay = min(self.interval * (2 ** min(consecutive_errors, 6)), 300.0)
-                logger.exception(
-                    "watch: ingest pass failed (%d in a row) — backing off %.0fs",
-                    consecutive_errors, delay,
-                )
-            else:
-                consecutive_errors = 0
-                delay = self.interval
-
-            # Sleep in short slices so stop() is responsive.
-            slept = 0.0
-            while slept < delay and not self._stop:
-                time.sleep(min(0.5, delay - slept))
-                slept += 0.5
+                # Sleep in short slices so stop() is responsive.
+                slept = 0.0
+                while slept < delay and not self._stop:
+                    time.sleep(min(0.5, delay - slept))
+                    slept += 0.5
+        finally:
+            self._release_owner()
 
     def stop(self) -> None:
         self._stop = True
