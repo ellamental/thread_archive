@@ -330,7 +330,17 @@ def main() -> None:
     # early query that races the warm wait on one load rather than kick off a second. Daemon
     # so it never holds up interpreter exit; warm_models is fail-soft (a missing extra / load
     # failure just restores the old lazy behaviour).
-    threading.Thread(target=warm_models, name="archive-warm-models", daemon=True).start()
+    #
+    # Only the shared HTTP server warms: it's the one hot copy every client shares, so its
+    # ~3 GB model stack pays off. A per-client stdio server stays lean (~model unloaded, load
+    # is lazy on first use) — a client that only reads, never searches, or whose config was
+    # snapshotted to stdio before the HTTP switch shouldn't each hold 3 GB. A standalone stdio
+    # deployment with no shared server can opt back into warming with THREAD_ARCHIVE_MCP_WARM=1.
+    warm = args.http or os.environ.get("THREAD_ARCHIVE_MCP_WARM", "").strip().lower() in (
+        "1", "true", "yes", "on",
+    )
+    if warm:
+        threading.Thread(target=warm_models, name="archive-warm-models", daemon=True).start()
     # Startup catch-up: whatever landed in the local stores since the last
     # ingest (by any process) is searchable by the time the first query
     # arrives — or shortly after; the pass is additive, never blocking.

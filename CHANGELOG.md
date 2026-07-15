@@ -13,7 +13,11 @@
   of the stdio command. Stdio stays the default when no daemon is installed, so
   `claude mcp add … archive-mcp` keeps working standalone. `_launchd.py` now manages
   both the watcher and MCP agents through shared install/uninstall/restart/status
-  helpers.
+  helpers. Only the shared HTTP server warms the model at startup; a per-client stdio
+  server stays lean (~80 MB, model lazy-loaded on first search) rather than each
+  holding ~3 GB — so a client that only reads, or whose config was snapshotted to
+  stdio before the switch, costs nothing until it actually searches
+  (`THREAD_ARCHIVE_MCP_WARM=1` restores eager warming for a standalone stdio box).
 
 - **`_truth.jsonl_log` split into focused submodules (2026-07-14).** The 2,400-line
   truth module now lives as `layout` (paths/manifest/sharding/serialization),
