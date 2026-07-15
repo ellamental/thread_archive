@@ -71,6 +71,23 @@ _STAGE_RECORD = {
     "coverage": "coverage_last",
 }
 
+# A stage failure can also be *tolerated* — kept off the degraded board without a
+# re-run — while a recent enough green record of that stage still stands. This
+# forgives a *transient* failure of an expensive, resource-dependent stage, and is
+# distinct from recovery (which demands a postdating, at-least-as-strong re-run):
+# tolerance accepts a *prior* success, on the argument that it was still true.
+#
+# Only the restore-drill qualifies. It is ~1h of work that reads the off-machine
+# mirror — an intermittently-mounted network volume — so one failed drill with a
+# good drill days behind it means "the backup restored fine last week and the mount
+# flaked tonight", not "the archive is unprotected". A real restore-path regression
+# fails *every* night and trips the board once the last good drill ages out of the
+# window. Freshness is untouched: a job that stops RUNNING still goes stale (the
+# monitor's >30h check on nightly_at), tolerance only softens a run that ran and
+# failed. verify/backup/coverage get no grace — they are cheap and local, so a
+# failure there is real and must show the next morning.
+_STAGE_GRACE_DAYS = {"restore-drill": 14}
+
 
 def _parse_at(value: object) -> Optional[float]:
     """Epoch seconds from a health/heartbeat ``at`` stamp; None if absent or bad."""
@@ -120,11 +137,32 @@ def _stage_recovered(stage: str, nightly: dict, health: dict) -> bool:
     return True
 
 
+def _stage_tolerated(stage: str, health: dict) -> bool:
+    """Is ``stage`` within its grace window — a **green** record of that stage no
+    older than its ``_STAGE_GRACE_DAYS``? Unlike recovery, the success need not
+    postdate the failing nightly: a recent prior success is what forgives a
+    transient failure. A stage with no grace, no record, or a record that is
+    absent / not green / unparseable is never tolerated."""
+    grace = _STAGE_GRACE_DAYS.get(stage)
+    if grace is None:
+        return False
+    rec = health.get(_STAGE_RECORD.get(stage, ""))
+    if not isinstance(rec, dict) or not rec.get("ok"):
+        return False
+    when = _parse_at(rec.get("at"))
+    if when is None:
+        return False
+    from datetime import datetime, timezone
+
+    return (datetime.now(timezone.utc).timestamp() - when) <= grace * 86400
+
+
 def pipeline_verdict(health: Optional[dict] = None) -> dict:
     """The pipeline's state **now** — not merely a transcript of the last nightly.
 
     The last nightly's failed stages, minus every stage a later at-least-as-strong
-    run has since proven good.
+    run has since proven good, minus every stage still within its grace window
+    (see ``_STAGE_GRACE_DAYS``).
 
     Without this, the *only* thing that can retire a fault is another full nightly
     (~1h, restore-drill dominated). An operator who fixes the cause and proves it
@@ -137,12 +175,15 @@ def pipeline_verdict(health: Optional[dict] = None) -> dict:
     nightly = health.get("nightly_last") or {}
     failed = [s for s in (nightly.get("failed_stages") or []) if isinstance(s, str)]
     recovered = [s for s in failed if _stage_recovered(s, nightly, health)]
-    unresolved = [s for s in failed if s not in recovered]
+    remaining = [s for s in failed if s not in recovered]
+    tolerated = [s for s in remaining if _stage_tolerated(s, health)]
+    unresolved = [s for s in remaining if s not in tolerated]
     return {
         "ran": bool(nightly),
         "ok": not unresolved,
         "failed_stages": unresolved,
         "recovered_stages": recovered,
+        "tolerated_stages": tolerated,
         "nightly_at": nightly.get("at"),
         "dest": nightly.get("dest"),
     }
@@ -160,8 +201,10 @@ def stamp_heartbeat() -> None:
       staleness check on this field, **not** on the file's mtime, because every
       out-of-band stage run below rewrites the file: mtime would report "a run
       happened" on a box whose nightly job has been dead for a week.
-    - ``ok`` / ``failed_stages`` — the verdict with recovered stages retired, so a
-      proven out-of-band fix clears the board without waiting out another pipeline.
+    - ``ok`` / ``failed_stages`` — the verdict with recovered stages retired (and
+      grace-tolerated stages held off; see ``tolerated_stages``), so a proven
+      out-of-band fix — or a transient failure of a stage with recent good
+      evidence — clears the board without waiting out another pipeline.
 
     Stamped on every nightly completion whatever the outcome, and again whenever a
     stage is re-run on its own. Fail-soft, and skipped entirely when the dir does
@@ -189,6 +232,7 @@ def stamp_heartbeat() -> None:
                 "ok": verdict["ok"],
                 "failed_stages": verdict["failed_stages"],
                 "recovered_stages": verdict["recovered_stages"],
+                "tolerated_stages": verdict["tolerated_stages"],
                 "dest": verdict["dest"],
             }) + "\n",
             encoding="utf-8",

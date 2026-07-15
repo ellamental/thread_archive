@@ -23,7 +23,7 @@ def test_manifest_corruption_infers_shard_depth_from_layout(
     import_cc_session(tmp_path, "b")
     d = archive_home / "truth"
 
-    monkeypatch.setattr(jsonl_log, "_FLAT_MAX", 1)  # force a rebalance at 2 threads
+    monkeypatch.setattr(jsonl_log.layout, "_FLAT_MAX", 1)  # force a rebalance at 2 threads
     jsonl_log.checkpoint(snapshots=False)
     assert jsonl_log._shard_depth(d) >= 1
     depth = jsonl_log._shard_depth(d)
@@ -55,7 +55,7 @@ def test_checkpoint_preserves_foreign_manifest_keys(archive_home, tmp_path, monk
         jsonl_log._write_manifest(dd, m)
         return orig(dd, depth, last_iso)
 
-    monkeypatch.setattr(jsonl_log, "_checkpoint_changed_threads", sneaky)
+    monkeypatch.setattr(jsonl_log.maintenance, "_checkpoint_changed_threads", sneaky)
     jsonl_log.checkpoint()
     assert jsonl_log._read_manifest(d).get("hashes_baseline") == baseline
 

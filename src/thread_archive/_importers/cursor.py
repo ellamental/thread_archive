@@ -19,8 +19,8 @@ from typing import Any, Optional
 from thread_archive._thread_import import DefaultEventBuilder
 
 from .._store import ImportState, get_session
-from ._result import DbScanResult
 from ._events import assemble_events
+from ._result import DbScanResult
 from ._state import (
     create_thread,
     get_import_state,

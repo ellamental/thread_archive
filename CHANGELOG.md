@@ -2,6 +2,29 @@
 
 ## Unreleased
 
+- **`_truth.jsonl_log` split into focused submodules (2026-07-14).** The 2,400-line
+  truth module now lives as `layout` (paths/manifest/sharding/serialization),
+  `locks` (the three flock families), `drain` (append handles + staged writes +
+  crash framing), `maintenance` (checkpoint + rebalance), and `rebuild` (scan /
+  reindex / re-emit), with `jsonl_log` kept as the facade every consumer imports
+  through — no caller changed. The mypy ratchet override carried over to the four
+  modules that inherited the shielded code; `locks` and the facade are typed.
+  From a Claude self-review of the product (full review in the conversation log).
+
+- **Truth-drain listeners scoped to the archive's own sessions (2026-07-14).** The
+  before-commit drain and its compensation listeners registered on SQLAlchemy's
+  global `Session` class, firing (as no-ops) for every session in a host process.
+  They now register on `ArchiveSession`, the class `get_session` constructs, so
+  the archive-as-library imposes nothing on foreign SQLAlchemy sessions.
+
+- **One DB-scan result contract + one poll loop per watcher shape (2026-07-14).**
+  The Cursor/OpenCode/Claude-Science scanners now all return
+  `_importers.DbScanResult` (`processed`/`imported`/`events_created`/`failed`/
+  `errors`), replacing three per-provider dataclasses and the watch loop's
+  duck-typed field sniffing. `CoworkWatcher` rides `FileSessionWatcher`'s poll
+  loop and `ClaudeScienceWatcher` rides a multi-DB `_DbScanWatcher`, collapsing
+  two hand-copies of the fingerprint/retry/prune discipline.
+
 - **Repair undo dumps no longer ship in the wheel (2026-07-14).** The one-shot
   `_scripts` had accumulated ~450 KB of `*_backup_*` / `*_plan_*` operator dumps
   inside the package tree, and hatch packages everything under

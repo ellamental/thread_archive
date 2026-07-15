@@ -296,7 +296,7 @@ def test_failed_reindex_leaves_old_index_intact(archive_home, monkeypatch) -> No
     def _boom(*args, **kwargs):
         raise RuntimeError("killed mid-build")
 
-    monkeypatch.setattr(jsonl_log, "_load_thread_files", _boom)
+    monkeypatch.setattr(jsonl_log.rebuild, "_load_thread_files", _boom)
     try:
         jsonl_log.reindex()
     except RuntimeError as e:
@@ -364,7 +364,7 @@ def test_rebalance_crash_then_twin_merges_without_loss(archive_home, monkeypatch
     that used to clobber a thread's whole history with its tail."""
     import os as _os
 
-    monkeypatch.setattr(jsonl_log, "_FLAT_MAX", 4)
+    monkeypatch.setattr(jsonl_log.layout, "_FLAT_MAX", 4)
     d = jsonl_log.log_dir()
     _seed_flat_threads(d, 6)
     threads_dir = d / jsonl_log.THREADS_SUBDIR
@@ -444,7 +444,7 @@ def test_rebalance_lock_loser_skips_and_checkpoint_keeps_depth(archive_home, mon
     import fcntl as _fcntl
     import os as _os
 
-    monkeypatch.setattr(jsonl_log, "_FLAT_MAX", 4)
+    monkeypatch.setattr(jsonl_log.layout, "_FLAT_MAX", 4)
     init_db()
     d = jsonl_log.log_dir()
     _seed_flat_threads(d, 6)

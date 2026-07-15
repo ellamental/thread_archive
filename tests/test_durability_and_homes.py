@@ -79,7 +79,7 @@ def test_jsonl_write_failure_aborts_the_commit(archive_home, monkeypatch) -> Non
     def _boom(*_a, **_k):
         raise OSError("simulated disk-full while writing truth")
 
-    monkeypatch.setattr(jsonl_log, "_append_line", _boom)
+    monkeypatch.setattr(jsonl_log.drain, "_append_line", _boom)
 
     with get_session() as s:
         jsonl_log.write_events(s, [Event(

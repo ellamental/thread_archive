@@ -43,8 +43,8 @@ from thread_archive._thread_import import DefaultEventBuilder
 from thread_archive._thread_import.parsers.claude_code import ClaudeCodeParser
 
 from .._store import get_session
-from ._result import DbScanResult
 from ._events import import_lines
+from ._result import DbScanResult
 from ._state import (
     adopt_if_unwatermarked,
     create_thread,

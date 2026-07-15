@@ -130,7 +130,13 @@ ignore_missing_imports = true  # leidenalg / igraph / mcp ship no stubs
 module = [
     "thread_archive._thread_import.*",  # vendored parser island — typing it is its own project
     "thread_archive._scripts.*",        # one-shot operator/migration scripts
-    "thread_archive._truth.jsonl_log",  # delicate durability code; type deliberately, not mechanically
+    # Delicate durability code; type deliberately, not mechanically. These four
+    # carry the code that lived in _truth.jsonl_log before its split; the
+    # jsonl_log facade and _truth.locks are typed.
+    "thread_archive._truth.layout",
+    "thread_archive._truth.drain",
+    "thread_archive._truth.maintenance",
+    "thread_archive._truth.rebuild",
     "thread_archive._ops.verify",       # same
 ]
 ignore_errors = true

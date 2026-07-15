@@ -20,8 +20,8 @@ from sqlalchemy import select
 from .._store import ImportState, Thread, get_session
 from . import drain
 from .layout import (
-    THREADS_SUBDIR,
     _CROSS_THREAD,
+    THREADS_SUBDIR,
     _depth_for,
     _fsync_dir,
     _json_default,

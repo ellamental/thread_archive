@@ -34,18 +34,18 @@ def _die() -> None:
 
 
 def _arm_seam(seam: str) -> None:
-    from thread_archive._truth import jsonl_log
+    from thread_archive._truth import drain
 
     if seam == "after_intent":
-        real_intent = jsonl_log._write_intent
+        real_intent = drain._write_intent
 
         def kill_after_intent(files):
             real_intent(files)
             _die()
 
-        jsonl_log._write_intent = kill_after_intent
+        drain._write_intent = kill_after_intent
     elif seam == "mid_append":
-        real_append = jsonl_log._append_line
+        real_append = drain._append_line
         seen = {"n": 0}
 
         def kill_mid_append(path, rec):
@@ -54,15 +54,15 @@ def _arm_seam(seam: str) -> None:
             if seen["n"] >= 3:
                 _die()
 
-        jsonl_log._append_line = kill_mid_append
+        drain._append_line = kill_mid_append
     elif seam == "after_drain":
-        real_clear = jsonl_log._clear_intent
+        real_clear = drain._clear_intent
 
         def kill_after_drain():
             real_clear()
             _die()
 
-        jsonl_log._clear_intent = kill_after_drain
+        drain._clear_intent = kill_after_drain
     else:
         raise SystemExit(f"unknown seam: {seam}")
 

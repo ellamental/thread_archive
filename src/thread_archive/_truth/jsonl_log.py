@@ -78,6 +78,7 @@ from .drain import (
     write_events,
 )
 from .layout import (
+    _CROSS_THREAD,
     KG_EVENTS_FILE,
     MANIFEST_LOCK_FILE,
     THREADS_SUBDIR,
@@ -85,7 +86,6 @@ from .layout import (
     TruthFormatError,
     _classify_parse_errors,
     _coerce,
-    _CROSS_THREAD,
     _datetime_cols,
     _depth_for,
     _final_nonempty_lineno,

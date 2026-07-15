@@ -342,7 +342,7 @@ class _DbScanWatcher(SourceWatcher):
             except OSError as e:
                 result = result + WatchResult(errors=[f"{label}: cannot stat db: {e}"])
                 continue
-            if current is None:
+            if current is None or db_path is None:
                 result = result + WatchResult(errors=[f"{label}: database not found"])
                 continue
             key = str(db_path.resolve())

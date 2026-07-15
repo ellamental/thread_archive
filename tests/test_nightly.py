@@ -249,6 +249,64 @@ def test_verdict_never_retires_on_a_red_rerun():
     assert ops_health.pipeline_verdict(health)["failed_stages"] == ["verify"]
 
 
+# The restore-drill grace: an expensive drill over a flaky off-machine mirror is
+# forgiven while a recent GREEN drill still stands (see _STAGE_GRACE_DAYS). Unlike
+# recovery, that good drill may PREDATE the failed nightly — a prior success is what
+# makes a single failed drill a transient blip, not an unprotected archive. These use
+# now-relative stamps because the grace is measured against the wall clock.
+
+def _ago(days: float) -> str:
+    from datetime import datetime, timedelta, timezone
+    return (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+
+
+def test_verdict_tolerates_a_recent_drill_failure_that_predates_the_nightly():
+    health = {
+        "nightly_last": _nightly_rec(["restore-drill"], at=_ago(1)),
+        "restore_drill_last": {"at": _ago(3), "ok": True},  # green, predates, days old
+    }
+    v = ops_health.pipeline_verdict(health)
+    assert v["ok"] is True
+    assert v["failed_stages"] == []
+    assert v["tolerated_stages"] == ["restore-drill"]
+    assert v["recovered_stages"] == []  # tolerated, NOT re-proven
+
+
+def test_verdict_stops_tolerating_once_the_last_good_drill_is_stale():
+    health = {
+        "nightly_last": _nightly_rec(["restore-drill"], at=_ago(1)),
+        "restore_drill_last": {"at": _ago(20), "ok": True},  # older than the 14d grace
+    }
+    v = ops_health.pipeline_verdict(health)
+    assert v["ok"] is False
+    assert v["failed_stages"] == ["restore-drill"]
+    assert v["tolerated_stages"] == []
+
+
+def test_verdict_does_not_tolerate_a_drill_failure_on_a_recent_red_drill():
+    health = {
+        "nightly_last": _nightly_rec(["restore-drill"], at=_ago(1)),
+        "restore_drill_last": {"at": _ago(2), "ok": False},  # recent, but not green
+    }
+    v = ops_health.pipeline_verdict(health)
+    assert v["ok"] is False
+    assert v["failed_stages"] == ["restore-drill"]
+
+
+def test_verdict_gives_verify_no_grace():
+    # Grace is the restore-drill's alone; a cheap local stage must show its failure
+    # even with a recent green record — only a postdating equal-tier rerun retires it.
+    health = {
+        "nightly_last": _nightly_rec(["verify"], at=_ago(1)),
+        "verify_last": {"at": _ago(2), "ok": True,
+                        "deep": False, "hashes": False, "backup": False},
+    }
+    v = ops_health.pipeline_verdict(health)
+    assert v["ok"] is False
+    assert v["failed_stages"] == ["verify"]
+    assert v["tolerated_stages"] == []
+
+
 def test_a_passing_verify_clears_the_heartbeat_a_failed_nightly_left(
     archive_home, tmp_path, monkeypatch,
 ):

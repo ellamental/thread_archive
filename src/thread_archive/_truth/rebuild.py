@@ -28,12 +28,12 @@ from .._store import (
     use_engine,
 )
 from .layout import (
+    _CROSS_THREAD,
     KG_EVENTS_FILE,
     THREADS_SUBDIR,
     TRUTH_FORMAT_VERSION,
     _classify_parse_errors,
     _coerce,
-    _CROSS_THREAD,
     _depth_for,
     _fsync_dir,
     _iter_jsonl,
@@ -1147,3 +1147,5 @@ def _rebuild_truth_from_store_locked(d: Path) -> dict:
             p.unlink()
 
     result = {"threads": nt, "events": ne, "shard_depth": depth}
+    logger.info("jsonl_log rebuild_truth_from_store: %s", result)
+    return result

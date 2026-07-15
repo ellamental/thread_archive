@@ -78,7 +78,7 @@ def test_mirror_deletes_rehomed_twins_beyond_cap(archive_home, tmp_path, monkeyp
     assert all(len(rel.parts) == 2 for rel in flat_rels), "starts flat"
 
     # Drive the real rebalance: shrink the flat threshold and checkpoint.
-    monkeypatch.setattr(jsonl_log, "_FLAT_MAX", 1)
+    monkeypatch.setattr(jsonl_log.layout, "_FLAT_MAX", 1)
     jsonl_log.checkpoint()
     assert jsonl_log._shard_depth(archive_home / "truth") == 1
     assert not any((archive_home / "truth" / rel).exists() for rel in flat_rels)
