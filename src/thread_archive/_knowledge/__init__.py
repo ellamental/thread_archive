@@ -6,8 +6,10 @@ Two halves over a pure-graph spine (networkx, no Neo4j, no graph server):
   communities (Leiden via the base ``leidenalg`` + ``python-igraph``, networkx
   Louvain as a fail-soft fallback), bridges, peers.
 * **write / curation** (:mod:`.write`, :mod:`.materialize`) — the librarian's hands:
-  create topics, link threads, cite evidence. Every mutation is an append-only
-  ``KgEvent`` folded into the projection, so the operation history survives.
+  create topics, link threads, cite evidence, store thread summaries. Every graph
+  mutation is an append-only ``KgEvent`` folded into the projection, so the
+  operation history survives; summaries are thread metadata carried by the thread's
+  own truth record instead.
 
 The graph is empty (all queries return empty) until topics + links exist — the core
 archive works without this layer.
@@ -27,6 +29,7 @@ from .graph import (
     reset_cache,
 )
 from .materialize import apply_event
+from .read import topic_get, topic_members, topic_thread_ids
 from .write import (
     add_topic_evidence,
     archive_topic,
@@ -36,6 +39,7 @@ from .write import (
     merge_topics,
     rename_topic,
     review_queue,
+    set_thread_summary,
     thread_user_messages,
     topic_search,
     unlink_threads,
@@ -62,8 +66,13 @@ __all__ = [
     "unlink_threads",
     "add_topic_evidence",
     "archive_topic_evidence",
+    "set_thread_summary",
     # curation-read
     "review_queue",
     "topic_search",
     "thread_user_messages",
+    # graph-read
+    "topic_get",
+    "topic_members",
+    "topic_thread_ids",
 ]

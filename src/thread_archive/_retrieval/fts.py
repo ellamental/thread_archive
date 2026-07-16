@@ -204,6 +204,7 @@ def search_events(
     source: Optional[list[str]] = None,
     startswith: Optional[str] = None,
     *,
+    thread_ids: Optional[list[int]] = None,
     oldest_first: bool = False,
     or_fallback: bool = True,
     session: Optional[Session] = None,
@@ -238,6 +239,8 @@ def search_events(
     top-N happened to keep, which for a frequent term is recency-biased.
     """
     ensure_fts(session)
+    if thread_ids is not None and not thread_ids:
+        return []  # an empty id-set scope matches nothing (IN () isn't valid SQL)
     mode, is_boolean = classify_query(query)
 
     # Each pass is (match_where, match_params, order, use_match, fallback); shared
@@ -280,6 +283,10 @@ def search_events(
     if thread_id is not None:
         shared.append("thread_id = :tid")
         shared_params["tid"] = thread_id
+    elif thread_ids is not None:
+        # A resolved id-set scope (e.g. a topic's member threads). Like a single
+        # explicit thread_id, the scope is deliberate and bypasses the blacklist.
+        shared.append(_in_clause("thread_id", thread_ids, "tids", shared_params, negate=False))
     else:
         # Honor the per-thread search blacklist (threads.exclude_from_search).
         # An explicit thread_id scope is deliberate and bypasses it.

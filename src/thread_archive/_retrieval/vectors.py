@@ -480,6 +480,7 @@ def search(
     tool_name: Optional[str] = None,
     exclude_content_types: Optional[list[str]] = None,
     source: Optional[list[str]] = None,
+    thread_ids: Optional[list[int]] = None,
 ) -> Optional[list[EventHit]]:
     """Embedded semantic search: embed the query, brute-force cosine KNN, hydrate.
 
@@ -515,7 +516,10 @@ def search(
     # A scoped search (one thread / time window / source) pre-masks the KNN to the
     # in-scope event ids, so ranking happens *within* the scope — a corpus-wide
     # top-k could miss the scope entirely. Unscoped searches skip the id query.
-    selective = thread_id is not None or since is not None or until is not None or bool(source)
+    if thread_ids is not None and not thread_ids:
+        return []  # an empty id-set scope matches nothing
+    selective = (thread_id is not None or thread_ids is not None
+                 or since is not None or until is not None or bool(source))
     allowed_ids = None
     if selective:
         awhere = []
@@ -524,6 +528,8 @@ def search(
         if thread_id is not None:
             awhere.append("e.thread_id = :tid")
             aparams["tid"] = thread_id
+        if thread_ids is not None:
+            awhere.append(_in_clause("e.thread_id", thread_ids, "tids", aparams, negate=False))
         if since:
             awhere.append("e.occurred_at >= :since")
             aparams["since"] = since
@@ -552,6 +558,10 @@ def search(
     if thread_id is not None:
         where.append("f.thread_id = :tid")
         params["tid"] = thread_id
+    elif thread_ids is not None:
+        # A resolved id-set scope (e.g. a topic's member threads) — deliberate,
+        # so it bypasses the blacklist like a single explicit thread_id.
+        where.append(_in_clause("f.thread_id", thread_ids, "tids", params, negate=False))
     else:
         # Honor the per-thread search blacklist; an explicit thread scope bypasses it.
         where.append("f.thread_id NOT IN (SELECT id FROM threads WHERE exclude_from_search)")

@@ -61,6 +61,28 @@ function BlockView({ block }: { block: Block }) {
           <Markdown>{block.text}</Markdown>
         </details>
       )
+    case 'hook':
+      // A hook that fired and injected content — the hook's name up front,
+      // the injected text in the fold. <pre>, not markdown: injections are
+      // plain text whose indentation markdown would mangle.
+      return (
+        <details className="tool hook">
+          <summary>
+            <span className="tool-name">{block.hook_name}</span>
+            <span className="tool-tag">hook</span>
+          </summary>
+          <pre className="tool-body">{block.text}</pre>
+        </details>
+      )
+    case 'attachment':
+      return (
+        <details className="tool">
+          <summary>
+            <span className="tool-tag">attachment · {block.attachment_type}</span>
+          </summary>
+          <pre className="tool-body">{block.text || '(no content)'}</pre>
+        </details>
+      )
     case 'model_switch':
       // A first-class model switch marker, styled as a centered divider like the
       // harness's own transcript. A user /model switch shows just the target; a
@@ -125,6 +147,42 @@ function BlockView({ block }: { block: Block }) {
         </details>
       )
   }
+}
+
+// One renderable item: a regular block, or a run of consecutive hook_fired
+// markers merged into a single compact row — a hook can fire around every tool
+// call, and a chip row reads where a details-box per firing would drown the turn.
+type RenderItem = { kind: 'block'; block: Block } | { kind: 'hook_fires'; names: string[] }
+
+function groupBlocks(blocks: Block[]): RenderItem[] {
+  const items: RenderItem[] = []
+  for (const b of blocks) {
+    if (b.type === 'hook_fired') {
+      const last = items[items.length - 1]
+      if (last?.kind === 'hook_fires') last.names.push(b.hook_name)
+      else items.push({ kind: 'hook_fires', names: [b.hook_name] })
+    } else {
+      items.push({ kind: 'block', block: b })
+    }
+  }
+  return items
+}
+
+function HookFires({ names }: { names: string[] }) {
+  // Dedup in first-seen order, counting repeats ("PreToolUse:Read ×2").
+  const counts = new Map<string, number>()
+  for (const n of names) counts.set(n, (counts.get(n) ?? 0) + 1)
+  return (
+    <div className="hook-fires">
+      <span className="hook-fires-label">hooks</span>
+      {[...counts.entries()].map(([n, c]) => (
+        <span className="hook-fire" key={n}>
+          {n}
+          {c > 1 ? ` ×${c}` : ''}
+        </span>
+      ))}
+    </div>
+  )
 }
 
 // Compact token count ("12.6k"), matching cloth's turn-meta formatting.
@@ -229,9 +287,13 @@ export function Message({
     >
       {!continued && <div className="role">{message.role}</div>}
       <RawContext.Provider value={raw}>
-        {message.blocks.map((b, i) => (
-          <BlockView key={i} block={b} />
-        ))}
+        {groupBlocks(message.blocks).map((item, i) =>
+          item.kind === 'hook_fires' ? (
+            <HookFires key={i} names={item.names} />
+          ) : (
+            <BlockView key={i} block={item.block} />
+          ),
+        )}
       </RawContext.Provider>
       <div className="msg-foot">
         <button

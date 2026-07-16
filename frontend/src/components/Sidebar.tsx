@@ -1,5 +1,5 @@
 import { useEffect, useState, type KeyboardEvent } from 'react'
-import { useNavigate, useParams, useSearchParams } from 'react-router-dom'
+import { useLocation, useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import { api, type ThreadListItem } from '../api'
 
 function fmtDate(iso: string | null): string {
@@ -13,7 +13,9 @@ function fmtDate(iso: string | null): string {
 export function Sidebar() {
   const navigate = useNavigate()
   const { id } = useParams()
+  const { pathname } = useLocation()
   const [params] = useSearchParams()
+  const onTopics = pathname === '/topics' || pathname.startsWith('/topic/')
   // Only a numeric id maps to a rail item; a not-yet-resolved uuid highlights nothing.
   const activeId = id && /^\d+$/.test(id) ? parseInt(id, 10) : null
 
@@ -49,6 +51,11 @@ export function Sidebar() {
           autoComplete="off"
         />
       </div>
+      <nav className="rail-nav">
+        <button className={'rail-link' + (onTopics ? ' active' : '')} onClick={() => navigate('/topics')}>
+          topics
+        </button>
+      </nav>
       <div className="rail-head">
         <span>Recent</span>
         <input

@@ -1,21 +1,28 @@
-"""The curatorial write API — the librarian's hands on the topic graph.
+"""The curatorial write API — the librarian's hands on the archive.
 
-Thin, typed functions over the event-sourced knowledge layer. Each *mutating* call
+Thin, typed functions over the event-sourced knowledge layer. Each *graph* mutation
 does the same three things atomically: append a ``KgEvent`` to the truth log, fold it
 into the projection (:func:`thread_archive._knowledge.materialize.apply_event`), and —
 when it owns the session — commit and drop the graph cache. One call = a durable log
-line + an updated projection. The conversation archive stays untouched; this only
-writes the knowledge overlay (topics, links, citations) that sits beside it.
+line + an updated projection. The conversation events stay untouched; this writes the
+knowledge overlay (topics, links, citations) that sits beside them, plus one piece of
+thread *metadata*: the stored summaries (:func:`set_thread_summary`) the librarian
+writes alongside its citations.
 
 Topics are threads (``thread_type='topic'``), so :func:`create_topic` writes a real
 per-thread truth file and the ``topic.created`` event is the audit record; links and
 evidence have no owning conversation file, so the ``kg_events.jsonl`` log *is* their
-truth. Read helpers (:func:`review_queue`, :func:`topic_search`,
+truth. Summaries are deliberately NOT kg events: they are thread metadata like the
+title — durable via the thread's own latest-wins truth record — and keeping the
+summary text out of ``kg_events.jsonl`` means redaction's thread-meta scrub
+(``_ops.redact``) covers every copy without a second leak surface to chase.
+
+Read helpers (:func:`review_queue`, :func:`topic_search`,
 :func:`thread_user_messages`) are the curation-read surface the librarian needs to
 decide *what* to write — kept here so the MCP and the skill share one library.
 
-All writes are idempotent at the projection layer (upsert + tombstone), so re-running
-the librarian never double-links or double-cites — a partial pass is simply redone.
+All writes are idempotent, so re-running never double-links, double-cites, or stacks
+summaries (a re-summarize simply overwrites) — a partial pass is simply redone.
 """
 
 from __future__ import annotations
@@ -23,10 +30,10 @@ from __future__ import annotations
 import functools
 import json
 import os
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
-from sqlalchemy import or_, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
 from .._store import Event, KgEvent, Thread, ThreadLink, TopicMessage, use_session
@@ -328,24 +335,105 @@ def archive_topic_evidence(
     return result
 
 
+# ── stored summaries (thread metadata, not kg events) ─────────────────────────────
+# Caps, not targets: the short summary is a search doc (a few dense sentences), the
+# indexed summary a structured map with event anchors. A runaway write would bloat
+# the FTS/embedding surface it exists to serve.
+SUMMARY_MAX_CHARS = 4_000
+INDEXED_SUMMARY_MAX_CHARS = 24_000
+
+
+@_locked_write
+def set_thread_summary(
+    thread_id: int,
+    summary: Optional[str] = None,
+    *,
+    indexed_summary: Optional[str] = None,
+    session: Optional[Session] = None,
+) -> dict:
+    """Store a thread's summary — the short searchable ``summary`` (a few dense
+    sentences) and/or the structured ``indexed_summary`` (markdown with
+    ``(event NNN)`` anchors, served by ``thread_read summary='indexed'``).
+
+    Sets only the field(s) passed; a provided field overwrites (re-summarizing is an
+    update, not an append). Not a ``KgEvent``: summaries are thread metadata like the
+    title — the thread's re-staged truth record (latest-wins on reindex) is their
+    durability, and redaction's thread-meta scrub already covers them. The short
+    summary becomes a thread-meta search doc immediately (``index_thread_meta``),
+    where the embed cohost also picks it up for the semantic arm.
+
+    Topics are refused — a topic's ``description`` (via ``rename_topic``) is its
+    summary surface.
+    """
+    summary = summary.strip() if isinstance(summary, str) else summary
+    indexed_summary = indexed_summary.strip() if isinstance(indexed_summary, str) else indexed_summary
+    if not summary and not indexed_summary:
+        raise ValueError("nothing to set — pass summary and/or indexed_summary (non-empty)")
+    if summary and len(summary) > SUMMARY_MAX_CHARS:
+        raise ValueError(
+            f"summary is {len(summary)} chars (max {SUMMARY_MAX_CHARS}) — it should be "
+            "a few dense sentences; put per-section detail in indexed_summary"
+        )
+    if indexed_summary and len(indexed_summary) > INDEXED_SUMMARY_MAX_CHARS:
+        raise ValueError(
+            f"indexed_summary is {len(indexed_summary)} chars (max {INDEXED_SUMMARY_MAX_CHARS})"
+        )
+    own = session is None
+    with use_session(session) as s:
+        t = s.get(Thread, int(thread_id))
+        if t is None:
+            raise ValueError(f"no thread with id {thread_id}")
+        if t.thread_type == "topic":
+            raise ValueError(
+                f"thread {thread_id} is a topic — topics carry a description "
+                "(topic_rename), not a stored summary"
+            )
+        fields = []
+        if summary:
+            t.summary = summary
+            fields.append("summary")
+        if indexed_summary:
+            t.indexed_summary = indexed_summary
+            fields.append("indexed_summary")
+        t.updated_at = _now()
+        record_thread(s, t)  # latest-wins metadata in the thread's truth file
+        s.flush()
+        # Sync the thread-meta search docs now (diff-based; also drops the stale
+        # vector so the embed cohost re-embeds). Imported here like _ops.redact
+        # does — the retrieval package is heavier than this module needs at import.
+        from .._retrieval.fts import index_thread_meta
+
+        index_thread_meta(s, [int(thread_id)])
+        result = {"thread_id": int(thread_id), "fields": fields}
+        if own:
+            s.commit()
+    return result
+
+
 # ── curation-read surface ────────────────────────────────────────────────────────
 def review_queue(
     limit: int = 20, *, exclude_source_id: Optional[str] = None,
-    exclude_ids: Optional[list[int]] = None, session: Optional[Session] = None,
+    exclude_ids: Optional[list[int]] = None, quiet_minutes: int = 60,
+    session: Optional[Session] = None,
 ) -> list[dict]:
-    """Unreviewed conversation threads — the librarian's backlog.
+    """Conversation threads with librarian work left — the backlog.
 
-    Event-bearing conversation threads the librarian hasn't curated yet, newest first.
-    Pass ``exclude_source_id`` to drop the caller's own live session (its still-growing
-    transcript sits at the top of its own queue otherwise).
+    Event-bearing, non-archived conversation threads still missing either half of the
+    librarian's per-thread output — a live topic citation/link, or a stored short
+    summary — newest first. Pass ``exclude_source_id`` to drop the caller's own live
+    session (its still-growing transcript sits at the top of its own queue otherwise).
 
-    **State is the data, not a ledger.** 'Reviewed' is *derived from the curation a thread
-    produced* — a thread leaves the queue the instant it gains its first live topic
-    citation (or a link touching it); there is no summary column or processed-list to keep
-    in sync. That makes the queue idempotent (a half-done thread simply reappears) and safe
-    to drain even if two workers briefly overlap. Corollary: a thread genuinely read but
-    yielding nothing worth citing stays in the queue — acceptable, and in practice the
-    librarian-gate forces ≥1 citation per processed thread, so reviewed ⇒ cited.
+    **State is the data, not a ledger.** 'Done' is *derived from the curation a thread
+    carries* — a thread leaves the queue the instant it has BOTH its first live topic
+    citation (or a link touching it) AND a non-empty stored summary; there is no
+    processed-list to keep in sync. That makes the queue idempotent (a half-done
+    thread simply reappears) and safe to drain even if two workers briefly overlap.
+    The librarian-gate forces both halves per processed thread, so done ⇒ cited +
+    summarized.
+
+    ``quiet_minutes`` holds back still-ingesting threads: one whose newest event was
+    *ingested* inside the window (``recorded_at``, uniform naive-UTC) is likely a live
+    session — its citations would be premature and its summary stale on arrival.
 
     **Parallel backfill via lease-claims.** When ``$THREAD_ARCHIVE_LIBRARIAN_WORKER`` is
     set (the backfill driver sets a distinct id per instance), this call *claims* the batch
@@ -362,9 +450,7 @@ def review_queue(
 
     has_events = select(Event.id).where(Event.thread_id == Thread.id).exists()
     # 'Curated' = the librarian drew something from this thread: a live (non-archived)
-    # topic citation sourced from it, or a link touching it. Review state is
-    # derived from the curation the thread produced, never from a summary
-    # column (there is none).
+    # topic citation sourced from it, or a link touching it.
     is_curated = or_(
         select(TopicMessage.id)
         .where(TopicMessage.thread_id == Thread.id, TopicMessage.archived_at.is_(None))
@@ -378,11 +464,19 @@ def review_queue(
         )
         .exists(),
     )
+    is_summarized = Thread.summary.isnot(None) & (func.trim(Thread.summary) != "")
+    cutoff = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(minutes=quiet_minutes)
+    recently_ingested = (
+        select(Event.id)
+        .where(Event.thread_id == Thread.id, Event.recorded_at >= cutoff)
+        .exists()
+    )
     conds = [
         Thread.thread_type == "conversation",
-        ~is_curated,
+        or_(~is_curated, ~is_summarized),
         or_(Thread.archived.is_(False), Thread.archived.is_(None)),
         has_events,
+        ~recently_ingested,
     ]
     if exclude_source_id:
         conds.append(or_(Thread.source_id.is_(None), Thread.source_id != exclude_source_id))

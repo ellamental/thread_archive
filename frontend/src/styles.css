@@ -50,6 +50,12 @@ aside {
 .rail-item .t { display: block; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .rail-item .m { color: var(--muted); font-size: 12px; }
 .rail-empty { padding: 16px; color: var(--muted); }
+.rail-nav { padding: 8px 12px; border-bottom: 1px solid var(--line); display: flex; gap: 6px; }
+.rail-link {
+  padding: 4px 10px; border-radius: 6px; font-size: 12px; color: var(--muted);
+}
+.rail-link:hover { background: var(--accent-soft); color: var(--ink); }
+.rail-link.active { background: var(--accent-soft); color: var(--accent); }
 
 /* ---- main ---- */
 main { flex: 1; display: flex; flex-direction: column; min-width: 0; height: 100%; }
@@ -126,6 +132,27 @@ h1.title { font-size: 19px; margin: 0 0 4px; }
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px;
 }
 .tool.thinking summary { font-style: italic; }
+/* a hook that fired and injected context — violet-tagged so it stands apart from
+   plain tool machinery without shouting like the safeguard callout */
+.tool.hook { border-color: #7d5bb955; }
+.tool.hook .tool-tag { color: #7d5bb9; }
+
+/* a run of bare hook firings (hook_progress), merged into one compact chip row */
+.hook-fires {
+  display: flex; flex-wrap: wrap; gap: 5px; align-items: center; margin: 6px 0;
+  font-size: 11px; color: var(--muted);
+}
+.hook-fires-label { text-transform: uppercase; letter-spacing: .06em; font-size: 10px; }
+.hook-fire {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  background: #7d5bb914; border: 1px solid #7d5bb92e; border-radius: 5px;
+  padding: 0 6px; color: inherit;
+}
+@media (prefers-color-scheme: dark) {
+  .tool.hook { border-color: #a98fe066; }
+  .tool.hook .tool-tag { color: #a98fe0; }
+  .hook-fire { background: #a98fe018; border-color: #a98fe038; }
+}
 
 /* a standalone manual /model switch, rendered between message bubbles (no chrome) */
 .msg-divider { margin: 14px 0; }
@@ -159,6 +186,35 @@ h1.title { font-size: 19px; margin: 0 0 4px; }
   margin: 0; white-space: pre-wrap; word-break: break-word;
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12.5px;
   color: var(--ink);
+}
+
+/* ---- topics ---- */
+.topics-filter { margin-bottom: 18px; }
+h1.topic-title { font-size: 19px; margin: 0 0 6px; }
+.chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.chips .chip:hover { filter: brightness(1.06); text-decoration: underline; }
+
+/* the communities ↔ hierarchy switch */
+.seg { display: inline-flex; gap: 2px; border: 1px solid var(--line); border-radius: 8px; padding: 2px; margin-bottom: 16px; }
+.seg-btn { padding: 4px 12px; border-radius: 6px; font-size: 12px; color: var(--muted); }
+.seg-btn:hover { color: var(--ink); }
+.seg-btn.active { background: var(--accent-soft); color: var(--accent); }
+
+/* the hierarchy tree (indent per level via --tree-depth) */
+.tree-row {
+  display: flex; gap: 7px; align-items: baseline; padding: 3px 0;
+  margin-left: calc(var(--tree-depth, 0) * 18px);
+}
+.tree-caret { width: 16px; color: var(--muted); font-size: 11px; flex: none; }
+.tree-caret.leaf { text-align: center; }
+.tree-title:hover { color: var(--accent); text-decoration: underline; }
+
+/* the topic page's parent/children strip */
+.hier { margin: 0 0 16px; display: flex; flex-direction: column; gap: 6px; }
+.hier-row { display: flex; gap: 10px; align-items: baseline; }
+.hier-label {
+  color: var(--muted); font-size: 11px; text-transform: uppercase;
+  letter-spacing: .06em; flex: none; width: 58px;
 }
 
 /* ---- per-message info button + under-message drawer (modeled on cloth turn-meta) ---- */

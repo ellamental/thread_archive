@@ -67,7 +67,8 @@ def _rrf_merge(result_lists: list[list[EventHit]], limit: int, k: int = 60) -> l
     return out
 
 
-def _semantic_hits(query, *, thread_id, content_types, exclude_content_types, since, until, over, source):
+def _semantic_hits(query, *, thread_id, content_types, exclude_content_types, since, until, over,
+                   source, thread_ids=None):
     """The vector arm — None when the extra is absent, nothing's indexed, or embed fails."""
     try:
         from . import vectors
@@ -77,7 +78,7 @@ def _semantic_hits(query, *, thread_id, content_types, exclude_content_types, si
         return vectors.search(
             query, thread_id=thread_id, content_types=content_types,
             exclude_content_types=exclude_content_types, limit=over, since=since, until=until,
-            source=source,
+            source=source, thread_ids=thread_ids,
         )
     except Exception:  # noqa: BLE001 — vector arm must never break lexical search
         logger.exception("semantic arm failed; search continues lexical-only")
@@ -141,6 +142,7 @@ def search(
     *,
     limit: int = 20,
     thread_id: Optional[int] = None,
+    topic_id: Optional[int] = None,
     content_types: Optional[list[str]] = None,
     exclude_content_types: Optional[list[str]] = None,
     since: Optional[str] = None,
@@ -159,8 +161,9 @@ def search(
     + optional semantic vectors → RRF fusion → dedup → weighted lexical rank →
     optional cross-encoder head re-rank. Returns event-hit dicts with the thread
     title enriched. ``since``/``until`` accept ISO timestamps or a relative ``<N>d``
-    window; ``source`` restricts to threads of the named provider(s); ``rerank``
-    forces the cross-encoder stage on/off (else auto-gated).
+    window; ``source`` restricts to threads of the named provider(s); ``topic_id``
+    restricts to a topic's member conversations (threads cited under the topic or
+    linked to it); ``rerank`` forces the cross-encoder stage on/off (else auto-gated).
 
     ``startswith`` does a structural prefix scan (query text unused). ``sort='oldest'``
     returns the earliest matches chronologically, bypassing the ranker — the lexical
@@ -174,6 +177,20 @@ def search(
     returned hits in place (skipped for count)."""
     since_r = resolve_relative_date(since) if since else None
     until_r = resolve_relative_date(until) if until else None
+
+    # A topic scope resolves to the topic's member conversations (cited or linked)
+    # and rides the same id-set filter in both arms. A topic with no members — or
+    # a non-topic id — matches nothing rather than silently searching everything.
+    thread_ids: Optional[list[int]] = None
+    if topic_id is not None:
+        from .._knowledge.read import topic_thread_ids
+
+        try:
+            thread_ids = topic_thread_ids(topic_id, session=session)
+        except ValueError:
+            return []
+        if not thread_ids:
+            return []
 
     is_count = output == "count"
     # browse/startswith are structural — there's no lexical MATCH to rank or embed
@@ -192,7 +209,7 @@ def search(
     terms = _rank.search_terms(query)
 
     lexical = search_events(
-        query, thread_id=thread_id, content_types=content_types,
+        query, thread_id=thread_id, thread_ids=thread_ids, content_types=content_types,
         exclude_content_types=exclude_content_types, limit=over,
         since=since_r, until=until_r, tool_name=tool_name, source=source,
         # Strict matching for count and oldest: the OR tier would inflate a tally
@@ -207,7 +224,7 @@ def search(
     semantic = None if structural or tool_name else _semantic_hits(
         query, thread_id=thread_id, content_types=content_types,
         exclude_content_types=exclude_content_types, since=since_r, until=until_r,
-        over=over, source=source,
+        over=over, source=source, thread_ids=thread_ids,
     )
 
     # Fuse the arms into a wide pool (keeps _rrf agreement + _semantic provenance),

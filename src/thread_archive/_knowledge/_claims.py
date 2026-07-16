@@ -9,7 +9,7 @@ coordinator, and a crash forfeits nothing but a one-hour wait on those few threa
 
 The claim file (`<home>/.librarian-claims.json`) is **ephemeral operator coordination**,
 not truth — like a lock dir. Deleting it only drops in-flight leases; the archive (JSONL
-truth + the topic citations/links that actually mark a thread done) is untouched. Concurrency
+truth + the citations/summaries that actually mark a thread done) is untouched. Concurrency
 is an `flock`'d read-modify-write held only for the brief claim, never during the work.
 """
 
@@ -77,12 +77,12 @@ def claim_review_batch(
     worker: str, batch: int, *, lease: int = DEFAULT_LEASE_SECONDS,
     exclude_source_id: Optional[str] = None,
 ) -> list[dict]:
-    """Claim (and return) up to ``batch`` unreviewed conversations for ``worker``.
+    """Claim (and return) up to ``batch`` still-undone conversations for ``worker``.
 
     Under the lock: expire stale claims, ask the queue for eligible threads not claimed
-    by *other* live workers (resuming this worker's own still-unreviewed claims first),
+    by *other* live workers (resuming this worker's own still-undone claims first),
     stamp them to now, and drop this worker's claims that have since left the queue
-    (reviewed). Returns the queue rows the caller should process."""
+    (done). Returns the queue rows the caller should process."""
     from .write import review_queue
 
     now = _now()
@@ -95,7 +95,7 @@ def claim_review_batch(
         returned = {r["id"] for r in rows}
         for r in rows:
             claims[str(r["id"])] = {"worker": worker, "at": now}
-        # forget my claims for threads no longer eligible (reviewed, or bumped out of
+        # forget my claims for threads no longer eligible (done, or bumped out of
         # the window) so stale leases don't accumulate under my name
         for tid in [t for t, c in claims.items() if c.get("worker") == worker and int(t) not in returned]:
             del claims[tid]
@@ -105,8 +105,8 @@ def claim_review_batch(
 def has_claimable_work(
     *, lease: int = DEFAULT_LEASE_SECONDS, exclude_source_id: Optional[str] = None
 ) -> bool:
-    """Whether any unreviewed conversation is free to claim (not held by a live lease).
-    The driver's respawn condition."""
+    """Whether any still-undone conversation is free to claim (not held by a live
+    lease). The driver's respawn condition."""
     from .write import review_queue
 
     now = _now()

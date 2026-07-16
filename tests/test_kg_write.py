@@ -24,6 +24,7 @@ from thread_archive._knowledge import (
     link_threads,
     merge_topics,
     review_queue,
+    set_thread_summary,
     thread_user_messages,
     topic_search,
     unlink_threads,
@@ -36,7 +37,9 @@ NOW = datetime(2026, 1, 1, 12, 0, 0, tzinfo=timezone.utc)
 
 
 def _seed_conversation(source_id: str = "sess-1", content: str = "hello world") -> tuple[int, int]:
-    """A conversation thread with one user message; returns (thread_id, event_id)."""
+    """A conversation thread with one user message; returns (thread_id, event_id).
+    ``recorded_at`` is backdated so the thread clears ``review_queue``'s quiet window
+    (a freshly-ingested thread is held back as likely still growing)."""
     with get_session() as s:
         t = Thread(
             name=f"claude-code:{source_id}", title=source_id, thread_type="conversation",
@@ -48,6 +51,7 @@ def _seed_conversation(source_id: str = "sess-1", content: str = "hello world") 
             thread_id=t.id, stream_id=source_id, event_type="user_message_sent",
             payload={"content": content}, occurred_at=NOW,
         )
+        e.recorded_at = NOW.replace(tzinfo=None)
         s.add(e)
         s.flush()
         ids = (t.id, e.id)
@@ -131,7 +135,7 @@ def test_evidence_and_review_queue(archive_home):
     conv, eid = _seed_conversation("sess-A")
     topic = create_topic("Topic X")["topic_id"]
 
-    # a freshly-imported conversation with no citations is unreviewed — in the queue
+    # an uncurated conversation is in the queue
     assert any(row["id"] == conv for row in review_queue())
 
     add_topic_evidence(topic, eid, conv, "the salient quote")
@@ -141,7 +145,9 @@ def test_evidence_and_review_queue(archive_home):
         rows = s.execute(select(TopicMessage)).scalars().all()
         assert len(rows) == 1 and rows[0].topic_id == topic and rows[0].event_id == eid
 
-    # citing a message from the conversation marks it reviewed → it leaves the queue
+    # cited but not summarized → still queued; the summary completes the commit
+    assert any(row["id"] == conv for row in review_queue())
+    set_thread_summary(conv, "the stored summary")
     assert all(row["id"] != conv for row in review_queue())
 
 

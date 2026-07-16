@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Bulk librarian backfill driver — drain the whole citation backlog.
+"""Bulk librarian backfill driver — drain the citation + summary backlog.
 
-A new archive starts with thousands of unreviewed conversations. This driver clears
+A new archive starts with thousands of uncurated conversations. This driver clears
 them by spawning headless Claude Code instances that run the `/librarian` skill, in a
 loop, until the queue is empty — the process-level "force the work" that complements the
 per-thread `librarian-gate.py` hook (which forces each *spawned* instance to finish one
@@ -51,7 +51,7 @@ def _resolve_claude() -> str:
 
 
 def _has_claimable_work(home: str | None) -> bool:
-    """True if any unreviewed conversation is free to claim (not held by a live lease).
+    """True if any still-undone conversation is free to claim (not held by a live lease).
     Imported, not shelled — a cheap direct query against the same store + claim file the
     workers use."""
     from thread_archive import _api as ta
@@ -115,7 +115,7 @@ def _worker(k: int, args, claude: str, base_env: dict, stats: dict) -> None:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="librarian_backfill",
-        description="Drain the librarian summary/citation backlog with headless Claude instances.",
+        description="Drain the librarian citation + summary backlog with headless Claude instances.",
     )
     parser.add_argument("--workers", type=int, default=1, help="parallel sharded instances (default 1)")
     parser.add_argument("--batch", type=int, default=25, help="threads per spawned /librarian run")

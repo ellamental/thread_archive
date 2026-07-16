@@ -27,10 +27,10 @@ from collections.abc import Sequence
 from datetime import datetime
 from typing import Container, Optional
 
-from sqlalchemy import func, select
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from .._store import Event, Thread, TopicMessage, use_session
+from .._store import Event, Thread, use_session
 from .._truth.layout import is_redacted_payload
 from ._codex import codex_kind, render_codex_block
 from ._extract import _block_search_text
@@ -51,12 +51,15 @@ _SKIP_TYPES = frozenset({
     "tool_execution_started",
     # A dedup marker — its content is the duplicate_of event, already rendered.
     "archived_duplicate",
-    # Hook bookkeeping (hook_name + verdict metadata) — machinery, not conversation.
+    # Hook-injected context (sidecar lines) — skipped on the token-budgeted string
+    # path only; the structured (web) path renders these as hook blocks.
     "hook_context",
     # Pure session bookkeeping the source parser marks visually-hidden — not content.
     # Rendering them (as "QUEUE_OPERATION"/"FILE_SNAPSHOT" boxes) is just noise.
     "queue_operation",
     "file_snapshot",
+    # Skipped on the string path; the structured path surfaces hook_progress
+    # firings (which hooks ran, next to the tool calls they ran on) as markers.
     "progress",
 })
 
@@ -84,6 +87,48 @@ def _unknown_payload_text(payload: dict) -> str:
         )[:1000]
     except Exception:  # noqa: BLE001 — rendering must never raise
         return ""
+
+
+def _attachment_raw(p: dict) -> Optional[dict]:
+    """The raw Claude Code attachment preserved on an attachment context_summary
+    event (``payload.provider_data.line.attachment``), or None when the event
+    isn't one. The importer keeps the whole attachment; the placeholder in
+    ``content`` ("[attachment: …]") is just its label."""
+    if p.get("system_type") != "attachment":
+        return None
+    line = (p.get("provider_data") or {}).get("line")
+    att = (line or {}).get("attachment") if isinstance(line, dict) else None
+    return att if isinstance(att, dict) else None
+
+
+def _attachment_text(att: dict) -> str:
+    """Best-effort text of an attachment's injected content: ``content`` as a
+    string or list of strings (a hook can inject several), else a compact JSON
+    dump of the attachment's own fields — so the viewer always has something
+    real to show, never just the placeholder."""
+    c = att.get("content")
+    if isinstance(c, str) and c.strip():
+        return c
+    if isinstance(c, list):
+        parts = [x for x in c if isinstance(x, str) and x.strip()]
+        if parts:
+            return "\n\n".join(parts)
+        if c:
+            # Non-string items (e.g. a todo reminder's item dicts) — dump them whole
+            # rather than reducing the attachment to its bare counters.
+            try:
+                return json.dumps(c, indent=2, default=str)[:_TOOL_OUTPUT_CAP]
+            except Exception:  # noqa: BLE001 — rendering must never raise
+                pass
+    try:
+        rest = {k: v for k, v in att.items() if k not in ("type", "content")}
+        return json.dumps(rest, indent=2, default=str)[:_TOOL_OUTPUT_CAP] if rest else ""
+    except Exception:  # noqa: BLE001 — rendering must never raise
+        return ""
+
+
+def _hook_name(att: dict) -> str:
+    return att.get("hookName") or att.get("hookEvent") or "hook"
 
 
 def _rendered_text(events: list[Event]) -> set[str]:
@@ -240,6 +285,18 @@ def _assistant_block(et: str, p: dict, rendered_text: Container[str]) -> Optiona
         t = p.get("text", "")
         return {"type": "text", "content": t} if t.strip() else None
     if et == "context_summary":
+        att = _attachment_raw(p)
+        if att is not None:
+            atype = att.get("type") or "attachment"
+            if atype == "hook_additional_context":
+                # A hook fired and injected content into the model's context
+                # (e.g. a UserPromptSubmit hook adding system-map notes) —
+                # render the hook's name and what it injected, not a placeholder.
+                return {"type": "hook", "name": _hook_name(att),
+                        "content": _attachment_text(att)}
+            # Other preserved attachments (todo reminders, listing deltas, …) are
+            # machinery — label only on this token-budgeted path.
+            return {"type": "attachment", "attachment_type": atype}
         c = p.get("content", "")
         return {"type": "text", "content": f"[context summary] {c}"} if c.strip() else None
     if et == "content_block":
@@ -563,6 +620,15 @@ def _format_step(
             if not strip_tools:
                 c = b.get("content", "").strip()
                 parts.append(f"[block: {b.get('block_type')}]" + (f" {c}" if c else ""))
+        elif bt == "hook":
+            if not strip_tools:
+                c = (b.get("content") or "").strip()
+                if len(c) > _TOOL_RESULT_CAP:
+                    c = c[:_TOOL_RESULT_CAP] + "… (truncated)"
+                parts.append(f"[hook: {b.get('name')}]" + (f" {c}" if c else ""))
+        elif bt == "attachment":
+            if not strip_tools:
+                parts.append(f"[attachment: {b.get('attachment_type')}]")
         elif bt == "unknown":
             if not strip_tools:
                 c = b.get("content", "").strip()
@@ -625,21 +691,68 @@ def _accumulate_turns(remaining, limit, max_chars, *, strip_tools, strip_thinkin
     return page, consumed, total_chars
 
 
+# Rendering caps for a topic read: quotes are the payload so they render whole-ish,
+# but a huge topic must not blow the MCP output budget — the footer points at the
+# per-citation surface (librarian topic_members) for the full set.
+_TOPIC_READ_MAX_CITATIONS = 100
+_TOPIC_READ_QUOTE_CHARS = 500
+
+
 def _topic_read_message(thread: Thread, *, session: Optional[Session] = None) -> str:
-    """The message returned when a topic thread is read as a conversation."""
-    with use_session(session) as s:
-        link_count = s.execute(
-            select(func.count()).select_from(TopicMessage)
-            .where(TopicMessage.topic_id == thread.id, TopicMessage.archived_at.is_(None))
-        ).scalar_one()
-    return (
-        f"Thread {thread.id} is a **topic** thread, not a conversation. "
-        f"Topic threads don't have messages — they collect references to messages in "
-        f"other threads.\n"
-        f"Title: {thread.title or '(untitled)'}\n"
-        f"Description: {(thread.description or 'none')[:300]}\n"
-        f"Linked messages: {link_count}"
-    )
+    """A topic thread read as its curated page: description, links, and the live
+    citations with their quotes — each anchored ``[thread N event:M]`` so it opens
+    in ``thread_read`` via ``around_event``."""
+    from .._knowledge import read as kg_read
+
+    detail = kg_read.topic_get(thread.id, session=session)
+    members = kg_read.topic_members(
+        thread.id, limit=_TOPIC_READ_MAX_CITATIONS, session=session)
+
+    lines = [
+        f"# Topic {thread.id}: {detail['title'] or '(untitled)'}",
+        f"Kind: {detail['topic_kind'] or 'topic'}"
+        + (" · archived" if detail["archived"] else ""),
+    ]
+    if detail["description"]:
+        lines += ["", detail["description"]]
+
+    if detail["links"]:
+        lines += ["", "## Links"]
+        for lk in detail["links"]:
+            arrow = "→" if lk["direction"] == "out" else "←"
+            lines.append(
+                f"- {arrow} {lk['link_type']} [{lk['other_type']} {lk['other_id']}] "
+                f"{lk['other_title'] or '(untitled)'}"
+                + (f" — {lk['evidence']}" if lk["evidence"] else "")
+            )
+
+    if members:
+        lines += ["", f"## Citations ({detail['citation_count']})"]
+        by_thread: dict[int, list[dict]] = {}
+        for m in members:
+            by_thread.setdefault(m["thread_id"], []).append(m)
+        for tid, cites in by_thread.items():
+            lines += ["", f"### Thread {tid}: {cites[0]['thread_title'] or '(untitled)'}"]
+            for c in cites:
+                quote = (c["quote"] or "").strip()
+                if len(quote) > _TOPIC_READ_QUOTE_CHARS:
+                    quote = quote[:_TOPIC_READ_QUOTE_CHARS] + "…"
+                lines.append(f"- [event:{c['event_id']}] {quote}")
+        if detail["citation_count"] > len(members):
+            lines += ["", f"(showing {len(members)} of {detail['citation_count']} "
+                          f"citations — the librarian MCP's topic_members lists them all)"]
+    else:
+        lines += ["", "No live citations yet."]
+
+    if detail["peers"]:
+        peers = ", ".join(
+            f"{p.get('title') or p['thread_id']}" for p in detail["peers"])
+        lines += ["", f"Community peers: {peers}"]
+
+    lines += ["", "This is a topic thread — it collects references to messages in "
+                  "conversation threads. Open a citation with "
+                  "thread_read(thread_id, around_event=<event id>)."]
+    return "\n".join(lines)
 
 
 # Feature flag for the stored-summary read kinds (summary='short'/'indexed').
@@ -674,8 +787,9 @@ def _resolve_summary_kind(summary: bool | str) -> Optional[str]:
 def _stored_summary(thread: Thread, kind: str) -> str:
     """The thread's stored summary: ``short`` (``Thread.summary``, a few sentences)
     or ``indexed`` (``Thread.indexed_summary``, structured markdown with event
-    anchors). Written by the summarizer pipeline, so not every thread has them;
-    absence names whichever alternative exists rather than returning empty."""
+    anchors). Written by the ``/librarian`` skill via the librarian MCP's
+    ``thread_set_summary``, so not every thread has them; absence names whichever
+    alternative exists rather than returning empty."""
     text = thread.summary if kind == "short" else thread.indexed_summary
     other_kind = "indexed" if kind == "short" else "short"
     other_text = thread.indexed_summary if kind == "short" else thread.summary
@@ -963,6 +1077,29 @@ def _structured_event(
     code, and collapsible tool calls instead of a pre-flattened string. Mirrors the
     same event-type handling; returns None to skip lifecycle/empty events."""
     et = ev.event_type
+    # Hook visibility — handled ahead of the _SKIP_TYPES gate that hides these on
+    # the string path. A hook that fired is part of the who-did-what record: shown
+    # here, in the operator-facing viewer.
+    if et == "hook_context":
+        # A hook-context sidecar line: content a hook injected that never reaches
+        # the session JSONL (e.g. cloth's per-prompt kg_context).
+        p = _payload(ev)
+        text = p.get("context", "")
+        if not text.strip():
+            return None
+        return ("assistant", {"type": "hook", "hook_name": p.get("hook_name") or "hook",
+                              "text": text})
+    if et == "progress":
+        if not include_tools:
+            return None
+        p = _payload(ev)
+        data = p.get("data") or {}
+        if not isinstance(data, dict) or data.get("type") != "hook_progress":
+            return None  # other progress kinds stay bookkeeping noise
+        # A bare "this hook ran" marker (no content) — the viewer merges runs of
+        # these into one compact row next to the tool calls they fired on.
+        name = data.get("hookName") or data.get("hookEvent")
+        return ("assistant", {"type": "hook_fired", "hook_name": name}) if name else None
     if et in _SKIP_TYPES:
         return None
     p = _payload(ev)
@@ -1002,6 +1139,23 @@ def _structured_event(
             return None
         return ("assistant", {"type": "tool_error", "error": str(p.get("error", ""))})
     if et == "context_summary":
+        att = _attachment_raw(p)
+        if att is not None:
+            atype = att.get("type") or "attachment"
+            if atype == "hook_additional_context":
+                # A hook fired and injected content into the model's context (e.g.
+                # a UserPromptSubmit hook adding system-map notes). First-class:
+                # the hook's name plus exactly what it injected — conversation
+                # context, so not gated behind the tools toggle.
+                return ("assistant", {"type": "hook", "hook_name": _hook_name(att),
+                                      "text": _attachment_text(att)})
+            # Every other preserved attachment (todo reminders, skill/tool listing
+            # deltas, …) is machinery: behind the tools toggle, but carrying its
+            # real content, not just the "[attachment: …]" placeholder.
+            if not include_tools:
+                return None
+            return ("assistant", {"type": "attachment", "attachment_type": atype,
+                                  "text": _attachment_text(att)})
         content = p.get("content", "")
         if not content.strip():
             return None

@@ -59,8 +59,8 @@ ingests at a time, however many Claude Code sessions are open.
 **The clone path — for curation.** Clone the repo, open it in Claude Code, and
 say *"install this — follow claude-install.md"*. The clone carries what a pip
 install doesn't: the `.mcp.json` template and the `/librarian` skill (+ its
-enforcement hook) that drives topic-graph curation. Take this route when you
-want the knowledge layer worked, not just search.
+enforcement hook) that drives topic-graph curation and stored summaries. Take
+this route when you want the knowledge layer worked, not just search.
 
 ```bash
 git clone https://github.com/ellamental/thread_archive.git thread-archive && cd thread-archive
@@ -84,8 +84,9 @@ sed "s|ABSOLUTE_REPO_PATH|$(pwd)|g" .mcp.json.example > .mcp.json
 ```
 
 Restart Claude Code in the repo so it loads `.mcp.json` (the search + librarian MCP
-servers) and `.claude/` (the `/librarian` skill + its enforcement hook). Then curate the
-topic graph — `/librarian` interactively, or for a large backlog the bulk driver:
+servers) and `.claude/` (the `/librarian` skill + its enforcement hook). Then curate —
+`/librarian` interactively (topic citations + a stored summary per thread), or for a
+large backlog the bulk driver:
 
 ```bash
 .venv/bin/python scripts/librarian_backfill.py --workers 4 --batch 25
@@ -231,7 +232,11 @@ wins; ids that were never imported are skipped, not fatal.
   off the machine (`--show-key` + `--forget`) or destroy it for crypto-erasure. The
   original provider store keeps its own copy — redaction covers the archive.
 - **Curatable** — an event-sourced topic graph with Leiden communities (see below),
-  driven on demand by the `/librarian` skill.
+  driven on demand by the `/librarian` skill, which also stores each conversation's
+  search-first summary: a few dense sentences indexed into the default search scope
+  and embedded for the semantic arm, plus a structured `indexed_summary`
+  (event-anchored markdown) for long threads, served by
+  `thread_read summary='short'|'indexed'`.
 
 ## MCP
 
@@ -240,9 +245,9 @@ read-only tools — `thread_search` / `thread_read` — and cohosts lazy catch-u
 ingest in its own process (throttled, cross-process-safe via the ingest-owner
 lock; `THREAD_ARCHIVE_MCP_INGEST=0` disables it). **`thread-archive-librarian`**
 (`archive-librarian-mcp`) is the curatorial *write* surface — topic/link/citation
-writes + the reads a librarian needs (`review_queue`, `topic_search`,
-`thread_user_messages`). Keeping them separate means a read-only client never gets
-curation power. Client config:
+writes and stored-summary writes (`thread_set_summary`) + the reads the librarian
+needs (`review_queue`, `topic_search`, `thread_user_messages`). Keeping them
+separate means a read-only client never gets curation power. Client config:
 
 ```json
 {
@@ -268,15 +273,24 @@ Reads/analytics live in the knowledge layer (`_knowledge/`) — PageRank,
 communities (**Leiden**, the algorithm Neo4j GDS ran, with a networkx-Louvain fail-soft
 fallback), bridges, peers.
 
-Curation is **event-sourced**. Every write (`create_topic`, `link_threads`,
+Curation is **event-sourced**. Every graph write (`create_topic`, `link_threads`,
 `add_topic_evidence`, `merge_topics`, …) appends a `KgEvent` to an
 append-only `truth/kg_events.jsonl` and folds it into the SQLite projection in one
 transaction. The log is the source of truth for curation; `thread_links` / `topic_messages`
 are rebuildable from it — `reindex` replays the log (idempotent upsert + tombstone) to
-reconstruct them, so an unlink/merge/archive is recorded history, never silent loss. The
-librarian skill (`.claude/skills/librarian/`) drives the write MCP to clear the
-citation backlog on demand (a conversation is 'reviewed' once it gains its first
-citation/link — there is no per-thread summary).
+reconstruct them, so an unlink/merge/archive is recorded history, never silent loss.
+
+The librarian skill (`.claude/skills/librarian/`) drives the write MCP over
+`review_queue` — event-bearing conversations still missing either half of its
+per-thread output, held back while a thread is still ingesting. Per thread it writes
+**~3+ topic citations** and a **stored summary** (`thread_set_summary`): a short,
+dense `summary` that immediately becomes a thread-meta search doc (the default search
+scope is user + title + summary, and the embed cohost picks it up for the semantic
+arm), plus an event-anchored `indexed_summary` for long threads. A conversation is
+done once it has both a citation/link and a summary. Summaries are deliberately *not*
+kg events: they're thread metadata like the title, made durable by the thread's own
+latest-wins truth record, which keeps redaction's thread-meta scrub the single place
+summary content ever needs erasing.
 
 ## License
 

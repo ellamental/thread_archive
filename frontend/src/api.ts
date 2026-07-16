@@ -33,6 +33,85 @@ export interface SearchResponse {
   hits: SearchHit[]
 }
 
+export interface TopicListItem {
+  id: number
+  title: string | null
+  topic_kind: string | null
+  description: string | null
+  evidence_count: number
+  link_count: number
+  community: number | null
+  pagerank: number
+  updated_at: string | null
+}
+
+export interface TopicGraphStatus {
+  available: boolean
+  nodes?: number
+  communities?: number
+  components?: number
+  community_engine?: string
+}
+
+export interface TopicsResponse {
+  topics: TopicListItem[]
+  graph: TopicGraphStatus
+}
+
+export interface TopicTreeNode {
+  id: number
+  title: string | null
+  topic_kind: string | null
+  children: TopicTreeNode[]
+}
+
+export interface TopicTreeResponse {
+  roots: TopicTreeNode[]
+  topics_in_hierarchy: number
+  topics_total: number
+}
+
+export interface TopicLink {
+  direction: 'out' | 'in'
+  other_id: number
+  other_title: string | null
+  other_type: string // 'topic' | 'conversation'
+  link_type: string
+  strength: number
+  evidence: string | null
+}
+
+export interface TopicEvidence {
+  event_id: number
+  thread_id: number
+  thread_title: string | null
+  quote: string
+  created_at: string | null
+}
+
+export interface TopicPeer {
+  thread_id: number
+  title: string | null
+  pagerank: number
+}
+
+export interface TopicDetail {
+  id: number
+  title: string | null
+  topic_kind: string | null
+  description: string | null
+  summary: string | null
+  archived: boolean
+  created_at: string | null
+  updated_at: string | null
+  // null when the graph has no live node for this topic (archived, or unlinked
+  // before the projection saw it)
+  graph: { pagerank: number; community: number | null; degree: number } | null
+  links: TopicLink[]
+  evidence: TopicEvidence[]
+  peers: TopicPeer[]
+}
+
 export type Block =
   | { type: 'text'; text: string }
   | { type: 'thinking'; text: string }
@@ -40,6 +119,16 @@ export type Block =
   | { type: 'tool_result'; output: string; truncated: boolean }
   | { type: 'tool_error'; error: string }
   | { type: 'context_summary'; text: string }
+  // A hook that fired and injected content into the model's context (a
+  // hook_additional_context attachment or a hook-context sidecar line):
+  // hook_name plus exactly what it injected.
+  | { type: 'hook'; hook_name: string; text: string }
+  // A bare "this hook ran" marker (hook_progress) — no content; consecutive
+  // markers render merged into one compact row.
+  | { type: 'hook_fired'; hook_name: string }
+  // A preserved context injection (todo reminder, skill/tool listing delta, …)
+  // with its real content, not just a placeholder label.
+  | { type: 'attachment'; attachment_type: string; text: string }
   | { type: 'ide_context'; context_type: string; file_path?: string | null; text: string }
   | { type: 'content_block'; block_type: string; text: string }
   // A model switch marker. kind 'user' = a manual /model switch (a standalone divider
@@ -103,4 +192,7 @@ export const api = {
     getJSON<{ thread_id: number; url: string }>(
       '/api/archive-link?id=' + encodeURIComponent(id),
     ),
+  topics: () => getJSON<TopicsResponse>('/api/topics'),
+  topicTree: () => getJSON<TopicTreeResponse>('/api/topics/tree'),
+  topic: (id: number) => getJSON<TopicDetail>(`/api/topic/${id}`),
 }

@@ -14,7 +14,7 @@ from datetime import datetime, timezone
 from sqlalchemy import select
 
 from thread_archive import _api as ta
-from thread_archive._knowledge import add_topic_evidence, create_topic, review_queue
+from thread_archive._knowledge import add_topic_evidence, create_topic, review_queue, set_thread_summary
 from thread_archive._knowledge._claims import claim_review_batch, claims_path, has_claimable_work
 from thread_archive._store import Event, Thread, get_session
 
@@ -31,8 +31,11 @@ def _seed(n: int) -> list[int]:
             )
             s.add(t)
             s.flush()
-            s.add(Event(thread_id=t.id, stream_id=f"c{i}", event_type="user_message_sent",
-                        payload={"content": "x"}, occurred_at=NOW))
+            e = Event(thread_id=t.id, stream_id=f"c{i}", event_type="user_message_sent",
+                      payload={"content": "x"}, occurred_at=NOW)
+            # Backdate the ingest stamp so the seeds clear the queue's quiet window.
+            e.recorded_at = NOW.replace(tzinfo=None)
+            s.add(e)
             ids.append(t.id)
         s.commit()
     return ids
@@ -76,11 +79,11 @@ def test_has_claimable_work_reflects_live_leases(archive_home):
     assert has_claimable_work(lease=0) is True  # leases elapsed → free again
 
 
-def test_reviewed_threads_leave_the_claimable_set(archive_home):
+def test_done_threads_leave_the_claimable_set(archive_home):
     ta.open_archive()
     ids = _seed(2)
     claim_review_batch("A", 5)
-    # 'Reviewed' is derived from curation now: cite a message from each thread.
+    # 'Done' is derived from curation: cite AND summarize each thread.
     topic = create_topic("T")["topic_id"]
     with get_session() as s:
         eids = {
@@ -89,7 +92,11 @@ def test_reviewed_threads_leave_the_claimable_set(archive_home):
         }
     for tid in ids:
         add_topic_evidence(topic, eids[tid], tid, "q")
-    # both cited → reviewed → no claimable work even though the claims linger
+    # cited but unsummarized → still claimable work
+    assert has_claimable_work(lease=0) is True
+    for tid in ids:
+        set_thread_summary(tid, "s")
+    # both halves done → no claimable work even though the claims linger
     assert has_claimable_work(lease=0) is False
 
 

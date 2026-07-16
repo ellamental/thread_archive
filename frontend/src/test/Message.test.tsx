@@ -95,6 +95,52 @@ describe('block rendering', () => {
     expect(screen.getByText('holo_frame')).toBeInTheDocument()
     expect(screen.getByText('future content')).toBeInTheDocument()
   })
+
+  it('renders a hook with its name and injected content', () => {
+    render(
+      <Message
+        message={msg([
+          { type: 'hook', hook_name: 'UserPromptSubmit', text: '[system-map] archive notes' },
+        ])}
+      />,
+    )
+    expect(screen.getByText('UserPromptSubmit')).toBeInTheDocument()
+    expect(screen.getByText('hook')).toBeInTheDocument()
+    expect(screen.getByText('[system-map] archive notes')).toBeInTheDocument()
+  })
+
+  it('renders an attachment with its type and real content', () => {
+    render(
+      <Message
+        message={msg([
+          { type: 'attachment', attachment_type: 'skill_listing', text: '- backend-api: …' },
+        ])}
+      />,
+    )
+    expect(screen.getByText(/attachment · skill_listing/)).toBeInTheDocument()
+    expect(screen.getByText('- backend-api: …')).toBeInTheDocument()
+  })
+
+  it('merges consecutive hook firings into one chip row with counts', () => {
+    const { container } = render(
+      <Message
+        message={msg([
+          { type: 'hook_fired', hook_name: 'PreToolUse:Read' },
+          { type: 'hook_fired', hook_name: 'PreToolUse:Read' },
+          { type: 'hook_fired', hook_name: 'PostToolUse:Read' },
+          { type: 'text', text: 'then some text' },
+          { type: 'hook_fired', hook_name: 'PreToolUse:Edit' },
+        ])}
+      />,
+    )
+    // First run merges into a single row: deduped chips, repeat counted.
+    const rows = container.querySelectorAll('.hook-fires')
+    expect(rows).toHaveLength(2)
+    expect(screen.getByText('PreToolUse:Read ×2')).toBeInTheDocument()
+    expect(screen.getByText('PostToolUse:Read')).toBeInTheDocument()
+    // The text block breaks the run; the later firing starts its own row.
+    expect(screen.getByText('PreToolUse:Edit')).toBeInTheDocument()
+  })
 })
 
 describe('info drawer', () => {

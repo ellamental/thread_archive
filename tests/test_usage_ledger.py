@@ -1,0 +1,118 @@
+"""The retrieval-usage ledger records MCP searches and reads, ids only."""
+
+from __future__ import annotations
+
+import json
+
+from thread_archive import _api as ta
+from thread_archive._mcp.server import thread_read, thread_search
+from thread_archive._retrieval import usage
+
+USER = {"type": "user", "uuid": "u1", "timestamp": "2026-01-01T10:00:00Z",
+        "cwd": "/proj", "message": {"role": "user", "content": "hello ledger"}}
+ASSISTANT = {"type": "assistant", "uuid": "a1", "timestamp": "2026-01-01T10:00:05Z",
+             "message": {"role": "assistant", "model": "claude-opus-4",
+                         "content": [{"type": "text", "text": "hi from ledger"}]}}
+
+
+def _write_cc(path, lines):
+    path.write_text("\n".join(json.dumps(ln) for ln in lines) + "\n", encoding="utf-8")
+
+
+def _records(home):
+    path = home / usage.LEDGER_FILE
+    if not path.exists():
+        return []
+    return [json.loads(ln) for ln in path.read_text(encoding="utf-8").splitlines() if ln.strip()]
+
+
+def test_record_search_writes_ids_and_omits_none_params(archive_home) -> None:
+    hits = [{"event_id": 7, "thread_id": 3, "snippet": "SECRET CONTENT"},
+            {"event_id": "8", "thread_id": "3"}]
+    usage.record_search("what did we decide", params={"limit": 10, "source": None},
+                        hits=hits, widened=True)
+    (rec,) = _records(archive_home)
+    assert rec["kind"] == "search"
+    assert rec["query"] == "what did we decide"
+    assert rec["limit"] == 10 and "source" not in rec
+    assert rec["widened"] is True
+    assert rec["n_hits"] == 2
+    assert rec["results"] == [[7, 3], [8, 3]]
+    # ids only — never content
+    assert "SECRET CONTENT" not in json.dumps(rec)
+
+
+def test_record_search_tolerates_non_hit_shapes(archive_home) -> None:
+    usage.record_search("q", params={}, hits="a rendered string", widened=False)
+    usage.record_search("q2", params={}, hits=[{"count": 5}, {"event_id": "x", "thread_id": 1}],
+                        widened=False)
+    recs = _records(archive_home)
+    assert "n_hits" not in recs[0] and "results" not in recs[0]
+    assert recs[1]["n_hits"] == 2 and "results" not in recs[1]
+
+
+def test_record_read_int_and_uuid(archive_home) -> None:
+    usage.record_read(42, params={"mode": "chat", "offset": 0, "around_event": None})
+    usage.record_read("abc-uuid", params=None)
+    int_rec, uuid_rec = _records(archive_home)
+    assert int_rec == {"at": int_rec["at"], "kind": "read", "thread_id": 42, "mode": "chat"}
+    assert uuid_rec["thread_id"] == "abc-uuid"
+
+
+def test_usage_log_disabled_by_env(archive_home, monkeypatch) -> None:
+    monkeypatch.setenv("THREAD_ARCHIVE_USAGE_LOG", "0")
+    usage.record_search("q", params={}, hits=[], widened=False)
+    usage.record_read(1)
+    assert _records(archive_home) == []
+
+
+def test_usage_log_rotates_at_cap(archive_home, monkeypatch) -> None:
+    monkeypatch.setattr(usage, "_MAX_BYTES", 200)
+    for i in range(20):
+        usage.record_read(i)
+    rotated = archive_home / "retrieval-usage.jsonl.1"
+    assert rotated.exists()
+    # the live file restarted and both files hold parseable records
+    live = _records(archive_home)
+    old = [json.loads(ln) for ln in rotated.read_text(encoding="utf-8").splitlines()]
+    assert live and old
+    assert all(r["kind"] == "read" for r in live + old)
+
+
+def test_usage_write_failure_is_fail_soft(archive_home, monkeypatch) -> None:
+    def _boom(*a, **k):
+        raise OSError("disk gone")
+
+    monkeypatch.setattr("builtins.open", _boom)
+    usage.record_search("q", params={}, hits=[], widened=False)  # must not raise
+
+
+def test_mcp_tools_feed_the_ledger(archive_home) -> None:
+    f = archive_home / "sess.jsonl"
+    _write_cc(f, [USER, ASSISTANT])
+    ta.import_path(f)
+
+    out = thread_search("hello ledger", limit=5)
+    assert "hello ledger" in out
+    thread_id = ta.search("hello ledger")[0]["thread_id"]
+    thread_read(thread_id, mode="chat")
+
+    recs = _records(archive_home)
+    kinds = [r["kind"] for r in recs]
+    assert kinds == ["search", "read"]
+    search, read = recs
+    assert search["query"] == "hello ledger"
+    assert search["n_hits"] >= 1
+    assert [search["results"][0][1]] == [thread_id]
+    assert read["thread_id"] == thread_id and read["mode"] == "chat"
+
+
+def test_count_output_records_params_without_ids(archive_home) -> None:
+    f = archive_home / "sess.jsonl"
+    _write_cc(f, [USER, ASSISTANT])
+    ta.import_path(f)
+
+    thread_search("hello", output="count")
+    (rec,) = _records(archive_home)
+    assert rec["output"] == "count"
+    assert "query" in rec

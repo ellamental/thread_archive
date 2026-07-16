@@ -80,6 +80,7 @@ def search(
     home: Optional[str] = None,
     limit: int = 20,
     thread_id: Optional[int] = None,
+    topic_id: Optional[int] = None,
     content_types: Optional[list[str]] = None,
     exclude_content_types: Optional[list[str]] = None,
     since: Optional[str] = None,
@@ -96,7 +97,9 @@ def search(
     """Federated search over conversation events (lexical FTS5 + optional semantic
     vectors → RRF fusion → weighted rank → optional cross-encoder re-rank).
     Returns enriched event-hit dicts. ``source`` restricts to threads of the named
-    provider(s); ``startswith`` does a structural prefix scan; ``sort='oldest'``
+    provider(s); ``topic_id`` restricts to a topic's member conversations (threads
+    cited under the topic or linked to it, from the knowledge graph);
+    ``startswith`` does a structural prefix scan; ``sort='oldest'``
     returns the pool chronologically; ``output`` ('count'/'linkable') and
     ``context_lines`` / ``context_events`` shape what each hit carries; ``rerank``
     forces the cross-encoder stage (else auto-gated to conceptual queries when the
@@ -108,6 +111,7 @@ def search(
         query,
         limit=limit,
         thread_id=thread_id,
+        topic_id=topic_id,
         content_types=content_types,
         exclude_content_types=exclude_content_types,
         since=since,

@@ -113,12 +113,15 @@ their Claude Code session in this directory**, then confirm the servers connecte
 `thread-archive` and `thread-archive-librarian` tools should be available, e.g.
 `review_queue`).
 
-## 6. Curate the topic graph (the librarian)
+## 6. Curate the archive (the librarian)
 
-The archive is searchable now, but the topic graph is empty until the librarian runs. It
-writes each conversation's summary + a few topic citations. The `/librarian` skill is
-gated by `.claude/hooks/librarian-gate.py` — it forces one-thread-at-a-time, so an
-instance can't skim the queue without doing the work.
+The archive is searchable now, but the curation backlog starts full: the topic graph is
+empty and threads have no stored summary until the librarian runs. Per conversation it
+writes a few topic citations **and** a short search-first summary (summaries join the
+default search scope, so this directly improves search). The `/librarian` skill is
+gated by `.claude/hooks/librarian-gate.py` — it forces one-thread-at-a-time (each
+thread cited + summarized before the next opens), so an instance can't skim the queue
+without doing the work.
 
 **Decision point #2 — ask the human** how big their backlog is and whether to backfill
 now (`archive status` shows the rough size). Then:
@@ -134,7 +137,7 @@ now (`archive status` shows the rough size). Then:
   start at 2–4). Each instance **claims** the batches it works under a timestamped lease
   (`<home>/.librarian-claims.json`), so concurrent workers self-balance without overlap; a
   crashed worker loses nothing — its lease lapses within the hour and another picks the
-  threads up. Re-running the driver later processes only new, still-unreviewed threads.
+  threads up. Re-running the driver later processes only new, still-undone threads.
 
 ## Done
 

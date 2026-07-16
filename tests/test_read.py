@@ -374,10 +374,10 @@ def test_topic_thread_message(archive_home) -> None:
         s.add(TopicMessage(topic_id=9, event_id=1, thread_id=9, quote="q", actor="test"))
         s.commit()
     out = read_thread(tid)
-    assert "is a **topic** thread" in out
-    assert "Linked messages: 1" in out
-    # summary path gives the same topic message
-    assert "is a **topic** thread" in read_thread(tid, summary=True)
+    assert f"# Topic {tid}: A Topic" in out
+    assert "Citations (1)" in out and "[event:1] q" in out
+    # summary path gives the same topic page
+    assert f"# Topic {tid}: A Topic" in read_thread(tid, summary=True)
 
 
 # ── thread_id ref resolution: integer PK or provider session uuid ─────────────

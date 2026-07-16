@@ -2,6 +2,95 @@
 
 ## Unreleased
 
+- **The knowledge graph reads back out through the agent surfaces (2026-07-16).**
+  The curation layer was write-only for agents: no way to list a topic's citations,
+  read a topic as anything but a stub, or scope a search to a topic. Three additions,
+  all over a new `_knowledge/read.py` library layer (`topic_get` / `topic_members` /
+  `topic_thread_ids`): the librarian MCP grows `topic_get` (one topic with links,
+  counts, graph metadata, community peers) and `topic_members` (the live citations
+  with quotes, each `event_id` openable via `thread_read around_event`);
+  `thread_read` on a topic thread now renders the curated page — description, links,
+  citations grouped by thread with quotes (capped at 100 citations / 500 chars per
+  quote) — instead of the "topic threads don't have messages" stub; and
+  `thread_search` accepts `topic_id`, scoping both retrieval arms (FTS + vectors) to
+  the topic's member conversations (threads cited under it or linked to it). A topic
+  scope is a deliberate scope, so like `thread_id` it bypasses the
+  `exclude_from_search` blacklist; an empty or bogus topic matches nothing.
+
+- **Hooks that fired are visible in the thread viewer (2026-07-16).** The importer
+  already preserved every Claude Code hook record, but the read layer hid all of
+  them: `hook_additional_context` attachments rendered as a dead
+  `[attachment: …]` placeholder, and `hook_context` sidecar events plus
+  `hook_progress` firings were skipped outright. The structured (web) read now
+  renders three block kinds: `hook` — a hook that injected content (the
+  attachment's `hookName` + exactly what it injected, e.g. a UserPromptSubmit
+  system-map note; sidecar `hook_context` lines surface the same way), shown
+  regardless of the tools toggle since injections are conversation context;
+  `hook_fired` — a bare hook_progress marker, merged client-side into one compact
+  chip row per run (`PreToolUse:Read ×2 · PostToolUse:Read`), behind the tools
+  toggle; and `attachment` — every other preserved attachment (todo reminders,
+  skill/tool listing deltas, …) now folding open to its real content instead of
+  the placeholder, also behind the tools toggle. The string path (`thread_read`
+  mode=full) renders `[hook: <name>] <content>` (capped) and keeps other
+  attachments label-only; chat mode hides all of it, and sidecar/progress records
+  stay off the string path entirely.
+
+- **The web viewer reads the topic graph (2026-07-16).** Topics had no web surface —
+  the viewer's thread rail explicitly filtered them out and the graph was reachable
+  only through the library/MCP. Two new read routes on the cohosted server
+  (`/api/topics`: live topics ranked by pagerank with link/citation counts and
+  community ids, plus the graph survey; `/api/topic/<id>`: one topic with its
+  description/summary, both link directions labeled with the other endpoint's type,
+  un-archived citations, and community peers) and two SPA views (`/topics`: the list
+  grouped by community, anchored on each community's highest-pagerank member, with
+  client-side filtering; `/topic/<id>`: the detail page — citation rows deep-link to
+  the cited message via the reader's `?e=` anchor, topic links route to `/topic/`,
+  conversation links to `/archive/`). The sidebar grows a `topics` nav link.
+  Archived topics stay readable by id (merged-away topics remain referenced from kg
+  history) but are hidden from the list and carry no graph metadata.
+
+- **The topic viewer grows a hierarchy view (2026-07-16).** The old backend's wiki
+  had a curated ontology tree (`knowledge_nodes`); the migration deliberately kept
+  one id space (topics are threads) and dropped the tables, leaving hierarchy only
+  as sparse `part-of`/`contains` links nothing consumed. Now consumed: a
+  `/api/topics/tree` route derives the forest from those links (child→parent =
+  `part-of`, parent→child = `contains`; roots are parents that are no one's child,
+  multi-parent children appear under each parent, cycles are cut at the edge that
+  would revisit an ancestor, edges to conversations or archived topics never shape
+  the tree), the `/topics` page gets a communities ↔ hierarchy switch (`?view=tree`)
+  rendering it as a collapsible tree, and the topic page shows a part-of/contains
+  strip above the description. The hierarchy is exactly as curated as the links are
+  — growing it is librarian/garden process work, deliberately not a bulk
+  classification pass.
+
+- **The librarian writes stored summaries again (2026-07-16).** Every summary in the
+  index was legacy data (0 of 318 July conversations had one; the columns had no
+  writer anywhere in the product — the librarian had been narrowed to citations-only
+  back when nothing read summaries), yet three surfaces leaned on them: the default
+  search scope (user+title+summary), `thread_read summary='short'/'indexed'`, and the
+  embedding pools — so search was quietly two-tier, old threads findable by summary
+  vocabulary and new ones not. Summarization is folded back into the librarian's
+  per-thread pass (one read serves both outputs): `thread_set_summary` on the
+  librarian MCP (short searchable summary + optional event-anchored
+  `indexed_summary`; overwrite semantics, caps, topics refused), `review_queue`
+  redefined as *done = cited AND summarized* — which also re-queues the ~450
+  already-cited threads that lack summaries — plus a quiet window (threads that
+  ingested events in the last hour are held back, so live sessions aren't curated
+  mid-flight), and the one-thread-at-a-time gate now requires both halves before the
+  next thread opens. Deliberately NOT kg events: a summary is thread metadata like
+  the title — durable via the thread's latest-wins truth record, immediately
+  searchable via `index_thread_meta` (the embed cohost re-embeds it) — which keeps
+  summary text out of `kg_events.jsonl` and leaves redaction's existing thread-meta
+  scrub covering every copy.
+
+- **Retrieval usage is ledgered (2026-07-16).** The MCP surface now records
+  every `thread_search` / `thread_read` to `<home>/retrieval-usage.jsonl` —
+  query text, filter params, hit count, top result ids, and which thread got
+  read — ids only, never content, so redaction never touches it. This is the
+  observed ground truth future retrieval evals join over (search → subsequent
+  read), replacing proxy-only quality measurement; the auto-titles CI gate is
+  unchanged. Fail-soft, size-rotated, `THREAD_ARCHIVE_USAGE_LOG=0` disables.
+
 - **Capture-coverage signals stop crying wolf (2026-07-15).** Three status
   signals over-alarmed or lingered, training the operator to ignore coverage.
   (1) `watch_errors_last` was failure-only — written on a poll error, retired by

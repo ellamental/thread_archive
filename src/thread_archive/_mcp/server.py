@@ -38,6 +38,7 @@ from mcp.server.fastmcp import FastMCP
 
 from .. import _api as api
 from .._retrieval import format_results, warm_models
+from .._retrieval import usage as _usage
 from .._retrieval._types import EventHit
 from .._retrieval.format import query_terms, term_hit_count
 
@@ -118,6 +119,7 @@ def thread_search(
     query: str,
     limit: int = 10,
     thread_id: Optional[int] = None,
+    topic_id: Optional[int] = None,
     content_type: Optional[str] = None,
     exclude_content_type: Optional[str] = None,
     since: Optional[str] = None,
@@ -150,7 +152,9 @@ def thread_search(
 
     Query grammar: natural language, "quoted phrases", boolean AND/OR/NOT,
     pipe-OR (a|b), and code identifiers (get_session, a.b.c). Filter by
-    ``thread_id``, ``content_type`` (default user+title+summary; 'all' searches
+    ``thread_id``, ``topic_id`` (scope to a curated topic's member conversations —
+    the threads cited under it or linked to it in the knowledge graph),
+    ``content_type`` (default user+title+summary; 'all' searches
     everything),
     ``exclude_content_type`` (comma-separated types to drop), ``tool_name``,
     ``source`` (comma-separated providers, e.g. 'claude-code,cursor'), and a
@@ -191,6 +195,7 @@ def thread_search(
             query,
             limit=limit,
             thread_id=thread_id,
+            topic_id=topic_id,
             content_types=cts,
             exclude_content_types=exclude,
             since=since,
@@ -219,6 +224,22 @@ def thread_search(
         wide_hits = _run(list(WIDENED_SEARCH_CONTENT_TYPES))
         if wide_hits and not _default_scope_is_weak(wide_hits, query):
             hits, widened = wide_hits, True
+
+    # Usage ledger (fail-soft, ids only — see _retrieval.usage): the observed
+    # ground truth future retrieval evals are built from.
+    _usage.record_search(
+        query,
+        params={
+            "limit": limit, "thread_id": thread_id, "topic_id": topic_id,
+            "content_type": content_type,
+            "exclude_content_type": exclude_content_type, "since": since,
+            "until": until, "tool_name": tool_name, "source": source,
+            "startswith": startswith, "sort": sort, "output": output,
+            "rerank": rerank,
+        },
+        hits=hits,
+        widened=widened,
+    )
 
     rendered = format_results(hits, query, output=output)
     if widened:
@@ -272,7 +293,7 @@ def thread_read(
     summary view instead of the transcript: ``true``/``'toc'`` = a compact per-message
     TOC; ``'short'`` = the thread's stored short summary (a few sentences);
     ``'indexed'`` = the stored indexed summary (structured, with event anchors) —
-    the stored kinds exist only where the summarizer has covered the thread.
+    the stored kinds exist only where the librarian has covered the thread.
     ``user_only`` is a back-compat alias for ``mode`` (true→user, false→full);
     prefer ``mode``, which wins if both are set.
 
@@ -297,6 +318,14 @@ def thread_read(
         context_turns: Turns to include before and after around_event. Default: 1.
     """
     _maybe_catch_up()
+    _usage.record_read(
+        thread_id,
+        params={
+            "mode": mode, "summary": summary or None, "offset": offset,
+            "limit": limit, "after_event": after_event,
+            "around_event": around_event, "tool_results": tool_results,
+        },
+    )
     return api.read_thread(
         thread_id,
         limit=limit,

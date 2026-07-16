@@ -14,8 +14,10 @@ Run with::
 
     python -m thread_archive._mcp.librarian
 
-Every write is event-sourced (an append-only ``KgEvent``) and idempotent at the
-projection layer, so a re-run never double-links or double-cites.
+Every graph write is event-sourced (an append-only ``KgEvent``) and idempotent at the
+projection layer, so a re-run never double-links or double-cites. The one non-graph
+write, ``thread_set_summary``, is thread metadata carried by the thread's own truth
+record — idempotent the same way (overwrite, not append).
 """
 
 from __future__ import annotations
@@ -26,6 +28,7 @@ from typing import Optional
 from mcp.server.fastmcp import FastMCP
 
 from .. import _api as api
+from .._knowledge import read as _read
 from .._knowledge import write as _write
 
 mcp = FastMCP("thread-archive-librarian")
@@ -38,10 +41,12 @@ def _dump(value) -> str:
 # ── curation-read ────────────────────────────────────────────────────────────
 @mcp.tool()
 def review_queue(limit: int = 20, exclude_source_id: Optional[str] = None) -> str:
-    """Unreviewed conversation threads (the librarian backlog), newest first.
+    """Conversation threads with librarian work left (the backlog), newest first.
 
-    Event-bearing conversations the librarian hasn't curated yet — a thread leaves the
-    queue once it gains its first topic citation/link. Pass your own session's
+    Event-bearing conversations still missing either half of the librarian's output —
+    a thread leaves the queue once it has BOTH its first topic citation/link AND a
+    stored summary. Threads that ingested events within the last hour are held back
+    (a live session's curation would be premature). Pass your own session's
     ``source_id`` as ``exclude_source_id`` to drop your still-growing transcript from the
     queue. In a parallel backfill (when ``$THREAD_ARCHIVE_LIBRARIAN_WORKER`` is set) this
     transparently claims its batch under a lease, so concurrent workers don't overlap —
@@ -56,6 +61,31 @@ def topic_search(query: str, limit: int = 10) -> str:
     Returns a JSON list of ``{topic_id, title}``."""
     api.open_archive()
     return _dump(_write.topic_search(query, limit=limit))
+
+
+@mcp.tool()
+def topic_get(topic_id: int) -> str:
+    """Read one topic back out of the graph: metadata, links (both directions),
+    citation + member-thread counts, graph metadata (community, pagerank), and
+    community peers. The JSON twin of a topic page — use ``topic_members`` for the
+    citations themselves."""
+    api.open_archive()
+    try:
+        return _dump(_read.topic_get(topic_id))
+    except ValueError as e:
+        return f"Error: {e}"
+
+
+@mcp.tool()
+def topic_members(topic_id: int, limit: int = 200) -> str:
+    """A topic's live citations, oldest first — JSON ``[{event_id, thread_id,
+    thread_title, quote}]``. Each ``event_id`` opens in ``thread_read`` via
+    ``around_event``."""
+    api.open_archive()
+    try:
+        return _dump(_read.topic_members(topic_id, limit=limit))
+    except ValueError as e:
+        return f"Error: {e}"
 
 
 @mcp.tool()
@@ -147,6 +177,30 @@ def topic_uncite(topic_id: int, event_id: int) -> str:
     """Archive a citation (tombstone — sets archived_at, keeps the row + history)."""
     api.open_archive()
     return _dump(_write.archive_topic_evidence(topic_id, event_id))
+
+
+# ── stored summaries ──────────────────────────────────────────────────────────
+@mcp.tool()
+def thread_set_summary(
+    thread_id: int, summary: Optional[str] = None, indexed_summary: Optional[str] = None,
+) -> str:
+    """Store a conversation thread's summary — the second half of the librarian's
+    per-thread commit (citations are the first).
+
+    ``summary`` is the short one: a few dense, specific sentences that become a
+    search doc (lexical + semantic) in the default search scope — pack it with the
+    distinctive vocabulary someone would search for (system names, decisions, errors,
+    outcomes). ``indexed_summary`` is the structured markdown map for long threads —
+    ``## section (event NNNN)`` headings anchored to real event ids — served by
+    ``thread_read summary='indexed'``. Pass either or both; a passed field
+    overwrites the stored one (re-summarizing is an update). Topics are refused
+    (their description is their summary surface — ``topic_rename``)."""
+    api.open_archive()
+    try:
+        return _dump(_write.set_thread_summary(
+            thread_id, summary, indexed_summary=indexed_summary))
+    except ValueError as e:
+        return f"Error: {e}"
 
 
 def main() -> None:
