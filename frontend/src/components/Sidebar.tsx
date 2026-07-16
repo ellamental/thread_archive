@@ -1,5 +1,5 @@
 import { useEffect, useState, type KeyboardEvent } from 'react'
-import { useLocation, useNavigate, useParams, useSearchParams } from 'react-router-dom'
+import { Link, useLocation, useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import { api, type ThreadListItem } from '../api'
 
 function fmtDate(iso: string | null): string {
@@ -52,9 +52,9 @@ export function Sidebar() {
         />
       </div>
       <nav className="rail-nav">
-        <button className={'rail-link' + (onTopics ? ' active' : '')} onClick={() => navigate('/topics')}>
+        <Link className={'rail-link' + (onTopics ? ' active' : '')} to="/topics">
           topics
-        </button>
+        </Link>
       </nav>
       <div className="rail-head">
         <span>Recent</span>
@@ -68,14 +68,14 @@ export function Sidebar() {
       </div>
       <div className="rail">
         {threads.map((t) => (
-          <button
+          <Link
             key={t.id}
             className={'rail-item' + (t.id === activeId ? ' active' : '')}
-            onClick={() => navigate('/archive/' + t.id)}
+            to={'/archive/' + t.id}
           >
             <span className="t">{t.title || 'thread ' + t.id}</span>
             <span className="m">{[t.source, fmtDate(t.updated_at)].filter(Boolean).join(' · ')}</span>
-          </button>
+          </Link>
         ))}
         {threads.length === 0 && <div className="rail-empty">no conversations</div>}
       </div>

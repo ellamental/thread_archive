@@ -133,8 +133,10 @@ describe('TopicView', () => {
     expect(strip).toHaveTextContent('quote selection')
     expect(strip).toHaveTextContent('scoring')
     expect(strip).not.toHaveTextContent('A Conversation')
-    // a chip navigates to the parent topic
-    await user.click(screen.getByRole('button', { name: 'Needle' }))
+    // a chip is a real link to the parent topic (deep-linkable, middle-clickable)
+    const chip = screen.getByRole('link', { name: 'Needle' })
+    expect(chip).toHaveAttribute('href', '/topic/2')
+    await user.click(chip)
     expect(await screen.findByText(/part of|topic unavailable/)).toBeInTheDocument()
   })
 

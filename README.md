@@ -84,13 +84,10 @@ sed "s|ABSOLUTE_REPO_PATH|$(pwd)|g" .mcp.json.example > .mcp.json
 ```
 
 Restart Claude Code in the repo so it loads `.mcp.json` (the search + librarian MCP
-servers) and `.claude/` (the `/librarian` skill + its enforcement hook). Then curate —
-`/librarian` interactively (topic citations + a stored summary per thread), or for a
-large backlog the bulk driver:
-
-```bash
-.venv/bin/python scripts/librarian_backfill.py --workers 4 --batch 25
-```
+servers) and `.claude/` (the `/librarian` skill + its enforcement hook). Then curate:
+`/librarian` works the queue until it's empty (topic citations + a stored summary per
+thread), or pass a per-run cap (`/librarian 25`) and re-run across sessions for a
+large backlog.
 
 ## CLI
 
@@ -148,7 +145,7 @@ src/thread_archive/
   _thread_import/   # vendored provider parsers (a clean, dependency-free island)
 frontend/           # the viewer's React+Vite source (dev-only; builds into _web/static/)
 host/               # operator layer: Makefile over `archive daemon`, backup agent, family-manifest writer
-scripts/            # operator tools (e.g. the librarian backfill driver)
+scripts/            # operator tools (coverage gate, retrieval eval)
 tests/install/      # isolated Docker install test + fixtures
 ```
 

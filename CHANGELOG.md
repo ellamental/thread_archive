@@ -2,6 +2,31 @@
 
 ## Unreleased
 
+- **Viewer navigation is real links (2026-07-16).** Topic rows, tree titles,
+  hierarchy/peer chips, link and citation rows, search hits, and the sidebar rail
+  were `<button onClick={navigate}>` — no `href`, so no middle-click, cmd-click,
+  or copy-link. All of them are now router `<Link>` anchors; every topic and
+  thread row deep-links to its `/topic/:id` / `/archive/:id` URL.
+
+- **A new house ratchet: no new private-target patches (2026-07-16).**
+  `tests/meta/test_no_private_patch.py` counts every test patch of an
+  underscore-private — `monkeypatch.setattr(mod, "_helper", ...)` or
+  `patch.object(mod, "_helper", ...)` — and freezes the count
+  behind a shrink-only per-file baseline (146 call-sites frozen here).
+  Faking a module's own private couples the test to the implementation's
+  internal shape and leaves the real code unexercised; the paydown is
+  exercising the public surface over real data, or promoting the seam to a
+  public knob and injecting through it.
+
+- **The parallel backfill driver is gone (2026-07-16).**
+  `scripts/librarian_backfill.py` and the lease-claim layer that existed only for
+  it (`_knowledge/_claims.py`, the `$THREAD_ARCHIVE_LIBRARIAN_WORKER`
+  claim-on-read path and `exclude_ids` in `review_queue`, the
+  `.librarian-claims.json` file) are removed. The queue is state-free — done =
+  the thread carries a citation + summary — so serial `/librarian` runs (or the
+  host's hourly drain) stop and resume cleanly without worker coordination; the
+  claim machinery had no other consumer.
+
 - **The knowledge graph reads back out through the agent surfaces (2026-07-16).**
   The curation layer was write-only for agents: no way to list a topic's citations,
   read a topic as anything but a stub, or scope a search to a topic. Three additions,

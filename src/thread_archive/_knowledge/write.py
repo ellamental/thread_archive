@@ -29,7 +29,6 @@ from __future__ import annotations
 
 import functools
 import json
-import os
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
@@ -413,8 +412,7 @@ def set_thread_summary(
 # ── curation-read surface ────────────────────────────────────────────────────────
 def review_queue(
     limit: int = 20, *, exclude_source_id: Optional[str] = None,
-    exclude_ids: Optional[list[int]] = None, quiet_minutes: int = 60,
-    session: Optional[Session] = None,
+    quiet_minutes: int = 60, session: Optional[Session] = None,
 ) -> list[dict]:
     """Conversation threads with librarian work left — the backlog.
 
@@ -427,27 +425,13 @@ def review_queue(
     carries* — a thread leaves the queue the instant it has BOTH its first live topic
     citation (or a link touching it) AND a non-empty stored summary; there is no
     processed-list to keep in sync. That makes the queue idempotent (a half-done
-    thread simply reappears) and safe to drain even if two workers briefly overlap.
-    The librarian-gate forces both halves per processed thread, so done ⇒ cited +
-    summarized.
+    thread simply reappears) and safe to drain even if two librarian runs briefly
+    overlap. The librarian-gate forces both halves per processed thread, so done ⇒
+    cited + summarized.
 
     ``quiet_minutes`` holds back still-ingesting threads: one whose newest event was
     *ingested* inside the window (``recorded_at``, uniform naive-UTC) is likely a live
-    session — its citations would be premature and its summary stale on arrival.
-
-    **Parallel backfill via lease-claims.** When ``$THREAD_ARCHIVE_LIBRARIAN_WORKER`` is
-    set (the backfill driver sets a distinct id per instance), this call *claims* the batch
-    it returns — recording a timestamped lease in ``<home>/.librarian-claims.json`` so other
-    workers skip it, and reclaiming any lease older than an hour (a dead worker's). Launch N
-    instances with distinct worker ids and they self-balance with no central coordinator.
-    Interactive use (no worker id) is a plain read. ``exclude_ids`` filters explicitly and
-    bypasses the claim path (it's how the claim layer asks for the un-held remainder)."""
-    worker = os.environ.get("THREAD_ARCHIVE_LIBRARIAN_WORKER")
-    if worker and session is None and exclude_ids is None:
-        from ._claims import claim_review_batch
-
-        return claim_review_batch(worker, batch=limit, exclude_source_id=exclude_source_id)
-
+    session — its citations would be premature and its summary stale on arrival."""
     has_events = select(Event.id).where(Event.thread_id == Thread.id).exists()
     # 'Curated' = the librarian drew something from this thread: a live (non-archived)
     # topic citation sourced from it, or a link touching it.
@@ -480,8 +464,6 @@ def review_queue(
     ]
     if exclude_source_id:
         conds.append(or_(Thread.source_id.is_(None), Thread.source_id != exclude_source_id))
-    if exclude_ids:
-        conds.append(Thread.id.notin_(exclude_ids))
     with use_session(session) as s:
         rows = s.execute(
             select(Thread.id, Thread.title, Thread.source_id)

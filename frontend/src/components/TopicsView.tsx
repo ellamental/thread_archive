@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
-import { useNavigate, useSearchParams } from 'react-router-dom'
+import { Link, useSearchParams } from 'react-router-dom'
 import { api, type TopicListItem, type TopicsResponse, type TopicTreeNode, type TopicTreeResponse } from '../api'
 
 function fmtDate(iso: string | null): string {
@@ -33,7 +33,6 @@ function communities(topics: TopicListItem[]): Community[] {
 }
 
 function CommunitiesView() {
-  const navigate = useNavigate()
   const [data, setData] = useState<TopicsResponse | null>(null)
   const [err, setErr] = useState<string | null>(null)
   const [filter, setFilter] = useState('')
@@ -83,7 +82,7 @@ function CommunitiesView() {
             </span>
           </div>
           {c.topics.map((t) => (
-            <button className="hit" key={t.id} onClick={() => navigate('/topic/' + t.id)}>
+            <Link className="hit" key={t.id} to={'/topic/' + t.id}>
               <div className="snip">
                 <strong>{t.title || 'topic ' + t.id}</strong>
                 {t.description ? ` — ${t.description}` : ''}
@@ -96,7 +95,7 @@ function CommunitiesView() {
                 )}
                 {t.updated_at && <span className="badge">{fmtDate(t.updated_at)}</span>}
               </div>
-            </button>
+            </Link>
           ))}
         </div>
       ))}
@@ -108,7 +107,6 @@ function CommunitiesView() {
 // so a heavy subtree doesn't wall the page. The title is the link to the topic
 // page; the caret is the only expand/collapse control, so the two don't fight.
 function TreeNode({ node, depth }: { node: TopicTreeNode; depth: number }) {
-  const navigate = useNavigate()
   const [open, setOpen] = useState(depth === 0)
   const kids = node.children
   return (
@@ -121,9 +119,9 @@ function TreeNode({ node, depth }: { node: TopicTreeNode; depth: number }) {
         ) : (
           <span className="tree-caret leaf">·</span>
         )}
-        <button className="tree-title" onClick={() => navigate('/topic/' + node.id)}>
+        <Link className="tree-title" to={'/topic/' + node.id}>
           {node.title || 'topic ' + node.id}
-        </button>
+        </Link>
         {node.topic_kind && <span className="badge">{node.topic_kind}</span>}
         {kids.length > 0 && <span className="src">{kids.length}</span>}
       </div>

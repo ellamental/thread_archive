@@ -48,9 +48,7 @@ def review_queue(limit: int = 20, exclude_source_id: Optional[str] = None) -> st
     stored summary. Threads that ingested events within the last hour are held back
     (a live session's curation would be premature). Pass your own session's
     ``source_id`` as ``exclude_source_id`` to drop your still-growing transcript from the
-    queue. In a parallel backfill (when ``$THREAD_ARCHIVE_LIBRARIAN_WORKER`` is set) this
-    transparently claims its batch under a lease, so concurrent workers don't overlap —
-    you call it the same way regardless. Returns a JSON list of ``{id, title, source_id}``."""
+    queue. Returns a JSON list of ``{id, title, source_id}``."""
     api.open_archive()
     return _dump(_write.review_queue(limit=limit, exclude_source_id=exclude_source_id))
 

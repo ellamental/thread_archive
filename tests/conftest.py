@@ -62,9 +62,6 @@ def _isolate_archive(tmp_path, monkeypatch):
     # The nightly pipeline stamps a family-monitor heartbeat in ~/.thread/logs
     # when that dir exists; a test run must never touch the real box's beat.
     monkeypatch.setenv("THREAD_ARCHIVE_HEARTBEAT_DIR", str(tmp_path / "_family_logs"))
-    # The librarian backfill worker id activates claim-on-read; never let an ambient one
-    # leak into a test that expects a plain queue read.
-    monkeypatch.delenv("THREAD_ARCHIVE_LIBRARIAN_WORKER", raising=False)
     # The MCP server cohosts lazy catch-up ingest around its tools — in a test
     # that would background-import the machine's REAL AI-tool stores and repoint
     # the engine mid-suite. Off; test_lazy_ingest.py exercises it with stubs.

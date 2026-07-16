@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { useNavigate, useSearchParams } from 'react-router-dom'
+import { Link, useSearchParams } from 'react-router-dom'
 import { api, type SearchHit } from '../api'
 
 function fmtDate(iso: string | null): string {
@@ -31,7 +31,6 @@ function group(hits: SearchHit[]): Group[] {
 
 export function SearchView() {
   const [params] = useSearchParams()
-  const navigate = useNavigate()
   const q = params.get('q') ?? ''
   const [hits, setHits] = useState<SearchHit[] | null>(null)
   const [err, setErr] = useState<string | null>(null)
@@ -57,25 +56,21 @@ export function SearchView() {
       {hits &&
         group(hits).map((g) => (
           <div className="group" key={g.threadId}>
-            <button className="gh" onClick={() => navigate('/archive/' + g.threadId)}>
+            <Link className="gh" to={'/archive/' + g.threadId}>
               <span>{g.title || 'thread ' + g.threadId}</span>
               <span className="src">
                 #{g.threadId} · {g.hits.length} hit{g.hits.length > 1 ? 's' : ''}
               </span>
-            </button>
+            </Link>
             {g.hits.map((h) => (
-              <button
-                className="hit"
-                key={h.event_id}
-                onClick={() => navigate(`/archive/${g.threadId}?e=${h.event_id}`)}
-              >
+              <Link className="hit" key={h.event_id} to={`/archive/${g.threadId}?e=${h.event_id}`}>
                 <div className="snip">{h.snippet || h.full_content.slice(0, 280)}</div>
                 <div className="meta">
                   {h.content_type && <span className="badge">{h.content_type}</span>}
                   {h._semantic != null && <span className="badge sem">semantic</span>}
                   {h.occurred_at && <span className="badge">{fmtDate(h.occurred_at)}</span>}
                 </div>
-              </button>
+              </Link>
             ))}
           </div>
         ))}

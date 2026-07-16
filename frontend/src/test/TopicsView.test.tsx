@@ -105,6 +105,8 @@ describe('TopicsView', () => {
     renderTopics()
     // the title shows in the community header too — the row's copy is the last one
     const rows = await screen.findAllByText('Graph Theory')
+    // the row is a real link (deep-linkable, middle-clickable), not a JS-only button
+    expect(rows[rows.length - 1].closest('a')).toHaveAttribute('href', '/topic/7')
     await user.click(rows[rows.length - 1])
     expect(screen.getByText('TOPIC PAGE /topic/7')).toBeInTheDocument()
   })
@@ -181,7 +183,10 @@ describe('TopicsView hierarchy', () => {
       topics_total: 1,
     })
     renderTopics('/topics?view=tree')
-    await user.click(await screen.findByText('Needle'))
+    const title = await screen.findByText('Needle')
+    // the title is a real link (deep-linkable, middle-clickable), not a JS-only button
+    expect(title.closest('a')).toHaveAttribute('href', '/topic/9')
+    await user.click(title)
     expect(screen.getByText('TOPIC PAGE /topic/9')).toBeInTheDocument()
   })
 

@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { useNavigate, useParams } from 'react-router-dom'
+import { Link, useParams } from 'react-router-dom'
 import { api, type TopicDetail, type TopicLink } from '../api'
 import { Markdown } from './Markdown'
 
@@ -17,7 +17,6 @@ function linkLabel(l: TopicLink): string {
 
 export function TopicView() {
   const { id } = useParams()
-  const navigate = useNavigate()
   const topicId = id ? parseInt(id, 10) : NaN
   const [data, setData] = useState<TopicDetail | null>(null)
   const [err, setErr] = useState<string | null>(null)
@@ -33,8 +32,8 @@ export function TopicView() {
   if (err) return <div className="wrap"><div className="empty">topic unavailable: {err}</div></div>
   if (!data) return <div className="wrap"><div className="empty">loading…</div></div>
 
-  const openOther = (l: TopicLink) =>
-    navigate(l.other_type === 'topic' ? '/topic/' + l.other_id : '/archive/' + l.other_id)
+  const otherPath = (l: TopicLink) =>
+    l.other_type === 'topic' ? '/topic/' + l.other_id : '/archive/' + l.other_id
 
   // The hierarchy strip: parents and children read straight off the links the
   // server already returns (part-of is child→parent, contains parent→child).
@@ -63,9 +62,9 @@ export function TopicView() {
               <span className="hier-label">part of</span>
               <span className="chips">
                 {parents.map((p) => (
-                  <button className="chip" key={p.other_id} onClick={() => navigate('/topic/' + p.other_id)}>
+                  <Link className="chip" key={p.other_id} to={'/topic/' + p.other_id}>
                     {p.other_title || 'topic ' + p.other_id}
-                  </button>
+                  </Link>
                 ))}
               </span>
             </div>
@@ -75,9 +74,9 @@ export function TopicView() {
               <span className="hier-label">contains</span>
               <span className="chips">
                 {children.map((c) => (
-                  <button className="chip" key={c.other_id} onClick={() => navigate('/topic/' + c.other_id)}>
+                  <Link className="chip" key={c.other_id} to={'/topic/' + c.other_id}>
                     {c.other_title || 'topic ' + c.other_id}
-                  </button>
+                  </Link>
                 ))}
               </span>
             </div>
@@ -99,7 +98,7 @@ export function TopicView() {
             <span className="src">{data.links.length}</span>
           </div>
           {data.links.map((l) => (
-            <button className="hit" key={`${l.direction}:${l.other_id}:${l.link_type}`} onClick={() => openOther(l)}>
+            <Link className="hit" key={`${l.direction}:${l.other_id}:${l.link_type}`} to={otherPath(l)}>
               <div className="snip">
                 <span className="badge">{linkLabel(l)}</span>{' '}
                 <strong>{l.other_title || `thread ${l.other_id}`}</strong>
@@ -109,7 +108,7 @@ export function TopicView() {
                 <span className="badge">{l.other_type}</span>
                 <span className="badge">strength {l.strength.toFixed(2)}</span>
               </div>
-            </button>
+            </Link>
           ))}
         </div>
       )}
@@ -121,17 +120,13 @@ export function TopicView() {
             <span className="src">{data.evidence.length}</span>
           </div>
           {data.evidence.map((ev) => (
-            <button
-              className="hit"
-              key={ev.event_id}
-              onClick={() => navigate(`/archive/${ev.thread_id}?e=${ev.event_id}`)}
-            >
+            <Link className="hit" key={ev.event_id} to={`/archive/${ev.thread_id}?e=${ev.event_id}`}>
               <div className="snip">“{ev.quote}”</div>
               <div className="meta">
                 <span className="badge">{ev.thread_title || 'thread ' + ev.thread_id}</span>
                 {ev.created_at && <span className="badge">{fmtDate(ev.created_at)}</span>}
               </div>
-            </button>
+            </Link>
           ))}
         </div>
       )}
@@ -141,9 +136,9 @@ export function TopicView() {
           <div className="gh"><span>community peers</span></div>
           <div className="chips">
             {data.peers.map((p) => (
-              <button className="chip" key={p.thread_id} onClick={() => navigate('/topic/' + p.thread_id)}>
+              <Link className="chip" key={p.thread_id} to={'/topic/' + p.thread_id}>
                 {p.title || 'topic ' + p.thread_id}
-              </button>
+              </Link>
             ))}
           </div>
         </div>

@@ -16,7 +16,7 @@ librarian.
 ```bash
 python3 --version          # need >= 3.14
 git rev-parse --show-toplevel   # confirms you're in the clone; this is REPO_ROOT
-claude --version           # the CLI you'll spawn for the backfill
+claude --version           # the CLI the curation skill runs in
 ```
 
 If `python3` is older than 3.14, stop and tell the human — nothing below will work.
@@ -123,25 +123,16 @@ gated by `.claude/hooks/librarian-gate.py` — it forces one-thread-at-a-time (e
 thread cited + summarized before the next opens), so an instance can't skim the queue
 without doing the work.
 
-**Decision point #2 — ask the human** how big their backlog is and whether to backfill
-now (`archive status` shows the rough size). Then:
-
-- **Interactively / small backlog:** run `/librarian` in the session. It drains until the
-  queue is empty (or pass a cap, e.g. `/librarian 25`).
-- **Bulk backfill / thousands of threads:** run the driver, which spawns headless
-  `/librarian` instances in a loop until the queue is empty:
-  ```bash
-  .venv/bin/python scripts/librarian_backfill.py --workers 4 --batch 25
-  ```
-  Pick `--workers` for the machine (each is a concurrent opus instance + its writes;
-  start at 2–4). Each instance **claims** the batches it works under a timestamped lease
-  (`<home>/.librarian-claims.json`), so concurrent workers self-balance without overlap; a
-  crashed worker loses nothing — its lease lapses within the hour and another picks the
-  threads up. Re-running the driver later processes only new, still-undone threads.
+**Decision point #2 — ask the human** how big their backlog is and how much to curate
+now (`archive status` shows the rough size). Run `/librarian` in the session — it
+drains until the queue is empty, or pass a per-run cap (e.g. `/librarian 25`) and
+re-run across sessions to work a large backlog down in slices. The queue is state-free
+(done = the thread carries a citation + summary), so runs can stop and resume at any
+point — a later run picks up only what's still undone.
 
 ## Done
 
 Report to the human: install verified (tests green), `.mcp.json` written, archive
-populated (give the `archive status` counts), and the librarian's state (run interactively,
-backfilled, or deferred). If you deferred the backfill, tell them the one command to start
+populated (give the `archive status` counts), and the librarian's state (run, partially
+run, or deferred). If curation was deferred, tell them `/librarian` is the way to start
 it.

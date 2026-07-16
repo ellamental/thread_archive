@@ -17,6 +17,10 @@ body {
   font: 14px/1.55 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
 }
 button { font: inherit; color: inherit; background: none; border: none; cursor: pointer; text-align: left; }
+/* Nav rows/chips are real anchors (deep-linkable, middle-clickable); the class carries
+   the affordance, not anchor blue. :where() keeps specificity at zero so class rules
+   (e.g. .chip's accent color) still win. */
+:where(a.hit, a.chip, a.gh, a.tree-title, a.rail-item, a.rail-link) { color: inherit; text-decoration: none; }
 
 .app { display: flex; height: 100vh; }
 
