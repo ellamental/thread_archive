@@ -24,24 +24,17 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  # The Python bar. The matrix proves the suite runs across every supported
-  # interpreter (pyproject requires-python >=3.11, classifiers 3.11–3.13); the
-  # single-version quality gates (ruff, mypy, coverage floor) run only on the
-  # primary leg, whose calibration they're pinned to.
+  # The Python bar: ruff + mypy + the pytest suite with its coverage floor, on
+  # the interpreter this project runs (3.14) — the single version pyproject
+  # declares (requires-python >=3.14), so the gate tests what we actually use.
   python:
     runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        python-version: ["3.11", "3.12", "3.13"]
-    env:
-      PRIMARY: "3.13"
     steps:
       - uses: actions/checkout@v4
 
       - uses: actions/setup-python@v5
         with:
-          python-version: ${{ matrix.python-version }}
+          python-version: "3.14"
           cache: pip
           cache-dependency-path: pyproject.toml
 
@@ -49,15 +42,13 @@ jobs:
         run: pip install -e ".[dev]"
 
       - name: Ruff
-        if: matrix.python-version == env.PRIMARY
         run: ruff check .
 
       - name: Mypy
-        if: matrix.python-version == env.PRIMARY
         run: mypy
 
-      # Coverage rides every leg (blind spots stay visible in the term report);
-      # the JSON report feeds the coverage-gate step on the primary leg.
+      # Coverage floor feeds the coverage-gate step; the term report keeps blind
+      # spots visible in the row output.
       - name: Pytest
         run: >
           pytest -q --tb=short -p no:cacheprovider
@@ -65,7 +56,6 @@ jobs:
           --cov-report=term --cov-report=json:coverage.json
 
       - name: Coverage floors
-        if: matrix.python-version == env.PRIMARY
         run: python scripts/coverage_gate.py coverage.json
 
   # The web viewer's gates. tsc --noEmit (not a build — the SPA ships pre-built
@@ -105,7 +95,7 @@ jobs:
 
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.13"
+          python-version: "3.14"
           cache: pip
           cache-dependency-path: pyproject.toml
 

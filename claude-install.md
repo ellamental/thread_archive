@@ -14,12 +14,12 @@ librarian.
 ## 0. Preconditions (check, don't assume)
 
 ```bash
-python3 --version          # need >= 3.11
+python3 --version          # need >= 3.14
 git rev-parse --show-toplevel   # confirms you're in the clone; this is REPO_ROOT
 claude --version           # the CLI you'll spawn for the backfill
 ```
 
-If `python3` is older than 3.11, stop and tell the human — nothing below will work.
+If `python3` is older than 3.14, stop and tell the human — nothing below will work.
 
 ## 1. Create the venv and install the package
 

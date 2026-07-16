@@ -41,7 +41,7 @@ output; review a sample before sharing.
 
 | file | role |
 |------|------|
-| `Dockerfile` | clean `python:3.12-slim`, installs `.[dev]`, runs `run_in_container.sh` |
+| `Dockerfile` | clean `python:3.14-slim`, installs `.[dev]`, runs `run_in_container.sh` |
 | `run_install_test.sh` | host: build the image + run (mounts the obfuscated corpus if present) |
 | `run_in_container.sh` | container entrypoint: unit suite + e2e check |
 | `make_fixtures.py` | the synthetic provider corpus (safe to commit) |

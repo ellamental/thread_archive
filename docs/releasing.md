@@ -20,8 +20,8 @@ hatch reads it from there. Nothing else carries the number.
   venv, and runs the real entry points. Even without a registry this is the
   gate that proves a fresh-clone install actually works (files present,
   console scripts wired), rather than only the long-lived editable install.
-- GitHub CI green on `main` (ruff, mypy, coverage floor, the 3.11–3.13
-  matrix, frontend checks, and the same package lane).
+- GitHub CI green on `main` (ruff, mypy, coverage floor, the pytest suite on
+  3.14, frontend checks, and the same package lane).
 - If `frontend/` changed since the last release, the committed
   `_web/static/` bundle must be current: `cd frontend && npm run build`,
   and the regenerated static assets committed with the change that caused

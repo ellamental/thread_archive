@@ -1,7 +1,7 @@
 # thread-archive
 
 [![CI](https://github.com/ellamental/thread_archive/actions/workflows/ci.yml/badge.svg)](https://github.com/ellamental/thread_archive/actions/workflows/ci.yml)
-[![Python](https://img.shields.io/badge/python-3.11%20|%203.12%20|%203.13-blue)](https://github.com/ellamental/thread_archive)
+[![Python](https://img.shields.io/badge/python-3.14-blue)](https://github.com/ellamental/thread_archive)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 
 A serverless-native, single-user local archive for AI conversations.
@@ -22,7 +22,7 @@ no server, no external services, and no ties to any host application.
 
 Installs the `thread_archive` setup command, the `archive` operator CLI,
 both MCP servers (`archive-mcp`, `archive-librarian-mcp`), and the pre-built
-web viewer — no node. pip needs Python ≥ 3.11.
+web viewer — no node. pip needs Python ≥ 3.14.
 
 ```bash
 pip install git+https://github.com/ellamental/thread_archive.git   # lexical core (+ Leiden community detection)
