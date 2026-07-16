@@ -50,6 +50,7 @@ CLI_VERBS = {
     "redact",
     "unredact",
     "daemon",
+    "curate",
 }
 
 

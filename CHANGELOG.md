@@ -2,6 +2,24 @@
 
 ## Unreleased
 
+- **The librarian has a driver: scheduled self-curation ships with the wizard.**
+  New `_curation` module + `archive curate librarian|gardener` verb: each run
+  gates on work left (read-only SQLite counts mirroring the review/garden
+  queues), then spawns a headless `claude --print` against a generated strict
+  MCP config (the archive's two servers, nothing else), bounded by a batch cap
+  and hard timeout, heartbeating under `<home>/logs/` either way. The drain
+  prompts (librarian: ~3+ citations + a search-first summary per thread;
+  gardener: merge dupes / connect singletons / grow the hierarchy) ship as
+  package data. Two new LaunchAgents (`com.thread-archive.librarian` hourly,
+  `com.thread-archive.gardener` daily 05:00) via `archive daemon install
+  --librarian/--gardener`, and the setup wizard now offers them as its
+  curation step (skippable; `--skip-curation`; needs the `claude` CLI).
+  Addresses the archive-bare review finding that "a memory that organizes
+  itself" was a toolbox with no scheduled runner. Each fire also mirrors its
+  heartbeat into the thread-family logs dir
+  (`archive-librarian.heartbeat` / `archive-gardener.heartbeat`, same contract
+  as the nightly's family heartbeat) so thread-monitor can watch the drains.
+
 - **Private-patch debt paid to zero: 146 → 0 (2026-07-16).** Every test that
   faked a `_private` now goes through a front door, and the
   `test_no_private_patch.py` baseline is empty. The redesigns that carried it:

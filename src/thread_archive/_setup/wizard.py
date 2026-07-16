@@ -4,7 +4,8 @@ The consumer front door: install the package, run ``thread_archive``, and the
 product explains itself — it discovers the machine's conversation stores and
 shows what it found *before* touching anything, states exactly where copies
 will live (local only), imports with consent and narration, then offers the
-always-on watcher, a scheduled nightly backup, and MCP wiring. Every step can
+always-on watcher, a scheduled nightly backup, MCP wiring, and scheduled
+self-curation (the hourly librarian + daily gardener drains). Every step can
 be skipped, and decisions persist in ``<home>/config.json`` (see
 :mod:`.._config`) where every ingest path respects them.
 
@@ -118,11 +119,13 @@ def run_setup(
     offer_watcher: Optional[Callable] = None,
     offer_backup: Optional[Callable] = None,
     offer_mcp: Optional[Callable] = None,
+    offer_curation: Optional[Callable] = None,
 ) -> int:
-    """Discover → consent → import → watcher → MCP wiring. Returns exit code.
+    """Discover → consent → import → watcher → MCP wiring → curation. Returns
+    exit code.
 
     The flow's collaborators are keyword parameters: ``interactive`` overrides
-    the TTY auto-detect, ``ask`` is the prompt, and the three ``offer_*`` steps
+    the TTY auto-detect, ``ask`` is the prompt, and the ``offer_*`` steps
     default to this module's own (None → the real step) — so tests script a
     run without faking wizard internals.
     """
@@ -230,7 +233,11 @@ def run_setup(
     cfg["setup"]["clients"] = {"claude": (offer_mcp or _offer_mcp)(args, interactive)}
     _say()
 
-    # 7. Done.
+    # 7. Scheduled self-curation (after MCP wiring: it needs the same claude CLI).
+    cfg["setup"]["curation"] = (offer_curation or _offer_curation)(args, interactive)
+    _say()
+
+    # 8. Done.
     cfg["setup"]["completed_at"] = datetime.now().astimezone().isoformat(timespec="seconds")
     save_config(cfg, args.home)
     _say("Done. Ask your agent: \"what have we discussed about …?\"")
@@ -393,6 +400,60 @@ def _offer_backup(args: argparse.Namespace, interactive: bool) -> dict:
     return {"status": "launchd", "dest": str(dest_path)}
 
 
+def _offer_curation(
+    args: argparse.Namespace, interactive: bool, ask: Callable[..., str] = _ask
+) -> str:
+    """Offer the scheduled self-curation drains (hourly librarian + daily
+    gardener). Returns the recorded outcome."""
+    from . import clients
+
+    if args.skip_curation:
+        _say("Scheduled curation skipped (--skip-curation).")
+        return "skipped"
+    if sys.platform != "darwin":
+        _say("Keep it organized: scheduled curation ships for macOS only right now.")
+        _say("  Point your own scheduler at `archive curate librarian` (hourly) and")
+        _say("  `archive curate gardener` (daily) to get the same behavior.")
+        return "unavailable"
+    if clients.claude_cli() is None:
+        _say("Keep it organized: scheduled curation needs the `claude` CLI (Claude Code),")
+        _say("  which wasn't found. Once it's installed, `archive daemon install")
+        _say("  --librarian` and `--gardener` schedule the drains.")
+        return "no-claude"
+
+    from .. import _launchd
+
+    if curation_running(args.home):
+        _say("Keep it organized: the librarian/gardener schedule is already installed.")
+        return "already-installed"
+
+    _say("Keep it organized? Two scheduled agents (launchd) run Claude against this")
+    _say("archive's own MCP servers — an hourly librarian links and summarizes new")
+    _say("conversations so they're findable by topic, and a daily gardener tends the")
+    _say("topic graph (merges duplicates, grows the hierarchy). Runs are skipped")
+    _say("cheaply when there's no new work; launched runs spend your existing")
+    _say("`claude` login's usage.")
+    answer = ask(
+        "  [Enter] schedule both · s = skip (curate on demand: `archive curate …`)  > ",
+        default="", interactive=interactive,
+    )
+    if answer in ("s", "n", "no"):
+        _say("  Skipped — `archive curate librarian|gardener` runs one drain by hand;")
+        _say("  `thread_archive setup` to revisit.")
+        return "skipped"
+    try:
+        _launchd.install_librarian(args.home)
+        _launchd.install_gardener(args.home)
+    except SystemExit as e:
+        _say(f"  Could not schedule curation: {e}")
+        _say("  Retry with `archive daemon install --librarian` / `--gardener`.")
+        return "failed"
+    _say("  Scheduled — librarian hourly, gardener daily at "
+         f"{_launchd.GARDENER_DEFAULT_HOUR:02d}:{_launchd.GARDENER_DEFAULT_MINUTE:02d}; "
+         "logs in <archive home>/logs/.")
+    return "launchd"
+
+
 def _offer_mcp(
     args: argparse.Namespace, interactive: bool, ask: Callable[..., str] = _ask
 ) -> str:
@@ -449,10 +510,14 @@ def embeddings_installed() -> bool:
         return False
 
 
-def watcher_running(home: Optional[str] = None) -> bool:
-    """Whether the launchd watcher is loaded AND serves *this* home — the agent
-    is per-user, so a loaded agent pointed at a different ``THREAD_ARCHIVE_HOME``
-    (plist env) must not read as covering the home being asked about."""
+def _agent_covers_home(label: str, home: Optional[str]) -> bool:
+    """Whether the launchd agent ``label`` is loaded AND covers *this* home —
+    the agents are per-user, so a loaded agent pointed at a different
+    ``THREAD_ARCHIVE_HOME`` (plist env) must not read as covering the home
+    being asked about. An agent whose plist sets no home env — the ``host/``
+    install shape — is read as the default wiring, so the wizard treats an
+    operator-installed agent as already covering the default home and leaves
+    it alone."""
     if sys.platform != "darwin":
         return False
     import plistlib
@@ -460,46 +525,40 @@ def watcher_running(home: Optional[str] = None) -> bool:
     from .. import _launchd
 
     try:
-        proc = _launchd._launchctl("print", f"gui/{_launchd._uid()}/{_launchd.WATCHER_LABEL}")
+        proc = _launchd._launchctl("print", f"gui/{_launchd._uid()}/{label}")
         if proc.returncode != 0:
             return False
     except OSError:  # pragma: no cover — launchctl missing
         return False
     try:
-        plist = plistlib.loads(_launchd._plist_path(_launchd.WATCHER_LABEL).read_bytes())
+        plist = plistlib.loads(_launchd._plist_path(label).read_bytes())
         agent_home = plist.get("EnvironmentVariables", {}).get("THREAD_ARCHIVE_HOME")
     except (OSError, plistlib.InvalidFileException):
         return True  # loaded, plist unreadable — assume the default wiring
-    agent_paths = resolve_paths(agent_home)
-    return agent_paths.home == resolve_paths(home).home
+    return resolve_paths(agent_home).home == resolve_paths(home).home
+
+
+def watcher_running(home: Optional[str] = None) -> bool:
+    from .. import _launchd
+
+    return _agent_covers_home(_launchd.WATCHER_LABEL, home)
 
 
 def backup_running(home: Optional[str] = None) -> bool:
-    """Whether the launchd nightly-backup agent is loaded AND covers *this* home
-    (per-user agent; a loaded agent pointed at a different ``THREAD_ARCHIVE_HOME``
-    must not read as covering the home being asked about). An agent whose plist
-    sets no home env — the ``host/`` install shape — is read as the default
-    wiring, so the wizard treats the operator's pipeline as already covering the
-    default home and leaves it alone."""
-    if sys.platform != "darwin":
-        return False
-    import plistlib
-
     from .. import _launchd
 
-    try:
-        proc = _launchd._launchctl("print", f"gui/{_launchd._uid()}/{_launchd.BACKUP_LABEL}")
-        if proc.returncode != 0:
-            return False
-    except OSError:  # pragma: no cover — launchctl missing
-        return False
-    try:
-        plist = plistlib.loads(_launchd._plist_path(_launchd.BACKUP_LABEL).read_bytes())
-        agent_home = plist.get("EnvironmentVariables", {}).get("THREAD_ARCHIVE_HOME")
-    except (OSError, plistlib.InvalidFileException):
-        return True  # loaded, plist unreadable — assume the default wiring
-    agent_paths = resolve_paths(agent_home)
-    return agent_paths.home == resolve_paths(home).home
+    return _agent_covers_home(_launchd.BACKUP_LABEL, home)
+
+
+def curation_running(home: Optional[str] = None) -> bool:
+    """Both curation drains scheduled for this home. A half-installed pair
+    (one agent missing) reads as not running, so the wizard re-offers the
+    full schedule."""
+    from .. import _launchd
+
+    return _agent_covers_home(_launchd.LIBRARIAN_LABEL, home) and _agent_covers_home(
+        _launchd.GARDENER_LABEL, home
+    )
 
 
 # ── status ───────────────────────────────────────────────────────────────────
@@ -553,6 +612,11 @@ def print_status(args: argparse.Namespace) -> int:
         else:
             _say("  schedule: no nightly backup — `thread_archive setup` offers it "
                  "(or `archive daemon install --backup --dest <path>`)")
+        if curation_running(args.home):
+            _say("  curation: librarian (hourly) + gardener (daily) scheduled")
+        else:
+            _say("  curation: not scheduled — `thread_archive setup` offers it "
+                 "(or `archive curate librarian|gardener` by hand)")
     _say()
     _say("  search/read: the archive-mcp tools · web viewer: http://127.0.0.1:8787 (with the watcher)")
     _say("  re-run setup: thread_archive setup · operator CLI: archive --help")
@@ -599,6 +663,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--backup-dest", default=None, metavar="PATH",
                         help="setup: schedule nightly backups to PATH without prompting")
     parser.add_argument("--skip-mcp", action="store_true", help="setup: don't offer MCP wiring")
+    parser.add_argument("--skip-curation", action="store_true",
+                        help="setup: don't offer the scheduled librarian/gardener drains")
     parser.add_argument("--version", action="version", version=f"thread-archive {__version__}")
     return parser
 

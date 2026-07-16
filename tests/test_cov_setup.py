@@ -485,7 +485,7 @@ def test_discover_exception_marks_source_absent(archive_home, capsys) -> None:
     good = FakeWatcher("claude-code")
     broken = FakeWatcher("cursor", discover_raises=True)
     rc = wizard.run_setup(
-        _args("setup", "--yes", "--skip-watcher", "--skip-backup", "--skip-mcp"),
+        _args("setup", "--yes", "--skip-watcher", "--skip-backup", "--skip-mcp", "--skip-curation"),
         watchers=[good, broken],
     )
     assert rc == 0
@@ -502,7 +502,7 @@ def test_import_skipped_when_owner_lock_unavailable(archive_home, monkeypatch, c
     monkeypatch.setattr(lazy, "try_ingest_owner_lock", not_owned)
     fake = FakeWatcher("claude-code")
     rc = wizard.run_setup(
-        _args("setup", "--yes", "--skip-watcher", "--skip-backup", "--skip-mcp"),
+        _args("setup", "--yes", "--skip-watcher", "--skip-backup", "--skip-mcp", "--skip-curation"),
         watchers=[fake],
     )
     assert rc == 0
@@ -515,7 +515,7 @@ def test_import_poll_failure_is_reported(archive_home, capsys) -> None:
     # (zero events), and the error summary is printed.
     boom = FakeWatcher("claude-code", poll_raises=True)
     rc = wizard.run_setup(
-        _args("setup", "--yes", "--skip-watcher", "--skip-backup", "--skip-mcp"),
+        _args("setup", "--yes", "--skip-watcher", "--skip-backup", "--skip-mcp", "--skip-curation"),
         watchers=[boom],
     )
     assert rc == 0
@@ -532,6 +532,7 @@ def test_setup_reports_web_viewer_and_missing_embeddings(archive_home, monkeypat
         offer_watcher=lambda args, interactive: "launchd",
         offer_backup=lambda args, interactive: {"status": "skipped"},
         offer_mcp=lambda args, interactive: "skipped",
+        offer_curation=lambda args, interactive: "skipped",
     )
     assert rc == 0
     out = capsys.readouterr().out

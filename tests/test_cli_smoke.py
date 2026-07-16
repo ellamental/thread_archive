@@ -23,7 +23,7 @@ def test_all_subcommands_present() -> None:
     assert set(sub.choices) == {
         "import", "import-export", "watch", "reindex", "embed",
         "status", "backup", "verify", "repair", "restore-drill", "restore",
-        "nightly", "coverage", "redact", "unredact", "daemon",
+        "nightly", "coverage", "redact", "unredact", "daemon", "curate",
     }
 
 

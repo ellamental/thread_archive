@@ -18,7 +18,7 @@
 - Exposed over MCP (`thread_search`, `thread_read`), so Claude (or any MCP client) can search and read your entire history mid-conversation: *"what did we decide about the auth flow in March?"* just works.
 - Redaction with encrypted recovery bundles: scrub secrets from the archive without destroying them irrevocably.
 
-**A memory that organizes itself.** A second MCP server — the librarian — lets an AI agent curate the archive: creating topics, pinning key quotes, and linking related threads into a knowledge graph. Every curation act is itself event-sourced, so you can always see who connected what, and why.
+**A memory that organizes itself.** A second MCP server — the librarian — lets an AI agent curate the archive: creating topics, pinning key quotes, and linking related threads into a knowledge graph. The setup wizard schedules the curators too — an hourly librarian and a daily gardener run headlessly against those servers, so the organizing happens on its own, not just when you ask. Every curation act is itself event-sourced, so you can always see who connected what, and why.
 
 **No server. No cloud. No subscription to lose your history to.** A background watcher keeps it current; everything runs locally.
 
@@ -52,8 +52,13 @@ conversation stores and shows what it found — counts, sizes, date ranges —
 install the always-on watcher (macOS LaunchAgent; includes the web viewer at
 :8787), **schedule a nightly backup** (a second question — *where should
 backups go?* — that installs the daily backup → verify → restore-drill pipeline
-to a disk you name), and wire the MCP servers into detected clients (the
-`claude` CLI, or it prints the JSON block for any other client). Every choice is
+to a disk you name), wire the MCP servers into detected clients (the
+`claude` CLI, or it prints the JSON block for any other client), and **schedule
+self-curation** — an hourly librarian run (topic citations + a stored summary
+per new conversation) and a daily gardener run (merge duplicate topics, grow
+the hierarchy), each a headless `claude` spawn that gates on work left and
+skips cheaply when the queues are empty (`archive curate librarian|gardener`
+runs one by hand). Every choice is
 skippable and
 persists in `<home>/config.json`; a disabled source stays disabled across
 every ingest path. Re-running `thread_archive` shows status; `thread_archive
