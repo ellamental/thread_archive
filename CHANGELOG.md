@@ -2,6 +2,34 @@
 
 ## Unreleased
 
+- **Viewer: subagent runs leave the recent list; an all-threads page arrives.**
+  `/api/threads` now hides `thread_type='system'` (Task-tool subagent runs) by
+  default alongside topics — the importer always intended them "kept out of the
+  sidebar," but the list only filtered topics. A new `types=` CSV param selects
+  exact thread types instead, `/api/thread-types` serves the live type census,
+  and every list row carries its `thread_type`. On top of that: a `/threads`
+  page ("all threads" in the sidebar nav) listing every type newest-first with
+  a checkbox per type to hide it (URL-carried via `?hide=`, so filtered views
+  share/back-navigate), a title filter, per-type row links (topics open their
+  topic page), and a truncation note when the 500-row page fills.
+
+- **Viewer: the search → read workflow got its first real polish pass** (from
+  Sol's review in thread 3716655, trimmed to what held up). `/api/status` now
+  serves a per-home TTL cache (stale-while-revalidate + prewarm at server
+  start) — the survey took ~14s on the live archive and the status bar ran it
+  on every page mount. The structured read carries provenance
+  (`source_id`, `started_at`/`ended_at`, `event_count`) and the reader header
+  shows it; every message offers a copy-permalink button built on the existing
+  `?e=` deep-link ids. The sidebar's search widget grew a filters fold-out
+  (available on every page): the source/date filters the backend already
+  supported (new `/api/sources` feeds the source list; state lives in the URL
+  so back-navigation restores it; a change applies live when a search is on
+  screen, otherwise it arms for the next one),
+  says "top 40 hits shown" when the page is full, and guards against stale
+  responses replacing newer ones. Deliberately not done: custom in-thread find
+  (browser find already auto-expands `<details>`), reduced reading modes, lazy
+  block loading, and transcript pagination (unmeasured/premature).
+
 - **The librarian has a driver: scheduled self-curation ships with the wizard.**
   New `_curation` module + `archive curate librarian|gardener` verb: each run
   gates on work left (read-only SQLite counts mirroring the review/garden
@@ -19,6 +47,12 @@
   heartbeat into the thread-family logs dir
   (`archive-librarian.heartbeat` / `archive-gardener.heartbeat`, same contract
   as the nightly's family heartbeat) so thread-monitor can watch the drains.
+  Model and reasoning effort are per-drain settings in `config.json`
+  (`curation.<kind>.model` / `.effort`; defaults `opus` / `xhigh`, empty
+  effort omits the flag for CLIs that don't know it), and so is cadence
+  (`curation.librarian.interval_minutes`, `curation.gardener.at` "HH:MM" —
+  read at install; re-run `archive daemon install --librarian/--gardener`
+  to apply).
 
 - **Private-patch debt paid to zero: 146 → 0 (2026-07-16).** Every test that
   faked a `_private` now goes through a front door, and the

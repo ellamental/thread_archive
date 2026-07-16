@@ -141,6 +141,58 @@ def test_threads_query_filter(archive_home):
     assert payload["threads"] == []
 
 
+def _seed_subagent(archive_home):
+    """Import a Task-tool subagent transcript the way the watcher does — an
+    ``agent-*`` stem, which the importer files as a ``thread_type='system'`` thread."""
+    from thread_archive._importers import import_session_incremental
+
+    sub_user = {"type": "user", "uuid": "su1", "timestamp": "2026-01-02T10:00:00Z",
+                "sessionId": "parent-sess", "agentId": "agent-web", "cwd": "/proj",
+                "message": {"role": "user", "content": "do the subtask"}}
+    sub_asst = {"type": "assistant", "uuid": "sa1", "timestamp": "2026-01-02T10:00:05Z",
+                "sessionId": "parent-sess", "agentId": "agent-web",
+                "message": {"role": "assistant", "model": "claude-opus-4",
+                            "content": [{"type": "text", "text": "done"}]}}
+    f = archive_home / "agent.jsonl"
+    f.write_text("\n".join(json.dumps(ln) for ln in (sub_user, sub_asst)) + "\n", encoding="utf-8")
+    ta.open_archive(str(archive_home))
+    return import_session_incremental(f, "proj:agent-web").thread_id
+
+
+def test_threads_hides_subagents_by_default(archive_home):
+    # The recent list is for sessions someone opens by recency; subagent runs
+    # (thread_type='system') stay out unless asked for by an explicit types=.
+    _seed(archive_home)
+    sub_id = _seed_subagent(archive_home)
+    _, _, payload = _get("/api/threads")
+    ids = [t["id"] for t in payload["threads"]]
+    assert sub_id not in ids and len(ids) == 1
+    # every row says what it is, so list consumers can badge/filter client-side
+    assert payload["threads"][0]["thread_type"] == "conversation"
+
+
+def test_threads_types_filter_selects_exactly(archive_home):
+    _seed(archive_home)
+    sub_id = _seed_subagent(archive_home)
+    # types=system → only the subagent run
+    _, _, payload = _get("/api/threads", types="system")
+    assert [t["id"] for t in payload["threads"]] == [sub_id]
+    assert payload["threads"][0]["thread_type"] == "system"
+    # types=conversation,system → both, newest first
+    _, _, payload = _get("/api/threads", types="conversation,system")
+    assert len(payload["threads"]) == 2
+    assert payload["threads"][0]["id"] == sub_id  # 2026-01-02 beats 2026-01-01
+
+
+def test_thread_types_vocabulary(archive_home):
+    _seed(archive_home)
+    _seed_subagent(archive_home)
+    status, _, payload = _get("/api/thread-types")
+    assert status == 200
+    counts = {t["thread_type"]: t["threads"] for t in payload["types"]}
+    assert counts == {"conversation": 1, "system": 1}
+
+
 def test_read_endpoint(archive_home):
     _seed(archive_home)
     _, _, search = _get("/api/search", q="hello")
@@ -149,6 +201,48 @@ def test_read_endpoint(archive_home):
     assert status == 200
     assert payload["thread_id"] == tid
     assert "[USER" in payload["transcript"] and "hello webview" in payload["transcript"]
+
+
+def test_status_survey_is_cached(archive_home, monkeypatch):
+    # The status bar asks on every page load while the survey counts every
+    # table, so the route serves a per-home TTL cache: two requests, one survey.
+    from thread_archive._web import server as web_server
+
+    _seed(archive_home)
+    calls = {"n": 0}
+    real = web_server.api.status
+
+    def counting_status(**kw):
+        calls["n"] += 1
+        return real(**kw)
+
+    monkeypatch.setattr(web_server.api, "status", counting_status)
+    first = _get("/api/status")
+    second = _get("/api/status")
+    assert first == second
+    assert calls["n"] == 1
+
+
+def test_sources_endpoint(archive_home):
+    _seed(archive_home)
+    status, _, payload = _get("/api/sources")
+    assert status == 200
+    [src] = payload["sources"]
+    assert src["source"] and src["threads"] == 1
+
+
+def test_thread_endpoint_provenance(archive_home):
+    # The structured read carries the reader header's provenance: session id,
+    # first/last event timestamps, and the whole event log's size.
+    _seed(archive_home)
+    _, _, search = _get("/api/search", q="hello")
+    tid = search["hits"][0]["thread_id"]
+    status, _, payload = _get(f"/api/thread/{tid}")
+    assert status == 200 and payload["thread_id"] == tid
+    assert "source_id" in payload
+    assert payload["started_at"] and payload["ended_at"]
+    assert payload["started_at"] <= payload["ended_at"]
+    assert payload["event_count"] >= len(payload["messages"]) > 0
 
 
 def test_read_bad_id_is_404(archive_home):

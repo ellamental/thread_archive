@@ -2,7 +2,7 @@
 // via /api/archive-link, the per-thread model header, and same-model runs
 // merging into one labelled group.
 import { describe, expect, it, vi } from 'vitest'
-import { render, screen } from '@testing-library/react'
+import { fireEvent, render, screen } from '@testing-library/react'
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
 import { ThreadView } from '../components/ThreadView'
 import type { Message, StructuredThread } from '../api'
@@ -103,7 +103,7 @@ describe('ThreadView', () => {
     renderAt('/archive/5?e=12')
     const msg = (await screen.findByText('the hit turn')).closest('.msg')
     expect(msg).toHaveClass('hit-target')
-    expect(msg).toHaveAttribute('id', 'focus-event')
+    expect(msg).toHaveAttribute('id', 'm-1')
     expect(scrolled).toHaveBeenCalled()
     // the non-target message is untouched
     expect(screen.getByText('earlier turn').closest('.msg')).not.toHaveClass('hit-target')
@@ -120,5 +120,31 @@ describe('ThreadView', () => {
     renderAt('/archive/5?e=15')
     const msg = (await screen.findByText('second')).closest('.msg')
     expect(msg).toHaveClass('hit-target')
+  })
+
+  it('shows the provenance line: date span, event count, session id', async () => {
+    mswJson('/api/thread/:id', thread([asst('hi', 'opus')], {
+      source_id: '27056da6-8578-4a8c-ab90-d634702dc42d',
+      started_at: '2026-01-01T10:00:00Z',
+      ended_at: '2026-01-01T11:23:00Z',
+      event_count: 1234,
+    }))
+    renderAt('/archive/5')
+    await screen.findByText('hi')
+    expect(screen.getByText('1,234 events')).toBeInTheDocument()
+    expect(screen.getByText('27056da6-8578-4a8c-ab90-d634702dc42d')).toBeInTheDocument()
+    // start → end rendered as one span
+    expect(screen.getByText(/→/)).toBeInTheDocument()
+  })
+
+  it('copies a per-message permalink built on the message’s first event', async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined)
+    Object.defineProperty(navigator, 'clipboard', { value: { writeText }, configurable: true })
+    mswJson('/api/thread/:id', thread([{ ...asst('linked turn', 'opus'), event_ids: [11, 12] }]))
+    renderAt('/archive/5')
+    await screen.findByText('linked turn')
+    fireEvent.click(screen.getByRole('button', { name: 'copy link to this message' }))
+    expect(await screen.findByText('✓ copied')).toBeInTheDocument()
+    expect(writeText).toHaveBeenCalledWith(expect.stringContaining('/archive/5?e=11'))
   })
 })

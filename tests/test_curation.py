@@ -58,6 +58,9 @@ def test_backlog_launches_bounded_strict_run(archive_home, spawned) -> None:
     args = spawned[0].args
     assert args[0] == "/fake/claude"
     assert "--print" in args
+    # No config.json: the defaults — Opus at xhigh effort.
+    assert args[args.index("--model") + 1] == "opus"
+    assert args[args.index("--effort") + 1] == "xhigh"
     # Unattended run: the strict, dedicated MCP config is the containment.
     assert "--strict-mcp-config" in args
     config_path = args[args.index("--mcp-config") + 1]
@@ -119,6 +122,62 @@ def test_family_heartbeat_mirrored_when_dir_exists(archive_home, spawned, monkey
     monkeypatch.setenv("THREAD_ARCHIVE_HEARTBEAT_DIR", str(absent))
     _curation.run("gardener", gate=lambda home: 0, claude="/fake/claude")
     assert not absent.exists()
+
+
+def test_config_sets_model_and_effort_per_drain(archive_home, spawned) -> None:
+    from thread_archive._config import save_config
+
+    save_config({"curation": {
+        "librarian": {"model": "sonnet", "effort": "high"},
+        # Empty effort is the escape hatch: pass no --effort flag at all.
+        "gardener": {"model": "haiku", "effort": ""},
+    }})
+    _curation.run("librarian", gate=lambda home: 1, claude="/fake/claude")
+    args = spawned[0].args
+    assert args[args.index("--model") + 1] == "sonnet"
+    assert args[args.index("--effort") + 1] == "high"
+    _curation.run("gardener", gate=lambda home: 1, claude="/fake/claude")
+    args = spawned[1].args
+    assert args[args.index("--model") + 1] == "haiku"
+    assert "--effort" not in args
+
+
+def test_malformed_curation_config_falls_back_to_defaults(archive_home) -> None:
+    from thread_archive._config import save_config
+
+    assert _curation.curation_settings("librarian") == ("opus", "xhigh")
+    save_config({"curation": {"librarian": {"model": 7, "effort": None}, "gardener": "nope"}})
+    # Bad model type → default; explicit null effort → omit the flag.
+    assert _curation.curation_settings("librarian") == ("opus", "")
+    # A non-dict drain entry means defaults for that drain.
+    assert _curation.curation_settings("gardener") == ("opus", "xhigh")
+
+
+def test_cadence_config_read_and_validated(archive_home) -> None:
+    from thread_archive._config import save_config
+
+    # Unset: None means "installer default".
+    assert _curation.librarian_interval() is None
+    assert _curation.gardener_at() is None
+    save_config({"curation": {
+        "librarian": {"interval_minutes": 30},
+        "gardener": {"at": "22:45"},
+    }})
+    assert _curation.librarian_interval() == 1800
+    assert _curation.gardener_at() == (22, 45)
+    # Malformed values fail soft to the default cadence, never crash a fire.
+    save_config({"curation": {
+        "librarian": {"interval_minutes": -5},
+        "gardener": {"at": "25:99"},
+    }})
+    assert _curation.librarian_interval() is None
+    assert _curation.gardener_at() is None
+    save_config({"curation": {
+        "librarian": {"interval_minutes": True},
+        "gardener": {"at": "soonish"},
+    }})
+    assert _curation.librarian_interval() is None
+    assert _curation.gardener_at() is None
 
 
 def test_gates_read_missing_index_as_failed(archive_home) -> None:

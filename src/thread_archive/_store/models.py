@@ -42,9 +42,12 @@ from ._types import ARRAY, JSONB, REAL, BigIntPK
 class Thread(Base):
     """An imported conversation, or a curated topic.
 
-    ``thread_type`` is one of just two kinds: 'conversation' (a chat session — the
-    default, what every importer creates) or 'topic' (a curated knowledge node in the
-    topic graph; see :mod:`thread_archive._knowledge`). Modeling a topic *as* a thread is
+    ``thread_type`` has three live kinds: 'conversation' (a chat session — the
+    default, what importers create), 'system' (a subagent/machinery run — captured
+    and searchable but hidden from the default recent-threads list), and 'topic' (a
+    curated knowledge node in the topic graph; see :mod:`thread_archive._knowledge`).
+    Legacy imports carry other type strings (canvas, patch, outliner, …); readers
+    treat the column as an open vocabulary. Modeling a topic *as* a thread is
     deliberate, not leftover polymorphism: it gives topics thread ids, so the graph's
     edges and citations reference a single id space. ``source`` tracks origin
     ('claude-code', 'cursor', 'codex', ...). ``source_metadata`` (JSON) carries branching

@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { Link, useSearchParams } from 'react-router-dom'
-import { api, type SearchHit } from '../api'
+import { api, SEARCH_LIMIT, type SearchHit } from '../api'
 
 function fmtDate(iso: string | null): string {
   if (!iso) return ''
@@ -30,29 +30,54 @@ function group(hits: SearchHit[]): Group[] {
 }
 
 export function SearchView() {
+  // Query and filters both live in the URL (the sidebar's search widget writes
+  // them), so navigating into a thread and coming back — or sharing the
+  // address — restores the exact same result page.
   const [params] = useSearchParams()
   const q = params.get('q') ?? ''
+  const source = params.get('source') ?? ''
+  const since = params.get('since') ?? ''
+  const until = params.get('until') ?? ''
   const [hits, setHits] = useState<SearchHit[] | null>(null)
   const [err, setErr] = useState<string | null>(null)
 
   useEffect(() => {
-    if (!q) return
     setHits(null)
     setErr(null)
+    if (!q) return
+    // Stale guard: only the latest request may land — without it a slow older
+    // search can resolve after a newer one and silently replace its results.
+    let live = true
+    // A bare `until` date resolves server-side to that day's midnight, which
+    // excludes the day itself; a "to" filter should include the chosen day.
     api
-      .search(q)
-      .then((r) => setHits(r.hits))
-      .catch((e) => setErr(String(e.message ?? e)))
-  }, [q])
+      .search(q, {
+        source: source || undefined,
+        since: since || undefined,
+        until: until ? until + 'T23:59:59' : undefined,
+      })
+      .then((r) => live && setHits(r.hits))
+      .catch((e) => live && setErr(String(e.message ?? e)))
+    return () => {
+      live = false
+    }
+  }, [q, source, since, until])
 
   if (!q) return <div className="wrap"><div className="empty">Type a query above.</div></div>
 
+  const filters = [source, since && `from ${since}`, until && `to ${until}`].filter(Boolean)
+
   return (
     <div className="wrap">
-      <div className="submeta">results for “{q}”</div>
+      <div className="submeta">
+        results for “{q}”{filters.length > 0 && ` · ${filters.join(' · ')}`}
+      </div>
       {err && <div className="empty">search error: {err}</div>}
       {!err && hits === null && <div className="empty">searching…</div>}
       {!err && hits && hits.length === 0 && <div className="empty">no matches</div>}
+      {hits && hits.length >= SEARCH_LIMIT && (
+        <div className="submeta">top {SEARCH_LIMIT} hits shown — narrow the query or filters to see the rest</div>
+      )}
       {hits &&
         group(hits).map((g) => (
           <div className="group" key={g.threadId}>

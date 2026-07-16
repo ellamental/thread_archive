@@ -1,6 +1,6 @@
 import { useEffect, useState, type KeyboardEvent } from 'react'
 import { Link, useLocation, useNavigate, useParams, useSearchParams } from 'react-router-dom'
-import { api, type ThreadListItem } from '../api'
+import { api, type SourceCount, type ThreadListItem } from '../api'
 
 function fmtDate(iso: string | null): string {
   if (!iso) return ''
@@ -23,19 +23,53 @@ export function Sidebar() {
   const [threads, setThreads] = useState<ThreadListItem[]>([])
   const [filter, setFilter] = useState('')
 
+  // Search filters ride with the widget (they render on every page), initialized
+  // from the URL so a shared/back-navigated /search address shows its own filters.
+  const [showFilters, setShowFilters] = useState(false)
+  const [sources, setSources] = useState<SourceCount[]>([])
+  const [source, setSource] = useState(params.get('source') ?? '')
+  const [since, setSince] = useState(params.get('since') ?? '')
+  const [until, setUntil] = useState(params.get('until') ?? '')
+  const activeFilters = [source, since, until].filter(Boolean).length
+
+  useEffect(() => {
+    api.sources().then(setSources).catch(() => {})
+  }, [])
+
   useEffect(() => {
     let live = true
-    api.threads(filter || undefined).then((t) => live && setThreads(t)).catch(() => {})
+    api.threads({ q: filter || undefined }).then((t) => live && setThreads(t)).catch(() => {})
     return () => {
       live = false
     }
   }, [filter])
 
+  function searchUrl(q: string, f: { source: string; since: string; until: string }): string {
+    const p = new URLSearchParams({ q })
+    if (f.source) p.set('source', f.source)
+    if (f.since) p.set('since', f.since)
+    if (f.until) p.set('until', f.until)
+    return '/search?' + p.toString()
+  }
+
   function onSearchKey(e: KeyboardEvent<HTMLInputElement>) {
     if (e.key !== 'Enter') return
     const q = term.trim()
-    navigate(q ? '/search?q=' + encodeURIComponent(q) : '/')
+    navigate(q ? searchUrl(q, { source, since, until }) : '/')
   }
+
+  // A filter change applies immediately when a search is already on screen;
+  // otherwise it just sits armed until Enter runs one.
+  function applyFilter(next: { source: string; since: string; until: string }) {
+    setSource(next.source)
+    setSince(next.since)
+    setUntil(next.until)
+    const q = (params.get('q') ?? term).trim()
+    if (pathname === '/search' && q) navigate(searchUrl(q, next), { replace: true })
+  }
+
+  // Keep a URL-carried source selectable even if /api/sources failed or lags.
+  const sourceMissing = source && !sources.some((s) => s.source === source)
 
   return (
     <aside>
@@ -50,10 +84,66 @@ export function Sidebar() {
           onKeyDown={onSearchKey}
           autoComplete="off"
         />
+        <button
+          className={'filters-toggle' + (activeFilters > 0 ? ' on' : '')}
+          aria-expanded={showFilters}
+          onClick={() => setShowFilters((v) => !v)}
+        >
+          {showFilters ? '▾' : '▸'} filters{activeFilters > 0 ? ` · ${activeFilters}` : ''}
+        </button>
+        {showFilters && (
+          <div className="filters-panel">
+            <select
+              className="filter-input"
+              value={source}
+              aria-label="source"
+              onChange={(e) => applyFilter({ source: e.target.value, since, until })}
+            >
+              <option value="">all sources</option>
+              {sourceMissing && <option value={source}>{source}</option>}
+              {sources.map((s) => (
+                <option key={s.source} value={s.source}>
+                  {s.source} ({s.threads.toLocaleString()})
+                </option>
+              ))}
+            </select>
+            <label className="filter-date">
+              from{' '}
+              <input
+                className="filter-input"
+                type="date"
+                aria-label="since"
+                value={since}
+                onChange={(e) => applyFilter({ source, since: e.target.value, until })}
+              />
+            </label>
+            <label className="filter-date">
+              to{' '}
+              <input
+                className="filter-input"
+                type="date"
+                aria-label="until"
+                value={until}
+                onChange={(e) => applyFilter({ source, since, until: e.target.value })}
+              />
+            </label>
+            {activeFilters > 0 && (
+              <button
+                className="filters-clear"
+                onClick={() => applyFilter({ source: '', since: '', until: '' })}
+              >
+                clear filters
+              </button>
+            )}
+          </div>
+        )}
       </div>
       <nav className="rail-nav">
         <Link className={'rail-link' + (onTopics ? ' active' : '')} to="/topics">
           topics
+        </Link>
+        <Link className={'rail-link' + (pathname === '/threads' ? ' active' : '')} to="/threads">
+          all threads
         </Link>
       </nav>
       <div className="rail-head">

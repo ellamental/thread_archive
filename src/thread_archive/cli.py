@@ -215,12 +215,19 @@ def cmd_daemon(args: argparse.Namespace) -> int:
         kind = "librarian" if args.librarian else "gardener"
         label = _launchd.LIBRARIAN_LABEL if args.librarian else _launchd.GARDENER_LABEL
         if args.action == "install":
+            # Cadence: an explicit --at wins; otherwise config.json's
+            # curation.<kind> entry, else the defaults (hourly / daily 05:00).
             if args.librarian:
-                plist = _launchd.install_librarian(args.home)
+                interval = _launchd.resolved_librarian_interval(args.home)
+                plist = _launchd.install_librarian(args.home, interval=interval)
                 print(f"installed {label} ({plist})")
-                print("the librarian drains the review queue hourly (links + summaries);")
+                print(f"the librarian drains the review queue every "
+                      f"{interval // 60} min (links + summaries);")
             else:
-                hour, minute = _parse_hhmm(args.at or "05:00")
+                hour, minute = (
+                    _parse_hhmm(args.at) if args.at
+                    else _launchd.resolved_gardener_schedule(args.home)
+                )
                 plist = _launchd.install_gardener(args.home, hour=hour, minute=minute)
                 print(f"installed {label} ({plist})")
                 print(f"the gardener tends the topic graph daily at {hour:02d}:{minute:02d};")
@@ -1226,7 +1233,8 @@ def build_parser() -> argparse.ArgumentParser:
     p_daemon.add_argument(
         "--at", default=None, metavar="HH:MM",
         help="--backup/--gardener install only: daily fire time, local "
-             "(default: backup 04:00, gardener 05:00)",
+             "(default: backup 04:00; gardener config.json curation.gardener.at, "
+             "else 05:00)",
     )
     p_daemon.add_argument(
         "--notify-url", default=None, metavar="URL",

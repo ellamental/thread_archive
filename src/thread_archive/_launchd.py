@@ -27,7 +27,9 @@ Five agents live here:
   (``com.thread-archive.gardener``) — the scheduled curation drains
   (``archive curate librarian|gardener``, see :mod:`._curation`): the
   librarian hourly on a ``StartInterval``, the gardener daily on a
-  ``StartCalendarInterval``. Both are cheap when there's no work (the gate is
+  ``StartCalendarInterval`` — both cadences configurable in ``config.json``
+  (``curation.librarian.interval_minutes`` / ``curation.gardener.at``),
+  applied at install. Both are cheap when there's no work (the gate is
   one SQLite count), so the schedule can stay dense.
 
 macOS only, deliberately (launchd is the product's process manager). Each
@@ -450,14 +452,35 @@ def backup_status() -> str:
     return _agent_status(BACKUP_LABEL)
 
 
+def resolved_librarian_interval(home: Optional[str] = None) -> int:
+    """The librarian cadence an install applies, seconds: ``config.json``'s
+    ``curation.librarian.interval_minutes`` when set (and valid), else hourly."""
+    from ._curation import librarian_interval
+
+    return librarian_interval(home) or LIBRARIAN_INTERVAL_S
+
+
+def resolved_gardener_schedule(home: Optional[str] = None) -> tuple[int, int]:
+    """The gardener fire time an install applies, ``(hour, minute)``:
+    ``config.json``'s ``curation.gardener.at`` when set (and valid), else the
+    default (offset from the backup's mark)."""
+    from ._curation import gardener_at
+
+    return gardener_at(home) or (GARDENER_DEFAULT_HOUR, GARDENER_DEFAULT_MINUTE)
+
+
 def install_librarian(
-    home: Optional[str] = None, *, interval: int = LIBRARIAN_INTERVAL_S
+    home: Optional[str] = None, *, interval: Optional[int] = None
 ) -> Path:
     """Write the librarian-drain plist and (re)load the agent. Returns the
-    plist path."""
+    plist path. ``interval`` (seconds) defaults from config — see
+    :func:`resolved_librarian_interval`; changing the config means
+    reinstalling (the cadence lives in the plist)."""
     entry = _entry_path("archive")
     from ._config import resolve_paths
 
+    if interval is None:
+        interval = resolved_librarian_interval(home)
     log_dir = resolve_paths(home).home / "logs"
     return _install_agent(
         LIBRARIAN_LABEL,
@@ -477,14 +500,20 @@ def librarian_status() -> str:
 def install_gardener(
     home: Optional[str] = None,
     *,
-    hour: int = GARDENER_DEFAULT_HOUR,
-    minute: int = GARDENER_DEFAULT_MINUTE,
+    hour: Optional[int] = None,
+    minute: Optional[int] = None,
 ) -> Path:
     """Write the gardener-drain plist and (re)load the agent. Returns the
-    plist path."""
+    plist path. ``hour``/``minute`` default from config — see
+    :func:`resolved_gardener_schedule`; changing the config means
+    reinstalling (the cadence lives in the plist)."""
     entry = _entry_path("archive")
     from ._config import resolve_paths
 
+    if hour is None or minute is None:
+        cfg_hour, cfg_minute = resolved_gardener_schedule(home)
+        hour = cfg_hour if hour is None else hour
+        minute = cfg_minute if minute is None else minute
     log_dir = resolve_paths(home).home / "logs"
     return _install_agent(
         GARDENER_LABEL,

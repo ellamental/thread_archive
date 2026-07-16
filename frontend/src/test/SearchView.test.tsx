@@ -6,7 +6,7 @@ import userEvent from '@testing-library/user-event'
 import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom'
 import { SearchView } from '../components/SearchView'
 import type { SearchHit } from '../api'
-import { mswError, mswJson, mswPending } from './msw'
+import { mswError, mswJson, mswPending, recordRequests } from './msw'
 
 // Stub thread page that echoes where it was opened, so hit-click tests can
 // assert the deep-link (?e=<event_id>) and not just that navigation happened.
@@ -90,5 +90,27 @@ describe('SearchView', () => {
     mswJson('/api/search', { query: 'x', hits: [hit({ _semantic: 0.87 })] })
     renderAt('/search?q=x')
     expect(await screen.findByText('semantic')).toBeInTheDocument()
+  })
+
+  it('sends URL-carried filters with the search (until made day-inclusive)', async () => {
+    const requests = recordRequests()
+    mswJson('/api/search', { query: 'x', hits: [] })
+    renderAt('/search?q=x&source=cloth&since=2026-01-01&until=2026-02-01')
+    await screen.findByText('no matches')
+    const search = requests.find((r) => r.startsWith('/api/search'))
+    expect(search).toContain('source=cloth')
+    expect(search).toContain('since=2026-01-01')
+    expect(search).toContain('until=2026-02-01T23%3A59%3A59')
+    // the active filters are echoed on the results line
+    expect(screen.getByText(/cloth · from 2026-01-01 · to 2026-02-01/)).toBeInTheDocument()
+  })
+
+  it('says when only the top page of hits is shown', async () => {
+    mswJson('/api/search', {
+      query: 'x',
+      hits: Array.from({ length: 40 }, (_, i) => hit({ event_id: i + 1, thread_id: 1 })),
+    })
+    renderAt('/search?q=x')
+    expect(await screen.findByText(/top 40 hits shown/)).toBeInTheDocument()
   })
 })

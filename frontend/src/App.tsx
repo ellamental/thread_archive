@@ -5,6 +5,7 @@ import { SearchView } from './components/SearchView'
 import { ThreadView } from './components/ThreadView'
 import { TopicsView } from './components/TopicsView'
 import { TopicView } from './components/TopicView'
+import { AllThreadsView } from './components/AllThreadsView'
 import { Landing } from './components/Landing'
 
 export function App() {
@@ -19,6 +20,7 @@ export function App() {
             <Route path="/search" element={<SearchView />} />
             <Route path="/topics" element={<TopicsView />} />
             <Route path="/topic/:id" element={<TopicView />} />
+            <Route path="/threads" element={<AllThreadsView />} />
             <Route path="/archive/:id" element={<ThreadView />} />
           </Routes>
         </div>

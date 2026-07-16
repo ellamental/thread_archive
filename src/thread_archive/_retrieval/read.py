@@ -1228,7 +1228,11 @@ def read_thread_structured(
 
     ``thread_id`` accepts an integer thread id or a provider session id, same as
     :func:`read_thread` (see :func:`resolve_thread_ref`). Returns
-    ``{thread_id, title, source, messages}`` where ``messages`` is a list of
+    ``{thread_id, title, source, source_id, started_at, ended_at, event_count,
+    messages}`` — the provenance fields feed the viewer's reader header
+    (``started_at``/``ended_at`` are the first/last event's occurred_at;
+    ``event_count`` is the whole event log's size, machinery included, so it can
+    exceed what any toggle combination renders). ``messages`` is a list of
     ``{role, blocks, event_ids, meta}`` — same-role events grouped into a message
     (``event_ids`` names the source events, so the viewer can deep-link a search hit
     to its message), but an assistant
@@ -1244,13 +1248,16 @@ def read_thread_structured(
     with use_session(session) as s:
         resolved = resolve_thread_ref(s, thread_id)
         if resolved is None:
-            return {"thread_id": thread_id, "title": None, "source": None, "messages": []}
+            return _structured_not_found(thread_id)
         thread = s.get(Thread, resolved)
         if thread is None:
-            return {"thread_id": thread_id, "title": None, "source": None, "messages": []}
+            return _structured_not_found(thread_id)
         events = s.execute(
             select(Event).where(Event.thread_id == resolved).order_by(Event.id)
         ).scalars().all()
+    event_count = len(events)
+    started_at = events[0].occurred_at if events else None
+    ended_at = events[-1].occurred_at if events else None
     events = _absorb_stream_deltas(_slot_queued_events(events))
     rendered_text = _rendered_text(events)
 
@@ -1309,5 +1316,17 @@ def read_thread_structured(
         "thread_id": thread.id,
         "title": thread.title or thread.name,
         "source": thread.source,
+        "source_id": thread.source_id,
+        "started_at": started_at.isoformat() if started_at else None,
+        "ended_at": ended_at.isoformat() if ended_at else None,
+        "event_count": event_count,
         "messages": messages,
+    }
+
+
+def _structured_not_found(thread_id: int | str) -> dict:
+    """The empty structured read — same shape as a hit, so consumers never branch."""
+    return {
+        "thread_id": thread_id, "title": None, "source": None, "source_id": None,
+        "started_at": None, "ended_at": None, "event_count": 0, "messages": [],
     }

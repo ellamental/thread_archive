@@ -31,6 +31,12 @@ subprocess) and ``thread-archive-librarian`` (curation writes) — passed with
 ``--mcp-config … --strict-mcp-config`` so whatever other servers the user's
 Claude config carries never leak into an unattended, permission-bypassing run.
 
+Each drain is operator-configurable per drain in ``config.json`` under
+``curation.<kind>``: ``model`` / ``effort`` (defaults: Opus at xhigh effort,
+read at fire time) and cadence — ``interval_minutes`` for the librarian,
+``at`` ("HH:MM") for the gardener — read when the LaunchAgent is
+(re)installed.
+
 Requires the ``claude`` CLI (any login it already has pays for the runs); the
 wizard and ``archive daemon install --librarian/--gardener`` only offer the
 schedule when it's present.
@@ -52,14 +58,17 @@ from importlib import resources
 from pathlib import Path
 from typing import Optional
 
-from .._config import resolve_paths
+from .._config import load_config, resolve_paths
 
 logger = logging.getLogger(__name__)
 
 # The claude CLI's model alias for the latest Opus — capable enough for
 # unattended curation without pinning a dated snapshot id that a user's CLI may
-# not know.
-MODEL = "opus"
+# not know — at its highest reasoning effort (curation quality is worth the
+# tokens; the runs are already batch-capped). Per-drain overrides live in
+# ``config.json`` under ``curation.<kind>.model`` / ``.effort``.
+DEFAULT_MODEL = "opus"
+DEFAULT_EFFORT = "xhigh"
 
 # Hard wall-clock stop for one drain, seconds. Generous — a batch of long
 # threads is slow — and hitting it is a normal exit (the next fire continues).
@@ -184,6 +193,87 @@ DRAINS = {
         gate=gardener_backlog,
     ),
 }
+
+
+def drain_config(kind: str, home: Optional[str] = None) -> dict:
+    """This drain's entry in ``config.json`` (``curation.<kind>``), or ``{}``.
+
+    Fail-soft like every config read: a missing or malformed entry means all
+    defaults, never a dead drain.
+    """
+    entry = load_config(home).get("curation", {})
+    entry = entry.get(kind, {}) if isinstance(entry, dict) else {}
+    return entry if isinstance(entry, dict) else {}
+
+
+def curation_settings(kind: str, home: Optional[str] = None) -> tuple[str, str]:
+    """The ``(model, effort)`` this drain should run with.
+
+    Read from ``config.json`` under ``curation.<kind>`` — e.g.
+    ``{"curation": {"gardener": {"model": "opus", "effort": "xhigh"}}}`` —
+    with each field falling back to the defaults independently. An explicitly
+    empty ``effort`` ("" or null) means "don't pass ``--effort`` at all", the
+    escape hatch for a claude CLI that doesn't know the flag. Fail-soft like
+    every config read: malformed entries mean defaults, never a dead drain.
+    """
+    entry = drain_config(kind, home)
+    model = entry.get("model", DEFAULT_MODEL)
+    effort = entry.get("effort", DEFAULT_EFFORT)
+    if not isinstance(model, str) or not model.strip():
+        model = DEFAULT_MODEL
+    if effort is None:
+        effort = ""
+    elif not isinstance(effort, str):
+        effort = DEFAULT_EFFORT
+    return model.strip(), effort.strip()
+
+
+def librarian_interval(home: Optional[str] = None) -> Optional[int]:
+    """The configured librarian fire interval in **seconds**, or ``None``
+    (use the installer's default).
+
+    Config key: ``curation.librarian.interval_minutes`` (a positive number).
+    Applied when the LaunchAgent is (re)installed, not per fire — edit the
+    config, then re-run ``archive daemon install --librarian``.
+    """
+    raw = drain_config("librarian", home).get("interval_minutes")
+    if raw is None:
+        return None
+    if isinstance(raw, (int, float)) and not isinstance(raw, bool) and raw > 0:
+        return int(raw * 60)
+    logger.warning(
+        "librarian: config interval_minutes=%r is not a positive number — "
+        "using the default cadence", raw,
+    )
+    return None
+
+
+def gardener_at(home: Optional[str] = None) -> Optional[tuple[int, int]]:
+    """The configured daily gardener fire time as ``(hour, minute)``, or
+    ``None`` (use the installer's default).
+
+    Config key: ``curation.gardener.at``, an ``"HH:MM"`` string (local time).
+    Applied when the LaunchAgent is (re)installed, not per fire — edit the
+    config, then re-run ``archive daemon install --gardener``.
+    """
+    raw = drain_config("gardener", home).get("at")
+    if raw is None:
+        return None
+    if isinstance(raw, str):
+        parts = raw.strip().split(":")
+        if len(parts) == 2:
+            try:
+                hour, minute = int(parts[0]), int(parts[1])
+            except ValueError:
+                pass
+            else:
+                if 0 <= hour <= 23 and 0 <= minute <= 59:
+                    return hour, minute
+    logger.warning(
+        "gardener: config at=%r is not an HH:MM time — using the default "
+        "cadence", raw,
+    )
+    return None
 
 
 def resolve_claude() -> Optional[str]:
@@ -311,6 +401,7 @@ def run(
     config_path.parent.mkdir(parents=True, exist_ok=True)
     config_path.write_text(json.dumps(mcp_config(home), indent=2), encoding="utf-8")
 
+    model, effort = curation_settings(kind, home)
     args = [
         cli,
         "--print",
@@ -318,13 +409,17 @@ def run(
         # MCP config below is what keeps the blast radius to the archive's own
         # servers.
         "--permission-mode", "bypassPermissions",
-        "--model", MODEL,
+        "--model", model,
+        *(["--effort", effort] if effort else []),
         "--mcp-config", str(config_path),
         "--strict-mcp-config",
         prompt_text(kind, batch),
     ]
 
-    logger.info("%s: launching headless claude (batch=%d, timeout=%ds)", kind, batch, timeout)
+    logger.info(
+        "%s: launching headless claude (model=%s%s, batch=%d, timeout=%ds)",
+        kind, model, f", effort={effort}" if effort else "", batch, timeout,
+    )
     try:
         # Own session + group-kill on timeout: the instance spawns MCP/tool
         # subprocesses, and timeout is a normal exit path here — a plain

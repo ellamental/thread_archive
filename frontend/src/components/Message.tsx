@@ -240,12 +240,38 @@ function MessageMeta({
   )
 }
 
+// Copy this message's deep link (the same ?e= form search hits use). The copied
+// URL is absolute — it leaves the page, so a relative path would be useless.
+function PermalinkButton({ permalink }: { permalink: string }) {
+  const [copied, setCopied] = useState(false)
+  async function copy() {
+    try {
+      await navigator.clipboard.writeText(new URL(permalink, window.location.href).toString())
+      setCopied(true)
+      setTimeout(() => setCopied(false), 1500)
+    } catch {
+      // clipboard unavailable (permissions, non-secure context) — nothing to show
+    }
+  }
+  return (
+    <button
+      className={'msg-link' + (copied ? ' copied' : '')}
+      title="copy link to this message"
+      aria-label="copy link to this message"
+      onClick={copy}
+    >
+      {copied ? '✓ copied' : '🔗'}
+    </button>
+  )
+}
+
 export function Message({
   message,
   hueForModel,
   continued,
   highlighted,
   anchorId,
+  permalink,
 }: {
   message: Msg
   hueForModel?: Record<string, number>
@@ -258,6 +284,9 @@ export function Message({
   // accented so the eye lands on the matching turn, not the top of the thread.
   highlighted?: boolean
   anchorId?: string
+  // The in-app path deep-linking this message (/archive/<id>?e=<event>); when
+  // present the footer offers a copy-link button.
+  permalink?: string
 }) {
   const [open, setOpen] = useState(false)
   const [raw, setRaw] = useState(false)
@@ -296,6 +325,7 @@ export function Message({
         )}
       </RawContext.Provider>
       <div className="msg-foot">
+        {permalink && <PermalinkButton permalink={permalink} />}
         <button
           className="msg-info"
           title="message info"

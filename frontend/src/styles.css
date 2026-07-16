@@ -71,9 +71,33 @@ h1.title { font-size: 19px; margin: 0 0 4px; }
 .submeta { color: var(--muted); font-size: 12px; margin-bottom: 18px; }
 .toggles { font-size: 12px; color: var(--muted); margin-bottom: 18px; }
 .toggles label { margin-right: 14px; cursor: pointer; }
+
+/* the reader's provenance line: date span, event count, provider session id */
+.provenance { display: flex; flex-wrap: wrap; gap: 12px; margin-top: -12px; }
+.session-id { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11px; }
 .empty { color: var(--muted); padding: 44px 0; text-align: center; }
 
-/* ---- search ---- */
+/* ---- search filters (fold out under the sidebar's search box) ---- */
+.filters-toggle {
+  margin-top: 6px; padding: 2px 4px; font-size: 11px; color: var(--muted);
+  border-radius: 5px;
+}
+.filters-toggle:hover { color: var(--accent); }
+.filters-toggle.on { color: var(--accent); }
+.filters-panel {
+  margin-top: 8px; display: flex; flex-direction: column; gap: 8px;
+  font-size: 12px; color: var(--muted);
+}
+.filter-input {
+  padding: 4px 8px; border: 1px solid var(--line); border-radius: 6px;
+  background: var(--bg); color: var(--ink); font: inherit; font-size: 12px; outline: none;
+  max-width: 100%;
+}
+.filter-input:focus { border-color: var(--accent); }
+.filter-date { display: inline-flex; gap: 6px; align-items: center; }
+.filters-clear { align-self: flex-start; padding: 2px 4px; font-size: 11px; color: var(--muted); }
+.filters-clear:hover { color: var(--accent); }
+
 .group { margin-bottom: 22px; }
 .gh { font-weight: 600; padding: 4px 0; display: flex; gap: 8px; align-items: baseline; width: 100%; }
 .gh:hover { color: var(--accent); }
@@ -192,6 +216,15 @@ h1.title { font-size: 19px; margin: 0 0 4px; }
   color: var(--ink);
 }
 
+/* ---- all threads (the show/hide-by-type checkbox row) ---- */
+.type-filters { display: flex; flex-wrap: wrap; gap: 6px 14px; margin-bottom: 14px; }
+.type-filter {
+  display: inline-flex; gap: 5px; align-items: baseline; font-size: 12px;
+  color: var(--ink); cursor: pointer; user-select: none;
+}
+.type-filter input { cursor: pointer; accent-color: var(--accent); align-self: center; }
+.type-filter:hover { color: var(--accent); }
+
 /* ---- topics ---- */
 .topics-filter { margin-bottom: 18px; }
 h1.topic-title { font-size: 19px; margin: 0 0 6px; }
@@ -222,7 +255,15 @@ h1.topic-title { font-size: 19px; margin: 0 0 6px; }
 }
 
 /* ---- per-message info button + under-message drawer (modeled on cloth turn-meta) ---- */
-.msg-foot { display: flex; justify-content: flex-end; margin-top: 6px; }
+.msg-foot { display: flex; justify-content: flex-end; align-items: center; gap: 6px; margin-top: 6px; }
+/* copy-permalink button: invisible until the message is hovered, like .msg-info */
+.msg-link {
+  border-radius: 6px; padding: 1px 6px; font-size: 11px; color: var(--muted);
+  opacity: 0; transition: opacity .12s ease, color .12s ease;
+}
+.msg:hover .msg-link, .msg-link.copied, .msg-link:focus-visible { opacity: .7; }
+.msg-link:hover { opacity: 1; color: var(--accent); }
+.msg-link.copied { color: var(--accent); }
 .msg-info {
   width: 22px; height: 22px; border-radius: 50%;
   display: flex; align-items: center; justify-content: center;

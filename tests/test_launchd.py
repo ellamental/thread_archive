@@ -17,6 +17,8 @@ from thread_archive._launchd import (
     backup_plist,
     gardener_plist,
     librarian_plist,
+    resolved_gardener_schedule,
+    resolved_librarian_interval,
     watcher_plist,
 )
 
@@ -93,6 +95,21 @@ def test_gardener_plist_shape() -> None:
     custom = gardener_plist(ENTRY, LOG_DIR, home="/data/arc", hour=2, minute=15)
     assert custom["StartCalendarInterval"] == {"Hour": 2, "Minute": 15}
     assert custom["EnvironmentVariables"]["THREAD_ARCHIVE_HOME"] == "/data/arc"
+
+
+def test_resolved_cadence_prefers_config(tmp_path) -> None:
+    # A home with no config: the install-time defaults (hourly / daily 05:00).
+    from thread_archive._config import save_config
+
+    home = str(tmp_path / "arc")
+    assert resolved_librarian_interval(home) == 3600
+    assert resolved_gardener_schedule(home) == (5, 0)
+    save_config({"curation": {
+        "librarian": {"interval_minutes": 120},
+        "gardener": {"at": "03:30"},
+    }}, home)
+    assert resolved_librarian_interval(home) == 7200
+    assert resolved_gardener_schedule(home) == (3, 30)
 
 
 def test_backup_plist_options() -> None:

@@ -14,7 +14,15 @@ export interface ThreadListItem {
   id: number
   title: string | null
   source: string | null
+  // 'conversation' | 'system' (subagent runs) | 'topic' | legacy type strings —
+  // an open vocabulary; /api/thread-types is the live census.
+  thread_type: string
   updated_at: string | null
+}
+
+export interface ThreadTypeCount {
+  thread_type: string
+  threads: number
 }
 
 export interface SearchHit {
@@ -165,8 +173,31 @@ export interface StructuredThread {
   thread_id: number
   title: string | null
   source: string | null
+  // Provenance for the reader header. `event_count` is the whole event log's
+  // size (machinery included), so it normally exceeds messages.length.
+  source_id?: string | null
+  started_at?: string | null
+  ended_at?: string | null
+  event_count?: number
   messages: Message[]
 }
+
+export interface SourceCount {
+  source: string
+  threads: number
+}
+
+// The filters the search endpoint accepts beyond the query itself. since/until
+// are ISO dates; source is one of /api/sources' names.
+export interface SearchFilters {
+  source?: string
+  since?: string
+  until?: string
+}
+
+// One page of hits; when a response comes back full the UI says "top N" and
+// asks for a narrower query instead of pretending the list is complete.
+export const SEARCH_LIMIT = 40
 
 async function getJSON<T>(url: string): Promise<T> {
   const r = await fetch(url)
@@ -176,12 +207,26 @@ async function getJSON<T>(url: string): Promise<T> {
 
 export const api = {
   status: () => getJSON<Status>('/api/status'),
-  threads: (q?: string) =>
-    getJSON<{ threads: ThreadListItem[] }>(
-      '/api/threads?limit=150' + (q ? '&q=' + encodeURIComponent(q) : ''),
-    ).then((d) => d.threads),
-  search: (q: string) =>
-    getJSON<SearchResponse>('/api/search?limit=40&q=' + encodeURIComponent(q)),
+  // No `types` → the server's default view (topics and system/subagent runs
+  // hidden); an explicit list selects exactly those thread types.
+  threads: (opts: { q?: string; types?: string[]; limit?: number } = {}) => {
+    const params = new URLSearchParams({ limit: String(opts.limit ?? 150) })
+    if (opts.q) params.set('q', opts.q)
+    if (opts.types) params.set('types', opts.types.join(','))
+    return getJSON<{ threads: ThreadListItem[] }>('/api/threads?' + params.toString()).then(
+      (d) => d.threads,
+    )
+  },
+  threadTypes: () =>
+    getJSON<{ types: ThreadTypeCount[] }>('/api/thread-types').then((d) => d.types),
+  search: (q: string, filters: SearchFilters = {}) => {
+    const params = new URLSearchParams({ limit: String(SEARCH_LIMIT), q })
+    for (const key of ['source', 'since', 'until'] as const)
+      if (filters[key]) params.set(key, filters[key])
+    return getJSON<SearchResponse>('/api/search?' + params.toString())
+  },
+  sources: () =>
+    getJSON<{ sources: SourceCount[] }>('/api/sources').then((d) => d.sources),
   thread: (id: number, opts: { thinking: boolean; tools: boolean }) =>
     getJSON<StructuredThread>(
       `/api/thread/${id}?thinking=${opts.thinking ? 1 : 0}&tools=${opts.tools ? 1 : 0}`,

@@ -29,6 +29,23 @@ function threadModels(data: StructuredThread): string[] {
   return seen
 }
 
+// "Jan 3, 2026, 10:00 AM → 11:42 AM" — the end collapses to time-of-day when the
+// thread starts and ends on the same date, which almost all do.
+function fmtSpan(start?: string | null, end?: string | null): string | null {
+  if (!start) return null
+  const s = new Date(start)
+  if (isNaN(s.getTime())) return null
+  const from = s.toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' })
+  const e = end ? new Date(end) : null
+  if (!e || isNaN(e.getTime()) || e.getTime() === s.getTime()) return from
+  const sameDay = s.toDateString() === e.toDateString()
+  const to = e.toLocaleString(
+    [],
+    sameDay ? { timeStyle: 'short' } : { dateStyle: 'medium', timeStyle: 'short' },
+  )
+  return `${from} → ${to}`
+}
+
 export function ThreadView() {
   const { id } = useParams()
   const navigate = useNavigate()
@@ -64,10 +81,12 @@ export function ThreadView() {
       .catch((e) => setErr(String(e.message ?? e)))
   }, [threadId, thinking, tools])
 
+  const focusIdx = data ? targetMessageIndex(data, focusEvent) : -1
+
   useEffect(() => {
-    if (!data || isNaN(focusEvent)) return
-    document.getElementById('focus-event')?.scrollIntoView({ block: 'center' })
-  }, [data, focusEvent])
+    if (!data || focusIdx < 0) return
+    document.getElementById('m-' + focusIdx)?.scrollIntoView({ block: 'center' })
+  }, [data, focusIdx])
 
   if (err) return <div className="wrap"><div className="empty">read error: {err}</div></div>
   if (!isNumeric) return <div className="wrap"><div className="empty">resolving {id}…</div></div>
@@ -75,7 +94,7 @@ export function ThreadView() {
 
   const models = threadModels(data)
   const hues = assignHues(models)
-  const focusIdx = targetMessageIndex(data, focusEvent)
+  const span = fmtSpan(data.started_at, data.ended_at)
 
   return (
     <div className="wrap">
@@ -89,6 +108,19 @@ export function ThreadView() {
                 {m}
               </span>
             ))}
+          </span>
+        )}
+      </div>
+      {/* Provenance: this is an archive — say when it happened, which session it
+          was, and how much of a record there is. */}
+      <div className="submeta provenance">
+        {span && <span>{span}</span>}
+        {data.event_count != null && data.event_count > 0 && (
+          <span>{data.event_count.toLocaleString()} events</span>
+        )}
+        {data.source_id && (
+          <span className="session-id" title="provider session id">
+            {data.source_id}
           </span>
         )}
       </div>
@@ -114,6 +146,7 @@ export function ThreadView() {
             prev.role === m.role &&
             (m.role !== 'assistant' ||
               (m.meta?.models?.[0] ?? null) === (prev.meta?.models?.[0] ?? null))
+          const firstEvent = m.event_ids?.[0]
           return (
             <Message
               key={i}
@@ -121,7 +154,10 @@ export function ThreadView() {
               hueForModel={hues}
               continued={continued}
               highlighted={i === focusIdx}
-              anchorId={i === focusIdx ? 'focus-event' : undefined}
+              anchorId={'m-' + i}
+              permalink={
+                firstEvent != null ? `/archive/${data.thread_id}?e=${firstEvent}` : undefined
+              }
             />
           )
         })

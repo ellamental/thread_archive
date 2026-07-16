@@ -16,6 +16,7 @@ import json
 import logging
 import os
 import threading
+import time
 from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -154,19 +155,89 @@ def _csv(params: dict, key: str) -> Optional[list[str]]:
     return [s for s in (x.strip() for x in v.split(",")) if s] or None
 
 
-def _list_threads(*, limit: int, q: Optional[str]) -> list[dict]:
-    """Recent conversation threads for the sidebar (newest first). Topics and
-    archived threads are excluded; ``q`` filters on title/name substring."""
+# /api/status behind a small TTL cache. The survey counts every table — seconds
+# on a large archive — while the status bar asks on every page load, so requests
+# serve the cached survey and a stale one refreshes in the background; only the
+# first request a process ever sees pays the full cost (and serve_in_thread
+# prewarms, so in the cohosted watcher not even that). Keyed by home: one
+# process normally serves one archive, but tests point the engine at a fresh
+# home per test and must not read a stale survey of the previous one.
+_STATUS_TTL = 60.0
+_status_lock = threading.Lock()
+_status_cache: dict[str, tuple[float, dict]] = {}
+_status_refreshing: set[str] = set()
+
+
+def _refresh_status(home: str) -> dict:
+    fresh = api.status()
+    with _status_lock:
+        _status_cache[home] = (time.monotonic(), fresh)
+        _status_refreshing.discard(home)
+    return fresh
+
+
+def _status() -> dict:
+    home = str(api.open_archive().home)
+    with _status_lock:
+        cached = _status_cache.get(home)
+        if cached is not None:
+            age = time.monotonic() - cached[0]
+            if age >= _STATUS_TTL and home not in _status_refreshing:
+                _status_refreshing.add(home)
+                threading.Thread(
+                    target=_refresh_status, args=(home,),
+                    name="archive-web-status", daemon=True,
+                ).start()
+            return cached[1]
+    return _refresh_status(home)
+
+
+def _list_sources() -> list[dict]:
+    """Distinct conversation sources with thread counts, biggest first — the
+    vocabulary for the search page's source filter (topics and archived threads
+    are outside the search corpus, so they don't vote)."""
+    from sqlalchemy import func, select
+
+    from .._store import Thread, get_session
+
+    api.open_archive()
+    with get_session() as s:
+        rows = s.execute(
+            select(Thread.source, func.count())
+            .where(Thread.thread_type != "topic")
+            .where(Thread.archived.is_(False))
+            .group_by(Thread.source)
+            .order_by(func.count().desc(), Thread.source)
+        ).all()
+    return [{"source": r[0], "threads": r[1]} for r in rows if r[0]]
+
+
+# Thread types the recent list hides when no explicit ``types`` filter is given:
+# topics have their own pages, and 'system' threads (Task-tool subagent runs —
+# see the claude-code importer) are machinery, not sessions someone opens by
+# recency. Both stay reachable through /api/threads?types=….
+_DEFAULT_HIDDEN_TYPES = ("topic", "system")
+
+
+def _list_threads(*, limit: int, q: Optional[str], types: Optional[list[str]] = None) -> list[dict]:
+    """Recent threads (newest first). With ``types`` given, exactly those
+    ``thread_type`` values are listed; without it, topics and system threads
+    (subagent runs) are hidden — the sidebar's default. Archived threads never
+    list; ``q`` filters on title/name substring."""
     from sqlalchemy import select
 
     from .._store import Thread, get_session
 
     api.open_archive()  # ensure the engine is up for this process' home
     stmt = (
-        select(Thread.id, Thread.title, Thread.name, Thread.source, Thread.updated_at)
-        .where(Thread.thread_type != "topic")
+        select(Thread.id, Thread.title, Thread.name, Thread.source,
+               Thread.thread_type, Thread.updated_at)
         .where(Thread.archived.is_(False))
     )
+    if types:
+        stmt = stmt.where(Thread.thread_type.in_(types))
+    else:
+        stmt = stmt.where(Thread.thread_type.not_in(_DEFAULT_HIDDEN_TYPES))
     if q:
         like = f"%{q}%"
         stmt = stmt.where(Thread.title.ilike(like) | Thread.name.ilike(like))
@@ -178,10 +249,30 @@ def _list_threads(*, limit: int, q: Optional[str]) -> list[dict]:
             "id": r.id,
             "title": r.title or r.name,
             "source": r.source,
+            "thread_type": r.thread_type,
             "updated_at": r.updated_at.isoformat() if r.updated_at else None,
         }
         for r in rows
     ]
+
+
+def _list_thread_types() -> list[dict]:
+    """Distinct thread types with counts, biggest first — the vocabulary for the
+    all-threads page's type filter. Archived threads don't vote (they don't
+    list), so a type that only exists archived doesn't offer a dead checkbox."""
+    from sqlalchemy import func, select
+
+    from .._store import Thread, get_session
+
+    api.open_archive()
+    with get_session() as s:
+        rows = s.execute(
+            select(Thread.thread_type, func.count())
+            .where(Thread.archived.is_(False))
+            .group_by(Thread.thread_type)
+            .order_by(func.count().desc(), Thread.thread_type)
+        ).all()
+    return [{"thread_type": r[0], "threads": r[1]} for r in rows if r[0]]
 
 
 def _list_topics(*, limit: int, q: Optional[str]) -> dict:
@@ -409,7 +500,10 @@ def route(method: str, path: str, params: dict) -> Response:
         return _ok({"ok": paths.index_path.exists(), "home": str(paths.home)})
 
     if path == "/api/status":
-        return _ok(api.status())
+        return _ok(_status())
+
+    if path == "/api/sources":
+        return _ok({"sources": _list_sources()})
 
     if path == "/api/archive-link":
         # ``id`` may repeat: a caller that cannot tell which of the uuids it can
@@ -463,8 +557,17 @@ def route(method: str, path: str, params: dict) -> Response:
 
     if path == "/api/threads":
         return _ok(
-            {"threads": _list_threads(limit=_int(params, "limit", 100), q=_first(params, "q"))}
+            {
+                "threads": _list_threads(
+                    limit=_int(params, "limit", 100),
+                    q=_first(params, "q"),
+                    types=_csv(params, "types"),
+                )
+            }
         )
+
+    if path == "/api/thread-types":
+        return _ok({"types": _list_thread_types()})
 
     if path == "/api/topics/tree":
         return _ok(_topic_tree())
@@ -558,4 +661,7 @@ def serve_in_thread(*, host: str = "127.0.0.1", port: int = 8787) -> ThreadingHT
         )
     httpd = ThreadingHTTPServer((host, port), _Handler)
     threading.Thread(target=httpd.serve_forever, name="archive-web", daemon=True).start()
+    # Prewarm the status survey so even the first /api/status a fresh process
+    # serves comes from cache instead of paying the multi-second count.
+    threading.Thread(target=_status, name="archive-web-status-warm", daemon=True).start()
     return httpd
