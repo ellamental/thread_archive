@@ -89,15 +89,18 @@ def test_no_subjects_without_evidence(archive_home) -> None:
     assert _subjects.format_subjects_line([]) is None
 
 
-def test_lens_is_fail_soft(archive_home, monkeypatch) -> None:
+def test_lens_is_fail_soft(archive_home) -> None:
     _seed(archive_home)
     hits = search("widget")
 
-    def _boom(*a, **k):
-        raise RuntimeError("subject graph exploded")
+    class _BoomSession:
+        """A session whose every query explodes — in through the lens's own
+        ``session`` parameter, so the real lookup hits the failure."""
 
-    monkeypatch.setattr(_subjects, "_subjects", _boom)
-    assert _subjects.subjects_for_results(hits) == []  # swallowed, no raise
+        def execute(self, *a, **k):
+            raise RuntimeError("subject graph exploded")
+
+    assert _subjects.subjects_for_results(hits, session=_BoomSession()) == []  # swallowed, no raise
 
 
 def test_format_results_shows_subjects_line(archive_home, monkeypatch) -> None:

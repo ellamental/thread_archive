@@ -45,7 +45,7 @@ def _arm_seam(seam: str) -> None:
 
         drain._write_intent = kill_after_intent
     elif seam == "mid_append":
-        real_append = drain._append_line
+        real_append = drain.append_line
         seen = {"n": 0}
 
         def kill_mid_append(path, rec):
@@ -54,7 +54,7 @@ def _arm_seam(seam: str) -> None:
             if seen["n"] >= 3:
                 _die()
 
-        drain._append_line = kill_mid_append
+        drain.append_line = kill_mid_append
     elif seam == "after_drain":
         real_clear = drain._clear_intent
 

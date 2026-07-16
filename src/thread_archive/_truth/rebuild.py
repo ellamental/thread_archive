@@ -227,7 +227,7 @@ def thread_file_load_order(d: Path) -> list[Path]:
     return paths
 
 
-def _load_thread_files(
+def load_thread_files(
     d: Path, engine, batch: int = 5000,
     *, errors: list[tuple[str, int]] | None = None,
 ) -> tuple[int, int]:
@@ -734,7 +734,7 @@ def reindex(*, vectors: bool = False, salvage: bool = False) -> dict:
         loader = build_engine(f"sqlite:///{tmp_path}", enforce_fk=False)
         try:
             init_db(loader)
-            counts["threads"], counts["events"] = _load_thread_files(d, loader, errors=parse_errors)
+            counts["threads"], counts["events"] = load_thread_files(d, loader, errors=parse_errors)
             # The loader counts rows loaded; OR REPLACE + the (thread_id, dedup_key)
             # unique index collapse superseded lines (re-appended ids, same-content
             # twins from a lost-commit re-import, a thread's stale twin at another

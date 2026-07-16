@@ -26,7 +26,8 @@ from __future__ import annotations
 import importlib.util
 import logging
 import os
-import threading
+
+from .model_slot import ModelSlot
 
 logger = logging.getLogger(__name__)
 
@@ -42,11 +43,9 @@ _MODEL_NAME = os.environ.get("THREAD_ARCHIVE_RERANK_MODEL", "BAAI/bge-reranker-v
 # measured on MPS over real 24-doc pools, 8 beats 32 by ~2× at identical scores.
 _PREDICT_BATCH_SIZE = 8
 
-_model = None
-_load_failed = False
-# Serializes _load() so a background warm (mcp.server) and a concurrent first conceptual
-# query can't both construct this ~570M cross-encoder at once.
-_load_lock = threading.Lock()
+# The lazily-loaded ~570M cross-encoder + degrade flag — the public state seam
+# (see ModelSlot).
+SLOT = ModelSlot()
 
 
 def model_name() -> str:
@@ -79,43 +78,42 @@ def is_available() -> bool:
             return False
     except ImportError:
         return False
-    return not _load_failed
+    return not SLOT.load_failed
+
+
+def _construct():
+    """Construct the CrossEncoder (fp16 on an accelerator, fp32 on CPU).
+
+    Raises on any failure — including the ``[embeddings]`` extra being absent —
+    and the slot catches it, caching the failure so the re-rank stage degrades."""
+    try:
+        from sentence_transformers import CrossEncoder
+    except ImportError as e:  # extra absent — degrade via the slot's failure cache
+        raise RuntimeError(f"[embeddings] extra not installed: {e}") from e
+
+    device = _device()
+    model_kwargs = {}
+    if device.startswith(("mps", "cuda")):
+        # fp16 on an accelerator: ~2× the inference speed at scores whose
+        # ordering is indistinguishable from fp32 (measured over real
+        # pools: zero pairwise rank flips). CPU stays fp32 — fp16 there
+        # is emulated and slower.
+        try:
+            import torch
+        except ImportError as e:  # extra absent — degrade via the slot's failure cache
+            raise RuntimeError(f"[embeddings] extra not installed: {e}") from e
+
+        model_kwargs["torch_dtype"] = torch.float16
+    model = CrossEncoder(_MODEL_NAME, device=device, model_kwargs=model_kwargs)
+    logger.info("rerank: loaded %s (device=%s)", _MODEL_NAME, device)
+    return model
 
 
 def _load():
-    """Lazily construct the cached CrossEncoder. None (cached) on any load failure.
-    Double-checked under ``_load_lock`` so a background warm and a first query race to a
-    single construction, not two concurrent heavy loads."""
-    global _model, _load_failed
-    if _model is not None:
-        return _model
-    if _load_failed:
-        return None
-    with _load_lock:
-        if _model is not None:
-            return _model
-        if _load_failed:
-            return None
-        try:
-            from sentence_transformers import CrossEncoder
-
-            device = _device()
-            model_kwargs = {}
-            if device.startswith(("mps", "cuda")):
-                # fp16 on an accelerator: ~2× the inference speed at scores whose
-                # ordering is indistinguishable from fp32 (measured over real
-                # pools: zero pairwise rank flips). CPU stays fp32 — fp16 there
-                # is emulated and slower.
-                import torch
-
-                model_kwargs["torch_dtype"] = torch.float16
-            _model = CrossEncoder(_MODEL_NAME, device=device, model_kwargs=model_kwargs)
-            logger.info("rerank: loaded %s (device=%s)", _MODEL_NAME, device)
-            return _model
-        except Exception as e:  # noqa: BLE001
-            _load_failed = True
-            logger.warning("rerank: model load failed (%s) — re-rank stage degrades", e)
-            return None
+    """The cached CrossEncoder, loading it on first call. None on failure —
+    cached by the slot, so it costs one attempt, not one per query."""
+    return SLOT.get(_construct, lambda e: logger.warning(
+        "rerank: model load failed (%s) — re-rank stage degrades", e))
 
 
 def warm() -> bool:

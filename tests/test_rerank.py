@@ -139,29 +139,37 @@ def test_rerank_scores_none_without_model(monkeypatch) -> None:
 
 
 # ── warm() preload contract (model-free) ─────────────────────────────────────
+class _RecordingSlot(rerank.ModelSlot):
+    """A slot that counts get() calls — swapped in whole (SLOT is the public
+    seam) to prove the heavy loader is never consulted."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.gets = 0
+
+    def get(self, construct, on_error):
+        self.gets += 1
+        return object()
+
+
 def test_warm_skips_the_loader_when_unavailable(monkeypatch) -> None:
     # Extra absent → warm() reports False and never touches the (heavy) model loader.
     for mod in (rerank, embed):
-        loaded = False
-
-        def _boom():  # a _load() that must not run
-            nonlocal loaded
-            loaded = True
-            return object()
-
+        slot = _RecordingSlot()
         monkeypatch.setattr(mod, "is_available", lambda: False)
-        monkeypatch.setattr(mod, "_load", _boom)
+        monkeypatch.setattr(mod, "SLOT", slot)
         assert mod.warm() is False
-        assert loaded is False
+        assert slot.gets == 0
 
 
 def test_warm_reports_the_load_outcome(monkeypatch) -> None:
     # Available + a model loads → True; available + load fails (None) → False (degrade lazily).
     for mod in (rerank, embed):
         monkeypatch.setattr(mod, "is_available", lambda: True)
-        monkeypatch.setattr(mod, "_load", lambda: object())
+        monkeypatch.setattr(mod.SLOT, "model", object())     # already loaded
         assert mod.warm() is True
-        monkeypatch.setattr(mod, "_load", lambda: None)
+        monkeypatch.setattr(mod.SLOT, "model", None)
+        monkeypatch.setattr(mod.SLOT, "load_failed", True)   # cached failure
         assert mod.warm() is False
 
 

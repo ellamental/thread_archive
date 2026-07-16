@@ -526,12 +526,12 @@ def test_import_poll_failure_is_reported(archive_home, capsys) -> None:
 
 
 def test_setup_reports_web_viewer_and_missing_embeddings(archive_home, monkeypatch, capsys) -> None:
-    monkeypatch.setattr(wizard, "_offer_watcher", lambda args, interactive: "launchd")
-    monkeypatch.setattr(wizard, "_offer_backup", lambda args, interactive: {"status": "skipped"})
-    monkeypatch.setattr(wizard, "_offer_mcp", lambda args, interactive: "skipped")
-    monkeypatch.setattr(wizard, "_embeddings_installed", lambda: False)
+    monkeypatch.setattr(wizard, "embeddings_installed", lambda: False)
     rc = wizard.run_setup(
-        _args("setup", "--yes", "--skip-import"), watchers=[]
+        _args("setup", "--yes", "--skip-import"), watchers=[],
+        offer_watcher=lambda args, interactive: "launchd",
+        offer_backup=lambda args, interactive: {"status": "skipped"},
+        offer_mcp=lambda args, interactive: "skipped",
     )
     assert rc == 0
     out = capsys.readouterr().out
@@ -554,14 +554,14 @@ def test_offer_watcher_non_darwin_unavailable(archive_home, monkeypatch) -> None
 
 def test_offer_watcher_already_running(archive_home, monkeypatch, capsys) -> None:
     _force_darwin(monkeypatch)
-    monkeypatch.setattr(wizard, "_watcher_running", lambda home=None: True)
+    monkeypatch.setattr(wizard, "watcher_running", lambda home=None: True)
     assert wizard._offer_watcher(_args("setup"), interactive=False) == "already-running"
     assert "already installed and running" in capsys.readouterr().out
 
 
 def test_offer_watcher_installs(archive_home, monkeypatch, capsys) -> None:
     _force_darwin(monkeypatch)
-    monkeypatch.setattr(wizard, "_watcher_running", lambda home=None: False)
+    monkeypatch.setattr(wizard, "watcher_running", lambda home=None: False)
     recorded = {}
     monkeypatch.setattr(_launchd, "install_watcher",
                         lambda home=None, **kw: recorded.setdefault("home", home) or Path("/x"))
@@ -573,17 +573,19 @@ def test_offer_watcher_installs(archive_home, monkeypatch, capsys) -> None:
 
 def test_offer_watcher_skip_answer(archive_home, monkeypatch, capsys) -> None:
     _force_darwin(monkeypatch)
-    monkeypatch.setattr(wizard, "_watcher_running", lambda home=None: False)
-    monkeypatch.setattr(wizard, "_ask", lambda prompt, *, default, interactive: "s")
+    monkeypatch.setattr(wizard, "watcher_running", lambda home=None: False)
     monkeypatch.setattr(_launchd, "install_watcher",
                         lambda *a, **k: pytest.fail("must not install on skip"))
-    assert wizard._offer_watcher(_args("setup"), interactive=True) == "skipped"
+    assert wizard._offer_watcher(
+        _args("setup"), interactive=True,
+        ask=lambda prompt, *, default, interactive: "s",
+    ) == "skipped"
     assert "lazy catch-up covers freshness" in capsys.readouterr().out
 
 
 def test_offer_watcher_install_failure(archive_home, monkeypatch, capsys) -> None:
     _force_darwin(monkeypatch)
-    monkeypatch.setattr(wizard, "_watcher_running", lambda home=None: False)
+    monkeypatch.setattr(wizard, "watcher_running", lambda home=None: False)
 
     def boom(home=None, **kw):
         raise SystemExit("launchctl bootstrap failed")
@@ -598,7 +600,7 @@ def test_offer_watcher_install_failure(archive_home, monkeypatch, capsys) -> Non
 
 def test_offer_backup_relative_dest_is_resolved(archive_home, monkeypatch, capsys) -> None:
     _force_darwin(monkeypatch)
-    monkeypatch.setattr(wizard, "_backup_running", lambda home=None: False)
+    monkeypatch.setattr(wizard, "backup_running", lambda home=None: False)
     recorded = {}
     monkeypatch.setattr(_launchd, "install_backup",
                         lambda dest, home=None, **kw: recorded.update(dest=dest))
@@ -613,7 +615,7 @@ def test_offer_backup_relative_dest_is_resolved(archive_home, monkeypatch, capsy
 
 def test_offer_backup_install_failure(archive_home, monkeypatch, capsys) -> None:
     _force_darwin(monkeypatch)
-    monkeypatch.setattr(wizard, "_backup_running", lambda home=None: False)
+    monkeypatch.setattr(wizard, "backup_running", lambda home=None: False)
 
     def boom(dest, home=None, **kw):
         raise SystemExit("launchctl bootstrap failed")
@@ -650,18 +652,22 @@ def test_offer_mcp_already_wired(archive_home, monkeypatch, capsys) -> None:
 def test_offer_mcp_print_only_answer(archive_home, monkeypatch, capsys) -> None:
     monkeypatch.setattr(clients, "claude_cli", lambda: "/bin/claude")
     monkeypatch.setattr(clients, "claude_has_server", lambda cli: False)
-    monkeypatch.setattr(wizard, "_ask", lambda prompt, *, default, interactive: "p")
     monkeypatch.setattr(clients, "wire_claude",
                         lambda cli: pytest.fail("print-only must not wire"))
-    assert wizard._offer_mcp(_args("setup"), interactive=True) == "printed"
+    assert wizard._offer_mcp(
+        _args("setup"), interactive=True,
+        ask=lambda prompt, *, default, interactive: "p",
+    ) == "printed"
     assert "mcpServers" in capsys.readouterr().out
 
 
 def test_offer_mcp_skip_answer(archive_home, monkeypatch, capsys) -> None:
     monkeypatch.setattr(clients, "claude_cli", lambda: "/bin/claude")
     monkeypatch.setattr(clients, "claude_has_server", lambda cli: False)
-    monkeypatch.setattr(wizard, "_ask", lambda prompt, *, default, interactive: "s")
-    assert wizard._offer_mcp(_args("setup"), interactive=True) == "skipped"
+    assert wizard._offer_mcp(
+        _args("setup"), interactive=True,
+        ask=lambda prompt, *, default, interactive: "s",
+    ) == "skipped"
     assert "thread_archive setup" in capsys.readouterr().out
 
 
@@ -693,73 +699,77 @@ def test_offer_mcp_wiring_failure(archive_home, monkeypatch, capsys) -> None:
 # ── _watcher_running / _backup_running ────────────────────────────────────────
 
 
-def _rc(rc):
-    def f(*args, check=False):
-        return subprocess.CompletedProcess(list(args), rc, "", "")
-    return f
+def _fake_launchctl(monkeypatch, rc):
+    """The probe tests' one-liner: a launchctl whose ``print`` answers ``rc``,
+    installed at the subprocess boundary (the real ``_launchctl`` body runs)."""
+    monkeypatch.setattr(_launchd.subprocess, "run",
+                        FakeLaunchctl(results={"print": (rc, "", "")}))
 
 
-def _plist_with_home(tmp_path, name, home):
+def _install_plist(monkeypatch, tmp_path, label, home):
+    """A real agent plist where ``_plist_path`` resolves it: redirect ``$HOME``
+    to tmp and write ``Library/LaunchAgents/<label>.plist`` there."""
+    monkeypatch.setenv("HOME", str(tmp_path))
+    agents = tmp_path / "Library" / "LaunchAgents"
+    agents.mkdir(parents=True, exist_ok=True)
     env = {"THREAD_ARCHIVE_HOME": home} if home else {}
-    p = tmp_path / f"{name}.plist"
-    p.write_bytes(plistlib.dumps({"Label": name, "EnvironmentVariables": env}))
-    return p
+    (agents / f"{label}.plist").write_bytes(
+        plistlib.dumps({"Label": label, "EnvironmentVariables": env})
+    )
 
 
 def test_watcher_running_non_darwin(monkeypatch) -> None:
     monkeypatch.setattr(wizard.sys, "platform", "linux")
-    assert wizard._watcher_running() is False
+    assert wizard.watcher_running() is False
 
 
 def test_watcher_running_not_loaded(monkeypatch) -> None:
     _force_darwin(monkeypatch)
-    monkeypatch.setattr(_launchd, "_launchctl", _rc(1))
-    assert wizard._watcher_running() is False
+    _fake_launchctl(monkeypatch, 1)
+    assert wizard.watcher_running() is False
 
 
 def test_watcher_running_matches_this_home(tmp_path, monkeypatch) -> None:
     _force_darwin(monkeypatch)
-    monkeypatch.setattr(_launchd, "_launchctl", _rc(0))
+    _fake_launchctl(monkeypatch, 0)
     agent_home = str(tmp_path / "agent")
-    plist = _plist_with_home(tmp_path, "watcher", agent_home)
-    monkeypatch.setattr(_launchd, "_plist_path", lambda label: plist)
-    assert wizard._watcher_running(agent_home) is True
-    assert wizard._watcher_running(str(tmp_path / "elsewhere")) is False
+    _install_plist(monkeypatch, tmp_path, WATCHER_LABEL, agent_home)
+    assert wizard.watcher_running(agent_home) is True
+    assert wizard.watcher_running(str(tmp_path / "elsewhere")) is False
 
 
 def test_watcher_running_unreadable_plist_assumes_default(tmp_path, monkeypatch) -> None:
     _force_darwin(monkeypatch)
-    monkeypatch.setattr(_launchd, "_launchctl", _rc(0))
-    monkeypatch.setattr(_launchd, "_plist_path", lambda label: tmp_path / "gone.plist")
-    assert wizard._watcher_running() is True  # loaded, plist unreadable → default wiring
+    _fake_launchctl(monkeypatch, 0)
+    monkeypatch.setenv("HOME", str(tmp_path))  # no plist under this home
+    assert wizard.watcher_running() is True  # loaded, plist unreadable → default wiring
 
 
 def test_backup_running_non_darwin(monkeypatch) -> None:
     monkeypatch.setattr(wizard.sys, "platform", "linux")
-    assert wizard._backup_running() is False
+    assert wizard.backup_running() is False
 
 
 def test_backup_running_not_loaded(monkeypatch) -> None:
     _force_darwin(monkeypatch)
-    monkeypatch.setattr(_launchd, "_launchctl", _rc(1))
-    assert wizard._backup_running() is False
+    _fake_launchctl(monkeypatch, 1)
+    assert wizard.backup_running() is False
 
 
 def test_backup_running_no_home_env_reads_as_default(tmp_path, monkeypatch) -> None:
     # The host/ install shape: a plist with no home env is read as the default
     # wiring, so it counts as covering the default home.
     _force_darwin(monkeypatch)
-    monkeypatch.setattr(_launchd, "_launchctl", _rc(0))
-    plist = _plist_with_home(tmp_path, "backup", None)
-    monkeypatch.setattr(_launchd, "_plist_path", lambda label: plist)
-    assert wizard._backup_running() is True
+    _fake_launchctl(monkeypatch, 0)
+    _install_plist(monkeypatch, tmp_path, BACKUP_LABEL, None)
+    assert wizard.backup_running() is True
 
 
 def test_backup_running_unreadable_plist_assumes_default(tmp_path, monkeypatch) -> None:
     _force_darwin(monkeypatch)
-    monkeypatch.setattr(_launchd, "_launchctl", _rc(0))
-    monkeypatch.setattr(_launchd, "_plist_path", lambda label: tmp_path / "gone.plist")
-    assert wizard._backup_running() is True
+    _fake_launchctl(monkeypatch, 0)
+    monkeypatch.setenv("HOME", str(tmp_path))  # no plist under this home
+    assert wizard.backup_running() is True
 
 
 # ── print_status: the darwin + recorded-backup/verify branches ────────────────
@@ -767,8 +777,8 @@ def test_backup_running_unreadable_plist_assumes_default(tmp_path, monkeypatch) 
 
 def test_print_status_with_backup_and_verify_records(archive_home, monkeypatch, capsys) -> None:
     _force_darwin(monkeypatch)
-    monkeypatch.setattr(wizard, "_watcher_running", lambda home=None: True)
-    monkeypatch.setattr(wizard, "_backup_running", lambda home=None: True)
+    monkeypatch.setattr(wizard, "watcher_running", lambda home=None: True)
+    monkeypatch.setattr(wizard, "backup_running", lambda home=None: True)
     monkeypatch.setattr(_launchd, "backup_agent_dest", lambda: "/Volumes/B/arc")
     fake_status = {
         "home": str(archive_home), "threads": 3, "events": 12, "fts_indexed": 9,
@@ -788,8 +798,8 @@ def test_print_status_red_nightly_and_topic_split(archive_home, monkeypatch, cap
     # The scheduled pipeline's verdict must be visible next to a green ad-hoc
     # backup, and topic threads must not be counted as conversations.
     _force_darwin(monkeypatch)
-    monkeypatch.setattr(wizard, "_watcher_running", lambda home=None: True)
-    monkeypatch.setattr(wizard, "_backup_running", lambda home=None: True)
+    monkeypatch.setattr(wizard, "watcher_running", lambda home=None: True)
+    monkeypatch.setattr(wizard, "backup_running", lambda home=None: True)
     monkeypatch.setattr(_launchd, "backup_agent_dest", lambda: "/Volumes/B/arc")
     fake_status = {
         "home": str(archive_home), "threads": 10, "topics": 4, "events": 12, "fts_indexed": 9,

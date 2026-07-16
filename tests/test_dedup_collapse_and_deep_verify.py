@@ -198,8 +198,8 @@ def test_backup_deletion_bound_blocks_gutted_source_mirror(archive_home, tmp_pat
 
     # Lower the bound so this small fixture can trip it, then gut the source.
     import thread_archive._ops.backup as ops_backup
-    monkeypatch.setattr(ops_backup, "_MIRROR_DELETE_FLOOR", 0)
-    monkeypatch.setattr(ops_backup, "_MIRROR_DELETE_MAX_FRACTION", 0.0)
+    monkeypatch.setattr(ops_backup, "MIRROR_DELETE_FLOOR", 0)
+    monkeypatch.setattr(ops_backup, "MIRROR_DELETE_MAX_FRACTION", 0.0)
     for p in (archive_home / "truth" / "threads").rglob("*.jsonl"):
         p.unlink()
 

@@ -16,7 +16,8 @@ import importlib.util
 import logging
 import os
 import sys
-import threading
+
+from .model_slot import ModelSlot
 
 logger = logging.getLogger(__name__)
 
@@ -38,11 +39,8 @@ _MODEL_REVISION = os.environ.get("THREAD_ARCHIVE_EMBED_REVISION") or (
     else None
 )
 
-_model = None
-_load_failed = False
-# Serializes _load() so a background warm (mcp.server) and a concurrent first query can't
-# both construct the heavy model at once (a transient double-load / memory spike).
-_load_lock = threading.Lock()
+# The lazily-loaded model + degrade flag — the public state seam (see ModelSlot).
+SLOT = ModelSlot()
 
 
 def model_name() -> str:
@@ -81,7 +79,7 @@ def is_available() -> bool:
             return False
     except ImportError:
         return False
-    return not _load_failed
+    return not SLOT.load_failed
 
 
 def _hub_cache_dir() -> str:
@@ -126,36 +124,32 @@ def _pin_offline_if_cached() -> None:
         setattr(const, "HF_HUB_OFFLINE", True)
 
 
-def _load():
-    """Lazily construct the cached SentenceTransformer (nomic needs trust_remote_code).
-    Double-checked under ``_load_lock`` so a background warm and a first query race to a
-    single construction, not two concurrent heavy loads."""
-    global _model, _load_failed
-    if _model is not None:
-        return _model
-    if _load_failed:
-        return None
-    with _load_lock:
-        if _model is not None:
-            return _model
-        if _load_failed:
-            return None
-        try:
-            _pin_offline_if_cached()
-            from sentence_transformers import SentenceTransformer
+def _construct():
+    """Construct the SentenceTransformer (nomic needs trust_remote_code).
 
-            device = _device()
-            _model = SentenceTransformer(
-                _MODEL_NAME, revision=_MODEL_REVISION,
-                trust_remote_code=True, device=device,
-            )
-            dim = getattr(_model, "get_embedding_dimension", _model.get_sentence_embedding_dimension)()
-            logger.info("embed: loaded %s (dim=%s, device=%s)", _MODEL_NAME, dim, device)
-            return _model
-        except Exception as e:  # noqa: BLE001
-            _load_failed = True
-            logger.warning("embed: model load failed (%s) — vector arm degrades", e)
-            return None
+    Raises on any failure — including the ``[embeddings]`` extra being absent —
+    and the slot catches it, caching the failure so the vector arm degrades."""
+    _pin_offline_if_cached()
+    try:
+        from sentence_transformers import SentenceTransformer
+    except ImportError as e:  # extra absent — degrade via the slot's failure cache
+        raise RuntimeError(f"[embeddings] extra not installed: {e}") from e
+
+    device = _device()
+    model = SentenceTransformer(
+        _MODEL_NAME, revision=_MODEL_REVISION,
+        trust_remote_code=True, device=device,
+    )
+    dim = getattr(model, "get_embedding_dimension", model.get_sentence_embedding_dimension)()
+    logger.info("embed: loaded %s (dim=%s, device=%s)", _MODEL_NAME, dim, device)
+    return model
+
+
+def _load():
+    """The cached SentenceTransformer, loading it on first call. None on failure —
+    cached by the slot, so it costs one attempt, not one per query."""
+    return SLOT.get(_construct, lambda e: logger.warning(
+        "embed: model load failed (%s) — vector arm degrades", e))
 
 
 def warm() -> bool:

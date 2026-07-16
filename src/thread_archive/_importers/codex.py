@@ -59,7 +59,7 @@ def _codex_session_meta(lines: list[dict]) -> dict[str, Any]:
     return {}
 
 
-def _codex_line_model(line: dict) -> Optional[str]:
+def codex_line_model(line: dict) -> Optional[str]:
     """The model a codex line names, or None when it names none.
 
     Codex declares the serving model per *turn*, not once per session: each turn
@@ -94,7 +94,7 @@ def _codex_model(prior_lines: list[dict]) -> str:
     for line in reversed(prior_lines):
         if not isinstance(line, dict):
             continue
-        named = _codex_line_model(line)
+        named = codex_line_model(line)
         if named:
             return named
     return "codex"
@@ -344,7 +344,7 @@ def _build_codex_messages(
     """Assemble codex's interleaved line stream into canonical NormalizedMessages.
 
     ``model`` is the model entering the chunk; the lines themselves re-declare it
-    per turn (see :func:`_codex_line_model`), so it is tracked as the stream is
+    per turn (see :func:`codex_line_model`), so it is tracked as the stream is
     walked and each assistant turn carries the model that actually served it.
     """
     messages: list[dict[str, Any]] = []
@@ -379,7 +379,7 @@ def _build_codex_messages(
         payload_type = payload.get("type")
         ts = line.get("timestamp")
 
-        named = _codex_line_model(line)
+        named = codex_line_model(line)
         if named and named != model:
             model = named
             if cur is not None:

@@ -17,7 +17,7 @@ not archive data, and no backup/verify path depends on it.
 
 Append-only JSONL, advisory, fail-soft — a ledger write must never break the
 retrieval call it describes. ``THREAD_ARCHIVE_USAGE_LOG=0`` disables it. The
-file self-rotates: at ``_MAX_BYTES`` the current file is renamed to
+file self-rotates: at ``MAX_BYTES`` the current file is renamed to
 ``retrieval-usage.jsonl.1`` (replacing any previous rotation) and a fresh file
 starts — bounded disk, and at observed agent volumes the window still spans
 months.
@@ -37,7 +37,7 @@ logger = logging.getLogger(__name__)
 
 LEDGER_FILE = "retrieval-usage.jsonl"
 
-_MAX_BYTES = 32 * 1024 * 1024  # rotate at 32 MB; .1 keeps one prior window
+MAX_BYTES = 32 * 1024 * 1024  # rotate at 32 MB; .1 keeps one prior window
 _MAX_RESULT_IDS = 20  # per-search result ids retained — enough to judge rank quality
 
 
@@ -52,7 +52,7 @@ def _append(record: dict) -> None:
     try:
         path = resolve_paths().home / LEDGER_FILE
         try:
-            if path.stat().st_size >= _MAX_BYTES:
+            if path.stat().st_size >= MAX_BYTES:
                 path.replace(path.with_suffix(".jsonl.1"))
         except FileNotFoundError:
             pass

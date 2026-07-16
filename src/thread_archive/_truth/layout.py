@@ -37,7 +37,7 @@ _CROSS_THREAD: dict[str, type] = {"thread_links": ThreadLink, "topic_messages": 
 KG_EVENTS_FILE = "kg_events.jsonl"
 
 # Flat until a directory would exceed this many files, then shard by id buckets.
-_FLAT_MAX = int(os.environ.get("THREAD_ARCHIVE_SHARD_FLAT_MAX", "16384"))
+FLAT_MAX = int(os.environ.get("THREAD_ARCHIVE_SHARDFLAT_MAX", "16384"))
 _BUCKET = 256  # children per shard level
 
 # A redacted event payload: content replaced by a marker envelope
@@ -263,7 +263,7 @@ def _max_dir_occupancy(n_threads: int, depth: int) -> int:
 
 def _depth_for(n_threads: int) -> int:
     depth = 0
-    while _max_dir_occupancy(n_threads, depth) > _FLAT_MAX:
+    while _max_dir_occupancy(n_threads, depth) > FLAT_MAX:
         depth += 1
     return depth
 

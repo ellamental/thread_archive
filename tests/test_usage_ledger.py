@@ -67,7 +67,7 @@ def test_usage_log_disabled_by_env(archive_home, monkeypatch) -> None:
 
 
 def test_usage_log_rotates_at_cap(archive_home, monkeypatch) -> None:
-    monkeypatch.setattr(usage, "_MAX_BYTES", 200)
+    monkeypatch.setattr(usage, "MAX_BYTES", 200)
     for i in range(20):
         usage.record_read(i)
     rotated = archive_home / "retrieval-usage.jsonl.1"

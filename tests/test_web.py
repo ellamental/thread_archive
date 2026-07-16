@@ -590,21 +590,23 @@ def test_search_limit_clamped(archive_home, monkeypatch):
     assert seen["limit"] == 30  # the default
 
 
-def test_threads_limit_clamped(archive_home, monkeypatch):
+def test_threads_limit_clamped(archive_home):
     from thread_archive._web import server
 
+    # Two real threads, then drive the route over real data: an unclamped -1
+    # would reach SQLite as LIMIT -1 (unlimited) and return both.
     _seed(archive_home)
-    seen = {}
+    _seed_cloth(archive_home)
 
-    def fake_list(*, limit, q):
-        seen["limit"] = limit
-        return []
+    status, _, body = _get("/api/threads", limit=-1)
+    assert status == 200
+    assert len(body["threads"]) == 1  # clamped to lo=1, not unlimited
 
-    monkeypatch.setattr(server, "_list_threads", fake_list)
-    status, _, _ = _get("/api/threads", limit=-1)
-    assert status == 200 and seen["limit"] == 1
-    _get("/api/threads", limit=999999)
-    assert seen["limit"] == 500
+    status, _, body = _get("/api/threads", limit=999999)
+    assert status == 200
+    assert len(body["threads"]) == 2  # hi-clamp holds without erroring…
+    # …and the hi bound itself is _int's own contract:
+    assert server._int({"limit": ["999999"]}, "limit", 100) == 500
 
 
 def test_error_body_is_generic(monkeypatch):

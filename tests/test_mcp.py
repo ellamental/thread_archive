@@ -172,7 +172,7 @@ def _drive_main(monkeypatch, argv):
     run_calls: list[tuple] = []
     monkeypatch.setattr(sys, "argv", argv)
     monkeypatch.setattr(server.threading, "Thread", _RecordingThread)
-    monkeypatch.setattr(server, "_maybe_catch_up", lambda: None)
+    monkeypatch.setenv("THREAD_ARCHIVE_MCP_INGEST", "0")  # the ingest kill-switch
     monkeypatch.setattr(server.mcp, "run", lambda *a: run_calls.append(a))
     server.main()
     return run_calls

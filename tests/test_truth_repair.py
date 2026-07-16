@@ -84,7 +84,7 @@ def test_drain_failure_rolls_back_every_appended_record(archive_home, monkeypatc
     truth_file = one_thread_file(archive_home)
     baseline = truth_file.read_bytes()
 
-    real_append = jsonl_log._append_line
+    real_append = jsonl_log.append_line
     calls = {"n": 0}
 
     def _fail_second(path, rec):
@@ -93,7 +93,7 @@ def test_drain_failure_rolls_back_every_appended_record(archive_home, monkeypatc
             raise OSError("simulated disk-full mid-batch")
         real_append(path, rec)
 
-    monkeypatch.setattr(jsonl_log.drain, "_append_line", _fail_second)
+    monkeypatch.setattr(jsonl_log.drain, "append_line", _fail_second)
 
     with get_session() as s:
         jsonl_log.write_events(s, [

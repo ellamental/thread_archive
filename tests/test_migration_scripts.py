@@ -160,15 +160,15 @@ def test_reconcile_run_dry_apply_backup_idempotent(archive_home, tmp_path, monke
         s.execute(update(Event).where(Event.thread_id == tid).values(dedup_key=None))
         s.commit()
 
-    monkeypatch.setattr(mod, "_iter_pairs", lambda: iter([("claude-code", f, "proj:s1")]))
+    pairs = [("claude-code", f, "proj:s1")]
 
-    totals = mod.run(apply=False)
+    totals = mod.run(apply=False, pairs=pairs)
     assert totals["threads"] == 1
     assert totals["backfills"] > 0
     assert all(k is None for k in _keys(tid).values()), "dry-run must not write"
 
     backup = tmp_path / "reconcile-backup.jsonl"
-    totals = mod.run(apply=True, backup_path=backup)
+    totals = mod.run(apply=True, backup_path=backup, pairs=pairs)
     assert totals["threads_changed"] == 1
     keyed = {eid: k for eid, k in _keys(tid).items() if k}
     assert len(keyed) == totals["backfills"]
@@ -176,7 +176,7 @@ def test_reconcile_run_dry_apply_backup_idempotent(archive_home, tmp_path, monke
     assert rows[0]["thread_id"] == tid
     assert set(rows[0]["backfill_ids"]) == set(keyed)
 
-    totals2 = mod.run(apply=True, backup_path=backup)
+    totals2 = mod.run(apply=True, backup_path=backup, pairs=pairs)
     assert totals2["backfills"] == 0, "second apply must be a no-op"
 
 
@@ -193,22 +193,20 @@ def test_recover_run_dry_apply_idempotent(archive_home, monkeypatch) -> None:
             Event.thread_id == tid, Event.event_type.in_(list(mod.RECOVERABLE_TYPES))))
         s.commit()
 
-    monkeypatch.setattr(mod, "_iter_pairs", lambda: iter([("claude-code", f, "proj:s1")]))
+    pairs = [("claude-code", f, "proj:s1")]
 
-    totals = mod.run(apply=False)
+    totals = mod.run(apply=False, pairs=pairs)
     assert totals["threads_mapped"] == 1
     assert totals["events_recovered"] > 0
     with get_session() as s:
         assert len(s.execute(select(Event).where(Event.thread_id == tid)).scalars().all()) < n_full
 
-    monkeypatch.setattr(mod, "_iter_pairs", lambda: iter([("claude-code", f, "proj:s1")]))
-    totals = mod.run(apply=True)
+    totals = mod.run(apply=True, pairs=pairs)
     assert totals["write_errors"] == 0
     with get_session() as s:
         assert len(s.execute(select(Event).where(Event.thread_id == tid)).scalars().all()) == n_full
 
-    monkeypatch.setattr(mod, "_iter_pairs", lambda: iter([("claude-code", f, "proj:s1")]))
-    totals = mod.run(apply=True)
+    totals = mod.run(apply=True, pairs=pairs)
     assert totals["events_recovered"] == 0, "second apply must be a no-op"
 
 

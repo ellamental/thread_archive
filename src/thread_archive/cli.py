@@ -51,10 +51,14 @@ def _self_throttle() -> None:
     interactive machine. CPU via ``nice``; on macOS also throttle disk I/O (the FTS
     rebuild is I/O-bound) — the in-process equivalent of ``taskpolicy -d throttle``.
     Best-effort: on an idle box it still runs full speed, and a failure to throttle
-    must never stop the work. Renice up if you want a rebuild to go flat-out."""
-    try:
-        import os
+    must never stop the work. ``THREAD_ARCHIVE_NO_THROTTLE`` (non-empty) skips it —
+    a rebuild you want flat-out, or a process the renice must not deprioritize
+    (nice() is one-way; the test suite runs with it set)."""
+    import os
 
+    if os.environ.get("THREAD_ARCHIVE_NO_THROTTLE"):
+        return
+    try:
         os.nice(10)
     except OSError:  # pragma: no cover — nice() can be restricted
         pass

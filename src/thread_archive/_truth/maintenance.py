@@ -60,7 +60,7 @@ def _write_snapshot(d: Path, name: str, model: type) -> int:
     return n
 
 
-def _checkpoint_changed_threads(d: Path, depth: int, last_iso: str | None) -> int:
+def checkpoint_changed_threads(d: Path, depth: int, last_iso: str | None) -> int:
     """Backstop for thread *metadata updates*: append a fresh thread record for any
     thread whose ``updated_at`` advanced since the last checkpoint. New threads are
     already recorded at creation (:func:`record_thread`), so the first checkpoint
@@ -75,7 +75,7 @@ def _checkpoint_changed_threads(d: Path, depth: int, last_iso: str | None) -> in
         with _truth_write_lock():  # append batches are mutually exclusive across writers
             for t in changed:
                 path = _thread_file(d, t.id, depth)
-                drain._append_line(path, {"type": "thread", **_row_dict(t)})
+                drain.append_line(path, {"type": "thread", **_row_dict(t)})
                 touched.add(path)
                 n += 1
             for path in touched:
@@ -138,7 +138,7 @@ def _checkpoint_locked(*, snapshots: bool = True) -> dict:
     # runs are the primary seam's job — every in-tree metadata writer also stages
     # its record inline (``record_thread``); this pass is only the backstop.
     checkpoint_started_at = _now_iso()
-    counts["threads_updated"] = _checkpoint_changed_threads(d, depth, m.get("last_checkpoint_at"))
+    counts["threads_updated"] = checkpoint_changed_threads(d, depth, m.get("last_checkpoint_at"))
     # Locked read-modify-write: the backstop pass takes time, and the manifest
     # is shared state (shard depth from a concurrent sweep, a verify run's
     # hashes baseline). Mutating only this checkpoint's own keys under the

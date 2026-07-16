@@ -109,7 +109,7 @@ def _quote_all_tokens(text_: str) -> str:
     return " ".join(toks) or '""'
 
 
-def _to_match_query(query: str) -> str:
+def to_match_query(query: str) -> str:
     """Translate a natural-language / boolean / quoted-phrase query into a safe
     FTS5 MATCH expression. AND/OR/NOT and "quoted phrases" pass through; every
     other token is emitted quoted so stray punctuation can't raise a syntax error.
@@ -276,7 +276,7 @@ def search_events(
         passes.append(_Pass("content LIKE :codepat ESCAPE '\\'", {"codepat": _like_substring(clean)},
                             order="occurred_at DESC", use_match=False, is_fallback=True))
     else:
-        passes.append(_Pass("event_search MATCH :q", {"q": _to_match_query(query)}))
+        passes.append(_Pass("event_search MATCH :q", {"q": to_match_query(query)}))
 
     shared: list[str] = []
     shared_params: dict = {"lim": limit}
@@ -331,7 +331,7 @@ def search_events(
             try:
                 rows = s.execute(sql, {**shared_params, **p.params}).mappings().all()
             except OperationalError as exc:
-                # A residual fts5 syntax error (a shape _to_match_query's
+                # A residual fts5 syntax error (a shape to_match_query's
                 # validation didn't catch) retries once with every MATCH param
                 # demoted to the everything-quoted form — a malformed query
                 # returns results-or-empty, never a raw OperationalError.
@@ -375,7 +375,7 @@ def search_events(
             or_q = " OR ".join(_quote_phrase(t) for t in terms)
             # Skip when the tier would be the strict pass verbatim (single term,
             # nothing dropped) — same MATCH, nothing new to add.
-            if terms and or_q.lower() != _to_match_query(query).lower():
+            if terms and or_q.lower() != to_match_query(query).lower():
                 run_pass(_Pass("event_search MATCH :orq", {"orq": or_q}))
     return hits
 

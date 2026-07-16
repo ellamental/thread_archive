@@ -386,7 +386,7 @@ def test_daemon_watcher_uninstall_restart_status(monkeypatch, capsys) -> None:
 
 
 def test_reindex_refused_returns_1(tmp_path, monkeypatch, capsys) -> None:
-    monkeypatch.setattr(cli, "_self_throttle", lambda: None)
+    monkeypatch.setenv("THREAD_ARCHIVE_NO_THROTTLE", "1")
 
     def boom(**kw):
         raise RuntimeError("no disk room")
@@ -398,7 +398,7 @@ def test_reindex_refused_returns_1(tmp_path, monkeypatch, capsys) -> None:
 
 
 def test_reindex_success_prints_counts(tmp_path, monkeypatch, capsys) -> None:
-    monkeypatch.setattr(cli, "_self_throttle", lambda: None)
+    monkeypatch.setenv("THREAD_ARCHIVE_NO_THROTTLE", "1")
     seen = {}
     monkeypatch.setattr(
         api, "reindex",

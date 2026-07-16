@@ -93,7 +93,7 @@ def test_residual_fts_syntax_error_retries_quoted(archive_home, monkeypatch) -> 
     from thread_archive._retrieval import fts as fts_mod
 
     _seed_corpus(archive_home)
-    monkeypatch.setattr(fts_mod, "_to_match_query", lambda q: 'NOT "login"')
+    monkeypatch.setattr(fts_mod, "to_match_query", lambda q: 'NOT "login"')
     hits = fts_mod.search_events("login", or_fallback=False)
     assert hits == []  # retried as '"NOT" "login"' → empty, no raise
 

@@ -13,7 +13,7 @@ The model is read back from two sources, in order of durability:
    ``thread_settings_applied`` lines verbatim as ``content_block`` events (Archivist,
    not Filter), so most threads carry their own answer and need no outside file. Each
    preserved block is reconstructed into the line it came from and put through the
-   importer's own :func:`~thread_archive._importers.codex._codex_line_model`.
+   importer's own :func:`~thread_archive._importers.codex.codex_line_model`.
 2. **The on-disk rollout**, for turns the archive can't answer — threads imported
    before the preservation existed dropped those lines, so the only surviving copy is
    Codex's own session file. Its model changes are read with the same rule and matched
@@ -62,7 +62,7 @@ from typing import Any, Optional
 from sqlalchemy import select
 
 from .._importers._read import read_session_lines
-from .._importers.codex import _codex_line_model
+from .._importers.codex import codex_line_model
 from .._store import Event, Thread, get_session
 from .._thread_import.event_builder import compute_content_hash
 from .._truth.jsonl_log import (
@@ -95,7 +95,7 @@ def _block_model(payload: dict) -> Optional[str]:
     raw = data.get("raw")
     if not isinstance(raw, dict):
         return None
-    return _codex_line_model({"type": data.get("codex_line_type"), "payload": raw})
+    return codex_line_model({"type": data.get("codex_line_type"), "payload": raw})
 
 
 def rollout_timeline(path: Path) -> list[tuple[datetime, str]]:
@@ -109,7 +109,7 @@ def rollout_timeline(path: Path) -> list[tuple[datetime, str]]:
     """
     out: list[tuple[datetime, str]] = []
     for line in read_session_lines(path):
-        named = _codex_line_model(line)
+        named = codex_line_model(line)
         when = _as_utc(line.get("timestamp"))
         if named and when is not None:
             out.append((when, named))

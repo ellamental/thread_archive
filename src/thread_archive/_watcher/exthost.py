@@ -61,7 +61,7 @@ _TS = re.compile(r"^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d{3}) ")
 # between-turn message that's merely mid-write reaches the JSONL within seconds, so
 # the grace lets the JSONL path claim it first and prevents a context-injected
 # duplicate. (The exthost log stamps local wall-clock; ``now()`` is local too.)
-_GRACE_SECONDS = 300
+GRACE_SECONDS = 300
 # Bare slash-command lines ("/debrief") — the CC importer drops these by design
 # (the injected skill doc persists instead, carrying the command), so flagging them
 # as lost would cry wolf on every command typed. Commands WITH args stay capturable.
@@ -104,7 +104,7 @@ def _too_fresh(iso: Optional[str]) -> bool:
         age = (datetime.now() - datetime.fromisoformat(iso)).total_seconds()
     except ValueError:  # pragma: no cover — malformed stamp
         return False
-    return age < _GRACE_SECONDS
+    return age < GRACE_SECONDS
 
 
 def _content_text(content) -> Optional[str]:

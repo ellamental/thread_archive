@@ -332,7 +332,7 @@ def test_backup_mirror_holds_the_truth_write_lock(archive_home, tmp_path, monkey
     import_cc_session(tmp_path)
     import thread_archive._ops.backup as ops_backup
 
-    real = ops_backup._mirror_dir
+    real = ops_backup.mirror_dir
     seen: dict[str, bool] = {}
 
     def probe(*a, **k):
@@ -348,7 +348,7 @@ def test_backup_mirror_holds_the_truth_write_lock(archive_home, tmp_path, monkey
             os.close(fd)
         return real(*a, **k)
 
-    monkeypatch.setattr(ops_backup, "_mirror_dir", probe)
+    monkeypatch.setattr(ops_backup, "mirror_dir", probe)
     ta.backup(str(tmp_path / "mirror"))
     assert seen["held"] is True, "the mirror must run inside the truth-write lock"
 

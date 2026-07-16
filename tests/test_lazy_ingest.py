@@ -79,7 +79,7 @@ def test_mcp_maybe_catch_up_throttles_and_respects_env(archive_home, monkeypatch
         return WatchResult()
 
     monkeypatch.setattr(_watcher, "catch_up_once", fake_catch_up)
-    monkeypatch.setattr(server, "_ingest_last", 0.0)
+    monkeypatch.setattr(server.INGEST, "last", 0.0)
 
     monkeypatch.setenv("THREAD_ARCHIVE_MCP_INGEST", "0")
     server._maybe_catch_up()

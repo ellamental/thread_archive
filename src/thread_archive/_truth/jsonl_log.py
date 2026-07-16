@@ -58,7 +58,6 @@ from __future__ import annotations
 from . import drain, layout, locks, maintenance, rebuild
 from .drain import (
     DRAIN_INTENT_FILE,
-    _append_line,
     _clear_intent,
     _fsync_handle,
     _handle,
@@ -72,6 +71,7 @@ from .drain import (
     _write_intent,
     append_event_row,
     append_kg_event,
+    append_line,
     record_thread,
     reset_handles,
     unstage_thread,
@@ -122,12 +122,12 @@ from .locks import (
     try_shared_ingest_lock,
 )
 from .maintenance import (
-    _checkpoint_changed_threads,
     _checkpoint_locked,
     _maybe_rebalance,
     _merge_file_into,
     _write_snapshot,
     checkpoint,
+    checkpoint_changed_threads,
 )
 from .rebuild import (
     _build_fk_violations,
@@ -138,7 +138,6 @@ from .rebuild import (
     _fold_wal,
     _hash_key_check,
     _load_table,
-    _load_thread_files,
     _parsed_equal,
     _reconcile_collapsed_citations,
     _replay_kg_events,
@@ -146,6 +145,7 @@ from .rebuild import (
     _truth_units_missing_from_store,
     _unlink_build,
     emit_thread_file,
+    load_thread_files,
     rebuild_truth_from_store,
     reindex,
     scan_truth_counts,

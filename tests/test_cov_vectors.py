@@ -5,7 +5,8 @@ provider (:mod:`~.embed`), and the cross-encoder re-rank (:mod:`~.rerank`).
 The suite is pinned model-free by conftest (embed/rerank ``is_available`` forced
 False so nothing cold-loads torch). Tests that need the machinery opt back in
 per-test with a FAKE model — injecting a fake ``sentence_transformers`` /
-``torch`` into ``sys.modules`` or stubbing ``_load`` — so no real weights load.
+``torch`` into ``sys.modules``, or placing a scripted model in the module's
+public ``SLOT`` — so no real weights load.
 """
 
 from __future__ import annotations
@@ -74,13 +75,13 @@ def test_embed_is_available_true_when_extra_present(monkeypatch) -> None:
 
     monkeypatch.setattr(embed, "is_available", _REAL_EMBED_IS_AVAILABLE)
     monkeypatch.setattr(ilu, "find_spec", lambda name: object())  # extra present
-    monkeypatch.setattr(embed, "_load_failed", False)
+    monkeypatch.setattr(embed.SLOT, "load_failed", False)
     assert embed.is_available() is True
 
 
 def test_embed_is_available_false_when_load_failed(monkeypatch) -> None:
     monkeypatch.setattr(embed, "is_available", _REAL_EMBED_IS_AVAILABLE)
-    monkeypatch.setattr(embed, "_load_failed", True)
+    monkeypatch.setattr(embed.SLOT, "load_failed", True)
     assert embed.is_available() is False
 
 
@@ -113,14 +114,20 @@ def test_hub_cache_dir_precedence(monkeypatch, tmp_path) -> None:
     assert embed._hub_cache_dir().endswith("/.cache/huggingface/hub")
 
 
-def test_model_cached_true_and_false(monkeypatch, tmp_path) -> None:
-    cache = tmp_path / "hub"
-    monkeypatch.setenv("HUGGINGFACE_HUB_CACHE", str(cache))
-    assert embed._model_cached() is False  # empty cache
+def _seed_hub_cache(tmp_path) -> None:
+    """A real, non-empty HF snapshots tree for embed's default model under
+    ``tmp_path/hub`` — point HUGGINGFACE_HUB_CACHE there and ``_model_cached()``
+    reads True off disk, no faking."""
     folder = "models--" + embed._MODEL_NAME.replace("/", "--")
-    snaps = cache / folder / "snapshots" / "rev1"
+    snaps = tmp_path / "hub" / folder / "snapshots" / "rev1"
     snaps.mkdir(parents=True)
     (snaps / "config.json").write_text("{}")
+
+
+def test_model_cached_true_and_false(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("HUGGINGFACE_HUB_CACHE", str(tmp_path / "hub"))
+    assert embed._model_cached() is False  # empty cache
+    _seed_hub_cache(tmp_path)
     assert embed._model_cached() is True
 
 
@@ -144,17 +151,18 @@ def test_pin_offline_noop_when_online_forced(monkeypatch) -> None:
     assert "HF_HUB_OFFLINE" not in os.environ
 
 
-def test_pin_offline_noop_when_not_cached(monkeypatch) -> None:
+def test_pin_offline_noop_when_not_cached(monkeypatch, tmp_path) -> None:
     monkeypatch.delenv("THREAD_ARCHIVE_EMBED_ONLINE", raising=False)
-    monkeypatch.setattr(embed, "_model_cached", lambda: False)
+    monkeypatch.setenv("HUGGINGFACE_HUB_CACHE", str(tmp_path / "hub"))  # empty
     monkeypatch.delenv("HF_HUB_OFFLINE", raising=False)
     embed._pin_offline_if_cached()
     assert "HF_HUB_OFFLINE" not in os.environ
 
 
-def test_pin_offline_sets_env_and_flips_hub_constant(monkeypatch) -> None:
+def test_pin_offline_sets_env_and_flips_hub_constant(monkeypatch, tmp_path) -> None:
     monkeypatch.delenv("THREAD_ARCHIVE_EMBED_ONLINE", raising=False)
-    monkeypatch.setattr(embed, "_model_cached", lambda: True)
+    monkeypatch.setenv("HUGGINGFACE_HUB_CACHE", str(tmp_path / "hub"))
+    _seed_hub_cache(tmp_path)
     monkeypatch.delenv("HF_HUB_OFFLINE", raising=False)
     monkeypatch.delenv("TRANSFORMERS_OFFLINE", raising=False)
     fake_const = types.ModuleType("huggingface_hub.constants")
@@ -166,9 +174,10 @@ def test_pin_offline_sets_env_and_flips_hub_constant(monkeypatch) -> None:
     assert fake_const.HF_HUB_OFFLINE is True
 
 
-def test_pin_offline_without_hub_constants_loaded(monkeypatch) -> None:
+def test_pin_offline_without_hub_constants_loaded(monkeypatch, tmp_path) -> None:
     monkeypatch.delenv("THREAD_ARCHIVE_EMBED_ONLINE", raising=False)
-    monkeypatch.setattr(embed, "_model_cached", lambda: True)
+    monkeypatch.setenv("HUGGINGFACE_HUB_CACHE", str(tmp_path / "hub"))
+    _seed_hub_cache(tmp_path)
     monkeypatch.delitem(sys.modules, "huggingface_hub.constants", raising=False)
     monkeypatch.delenv("HF_HUB_OFFLINE", raising=False)
     embed._pin_offline_if_cached()
@@ -189,8 +198,8 @@ def test_embed_load_constructs_and_caches(monkeypatch) -> None:
     fake_mod.SentenceTransformer = FakeST
     monkeypatch.setitem(sys.modules, "sentence_transformers", fake_mod)
     monkeypatch.setenv("THREAD_ARCHIVE_EMBED_DEVICE", "cpu")
-    monkeypatch.setattr(embed, "_model", None)
-    monkeypatch.setattr(embed, "_load_failed", False)
+    monkeypatch.setattr(embed.SLOT, "model", None)
+    monkeypatch.setattr(embed.SLOT, "load_failed", False)
 
     m = embed._load()
     assert m is not None
@@ -211,23 +220,23 @@ def test_embed_load_failure_is_cached(monkeypatch) -> None:
     fake_mod.SentenceTransformer = BadST
     monkeypatch.setitem(sys.modules, "sentence_transformers", fake_mod)
     monkeypatch.setenv("THREAD_ARCHIVE_EMBED_DEVICE", "cpu")
-    monkeypatch.setattr(embed, "_model", None)
-    monkeypatch.setattr(embed, "_load_failed", False)
+    monkeypatch.setattr(embed.SLOT, "model", None)
+    monkeypatch.setattr(embed.SLOT, "load_failed", False)
 
     assert embed._load() is None
-    assert embed._load_failed is True
+    assert embed.SLOT.load_failed is True
     assert embed._load() is None  # cached failure short-circuits
 
 
 def test_embed_load_returns_cached_model(monkeypatch) -> None:
     sentinel = object()
-    monkeypatch.setattr(embed, "_model", sentinel)
+    monkeypatch.setattr(embed.SLOT, "model", sentinel)
     assert embed._load() is sentinel
 
 
 def test_embed_load_returns_none_when_previously_failed(monkeypatch) -> None:
-    monkeypatch.setattr(embed, "_model", None)
-    monkeypatch.setattr(embed, "_load_failed", True)
+    monkeypatch.setattr(embed.SLOT, "model", None)
+    monkeypatch.setattr(embed.SLOT, "load_failed", True)
     assert embed._load() is None
 
 
@@ -238,7 +247,8 @@ def test_encode_returns_none_when_unavailable() -> None:
 
 def test_encode_returns_none_when_model_is_none(monkeypatch) -> None:
     monkeypatch.setattr(embed, "is_available", lambda: True)
-    monkeypatch.setattr(embed, "_load", lambda: None)
+    monkeypatch.setattr(embed.SLOT, "model", None)
+    monkeypatch.setattr(embed.SLOT, "load_failed", True)
     assert embed._encode(["x"]) is None
 
 
@@ -250,7 +260,7 @@ def test_encode_success_returns_float_lists(monkeypatch) -> None:
             return np.ones((len(prefixed), 4), dtype=np.float64)
 
     monkeypatch.setattr(embed, "is_available", lambda: True)
-    monkeypatch.setattr(embed, "_load", lambda: FakeModel())
+    monkeypatch.setattr(embed.SLOT, "model", FakeModel())
     out = embed._encode(["a", "b"])
     assert out == [[1.0, 1.0, 1.0, 1.0], [1.0, 1.0, 1.0, 1.0]]
 
@@ -261,37 +271,41 @@ def test_encode_swallows_model_error(monkeypatch) -> None:
             raise RuntimeError("cuda oom")
 
     monkeypatch.setattr(embed, "is_available", lambda: True)
-    monkeypatch.setattr(embed, "_load", lambda: Boom())
+    monkeypatch.setattr(embed.SLOT, "model", Boom())
     assert embed._encode(["x"]) is None
 
 
 def test_embed_query_prefixes_and_short_circuits(monkeypatch) -> None:
     captured = {}
 
-    def fake_encode(prefixed):
-        captured["p"] = prefixed
-        return [[0.5, 0.5]]
+    class FakeModel:
+        def encode(self, prefixed, normalize_embeddings, convert_to_numpy):
+            captured["p"] = prefixed
+            return np.asarray([[0.5, 0.5]], dtype=np.float32)
 
-    monkeypatch.setattr(embed, "_encode", fake_encode)
+    monkeypatch.setattr(embed, "is_available", lambda: True)
+    monkeypatch.setattr(embed.SLOT, "model", FakeModel())
     assert embed.embed_query("  hello  ") == [0.5, 0.5]
     assert captured["p"][0].startswith("search_query: ")
     assert embed.embed_query("   ") is None
     assert embed.embed_query("") is None
 
 
-def test_embed_query_none_when_encode_none(monkeypatch) -> None:
-    monkeypatch.setattr(embed, "_encode", lambda p: None)
+def test_embed_query_none_when_encode_none() -> None:
+    # conftest pins is_available False → the encode seam sits out → None.
     assert embed.embed_query("hello") is None
 
 
 def test_embed_documents_prefixes_caps_and_empties(monkeypatch) -> None:
     captured = {}
 
-    def fake_encode(prefixed):
-        captured["p"] = prefixed
-        return [[1.0]] * len(prefixed)
+    class FakeModel:
+        def encode(self, prefixed, normalize_embeddings, convert_to_numpy):
+            captured["p"] = prefixed
+            return np.ones((len(prefixed), 1), dtype=np.float32)
 
-    monkeypatch.setattr(embed, "_encode", fake_encode)
+    monkeypatch.setattr(embed, "is_available", lambda: True)
+    monkeypatch.setattr(embed.SLOT, "model", FakeModel())
     long = "z" * (embed.EMBEDDING_CHAR_CAP + 50)
     out = embed.embed_documents([long, "b"])
     assert len(out) == 2
@@ -341,11 +355,11 @@ def test_rerank_is_available_variants(monkeypatch) -> None:
 
     monkeypatch.setattr(rerank, "is_available", _REAL_RERANK_IS_AVAILABLE)
     monkeypatch.setattr(ilu, "find_spec", lambda n: object())  # extra present
-    monkeypatch.setattr(rerank, "_load_failed", False)
+    monkeypatch.setattr(rerank.SLOT, "load_failed", False)
     assert rerank.is_available() is True
-    monkeypatch.setattr(rerank, "_load_failed", True)
+    monkeypatch.setattr(rerank.SLOT, "load_failed", True)
     assert rerank.is_available() is False
-    monkeypatch.setattr(rerank, "_load_failed", False)
+    monkeypatch.setattr(rerank.SLOT, "load_failed", False)
     monkeypatch.setattr(ilu, "find_spec", lambda n: None)
     assert rerank.is_available() is False
 
@@ -372,8 +386,8 @@ def test_rerank_load_cpu_no_fp16(monkeypatch) -> None:
     fake_mod.CrossEncoder = FakeCE
     monkeypatch.setitem(sys.modules, "sentence_transformers", fake_mod)
     monkeypatch.setenv("THREAD_ARCHIVE_RERANK_DEVICE", "cpu")
-    monkeypatch.setattr(rerank, "_model", None)
-    monkeypatch.setattr(rerank, "_load_failed", False)
+    monkeypatch.setattr(rerank.SLOT, "model", None)
+    monkeypatch.setattr(rerank.SLOT, "load_failed", False)
 
     m = rerank._load()
     assert m is not None
@@ -395,8 +409,8 @@ def test_rerank_load_accelerator_uses_fp16(monkeypatch) -> None:
     monkeypatch.setitem(sys.modules, "sentence_transformers", fake_mod)
     monkeypatch.setitem(sys.modules, "torch", fake_torch)
     monkeypatch.setenv("THREAD_ARCHIVE_RERANK_DEVICE", "mps")
-    monkeypatch.setattr(rerank, "_model", None)
-    monkeypatch.setattr(rerank, "_load_failed", False)
+    monkeypatch.setattr(rerank.SLOT, "model", None)
+    monkeypatch.setattr(rerank.SLOT, "load_failed", False)
 
     assert rerank._load() is not None
     name, device, kwargs = made[0]
@@ -406,10 +420,10 @@ def test_rerank_load_accelerator_uses_fp16(monkeypatch) -> None:
 
 def test_rerank_load_returns_cached_and_failed(monkeypatch) -> None:
     sentinel = object()
-    monkeypatch.setattr(rerank, "_model", sentinel)
+    monkeypatch.setattr(rerank.SLOT, "model", sentinel)
     assert rerank._load() is sentinel
-    monkeypatch.setattr(rerank, "_model", None)
-    monkeypatch.setattr(rerank, "_load_failed", True)
+    monkeypatch.setattr(rerank.SLOT, "model", None)
+    monkeypatch.setattr(rerank.SLOT, "load_failed", True)
     assert rerank._load() is None
 
 
@@ -422,11 +436,11 @@ def test_rerank_load_failure_is_cached(monkeypatch) -> None:
     fake_mod.CrossEncoder = BadCE
     monkeypatch.setitem(sys.modules, "sentence_transformers", fake_mod)
     monkeypatch.setenv("THREAD_ARCHIVE_RERANK_DEVICE", "cpu")
-    monkeypatch.setattr(rerank, "_model", None)
-    monkeypatch.setattr(rerank, "_load_failed", False)
+    monkeypatch.setattr(rerank.SLOT, "model", None)
+    monkeypatch.setattr(rerank.SLOT, "load_failed", False)
 
     assert rerank._load() is None
-    assert rerank._load_failed is True
+    assert rerank.SLOT.load_failed is True
     assert rerank._load() is None
 
 
@@ -439,7 +453,7 @@ def test_rerank_scores_success_and_pairs(monkeypatch) -> None:
             return np.asarray([0.2, 0.8])
 
     fm = FakeModel()
-    monkeypatch.setattr(rerank, "_load", lambda: fm)
+    monkeypatch.setattr(rerank.SLOT, "model", fm)
     out = rerank.rerank_scores("q", ["doc a", "doc b"])
     assert out == [0.2, 0.8]
     assert all(isinstance(s, float) for s in out)
@@ -454,7 +468,7 @@ def test_rerank_scores_caps_docs_and_handles_none_text(monkeypatch) -> None:
             captured["pairs"] = pairs
             return [1.0, 2.0]
 
-    monkeypatch.setattr(rerank, "_load", lambda: FakeModel())
+    monkeypatch.setattr(rerank.SLOT, "model", FakeModel())
     long = "y" * (rerank.RERANK_DOC_CHARS + 100)
     rerank.rerank_scores("q", [long, None])
     assert len(captured["pairs"][0][1]) == rerank.RERANK_DOC_CHARS
@@ -464,7 +478,8 @@ def test_rerank_scores_caps_docs_and_handles_none_text(monkeypatch) -> None:
 def test_rerank_scores_none_paths(monkeypatch) -> None:
     assert rerank.rerank_scores("", ["a"]) is None  # empty query
     assert rerank.rerank_scores("q", []) is None  # empty docs
-    monkeypatch.setattr(rerank, "_load", lambda: None)
+    monkeypatch.setattr(rerank.SLOT, "model", None)
+    monkeypatch.setattr(rerank.SLOT, "load_failed", True)
     assert rerank.rerank_scores("q", ["a"]) is None  # model unavailable
 
 
@@ -473,7 +488,7 @@ def test_rerank_scores_swallows_predict_error(monkeypatch) -> None:
         def predict(self, *a, **k):
             raise RuntimeError("boom")
 
-    monkeypatch.setattr(rerank, "_load", lambda: Boom())
+    monkeypatch.setattr(rerank.SLOT, "model", Boom())
     assert rerank.rerank_scores("q", ["a"]) is None
 
 
@@ -919,7 +934,8 @@ def test_embed_and_rerank_warm(monkeypatch) -> None:
         assert mod.warm() is False  # unavailable → loader untouched
     for mod in (embed, rerank):
         monkeypatch.setattr(mod, "is_available", lambda: True)
-        monkeypatch.setattr(mod, "_load", lambda: object())
+        monkeypatch.setattr(mod.SLOT, "model", object())     # already loaded
         assert mod.warm() is True
-        monkeypatch.setattr(mod, "_load", lambda: None)
+        monkeypatch.setattr(mod.SLOT, "model", None)
+        monkeypatch.setattr(mod.SLOT, "load_failed", True)   # cached failure
         assert mod.warm() is False

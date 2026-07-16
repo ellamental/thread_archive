@@ -23,6 +23,7 @@ import argparse
 import logging
 import sys
 import time
+from collections.abc import Callable
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
@@ -108,11 +109,26 @@ def _ask_path(prompt: str, *, interactive: bool) -> str:
 # ── the setup flow ───────────────────────────────────────────────────────────
 
 
-def run_setup(args: argparse.Namespace, watchers: Optional[list] = None) -> int:
-    """Discover → consent → import → watcher → MCP wiring. Returns exit code."""
+def run_setup(
+    args: argparse.Namespace,
+    watchers: Optional[list] = None,
+    *,
+    interactive: Optional[bool] = None,
+    ask: Callable[..., str] = _ask,
+    offer_watcher: Optional[Callable] = None,
+    offer_backup: Optional[Callable] = None,
+    offer_mcp: Optional[Callable] = None,
+) -> int:
+    """Discover → consent → import → watcher → MCP wiring. Returns exit code.
+
+    The flow's collaborators are keyword parameters: ``interactive`` overrides
+    the TTY auto-detect, ``ask`` is the prompt, and the three ``offer_*`` steps
+    default to this module's own (None → the real step) — so tests script a
+    run without faking wizard internals.
+    """
     from .._watcher import provider_watchers
 
-    interactive = _interactive(args)
+    interactive = _interactive(args) if interactive is None else interactive
     if not interactive and not args.yes:
         # No TTY and no --yes: never ingest as a side effect of being glanced at.
         _say("thread_archive: no terminal to ask questions in.")
@@ -161,7 +177,7 @@ def run_setup(args: argparse.Namespace, watchers: Optional[list] = None) -> int:
         do_import = False
     else:
         total = _fmt_bytes(sum(r.bytes for _, r in found))
-        answer = _ask(
+        answer = ask(
             f"Import these now? Roughly {total} of source data; a large store takes a few minutes.\n"
             "  [Enter] import all · e = edit selection · s = skip import  > ",
             default="", interactive=interactive,
@@ -171,7 +187,7 @@ def run_setup(args: argparse.Namespace, watchers: Optional[list] = None) -> int:
             selected = []
             for w, r in found:
                 label = SOURCE_LABELS.get(r.name, r.name)
-                keep = _ask(f"  include {label}? [Y/n] > ", default="y", interactive=interactive)
+                keep = ask(f"  include {label}? [Y/n] > ", default="y", interactive=interactive)
                 if keep not in ("n", "no"):
                     selected.append(w)
         do_import = answer not in ("s", "n", "no") and bool(selected)
@@ -203,15 +219,15 @@ def run_setup(args: argparse.Namespace, watchers: Optional[list] = None) -> int:
 
     # 4. The always-on watcher.
     cfg["setup"] = cfg.get("setup", {})
-    cfg["setup"]["watcher"] = _offer_watcher(args, interactive)
+    cfg["setup"]["watcher"] = (offer_watcher or _offer_watcher)(args, interactive)
     _say()
 
     # 5. The scheduled nightly backup.
-    cfg["setup"]["backup"] = _offer_backup(args, interactive)
+    cfg["setup"]["backup"] = (offer_backup or _offer_backup)(args, interactive)
     _say()
 
     # 6. MCP wiring.
-    cfg["setup"]["clients"] = {"claude": _offer_mcp(args, interactive)}
+    cfg["setup"]["clients"] = {"claude": (offer_mcp or _offer_mcp)(args, interactive)}
     _say()
 
     # 7. Done.
@@ -222,7 +238,7 @@ def run_setup(args: argparse.Namespace, watchers: Optional[list] = None) -> int:
     if cfg["setup"]["watcher"] in ("launchd", "already-running"):
         _say("  web viewer:       http://127.0.0.1:8787")
     _say(f"  account exports:  drop ZIPs into {paths.dumps_dir}")
-    if not _embeddings_installed():
+    if not embeddings_installed():
         _say("  semantic search:  not installed — `pip install 'thread-archive[embeddings]'` adds it (large: torch)")
     return 0
 
@@ -289,7 +305,9 @@ def _import_selected_locked(args: argparse.Namespace, selected: list, log_path) 
                 _say(f"    ! {err}")
 
 
-def _offer_watcher(args: argparse.Namespace, interactive: bool) -> str:
+def _offer_watcher(
+    args: argparse.Namespace, interactive: bool, ask: Callable[..., str] = _ask
+) -> str:
     """Offer the always-fresh upgrade. Returns the recorded outcome."""
     if args.skip_watcher:
         _say("Watcher skipped (--skip-watcher).")
@@ -302,12 +320,12 @@ def _offer_watcher(args: argparse.Namespace, interactive: bool) -> str:
 
     from .. import _launchd
 
-    if _watcher_running(args.home):
+    if watcher_running(args.home):
         _say("Keep it fresh: the always-on watcher is already installed and running.")
         return "already-running"
     _say("Keep it fresh? A background watcher (launchd) tails these stores so new")
     _say("conversations land within seconds, and serves the web viewer at http://127.0.0.1:8787.")
-    answer = _ask(
+    answer = ask(
         "  [Enter] install watcher · s = skip (catch-up runs whenever the archive is used)  > ",
         default="", interactive=interactive,
     )
@@ -342,7 +360,7 @@ def _offer_backup(args: argparse.Namespace, interactive: bool) -> dict:
     # An already-loaded backup agent is left untouched — this is what keeps the
     # wizard from clobbering an operator-installed pipeline (e.g. the host/ layer's
     # NAS backup with its own remount + notify wiring) on a re-run.
-    if _backup_running(args.home):
+    if backup_running(args.home):
         dest = _launchd.backup_agent_dest()
         _say("Keep it safe: a nightly backup job is already installed"
              + (f" → {dest}." if dest else "."))
@@ -375,7 +393,9 @@ def _offer_backup(args: argparse.Namespace, interactive: bool) -> dict:
     return {"status": "launchd", "dest": str(dest_path)}
 
 
-def _offer_mcp(args: argparse.Namespace, interactive: bool) -> str:
+def _offer_mcp(
+    args: argparse.Namespace, interactive: bool, ask: Callable[..., str] = _ask
+) -> str:
     """Offer to wire detected MCP clients. Returns the recorded outcome."""
     from . import clients
 
@@ -392,7 +412,7 @@ def _offer_mcp(args: argparse.Namespace, interactive: bool) -> str:
         _say("Connect your agents: claude already has the archive's MCP servers.")
         return "already-wired"
     _say("Connect your agents? Found: claude (Claude Code).")
-    answer = _ask(
+    answer = ask(
         "  [Enter] wire MCP (search + librarian, user scope) · p = print config only · s = skip  > ",
         default="", interactive=interactive,
     )
@@ -420,7 +440,7 @@ def _indent(block: str, by: str = "    ") -> str:
     return "\n".join(by + line for line in block.splitlines())
 
 
-def _embeddings_installed() -> bool:
+def embeddings_installed() -> bool:
     from importlib.util import find_spec
 
     try:
@@ -429,7 +449,7 @@ def _embeddings_installed() -> bool:
         return False
 
 
-def _watcher_running(home: Optional[str] = None) -> bool:
+def watcher_running(home: Optional[str] = None) -> bool:
     """Whether the launchd watcher is loaded AND serves *this* home — the agent
     is per-user, so a loaded agent pointed at a different ``THREAD_ARCHIVE_HOME``
     (plist env) must not read as covering the home being asked about."""
@@ -454,7 +474,7 @@ def _watcher_running(home: Optional[str] = None) -> bool:
     return agent_paths.home == resolve_paths(home).home
 
 
-def _backup_running(home: Optional[str] = None) -> bool:
+def backup_running(home: Optional[str] = None) -> bool:
     """Whether the launchd nightly-backup agent is loaded AND covers *this* home
     (per-user agent; a loaded agent pointed at a different ``THREAD_ARCHIVE_HOME``
     must not read as covering the home being asked about). An agent whose plist
@@ -502,7 +522,7 @@ def print_status(args: argparse.Namespace) -> int:
     topics_part = f" · {topics:,} topics" if topics else ""
     _say(f"  archive:  {convs:,} conversations{topics_part} · {st['events']:,} events · {st['fts_indexed']:,} indexed")
     if sys.platform == "darwin":
-        _say(f"  watcher:  {'running' if _watcher_running(args.home) else 'not running — `thread_archive setup` offers it'}")
+        _say(f"  watcher:  {'running' if watcher_running(args.home) else 'not running — `thread_archive setup` offers it'}")
     disabled = sorted(
         name for name, entry in cfg.get("sources", {}).items()
         if isinstance(entry, dict) and entry.get("enabled") is False
@@ -524,7 +544,7 @@ def print_status(args: argparse.Namespace) -> int:
     elif n:
         _say(f"  nightly:  ok {_age(n['at'])} → {n.get('dest')}")
     if sys.platform == "darwin":
-        if _backup_running(args.home):
+        if backup_running(args.home):
             from .. import _launchd
 
             dest = _launchd.backup_agent_dest()

@@ -29,7 +29,6 @@ from thread_archive._importers.codex import (
     _codex_call_maps,
     _codex_first_user_line,
     _codex_has_importable_content,
-    _codex_line_model,
     _codex_model,
     _codex_output_is_error,
     _codex_reasoning_text,
@@ -37,6 +36,7 @@ from thread_archive._importers.codex import (
     _codex_tool_result_block,
     _codex_tool_use_block,
     _codex_user_message,
+    codex_line_model,
 )
 from thread_archive._importers.cursor import (
     _build_cursor_messages,
@@ -468,16 +468,16 @@ def test_codex_full_session_reasoning_and_custom_tool(archive_home) -> None:
     assert len(_events()) == n
 
 
-def test_codex_line_model_variants() -> None:
-    assert _codex_line_model({"type": "turn_context", "payload": "notdict"}) is None
-    assert _codex_line_model({"type": "turn_context", "payload": {"model": "gpt-5"}}) == "gpt-5"
-    assert _codex_line_model({"type": "event_msg", "payload": {
+def testcodex_line_model_variants() -> None:
+    assert codex_line_model({"type": "turn_context", "payload": "notdict"}) is None
+    assert codex_line_model({"type": "turn_context", "payload": {"model": "gpt-5"}}) == "gpt-5"
+    assert codex_line_model({"type": "event_msg", "payload": {
         "type": "thread_settings_applied", "thread_settings": {"model": "gpt-x"}}}) == "gpt-x"
-    assert _codex_line_model({"type": "event_msg", "payload": {
+    assert codex_line_model({"type": "event_msg", "payload": {
         "type": "thread_settings_applied", "thread_settings": "oops"}}) is None
-    assert _codex_line_model({"type": "session_meta", "payload": {"model": "old"}}) == "old"
-    assert _codex_line_model({"type": "response_item", "payload": {"type": "reasoning"}}) is None  # other
-    assert _codex_line_model({"type": "turn_context", "payload": {"model": "   "}}) is None       # blank
+    assert codex_line_model({"type": "session_meta", "payload": {"model": "old"}}) == "old"
+    assert codex_line_model({"type": "response_item", "payload": {"type": "reasoning"}}) is None  # other
+    assert codex_line_model({"type": "turn_context", "payload": {"model": "   "}}) is None       # blank
 
 
 def test_codex_model_scan() -> None:
@@ -726,14 +726,16 @@ def test_cursor_stub_failure_is_swallowed(archive_home, monkeypatch) -> None:
         ("bubbleId:good:b1", json.dumps({"type": 1, "text": "hi", "createdAt": 1700000000000})),
     ])
 
-    def _boom_stub(*a, **k):
-        raise RuntimeError("stub failed too")
-
     def _boom_import(*a, **k):
         raise RuntimeError("import failed")
 
-    monkeypatch.setattr(cursor_mod, "_import_cursor_error_stub", _boom_stub)
+    def _boom_session():
+        # The stub writes its stub thread through get_session — a broken store
+        # makes the REAL stub fail after the import already has.
+        raise RuntimeError("stub failed too")
+
     monkeypatch.setattr(cursor_mod, "import_cursor_from_payload", _boom_import)
+    monkeypatch.setattr(cursor_mod, "get_session", _boom_session)
     scan = import_cursor_db(db)   # must not raise
     assert scan.failed >= 1
 

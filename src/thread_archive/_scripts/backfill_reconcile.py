@@ -33,7 +33,7 @@ import uuid as _uuid
 from collections import defaultdict
 from datetime import timezone
 from pathlib import Path
-from typing import Any, Iterator, Optional
+from typing import Any, Iterable, Iterator, Optional
 
 from sqlalchemy import select, update
 
@@ -216,14 +216,22 @@ def _iter_pairs() -> Iterator[tuple[str, Path, str]]:
             yield name, path, source_id
 
 
-def run(*, apply: bool = False, limit: Optional[int] = None, backup_path: Optional[Path] = None) -> dict:
+def run(
+    *,
+    apply: bool = False,
+    limit: Optional[int] = None,
+    backup_path: Optional[Path] = None,
+    pairs: Optional[Iterable[tuple[str, Path, str]]] = None,
+) -> dict:
     """Backfill dedup_keys onto NULL-key rows. Dry-run by default; ``apply`` writes
-    per-thread (unsafe threads always skipped), appending a row-level backup."""
+    per-thread (unsafe threads always skipped), appending a row-level backup.
+    ``pairs`` overrides the on-disk transcript discovery (default: _iter_pairs())
+    — the discovery boundary as a parameter, so tests feed scripted stores."""
     totals: dict[str, Any] = defaultdict(int)
     examined = 0
     backup = open(backup_path, "a", encoding="utf-8") if (apply and backup_path) else None
     try:
-        for name, path, source_id in _iter_pairs():
+        for name, path, source_id in (pairs if pairs is not None else _iter_pairs()):
             if limit is not None and examined >= limit:
                 break
             with get_session() as s:
@@ -272,7 +280,11 @@ def run(*, apply: bool = False, limit: Optional[int] = None, backup_path: Option
     return dict(totals)
 
 
-def main(argv: Optional[list[str]] = None) -> None:
+def main(
+    argv: Optional[list[str]] = None,
+    *,
+    pairs: Optional[Iterable[tuple[str, Path, str]]] = None,
+) -> None:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--apply", action="store_true", help="write (default: dry-run)")
     ap.add_argument("--limit", type=int, default=None)
@@ -281,7 +293,7 @@ def main(argv: Optional[list[str]] = None) -> None:
     args = ap.parse_args(argv)
     logging.basicConfig(level=logging.INFO if args.verbose else logging.WARNING)
 
-    totals = run(apply=args.apply, limit=args.limit, backup_path=args.backup)
+    totals = run(apply=args.apply, limit=args.limit, backup_path=args.backup, pairs=pairs)
     mode = "APPLIED" if args.apply else "DRY-RUN"
     print(f"[{mode}] backfill-reconcile (dedup_key backfill)")
     print(f"  threads examined:   {totals.get('threads', 0):,}")

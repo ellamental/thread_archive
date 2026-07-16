@@ -194,8 +194,11 @@ def test_semantic_arm_sits_out_for_toolname_count_oldest(archive_home, monkeypat
     from thread_archive import _retrieval as retrieval
 
     init_db()
+    # Record at the vector arm's own boundary (vectors.search, public): a scoped
+    # search must never reach it; an unscoped one does. None keeps fusion lexical.
     calls: list = []
-    monkeypatch.setattr(retrieval, "_semantic_hits",
+    monkeypatch.setattr(vectors, "is_available", lambda: True)
+    monkeypatch.setattr(vectors, "search",
                         lambda *a, **k: (calls.append(1), None)[1])
     retrieval.search("some query", tool_name="Bash")
     retrieval.search("some query", output="count")
@@ -237,10 +240,13 @@ def test_encode_honors_availability_stub(monkeypatch):
     (conftest's model-free pin, --lexical-only) must never cold-load a model."""
     from thread_archive._retrieval import embed
 
+    class _NoLoadSlot(embed.ModelSlot):
+        """A slot that treats any load attempt as a test failure."""
+
+        def get(self, construct, on_error):
+            raise AssertionError("model load attempted")
+
     monkeypatch.setattr(embed, "is_available", lambda: False)
-    monkeypatch.setattr(
-        embed, "_load",
-        lambda: (_ for _ in ()).throw(AssertionError("model load attempted")),
-    )
+    monkeypatch.setattr(embed, "SLOT", _NoLoadSlot())
     assert embed.embed_query("anything at all") is None
     assert embed.embed_documents(["doc"]) is None

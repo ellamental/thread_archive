@@ -67,6 +67,22 @@ def _home(tmp_path, monkeypatch) -> Path:
 def _recv(obj: dict, ts: str = "2026-06-25 10:00:00.000") -> str:
     return f"{ts} [info] Received message from webview: {json.dumps(obj)}"
 
+def _exthost_layout(monkeypatch, tmp_path, *, session="sess-1", content=None, as_dir=False):
+    """The real Claude Code transcript layout under a redirected $HOME, so the
+    real ``_session_jsonl`` glob resolves /proj + ``session`` naturally:
+    ``content=None`` leaves no file at all (→ None), ``as_dir`` makes the path a
+    directory (resolvable but unreadable)."""
+    monkeypatch.setenv("HOME", str(tmp_path))
+    proj = tmp_path / ".claude" / "projects" / "-proj"
+    f = proj / f"{session}.jsonl"
+    if as_dir:
+        f.mkdir(parents=True)
+    elif content is not None:
+        proj.mkdir(parents=True, exist_ok=True)
+        f.write_text(content, encoding="utf-8")
+    return f
+
+
 
 # ══ sources.py ═══════════════════════════════════════════════════════════════
 
@@ -346,7 +362,7 @@ def test_too_fresh_grace_window() -> None:
     assert ex._too_fresh(None) is False  # absent stamp → act now
     fresh = datetime.now().replace(microsecond=0).isoformat()
     assert ex._too_fresh(fresh) is True  # just now → within grace
-    old = (datetime.now() - timedelta(seconds=ex._GRACE_SECONDS + 60)).isoformat()
+    old = (datetime.now() - timedelta(seconds=ex.GRACE_SECONDS + 60)).isoformat()
     assert ex._too_fresh(old) is False  # aged out → act now
 
 
@@ -453,7 +469,6 @@ def test_exthost_process_log_skips_channel_without_context(archive_home, tmp_pat
     """A user message on a channel with no control line (no cwd/session) is left
     for a later poll rather than misfiled."""
     init_db()
-    monkeypatch.setattr(ex, "_too_fresh", lambda iso: False)
     log = tmp_path / "Claude VSCode.log"
     # user message, but NO control line establishing the channel's cwd/session
     log.write_text(_recv({"channelId": "c1",
@@ -469,8 +484,7 @@ def test_exthost_process_log_skips_channel_without_context(archive_home, tmp_pat
 def test_exthost_process_log_skips_when_no_jsonl(archive_home, tmp_path, monkeypatch) -> None:
     """No session JSONL on disk → can't confirm lost-vs-persisted → leave it."""
     init_db()
-    monkeypatch.setattr(ex, "_session_jsonl", lambda cwd, sid: None)
-    monkeypatch.setattr(ex, "_too_fresh", lambda iso: False)
+    _exthost_layout(monkeypatch, tmp_path)  # no transcript on disk at all
     log = tmp_path / "Claude VSCode.log"
     log.write_text("\n".join([
         _recv({"channelId": "c1", "cwd": "/proj", "resume": "sess-1",
@@ -488,10 +502,7 @@ def test_exthost_process_log_tolerates_unreadable_jsonl(archive_home, tmp_path, 
     """If the resolved session JSONL can't be read (here: it's a directory), the
     read is caught (cache the empty string) and the message still gets considered."""
     init_db()
-    jdir = tmp_path / "jsonl-is-a-dir"
-    jdir.mkdir()
-    monkeypatch.setattr(ex, "_session_jsonl", lambda cwd, sid: jdir)
-    monkeypatch.setattr(ex, "_too_fresh", lambda iso: False)
+    _exthost_layout(monkeypatch, tmp_path, as_dir=True)  # resolvable, unreadable
     log = tmp_path / "Claude VSCode.log"
     log.write_text("\n".join([
         _recv({"channelId": "c1", "cwd": "/proj", "resume": "sess-1",
@@ -520,10 +531,7 @@ def test_exthost_recovers_two_lost_messages_sharing_thread(archive_home, tmp_pat
         tid = create_thread(s, source="claude-code", source_id=source_id, title="t")
         s.commit()
 
-    jsonl = tmp_path / "sess-1.jsonl"
-    jsonl.write_text("", encoding="utf-8")  # exists but empty → neither uuid present
-    monkeypatch.setattr(ex, "_session_jsonl", lambda cwd, sid: jsonl)
-    monkeypatch.setattr(ex, "_too_fresh", lambda iso: False)
+    _exthost_layout(monkeypatch, tmp_path, content="")  # empty → neither uuid present
 
     log = tmp_path / "Claude VSCode.log"
     log.write_text("\n".join([

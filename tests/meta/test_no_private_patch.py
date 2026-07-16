@@ -31,33 +31,7 @@ TESTS_ROOT = Path(__file__).resolve().parent.parent
 # Known private-target patches, by path relative to the test root.
 # This mapping can only shrink, never grow.
 BASELINE: dict[str, int] = {
-    "test_backfill_codex_model.py": 1,
-    "test_backup_mirror.py": 5,
-    "test_cov_cli.py": 2,
-    "test_cov_importers_a.py": 1,
-    "test_cov_ops_truth.py": 2,
-    "test_cov_scripts.py": 17,
-    "test_cov_setup.py": 27,
-    "test_cov_vectors.py": 36,
-    "test_cov_watcher.py": 7,
-    "test_dedup_collapse_and_deep_verify.py": 2,
-    "test_durability_and_homes.py": 1,
-    "test_exthost.py": 8,
-    "test_integrity_hardening.py": 1,
-    "test_lazy_ingest.py": 1,
-    "test_mcp.py": 1,
-    "test_migration_scripts.py": 4,
-    "test_nightly.py": 1,
-    "test_rerank.py": 3,
-    "test_search.py": 1,
-    "test_setup_wizard.py": 14,
-    "test_subjects.py": 1,
-    "test_truth.py": 3,
-    "test_truth_manifest.py": 2,
-    "test_truth_repair.py": 1,
-    "test_usage_ledger.py": 1,
-    "test_vectors.py": 2,
-    "test_web.py": 1,
+    # Clean: this product has no private-target patches. Keep it that way.
 }
 
 

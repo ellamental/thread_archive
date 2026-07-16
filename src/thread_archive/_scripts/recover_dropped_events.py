@@ -37,7 +37,7 @@ import argparse
 import logging
 import uuid as _uuid
 from pathlib import Path
-from typing import Iterator, Optional
+from typing import Iterable, Iterator, Optional
 
 from sqlalchemy import select
 
@@ -111,9 +111,16 @@ def _iter_pairs() -> Iterator[tuple[str, Path, str]]:
             yield name, path, source_id
 
 
-def run(*, apply: bool = False, limit: Optional[int] = None) -> dict:
+def run(
+    *,
+    apply: bool = False,
+    limit: Optional[int] = None,
+    pairs: Optional[Iterable[tuple[str, Path, str]]] = None,
+) -> dict:
     """Walk on-disk CC-shaped transcripts, backfilling recoverable events onto their
-    already-imported threads. Returns a summary dict."""
+    already-imported threads. Returns a summary dict. ``pairs`` overrides the
+    on-disk transcript discovery (default: _iter_pairs()) — the discovery
+    boundary as a parameter, so tests feed scripted stores."""
     totals = {
         "files_seen": 0,
         "threads_mapped": 0,
@@ -124,7 +131,7 @@ def run(*, apply: bool = False, limit: Optional[int] = None) -> dict:
         "write_errors": 0,
     }
     examined = 0
-    for name, path, source_id in _iter_pairs():
+    for name, path, source_id in (pairs if pairs is not None else _iter_pairs()):
         totals["files_seen"] += 1
         if limit is not None and examined >= limit:
             break
@@ -165,7 +172,11 @@ def run(*, apply: bool = False, limit: Optional[int] = None) -> dict:
     return totals
 
 
-def main(argv: Optional[list[str]] = None) -> None:
+def main(
+    argv: Optional[list[str]] = None,
+    *,
+    pairs: Optional[Iterable[tuple[str, Path, str]]] = None,
+) -> None:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--apply", action="store_true", help="write recovered events (default: dry-run)")
     ap.add_argument("--limit", type=int, default=None, help="cap threads examined (sampling)")
@@ -173,7 +184,7 @@ def main(argv: Optional[list[str]] = None) -> None:
     args = ap.parse_args(argv)
     logging.basicConfig(level=logging.INFO if args.verbose else logging.WARNING)
 
-    totals = run(apply=args.apply, limit=args.limit)
+    totals = run(apply=args.apply, limit=args.limit, pairs=pairs)
     mode = "APPLIED" if args.apply else "DRY-RUN"
     print(f"[{mode}] recover-dropped-events")
     print(f"  files seen:        {totals['files_seen']}")

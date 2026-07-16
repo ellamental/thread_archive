@@ -2,6 +2,39 @@
 
 ## Unreleased
 
+- **Private-patch debt paid to zero: 146 → 0 (2026-07-16).** Every test that
+  faked a `_private` now goes through a front door, and the
+  `test_no_private_patch.py` baseline is empty. The redesigns that carried it:
+  - *embed/rerank (41):* new `ModelSlot` (`_retrieval/model_slot.py`) holds
+    each heavy model + its cached-failure flag as one public state object —
+    tests inject a scripted model or reset via `SLOT.model`/`SLOT.load_failed`;
+    the offline-pin tests build real HF cache trees under
+    `HUGGINGFACE_HUB_CACHE`.
+  - *setup wizard (41):* `run_setup` takes `interactive`/`ask`/`offer_*` as
+    parameters; the box probes are public (`watcher_running`,
+    `backup_running`, `embeddings_installed`); the launchd probe tests script
+    `subprocess.run` and read real plists under a redirected `$HOME`.
+  - *scripts (22):* `backfill_reconcile`/`recover_dropped_events` `run`/`main`
+    take the transcript discovery as a `pairs=` parameter;
+    `codex_line_model` is public (it was always the cross-module rule).
+  - *exthost (11 incl. cov_watcher):* tests build the real
+    `~/.claude/projects` layout under a redirected `$HOME`; `GRACE_SECONDS`
+    is a public tunable and the grace test uses real timestamps.
+  - *truth/ops (12):* `mirror_dir`, `append_line`, `load_thread_files`,
+    `checkpoint_changed_threads` are public seams (fault/interleave injection
+    at real phase boundaries); `MAX_OPEN_HANDLES`, `MAX_BYTES`,
+    `FLAT_MAX`, `MIRROR_DELETE_FLOOR`/`_MAX_FRACTION` are public tunables;
+    the nightly notify test runs a real loopback `/api/notify` and asserts
+    the wire payload.
+  - *misc (19):* `THREAD_ARCHIVE_NO_THROTTLE` env skips the CLI self-renice
+    (one-way in-process — the suite sets it); the MCP lazy-ingest throttle
+    state lives in a public `IngestThrottle` (`server.INGEST`); the mcp test
+    uses the existing `THREAD_ARCHIVE_MCP_INGEST=0` kill-switch; the
+    subjects fail-soft test injects a booming session through the existing
+    `session=` parameter; the web limit-clamp test drives the route over
+    real data; the cursor double-failure test breaks the store
+    (`get_session`) instead of faking the stub.
+
 - **The gardener returns (2026-07-16).** The old monorepo's gardener — the
   librarian's structural complement — is back as a lite diagnostics layer over
   the standalone graph: `_knowledge/garden.py` computes per-kind issue queues

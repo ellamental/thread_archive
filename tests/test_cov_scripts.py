@@ -419,33 +419,31 @@ def test_reconcile_plan_counts_unmatched_fresh_as_dropped(archive_home) -> None:
 
 def test_reconcile_run_skips_unmapped_source(archive_home, monkeypatch) -> None:
     tid, f = _import_cc(archive_home)
-    monkeypatch.setattr(rec, "_iter_pairs",
-                        lambda: iter([("claude-code", f, "no-such-source")]))
-    totals = rec.run(apply=False)
+    pairs = iter([("claude-code", f, "no-such-source")])
+    totals = rec.run(pairs=pairs, apply=False)
     assert totals.get("threads", 0) == 0
 
 
 def test_reconcile_run_counts_plan_errors(archive_home, monkeypatch) -> None:
     tid, f = _import_cc(archive_home)
-    monkeypatch.setattr(rec, "_iter_pairs",
-                        lambda: iter([("claude-code", f, "proj:s1")]))
+    pairs = iter([("claude-code", f, "proj:s1")])
 
     def _boom(path):
         raise RuntimeError("cannot read")
 
     monkeypatch.setattr(rec, "read_session_lines", _boom)
-    totals = rec.run(apply=False)
+    totals = rec.run(pairs=pairs, apply=False)
     assert totals["plan_errors"] == 1
     assert totals["threads"] == 1
 
 
 def test_reconcile_run_respects_limit(archive_home, monkeypatch) -> None:
     tid, f = _import_cc(archive_home)
-    monkeypatch.setattr(rec, "_iter_pairs", lambda: iter([
+    pairs = iter([
         ("claude-code", f, "proj:s1"),
         ("claude-code", f, "proj:s1"),
-    ]))
-    totals = rec.run(apply=False, limit=1)
+    ])
+    totals = rec.run(pairs=pairs, apply=False, limit=1)
     assert totals["threads"] == 1
 
 
@@ -456,9 +454,8 @@ def test_reconcile_run_flags_unsafe_on_key_drift(archive_home, monkeypatch) -> N
             Event.thread_id == tid, Event.dedup_key.is_not(None))).scalars().first()
         s.execute(update(Event).where(Event.id == ev.id).values(dedup_key="drifted-key"))
         s.commit()
-    monkeypatch.setattr(rec, "_iter_pairs",
-                        lambda: iter([("claude-code", f, "proj:s1")]))
-    totals = rec.run(apply=False)
+    pairs = iter([("claude-code", f, "proj:s1")])
+    totals = rec.run(pairs=pairs, apply=False)
     assert totals["unsafe_threads"] == 1
     assert totals["warnings"] >= 1
 
@@ -466,9 +463,8 @@ def test_reconcile_run_flags_unsafe_on_key_drift(archive_home, monkeypatch) -> N
 def test_reconcile_run_apply_without_backup(archive_home, monkeypatch) -> None:
     tid, f = _import_cc(archive_home)
     _null_all_keys(tid)
-    monkeypatch.setattr(rec, "_iter_pairs",
-                        lambda: iter([("claude-code", f, "proj:s1")]))
-    totals = rec.run(apply=True)  # no backup_path → the backup-write branch is skipped
+    pairs = iter([("claude-code", f, "proj:s1")])
+    totals = rec.run(pairs=pairs, apply=True)  # no backup_path → the backup-write branch is skipped
     assert totals["backfills"] > 0
     assert any(k for k in _keys(tid).values())
 
@@ -476,10 +472,9 @@ def test_reconcile_run_apply_without_backup(archive_home, monkeypatch) -> None:
 def test_reconcile_run_apply_with_backup(archive_home, tmp_path, monkeypatch) -> None:
     tid, f = _import_cc(archive_home)
     _null_all_keys(tid)
-    monkeypatch.setattr(rec, "_iter_pairs",
-                        lambda: iter([("claude-code", f, "proj:s1")]))
+    pairs = iter([("claude-code", f, "proj:s1")])
     backup = tmp_path / "reconcile-backup.jsonl"
-    totals = rec.run(apply=True, backup_path=backup)
+    totals = rec.run(pairs=pairs, apply=True, backup_path=backup)
     assert totals["backfills"] > 0
     rows = [json.loads(ln) for ln in backup.read_text().splitlines()]
     assert rows and rows[0]["thread_id"] == tid
@@ -490,13 +485,11 @@ def test_reconcile_run_apply_with_backup(archive_home, tmp_path, monkeypatch) ->
 def test_reconcile_main_dry_and_apply(archive_home, monkeypatch, capsys) -> None:
     tid, f = _import_cc(archive_home)
     _null_all_keys(tid)
-    monkeypatch.setattr(rec, "_iter_pairs",
-                        lambda: iter([("claude-code", f, "proj:s1")]))
-    rec.main([])
+    pairs = iter([("claude-code", f, "proj:s1")])
+    rec.main([], pairs=pairs)
     assert "[DRY-RUN]" in capsys.readouterr().out
-    monkeypatch.setattr(rec, "_iter_pairs",
-                        lambda: iter([("claude-code", f, "proj:s1")]))
-    rec.main(["--apply", "-v"])
+    pairs = iter([("claude-code", f, "proj:s1")])
+    rec.main(["--apply", "-v"], pairs=pairs)
     assert "[APPLIED]" in capsys.readouterr().out
     assert any(k for k in _keys(tid).values())
 
@@ -539,9 +532,8 @@ def test_recover_iter_pairs_yields_available_only(monkeypatch) -> None:
 
 def test_recover_run_skips_unmapped_source(archive_home, monkeypatch) -> None:
     tid, f = _import_cc(archive_home)
-    monkeypatch.setattr(rec2, "_iter_pairs",
-                        lambda: iter([("claude-code", f, "no-such-source")]))
-    totals = rec2.run(apply=False)
+    pairs = iter([("claude-code", f, "no-such-source")])
+    totals = rec2.run(pairs=pairs, apply=False)
     assert totals["threads_mapped"] == 0
     assert totals["files_seen"] == 1
 
@@ -549,48 +541,45 @@ def test_recover_run_skips_unmapped_source(archive_home, monkeypatch) -> None:
 def test_recover_run_respects_limit(archive_home, monkeypatch) -> None:
     tid, f = _import_cc(archive_home)
     _strip_recoverable(tid)
-    monkeypatch.setattr(rec2, "_iter_pairs", lambda: iter([
+    pairs = iter([
         ("claude-code", f, "proj:s1"),
         ("claude-code", f, "proj:s1"),
-    ]))
-    totals = rec2.run(apply=False, limit=1)
+    ])
+    totals = rec2.run(pairs=pairs, apply=False, limit=1)
     assert totals["files_seen"] == 2
     assert totals["threads_mapped"] == 1
 
 
 def test_recover_run_counts_read_errors(archive_home, monkeypatch) -> None:
     tid, f = _import_cc(archive_home)
-    monkeypatch.setattr(rec2, "_iter_pairs",
-                        lambda: iter([("claude-code", f, "proj:s1")]))
+    pairs = iter([("claude-code", f, "proj:s1")])
 
     def _boom(path):
         raise RuntimeError("unreadable")
 
     monkeypatch.setattr(rec2, "read_session_lines", _boom)
-    totals = rec2.run(apply=False)
+    totals = rec2.run(pairs=pairs, apply=False)
     assert totals["read_errors"] == 1
 
 
 def test_recover_run_counts_write_errors(archive_home, monkeypatch) -> None:
     tid, f = _import_cc(archive_home)
     _strip_recoverable(tid)
-    monkeypatch.setattr(rec2, "_iter_pairs",
-                        lambda: iter([("claude-code", f, "proj:s1")]))
+    pairs = iter([("claude-code", f, "proj:s1")])
 
     def _boom(session, rows):
         raise RuntimeError("write failed")
 
     monkeypatch.setattr(rec2, "write_events", _boom)
-    totals = rec2.run(apply=True)
+    totals = rec2.run(pairs=pairs, apply=True)
     assert totals["write_errors"] == 1
 
 
 def test_recover_run_nothing_to_recover_is_noop(archive_home, monkeypatch) -> None:
     """A whole thread (nothing was dropped) plans no rows — the per-thread skip."""
     tid, f = _import_cc(archive_home)
-    monkeypatch.setattr(rec2, "_iter_pairs",
-                        lambda: iter([("claude-code", f, "proj:s1")]))
-    totals = rec2.run(apply=False)
+    pairs = iter([("claude-code", f, "proj:s1")])
+    totals = rec2.run(pairs=pairs, apply=False)
     assert totals["threads_mapped"] == 1
     assert totals["threads_recovered"] == 0
     assert totals["events_recovered"] == 0
@@ -598,14 +587,13 @@ def test_recover_run_nothing_to_recover_is_noop(archive_home, monkeypatch) -> No
 
 def test_recover_main_prints_error_counts(archive_home, monkeypatch, capsys) -> None:
     tid, f = _import_cc(archive_home)
-    monkeypatch.setattr(rec2, "_iter_pairs",
-                        lambda: iter([("claude-code", f, "proj:s1")]))
+    pairs = iter([("claude-code", f, "proj:s1")])
 
     def _boom(path):
         raise RuntimeError("unreadable")
 
     monkeypatch.setattr(rec2, "read_session_lines", _boom)
-    rec2.main([])
+    rec2.main([], pairs=pairs)
     out = capsys.readouterr().out
     assert "read errors" in out
 
@@ -614,16 +602,14 @@ def test_recover_main_dry_and_apply(archive_home, monkeypatch, capsys) -> None:
     tid, f = _import_cc(archive_home)
     n_full = len(_keys(tid))
     _strip_recoverable(tid)
-    monkeypatch.setattr(rec2, "_iter_pairs",
-                        lambda: iter([("claude-code", f, "proj:s1")]))
-    rec2.main([])
+    pairs = iter([("claude-code", f, "proj:s1")])
+    rec2.main([], pairs=pairs)
     out = capsys.readouterr().out
     assert "[DRY-RUN]" in out
     assert "events recovered" in out
 
-    monkeypatch.setattr(rec2, "_iter_pairs",
-                        lambda: iter([("claude-code", f, "proj:s1")]))
-    rec2.main(["--apply", "-v"])
+    pairs = iter([("claude-code", f, "proj:s1")])
+    rec2.main(["--apply", "-v"], pairs=pairs)
     assert "[APPLIED]" in capsys.readouterr().out
     assert len(_keys(tid)) == n_full
 
@@ -661,7 +647,7 @@ def _seed_codex(archive_home, lines=CODEX_SESSION, name="codex.jsonl", source_id
     f = archive_home / name
     f.write_text("\n".join(json.dumps(ln) for ln in lines) + "\n", encoding="utf-8")
     with pytest.MonkeyPatch.context() as mp:
-        mp.setattr(codex_mod, "_codex_line_model", lambda line: None)
+        mp.setattr(codex_mod, "codex_line_model", lambda line: None)
         return import_codex_session_incremental(f, source_id).thread_id
 
 

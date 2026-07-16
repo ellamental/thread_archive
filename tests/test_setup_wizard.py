@@ -170,12 +170,12 @@ def test_yes_setup_imports_and_records(archive_home, capsys) -> None:
 
 def test_edit_selection_persists_opt_outs(archive_home, monkeypatch, capsys) -> None:
     answers = iter(["e", "n", "y"])  # edit; drop claude-code; keep cursor
-    monkeypatch.setattr(wizard, "_interactive", lambda args: True)
-    monkeypatch.setattr(
-        wizard, "_ask", lambda prompt, *, default, interactive: next(answers, default)
-    )
     fakes = [FakeWatcher("claude-code"), FakeWatcher("cursor")]
-    rc = wizard.run_setup(_args("setup", "--skip-watcher", "--skip-backup", "--skip-mcp"), watchers=fakes)
+    rc = wizard.run_setup(
+        _args("setup", "--skip-watcher", "--skip-backup", "--skip-mcp"), watchers=fakes,
+        interactive=True,
+        ask=lambda prompt, *, default, interactive: next(answers, default),
+    )
     assert rc == 0
     assert fakes[0].polled == 0 and fakes[1].polled == 1
     cfg = json.loads((archive_home / "config.json").read_text())
@@ -191,12 +191,12 @@ def test_edit_to_zero_disables_every_source(archive_home, monkeypatch, capsys) -
     # Deselecting each source in the edit pass is an explicit opt-out for all of
     # them — unlike a wholesale "skip import", which leaves sources enabled.
     answers = iter(["e", "n", "n"])
-    monkeypatch.setattr(wizard, "_interactive", lambda args: True)
-    monkeypatch.setattr(
-        wizard, "_ask", lambda prompt, *, default, interactive: next(answers, default)
-    )
     fakes = [FakeWatcher("claude-code"), FakeWatcher("cursor")]
-    rc = wizard.run_setup(_args("setup", "--skip-watcher", "--skip-backup", "--skip-mcp"), watchers=fakes)
+    rc = wizard.run_setup(
+        _args("setup", "--skip-watcher", "--skip-backup", "--skip-mcp"), watchers=fakes,
+        interactive=True,
+        ask=lambda prompt, *, default, interactive: next(answers, default),
+    )
     assert rc == 0
     assert fakes[0].polled == 0 and fakes[1].polled == 0
     cfg = json.loads((archive_home / "config.json").read_text())
@@ -216,8 +216,8 @@ def test_skip_import_keeps_sources_enabled(archive_home, capsys) -> None:
 
 
 def test_bare_rerun_lands_on_status(archive_home, monkeypatch, capsys) -> None:
-    monkeypatch.setattr(wizard, "_watcher_running", lambda home=None: False)
-    monkeypatch.setattr(wizard, "_backup_running", lambda home=None: False)
+    monkeypatch.setattr(wizard, "watcher_running", lambda home=None: False)
+    monkeypatch.setattr(wizard, "backup_running", lambda home=None: False)
     wizard.run_setup(
         _args("setup", "--yes", "--skip-import", "--skip-watcher", "--skip-backup", "--skip-mcp"), watchers=[]
     )
@@ -229,8 +229,8 @@ def test_bare_rerun_lands_on_status(archive_home, monkeypatch, capsys) -> None:
 
 
 def test_status_command(archive_home, monkeypatch, capsys) -> None:
-    monkeypatch.setattr(wizard, "_watcher_running", lambda home=None: False)
-    monkeypatch.setattr(wizard, "_backup_running", lambda home=None: False)
+    monkeypatch.setattr(wizard, "watcher_running", lambda home=None: False)
+    monkeypatch.setattr(wizard, "backup_running", lambda home=None: False)
     assert wizard.main(["status"]) == 0
     out = capsys.readouterr().out
     assert "0 conversations" in out and "all enabled" in out
@@ -256,7 +256,7 @@ def test_offer_backup_skipped_flag(archive_home) -> None:
 
 def test_offer_backup_installs_from_dest_flag(archive_home, monkeypatch, capsys) -> None:
     _force_darwin(monkeypatch)
-    monkeypatch.setattr(wizard, "_backup_running", lambda home=None: False)
+    monkeypatch.setattr(wizard, "backup_running", lambda home=None: False)
     recorded = {}
     monkeypatch.setattr(
         _launchd, "install_backup",
@@ -274,7 +274,7 @@ def test_offer_backup_already_installed_is_left_alone(archive_home, monkeypatch,
     # The guard that stops a wizard re-run from clobbering an operator-installed
     # pipeline (e.g. the host/ NAS backup): a loaded agent → no install call.
     _force_darwin(monkeypatch)
-    monkeypatch.setattr(wizard, "_backup_running", lambda home=None: True)
+    monkeypatch.setattr(wizard, "backup_running", lambda home=None: True)
     monkeypatch.setattr(_launchd, "backup_agent_dest", lambda: "/Volumes/NAS/arc")
     called = []
     monkeypatch.setattr(
@@ -289,7 +289,7 @@ def test_offer_backup_already_installed_is_left_alone(archive_home, monkeypatch,
 def test_offer_backup_yes_without_dest_skips(archive_home, monkeypatch) -> None:
     # --yes has no destination to invent: it must skip, never install to a guess.
     _force_darwin(monkeypatch)
-    monkeypatch.setattr(wizard, "_backup_running", lambda home=None: False)
+    monkeypatch.setattr(wizard, "backup_running", lambda home=None: False)
     monkeypatch.setattr(
         _launchd, "install_backup",
         lambda *a, **k: pytest.fail("must not install without a dest"),
@@ -307,9 +307,9 @@ def test_offer_backup_non_darwin_is_unavailable(archive_home, monkeypatch) -> No
 def test_setup_records_backup_outcome(archive_home, monkeypatch, capsys) -> None:
     # End to end through run_setup: the offer's verdict lands in config under
     # setup.backup, the sibling of setup.watcher.
-    monkeypatch.setattr(wizard, "_offer_backup", lambda args, interactive: {"status": "skipped"})
     rc = wizard.run_setup(
-        _args("setup", "--yes", "--skip-import", "--skip-watcher", "--skip-mcp"), watchers=[]
+        _args("setup", "--yes", "--skip-import", "--skip-watcher", "--skip-mcp"), watchers=[],
+        offer_backup=lambda args, interactive: {"status": "skipped"},
     )
     assert rc == 0
     cfg = json.loads((archive_home / "config.json").read_text())
@@ -355,12 +355,12 @@ def test_wholesale_import_skip_writes_no_opt_outs(archive_home, monkeypatch) -> 
     source must stay enabled (unlisted) for later ingest paths. Only an
     explicit per-source "no" in the edit pass may write enabled=False —
     pinned here so a wizard regression can't silently mass-disable capture."""
-    monkeypatch.setattr(wizard, "_interactive", lambda args: True)
-    monkeypatch.setattr(
-        wizard, "_ask", lambda prompt, *, default, interactive: "s"
-    )
     fakes = [FakeWatcher("claude-code"), FakeWatcher("cursor")]
-    rc = wizard.run_setup(_args("setup", "--skip-watcher", "--skip-backup", "--skip-mcp"), watchers=fakes)
+    rc = wizard.run_setup(
+        _args("setup", "--skip-watcher", "--skip-backup", "--skip-mcp"), watchers=fakes,
+        interactive=True,
+        ask=lambda prompt, *, default, interactive: "s",
+    )
     assert rc == 0
     assert all(f.polled == 0 for f in fakes)  # nothing imported
     cfg = json.loads((archive_home / "config.json").read_text())

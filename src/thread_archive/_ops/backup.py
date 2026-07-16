@@ -34,8 +34,8 @@ from .verify import verify
 # a legitimate mass-move (shard rebalance) re-homes files, so the copies land
 # first and the stale paths deleted stay a bounded fraction only when the copy
 # half of the mirror actually ran.
-_MIRROR_DELETE_FLOOR = 64
-_MIRROR_DELETE_MAX_FRACTION = 0.25
+MIRROR_DELETE_FLOOR = 64
+MIRROR_DELETE_MAX_FRACTION = 0.25
 
 # Destination-side generation snapshots: hardlink copies of the mirror's state,
 # taken before each backup run overwrites it. See _snapshot_generation.
@@ -174,7 +174,7 @@ def _atomic_copy(sp: Path, dp: Path, *, trim_to_newline: bool) -> None:
         raise
 
 
-def _mirror_dir(
+def mirror_dir(
     src: Path, dest: Path, *, delete: bool = False, allow_shrink: bool = False
 ) -> dict:
     """Incrementally mirror ``src`` into ``dest`` (skip files unchanged by size +
@@ -267,7 +267,7 @@ def _mirror_dir(
                 dp.unlink()
                 twins_deleted += 1
                 deleted += 1
-        limit = max(_MIRROR_DELETE_FLOOR, int(len(dest_files) * _MIRROR_DELETE_MAX_FRACTION))
+        limit = max(MIRROR_DELETE_FLOOR, int(len(dest_files) * MIRROR_DELETE_MAX_FRACTION))
         if len(doomed) > limit:
             skipped = len(doomed)
         else:
@@ -293,7 +293,7 @@ def _mirror_dir(
 
 def _split_rehomed_twins(src: Path, dest: Path, doomed: list[Path]) -> tuple[list[Path], list[Path]]:
     """Partition planned mirror deletions into provably-superseded rebalance
-    twins and everything else (see :func:`_mirror_dir`). A twin qualifies only
+    twins and everything else (see :func:`mirror_dir`). A twin qualifies only
     when its thread's canonical-depth file exists at the source *and* the
     destination's copy of that canonical file is at least as large as the stale
     one — the rebalance sweep moves/merges whole files, so a genuine re-home can
@@ -604,7 +604,7 @@ def backup(
     Live appends between the copy pass and the check make a file *larger* at the
     source; that isn't a mirror failure, so the check tolerates dest ≤ src growth
     on files it copied and only flags missing or divergent copies. Append-only
-    truth files are additionally shrink-guarded (see :func:`_mirror_dir`);
+    truth files are additionally shrink-guarded (see :func:`mirror_dir`);
     ``allow_shrink=True`` overrides after a deliberate truth re-emit.
 
     Before the mirror touches anything, the destination's current state is
@@ -678,7 +678,7 @@ def backup(
         # afterwards pin in the mirror as a divergent file. Writers pause for the
         # traversal; incremental runs copy little, so the pause is brief.
         with _truth_write_lock():
-            result = _mirror_dir(
+            result = mirror_dir(
                 paths.truth_dir, dest_path, delete=delete and held, allow_shrink=allow_shrink
             )
     result.update(generations)

@@ -81,7 +81,7 @@ def _seed_prefix_import(archive_home, lines, name, source_id) -> int:
     f = archive_home / name
     _write(f, lines)
     with pytest.MonkeyPatch.context() as mp:
-        mp.setattr(codex_mod, "_codex_line_model", lambda line: None)
+        mp.setattr(codex_mod, "codex_line_model", lambda line: None)
         return import_codex_session_incremental(f, source_id).thread_id
 
 

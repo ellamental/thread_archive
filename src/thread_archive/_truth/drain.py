@@ -42,7 +42,7 @@ logger = logging.getLogger(__name__)
 # Cap on simultaneously-open per-thread append handles (LRU-evicted). A bulk import
 # usually touches one thread at a time, so the working set is tiny; the cap only
 # bounds a pathological fan-out.
-_MAX_OPEN_HANDLES = 256
+MAX_OPEN_HANDLES = 256
 _handles: "OrderedDict[str, TextIO]" = OrderedDict()
 
 
@@ -102,11 +102,11 @@ def _handle(path: Path) -> TextIO:
         _fsync_dir(path.parent)  # the new file's dirent must be as durable as its rows
     _handles[key] = fh
     _handles.move_to_end(key)
-    while len(_handles) > _MAX_OPEN_HANDLES:
+    while len(_handles) > MAX_OPEN_HANDLES:
         _, old = _handles.popitem(last=False)
         try:
             # Nothing buffered can be lost here — every append flushes its line
-            # (see _append_line) and durability comes from _fsync_handle, which
+            # (see append_line) and durability comes from _fsync_handle, which
             # reopens an evicted path by fd. Still loud: a failing close() in the
             # truth layer is a disk telling us something.
             old.close()
@@ -115,7 +115,7 @@ def _handle(path: Path) -> TextIO:
     return fh
 
 
-def _append_line(path: Path, rec: dict) -> None:
+def append_line(path: Path, rec: dict) -> None:
     fh = _handle(path)
     fh.write(json.dumps(rec, default=_json_default, ensure_ascii=False))
     fh.write("\n")
@@ -125,12 +125,12 @@ def _append_line(path: Path, rec: dict) -> None:
 def _fsync_handle(path: Path) -> None:
     """fsync a cached append handle so its flushed lines are durable on disk.
 
-    Callers batch: write every line of a logical unit via :func:`_append_line`
+    Callers batch: write every line of a logical unit via :func:`append_line`
     (flush-only), then fsync each touched file once — one fsync per file per
     commit, not per line, keeps bulk imports fast while closing the power-loss
     window between the OS page cache and the platter.
 
-    A batch touching more than ``_MAX_OPEN_HANDLES`` files LRU-evicts its early
+    A batch touching more than ``MAX_OPEN_HANDLES`` files LRU-evicts its early
     handles before this runs; eviction close() flushes to the OS but does not
     fsync, so an evicted file is reopened here and fsynced by fd — the durability
     bar must not quietly drop for bulk batches. An OSError propagates (fail fast,
@@ -492,7 +492,7 @@ def _drain_before_commit(session: Session) -> None:
         ])  # durable BEFORE the first data write
         try:
             for path, rec in staged:
-                _append_line(path, rec)
+                append_line(path, rec)
             for path in baselines:
                 _fsync_handle(path)
         except BaseException:

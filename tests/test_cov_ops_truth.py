@@ -371,7 +371,7 @@ def test_backup_reports_missing_dest_files(archive_home, tmp_path, monkeypatch):
             "shrinks_skipped": 0, "shrink_sample": [],
         }
 
-    monkeypatch.setattr(bk, "_mirror_dir", _no_copy)
+    monkeypatch.setattr(bk, "mirror_dir", _no_copy)
     res = ta.backup(str(dest))
     assert res["dest_missing_files"] > 0
     assert res["mirror_complete"] is False
@@ -459,11 +459,11 @@ def test_fsync_handle_reopens_uncached_path(tmp_path):
 
 
 def test_handle_evicts_lru_beyond_cap(tmp_path, monkeypatch):
-    monkeypatch.setattr(drain, "_MAX_OPEN_HANDLES", 1)
+    monkeypatch.setattr(drain, "MAX_OPEN_HANDLES", 1)
     drain.reset_handles()
     p1, p2 = tmp_path / "a.jsonl", tmp_path / "b.jsonl"
     fh1 = drain._handle(p1)
-    drain._append_line(p1, {"type": "event", "id": 1})
+    drain.append_line(p1, {"type": "event", "id": 1})
     fh2 = drain._handle(p2)  # exceeds cap → evicts p1's handle
     assert str(p1) not in drain._handles
     assert str(p2) in drain._handles

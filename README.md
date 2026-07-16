@@ -4,19 +4,33 @@
 [![Python](https://img.shields.io/badge/python-3.14-blue)](https://github.com/ellamental/thread_archive)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 
-A serverless-native, single-user local archive for AI conversations.
+## Your AI conversations are your most valuable dataset. Stop losing them.
 
-It watches local AI-tool stores, imports provider transcripts into one event
-model, writes an append-only **JSONL truth log**, rebuilds a **SQLite** index from
-that truth, and searches/reads conversations locally — exposed as a Python library
-and over MCP (`thread_search`, `thread_read`).
+**Thread Archive is a local-first memory system for everything you and your AI assistants have ever said.** It ingests conversations from every tool you use — Claude Code, Claude.ai, ChatGPT, Cursor, Codex, OpenCode, Grok — into one append-only archive you own, on your machine, forever.
 
-There is one storage/runtime path: **JSONL + SQLite**. No Postgres, no Neo4j, no
-external search engines, no ops service. JSONL is truth; SQLite is a rebuildable
-projection — deleting `index.db` and running `archive reindex` loses nothing.
+**Built like a database, not a folder of exports.**
+- Plain JSONL files are the source of truth — human-readable, greppable, yours. The search index is disposable and rebuilds from them at any time.
+- Crash-safe writes with intent journaling, fsync discipline, and automatic recovery. Your history survives power loss, killed processes, and corrupted indexes.
+- Backups, integrity verification, and restore drills built in — it doesn't just back up, it *proves the backup restores*.
 
-It is a standalone, dependency-free package: a conversation-archive engine with
-no server, no external services, and no ties to any host application.
+**Searchable by you — and by your AI.**
+- Full-text and semantic search with reranking, filterable by time, source, tool, and content type.
+- Exposed over MCP (`thread_search`, `thread_read`), so Claude (or any MCP client) can search and read your entire history mid-conversation: *"what did we decide about the auth flow in March?"* just works.
+- Redaction with encrypted recovery bundles: scrub secrets from the archive without destroying them irrevocably.
+
+**A memory that organizes itself.** A second MCP server — the librarian — lets an AI agent curate the archive: creating topics, pinning key quotes, and linking related threads into a knowledge graph. Every curation act is itself event-sourced, so you can always see who connected what, and why.
+
+**No server. No cloud. No subscription to lose your history to.** A background watcher keeps it current; everything runs locally.
+
+## How it works
+
+Serverless-native and single-user: it watches local AI-tool stores and imports
+provider transcripts into one event model. There is one storage/runtime path:
+**JSONL + SQLite**. No Postgres, no Neo4j, no external search engines, no ops
+service — deleting `index.db` and running `archive reindex` loses nothing.
+
+It is a standalone, dependency-free package with no ties to any host
+application, usable as a Python library as well as over MCP.
 
 ## Install
 

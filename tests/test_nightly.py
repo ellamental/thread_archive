@@ -9,6 +9,8 @@ the rebuilt archive actually reads and searches.
 from __future__ import annotations
 
 import json
+import threading
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import thread_archive._ops.health as ops_health
 from thread_archive import _api as ta
@@ -101,10 +103,30 @@ def test_nightly_stage_failure_runs_remaining_stages_and_notifies(
 
     import thread_archive._ops.nightly as ops_nightly
     monkeypatch.setattr(ops_nightly, "backup", boom)
-    sent: list[str] = []
-    monkeypatch.setattr(ops_nightly, "_notify", lambda url, msg: sent.append((url, msg)) and None)
 
-    res = ta.nightly(str(tmp_path / "mirror"), notify_url="http://x/api/notify")
+    # A real loopback /api/notify records what the push actually sends.
+    class _NotifyHandler(BaseHTTPRequestHandler):
+        def do_POST(self):
+            n = int(self.headers.get("Content-Length", 0))
+            self.server.posts.append(json.loads(self.rfile.read(n)))
+            self.send_response(200)
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+
+        def log_message(self, *a):
+            pass
+
+    notify_srv = ThreadingHTTPServer(("127.0.0.1", 0), _NotifyHandler)
+    notify_srv.posts = []
+    threading.Thread(target=lambda: notify_srv.serve_forever(poll_interval=0.02),
+                     daemon=True).start()
+    try:
+        res = ta.nightly(str(tmp_path / "mirror"),
+                         notify_url=f"http://127.0.0.1:{notify_srv.server_port}/api/notify")
+    finally:
+        notify_srv.shutdown()
+        notify_srv.server_close()
+    sent = notify_srv.posts
 
     # backup exploded but the later stages still ran: verify executed (and
     # failed on its mirror scan — first night, so the deep tier folded in and
@@ -112,7 +134,8 @@ def test_nightly_stage_failure_runs_remaining_stages_and_notifies(
     # own failure. Every failed stage is named in the one notification.
     assert res["failed_stages"] == ["backup", "verify", "restore-drill"]
     assert "error" not in res["verify"]  # verify ran to completion
-    assert sent and "backup, verify, restore-drill" in sent[0][1]
+    assert sent and "backup, verify, restore-drill" in sent[0]["message"]
+    assert sent[0]["title"] == "thread-archive"
     beat = json.loads((hb_dir / "archive-nightly.heartbeat").read_text())
     assert beat["ok"] is False and beat["failed_stages"] == res["failed_stages"]
 

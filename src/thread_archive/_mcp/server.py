@@ -55,25 +55,35 @@ mcp = FastMCP("thread-archive")
 # daemon — or another server's pass — owns ingest. THREAD_ARCHIVE_MCP_INGEST=0
 # turns the whole behaviour off.
 _INGEST_MIN_INTERVAL = 300.0  # seconds between catch-up attempts in this process
-_ingest_last = 0.0  # monotonic time of the last attempt (0 = never)
-_ingest_running = threading.Lock()  # one in-flight catch-up per process
+
+
+class IngestThrottle:
+    """Per-process lazy-ingest throttle state — public so tests reset it
+    (``monkeypatch.setattr(server.INGEST, "last", 0.0)``) instead of poking
+    module globals."""
+
+    def __init__(self) -> None:
+        self.last = 0.0  # monotonic time of the last attempt (0 = never)
+        self.running = threading.Lock()  # one in-flight catch-up per process
+
+
+INGEST = IngestThrottle()
 
 
 def _maybe_catch_up() -> None:
     """Kick a background catch-up pass, throttled. Never blocks the caller and
     never raises — retrieval must work identically with ingest disabled, owned
     by another process, or broken."""
-    global _ingest_last
     if os.environ.get("THREAD_ARCHIVE_MCP_INGEST", "1").strip().lower() in (
         "0", "false", "no", "off",
     ):
         return
     now = time.monotonic()
-    if _ingest_last and now - _ingest_last < _INGEST_MIN_INTERVAL:
+    if INGEST.last and now - INGEST.last < _INGEST_MIN_INTERVAL:
         return
-    if not _ingest_running.acquire(blocking=False):
+    if not INGEST.running.acquire(blocking=False):
         return  # a catch-up is already in flight in this process
-    _ingest_last = now
+    INGEST.last = now
 
     def _run() -> None:
         try:
@@ -83,7 +93,7 @@ def _maybe_catch_up() -> None:
         except Exception:  # noqa: BLE001 — advisory; retrieval must not care
             logger.exception("lazy catch-up ingest failed")
         finally:
-            _ingest_running.release()
+            INGEST.running.release()
 
     threading.Thread(target=_run, name="archive-lazy-ingest", daemon=True).start()
 

@@ -84,8 +84,8 @@ def test_mirror_deletes_rehomed_twins_beyond_cap(archive_home, tmp_path, monkeyp
 
     # Cap at zero: every non-twin deletion is skipped, so anything that DOES get
     # deleted went through the twin exemption.
-    monkeypatch.setattr(ops_backup, "_MIRROR_DELETE_FLOOR", 0)
-    monkeypatch.setattr(ops_backup, "_MIRROR_DELETE_MAX_FRACTION", 0.0)
+    monkeypatch.setattr(ops_backup, "MIRROR_DELETE_FLOOR", 0)
+    monkeypatch.setattr(ops_backup, "MIRROR_DELETE_MAX_FRACTION", 0.0)
 
     for name in ("one", "two"):
         import_cc_session(tmp_path, name=name)
@@ -98,7 +98,7 @@ def test_mirror_deletes_rehomed_twins_beyond_cap(archive_home, tmp_path, monkeyp
     assert all(len(rel.parts) == 2 for rel in flat_rels), "starts flat"
 
     # Drive the real rebalance: shrink the flat threshold and checkpoint.
-    monkeypatch.setattr(jsonl_log.layout, "_FLAT_MAX", 1)
+    monkeypatch.setattr(jsonl_log.layout, "FLAT_MAX", 1)
     jsonl_log.checkpoint()
     assert jsonl_log._shard_depth(archive_home / "truth") == 1
     assert not any((archive_home / "truth" / rel).exists() for rel in flat_rels)
@@ -120,8 +120,8 @@ def test_backup_cli_fails_on_skipped_deletions(archive_home, tmp_path, monkeypat
     import thread_archive._ops.backup as ops_backup
     from thread_archive.cli import main
 
-    monkeypatch.setattr(ops_backup, "_MIRROR_DELETE_FLOOR", 0)
-    monkeypatch.setattr(ops_backup, "_MIRROR_DELETE_MAX_FRACTION", 0.0)
+    monkeypatch.setattr(ops_backup, "MIRROR_DELETE_FLOOR", 0)
+    monkeypatch.setattr(ops_backup, "MIRROR_DELETE_MAX_FRACTION", 0.0)
 
     import_cc_session(tmp_path)
     dest = tmp_path / "dest"
