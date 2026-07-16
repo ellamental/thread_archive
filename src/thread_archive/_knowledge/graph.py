@@ -195,6 +195,24 @@ def community_members_for(topic_ids: list[int]) -> dict[int, list[int]]:
     return out
 
 
+def get_communities(limit: int = 30, member_limit: int = 8) -> list[dict]:
+    """The community clusters, largest first — each with its highest-pagerank
+    members. The gardener's map for promoting a cluster into a hierarchy subtree
+    (a parent topic + ``part-of`` children)."""
+    proj = _projection()
+    if proj is None:
+        return []
+    out = []
+    for cid, members in sorted(proj.members.items(), key=lambda kv: (-len(kv[1]), kv[0]))[:limit]:
+        ranked = sorted(members, key=lambda t: (-proj.pagerank.get(t, 0.0), t))
+        out.append({
+            "community_id": cid,
+            "size": len(members),
+            "members": [{"topic_id": t, "title": proj.titles.get(t)} for t in ranked[:member_limit]],
+        })
+    return out
+
+
 def get_bridge_topics(limit: int = 20) -> list[dict]:
     """Highest-betweenness topics — structural bridges between communities."""
     proj = _projection()

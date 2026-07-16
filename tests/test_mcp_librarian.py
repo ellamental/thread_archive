@@ -22,6 +22,7 @@ def test_librarian_registers_the_write_surface() -> None:
     assert names == {
         "review_queue", "topic_search", "topic_get", "topic_members",
         "thread_user_messages",
+        "garden_status", "garden_queue", "communities",
         "topic_create", "topic_rename", "topic_archive", "topic_merge",
         "topic_link", "topic_unlink", "topic_cite", "topic_uncite",
         "thread_set_summary",

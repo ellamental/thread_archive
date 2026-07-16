@@ -2,7 +2,9 @@
 
 A second, deliberately distinct MCP server (``thread-archive-librarian``) carrying the
 knowledge-layer write tools + the curation-read tools the librarian needs to decide
-what to write. The read-only ``thread-archive`` server (``thread_search`` /
+what to write, plus the gardener's structural diagnostics (``garden_status`` /
+``garden_queue`` / ``communities`` — the read surface the ``/gardener-lite`` skill
+drains with the same write tools). The read-only ``thread-archive`` server (``thread_search`` /
 ``thread_read``) stays read-only: mixing write tools into it would hand every
 read-only client (e.g. a reader bot) curation power. This mirrors the read/write split
 the upstream operator surface enforces.
@@ -28,6 +30,7 @@ from typing import Optional
 from mcp.server.fastmcp import FastMCP
 
 from .. import _api as api
+from .. import _knowledge
 from .._knowledge import read as _read
 from .._knowledge import write as _write
 
@@ -92,6 +95,40 @@ def thread_user_messages(thread_id: int, limit: Optional[int] = None) -> str:
     to cite from (cite the ``event_id`` values)."""
     api.open_archive()
     return _dump(_write.thread_user_messages(thread_id, limit=limit))
+
+
+# ── gardener diagnostics ──────────────────────────────────────────────────────
+@mcp.tool()
+def garden_status() -> str:
+    """The gardener's dashboard: per-kind structural-issue counts over the live
+    topic graph (singletons, uncited, unparented, near-duplicate title pairs),
+    hierarchy coverage, and graph status. Pull the lists with ``garden_queue``."""
+    api.open_archive()
+    return _dump(_knowledge.garden_status())
+
+
+@mcp.tool()
+def garden_queue(kind: str, limit: int = 20) -> str:
+    """One kind's prioritized structural-issue list. Kinds: ``singleton`` (topics
+    with no link to another live topic, most-cited first), ``uncited`` (topics
+    with no live citation, least-linked first — archive candidates), ``unparented``
+    (linked topics outside the part-of/contains hierarchy, highest-pagerank
+    first), ``dupes`` (near-duplicate title pairs, best score first). State is the
+    data: fixing an issue removes it from the queue."""
+    api.open_archive()
+    try:
+        return _dump(_knowledge.garden_queue(kind, limit=limit))
+    except ValueError as e:
+        return f"Error: {e}"
+
+
+@mcp.tool()
+def communities(limit: int = 30, member_limit: int = 8) -> str:
+    """The graph's community clusters, largest first, each with its
+    highest-pagerank members — the map for promoting a cluster into a hierarchy
+    subtree (a parent topic + ``part-of`` children)."""
+    api.open_archive()
+    return _dump(_knowledge.get_communities(limit=limit, member_limit=member_limit))
 
 
 # ── topics ───────────────────────────────────────────────────────────────────

@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- **The gardener returns (2026-07-16).** The old monorepo's gardener — the
+  librarian's structural complement — is back as a lite diagnostics layer over
+  the standalone graph: `_knowledge/garden.py` computes per-kind issue queues
+  (`singleton`, `uncited`, `unparented`, `dupes` — near-duplicate titles by
+  token Jaccard) plus a `garden_status` dashboard, and `graph.get_communities`
+  maps the clusters. Exposed on the librarian MCP server as `garden_status` /
+  `garden_queue` / `communities`; drained by the monorepo's `/gardener-lite`
+  skill on a daily thread-cron cadence. The hierarchy edge vocabulary
+  (`part-of`/`contains`) now lives in `garden.py`; the web viewer's topic tree
+  imports it from there.
+
 - **Viewer navigation is real links (2026-07-16).** Topic rows, tree titles,
   hierarchy/peer chips, link and citation rows, search hits, and the sidebar rail
   were `<button onClick={navigate}>` — no `href`, so no middle-click, cmd-click,

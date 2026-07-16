@@ -24,6 +24,13 @@ from urllib.parse import parse_qs, urlparse
 
 from .. import _api as api
 
+# The hierarchy edge vocabulary (owned by the gardener diagnostics module): a
+# `part-of` link reads child→parent, a `contains` link parent→child. The topic
+# tree is *derived* from these links — topics are the only nodes (one id space,
+# no ontology tables), so the hierarchy is exactly as curated as the links are.
+from .._knowledge.garden import HIERARCHY_DOWN as _HIERARCHY_DOWN
+from .._knowledge.garden import HIERARCHY_UP as _HIERARCHY_UP
+
 STATIC_DIR = (Path(__file__).parent / "static").resolve()
 
 log = logging.getLogger(__name__)
@@ -227,12 +234,6 @@ def _list_topics(*, limit: int, q: Optional[str]) -> dict:
     return {"topics": topics[:limit], "graph": get_status()}
 
 
-# The hierarchy edge vocabulary: a `part-of` link reads child→parent, a
-# `contains` link parent→child. The tree is *derived* from these links — topics
-# are the only nodes (one id space, no ontology tables), so the hierarchy is
-# exactly as curated as the links are.
-_HIERARCHY_UP = "part-of"
-_HIERARCHY_DOWN = "contains"
 
 
 def _topic_tree() -> dict:

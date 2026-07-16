@@ -5,6 +5,8 @@ Two halves over a pure-graph spine (networkx, no Neo4j, no graph server):
 * **read / analytics** (:mod:`.graph`) — the in-process topic graph: PageRank,
   communities (Leiden via the base ``leidenalg`` + ``python-igraph``, networkx
   Louvain as a fail-soft fallback), bridges, peers.
+* **gardener diagnostics** (:mod:`.garden`) — structural-health queues over the
+  live graph: singletons, uncited topics, hierarchy gaps, near-duplicate titles.
 * **write / curation** (:mod:`.write`, :mod:`.materialize`) — the librarian's hands:
   create topics, link threads, cite evidence, store thread summaries. Every graph
   mutation is an append-only ``KgEvent`` folded into the projection, so the
@@ -17,9 +19,11 @@ archive works without this layer.
 
 from __future__ import annotations
 
+from .garden import garden_queue, garden_status
 from .graph import (
     community_members_for,
     get_bridge_topics,
+    get_communities,
     get_community_peers,
     get_community_topic_ids,
     get_status,
@@ -46,7 +50,11 @@ from .write import (
 )
 
 __all__ = [
+    # gardener diagnostics
+    "garden_status",
+    "garden_queue",
     # read / analytics
+    "get_communities",
     "get_topic_graph_metadata",
     "get_topic_graph_meta",
     "get_community_topic_ids",
