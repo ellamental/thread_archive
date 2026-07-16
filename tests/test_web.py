@@ -184,6 +184,24 @@ def test_threads_types_filter_selects_exactly(archive_home):
     assert payload["threads"][0]["id"] == sub_id  # 2026-01-02 beats 2026-01-01
 
 
+def test_threads_order_by_activity_not_metadata_writes(archive_home):
+    # The list orders by the newest event (last activity). A curation write —
+    # here a summary — bumps the row's updated_at (the truth checkpoint's
+    # dirty-flag) but is not activity and must not re-rank the list.
+    _seed(archive_home)
+    sub_id = _seed_subagent(archive_home)
+    _, _, payload = _get("/api/threads", types="conversation,system")
+    ids = [t["id"] for t in payload["threads"]]
+    assert ids[0] == sub_id  # newest events (2026-01-02) first
+    from thread_archive._knowledge.write import set_thread_summary
+
+    set_thread_summary(ids[1], summary="curated much later than its last event")
+    _, _, payload = _get("/api/threads", types="conversation,system")
+    assert [t["id"] for t in payload["threads"]] == ids  # unchanged
+    # and the row's date is the thread's last event, not the summary write
+    assert payload["threads"][1]["updated_at"].startswith("2026-01-01")
+
+
 def test_thread_types_vocabulary(archive_home):
     _seed(archive_home)
     _seed_subagent(archive_home)

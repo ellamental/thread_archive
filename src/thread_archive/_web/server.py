@@ -220,18 +220,33 @@ _DEFAULT_HIDDEN_TYPES = ("topic", "system")
 
 
 def _list_threads(*, limit: int, q: Optional[str], types: Optional[list[str]] = None) -> list[dict]:
-    """Recent threads (newest first). With ``types`` given, exactly those
-    ``thread_type`` values are listed; without it, topics and system threads
-    (subagent runs) are hidden — the sidebar's default. Archived threads never
-    list; ``q`` filters on title/name substring."""
-    from sqlalchemy import select
+    """Recent threads by last *activity* — the newest event's ``occurred_at``,
+    falling back to the row's ``updated_at`` for event-less threads. The raw
+    ``updated_at`` column can't mean "recently active" here: it is the truth
+    checkpoint's dirty-flag, bumped by any metadata write (a librarian summary
+    would re-surface a years-old thread) and untouched by event ingest. With
+    ``types`` given, exactly those ``thread_type`` values are listed; without
+    it, topics and system threads (subagent runs) are hidden — the sidebar's
+    default. Archived threads never list; ``q`` filters on title/name
+    substring."""
+    from sqlalchemy import DateTime, func, select
 
-    from .._store import Thread, get_session
+    from .._store import Event, Thread, get_session
 
     api.open_archive()  # ensure the engine is up for this process' home
+    newest_event_at = (  # one (thread_id, id) index seek per candidate row
+        select(Event.occurred_at)
+        .where(Event.thread_id == Thread.id)
+        .order_by(Event.id.desc())
+        .limit(1)
+        .scalar_subquery()
+    )
+    last_active_at = func.coalesce(
+        newest_event_at, Thread.updated_at, type_=DateTime(timezone=True)
+    ).label("last_active_at")
     stmt = (
         select(Thread.id, Thread.title, Thread.name, Thread.source,
-               Thread.thread_type, Thread.updated_at)
+               Thread.thread_type, last_active_at)
         .where(Thread.archived.is_(False))
     )
     if types:
@@ -241,7 +256,7 @@ def _list_threads(*, limit: int, q: Optional[str], types: Optional[list[str]] = 
     if q:
         like = f"%{q}%"
         stmt = stmt.where(Thread.title.ilike(like) | Thread.name.ilike(like))
-    stmt = stmt.order_by(Thread.updated_at.desc()).limit(limit)
+    stmt = stmt.order_by(last_active_at.desc()).limit(limit)
     with get_session() as s:
         rows = s.execute(stmt).all()
     return [
@@ -250,7 +265,8 @@ def _list_threads(*, limit: int, q: Optional[str], types: Optional[list[str]] = 
             "title": r.title or r.name,
             "source": r.source,
             "thread_type": r.thread_type,
-            "updated_at": r.updated_at.isoformat() if r.updated_at else None,
+            # the row's date in list consumers: last activity, not the raw column
+            "updated_at": r.last_active_at.isoformat() if r.last_active_at else None,
         }
         for r in rows
     ]

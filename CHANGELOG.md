@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- **Viewer: the recent list orders by last activity, not row writes.**
+  `/api/threads` sorted on `threads.updated_at`, which is really the truth
+  checkpoint's dirty-flag — every librarian summary bumped its thread to the
+  top of the sidebar (each hourly drain re-surfaced freshly-curated old
+  threads), while live ingest never moved a thread at all. The list now orders
+  by the newest event's `occurred_at` (falling back to `updated_at` only for
+  event-less threads), and each row's date shows that same last-activity time.
+
 - **Viewer: subagent runs leave the recent list; an all-threads page arrives.**
   `/api/threads` now hides `thread_type='system'` (Task-tool subagent runs) by
   default alongside topics — the importer always intended them "kept out of the
