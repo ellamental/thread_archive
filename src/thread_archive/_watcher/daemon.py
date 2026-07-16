@@ -82,6 +82,7 @@ class Watcher:
         self._owner_fd: Optional[int] = None
         self._errors_total = 0
         self._errors_recorded_at: Optional[float] = None
+        self._stale_errors_cleared = False
         from datetime import datetime, timezone
 
         self._started_at = datetime.now(timezone.utc).isoformat()
@@ -136,6 +137,20 @@ class Watcher:
         accounting a capture audit reads — a source whose ``lines`` climb while
         ``events`` stay flat is a parser gone blind. Fail-soft: advisory, must
         never take the poll loop down."""
+        # Clear-on-green: watch_errors_last is a failure-only record — nothing
+        # retires it, so a prior run's error (it persists across restarts) keeps
+        # painting `archive status` red under a heartbeat that says the daemon
+        # restarted clean hours ago. Once this run has logged a poll with no
+        # errors, drop any stale record — at most once per run, and never while
+        # this run has actually errored (then the record is current, not stale).
+        if not self._stale_errors_cleared and self._errors_total == 0:
+            try:
+                from .._ops.health import clear_health
+
+                clear_health("watch_errors_last")
+                self._stale_errors_cleared = True
+            except Exception:  # noqa: BLE001 — advisory; the loop must survive
+                logger.exception("watch: could not clear stale watch errors")
         now = time.monotonic()
         if (self._heartbeat_recorded_at is not None
                 and now - self._heartbeat_recorded_at < 300):

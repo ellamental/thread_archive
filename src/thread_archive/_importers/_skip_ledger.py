@@ -64,11 +64,25 @@ def record_skip(
         )
 
 
+# The routine reason: a brand-new session with nothing importable — the metadata-
+# only / empty-transcript case the module docstring calls out. It fires constantly
+# (harnesses open sessions that never get used), so counting it toward the coverage
+# *warning* trains the operator to ignore skips. Still ledgered and still counted in
+# ``recent`` for the audit trail — only held out of ``recent_substantive``, which is
+# what the health warning fires on. ``empty_import_discarded`` (a thread built then
+# discarded because its content parsed to nothing) is the drift-adjacent case and
+# stays substantive. A record with no/unknown reason counts as substantive too.
+_ROUTINE_SKIP_REASON = "no_importable_content"
+
+
 def summarize_skips(*, days: float = 7.0) -> dict:
     """Ledger volume: total records ever, and records + lines within ``days``.
-    Malformed ledger lines are counted as records but excluded from recency."""
+    ``recent_substantive`` is the subset of recent records whose reason is not the
+    routine empty-session case (see ``_ROUTINE_SKIP_REASON``) — the count the
+    coverage warning fires on, so a steady trickle of empty sessions doesn't cry
+    wolf. Malformed ledger lines are counted as records but excluded from recency."""
     path = resolve_paths().home / LEDGER_FILE
-    total = recent = recent_lines = 0
+    total = recent = recent_lines = recent_substantive = 0
     cutoff = datetime.now(timezone.utc).timestamp() - days * 86400
     try:
         with open(path, encoding="utf-8") as fh:
@@ -84,8 +98,16 @@ def summarize_skips(*, days: float = 7.0) -> dict:
                     if at.timestamp() >= cutoff:
                         recent += 1
                         recent_lines += int(rec.get("lines_skipped") or 0)
+                        if rec.get("reason") != _ROUTINE_SKIP_REASON:
+                            recent_substantive += 1
                 except (ValueError, KeyError, TypeError):
                     continue
     except OSError:
         pass
-    return {"total": total, "recent": recent, "recent_lines": recent_lines, "days": days}
+    return {
+        "total": total,
+        "recent": recent,
+        "recent_lines": recent_lines,
+        "recent_substantive": recent_substantive,
+        "days": days,
+    }

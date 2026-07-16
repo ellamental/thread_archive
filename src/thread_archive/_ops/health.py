@@ -63,6 +63,39 @@ def record_health(key: str, record: dict) -> None:
         logging.getLogger(__name__).exception("could not record %s in health.json", key)
 
 
+def clear_health(key: str) -> None:
+    """Remove ``key`` from ``health.json`` if present — the clear-on-green
+    counterpart to :func:`record_health`, under the same exclusive flock. A
+    failure-only record (``watch_errors_last``) can otherwise only ever go red:
+    it is written when a fault occurs and nothing retires it, so a stale fault —
+    or one from a previous daemon run — keeps painting ``archive status`` red
+    long after the source recovered. A no-op (no write) when the key is absent,
+    so the green path costs a lock and a read, not a rewrite. Advisory: a failed
+    clear logs and never breaks the caller."""
+    import fcntl
+
+    try:
+        p = _health_path()
+        if not p.exists():
+            return
+        fd = os.open(p.with_name(f"{p.name}.lock"), os.O_RDWR | os.O_CREAT, 0o644)
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX)
+            health = read_health()
+            if key not in health:
+                return
+            del health[key]
+            tmp = p.with_name(f"{p.name}.tmp.{os.getpid()}")
+            tmp.write_text(json.dumps(health, indent=2), encoding="utf-8")
+            os.replace(tmp, p)
+        finally:
+            os.close(fd)  # closing the fd releases the flock
+    except OSError:
+        import logging
+
+        logging.getLogger(__name__).exception("could not clear %s in health.json", key)
+
+
 # Each pipeline stage, mapped to the health record that a later, out-of-band run
 # of that same stage writes. This is what lets a stage's failure be *retired* by
 # evidence rather than only by another full nightly.

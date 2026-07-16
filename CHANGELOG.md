@@ -2,6 +2,23 @@
 
 ## Unreleased
 
+- **Capture-coverage signals stop crying wolf (2026-07-15).** Three status
+  signals over-alarmed or lingered, training the operator to ignore coverage.
+  (1) `watch_errors_last` was failure-only — written on a poll error, retired by
+  nothing — so a fault from a previous daemon run kept painting `archive status`
+  red under a heartbeat that said the daemon had restarted clean hours ago. The
+  daemon now clears it on the first clean pass of a run (`clear_health`, the
+  green counterpart to `record_health`), scoped so a record the current run
+  actually wrote is kept, not wiped. (2) Routine empty-session skips
+  (`no_importable_content` — a brand-new session with nothing importable, which
+  fires constantly) no longer trip the capture-skips warning; they stay in the
+  ledger and its recent tally for the re-import audit, but the warning fires only
+  on substantive skips (`recent_substantive`). (3) The validation-drift warning
+  is unchanged in code, but the ledger's pre-fix self-noise (354 records flagging
+  `attachment` / `model_change` / `unknown_line`, all now in the claude-code
+  parser's expected block types) was pruned to `validation-drift.jsonl.superseded`
+  so the week-long warning tail cleared at once.
+
 - **Backups carry a full recovery bundle (2026-07-15).** A backup destination
   restored the conversations but not the install: `config.json` (source
   opt-outs), `keyring.json` (redaction keys — disk loss meant accidental

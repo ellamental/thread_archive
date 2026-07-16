@@ -351,6 +351,34 @@ def test_coverage_warns_on_recent_ledger_records(archive_home):
     assert any("capture skips" in msg for msg in r["warnings"])
 
 
+def test_coverage_skip_warning_ignores_routine_empty_sessions(archive_home):
+    # A steady trickle of empty-session skips (no_importable_content) is routine
+    # — it must stay in the ledger and its recent tally but not trip the warning,
+    # or the signal drowns. A substantive skip (any other reason) still warns.
+    import datetime as dt
+
+    ta.open_archive()
+    now_iso = dt.datetime.now(dt.timezone.utc).isoformat()
+    (archive_home / LEDGER_FILE).write_text(
+        json.dumps({"at": now_iso, "reason": "no_importable_content", "lines_skipped": 2}) + "\n"
+        + json.dumps({"at": now_iso, "reason": "no_importable_content", "lines_skipped": 2}) + "\n")
+
+    summary = summarize_skips()
+    assert summary["recent"] == 2  # still counted for the audit trail
+    assert summary["recent_substantive"] == 0
+
+    r = check_coverage(watchers=[])
+    assert not any("capture skips" in msg for msg in r["warnings"])
+
+    # A drift-adjacent skip (thread built then discarded) is substantive → warns.
+    with open(archive_home / LEDGER_FILE, "a") as fh:
+        fh.write(json.dumps(
+            {"at": now_iso, "reason": "empty_import_discarded", "lines_skipped": 4}) + "\n")
+    assert summarize_skips()["recent_substantive"] == 1
+    r = check_coverage(watchers=[])
+    assert any("capture skips" in msg for msg in r["warnings"])
+
+
 def test_coverage_export_staleness_respects_config_opt_out(archive_home, tmp_path):
     import json as _json
 

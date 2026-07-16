@@ -615,6 +615,42 @@ def test_record_pass_swallows_recording_failure(archive_home, monkeypatch, caplo
     assert any("could not record pass heartbeat" in r.getMessage() for r in caplog.records)
 
 
+def test_clean_pass_clears_stale_watch_errors(archive_home) -> None:
+    """A prior run's watch_errors_last persists in health.json across restarts.
+    The first clean pass of a fresh daemon must retire it, so `archive status`
+    doesn't report a red the daemon already ran past."""
+    from thread_archive import _api as ta
+
+    health.record_health("watch_errors_last", {"count_since_start": 3, "errors": ["old"]})
+    assert ta.status()["last_watch_errors"] is not None
+
+    w = Watcher([], embed=False)  # fresh run: no errors this process
+    w._record_pass()
+    assert ta.status()["last_watch_errors"] is None
+    assert w._stale_errors_cleared is True
+
+
+def test_errored_run_keeps_its_watch_errors(archive_home) -> None:
+    """Clear-on-green must not wipe a record the *current* run wrote: once this
+    run has errored, watch_errors_last is current, not stale."""
+    from thread_archive import _api as ta
+    from thread_archive._watcher.base import SourceWatcher
+
+    class Broken(SourceWatcher):
+        source_name = "broken"
+
+        def poll(self):
+            raise RuntimeError("boom")
+
+        def is_available(self):
+            return True
+
+    w = Watcher([Broken()], embed=False)
+    w.poll_once()  # records a fresh error and a pass in the same tick
+    rec = ta.status()["last_watch_errors"]
+    assert rec is not None and rec["count_since_start"] == 1
+
+
 def test_maintain_folds_meta_docs_when_present(archive_home, monkeypatch) -> None:
     init_db()
     monkeypatch.setattr(fts, "index_thread_meta", lambda: 7)

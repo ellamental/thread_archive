@@ -35,7 +35,10 @@ coverage is their reconciliation:
   sanctioned off switch from doubling as a silent capture hole.
 - **ledger volume** (warn): recent capture-skip or validation-drift records.
   Both ledgers record failures that never throw; the warning is what makes them
-  reach anything watching coverage instead of waiting to be read.
+  reach anything watching coverage instead of waiting to be read. Routine
+  empty-session skips (``no_importable_content``) are held out of the warning —
+  they fire constantly and would drown the signal — while staying in the ledger
+  and its full recent tally for the re-import audit.
 
 Runs nightly as a pipeline stage (recording ``coverage_last``; an out-of-band
 green run retires a red nightly stage, see :mod:`.health`) and on demand via
@@ -286,12 +289,11 @@ def check_coverage(
             "— a parser no longer fully understands a source's format; see the "
             "drift ledger"
         )
-    if skips["recent"]:
+    if skips["recent_substantive"]:
         warnings.append(
-            f"capture skips: {skips['recent']} skip record(s) "
-            f"({skips['recent_lines']} line(s)) in the last {skips['days']:.0f}d "
-            "— store content was consumed without becoming events; see the "
-            "skip ledger"
+            f"capture skips: {skips['recent_substantive']} skip record(s) with "
+            f"unimported content in the last {skips['days']:.0f}d — store content "
+            "was consumed without becoming events; see the skip ledger"
         )
     result = {
         "ok": not failed,
