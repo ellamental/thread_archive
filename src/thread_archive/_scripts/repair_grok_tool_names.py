@@ -12,8 +12,9 @@ importer run over the *complete* ``chat_history.jsonl`` files (no chunk
 boundaries). This script applies the standalone half of the patch plan (21
 events); its sibling in the monorepo
 (``archive/src/archive/scripts/repair_grok_tool_names.py``) applies the pg
-half. The plan (``repair_grok_tool_names_plan_20260704.json`` beside this
-script) carries old + new values; old payloads are asserted before writing and
+half. The plan (``repair_grok_tool_names_plan_20260704.json``, untracked in
+``host/repair-dumps/`` — it holds real conversation payloads, so it never
+enters git) carries old + new values; old payloads are asserted before writing and
 the changed rows are dumped to a backup file first. Truth-file history is
 inherent: the corrected event lines append via the normal ``append_event_row``
 seam and reindex is last-wins by id, so the pre-repair lines remain in the

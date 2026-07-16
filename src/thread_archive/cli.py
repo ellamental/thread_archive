@@ -291,6 +291,22 @@ def cmd_backup(args: argparse.Namespace) -> int:
     )
     mb = res["bytes_copied"] / (1024 * 1024)
     print(f"backed up {res['truth_dir']} → {res['dest']}: {res['files_copied']} files ({mb:.1f} MB copied)")
+    if res.get("bundle_error"):
+        print(
+            f"WARNING: recovery bundle sync failed ({res['bundle_error']}) — the "
+            "destination's .recovery/ (config, keyring, retained exports) is stale"
+        )
+    elif "bundle_files" in res:
+        if res["keyring_in_bundle"]:
+            keyring = "keyring included"
+        elif res.get("keyring_opted_out"):
+            keyring = "keyring EXCLUDED — config opt-out"
+        else:
+            keyring = "no keyring at the home"
+        print(
+            f"recovery bundle: {res['bundle_files']} file(s) "
+            f"({res['bundle_copied']} copied, {res['bundle_deleted']} removed; {keyring})"
+        )
     if res.get("generation_created"):
         print(
             f"generation: pre-run state preserved as .generations/{res['generation_created']} "
@@ -336,7 +352,13 @@ def cmd_backup(args: argparse.Namespace) -> int:
     # Skipped deletions fail the run too: the condition is either a gutted source
     # (page-worthy) or a persistently additive backup accumulating stale records —
     # both need eyes, and the scheduled wrapper only notifies on a nonzero exit.
-    return 0 if res["verify_ok"] and not res["deletions_skipped"] else 1
+    # So does a failed bundle sync: a mirror whose .recovery/ has quietly stopped
+    # updating restores yesterday's keyring and config.
+    return (
+        0
+        if res["verify_ok"] and not res["deletions_skipped"] and not res.get("bundle_error")
+        else 1
+    )
 
 
 def cmd_verify(args: argparse.Namespace) -> int:
@@ -496,6 +518,17 @@ def cmd_restore_drill(args: argparse.Namespace) -> int:
                 + (f" (token {sm['token']!r})" if sm.get("token") else "")
                 + (f" error: {sm['error']}" if sm.get("error") else "")
             )
+    b = res.get("bundle")
+    if b:
+        if not b["present"]:
+            print("bundle: ABSENT — this mirror restores conversations only (no config/keyring/exports)")
+        else:
+            keys = "none" if b["keyring_keys"] is None else str(b["keyring_keys"])
+            print(
+                f"bundle: config={'yes' if b['config'] else 'no'} "
+                f"keyring keys={keys} retained exports={b['retained_exports']}"
+                + (" (keyring UNREADABLE)" if b.get("keyring_unreadable") else "")
+            )
     if res.get("drill_home"):
         print(f"drill home kept: {res['drill_home']}")
     print(f"{'OK' if res.get('ok') else 'RESTORE DRILL FAILED'} ({res.get('seconds', '?')}s)")
@@ -540,6 +573,19 @@ def cmd_restore(args: argparse.Namespace) -> int:
                 f"search={'ok' if sm.get('search_ok') else 'FAILED'}"
                 + (f" error: {sm['error']}" if sm.get("error") else "")
             )
+    b = res.get("bundle")
+    if b:
+        installed = [
+            name
+            for name, on in (("config", b.get("config")), ("keyring", b.get("keyring")))
+            if on
+        ]
+        if b.get("retained_exports"):
+            installed.append(f"{b['retained_exports']} retained export(s)")
+        print(
+            "bundle: installed " + (", ".join(installed) if installed else "nothing")
+            + (f" (ERROR: {b['error']})" if b.get("error") else "")
+        )
     if res.get("damaged_home"):
         print(f"previous home set aside (preserved): {res['damaged_home']}")
     if res.get("error"):

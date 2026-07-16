@@ -26,6 +26,17 @@ logger = logging.getLogger(__name__)
 # (mean doc is ~300 chars) and runs ~7× faster with no hang.
 EMBEDDING_CHAR_CAP = 2048
 _MODEL_NAME = os.environ.get("THREAD_ARCHIVE_EMBED_MODEL", "nomic-ai/nomic-embed-text-v1.5")
+# Pin the exact upstream snapshot for the default model: the nomic loader
+# executes repo-hosted code (``trust_remote_code``), so a floating revision
+# would let an upstream push run new code over a store of private
+# conversations. Bump deliberately when upgrading the model. A custom
+# THREAD_ARCHIVE_EMBED_MODEL floats unless THREAD_ARCHIVE_EMBED_REVISION pins
+# it too (the default pin belongs to the default model only).
+_MODEL_REVISION = os.environ.get("THREAD_ARCHIVE_EMBED_REVISION") or (
+    "e9b6763023c676ca8431644204f50c2b100d9aab"
+    if _MODEL_NAME == "nomic-ai/nomic-embed-text-v1.5"
+    else None
+)
 
 _model = None
 _load_failed = False
@@ -134,7 +145,10 @@ def _load():
             from sentence_transformers import SentenceTransformer
 
             device = _device()
-            _model = SentenceTransformer(_MODEL_NAME, trust_remote_code=True, device=device)
+            _model = SentenceTransformer(
+                _MODEL_NAME, revision=_MODEL_REVISION,
+                trust_remote_code=True, device=device,
+            )
             dim = getattr(_model, "get_embedding_dimension", _model.get_sentence_embedding_dimension)()
             logger.info("embed: loaded %s (dim=%s, device=%s)", _MODEL_NAME, dim, device)
             return _model

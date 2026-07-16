@@ -2,9 +2,11 @@
 
 When verify / backup / the nightly last ran and how they went — the staleness
 signal that tells a dead scheduled job apart from a healthy one. Deliberately
-OUTSIDE the truth dir: this is install-local operational state, so backups don't
-mirror it (a restored truth must not claim the source install's health history)
-and the backup can't dirty the tree it is mirroring.
+OUTSIDE the truth dir: this is install-local operational state, so the truth
+mirror doesn't carry it and the backup can't dirty the tree it is mirroring. A
+reference snapshot rides the backup's ``.recovery`` bundle so the history
+survives disk loss, but ``archive restore`` never installs it — a restored home
+must not claim the source install's health history.
 
 The verdict half (:func:`pipeline_verdict` / :func:`stamp_heartbeat`) turns those
 records into the family-monitor heartbeat: the last nightly's failed stages,

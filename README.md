@@ -104,7 +104,9 @@ archive watch             # watch local AI-tool stores and import incrementally
 archive reindex           # rebuild index.db from the JSONL truth directory
 archive verify            # integrity check: truth parses + matches the index
 archive repair            # quarantine damaged truth lines; restore committed content from the index
-archive backup <dest>     # mirror the truth dir (keeps hardlink generations under <dest>/.generations)
+archive backup <dest>     # mirror the truth dir (hardlink generations under <dest>/.generations) +
+                          #   the recovery bundle under <dest>/.recovery (config, redaction keyring,
+                          #   retained exports, health/ledger snapshots)
 archive restore-drill <dest>  # prove the backup restores: rebuild an index from the mirror + smoke read/search
 archive restore <mirror> --to <home>  # actually restore: staged rebuild + verify, then atomic publish
                           #   (--generation <stamp> picks a retained snapshot; --list-generations shows them)
@@ -221,9 +223,12 @@ wins; ids that were never imported are skipped, not fatal.
 - **Redacts without deleting history** — `archive redact` crypto-shreds content
   (truth lines, index rows and free pages, search docs, vectors, citation quotes,
   derived titles) into an encrypted bundle on the append-only redaction log, keyed
-  by `<home>/keyring.json` (outside the truth dir — backups mirror ciphertext
-  only). Reversible while the key is held (`archive unredact`); escrow the key off
-  the machine (`--show-key` + `--forget`) or destroy it for crypto-erasure. The
+  by `<home>/keyring.json` (outside the truth dir — the truth mirror and its dated
+  generations hold ciphertext only; the keyring rides the backup's head-only
+  `.recovery` bundle so disk loss doesn't erase active redactions, with
+  `{"backup": {"include_keyring": false}}` in config.json as the ciphertext-only
+  opt-out). Reversible while the key is held (`archive unredact`); escrow the key
+  off the machine (`--show-key` + `--forget`) or destroy it for crypto-erasure. The
   original provider store keeps its own copy — redaction covers the archive.
 - **Curatable** — an event-sourced topic graph with Leiden communities (see below),
   driven on demand by the `/librarian` skill.

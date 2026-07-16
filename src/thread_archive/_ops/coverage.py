@@ -26,12 +26,16 @@ coverage is their reconciliation:
   expected, so their age is shown, never red — except that a known export-fed
   source aging past ``EXPORT_STALE_DAYS`` earns a *warning*: the archive can't
   watch a provider's servers, so "time to drop a fresh export" has no other
-  surface). Disabled sources report their
-  store's current activity alongside their import history: a deliberate
+  surface). A source fed by both a watcher and account exports (grok) ages its
+  export channel by itself — see ``EXPORT_FED_SOURCES``. Disabled sources report
+  their store's current activity alongside their import history: a deliberate
   opt-out's store staying active is normal, but a source disabled by
   *accident* (a config bug, a wizard regression) has no other surface where
   its unarchived activity shows — visibility here is what keeps the
   sanctioned off switch from doubling as a silent capture hole.
+- **ledger volume** (warn): recent capture-skip or validation-drift records.
+  Both ledgers record failures that never throw; the warning is what makes them
+  reach anything watching coverage instead of waiting to be read.
 
 Runs nightly as a pipeline stage (recording ``coverage_last``; an out-of-band
 green run retires a red nightly stage, see :mod:`.health`) and on demand via
@@ -51,11 +55,15 @@ GRACE_HOURS = 6.0
 # Sessions of imported history before a missing store reads as "went dark"
 # rather than "was never really used here".
 MIN_HISTORY_FOR_DARK = 5
-# Sources fed only by manual account exports — no watcher can exist for them, so
-# they age between drops by design. Past this window the aging is a coverage
-# hole worth a warning: everything since the last export exists only on the
-# provider's servers. Disabling the source in config.json silences it.
-EXPORT_FED_SOURCES = {"claude": "claude.ai", "chatgpt": "ChatGPT"}
+# Sources fed by manual account exports — the provider's servers can't be
+# watched, so the export channel ages between drops by design. Past this window
+# the aging is a coverage hole worth a warning: everything since the last export
+# exists only on the provider's servers. Disabling the source in config.json
+# silences it. A source may ALSO have a live watcher (grok: the Grok-CLI watcher
+# and xAI account exports share source='grok') — for those, staleness is judged
+# on the export channel alone (``source_metadata.surface == 'web'``), because
+# fresh CLI events would otherwise mask an aging web-side export forever.
+EXPORT_FED_SOURCES = {"claude": "claude.ai", "chatgpt": "ChatGPT", "grok": "xAI/Grok"}
 EXPORT_STALE_DAYS = 45.0
 
 
@@ -102,6 +110,27 @@ def _archive_side() -> tuple[dict, dict]:
             )
         }
     return history, newest_event
+
+
+def _newest_export_event(source: str) -> Optional[float]:
+    """Newest event among ``source``'s *export-imported* threads (the export
+    importers stamp ``source_metadata.surface = 'web'``; watcher-tailed threads
+    carry no surface). The channel discriminator for sources fed by both a live
+    watcher and manual account exports."""
+    from sqlalchemy import func, select
+
+    from .._store import Event, Thread, get_session
+
+    with get_session() as s:
+        newest = s.execute(
+            select(func.max(Event.occurred_at))
+            .join(Thread, Event.thread_id == Thread.id)
+            .where(
+                Thread.source == source,
+                func.json_extract(Thread.source_metadata, "$.surface") == "web",
+            )
+        ).scalar()
+    return _epoch(newest)
 
 
 def check_coverage(
@@ -212,10 +241,22 @@ def check_coverage(
     now = datetime.now(timezone.utc).timestamp()
     unwatched: dict[str, dict] = {}
     for source, epoch in sorted(newest_event.items()):
-        if not source or source in watcher_names:
+        if not source:
             continue
-        uw_entry: dict = {"newest_event_at": _iso(epoch)}
         label = EXPORT_FED_SOURCES.get(source)
+        watched = source in watcher_names
+        if watched:
+            # A watcher keeps the source's newest_event young, so per-source
+            # recency says nothing about its export channel — age that channel
+            # by itself, or fresh CLI events hide a stale account export forever.
+            if not label:
+                continue
+            epoch = _newest_export_event(source)
+            if epoch is None:
+                continue  # no export ever imported: no channel to age
+        uw_entry: dict = {"newest_event_at": _iso(epoch)}
+        if watched:
+            uw_entry["channel"] = "export"
         if (
             label
             and epoch is not None
@@ -224,15 +265,34 @@ def check_coverage(
         ):
             uw_entry["warning"] = "export_stale"
             warnings.append(
-                f"{source} account export is stale: newest archived event is "
-                f"{(now - epoch) / 86400:.0f}d old — conversations since then exist "
-                f"only on {label}'s servers (drop a fresh export, or disable the "
-                "source in config.json)"
+                f"{source} account export is stale: newest export-imported event "
+                f"is {(now - epoch) / 86400:.0f}d old — conversations since then "
+                f"exist only on {label}'s servers (drop a fresh export, or disable "
+                "the source in config.json)"
             )
         unwatched[source] = uw_entry
 
     skips = summarize_skips()
     drift = summarize_drift()
+    # Recent ledger records are unresolved capture loss until someone looks:
+    # both ledgers exist precisely because these failures never throw, so
+    # recording without warning left them invisible to everything watching
+    # coverage (nightly notify, ops digest). Warn, never red — a single benign
+    # drift record must not fail the pipeline, but it must surface.
+    if drift["recent"]:
+        warnings.append(
+            f"format drift: {drift['recent']} validation-drift record(s) "
+            f"({drift['recent_findings']} finding(s)) in the last {drift['days']:.0f}d "
+            "— a parser no longer fully understands a source's format; see the "
+            "drift ledger"
+        )
+    if skips["recent"]:
+        warnings.append(
+            f"capture skips: {skips['recent']} skip record(s) "
+            f"({skips['recent_lines']} line(s)) in the last {skips['days']:.0f}d "
+            "— store content was consumed without becoming events; see the "
+            "skip ledger"
+        )
     result = {
         "ok": not failed,
         "failed": failed,

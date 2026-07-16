@@ -5,7 +5,10 @@ The plan-level logic of ``backfill_recompute`` / ``denamespace_dedup_keys`` /
 ``recover_dropped_events`` is covered in their sibling test modules; this module
 drives the ``run()`` / ``main()`` orchestration those tests bypass — the code that
 actually touches the live store when a migration is executed — plus the whole of
-``repair_grok_tool_names`` (its committed plan file doubles as the fixture).
+``repair_grok_tool_names``, driven by a synthetic plan of the production shape
+(the real plan/backup dumps are operator data holding private conversation
+payloads — they live untracked in ``host/repair-dumps/``, never in the repo,
+so no test may depend on them existing).
 """
 
 from __future__ import annotations
@@ -209,18 +212,45 @@ def test_recover_run_dry_apply_idempotent(archive_home, monkeypatch) -> None:
     assert totals["events_recovered"] == 0, "second apply must be a no-op"
 
 
-# ── repair_grok_tool_names: the committed plan is the fixture ────────────────
+# ── repair_grok_tool_names: a synthetic plan of the production shape ─────────
+
+def _grok_plan_row(event_id: int) -> dict:
+    """One patch row shaped like the production plan: a tool_execution_completed
+    whose live tail-import recorded ``tool_name: "unknown"`` at a stale timestamp."""
+    old_payload = {"tool_call_id": f"call-{event_id}", "tool_name": "unknown",
+                   "output": f"output {event_id}", "is_error": False}
+    new_payload = {**old_payload, "tool_name": "Read"}
+    canon = lambda o: json.dumps(o, sort_keys=True, separators=(",", ":"))  # noqa: E731
+    return {
+        "event_id": event_id,
+        "old_event_type": "tool_execution_completed",
+        "new_event_type": "tool_execution_completed",
+        "old_occurred_at": "2026-06-29 23:00:00.000000",
+        "new_occurred_at": "2026-06-29 23:06:35.000000",
+        "old_payload": canon(old_payload),
+        "new_payload": canon(new_payload),
+    }
+
+
+def _write_grok_plan(tmp_path, monkeypatch, patches: list[dict]):
+    from thread_archive._scripts import repair_grok_tool_names as mod
+
+    plan = tmp_path / "plan.json"
+    plan.write_text(json.dumps({"pg": [], "sa": patches}))
+    monkeypatch.setattr(mod, "PLAN_PATH", plan)
+    return mod
+
 
 @pytest.fixture
-def grok_plan_seeded(archive_home):
-    """Seed a store holding exactly the events the committed repair plan targets,
-    at their production ids, with the plan's asserted old values."""
+def grok_plan_seeded(archive_home, tmp_path, monkeypatch):
+    """Seed a store holding exactly the events a synthetic repair plan targets,
+    with the plan's asserted old values."""
     from thread_archive._retrieval.fts import ensure_fts
-    from thread_archive._scripts import repair_grok_tool_names as mod
 
     init_db()
     ensure_fts()  # the script raw-DELETEs from event_search; a real store has it
-    patches = json.loads(mod.PLAN_PATH.read_text())["sa"]
+    patches = [_grok_plan_row(eid) for eid in (8225001, 8225002, 8225003)]
+    mod = _write_grok_plan(tmp_path, monkeypatch, patches)
     with get_session() as s:
         s.add(Thread(id=1, name="grok-repair-fixture", source="grok"))
         s.flush()
@@ -276,8 +306,8 @@ def test_grok_repair_apply_backs_up_then_patches(grok_plan_seeded, monkeypatch, 
     assert {ln["id"] for ln in lines if ln.get("type") == "event"} >= patched_ids
 
 
-def test_grok_repair_aborts_on_missing_event(archive_home, monkeypatch, capsys) -> None:
-    from thread_archive._scripts import repair_grok_tool_names as mod
+def test_grok_repair_aborts_on_missing_event(archive_home, tmp_path, monkeypatch, capsys) -> None:
+    mod = _write_grok_plan(tmp_path, monkeypatch, [_grok_plan_row(8225001)])
 
     init_db()  # empty store: first planned event is absent
     monkeypatch.setattr("sys.argv", ["repair_grok_tool_names.py", "--apply"])

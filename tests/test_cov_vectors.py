@@ -179,8 +179,8 @@ def test_embed_load_constructs_and_caches(monkeypatch) -> None:
     made = []
 
     class FakeST:
-        def __init__(self, name, trust_remote_code=False, device=None):
-            made.append((name, trust_remote_code, device))
+        def __init__(self, name, revision=None, trust_remote_code=False, device=None):
+            made.append((name, revision, trust_remote_code, device))
 
         def get_sentence_embedding_dimension(self):
             return 768
@@ -194,7 +194,10 @@ def test_embed_load_constructs_and_caches(monkeypatch) -> None:
 
     m = embed._load()
     assert m is not None
-    assert made == [(embed._MODEL_NAME, True, "cpu")]
+    # The default model must load its pinned snapshot (trust_remote_code means
+    # a floating revision executes whatever upstream pushes).
+    assert embed._MODEL_REVISION is not None
+    assert made == [(embed._MODEL_NAME, embed._MODEL_REVISION, True, "cpu")]
     assert embed._load() is m  # cached — no second construction
     assert len(made) == 1
 

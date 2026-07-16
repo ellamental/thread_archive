@@ -6,6 +6,15 @@ the guards that keep a sick source or a mid-flight rebalance from destroying the
 last good copy (shrink guard, bounded delete-sync, hardlink generations).
 :func:`restore_drill` is the end-to-end rehearsal: rebuild a full index from the
 mirror in a throwaway home and prove it reads and searches.
+
+The destination is a *complete* disaster-recovery set, not just the truth: each
+run also syncs the home's non-truth recovery material into a reserved
+``<dest>/.recovery/`` subtree (:func:`_sync_recovery_bundle`) — ``config.json``,
+the redaction keyring (by default; see the function docstring), the retained
+original exports under ``dumps/imported/``, and a reference snapshot of
+``health.json`` + the operational ledgers. :func:`restore` installs the choices
+and recovery material into the recovered home; the history snapshots stay at the
+mirror.
 """
 
 from __future__ import annotations
@@ -15,7 +24,7 @@ import os
 from pathlib import Path
 from typing import Optional
 
-from .._config import resolve_paths
+from .._config import ArchivePaths, load_config, resolve_paths
 from .health import record_health, stamp_heartbeat
 from .verify import verify
 
@@ -33,6 +42,24 @@ _MIRROR_DELETE_MAX_FRACTION = 0.25
 _GENERATIONS_SUBDIR = ".generations"
 _GEN_KEEP_RECENT = 7
 _GEN_KEEP_MONTHS = 6
+
+# The recovery bundle: the home's non-truth recovery material, synced beside the
+# truth mirror. Head-only by design — never snapshotted into generations — so a
+# key removed from the live keyring (crypto-erasure) leaves the backup on the
+# next run instead of persisting in dated snapshots. See _sync_recovery_bundle.
+_RECOVERY_SUBDIR = ".recovery"
+# Home-level files that ride the bundle. keyring.json is handled separately
+# (config-gated; the canonical name lives in _ops.redact); health.json and the
+# ledgers are reference snapshots — bundled so operational history survives disk
+# loss, but never installed by restore (a restored home must not claim the
+# source install's health history).
+_BUNDLE_HOME_FILES = (
+    "config.json",
+    "health.json",
+    "capture-skips.jsonl",
+    "validation-drift.jsonl",
+    "verify-failures.jsonl",
+)
 
 
 def external_disk_coverage(path: Path) -> Optional[str]:
@@ -75,6 +102,35 @@ def _is_append_only_truth(rel: Path) -> bool:
     ) and rel.suffix == ".jsonl"
 
 
+def _chmod_private(path: Path, mode: int) -> None:
+    """Best-effort ``chmod``: backup destinations must never be more readable
+    than the live home (0700 dirs / 0600 files), but network filesystems (smbfs)
+    answer EPERM to chmod — there, access is the share's ACL problem, and a
+    failed tighten must not fail the backup that privacy exists to protect."""
+    try:
+        os.chmod(path, mode)
+    except OSError:
+        pass
+
+
+def _mkdir_private(d: Path) -> None:
+    """``mkdir -p`` with every newly created component tightened to 0700.
+    ``mkdir(mode=...)`` is umask-masked and applies only to the leaf, so each
+    missing ancestor is created and chmodded explicitly. Pre-existing dirs are
+    left alone — the backup entrypoint tightens the destination root itself."""
+    missing = []
+    cur = d
+    while not cur.exists():
+        missing.append(cur)
+        cur = cur.parent
+    for nd in reversed(missing):
+        try:
+            nd.mkdir()
+        except FileExistsError:
+            continue
+        _chmod_private(nd, 0o700)
+
+
 def _atomic_copy(sp: Path, dp: Path, *, trim_to_newline: bool) -> None:
     """Copy ``sp`` over ``dp`` with no destructive window: the bytes land in a
     same-directory temp file, fsynced, then an atomic rename publishes them — a
@@ -108,6 +164,10 @@ def _atomic_copy(sp: Path, dp: Path, *, trim_to_newline: bool) -> None:
                         pos -= step
                     fh.truncate(last_nl + 1)
             os.fsync(fh.fileno())
+        # Owner-only regardless of what copy2 replicated: these are private
+        # conversation payloads, and the mode must not depend on source-mode
+        # history or drift.
+        _chmod_private(tmp, 0o600)
         os.replace(tmp, dp)
     except BaseException:
         tmp.unlink(missing_ok=True)
@@ -182,7 +242,7 @@ def _mirror_dir(
                 if len(shrink_sample) < 10:
                     shrink_sample.append(str(rel))
                 continue
-        dp.parent.mkdir(parents=True, exist_ok=True)
+        _mkdir_private(dp.parent)
         _atomic_copy(sp, dp, trim_to_newline=_is_append_only_truth(rel))
         copied += 1
         total += dp.stat().st_size
@@ -191,12 +251,14 @@ def _mirror_dir(
         _fsync_dir(sd)  # the renames that published this pass's copies must stick
     twins_deleted = 0
     if delete:
-        # The generations subtree is destination-only state (hardlink snapshots
-        # of prior mirror runs) — never a deletion candidate, and never counted
-        # toward the deletion cap's denominator.
+        # The generations subtree (hardlink snapshots of prior mirror runs) and
+        # the recovery bundle (synced by its own pass, with its own deletion
+        # rules) are destination-side state, not truth copies — never deletion
+        # candidates, and never counted toward the deletion cap's denominator.
         dest_files = [
             dp for dp in dest.rglob("*")
-            if not dp.is_dir() and dp.relative_to(dest).parts[0] != _GENERATIONS_SUBDIR
+            if not dp.is_dir()
+            and dp.relative_to(dest).parts[0] not in (_GENERATIONS_SUBDIR, _RECOVERY_SUBDIR)
         ]
         doomed = [dp for dp in dest_files if not (src / dp.relative_to(dest)).exists()]
         if doomed:
@@ -300,6 +362,7 @@ def _snapshot_generation(dest: Path) -> dict:
     try:
         if not gens.is_dir():  # not exist_ok=True: smbfs answers EPERM, not
             gens.mkdir()  # EEXIST, for mkdir of an existing dir
+            _chmod_private(gens, 0o700)
         for stale in gens.glob(".tmp-*"):  # a killed snapshot's half-built tree
             shutil.rmtree(stale, ignore_errors=True)
         names = sorted((p.name for p in gens.iterdir() if p.is_dir()), reverse=True)
@@ -318,18 +381,22 @@ def _snapshot_generation(dest: Path) -> dict:
             if sp.is_dir():
                 continue
             rel = sp.relative_to(dest)
-            if rel.parts[0] == _GENERATIONS_SUBDIR:
+            # The recovery bundle is head-only: a generation that retained a
+            # keyring copy would keep a forgotten (crypto-erased) key alive in
+            # dated snapshots for the whole retention window.
+            if rel.parts[0] in (_GENERATIONS_SUBDIR, _RECOVERY_SUBDIR):
                 continue
             gp = tmp / rel
-            gp.parent.mkdir(parents=True, exist_ok=True)
+            _mkdir_private(gp.parent)
             try:
-                os.link(sp, gp)
+                os.link(sp, gp)  # linked inode carries the mirror file's 0600
             except OSError:  # filesystem without hardlinks — take the copy cost.
                 # copyfile, not copy2: a generation is a restore source, so only
                 # content matters (retention is keyed by the generation dir's
                 # name), and metadata replication EPERMs on network mirrors
                 # (smbfs refuses reads of system xattrs like com.apple.provenance).
                 shutil.copyfile(sp, gp)
+                _chmod_private(gp, 0o600)
             linked += 1
         os.rename(tmp, gens / name)
         from .._truth.jsonl_log import _fsync_dir
@@ -359,6 +426,153 @@ def _snapshot_generation(dest: Path) -> dict:
             shutil.rmtree(gens / n, ignore_errors=True)
             out["generations_pruned"] += 1
     out["generations_kept"] = len(keep)
+    return out
+
+
+def _bundle_sources(paths: ArchivePaths, *, include_keyring: bool) -> dict[Path, Path]:
+    """The recovery bundle's file map: bundle-relative path → source path, for
+    every bundle member that exists at the home. Membership is explicit — the
+    home also holds the index, locks, and logs, none of which belong in a
+    restore set (the index rebuilds from truth; locks and logs are process
+    state)."""
+    from .._watcher.export_drop import IMPORTED_DIRNAME
+    from .redact import KEYRING_FILE
+
+    names = list(_BUNDLE_HOME_FILES)
+    if include_keyring:
+        names.append(KEYRING_FILE)
+    out: dict[Path, Path] = {}
+    for name in names:
+        sp = paths.home / name
+        if sp.is_file():
+            out[Path(name)] = sp
+    imported = paths.dumps_dir / IMPORTED_DIRNAME
+    if imported.is_dir():
+        for sp in imported.rglob("*"):
+            if sp.is_file():
+                rel = Path("dumps") / IMPORTED_DIRNAME / sp.relative_to(imported)
+                out[rel] = sp
+    return out
+
+
+def _sync_recovery_bundle(
+    paths: ArchivePaths, dest: Path, *, include_keyring: bool, delete: bool
+) -> dict:
+    """Sync the home's non-truth recovery material into ``<dest>/.recovery/`` —
+    the difference between "the conversations survive" and "the install
+    survives": operator choices (``config.json``), the redaction keyring, the
+    retained original exports (``dumps/imported/``, the lossless re-import
+    source), and reference snapshots of ``health.json`` + the operational
+    ledgers.
+
+    The keyring rides by default: without it, losing the disk crypto-erases
+    every active redaction — recoverability is what redaction's *redacted*
+    (vs *forgotten*) state promises. The cost is that the backup medium can
+    unredact its own ciphertext; ``{"backup": {"include_keyring": false}}`` in
+    ``config.json`` restores the ciphertext-only posture for anyone who wants
+    escrow to live elsewhere.
+
+    A true head-only mirror of the file map: changed files are copied
+    atomically, and (``delete``, same gate as the truth mirror's delete-sync)
+    bundle files with no live counterpart are removed — that is the path by
+    which a forgotten key, a flipped ``include_keyring``, or a superseded
+    retained export actually leaves the backup. Never snapshotted into
+    generations (see :func:`_snapshot_generation`)."""
+    rec_dir = dest / _RECOVERY_SUBDIR
+    sources = _bundle_sources(paths, include_keyring=include_keyring)
+    copied = deleted = 0
+    for rel, sp in sources.items():
+        dp = rec_dir / rel
+        if dp.exists():
+            ss, ds = sp.stat(), dp.stat()
+            if ss.st_size == ds.st_size and (
+                int(ss.st_mtime) <= int(ds.st_mtime)
+                or filecmp.cmp(sp, dp, shallow=False)
+            ):
+                continue
+        _mkdir_private(dp.parent)
+        _atomic_copy(sp, dp, trim_to_newline=False)
+        copied += 1
+    if delete and rec_dir.is_dir():
+        keep = {rec_dir / rel for rel in sources}
+        for dp in list(rec_dir.rglob("*")):
+            if not dp.is_dir() and dp not in keep:
+                dp.unlink()
+                deleted += 1
+        for dp in sorted((p for p in rec_dir.rglob("*") if p.is_dir()), reverse=True):
+            try:
+                dp.rmdir()  # only succeeds when empty
+            except OSError:
+                pass
+    return {
+        "bundle_files": len(sources),
+        "bundle_copied": copied,
+        "bundle_deleted": deleted,
+        # Distinct states the operator must be able to tell apart: bundled,
+        # opted out (a choice), or simply no keyring at the home (no active
+        # redaction has ever minted one — nothing to bundle).
+        "keyring_in_bundle": any(str(rel) == "keyring.json" for rel in sources),
+        "keyring_opted_out": not include_keyring,
+    }
+
+
+def _bundle_status(dest: Path) -> dict:
+    """What the mirror's recovery bundle holds — presence and rough shape, so
+    the restore drill can report whether a real disaster would get the install
+    back, not just the conversations."""
+    import json
+
+    rec = dest / _RECOVERY_SUBDIR
+    out: dict = {
+        "present": rec.is_dir(),
+        "config": (rec / "config.json").is_file(),
+        "health": (rec / "health.json").is_file(),
+        "keyring_keys": None,
+        "retained_exports": 0,
+    }
+    kp = rec / "keyring.json"
+    if kp.is_file():
+        try:
+            keys = json.loads(kp.read_text(encoding="utf-8")).get("keys", {})
+            out["keyring_keys"] = len(keys) if isinstance(keys, dict) else 0
+        except (OSError, ValueError):
+            out["keyring_unreadable"] = True
+    imported = rec / "dumps" / "imported"
+    if imported.is_dir():
+        out["retained_exports"] = sum(1 for p in imported.rglob("*") if p.is_file())
+    return out
+
+
+def _restore_bundle(dest: Path, home: Path) -> dict:
+    """Install the recovery bundle into a restored home: ``config.json``, the
+    keyring, and the retained exports — the operator's choices and the
+    recovery material. The bundled health snapshot and ledgers deliberately
+    stay at the mirror: they are the *source install's* operational history,
+    reference material for forensics, not state the restored home may claim
+    as its own. Fail-soft — a bundle that won't copy degrades to the pre-bundle
+    restore (truth only), reported, never a failed restore."""
+    from .redact import KEYRING_FILE
+
+    rec = dest / _RECOVERY_SUBDIR
+    out: dict = {"config": False, "keyring": False, "retained_exports": 0}
+    if not rec.is_dir():
+        return out
+    try:
+        for name in ("config.json", KEYRING_FILE):
+            sp = rec / name
+            if sp.is_file():
+                _atomic_copy(sp, home / name, trim_to_newline=False)
+                out["keyring" if name == KEYRING_FILE else "config"] = True
+        imported = rec / "dumps" / "imported"
+        if imported.is_dir():
+            for sp in imported.rglob("*"):
+                if sp.is_file():
+                    dp = home / "dumps" / "imported" / sp.relative_to(imported)
+                    _mkdir_private(dp.parent)
+                    _atomic_copy(sp, dp, trim_to_newline=False)
+                    out["retained_exports"] += 1
+    except OSError as e:
+        out["error"] = str(e)
     return out
 
 
@@ -398,6 +612,13 @@ def backup(
     (:func:`_snapshot_generation`) — the recovery margin for destruction the
     in-run guards can't see. ``archive restore-drill`` proves the mirror (or a
     generation) actually restores.
+
+    After the mirror, the run syncs the recovery bundle
+    (:func:`_sync_recovery_bundle`): config, keyring (config-gated), retained
+    exports, and health/ledger snapshots land under ``<dest>/.recovery/``, so
+    the destination restores the *install*, not just the conversations. Bundle
+    failure is reported (``bundle_error``, and it fails the health record's
+    ``ok``) but never aborts the truth mirror itself.
     """
     from .._api import open_archive
 
@@ -422,7 +643,10 @@ def backup(
 
     vectors_cached = save_vectors_sidecar(paths.truth_dir)
     dest_path = Path(dest).expanduser()
-    dest_path.mkdir(parents=True, exist_ok=True)
+    _mkdir_private(dest_path)
+    # Tighten a pre-existing destination too: the mirror must never sit more
+    # readable than the 0700 live home it copies.
+    _chmod_private(dest_path, 0o700)
     # A destination on the same filesystem as the truth dir protects against a
     # bad write, not against the disk: one device failure (or a stolen machine)
     # takes source, mirror, and every hardlink generation together. Report-only
@@ -459,6 +683,20 @@ def backup(
             )
     result.update(generations)
 
+    # The recovery bundle, outside the truth locks: its members have their own
+    # atomic writers, so a copy races to the old or the new file, never a torn
+    # one. Same delete gate as the truth mirror — a sick source syncs additively.
+    include_keyring = bool(load_config(home).get("backup", {}).get("include_keyring", True))
+    try:
+        result.update(
+            _sync_recovery_bundle(paths, dest_path, include_keyring=include_keyring, delete=delete)
+        )
+    except OSError as e:  # the bundle is protection for the install, not the truth mirror
+        result["bundle_error"] = str(e)
+        import logging
+
+        logging.getLogger(__name__).exception("backup: recovery bundle sync failed")
+
     # Structural completeness: every source .jsonl must exist at the destination,
     # at ≥ its size at copy time (append-only files may have grown since).
     missing = divergent = 0
@@ -480,10 +718,16 @@ def backup(
     # healthy one by its log files alone — the record's age is the signal.
     record_health("backup_last", {
         "dest": str(dest_path),
-        "ok": bool(verify_ok and result["mirror_complete"] and not result["deletions_skipped"]),
+        "ok": bool(
+            verify_ok
+            and result["mirror_complete"]
+            and not result["deletions_skipped"]
+            and "bundle_error" not in result
+        ),
         "verify_ok": verify_ok,
         "mirror_complete": result["mirror_complete"],
         "files_copied": result["files_copied"],
+        "keyring_in_bundle": result.get("keyring_in_bundle"),
         "same_device": same_device,
     })
     stamp_heartbeat()
@@ -541,18 +785,27 @@ def restore_drill(
     with get_session() as s:
         live_events = s.execute(select(func.count()).select_from(Event)).scalar() or 0
     scan = scan_truth_counts(truth_dir=dest_path)
-    result: dict = {"dest": str(dest_path), "mirror": scan, "live_events": int(live_events)}
+    result: dict = {
+        "dest": str(dest_path),
+        "mirror": scan,
+        "live_events": int(live_events),
+        # What a real disaster would get back besides the conversations —
+        # presence-only (the drill proves the truth restores; the bundle's
+        # members are plain copies with their own atomic writers).
+        "bundle": _bundle_status(dest_path),
+    }
     drill_home = Path(tempfile.mkdtemp(prefix="thread-archive-restore-drill-"))
     try:
-        # The generations subtree and any half-published mirror temp files are
-        # destination bookkeeping, not truth — the drill restores the mirror.
-        # copyfile, not the default copy2: the drill consumes JSONL content
-        # only, and metadata replication EPERMs on network mirrors (smbfs
-        # refuses reads of system xattrs like com.apple.provenance).
+        # The generations subtree, the recovery bundle, and any half-published
+        # mirror temp files are destination bookkeeping, not truth — the drill
+        # restores the mirror. copyfile, not the default copy2: the drill
+        # consumes JSONL content only, and metadata replication EPERMs on
+        # network mirrors (smbfs refuses reads of system xattrs like
+        # com.apple.provenance).
         shutil.copytree(
             dest_path, drill_home / "truth",
             copy_function=shutil.copyfile,
-            ignore=shutil.ignore_patterns(_GENERATIONS_SUBDIR, ".*.tmp-*"),
+            ignore=shutil.ignore_patterns(_GENERATIONS_SUBDIR, _RECOVERY_SUBDIR, ".*.tmp-*"),
         )
         open_archive(str(drill_home))
         from .._truth import reindex as _reindex
@@ -636,13 +889,15 @@ def restore(
       deleted and reported — the target is never replaced with a dud.
     - **Publish.** With ``replace``, the existing home is moved aside to
       ``<home>.damaged-<stamp>`` — preserved, never deleted — then the staging
-      home renames into place. A post-publish reopen re-counts events as a
-      final sanity check.
+      home renames into place, and the mirror's recovery bundle is installed
+      (:func:`_restore_bundle`: config, keyring, retained exports — always
+      from the mirror head, generations carry no bundle). A post-publish
+      reopen re-counts events as a final sanity check.
 
     Returns a report dict (``ok``, mirror scan, rebuilt counts, smoke, the
-    damaged-home path when one was set aside, seconds) and records
-    ``restore_last`` in the restored home's health.json. Leaves the process's
-    archive pointed at the restored home."""
+    bundle installed, the damaged-home path when one was set aside, seconds)
+    and records ``restore_last`` in the restored home's health.json. Leaves
+    the process's archive pointed at the restored home."""
     import shutil
     import time
     from datetime import datetime, timezone
@@ -681,7 +936,7 @@ def restore(
         shutil.copytree(
             source, staging / "truth",
             copy_function=shutil.copyfile,
-            ignore=shutil.ignore_patterns(_GENERATIONS_SUBDIR, ".*.tmp-*"),
+            ignore=shutil.ignore_patterns(_GENERATIONS_SUBDIR, _RECOVERY_SUBDIR, ".*.tmp-*"),
         )
         staging.chmod(0o700)
         open_archive(str(staging))
@@ -717,6 +972,11 @@ def restore(
             os.rename(to_path, damaged)
             result["damaged_home"] = str(damaged)
         os.rename(staging, to_path)
+        # Install the recovery bundle — always from the mirror HEAD, even when
+        # restoring a generation: the bundle is head-only by design (a dated
+        # keyring copy would defeat crypto-erasure), so the head's is the only
+        # and the current one.
+        result["bundle"] = _restore_bundle(dest_path, to_path)
     except Exception as e:  # noqa: BLE001 — the report is the contract; never half-raise
         close()
         shutil.rmtree(staging, ignore_errors=True)

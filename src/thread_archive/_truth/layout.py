@@ -43,10 +43,11 @@ _BUCKET = 256  # children per shard level
 # A redacted event payload: content replaced by a marker envelope
 # ``{"_redacted": {"key_id": ..., "at": ...}}``. The encrypted original lives on
 # the matching record in ``truth/redactions.jsonl``; the key in
-# ``<home>/keyring.json`` (outside the truth dir — backups mirror ciphertext
-# only). See :mod:`thread_archive._ops.redact`. Truth vocabulary, so readers
-# (hash checks, renderers) can recognize the shape without importing the
-# redaction machinery.
+# ``<home>/keyring.json`` (outside the truth dir — the truth mirror and its
+# generations carry ciphertext only; the keyring rides the backup's head-only
+# ``.recovery`` bundle unless config opts out). See
+# :mod:`thread_archive._ops.redact`. Truth vocabulary, so readers (hash checks,
+# renderers) can recognize the shape without importing the redaction machinery.
 REDACTED_PAYLOAD_KEY = "_redacted"
 
 

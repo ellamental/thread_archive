@@ -32,6 +32,25 @@ from thread_archive._truth import jsonl_log, scan_truth_counts
 from .helpers import event_count, import_cc_session, one_thread_file
 
 
+def test_backup_destination_is_owner_only(archive_home, tmp_path) -> None:
+    """Mirror dirs land 0700 and files 0600 — even when a source file's mode is
+    looser and the destination pre-exists open. The backup must never sit more
+    readable than the 0700 live home it copies."""
+    import_cc_session(tmp_path)
+    one_thread_file(archive_home).chmod(0o644)  # source-mode drift must not propagate
+
+    dest = tmp_path / "bk"
+    dest.mkdir(mode=0o755)
+    ta.backup(str(dest))
+    ta.backup(str(dest))  # second run: generations subtree exists too
+
+    assert (dest.stat().st_mode & 0o777) == 0o700
+    for p in dest.rglob("*"):
+        mode = p.stat().st_mode & 0o777
+        expected = 0o700 if p.is_dir() else 0o600
+        assert mode == expected, f"{p} is {oct(mode)}"
+
+
 # ── delete-sync: a true mirror, capped except for re-homed twins ──────────────
 def test_backup_deletes_files_the_source_no_longer_has(archive_home, tmp_path) -> None:
     """The mirror must drop stale destination files (e.g. a pre-rebalance layout), or
@@ -50,11 +69,12 @@ def test_backup_deletes_files_the_source_no_longer_has(archive_home, tmp_path) -
     assert res["files_deleted"] >= 1
     assert not stale.exists()
     # Everything the source has is still mirrored (the destination-only
-    # .generations subtree is the mirror's own snapshot state, not a copy).
+    # .generations and .recovery subtrees are the mirror's own snapshot/bundle
+    # state, not truth copies).
     src_files = {p.relative_to(archive_home / "truth") for p in (archive_home / "truth").rglob("*") if p.is_file()}
     dest_files = {
         p.relative_to(dest) for p in dest.rglob("*")
-        if p.is_file() and p.relative_to(dest).parts[0] != ".generations"
+        if p.is_file() and p.relative_to(dest).parts[0] not in (".generations", ".recovery")
     }
     assert src_files == dest_files
 

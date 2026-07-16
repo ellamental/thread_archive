@@ -282,6 +282,75 @@ def test_coverage_warns_on_stale_export_fed_source(archive_home, tmp_path):
     assert not r["warnings"]
 
 
+def test_coverage_ages_export_channel_of_watched_source(archive_home):
+    # grok is fed by both the CLI watcher and manual xAI account exports (same
+    # source name). Fresh CLI events must not mask an aging export channel: the
+    # staleness check keys on export-imported threads (source_metadata.surface
+    # = 'web') alone.
+    from datetime import datetime, timedelta, timezone
+
+    from thread_archive._store import Event, Thread, get_session, init_db
+
+    ta.open_archive()
+    init_db()
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    with get_session() as s:
+        s.add(Thread(id=1, name="cli-session", source="grok"))
+        s.add(Thread(id=2, name="web-export", source="grok",
+                     source_metadata={"provider": "grok", "surface": "web"}))
+        s.flush()
+        s.add(Event(id=1, thread_id=1, stream_id="st", event_type="user_message",
+                    payload={"content_text": "fresh cli"}, occurred_at=now))
+        s.add(Event(id=2, thread_id=2, stream_id="st", event_type="user_message",
+                    payload={"content_text": "old export"},
+                    occurred_at=now - timedelta(days=100)))
+        s.commit()
+
+    r = check_coverage(watchers=[StubWatcher("grok")])
+    assert r["unwatched"]["grok"]["channel"] == "export"
+    assert r["unwatched"]["grok"]["warning"] == "export_stale"
+    assert any("grok account export is stale" in msg for msg in r["warnings"])
+
+    # The CLI channel's freshness is judged where it always was — per-source
+    # newest_event — so the split adds the export view without touching it.
+    r = check_coverage(watchers=[StubWatcher("grok")], export_stale_days=365 * 50)
+    assert "warning" not in r["unwatched"]["grok"]
+
+
+def test_coverage_skips_export_channel_with_no_export_history(archive_home, tmp_path):
+    # A watched source with no export-imported thread has no export channel to
+    # age: CLI-only grok use must not nag for an account export it never had.
+    f = tmp_path / "grok-like.jsonl"
+    write_jsonl(f, [cc_user("g"), cc_assistant("g")])
+    ta.open_archive()
+    import_session_incremental(f, "g-1", source="grok")
+    r = check_coverage(watchers=[StubWatcher("grok")])
+    assert "grok" not in r["unwatched"]
+    assert not any("account export" in msg for msg in r["warnings"])
+
+
+def test_coverage_warns_on_recent_ledger_records(archive_home):
+    # Skip/drift ledgers record capture loss that never throws; recent records
+    # must surface as coverage warnings (warn, never red).
+    import datetime as dt
+
+    from thread_archive._importers._validation_ledger import (
+        LEDGER_FILE as DRIFT_FILE,
+    )
+
+    ta.open_archive()
+    now_iso = dt.datetime.now(dt.timezone.utc).isoformat()
+    (archive_home / DRIFT_FILE).write_text(
+        json.dumps({"at": now_iso, "count": 3}) + "\n")
+    (archive_home / LEDGER_FILE).write_text(
+        json.dumps({"at": now_iso, "lines_skipped": 2}) + "\n")
+
+    r = check_coverage(watchers=[])
+    assert r["ok"]
+    assert any("format drift" in msg for msg in r["warnings"])
+    assert any("capture skips" in msg for msg in r["warnings"])
+
+
 def test_coverage_export_staleness_respects_config_opt_out(archive_home, tmp_path):
     import json as _json
 

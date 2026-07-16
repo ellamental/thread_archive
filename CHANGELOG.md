@@ -2,6 +2,54 @@
 
 ## Unreleased
 
+- **Backups carry a full recovery bundle (2026-07-15).** A backup destination
+  restored the conversations but not the install: `config.json` (source
+  opt-outs), `keyring.json` (redaction keys — disk loss meant accidental
+  crypto-erasure of every active redaction), the retained original exports
+  (`dumps/imported/`), and the health/ledger history all lived only on the
+  primary disk. `archive backup` now syncs them into a reserved
+  `<dest>/.recovery/` subtree; `archive restore` installs config + keyring +
+  retained exports into the recovered home (health/ledger snapshots stay at the
+  mirror as reference — a restored home doesn't claim the source install's
+  history); `archive restore-drill` reports what the bundle holds. The bundle is
+  head-only — never snapshotted into `.generations` — so `redact --forget`
+  propagates crypto-erasure to the backup on the next run. Operators who escrow
+  keys off-machine can keep backups ciphertext-only with
+  `{"backup": {"include_keyring": false}}`. (External whole-tree copies — e.g.
+  lab's rotation slots — retain the keyring on their own schedule, the same way
+  they already retain pre-redaction plaintext.)
+
+- **Repair-dump privacy incident purged (2026-07-15).** Three live-repair dumps
+  (real transcript/tool payloads, ~450 KB) were tracked in git, public on GitHub
+  since 2026-06-25, and two rode the v0.0.2 wheel/sdist (briefly on PyPI). The
+  GitHub repo was made private, history rewritten (`git filter-repo`) to drop the
+  files from every commit and tag, then the repo deleted and recreated so
+  GitHub-side unreachable objects and GH-Archive-published SHAs resolve to
+  nothing. No credentials were in the payloads. `host/repair-dumps/` is now
+  gitignored and a meta test fails CI if any dump-marked data file is ever
+  tracked; the migration tests build synthetic plans instead of reading the real
+  ones (which also un-reds CI on checkouts without the local dumps).
+
+- **Backup destinations are owner-only (2026-07-15).** The live home is
+  0700/0600 but mirrors were world-readable (0755 dirs / 0644 files — >240k
+  files across the local mirror, rotation slots, and the second local dest).
+  `archive backup` now enforces 0700 on the destination root and every dir it
+  creates and 0600 on every file it publishes (best-effort on network
+  filesystems, where modes are the share's problem); existing trees were
+  remediated in place. Lab's slot-rotation script runs under `umask 077`.
+
+- **Coverage warns on ledger volume and ages grok's export channel (2026-07-15).**
+  Recent capture-skip / validation-drift records were stored but affected
+  nothing; they now surface as coverage warnings. xAI account exports share
+  `source='grok'` with the CLI watcher, so fresh CLI events masked export
+  staleness — the export channel (threads with `source_metadata.surface='web'`)
+  is now aged by itself, same 45d window as claude.ai/ChatGPT.
+
+- **Embedding model revision pinned (2026-07-15).** The nomic loader executes
+  repo-hosted code (`trust_remote_code`); the default model now loads a fixed
+  upstream snapshot instead of whatever revision upstream points at
+  (`THREAD_ARCHIVE_EMBED_REVISION` overrides).
+
 - **Export redrops now merge grown conversations (2026-07-15).** The drop watcher
   imported account exports without `force`, so a conversation that gained messages
   since the last export was skipped outright — a recurring ChatGPT/claude.ai/xAI

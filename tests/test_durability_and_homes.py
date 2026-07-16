@@ -149,8 +149,14 @@ def test_backup_mirrors_truth_and_is_restorable(archive_home, tmp_path) -> None:
     # Re-run is incremental. Every checkpoint advances the manifest's
     # last_checkpoint_at watermark, so the manifest is the one file a no-op
     # re-run may recopy — the append-only thread truth and the byte-identical
-    # overlay snapshots stay untouched.
-    before = {p: p.stat().st_mtime_ns for p in dest.rglob("*") if p.is_file()}
+    # overlay snapshots stay untouched. The .recovery bundle sits outside the
+    # claim: its health snapshot legitimately updates every run (each run's
+    # verify records into it).
+    before = {
+        p: p.stat().st_mtime_ns
+        for p in dest.rglob("*")
+        if p.is_file() and p.relative_to(dest).parts[0] != ".recovery"
+    }
     second = ta.backup(str(dest))
     assert second["files_copied"] <= 1
     rewritten = {p.name for p, mtime in before.items() if p.stat().st_mtime_ns != mtime}
