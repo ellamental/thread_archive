@@ -1,12 +1,12 @@
 """Reality-integrity mechanism goldens — the failure *shapes* behind real incidents.
 
-Each real search failure in an operator's private incident catalogue guards
-specific conversations; these goldens guard the *mechanisms* those incidents
-exposed, reproduced on synthetic corpora so the public suite carries the
-regression class without carrying anyone's data. The bar mirrors the incident
-harness's (:mod:`thread_archive._evals.incidents`): "the agent can see it at
-all", because the failure mode being guarded is a false "not found" against a
-conversation that is right there.
+Each of these goldens reproduces, on a synthetic corpus, the mechanism behind a
+real search failure observed in production — so the suite carries the
+regression class without carrying anyone's data. The bar is deliberately low:
+"the agent can see it at all" (surfaces in the top ``RECALL_LIMIT`` hits, not
+"ranks first"), because the failure mode being guarded is a false "not found"
+against a conversation that is right there — the archive telling its operator
+that part of their own history didn't happen.
 
 The three mechanisms:
 
@@ -27,7 +27,7 @@ from thread_archive import _api as api
 
 from .helpers import write_jsonl
 
-# Mirrors the incident harness's recall window: buried below this is "not seen".
+# The recall window: buried below this is "not seen".
 RECALL_LIMIT = 25
 
 

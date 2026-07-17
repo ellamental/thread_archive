@@ -6,8 +6,7 @@ this CLI is the process seam launchd, cron, and operators use to run the
 private machinery — ingest (``import``, ``import-export``, ``watch``,
 ``embed``), the durability kit (``backup``, ``verify``, ``restore-drill``,
 ``restore``, ``reindex``, ``repair``, ``status``, ``nightly``, ``coverage``), the
-curation drains (``curate``), the reality-integrity guards (``incidents``), and the
-LaunchAgent lifecycle (``daemon``). Verbs may change without
+curation drains (``curate``), and the LaunchAgent lifecycle (``daemon``). Verbs may change without
 external notice, but they are *wired into* the LaunchAgent plists, lab's cron
 script, the /ci skill, and the monitor's heartbeat contract — renaming one
 means updating those in the same change (``tests/test_public_api.py`` pins the
@@ -943,33 +942,6 @@ def cmd_coverage(args: argparse.Namespace) -> int:
     return 0 if r["ok"] else 1
 
 
-def cmd_incidents(args: argparse.Namespace) -> int:
-    from . import _api as api
-    from ._evals.incidents import CatalogueError
-
-    try:
-        r = api.run_incidents(args.catalogue, home=args.home, limit=args.limit)
-    except FileNotFoundError:
-        print(f"archive incidents: no catalogue at {args.catalogue}", file=sys.stderr)
-        return 2
-    except CatalogueError as exc:
-        print(f"archive incidents: {exc}", file=sys.stderr)
-        return 2
-    for res in r["results"]:
-        status = "PASS" if res["ok"] else "FAIL"
-        open_mark = "  (open)" if res["tier"] == "unresolved" else ""
-        print(f"{status}  {res['tier']:<10} {res['slug']:<28} {res['detail']}{open_mark}")
-        if not res["ok"]:
-            for key in ("confidence", "original_failure", "notes"):
-                if res["annotations"].get(key):
-                    print(f"      {key}: {res['annotations'][key]}")
-    tally = f"{r['passed']} passed, {r['failed']} failed"
-    if r["open"]:
-        tally += f", {r['open']} open (unresolved incidents — standing work, not failures)"
-    print(tally)
-    return 0 if r["ok"] else 1
-
-
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="archive",
@@ -1043,23 +1015,6 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _add_home_arg(p_coverage)
     p_coverage.set_defaults(func=cmd_coverage)
-
-    p_incidents = sub.add_parser(
-        "incidents",
-        help="replay a reality-integrity incident catalogue (recorded search failures) as guards",
-    )
-    p_incidents.add_argument(
-        "catalogue",
-        help="JSONL catalogue of incidents (format + philosophy: docs/incidents.md)",
-    )
-    p_incidents.add_argument(
-        "--limit",
-        type=int,
-        default=None,
-        help="recall window: a guard holds if a required thread appears in the top N hits (default 25)",
-    )
-    _add_home_arg(p_incidents)
-    p_incidents.set_defaults(func=cmd_incidents)
 
     p_status = sub.add_parser("status", help="archive health / paths / counts")
     _add_home_arg(p_status)

@@ -20,19 +20,16 @@
   secondary-by-design best-effort channels with a deliberately calm staleness
   warning. Repeated outside reviews kept rediscovering both as "glaring gaps."
 
-- **Reality-integrity incidents are a product surface.** New `_evals/incidents`
-  harness + `archive incidents <catalogue.jsonl>` verb: a catalogue of recorded
-  search failures (tiers `recall` / `capability` / `record` / `unresolved`,
-  format in `docs/incidents.md`) replays as permanent guards against the live
-  archive — read-only, exit non-zero on breach, human-stakes annotations echoed
-  when a guard fails. The catalogue is user data (real queries and thread ids),
-  deliberately not shipped; the harness, pass conditions, and runner are. The
-  public suite gains mechanism goldens (`tests/test_reality_mechanisms.py`)
-  pinning the failure shapes behind real incidents on synthetic corpora: a rare
-  bigram must survive a high-frequency single-token flood, tool-call events must
-  be searchable at all, and a thread-scoped phrase must survive reindex. This
-  imports the value of the private anti-gaslighting suite without importing
-  anyone's corpus — the private cases become data run through this harness.
+- **Reality-integrity failures are guarded by mechanism goldens, not a
+  user-facing harness.** The suite gains `tests/test_reality_mechanisms.py`,
+  pinning the failure shapes behind real search failures on synthetic corpora:
+  a rare bigram must survive a high-frequency single-token flood, tool-call
+  events must be searchable at all, and a thread-scoped phrase must survive
+  reindex. An earlier same-cycle cut also shipped a user-runnable incident
+  harness (`archive incidents <catalogue.jsonl>` + `_evals/incidents` +
+  `docs/incidents.md`); that was the wrong build — users don't run tests on
+  products they use, they assume the product does — and it was removed before
+  release. The regression class the harness targeted lives in the goldens.
 
 - **The offsite-backup machinery leaves the repo.** `host/run-nightly.sh` (the
   SMB remount wrapper), the `com.thread-archive.backup` plist template, and the

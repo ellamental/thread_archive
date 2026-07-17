@@ -132,8 +132,6 @@ archive coverage          # capture-coverage check: source stores reconciled aga
 archive redact <thread>   # crypto-shred events (--events for a subset): content out of truth, index,
                           #   search, quotes; the original encrypted under a revocable per-redaction key
 archive unredact <key_id> # restore a redaction from its encrypted bundle (key still in the keyring)
-archive incidents <file>  # replay a reality-integrity incident catalogue (recorded search
-                          #   failures) as guards — see docs/incidents.md
 archive status            # archive health / counts / last verify + backup + drill + coverage outcomes
 archive daemon <action>   # macOS: install/uninstall/restart/status a LaunchAgent — the always-on
                           #   watcher (default), --mcp the shared server, or --backup the nightly
@@ -249,14 +247,11 @@ wins; ids that were never imported are skipped, not fatal.
   opt-out). Reversible while the key is held (`archive unredact`); escrow the key
   off the machine (`--show-key` + `--forget`) or destroy it for crypto-erasure. The
   original provider store keeps its own copy — redaction covers the archive.
-- **Guards its operator's reality** — `archive incidents` replays a catalogue of
-  recorded search failures as permanent regression guards
-  ([docs/incidents.md](https://github.com/ellamental/thread_archive/blob/main/docs/incidents.md)):
-  when search once answered "not found" against a conversation that was right
-  there, that query must surface it forever after. The catalogue is user data
-  (real queries, real thread ids — as personal as the archive); the product
-  ships the harness, and the public suite pins the underlying failure
-  *mechanisms* on synthetic corpora.
+- **Guards its operator's reality** — when search once answered "not found"
+  against a conversation that was right there, that failure's *mechanism* is
+  pinned as a permanent regression test on a synthetic corpus: a false "not
+  found" against a high-confidence memory is the one failure class the suite
+  guards hardest.
 - **Curatable** — an event-sourced topic graph with Leiden communities (see below),
   driven on demand by the `/librarian` skill, which also stores each conversation's
   search-first summary: a few dense sentences indexed into the default search scope
