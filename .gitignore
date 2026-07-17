@@ -42,9 +42,11 @@ tests/install/fixtures-real/
 # coverage data (pytest --cov; the CI pytest row reports coverage per run,
 # and writes coverage.json for the coverage-gate row). Unanchored — a pytest
 # run from any subdirectory drops its .coverage there, not just at the root.
+# coverage-*.json catches sharded/per-run coverage dumps tools leave at the root.
 .coverage
 .coverage.*
 coverage.json
+coverage-*.json
 
 # os
 .DS_Store
