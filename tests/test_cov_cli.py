@@ -382,6 +382,84 @@ def test_daemon_watcher_uninstall_restart_status(monkeypatch, capsys) -> None:
     assert "watcher: loaded" in capsys.readouterr().out
 
 
+# ── daemon: librarian / gardener drain agents ────────────────────────────────
+
+
+def test_daemon_librarian_lifecycle(monkeypatch, capsys) -> None:
+    seen = {}
+    monkeypatch.setattr(_launchd, "resolved_librarian_interval", lambda home: 1800)
+    monkeypatch.setattr(
+        _launchd, "install_librarian",
+        lambda home, *, interval: seen.update(home=home, interval=interval)
+        or "/plist/librarian.plist",
+    )
+    rc = main(["daemon", "install", "--librarian", "--home", "/h"])
+    assert rc == 0
+    assert seen == {"home": "/h", "interval": 1800}
+    out = capsys.readouterr().out
+    assert f"installed {_launchd.LIBRARIAN_LABEL}" in out
+    assert "every 30 min" in out
+
+    monkeypatch.setattr(_launchd, "uninstall_librarian", lambda: None)
+    assert main(["daemon", "uninstall", "--librarian"]) == 0
+    assert f"uninstalled {_launchd.LIBRARIAN_LABEL}" in capsys.readouterr().out
+
+    # A scheduled one-shot has nothing resident to kick — restart is guidance.
+    assert main(["daemon", "restart", "--librarian"]) == 0
+    out = capsys.readouterr().out
+    assert "nothing resident to restart" in out
+    assert "archive curate librarian" in out
+
+    monkeypatch.setattr(_launchd, "librarian_status", lambda: "librarian: scheduled")
+    assert main(["daemon", "status", "--librarian"]) == 0
+    assert "librarian: scheduled" in capsys.readouterr().out
+
+
+def test_daemon_gardener_lifecycle(monkeypatch, capsys) -> None:
+    seen = {}
+    monkeypatch.setattr(
+        _launchd, "install_gardener",
+        lambda home, *, hour, minute: seen.update(home=home, hour=hour, minute=minute)
+        or "/plist/gardener.plist",
+    )
+    # An explicit --at wins over the resolved schedule.
+    rc = main(["daemon", "install", "--gardener", "--at", "06:30", "--home", "/h"])
+    assert rc == 0
+    assert seen == {"home": "/h", "hour": 6, "minute": 30}
+    assert "daily at 06:30" in capsys.readouterr().out
+
+    # Without --at the cadence resolves from config.json / the defaults.
+    monkeypatch.setattr(_launchd, "resolved_gardener_schedule", lambda home: (5, 0))
+    assert main(["daemon", "install", "--gardener"]) == 0
+    assert "daily at 05:00" in capsys.readouterr().out
+
+    monkeypatch.setattr(_launchd, "uninstall_gardener", lambda: None)
+    assert main(["daemon", "uninstall", "--gardener"]) == 0
+    assert f"uninstalled {_launchd.GARDENER_LABEL}" in capsys.readouterr().out
+
+    monkeypatch.setattr(_launchd, "gardener_status", lambda: "gardener: scheduled")
+    assert main(["daemon", "status", "--gardener"]) == 0
+    assert "gardener: scheduled" in capsys.readouterr().out
+
+
+# ── curate: the by-hand drain ─────────────────────────────────────────────────
+
+
+def test_curate_dispatches_to_the_drain(monkeypatch) -> None:
+    from thread_archive import _curation
+
+    seen = {}
+
+    def fake_run(kind, home, *, batch, timeout):
+        seen.update(kind=kind, home=home, batch=batch, timeout=timeout)
+        return 0
+
+    monkeypatch.setattr(_curation, "run", fake_run)
+    rc = main(["curate", "gardener", "--home", "/h", "--batch", "5", "--timeout", "60"])
+    assert rc == 0
+    assert seen == {"kind": "gardener", "home": "/h", "batch": 5, "timeout": 60}
+
+
 # ── reindex error branch ──────────────────────────────────────────────────────
 
 
@@ -434,6 +512,40 @@ def test_backup_all_warnings_returns_1(monkeypatch, capsys) -> None:
     assert "rebalance twins: 4" in out
     assert "stale destination files kept" in out
     assert "SHRINK GUARD: 1" in out
+
+
+def _backup_clean_base() -> dict:
+    return {
+        "truth_dir": "t", "dest": "d", "files_copied": 1, "bytes_copied": 0,
+        "verify_ok": True, "deletions_skipped": 0, "shrinks_skipped": 0,
+        "mirror_complete": True,
+    }
+
+
+def test_backup_bundle_error_fails_the_run(monkeypatch, capsys) -> None:
+    # A stale .recovery/ restores yesterday's keyring — a failed run, not a footnote.
+    res = {**_backup_clean_base(), "bundle_error": "smb down"}
+    monkeypatch.setattr(api, "backup", lambda dest, **kw: res)
+    rc = main(["backup", "/dest"])
+    assert rc == 1
+    assert "recovery bundle sync failed (smb down)" in capsys.readouterr().out
+
+
+def test_backup_bundle_keyring_included(monkeypatch, capsys) -> None:
+    res = {**_backup_clean_base(), "bundle_files": 3, "bundle_copied": 2,
+           "bundle_deleted": 1, "keyring_in_bundle": True}
+    monkeypatch.setattr(api, "backup", lambda dest, **kw: res)
+    assert main(["backup", "/dest"]) == 0
+    out = capsys.readouterr().out
+    assert "recovery bundle: 3 file(s) (2 copied, 1 removed; keyring included)" in out
+
+
+def test_backup_bundle_keyring_opted_out(monkeypatch, capsys) -> None:
+    res = {**_backup_clean_base(), "bundle_files": 2, "bundle_copied": 0,
+           "bundle_deleted": 0, "keyring_in_bundle": False, "keyring_opted_out": True}
+    monkeypatch.setattr(api, "backup", lambda dest, **kw: res)
+    assert main(["backup", "/dest"]) == 0
+    assert "keyring EXCLUDED — config opt-out" in capsys.readouterr().out
 
 
 # ── verify: parse errors, fts, deep samples, hashes, backup error ─────────────
@@ -593,6 +705,25 @@ def test_restore_drill_failure_with_smoke(monkeypatch, capsys) -> None:
     assert "RESTORE DRILL FAILED (1.0s)" in out
 
 
+def test_restore_drill_bundle_absent(monkeypatch, capsys) -> None:
+    res = {"ok": True, "seconds": 1.0, "bundle": {"present": False}}
+    monkeypatch.setattr(api, "restore_drill", lambda dest, **kw: res)
+    assert main(["restore-drill", "/mirror"]) == 0
+    assert "bundle: ABSENT" in capsys.readouterr().out
+
+
+def test_restore_drill_bundle_present_unreadable_keyring(monkeypatch, capsys) -> None:
+    res = {
+        "ok": True, "seconds": 1.0,
+        "bundle": {"present": True, "config": True, "keyring_keys": None,
+                   "retained_exports": 2, "keyring_unreadable": True},
+    }
+    monkeypatch.setattr(api, "restore_drill", lambda dest, **kw: res)
+    assert main(["restore-drill", "/mirror"]) == 0
+    out = capsys.readouterr().out
+    assert "bundle: config=yes keyring keys=none retained exports=2 (keyring UNREADABLE)" in out
+
+
 # ── restore: skipped-smoke, damaged home, and failure branches ────────────────
 # The real restore path (mirror + rebuilt + working smoke + OK line) is driven
 # end-to-end in test_restore.py; these stub api.restore to reach the formatting
@@ -630,6 +761,18 @@ def test_restore_failed_no_mirror_no_smoke_error(monkeypatch, capsys) -> None:
     assert "mirror:" not in out and "rebuilt:" not in out
     assert "FAILED: rebuild aborted" in out
     assert "RESTORE FAILED (1.0s)" in out
+
+
+def test_restore_bundle_installed_with_error(monkeypatch, capsys) -> None:
+    res = {
+        "ok": True, "seconds": 1.0,
+        "bundle": {"config": True, "keyring": True, "retained_exports": 2,
+                   "error": "keyring locked"},
+    }
+    monkeypatch.setattr(api, "restore", lambda dest, to, **kw: res)
+    assert main(["restore", "/mirror", "--to", "/h/x"]) == 0
+    out = capsys.readouterr().out
+    assert "bundle: installed config, keyring, 2 retained export(s) (ERROR: keyring locked)" in out
 
 
 # ── nightly: full report, drill error ─────────────────────────────────────────

@@ -97,3 +97,28 @@ def test_librarian_rename_and_archive(archive_home) -> None:
 
     json.loads(L.topic_archive(topic))
     assert json.loads(L.topic_search("New Title")) == []  # archived → out of the live graph
+
+
+def test_gardener_diagnostics_tool_layer(archive_home) -> None:
+    """The gardener's read surface over the tool layer: JSON dashboards, the
+    prioritized issue queue, and garden_queue's Error-string contract on an
+    unknown kind."""
+    topic = json.loads(L.topic_create("Garden Solo"))["topic_id"]
+
+    status = json.loads(L.garden_status())
+    assert status["topics"] == 1
+    assert {"singletons", "uncited", "unparented", "dupe_pairs", "graph"} <= set(status)
+
+    queue = json.loads(L.garden_queue("singleton"))
+    assert [row["topic_id"] for row in queue] == [topic]
+
+    assert L.garden_queue("bogus-kind").startswith("Error:")
+
+    assert isinstance(json.loads(L.communities()), list)
+
+
+def test_librarian_main_runs_the_server(monkeypatch) -> None:
+    called = {}
+    monkeypatch.setattr(L.mcp, "run", lambda: called.setdefault("run", True))
+    L.main()
+    assert called == {"run": True}
