@@ -25,6 +25,7 @@ from pathlib import Path
 # package (top-level dir/module under src/thread_archive/) -> minimum percent
 FLOORS = {
     "_api": 90.0,  # thin dispatch layer over the private machinery
+    "_evals": 95.0,  # the incident harness — a guard that isn't itself guarded guards nothing
     "_importers": 92.0,
     "_knowledge": 90.0,
     "_mcp": 92.0,

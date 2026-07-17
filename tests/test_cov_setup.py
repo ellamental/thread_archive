@@ -314,9 +314,9 @@ def test_backup_agent_dest_reads_nightly_arg(tmp_path, monkeypatch) -> None:
 
 
 def test_backup_agent_dest_none_without_nightly(tmp_path, monkeypatch) -> None:
-    # The host/ run-nightly.sh wrapper shape: no bare `nightly` arg → unknown dest.
+    # An external wrapper-script shape: no bare `nightly` arg → unknown dest.
     _force_darwin(monkeypatch, _launchd)
-    _write_backup_plist(tmp_path, monkeypatch, ["/host/run-nightly.sh"])
+    _write_backup_plist(tmp_path, monkeypatch, ["/somewhere/run-nightly.sh"])
     assert _launchd.backup_agent_dest() is None
 
 

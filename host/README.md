@@ -9,8 +9,7 @@ The LaunchAgent itself is installed by the package — `archive daemon install`
 (`src/thread_archive/_launchd.py` generates and loads the plist; no template
 here). This directory is the **operator layer on top**: the Makefile wraps the
 daemon verb and additionally writes the thread-family manifest
-(`write-manifest.py`, which needs the repo checkout and never ships), plus the
-nightly backup agent's plist.
+(`write-manifest.py`, which needs the repo checkout and never ships).
 
 Unlike a service-based watcher that POSTs each changed session path to a backend
 ingest route, this one runs entirely local: it calls the importer directly

@@ -21,8 +21,8 @@ Five agents live here:
   integrity verify → restore drill), on a daily ``StartCalendarInterval``. Its
   ``dest`` must be a path launchd can reach unattended — a local second disk or
   an already-mounted volume; network shares that drop their mount between runs
-  (and the TCC grant a background job needs to touch them) are the operator
-  ``host/`` layer's concern (see ``host/run-nightly.sh``), not this builder's.
+  (and the TCC grant a background job needs to touch them) are an outer
+  operator layer's concern (a wrapper script), not this builder's.
 * the **librarian** (``com.thread-archive.librarian``) and the **gardener**
   (``com.thread-archive.gardener``) — the scheduled curation drains
   (``archive curate librarian|gardener``, see :mod:`._curation`): the
@@ -187,8 +187,8 @@ def backup_plist(
     Runs ``archive nightly <dest>`` on a daily ``StartCalendarInterval`` — the
     whole durability pipeline (mirror the JSONL truth to ``dest`` → integrity
     verify → restore drill) as one scheduled command. ``dest`` must be a path
-    launchd can reach unattended at the fire time; the network-share remount is
-    the ``host/`` layer's concern, not this builder's (see the module docstring).
+    launchd can reach unattended at the fire time; a network-share remount is an
+    outer wrapper's concern, not this builder's (see the module docstring).
     """
     args = [str(entry), "nightly", dest]
     if notify_url:
@@ -532,9 +532,9 @@ def gardener_status() -> str:
 
 def backup_agent_dest() -> Optional[str]:
     """The ``dest`` the installed backup agent runs against, or ``None`` when no
-    plist is present or it isn't the package-generated shape (e.g. the ``host/``
-    ``run-nightly.sh`` wrapper form, whose dest lives inside the wrapper's args).
-    Reads the plist on disk, so it reflects the agent even when it isn't loaded."""
+    plist is present or it isn't the package-generated shape (e.g. an external
+    wrapper-script form, whose dest lives inside the wrapper's args). Reads the
+    plist on disk, so it reflects the agent even when it isn't loaded."""
     if sys.platform != "darwin":
         return None
     try:

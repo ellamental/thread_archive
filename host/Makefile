@@ -16,39 +16,19 @@
 # into the repo venv. If $(ENTRY) is missing, install the package first.
 
 LABEL     := com.thread-archive.watcher
-UID       := $(shell id -u)
 REPO      := $(abspath $(CURDIR)/..)
 ENTRY     := $(REPO)/.venv/bin/archive
 # Logs live next to the data (the archive home), not in the repo.
 LOG_DIR   := $(HOME)/.thread/archive/logs
 
-# Scheduled nightly protection pipeline (`archive nightly`: backup → verify →
-# restore drill), agent `com.thread-archive.backup`. DEST is the backup
-# destination — pass it on the command line and point it at a DIFFERENT
-# disk/machine.
-#
-# This target wraps the pipeline in run-nightly.sh (network-share remount) and
-# points --notify-url at lab. For a plain LOCAL DEST with no remount, the package
-# installs the same agent directly — `archive daemon install --backup --dest
-# <path>`, and the `thread_archive` setup wizard offers it — so reach for this
-# target specifically when DEST is a network share (MOUNT_URL) or you want lab's
-# notify + the family manifest.
-#
-# For a network DEST, pass MOUNT_URL (the smb:// URL of the volume containing
-# DEST) so run-nightly.sh can remount it before each run — needs the share's
-# password saved in the login keychain (Finder ⌘K, "Remember this password in
-# my keychain") AND, because a background launchd job hits macOS TCC on network
-# volumes, a Files & Folders → Network Volumes grant for the job's interpreter
-# (System Settings → Privacy & Security); without it the backup stage gets EPERM
-# and `archive nightly` names the TCC cause in its notify:
-#   make install-backup-agent DEST=/Volumes/Backup/thread_archive
-#   make install-backup-agent DEST="/Volumes/NAS/backups/thread_archive" MOUNT_URL="smb://user@host/NAS"
-MOUNT_URL ?=
-BACKUP_PLIST_SRC := com.thread-archive.backup.plist
-BACKUP_LABEL     := com.thread-archive.backup
-BACKUP_PLIST     := $(HOME)/Library/LaunchAgents/$(BACKUP_LABEL).plist
+# The nightly durability pipeline (`archive nightly`: backup → verify →
+# restore drill) is scheduled by the package itself — `archive daemon install
+# --backup --dest <path>`, and the `thread_archive` setup wizard offers it.
+# DEST must be a path launchd can reach unattended (a local disk); network
+# shares and their remount/TCC machinery are an outer operator layer's
+# concern, not this repo's.
 
-.PHONY: all install-agent uninstall-agent restart logs status manifest install-backup-agent uninstall-backup-agent
+.PHONY: all install-agent uninstall-agent restart logs status manifest
 
 all: install-agent
 
@@ -84,21 +64,3 @@ status:
 
 logs:
 	tail -F $(LOG_DIR)/watcher-stdout.log $(LOG_DIR)/watcher-stderr.log
-
-# Backup+verify scheduled job. Requires DEST=<path> (a different disk/machine).
-install-backup-agent:
-	@test -n "$(DEST)" || { echo "pass a destination: make install-backup-agent DEST=/Volumes/Backup/thread_archive"; exit 1; }
-	@test -x $(ENTRY) || { echo "missing $(ENTRY) — run 'pip install -e .' into the repo venv first"; exit 1; }
-	@mkdir -p $(LOG_DIR) $(dir $(BACKUP_PLIST))
-	sed -e 's#__REPO__#$(REPO)#g' -e 's#__LOGDIR__#$(LOG_DIR)#g' -e 's#__DEST__#$(DEST)#g' \
-	    -e 's#__MOUNT_URL__#$(MOUNT_URL)#g' \
-	    $(BACKUP_PLIST_SRC) > $(BACKUP_PLIST)
-	-launchctl bootout gui/$(UID)/$(BACKUP_LABEL) 2>/dev/null
-	@sleep 3
-	launchctl bootstrap gui/$(UID) $(BACKUP_PLIST)
-	@echo "installed $(BACKUP_LABEL) — nightly at 04:00: backup to $(DEST), verify, restore drill."
-
-uninstall-backup-agent:
-	-launchctl bootout gui/$(UID)/$(BACKUP_LABEL)
-	rm -f $(BACKUP_PLIST)
-	@echo "uninstalled $(BACKUP_LABEL)"

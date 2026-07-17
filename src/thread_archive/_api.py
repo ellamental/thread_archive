@@ -188,6 +188,23 @@ def read_thread_structured(
     return _read(thread_id, include_thinking=include_thinking, include_tools=include_tools)
 
 
+def run_incidents(catalogue, *, home: Optional[str] = None, limit: Optional[int] = None) -> dict:
+    """Run a reality-integrity incident catalogue against the archive, read-only.
+
+    ``catalogue`` is a JSONL file of recorded search failures (tiers, format,
+    and philosophy in :mod:`._evals.incidents` / ``docs/incidents.md``). Each
+    incident's guard is replayed through the production search pipeline;
+    returns the run summary (``ok`` / ``passed`` / ``failed`` / ``open`` +
+    per-incident results). Raises :class:`._evals.incidents.CatalogueError`
+    on a catalogue that can't be trusted to guard anything."""
+    open_archive(home)
+    from ._evals import incidents as _incidents
+
+    cases = _incidents.load_catalogue(catalogue)
+    kwargs = {"limit": limit} if limit is not None else {}
+    return _incidents.run_catalogue(cases, _incidents.archive_search(home), **kwargs)
+
+
 def import_path(path, *, home: Optional[str] = None, provider: str = "claude-code", source_id: Optional[str] = None):
     """Import a transcript (line-stream providers) or scan a DB (cursor/opencode).
 

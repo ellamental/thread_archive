@@ -51,6 +51,7 @@ CLI_VERBS = {
     "unredact",
     "daemon",
     "curate",
+    "incidents",
 }
 
 

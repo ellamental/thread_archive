@@ -2,6 +2,31 @@
 
 ## Unreleased
 
+- **Reality-integrity incidents are a product surface.** New `_evals/incidents`
+  harness + `archive incidents <catalogue.jsonl>` verb: a catalogue of recorded
+  search failures (tiers `recall` / `capability` / `record` / `unresolved`,
+  format in `docs/incidents.md`) replays as permanent guards against the live
+  archive — read-only, exit non-zero on breach, human-stakes annotations echoed
+  when a guard fails. The catalogue is user data (real queries and thread ids),
+  deliberately not shipped; the harness, pass conditions, and runner are. The
+  public suite gains mechanism goldens (`tests/test_reality_mechanisms.py`)
+  pinning the failure shapes behind real incidents on synthetic corpora: a rare
+  bigram must survive a high-frequency single-token flood, tool-call events must
+  be searchable at all, and a thread-scoped phrase must survive reindex. This
+  imports the value of the private anti-gaslighting suite without importing
+  anyone's corpus — the private cases become data run through this harness.
+
+- **The offsite-backup machinery leaves the repo.** `host/run-nightly.sh` (the
+  SMB remount wrapper), the `com.thread-archive.backup` plist template, and the
+  Makefile's `install-backup-agent`/`MOUNT_URL` targets are gone — network
+  shares, keychain-seeded remounts, and the TCC grants a background job needs
+  to touch them are host-operator concerns, not this product's. The machinery
+  is parked in the thread monorepo (`lab/scripts/archive_offsite/`, unscheduled).
+  The nightly pipeline itself is unchanged and stays scheduled via the
+  package's own `archive daemon install --backup --dest <local path>`; on the
+  home box it now runs against lab's local mirror (the graduated-slot rotation's
+  source) instead of a network share that had been failing on TCC for days.
+
 - **Viewer: the recent list orders by last activity, not row writes.**
   `/api/threads` sorted on `threads.updated_at`, which is really the truth
   checkpoint's dirty-flag — every librarian summary bumped its thread to the
