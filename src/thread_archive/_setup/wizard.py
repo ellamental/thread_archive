@@ -350,14 +350,14 @@ def _offer_watcher(
 
 
 def _offer_backup(args: argparse.Namespace, interactive: bool) -> dict:
-    """Offer to schedule the nightly durability pipeline (backup → verify →
+    """Offer to schedule the nightly backup pipeline (backup → verify →
     restore drill). Returns the recorded outcome: ``{"status": ...}`` plus a
     ``dest`` when one is known."""
     if args.skip_backup:
         _say("Nightly backup skipped (--skip-backup).")
         return {"status": "skipped"}
     if sys.platform != "darwin":
-        _say("Keep it safe: scheduled nightly backup ships for macOS only right now.")
+        _say("Backups: scheduled nightly backup ships for macOS only right now.")
         _say("  Back up by hand anytime with `archive backup <dest>` (a copy of truth/ IS")
         _say("  the backup), or point your own scheduler at `archive nightly <dest>`.")
         return {"status": "unavailable"}
@@ -369,15 +369,15 @@ def _offer_backup(args: argparse.Namespace, interactive: bool) -> dict:
     # NAS backup with its own remount + notify wiring) on a re-run.
     if backup_running(args.home):
         dest = _launchd.backup_agent_dest()
-        _say("Keep it safe: a nightly backup job is already installed"
+        _say("Backups: a nightly backup job is already installed"
              + (f" → {dest}." if dest else "."))
         return {"status": "already-installed", **({"dest": dest} if dest else {})}
 
-    _say("Keep it safe? A nightly job (launchd) mirrors the archive to a second disk,")
-    _say("verifies it, and proves it restores — the durability kit, on a schedule.")
+    _say("Schedule backups? A nightly job (launchd) mirrors the archive to a directory,")
+    _say("verifies it, and runs a restore drill.")
     dest = args.backup_dest or _ask_path(
-        "  Where should nightly backups go? A path on a DIFFERENT disk\n"
-        "  (an external drive, a mounted NAS folder), or [Enter] to skip  > ",
+        "  Where should nightly backups go? A directory of your choice,\n"
+        "  or [Enter] to skip  > ",
         interactive=interactive,
     )
     if not dest:
@@ -395,8 +395,7 @@ def _offer_backup(args: argparse.Namespace, interactive: bool) -> dict:
              "`archive daemon install --backup --dest <path>` to retry.")
         return {"status": "failed"}
     _say(f"  Scheduled — nightly at 04:00 → {dest_path}: backup, verify, restore drill.")
-    _say("  `thread_archive` shows the last run's result; point it at a DIFFERENT disk")
-    _say("  than the archive so one failure can't take both copies.")
+    _say("  `thread_archive` shows the last run's result.")
     return {"status": "launchd", "dest": str(dest_path)}
 
 
@@ -595,7 +594,7 @@ def print_status(args: argparse.Namespace) -> int:
     if v:
         _say(f"  verify:   {'ok' if v['ok'] else 'FAILED'} {_age(v['at'])}")
     # The scheduled pipeline's verdict outranks the ad-hoc backup line above: a
-    # green same-disk mirror must not mask a red offsite nightly.
+    # green ad-hoc backup must not mask a red scheduled nightly.
     n = st.get("last_nightly")
     if n and not n.get("ok"):
         stages = ", ".join(n.get("failed_stages") or []) or "see logs/backup-stdout.log"

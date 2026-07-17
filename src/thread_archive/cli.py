@@ -4,7 +4,7 @@
 is the retrieval MCP tools plus the truth format (see the package docstring);
 this CLI is the process seam launchd, cron, and operators use to run the
 private machinery — ingest (``import``, ``import-export``, ``watch``,
-``embed``), the durability kit (``backup``, ``verify``, ``restore-drill``,
+``embed``), the backup kit (``backup``, ``verify``, ``restore-drill``,
 ``restore``, ``reindex``, ``repair``, ``status``, ``nightly``, ``coverage``), the
 curation drains (``curate``), and the LaunchAgent lifecycle (``daemon``). Verbs may change without
 external notice, but they are *wired into* the LaunchAgent plists, lab's cron
@@ -244,14 +244,13 @@ def cmd_daemon(args: argparse.Namespace) -> int:
         return 0
 
     if args.backup:
-        # The scheduled durability pipeline (backup → verify → restore drill) as
+        # The scheduled backup pipeline (backup → verify → restore drill) as
         # a launchd agent — the productized form of what host/ wires by hand.
-        # install needs --dest (a different disk / an already-mounted volume).
+        # install needs --dest (a directory launchd can reach unattended).
         if args.action == "install":
             if not args.dest:
                 print(
-                    "archive daemon install --backup needs --dest <path> "
-                    "(a different disk/machine)",
+                    "archive daemon install --backup needs --dest <path>",
                     file=sys.stderr,
                 )
                 return 2
@@ -370,12 +369,6 @@ def cmd_backup(args: argparse.Namespace) -> int:
     if res.get("generation_error"):
         print(f"WARNING: generation snapshot failed ({res['generation_error']}) — "
               "this run had no pre-overwrite recovery margin")
-    if res.get("same_device"):
-        print(
-            "WARNING: the backup destination is on the SAME filesystem as the "
-            "archive — one disk failure takes both copies (and every generation). "
-            "Point it at a different disk/machine, or add an off-machine leg."
-        )
     if not res["verify_ok"]:
         print(
             "WARNING: pre-backup verify FAILED — the source truth has integrity "
@@ -663,8 +656,7 @@ def cmd_nightly(args: argparse.Namespace) -> int:
         print(f"backup: ERROR {b['error']}")
     else:
         mb = b["bytes_copied"] / (1024 * 1024)
-        print(f"backup: {b['files_copied']} files ({mb:.1f} MB copied)"
-              + (" [SAME DEVICE as archive]" if b.get("same_device") else ""))
+        print(f"backup: {b['files_copied']} files ({mb:.1f} MB copied)")
     esc = res["escalations"]
     v = res["verify"]
     flags = "+".join(k for k in ("deep", "hashes") if esc[k]) or "shallow"
@@ -826,26 +818,6 @@ def cmd_status(args: argparse.Namespace) -> int:
         f"backup:  {'ok' if b['ok'] else 'FAILED'} → {b['dest']} {b['at']} ({_age(b['at'])})"
         if b else "backup:  never recorded"
     )
-    if b and b.get("same_device"):
-        # A same-filesystem mirror is a legitimate opt-in posture (and the disk
-        # may carry protection the archive didn't set up — Time Machine, etc.),
-        # so this is a note, not an alarm. Name external coverage when we can
-        # detect it; otherwise state plainly what the mirror does and doesn't do.
-        from pathlib import Path
-
-        from ._ops.backup import external_disk_coverage
-
-        covered_by = external_disk_coverage(Path(st["truth_dir"]))
-        if covered_by:
-            print(
-                "         note: backup shares the archive's filesystem; "
-                f"disk loss is covered externally by {covered_by}"
-            )
-        else:
-            print(
-                "         note: backup shares the archive's filesystem — it protects "
-                "against bad writes, not disk loss"
-            )
     print(
         f"drill:   {'ok' if d['ok'] else 'FAILED'} coverage={d.get('coverage')} "
         f"{d['at']} ({_age(d['at'])})"
@@ -1022,7 +994,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_backup = sub.add_parser("backup", help="mirror the JSONL truth dir to a backup destination")
     _add_home_arg(p_backup)
-    p_backup.add_argument("dest", help="backup destination dir (ideally a different disk/machine)")
+    p_backup.add_argument("dest", help="backup destination dir")
     p_backup.add_argument(
         "--allow-shrink", action="store_true",
         help="let a smaller source file overwrite its larger backup copy (only after "
@@ -1098,7 +1070,7 @@ def build_parser() -> argparse.ArgumentParser:
              "escalation) → restore drill, with per-stage health records",
     )
     _add_home_arg(p_nightly)
-    p_nightly.add_argument("dest", help="backup destination dir (a different disk/machine)")
+    p_nightly.add_argument("dest", help="backup destination dir")
     p_nightly.add_argument(
         "--notify-url", default=None, metavar="URL",
         help="POST {title, message} here when any stage fails "
@@ -1195,7 +1167,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="manage the archive LaunchAgents (macOS): the watcher (the upgrade "
              "from lazy MCP-cohosted ingest to always-fresh), or with --mcp the "
              "shared MCP server (one HTTP server for all clients), --backup the "
-             "scheduled nightly durability pipeline, --librarian / --gardener "
+             "scheduled nightly backup pipeline, --librarian / --gardener "
              "the scheduled curation drains",
     )
     _add_home_arg(p_daemon)
@@ -1217,7 +1189,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_daemon.add_argument(
         "--dest", default=None, metavar="PATH",
-        help="--backup install only: backup destination dir (a different disk/machine)",
+        help="--backup install only: backup destination dir",
     )
     p_daemon.add_argument(
         "--librarian", action="store_true",

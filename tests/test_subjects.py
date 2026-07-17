@@ -103,11 +103,24 @@ def test_lens_is_fail_soft(archive_home) -> None:
     assert _subjects.subjects_for_results(hits, session=_BoomSession()) == []  # swallowed, no raise
 
 
+def test_subjects_line_carries_topic_ids() -> None:
+    """Each subject shows its ``[topic <id>]`` — the lens is followable, not just
+    legible: the id opens the curated page via ``thread_read(topic_id)``."""
+    line = _subjects.format_subjects_line([(7, "auth flow", 3), (9, "backups", 2)])
+    assert line == "  subjects: auth flow [topic 7] (3) · backups [topic 9] (2)"
+
+
 def test_format_results_shows_subjects_line(archive_home, monkeypatch) -> None:
     _seed(archive_home)
     hits = search("widget")
-    assert "subjects:" in format_results(hits, "widget")
+    rendered = format_results(hits, "widget")
+    assert "subjects:" in rendered
+    assert "[topic " in rendered
+    # …and the header teaches the follow-up moves for the ids it just showed.
+    assert "open a subject: thread_read(topic_id)" in rendered
 
     # THREAD_ARCHIVE_SUBJECTS=0 is the kill switch — the line is omitted.
     monkeypatch.setenv("THREAD_ARCHIVE_SUBJECTS", "0")
-    assert "subjects:" not in format_results(hits, "widget")
+    off = format_results(hits, "widget")
+    assert "subjects:" not in off
+    assert "open a subject:" not in off

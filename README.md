@@ -11,7 +11,7 @@
 **Built like a database, not a folder of exports.**
 - Plain JSONL files are the source of truth — human-readable, greppable, yours. The search index is disposable and rebuilds from them at any time.
 - Crash-safe writes with intent journaling, fsync discipline, and automatic recovery. Your history survives power loss, killed processes, and corrupted indexes.
-- Backups, integrity verification, and restore drills built in — it doesn't just back up, it *proves the backup restores*. The built-in backup recovers from bad writes (corruption, an errant delete); durable off-machine retention is deliberately your machine-level backup's job (Time Machine, cloud sync, …), not a second system this product owns.
+- Built-in backup, integrity verification, and restore drills: recovers from corruption or an errant delete, and the nightly pipeline checks that the backup actually restores. The archive is ordinary files on disk — whatever backs up the rest of your data covers it the same way.
 
 **Searchable by you — and by your AI.**
 - Full-text and semantic search with reranking, filterable by time, source, tool, and content type.
@@ -153,7 +153,7 @@ src/thread_archive/
   _config.py        # truth dir + index path resolution, config.json (source opt-outs)
   _store/           # SQLite store + schema
   _truth/           # JSONL truth log + reindex
-  _ops/             # durability kit: backup/mirror + restore drill, verify tiers, nightly, health records
+  _ops/             # backup kit: backup/mirror + restore drill, verify tiers, nightly, health records
   _importers/       # incremental import orchestration
   _retrieval/       # FTS5 + vector search, read reconstruction
   _knowledge/       # topic graph: event-sourced curation + Leiden analytics
@@ -242,7 +242,7 @@ wins; ids that were never imported are skipped, not fatal.
   derived titles) into an encrypted bundle on the append-only redaction log, keyed
   by `<home>/keyring.json` (outside the truth dir — the truth mirror and its dated
   generations hold ciphertext only; the keyring rides the backup's head-only
-  `.recovery` bundle so disk loss doesn't erase active redactions, with
+  `.recovery` bundle so a restore keeps active redactions reversible, with
   `{"backup": {"include_keyring": false}}` in config.json as the ciphertext-only
   opt-out). Reversible while the key is held (`archive unredact`); escrow the key
   off the machine (`--show-key` + `--forget`) or destroy it for crypto-erasure. The
@@ -293,6 +293,12 @@ There are exactly two kinds of thread: imported **conversations** and curated **
 Reads/analytics live in the knowledge layer (`_knowledge/`) — PageRank,
 communities (**Leiden**, the algorithm Neo4j GDS ran, with a networkx-Louvain fail-soft
 fallback), bridges, peers.
+
+The graph is consumable from the public read surface, not just the librarian's: search
+headers name the subjects a result set clusters under with their `[topic <id>]`s,
+`thread_read` on a topic id renders the topic's curated page (description, links, cited
+quotes — each quote anchored to open via `around_event`), and `thread_search(topic_id=…)`
+scopes a search to the topic's member conversations.
 
 Curation is **event-sourced**. Every graph write (`create_topic`, `link_threads`,
 `add_topic_evidence`, `merge_topics`, …) appends a `KgEvent` to an

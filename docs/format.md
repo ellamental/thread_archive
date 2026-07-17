@@ -12,7 +12,7 @@ The format is one half of the package's public API — the other half is the
 retrieval MCP tools (`thread_search` / `thread_read`); everything else,
 the `archive` CLI included, is private support machinery. This document is
 the durability promise: data written by one release must stay readable by
-the next. The CLI's durability verbs (`backup`, `verify`, `restore-drill`,
+the next. The CLI's backup verbs (`backup`, `verify`, `restore-drill`,
 `reindex`, `repair`) are the private enforcement machinery behind that
 promise.
 

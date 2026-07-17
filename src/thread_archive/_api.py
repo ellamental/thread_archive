@@ -8,7 +8,7 @@ process, and initializes the SQLite engine + schema — then dispatches into the
 store / importers / search / truth / watch / ops layers. Internal imports are
 lazy so ``import thread_archive`` stays light and pulls in no server backends.
 
-The durability kit (``backup`` / ``restore_drill`` / ``verify`` / ``nightly``)
+The backup kit (``backup`` / ``restore_drill`` / ``verify`` / ``nightly``)
 is implemented in :mod:`._ops` and re-exported here, so this module stays the
 single coordination surface every caller goes through.
 
@@ -28,7 +28,7 @@ from ._config import ENV_HOME, ArchivePaths, resolve_paths
 if TYPE_CHECKING:
     from ._retrieval._types import EventHit
 
-# The durability kit, re-exported (see docstring).
+# The backup kit, re-exported (see docstring).
 from ._ops.backup import backup, list_generations, restore, restore_drill  # noqa: F401
 from ._ops.coverage import check_coverage  # noqa: F401
 from ._ops.health import read_health  # noqa: F401

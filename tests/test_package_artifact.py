@@ -125,7 +125,7 @@ def _run(bin_dir: Path, argv: list[str], home: Path) -> subprocess.CompletedProc
 
 def test_installed_cli_lifecycle_import_reindex_verify(installed, tmp_path) -> None:
     # Retrieval has no CLI verbs (search/read are the MCP tools, exercised
-    # below); the CLI lifecycle is ingest + the durability kit.
+    # below); the CLI lifecycle is ingest + the backup kit.
     home = tmp_path
     session_file = home / "sess.jsonl"
     session_file.write_text(

@@ -140,14 +140,6 @@ def test_nightly_stage_failure_runs_remaining_stages_and_notifies(
     assert beat["ok"] is False and beat["failed_stages"] == res["failed_stages"]
 
 
-def test_backup_flags_same_filesystem_destination(archive_home, tmp_path):
-    _seed(archive_home)
-    # tmp destination shares the tmp filesystem with the archive home.
-    res = ta.backup(str(tmp_path / "mirror"))
-    assert res["same_device"] is True
-    assert _health(archive_home)["backup_last"]["same_device"] is True
-
-
 def test_restore_drill_smoke_reads_and_searches_the_rebuilt_archive(
     archive_home, tmp_path,
 ):
@@ -272,7 +264,7 @@ def test_verdict_never_retires_on_a_red_rerun():
     assert ops_health.pipeline_verdict(health)["failed_stages"] == ["verify"]
 
 
-# The restore-drill grace: an expensive drill over a flaky off-machine mirror is
+# The restore-drill grace: an expensive drill over a flaky backup mirror is
 # forgiven while a recent GREEN drill still stands (see _STAGE_GRACE_DAYS). Unlike
 # recovery, that good drill may PREDATE the failed nightly — a prior success is what
 # makes a single failed drill a transient blip, not an unprotected archive. These use

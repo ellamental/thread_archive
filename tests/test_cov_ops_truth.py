@@ -1,4 +1,4 @@
-"""Edge/error-branch coverage for the durability kit (``_ops``) and the truth log
+"""Edge/error-branch coverage for the backup kit (``_ops``) and the truth log
 (``_truth``): verify, redact, backup, reindex/rebuild, the drain, and repair.
 
 These modules already carry the happy paths well; this file drives the remaining

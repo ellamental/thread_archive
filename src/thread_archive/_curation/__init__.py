@@ -401,6 +401,16 @@ def run(
     config_path.parent.mkdir(parents=True, exist_ok=True)
     config_path.write_text(json.dumps(mcp_config(home), indent=2), encoding="utf-8")
 
+    # The drain runs from a cwd inside the archive home. The claude CLI records
+    # the cwd on the session's lines, and the claude-code importer types sessions
+    # born under the home as hidden 'system' threads (archive machinery, like
+    # subagents) — which keeps a drain's own transcript out of the librarian's
+    # review queue, where future drains would otherwise curate past ones forever.
+    # A dedicated empty directory also keeps the spawn clear of any CLAUDE.md the
+    # operator's home directory might carry.
+    run_cwd = paths.home / "curation"
+    run_cwd.mkdir(parents=True, exist_ok=True)
+
     model, effort = curation_settings(kind, home)
     args = [
         cli,
@@ -427,7 +437,7 @@ def run(
         # orphan that tree every window.
         proc = subprocess.Popen(
             args,
-            cwd=str(Path.home()),
+            cwd=str(run_cwd),
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,

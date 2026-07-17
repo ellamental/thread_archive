@@ -8,6 +8,7 @@ shape, not this machine's archive or Claude login.
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 import pytest
 
@@ -42,6 +43,18 @@ def spawned(archive_home, monkeypatch):
     # Deterministic read-server choice: no probe of this machine's port 8788.
     monkeypatch.setattr(_curation, "shared_mcp_up", lambda port: False)
     return calls
+
+
+def test_drain_runs_from_in_home_curation_cwd(archive_home, spawned) -> None:
+    """The spawn's cwd is ``<home>/curation`` — the marker the claude-code
+    importer types the drain's own session by ('system': archive machinery,
+    never librarian work), and a CLAUDE.md-free directory besides."""
+    rc = _curation.run("librarian", gate=lambda home: 3, claude="/fake/claude")
+    assert rc == 0
+    assert len(spawned) == 1
+    cwd = spawned[0].kwargs["cwd"]
+    assert cwd == str(resolve_paths(None).home / "curation")
+    assert Path(cwd).is_dir()
 
 
 def test_drained_queue_skips_launch_but_heartbeats(archive_home, spawned) -> None:

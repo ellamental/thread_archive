@@ -17,9 +17,9 @@ Five agents live here:
   model stays resident instead of one process per connecting client. Without
   it, ``archive-mcp`` runs per-client over stdio (each client its own model).
 * the **nightly backup** (``com.thread-archive.backup``) — the scheduled
-  durability pipeline (``archive nightly <dest>``: mirror the JSONL truth →
+  backup pipeline (``archive nightly <dest>``: mirror the JSONL truth →
   integrity verify → restore drill), on a daily ``StartCalendarInterval``. Its
-  ``dest`` must be a path launchd can reach unattended — a local second disk or
+  ``dest`` must be a path launchd can reach unattended — a local directory or
   an already-mounted volume; network shares that drop their mount between runs
   (and the TCC grant a background job needs to touch them) are an outer
   operator layer's concern (a wrapper script), not this builder's.
@@ -185,7 +185,7 @@ def backup_plist(
     launchctl).
 
     Runs ``archive nightly <dest>`` on a daily ``StartCalendarInterval`` — the
-    whole durability pipeline (mirror the JSONL truth to ``dest`` → integrity
+    whole backup pipeline (mirror the JSONL truth to ``dest`` → integrity
     verify → restore drill) as one scheduled command. ``dest`` must be a path
     launchd can reach unattended at the fire time; a network-share remount is an
     outer wrapper's concern, not this builder's (see the module docstring).

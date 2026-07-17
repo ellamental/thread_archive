@@ -160,6 +160,11 @@ def thread_search(
     ``content_type='all'`` to search everything, or a specific ``content_type``
     (text/thinking/tool/tool_result/...) to target one.
 
+    The header's ``subjects:`` line names the curated topics the results cluster
+    under, each with its ``[topic <id>]`` — pass the id to ``thread_read`` for the
+    topic's curated page (description, links, cited quotes), or to ``topic_id``
+    here to scope a follow-up search to that subject's conversations.
+
     Query grammar: natural language, "quoted phrases", boolean AND/OR/NOT,
     pipe-OR (a|b), and code identifiers (get_session, a.b.c). Filter by
     ``thread_id``, ``topic_id`` (scope to a curated topic's member conversations —
@@ -283,6 +288,11 @@ def thread_read(
     conversation by — its ``source_id``). The uuid is resolved to the thread
     automatically (newest match wins), so you can pass a session uuid straight
     through without looking the integer id up first.
+
+    A **topic id** (from a search header's ``subjects:`` line, or a topic link)
+    reads as the topic's curated page instead of a transcript: description, links
+    into the topic graph, and the cited quotes — each anchored ``[event:N]`` so it
+    opens in a focused read via ``around_event``.
 
     ``mode`` picks the view: 'user' (default) = only the USER messages — the real
     signal of what a thread was about and what was wanted, far cheaper than the

@@ -121,11 +121,16 @@ def format_results(hits: list[EventHit], query: str, *, output: str | None = Non
     lines = [header]
     if verdict and verdict[1]:
         lines.append(f"  note: {verdict[1]}")
+    subj_line = None
     if _subjects.enabled():
         subj_line = _subjects.format_subjects_line(_subjects.subjects_for_results(hits))
         if subj_line:  # the topic graph as orientation: what subjects these hits cluster under
             lines.append(subj_line)
     lines.append("  open a hit: thread_read(thread_id, around_event=event_id)")
+    if subj_line:
+        lines.append(
+            "  open a subject: thread_read(topic_id) · drill in: thread_search(query, topic_id=…)"
+        )
     lines.append("")
 
     for h in hits:

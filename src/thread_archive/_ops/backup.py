@@ -7,7 +7,7 @@ last good copy (shrink guard, bounded delete-sync, hardlink generations).
 :func:`restore_drill` is the end-to-end rehearsal: rebuild a full index from the
 mirror in a throwaway home and prove it reads and searches.
 
-The destination is a *complete* disaster-recovery set, not just the truth: each
+The destination is a *complete* restore set, not just the truth: each
 run also syncs the home's non-truth recovery material into a reserved
 ``<dest>/.recovery/`` subtree (:func:`_sync_recovery_bundle`) — ``config.json``,
 the redaction keyring (by default; see the function docstring), the retained
@@ -17,16 +17,12 @@ and recovery material into the recovered home; the history snapshots stay at the
 mirror.
 
 Scope — what this backup is *for*: recovering from bad writes (corruption, a
-botched migration, an errant delete), not durable off-machine retention. A
-same-filesystem destination is a normal, supported posture, not a gap.
-Off-site / second-disk durability is deliberately out of scope for
-thread_archive: it is a host-operator concern (whole-disk backup, cloud sync,
-whatever the machine already runs), it varies per install in ways the product
-can't own (network shares, credentials, TCC grants), and the archive should
-not grow a second durability system to compete with the host's. Reviewers:
-do not recommend scheduling an off-site copy from here — point the operator
-at their machine-level backup instead. :func:`external_disk_coverage` reports
-the host's own disk-loss protection when it is detectable.
+botched migration, an errant delete). Durability of the disk itself is not
+this product's concern: the archive is ordinary files, no different from any
+other data on the machine, and it is covered by whatever the user runs for
+the rest of their data. The product takes no position on where the
+destination lives, does not inspect the host's backup arrangements, and
+neither should anyone reviewing or operating it.
 """
 
 from __future__ import annotations
@@ -72,37 +68,6 @@ _BUNDLE_HOME_FILES = (
     "validation-drift.jsonl",
     "verify-failures.jsonl",
 )
-
-
-def external_disk_coverage(path: Path) -> Optional[str]:
-    """Name the external whole-disk backup covering ``path``, or None.
-
-    A same-filesystem mirror protects against bad writes, not disk loss — but
-    the machine may already carry disk-loss protection the archive didn't set
-    up (opt-in offsite is a choice, not a requirement). Where that protection
-    is detectable, name it so status can report the true posture instead of
-    warning about a gap that doesn't exist. Today this detects macOS Time
-    Machine (``tmutil``): a configured destination with ``path`` not excluded.
-    Fail-soft: any probe error reads as "not detected"."""
-    import platform
-    import subprocess
-
-    if platform.system() != "Darwin":
-        return None
-    try:
-        dests = subprocess.run(
-            ["tmutil", "destinationinfo"], capture_output=True, text=True, timeout=10
-        )
-        if dests.returncode != 0 or "No destinations configured" in dests.stdout:
-            return None
-        excluded = subprocess.run(
-            ["tmutil", "isexcluded", str(path)], capture_output=True, text=True, timeout=10
-        )
-        if excluded.returncode == 0 and "[Included]" in excluded.stdout:
-            return "Time Machine"
-    except (OSError, subprocess.SubprocessError):
-        return None
-    return None
 
 
 def _is_append_only_truth(rel: Path) -> bool:
@@ -530,7 +495,7 @@ def _sync_recovery_bundle(
 
 def _bundle_status(dest: Path) -> dict:
     """What the mirror's recovery bundle holds — presence and rough shape, so
-    the restore drill can report whether a real disaster would get the install
+    the restore drill can report whether a restore would get the install
     back, not just the conversations."""
     import json
 
@@ -600,8 +565,7 @@ def backup(
     A ``cp``/``rsync`` of the truth dir *is* the backup (index.db is rebuildable from
     it), so this checkpoints first — flushing the cross-thread overlays + any thread-
     metadata updates so the on-disk truth is a complete restore set — then mirrors
-    ``truth/`` into ``dest`` incrementally. Point ``dest`` at a *different disk /
-    machine*: for pre-retention history the truth log is the only copy.
+    ``truth/`` into ``dest`` incrementally.
 
     The source is verified before it is mirrored (``verify_first``): a truth dir
     that fails the shallow integrity check (parse errors, index ⊃ truth drift) is
@@ -659,16 +623,6 @@ def backup(
     # Tighten a pre-existing destination too: the mirror must never sit more
     # readable than the 0700 live home it copies.
     _chmod_private(dest_path, 0o700)
-    # A destination on the same filesystem as the truth dir protects against a
-    # bad write, not against the disk: one device failure (or a stolen machine)
-    # takes source, mirror, and every hardlink generation together. Report-only
-    # — a same-disk mirror still beats none — but the flag rides the result and
-    # the health record so `archive status` and anything watching health.json
-    # can keep saying so until a real second copy exists.
-    try:
-        same_device = os.stat(dest_path).st_dev == os.stat(paths.truth_dir).st_dev
-    except OSError:
-        same_device = None
     # Delete-sync only when the source looks like a real, checkpointed truth dir —
     # a mirror of an empty/foreign source must never strip a good backup — and only
     # when it verified clean (a sick source mirrors additively; see docstring).
@@ -740,7 +694,6 @@ def backup(
         "mirror_complete": result["mirror_complete"],
         "files_copied": result["files_copied"],
         "keyring_in_bundle": result.get("keyring_in_bundle"),
-        "same_device": same_device,
     })
     stamp_heartbeat()
     return {
@@ -748,7 +701,6 @@ def backup(
         "dest": str(dest_path),
         "vectors_cached": vectors_cached,
         "verify_ok": verify_ok,
-        "same_device": same_device,
         **result,
     }
 
@@ -801,7 +753,7 @@ def restore_drill(
         "dest": str(dest_path),
         "mirror": scan,
         "live_events": int(live_events),
-        # What a real disaster would get back besides the conversations —
+        # What a restore would get back besides the conversations —
         # presence-only (the drill proves the truth restores; the bundle's
         # members are plain copies with their own atomic writers).
         "bundle": _bundle_status(dest_path),
@@ -889,8 +841,8 @@ def restore(
 
     - **Preflight.** The source (the mirror head, or ``<mirror>/.generations/<generation>``
       when a generation is named) must be a truth mirror; its scan must parse
-      clean (``allow_parse_errors=True`` restores a dirty mirror anyway — in a
-      real disaster a flawed copy beats none, but that is an explicit choice).
+      clean (``allow_parse_errors=True`` restores a dirty mirror anyway — a
+      flawed copy beats none, but that is an explicit choice).
       A non-empty target home is refused without ``replace=True``.
     - **Staged rebuild.** The mirror is copied into a staging home *next to* the
       target (same filesystem, so publication is a rename), and a full

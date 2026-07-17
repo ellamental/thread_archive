@@ -97,6 +97,18 @@ def test_rank_content_type_weight_prefers_user() -> None:
     assert ranked[0]["content_type"] == "user"
 
 
+def test_rank_summary_yields_to_verbatim_evidence() -> None:
+    """A stored summary is derived prose: at equal match it ranks below the
+    verbatim record — user text and even tool output — while staying in the
+    results (it's still the only doc carrying synthesis vocabulary)."""
+    now = datetime(2026, 1, 1, 12, 0, 0)
+    summary = _hit(1, "reindex the store", ct="summary", occurred_at=now)
+    user = _hit(2, "reindex the store", ct="user", occurred_at=now)
+    tool_result = _hit(3, "reindex the store", ct="tool_result", occurred_at=now)
+    ranked = rank.rank_search_results([summary, user, tool_result], ["reindex"], 3, now=now)
+    assert [h["content_type"] for h in ranked] == ["user", "tool_result", "summary"]
+
+
 def test_rank_fusion_rescues_semantic_only_hit() -> None:
     now = datetime(2026, 1, 1, 12, 0, 0)
     # neither contains the query term (vocab mismatch) → density 0 for both; the

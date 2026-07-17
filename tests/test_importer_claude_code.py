@@ -229,6 +229,26 @@ def test_subagent_filed_as_hidden_system_thread(archive_home) -> None:
         assert t.source_metadata.get("parent_session_id") == "parent-sess"
 
 
+def test_in_home_session_filed_as_hidden_system_thread(archive_home) -> None:
+    """A session whose recorded cwd sits inside the archive home is archive
+    machinery (the curation drains run from ``<home>/curation``): filed like a
+    subagent — hidden ``thread_type='system'``, 🤖 title, ``archive_operational``
+    stamped — so a drain's own transcript never becomes librarian work."""
+    init_db()
+    f = archive_home / "curate.jsonl"
+    drain_user = dict(USER, cwd=str(archive_home / "curation"))
+    _write_jsonl(f, [drain_user, ASSISTANT])
+
+    result = import_session_incremental(f, "curate-run-1")
+    assert result.is_new_thread is True
+    with get_session() as s:
+        t = s.execute(select(Thread).where(Thread.source == "claude-code")).scalar_one()
+        assert t.thread_type == "system"
+        assert t.title.startswith("🤖")
+        assert t.source_metadata.get("archive_operational") is True
+        assert t.source_metadata.get("is_subagent") is None
+
+
 def test_custom_title_wins_over_ai_title(archive_home) -> None:
     """A user rename (``custom-title``) beats the auto-titler's ``ai-title``."""
     init_db()

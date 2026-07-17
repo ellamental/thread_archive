@@ -135,8 +135,11 @@ def _subjects(hits: list[EventHit], s: Session, limit: int) -> list[tuple[int, s
 
 def format_subjects_line(subjects: list[tuple[int, str, int]]) -> Optional[str]:
     """The one-line ``subjects:`` orientation header, or None when there's nothing
-    to show. ``(N)`` is how many of the result conversations the subject links."""
+    to show. ``(N)`` is how many of the result conversations the subject links.
+    Each subject carries its ``[topic <id>]`` so the lens is followable, not just
+    legible: the id opens the curated topic page via ``thread_read(topic_id)`` and
+    scopes a drill-in via ``thread_search(topic_id=...)``."""
     if not subjects:
         return None
-    parts = [f"{title} ({chats})" for _tid, title, chats in subjects]
+    parts = [f"{title} [topic {tid}] ({chats})" for tid, title, chats in subjects]
     return "  subjects: " + " · ".join(parts)

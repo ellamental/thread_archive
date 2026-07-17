@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+- The topic graph is followable from search for read-only consumers: the `subjects:` header carries each
+  subject's `[topic <id>]`, a hint line teaches the moves, and the docstrings advertise that `thread_read`
+  on a topic id renders its curated page (description, links, cited quotes).
+- Stored summaries yield to verbatim evidence in ranking (content-type weight 1.2 → 0.6): a librarian
+  digest stays findable but no longer crowds the record it summarizes out of the top ranks.
+- Curation drains spawn from `<home>/curation`, and the claude-code importer files any session run from
+  inside the archive home as a hidden `system` thread (`archive_operational`) — a drain's own transcript
+  no longer re-enters the librarian queue for future drains to summarize.
+- Backup drops all disk-durability posturing: the `same_device` flag, the Time Machine probe
+  (`external_disk_coverage`), the same-filesystem warnings, and every "different disk/machine" /
+  off-machine suggestion in docs and wizard copy. Disk durability is the user's concern, like any
+  other data; the backup's scope is recovering from bad writes. "Durability kit" is now the backup kit.
+
 ## 0.0.4 — 2026-07-16
 
 - Self-curation runs on a schedule: `archive curate librarian|gardener` spawns bounded headless drains, installed as

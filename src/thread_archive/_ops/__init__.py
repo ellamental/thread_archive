@@ -1,4 +1,4 @@
-"""The durability kit: backup, verify, the nightly pipeline, health records.
+"""The backup kit: backup, verify, the nightly pipeline, health records.
 
 Private, like every underscore-prefixed package. :mod:`.._api` re-exports the
 public entry points (``backup`` / ``restore_drill`` / ``verify`` / ``nightly``)

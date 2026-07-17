@@ -11,9 +11,8 @@ rewind) is guaranteed by the dedup_key membership check in :func:`import_lines`.
 session, so "the watermark advances only after a successful import" holds by
 construction.
 
-Deferred (enhancements, not core): compaction continuation/fork detection, subagent
-session handling, sidecar hook context, batch-thread adoption, description/models
-backfill, and rich title extraction.
+Deferred (enhancements, not core): sidecar hook context, batch-thread adoption,
+description/models backfill, and rich title extraction.
 """
 
 from __future__ import annotations
@@ -26,6 +25,7 @@ from typing import Any, Optional
 from thread_archive._thread_import import DefaultEventBuilder
 from thread_archive._thread_import.parsers.claude_code import ClaudeCodeParser
 
+from .._config import resolve_paths
 from .._store import Thread, get_session
 from ._continuation import resolve_continuation_thread
 from ._cursor import resolve_source_cursor
@@ -64,9 +64,29 @@ def _is_subagent_source_id(source_id: str) -> bool:
     return source_id.rsplit(":", 1)[-1].startswith("agent-")
 
 
-def _cc_origin_metadata(all_lines: list[dict], source_id: str, *, session=None) -> Optional[dict]:
+def _is_archive_operational(all_lines: list[dict]) -> bool:
+    """True when this session ran from a cwd inside the archive home — a session
+    the archive's own machinery spawned (the scheduled curation drains run from
+    ``<home>/curation``), not operator work. Filed like subagents: hidden
+    ``thread_type='system'`` threads, captured and searchable, but never
+    themselves librarian work — otherwise every drain's own transcript re-enters
+    the review queue and future drains summarize past ones, forever."""
+    for line in all_lines:
+        cwd = line.get("cwd")
+        if isinstance(cwd, str) and cwd:
+            try:
+                home = resolve_paths(None).home.expanduser().resolve()
+                return Path(cwd).expanduser().resolve().is_relative_to(home)
+            except (OSError, ValueError):
+                return False
+    return False
+
+
+def _cc_origin_metadata(all_lines: list[dict], source_id: str, *, session=None, operational: bool = False) -> Optional[dict]:
     """Origin-project metadata for a CC thread: the real ``cwd`` (first line that
     carries one) + the munged ``project_dir`` from the source_id.
+    ``operational`` stamps ``archive_operational`` — the caller judged the session
+    archive machinery (see :func:`_is_archive_operational`).
 
     For a subagent transcript also stamp ``is_subagent`` plus the spawning session
     (``parent_session_id`` from the lines' ``sessionId``) and the subagent's own
@@ -81,6 +101,8 @@ def _cc_origin_metadata(all_lines: list[dict], source_id: str, *, session=None) 
             break
     if ":" in source_id:
         meta["project_dir"] = source_id.rsplit(":", 1)[0]
+    if operational:
+        meta["archive_operational"] = True
     if _is_subagent_source_id(source_id):
         meta["is_subagent"] = True
         for line in all_lines:
@@ -181,17 +203,20 @@ def _import_cc(
 
     is_new_thread = False
     if thread_id is None:
+        is_operational = _is_archive_operational(all_lines)
         title = title_override or extract_title(all_lines)
-        if is_subagent:
+        if is_subagent or is_operational:
             title = f"🤖 {title}"
         thread_id = create_thread(
             session,
             source=source,
             source_id=source_id,
             title=title,
-            thread_type="system" if is_subagent else "conversation",
+            thread_type="system" if (is_subagent or is_operational) else "conversation",
             description=extract_description(all_lines),
-            source_metadata=_cc_origin_metadata(all_lines, source_id, session=session),
+            source_metadata=_cc_origin_metadata(
+                all_lines, source_id, session=session, operational=is_operational
+            ),
         )
         is_new_thread = True
 

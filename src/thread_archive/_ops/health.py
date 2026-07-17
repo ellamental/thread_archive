@@ -5,8 +5,8 @@ signal that tells a dead scheduled job apart from a healthy one. Deliberately
 OUTSIDE the truth dir: this is install-local operational state, so the truth
 mirror doesn't carry it and the backup can't dirty the tree it is mirroring. A
 reference snapshot rides the backup's ``.recovery`` bundle so the history
-survives disk loss, but ``archive restore`` never installs it — a restored home
-must not claim the source install's health history.
+survives the loss of the home, but ``archive restore`` never installs it — a
+restored home must not claim the source install's health history.
 
 The verdict half (:func:`pipeline_verdict` / :func:`stamp_heartbeat`) turns those
 records into the family-monitor heartbeat: the last nightly's failed stages,
@@ -112,10 +112,10 @@ _STAGE_RECORD = {
 # distinct from recovery (which demands a postdating, at-least-as-strong re-run):
 # tolerance accepts a *prior* success, on the argument that it was still true.
 #
-# Only the restore-drill qualifies. It is ~1h of work that reads the off-machine
-# mirror — an intermittently-mounted network volume — so one failed drill with a
-# good drill days behind it means "the backup restored fine last week and the mount
-# flaked tonight", not "the archive is unprotected". A real restore-path regression
+# Only the restore-drill qualifies. It is ~1h of work that reads the backup
+# mirror — possibly an intermittently-mounted network volume — so one failed drill
+# with a good drill days behind it means "the backup restored fine last week and
+# the mount flaked tonight", not "the archive is unprotected". A real restore-path regression
 # fails *every* night and trips the board once the last good drill ages out of the
 # window. Freshness is untouched: a job that stops RUNNING still goes stale (the
 # monitor's >30h check on nightly_at), tolerance only softens a run that ran and

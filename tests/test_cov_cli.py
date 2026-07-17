@@ -499,7 +499,7 @@ def test_backup_all_warnings_returns_1(monkeypatch, capsys) -> None:
         "shrink_sample": ["a.jsonl"], "mirror_complete": True,
         "generation_created": "2026-07-15T00-00-00", "generations_kept": 7,
         "generations_pruned": 1, "generation_error": "snap failed",
-        "same_device": True, "rehomed_twins_deleted": 4,
+        "rehomed_twins_deleted": 4,
     }
     monkeypatch.setattr(api, "backup", lambda dest, **kw: res)
     rc = main(["backup", "/dest"])
@@ -507,7 +507,6 @@ def test_backup_all_warnings_returns_1(monkeypatch, capsys) -> None:
     out = capsys.readouterr().out
     assert "generation:" in out
     assert "WARNING: generation snapshot failed" in out
-    assert "SAME filesystem" in out
     assert "pre-backup verify FAILED" in out
     assert "rebalance twins: 4" in out
     assert "stale destination files kept" in out
@@ -780,7 +779,7 @@ def test_restore_bundle_installed_with_error(monkeypatch, capsys) -> None:
 
 def test_nightly_verify_failed_drill_ok(monkeypatch, capsys) -> None:
     res = {
-        "backup": {"files_copied": 1, "bytes_copied": 2 * 1024 * 1024, "same_device": True},
+        "backup": {"files_copied": 1, "bytes_copied": 2 * 1024 * 1024},
         "escalations": {"deep": True, "hashes": True},
         "verify": {"ok": False, "failed_components": ["drift_events"],
                    "drift": {"events": -2}, "truth": {"parse_errors": 1},
@@ -793,7 +792,7 @@ def test_nightly_verify_failed_drill_ok(monkeypatch, capsys) -> None:
     rc = main(["nightly", "/dest"])
     assert rc == 1
     out = capsys.readouterr().out
-    assert "[SAME DEVICE as archive]" in out
+    assert "backup: 1 files (2.0 MB copied)" in out
     assert "verify [deep+hashes]: FAILED (drift_events)" in out
     assert "full result appended to /home/verify-failures.jsonl" in out
     assert "restore drill: ok coverage=0.9700 (3s)" in out
@@ -945,7 +944,7 @@ def test_status_all_ok(monkeypatch, capsys) -> None:
     old = "2026-07-10T00:00:00+00:00"
     st = _status_base(
         last_verify={"ok": True, "at": old},
-        last_backup={"ok": True, "dest": "/vol/bak", "at": old, "same_device": True},
+        last_backup={"ok": True, "dest": "/vol/bak", "at": old},
         last_restore_drill={"ok": True, "coverage": 0.99, "at": old},
         last_nightly={"ok": True, "dest": "/vol/bak", "at": old},
         last_coverage={"ok": True, "sources_checked": 6, "at": old},
@@ -954,15 +953,11 @@ def test_status_all_ok(monkeypatch, capsys) -> None:
                            "errors": ["e1", "e2", "e3", "e4"]},
     )
     monkeypatch.setattr(api, "status", lambda **kw: st)
-    from thread_archive._ops import backup as backup_mod
-    monkeypatch.setattr(backup_mod, "external_disk_coverage", lambda p: None)
     rc = main(["status", "--home", "/h"])
     assert rc == 0
     out = capsys.readouterr().out
     assert "verify:  ok" in out
     assert "backup:  ok → /vol/bak" in out
-    assert "shares the archive's filesystem" in out
-    assert "not disk loss" in out
     assert "nightly: ok → /vol/bak" in out
     assert "drill:   ok coverage=0.99" in out
     assert "coverage: ok (6 sources)" in out
@@ -987,23 +982,6 @@ def test_status_green_coverage_still_shows_warnings(monkeypatch, capsys) -> None
     out = capsys.readouterr().out
     assert "coverage: ok (6 sources, 1 warning(s))" in out
     assert "chatgpt-export: last export 127d ago" in out
-
-
-def test_status_same_device_notes_external_coverage(monkeypatch, capsys) -> None:
-    # A same-filesystem mirror on a Time-Machine-covered disk reports the real
-    # posture (covered externally) instead of implying an unprotected archive.
-    old = "2026-07-10T00:00:00+00:00"
-    st = _status_base(
-        last_backup={"ok": True, "dest": "/vol/bak", "at": old, "same_device": True},
-    )
-    monkeypatch.setattr(api, "status", lambda **kw: st)
-    from thread_archive._ops import backup as backup_mod
-    monkeypatch.setattr(backup_mod, "external_disk_coverage", lambda p: "Time Machine")
-    rc = main(["status"])
-    assert rc == 0
-    out = capsys.readouterr().out
-    assert "covered externally by Time Machine" in out
-    assert "not disk loss" not in out
 
 
 def test_status_all_failed(monkeypatch, capsys) -> None:

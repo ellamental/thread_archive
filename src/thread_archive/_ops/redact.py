@@ -19,8 +19,9 @@ bundle* on the redaction record (``truth/redactions.jsonl``, append-only), keyed
 by a fresh per-redaction key held in ``<home>/keyring.json`` — deliberately
 OUTSIDE the truth directory, so the truth mirror and its dated generations hold
 ciphertext only. The keyring itself rides ``archive backup``'s *head-only*
-``.recovery`` bundle by default (disk loss must not crypto-erase every active
-redaction); because that bundle is never snapshotted into generations, a
+``.recovery`` bundle by default (losing the live home must not crypto-erase
+every active redaction); because that bundle is never snapshotted into
+generations, a
 ``--forget`` leaves the backup on the next run too. ``{"backup":
 {"include_keyring": false}}`` in config.json keeps backups ciphertext-only for
 operators who escrow keys elsewhere.

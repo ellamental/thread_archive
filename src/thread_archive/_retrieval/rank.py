@@ -28,15 +28,19 @@ from datetime import datetime, timezone
 from ._types import EventHit
 
 # Per-content-type relevance multiplier — user messages are the most intentional,
-# tool/thinking the noisiest. Thread-meta docs (title/summary) rank like the
-# intentional kinds they distill: a title is aboutness itself, a summary is the
-# thread's own digest.
+# tool/thinking the noisiest. A title is aboutness itself, so it ranks with user
+# text. A stored summary is *derived* — a keyword-dense librarian digest whose
+# short length already wins the density term, so an at-parity multiplier lets
+# summaries crowd verbatim evidence out of the top ranks and puts generated prose
+# above the record it summarizes. The discount keeps summaries findable (they are
+# the only docs carrying synthesis vocabulary that never appears verbatim) while
+# making them yield to any primary source that matches comparably.
 _CONTENT_TYPE_WEIGHT = {
     "title": 1.5,
     "user": 1.5,
-    "summary": 1.2,
     "text": 1.2,
     "tool_result": 0.8,
+    "summary": 0.6,
     "tool": 0.5,
     "thinking": 0.3,
     "continuation_summary": 0.1,
