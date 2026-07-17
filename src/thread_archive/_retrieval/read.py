@@ -8,7 +8,8 @@ tool_execution_*) plus lifecycle/summary events (api_request_*, stream_completed
 
 :func:`read_thread` is the string transcript surface (CLI / MCP). It mirrors the
 monorepo ``thread_read`` contract: a ``mode`` view knob (user / chat / full, plus
-the standalone-only ``last`` — the closing assistant message),
+the standalone-only ``last`` — the closing assistant message — and ``ends`` — the
+first and last turns in one read),
 turn-based pagination (``limit`` / ``offset`` / ``after_event``), focused reads
 around a search-result event (``around_event`` / ``context_turns``), a per-chunk
 ``max_chars`` budget with a CHUNKED footer, and ``summary`` for the summary views
@@ -252,8 +253,8 @@ def resolve_read_view(mode: Optional[str], user_only: Optional[bool]) -> tuple[b
     ``mode`` is the primary knob; ``user_only`` is a back-compat alias (True→user,
     False→full) and ``mode`` wins when both are set. Default (neither set, or an
     unrecognised mode) is ``user`` — the cheap default, matching the monorepo.
-    (``mode='last'`` is a selection, not a strip-set — :func:`read_thread` handles
-    it before this resolver runs.)
+    (``mode='last'`` and ``mode='ends'`` are selections, not strip-sets —
+    :func:`read_thread` handles them before this resolver runs.)
     """
     if mode is not None:
         m = mode.strip().lower()
@@ -909,6 +910,83 @@ def _last_assistant_message(thread: Thread, steps: list[dict], budget: int) -> s
     )
 
 
+def _ends_read(thread: Thread, steps: list[dict], per_end: int, budget: int) -> str:
+    """``mode='ends'``: the first and last ``per_end`` turns in one read — "what was
+    this session and how did it end" without paying for the middle. Turns render
+    chat-style (visible text only); a gap marker names the ``mode='chat'`` offset
+    that continues past the head. A short thread (no middle to skip) just renders
+    whole. Budget is split across the two ends; trimming keeps the turns nearest
+    each end (the opening ask, the closing answer)."""
+
+    def fmt(turn: list[dict]) -> str:
+        user_step = turn[0] if turn and turn[0]["role"] == "user" else None
+        if user_step is not None and user_step.get("is_compaction"):
+            return f"[COMPACTION event:{user_step['id']}] (context was compacted here)"
+        return "\n\n".join(
+            _format_step(s, strip_tools=True, strip_thinking=True, include_results=False)
+            for s in turn
+        )
+
+    turns = _group_steps_into_turns(steps)
+    total = len(turns)
+    if total == 0:
+        return f"Thread {thread.id} has no messages yet"
+
+    head_n = min(per_end, total)
+    tail_n = min(per_end, total - head_n)
+    head_fmt = [fmt(t) for t in turns[:head_n]]
+    tail_fmt = [fmt(t) for t in turns[total - tail_n:]] if tail_n else []
+
+    # Split the budget across the ends; an end keeps at least its outermost turn
+    # even oversized (a single turn can't split — same rule as _accumulate_turns).
+    trimmed = 0
+    if budget > 0:
+        half = budget // 2 if tail_fmt else budget
+        kept, used = [], 0
+        for t in head_fmt:  # head keeps the earliest turns
+            if kept and used + len(t) > half:
+                break
+            kept.append(t)
+            used += len(t)
+        trimmed += len(head_fmt) - len(kept)
+        head_fmt = kept
+        if tail_fmt:
+            kept, used = [], 0
+            for t in reversed(tail_fmt):  # tail keeps the latest turns
+                if kept and used + len(t) > budget - half:
+                    break
+                kept.append(t)
+                used += len(t)
+            trimmed += len(tail_fmt) - len(kept)
+            tail_fmt = list(reversed(kept))
+
+    omitted = total - len(head_fmt) - len(tail_fmt)
+    shown = (
+        f"all {total}" if omitted == 0
+        else f"first {len(head_fmt)} + last {len(tail_fmt)}"
+    )
+    parts = [
+        f"# Thread {thread.id}: {thread.title or thread.name or '(untitled)'} "
+        f"(ends view: {shown} of {total} turns)\n"
+        f"Created: {_fmt_ts(thread.inserted_at)}\n",
+        "\n\n".join(head_fmt),
+    ]
+    if omitted:
+        parts.append(
+            f"[... {omitted} intervening turns omitted — "
+            f"thread_read({thread.id}, mode='chat', offset={len(head_fmt)}) "
+            f"continues from turn {len(head_fmt) + 1} ...]"
+        )
+    if tail_fmt:
+        parts.append("\n\n".join(tail_fmt))
+    if trimmed:
+        parts.append(
+            f"---\n⚠ {trimmed} requested turn(s) dropped at the ~{budget}-char budget "
+            f"— raise max_chars or lower context_turns."
+        )
+    return "\n\n".join(parts)
+
+
 def _thread_read_summary(
     thread: Thread, steps: list[dict], limit: int, offset: int, *, session: Optional[Session] = None
 ) -> str:
@@ -972,7 +1050,9 @@ def read_thread(
     the user turns; ``chat`` = user + assistant visible text (thinking + tool calls
     stripped); ``full`` = the whole transcript including tool calls; ``last`` = only
     the thread's final assistant text (the closing answer — the cheapest "how did
-    this session end" read; ignores pagination). ``tool_results``
+    this session end" read; ignores pagination); ``ends`` = the first and last
+    ``context_turns`` turns chat-style (default 1 each end — the opening ask and the
+    closing exchange in one read; ignores pagination). ``tool_results``
     (default off) adds tool *output* under each call — only meaningful in ``full``
     (where calls are shown). The read is paginated by turns and size-budgeted at
     ``max_chars`` (default ~48k chars): a thread bigger than one chunk ends in a
@@ -1029,6 +1109,10 @@ def read_thread(
     if mode is not None and mode.strip().lower() == "last":
         budget = max_chars if max_chars and max_chars > 0 else DEFAULT_READ_CHAR_BUDGET
         return _last_assistant_message(thread, steps, budget)
+
+    if mode is not None and mode.strip().lower() == "ends":
+        budget = max_chars if max_chars and max_chars > 0 else DEFAULT_READ_CHAR_BUDGET
+        return _ends_read(thread, steps, max(1, context_turns), budget)
 
     # A focused search-result read should show the exchange around the hit, not only
     # the asking side. An explicit mode/user_only remains authoritative.

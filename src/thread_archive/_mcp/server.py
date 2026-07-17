@@ -340,7 +340,10 @@ def thread_read(
     tool call (bulky, mostly tool noise — only when you need what the assistant *did*);
     'last' = ONLY the thread's final assistant text — the closing answer/wrap-up, the
     cheapest way to see how a session ended (ignores pagination; the footer names the
-    turn, so the surrounding exchange is one mode='chat' read away).
+    turn, so the surrounding exchange is one mode='chat' read away);
+    'ends' = the first and last ``context_turns`` turns chat-style in one read
+    (default 1 each end) — "what was this session and how did it end" without paying
+    for the middle; a gap marker names the offset that continues past the head.
     Tool *output* is off by default; set ``tool_results=true`` (only meaningful with
     'full', where the calls are shown) to fold each tool's result under its call.
 
@@ -370,8 +373,8 @@ def thread_read(
             next chunk. Negative counts from end: -20 = last 20 turns. Default: 0.
         summary: Summary view instead of full content — true/'toc' for a compact
             TOC with previews, 'short' or 'indexed' for the stored thread summary.
-        mode: View — 'user' (default), 'chat', 'full', or 'last' (final assistant
-            text only). Default: user.
+        mode: View — 'user' (default), 'chat', 'full', 'last' (final assistant
+            text only), or 'ends' (first + last turns). Default: user.
         user_only: Back-compat alias for mode (true→user, false→full). Prefer mode.
         tool_results: Include tool output under each call (default off; needs 'full').
         max_chars: Per-chunk character budget; the read stops at a clean turn
@@ -381,7 +384,8 @@ def thread_read(
             offset). Robust way to continue from where a previous read stopped.
         around_event: Open this search-result event in its containing turn with
             surrounding conversation. Overrides offset and after_event.
-        context_turns: Turns to include before and after around_event. Default: 1.
+        context_turns: Turns to include before and after around_event, or per end
+            for mode='ends'. Default: 1.
     """
     _maybe_catch_up()
     # Log in a finally so a raising read still leaves its usage record —

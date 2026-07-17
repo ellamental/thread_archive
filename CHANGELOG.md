@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- **`thread_read(mode='ends')`** — a head+tail view: the first and last `context_turns`
+  turns (default 1 each end) chat-style in one read — "what was this session and how did
+  it end" without paying for the middle. A gap marker names the `mode='chat'` offset that
+  continues past the head; the `max_chars` budget splits across the ends and trimming
+  keeps the outermost turns (the opening ask, the closing answer).
+
 - **`thread_read(mode='last')`** — a token-minimal view that returns only the thread's
   closing assistant text (the final answer / wrap-up), with its event anchor, turn
   position, and a one-call hint to open the surrounding exchange. The cheapest "how did

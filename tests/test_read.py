@@ -196,6 +196,48 @@ def test_mode_last_without_assistant_text(archive_home) -> None:
     assert "no assistant text" in out
 
 
+def test_mode_ends_default_first_and_last_turn(archive_home) -> None:
+    tid = _seed()
+    out = read_thread(tid, mode="ends")
+    assert "(ends view: first 1 + last 1 of 3 turns)" in out
+    # head: the opening exchange, chat-style (thinking + tools stripped)
+    assert "first question about authentication" in out
+    assert "here is the first answer" in out
+    assert "let me think" not in out and "[tool:" not in out
+    # tail: the closing turn — a compaction boundary collapses to its placeholder,
+    # exactly as it does in every transcript view
+    assert "[COMPACTION event:10]" in out
+    assert _COMPACTION not in out
+    # middle omitted, with a resume hint pointing past the head
+    assert "second question" not in out
+    assert "1 intervening turns omitted" in out
+    assert "mode='chat', offset=1" in out
+
+
+def test_mode_ends_context_turns_widens_to_whole_thread(archive_home) -> None:
+    tid = _seed()
+    out = read_thread(tid, mode="ends", context_turns=2)
+    # 2 per end covers all 3 turns — rendered whole, no gap marker
+    assert "(ends view: all 3 of 3 turns)" in out
+    assert "second question about database" in out
+    assert "omitted" not in out
+
+
+def test_mode_ends_budget_keeps_outermost_turns(archive_home) -> None:
+    events = []
+    for i, word in enumerate(("alpha", "beta", "gamma", "delta")):
+        events.append(("user_message_sent", {"content": f"q{i}"}, i * 2 + 1))
+        events.append(("text_complete", {"text": word + " " + "A" * 200}, i * 2 + 2))
+    tid = _seed(events, tid=7)
+    out = read_thread(tid, mode="ends", context_turns=2, max_chars=600)
+    # each end trims inward: the opening and closing turns survive, the inner
+    # requested turns drop with a note
+    assert "alpha" in out and "delta" in out
+    assert "beta" not in out and "gamma" not in out
+    assert "first 1 + last 1 of 4" in out
+    assert "dropped at the" in out
+
+
 # ── step grouping ────────────────────────────────────────────────────────────
 
 def test_steps_close_at_text(archive_home) -> None:

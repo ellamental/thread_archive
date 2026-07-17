@@ -160,7 +160,8 @@ def read_thread(
     ``thread_id`` is the archive's integer thread id or a provider **session id**
     (the uuid/source_id a tool knows the conversation by); the reserved ref
     ``'topics'`` renders the curated topic hierarchy instead. ``mode`` picks the view —
-    ``user`` (default), ``chat``, ``full``, or ``last`` (final assistant text only) —
+    ``user`` (default), ``chat``, ``full``, ``last`` (final assistant text only), or
+    ``ends`` (first + last ``context_turns`` turns) —
     and the read is turn-paginated +
     size-budgeted (``max_chars``, default ~48k). ``tool_results`` (default off) adds
     tool output under each call in ``full``. ``summary`` swaps in a summary view:
