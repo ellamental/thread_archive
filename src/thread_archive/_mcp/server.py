@@ -220,6 +220,9 @@ def thread_search(
             rerank=rerank,
         )
 
+    # Latency covers the retrieval work as the caller felt it — both arms plus
+    # any widen retry — but not the catch-up ingest above or rendering below.
+    started = time.monotonic()
     hits = _run(content_types)
 
     # One-shot scope widen: a default-scope search whose top hit contains no query
@@ -249,6 +252,7 @@ def thread_search(
         },
         hits=hits,
         widened=widened,
+        duration_ms=(time.monotonic() - started) * 1000.0,
     )
 
     rendered = format_results(hits, query, output=output)
@@ -328,27 +332,33 @@ def thread_read(
         context_turns: Turns to include before and after around_event. Default: 1.
     """
     _maybe_catch_up()
-    _usage.record_read(
-        thread_id,
-        params={
-            "mode": mode, "summary": summary or None, "offset": offset,
-            "limit": limit, "after_event": after_event,
-            "around_event": around_event, "tool_results": tool_results,
-        },
-    )
-    return api.read_thread(
-        thread_id,
-        limit=limit,
-        offset=offset,
-        summary=summary,
-        mode=mode,
-        user_only=user_only,
-        tool_results=tool_results,
-        max_chars=max_chars,
-        after_event=after_event,
-        around_event=around_event,
-        context_turns=context_turns,
-    )
+    # Log in a finally so a raising read still leaves its usage record —
+    # a failed read is usage evidence too — with the latency it burned.
+    started = time.monotonic()
+    try:
+        return api.read_thread(
+            thread_id,
+            limit=limit,
+            offset=offset,
+            summary=summary,
+            mode=mode,
+            user_only=user_only,
+            tool_results=tool_results,
+            max_chars=max_chars,
+            after_event=after_event,
+            around_event=around_event,
+            context_turns=context_turns,
+        )
+    finally:
+        _usage.record_read(
+            thread_id,
+            params={
+                "mode": mode, "summary": summary or None, "offset": offset,
+                "limit": limit, "after_event": after_event,
+                "around_event": around_event, "tool_results": tool_results,
+            },
+            duration_ms=(time.monotonic() - started) * 1000.0,
+        )
 
 
 def main() -> None:

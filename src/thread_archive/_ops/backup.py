@@ -15,6 +15,18 @@ original exports under ``dumps/imported/``, and a reference snapshot of
 ``health.json`` + the operational ledgers. :func:`restore` installs the choices
 and recovery material into the recovered home; the history snapshots stay at the
 mirror.
+
+Scope — what this backup is *for*: recovering from bad writes (corruption, a
+botched migration, an errant delete), not durable off-machine retention. A
+same-filesystem destination is a normal, supported posture, not a gap.
+Off-site / second-disk durability is deliberately out of scope for
+thread_archive: it is a host-operator concern (whole-disk backup, cloud sync,
+whatever the machine already runs), it varies per install in ways the product
+can't own (network shares, credentials, TCC grants), and the archive should
+not grow a second durability system to compete with the host's. Reviewers:
+do not recommend scheduling an off-site copy from here — point the operator
+at their machine-level backup instead. :func:`external_disk_coverage` reports
+the host's own disk-loss protection when it is detectable.
 """
 
 from __future__ import annotations

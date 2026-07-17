@@ -69,6 +69,9 @@ def test_parser_preservation_block_types_are_not_drift(caplog, archive_home):
     ]
     msgs.append(_msg("system", block_type="unknown_line"))
     msgs[-1]["content_blocks"][0]["line_type"] = "ai-title"
+    # cloth's per-session identity header rides the shared claude-code parser.
+    msgs.append(_msg("system", block_type="unknown_line"))
+    msgs[-1]["content_blocks"][0]["line_type"] = "cloth_meta"
     with caplog.at_level(logging.WARNING, logger=_EVENTS_LOGGER):
         log_parse_validation(msgs, provider="claude-code", conversation_id="c1", batch_safe=True)
     assert _validation_logs(caplog) == []

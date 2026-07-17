@@ -11,7 +11,7 @@
 **Built like a database, not a folder of exports.**
 - Plain JSONL files are the source of truth — human-readable, greppable, yours. The search index is disposable and rebuilds from them at any time.
 - Crash-safe writes with intent journaling, fsync discipline, and automatic recovery. Your history survives power loss, killed processes, and corrupted indexes.
-- Backups, integrity verification, and restore drills built in — it doesn't just back up, it *proves the backup restores*.
+- Backups, integrity verification, and restore drills built in — it doesn't just back up, it *proves the backup restores*. The built-in backup recovers from bad writes (corruption, an errant delete); durable off-machine retention is deliberately your machine-level backup's job (Time Machine, cloud sync, …), not a second system this product owns.
 
 **Searchable by you — and by your AI.**
 - Full-text and semantic search with reranking, filterable by time, source, tool, and content type.

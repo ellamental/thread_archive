@@ -59,6 +59,16 @@ def test_record_read_int_and_uuid(archive_home) -> None:
     assert uuid_rec["thread_id"] == "abc-uuid"
 
 
+def test_duration_ms_recorded_when_given_and_omitted_when_not(archive_home) -> None:
+    usage.record_search("q", params={}, hits=[], widened=False, duration_ms=12.3456)
+    usage.record_read(1, duration_ms=0.74)
+    usage.record_read(2)
+    search, read, bare = _records(archive_home)
+    assert search["duration_ms"] == 12.3
+    assert read["duration_ms"] == 0.7
+    assert "duration_ms" not in bare
+
+
 def test_usage_log_disabled_by_env(archive_home, monkeypatch) -> None:
     monkeypatch.setenv("THREAD_ARCHIVE_USAGE_LOG", "0")
     usage.record_search("q", params={}, hits=[], widened=False)
@@ -105,6 +115,9 @@ def test_mcp_tools_feed_the_ledger(archive_home) -> None:
     assert search["n_hits"] >= 1
     assert [search["results"][0][1]] == [thread_id]
     assert read["thread_id"] == thread_id and read["mode"] == "chat"
+    # Both tools time their retrieval work into the record.
+    assert search["duration_ms"] > 0
+    assert read["duration_ms"] > 0
 
 
 def test_count_output_records_params_without_ids(archive_home) -> None:

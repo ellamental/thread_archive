@@ -187,6 +187,10 @@ CLAUDE_CODE_CONFIG = ProviderConfig(
         "custom-title",  # a user rename (wins over ai-title; importer reads it too)
         "mode",  # permission-mode switches (normal/plan/…)
         "file-history-delta",  # file-backup bookkeeping, sibling of file-history-snapshot
+        # cloth (a Claude-Code-shaped harness that shares this parser) writes a
+        # one-per-session identity header: client/model/system-prompt metadata,
+        # no message content. Preserved verbatim like the rest of this set.
+        "cloth_meta",
     },
     timestamp_format="iso",
 )

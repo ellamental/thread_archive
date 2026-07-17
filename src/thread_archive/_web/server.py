@@ -315,12 +315,12 @@ def _list_topics(*, limit: int, q: Optional[str]) -> dict:
         stmt = stmt.where(Thread.title.ilike(like) | Thread.name.ilike(like))
     with get_session() as s:
         rows = s.execute(stmt).all()
-        evidence_counts = dict(
+        evidence_counts: dict[int, int] = dict(
             s.execute(
                 select(TopicMessage.topic_id, func.count())
                 .where(TopicMessage.archived_at.is_(None))
                 .group_by(TopicMessage.topic_id)
-            ).all()
+            ).tuples().all()
         )
     meta = get_topic_graph_metadata([r.id for r in rows])
     topics = [
@@ -413,7 +413,7 @@ def _topic_detail(topic_id: int, *, evidence_limit: int) -> Optional[dict]:
         t = s.get(Thread, topic_id)
         if t is None or t.thread_type != "topic":
             return None
-        links = []
+        links: list[dict] = []
         other = Thread.__table__.alias("other")
         for direction, own_col, other_col in (
             ("out", ThreadLink.source_thread_id, ThreadLink.target_thread_id),

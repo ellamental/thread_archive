@@ -39,7 +39,7 @@ def topic_get(topic_id: int, *, session: Optional[Session] = None) -> dict:
 
     with use_session(session) as s:
         t = _require_topic(s, topic_id)
-        links = []
+        links: list[dict] = []
         other = Thread.__table__.alias("other")
         for direction, own_col, other_col in (
             ("out", ThreadLink.source_thread_id, ThreadLink.target_thread_id),

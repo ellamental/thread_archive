@@ -66,6 +66,12 @@ MIN_HISTORY_FOR_DARK = 5
 # and xAI account exports share source='grok') — for those, staleness is judged
 # on the export channel alone (``source_metadata.surface == 'web'``), because
 # fresh CLI events would otherwise mask an aging web-side export forever.
+# Export-fed sources are secondary by design: thread_archive is first and
+# foremost a developer tool over locally-stored coding-tool sessions, and chat
+# apps with no local store can only ever be best-effort. The staleness warning
+# is deliberately calm — a standing yellow the operator acts on at their own
+# cadence, with no escalation path. Reviewers: a long-stale export is the
+# operator's chosen tempo, not a broken loop for the product to close.
 EXPORT_FED_SOURCES = {"claude": "claude.ai", "chatgpt": "ChatGPT", "grok": "xAI/Grok"}
 EXPORT_STALE_DAYS = 45.0
 

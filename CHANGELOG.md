@@ -2,6 +2,24 @@
 
 ## Unreleased
 
+- **Retrieval usage records carry latency.** `thread_search` / `thread_read`
+  ledger records gain `duration_ms` — the retrieval work as the caller felt it
+  (search: both arms + any widen retry; read: the reconstruction, logged in a
+  `finally` so a raising read still leaves its record). Result-quality evals
+  can't see a search that returns the right hits ever slower; now the ledger can.
+
+- **`cloth_meta` is a declared line kind, not drift.** cloth's one-per-session
+  identity header (it shares the claude-code parser) was tripping the
+  validation-drift ledger daily; it's now in the parser's
+  `expected_unmodeled_line_types` — preserved verbatim as before, no finding.
+
+- **Durability scope stated where reviewers read.** The backup module, coverage
+  module, and README now say explicitly: the built-in backup exists to recover
+  from bad writes, off-machine durability is the host operator's system (not a
+  gap to close by scheduling an offsite copy here), and export-fed sources are
+  secondary-by-design best-effort channels with a deliberately calm staleness
+  warning. Repeated outside reviews kept rediscovering both as "glaring gaps."
+
 - **Reality-integrity incidents are a product surface.** New `_evals/incidents`
   harness + `archive incidents <catalogue.jsonl>` verb: a catalogue of recorded
   search failures (tiers `recall` / `capability` / `record` / `unresolved`,

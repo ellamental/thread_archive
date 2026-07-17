@@ -178,7 +178,7 @@ def garden_queue(kind: str, limit: int = 20, *, session: Optional[Session] = Non
         degrees = _degrees(live_ids)
         if kind == "singleton":
             singles = [tid for tid, d in degrees.items() if d == 0]
-            counts = dict(
+            counts: dict[int, int] = dict(
                 s.execute(
                     select(TopicMessage.topic_id, func.count())
                     .where(
@@ -186,7 +186,7 @@ def garden_queue(kind: str, limit: int = 20, *, session: Optional[Session] = Non
                         TopicMessage.archived_at.is_(None),
                     )
                     .group_by(TopicMessage.topic_id)
-                ).all()
+                ).tuples().all()
             ) if singles else {}
             singles.sort(key=lambda t: (-counts.get(t, 0), t))
             return [

@@ -8,9 +8,12 @@ surface — so a future eval (and the knowledge-layer verdict) can be built from
 observed behaviour instead of intuition. A read joins to the searches before it
 by thread id.
 
-Records hold query text, filter parameters, and result *ids* — never event
-content, snippets, or transcripts — so redaction never needs to touch this
-file, and a leaked ledger names conversations without quoting them. The file
+Records hold query text, filter parameters, result *ids*, and the call's
+wall-clock latency (``duration_ms``) — never event content, snippets, or
+transcripts — so redaction never needs to touch this file, and a leaked ledger
+names conversations without quoting them. Latency rides along because it is
+the one regression class result-quality evals can't see: a search that returns
+the right hits ever slower looks perfect until someone measures. The file
 lives beside the other home-root ledgers (``capture-skips.jsonl``,
 ``validation-drift.jsonl``), outside ``truth/`` — it is operational telemetry,
 not archive data, and no backup/verify path depends on it.
@@ -68,12 +71,15 @@ def record_search(
     params: dict[str, Any],
     hits: object,
     widened: bool,
+    duration_ms: Optional[float] = None,
 ) -> None:
     """Record one ``thread_search`` call: the query, the non-default parameters,
-    how many hits came back, and the top result ids (``[event_id, thread_id]``
-    pairs) for later join against reads. ``hits`` is whatever the engine
-    returned — result ids are extracted defensively, so a non-ranked output
-    shape (count/linkable) records its parameters and count without ids."""
+    how many hits came back, the top result ids (``[event_id, thread_id]``
+    pairs) for later join against reads, and the call's latency. ``hits`` is
+    whatever the engine returned — result ids are extracted defensively, so a
+    non-ranked output shape (count/linkable) records its parameters and count
+    without ids. ``duration_ms`` covers the retrieval work as the agent felt it
+    (including a widen retry), not ledger/render overhead."""
     if not _enabled():
         return
     record: dict[str, Any] = {
@@ -84,6 +90,8 @@ def record_search(
     record.update({k: v for k, v in params.items() if v is not None})
     if widened:
         record["widened"] = True
+    if duration_ms is not None:
+        record["duration_ms"] = round(duration_ms, 1)
     results: list[list[int]] = []
     if isinstance(hits, list):
         record["n_hits"] = len(hits)
@@ -102,10 +110,12 @@ def record_read(
     thread_id: object,
     *,
     params: Optional[dict[str, Any]] = None,
+    duration_ms: Optional[float] = None,
 ) -> None:
     """Record one ``thread_read`` call: the id as the caller passed it (integer
     thread id or provider session uuid — searches log integer ids, so joins work
-    for the id-from-search path) plus the non-default view parameters."""
+    for the id-from-search path) plus the non-default view parameters and the
+    read's latency."""
     if not _enabled():
         return
     record: dict[str, Any] = {
@@ -115,4 +125,6 @@ def record_read(
     }
     if params:
         record.update({k: v for k, v in params.items() if v not in (None, False, 0)})
+    if duration_ms is not None:
+        record["duration_ms"] = round(duration_ms, 1)
     _append(record)
