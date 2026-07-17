@@ -145,6 +145,9 @@ export function Sidebar() {
         <Link className={'rail-link' + (pathname === '/threads' ? ' active' : '')} to="/threads">
           all threads
         </Link>
+        <Link className={'rail-link' + (pathname === '/stats' ? ' active' : '')} to="/stats">
+          stats
+        </Link>
       </nav>
       <div className="rail-head">
         <span>Recent</span>

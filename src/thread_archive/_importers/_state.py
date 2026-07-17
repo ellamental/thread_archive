@@ -93,6 +93,7 @@ def create_thread(
     thread_type: str = "conversation",
     description: Optional[str] = None,
     source_metadata: Optional[dict] = None,
+    exclude_from_search: bool = False,
 ) -> int:
     """Create a thread for ``(source, source_id)`` and return its id (flushed)."""
     thread = Thread(
@@ -103,6 +104,7 @@ def create_thread(
         source=source,
         source_id=source_id,
         source_metadata=source_metadata,
+        exclude_from_search=exclude_from_search,
     )
     session.add(thread)
     session.flush()

@@ -324,6 +324,63 @@ class TopicMessage(Base):
     )
 
 
+class ThreadMetrics(Base):
+    """Per-(thread, model) token/cost rollup — a derived analytics cache for the
+    viewer's stats page.
+
+    Cost and token counts live inside each ``api_request_completed`` event's JSON
+    ``payload`` (``input_tokens`` / ``output_tokens`` / ``thinking_tokens`` / ``cost``
+    / ``model``). Surveying them straight from ``events`` means JSON-extracting across
+    hundreds of thousands of fat payloads (each carries the full response), which is
+    far too slow to do per request on a multi-GB index. This table is the standing
+    aggregate: one row per (thread_id, model), accumulated **incrementally** from new
+    events only (:func:`thread_archive._store._metrics.refresh_metrics` folds events
+    past a global cursor), so the survey is paid once and stays cheap thereafter.
+
+    A pure projection of the event log — rebuildable and disposable, like the FTS
+    shadow. ``thread_id`` is a soft reference (no FK, mirroring :class:`EventFts`) so
+    the cache never constrains the thread/event lifecycle or a reindex's bulk reload;
+    aggregation joins ``threads`` and so ignores any row orphaned by a deleted thread.
+    ``cost`` is summed treating a null (a route that reported none, e.g. ``local/*``)
+    as zero; ``cost_requests`` counts how many folded requests actually carried a cost,
+    so "no cost recorded" stays distinguishable from "$0".
+    """
+
+    __tablename__ = "thread_metrics"
+
+    thread_id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    # The model that produced these requests, exactly as the event payload records it
+    # (e.g. 'anthropic/claude-opus-4-8', 'deepseek/deepseek-v4-pro'); '' for a request
+    # whose payload named no model. Placeholder values ('', 'unknown', '<synthetic>')
+    # are dropped at aggregation time, not here.
+    model: Mapped[str] = mapped_column(Text, primary_key=True)
+    requests: Mapped[int] = mapped_column(BigInteger, default=0, server_default=text("0"))
+    input_tokens: Mapped[int] = mapped_column(BigInteger, default=0, server_default=text("0"))
+    output_tokens: Mapped[int] = mapped_column(BigInteger, default=0, server_default=text("0"))
+    thinking_tokens: Mapped[int] = mapped_column(BigInteger, default=0, server_default=text("0"))
+    cost: Mapped[float] = mapped_column(REAL, default=0.0, server_default=text("0"))
+    cost_requests: Mapped[int] = mapped_column(BigInteger, default=0, server_default=text("0"))
+
+    __table_args__ = (Index("idx_thread_metrics_model", "model"),)
+
+
+class MetricsCursor(Base):
+    """The incremental-rollup watermark: the highest ``events.id`` already folded into
+    :class:`ThreadMetrics`. A single row (``id = 1``).
+
+    :func:`thread_archive._store._metrics.refresh_metrics` folds only events with
+    ``id > through_event_id`` (append-only, monotonic ids → exact incremental sums),
+    then advances the cursor. If the log ever shrinks below the cursor (a reindex
+    rebuilt it), the refresh resets the whole cache and rebuilds from zero — the
+    projection self-heals rather than trusting a stale sum.
+    """
+
+    __tablename__ = "metrics_cursor"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, default=1)
+    through_event_id: Mapped[int] = mapped_column(BigInteger, default=0, server_default=text("0"))
+
+
 class KgEvent(Base):
     """Append-only curatorial event — the event-sourced spine of the topic graph.
 

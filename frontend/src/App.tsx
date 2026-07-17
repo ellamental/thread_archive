@@ -6,6 +6,7 @@ import { ThreadView } from './components/ThreadView'
 import { TopicsView } from './components/TopicsView'
 import { TopicView } from './components/TopicView'
 import { AllThreadsView } from './components/AllThreadsView'
+import { StatsView } from './components/StatsView'
 import { Landing } from './components/Landing'
 
 export function App() {
@@ -21,6 +22,7 @@ export function App() {
             <Route path="/topics" element={<TopicsView />} />
             <Route path="/topic/:id" element={<TopicView />} />
             <Route path="/threads" element={<AllThreadsView />} />
+            <Route path="/stats" element={<StatsView />} />
             <Route path="/archive/:id" element={<ThreadView />} />
           </Routes>
         </div>

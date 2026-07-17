@@ -125,6 +125,46 @@ def test_empty_query_returns_no_hits(archive_home):
     assert status == 200 and payload["hits"] == []
 
 
+def _seed_grok(archive_home):
+    """A Grok-shaped session: the operator's prompt wrapped in ``<user_query>`` with
+    injected context around it — the truth the importer keeps verbatim."""
+    wrapped = {
+        "type": "user", "uuid": "g1", "timestamp": "2026-01-01T10:00:00Z", "cwd": "/proj",
+        "message": {"role": "user",
+                    "content": "<user_info>ella</user_info><user_query>\nhey grok!\n</user_query>"},
+    }
+    reply = dict(ASSISTANT, uuid="g2")
+    f = archive_home / "grok.jsonl"
+    f.write_text("\n".join(json.dumps(ln) for ln in (wrapped, reply)) + "\n", encoding="utf-8")
+    ta.import_path(f)
+
+
+def test_search_snippet_unwraps_user_query(archive_home):
+    # The viewer's snippet shows the query span, not the raw <user_query> wrapper
+    # + injected context (the reader already unwraps; the result list matches it).
+    _seed_grok(archive_home)
+    _, _, payload = _get("/api/search", q="hey grok")
+    snips = [h["snippet"] for h in payload["hits"]]
+    assert any("hey grok!" in s for s in snips)
+    assert all("<user_query>" not in s and "<user_info>" not in s for s in snips)
+
+
+def test_search_snippet_is_a_context_window(archive_home):
+    # The snippet is the matched line plus one line of context on each side, and the
+    # internal numbered `context` field never leaks into the viewer payload.
+    body = "line before the hit\nthe unmistakable marker sits here\nline after the hit"
+    turn = dict(ASSISTANT, uuid="c1",
+                message={"role": "assistant", "model": "claude-opus-4",
+                         "content": [{"type": "text", "text": body}]})
+    f = archive_home / "ctx.jsonl"
+    f.write_text("\n".join(json.dumps(ln) for ln in (USER, turn)) + "\n", encoding="utf-8")
+    ta.import_path(f)
+    _, _, payload = _get("/api/search", q="unmistakable marker")
+    hit = next(h for h in payload["hits"] if "unmistakable marker" in h["snippet"])
+    assert hit["snippet"] == body  # exactly the ±1 window (which is the whole 3-line body)
+    assert "context" not in hit
+
+
 def test_threads_endpoint(archive_home):
     _seed(archive_home)
     status, _, payload = _get("/api/threads")

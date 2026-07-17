@@ -323,3 +323,45 @@ h1.topic-title { font-size: 19px; margin: 0 0 6px; }
   .msg.has-model .role { color: hsl(var(--mc-h) 62% 66%); }
   .chip.model-chip { color: hsl(var(--mc-h) 70% 70%); background: hsl(var(--mc-h) 55% 55% / .18); }
 }
+
+/* ---- stats page ---- */
+.stat-tiles {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: 12px; margin-bottom: 26px;
+}
+.stat-tile {
+  border: 1px solid var(--line); border-radius: 10px; background: var(--panel);
+  padding: 14px 16px;
+}
+.stat-tile .n { font-size: 22px; font-weight: 600; letter-spacing: .2px; }
+.stat-tile .l { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: .06em; margin-top: 2px; }
+.stat-tile .s { color: var(--muted); font-size: 11px; margin-top: 4px; }
+
+.stat-section { margin-bottom: 30px; }
+.stat-h { font-size: 14px; margin: 0 0 10px; }
+.stat-note { color: var(--muted); font-size: 12px; margin: 10px 2px 0; }
+
+.stat-table-wrap { overflow-x: auto; }
+.stat-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.stat-table th {
+  text-align: left; font-weight: 500; color: var(--muted); font-size: 11px;
+  text-transform: uppercase; letter-spacing: .05em;
+  padding: 6px 12px 6px 0; border-bottom: 1px solid var(--line); white-space: nowrap;
+}
+.stat-table td { padding: 7px 12px 7px 0; border-bottom: 1px solid var(--line); white-space: nowrap; }
+.stat-table tr:last-child td { border-bottom: none; }
+.stat-table th.num, .stat-table td.num { text-align: right; font-variant-numeric: tabular-nums; }
+.stat-table th.bar-col { width: 40%; }
+.stat-table td.bar-col { display: flex; align-items: center; gap: 8px; }
+
+.stat-bar {
+  flex: 1; min-width: 60px; height: 8px; border-radius: 4px;
+  background: var(--badge); overflow: hidden;
+}
+.stat-bar-fill { display: block; height: 100%; border-radius: 4px; background: var(--accent); }
+.stat-bar-fill.model { background: hsl(var(--mc-h) 55% 50%); }
+.bar-num { font-variant-numeric: tabular-nums; color: var(--muted); font-size: 12px; min-width: 46px; text-align: right; }
+
+@media (prefers-color-scheme: dark) {
+  .stat-bar-fill.model { background: hsl(var(--mc-h) 58% 60%); }
+}

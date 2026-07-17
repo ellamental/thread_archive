@@ -67,8 +67,10 @@ def _is_subagent_source_id(source_id: str) -> bool:
 def _is_archive_operational(all_lines: list[dict]) -> bool:
     """True when this session ran from a cwd inside the archive home — a session
     the archive's own machinery spawned (the scheduled curation drains run from
-    ``<home>/curation``), not operator work. Filed like subagents: hidden
-    ``thread_type='system'`` threads, captured and searchable, but never
+    ``<home>/curation``), not operator work. Filed as hidden
+    ``thread_type='system'`` threads with ``exclude_from_search`` set: captured,
+    but never surfaced by search (a drain's transcript is full of quoted search
+    hits, so it would match nearly any query about its own subjects) and never
     themselves librarian work — otherwise every drain's own transcript re-enters
     the review queue and future drains summarize past ones, forever."""
     for line in all_lines:
@@ -217,6 +219,10 @@ def _import_cc(
             source_metadata=_cc_origin_metadata(
                 all_lines, source_id, session=session, operational=is_operational
             ),
+            # Operational (curation-drain) transcripts quote search hits
+            # wholesale, so leaving them searchable makes them match nearly any
+            # query about their own subjects. Subagents stay searchable.
+            exclude_from_search=is_operational,
         )
         is_new_thread = True
 

@@ -4,7 +4,9 @@ in the same thread.
 Two independent enrichments the search pipeline attaches to its final hits:
 
 - :func:`extract_context_lines` (the ``context_lines`` arg) renders a numbered
-  window of lines around the first query-term match inside one event's content.
+  window of lines around the first query-term match inside one event's content;
+  :func:`context_window` returns the same window as plain text (the web viewer's
+  search snippet, which lays out its own display).
 - :func:`get_context_events` (the ``context_events`` arg) fetches the N events
   immediately before/after each hit in its thread, nearest-first, optionally
   filtered by content type. Neighbours come from the ``event_search`` FTS table
@@ -37,23 +39,27 @@ _CONTEXT_STOPWORDS = {
 }
 
 
+def _match_line_idx(lines: list[str], query: str) -> Optional[int]:
+    """Index of the first line holding a non-stopword query term (any term when the
+    query is all stopwords, so "how does auth work" centres on the ``auth`` line, not
+    the first ``how``). ``None`` when no term appears."""
+    query_terms = [t for t in re.findall(r"\w+", query.lower()) if t not in _CONTEXT_STOPWORDS]
+    if not query_terms:  # all stopwords → fall back to every term
+        query_terms = re.findall(r"\w+", query.lower())
+    for idx, line in enumerate(lines):
+        low = line.lower()
+        if any(term in low for term in query_terms):
+            return idx
+    return None
+
+
 def extract_context_lines(content: str, query: str, num_lines: int) -> str:
     """A numbered window of ``±num_lines`` around the first line of ``content``
     containing a (non-stopword) query term. The matched line is prefixed ``>>>``,
     the rest three spaces; lines are 1-based. No match → the first ``2N+1`` lines,
     unnumbered."""
     lines = content.split("\n")
-    query_terms = [t for t in re.findall(r"\w+", query.lower()) if t not in _CONTEXT_STOPWORDS]
-    if not query_terms:  # all stopwords → fall back to every term
-        query_terms = re.findall(r"\w+", query.lower())
-
-    match_line_idx = None
-    for idx, line in enumerate(lines):
-        low = line.lower()
-        if any(term in low for term in query_terms):
-            match_line_idx = idx
-            break
-
+    match_line_idx = _match_line_idx(lines, query)
     if match_line_idx is None:
         return "\n".join(lines[: num_lines * 2 + 1])
 
@@ -64,6 +70,18 @@ def extract_context_lines(content: str, query: str, num_lines: int) -> str:
         prefix = ">>>" if (start + i) == match_line_idx else "   "
         numbered.append(f"{prefix} {start + i + 1}: {line}")
     return "\n".join(numbered)
+
+
+def context_window(content: str, query: str, num_lines: int) -> str:
+    """The raw ``±num_lines`` line window around the first query-term match — the
+    same window :func:`extract_context_lines` numbers, but plain text for callers
+    that render their own layout (the web viewer's search snippet). No match → the
+    first ``2N+1`` lines."""
+    lines = content.split("\n")
+    idx = _match_line_idx(lines, query)
+    if idx is None:
+        return "\n".join(lines[: num_lines * 2 + 1])
+    return "\n".join(lines[max(0, idx - num_lines): idx + num_lines + 1])
 
 
 def parse_context_events_spec(spec: str) -> tuple[int, int, Optional[list[str]]]:

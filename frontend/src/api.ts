@@ -199,6 +199,51 @@ export interface SearchFilters {
 // asks for a narrower query instead of pretending the list is complete.
 export const SEARCH_LIMIT = 40
 
+// ── stats page ──────────────────────────────────────────────────────────────
+export interface StatsOverview {
+  conversations: number
+  sources: number
+  models: number
+  input_tokens: number
+  output_tokens: number
+  tokens: number
+  cost: number
+  cost_conversations: number
+  first_at: string | null
+  last_at: string | null
+}
+
+export interface StatsSource {
+  source: string
+  conversations: number
+  with_tokens: number
+  input_tokens: number
+  output_tokens: number
+  tokens: number
+  avg_tokens: number | null
+  with_cost: number
+  // null when this source records no cost at all (a subscription tool); a number
+  // (possibly 0) when at least one of its sessions carried a cost.
+  cost: number | null
+  avg_cost: number | null
+}
+
+export interface StatsModel {
+  model: string
+  requests: number
+  input_tokens: number
+  output_tokens: number
+  tokens: number
+  cost: number | null
+  conversations: number
+}
+
+export interface Stats {
+  overview: StatsOverview
+  by_source: StatsSource[]
+  by_model: StatsModel[]
+}
+
 async function getJSON<T>(url: string): Promise<T> {
   const r = await fetch(url)
   if (!r.ok) throw new Error(`${r.status}: ${await r.text()}`)
@@ -240,4 +285,5 @@ export const api = {
   topics: () => getJSON<TopicsResponse>('/api/topics'),
   topicTree: () => getJSON<TopicTreeResponse>('/api/topics/tree'),
   topic: (id: number) => getJSON<TopicDetail>(`/api/topic/${id}`),
+  stats: () => getJSON<Stats>('/api/stats'),
 }

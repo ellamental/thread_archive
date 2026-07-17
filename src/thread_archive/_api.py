@@ -322,6 +322,22 @@ def status(*, home: Optional[str] = None) -> dict:
     }
 
 
+def stats(*, home: Optional[str] = None, model_limit: Optional[int] = None) -> dict:
+    """Token/cost analytics for the viewer's stats page: an ``overview`` (totals +
+    activity span), ``by_source`` (conversations, tokens, and — where a pay-per-token
+    source recorded it — cost, per provider), and ``by_model`` (the busiest models).
+
+    Cost is only present for sources that record it (the pay-per-token harnesses, e.g.
+    cloth); subscription tools log tokens but no dollar figure, so their cost comes back
+    null rather than a fabricated estimate. Backed by an incrementally-maintained rollup
+    (:mod:`._store._metrics`) so it stays fast on a large archive — the first call after
+    a reindex pays a one-time survey, the rest fold only new events."""
+    open_archive(home)
+    from ._store._metrics import collect_stats
+
+    return collect_stats(model_limit=model_limit)
+
+
 def repair(*, home: Optional[str] = None, dry_run: bool = False) -> dict:
     """Quarantine unparseable truth lines and restore committed rows the truth
     lacks from the live index — the sanctioned path from a red ``verify`` back to

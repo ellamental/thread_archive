@@ -2,6 +2,21 @@
 
 ## Unreleased
 
+- The web viewer gains a **stats** page: token and cost analytics over the whole archive — overview
+  totals + activity span, a by-provider table (conversations, tokens, and average session cost for the
+  pay-per-token sources that record it), and a by-model breakdown listing every model used. Cost is read
+  straight from the `api_request_completed` payloads that carry it (subscription tools log tokens but no
+  dollar figure, shown honestly as "—"). Backed by an incrementally-maintained per-(thread, model) rollup
+  (`thread_metrics` + a `metrics_cursor` watermark) that folds only new events, so the survey stays fast
+  on a multi-GB index; the rollup is a derived projection that rebuilds itself after a reindex.
+- Archive-operational (curation drain) threads are created with `exclude_from_search` set, and existing
+  ones were backfilled — librarian/gardener transcripts quote search hits wholesale, so they matched
+  nearly any query about their own subjects. Subagent `system` threads stay searchable.
+- Web viewer search snippets show the matched line plus one line of context on each side and unwrap the
+  Grok `<user_query>` wrapper to the real prompt — the result list reads like the thread it opens instead
+  of leaking `<user_query>`/`<user_info>` tags. The status bar polls instead of fetching once, so a
+  transient blip (a watcher restart cycling the cohosted server) no longer latches a permanent "archive
+  unavailable" banner.
 - The topic graph is followable from search for read-only consumers: the `subjects:` header carries each
   subject's `[topic <id>]`, a hint line teaches the moves, and the docstrings advertise that `thread_read`
   on a topic id renders its curated page (description, links, cited quotes).

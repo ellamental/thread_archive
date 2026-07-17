@@ -19,7 +19,17 @@ from ._base import (
     use_engine,
     use_session,
 )
-from .models import Event, EventFts, ImportState, KgEvent, Thread, ThreadLink, TopicMessage
+from .models import (
+    Event,
+    EventFts,
+    ImportState,
+    KgEvent,
+    MetricsCursor,
+    Thread,
+    ThreadLink,
+    ThreadMetrics,
+    TopicMessage,
+)
 from .resolve import resolve_session_source_id
 from .schema import init_db
 
@@ -47,6 +57,8 @@ __all__ = [
     "EventFts",
     "ImportState",
     "ThreadLink",
+    "ThreadMetrics",
+    "MetricsCursor",
     "TopicMessage",
     "KgEvent",
 ]

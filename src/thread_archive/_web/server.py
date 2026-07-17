@@ -155,6 +155,31 @@ def _csv(params: dict, key: str) -> Optional[list[str]]:
     return [s for s in (x.strip() for x in v.split(",")) if s] or None
 
 
+# The viewer's search snippet: the matched line plus one line of context on each
+# side. A ceiling keeps a match inside a wall-of-text single line from dumping the
+# whole line into the results list.
+_VIEWER_SNIPPET_LINES = 1
+_VIEWER_SNIPPET_MAX = 400
+
+
+def _shape_search_hits(hits: list[dict], query: str) -> list[dict]:
+    """Rewrite each hit's ``snippet`` for the viewer: unwrap the Grok
+    ``<user_query>`` wrapper to the real prompt (the span the reader shows, so the
+    result list matches the thread it opens), then keep the matched line plus one
+    line of context on each side. The raw FTS/semantic snippet shows the wrapper
+    tags and the injected context around them."""
+    from .._retrieval._context import context_window
+    from .._retrieval.read import _display_user_content
+
+    for h in hits:
+        content = _display_user_content(h.get("full_content") or h.get("snippet") or "")
+        snip = context_window(content, query, _VIEWER_SNIPPET_LINES).strip()
+        if len(snip) > _VIEWER_SNIPPET_MAX:
+            snip = snip[:_VIEWER_SNIPPET_MAX].rstrip() + " …"
+        h["snippet"] = snip or (h.get("snippet") or "").strip()
+    return hits
+
+
 # /api/status behind a small TTL cache. The survey counts every table — seconds
 # on a large archive — while the status bar asks on every page load, so requests
 # serve the cached survey and a stale one refreshes in the background; only the
@@ -521,6 +546,15 @@ def route(method: str, path: str, params: dict) -> Response:
     if path == "/api/sources":
         return _ok({"sources": _list_sources()})
 
+    if path == "/api/stats":
+        # Token/cost analytics. Backed by an incrementally-maintained rollup
+        # (_store._metrics), so only the first survey on a fresh cache is slow —
+        # thereafter it folds just new events. By default every model is listed (no
+        # silent cap); `?models=N` optionally caps the by-model list.
+        models = _first(params, "models")
+        limit = int(models) if models and models.isdigit() else None
+        return _ok(api.stats(model_limit=limit))
+
     if path == "/api/archive-link":
         # ``id`` may repeat: a caller that cannot tell which of the uuids it can
         # see is the session id sends every candidate, best guess first, and the
@@ -553,8 +587,9 @@ def route(method: str, path: str, params: dict) -> Response:
             content_types=_csv(params, "content_types"),
             since=_first(params, "since"),
             until=_first(params, "until"),
+            context_lines=0,  # the viewer builds its own ±1 snippet from full_content
         )
-        return _ok({"query": q, "hits": hits})
+        return _ok({"query": q, "hits": _shape_search_hits(hits, q)})
 
     if path.startswith("/api/read/") or path.startswith("/api/thread/"):
         try:
@@ -680,4 +715,17 @@ def serve_in_thread(*, host: str = "127.0.0.1", port: int = 8787) -> ThreadingHT
     # Prewarm the status survey so even the first /api/status a fresh process
     # serves comes from cache instead of paying the multi-second count.
     threading.Thread(target=_status, name="archive-web-status-warm", daemon=True).start()
+    # Prewarm the stats rollup the same way: build/refresh the token-cost cache in the
+    # background so the first /api/stats serves an already-warm table. Only the very
+    # first build (or the one after a reindex) is slow; a restart folds just the delta.
+    threading.Thread(target=_prewarm_stats, name="archive-web-stats-warm", daemon=True).start()
     return httpd
+
+
+def _prewarm_stats() -> None:
+    """Best-effort background build of the stats rollup at server start. A failure
+    (archive momentarily unavailable) just means the first real request pays the cost."""
+    try:
+        api.stats()
+    except Exception:  # noqa: BLE001 — warm-up must never crash the server thread
+        log.debug("stats prewarm failed", exc_info=True)
