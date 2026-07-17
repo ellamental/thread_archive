@@ -34,7 +34,9 @@ while work happens — each written for reviewers of that day's change, dates
 and narration included. Releasing rewrites them for readers of the release:
 
 - Retitle `## Unreleased` to `## X.Y.Z — YYYY-MM-DD`.
-- Compress hard: **~10 lines per version, max**, wrapped at **120 characters**.
+- Compress hard: **10 lines per version, hard maximum**, wrapped at **120
+  characters** — every body line under the version heading counts (blank lines
+  don't). An 11th line is not "about 10"; compress further, it always fits.
   One tight bullet per theme (group related in-flight entries), present tense,
   no per-bullet dates, no thread references. Drop pure-hygiene noise that no
   user or operator will ever act on. The full stories live in git history and
