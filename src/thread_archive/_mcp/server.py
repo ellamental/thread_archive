@@ -347,6 +347,10 @@ def thread_read(
     Tool *output* is off by default; set ``tool_results=true`` (only meaningful with
     'full', where the calls are shown) to fold each tool's result under its call.
 
+    Images and documents (pasted screenshots, tool-result captures, attached
+    PDFs) render as ``[image image/png 48 KB — /path/to/blob]`` markers. The
+    path is a real local file — Read it to actually view the image.
+
     The read is size-budgeted (~48k chars), so it never silently overflows the MCP
     output cap: a thread bigger than one chunk ends in a CHUNKED footer naming the
     exact offset to read next (that's pagination, not lost data — page with

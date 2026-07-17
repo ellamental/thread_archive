@@ -2,7 +2,7 @@ import { useState } from 'react'
 import { Markdown } from './Markdown'
 import { RawContext } from './RawMode'
 import { hueStyle, modelHue } from '../modelColor'
-import type { Block, Message as Msg, MessageMeta } from '../api'
+import type { Block, BlockImage, Message as Msg, MessageMeta } from '../api'
 
 function prettyInput(input: unknown): string {
   if (typeof input === 'string') return input
@@ -13,10 +13,62 @@ function prettyInput(input: unknown): string {
   }
 }
 
+function fmtBytes(n: number | null): string {
+  if (n == null || n < 0) return ''
+  if (n < 1024) return `${n} B`
+  if (n < 1024 * 1024) return `${Math.round(n / 1024)} KB`
+  return `${(n / (1024 * 1024)).toFixed(1)} MB`
+}
+
+// Binary content attached to a block: images render inline (click-through to the
+// full-size blob); non-image media (PDFs etc.) render as a download link. A
+// pointer-only ref (bytes never in the archive) gets a labelled stub.
+function BlockImages({ images }: { images?: BlockImage[] }) {
+  if (!images || images.length === 0) return null
+  return (
+    <div className="block-images">
+      {images.map((img, i) => {
+        const size = fmtBytes(img.bytes)
+        if (!img.url) {
+          return (
+            <span className="block-image-stub" key={i} title={img.pointer ?? undefined}>
+              {img.kind}
+              {size ? ` · ${size}` : ''} · not archived
+            </span>
+          )
+        }
+        if (img.kind === 'image') {
+          return (
+            <a href={img.url} target="_blank" rel="noreferrer" key={i}>
+              <img
+                className="block-image"
+                src={img.url}
+                loading="lazy"
+                alt={img.media_type ?? 'image'}
+              />
+            </a>
+          )
+        }
+        return (
+          <a className="block-image-stub" href={img.url} target="_blank" rel="noreferrer" key={i}>
+            {img.kind}
+            {size ? ` · ${size}` : ''}
+          </a>
+        )
+      })}
+    </div>
+  )
+}
+
 function BlockView({ block }: { block: Block }) {
   switch (block.type) {
     case 'text':
-      return <Markdown>{block.text}</Markdown>
+      return (
+        <>
+          {block.text && <Markdown>{block.text}</Markdown>}
+          <BlockImages images={block.images} />
+        </>
+      )
     case 'thinking':
       return (
         <details className="tool thinking">
@@ -38,9 +90,13 @@ function BlockView({ block }: { block: Block }) {
       return (
         <details className="tool">
           <summary>
-            <span className="tool-tag">result{block.truncated ? ' · truncated' : ''}</span>
+            <span className="tool-tag">
+              result{block.truncated ? ' · truncated' : ''}
+              {block.images?.length ? ` · ${block.images.length} image${block.images.length > 1 ? 's' : ''}` : ''}
+            </span>
           </summary>
-          <pre className="tool-body">{block.output}</pre>
+          {block.output && <pre className="tool-body">{block.output}</pre>}
+          <BlockImages images={block.images} />
         </details>
       )
     case 'tool_error':
@@ -49,7 +105,8 @@ function BlockView({ block }: { block: Block }) {
           <summary>
             <span className="tool-tag">tool error</span>
           </summary>
-          <pre className="tool-body">{block.error}</pre>
+          {block.error && <pre className="tool-body">{block.error}</pre>}
+          <BlockImages images={block.images} />
         </details>
       )
     case 'context_summary':

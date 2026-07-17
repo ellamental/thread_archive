@@ -33,6 +33,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from .._store import Event, Thread, use_session
+from .._truth.blobs import materialize
 from .._truth.layout import is_redacted_payload
 from ._codex import codex_kind, render_codex_block
 from ._extract import _block_search_text
@@ -163,7 +164,134 @@ def _content_block_view(p: dict, rendered_text: Container[str]) -> Optional[tupl
     kind = codex_kind(block_type)
     if kind is not None:
         return render_codex_block(kind, p.get("data"), rendered_text)
-    return block_type, _block_search_text(p.get("data"))
+    data = p.get("data")
+    text = _block_search_text(data)
+    # A preserved document/image block (a pasted PDF, an unmodeled image) carries
+    # its bytes under data.source — show the materialized file, not just a label.
+    view = _binary_view(data.get("source")) if isinstance(data, dict) else None
+    if view is not None:
+        text = (text + "\n" if text else "") + _binary_marker(view)
+    return block_type, text
+
+
+# ── binary content (images / documents) ──────────────────────────────────────
+# Payload dicts carry binary content three ways: a blob ref ({"blob_hash", ...} —
+# see _truth.blobs), inline base64 ({"data", "media_type"} — historical truth,
+# never rewritten), or a pointer-only ref (ChatGPT asset_pointer / url, whose
+# bytes were never in the export). The first two materialize to a file in the
+# blob store (content-addressed, so the lazy write happens once); renderers show
+# the path — an agent Reads it, the web viewer serves it via /api/blob/<name>.
+
+
+def _binary_view(d: object) -> Optional[dict]:
+    """A renderable view of one binary dict, or None when it isn't one.
+
+    ``{"kind", "media_type", "bytes", "path", "pointer"}`` — ``path`` is the
+    materialized blob file (None for pointer-only refs or on failure)."""
+    if not isinstance(d, dict):
+        return None
+    media_type = d.get("media_type") or d.get("mime_type")
+    has_bytes = isinstance(d.get("data"), str) or isinstance(d.get("blob_hash"), str)
+    pointer = d.get("asset_pointer") or d.get("url")
+    if not has_bytes and not pointer:
+        return None
+    path = materialize(d) if has_bytes else None
+    nbytes = d.get("blob_bytes")
+    if nbytes is None and path is not None:
+        try:
+            nbytes = path.stat().st_size
+        except OSError:
+            nbytes = None
+    mt = media_type if isinstance(media_type, str) else None
+    kind = "image"
+    if mt and not mt.startswith("image"):
+        kind = "pdf" if mt == "application/pdf" else "file"
+    return {
+        "kind": kind, "media_type": mt, "bytes": nbytes, "path": path,
+        "pointer": pointer if (pointer and not has_bytes) else None,
+    }
+
+
+def _payload_image_views(p: dict) -> list[dict]:
+    """Views for a user payload's ``images`` list (multimodal turns)."""
+    images = p.get("images")
+    if not isinstance(images, list):
+        return []
+    return [v for v in (_binary_view(i) for i in images) if v is not None]
+
+
+def _tool_output_parts(output: object) -> tuple[str, list[dict]]:
+    """Split a tool output into ``(text, binary views)``.
+
+    A string output passes through. A list output (an Anthropic content-block
+    list — how screenshots ride tool results) yields its text parts joined and a
+    view per image/document block, instead of the ``str(list)`` repr that used
+    to bury both."""
+    if isinstance(output, str) or output is None:
+        return output or "", []
+    if isinstance(output, list):
+        texts: list[str] = []
+        views: list[dict] = []
+        for item in output:
+            if isinstance(item, str):
+                texts.append(item)
+                continue
+            if isinstance(item, dict):
+                # Only typed image/document blocks are binary — a web-search
+                # result item also carries a "url" and must stay text.
+                if item.get("type") in ("image", "document"):
+                    view = _binary_view(item.get("source")) or _binary_view(item)
+                    if view is not None:
+                        views.append(view)
+                        continue
+                t = item.get("text")
+                if isinstance(t, str):
+                    texts.append(t)
+                    continue
+            texts.append(json.dumps(item, default=str))
+        return "\n".join(t for t in texts if t.strip()), views
+    return str(output), []
+
+
+def _fmt_bytes(n: object) -> str:
+    if not isinstance(n, int) or n < 0:
+        return ""
+    if n < 1024:
+        return f"{n} B"
+    if n < 1024 * 1024:
+        return f"{n / 1024:.0f} KB"
+    return f"{n / (1024 * 1024):.1f} MB"
+
+
+def _binary_marker(view: dict) -> str:
+    """One transcript line for a binary view: ``[image image/png 48 KB — /path]``.
+    The path is a real file an agent can Read to see the image."""
+    bits = [view["kind"]]
+    if view.get("media_type") and view["media_type"] != view["kind"]:
+        bits.append(view["media_type"])
+    size = _fmt_bytes(view.get("bytes"))
+    if size:
+        bits.append(size)
+    label = " ".join(bits)
+    if view.get("path") is not None:
+        return f"[{label} — {view['path']}]"
+    if view.get("pointer"):
+        return f"[{label} — external ref, bytes not archived]"
+    return f"[{label} — unavailable]"
+
+
+def _web_binary(view: dict) -> dict:
+    """The structured (web viewer) twin of :func:`_binary_marker`: same view,
+    URL instead of path — ``/api/blob/<hash><ext>``, served by the cohosted web
+    server from the blob store."""
+    path = view.get("path")
+    return {
+        "kind": view["kind"],
+        "media_type": view.get("media_type"),
+        "bytes": view.get("bytes"),
+        "url": f"/api/blob/{path.name}" if path is not None else None,
+        "pointer": view.get("pointer"),
+    }
 
 
 def resolve_thread_ref(s: Session, ref: int | str) -> Optional[int]:
@@ -282,9 +410,17 @@ def _assistant_block(et: str, p: dict, rendered_text: Container[str]) -> Optiona
     if et in ("tool_use_complete", "tool_use_started"):
         return {"type": "tool", "name": p.get("tool_name", "?"), "input": p.get("input") or {}}
     if et == "tool_execution_completed":
-        return {"type": "tool_result", "output": str(p.get("output", ""))}
+        out, views = _tool_output_parts(p.get("output"))
+        block: dict = {"type": "tool_result", "output": out}
+        if views:
+            block["media"] = [_binary_marker(v) for v in views]
+        return block
     if et == "tool_execution_error":
-        return {"type": "tool_error", "error": str(p.get("error", ""))}
+        err, views = _tool_output_parts(p.get("error"))
+        error_block: dict = {"type": "tool_error", "error": err}
+        if views:
+            error_block["media"] = [_binary_marker(v) for v in views]
+        return error_block
     if et == "text_complete":
         t = p.get("text", "")
         return {"type": "text", "content": t} if t.strip() else None
@@ -490,14 +626,20 @@ def _build_steps(events: list[Event]) -> list[dict]:
                 steps.append(cur)
                 cur = None
             content = p.get("content", "")
-            if not content.strip():
+            # A pasted screenshot rides payload["images"]; an image-only turn
+            # (paste with no caption) must render, not vanish.
+            image_lines = [_binary_marker(v) for v in _payload_image_views(p)]
+            if not content.strip() and not image_lines:
                 continue
+            display = _display_user_content(content) if content.strip() else ""
+            if image_lines:
+                display = (display + "\n" if display else "") + "\n".join(image_lines)
             steps.append({
                 "role": "user",
                 "id": ev.id,
                 "event_ids": [ev.id],
                 "ts": ev.occurred_at,
-                "content": _display_user_content(content),
+                "content": display,
                 "is_compaction": content.startswith(_COMPACTION_PREFIX),
             })
             continue
@@ -563,15 +705,22 @@ def _format_tool_block(block: dict) -> str:
 
 
 def _format_result_block(block: dict) -> str:
-    """Render a tool result/error block (only when ``tool_results`` is on)."""
+    """Render a tool result/error block (only when ``tool_results`` is on).
+    Binary markers (screenshot paths etc.) land after the capped text, so a big
+    text head can't truncate the image away."""
+    media = "\n".join(block.get("media") or [])
     if block.get("type") == "tool_error":
         err = (block.get("error", "") or "").strip()
         if len(err) > _TOOL_RESULT_CAP:
             err = err[:_TOOL_RESULT_CAP] + "… (truncated)"
+        if media:
+            err = f"{err}\n{media}" if err else media
         return f"[tool error] {err}"
     out = (block.get("output", "") or "").strip()
     if len(out) > _TOOL_RESULT_CAP:
         out = out[:_TOOL_RESULT_CAP] + "… (truncated)"
+    if media:
+        out = f"{out}\n{media}" if out else media
     return f"[result] {out}"
 
 
@@ -942,7 +1091,8 @@ def _ends_read(thread: Thread, steps: list[dict], per_end: int, budget: int) -> 
     trimmed = 0
     if budget > 0:
         half = budget // 2 if tail_fmt else budget
-        kept, used = [], 0
+        kept: list[str] = []
+        used = 0
         for t in head_fmt:  # head keeps the earliest turns
             if kept and used + len(t) > half:
                 break
@@ -1305,9 +1455,14 @@ def _structured_event(
 
     if et in ("user_message_sent", "thread_message_sent"):
         content = p.get("content", "")
-        if not content.strip():
+        images = [_web_binary(v) for v in _payload_image_views(p)]
+        if not content.strip() and not images:
             return None
-        return ("user", {"type": "text", "text": _display_user_content(content)})
+        block: dict = {"type": "text",
+                       "text": _display_user_content(content) if content.strip() else ""}
+        if images:
+            block["images"] = images
+        return ("user", block)
     if et == "text_complete":
         text = p.get("text", "")
         return ("assistant", {"type": "text", "text": text}) if text.strip() else None
@@ -1327,16 +1482,23 @@ def _structured_event(
     if et == "tool_execution_completed":
         if not include_tools:
             return None
-        out = str(p.get("output", ""))
-        return ("assistant", {
+        out, views = _tool_output_parts(p.get("output"))
+        result: dict = {
             "type": "tool_result",
             "output": out[:_TOOL_OUTPUT_CAP],
             "truncated": len(out) > _TOOL_OUTPUT_CAP,
-        })
+        }
+        if views:
+            result["images"] = [_web_binary(v) for v in views]
+        return ("assistant", result)
     if et == "tool_execution_error":
         if not include_tools:
             return None
-        return ("assistant", {"type": "tool_error", "error": str(p.get("error", ""))})
+        err, views = _tool_output_parts(p.get("error"))
+        error_block: dict = {"type": "tool_error", "error": err}
+        if views:
+            error_block["images"] = [_web_binary(v) for v in views]
+        return ("assistant", error_block)
     if et == "context_summary":
         att = _attachment_raw(p)
         if att is not None:

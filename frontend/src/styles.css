@@ -382,3 +382,16 @@ a.session-link:hover { color: var(--accent); }
     border-color: hsl(var(--mc-h) 55% 60% / .75);
   }
 }
+
+/* Binary content on a block (pasted screenshots, tool-result images, documents).
+   Images render inline at a bounded height; click opens the full-size blob. */
+.block-images { display: flex; flex-wrap: wrap; gap: 8px; margin: 8px 0; padding: 0 2px; }
+.block-image {
+  display: block; max-width: 100%; max-height: 360px;
+  border: 1px solid var(--line); border-radius: 8px; background: var(--panel);
+}
+.block-image-stub {
+  display: inline-block; padding: 4px 10px; border: 1px dashed var(--line);
+  border-radius: 6px; color: var(--muted); font-size: 12px; text-decoration: none;
+}
+a.block-image-stub:hover { color: var(--accent); border-color: var(--accent); }

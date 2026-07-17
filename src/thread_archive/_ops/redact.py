@@ -12,7 +12,12 @@ lives:
 * the index — ``events.payload``, the ``events_fts`` shadow + ``event_search``
   FTS5 docs, and ``event_vectors`` rows (live table and the ``vectors.sqlite``
   sidecar — an embedding of a secret is recoverable enough to count as the
-  secret).
+  secret);
+* the blob store — ``truth/blobs/`` files holding the events' extracted binary
+  content (screenshots, documents; see :mod:`.._truth.blobs`), deleted unless
+  another live event still references the same content hash. The recovery
+  bundle carries that content reconstituted inline, so unredact restores it
+  without the file.
 
 The plaintext is not destroyed. It is AES-256-GCM-encrypted into a *recovery
 bundle* on the redaction record (``truth/redactions.jsonl``, append-only), keyed
@@ -437,10 +442,25 @@ def _redact_locked(thread_id: int, event_ids: list[int] | None, reason: str | No
             and ((t.title or "").strip() or (t.summary or "").strip())
         )
 
+    # Blob-extracted payloads (see _truth.blobs) enter the bundle *reconstituted* —
+    # inline base64 restored from the blob files — so the bundle is self-contained:
+    # unredact restores full content even after the blob files are shredded below.
+    # A ref whose blob file is already gone stays a ref (noted in the result).
+    from .._truth.blobs import blob_file, collect_blob_hashes, reconstitute_blobs
+
+    target_blob_hashes: set[str] = set()
+    bundle_events: dict[str, dict] = {}
+    blobs_unrecoverable = 0
+    for e in targets:
+        target_blob_hashes |= collect_blob_hashes(latest[e])
+        restored_payload, blob_missing = reconstitute_blobs(latest[e])
+        blobs_unrecoverable += blob_missing
+        bundle_events[str(e)] = restored_payload
+
     bundle = {
         "format": 1,
         "thread_id": thread_id,
-        "events": {str(e): latest[e] for e in targets},
+        "events": bundle_events,
         "topic_message_quotes": {str(i): q for i, q in tm_quotes.items()},
         "kg_event_quotes": {str(i): q for i, q in kg_quotes.items()},
         "thread_meta": meta_scrub,
@@ -510,6 +530,27 @@ def _redact_locked(thread_id: int, event_ids: list[int] | None, reason: str | No
         # the next natural checkpoint finishes the job.
         s.connection().connection.execute("PRAGMA wal_checkpoint(TRUNCATE)")
 
+    # Blob files carrying the targets' binary content (extracted refs, and any
+    # lazily-materialized copy of inline base64 — collect_blob_hashes covers
+    # both). Content-addressed files are shared across events and threads, so a
+    # file is deleted only when no live event still references its hash; an
+    # event that still holds the same content *inline* keeps its content either
+    # way (the file would just be re-materialized from it on the next read).
+    blobs_shredded: list[str] = []
+    if target_blob_hashes:
+        with get_session() as s:
+            for h in sorted(target_blob_hashes):
+                still_referenced = s.execute(
+                    sa_text("SELECT 1 FROM events WHERE payload LIKE :pat LIMIT 1"),
+                    {"pat": f"%{h}%"},
+                ).first()
+                if still_referenced is not None:
+                    continue
+                bp = blob_file(h)
+                if bp is not None:
+                    bp.unlink(missing_ok=True)
+                    blobs_shredded.append(h)
+
     logger.warning(
         "redact: thread %d — %d event(s) redacted under key %s (%d truth line(s), "
         "%d topic quote(s), %d kg quote(s))",
@@ -524,10 +565,16 @@ def _redact_locked(thread_id: int, event_ids: list[int] | None, reason: str | No
         notes.append(f"thread meta scrubbed (derived from the content): {', '.join(sorted(meta_scrub))}")
     elif has_meta:
         notes.append("the thread's title/summary were kept (no overlap detected) — check them if they paraphrase the content")
+    if blobs_unrecoverable:
+        notes.append(
+            f"{blobs_unrecoverable} blob ref(s) had no blob file to bundle — that binary "
+            "content was already gone and cannot be restored by unredact"
+        )
     return {
         "thread_id": thread_id, "key_id": key_id, "events_redacted": len(targets),
         "truth_lines_rewritten": lines, "topic_quotes_scrubbed": len(tm_quotes),
         "kg_quotes_scrubbed": len(kg_quotes), "thread_meta_scrubbed": sorted(meta_scrub),
+        "blobs_shredded": len(blobs_shredded),
         "notes": notes,
     }
 

@@ -498,14 +498,16 @@ def _verify_backup(dest: Path, live_truth: dict) -> dict:
     return out
 
 
-def _hash_key_check(payload: object, dedup_key: str) -> Optional[bool]:
+def _hash_key_check(payload: object, dedup_key: str, *, d: Optional[Path] = None) -> Optional[bool]:
     """True = the payload re-hashes to the content hash embedded in its own
     ``dedup_key`` (the last ``:``-segment; see
     ``thread_archive._thread_import.event_builder.compute_dedup_key``); False = mismatch;
-    None = the key carries no hash tail (nothing to validate against)."""
+    None = the key carries no hash tail (nothing to validate against). ``d`` is
+    the truth dir whose blob store backs reconstitution of extracted payloads —
+    pass the mirror when checking a mirror."""
     from .._truth.jsonl_log import _hash_key_check as _impl
 
-    return _impl(payload, dedup_key)
+    return _impl(payload, dedup_key, d=d)
 
 
 def _hash_scan_truth_dir(truth_dir: Path, watermark: Optional[int]) -> dict:
@@ -531,7 +533,7 @@ def _hash_scan_truth_dir(truth_dir: Path, watermark: Optional[int]) -> dict:
                 if not key:
                     no_key += 1
                     continue
-                verdict = _hash_key_check(rec.get("payload"), key)
+                verdict = _hash_key_check(rec.get("payload"), key, d=truth_dir)
                 if verdict is None:
                     skipped += 1
                     continue

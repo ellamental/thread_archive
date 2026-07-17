@@ -47,6 +47,8 @@ truth/
     <id>.jsonl           #   shard_depth 0 (flat)
     <hh>/<id>.jsonl      #   shard_depth 1: hh = id % 256 as two lowercase hex digits
     <hh>/<hh>/<id>.jsonl #   shard_depth 2: id % 256, then (id // 256) % 256
+  blobs/                 # content-addressed binary content (images, documents)
+    <hh>/<sha256><ext>   #   hh = first two hex chars; ext from media type (.png, .pdf, .bin)
   kg_events.jsonl        # append-only curatorial event log (knowledge layer)
   thread_links.jsonl     # snapshot: topic-graph edges (rebuildable from kg_events)
   topic_messages.jsonl   # snapshot: topic evidence   (rebuildable from kg_events)
@@ -101,10 +103,28 @@ skip content-hash validation against `dedup_key` (the key still names the
 *original* content — it is kept so re-import cannot resurrect the plaintext
 under a fresh id).
 
+**Blob refs.** Large binary content (a pasted screenshot's base64, a
+tool-result image, an attached document) is extracted out of payloads into the
+content-addressed `blobs/` directory. Wherever a payload dict carried
+`{"data": "<base64>", "media_type": ...}`, the extracted form is the same dict
+with `data` replaced by `"blob_hash"` (sha256 hex of the raw bytes — the blob's
+filename stem under `blobs/<hh>/`) and `"blob_bytes"` (raw size); every other
+key is untouched. The transform is exactly invertible: restoring `data` as the
+standard base64 of the blob file's bytes reproduces the original dict, which is
+how such payloads re-hash against `dedup_key` (below). Blob files are truth —
+they ride every backup of the truth directory — and are immutable and shared
+(the same content pasted twice is one file). Historical payloads written before
+extraction may still carry inline base64 `data`; readers must accept both
+forms. A redacted event's blob files are deleted unless another live event
+references the same hash (see redactions.jsonl — the recovery bundle carries
+the content inline).
+
 `dedup_key` is the event's timestamp-free natural identity,
 `{provider_message_id | c=<hash>}:{event_type}:{tool=…|blk=…|}:{content_hash}`
 with `content_hash` = first 16 hex chars of sha256 over the payload's semantic
-content keys. It is bare (never thread-prefixed); uniqueness is enforced per
+content keys — computed over the *inline* form, so validating a blob-extracted
+payload against its key means reconstituting `data` from the blob files first.
+It is bare (never thread-prefixed); uniqueness is enforced per
 `(thread_id, dedup_key)`. `null` on pre-dedup history and non-imported events.
 
 ## kg_events.jsonl

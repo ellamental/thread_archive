@@ -120,12 +120,24 @@ export interface TopicDetail {
   peers: TopicPeer[]
 }
 
+// Binary content on a block (a pasted screenshot, a tool-result image, a
+// document). `url` serves the bytes from the archive's blob store
+// (/api/blob/<hash><ext>); a pointer-only ref (bytes never in the archive)
+// has url: null and carries the provider pointer instead.
+export interface BlockImage {
+  kind: string // 'image' | 'pdf' | 'file'
+  media_type: string | null
+  bytes: number | null
+  url: string | null
+  pointer?: string | null
+}
+
 export type Block =
-  | { type: 'text'; text: string }
+  | { type: 'text'; text: string; images?: BlockImage[] }
   | { type: 'thinking'; text: string }
   | { type: 'tool_use'; name: string; input: unknown }
-  | { type: 'tool_result'; output: string; truncated: boolean }
-  | { type: 'tool_error'; error: string }
+  | { type: 'tool_result'; output: string; truncated: boolean; images?: BlockImage[] }
+  | { type: 'tool_error'; error: string; images?: BlockImage[] }
   | { type: 'context_summary'; text: string }
   // A hook that fired and injected content into the model's context (a
   // hook_additional_context attachment or a hook-context sidecar line):

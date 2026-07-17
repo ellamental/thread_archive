@@ -40,10 +40,11 @@ tests/install/fixtures-real/
 /host/repair-dumps/
 
 # coverage data (pytest --cov; the CI pytest row reports coverage per run,
-# and writes coverage.json for the coverage-gate row)
-/.coverage
-/.coverage.*
-/coverage.json
+# and writes coverage.json for the coverage-gate row). Unanchored — a pytest
+# run from any subdirectory drops its .coverage there, not just at the root.
+.coverage
+.coverage.*
+coverage.json
 
 # os
 .DS_Store

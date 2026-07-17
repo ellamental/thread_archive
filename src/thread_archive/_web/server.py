@@ -535,6 +535,30 @@ def route(method: str, path: str, params: dict) -> Response:
         tried = ", ".join(link_ids)
         return 404, "application/json", json.dumps({"error": f"no thread for id={tried}"}).encode(), {}
 
+    if path.startswith("/api/blob/"):
+        # A blob-store file (extracted/materialized image or document content —
+        # see _truth.blobs), addressed by content hash; the reader's <img> tags
+        # point here. The name regex is the traversal guard, and content
+        # addressing makes the response immutable, so cache it hard.
+        import re as _re
+
+        m = _re.match(r"^([0-9a-f]{64})(\.[A-Za-z0-9]{1,8})?$", path[len("/api/blob/"):])
+        if not m:
+            return _text(404, "bad blob name")
+        api.open_archive()
+        from .._truth.blobs import blob_file, media_type_for_path
+
+        bp = blob_file(m.group(1))
+        if bp is None:
+            return _text(404, "no such blob")
+        try:
+            body = bp.read_bytes()
+        except OSError:
+            return _text(404, "no such blob")
+        return 200, media_type_for_path(bp), body, {
+            "Cache-Control": "public, max-age=31536000, immutable",
+        }
+
     if path == "/api/search":
         q = (_first(params, "q") or "").strip()
         if not q:

@@ -916,11 +916,23 @@ def emit_thread_file(d: Path, thread_id: int, depth: int, thread_record, event_r
     return n_ev
 
 
-def _hash_key_check(payload: object, dedup_key: str) -> bool | None:
+def _hash_key_check(payload: object, dedup_key: str, *, d: "Path | None" = None) -> bool | None:
     """True = the payload re-hashes to the content hash embedded in its own
     ``dedup_key`` (the last ``:``-segment; see
     ``thread_archive._thread_import.event_builder.compute_dedup_key``); False = mismatch;
-    None = the key carries no hash tail (nothing to validate against)."""
+    None = the key carries no hash tail (nothing to validate against).
+
+    A payload whose binary content was extracted into the blob store no longer
+    hashes as stored — its key was computed over the inline form at parse time.
+    On mismatch, blob refs are reconstituted (inline base64 restored from the
+    blob files) and the hash retried, so the gate keeps validating extracted
+    payloads at full strength: a missing or corrupted blob file fails the
+    reconstruction and the check — lost image bytes are lost content. The plain
+    hash is tried first, so the reconstitution cost is paid only by the rare
+    blob-bearing events. ``d`` names the truth directory whose blob store backs
+    the reconstruction — pass it when checking a mirror, so a blob missing or
+    rotted *in the mirror* fails the mirror's check instead of being papered
+    over by the live store's copy; default is the live truth dir."""
     import re as _re
 
     from thread_archive._thread_import.event_builder import compute_content_hash
@@ -935,7 +947,16 @@ def _hash_key_check(payload: object, dedup_key: str) -> bool | None:
         return None
     if not isinstance(payload, dict):
         return False
-    return compute_content_hash(payload) == dedup_key.rsplit(":", 1)[-1]
+    want = dedup_key.rsplit(":", 1)[-1]
+    if compute_content_hash(payload) == want:
+        return True
+    from .blobs import has_blob_refs, reconstitute_blobs
+
+    if has_blob_refs(payload):
+        restored, missing = reconstitute_blobs(payload, d=d)
+        if not missing and compute_content_hash(restored) == want:
+            return True
+    return False
 
 
 def _store_rows_failing_key_hash() -> tuple[int, list[str]]:

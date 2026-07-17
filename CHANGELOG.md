@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- **Images and attachments are viewable** — binary payload content (pasted screenshots,
+  tool-result captures, base64 documents) now extracts at import into a content-addressed
+  blob store (`truth/blobs/<hh>/<sha256><ext>`; exactly invertible, so dedup keys and the
+  verify hash gate hold — a lost blob file is a red check, not silence). MCP reads render
+  `[image image/png 48 KB — /path]` markers an agent can Read; the web viewer shows images
+  inline via `/api/blob/<hash>`; historical inline base64 materializes lazily on read (no
+  migration); redaction shreds blob files (unless shared) and bundles the content for
+  unredact; tool-result lists render their text instead of a `str(list)` repr.
+
 - **`thread_read(mode='ends')`** — a head+tail view: the first and last `context_turns`
   turns (default 1 each end) chat-style in one read — "what was this session and how did
   it end" without paying for the middle. A gap marker names the `mode='chat'` offset that

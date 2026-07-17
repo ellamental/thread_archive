@@ -121,6 +121,69 @@ describe('block rendering', () => {
     expect(screen.getByText('- backend-api: …')).toBeInTheDocument()
   })
 
+  it('renders block images inline with a click-through to the blob', () => {
+    const { container } = render(
+      <Message
+        message={msg([
+          {
+            type: 'text',
+            text: 'look at this',
+            images: [
+              {
+                kind: 'image',
+                media_type: 'image/png',
+                bytes: 4096,
+                url: '/api/blob/abc123.png',
+              },
+            ],
+          },
+        ])}
+      />,
+    )
+    const img = container.querySelector('img.block-image')
+    expect(img).not.toBeNull()
+    expect(img?.getAttribute('src')).toBe('/api/blob/abc123.png')
+    expect(img?.closest('a')?.getAttribute('href')).toBe('/api/blob/abc123.png')
+  })
+
+  it('renders an image-only user turn and labels unarchived pointers', () => {
+    render(
+      <Message
+        message={msg(
+          [
+            {
+              type: 'text',
+              text: '',
+              images: [
+                { kind: 'image', media_type: 'image/png', bytes: null, url: null, pointer: 'file-svc://x' },
+              ],
+            },
+          ],
+          { role: 'user' },
+        )}
+      />,
+    )
+    expect(screen.getByText(/image · not archived/)).toBeInTheDocument()
+  })
+
+  it('shows tool-result images behind the result fold with a count', () => {
+    render(
+      <Message
+        message={msg([
+          {
+            type: 'tool_result',
+            output: '',
+            truncated: false,
+            images: [
+              { kind: 'image', media_type: 'image/png', bytes: 2048, url: '/api/blob/def456.png' },
+            ],
+          },
+        ])}
+      />,
+    )
+    expect(screen.getByText(/result · 1 image/)).toBeInTheDocument()
+  })
+
   it('merges consecutive hook firings into one chip row with counts', () => {
     const { container } = render(
       <Message

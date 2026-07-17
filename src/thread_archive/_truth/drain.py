@@ -434,7 +434,21 @@ def write_events(session: Session, events: list[Event]) -> list[Event]:
     The single seam so the projection and the truth never diverge: each row is
     flushed to its thread file before the COMMIT it belongs to. ``flush`` populates
     the autoincrement id and the server-default ``recorded_at`` before the row dict
-    is snapshotted, so the truth line is faithful. The caller owns the commit."""
+    is snapshotted, so the truth line is faithful. The caller owns the commit.
+
+    Base64 image/document content is extracted into the content-addressed blob
+    store here (see :mod:`.blobs`), before the row reaches SQLite, FTS, or the
+    truth file — this seam carries exactly the imported batches (redact/amend
+    rewrites use their own paths and must not re-extract), so it is the one
+    place that keeps new truth free of inline binary. The blob file is durable
+    before the payload referencing it is staged."""
+    from .blobs import extract_blobs
+
+    for ev in events:
+        if isinstance(ev.payload, dict):
+            new_payload, n = extract_blobs(ev.payload)
+            if n:
+                ev.payload = new_payload
     session.add_all(events)
     session.flush()
     for ev in events:
