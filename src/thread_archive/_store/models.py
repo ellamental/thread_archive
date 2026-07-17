@@ -43,8 +43,9 @@ class Thread(Base):
     """An imported conversation, or a curated topic.
 
     ``thread_type`` has three live kinds: 'conversation' (a chat session — the
-    default, what importers create), 'system' (a subagent/machinery run — captured
-    and searchable but hidden from the default recent-threads list), and 'topic' (a
+    default, what importers create), 'system' (a subagent/machinery run — captured,
+    but out of default search and browse; retrieval's ``agents``/``types`` controls
+    reach it), and 'topic' (a
     curated knowledge node in the topic graph; see :mod:`thread_archive._knowledge`).
     Legacy imports carry other type strings (canvas, patch, outliner, …); readers
     treat the column as an open vocabulary. Modeling a topic *as* a thread is

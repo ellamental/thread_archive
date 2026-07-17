@@ -23,6 +23,7 @@ lexical-only when the extra isn't installed or nothing's indexed.
 from __future__ import annotations
 
 import logging
+from contextlib import contextmanager
 from typing import Optional
 
 import numpy as np
@@ -276,6 +277,30 @@ def index_events_local(
     return total
 
 
+@contextmanager
+def _attach_side(conn, db_path):
+    """ATTACH ``db_path`` as ``side`` for the block, detaching on exit.
+
+    The connection comes from (and returns to) the engine pool, and an attached
+    schema is per-connection state the pool's reset does not clear — so a DETACH
+    that fails would hand every later borrower a connection with a stray ``side``
+    schema. On a failed DETACH the DBAPI connection is invalidated (discarded
+    from the pool) instead."""
+    conn.exec_driver_sql("ATTACH DATABASE ? AS side", (str(db_path),))
+    try:
+        yield conn
+    finally:
+        try:
+            conn.exec_driver_sql("DETACH DATABASE side")
+        except Exception:  # pragma: no cover — detach failure is exotic
+            conn.invalidate()
+
+
+# A build file this much older than its last write belongs to a saver that died
+# (a live CREATE TABLE ... AS SELECT keeps the mtime moving); sweep it.
+_STALE_TMP_AGE_S = 3600
+
+
 def save_vectors_sidecar(truth_dir, space_key: Optional[str] = None) -> int:
     """Persist ``event_vectors`` to ``<truth_dir>/vectors.sqlite`` — a durable cache so
     the expensive embed survives ``rm index.db && reindex``. Tagged with the embedding
@@ -287,6 +312,7 @@ def save_vectors_sidecar(truth_dir, space_key: Optional[str] = None) -> int:
     if not is_available():
         return 0
     import os
+    import time
     from pathlib import Path
 
     from .embed import space_key as _sk
@@ -299,32 +325,47 @@ def save_vectors_sidecar(truth_dir, space_key: Optional[str] = None) -> int:
         return 0
     sk = space_key or _sk()
     path = Path(truth_dir) / "vectors.sqlite"
-    # Build into a temp sidecar and rename over the live one: a crash mid-save must
-    # not leave a gutted cache (the embed it protects takes hours to redo).
-    tmp = path.with_name(path.name + ".tmp")
-    tmp.unlink(missing_ok=True)
-    with get_engine().connect() as conn:
-        conn = conn.execution_options(isolation_level="AUTOCOMMIT")
-        conn.exec_driver_sql("ATTACH DATABASE ? AS side", (str(tmp),))
+    # Build into a per-process temp sidecar and rename over the live one. The
+    # rename bounds a crash (a mid-save death must not leave a gutted cache —
+    # the embed it protects takes hours to redo); the pid-unique name bounds
+    # concurrency (savers run unserialized — a backup racing the watcher's
+    # cadence, two operator sessions — and a shared build file lets one saver
+    # ATTACH the other's half-built database: a CREATE TABLE collision at best,
+    # publishing a half-built sidecar at worst). Each saver builds its own file;
+    # every rename that runs publishes a complete snapshot, last one wins.
+    for stray in path.parent.glob(path.name + ".tmp*"):
         try:
-            conn.exec_driver_sql("CREATE TABLE side.event_vectors AS SELECT * FROM event_vectors")
-            conn.exec_driver_sql("CREATE TABLE side.vector_meta (space_key TEXT)")
-            conn.exec_driver_sql("INSERT INTO side.vector_meta (space_key) VALUES (?)", (sk,))
-            n = conn.exec_driver_sql("SELECT count(*) FROM side.event_vectors").scalar()
-        finally:
-            conn.exec_driver_sql("DETACH DATABASE side")
-    # Same durability bar as the truth writers: the sidecar protects an embed that
-    # takes hours to redo, so it must be on the platter — not just in the page
-    # cache — before the rename publishes it, and the rename itself must survive
-    # power loss (dir fsync).
-    from .._truth.jsonl_log import _fsync_dir
-
-    fd = os.open(tmp, os.O_RDONLY)
+            if time.time() - stray.stat().st_mtime > _STALE_TMP_AGE_S:
+                stray.unlink()
+        except OSError:  # racing another saver's sweep of the same stray
+            pass
+    tmp = path.with_name(f"{path.name}.tmp.{os.getpid()}")
+    tmp.unlink(missing_ok=True)
     try:
-        os.fsync(fd)
-    finally:
-        os.close(fd)
-    os.replace(tmp, path)
+        with get_engine().connect() as conn:
+            conn = conn.execution_options(isolation_level="AUTOCOMMIT")
+            with _attach_side(conn, tmp):
+                conn.exec_driver_sql(
+                    "CREATE TABLE side.event_vectors AS SELECT * FROM event_vectors"
+                )
+                conn.exec_driver_sql("CREATE TABLE side.vector_meta (space_key TEXT)")
+                conn.exec_driver_sql("INSERT INTO side.vector_meta (space_key) VALUES (?)", (sk,))
+                n = conn.exec_driver_sql("SELECT count(*) FROM side.event_vectors").scalar()
+        # Same durability bar as the truth writers: the sidecar protects an embed
+        # that takes hours to redo, so it must be on the platter — not just in the
+        # page cache — before the rename publishes it, and the rename itself must
+        # survive power loss (dir fsync).
+        from .._truth.jsonl_log import _fsync_dir
+
+        fd = os.open(tmp, os.O_RDONLY)
+        try:
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+        os.replace(tmp, path)
+    except BaseException:
+        tmp.unlink(missing_ok=True)  # never leave a dead build for the sweep to age out
+        raise
     _fsync_dir(Path(truth_dir))
     logger.info("vectors: saved %s vectors to sidecar (space=%s)", n, sk)
     return int(n or 0)
@@ -345,8 +386,7 @@ def load_vectors_sidecar(truth_dir, space_key: Optional[str] = None) -> int:
     want = space_key or _sk()
     with get_engine().connect() as conn:
         conn = conn.execution_options(isolation_level="AUTOCOMMIT")
-        conn.exec_driver_sql("ATTACH DATABASE ? AS side", (str(path),))
-        try:
+        with _attach_side(conn, path):
             have = conn.exec_driver_sql("SELECT space_key FROM side.vector_meta LIMIT 1").scalar()
             if have != want:
                 logger.info("vector sidecar space %r != current %r — re-embedding", have, want)
@@ -360,8 +400,6 @@ def load_vectors_sidecar(truth_dir, space_key: Optional[str] = None) -> int:
                 f"SELECT event_id, content_type, {chunk_col}, dim, vec FROM side.event_vectors"
             )
             n = conn.exec_driver_sql("SELECT count(*) FROM event_vectors").scalar()
-        finally:
-            conn.exec_driver_sql("DETACH DATABASE side")
     _bump_version()
     logger.info("vectors: restored %s vectors from sidecar", n)
     return int(n or 0)
@@ -481,11 +519,19 @@ def search(
     exclude_content_types: Optional[list[str]] = None,
     source: Optional[list[str]] = None,
     thread_ids: Optional[list[int]] = None,
+    agents: str = "exclude",
 ) -> Optional[list[EventHit]]:
     """Embedded semantic search: embed the query, brute-force cosine KNN, hydrate.
 
     Returns None when this isn't SQLite, the scope has no embedded pool, nothing's
     indexed, or the embed fails — so search degrades to the lexical arm.
+
+    ``agents`` mirrors the lexical arm: 'exclude' (default) drops agent-run threads
+    (``thread_type='system'``), 'include' keeps them, 'only' keeps nothing else.
+    An explicit ``thread_id``/``thread_ids`` scope bypasses it, like the blacklist.
+    'only' pre-masks the KNN (agent threads are a sliver of the embedded corpus —
+    a corpus-wide top-k would rarely land in them); 'exclude' filters at hydration
+    like the blacklist, leaning on the candidate over-fetch.
     """
     if not is_available() or not query or not query.strip():
         return None
@@ -519,7 +565,8 @@ def search(
     if thread_ids is not None and not thread_ids:
         return []  # an empty id-set scope matches nothing
     selective = (thread_id is not None or thread_ids is not None
-                 or since is not None or until is not None or bool(source))
+                 or since is not None or until is not None or bool(source)
+                 or agents == "only")
     allowed_ids = None
     if selective:
         awhere = []
@@ -530,6 +577,13 @@ def search(
             aparams["tid"] = thread_id
         if thread_ids is not None:
             awhere.append(_in_clause("e.thread_id", thread_ids, "tids", aparams, negate=False))
+        if thread_id is None and thread_ids is None:
+            # No explicit thread scope: apply the agents filter to the mask so
+            # ranking happens within the allowed pool (essential for 'only').
+            if agents == "exclude":
+                awhere.append("e.thread_id NOT IN (SELECT id FROM threads WHERE thread_type = 'system')")
+            elif agents == "only":
+                awhere.append("e.thread_id IN (SELECT id FROM threads WHERE thread_type = 'system')")
         if since:
             awhere.append("e.occurred_at >= :since")
             aparams["since"] = since
@@ -565,6 +619,11 @@ def search(
     else:
         # Honor the per-thread search blacklist; an explicit thread scope bypasses it.
         where.append("f.thread_id NOT IN (SELECT id FROM threads WHERE exclude_from_search)")
+        # Agent-run threads ride the same pattern (see the docstring).
+        if agents == "exclude":
+            where.append("f.thread_id NOT IN (SELECT id FROM threads WHERE thread_type = 'system')")
+        elif agents == "only":
+            where.append("f.thread_id IN (SELECT id FROM threads WHERE thread_type = 'system')")
     if exclude_content_types:
         where.append(_in_clause("f.content_type", exclude_content_types, "xct", params, negate=True))
     if since:

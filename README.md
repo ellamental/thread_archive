@@ -234,7 +234,11 @@ wins; ids that were never imported are skipped, not fatal.
   `docs/spec/product-json.md` in the thread monorepo.
 - **Searches locally** — FTS5 lexical (boolean / phrase / pipe-OR / code-identifier),
   optionally fused with local semantic vectors and a cross-encoder re-rank; plus
-  transcript reconstruction for reading.
+  transcript reconstruction for reading. An empty query **browses**: one row per
+  thread by last activity, under the same time/source/type filters — orientation
+  ("what happened yesterday") without guessing keywords. Ranked results come one
+  row per thread — repeats and cross-thread duplicate content fold into
+  annotations instead of spending result slots (`group='none'` for every hit).
 - **Rebuilds losslessly** — `rm index.db && archive reindex` reconstructs the entire
   index from the JSONL truth; a `cp`/`rsync` of the truth dir *is* the backup.
 - **Redacts without deleting history** — `archive redact` crypto-shreds content
@@ -297,7 +301,8 @@ fallback), bridges, peers.
 The graph is consumable from the public read surface, not just the librarian's: search
 headers name the subjects a result set clusters under with their `[topic <id>]`s,
 `thread_read` on a topic id renders the topic's curated page (description, links, cited
-quotes — each quote anchored to open via `around_event`), and `thread_search(topic_id=…)`
+quotes — each quote anchored to open via `around_event`), `thread_read('topics')` renders
+the whole curated hierarchy as an indented forest, and `thread_search(topic_id=…)`
 scopes a search to the topic's member conversations.
 
 Curation is **event-sourced**. Every graph write (`create_topic`, `link_threads`,

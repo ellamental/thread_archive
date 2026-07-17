@@ -87,8 +87,9 @@ def test_mcp_search_defaults_to_user_only(archive_home) -> None:
 
     # default scope answers the query with the user hit — assistant text stays out
     assert "hi from mcp" not in thread_search("mcp")
-    # 'all' clears the filter → assistant text now found
-    assert "hi from mcp" in thread_search("from mcp", content_type="all")
+    # 'all' clears the filter → assistant text now found (group='none': grouping
+    # would fold the assistant hit into the higher-weighted user hit's row)
+    assert "hi from mcp" in thread_search("from mcp", content_type="all", group="none")
     # an explicit type targets it directly
     assert "hi from mcp" in thread_search("from mcp", content_type="text")
     # the user message is always reachable under the default

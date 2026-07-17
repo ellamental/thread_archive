@@ -691,16 +691,28 @@ class DefaultEventBuilder:
         # API_REQUEST_COMPLETED — completes after every block, so it carries the
         # running (max) timestamp, keeping the whole turn monotonic.
         usage = provider_data.get("usage", {})
+        completed_payload: dict[str, Any] = {
+            "stop_reason": provider_data.get("stop_reason", "end_turn"),
+            "content_blocks": api_blocks,
+            "model": model,
+            "input_tokens": usage.get("input_tokens", 0),
+            "output_tokens": usage.get("output_tokens", 0),
+            "thinking_tokens": usage.get("thinking_tokens", 0),
+        }
+        # Preserve every other usage field the source recorded rather than dropping it:
+        # the flat trio above stays for readers, and any remaining key rides alongside —
+        # cloth's cache_read_tokens/cache_write_tokens, a provider's cache-creation counts.
+        for key, value in usage.items():
+            if key not in completed_payload:
+                completed_payload[key] = value
+        # Per-message cost, for the pay-per-token sources that record it (cloth); absent
+        # from subscription transcripts (Claude Code), so those payloads are unchanged.
+        cost = provider_data.get("cost")
+        if cost is not None:
+            completed_payload["cost"] = cost
         events.append(ThreadEvent(
             event_type="api_request_completed",
-            payload={
-                "stop_reason": provider_data.get("stop_reason", "end_turn"),
-                "content_blocks": api_blocks,
-                "model": model,
-                "input_tokens": usage.get("input_tokens", 0),
-                "output_tokens": usage.get("output_tokens", 0),
-                "thinking_tokens": usage.get("thinking_tokens", 0),
-            },
+            payload=completed_payload,
             stream_id=stream_id,
             api_call_id=api_call_id,
             occurred_at=running_ts,

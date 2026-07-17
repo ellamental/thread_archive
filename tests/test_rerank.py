@@ -69,6 +69,27 @@ def test_should_rerank_gates_to_conceptual_multiterm() -> None:
     ) is True
 
 
+# ── head_is_strong (the result-side gate half) ───────────────────────────────
+def test_strong_match_floor_is_two_thirds_min_one() -> None:
+    assert rank.strong_match_floor(1) == 1
+    assert rank.strong_match_floor(2) == 2
+    assert rank.strong_match_floor(3) == 2
+    assert rank.strong_match_floor(6) == 4
+
+
+def test_head_is_strong_reads_the_top_hit_only() -> None:
+    terms = ["watcher", "backlog", "daemon"]
+    strong = _hit(1, "the watcher daemon backlog drained overnight")
+    weak = _hit(2, "an unrelated message about breakfast")
+    # strong top hit → True regardless of what ranks below it
+    assert rank.head_is_strong([strong, weak], terms) is True
+    # weak top hit → False even with a strong hit buried at #2
+    assert rank.head_is_strong([weak, strong], terms) is False
+    # empty pool / empty terms → never "strong"
+    assert rank.head_is_strong([], terms) is False
+    assert rank.head_is_strong([strong], []) is False
+
+
 # ── dedup ─────────────────────────────────────────────────────────────────────
 def test_dedup_collapses_identical_same_thread_keeps_cross_thread() -> None:
     hits = [_hit(1, "same text"), _hit(1, "same text"), _hit(2, "same text")]
@@ -148,6 +169,76 @@ def test_rerank_scores_none_without_model(monkeypatch) -> None:
     # No query / no docs short-circuits before any model load.
     assert rerank.rerank_scores("", ["a"]) is None
     assert rerank.rerank_scores("q", []) is None
+
+
+# ── the full gate through search() (model-free, real store) ──────────────────
+def _seed_one_thread(archive_home, user_text: str) -> None:
+    import json
+
+    from thread_archive._importers import import_session_incremental
+    from thread_archive._store import init_db
+
+    init_db()
+    f = archive_home / "s.jsonl"
+    lines = [
+        {"type": "user", "uuid": "u1", "timestamp": "2026-01-01T10:00:00Z",
+         "sessionId": "s", "message": {"role": "user", "content": user_text}},
+        {"type": "assistant", "uuid": "a1", "timestamp": "2026-01-01T10:00:05Z",
+         "message": {"role": "assistant", "model": "claude-opus-4",
+                     "content": [{"type": "text", "text": "ok."}]}},
+    ]
+    f.write_text("\n".join(json.dumps(ln) for ln in lines) + "\n", encoding="utf-8")
+    import_session_incremental(f, "proj:s")
+
+
+def _arm_recording_reranker(monkeypatch) -> list:
+    """Make the reranker 'available' with a scoring stub that records its calls."""
+    calls: list[int] = []
+
+    def fake_scores(query, docs):
+        calls.append(len(docs))
+        return [0.0] * len(docs)
+
+    monkeypatch.setattr(rerank, "is_available", lambda: True)
+    monkeypatch.setattr(rerank, "rerank_scores", fake_scores)
+    return calls
+
+
+def test_search_skips_rerank_on_strong_lexical_head(archive_home, monkeypatch) -> None:
+    # Every query term lands literally in the seeded doc → the ranked head is
+    # strong → the cross-encoder must not be consulted, and the hit must carry
+    # the lexical verdict (_did_rerank False), not the by-meaning one.
+    from thread_archive._retrieval import search
+
+    calls = _arm_recording_reranker(monkeypatch)
+    _seed_one_thread(archive_home, "the launchd supervisor restarted the watcher daemon")
+    hits = search("watcher daemon restarted")
+    assert hits and calls == []
+    assert hits[0]["_did_rerank"] is False
+
+
+def test_search_reranks_on_weak_lexical_head(archive_home, monkeypatch) -> None:
+    # Only one of three terms lands (below the strong floor of 2) → the head is
+    # weak — the vocab-mismatch shape the cross-encoder exists for — so it runs.
+    from thread_archive._retrieval import search
+
+    calls = _arm_recording_reranker(monkeypatch)
+    _seed_one_thread(archive_home, "the watcher process stopped overnight")
+    hits = search("watcher vanishing mysteriously")
+    assert hits and calls, "weak head should have gone through the cross-encoder"
+    assert hits[0]["_did_rerank"] is True
+
+
+def test_search_rerank_true_overrides_the_strong_head_skip(archive_home, monkeypatch) -> None:
+    # An explicit rerank=True is a caller decision — it bypasses the shape gate
+    # AND the strong-head skip (warm_models depends on this to prime the model).
+    from thread_archive._retrieval import search
+
+    calls = _arm_recording_reranker(monkeypatch)
+    _seed_one_thread(archive_home, "the launchd supervisor restarted the watcher daemon")
+    hits = search("watcher daemon restarted", rerank=True)
+    assert hits and calls
+    assert hits[0]["_did_rerank"] is True
 
 
 # ── warm() preload contract (model-free) ─────────────────────────────────────

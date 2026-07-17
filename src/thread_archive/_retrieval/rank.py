@@ -12,6 +12,10 @@ The production ranker. The federation produces a pool; this turns it into an ord
      (:mod:`.rerank`) to *conceptual* multi-term queries — the vocab-mismatch ones
      where the bi-encoder ranks the target mid-list. Keyword shapes (OR / quoted /
      identifier-dominated / single-term) the lexical arm already nails are skipped.
+     :func:`head_is_strong` is the second, result-side half of that gate: once the
+     pool is ranked, a top hit that literally contains the query terms means the
+     lexical order is already trustworthy and the re-rank stands down (see
+     :func:`thread_archive._retrieval.search`).
 
 The weights are the production values, with their rationale: recency 1.0 (the
 corpus skews to OLD threads, so a strong recency boost buries what users actually
@@ -155,6 +159,44 @@ def should_rerank(query: str, terms: list[str]) -> bool:
     return code_terms * 2 < len(terms)
 
 
+def term_hit_count(content: str, terms: list[str]) -> int:
+    """How many of ``terms`` literally appear in ``content``. Terms ≥4 chars match
+    by substring; shorter terms must hit a word boundary (so 'go' doesn't match
+    'good'). Each term counts at most once."""
+    if not terms or not content:
+        return 0
+    c = content.lower()
+    n = 0
+    for t in terms:
+        if len(t) >= 4:
+            if t in c:
+                n += 1
+        elif re.search(r"\b" + re.escape(t) + r"\b", c):
+            n += 1
+    return n
+
+
+def strong_match_floor(n_terms: int) -> int:
+    """Term-hit floor for a *strong* lexical match: ⌈2/3·N⌉, min 1. The one
+    threshold shared by the renderer's ``quality=strong`` verdict and the
+    :func:`head_is_strong` re-rank skip — what the header calls trustworthy is
+    exactly what the pipeline trusts."""
+    return max(1, -(-2 * n_terms // 3))
+
+
+def head_is_strong(hits: list[EventHit], terms: list[str]) -> bool:
+    """Whether the top-ranked hit is a strong literal match for the query
+    (:func:`strong_match_floor` of the terms land in its content). A strong head
+    means the lexical ranking already found the target's vocabulary — the
+    cross-encoder exists for the *vocab-mismatch* case, and re-ranking a
+    confident lexical order costs seconds only to shuffle it (measured on the
+    title-query eval: forced re-rank drops MRR 0.55→0.48)."""
+    if not hits or not terms:
+        return False
+    text = hits[0].get("full_content") or hits[0].get("snippet") or ""
+    return term_hit_count(text, terms) >= strong_match_floor(len(terms))
+
+
 def match_window(content: str, terms: list[str], chars: int) -> str:
     """The ~``chars``-wide slice of ``content`` centred on the earliest term match —
     what a cross-encoder should score. Feeding it the doc *head* mis-scores any hit
@@ -185,6 +227,69 @@ def dedup_results(results: list[EventHit]) -> list[EventHit]:
         if key in seen:
             continue
         seen.add(key)
+        out.append(r)
+    return out
+
+
+def collapse_same_anchor(results: list[EventHit]) -> list[EventHit]:
+    """Collapse hits sharing one ``(thread_id, event_id)`` anchor. A thread-meta
+    doc (title/summary) is anchored to its thread's first indexed event, so it
+    and that event can both match one query — two rows that open identically in
+    ``thread_read``. Runs post-rank, order-preserving: the better-placed row
+    survives."""
+    if len(results) <= 1:
+        return results
+    seen: set[tuple] = set()
+    out: list[EventHit] = []
+    for r in results:
+        key = (r.get("thread_id"), r.get("event_id"))
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(r)
+    return out
+
+
+def _norm_content(r: EventHit) -> str:
+    """Whitespace-collapsed, lowercased hit content — the cross-thread duplicate
+    identity ``group_by_thread`` folds on."""
+    return " ".join((r.get("full_content") or r.get("snippet") or "").split()).lower()
+
+
+def group_by_thread(results: list[EventHit]) -> list[EventHit]:
+    """Collapse a ranked hit list to one row per thread, annotated instead of
+    truncated — result slots are an agent's budget, and redundancy spends them:
+
+    - further hits in an already-represented thread fold into its row's
+      ``_thread_more`` count (drill in with a ``thread_id``-scoped search);
+    - a hit whose content is identical (:func:`_norm_content`) to a row already
+      on screen from a *different* thread — a forked session, a fleet of
+      spawned agents carrying one prompt — folds into that row's
+      ``_dup_thread_ids`` instead of repeating the content. A thread folded
+      this way can still surface later on a distinct hit of its own.
+
+    Ranked order in, ranked order out: a thread ranks where its best hit ranks.
+    """
+    by_thread: dict[int, EventHit] = {}
+    by_content: dict[str, EventHit] = {}
+    out: list[EventHit] = []
+    for r in results:
+        tid = r.get("thread_id")
+        rep = by_thread.get(tid)
+        if rep is not None:
+            rep["_thread_more"] = rep.get("_thread_more", 0) + 1
+            continue
+        norm = _norm_content(r)
+        if norm:
+            dup = by_content.get(norm)
+            if dup is not None:
+                ids = dup.setdefault("_dup_thread_ids", [])
+                if tid not in ids:
+                    ids.append(tid)
+                continue
+        by_thread[tid] = r
+        if norm:
+            by_content[norm] = r
         out.append(r)
     return out
 

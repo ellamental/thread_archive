@@ -10,8 +10,8 @@ switches to ``count`` (a per-thread tally over the whole match pool) or ``linkab
 from __future__ import annotations
 
 import json
-import re
 from collections import Counter
+from datetime import datetime
 
 from sqlalchemy import text as sa_text
 
@@ -19,6 +19,9 @@ from .._store import use_session
 from . import rank as _rank
 from . import subjects as _subjects
 from ._types import EventHit
+from .rank import (
+    term_hit_count,  # noqa: F401 — the match-quality primitive lives in rank; re-exported here for the render-layer's callers
+)
 
 # output='count' wants a true tally, so the pipeline over-fetches to this cap; a
 # pool that reaches it was truncated and the tally renders as a floor ("N+").
@@ -29,27 +32,10 @@ def _hit_text(h: EventHit) -> str:
     return h.get("full_content") or h.get("snippet") or ""
 
 
-def term_hit_count(content: str, terms: list[str]) -> int:
-    """How many of ``terms`` literally appear in ``content``. Terms ≥4 chars match
-    by substring; shorter terms must hit a word boundary (so 'go' doesn't match
-    'good'). Each term counts at most once."""
-    if not terms or not content:
-        return 0
-    c = content.lower()
-    n = 0
-    for t in terms:
-        if len(t) >= 4:
-            if t in c:
-                n += 1
-        elif re.search(r"\b" + re.escape(t) + r"\b", c):
-            n += 1
-    return n
-
-
 def _search_quality(top_hit_count: int, n_terms: int, did_rerank: bool):
     """Verdict for the top hit → ``(quality, note)`` or None. Rerank wins (the order
-    is by-meaning, not keyword overlap); else zero overlap is ``weak``, ≥⌈2/3·N⌉
-    terms is ``strong``, in-between is ``partial``."""
+    is by-meaning, not keyword overlap); else zero overlap is ``weak``, at least
+    :func:`_rank.strong_match_floor` terms is ``strong``, in-between is ``partial``."""
     if n_terms <= 0:
         return None
     if did_rerank:
@@ -59,8 +45,7 @@ def _search_quality(top_hit_count: int, n_terms: int, did_rerank: bool):
         return ("weak", "no query term appears in the top hit — these are nearest-neighbour "
                         "guesses and the log may simply not contain this. Rephrase the concept "
                         "or switch data store; piling on more synonyms won't help")
-    strong_at = max(1, -(-2 * n_terms // 3))  # ceil(2/3 · n_terms)
-    if top_hit_count >= strong_at:
+    if top_hit_count >= _rank.strong_match_floor(n_terms):
         return ("strong", None)
     return ("partial", "only some query terms matched the top hit — scan before trusting")
 
@@ -102,12 +87,43 @@ def _format_linkable(hits: list[EventHit]) -> str:
     return json.dumps(out, indent=2)
 
 
+def _format_browse(hits: list[EventHit]) -> str:
+    """Render browse rows (empty-query search) as a thread list: one line per
+    thread — id, title, source, type, size, last activity — plus the follow-up
+    verbs an agent needs to go deeper."""
+    lines = [
+        f"{len(hits)} thread(s) · browse (no query) — one row per thread, by last activity",
+        "  open one: thread_read(thread_id) · its tail: thread_read(thread_id, around_event=event_id)",
+        "  topic tree: thread_read('topics') · list topics: thread_search('', types='topic')",
+        "",
+    ]
+    for h in hits:
+        ts = h.get("occurred_at")
+        when = ts.strftime("%Y-%m-%d %H:%M") if isinstance(ts, datetime) else str(ts or "")[:16]
+        lines.append(
+            f"[{h['thread_id']}/{h['event_id']}] {h.get('thread_title')} · "
+            f"{h.get('thread_source') or '?'} · {h.get('content_type')} · "
+            f"{h.get('n_events', 0)} ev · {when}"
+        )
+    return "\n".join(lines)
+
+
 def format_results(hits: list[EventHit], query: str, *, output: str | None = None) -> str:
+    if hits and hits[0].get("_browse"):
+        # Browse rows: linkable stays JSON; count is meaningless for a list that
+        # is already one row per thread, so every other output renders the list.
+        if output == "linkable":
+            return _format_linkable(hits)
+        return _format_browse(hits)
     if output == "count":
         return _format_count(hits, query)
     if output == "linkable":
         return _format_linkable(hits)
     if not hits:
+        if not (query or "").strip():
+            return ("No threads matched the browse filters. Widen the window or drop a "
+                    "filter (browse lists threads by last activity; topics/system threads "
+                    "need an explicit types=…).")
         return f'No results for "{query}".'
 
     terms = query_terms(query)
@@ -121,6 +137,9 @@ def format_results(hits: list[EventHit], query: str, *, output: str | None = Non
     lines = [header]
     if verdict and verdict[1]:
         lines.append(f"  note: {verdict[1]}")
+    if any(h.get("_thread_more") or h.get("_dup_thread_ids") for h in hits):
+        lines.append("  grouped: one row per thread — repeats fold into '+N more in thread' / "
+                     "'= same content'; group='none' for every hit, thread_id=… to drill in")
     subj_line = None
     if _subjects.enabled():
         subj_line = _subjects.format_subjects_line(_subjects.subjects_for_results(hits))
@@ -142,6 +161,9 @@ def format_results(hits: list[EventHit], query: str, *, output: str | None = Non
             head += f" · {k}/{n_terms}"
             if k == 0:
                 head += " (semantic)"
+        more = h.get("_thread_more")
+        if more:
+            head += f" · +{more} more in thread"
         lines.append(head)
 
         context = h.get("context")
@@ -151,6 +173,12 @@ def format_results(hits: list[EventHit], query: str, *, output: str | None = Non
             snippet = " ".join((h.get("snippet") or "").split())
             if snippet:
                 lines.append(f"    {snippet}")
+
+        dups = h.get("_dup_thread_ids")
+        if dups:
+            shown = ", ".join(str(t) for t in dups[:3])
+            extra = f", +{len(dups) - 3} more" if len(dups) > 3 else ""
+            lines.append(f"    = same content in thread(s) {shown}{extra}")
 
         ctx_events = h.get("context_events") or {}
         for direction in ("before", "after"):

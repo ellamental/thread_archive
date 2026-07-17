@@ -33,7 +33,7 @@ from .graph import (
     reset_cache,
 )
 from .materialize import apply_event
-from .read import topic_get, topic_members, topic_thread_ids
+from .read import topic_get, topic_members, topic_thread_ids, topic_tree
 from .write import (
     add_topic_evidence,
     archive_topic,
@@ -83,4 +83,5 @@ __all__ = [
     "topic_get",
     "topic_members",
     "topic_thread_ids",
+    "topic_tree",
 ]

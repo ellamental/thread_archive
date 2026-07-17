@@ -117,6 +117,39 @@ def test_by_model_lists_every_model_uncapped(archive_home):
     assert capped["overview"]["models"] == 25  # the count stays true even when the list is capped
 
 
+def test_import_preserves_cloth_cost_and_cache_tokens(archive_home):
+    """End to end through the real cloth import path: a message's cost + cache-token counts
+    land in the stored api_request_completed event (they were being dropped) and feed the
+    stats survey."""
+    from thread_archive._importers import import_cloth_session_incremental
+    from thread_archive._store import get_engine
+
+    uuid = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+    user = {"type": "user", "uuid": "u1", "timestamp": "2026-07-01T10:00:00Z",
+            "message": {"role": "user", "content": "hi"}}
+    asst = {"type": "assistant", "uuid": "a1", "parentUuid": "u1", "timestamp": "2026-07-01T10:00:05Z",
+            "message": {"role": "assistant", "model": "deepseek/deepseek-v4-pro",
+                        "content": [{"type": "text", "text": "hello"}],
+                        "usage": {"input_tokens": 100, "output_tokens": 20, "thinking_tokens": 0,
+                                  "cache_read_tokens": 80, "cache_write_tokens": 5},
+                        "cost": 0.0121}}
+    f = archive_home / f"{uuid}.jsonl"
+    f.write_text("\n".join(json.dumps(x) for x in (user, asst)) + "\n", encoding="utf-8")
+    ta.open_archive(str(archive_home))
+    import_cloth_session_incremental(f, source_id=uuid)
+
+    with get_engine().begin() as c:
+        row = c.execute(
+            text("SELECT payload FROM events WHERE event_type = 'api_request_completed' LIMIT 1")
+        ).scalar()
+    payload = json.loads(row)
+    assert payload["cost"] == 0.0121
+    assert payload["cache_read_tokens"] == 80
+    assert payload["cache_write_tokens"] == 5
+
+    assert abs(ta.stats()["overview"]["cost"] - 0.0121) < 1e-9
+
+
 def test_refresh_is_incremental(archive_home):
     _seed_events(archive_home, [(1, "cloth", "m1", 100, 10, 0.01)])
     assert ta.stats()["overview"]["tokens"] == 110
@@ -127,6 +160,123 @@ def test_refresh_is_incremental(archive_home):
     s2 = ta.stats()
     assert s2["overview"]["tokens"] == 330
     assert abs(s2["overview"]["cost"] - 0.03) < 1e-9
+
+
+def _seed_model_detail(archive_home):
+    """Fixture for the per-model drill-down: two 'mx' sessions in different months
+    (one mixed-model, one cost-bearing), a third session that never used 'mx', and
+    ``context_summary`` (compaction) events — including one landing in a month after
+    its session started, and one in the non-mx session that must not be attributed.
+    """
+    ta.open_archive(str(archive_home))
+    from thread_archive._store import get_engine
+
+    with get_engine().begin() as c:
+        for tid, source, at in [
+            (1, "cloth", "2026-01-05 10:00:00"),
+            (2, "claude-code", "2026-01-20 09:00:00"),
+            (3, "claude-code", "2026-02-02 08:00:00"),
+        ]:
+            c.execute(
+                text(
+                    "INSERT INTO threads (id, name, title, thread_type, source, archived, inserted_at) "
+                    "VALUES (:id, :name, :title, 'conversation', :source, 0, :at)"
+                ),
+                {"id": tid, "name": f"thread-{tid}", "title": f"session {tid}", "source": source, "at": at},
+            )
+        completions = [
+            (1, "mx", 100, 10, 0.01),
+            (1, "mx", 200, 20, None),
+            (2, "mx", 1000, 100, None),
+            (2, "my", 5000, 500, None),  # another model's share of the mixed session
+            (3, "my", 70, 7, None),  # a session mx never touched
+        ]
+        for j, (tid, model, itok, otok, cost) in enumerate(completions):
+            payload = {"model": model, "input_tokens": itok, "output_tokens": otok, "thinking_tokens": 0}
+            if cost is not None:
+                payload["cost"] = cost
+            c.execute(
+                text(
+                    "INSERT INTO events (thread_id, stream_id, event_type, payload, occurred_at) "
+                    "VALUES (:tid, :sid, 'api_request_completed', :payload, :ts)"
+                ),
+                {"tid": tid, "sid": f"s{j}", "payload": json.dumps(payload), "ts": "2026-01-05T10:00:00Z"},
+            )
+        for k, (tid, ts) in enumerate([
+            (1, "2026-01-05T12:00:00Z"),
+            (2, "2026-01-20T11:00:00Z"),
+            (2, "2026-02-01T09:00:00Z"),  # session started in Jan, compacted again in Feb
+            (3, "2026-02-02T09:00:00Z"),  # non-mx session: never attributed to mx
+        ]):
+            c.execute(
+                text(
+                    "INSERT INTO events (thread_id, stream_id, event_type, payload, occurred_at) "
+                    "VALUES (:tid, :sid, 'context_summary', '{}', :ts)"
+                ),
+                {"tid": tid, "sid": f"c{k}", "ts": ts},
+            )
+
+
+def test_model_stats_detail(archive_home):
+    _seed_model_detail(archive_home)
+    status, payload = _get("/api/stats/model/mx")
+    assert status == 200
+    assert payload["model"] == "mx"
+
+    o = payload["overview"]
+    assert o["conversations"] == 2  # threads 1 and 2 — thread 3 never used mx
+    assert o["requests"] == 3
+    assert o["tokens"] == 100 + 10 + 200 + 20 + 1000 + 100  # mx's share only, not my's
+    assert abs(o["cost"] - 0.01) < 1e-9
+    assert o["cost_conversations"] == 1
+    assert o["compactions"] == 3  # thread 3's compaction is not mx's
+    assert o["first_at"].startswith("2026-01-05")
+    assert o["last_at"].startswith("2026-01-20")
+
+    p = payload["per_session"]
+    assert p["min_tokens"] == 330
+    assert p["max_tokens"] == 1100
+    assert p["avg_tokens"] == (330 + 1100) / 2
+    assert p["median_tokens"] == (330 + 1100) / 2
+    assert p["avg_requests"] == 1.5
+
+    months = {m["month"]: m for m in payload["by_month"]}
+    assert list(months) == ["2026-01", "2026-02"]  # sorted
+    jan = months["2026-01"]
+    assert jan["sessions"] == 2 and jan["tokens"] == 1430 and jan["compactions"] == 2
+    # February has no new mx session, but a January session compacted there — the
+    # activity keeps a row rather than vanishing.
+    feb = months["2026-02"]
+    assert feb["sessions"] == 0 and feb["tokens"] == 0 and feb["compactions"] == 1
+    assert feb["cost"] is None and feb["avg_tokens"] is None
+
+    top = payload["top_sessions"]
+    assert [t["thread_id"] for t in top] == [2, 1]  # heaviest mx share first
+    assert top[0]["tokens"] == 1100 and top[0]["compactions"] == 2
+    assert top[0]["title"] == "session 2" and top[0]["source"] == "claude-code"
+
+
+def test_model_stats_unknown_model_404s(archive_home):
+    _seed_model_detail(archive_home)
+    status, payload = _get("/api/stats/model/never-used")
+    assert status == 404
+    assert "never-used" in payload["error"]
+    # A placeholder id has rollup rows but is not a real model page either way —
+    # it simply has no thread_metrics rows under that name here.
+    status, _ = _get("/api/stats/model/")
+    assert status == 404
+
+
+def test_model_stats_slash_in_model_name(archive_home):
+    # Router models like 'deepseek/deepseek-v4-pro' contain a slash; the route takes
+    # the whole tail, so both the SPA's percent-encoded form and a hand-typed literal
+    # slash resolve.
+    _seed_events(archive_home, [(1, "cloth", "deepseek/deepseek-v4-pro", 100, 10, 0.01)])
+    for path in ("/api/stats/model/deepseek%2Fdeepseek-v4-pro", "/api/stats/model/deepseek/deepseek-v4-pro"):
+        status, payload = _get(path)
+        assert status == 200, path
+        assert payload["model"] == "deepseek/deepseek-v4-pro"
+        assert payload["overview"]["conversations"] == 1
 
 
 def test_refresh_resets_when_log_shrinks(archive_home):

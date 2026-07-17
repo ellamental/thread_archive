@@ -156,6 +156,46 @@ def test_unrecognised_mode_falls_back_to_user(archive_home) -> None:
     assert read_thread(tid, mode="bogus") == read_thread(tid, mode="user")
 
 
+def test_mode_last_returns_only_final_assistant_text(archive_home) -> None:
+    tid = _seed()
+    out = read_thread(tid, mode="last")
+    assert "(last assistant message)" in out
+    # the closing reply — even though its turn is a compaction boundary the
+    # transcript views collapse; the summary text itself must not leak
+    assert "post compaction reply" in out
+    assert _COMPACTION not in out
+    # nothing else from the thread: no earlier answers, no user turns, no machinery
+    assert "here is the first answer" not in out
+    assert "second question" not in out
+    assert "let me think" not in out
+    assert "[tool:" not in out
+    # anchored and locatable: event id, turn position, and the expand hint
+    assert "event:11" in out
+    assert "turn 3 of 3" in out
+    assert "mode='chat', offset=2" in out
+
+
+def test_mode_last_skips_trailing_unanswered_user(archive_home) -> None:
+    events = _CORPUS + [("user_message_sent", {"content": "unanswered follow-up"}, 11)]
+    tid = _seed(events)
+    out = read_thread(tid, mode="last")
+    assert "post compaction reply" in out
+    assert "unanswered follow-up" not in out
+
+
+def test_mode_last_truncates_at_budget(archive_home) -> None:
+    tid = _seed()
+    out = read_thread(tid, mode="last", max_chars=10)
+    assert "post compa" in out and "post compaction reply" not in out
+    assert "truncated" in out
+
+
+def test_mode_last_without_assistant_text(archive_home) -> None:
+    tid = _seed([("user_message_sent", {"content": "hello?"}, 1)])
+    out = read_thread(tid, mode="last")
+    assert "no assistant text" in out
+
+
 # ── step grouping ────────────────────────────────────────────────────────────
 
 def test_steps_close_at_text(archive_home) -> None:

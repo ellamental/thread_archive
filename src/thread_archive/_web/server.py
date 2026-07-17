@@ -20,17 +20,13 @@ import time
 from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import Optional
-from urllib.parse import parse_qs, urlparse
+from typing import TYPE_CHECKING, Optional
+from urllib.parse import parse_qs, unquote, urlparse
 
 from .. import _api as api
 
-# The hierarchy edge vocabulary (owned by the gardener diagnostics module): a
-# `part-of` link reads child→parent, a `contains` link parent→child. The topic
-# tree is *derived* from these links — topics are the only nodes (one id space,
-# no ontology tables), so the hierarchy is exactly as curated as the links are.
-from .._knowledge.garden import HIERARCHY_DOWN as _HIERARCHY_DOWN
-from .._knowledge.garden import HIERARCHY_UP as _HIERARCHY_UP
+if TYPE_CHECKING:
+    from .._retrieval._types import EventHit
 
 STATIC_DIR = (Path(__file__).parent / "static").resolve()
 
@@ -162,7 +158,7 @@ _VIEWER_SNIPPET_LINES = 1
 _VIEWER_SNIPPET_MAX = 400
 
 
-def _shape_search_hits(hits: list[dict], query: str) -> list[dict]:
+def _shape_search_hits(hits: "list[EventHit]", query: str) -> "list[EventHit]":
     """Rewrite each hit's ``snippet`` for the viewer: unwrap the Grok
     ``<user_query>`` wrapper to the real prompt (the span the reader shows, so the
     result list matches the thread it opens), then keep the matched line plus one
@@ -369,58 +365,11 @@ def _list_topics(*, limit: int, q: Optional[str]) -> dict:
 
 
 def _topic_tree() -> dict:
-    """The derived topic hierarchy: a forest over live topics' part-of/contains
-    links. Roots are parents that are no one's child. A child with several
-    parents appears under each (it's a DAG rendered as a tree); a cycle is cut
-    at the edge that would revisit an ancestor. Conversations and archived
-    topics never enter — an edge to one simply doesn't shape the tree."""
-    from sqlalchemy import select
-
-    from .._store import Thread, ThreadLink, get_session
+    """The derived topic hierarchy (see :func:`thread_archive._knowledge.topic_tree`)."""
+    from .._knowledge import topic_tree
 
     api.open_archive()
-    with get_session() as s:
-        live = {
-            r.id: {"id": r.id, "title": r.title or r.name, "topic_kind": r.topic_kind}
-            for r in s.execute(
-                select(Thread.id, Thread.title, Thread.name, Thread.topic_kind)
-                .where(Thread.thread_type == "topic")
-                .where(Thread.archived.is_(False))
-            )
-        }
-        rows = s.execute(
-            select(ThreadLink.source_thread_id, ThreadLink.target_thread_id, ThreadLink.link_type)
-            .where(ThreadLink.link_type.in_((_HIERARCHY_UP, _HIERARCHY_DOWN)))
-        ).all()
-
-    children: dict[int, set[int]] = {}
-    for src, tgt, link_type in rows:
-        child, parent = (src, tgt) if link_type == _HIERARCHY_UP else (tgt, src)
-        if child == parent or child not in live or parent not in live:
-            continue
-        children.setdefault(parent, set()).add(child)
-
-    child_ids = {c for kids in children.values() for c in kids}
-
-    def build(tid: int, ancestors: frozenset) -> dict:
-        node = dict(live[tid])
-        kids = sorted(
-            children.get(tid, set()) - ancestors,
-            key=lambda c: ((live[c]["title"] or "").lower(), c),
-        )
-        node["children"] = [build(c, ancestors | {tid}) for c in kids]
-        return node
-
-    def weight(node: dict) -> int:
-        return 1 + sum(weight(c) for c in node["children"])
-
-    forest = [build(r, frozenset()) for r in sorted(set(children) - child_ids)]
-    forest.sort(key=lambda n: (-weight(n), (n["title"] or "").lower(), n["id"]))
-    return {
-        "roots": forest,
-        "topics_in_hierarchy": len((child_ids | set(children)) & set(live)),
-        "topics_total": len(live),
-    }
+    return topic_tree()
 
 
 def _topic_detail(topic_id: int, *, evidence_limit: int) -> Optional[dict]:
@@ -555,6 +504,16 @@ def route(method: str, path: str, params: dict) -> Response:
         limit = int(models) if models and models.isdigit() else None
         return _ok(api.stats(model_limit=limit))
 
+    if path.startswith("/api/stats/model/"):
+        # Per-model drill-down. The tail is the model name — taken whole (model ids
+        # like 'deepseek/deepseek-v4-pro' contain slashes) and percent-decoded (the
+        # SPA links with encodeURIComponent; a hand-typed literal slash works too).
+        model = unquote(path[len("/api/stats/model/"):])
+        detail = api.model_stats(model)
+        if detail is None:
+            return 404, "application/json", json.dumps({"error": f"no data for model {model!r}"}).encode(), {}
+        return _ok(detail)
+
     if path == "/api/archive-link":
         # ``id`` may repeat: a caller that cannot tell which of the uuids it can
         # see is the session id sends every candidate, best guess first, and the
@@ -587,6 +546,8 @@ def route(method: str, path: str, params: dict) -> Response:
             content_types=_csv(params, "content_types"),
             since=_first(params, "since"),
             until=_first(params, "until"),
+            agents=_first(params, "agents"),
+            group="none",  # the viewer lists every hit; fold annotations have no UI
             context_lines=0,  # the viewer builds its own ±1 snippet from full_content
         )
         return _ok({"query": q, "hits": _shape_search_hits(hits, q)})

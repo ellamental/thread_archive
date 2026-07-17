@@ -7,7 +7,8 @@ tool_execution_*) plus lifecycle/summary events (api_request_*, stream_completed
 — we render from the granular events and skip the lifecycle ones.
 
 :func:`read_thread` is the string transcript surface (CLI / MCP). It mirrors the
-monorepo ``thread_read`` contract: a ``mode`` view knob (user / chat / full),
+monorepo ``thread_read`` contract: a ``mode`` view knob (user / chat / full, plus
+the standalone-only ``last`` — the closing assistant message),
 turn-based pagination (``limit`` / ``offset`` / ``after_event``), focused reads
 around a search-result event (``around_event`` / ``context_turns``), a per-chunk
 ``max_chars`` budget with a CHUNKED footer, and ``summary`` for the summary views
@@ -251,6 +252,8 @@ def resolve_read_view(mode: Optional[str], user_only: Optional[bool]) -> tuple[b
     ``mode`` is the primary knob; ``user_only`` is a back-compat alias (True→user,
     False→full) and ``mode`` wins when both are set. Default (neither set, or an
     unrecognised mode) is ``user`` — the cheap default, matching the monorepo.
+    (``mode='last'`` is a selection, not a strip-set — :func:`read_thread` handles
+    it before this resolver runs.)
     """
     if mode is not None:
         m = mode.strip().lower()
@@ -755,6 +758,62 @@ def _topic_read_message(thread: Thread, *, session: Optional[Session] = None) ->
     return "\n".join(lines)
 
 
+# The reserved thread_read ref that renders the topic hierarchy instead of a
+# transcript — the knowledge graph's table of contents, and the read surface's
+# only query-less entry point into it.
+TOPIC_TREE_REF = "topics"
+
+
+def _topic_tree_page(budget: int, *, session: Optional[Session] = None) -> str:
+    """Render the curated topic hierarchy as an indented forest, biggest subtree
+    first (see :func:`thread_archive._knowledge.topic_tree`). Size-budgeted like
+    a transcript read: rendering stops cleanly at ``budget`` chars with a note,
+    since a large curated graph can far exceed one read."""
+    from .._knowledge import topic_tree
+
+    tree = topic_tree(session=session)
+    outside = tree["topics_total"] - tree["topics_in_hierarchy"]
+    lines = [
+        "# Topic tree",
+        f"{tree['topics_in_hierarchy']} of {tree['topics_total']} live topics are in "
+        f"the hierarchy ({outside} unparented — list them: "
+        f"thread_search('', types='topic')).",
+        "Open a topic's page: thread_read(topic_id) · scope a search to one: "
+        "thread_search(query, topic_id=…)",
+        "",
+    ]
+    if not tree["roots"]:
+        lines.append("No hierarchy yet — no part-of/contains links between live topics.")
+        return "\n".join(lines)
+
+    used = sum(len(ln) + 1 for ln in lines)
+    truncated = False
+
+    def emit(node: dict, depth: int) -> bool:
+        """Append one node (and recurse); False once the budget is exhausted."""
+        nonlocal used, truncated
+        kind = f" · {node['topic_kind']}" if node.get("topic_kind") else ""
+        line = f"{'  ' * depth}- {node['title'] or '(untitled)'} [topic {node['id']}]{kind}"
+        if used + len(line) + 1 > budget:
+            truncated = True
+            return False
+        lines.append(line)
+        used += len(line) + 1
+        for child in node["children"]:
+            if not emit(child, depth + 1):
+                return False
+        return True
+
+    for root in tree["roots"]:
+        if not emit(root, 0):
+            break
+
+    if truncated:
+        lines += ["", f"… truncated at ~{budget} chars — raise max_chars, or open a "
+                      "subtree's root topic with thread_read(topic_id)."]
+    return "\n".join(lines)
+
+
 # Feature flag for the stored-summary read kinds (summary='short'/'indexed').
 # On by default; set THREAD_ARCHIVE_STORED_SUMMARIES=0 (or false/no/off) to disable —
 # those kinds then return a disabled notice, and everything else is unchanged.
@@ -803,6 +862,50 @@ def _stored_summary(thread: Thread, kind: str) -> str:
     return (
         f"# Thread {thread.id}: {thread.title or thread.name or '(untitled)'} "
         f"({kind} summary)\n\n{text.strip()}"
+    )
+
+
+def _last_assistant_message(thread: Thread, steps: list[dict], budget: int) -> str:
+    """``mode='last'``: only the thread's closing assistant text — the final answer /
+    wrap-up, without paying for any of the rest of the transcript. Renders the last
+    assistant step that has a visible text block (thinking and tool calls stripped,
+    chat-style); a thread that ends on an unanswered user message still returns the
+    latest assistant text there is. The footer names the turn it came from so the
+    surrounding exchange is one focused read away."""
+    turns = _group_steps_into_turns(steps)
+    for ti in range(len(turns) - 1, -1, -1):
+        for st in reversed(turns[ti]):
+            if st["role"] != "assistant":
+                continue
+            texts = [
+                b["content"].strip()
+                for b in st.get("blocks", [])
+                if b.get("type") == "text" and (b.get("content") or "").strip()
+            ]
+            if not texts:
+                continue
+            body = "\n\n".join(texts)
+            note = ""
+            if budget > 0 and len(body) > budget:
+                body = body[:budget]
+                note = (
+                    f"\n\n---\n⚠ truncated at ~{budget} chars — raise max_chars "
+                    f"for the whole message."
+                )
+            header = (
+                f"# Thread {thread.id}: {thread.title or thread.name or '(untitled)'} "
+                f"(last assistant message)\n"
+                f"[ASSISTANT {_fmt_ts(st['ts'])} event:{st['id']} "
+                f"— turn {ti + 1} of {len(turns)}]\n\n"
+            )
+            footer = (
+                f"\n\n---\nFull surrounding exchange: "
+                f"thread_read({thread.id}, mode='chat', offset={ti})"
+            )
+            return header + body + note + footer
+    return (
+        f"Thread {thread.id} has no assistant text yet"
+        f" — mode='user' shows what was asked."
     )
 
 
@@ -863,9 +966,13 @@ def read_thread(
 
     ``thread_id`` is either the archive's integer thread id or a provider **session
     id** (the uuid/source_id a tool knows the conversation by) — see
-    :func:`resolve_thread_ref`. ``mode`` picks the view: ``user`` (default) = only
+    :func:`resolve_thread_ref`. The reserved ref ``'topics'`` renders the curated
+    topic hierarchy instead (:func:`_topic_tree_page`), budgeted by ``max_chars``.
+    ``mode`` picks the view: ``user`` (default) = only
     the user turns; ``chat`` = user + assistant visible text (thinking + tool calls
-    stripped); ``full`` = the whole transcript including tool calls. ``tool_results``
+    stripped); ``full`` = the whole transcript including tool calls; ``last`` = only
+    the thread's final assistant text (the closing answer — the cheapest "how did
+    this session end" read; ignores pagination). ``tool_results``
     (default off) adds tool *output* under each call — only meaningful in ``full``
     (where calls are shown). The read is paginated by turns and size-budgeted at
     ``max_chars`` (default ~48k chars): a thread bigger than one chunk ends in a
@@ -882,6 +989,10 @@ def read_thread(
     back-compat alias for ``mode`` (True→user, False→full); ``mode`` wins. Returns a
     message string if absent.
     """
+    if isinstance(thread_id, str) and thread_id.strip().lower() == TOPIC_TREE_REF:
+        budget = max_chars if max_chars and max_chars > 0 else DEFAULT_READ_CHAR_BUDGET
+        return _topic_tree_page(budget, session=session)
+
     summary_kind = _resolve_summary_kind(summary)
     if summary_kind == "?":
         return (
@@ -914,6 +1025,10 @@ def read_thread(
         return _thread_read_summary(
             thread, steps, limit if limit and limit > 0 else 200, offset, session=session
         )
+
+    if mode is not None and mode.strip().lower() == "last":
+        budget = max_chars if max_chars and max_chars > 0 else DEFAULT_READ_CHAR_BUDGET
+        return _last_assistant_message(thread, steps, budget)
 
     # A focused search-result read should show the exchange around the hit, not only
     # the asking side. An explicit mode/user_only remains authoritative.

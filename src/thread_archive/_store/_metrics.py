@@ -240,3 +240,169 @@ def collect_stats(*, model_limit: int | None = None) -> dict:
     }
 
     return {"overview": overview, "by_source": by_source, "by_model": by_model}
+
+
+def _median(sorted_vals: list[int]) -> float | None:
+    """Median of an already-sorted list, or None when empty."""
+    n = len(sorted_vals)
+    if not n:
+        return None
+    mid = n // 2
+    return float(sorted_vals[mid]) if n % 2 else (sorted_vals[mid - 1] + sorted_vals[mid]) / 2
+
+# The most token-hungry sessions listed on a model's detail page — enough to see
+# the shape of the tail without the list becoming a second all-threads page.
+TOP_SESSIONS = 12
+
+
+def collect_model_stats(model: str) -> dict | None:
+    """One model's story across the archive, for the per-model drill-down page:
+    totals, a per-session token distribution, a monthly time series, and the
+    heaviest sessions. Returns None for a model with no live conversation data.
+
+    Sessions here are the conversations in which ``model`` answered at least one
+    request; token/request/cost numbers are that model's share of each (a mixed-model
+    session contributes only its ``model`` rows). Compactions are ``context_summary``
+    events counted across those same sessions — the event doesn't record which model's
+    context overflowed, so in a mixed-model session they read as "compactions in
+    sessions this model took part in", not "compactions this model caused".
+
+    Time comes from ``threads.inserted_at`` (a session's ingest time — first event
+    time for anything the watcher tailed live), not from the events themselves:
+    surveying occurred_at per request means JSON-extracting over the fat event log,
+    seconds per pass (the reason ThreadMetrics exists). Whole sessions bucket into
+    the month they started; compaction events carry their own occurred_at.
+    """
+    refresh_metrics()
+
+    from ._base import get_session
+
+    with get_session() as s:
+        rows = s.execute(
+            text(
+                """
+                SELECT m.thread_id, t.title, COALESCE(t.source, '') AS source,
+                       t.inserted_at,
+                       m.requests, m.input_tokens, m.output_tokens, m.thinking_tokens,
+                       m.cost, m.cost_requests
+                FROM thread_metrics m
+                JOIN threads t ON t.id = m.thread_id
+                WHERE m.model = :model AND t.thread_type = 'conversation' AND t.archived = 0
+                """
+            ),
+            {"model": model},
+        ).all()
+        if not rows:
+            return None
+
+        # Compactions in those sessions, split by thread (for the top-sessions list)
+        # and by the event's own month (for the time series).
+        compact_by_thread: dict[int, int] = {}
+        compact_by_month: dict[str, int] = {}
+        for tid, month, n in s.execute(
+            text(
+                """
+                SELECT e.thread_id, strftime('%Y-%m', e.occurred_at) AS month, COUNT(*)
+                FROM events e
+                WHERE e.event_type = 'context_summary'
+                  AND e.thread_id IN (SELECT thread_id FROM thread_metrics WHERE model = :model)
+                GROUP BY e.thread_id, month
+                """
+            ),
+            {"model": model},
+        ).all():
+            compact_by_thread[tid] = compact_by_thread.get(tid, 0) + int(n)
+            if month:
+                compact_by_month[month] = compact_by_month.get(month, 0) + int(n)
+
+    sessions = [
+        {
+            "thread_id": int(tid),
+            "title": title,
+            "source": source or "(unknown)",
+            "at": str(at) if at else None,
+            "month": str(at)[:7] if at else None,
+            "requests": int(req or 0),
+            "input_tokens": int(itok or 0),
+            "output_tokens": int(otok or 0),
+            "tokens": int(itok or 0) + int(otok or 0),
+            "thinking_tokens": int(ttok or 0),
+            "cost": float(cost or 0.0),
+            "cost_requests": int(creq or 0),
+            "compactions": compact_by_thread.get(int(tid), 0),
+        }
+        for tid, title, source, at, req, itok, otok, ttok, cost, creq in rows
+    ]
+
+    per_session_tokens = sorted(sess["tokens"] for sess in sessions)
+    n_sessions = len(sessions)
+    total_cost_requests = sum(sess["cost_requests"] for sess in sessions)
+    cost_sessions = [sess for sess in sessions if sess["cost_requests"]]
+
+    months: dict[str, dict] = {}
+    for sess in sessions:
+        if not sess["month"]:
+            continue
+        b = months.setdefault(
+            sess["month"],
+            {"sessions": 0, "requests": 0, "input_tokens": 0, "output_tokens": 0, "tokens": 0, "cost": 0.0, "cost_sessions": 0},
+        )
+        b["sessions"] += 1
+        b["requests"] += sess["requests"]
+        b["input_tokens"] += sess["input_tokens"]
+        b["output_tokens"] += sess["output_tokens"]
+        b["tokens"] += sess["tokens"]
+        b["cost"] += sess["cost"]
+        b["cost_sessions"] += 1 if sess["cost_requests"] else 0
+    by_month = [
+        {
+            "month": month,
+            "sessions": b["sessions"],
+            "requests": b["requests"],
+            "input_tokens": b["input_tokens"],
+            "output_tokens": b["output_tokens"],
+            "tokens": b["tokens"],
+            "avg_tokens": _avg(b["tokens"], b["sessions"]),
+            "cost": b["cost"] if b["cost_sessions"] else None,
+            "compactions": compact_by_month.get(month, 0),
+        }
+        # Union with compaction-only months: a session started in one month can
+        # compact in the next, and that activity shouldn't vanish from the series.
+        for month, b in sorted(
+            (months | {
+                m: {"sessions": 0, "requests": 0, "input_tokens": 0, "output_tokens": 0, "tokens": 0, "cost": 0.0, "cost_sessions": 0}
+                for m in compact_by_month if m not in months
+            }).items()
+        )
+    ]
+
+    top_sessions = [
+        {k: sess[k] for k in ("thread_id", "title", "source", "at", "tokens", "requests", "compactions")}
+        for sess in sorted(sessions, key=lambda x: -x["tokens"])[:TOP_SESSIONS]
+    ]
+
+    return {
+        "model": model,
+        "overview": {
+            "conversations": n_sessions,
+            "requests": sum(sess["requests"] for sess in sessions),
+            "input_tokens": sum(sess["input_tokens"] for sess in sessions),
+            "output_tokens": sum(sess["output_tokens"] for sess in sessions),
+            "thinking_tokens": sum(sess["thinking_tokens"] for sess in sessions),
+            "tokens": sum(sess["tokens"] for sess in sessions),
+            "cost": sum(sess["cost"] for sess in sessions) if total_cost_requests else None,
+            "cost_conversations": len(cost_sessions),
+            "compactions": sum(compact_by_thread.values()),
+            "first_at": min((sess["at"] for sess in sessions if sess["at"]), default=None),
+            "last_at": max((sess["at"] for sess in sessions if sess["at"]), default=None),
+        },
+        "per_session": {
+            "min_tokens": per_session_tokens[0],
+            "max_tokens": per_session_tokens[-1],
+            "avg_tokens": _avg(sum(per_session_tokens), n_sessions),
+            "median_tokens": _median(per_session_tokens),
+            "avg_requests": _avg(sum(sess["requests"] for sess in sessions), n_sessions),
+        },
+        "by_month": by_month,
+        "top_sessions": top_sessions,
+    }

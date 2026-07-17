@@ -677,6 +677,54 @@ def test_save_and_load_sidecar_roundtrip(archive_home, tmp_path) -> None:
     assert vectors.get_status()["indexed"] == 2
 
 
+def test_save_sidecar_ignores_and_sweeps_stray_builds(archive_home, tmp_path) -> None:
+    """Concurrent/dead savers' build files must not break a save: each saver
+    builds under its own pid-unique name, a stale stray (a crashed build —
+    the shape that used to collide on CREATE TABLE) is swept by age, and a
+    fresh stray (a live concurrent build) is left alone."""
+    import sqlite3
+    import time
+
+    init_db()
+    vectors.ensure_index()
+    vectors.index_vectors([(1, "user", _unit((0, 1.0)))])
+    truth = tmp_path / "truth"
+    truth.mkdir()
+    stale = truth / "vectors.sqlite.tmp"  # old fixed-name build, saver long dead
+    con = sqlite3.connect(stale)
+    con.execute("CREATE TABLE event_vectors (x)")
+    con.commit()
+    con.close()
+    old = time.time() - 7200
+    os.utime(stale, (old, old))
+    fresh = truth / "vectors.sqlite.tmp.99999999"  # a concurrent saver, mid-build
+    fresh.write_bytes(b"")
+
+    assert vectors.save_vectors_sidecar(truth, space_key="local:test") == 1
+    assert not stale.exists()
+    assert fresh.exists()
+    assert vectors.load_vectors_sidecar(truth, space_key="local:test") == 1
+
+
+def test_failed_save_cleans_its_build_file(archive_home, tmp_path, monkeypatch) -> None:
+    init_db()
+    vectors.ensure_index()
+    vectors.index_vectors([(1, "user", _unit((0, 1.0)))])
+    truth = tmp_path / "truth"
+    truth.mkdir()
+
+    def boom(src, dst):
+        raise OSError("no publish")
+
+    monkeypatch.setattr(os, "replace", boom)
+    try:
+        vectors.save_vectors_sidecar(truth, space_key="local:test")
+        raise AssertionError("save should have propagated the publish failure")
+    except OSError:
+        pass
+    assert list(truth.glob("vectors.sqlite*")) == []
+
+
 def test_load_sidecar_missing_file(archive_home, tmp_path) -> None:
     init_db()
     truth = tmp_path / "truth"

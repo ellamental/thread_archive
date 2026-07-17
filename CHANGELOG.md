@@ -2,6 +2,88 @@
 
 ## Unreleased
 
+- **`thread_read(mode='last')`** — a token-minimal view that returns only the thread's
+  closing assistant text (the final answer / wrap-up), with its event anchor, turn
+  position, and a one-call hint to open the surrounding exchange. The cheapest "how did
+  this session end" read; previously that cost a whole last-turn `chat` read. Budgeted
+  by `max_chars` like everything else; a thread ending on an unanswered user message
+  returns the latest assistant text there is.
+
+- An **empty `thread_search` query is now a browse** — the agent surface's missing list view.
+  One row per thread, ordered by last activity (newest event's `occurred_at`, falling back to
+  `updated_at`), under the existing structural filters: `since`/`until`, `source`, `limit`,
+  `sort='oldest'`, `topic_id` scope. Rows carry the thread id, source, type, event count, and
+  the newest event id as a ready `around_event` anchor; `output='linkable'` stays JSON. A new
+  `types` filter (comma-separated `thread_type` values) picks the population — a browse
+  without it hides `topic`/`system` threads (the web recent-list default); with a keyword
+  query, `types` scopes the lexical arm the same way (semantic arm sits out). Previously an
+  empty query returned "No results" — "what happened yesterday" / "list recent cursor
+  sessions" required guessing keywords.
+
+- **`thread_read('topics')` renders the curated topic tree** — the knowledge graph's table of
+  contents on the public read surface: an indented forest over part-of/contains links,
+  biggest subtree first, budgeted by `max_chars` with a clean truncation note; the header
+  counts unparented topics and points at `thread_search('', types='topic')` to list them.
+  The tree builder moved to `_knowledge.topic_tree()`; the web viewer's `/api/topics/tree`
+  delegates to it.
+
+- Ranked search results are **grouped one row per thread** (`rank.group_by_thread`): a thread's
+  best hit represents it, further hits fold into a `+N more in thread` annotation, and duplicate
+  content from other threads (forked sessions, fleet-spawned copies of one prompt) folds into a
+  `= same content in thread(s) …` annotation — the fold annotates the surviving row instead of
+  spending result slots repeating it. `group='none'` (on `thread_search` / `api.search`) restores
+  every-hit-a-row; a `thread_id` scope, the structural shapes (browse/startswith/oldest), and
+  `count`/`linkable` output are never grouped; the web viewer's `/api/search` passes
+  `group='none'` (its UI lists every hit). Independently, every row-shaped output now collapses
+  hits sharing one `(thread_id, event_id)` anchor — a thread-meta title/summary doc and the first
+  event it anchors to could both match and render as two rows that open identically. The
+  cross-encoder re-rank now scores only the top `RERANK_POOL` ranked candidates (its documented
+  intent) rather than up to `limit` when `limit` exceeds the pool.
+
+- Agent-run threads (`thread_type='system'` — Task-tool subagents, machinery runs) are now
+  **excluded from search and browse by default**: swarms echo their spawning prompts verbatim,
+  and those copies were outranking the conversations that asked. A new `agents` control on
+  `thread_search` (and `api.search` / `browse_threads`) picks the inclusion: `'exclude'`
+  (default) / `'include'` / `'only'` ("what did my subagents do"). Applied in both retrieval
+  arms (lexical WHERE + vector hydration, with a KNN pre-mask for `'only'`). Deliberate scopes
+  stand it down, mirroring the blacklist: an explicit `thread_id`/`topic_id` bypasses it, and
+  an explicit `types` list wins over it entirely.
+
+- The cross-encoder re-rank gains a **result-side gate** (`rank.head_is_strong`): after ranking,
+  a top hit that literally contains ⌈2/3·N⌉ of the query terms (the header's own `strong`
+  threshold, now shared via `rank.strong_match_floor`) skips the re-rank — the stage only pays
+  its seconds on the vocab-mismatch queries it was built for. Motivation: profiling showed the
+  reranker was ~4.9s of a ~5.7s warm search, and a 150-title eval measured forced re-rank
+  *degrading* lexically-anchored queries (MRR 0.546→0.482) while the paraphrase eval that
+  justified the stage stays covered (weak/partial heads still re-rank). `rerank=True` still
+  forces the stage past both gates; the warm pass uses that so the model still preloads.
+  `term_hit_count` moved from `format` to `rank` (format re-exports it).
+
+- Concurrent `save_vectors_sidecar` calls (a backup racing the watcher's cadence, two operator
+  sessions) no longer collide: each saver builds under a pid-unique temp name (the fixed
+  `vectors.sqlite.tmp` let one saver ATTACH another's half-built database — a CREATE TABLE
+  error at best, publishing a half-built sidecar at worst), stale dead builds are swept by
+  age, a failed save removes its own build file, and a DETACH failure invalidates the pooled
+  connection instead of returning it with a stray `side` schema attached.
+
+- **Event amendment** (`thread_archive._ops.amend`, API `amend`/`amendments`): the sanctioned
+  append-only edit mechanism — a superseding truth line (same event id + dedup_key, merged payload)
+  written through the ordinary staged-drain seam, with the prior line preserved as history and an
+  audit record (fields, before-values, reason) in `truth/amendments.jsonl`. Restricted to
+  non-content fields (content-hash material is redaction's jurisdiction), so re-import idempotency
+  and every verify/rebuild hash gate hold. Readers already reconcile: loads are last-wins by id.
+- `backfill_usage_cost` script: re-parses each source transcript and amends the `cost` +
+  cache/extra-usage fields the old importer dropped onto stored `api_request_completed` events
+  (dedup_key match, content-anchor fallback; missing-only merge; dry-run by default, idempotent).
+
+- Each model on the stats page links to a **per-model drill-down** (`/stats/model/:model`, backed by
+  `/api/stats/model/<name>` — the name is a percent-encoded path tail, so router ids like
+  `deepseek/deepseek-v4-pro` work): overview tiles (sessions, tokens, requests, compactions, cost where
+  recorded), a per-session token distribution (min/median/avg/max), a monthly series (sessions, tokens,
+  compactions — sessions bucket into the month they started via `threads.inserted_at`, since surveying
+  per-request timestamps from the event log is seconds-slow; compaction events carry their own month),
+  and the heaviest sessions linking into the reader. Compactions are `context_summary` events counted
+  across the sessions the model took part in — the event doesn't record which model's context overflowed.
 - The web viewer gains a **stats** page: token and cost analytics over the whole archive — overview
   totals + activity span, a by-provider table (conversations, tokens, and average session cost for the
   pay-per-token sources that record it), and a by-model breakdown listing every model used. Cost is read

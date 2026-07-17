@@ -20,8 +20,16 @@ class EventHit(TypedDict):
     are stage annotations: ``_semantic`` (vector-arm cosine, carried through
     fusion), ``_rrf`` (normalized fusion score), ``_did_rerank`` (whether the
     cross-encoder re-ordered the head — drives the renderer's quality verdict),
-    ``context`` (±N-line window around the match) and ``context_events``
-    (neighbouring events, ``{"before": [...], "after": [...]}``)."""
+    ``context`` (±N-line window around the match), ``context_events``
+    (neighbouring events, ``{"before": [...], "after": [...]}``), and the
+    grouping annotations ``_thread_more`` (further hits in this thread folded
+    into this row) / ``_dup_thread_ids`` (other threads whose hit carried the
+    same content, folded into this row — see ``rank.group_by_thread``).
+
+    A *browse* row (empty-query search — see :mod:`.browse`) rides the same
+    shape with ``_browse=True``: one row per thread, ``event_id`` = the
+    thread's newest event, plus ``thread_source`` / ``n_events`` for the
+    list renderer."""
 
     event_id: int
     thread_id: int
@@ -34,5 +42,10 @@ class EventHit(TypedDict):
     _semantic: NotRequired[float]
     _rrf: NotRequired[float]
     _did_rerank: NotRequired[bool]
+    _thread_more: NotRequired[int]
+    _dup_thread_ids: NotRequired[list[int]]
     context: NotRequired[str]
     context_events: NotRequired[dict]
+    _browse: NotRequired[bool]
+    thread_source: NotRequired[Optional[str]]
+    n_events: NotRequired[int]

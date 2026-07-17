@@ -136,8 +136,11 @@ def thread_search(
     until: Optional[str] = None,
     tool_name: Optional[str] = None,
     source: Optional[str] = None,
+    types: Optional[str] = None,
+    agents: Optional[str] = None,
     startswith: Optional[str] = None,
     sort: Optional[str] = None,
+    group: Optional[str] = None,
     output: Optional[str] = None,
     context_lines: int = 2,
     context_events: Optional[str] = None,
@@ -151,6 +154,17 @@ def thread_search(
     ``K/N`` (how many query terms landed) — a weak / 0-of-N result means these are
     nearest-neighbour guesses and the log likely lacks it, so rephrase or switch
     store rather than piling on synonyms.
+
+    An **empty query is a browse** — no keywords needed: one row per thread,
+    newest activity first, honoring the structural filters. "What happened
+    yesterday" is ``query='', since='1d'``; "recent cursor sessions" is
+    ``query='', source='cursor'``; "list my topics" is ``query='',
+    types='topic'``; ``sort='oldest'`` flips to the earliest threads. Each row
+    carries the thread id (open it: ``thread_read``) and its newest event id
+    (open at the tail: ``around_event``). A browse hides topic and system
+    threads unless ``types``/``agents`` says otherwise; ranking options
+    (content_type, context, rerank) don't apply. The curated topic *hierarchy*
+    is a read, not a search: ``thread_read('topics')``.
 
     By default USER messages, thread titles, and stored thread summaries are
     searched — the strongest signals of what a thread was about. When that scope
@@ -172,8 +186,23 @@ def thread_search(
     ``content_type`` (default user+title+summary; 'all' searches
     everything),
     ``exclude_content_type`` (comma-separated types to drop), ``tool_name``,
-    ``source`` (comma-separated providers, e.g. 'claude-code,cursor'), and a
-    ``since``/``until`` window (ISO timestamp or '7d').
+    ``source`` (comma-separated providers, e.g. 'claude-code,cursor'),
+    ``types`` (comma-separated ``thread_type`` values — 'conversation',
+    'topic', 'system'), and a ``since``/``until`` window (ISO timestamp or '7d').
+
+    Agent-run threads — subagent / machinery sessions (🤖-titled) — are
+    **excluded by default**: a swarm echoes its spawning prompt verbatim, and
+    those copies would drown the conversation that asked. Pass
+    ``agents='include'`` to search them alongside conversations, or
+    ``agents='only'`` for just them ("what did my subagents do"). An explicit
+    ``thread_id``/``topic_id`` scope always reaches them.
+
+    Ranked results are **one row per thread** — the thread's best hit, with its
+    other hits folded into a ``+N more in thread`` note (drill in with a
+    ``thread_id``-scoped search) and duplicate content from other threads
+    (forked sessions, fleet-spawned copies of one prompt) folded into a
+    ``= same content in thread(s) …`` note. Pass ``group='none'`` for every hit
+    as its own row.
 
     ``startswith`` does a structural prefix scan (content LIKE 'prefix%'; query text
     unused). ``sort='oldest'`` returns matches chronologically (find when something
@@ -184,8 +213,8 @@ def thread_search(
     'before:after:types', e.g. '2' or '0:1:user') appends the neighbouring events.
     ``output='count'`` returns a per-thread tally (no snippets); ``output='linkable'``
     returns JSON of event/thread ids. ``rerank`` forces the cross-encoder head
-    re-rank on/off (else auto-gated to conceptual queries when the ``[embeddings]``
-    extra is installed).
+    re-rank on/off (else auto-gated: conceptual queries whose top hit isn't
+    already a strong literal match, when the ``[embeddings]`` extra is installed).
     """
     _maybe_catch_up()
     # Bound caller-supplied sizing before it reaches the engine: limit drives a
@@ -204,6 +233,7 @@ def thread_search(
         content_types = list(DEFAULT_SEARCH_CONTENT_TYPES)
     exclude = [c.strip() for c in exclude_content_type.split(",") if c.strip()] if exclude_content_type else None
     sources = [s.strip() for s in source.split(",") if s.strip()] if source else None
+    type_list = [t.strip() for t in types.split(",") if t.strip()] if types else None
 
     def _run(cts):
         return api.search(
@@ -217,8 +247,11 @@ def thread_search(
             until=until,
             tool_name=tool_name,
             source=sources,
+            types=type_list,
+            agents=agents,
             startswith=startswith,
             sort=sort,
+            group=group,
             output=output,
             context_lines=context_lines,
             context_events=context_events,
@@ -252,8 +285,9 @@ def thread_search(
             "content_type": content_type,
             "exclude_content_type": exclude_content_type, "since": since,
             "until": until, "tool_name": tool_name, "source": source,
-            "startswith": startswith, "sort": sort, "output": output,
-            "rerank": rerank,
+            "types": types, "agents": agents,
+            "startswith": startswith, "sort": sort, "group": group,
+            "output": output, "rerank": rerank,
         },
         hits=hits,
         widened=widened,
@@ -292,7 +326,10 @@ def thread_read(
     A **topic id** (from a search header's ``subjects:`` line, or a topic link)
     reads as the topic's curated page instead of a transcript: description, links
     into the topic graph, and the cited quotes — each anchored ``[event:N]`` so it
-    opens in a focused read via ``around_event``.
+    opens in a focused read via ``around_event``. The reserved ref **'topics'**
+    reads the whole curated **topic tree** — the knowledge graph's table of
+    contents, an indented forest of every parented topic (budgeted by
+    ``max_chars``; unparented topics list via ``thread_search('', types='topic')``).
 
     ``mode`` picks the view: 'user' (default) = only the USER messages — the real
     signal of what a thread was about and what was wanted, far cheaper than the
@@ -300,7 +337,10 @@ def thread_read(
     'chat' = the readable conversation — user turns + the assistant's reasoning/text
     with tool calls stripped out (use when you need what was *decided/concluded/built*,
     which lives in assistant text); 'full' = the whole transcript including every
-    tool call (bulky, mostly tool noise — only when you need what the assistant *did*).
+    tool call (bulky, mostly tool noise — only when you need what the assistant *did*);
+    'last' = ONLY the thread's final assistant text — the closing answer/wrap-up, the
+    cheapest way to see how a session ended (ignores pagination; the footer names the
+    turn, so the surrounding exchange is one mode='chat' read away).
     Tool *output* is off by default; set ``tool_results=true`` (only meaningful with
     'full', where the calls are shown) to fold each tool's result under its call.
 
@@ -330,11 +370,13 @@ def thread_read(
             next chunk. Negative counts from end: -20 = last 20 turns. Default: 0.
         summary: Summary view instead of full content — true/'toc' for a compact
             TOC with previews, 'short' or 'indexed' for the stored thread summary.
-        mode: View — 'user' (default), 'chat', or 'full'. Default: user.
+        mode: View — 'user' (default), 'chat', 'full', or 'last' (final assistant
+            text only). Default: user.
         user_only: Back-compat alias for mode (true→user, false→full). Prefer mode.
         tool_results: Include tool output under each call (default off; needs 'full').
         max_chars: Per-chunk character budget; the read stops at a clean turn
             boundary once hit and the footer points at the next offset. Default: ~48k.
+            Lower it (e.g. 8000) for a cheap skim of a long thread.
         after_event: Resume reading from the turn AFTER this event id (overrides
             offset). Robust way to continue from where a previous read stopped.
         around_event: Open this search-result event in its containing turn with

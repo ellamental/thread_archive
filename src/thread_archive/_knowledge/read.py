@@ -158,3 +158,59 @@ def topic_thread_ids(topic_id: int, *, session: Optional[Session] = None) -> lis
                 )
             )
     return sorted(ids)
+
+
+def topic_tree(*, session: Optional[Session] = None) -> dict:
+    """The derived topic hierarchy: a forest over live topics' part-of/contains
+    links. Roots are parents that are no one's child. A child with several
+    parents appears under each (it's a DAG rendered as a tree); a cycle is cut
+    at the edge that would revisit an ancestor. Conversations and archived
+    topics never enter — an edge to one simply doesn't shape the tree.
+
+    Returns ``{"roots": [...], "topics_in_hierarchy": N, "topics_total": M}``;
+    each node is ``{"id", "title", "topic_kind", "children": [...]}``. Shared
+    by the web viewer's tree endpoint and ``thread_read('topics')``."""
+    from .garden import HIERARCHY_DOWN, HIERARCHY_UP
+
+    with use_session(session) as s:
+        live = {
+            r.id: {"id": r.id, "title": r.title or r.name, "topic_kind": r.topic_kind}
+            for r in s.execute(
+                select(Thread.id, Thread.title, Thread.name, Thread.topic_kind)
+                .where(Thread.thread_type == "topic")
+                .where(Thread.archived.is_(False))
+            )
+        }
+        rows = s.execute(
+            select(ThreadLink.source_thread_id, ThreadLink.target_thread_id, ThreadLink.link_type)
+            .where(ThreadLink.link_type.in_((HIERARCHY_UP, HIERARCHY_DOWN)))
+        ).all()
+
+    children: dict[int, set[int]] = {}
+    for src, tgt, link_type in rows:
+        child, parent = (src, tgt) if link_type == HIERARCHY_UP else (tgt, src)
+        if child == parent or child not in live or parent not in live:
+            continue
+        children.setdefault(parent, set()).add(child)
+
+    child_ids = {c for kids in children.values() for c in kids}
+
+    def build(tid: int, ancestors: frozenset) -> dict:
+        node = dict(live[tid])
+        kids = sorted(
+            children.get(tid, set()) - ancestors,
+            key=lambda c: ((live[c]["title"] or "").lower(), c),
+        )
+        node["children"] = [build(c, ancestors | {tid}) for c in kids]
+        return node
+
+    def weight(node: dict) -> int:
+        return 1 + sum(weight(c) for c in node["children"])
+
+    forest = [build(r, frozenset()) for r in sorted(set(children) - child_ids)]
+    forest.sort(key=lambda n: (-weight(n), (n["title"] or "").lower(), n["id"]))
+    return {
+        "roots": forest,
+        "topics_in_hierarchy": len((child_ids | set(children)) & set(live)),
+        "topics_total": len(live),
+    }

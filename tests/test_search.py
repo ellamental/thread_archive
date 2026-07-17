@@ -244,10 +244,13 @@ def test_assistant_text_indexed_once(archive_home) -> None:
     assert hits[0] is exact[0]  # and the full match outranks the partials
 
 
-def test_empty_query_returns_nothing(archive_home) -> None:
+def test_empty_query_browses(archive_home) -> None:
+    """An empty query is a browse, not a lexical search: one row per thread by
+    last activity (full behavior pinned in test_browse.py)."""
     _seed_corpus(archive_home)
-    # browse mode (empty query) isn't a lexical search here → no hits
-    assert search("") == []
+    rows = search("")
+    assert rows and all(r.get("_browse") for r in rows)
+    assert len({r["thread_id"] for r in rows}) == len(rows)
 
 
 # --- match-quality signal ---------------------------------------------------
@@ -447,3 +450,77 @@ def test_substring_like_pass_only_runs_on_pool_shortfall(archive_home) -> None:
     hits = search_events("get_session", limit=1)
     assert len(hits) == 1
     assert "megaget_sessionizer" not in (hits[0]["full_content"] or "")
+
+
+def _seed_agent_thread(archive_home):
+    """A third thread retyped 'system' — an agent-run (subagent/machinery) session
+    that echoes the corpus vocabulary, the way a spawned swarm echoes its prompt."""
+    from sqlalchemy import select, update
+
+    from thread_archive._store import Thread, use_session
+
+    f3 = archive_home / "agent.jsonl"
+    _write_cc(f3, _cc_turn("u9", "a9", "how does authentication work in the login flow",
+                           "Subagent report: authentication rides the session token.", 3))
+    import_session_incremental(f3, "proj:agent")
+    with use_session() as s:
+        tid = s.execute(
+            select(Thread.id).where(Thread.source_id == "proj:agent")
+        ).scalar_one()
+        s.execute(update(Thread).where(Thread.id == tid).values(thread_type="system"))
+        s.commit()
+    return tid
+
+
+def test_agents_excluded_from_search_by_default(archive_home) -> None:
+    """Agent-run threads (thread_type='system') never surface in a default search;
+    agents='include' adds them, agents='only' returns nothing else."""
+    _seed_corpus(archive_home)
+    agent_tid = _seed_agent_thread(archive_home)
+
+    default = search("authentication")
+    assert default, "the human thread must still hit"
+    assert all(h["thread_id"] != agent_tid for h in default)
+
+    included = search("authentication", agents="include")
+    assert {agent_tid} < {h["thread_id"] for h in included}
+
+    only = search("authentication", agents="only")
+    assert only and all(h["thread_id"] == agent_tid for h in only)
+
+
+def test_agents_filter_covers_structural_shapes(archive_home) -> None:
+    """The exclusion rides the shared WHERE, so count / oldest / startswith
+    inherit it."""
+    _seed_corpus(archive_home)
+    agent_tid = _seed_agent_thread(archive_home)
+
+    tally = search("authentication", output="count")
+    assert tally and all(h["thread_id"] != agent_tid for h in tally)
+
+    oldest = search("authentication", sort="oldest")
+    assert oldest and all(h["thread_id"] != agent_tid for h in oldest)
+
+    prefix = search("", startswith="how does authentication")
+    assert prefix and all(h["thread_id"] != agent_tid for h in prefix)
+
+
+def test_agents_deliberate_scopes_bypass(archive_home) -> None:
+    """An explicit thread_id reaches an agent thread regardless of the default,
+    and an explicit types list wins over the agents switch entirely."""
+    _seed_corpus(archive_home)
+    agent_tid = _seed_agent_thread(archive_home)
+
+    scoped = search("authentication", thread_id=agent_tid)
+    assert scoped and all(h["thread_id"] == agent_tid for h in scoped)
+
+    typed = search("authentication", types=["system"])
+    assert typed and all(h["thread_id"] == agent_tid for h in typed)
+
+
+def test_agents_invalid_value_raises(archive_home) -> None:
+    import pytest
+
+    _seed_corpus(archive_home)
+    with pytest.raises(ValueError, match="agents"):
+        search("authentication", agents="everyone")

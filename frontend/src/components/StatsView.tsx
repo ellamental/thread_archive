@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { Link } from 'react-router-dom'
 import { api, type Stats, type StatsModel, type StatsSource } from '../api'
 import { hueStyle, modelHue } from '../modelColor'
 
@@ -6,10 +7,12 @@ import { hueStyle, modelHue } from '../modelColor'
 // incrementally-maintained rollup (server-side). Cost is only present for the
 // pay-per-token sources that record it (cloth, …); subscription tools log tokens
 // but no dollar figure, so their cost shows as '—' rather than a fabricated 0.
+// The formatting helpers and table furniture are shared with the per-model
+// drill-down (ModelStatsView), which lives off this page's model links.
 
-const fmtInt = (n: number): string => n.toLocaleString()
+export const fmtInt = (n: number): string => n.toLocaleString()
 
-function fmtTokens(n: number): string {
+export function fmtTokens(n: number): string {
   const trim = (s: string): string => s.replace(/\.0$/, '')
   if (n >= 1e9) return trim((n / 1e9).toFixed(1)) + 'B'
   if (n >= 1e6) return trim((n / 1e6).toFixed(1)) + 'M'
@@ -19,7 +22,7 @@ function fmtTokens(n: number): string {
 
 // Totals read as plain dollars; sub-dollar per-session averages need more places
 // to not collapse to $0.00, so `precise` widens them.
-function fmtUsd(n: number | null | undefined, precise = false): string {
+export function fmtUsd(n: number | null | undefined, precise = false): string {
   if (n == null) return '—'
   if (n === 0) return '$0'
   if (!precise) return '$' + n.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })
@@ -33,7 +36,7 @@ function fmtMonth(iso: string | null): string {
 }
 
 // A proportional fill bar (0..1 of the row's value against the column max).
-function Bar({ frac, hue }: { frac: number; hue?: number }) {
+export function Bar({ frac, hue }: { frac: number; hue?: number }) {
   const pct = Math.max(frac <= 0 ? 0 : 2, Math.min(100, frac * 100)) // floor a nonzero value so it's visible
   return (
     <span className="stat-bar">
@@ -45,7 +48,7 @@ function Bar({ frac, hue }: { frac: number; hue?: number }) {
   )
 }
 
-function Tile({ label, value, sub }: { label: string; value: string; sub?: string }) {
+export function Tile({ label, value, sub }: { label: string; value: string; sub?: string }) {
   return (
     <div className="stat-tile">
       <div className="n">{value}</div>
@@ -110,9 +113,11 @@ function ModelTable({ rows }: { rows: StatsModel[] }) {
           {rows.map((r) => (
             <tr key={r.model}>
               <td>
-                <span className="model-tag" style={hueStyle(modelHue(r.model))}>
-                  {r.model}
-                </span>
+                <Link className="model-link" to={'/stats/model/' + encodeURIComponent(r.model)}>
+                  <span className="model-tag" style={hueStyle(modelHue(r.model))}>
+                    {r.model}
+                  </span>
+                </Link>
               </td>
               <td className="bar-col">
                 <Bar frac={r.requests / maxReq} hue={modelHue(r.model)} />

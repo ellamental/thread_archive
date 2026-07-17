@@ -244,6 +244,64 @@ export interface Stats {
   by_model: StatsModel[]
 }
 
+// ── per-model drill-down (/stats/model/:model) ──────────────────────────────
+// Sessions are the conversations in which the model answered at least one request;
+// token/request/cost figures are the model's own share of each. Compactions are
+// counted across those sessions (the event doesn't say which model's context
+// overflowed, so in a mixed-model session they read as "compactions in sessions
+// this model took part in").
+export interface ModelStatsOverview {
+  conversations: number
+  requests: number
+  input_tokens: number
+  output_tokens: number
+  thinking_tokens: number
+  tokens: number
+  cost: number | null
+  cost_conversations: number
+  compactions: number
+  first_at: string | null
+  last_at: string | null
+}
+
+export interface ModelStatsPerSession {
+  min_tokens: number
+  max_tokens: number
+  avg_tokens: number | null
+  median_tokens: number | null
+  avg_requests: number | null
+}
+
+export interface ModelStatsMonth {
+  month: string // 'YYYY-MM'
+  sessions: number
+  requests: number
+  input_tokens: number
+  output_tokens: number
+  tokens: number
+  avg_tokens: number | null
+  cost: number | null
+  compactions: number
+}
+
+export interface ModelStatsSession {
+  thread_id: number
+  title: string | null
+  source: string
+  at: string | null
+  tokens: number
+  requests: number
+  compactions: number
+}
+
+export interface ModelStats {
+  model: string
+  overview: ModelStatsOverview
+  per_session: ModelStatsPerSession
+  by_month: ModelStatsMonth[]
+  top_sessions: ModelStatsSession[]
+}
+
 async function getJSON<T>(url: string): Promise<T> {
   const r = await fetch(url)
   if (!r.ok) throw new Error(`${r.status}: ${await r.text()}`)
@@ -286,4 +344,8 @@ export const api = {
   topicTree: () => getJSON<TopicTreeResponse>('/api/topics/tree'),
   topic: (id: number) => getJSON<TopicDetail>(`/api/topic/${id}`),
   stats: () => getJSON<Stats>('/api/stats'),
+  // Model ids can contain '/' (router models), so the name is a percent-encoded
+  // path tail, not a query param — the server decodes it back.
+  modelStats: (model: string) =>
+    getJSON<ModelStats>('/api/stats/model/' + encodeURIComponent(model)),
 }

@@ -5,7 +5,10 @@ optional in-process **vector** (semantic) search — fuse them by reciprocal-ran
 fusion (``_rrf`` normalized to [0,1]), dedup, score with the weighted lexical
 **ranker** (density / phrase / recency / content-type / fusion — :mod:`.rank`),
 then optionally re-order the head with an in-process **cross-encoder** (:mod:`.rerank`)
-on conceptual multi-term queries. With no ``[embeddings]`` extra the vector and
+— gated twice: to conceptual multi-term query shapes (``should_rerank``), and away
+again when the ranked head is already a strong literal match (``head_is_strong``) —
+the re-rank pays its seconds only on the vocab-mismatch queries it was built for.
+With no ``[embeddings]`` extra the vector and
 cross-encoder arms sit out and search is lexical-only (still through the ranker).
 ``read_thread`` reconstructs a conversation; ``rebuild_fts`` is the FTS half of reindex.
 """
@@ -23,6 +26,7 @@ from . import rank as _rank
 from ._classify import resolve_relative_date
 from ._context import extract_context_lines, get_context_events, parse_context_events_spec
 from ._types import EventHit
+from .browse import browse_threads
 from .format import COUNT_FETCH_CAP, format_results
 from .fts import ensure_fts, fts_status, index_events, index_thread_meta, rebuild_fts, search_events
 from .read import read_thread, read_thread_structured, resolve_thread_ref
@@ -68,7 +72,7 @@ def _rrf_merge(result_lists: list[list[EventHit]], limit: int, k: int = 60) -> l
 
 
 def _semantic_hits(query, *, thread_id, content_types, exclude_content_types, since, until, over,
-                   source, thread_ids=None):
+                   source, thread_ids=None, agents="exclude"):
     """The vector arm — None when the extra is absent, nothing's indexed, or embed fails."""
     try:
         from . import vectors
@@ -78,15 +82,15 @@ def _semantic_hits(query, *, thread_id, content_types, exclude_content_types, si
         return vectors.search(
             query, thread_id=thread_id, content_types=content_types,
             exclude_content_types=exclude_content_types, limit=over, since=since, until=until,
-            source=source, thread_ids=thread_ids,
+            source=source, thread_ids=thread_ids, agents=agents,
         )
     except Exception:  # noqa: BLE001 — vector arm must never break lexical search
         logger.exception("semantic arm failed; search continues lexical-only")
         return None
 
 
-# A throwaway conceptual, multi-term query for the warm pass: multi-term + no operators so
-# it trips the rerank gate (should_rerank), exercising the cross-encoder head too.
+# A throwaway conceptual query for the warm pass (run with rerank=True so the
+# cross-encoder head is exercised regardless of the gates).
 _WARM_QUERY = "warm up the retrieval vector index and reranker"
 
 
@@ -121,15 +125,18 @@ def warm_models() -> None:
     try:
         from .. import _api as api
 
-        api.search(_WARM_QUERY, limit=1, content_types=["user", "title", "summary"])
+        # rerank=True: the point is priming the cross-encoder's inference path, so
+        # force it past the gates (a strong-headed warm hit would otherwise skip it).
+        api.search(_WARM_QUERY, limit=1, content_types=["user", "title", "summary"], rerank=True)
     except Exception:  # noqa: BLE001 — a store that isn't ready just warms the models, not the caches
         logger.debug("warm_models: dummy warm search skipped", exc_info=True)
 
 
 def _do_rerank(query: str, terms: list[str], force: Optional[bool]) -> bool:
-    """Whether to run the cross-encoder head re-rank. ``force`` (the ``rerank=``
-    arg) overrides the auto-gate; otherwise gate to conceptual multi-term queries
-    *and* an available reranker (the ``[embeddings]`` extra)."""
+    """The query-shape half of the re-rank gate. ``force`` (the ``rerank=`` arg)
+    overrides it; otherwise gate to conceptual multi-term queries *and* an
+    available reranker (the ``[embeddings]`` extra). The result-side half —
+    standing down on a strong lexical head — runs after ranking in ``search``."""
     from . import rerank as _rerank
 
     if force is not None:
@@ -149,8 +156,11 @@ def search(
     until: Optional[str] = None,
     tool_name: Optional[str] = None,
     source: Optional[list[str]] = None,
+    types: Optional[list[str]] = None,
+    agents: Optional[str] = None,
     startswith: Optional[str] = None,
     sort: Optional[str] = None,
+    group: Optional[str] = None,
     output: Optional[str] = None,
     context_lines: int = 2,
     context_events: Optional[str] = None,
@@ -163,7 +173,17 @@ def search(
     title enriched. ``since``/``until`` accept ISO timestamps or a relative ``<N>d``
     window; ``source`` restricts to threads of the named provider(s); ``topic_id``
     restricts to a topic's member conversations (threads cited under the topic or
-    linked to it); ``rerank`` forces the cross-encoder stage on/off (else auto-gated).
+    linked to it); ``rerank`` forces the cross-encoder stage on/off (else auto-gated:
+    conceptual multi-term shape AND a ranked head that isn't already a strong
+    literal match).
+
+    An **empty query** is a browse (see :mod:`.browse`): one row per thread by
+    last activity, honoring ``since``/``until``/``source``/``types``/``topic_id``
+    and ``sort='oldest'``; content-type and context options don't apply.
+    ``types`` restricts to the named ``thread_type`` values (a browse without it
+    hides topics and system threads); with a query it scopes the keyword search
+    the same way — and sits the semantic arm out, since vectors carry no
+    thread-type filter.
 
     ``startswith`` does a structural prefix scan (query text unused). ``sort='oldest'``
     returns the earliest matches chronologically, bypassing the ranker — the lexical
@@ -174,9 +194,33 @@ def search(
     cross-encoder sit out. ``context_lines`` (default 2; 0 = the raw FTS snippet)
     attaches a numbered window around each hit's match; ``context_events`` (``N`` /
     ``b:a`` / ``b:a:types``) attaches the neighbouring events. Both enrich the
-    returned hits in place (skipped for count)."""
+    ``agents`` controls agent-run threads (``thread_type='system'`` — subagent /
+    machinery sessions): 'exclude' (default) keeps them out of every result
+    shape, 'include' searches/lists them alongside conversations, 'only'
+    restricts to nothing else. Deliberate scopes stand it down: an explicit
+    ``thread_id``/``topic_id`` bypasses it (like the blacklist), and an explicit
+    ``types`` list — the raw thread-type scope — wins over it entirely.
+
+    The ranked shape returns **one row per thread** (:func:`rank.group_by_thread`):
+    a thread's best hit represents it, with further hits folded into its
+    ``_thread_more`` count and cross-thread duplicate content (forks, fleets of
+    spawned agents carrying one prompt) folded into ``_dup_thread_ids`` — the
+    fold annotates rather than discards. ``group='none'`` returns every ranked
+    hit as its own row; a ``thread_id`` scope, the structural shapes, and the
+    ``count``/``linkable`` outputs are never grouped. Hits sharing one
+    ``(thread_id, event_id)`` anchor (a thread-meta title/summary doc and the
+    first event it anchors to) collapse to the better-placed row in every
+    row-shaped output, grouped or not."""
     since_r = resolve_relative_date(since) if since else None
     until_r = resolve_relative_date(until) if until else None
+
+    if agents is not None and agents not in ("exclude", "include", "only"):
+        raise ValueError("agents must be 'exclude', 'include', or 'only'")
+    if group is not None and group not in ("thread", "none"):
+        raise ValueError("group must be 'thread' or 'none'")
+    # An explicit types list is the raw thread-type scope; the agents switch
+    # stands down so types=['system'] just works without a second knob.
+    agents_eff = "include" if types else (agents or "exclude")
 
     # A topic scope resolves to the topic's member conversations (cited or linked)
     # and rides the same id-set filter in both arms. A topic with no members — or
@@ -192,14 +236,30 @@ def search(
         if not thread_ids:
             return []
 
+    # Empty query (and no prefix scan) → browse: a thread-granular list view.
+    # The structural filters compose; ranking/context machinery doesn't apply.
+    if not (query or "").strip() and startswith is None:
+        return browse_threads(
+            limit=limit, since=since_r, until=until_r, source=source, types=types,
+            agents=agents or "exclude",
+            thread_id=thread_id, thread_ids=thread_ids,
+            oldest_first=sort == "oldest", session=session,
+        )
+
     is_count = output == "count"
-    # browse/startswith are structural — there's no lexical MATCH to rank or embed
+    # startswith is structural — there's no lexical MATCH to rank or embed
     # against, so the semantic arm and the weighted ranker both sit out. So do
     # sort='oldest' and count: the vector arm returns similarity-ranked nearest
     # neighbours, which can't strengthen a chronological first-mention scan or a
     # tally of literal matches, only pollute them.
-    structural = (startswith is not None or sort == "oldest" or is_count
-                  or not (query or "").strip())
+    structural = startswith is not None or sort == "oldest" or is_count
+    # One row per thread for the ranked shape (rank.group_by_thread): folds
+    # annotate the surviving row instead of spending result slots on repeats.
+    # Deliberate scopes stand it down — a thread_id scope wants every hit — and
+    # count/linkable are ungrouped by shape ('count' already tallies per thread,
+    # 'linkable' links every event). group='none' turns it off.
+    grouping = (group != "none" and not structural and thread_id is None
+                and output is None)
     # Candidate pool depth. 200 (not limit*5) because reachability dies at the pool
     # boundary: for a high-frequency term over a ~1M-doc index, a relevant-but-old
     # hit past bm25's top-N is unreachable no matter how the ranker weighs it. The
@@ -212,6 +272,7 @@ def search(
         query, thread_id=thread_id, thread_ids=thread_ids, content_types=content_types,
         exclude_content_types=exclude_content_types, limit=over,
         since=since_r, until=until_r, tool_name=tool_name, source=source,
+        types=types, agents=agents_eff,
         # Strict matching for count and oldest: the OR tier would inflate a tally
         # with partial matches, and in a chronological sort an older partial match
         # would leapfrog the true first mention.
@@ -220,11 +281,13 @@ def search(
     )
     # A tool_name scope also sits the vector arm out: tool docs aren't embedded
     # (only user/text/title/summary are), so every semantic hit in a tool-scoped
-    # search would be a hit the filter should have excluded.
-    semantic = None if structural or tool_name else _semantic_hits(
+    # search would be a hit the filter should have excluded. A types scope sits
+    # it out too: vectors carry no thread-type filter, so its hits could leak
+    # threads the filter excludes.
+    semantic = None if structural or tool_name or types else _semantic_hits(
         query, thread_id=thread_id, content_types=content_types,
         exclude_content_types=exclude_content_types, since=since_r, until=until_r,
-        over=over, source=source, thread_ids=thread_ids,
+        over=over, source=source, thread_ids=thread_ids, agents=agents_eff,
     )
 
     # Fuse the arms into a wide pool (keeps _rrf agreement + _semantic provenance),
@@ -241,31 +304,54 @@ def search(
         ranked = sorted(
             fused,
             key=lambda r: (r.get("occurred_at") is None, str(r.get("occurred_at") or "")),
-        )[:limit]
+        )
     elif structural:
-        ranked = fused[:limit]  # structural recency order from the scan
+        ranked = fused  # structural recency order from the scan; the final cut caps it
     else:
-        # Weighted lexical rank; a wider pool when a cross-encoder re-rank will
-        # re-order the head, else straight to `limit`.
+        # Weighted lexical rank. Grouping ranks the whole pool — folded rows must
+        # backfill from ranked candidates past `limit`, and sorting the pool costs
+        # microseconds either way; otherwise rank just what the cut needs, with a
+        # wider head when a cross-encoder re-rank may re-order it.
         do_rerank = _do_rerank(query, terms, rerank)
-        rank_to = max(limit, _rank.RERANK_POOL) if do_rerank else limit
+        if grouping:
+            rank_to = len(fused)
+        else:
+            rank_to = max(limit, _rank.RERANK_POOL) if do_rerank else limit
         ranked = _rank.rank_search_results(fused, terms, rank_to)
+        # Result-side half of the gate: when the ranked head is already a strong
+        # literal match, the lexical order is trustworthy and the cross-encoder
+        # stands down — it exists for the vocab-mismatch case, and re-ranking a
+        # confident head costs seconds only to degrade it (see head_is_strong).
+        # An explicit rerank=True skips this check along with the shape gate.
+        if do_rerank and rerank is not True and _rank.head_is_strong(ranked, terms):
+            do_rerank = False
         # Cross-encoder head re-rank (gated, fail-soft): scores (query, content)
-        # jointly and floats the true target up. None → keep lexical order.
+        # jointly and floats the true target up. None → keep lexical order. Head
+        # only (RERANK_POOL): the cross-encoder's cost is per document, and past
+        # the head the lexical order is only backfill.
         if do_rerank:
             from . import rerank as _rerank
 
+            head, tail = ranked[:_rank.RERANK_POOL], ranked[_rank.RERANK_POOL:]
             # Score the match-centred window, not the doc head — a long hit whose
             # relevant text sits mid-message would otherwise be scored on its intro.
             reordered = _rerank.rerank(
-                query, ranked,
+                query, head,
                 get_text=lambda r: _rank.match_window(
                     r.get("full_content") or r.get("snippet") or "",
                     terms, _rerank.RERANK_DOC_CHARS,
                 ),
             )
             if reordered is not None:
-                ranked, did_rerank = reordered, True
+                ranked, did_rerank = reordered + tail, True
+
+    if not is_count:
+        # Every row-shaped output collapses same-anchor twins (a thread-meta
+        # title/summary doc and the first event it anchors to — one anchor,
+        # two rows that open identically in thread_read).
+        ranked = _rank.collapse_same_anchor(ranked)
+        if grouping:
+            ranked = _rank.group_by_thread(ranked)
 
     hits = ranked if is_count else ranked[:limit]
 

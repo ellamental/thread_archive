@@ -87,8 +87,11 @@ def search(
     until: Optional[str] = None,
     tool_name: Optional[str] = None,
     source: Optional[list[str]] = None,
+    types: Optional[list[str]] = None,
+    agents: Optional[str] = None,
     startswith: Optional[str] = None,
     sort: Optional[str] = None,
+    group: Optional[str] = None,
     output: Optional[str] = None,
     context_lines: int = 2,
     context_events: Optional[str] = None,
@@ -99,11 +102,18 @@ def search(
     Returns enriched event-hit dicts. ``source`` restricts to threads of the named
     provider(s); ``topic_id`` restricts to a topic's member conversations (threads
     cited under the topic or linked to it, from the knowledge graph);
+    ``agents`` controls agent-run threads (``thread_type='system'``): 'exclude'
+    (default) / 'include' / 'only'; ``types`` restricts to the named
+    ``thread_type`` values. An **empty query** is a browse — one row per thread by
+    last activity, honoring the structural filters (see
+    :func:`thread_archive._retrieval.browse.browse_threads`);
     ``startswith`` does a structural prefix scan; ``sort='oldest'``
     returns the pool chronologically; ``output`` ('count'/'linkable') and
     ``context_lines`` / ``context_events`` shape what each hit carries; ``rerank``
     forces the cross-encoder stage (else auto-gated to conceptual queries when the
-    ``[embeddings]`` extra is present)."""
+    ``[embeddings]`` extra is present). The ranked shape returns one row per
+    thread, repeats folded into ``_thread_more`` / ``_dup_thread_ids``
+    annotations; ``group='none'`` returns every hit as its own row."""
     open_archive(home)
     from ._retrieval import search as _search
 
@@ -118,8 +128,11 @@ def search(
         until=until,
         tool_name=tool_name,
         source=source,
+        types=types,
+        agents=agents,
         startswith=startswith,
         sort=sort,
+        group=group,
         output=output,
         context_lines=context_lines,
         context_events=context_events,
@@ -145,8 +158,10 @@ def read_thread(
     """Reconstruct a conversation thread as a readable transcript.
 
     ``thread_id`` is the archive's integer thread id or a provider **session id**
-    (the uuid/source_id a tool knows the conversation by). ``mode`` picks the view —
-    ``user`` (default), ``chat``, or ``full`` — and the read is turn-paginated +
+    (the uuid/source_id a tool knows the conversation by); the reserved ref
+    ``'topics'`` renders the curated topic hierarchy instead. ``mode`` picks the view —
+    ``user`` (default), ``chat``, ``full``, or ``last`` (final assistant text only) —
+    and the read is turn-paginated +
     size-budgeted (``max_chars``, default ~48k). ``tool_results`` (default off) adds
     tool output under each call in ``full``. ``summary`` swaps in a summary view:
     ``True``/``'toc'`` = compact TOC, ``'short'`` / ``'indexed'`` = the stored thread
@@ -338,6 +353,18 @@ def stats(*, home: Optional[str] = None, model_limit: Optional[int] = None) -> d
     return collect_stats(model_limit=model_limit)
 
 
+def model_stats(model: str, *, home: Optional[str] = None) -> Optional[dict]:
+    """One model's drill-down for the viewer's per-model page: overview totals,
+    a per-session token distribution (min/median/avg/max), a monthly time series
+    (sessions, tokens, compactions), and its heaviest sessions. None when the model
+    has no live conversation data. Same rollup as :func:`stats`; see
+    :func:`._store._metrics.collect_model_stats` for the semantics."""
+    open_archive(home)
+    from ._store._metrics import collect_model_stats
+
+    return collect_model_stats(model)
+
+
 def repair(*, home: Optional[str] = None, dry_run: bool = False) -> dict:
     """Quarantine unparseable truth lines and restore committed rows the truth
     lacks from the live index — the sanctioned path from a red ``verify`` back to
@@ -367,6 +394,28 @@ def unredact(key_id: str, *, home: Optional[str] = None) -> dict:
     from ._ops.redact import unredact as _unredact
 
     return _unredact(key_id)
+
+
+def amend(
+    patches: list[tuple[int, int, dict]], *,
+    reason: Optional[str] = None, home: Optional[str] = None,
+) -> dict:
+    """Merge non-content fields onto events' payloads via superseding truth
+    lines — the append-only edit mechanism. ``patches`` is
+    ``[(thread_id, event_id, {field: value}), ...]``. See
+    :mod:`thread_archive._ops.amend`."""
+    open_archive(home)
+    from ._ops.amend import amend_event_payloads
+
+    return amend_event_payloads(patches, reason=reason)
+
+
+def amendments(*, home: Optional[str] = None) -> list[dict]:
+    """Every amendment audit record, in append order."""
+    open_archive(home)
+    from ._ops.amend import load_amendments
+
+    return load_amendments()
 
 
 def redactions(*, home: Optional[str] = None) -> list[dict]:

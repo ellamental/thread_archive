@@ -454,8 +454,10 @@ def _content_divergence(index_path: Path, tmp_path: Path) -> dict | None:
     rebuild — publication *visibility*, deliberately not a gate.
 
     The truth is authoritative: on publish the rebuild's content wins, and the
-    projection disagreeing must not block the swap. But nothing mutates a
-    payload after commit, so a same-id disagreement means one copy is damaged —
+    projection disagreeing must not block the swap. But every sanctioned payload
+    change lands in both stores inside one commit (an amendment's superseding
+    truth line drains before its index COMMIT), so a same-id disagreement
+    between them means one copy is damaged —
     and for an event with no hash-tailed ``dedup_key`` the live index row can be
     the last good copy of a truth line rotted in place. Cross-store parity
     (``verify --hashes``) can only see the disagreement while both copies still

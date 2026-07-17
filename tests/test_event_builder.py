@@ -204,6 +204,37 @@ def test_assistant_turn_emits_the_full_envelope() -> None:
             completed.payload["thinking_tokens"]) == (10, 5, 2)
 
 
+def test_assistant_completed_preserves_cost_and_extra_usage_fields() -> None:
+    # A pay-per-token source (cloth) records per-message cost + cache-token counts; none
+    # of it may be dropped from the api_request_completed summary.
+    provider_data = {
+        "model": "deepseek/deepseek-v4-pro", "stop_reason": "end_turn",
+        "usage": {"input_tokens": 100, "output_tokens": 20, "thinking_tokens": 0,
+                  "cache_read_tokens": 80, "cache_write_tokens": 5},
+        "cost": 0.012075,
+    }
+    events = DefaultEventBuilder().build_events(
+        _assistant([{"type": "text", "text": "hi"}], provider_data=provider_data), "s"
+    )
+    completed = next(e for e in events if e.event_type == "api_request_completed")
+    assert completed.payload["cost"] == 0.012075
+    assert completed.payload["cache_read_tokens"] == 80
+    assert completed.payload["cache_write_tokens"] == 5
+    # the flat trio stays for readers that only know the old shape
+    assert (completed.payload["input_tokens"], completed.payload["output_tokens"]) == (100, 20)
+
+
+def test_assistant_completed_omits_cost_when_absent() -> None:
+    # A subscription transcript (Claude Code) has no per-message cost — the payload stays
+    # cost-free rather than carrying a null.
+    provider_data = {"model": "claude-x", "usage": {"input_tokens": 10, "output_tokens": 5}}
+    events = DefaultEventBuilder().build_events(
+        _assistant([{"type": "text", "text": "hi"}], provider_data=provider_data), "s"
+    )
+    completed = next(e for e in events if e.event_type == "api_request_completed")
+    assert "cost" not in completed.payload
+
+
 def test_assistant_generates_one_shared_api_call_id_when_none_given() -> None:
     events = DefaultEventBuilder().build_events(_assistant([{"type": "text", "text": "hi"}]), "s")
     ids = {e.api_call_id for e in events}

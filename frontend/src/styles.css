@@ -362,6 +362,23 @@ h1.topic-title { font-size: 19px; margin: 0 0 6px; }
 .stat-bar-fill.model { background: hsl(var(--mc-h) 55% 50%); }
 .bar-num { font-variant-numeric: tabular-nums; color: var(--muted); font-size: 12px; min-width: 46px; text-align: right; }
 
+/* A model tag that is also a link (stats → per-model drill-down). */
+a.model-link { text-decoration: none; }
+a.model-link .model-tag:hover {
+  background: hsl(var(--mc-h) 62% 50% / .22);
+  border-color: hsl(var(--mc-h) 55% 50% / .7);
+}
+/* The drill-down's h1 is the tag itself, scaled up from its 11px chip size. */
+.model-tag.title-tag { font-size: 17px; padding: 3px 12px; border-radius: 8px; }
+/* Plain text links on the stats pages (back link, session titles). */
+a.session-link { color: inherit; text-decoration: none; }
+a.session-link:hover { color: var(--accent); }
+.stat-table td.session-cell { max-width: 340px; overflow: hidden; text-overflow: ellipsis; }
+
 @media (prefers-color-scheme: dark) {
   .stat-bar-fill.model { background: hsl(var(--mc-h) 58% 60%); }
+  a.model-link .model-tag:hover {
+    background: hsl(var(--mc-h) 60% 60% / .26);
+    border-color: hsl(var(--mc-h) 55% 60% / .75);
+  }
 }

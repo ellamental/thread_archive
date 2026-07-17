@@ -202,9 +202,11 @@ def search_events(
     tool_name: Optional[str] = None,
     exclude_content_types: Optional[list[str]] = None,
     source: Optional[list[str]] = None,
+    types: Optional[list[str]] = None,
     startswith: Optional[str] = None,
     *,
     thread_ids: Optional[list[int]] = None,
+    agents: str = "exclude",
     oldest_first: bool = False,
     or_fallback: bool = True,
     session: Optional[Session] = None,
@@ -237,6 +239,12 @@ def search_events(
     ranking order, so the candidate pool holds the *earliest* matching rows —
     without it, "when was this first discussed" sorts only whatever bm25's
     top-N happened to keep, which for a frequent term is recency-biased.
+
+    ``agents`` controls agent-run threads (``thread_type='system'`` — subagent /
+    machinery sessions): 'exclude' (default) keeps them out of the pool, 'include'
+    searches them alongside conversations, 'only' searches nothing else. Like the
+    blacklist, an explicit ``thread_id``/``thread_ids`` scope is deliberate and
+    bypasses the filter.
     """
     ensure_fts(session)
     if thread_ids is not None and not thread_ids:
@@ -291,9 +299,24 @@ def search_events(
         # Honor the per-thread search blacklist (threads.exclude_from_search).
         # An explicit thread_id scope is deliberate and bypasses it.
         shared.append("thread_id NOT IN (SELECT id FROM threads WHERE exclude_from_search)")
+        # Agent-run threads (subagent/machinery sessions) ride the same pattern:
+        # out of the default pool, reachable via agents='include'/'only', an
+        # explicit thread scope, or a ``types`` filter that names 'system'
+        # (an explicit type request must not be emptied by the default).
+        if agents == "exclude" and not (types and "system" in types):
+            shared.append("thread_id NOT IN (SELECT id FROM threads WHERE thread_type = 'system')")
+        elif agents == "only":
+            shared.append("thread_id IN (SELECT id FROM threads WHERE thread_type = 'system')")
     if tool_name:
         shared.append("tool_name = :tool")
         shared_params["tool"] = tool_name
+    if types:
+        # event_search carries thread_id but not thread_type; constrain via the
+        # threads table (idx_threads_type), same pattern as the source filter.
+        shared.append(
+            "thread_id IN (SELECT id FROM threads WHERE "
+            + _in_clause("thread_type", types, "tt", shared_params, negate=False) + ")"
+        )
     if content_types:
         shared.append(_in_clause("content_type", content_types, "ct", shared_params, negate=False))
     if exclude_content_types:

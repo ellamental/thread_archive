@@ -90,4 +90,15 @@ describe('StatsView', () => {
     expect(await screen.findByText('deepseek/deepseek-v4-pro')).toBeInTheDocument()
     expect(screen.getByText('claude-opus-4-8')).toBeInTheDocument()
   })
+
+  it('links each model to its drill-down page, slash-safe', async () => {
+    mswJson('/api/stats', stats())
+    renderStats()
+    const link = await screen.findByRole('link', { name: 'deepseek/deepseek-v4-pro' })
+    expect(link).toHaveAttribute('href', '/stats/model/deepseek%2Fdeepseek-v4-pro')
+    expect(screen.getByRole('link', { name: 'claude-opus-4-8' })).toHaveAttribute(
+      'href',
+      '/stats/model/claude-opus-4-8',
+    )
+  })
 })
