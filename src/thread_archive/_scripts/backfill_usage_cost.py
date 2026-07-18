@@ -30,9 +30,9 @@ from typing import Any, Iterable, Optional
 
 from sqlalchemy import select
 
+from .._importers._read import read_session_lines
 from .._ops.amend import amend_event_payloads, check_patch
 from .._store import Event, ImportState, get_session
-from .._importers._read import read_session_lines
 from .backfill_reconcile import (
     _content_anchor,
     _fresh_events,

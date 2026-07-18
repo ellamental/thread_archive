@@ -11,16 +11,15 @@ from __future__ import annotations
 
 import json
 
+import pytest
 from sqlalchemy import select, update
 
 from thread_archive._importers import import_session_incremental
 from thread_archive._ops.amend import amend_event_payloads, load_amendments
 from thread_archive._scripts.backfill_usage_cost import run as backfill_run
 from thread_archive._store import Event, get_session, init_db
-from thread_archive._truth.jsonl_log import _iter_jsonl, _thread_file, _shard_depth, log_dir
+from thread_archive._truth.jsonl_log import _iter_jsonl, _shard_depth, _thread_file, log_dir
 from thread_archive._truth.rebuild import _store_rows_failing_key_hash, reindex
-
-import pytest
 
 USAGE = {
     "input_tokens": 11, "output_tokens": 7, "thinking_tokens": 0,
