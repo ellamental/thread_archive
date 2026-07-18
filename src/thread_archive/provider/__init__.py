@@ -88,7 +88,11 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Container, Literal, Optional
 
-from .._importers._events import assemble_events, log_parse_validation
+from .._importers._events import (
+    assemble_events,
+    log_parse_validation,
+    preserve_unmodeled_fields,
+)
 from .._importers._line_stream import line_stream_importer
 from .._importers._read import (
     parse_session_lines,
@@ -336,6 +340,7 @@ __all__ = [
     # Import primitives
     "assemble_events",
     "log_parse_validation",
+    "preserve_unmodeled_fields",
     "record_skip",
     "get_session",
     # Thread + watermark state

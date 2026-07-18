@@ -43,7 +43,7 @@ from thread_archive._thread_import.parsers.claude_code import ClaudeCodeParser
 from thread_archive._thread_import.timestamps import parse_timestamp_iso
 
 from .._store import get_session
-from ._events import assemble_events, log_parse_validation
+from ._events import assemble_events, log_parse_validation, preserve_unmodeled_fields
 from ._result import DbScanResult
 from ._state import (
     adopt_if_unwatermarked,
@@ -177,6 +177,7 @@ def _import_science_lines(
         "sessions": [{"session_id": "incremental", "project": "incremental", "lines": lines}],
     }
     messages = parser.parse_export(session_data)
+    preserve_unmodeled_fields(messages, provider="claude-code")
     log_parse_validation(
         messages,
         provider="claude-code",

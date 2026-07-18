@@ -27,11 +27,13 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from thread_archive._thread_import import DefaultEventBuilder
+from thread_archive._thread_import.parsers.residual import annotate_unmodeled_fields
 from thread_archive._thread_import.parsers.validators import validate_messages
 
 from .._store import Event
 from .._truth import write_events
 from ._validation_ledger import record_drift
+from ._versions import note_new_versions
 
 logger = logging.getLogger(__name__)
 
@@ -249,6 +251,25 @@ def _ensure_provider_configs() -> None:
         logger.exception("could not load the provider registry for parse validation")
 
 
+def preserve_unmodeled_fields(messages: list, *, provider: str) -> None:
+    """Annotate each message's unmodeled-field residual so the builder persists it.
+
+    The other half of the field-level drift check: ``TypeValidator`` warns on a
+    new field's *name*; this keeps its *value* — copied into
+    ``annotations["unmodeled"]``, which rides the anchor event's payload — so a
+    field the provider grew before the ledger caught up is preserved, not
+    dropped at the builder seam. Runs before validation at every seam that
+    validates, from the same ledger, so warning and preservation agree.
+    Fail-soft: preservation must never break the import it protects."""
+    if not messages:
+        return
+    _ensure_provider_configs()
+    try:
+        annotate_unmodeled_fields(messages, provider)
+    except Exception:  # noqa: BLE001 — preservation is best-effort, never a gate
+        logger.exception("unmodeled-field preservation failed for %s", provider)
+
+
 def log_parse_validation(
     messages: list,
     *,
@@ -281,6 +302,11 @@ def log_parse_validation(
         # Durable, queryable trail so the coverage check / nightly can surface drift
         # volume — the log line alone is ephemeral. Advisory + fail-soft.
         record_drift(provider, conversation_id, findings=findings, batch_safe=batch_safe)
+    # The version tripwire: a first-seen harness version, recorded to the same
+    # ledger — format changes ride version bumps, so this warns *before* any
+    # field drifts (and explains it when one does).
+    note_new_versions(messages, provider=provider, source_id=conversation_id,
+                      batch_safe=batch_safe)
 
 
 def import_lines(
@@ -308,6 +334,7 @@ def import_lines(
         "sessions": [{"session_id": "incremental", "project": "incremental", "lines": lines}],
     }
     messages = parser.parse_export(session_data)
+    preserve_unmodeled_fields(messages, provider=source)
     log_parse_validation(
         messages,
         provider=source,

@@ -57,10 +57,12 @@ class ProviderConfig:
         known_line_fields: Field-level drift ledger — role → the set of top-level
             keys the parser knows about on that role's raw source line
             (``provider_data["line"]``). The type/role/line-type ledgers above
-            cannot see a NEW FIELD appear on an already-modeled line — the class
-            of silent loss where a value rides into ``provider_data`` and is then
-            dropped at the builder seam. Any line key outside the role's set
-            warns. Empty dict (or a role absent from it) disables the check.
+            cannot see a NEW FIELD appear on an already-modeled line. Any line
+            key outside the role's set warns, and the import seam preserves its
+            value under the anchor event's ``annotations["unmodeled"]`` (see
+            ``parsers.residual``) until someone decides its endgame: model it,
+            annotate it, or add it here as a conscious drop. Empty dict (or a
+            role absent from it) disables both the check and the preservation.
         known_message_fields: Same ledger for the nested ``line["message"]``
             object's keys, role-independent. Empty set disables.
     """

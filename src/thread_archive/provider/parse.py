@@ -35,9 +35,13 @@ it into a second event.
 :class:`ProviderConfig` is a drift ledger, not a schema — it never rejects
 anything. It records what your format looks like today, so that when the
 provider grows a new line kind or a new field, the difference surfaces as a
-warning instead of passing silently. The check exists because a new field on an
-already-modeled line is the one class of loss nothing else catches: the value
-rides into ``provider_data`` and is dropped at the builder seam with no error.
+warning instead of passing silently. A new field on an already-modeled line —
+the one shape none of the type/role/line-type checks can see — is both warned
+on and preserved: the import seam copies the *residual* (every line key outside
+the ledger, values included) into ``annotations["unmodeled"]`` on the line's
+anchor event (:func:`annotate_unmodeled_fields`), so the value survives while
+the warning waits for a ledger decision: model the field, annotate it
+explicitly, or add it to the ledger as a conscious drop.
 
 Set it as ``Provider.parser_config`` and archive registers it for you.
 
@@ -86,6 +90,10 @@ from .._thread_import.parsers import (
     registered_parsers,
     registered_providers,
 )
+from .._thread_import.parsers.residual import (
+    annotate_unmodeled_fields,
+    unmodeled_residual,
+)
 from .._thread_import.timestamps import parse_timestamp, parse_timestamp_iso
 from .._thread_import.tool_names import normalize_tool_name
 
@@ -126,6 +134,9 @@ __all__ = [
     "get_parser",
     "register_parser",
     "registered_parsers",
+    # Unmodeled-field preservation (the drift ledgers' other half)
+    "annotate_unmodeled_fields",
+    "unmodeled_residual",
     # Utilities
     "parse_timestamp",
     "parse_timestamp_iso",

@@ -872,6 +872,13 @@ def cmd_status(args: argparse.Namespace) -> int:
         else:
             stages = ", ".join(n.get("failed_stages", [])) or "see logs/backup-stdout.log"
             print(f"nightly: FAILED ({stages}) → {n.get('dest')} {n['at']} ({_age(n['at'])})")
+    m = st.get("last_source_mirror")
+    if m:
+        state = "ok" if m.get("ok") else "FAILED"
+        detail = f"{m.get('copied', '?')} copied / {m.get('files', '?')} files"
+        if m.get("errors"):
+            detail += f", {m['errors']} error(s)"
+        print(f"source mirror: {state} ({detail}) {m['at']} ({_age(m['at'])})")
     c = st.get("last_coverage")
     if c and c["ok"]:
         # Warnings (stale exports, never-ingested stores) are capture holes in the
@@ -950,6 +957,31 @@ def cmd_coverage(args: argparse.Namespace) -> int:
         print("FAILED:")
         for msg in r["failed"]:
             print(f"  {msg}")
+    return 0 if r["ok"] else 1
+
+
+def cmd_mirror(args: argparse.Namespace) -> int:
+    from . import _api as api
+
+    r = api.mirror_sources(home=args.home)
+    for name, p in sorted(r["providers"].items()):
+        extras = ""
+        if p.get("generations"):
+            extras += f" generations={p['generations']}"
+        if p.get("sidecars_capped"):
+            extras += f" capped={p['sidecars_capped']}"
+        if p.get("error_count"):
+            extras += f" errors={p['error_count']}"
+        print(
+            f"{name:<16} {'ok' if p['ok'] else 'FAILED':<8} "
+            f"files={p['files']} copied={p['copied']} unchanged={p['unchanged']} "
+            f"bytes={p['bytes_in']}→{p['bytes_out']}{extras}"
+        )
+        for err in p.get("errors", []):
+            print(f"    {err}")
+    for name in r["unsupported"]:
+        print(f"{name:<16} unsupported (watcher shape has no mirror path)")
+    print(f"{'OK' if r['ok'] else 'FAILED'} → {r['root']} ({r['duration_s']}s)")
     return 0 if r["ok"] else 1
 
 
@@ -1033,6 +1065,14 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _add_home_arg(p_coverage)
     p_coverage.set_defaults(func=cmd_coverage)
+
+    p_mirror = sub.add_parser(
+        "mirror",
+        help="mirror raw harness source stores into <home>/source-mirror "
+        "(verbatim, gzip; nothing ever deleted)",
+    )
+    _add_home_arg(p_mirror)
+    p_mirror.set_defaults(func=cmd_mirror)
 
     p_status = sub.add_parser("status", help="archive health / paths / counts")
     _add_home_arg(p_status)

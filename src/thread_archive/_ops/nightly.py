@@ -1,5 +1,5 @@
-"""The scheduled protection pipeline: backup → verify (escalated) → restore drill
-→ capture coverage."""
+"""The scheduled protection pipeline: source mirror → backup → verify
+(escalated) → restore drill → capture coverage."""
 
 from __future__ import annotations
 
@@ -12,6 +12,7 @@ from typing import Optional
 from .backup import backup, restore_drill
 from .coverage import check_coverage
 from .health import read_health, record_health, stamp_heartbeat
+from .source_mirror import mirror_sources
 from .verify import verify
 
 # Age gates for the escalated verify tiers `nightly` folds in on top of its
@@ -93,9 +94,9 @@ def nightly(
     allow_shrink: bool = False,
     drill: bool = True,
 ) -> dict:
-    """The scheduled protection pipeline, as one command: ``backup`` → ``verify``
-    (with age-gated escalation) → ``restore_drill`` → capture ``coverage`` —
-    every night.
+    """The scheduled protection pipeline, as one command: source ``mirror`` →
+    ``backup`` → ``verify`` (with age-gated escalation) → ``restore_drill`` →
+    capture ``coverage`` — every night.
 
     Replaces a shell chain of the three commands. The differences that matter:
 
@@ -124,6 +125,18 @@ def nightly(
     open_archive(home)
     failed: list[str] = []
     result: dict = {"dest": str(Path(dest).expanduser())}
+
+    # Source mirror first: raw harness stores prune on their own clocks
+    # (Claude Code at ~30 days), so their capture is the most time-sensitive
+    # stage — and it must not be forfeited to a failure later in the night.
+    try:
+        m = mirror_sources(home=home)
+        mirror_ok = bool(m.get("ok"))
+    except Exception as e:
+        m, mirror_ok = {"error": _stage_error(e)}, False
+    result["source_mirror"] = m
+    if not mirror_ok:
+        failed.append("source-mirror")
 
     try:
         b = backup(dest, home=home, allow_shrink=allow_shrink)
@@ -176,6 +189,7 @@ def nightly(
 
     result["ok"] = not failed
     result["failed_stages"] = failed
+    result["drift_alert"] = _drift_alert()
     record_health("nightly_last", {
         "dest": result["dest"],
         "ok": result["ok"],
@@ -194,4 +208,42 @@ def nightly(
             f"nightly backup pipeline FAILED at: {', '.join(failed)} — "
             "see `archive status`, health.json, and ~/.thread/archive/logs/backup-*.log",
         )
+    # Drift is warn-never-red in coverage (one benign record must not fail the
+    # night), but the ledgers exist to be READ — records written in the last
+    # day mean a parser is flagging live imports right now, and the recovery
+    # window is bounded by the harness's retention. Push once per nightly while
+    # it lasts; goes quiet on its own the day after the ledger does.
+    if result["drift_alert"] and notify_url:
+        result["drift_notify_error"] = _notify(notify_url, result["drift_alert"])
     return result
+
+
+def _drift_alert() -> Optional[str]:
+    """One alert line when either capture ledger took records in the last 24h,
+    else None. Fail-soft: an unreadable ledger is the coverage check's problem,
+    never this escalation's."""
+    try:
+        from .._importers._skip_ledger import summarize_skips
+        from .._importers._validation_ledger import summarize_drift
+
+        drift = summarize_drift(days=1.0)
+        skips = summarize_skips(days=1.0)
+        parts = []
+        if drift["recent"]:
+            parts.append(
+                f"{drift['recent']} validation-drift record(s) "
+                f"({drift['recent_findings']} finding(s))"
+            )
+        if skips["recent_substantive"]:
+            parts.append(
+                f"{skips['recent_substantive']} substantive capture-skip record(s)"
+            )
+        if not parts:
+            return None
+        return (
+            "format drift active: " + " and ".join(parts) + " in the last 24h "
+            "— a parser no longer fully understands a source's format; "
+            "see `archive coverage` and the ledgers in ~/.thread/archive/"
+        )
+    except Exception:  # noqa: BLE001
+        return None

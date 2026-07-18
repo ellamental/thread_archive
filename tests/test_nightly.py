@@ -74,6 +74,37 @@ def test_nightly_coverage_stage_is_wired(archive_home, tmp_path, monkeypatch):
     assert _health(archive_home)["nightly_last"]["failed_stages"] == ["coverage"]
 
 
+def test_nightly_source_mirror_stage_is_wired(archive_home, tmp_path, monkeypatch):
+    # conftest no-ops the source-mirror stage (it sweeps real stores); re-patch
+    # a failing stub to assert the stage runs, fails the night, and records.
+    import thread_archive._ops.nightly as ops_nightly
+
+    _seed(archive_home)
+    monkeypatch.setattr(
+        ops_nightly, "mirror_sources",
+        lambda **kw: {"ok": False, "providers": {}, "unsupported": []},
+    )
+    res = ta.nightly(str(tmp_path / "mirror"))
+    assert "source-mirror" in res["failed_stages"]
+    assert res["source_mirror"]["ok"] is False
+    # The mirror failing must not short-circuit the stages after it.
+    assert res["backup"]["verify_ok"] is True
+
+
+def test_nightly_drift_alert_notifies(archive_home, tmp_path):
+    # A validation-drift record written in the last 24h rides the nightly as a
+    # push (independent of stage failures), and its text names the ledger.
+    from thread_archive._importers._validation_ledger import record_drift
+    from thread_archive._ops.nightly import _drift_alert
+
+    _seed(archive_home)
+    assert _drift_alert() is None
+    record_drift("claude-code", "sess", findings=["field drifted"], batch_safe=True)
+    alert = _drift_alert()
+    assert alert is not None and "format drift active" in alert
+    assert "1 validation-drift record(s)" in alert
+
+
 def test_nightly_escalation_is_age_gated(archive_home, tmp_path):
     _seed(archive_home)
     dest = str(tmp_path / "mirror")

@@ -37,7 +37,7 @@ from thread_archive._thread_import.parsers.claude import ClaudeParser
 from thread_archive._thread_import.timestamps import parse_timestamp
 
 from .._store import get_session
-from ._events import assemble_events, log_parse_validation
+from ._events import assemble_events, log_parse_validation, preserve_unmodeled_fields
 from ._state import (
     create_thread,
     discard_new_thread,
@@ -54,6 +54,7 @@ def _parsed(parser, data, *, provider: str, conversation_id: str) -> list:
     shared write path. Grok stays out — its hand-built passthrough turns aren't
     NormalizedMessages, so the universal type checks would only cry false drift."""
     messages = parser.parse_export(data)
+    preserve_unmodeled_fields(messages, provider=provider)
     log_parse_validation(
         messages, provider=provider, conversation_id=conversation_id, batch_safe=False
     )

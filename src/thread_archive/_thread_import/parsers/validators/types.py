@@ -7,6 +7,7 @@ Validates roles and content block types against known values.
 from typing import List, Set
 
 from ..base import NormalizedMessage
+from ..residual import unmodeled_residual
 from .base import BaseValidator, ValidationContext, ValidationSeverity
 
 # Universal known block types across all providers
@@ -57,25 +58,13 @@ class TypeValidator(BaseValidator):
             role = msg.get("role", "")
 
             # Field-level drift: a NEW key on an already-modeled source line is
-            # invisible to the type/role/line-type ledgers — it rides into
-            # provider_data["line"] and is then dropped at the builder seam
-            # unless modeled or annotated. Compare the raw line's keys (and its
-            # nested message object's keys) against the provider's known sets.
-            if self.config.known_line_fields:
-                line = (msg.get("provider_data") or {}).get("line")
-                if isinstance(line, dict):
-                    known = self.config.known_line_fields.get(role)
-                    if known:
-                        unknown_line_fields.update(
-                            f"{role}.{k}" for k in line if k not in known
-                        )
-                    if self.config.known_message_fields:
-                        inner = line.get("message")
-                        if isinstance(inner, dict):
-                            unknown_message_fields.update(
-                                k for k in inner
-                                if k not in self.config.known_message_fields
-                            )
+            # invisible to the type/role/line-type ledgers. The residual module
+            # is the one computation of what counts as unmodeled — the import
+            # seam preserves those values as annotations["unmodeled"], and this
+            # warns on their names, so preservation and warning cannot disagree.
+            line_residual, message_residual = unmodeled_residual(msg, self.config)
+            unknown_line_fields.update(f"{role}.{k}" for k in line_residual)
+            unknown_message_fields.update(message_residual)
 
             # Check role against provider's expected roles
             if role and self.config.expected_roles:
@@ -135,8 +124,9 @@ class TypeValidator(BaseValidator):
             self._add_issue(
                 context,
                 f"Unmodeled source line field '{field_name}' - a new field on a "
-                f"known line type; its value is NOT persisted until modeled or "
-                f"annotated (field-level format drift)",
+                f"known line type; its value is preserved under the anchor "
+                f"event's annotations['unmodeled'] until modeled or ledgered "
+                f"(field-level format drift)",
                 ValidationSeverity.warning,
             )
 
@@ -144,7 +134,8 @@ class TypeValidator(BaseValidator):
             self._add_issue(
                 context,
                 f"Unmodeled message field '{field_name}' - a new field on a known "
-                f"message object; its value is NOT persisted until modeled or "
-                f"annotated (field-level format drift)",
+                f"message object; its value is preserved under the anchor "
+                f"event's annotations['unmodeled'] until modeled or ledgered "
+                f"(field-level format drift)",
                 ValidationSeverity.warning,
             )

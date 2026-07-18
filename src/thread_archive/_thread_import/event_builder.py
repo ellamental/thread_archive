@@ -375,13 +375,15 @@ class DefaultEventBuilder:
             for b in content_blocks
         )
         if has_tool_results and content_text.strip() in self._TOOL_LOAD_CONFIRMATIONS:
+            loaded_payload: dict[str, Any] = {
+                "content": content_text,
+                "provider_data": {"provider_message_id": provider_message_id},
+            }
+            self._merge_block_annotations(message.get("provider_data") or {}, loaded_payload)
             return [
                 ThreadEvent(
                     event_type="tool_loaded",
-                    payload={
-                        "content": content_text,
-                        "provider_data": {"provider_message_id": provider_message_id},
-                    },
+                    payload=loaded_payload,
                     stream_id=stream_id,
                     occurred_at=occurred_at,
                 )
@@ -480,6 +482,22 @@ class DefaultEventBuilder:
                 stream_id=stream_id,
                 occurred_at=occurred_at,
             ))
+
+        # A turn that emitted no user_message_sent (a tool-result-only line, a
+        # context-only line) has no anchor carrying the message-level
+        # annotations built above — so its first event stands in as the anchor.
+        # Filled key-by-key: a block-level annotation already on that event is
+        # more specific and wins. Annotations sit outside dedup identity, so
+        # this never forks an event.
+        if (
+            events
+            and not (content_text.strip() or has_images)
+            and isinstance(annotations, dict)
+            and annotations
+        ):
+            anchor = events[0].payload.setdefault("annotations", {})
+            for key, value in annotations.items():
+                anchor.setdefault(key, value)
 
         return events
 
