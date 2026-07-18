@@ -47,7 +47,7 @@ describe('SearchView', () => {
       query: '', browse: true, quality: null, subjects: [],
       hits: [
         hit({ thread_id: 5, event_id: 99, thread_title: 'Latest Session',
-              thread_source: 'cloth', n_events: 12 }),
+              thread_source: 'demo-harness', n_events: 12 }),
         hit({ thread_id: 3, event_id: 42, thread_title: 'Older Session',
               thread_source: 'codex', n_events: 1 }),
       ],
@@ -55,7 +55,7 @@ describe('SearchView', () => {
     renderAt('/search')
     expect(await screen.findByText('Latest Session')).toBeInTheDocument()
     expect(screen.getByText(/recent threads — newest activity first/)).toBeInTheDocument()
-    expect(screen.getByText('cloth')).toBeInTheDocument()
+    expect(screen.getByText('demo-harness')).toBeInTheDocument()
     expect(screen.getByText('12 events')).toBeInTheDocument()
     expect(screen.getByText('1 event')).toBeInTheDocument()
   })
@@ -73,7 +73,7 @@ describe('SearchView', () => {
 
   it('says when the browse window is empty', async () => {
     mswJson('/api/search', { query: '', browse: true, quality: null, subjects: [], hits: [] })
-    renderAt('/search?source=cloth')
+    renderAt('/search?source=demo-harness')
     expect(await screen.findByText('no threads in this window')).toBeInTheDocument()
   })
 
@@ -203,14 +203,14 @@ describe('SearchView', () => {
   it('sends URL-carried filters with the search (until made day-inclusive)', async () => {
     const requests = recordRequests()
     mswJson('/api/search', { query: 'x', hits: [] })
-    renderAt('/search?q=x&source=cloth&since=2026-01-01&until=2026-02-01')
+    renderAt('/search?q=x&source=demo-harness&since=2026-01-01&until=2026-02-01')
     await screen.findByText('no matches')
     const search = requests.find((r) => r.startsWith('/api/search'))
-    expect(search).toContain('source=cloth')
+    expect(search).toContain('source=demo-harness')
     expect(search).toContain('since=2026-01-01')
     expect(search).toContain('until=2026-02-01T23%3A59%3A59')
     // the active filters are echoed on the results line
-    expect(screen.getByText(/cloth · from 2026-01-01 · to 2026-02-01/)).toBeInTheDocument()
+    expect(screen.getByText(/demo-harness · from 2026-01-01 · to 2026-02-01/)).toBeInTheDocument()
   })
 
   it('says when only the top page of hits is shown', async () => {

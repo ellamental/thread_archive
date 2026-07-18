@@ -1,9 +1,18 @@
-"""The source watchers — one per supported provider.
+"""The source watchers — one per built-in provider, plus the shared machinery
+every watcher is built from.
 
 Two properties worth noting: (1) each watcher calls the **local importer**
 directly rather than POSTing to an HTTP ingest route, so it needs no backend
 running, and (2) the JSONL file watchers share a single ``(mtime_ns, size)``
 fingerprint skip, so an unchanged file is a no-op without a server round-trip.
+
+:class:`FileSessionWatcher`, :class:`RglobWatcher` and :class:`DbScanWatcher`
+are re-exported from :mod:`thread_archive.provider` and are part of the public
+plugin API — a provider defined outside this package builds its watcher from the
+same three shapes the built-ins use.
+
+Which watchers run is not decided here: the set comes from the provider
+registry, so a plugin's watcher joins the same poll loop on equal terms.
 
 Out of scope here: any non-conversation data source, and any peer/status server —
 neither belongs in a serverless conversation archive.
@@ -19,7 +28,6 @@ from typing import Callable, Iterator, Optional
 from .._importers import (
     import_antigravity_session_incremental,
     import_claude_science_db,
-    import_cloth_session_incremental,
     import_codex_session_incremental,
     import_cowork_session_incremental,
     import_cursor_db,
@@ -32,7 +40,7 @@ from .base import SourceDiscovery, SourceWatcher, WatchResult, fingerprint_poll
 logger = logging.getLogger(__name__)
 
 
-def _stat_discovery(name: str, paths: Iterator[Path]) -> SourceDiscovery:
+def stat_discovery(name: str, paths: Iterator[Path]) -> SourceDiscovery:
     """Fold a stream of store files into a :class:`SourceDiscovery` — stat only."""
     items = 0
     total = 0
@@ -67,10 +75,10 @@ def discover_claude_dirs() -> list[Path]:
 
 class FileSessionWatcher(SourceWatcher):
     """Watches a tree of per-session JSONL transcripts, fingerprint-skipping
-    unchanged files and importing changed ones via ``self._import``.
+    unchanged files and importing changed ones via ``self.import_session``.
 
-    Subclasses provide ``source_name``, ``is_available``, ``_iter_files`` (yields
-    ``(path, source_id)``), and ``_import(path, source_id) -> result`` (a result
+    Subclasses provide ``source_name``, ``is_available``, ``iter_files`` (yields
+    ``(path, source_id)``), and ``import_session(path, source_id) -> result`` (a result
     with ``.events_created`` / ``.thread_id`` / ``.is_new_thread``).
     """
 
@@ -80,14 +88,14 @@ class FileSessionWatcher(SourceWatcher):
         # Per-file (mtime_ns, size) fingerprints, pruned each poll to files on disk.
         self._seen: dict[str, tuple[int, int]] = {}
 
-    def _iter_files(self) -> Iterator[tuple[Path, str]]:
+    def iter_files(self) -> Iterator[tuple[Path, str]]:
         raise NotImplementedError
 
-    def _import(self, path: Path, source_id: str):
+    def import_session(self, path: Path, source_id: str):
         raise NotImplementedError
 
     def discover(self) -> SourceDiscovery:
-        return _stat_discovery(self.source_name, (p for p, _ in self._iter_files()))
+        return stat_discovery(self.source_name, (p for p, _ in self.iter_files()))
 
     def _probe(self, target: tuple[Path, str]):
         session_file, _ = target
@@ -101,7 +109,7 @@ class FileSessionWatcher(SourceWatcher):
 
     def _work(self, target: tuple[Path, str]) -> WatchResult:
         session_file, source_id = target
-        imp = self._import(session_file, source_id)
+        imp = self.import_session(session_file, source_id)
         return WatchResult(
             sources_checked=1,
             items_imported=1 if imp.events_created > 0 else 0,
@@ -118,7 +126,7 @@ class FileSessionWatcher(SourceWatcher):
 
     def poll(self) -> WatchResult:
         return fingerprint_poll(
-            self._iter_files(), self._seen,
+            self.iter_files(), self._seen,
             probe=self._probe, work=self._work, on_error=self._import_error,
         )
 
@@ -140,7 +148,7 @@ class ClaudeCodeWatcher(FileSessionWatcher):
     def is_available(self) -> bool:
         return any(d.exists() for d in self._dirs())
 
-    def _iter_files(self) -> Iterator[tuple[Path, str]]:
+    def iter_files(self) -> Iterator[tuple[Path, str]]:
         pairs: list[tuple[Path, str]] = []
         for projects_dir in self._dirs():
             if not projects_dir.exists():
@@ -166,20 +174,34 @@ class ClaudeCodeWatcher(FileSessionWatcher):
         pairs.sort(key=lambda ps: _mtime(ps[0]))
         yield from pairs
 
-    def _import(self, path: Path, source_id: str):
+    def import_session(self, path: Path, source_id: str):
         return import_session_incremental(path, source_id)
 
 
-class _RglobWatcher(FileSessionWatcher):
-    """A FileSessionWatcher over ``root.rglob(glob)`` with provider-specific id +
-    importer."""
+class RglobWatcher(FileSessionWatcher):
+    """A :class:`FileSessionWatcher` over ``root.rglob(glob)``.
 
-    glob: str
-    _name: str
+    The whole watcher for a provider that keeps one transcript file per session
+    somewhere under a root directory. ``source_id_of`` derives each session's
+    stable id from its path — the id that must stay the same across every poll
+    of that session, since it is what the watermark and the thread are keyed on.
+    Where the id lives varies: the file stem, its parent directory's name, a
+    grandparent's.
+    """
 
-    def __init__(self, root: Path, importer: Callable, source_id_of: Callable[[Path], str]) -> None:
+    def __init__(
+        self,
+        root: Path,
+        importer: Callable,
+        source_id_of: Callable[[Path], str],
+        *,
+        name: str,
+        glob: str = "*.jsonl",
+    ) -> None:
         super().__init__()
         self.root = root
+        self.glob = glob
+        self._name = name
         self._importer = importer
         self._source_id_of = source_id_of
 
@@ -190,63 +212,46 @@ class _RglobWatcher(FileSessionWatcher):
     def is_available(self) -> bool:
         return self.root.exists()
 
-    def _iter_files(self) -> Iterator[tuple[Path, str]]:
+    def iter_files(self) -> Iterator[tuple[Path, str]]:
         if not self.root.exists():
             return
         for f in sorted(self.root.rglob(self.glob)):
             if f.is_file():
                 yield f, self._source_id_of(f)
 
-    def _import(self, path: Path, source_id: str):
+    def import_session(self, path: Path, source_id: str):
         return self._importer(path, source_id)
 
 
-def codex_watcher(sessions_dir: Optional[Path] = None) -> _RglobWatcher:
-    w = _RglobWatcher(
+def codex_watcher(sessions_dir: Optional[Path] = None) -> RglobWatcher:
+    return RglobWatcher(
         sessions_dir or (Path.home() / ".codex" / "sessions"),
         import_codex_session_incremental,
         lambda p: p.stem,
+        name="codex",
     )
-    w.glob, w._name = "*.jsonl", "codex"
-    return w
 
 
-def grok_watcher(sessions_dir: Optional[Path] = None) -> _RglobWatcher:
+def grok_watcher(sessions_dir: Optional[Path] = None) -> RglobWatcher:
     # Each session lives in its own UUID dir; that UUID is the stable id.
-    w = _RglobWatcher(
+    return RglobWatcher(
         sessions_dir or (Path.home() / ".grok" / "sessions"),
         import_grok_session_incremental,
         lambda p: p.parent.name,
+        name="grok",
+        glob="chat_history.jsonl",
     )
-    w.glob, w._name = "chat_history.jsonl", "grok"
-    return w
 
 
-def antigravity_watcher(brain_dir: Optional[Path] = None) -> _RglobWatcher:
+def antigravity_watcher(brain_dir: Optional[Path] = None) -> RglobWatcher:
     # brain/<id>/.system_generated/logs/transcript.jsonl → <id> is the session UUID.
-    w = _RglobWatcher(
+    return RglobWatcher(
         brain_dir or (Path.home() / ".gemini" / "antigravity-cli" / "brain"),
         import_antigravity_session_incremental,
         lambda p: p.parents[2].name,
+        name="antigravity",
+        glob="transcript.jsonl",
     )
-    w.glob, w._name = "transcript.jsonl", "antigravity"
-    return w
-
-
-def cloth_watcher(threads_dir: Optional[Path] = None) -> _RglobWatcher:
-    # cloth writes Claude-Code-shaped JSONL to ~/.thread/cloth/threads/<stem>.jsonl — one file
-    # per CLI session, ``source_id = "<stem>"``. cloth names files by session uuid
-    # (already globally unique), so the source_id is the bare stem — no prefix.
-    # (Bare numeric stems like ``1``/``22`` land bare too; they namespace under
-    # source='cloth' for import, and only collide with an integer thread PK on *read*,
-    # an accepted tradeoff.) CLOTH_HOME relocates the store. This is the sole live
-    # cloth store the standalone archive ingests.
-    import os
-
-    root = threads_dir or (Path(os.environ.get("CLOTH_HOME") or Path.home() / ".thread" / "cloth").expanduser() / "threads")
-    w = _RglobWatcher(root, import_cloth_session_incremental, lambda p: p.stem)
-    w.glob, w._name = "*.jsonl", "cloth"
-    return w
 
 
 # ── DB (single live SQLite) watchers ────────────────────────────────────────
@@ -263,7 +268,7 @@ def _scan_errors(source_name: str, scan) -> list[str]:
     return [f"{source_name}: {e}" for e in (getattr(scan, "errors", None) or [])]
 
 
-class _DbScanWatcher(SourceWatcher):
+class DbScanWatcher(SourceWatcher):
     """Detects mtime changes on live SQLite DBs and runs a scan importer on each
     changed one.
 
@@ -311,7 +316,7 @@ class _DbScanWatcher(SourceWatcher):
         # Live SQLite DBs: sizes + activity mtimes. No conversation count —
         # counting means opening and understanding the provider's schema, and
         # the discovery pass is stat-only by contract.
-        report = _stat_discovery(
+        report = stat_discovery(
             self.source_name, (db for db, _, _ in self._targets() if db is not None)
         )
         report.items = None
@@ -360,12 +365,12 @@ class _DbScanWatcher(SourceWatcher):
         )
 
 
-def cursor_watcher(db_path: Optional[Path] = None) -> _DbScanWatcher:
-    return _DbScanWatcher(db_path or _cursor_default_db(), "cursor", import_cursor_db)
+def cursor_watcher(db_path: Optional[Path] = None) -> DbScanWatcher:
+    return DbScanWatcher(db_path or _cursor_default_db(), "cursor", import_cursor_db)
 
 
-def opencode_watcher(db_path: Optional[Path] = None) -> _DbScanWatcher:
-    return _DbScanWatcher(
+def opencode_watcher(db_path: Optional[Path] = None) -> DbScanWatcher:
+    return DbScanWatcher(
         db_path or _opencode_default_db(), "opencode", import_opencode_db, watch_wal=True
     )
 
@@ -447,12 +452,12 @@ class CoworkWatcher(FileSessionWatcher):
                 metadata_path = org_dir / f"{session_dir.name}.json"
                 yield audit_path, source_id, (metadata_path if metadata_path.exists() else None)
 
-    def _iter_files(self) -> Iterator[tuple[Path, str]]:
+    def iter_files(self) -> Iterator[tuple[Path, str]]:
         for audit_path, source_id, metadata_path in self._iter_sessions():
             self._metadata[source_id] = metadata_path
             yield audit_path, source_id
 
-    def _import(self, path: Path, source_id: str):
+    def import_session(self, path: Path, source_id: str):
         return import_cowork_session_incremental(path, source_id, self._metadata.get(source_id))
 
 
@@ -478,7 +483,7 @@ def discover_claude_science_dbs(base: Optional[Path] = None) -> list[tuple[Path,
     return out
 
 
-class ClaudeScienceWatcher(_DbScanWatcher):
+class ClaudeScienceWatcher(DbScanWatcher):
     """Watches every org's ``operon-cli.db`` and imports its conversation frames.
 
     The dynamic-discovery form of the DB-scan watcher: DBs are found each poll —
@@ -502,50 +507,51 @@ class ClaudeScienceWatcher(_DbScanWatcher):
             )
 
 
-def default_watchers() -> list[SourceWatcher]:
-    """One watcher per provider, default system paths.
+def _build_watchers(providers) -> list[SourceWatcher]:
+    """Construct each provider's watcher, skipping providers that have none.
+
+    A watcher that raises on construction is logged and dropped rather than
+    propagated: a provider whose factory is broken must cost only itself, not
+    every other source in the poll.
+    """
+    built: list[SourceWatcher] = []
+    for provider in providers:
+        if provider.watcher is None:
+            continue
+        try:
+            built.append(provider.watcher())
+        except Exception:  # noqa: BLE001 — one bad factory must not stop ingest
+            logger.exception(
+                "provider %r: building its watcher failed — source skipped this pass",
+                provider.name,
+            )
+    return built
+
+
+def default_watchers(home=None) -> list[SourceWatcher]:
+    """One watcher per registered provider that has a store to watch, in poll order.
 
     Each is **self-gating** — ``poll_once`` skips any whose ``is_available()`` is
-    false — so a provider whose store is absent (no Cursor installed, no cloth store)
-    costs nothing and adds no process. cloth is a provider like the rest, riding this
-    one loop; there is no separate cloth daemon.
+    false — so a provider whose store is absent (no Cursor installed) costs
+    nothing and adds no process. Every source rides this one loop; there is no
+    per-provider daemon.
 
-    The exthost watcher runs last: the JSONL sources import each session's persisted
-    messages first (establishing their dedup_keys), so the exthost pass only has the
-    genuinely-lost steering messages left to write.
+    Order comes from the registry: a watcher that recovers what another source
+    persists must poll after it, so the primary import establishes its dedup keys
+    first and the recovery pass writes only what is genuinely lost.
+    """
+    from .._providers import sources as provider_sources
 
-    The export-drop watcher rides the same loop: it imports any claude.ai / ChatGPT /
-    xAI account export dropped into ``<home>/dumps/`` (a human-driven drop zone, not a
-    live store), so a one-time bulk export needs no separate command."""
-    from .export_drop import ExportDropWatcher
-    from .exthost import ExthostWatcher
-
-    return [
-        ClaudeCodeWatcher(),
-        codex_watcher(),
-        grok_watcher(),
-        antigravity_watcher(),
-        cloth_watcher(),
-        cursor_watcher(),
-        opencode_watcher(),
-        CoworkWatcher(),
-        ClaudeScienceWatcher(),
-        ExportDropWatcher(),
-        ExthostWatcher(),
-    ]
+    return _build_watchers(provider_sources(home=home))
 
 
-# The mechanism watchers, as distinct from provider *sources*: export-drop only
-# reads the archive's own <home>/dumps drop zone (consented by construction),
-# and cc-exthost recovers claude-code steering messages — it follows the
-# claude-code source rather than being a store of its own. Setup presents
-# provider sources only; these two ride along.
-_MECHANISM_SOURCES = frozenset({"export-drop", "cc-exthost"})
+def provider_watchers(home=None) -> list[SourceWatcher]:
+    """The consumer-facing provider sources — the default set minus archive's own
+    machinery (the drop zone, a recovery pass over another source's store), which
+    an operator doesn't choose the way they choose a tool they use."""
+    from .._providers import sources as provider_sources
 
-
-def provider_watchers() -> list[SourceWatcher]:
-    """The consumer-facing provider sources (default set minus the mechanisms)."""
-    return [w for w in default_watchers() if w.source_name not in _MECHANISM_SOURCES]
+    return _build_watchers(provider_sources(include_mechanisms=False, home=home))
 
 
 def enabled_watchers(home=None) -> list[SourceWatcher]:
@@ -554,9 +560,20 @@ def enabled_watchers(home=None) -> list[SourceWatcher]:
     The single choke point where operator source opt-outs (see
     :func:`.._config.source_enabled`) reach every ingest path — the daemon, the
     lazy MCP catch-up, ``archive watch`` — all of which construct their watcher
-    set here. No config file means the full default set.
+    set here. A provider that ``follows`` another is disabled with it: a recovery
+    pass over a store the operator opted out of has nothing legitimate to read.
+    No config file means the full default set.
     """
     from .._config import load_config, source_enabled
+    from .._providers import registry
 
     cfg = load_config(home)
-    return [w for w in default_watchers() if source_enabled(cfg, w.source_name)]
+
+    def _enabled(provider) -> bool:
+        if not source_enabled(cfg, provider.name):
+            return False
+        if provider.follows and not source_enabled(cfg, provider.follows):
+            return False
+        return True
+
+    return _build_watchers([p for p in registry(cfg).values() if _enabled(p)])

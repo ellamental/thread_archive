@@ -290,7 +290,7 @@ def rollout_index() -> dict[str, Path]:
     watcher = codex_watcher()
     if not watcher.is_available():
         return {}
-    return {source_id: path for path, source_id in watcher._iter_files()}
+    return {source_id: path for path, source_id in watcher.iter_files()}
 
 
 def run(

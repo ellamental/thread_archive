@@ -468,7 +468,11 @@ _UUID = "3f2a9c1e-0b44-4d27-9a11-77c0de9912ab"
 
 
 def test_read_by_bare_session_uuid(archive_home) -> None:
-    """A bare provider session uuid (the thread's source_id) resolves to the thread."""
+    """A bare provider session uuid (the thread's source_id) resolves to the thread.
+
+    Sources differ in whether they prefix their ids; one that stores the bare
+    session uuid has to resolve on the exact match, not only the suffix path the
+    prefixed sources take."""
     _seed(tid=11, source="claude-code", source_id=_UUID)
     out = read_thread(_UUID)
     assert "first question about authentication" in out
@@ -480,14 +484,6 @@ def test_read_by_project_prefixed_source_id(archive_home) -> None:
     _seed(tid=12, source="claude-code", source_id=f"my-project:{_UUID}")
     out = read_thread(_UUID)
     assert "# Thread 12:" in out
-    assert "first question about authentication" in out
-
-
-def test_read_by_bare_cloth_session_uuid(archive_home) -> None:
-    """cloth stores source_id as the bare session uuid (no prefix); it resolves exactly."""
-    _seed(tid=17, source="cloth", source_id=_UUID)
-    out = read_thread(_UUID)
-    assert "# Thread 17:" in out
     assert "first question about authentication" in out
 
 

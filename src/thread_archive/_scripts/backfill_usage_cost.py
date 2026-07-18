@@ -7,7 +7,7 @@ preserve them, so a fresh re-parse of each thread's source carries the values
 its stored events lack — and because none of those fields are content-hash
 material, the stored event and its fresh twin share the same ``dedup_key``.
 
-This script re-parses each source (claude-code and cloth transcripts), matches
+This script re-parses each source (the Claude-Code-shaped transcripts), matches
 every fresh ``api_request_completed`` event to its stored row — by ``dedup_key``
 first, content anchor as the NULL-key fallback — and merges the *missing*
 non-content fields onto the stored payload via the amendment mechanism

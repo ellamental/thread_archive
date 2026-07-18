@@ -5,8 +5,8 @@ model — IDE context blocks (``<ide_selection>`` / ``<ide_opened_file>``), unmo
 assistant block types (``server_tool_use``, ``web_search_tool_result``, images, …),
 and messages whose role isn't user/assistant/system. The builder fix preserves them
 going forward as ``ide_context`` / ``content_block`` / ``message`` events. This
-one-shot backfill recovers the same events for **already-imported** CC-shaped threads
-(``claude-code`` + ``cloth``) by re-parsing their still-on-disk source transcripts.
+one-shot backfill recovers the same events for **already-imported** threads of every
+source read by the Claude Code parser, by re-parsing their still-on-disk transcripts.
 
 Why this is safe on the live memory-of-record — even though a full re-import is not:
 it only ever inserts events whose ``event_type`` is in :data:`RECOVERABLE_TYPES`.
@@ -37,7 +37,7 @@ import argparse
 import logging
 import uuid as _uuid
 from pathlib import Path
-from typing import Iterable, Iterator, Optional
+from typing import Iterable, Optional
 
 from sqlalchemy import select
 
@@ -49,7 +49,10 @@ from .._importers._read import read_session_lines
 from .._retrieval.fts import index_events
 from .._store import Event, ImportState, get_session
 from .._truth import write_events
-from .._watcher.sources import ClaudeCodeWatcher, cloth_watcher
+
+# The Claude-Code-shaped transcript discovery, shared rather than restated: both
+# scripts sweep exactly the providers declaring that parser.
+from .backfill_reconcile import _iter_pairs
 
 logger = logging.getLogger(__name__)
 
@@ -100,15 +103,6 @@ def plan_thread(session, thread_id: int, lines: list[dict]) -> list[Event]:
                 out.append(_to_event(thread_id, e))
                 existing_keys.add(e.dedup_key)  # guard against in-file duplicates
     return out
-
-
-def _iter_pairs() -> Iterator[tuple[str, Path, str]]:
-    """Yield ``(source, path, source_id)`` for every on-disk CC-shaped transcript."""
-    for watcher, name in ((ClaudeCodeWatcher(), "claude-code"), (cloth_watcher(), "cloth")):
-        if not watcher.is_available():
-            continue
-        for path, source_id in watcher._iter_files():
-            yield name, path, source_id
 
 
 def run(

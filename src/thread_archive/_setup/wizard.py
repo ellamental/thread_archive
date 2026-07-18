@@ -31,18 +31,40 @@ from typing import Optional
 from .. import __version__
 from .._config import load_config, resolve_paths, save_config
 
-# Human labels for the provider sources, in presentation order.
-SOURCE_LABELS = {
-    "claude-code": "Claude Code",
-    "codex": "Codex",
-    "grok": "Grok",
-    "antigravity": "Antigravity",
-    "cloth": "cloth",
-    "cursor": "Cursor",
-    "opencode": "OpenCode",
-    "cowork": "Cowork",
-    "claude-science": "Claude Science",
-}
+
+def source_label(name: str) -> str:
+    """A source's human label, falling back to its bare name.
+
+    Read from the provider registry, so a plugin's source is presented by the
+    name its author chose rather than appearing here as an unlabelled string.
+    Fail-soft: setup must still run if the registry can't be built.
+    """
+    try:
+        from .._providers import labels
+
+        return labels().get(name, name)
+    except Exception:  # noqa: BLE001 — a label is never worth failing setup over
+        return name
+
+
+def _export_labels() -> str:
+    """The account-export vendors setup can name, from the registry."""
+    try:
+        from .._providers import export_specs
+
+        return " / ".join(spec.label for _, spec in export_specs()) or "none registered"
+    except Exception:  # noqa: BLE001 — never worth failing setup over
+        return "account exports"
+
+
+def _followers() -> list:
+    """Providers whose enablement follows another source's."""
+    try:
+        from .._providers import registry
+
+        return [p for p in registry().values() if p.follows]
+    except Exception:  # noqa: BLE001 — never worth failing setup over
+        return []
 
 
 # ── small formatting helpers ─────────────────────────────────────────────────
@@ -161,13 +183,13 @@ def run_setup(
         else:
             absent.append(w.source_name)
     for w, r in found:
-        label = SOURCE_LABELS.get(r.name, r.name)
+        label = source_label(r.name)
         items = f"{r.items:,} sessions" if r.items is not None else "live store"
         span = _fmt_range(r.earliest, r.latest)
         _say(f"  [x] {label:<15} {items:>15}   {_fmt_bytes(r.bytes):>9}   {span}")
     if absent:
-        _say(f"  not found: {', '.join(SOURCE_LABELS.get(n, n) for n in absent)}")
-    _say(f"  account exports (claude.ai / ChatGPT / xAI): drop the ZIP into {paths.dumps_dir} anytime.")
+        _say(f"  not found: {', '.join(source_label(n) for n in absent)}")
+    _say(f"  account exports ({_export_labels()}): drop the ZIP into {paths.dumps_dir} anytime.")
     _say()
 
     # 2. Consent + selection.
@@ -187,7 +209,7 @@ def run_setup(
             edited = True
             selected = []
             for w, r in found:
-                label = SOURCE_LABELS.get(r.name, r.name)
+                label = source_label(r.name)
                 keep = ask(f"  include {label}? [Y/n] > ", default="y", interactive=interactive)
                 if keep not in ("n", "no"):
                     selected.append(w)
@@ -204,11 +226,16 @@ def run_setup(
             sources_cfg[name] = {"enabled": False}
         else:
             sources_cfg.pop(name, None)
-    # cc-exthost recovers claude-code steering; it follows that source's choice.
-    if sources_cfg.get("claude-code", {}).get("enabled") is False:
-        sources_cfg["cc-exthost"] = {"enabled": False}
-    else:
-        sources_cfg.pop("cc-exthost", None)
+    # A source that follows another (a recovery pass over its store) inherits that
+    # source's choice — recovering from a store the operator opted out of would
+    # reintroduce exactly what they declined. Ingest enforces this too; writing it
+    # here as well keeps config.json a full statement of what will be captured.
+    for follower in _followers():
+        target = sources_cfg.get(follower.follows or "", {})
+        if isinstance(target, dict) and target.get("enabled") is False:
+            sources_cfg[follower.name] = {"enabled": False}
+        else:
+            sources_cfg.pop(follower.name, None)
     save_config(cfg, args.home)
 
     # 3. Import, narrated per source.
@@ -283,7 +310,7 @@ def _import_selected_locked(args: argparse.Namespace, selected: list, log_path) 
         errors: list[str] = []
         with shared_ingest_lock():
             for w in selected:
-                label = SOURCE_LABELS.get(w.source_name, w.source_name)
+                label = source_label(w.source_name)
                 print(f"  {label:<15} ", end="", flush=True)
                 t0 = time.monotonic()
                 try:

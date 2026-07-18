@@ -96,7 +96,7 @@ from .._importers.exports import (
 from .._ops.amend import _append_amendment_records, amend_event_payloads, check_patch
 from .._store import Event, Thread, get_session
 from .._truth.jsonl_log import append_event_row, log_dir, shared_ingest_lock
-from .backfill_reconcile import _block, _content_anchor, _norm_key, _pmid, _ts_key
+from .backfill_reconcile import _content_anchor, _norm_key, _pmid, _ts_key
 
 logger = logging.getLogger(__name__)
 

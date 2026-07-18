@@ -48,6 +48,9 @@ dependencies = [
 # embed.py and rerank.py import it directly to pick the device and the fp16 dtype.
 embeddings = ["sentence-transformers>=3.0", "einops>=0.7", "torch>=2.0"]
 dev = ["pytest>=8.0", "pytest-cov>=5.0", "ruff>=0.6", "mypy>=1.11", "build>=1.2"]
+# What a provider plugin needs to test itself against the archive: the golden
+# harness and isolated-home fixture in thread_archive.provider.testing.
+testing = ["pytest>=8.0"]
 
 [project.urls]
 Repository = "https://github.com/ellamental/thread_archive"
@@ -63,6 +66,11 @@ thread-archive = "thread_archive._setup:main"
 archive = "thread_archive.cli:main"
 archive-mcp = "thread_archive._mcp.server:main"
 archive-librarian-mcp = "thread_archive._mcp.librarian:main"
+
+# Provider plugins publish under this group; archive reads it at registry load.
+# Declared here so the name is documented in the project that consumes it —
+# archive itself registers no providers this way, since its own are built in.
+[project.entry-points."thread_archive.providers"]
 
 [tool.hatch.version]
 path = "src/thread_archive/__init__.py"

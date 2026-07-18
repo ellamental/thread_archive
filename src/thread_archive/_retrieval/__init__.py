@@ -18,10 +18,10 @@ from __future__ import annotations
 import logging
 from typing import Optional
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from .._store import Thread, use_session
+from .._store import Event, Thread, use_session
 from . import rank as _rank
 from ._classify import resolve_relative_date
 from ._context import extract_context_lines, get_context_events, parse_context_events_spec
@@ -44,6 +44,30 @@ def _enrich_thread_titles(hits: list[EventHit], *, session: Optional[Session] = 
     titles = {tid: (title or name) for tid, title, name in rows}
     for h in hits:
         h["thread_title"] = titles.get(h["thread_id"])
+
+
+def _enrich_thread_rows(hits: list[EventHit], *, session: Optional[Session] = None) -> None:
+    """Fill the thread-list columns — provider and event count — on hits the
+    thread-granular shapes render as threads rather than as messages (one query).
+    Mirrors what :func:`.browse.browse_threads` puts on a browse row, so the same
+    row vocabulary reads the same whether the list came from a query or not."""
+    if not hits:
+        return
+    ids = {h["thread_id"] for h in hits}
+    n_events = (
+        select(func.count()).where(Event.thread_id == Thread.id).scalar_subquery()
+    )
+    with use_session(session) as s:
+        rows = s.execute(
+            select(Thread.id, Thread.source, n_events.label("n_events"))
+            .where(Thread.id.in_(ids))
+        ).all()
+    meta = {r.id: r for r in rows}
+    for h in hits:
+        row = meta.get(h["thread_id"])
+        if row is not None:
+            h["thread_source"] = row.source
+            h["n_events"] = row.n_events
 
 
 def _rrf_merge(result_lists: list[list[EventHit]], limit: int, k: int = 60) -> list[EventHit]:
@@ -201,7 +225,8 @@ def search(
     ``thread_id``/``topic_id`` bypasses it (like the blacklist), and an explicit
     ``types`` list — the raw thread-type scope — wins over it entirely.
 
-    The ranked shape returns **one row per thread** (:func:`rank.group_by_thread`):
+    ``group`` picks how hits relate to threads. The default ranked shape,
+    ``group='thread'``, returns **one row per thread** (:func:`rank.group_by_thread`):
     a thread's best hit represents it, with further hits folded into its
     ``_thread_more`` count and cross-thread duplicate content (forks, fleets of
     spawned agents carrying one prompt) folded into ``_dup_thread_ids`` — the
@@ -209,9 +234,24 @@ def search(
     hit as its own row; ``group='dup'`` folds only the cross-thread duplicates
     (:func:`rank.fold_duplicate_threads`), keeping each surviving thread's own
     hits — the reader's shape, where a result list lays a thread's matches out
-    rather than collapsing them to a count. A ``thread_id`` scope, the
-    structural shapes, and the ``count``/``linkable`` outputs are never grouped
-    by any mode. Hits sharing one
+    rather than collapsing them to a count.
+
+    Two further modes turn a keyword search into a thread-granular *list*, the
+    shape an empty query already returns, and are flagged ``_group`` for the
+    renderer. ``group='browse'`` is the list of matched **threads** — one row
+    each, thread metadata instead of a snippet, ``limit`` counting threads.
+    ``group='nested'`` is the same list with the **messages** kept, clustered
+    under their thread (:func:`rank.cluster_by_thread`): ``limit`` counts
+    threads there too, each capped at :data:`rank.NESTED_HITS_PER_THREAD` hits
+    with the remainder folded into the cluster's ``_thread_more``. Both
+    enumerate every matched thread — no cross-thread duplicate fold, which would
+    drop a thread from a list that exists to enumerate them — and both apply to
+    the structural shapes and under a ``thread_id`` scope, since asking for them
+    is explicit. ``output='count'`` still wins over either (it tallies the whole
+    unranked pool per thread already).
+
+    Otherwise a ``thread_id`` scope, the structural shapes, and the
+    ``count``/``linkable`` outputs are never grouped. Hits sharing one
     ``(thread_id, event_id)`` anchor (a thread-meta title/summary doc and the
     first event it anchors to) collapse to the better-placed row in every
     row-shaped output, grouped or not."""
@@ -220,8 +260,8 @@ def search(
 
     if agents is not None and agents not in ("exclude", "include", "only"):
         raise ValueError("agents must be 'exclude', 'include', or 'only'")
-    if group is not None and group not in ("thread", "dup", "none"):
-        raise ValueError("group must be 'thread', 'dup', or 'none'")
+    if group is not None and group not in ("thread", "browse", "nested", "dup", "none"):
+        raise ValueError("group must be 'thread', 'browse', 'nested', 'dup', or 'none'")
     # An explicit types list is the raw thread-type scope; the agents switch
     # stands down so types=['system'] just works without a second knob.
     agents_eff = "include" if types else (agents or "exclude")
@@ -263,8 +303,15 @@ def search(
     # count/linkable are ungrouped by shape ('count' already tallies per thread,
     # 'linkable' links every event). group='none' turns it off; group='dup'
     # keeps per-thread hits and folds only cross-thread duplicate content.
-    grouping = (group != "none" and not structural and thread_id is None
-                and output is None)
+    #
+    # The list shapes ('browse'/'nested') are the exception to all of that: asking
+    # for one is an explicit request for a thread-granular view, so it outranks
+    # the shape-based suppressions above. Only output='count' still wins, via the
+    # is_count guard on the block that applies the fold.
+    listing = group in ("browse", "nested")
+    grouping = group != "none" and (
+        listing or (not structural and thread_id is None and output is None)
+    )
     # Candidate pool depth. 200 (not limit*5) because reachability dies at the pool
     # boundary: for a high-frequency term over a ~1M-doc index, a relevant-but-old
     # hit past bm25's top-N is unreachable no matter how the ranker weighs it. The
@@ -356,13 +403,33 @@ def search(
         # two rows that open identically in thread_read).
         ranked = _rank.collapse_same_anchor(ranked)
         if grouping:
-            ranked = (_rank.fold_duplicate_threads(ranked) if group == "dup"
-                      else _rank.group_by_thread(ranked))
+            if group == "nested":
+                # Clusters before the cut, and caps itself by thread — so the cut
+                # can't slice a thread's cluster in half.
+                ranked = _rank.cluster_by_thread(ranked, max_threads=limit)
+            elif group == "browse":
+                ranked = _rank.group_by_thread(ranked, fold_duplicates=False)
+            elif group == "dup":
+                ranked = _rank.fold_duplicate_threads(ranked)
+            else:
+                ranked = _rank.group_by_thread(ranked)
 
-    hits = ranked if is_count else ranked[:limit]
+    if is_count or (grouping and group == "nested"):
+        hits = ranked
+    else:
+        hits = ranked[:limit]
 
     # Per-hit enrichments the renderer reads. A pure tally (count) needs none.
     if not is_count:
+        if grouping and listing:
+            # The list shapes render thread rows, so they need the thread columns.
+            # 'browse' shows no message at all, so its per-hit match window would
+            # be computed only to be discarded.
+            for r in hits:
+                r["_group"] = group
+            _enrich_thread_rows(hits, session=session)
+            if group == "browse":
+                context_lines, context_events = 0, None
         if context_lines > 0:
             for r in hits:
                 if r.get("full_content"):

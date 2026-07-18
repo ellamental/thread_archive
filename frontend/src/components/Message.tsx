@@ -242,7 +242,7 @@ function HookFires({ names }: { names: string[] }) {
   )
 }
 
-// Compact token count ("12.6k"), matching cloth's turn-meta formatting.
+// Compact token count ("12.6k").
 function fmt(n?: number): string {
   if (!n) return '0'
   return n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n)
@@ -255,8 +255,8 @@ function fmtTime(s: string | null | undefined): string | null {
 }
 
 // The drawer that expands under the message: model/request detail (folded from the
-// turn's api_request events) plus a "view as raw" toggle. Modeled on cloth's inline
-// turn-meta — under the message, not a side sheet.
+// turn's api_request events) plus a "view as raw" toggle. Inline turn-meta —
+// under the message, not a side sheet.
 function MessageMeta({
   meta,
   raw,

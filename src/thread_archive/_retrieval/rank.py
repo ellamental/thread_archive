@@ -285,7 +285,7 @@ def fold_duplicate_threads(results: list[EventHit]) -> list[EventHit]:
     return out
 
 
-def group_by_thread(results: list[EventHit]) -> list[EventHit]:
+def group_by_thread(results: list[EventHit], *, fold_duplicates: bool = True) -> list[EventHit]:
     """Collapse a ranked hit list to one row per thread, annotated instead of
     truncated — result slots are an agent's budget, and redundancy spends them:
 
@@ -296,6 +296,10 @@ def group_by_thread(results: list[EventHit]) -> list[EventHit]:
       spawned agents carrying one prompt — folds into that row's
       ``_dup_thread_ids`` instead of repeating the content. A thread folded
       this way can still surface later on a distinct hit of its own.
+
+    ``fold_duplicates=False`` keeps the per-thread collapse but drops that second
+    fold, so **every** matched thread keeps a row — what a thread *list* owes its
+    reader, where a ranked result list owes its reader brevity.
 
     Ranked order in, ranked order out: a thread ranks where its best hit ranks.
     """
@@ -308,7 +312,7 @@ def group_by_thread(results: list[EventHit]) -> list[EventHit]:
         if rep is not None:
             rep["_thread_more"] = rep.get("_thread_more", 0) + 1
             continue
-        norm = _norm_content(r)
+        norm = _norm_content(r) if fold_duplicates else ""
         if norm:
             dup = by_content.get(norm)
             if dup is not None:
@@ -320,6 +324,58 @@ def group_by_thread(results: list[EventHit]) -> list[EventHit]:
         if norm:
             by_content[norm] = r
         out.append(r)
+    return out
+
+
+# Per-thread hit budget for the nested shape. A nested render is bounded by
+# threads, not hits, so one sprawling thread must not eat the whole view: past
+# this many hits a thread's remainder folds into its cluster's ``_thread_more``
+# (drill in with a thread_id-scoped search, which is never grouped).
+NESTED_HITS_PER_THREAD = 5
+
+
+def cluster_by_thread(
+    results: list[EventHit],
+    *,
+    max_threads: int,
+    max_per_thread: int = NESTED_HITS_PER_THREAD,
+) -> list[EventHit]:
+    """Reorder a ranked hit list so each thread's hits sit together — the nested
+    shape: every match kept, laid out under the thread it came from.
+
+    Threads keep their ranked order (a thread sits where its best hit ranked) and
+    the first ``max_threads`` of them survive; within a thread the hits go back to
+    **event order**, since a thread's matches read as a sequence, not a ranking.
+    Hits past ``max_per_thread`` fold into the cluster's leading row as
+    ``_thread_more``. Unlike :func:`group_by_thread` no cross-thread duplicate
+    fold runs: a nested view enumerates what matched.
+    """
+    order: list[int] = []
+    buckets: dict[int, list[EventHit]] = {}
+    overflow: dict[int, int] = {}
+    for pos, r in enumerate(results):
+        tid = r.get("thread_id")
+        if tid not in buckets:
+            if len(buckets) >= max_threads:
+                continue
+            buckets[tid] = []
+            order.append(tid)
+        bucket = buckets[tid]
+        if len(bucket) >= max_per_thread:
+            overflow[tid] = overflow.get(tid, 0) + 1
+            continue
+        # Clustering destroys the ranked order this list arrived in, and the
+        # match-quality verdict is a statement about the TOP-ranked hit — so each
+        # surviving hit carries where it ranked (see format._top_hit).
+        r["_rank_pos"] = pos
+        bucket.append(r)
+
+    out: list[EventHit] = []
+    for tid in order:
+        bucket = sorted(buckets[tid], key=lambda h: h.get("event_id") or 0)
+        if overflow.get(tid):
+            bucket[0]["_thread_more"] = overflow[tid]
+        out.extend(bucket)
     return out
 
 

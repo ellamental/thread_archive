@@ -68,11 +68,11 @@ def test_stats_tokens_and_cost_by_source(archive_home):
     _seed_events(
         archive_home,
         [
-            (1, "cloth", "deepseek/deepseek-v4-pro", 1000, 100, 0.05),
-            (1, "cloth", "deepseek/deepseek-v4-pro", 2000, 200, 0.10),
-            (2, "cloth", "x-ai/grok-4.5", 500, 50, 0.02),
+            (1, "demo-harness", "deepseek/deepseek-v4-pro", 1000, 100, 0.05),
+            (1, "demo-harness", "deepseek/deepseek-v4-pro", 2000, 200, 0.10),
+            (2, "demo-harness", "x-ai/grok-4.5", 500, 50, 0.02),
             (3, "claude-code", "claude-opus-4-8", 3000, 300, None),  # tokens, no cost
-            (4, "cloth", "<synthetic>", 10, 1, None),  # placeholder model
+            (4, "demo-harness", "<synthetic>", 10, 1, None),  # placeholder model
         ],
     )
     status, payload = _get("/api/stats")
@@ -88,9 +88,9 @@ def test_stats_tokens_and_cost_by_source(archive_home):
     assert o["models"] == 3
 
     by_source = {r["source"]: r for r in payload["by_source"]}
-    assert by_source["cloth"]["conversations"] == 3
-    assert abs(by_source["cloth"]["cost"] - 0.17) < 1e-9
-    assert abs(by_source["cloth"]["avg_cost"] - 0.085) < 1e-9  # over the 2 cost-bearing sessions
+    assert by_source["demo-harness"]["conversations"] == 3
+    assert abs(by_source["demo-harness"]["cost"] - 0.17) < 1e-9
+    assert abs(by_source["demo-harness"]["avg_cost"] - 0.085) < 1e-9  # over the 2 cost-bearing sessions
     # A subscription source: tokens present, cost absent (null, not a fabricated 0).
     assert by_source["claude-code"]["cost"] is None
     assert by_source["claude-code"]["tokens"] == 3300
@@ -107,7 +107,7 @@ def test_stats_tokens_and_cost_by_source(archive_home):
 def test_by_model_lists_every_model_uncapped(archive_home):
     # 25 distinct models, each a single request — none may be silently dropped, and the
     # overview count must reflect all of them.
-    _seed_events(archive_home, [(1, "cloth", f"m{i:02d}", 10, 1, None) for i in range(25)])
+    _seed_events(archive_home, [(1, "demo-harness", f"m{i:02d}", 10, 1, None) for i in range(25)])
     _status, payload = _get("/api/stats")
     assert payload["overview"]["models"] == 25
     assert len(payload["by_model"]) == 25
@@ -117,46 +117,13 @@ def test_by_model_lists_every_model_uncapped(archive_home):
     assert capped["overview"]["models"] == 25  # the count stays true even when the list is capped
 
 
-def test_import_preserves_cloth_cost_and_cache_tokens(archive_home):
-    """End to end through the real cloth import path: a message's cost + cache-token counts
-    land in the stored api_request_completed event (they were being dropped) and feed the
-    stats survey."""
-    from thread_archive._importers import import_cloth_session_incremental
-    from thread_archive._store import get_engine
-
-    uuid = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
-    user = {"type": "user", "uuid": "u1", "timestamp": "2026-07-01T10:00:00Z",
-            "message": {"role": "user", "content": "hi"}}
-    asst = {"type": "assistant", "uuid": "a1", "parentUuid": "u1", "timestamp": "2026-07-01T10:00:05Z",
-            "message": {"role": "assistant", "model": "deepseek/deepseek-v4-pro",
-                        "content": [{"type": "text", "text": "hello"}],
-                        "usage": {"input_tokens": 100, "output_tokens": 20, "thinking_tokens": 0,
-                                  "cache_read_tokens": 80, "cache_write_tokens": 5},
-                        "cost": 0.0121}}
-    f = archive_home / f"{uuid}.jsonl"
-    f.write_text("\n".join(json.dumps(x) for x in (user, asst)) + "\n", encoding="utf-8")
-    ta.open_archive(str(archive_home))
-    import_cloth_session_incremental(f, source_id=uuid)
-
-    with get_engine().begin() as c:
-        row = c.execute(
-            text("SELECT payload FROM events WHERE event_type = 'api_request_completed' LIMIT 1")
-        ).scalar()
-    payload = json.loads(row)
-    assert payload["cost"] == 0.0121
-    assert payload["cache_read_tokens"] == 80
-    assert payload["cache_write_tokens"] == 5
-
-    assert abs(ta.stats()["overview"]["cost"] - 0.0121) < 1e-9
-
-
 def test_refresh_is_incremental(archive_home):
-    _seed_events(archive_home, [(1, "cloth", "m1", 100, 10, 0.01)])
+    _seed_events(archive_home, [(1, "demo-harness", "m1", 100, 10, 0.01)])
     assert ta.stats()["overview"]["tokens"] == 110
 
     # More events on the same thread — the next survey folds only the delta and
     # accumulates onto the standing sums rather than recomputing from scratch.
-    _seed_events(archive_home, [(1, "cloth", "m1", 200, 20, 0.02)])
+    _seed_events(archive_home, [(1, "demo-harness", "m1", 200, 20, 0.02)])
     s2 = ta.stats()
     assert s2["overview"]["tokens"] == 330
     assert abs(s2["overview"]["cost"] - 0.03) < 1e-9
@@ -173,7 +140,7 @@ def _seed_model_detail(archive_home):
 
     with get_engine().begin() as c:
         for tid, source, at in [
-            (1, "cloth", "2026-01-05 10:00:00"),
+            (1, "demo-harness", "2026-01-05 10:00:00"),
             (2, "claude-code", "2026-01-20 09:00:00"),
             (3, "claude-code", "2026-02-02 08:00:00"),
         ]:
@@ -271,7 +238,7 @@ def test_model_stats_slash_in_model_name(archive_home):
     # Router models like 'deepseek/deepseek-v4-pro' contain a slash; the route takes
     # the whole tail, so both the SPA's percent-encoded form and a hand-typed literal
     # slash resolve.
-    _seed_events(archive_home, [(1, "cloth", "deepseek/deepseek-v4-pro", 100, 10, 0.01)])
+    _seed_events(archive_home, [(1, "demo-harness", "deepseek/deepseek-v4-pro", 100, 10, 0.01)])
     for path in ("/api/stats/model/deepseek%2Fdeepseek-v4-pro", "/api/stats/model/deepseek/deepseek-v4-pro"):
         status, payload = _get(path)
         assert status == 200, path
@@ -280,7 +247,7 @@ def test_model_stats_slash_in_model_name(archive_home):
 
 
 def test_refresh_resets_when_log_shrinks(archive_home):
-    _seed_events(archive_home, [(1, "cloth", "m1", 100, 10, 0.01)])
+    _seed_events(archive_home, [(1, "demo-harness", "m1", 100, 10, 0.01)])
     ta.stats()
 
     # Simulate a reindex that rebuilt the log below the cursor, and corrupt the rollup

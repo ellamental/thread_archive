@@ -3,8 +3,13 @@
 One in-DB ``event_vectors`` BLOB table holding 768-d nomic vectors, searched by an
 in-process brute-force cosine KNN (numpy). No server, no native extension, no HNSW:
 the vectors live in the archive SQLite DB beside the data. Vectors are float32 and
-unit-normalized, so cosine = dot product; at single-user scale the matrix loads once
-and a query is a single BLAS matvec (~ms).
+unit-normalized, so cosine = dot product; a query is a single BLAS matvec (~ms).
+
+The KNN matrix is **mmap'd, not resident**: the full corpus is packed once into
+token-named ``.npy`` files (``<home>/vector-pack/``, derived + disposable) and
+``np.load(mmap_mode='r')`` serves every content-type scope from the one pack via
+row masks — RAM cost is page cache the OS can reclaim, not per-process RSS, so
+the ceiling scales with disk instead of memory. Same float32 bits, same scores.
 
 Long documents are **chunked**: a doc is embedded as one vector per
 :data:`CHUNK_CHARS`-char slice (up to :data:`MAX_CHUNKS`), keyed
@@ -22,8 +27,12 @@ lexical-only when the extra isn't installed or nothing's indexed.
 
 from __future__ import annotations
 
+import json
 import logging
+import os
+import time
 from contextlib import contextmanager
+from pathlib import Path
 from typing import Optional
 
 import numpy as np
@@ -70,10 +79,10 @@ _ASSISTANT_CONTENT_TYPES = ("text",)
 _META_CONTENT_TYPES = ("title", "summary")
 
 # Process-local matrix cache: {(engine_id, cts): (validity_token, ids, ctypes, mat,
-# doc_inverse, doc_rep)}. Keys are canonicalized (sorted cts tuple) so equivalent
-# scopes in different orders share one entry, and the cache is bounded
-# (:data:`_MATRIX_CACHE_MAX`) — each entry is a full float32 matrix, so unbounded
-# scope proliferation would pin hundreds of MB per extra scope.
+# doc_inverse, doc_rep, scope_rows)}. Keys are canonicalized (sorted cts tuple) so
+# equivalent scopes in different orders share one entry; ``mat`` is the shared mmap
+# of the full pack, so an entry pins only the scope's small index arrays, and the
+# bound (:data:`_MATRIX_CACHE_MAX`) guards scope proliferation.
 # The token includes store-derived counters (row count + max rowid), not just the
 # process-local write version: the embed cohost lives in the *watcher* process, so a
 # long-lived search process (the MCP server) must notice out-of-process vector writes
@@ -81,6 +90,81 @@ _META_CONTENT_TYPES = ("title", "summary")
 _MATRIX_CACHE: dict = {}
 _MATRIX_CACHE_MAX = 4
 _write_version = 0
+
+# Pack files for a superseded token are swept once they age out — a mapped-in
+# reader elsewhere may still be serving queries off them (its unlinked inode
+# stays valid; the age is grace, not correctness).
+_PACK_STALE_AGE_S = 3600
+
+
+def _pack_dir() -> Optional[Path]:
+    """``<home>/vector-pack/`` beside the index — derived, disposable, rebuilt
+    whenever the store token moves. None for a non-file DSN (the in-RAM path)."""
+    db = get_engine().url.database
+    return Path(db).parent / "vector-pack" if db else None
+
+
+def _corpus_arrays(s) -> tuple:
+    """The full embedded corpus as arrays: (mat, ids, ct_codes, ct_names).
+    Deterministic order (the PK) so two rival pack builders of the same token
+    write byte-identical files."""
+    ids: list[int] = []
+    cts: list[str] = []
+    vecs: list[np.ndarray] = []
+    result = s.execute(sa_text(
+        "SELECT event_id, content_type, vec FROM event_vectors "
+        "ORDER BY event_id, content_type, chunk"
+    ))
+    for r in result:
+        ids.append(int(r[0]))
+        cts.append(str(r[1]))
+        vecs.append(np.frombuffer(r[2], dtype=np.float32))
+    ct_names = sorted(set(cts))
+    codes = {c: i for i, c in enumerate(ct_names)}
+    mat = np.vstack(vecs) if vecs else np.empty((0, _DIM), dtype=np.float32)
+    ids_arr = np.asarray(ids, dtype=np.int64)
+    ct_codes = np.asarray([codes[c] for c in cts], dtype=np.int16)
+    return mat, ids_arr, ct_codes, ct_names
+
+
+def _ensure_pack(s, store_token: tuple[int, int]) -> tuple:
+    """The full-corpus mmap pack for ``store_token`` — build if absent, then
+    return (mat[mmap], ids, ct_codes, ct_names). Files are token-named, so a
+    reader can never mix arrays from two builds, and rival concurrent builders
+    write byte-identical content (deterministic ORDER BY) — whichever
+    ``os.replace`` lands last changes nothing. Falls back to in-RAM arrays for
+    a non-file DSN."""
+    d = _pack_dir()
+    if d is None:
+        return _corpus_arrays(s)
+    tag = f"{store_token[0]}-{store_token[1]}"
+    paths = {k: d / f"{k}-{tag}.npy" for k in ("mat", "ids", "cts")}
+    meta_p = d / f"meta-{tag}.json"
+    if not (meta_p.exists() and all(p.exists() for p in paths.values())):
+        mat, ids_arr, ct_codes, ct_names = _corpus_arrays(s)
+        d.mkdir(parents=True, exist_ok=True)
+        pid = os.getpid()
+        for k, arr in (("mat", mat), ("ids", ids_arr), ("cts", ct_codes)):
+            tmp = d / f"{k}-{tag}.npy.tmp.{pid}"
+            with open(tmp, "wb") as f:  # a handle: np.save must not append '.npy'
+                np.save(f, arr)
+            os.replace(tmp, paths[k])
+        tmp = d / f"{meta_p.name}.tmp.{pid}"
+        tmp.write_text(json.dumps({"ct_names": ct_names, "rows": len(ids_arr)}))
+        os.replace(tmp, meta_p)
+        for stray in d.iterdir():  # sweep aged-out packs of superseded tokens
+            if f"-{tag}." in stray.name:
+                continue
+            try:
+                if time.time() - stray.stat().st_mtime > _PACK_STALE_AGE_S:
+                    stray.unlink()
+            except OSError:  # racing another sweeper
+                pass
+    mat = np.load(paths["mat"], mmap_mode="r")
+    ids_arr = np.load(paths["ids"])
+    ct_codes = np.load(paths["cts"])
+    ct_names = json.loads(meta_p.read_text())["ct_names"]
+    return mat, ids_arr, ct_codes, ct_names
 
 
 def is_available() -> bool:
@@ -162,6 +246,12 @@ def index_vectors(records) -> int:
         ), rows)
         s.commit()
     _bump_version()
+    # A pure in-place upsert moves neither row count nor max rowid, so the pack
+    # token can't see it — drop the pack metas so the next load rebuilds.
+    d = _pack_dir()
+    if d is not None:
+        for stray in d.glob("meta-*.json"):
+            stray.unlink(missing_ok=True)
     return len(rows)
 
 
@@ -428,21 +518,16 @@ def _load_matrix(cts: tuple[str, ...]):
         cached = _MATRIX_CACHE.get(key)
         if cached is not None and cached[0] == token:
             return cached[1:]
+        mat, ids_all, ct_codes_all, ct_names = _ensure_pack(s, (token[1], token[2]))
 
-        where = "content_type IN (" + ",".join(":c" + str(i) for i in range(len(cts))) + ")"
-        params = {"c" + str(i): c for i, c in enumerate(cts)}
-        ids: list[int] = []
-        ctypes: list[str] = []
-        vecs: list[np.ndarray] = []
-        result = s.execute(
-            sa_text("SELECT event_id, content_type, vec FROM event_vectors WHERE " + where), params,
-        )
-        for r in result:
-            ids.append(int(r[0]))
-            ctypes.append(str(r[1]))
-            vecs.append(np.frombuffer(r[2], dtype=np.float32))
-    mat = np.vstack(vecs) if vecs else np.empty((0, _DIM), dtype=np.float32)
-    ids_arr = np.asarray(ids, dtype=np.int64)
+    # The scope is a row mask over the one shared pack: sims run over the full
+    # matrix (the matvec streams mmap pages) and gather down to these rows.
+    want = np.asarray(
+        [i for i, n in enumerate(ct_names) if n in set(cts)], dtype=np.int16
+    )
+    scope_rows = np.nonzero(np.isin(ct_codes_all, want))[0]
+    ids_arr = ids_all[scope_rows]
+    ctypes = [ct_names[c] for c in ct_codes_all[scope_rows]]
     ct_arr = np.asarray(ctypes, dtype=object)
     # Per-document grouping for the KNN's chunk max-pool: rows sharing an
     # (event_id, content_type) are one document. ``doc_inverse`` maps each row to
@@ -459,8 +544,8 @@ def _load_matrix(cts: tuple[str, ...]):
     if key not in _MATRIX_CACHE:
         while len(_MATRIX_CACHE) >= _MATRIX_CACHE_MAX:
             _MATRIX_CACHE.pop(next(iter(_MATRIX_CACHE)))
-    _MATRIX_CACHE[key] = (token, ids_arr, ct_arr, mat, doc_inverse, doc_rep)
-    return ids_arr, ct_arr, mat, doc_inverse, doc_rep
+    _MATRIX_CACHE[key] = (token, ids_arr, ct_arr, mat, doc_inverse, doc_rep, scope_rows)
+    return ids_arr, ct_arr, mat, doc_inverse, doc_rep, scope_rows
 
 
 def _knn(qvec, cts: tuple[str, ...], cand: int, allowed_ids=None) -> list[tuple[int, str, float]]:
@@ -473,12 +558,15 @@ def _knn(qvec, cts: tuple[str, ...], cand: int, allowed_ids=None) -> list[tuple[
     those event ids *before* the top-k cut, so a scoped search (one thread, a time
     window) ranks within its scope instead of hoping the scope survives a
     corpus-wide top-k."""
-    ids, ct_arr, mat, doc_inverse, doc_rep = _load_matrix(cts)
+    ids, ct_arr, mat, doc_inverse, doc_rep, scope_rows = _load_matrix(cts)
     n = len(ids)
     if n == 0:
         return []
     q = _normalize(qvec)
-    sims = mat @ q
+    # Full-matrix matvec (streams the mmap; same float32 bits as an in-RAM
+    # multiply), gathered down to the scope's rows so everything below stays
+    # scope-local exactly as before.
+    sims = np.asarray(mat @ q, dtype=np.float32)[scope_rows]
     rows = np.arange(n)
     if allowed_ids is not None:
         rows = np.nonzero(np.isin(ids, allowed_ids))[0]

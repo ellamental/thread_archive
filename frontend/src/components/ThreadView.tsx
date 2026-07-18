@@ -49,7 +49,7 @@ function fmtSpan(start?: string | null, end?: string | null): string | null {
 export function ThreadView() {
   const { id } = useParams()
   const navigate = useNavigate()
-  // A purely numeric id is an archive thread PK; anything else (a cloth/claude-code/
+  // A purely numeric id is an archive thread PK; anything else (a claude-code/
   // codex session uuid or stem pasted straight into the URL) is a provider link id we
   // resolve to its numeric thread and redirect to. Parsing the uuid as an int would
   // silently truncate "27056da6-…" to 27056 and open the wrong thread.

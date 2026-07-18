@@ -48,7 +48,7 @@ function modelStats(overrides: Partial<ModelStats> = {}): ModelStats {
     ],
     top_sessions: [
       { thread_id: 77, title: 'the big refactor', source: 'claude-code', at: '2026-02-10 09:00:00', tokens: 400_000, requests: 120, compactions: 9 },
-      { thread_id: 78, title: null, source: 'cloth', at: null, tokens: 100_000, requests: 30, compactions: 0 },
+      { thread_id: 78, title: null, source: 'demo-harness', at: null, tokens: 100_000, requests: 30, compactions: 0 },
     ],
     ...overrides,
   }

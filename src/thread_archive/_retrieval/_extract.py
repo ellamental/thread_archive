@@ -18,8 +18,8 @@ from typing import Optional
 # NB: assistant text reaches the archive two ways, and exactly one of them may be
 # indexed per api_call. File importers (DefaultEventBuilder) emit granular
 # text_complete / thinking_complete twins beside an api_request_completed summary
-# that duplicates them; live-capture sources (cloth, loom, needle, officiant, …)
-# emit token text_delta events — never indexed — and the assembled turn exists
+# that duplicates them; a source captured live as it streams
+# emits token text_delta events — never indexed — and the assembled turn exists
 # only in the summary's content_blocks. So the granular twins are indexed
 # unconditionally, and api_request_completed is indexed ONLY for api_calls with
 # no twin — a gate the callers apply (see fts.index_events / rebuild_fts), since
@@ -77,6 +77,15 @@ def _strip_frontmatter(text: str) -> str:
     return text
 
 
+# Input keys whose string values are indexed whole as body text (frontmatter-
+# stripped, up to the overall 2000-char document cap). Every other key is
+# indexed as ``key=value`` metadata with the value capped, so a Write's
+# file_path or a Grep's pattern stays searchable beside the body.
+_BODY_KEYS = frozenset(
+    ("content", "text", "body", "message", "query", "prompt", "command", "description", "entry")
+)
+
+
 def _fts_tool_use(payload: dict) -> list[tuple[str, str, Optional[str]]]:
     tool_name = payload.get("tool_name") or ""
     tool_input = payload.get("input")
@@ -84,16 +93,19 @@ def _fts_tool_use(payload: dict) -> list[tuple[str, str, Optional[str]]]:
         # Heredoc bodies span many lines; index the first line, truncated.
         tool_name = tool_input["command"].split("\n", 1)[0][:200]
 
-    # Prioritize the real content keys over stringified metadata.
     content_parts = [payload.get("tool_name") or ""]
     if isinstance(tool_input, dict):
-        for key in ("content", "text", "body", "message", "query", "prompt", "description", "entry"):
-            val = tool_input.get(key)
-            if val and isinstance(val, str):
-                content_parts.append(_strip_frontmatter(val))
-                break
-        else:
-            content_parts.append(" ".join(f"{k}={v}" for k, v in tool_input.items()))
+        body_parts: list[str] = []
+        meta_parts: list[str] = []
+        for key, val in tool_input.items():
+            if key in _BODY_KEYS and isinstance(val, str) and val:
+                body_parts.append(_strip_frontmatter(val))
+            else:
+                meta_parts.append(f"{key}={_to_str(val)[:500]}")
+        # Metadata leads so the 2000-char cap can't truncate a small key
+        # (file_path, pattern) away behind a large body (a Write, a heredoc).
+        content_parts.extend(meta_parts)
+        content_parts.extend(body_parts)
     elif tool_input is not None:
         content_parts.append(str(tool_input))
 

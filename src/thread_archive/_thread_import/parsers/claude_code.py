@@ -727,7 +727,7 @@ class ClaudeCodeParser(ProviderParser):
             "model": model,
             "stop_reason": msg_data.get("stop_reason"),
             "usage": usage,
-            # Per-message cost when the source records it (cloth writes it on every
+            # Per-message cost when the source records it (a pay-per-token harness
             # assistant message); None for subscription transcripts, dropped downstream.
             "cost": msg_data.get("cost"),
             "request_id": line.get("requestId"),

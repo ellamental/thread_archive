@@ -157,7 +157,13 @@ def ensure_fts(session: Optional[Session] = None) -> None:
     An ``event_search`` that predates the external-content layout is swapped for
     an empty current-shape table: queries keep working (lexically dark) and the
     next ``reindex`` refills it — heavy work stays on the operator-visible path,
-    per the schema module's "verify reports, reindex heals" rule."""
+    per the schema module's "verify reports, reindex heals" rule. The swap
+    deliberately leaves the sync triggers ABSENT: over a populated shadow and an
+    empty index, a trigger-fired FTS 'delete' would target postings that don't
+    exist, which fts5 raises as SQLITE_CORRUPT. Triggerless, shadow writes stay
+    safe (the empty index misses nothing it wasn't already missing), verify's
+    ``fts_triggers`` check reports the state, and ``rebuild_fts`` restores the
+    triggers when it refills the index."""
     with use_session(session) as s:
         shape = _event_search_shape(s)
         if shape is False:
@@ -167,10 +173,18 @@ def ensure_fts(session: Optional[Session] = None) -> None:
             )
             _drop_triggers(s)
             s.execute(sa_text("DROP TABLE event_search"))
-            shape = None
-        if shape is None:
             s.execute(sa_text(_CREATE_FTS))
-        _create_triggers(s)
+        elif shape is None:
+            s.execute(sa_text(_CREATE_FTS))
+        # The dark window (populated shadow, empty index — i.e. the swap above,
+        # observed now or on any later open) must stay triggerless; a fresh
+        # empty-empty store is not dark and gets its triggers immediately.
+        dark = bool(s.execute(sa_text(
+            "SELECT EXISTS(SELECT 1 FROM events_fts) "
+            "AND NOT EXISTS(SELECT 1 FROM event_search_docsize)"
+        )).scalar())
+        if not dark:
+            _create_triggers(s)
         if session is None:
             s.commit()
 

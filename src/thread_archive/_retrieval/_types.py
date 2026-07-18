@@ -29,7 +29,13 @@ class EventHit(TypedDict):
     A *browse* row (empty-query search — see :mod:`.browse`) rides the same
     shape with ``_browse=True``: one row per thread, ``event_id`` = the
     thread's newest event, plus ``thread_source`` / ``n_events`` for the
-    list renderer."""
+    list renderer.
+
+    A keyword search asked for a thread-granular list (``search(group=…)``)
+    carries ``_group`` naming the shape, the same ``thread_source`` /
+    ``n_events`` columns, and — under ``group='nested'``, whose clustering
+    replaces ranked order with per-thread event order — ``_rank_pos``, so
+    ``format.top_hit`` can still find the head the quality verdict judges."""
 
     event_id: int
     thread_id: int
@@ -47,5 +53,7 @@ class EventHit(TypedDict):
     context: NotRequired[str]
     context_events: NotRequired[dict]
     _browse: NotRequired[bool]
+    _group: NotRequired[str]
+    _rank_pos: NotRequired[int]
     thread_source: NotRequired[Optional[str]]
     n_events: NotRequired[int]

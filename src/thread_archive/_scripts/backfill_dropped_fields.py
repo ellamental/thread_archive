@@ -93,12 +93,12 @@ from .._importers._read import read_session_lines
 from .._importers._state import _restage_thread
 from .._importers.antigravity import _build_antigravity_messages
 from .._importers.claude_science import (
-    _frame_metadata,
     _FRAME_COLUMNS,
     _FRAME_STAT_COLUMNS,
-    _message_annotations,
     _NON_CONVERSATION_TYPES,
     _SEEDED_PROJECT_IDS,
+    _frame_metadata,
+    _message_annotations,
     _synthesize_line,
 )
 from .._importers.codex import (
@@ -122,26 +122,30 @@ from .._importers.opencode import (
     _opencode_to_normalized,
     _parse_opencode_timestamp,
 )
-from .._ops.amend import amend_event_payloads, check_patch, _PROTECTED_KEYS
+from .._ops.amend import _PROTECTED_KEYS, amend_event_payloads, check_patch
 from .._retrieval.fts import index_events
 from .._store import Event, ImportState, Thread, get_session
 from .._truth import write_events
 from .._watcher.sources import (
-    antigravity_watcher,
-    codex_watcher,
     CoworkWatcher,
-    discover_claude_science_dbs,
-    grok_watcher,
     _cursor_default_db,
     _opencode_default_db,
+    antigravity_watcher,
+    codex_watcher,
+    discover_claude_science_dbs,
+    grok_watcher,
 )
 from .backfill_reconcile import (
     _content_anchor,
-    _fresh_events as _cc_fresh_events,
-    _iter_pairs as _cc_iter_pairs,
     _norm_key,
     _pmid,
     _struct_anchor,
+)
+from .backfill_reconcile import (
+    _fresh_events as _cc_fresh_events,
+)
+from .backfill_reconcile import (
+    _iter_pairs as _cc_iter_pairs,
 )
 
 logger = logging.getLogger(__name__)
@@ -202,7 +206,7 @@ def _events_from_messages(messages: list[dict], base_prev_ts: Optional[datetime]
 # ── per-source adapters (discovery + fresh build + thread metadata) ──────────
 
 def iter_cc_like_items(source_name: str) -> Iterator[WorkItem]:
-    """claude-code / cloth transcripts via backfill_reconcile's discovery."""
+    """One Claude-Code-shaped source's transcripts, via backfill_reconcile's discovery."""
     for name, path, source_id in _cc_iter_pairs():
         if name != source_name:
             continue
@@ -217,7 +221,7 @@ def iter_codex_items(sessions_dir: Optional[Path] = None) -> Iterator[WorkItem]:
     w = codex_watcher(sessions_dir)
     if not w.is_available():
         return
-    for path, source_id in w._iter_files():
+    for path, source_id in w.iter_files():
         def fresh(p=path):
             lines = read_session_lines(p)
             names, inputs = _codex_call_maps(lines)
@@ -238,7 +242,7 @@ def iter_grok_items(sessions_dir: Optional[Path] = None) -> Iterator[WorkItem]:
     w = grok_watcher(sessions_dir)
     if not w.is_available():
         return
-    for path, source_id in w._iter_files():
+    for path, source_id in w.iter_files():
         def fresh(p=path, sid=source_id):
             lines = read_session_lines(p)
             meta = _grok_session_meta(p.parent)
@@ -260,7 +264,7 @@ def iter_antigravity_items(brain_dir: Optional[Path] = None) -> Iterator[WorkIte
     w = antigravity_watcher(brain_dir)
     if not w.is_available():
         return
-    for path, source_id in w._iter_files():
+    for path, source_id in w.iter_files():
         yield WorkItem(
             "antigravity", source_id,
             fresh=lambda p=path, sid=source_id: _events_from_messages(
@@ -478,9 +482,10 @@ def _science_fresh(frame: dict, message_rows: list) -> list:
 
 
 # name → zero-arg iterator over WorkItems; empty iteration ⇒ store unavailable.
-ADAPTERS: dict[str, Callable[[], Iterator[WorkItem]]] = {
-    "claude-code": lambda: iter_cc_like_items("claude-code"),
-    "cloth": lambda: iter_cc_like_items("cloth"),
+# The per-provider entries below are the ones needing bespoke re-parse knowledge;
+# every Claude-Code-shaped source shares one adapter and is discovered from the
+# registry, so a harness declaring that parser is audited without an entry here.
+_BESPOKE_ADAPTERS: dict[str, Callable[[], Iterator[WorkItem]]] = {
     "codex": iter_codex_items,
     "grok": iter_grok_items,
     "antigravity": iter_antigravity_items,
@@ -489,6 +494,23 @@ ADAPTERS: dict[str, Callable[[], Iterator[WorkItem]]] = {
     "claude-science": iter_claude_science_items,
     "cowork": iter_cowork_items,
 }
+
+
+def adapters() -> dict[str, Callable[[], Iterator[WorkItem]]]:
+    """Every source this audit can re-derive, by name.
+
+    A source with no adapter has no dropped-field audit at all, and silently:
+    nothing reports that its fields were never checked. Deriving the
+    Claude-Code-shaped entries from the registry is what keeps that from
+    happening to a harness that shares the format.
+    """
+    from .._providers import sources_using_parser
+
+    found: dict[str, Callable[[], Iterator[WorkItem]]] = {}
+    for provider in sources_using_parser("claude-code"):
+        found[provider.name] = lambda n=provider.name: iter_cc_like_items(n)
+    found.update(_BESPOKE_ADAPTERS)
+    return found
 
 
 # ── patch construction ───────────────────────────────────────────────────────
@@ -720,7 +742,7 @@ def _plan_meta(session, thread_id: int, fresh_meta: Optional[dict]) -> dict:
 # ── run ──────────────────────────────────────────────────────────────────────
 
 def _iter_default_items(sources: Optional[set[str]], totals) -> Iterator[WorkItem]:
-    for name, factory in ADAPTERS.items():
+    for name, factory in adapters().items():
         if sources and name not in sources:
             continue
         yielded = False

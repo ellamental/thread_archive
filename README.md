@@ -124,6 +124,7 @@ the operator seam:
 
 ```bash
 archive import <path>     # import a transcript / provider store
+archive providers         # list registered providers (built-in + installed plugins)
 archive watch             # watch local AI-tool stores and import incrementally
 archive reindex           # rebuild index.db from the JSONL truth directory
 archive verify            # integrity check: truth parses + matches the index
@@ -171,6 +172,8 @@ src/thread_archive/
   _web/             # read-only viewer: stdlib server + built bundle (cohosted by `watch --web`)
   _launchd.py       # `archive daemon`: generates + loads the watcher / MCP / nightly-backup LaunchAgents (macOS)
   _thread_import/   # vendored provider parsers (a clean, dependency-free island)
+  _providers/       # the provider registry: built-in descriptors + plugin discovery
+  provider/         # PUBLIC: the plugin API a third-party provider is written against
 frontend/           # the viewer's React+Vite source (dev-only; builds into _web/static/)
 plugins/librarian/  # the archive-librarian Claude Code plugin: /librarian + /gardener skills, gate hook, write-MCP wiring
 host/               # operator layer: Makefile over `archive daemon`, family-manifest writer
@@ -180,7 +183,7 @@ tests/install/      # isolated Docker install test + fixtures
 
 ## Stability
 
-The public API is exactly two things:
+The public API is exactly three things:
 
 - **the retrieval MCP tools** — `thread_search` and `thread_read`, served by
   `archive-mcp`;
@@ -191,10 +194,14 @@ The public API is exactly two things:
   understands. Programmatic read access to the documented stores (`index.db`
   is plain SQLite; the truth directory is documented JSONL) rides on this
   contract.
+- **the provider plugin API** — `thread_archive.provider` and its `parse` /
+  `testing` submodules, documented in [docs/providers.md](docs/providers.md).
+  A provider maintained outside this repo is written against it and cannot
+  follow the private tree's churn, so these names keep working.
 
 Everything else is private support machinery and may change without notice:
 the `thread_archive` and `archive` CLIs, the librarian MCP server, the web
-viewer, and every Python module — there is **no public Python API**. More surface gets exposed
+viewer, and every other Python module. More surface gets exposed
 deliberately as it matures. `tests/test_public_api.py` ratchets the boundary.
 
 Releases (changelog compression, version bump, release commit, annotated tag)
@@ -228,14 +235,21 @@ wins; ids that were never imported are skipped, not fatal.
 
 ## What it does
 
-- **Ingests 9 agent harnesses** into one event model — Claude Code, Codex, Grok,
-  Antigravity, cloth, Cowork (transcript line-streams) and Cursor, OpenCode, Claude
+- **Ingests 8 agent harnesses** into one event model — Claude Code, Codex, Grok,
+  Antigravity, Cowork (transcript line-streams) and Cursor, OpenCode, Claude
   Science (SQLite scanners). Web chats (claude.ai, ChatGPT, xAI) are the one manual
   path: drop a downloaded account export into `<home>/dumps/` (picked up on the next
   ingest pass) or run `archive import-export <path>` — a redrop merges, importing only
   what grew. Imports are idempotent, atomic, and survive a full reindex losslessly. A
   `cc-exthost` watcher also recovers mid-turn Claude Code steering messages that never
   reach the session JSONL.
+- **Takes provider plugins**, so a harness archive has never heard of can be preserved
+  without a fork. A provider is one descriptor — where its transcripts live, how to
+  read them, what its format looks like — declared against the public
+  `thread_archive.provider` API and found through a `thread_archive.providers` entry
+  point. The built-in providers are built from that same API, so a plugin is a
+  first-class source: same poll loop, same off switch, same coverage reporting.
+  `archive providers` lists what is registered; see [docs/providers.md](docs/providers.md).
 - **Self-feeds** — the watcher tails local stores and ingests incrementally; events land
   in the JSONL truth *before* their commit (no checkpoint in the hot loop). Zero-daemon
   by default (`archive-mcp` cohosts lazy catch-up ingest), with a one-command macOS

@@ -383,29 +383,38 @@ def test_hook_context_sidecar_imported(archive_home) -> None:
 
 
 def test_source_override_labels_thread_and_watermark(archive_home) -> None:
-    """``source=`` overrides the default ``"claude-code"`` label end to end — the
-    one knob a deployment watcher (e.g. cloth) needs to import Claude-Code-shaped
-    JSONL under its own identity. Thread, name, and import-state all carry it."""
+    """A harness writing Claude-Code-shaped JSONL imports under its own identity.
+
+    ``claude_code_line_stream`` is the sanctioned way to reuse this parser: source
+    identity and parser identity are separate, so the harness's threads carry its
+    own provenance instead of masquerading as Claude Code. Thread, name and
+    import-state all take the harness's source, and the watermark is keyed on it
+    so resume matches rather than forking a second thread.
+    """
+    from thread_archive.provider import claude_code_line_stream
+
     init_db()
     f = archive_home / "sess.jsonl"
     _write_jsonl(f, [USER, ASSISTANT])
+    import_demo_harness = claude_code_line_stream("demo-harness")
 
-    result = import_session_incremental(f, "cloth-cli-7", source="cloth")
+    result = import_demo_harness(f, "demo-cli-7")
     assert result.is_new_thread is True
     assert result.events_created > 0
 
     with get_session() as s:
-        thread = s.execute(select(Thread).where(Thread.source == "cloth")).scalar_one()
-        assert thread.source_id == "cloth-cli-7"
-        assert thread.name == "cloth:cloth-cli-7"
+        thread = s.execute(select(Thread).where(Thread.source == "demo-harness")).scalar_one()
+        assert thread.source_id == "demo-cli-7"
+        assert thread.name == "demo-harness:demo-cli-7"
         # No claude-code thread leaked in under the default.
         assert s.execute(select(Thread).where(Thread.source == "claude-code")).first() is None
         # Watermark is keyed on the overridden source, so the resume path matches.
-        state = s.execute(select(ImportState).where(ImportState.source == "cloth")).scalar_one()
-        assert state.source_id == "cloth-cli-7"
+        state = s.execute(
+            select(ImportState).where(ImportState.source == "demo-harness")).scalar_one()
+        assert state.source_id == "demo-cli-7"
 
     # Resume resolves the same thread under the same source — no fork, no re-import.
-    again = import_session_incremental(f, "cloth-cli-7", source="cloth")
+    again = import_demo_harness(f, "demo-cli-7")
     assert again.events_created == 0
     assert again.is_new_thread is False
 

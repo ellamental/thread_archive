@@ -382,7 +382,7 @@ export const api = {
     getJSON<StructuredThread>(
       `/api/thread/${id}?thinking=${opts.thinking ? 1 : 0}&tools=${opts.tools ? 1 : 0}`,
     ),
-  // Resolve a pasted provider session id (a cloth/claude-code/codex uuid or stem) to
+  // Resolve a pasted provider session id (a claude-code/codex uuid or stem) to
   // its numeric archive thread. No source param → the server searches every provider.
   resolveLink: (id: string) =>
     getJSON<{ thread_id: number; url: string }>(

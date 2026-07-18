@@ -27,7 +27,7 @@ coverage is their reconciliation:
   source aging past ``EXPORT_STALE_DAYS`` earns a *warning*: the archive can't
   watch a provider's servers, so "time to drop a fresh export" has no other
   surface). A source fed by both a watcher and account exports (grok) ages its
-  export channel by itself — see ``EXPORT_FED_SOURCES``. Disabled sources report
+  export channel by itself — see :func:`export_fed_sources`. Disabled sources report
   their store's current activity alongside their import history: a deliberate
   opt-out's store staying active is normal, but a source disabled by
   *accident* (a config bug, a wizard regression) has no other surface where
@@ -47,10 +47,13 @@ green run retires a red nightly stage, see :mod:`.health`) and on demand via
 
 from __future__ import annotations
 
+import logging
 from datetime import datetime, timezone
 from typing import Optional
 
 from .health import record_health, stamp_heartbeat
+
+logger = logging.getLogger(__name__)
 
 # A store write should surface as archived events well within this window; the
 # slack absorbs message-timestamp vs file-mtime skew and imports of old content.
@@ -72,8 +75,24 @@ MIN_HISTORY_FOR_DARK = 5
 # is deliberately calm — a standing yellow the operator acts on at their own
 # cadence, with no escalation path. Reviewers: a long-stale export is the
 # operator's chosen tempo, not a broken loop for the product to close.
-EXPORT_FED_SOURCES = {"claude": "claude.ai", "chatgpt": "ChatGPT", "grok": "xAI/Grok"}
 EXPORT_STALE_DAYS = 45.0
+
+
+def export_fed_sources() -> dict[str, str]:
+    """``{source: vendor label}`` for every provider fed by account exports.
+
+    From the registry, so a plugin that accepts exports gets the same staleness
+    warning as a built-in one. Fail-soft: a registry that won't build must not
+    take the coverage report down with it — the check degrades to reporting no
+    export-fed sources rather than raising.
+    """
+    try:
+        from .._providers import export_specs
+
+        return {p.name: s.label for p, s in export_specs()}
+    except Exception:  # noqa: BLE001 — coverage is a report, never a gate
+        logger.exception("coverage: could not read export-fed providers")
+        return {}
 
 
 def _iso(epoch: Optional[float]) -> Optional[str]:
@@ -161,11 +180,11 @@ def check_coverage(
     from .._api import open_archive
     from .._importers._skip_ledger import summarize_skips
     from .._importers._validation_ledger import summarize_drift
-    from .._watcher.sources import (
-        _MECHANISM_SOURCES,
-        default_watchers,
-        enabled_watchers,
-    )
+    from .._providers import mechanism_names
+    from .._watcher.sources import default_watchers, enabled_watchers
+
+    mechanisms = mechanism_names()
+    export_fed = export_fed_sources()
 
     open_archive(home)
     if watchers is None:
@@ -174,7 +193,7 @@ def check_coverage(
             all_watchers = default_watchers()
     if all_watchers is None:
         all_watchers = watchers
-    watchers = [w for w in watchers if w.source_name not in _MECHANISM_SOURCES]
+    watchers = [w for w in watchers if w.source_name not in mechanisms]
 
     history, newest_event = _archive_side()
     grace = grace_hours * 3600
@@ -234,7 +253,7 @@ def check_coverage(
     disabled = {}
     for w in all_watchers:
         n = w.source_name
-        if n not in enabled_names and n not in _MECHANISM_SOURCES:
+        if n not in enabled_names and n not in mechanisms:
             hist_count, last_import = history.get(n, (0, None))
             d = w.discover()
             disabled[n] = {
@@ -252,7 +271,7 @@ def check_coverage(
     for source, epoch in sorted(newest_event.items()):
         if not source:
             continue
-        label = EXPORT_FED_SOURCES.get(source)
+        label = export_fed.get(source)
         watched = source in watcher_names
         if watched:
             # A watcher keeps the source's newest_event young, so per-source

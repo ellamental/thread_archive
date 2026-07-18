@@ -18,6 +18,7 @@ from typing import Any, Mapping, Optional, Protocol, cast
 from thread_archive._thread_import.timestamps import parse_timestamp
 
 from .parsers.base import NormalizedMessage
+from .parsers.config import get_provider_config
 
 # Payload keys that carry an event's *semantic content*. The dedup key hashes
 # only these — never the timestamp — so an exact re-import collapses to one row,
@@ -122,6 +123,7 @@ class EventBuilder(Protocol):
         message: NormalizedMessage,
         stream_id: str,
         api_call_id: Optional[str] = None,
+        prev_occurred_at: Optional[datetime] = None,
     ) -> list[ThreadEvent]:
         """Convert a normalized message to Thread events.
 
@@ -129,6 +131,11 @@ class EventBuilder(Protocol):
             message: The normalized message from archive
             stream_id: The stream ID for this message
             api_call_id: Optional API call ID (generated if not provided)
+            prev_occurred_at: The previous turn's timestamp. A message carrying
+                no source timestamp inherits it (monotonic, never fabricated).
+                ``assemble_events`` always passes this by keyword, so an
+                implementation that omits the parameter raises ``TypeError`` on
+                the first message it is handed.
 
         Returns:
             List of ThreadEvent objects to be written to the event log
@@ -198,12 +205,27 @@ class DefaultEventBuilder:
         if isinstance(ann, dict) and ann:
             payload["annotations"] = dict(ann)
 
-    # Providers whose source is a conversation *tree* (edit/regenerate branches), so
-    # parent links must be persisted for the tree to be rebuildable from truth. A
-    # provider whose log is already a linear transcript gains nothing from a
-    # parent_id on every event (its order implies the chain) and stays out; Claude
-    # Code's sidechain structure is a separate format decision, not folded in here.
-    _BRANCHED_PROVIDERS = frozenset({"chatgpt", "claude"})
+    @staticmethod
+    def _is_branched(provider: Optional[str]) -> bool:
+        """Whether ``provider``'s events persist their parent links.
+
+        Read from the provider's own ``ProviderConfig.persist_branch_metadata``,
+        so a provider defined outside this island gets its tree persisted by
+        declaring it rather than by being added to a list here. An unregistered
+        provider is treated as linear — the safe default, since a spurious
+        ``branch`` key on every event is stored data nothing asked for.
+
+        Deliberately **not** ``has_branching``: that describes the format, and
+        several formats that *can* branch are still delivered to the archive as
+        linear transcripts whose order implies the chain. Claude Code's sidechain
+        structure is one of those — a separate format decision, not folded in here.
+        """
+        if not provider:
+            return False
+        try:
+            return get_provider_config(provider).persist_branch_metadata
+        except KeyError:
+            return False
 
     @staticmethod
     def _branch_metadata(message: NormalizedMessage) -> dict:
@@ -216,7 +238,7 @@ class DefaultEventBuilder:
         ``provider_parent_id`` + ``is_active_path`` (nodes off the active path are
         ``False``) are persisted as ``branch`` payload metadata so the tree can be
         rebuilt from truth."""
-        if message.get("source_provider") not in DefaultEventBuilder._BRANCHED_PROVIDERS:
+        if not DefaultEventBuilder._is_branched(message.get("source_provider")):
             return {}
         branch: dict = {}
         parent_id = message.get("provider_parent_id")
@@ -740,11 +762,11 @@ class DefaultEventBuilder:
         }
         # Preserve every other usage field the source recorded rather than dropping it:
         # the flat trio above stays for readers, and any remaining key rides alongside —
-        # cloth's cache_read_tokens/cache_write_tokens, a provider's cache-creation counts.
+        # a source's cache_read_tokens/cache_write_tokens, or its cache-creation counts.
         for key, value in usage.items():
             if key not in completed_payload:
                 completed_payload[key] = value
-        # Per-message cost, for the pay-per-token sources that record it (cloth); absent
+        # Per-message cost, for the pay-per-token sources that record it; absent
         # from subscription transcripts (Claude Code), so those payloads are unchanged.
         cost = provider_data.get("cost")
         if cost is not None:

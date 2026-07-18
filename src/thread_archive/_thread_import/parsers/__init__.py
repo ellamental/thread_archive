@@ -66,6 +66,8 @@ from .config import (
     ProviderConfig,
     ThinkingExpectation,
     get_provider_config,
+    register_provider_config,
+    registered_providers,
 )
 
 # Validators
@@ -77,18 +79,28 @@ from .validators import (
     TypeValidator,
 )
 
-# Registry of parser classes (not instances - we create instances with config)
+# Registry of parser classes (not instances - we create instances with config).
+# Parsers that live in this island are seeded here; a provider defined outside it
+# registers via :func:`register_parser` (a push, for the same isolation reason
+# `register_provider_config` is one).
 PARSER_CLASSES: dict[str, Type[ProviderParser]] = {
     "chatgpt": ChatGPTParser,
     "claude": ClaudeParser,
     "claude-code": ClaudeCodeParser,
-    # Add more providers here:
-    # 'gemini': GeminiParser,
-    # 'copilot': CopilotParser,
 }
 
-# Available provider names
-PROVIDERS = list(PARSER_CLASSES.keys())
+
+def register_parser(provider: str, parser_class: Type[ProviderParser]) -> None:
+    """Register a parser class under ``provider``, replacing any prior one.
+
+    Idempotent, so a repeated registry load is a no-op rather than an error.
+    """
+    PARSER_CLASSES[provider] = parser_class
+
+
+def registered_parsers() -> list[str]:
+    """Every provider name with a registered parser, sorted."""
+    return sorted(PARSER_CLASSES)
 
 
 def get_parser(provider: str, strict: bool = False) -> ProviderParser:
@@ -96,14 +108,16 @@ def get_parser(provider: str, strict: bool = False) -> ProviderParser:
     Get a parser instance for a provider.
 
     Args:
-        provider: Provider name (chatgpt, claude, claude-code)
+        provider: Provider name (chatgpt, claude, claude-code, …)
         strict: If True, validation warnings become errors
 
     Returns:
         Parser instance configured with the given strictness level
     """
     if provider not in PARSER_CLASSES:
-        raise ValueError(f"Unknown provider '{provider}'. Available: {PROVIDERS}")
+        raise ValueError(
+            f"Unknown provider '{provider}'. Available: {registered_parsers()}"
+        )
     return PARSER_CLASSES[provider](strict=strict)
 
 
@@ -131,6 +145,8 @@ __all__ = [
     "CLAUDE_CONFIG",
     "CLAUDE_CODE_CONFIG",
     "get_provider_config",
+    "register_provider_config",
+    "registered_providers",
     # Validators
     "BaseValidator",
     "ThinkingBlockValidator",
@@ -142,7 +158,8 @@ __all__ = [
     "ClaudeParser",
     "ClaudeCodeParser",
     "PARSER_CLASSES",
-    "PROVIDERS",
+    "register_parser",
+    "registered_parsers",
     "get_parser",
 ]
 

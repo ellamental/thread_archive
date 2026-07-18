@@ -31,7 +31,7 @@ function stats(overrides: Partial<Stats> = {}): Stats {
     },
     by_source: [
       {
-        source: 'cloth', conversations: 21, with_tokens: 21, input_tokens: 800_000,
+        source: 'demo-harness', conversations: 21, with_tokens: 21, input_tokens: 800_000,
         output_tokens: 80_000, tokens: 880_000, avg_tokens: 41_904, with_cost: 21,
         cost: 3.69, avg_cost: 0.1757,
       },
@@ -68,7 +68,7 @@ describe('StatsView', () => {
     expect(await screen.findByText('Stats')).toBeInTheDocument()
     // token tile compacts 1,000,000 → 1M; cost tile shows the dollar total
     expect(screen.getByText('1M')).toBeInTheDocument()
-    // $3.69 appears in both the cost tile and cloth's provider row — assert presence, not uniqueness.
+    // $3.69 appears in both the cost tile and the demo-harness provider row — assert presence, not uniqueness.
     expect(screen.getAllByText('$3.69').length).toBeGreaterThan(0)
     expect(screen.getByText(/120 conversations across 3 sources/)).toBeInTheDocument()
   })
@@ -76,7 +76,7 @@ describe('StatsView', () => {
   it('renders provider rows with cost, and — for a source with none', async () => {
     mswJson('/api/stats', stats())
     renderStats()
-    expect(await screen.findByText('cloth')).toBeInTheDocument()
+    expect(await screen.findByText('demo-harness')).toBeInTheDocument()
     expect(screen.getByText('claude-code')).toBeInTheDocument()
     // The cost-bearing source shows its per-session average; the subscription source
     // renders '—' rather than a fabricated 0.

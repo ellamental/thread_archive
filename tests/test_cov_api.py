@@ -23,8 +23,9 @@ def test_import_path_unknown_provider_raises(archive_home) -> None:
 
 
 def test_import_path_routes_to_db_scanner(archive_home, monkeypatch) -> None:
-    """A DB-scanner provider is dispatched through ``DB_SCANNERS`` (not the
-    line-stream table), returning the scanner's result verbatim."""
+    """A ``db-scan`` provider is handed the whole store path, not a session path,
+    and its result comes back verbatim — the dispatch difference between the two
+    importer shapes is the only thing distinguishing them here."""
     from thread_archive import _importers
 
     seen: dict = {}
@@ -34,7 +35,7 @@ def test_import_path_routes_to_db_scanner(archive_home, monkeypatch) -> None:
         seen["path"] = path
         return sentinel
 
-    monkeypatch.setitem(_importers.DB_SCANNERS, "fakedb", fake_scan)
+    monkeypatch.setattr(_importers, "db_scanners", lambda home=None: {"fakedb": fake_scan})
     f = archive_home / "store.db"
     f.write_text("", encoding="utf-8")
 

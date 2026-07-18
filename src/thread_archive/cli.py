@@ -75,21 +75,60 @@ def _self_throttle() -> None:
 
 def cmd_import(args: argparse.Namespace) -> int:
     from . import _api as api
-    from ._importers import DB_SCANNERS, LINE_STREAM_IMPORTERS
+    from ._importers import db_scanners, line_stream_importers
 
+    line_streams = line_stream_importers(args.home)
+    scanners = db_scanners(args.home)
     provider = args.provider or "claude-code"
-    if provider not in LINE_STREAM_IMPORTERS and provider not in DB_SCANNERS:
-        raise SystemExit(f"archive import: unknown provider '{provider}'")
+    if provider not in line_streams and provider not in scanners:
+        known = ", ".join(sorted({**line_streams, **scanners}))
+        raise SystemExit(
+            f"archive import: unknown provider '{provider}' (known: {known})"
+        )
 
     result = api.import_path(args.path, home=args.home, provider=provider)  # checkpoints internally
 
-    if provider in LINE_STREAM_IMPORTERS:
+    if provider in line_streams:
         summary = (
             f"thread={result.thread_id} events={result.events_created} new={result.is_new_thread}"
         )
     else:  # DB scanner (cursor / opencode): scans many sessions in one file
         summary = " ".join(f"{k}={v}" for k, v in vars(result).items())
     print(f"imported {args.path} ({provider}): {summary}")
+    return 0
+
+
+def cmd_providers(args: argparse.Namespace) -> int:
+    """Every registered provider — the answer to "did my plugin load?"."""
+    from ._config import load_config, source_enabled
+    from ._providers import registry
+
+    cfg = load_config(args.home)
+    rows = []
+    for p in registry(cfg).values():
+        if p.mechanism and not args.all:
+            continue
+        traits: list[str] = []
+        if p.kind != "none":
+            traits.append(p.kind)
+        if p.export is not None:
+            traits.append(f"export:{p.export.label}")
+        if p.watcher is None:
+            traits.append("no live store")
+        if p.mechanism:
+            traits.append("mechanism")
+        if p.follows:
+            traits.append(f"follows {p.follows}")
+        disabled = not source_enabled(cfg, p.name) or (
+            bool(p.follows) and not source_enabled(cfg, p.follows or "")
+        )
+        rows.append((p.name, p.label, "off" if disabled else "on", ", ".join(traits)))
+
+    width = max((len(r[0]) for r in rows), default=0)
+    for name, label, state, notes in rows:
+        print(f"{name:<{width}}  {state:<3}  {label}" + (f"  ({notes})" if notes else ""))
+    if not args.all:
+        print("\n(--all also lists archive's own machinery)")
     return 0
 
 
@@ -924,18 +963,25 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--version", action="version", version=f"thread-archive {__version__}")
     sub = parser.add_subparsers(dest="command", metavar="<command>")
 
-    from ._importers import PROVIDERS  # registry is the single source of truth for choices
-
     p_import = sub.add_parser("import", help="import a transcript or provider store")
     _add_home_arg(p_import)
-    p_import.add_argument("path", help="transcript file (claude-code/codex/grok/antigravity/cloth) or DB (cursor/opencode)")
+    p_import.add_argument("path", help="a provider's session transcript, or its whole store")
+    # Not an argparse `choices`: the provider set depends on --home (a plugin can be
+    # declared in that home's config), and choices are fixed before any argument is
+    # parsed. cmd_import validates against the registry for the home actually given.
     p_import.add_argument(
         "--provider",
         default=None,
-        choices=PROVIDERS,
-        help="source provider (default: claude-code)",
+        help="source provider (default: claude-code; `archive providers` lists them)",
     )
     p_import.set_defaults(func=cmd_import)
+
+    p_providers = sub.add_parser("providers", help="list registered providers (built-in + plugins)")
+    _add_home_arg(p_providers)
+    p_providers.add_argument(
+        "--all", action="store_true", help="include archive's own machinery sources"
+    )
+    p_providers.set_defaults(func=cmd_providers)
 
     p_import_export = sub.add_parser(
         "import-export",

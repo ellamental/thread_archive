@@ -94,6 +94,56 @@ def test_shallow_verify_fails_on_fts5_drift(archive_home, tmp_path):
     assert v["fts"]["fts5_rows"] == v["fts"]["shadow_rows"] - 1
 
 
+_LEGACY_CREATE_FTS = (
+    "CREATE VIRTUAL TABLE event_search USING fts5("
+    "content, event_id UNINDEXED, thread_id UNINDEXED, event_type UNINDEXED, "
+    "content_type UNINDEXED, tool_name UNINDEXED, occurred_at UNINDEXED, "
+    "tokenize = 'porter unicode61')"
+)
+
+
+def test_legacy_event_search_swaps_dark_and_reindex_heals(archive_home, tmp_path):
+    """A pre-external-content ``event_search`` is swapped for an empty
+    current-shape table on open: lexical search goes dark (not wrong), shadow
+    writes — including the trigger-hazard deletes — stay safe, verify names the
+    state (``fts_triggers`` + ``fts_parity``), and ``rebuild_fts`` heals it."""
+    from thread_archive._retrieval.fts import _TRIGGERS, rebuild_fts, search_events
+
+    import_cc_session(tmp_path)
+    assert search_events("Hello")  # baseline: populated, findable
+
+    with get_session() as s:
+        for name in _TRIGGERS:
+            s.execute(text("DROP TRIGGER IF EXISTS " + name))
+        s.execute(text("DROP TABLE event_search"))
+        s.execute(text(_LEGACY_CREATE_FTS))
+        s.commit()
+
+    # First search after the swap: empty results, no error, and no triggers —
+    # the dark window must stay triggerless so shadow deletes can't fire an
+    # FTS 'delete' against postings the empty index doesn't hold.
+    assert search_events("Hello") == []
+    with get_session() as s:
+        assert s.execute(text(
+            "SELECT count(*) FROM sqlite_master WHERE type='trigger' "
+            "AND name LIKE 'events_fts_a%'")).scalar() == 0
+        # the hazard op, live during the window: a shadow delete must not raise
+        s.execute(text(
+            "DELETE FROM events_fts WHERE id = (SELECT min(id) FROM events_fts)"))
+        s.commit()
+
+    v = ta.verify()
+    assert v["ok"] is False
+    assert "fts_triggers" in v["failed_components"]
+    assert "fts_parity" in v["failed_components"]
+
+    rebuild_fts()
+    assert search_events("Hello")
+    v2 = ta.verify()
+    assert "fts_triggers" not in v2["failed_components"]
+    assert "fts_parity" not in v2["failed_components"]
+
+
 # ── deep ──────────────────────────────────────────────────────────────────────
 def test_deep_verify_flags_dedup_key_mismatch(archive_home, tmp_path) -> None:
     import_cc_session(tmp_path)

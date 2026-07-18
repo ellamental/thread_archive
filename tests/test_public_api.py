@@ -21,10 +21,13 @@ from thread_archive.cli import build_parser
 # here is an API commitment — it must survive until a deliberate deprecation.
 PUBLIC_API = ["__version__"]
 
-# The only module allowed to live at a public (non-underscore) name: the CLI
-# entry point. Installer machinery (the family manifest writer) lives in host/,
-# outside the package — it needs a repo checkout and is never shipped.
-PUBLIC_MODULES = {"cli"}
+# The modules allowed to live at a public (non-underscore) name. `cli` is the
+# entry point; `provider` is the plugin API — the one surface archive commits to
+# keeping stable, because a provider defined outside the package is written
+# against it and cannot follow the private tree's churn. Installer machinery (the
+# family manifest writer) lives in host/, outside the package — it needs a repo
+# checkout and is never shipped.
+PUBLIC_MODULES = {"cli", "provider"}
 
 # The CLI is private tooling, but its verbs are wired into the LaunchAgent
 # plists, lab's cron script, the /ci skill, and the monitor's heartbeat
@@ -36,6 +39,7 @@ PUBLIC_MODULES = {"cli"}
 CLI_VERBS = {
     "import",
     "import-export",
+    "providers",
     "watch",
     "embed",
     "reindex",

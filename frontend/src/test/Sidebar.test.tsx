@@ -16,7 +16,7 @@ function PageStub() {
 
 function renderAt(url: string) {
   mswJson('/api/threads', { threads: [] })
-  mswJson('/api/sources', { sources: [{ source: 'cloth', threads: 3 }, { source: 'codex', threads: 1 }] })
+  mswJson('/api/sources', { sources: [{ source: 'demo-harness', threads: 3 }, { source: 'codex', threads: 1 }] })
   return render(
     <MemoryRouter initialEntries={[url]}>
       <Sidebar />
@@ -32,11 +32,11 @@ describe('Sidebar search filters', () => {
     const user = userEvent.setup()
     renderAt('/')
     await user.click(screen.getByRole('button', { name: /filters/ }))
-    await user.selectOptions(await screen.findByLabelText('source'), 'cloth')
+    await user.selectOptions(await screen.findByLabelText('source'), 'demo-harness')
     // not on /search yet: nothing navigates until a query is run
     expect(screen.getByText('PAGE /')).toBeInTheDocument()
     await user.type(screen.getByPlaceholderText('search conversations…'), 'hello{Enter}')
-    expect(screen.getByText('PAGE /search?q=hello&source=cloth')).toBeInTheDocument()
+    expect(screen.getByText('PAGE /search?q=hello&source=demo-harness')).toBeInTheDocument()
   })
 
   it('applies a filter change immediately when a search is on screen', async () => {
@@ -51,9 +51,9 @@ describe('Sidebar search filters', () => {
     const user = userEvent.setup()
     renderAt('/')
     await user.click(screen.getByRole('button', { name: /filters/ }))
-    await user.selectOptions(await screen.findByLabelText('source'), 'cloth')
+    await user.selectOptions(await screen.findByLabelText('source'), 'demo-harness')
     await user.type(screen.getByPlaceholderText('search conversations…'), '{Enter}')
-    expect(screen.getByText('PAGE /search?source=cloth')).toBeInTheDocument()
+    expect(screen.getByText('PAGE /search?source=demo-harness')).toBeInTheDocument()
   })
 
   it('applies a filter change immediately on an open browse (no query)', async () => {
@@ -66,7 +66,7 @@ describe('Sidebar search filters', () => {
 
   it('clears every filter at once and re-runs the open search', async () => {
     const user = userEvent.setup()
-    renderAt('/search?q=hello&source=cloth&since=2026-01-01')
+    renderAt('/search?q=hello&source=demo-harness&since=2026-01-01')
     // the toggle shows the active-filter count even before opening
     await user.click(screen.getByRole('button', { name: /filters · 2/ }))
     await user.click(screen.getByRole('button', { name: 'clear filters' }))

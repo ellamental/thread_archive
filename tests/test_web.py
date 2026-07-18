@@ -55,22 +55,30 @@ def _claude_code_session_uuid(archive_home):
     return sid.split(":")[-1]
 
 
-def _seed_cloth(archive_home, uuid="27056da6-8578-4a8c-ab90-d634702dc42d"):
-    """Import a minimal cloth session the way the watcher does — source_id is the bare
-    session uuid (the file stem, no prefix). Returns the uuid a paster would drop into
-    ``/archive/<uuid>`` and the archive thread id it seeded."""
-    from thread_archive._importers import import_cloth_session_incremental
+def _seed_demo_harness(archive_home, uuid="27056da6-8578-4a8c-ab90-d634702dc42d"):
+    """Seed a thread from a source that records the **bare** session uuid as its
+    ``source_id`` (no ``{project}:`` prefix, unlike claude-code). Returns the uuid a
+    paster would drop into ``/archive/<uuid>`` and the archive thread id it seeded."""
+    from datetime import datetime, timezone
 
-    f = archive_home / f"{uuid}.jsonl"
-    lines = [
-        dict(USER, message={"role": "user", "content": "hello from cloth"}),
-        dict(ASSISTANT, message={"role": "assistant", "model": "claude-opus-4",
-                                 "content": [{"type": "text", "text": "hi from cloth"}]}),
-    ]
-    f.write_text("\n".join(json.dumps(ln) for ln in lines) + "\n", encoding="utf-8")
+    from thread_archive._store import Event, Thread, get_session
+
     ta.open_archive(str(archive_home))
-    res = import_cloth_session_incremental(f, source_id=uuid)
-    return uuid, res.thread_id
+    at = datetime(2026, 1, 1, 10, 0, 0, tzinfo=timezone.utc)
+    with get_session() as s:
+        t = Thread(name=f"demo-harness:{uuid}", title="demo harness session",
+                   thread_type="conversation", source="demo-harness", source_id=uuid,
+                   inserted_at=at, updated_at=at)
+        s.add(t)
+        s.flush()
+        s.add(Event(thread_id=t.id, stream_id="s", event_type="user_message_sent",
+                    payload={"content": "hello from the demo harness"}, occurred_at=at))
+        s.add(Event(thread_id=t.id, stream_id="s", event_type="api_request_completed",
+                    payload={"model": "claude-opus-4",
+                             "content_blocks": [{"type": "text", "text": "hi from the demo harness"}]},
+                    occurred_at=at))
+        s.commit()
+        return uuid, t.id
 
 
 def _seed_codex(archive_home, uuid="019f33d1-3e87-7a42-bab1-489d754fd0df"):
@@ -134,11 +142,11 @@ def test_empty_query_browses(archive_home):
 
 def test_browse_honors_source_filter(archive_home):
     _seed(archive_home)
-    _seed_cloth(archive_home)
+    _seed_demo_harness(archive_home)
     _, _, everything = _get("/api/search", q="")
     assert len(everything["hits"]) == 2
-    _, _, payload = _get("/api/search", q="", source="cloth")
-    assert [h["thread_source"] for h in payload["hits"]] == ["cloth"]
+    _, _, payload = _get("/api/search", q="", source="demo-harness")
+    assert [h["thread_source"] for h in payload["hits"]] == ["demo-harness"]
 
 
 def test_search_quality_signal(archive_home):
@@ -658,11 +666,11 @@ def test_archive_link_resolves_codex_rollout_stem(archive_home):
     assert payload["url"] == f"/archive/{tid}"
 
 
-def test_archive_link_resolves_bare_cloth_uuid_without_source(archive_home):
-    # the paste-a-uuid-as-thread-id path: cloth stores the bare session uuid as its
-    # source_id, and the paster doesn't pass a source — resolution must search every
-    # provider, not default to claude-code (which would 404 on a cloth-only id).
-    uuid, tid = _seed_cloth(archive_home)
+def test_archive_link_resolves_bare_uuid_without_source(archive_home):
+    # the paste-a-uuid-as-thread-id path: some providers store the bare session uuid
+    # as their source_id, and the paster doesn't pass a source — resolution must search
+    # every provider, not default to claude-code (which would 404 on such an id).
+    uuid, tid = _seed_demo_harness(archive_home)
     status, _, payload = _get("/api/archive-link", id=uuid)
     assert status == 200
     assert payload["thread_id"] == tid
@@ -670,9 +678,10 @@ def test_archive_link_resolves_bare_cloth_uuid_without_source(archive_home):
 
 
 def test_archive_link_source_narrows_to_provider(archive_home):
-    # passing source still scopes the lookup: a cloth-only uuid asked for as claude-code
-    # resolves to nothing (an editor that knows its harness gets the exact match only).
-    uuid, _ = _seed_cloth(archive_home)
+    # passing source still scopes the lookup: a uuid that exists under one provider,
+    # asked for as claude-code, resolves to nothing (an editor that knows its harness
+    # gets the exact match only).
+    uuid, _ = _seed_demo_harness(archive_home)
     status, _, _ = _get("/api/archive-link", id=uuid, source="claude-code")
     assert status == 404
 
@@ -696,13 +705,13 @@ def test_archive_link_skips_unresolvable_candidates(archive_home):
 def test_archive_link_candidate_order_wins(archive_home):
     # two real threads among the candidates: the caller's ranking decides, so the
     # thread the user is looking at (ranked first) beats a stale one behind it.
-    cloth_uuid, cloth_tid = _seed_cloth(archive_home)
+    demo_uuid, demo_tid = _seed_demo_harness(archive_home)
     codex_uuid, codex_tid = _seed_codex(archive_home)
-    status, _, payload = _get_multi("/api/archive-link", id=[cloth_uuid, codex_uuid])
+    status, _, payload = _get_multi("/api/archive-link", id=[demo_uuid, codex_uuid])
     assert status == 200
-    assert payload["thread_id"] == cloth_tid
-    assert payload["id"] == cloth_uuid
-    assert cloth_tid != codex_tid
+    assert payload["thread_id"] == demo_tid
+    assert payload["id"] == demo_uuid
+    assert demo_tid != codex_tid
 
 
 def test_archive_link_unknown_is_404(archive_home):
@@ -834,7 +843,7 @@ def test_threads_limit_clamped(archive_home):
     # Two real threads, then drive the route over real data: an unclamped -1
     # would reach SQLite as LIMIT -1 (unlimited) and return both.
     _seed(archive_home)
-    _seed_cloth(archive_home)
+    _seed_demo_harness(archive_home)
 
     status, _, body = _get("/api/threads", limit=-1)
     assert status == 200

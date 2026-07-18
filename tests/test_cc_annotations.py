@@ -239,22 +239,3 @@ def test_invented_message_field_warns() -> None:
     msgs = _parse([_assistant_line(message_extras={"brandNewMessageKey": True})])
     ctx = validate_messages(msgs, "s1", "claude-code", batch_safe=True)
     assert any("brandNewMessageKey" in w for w in ctx.warnings)
-
-
-def test_cloth_keys_are_in_the_ledger() -> None:
-    """cloth shares this parser: its cost / snake_case session_id / cache usage
-    keys must not read as drift, and cost still rides provider_data."""
-    line = _assistant_line(
-        {"session_id": "s1"},
-        {"cost": 0.0123,
-         "usage": {"input_tokens": 1, "output_tokens": 2,
-                   "cache_read_tokens": 3, "cache_write_tokens": 4}},
-    )
-    (msg,) = _parse([line])
-    assert msg["provider_data"]["cost"] == 0.0123
-    ctx = validate_messages([msg], "s1", "claude-code", batch_safe=True)
-    drift = [w for w in ctx.warnings if "field" in w.lower()]
-    assert drift == []
-    completed = _one(_events(msg), "api_request_completed")
-    assert completed.payload["cost"] == 0.0123
-    assert completed.payload["cache_read_tokens"] == 3

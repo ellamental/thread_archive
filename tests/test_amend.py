@@ -36,7 +36,7 @@ LINES = [
 ]
 
 
-def _import(archive_home, source="cloth", stem="s1"):
+def _import(archive_home, source="claude-code", stem="s1"):
     init_db()
     f = archive_home / f"{stem}.jsonl"
     f.write_text("\n".join(json.dumps(x) for x in LINES) + "\n", encoding="utf-8")
@@ -141,7 +141,7 @@ def test_backfill_usage_cost_restores_dropped_fields(archive_home) -> None:
         s.execute(update(Event).where(Event.id == eid).values(payload=stripped))
         s.commit()
 
-    pairs = [("cloth", f, "s1")]
+    pairs = [("claude-code", f, "s1")]
     dry = backfill_run(apply=False, pairs=pairs)
     assert dry["patches"] == 1
     assert dry["field:cost"] == 1 and dry["field:cache_read_tokens"] == 1

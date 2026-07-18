@@ -72,8 +72,37 @@ class FakeWatcher:
     def is_available(self) -> bool:
         return self._available
 
-    def _iter_files(self):
+    def iter_files(self):
         yield from self._files
+
+
+def _cc_shaped_providers(tmp_path):
+    """Two providers declaring the Claude Code parser — one whose store is on this
+    machine, one whose isn't — and the pairs a walk over them must yield.
+
+    The repair passes find their work through the registry rather than a hardcoded
+    watcher list, so what they walk is every provider that reuses the Claude Code
+    parser. A provider whose store is absent is the ordinary case (a tool this
+    machine doesn't have), not an error, and must contribute nothing.
+    """
+    from thread_archive.provider import Provider, RglobWatcher, claude_code_line_stream
+
+    present = tmp_path / "present-store"
+    present.mkdir()
+    session = present / "sid-a.jsonl"
+    session.write_text("", encoding="utf-8")
+
+    def _provider(name: str, root):
+        return Provider(
+            name=name, label=name, parser_id="claude-code", kind="line-stream",
+            importer=claude_code_line_stream(name),
+            watcher=lambda: RglobWatcher(
+                root, claude_code_line_stream(name), lambda p: p.stem, name=name),
+        )
+
+    providers = [_provider("present-store", present),
+                 _provider("absent-store", tmp_path / "absent-store")]
+    return providers, [("present-store", session, "sid-a")]
 
 
 # ══ backfill_recompute ═══════════════════════════════════════════════════════
@@ -333,24 +362,28 @@ def test_recompute_no_anchor_twin_variants(archive_home) -> None:
 
 
 def test_recompute_delete_events_clears_all_shadow_tables(archive_home) -> None:
-    """``_delete_events`` sweeps events + FTS + (when present) event_search /
-    event_vectors shadow rows in one statement each."""
+    """``_delete_events`` sweeps events + FTS shadow + (when present)
+    event_vectors rows; the ``event_search`` index empties via the sync
+    triggers cascading the shadow delete."""
+    from thread_archive._retrieval.fts import ensure_fts
+
     tid = _seed_recompute_thread(archive_home, [
         {"stream_id": "st", "api_call_id": "c", "event_type": "text_complete",
          "payload": {"block_index": 0, "text": "x"}, "dedup_key": "k1"},
     ])
     with get_session() as s:
+        ensure_fts(s)
         eid = s.execute(select(Event.id).where(Event.thread_id == tid)).scalar_one()
-        # populate the two optional shadow tables the deleter guards on
-        s.execute(sa_text("CREATE TABLE event_search (event_id INTEGER, body TEXT)"))
+        # populate the optional vector shadow the deleter guards on
         s.execute(sa_text("CREATE TABLE event_vectors (event_id INTEGER, vec BLOB)"))
         s.execute(sa_text("INSERT INTO events_fts (event_id, thread_id, event_type, content) "
                           "VALUES (:e, :t, 'text_complete', 'x')"), {"e": eid, "t": tid})
-        s.execute(sa_text("INSERT INTO event_search (event_id, body) VALUES (:e, 'x')"), {"e": eid})
         s.execute(sa_text("INSERT INTO event_vectors (event_id, vec) VALUES (:e, x'00')"), {"e": eid})
         s.commit()
 
     with get_session() as s:
+        assert s.execute(sa_text("SELECT count(*) FROM event_search WHERE event_id = :e"),
+                         {"e": eid}).scalar() == 1  # trigger mirrored the shadow write
         rc._delete_events(s, [eid])
         s.commit()
 
@@ -395,12 +428,12 @@ def test_reconcile_fresh_events_rejects_unknown_source() -> None:
         rec._fresh_events("grok", [])
 
 
-def test_reconcile_iter_pairs_yields_available_only(monkeypatch) -> None:
-    cc = FakeWatcher(True, [("/tmp/a.jsonl", "sid-a")])
-    monkeypatch.setattr(rec, "ClaudeCodeWatcher", lambda: cc)
-    monkeypatch.setattr(rec, "cloth_watcher", lambda: FakeWatcher(False))
-    pairs = list(rec._iter_pairs())
-    assert pairs == [("claude-code", "/tmp/a.jsonl", "sid-a")]
+def test_reconcile_iter_pairs_yields_available_only(monkeypatch, tmp_path) -> None:
+    from thread_archive import _providers
+
+    providers, expected = _cc_shaped_providers(tmp_path)
+    monkeypatch.setattr(_providers, "sources_using_parser", lambda *a, **kw: providers)
+    assert list(rec._iter_pairs()) == expected
 
 
 def test_reconcile_plan_counts_unmatched_fresh_as_dropped(archive_home) -> None:
@@ -523,11 +556,12 @@ def test_recover_existing_ignores_null_key_rows(archive_home) -> None:
     assert all(v is not None for v in keys)
 
 
-def test_recover_iter_pairs_yields_available_only(monkeypatch) -> None:
-    cc = FakeWatcher(True, [("/tmp/x.jsonl", "sid-x")])
-    monkeypatch.setattr(rec2, "ClaudeCodeWatcher", lambda: cc)
-    monkeypatch.setattr(rec2, "cloth_watcher", lambda: FakeWatcher(False))
-    assert list(rec2._iter_pairs()) == [("claude-code", "/tmp/x.jsonl", "sid-x")]
+def test_recover_iter_pairs_yields_available_only(monkeypatch, tmp_path) -> None:
+    from thread_archive import _providers
+
+    providers, expected = _cc_shaped_providers(tmp_path)
+    monkeypatch.setattr(_providers, "sources_using_parser", lambda *a, **kw: providers)
+    assert list(rec2._iter_pairs()) == expected
 
 
 def test_recover_run_skips_unmapped_source(archive_home, monkeypatch) -> None:

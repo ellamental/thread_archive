@@ -43,7 +43,7 @@ from thread_archive._thread_import.parsers.claude_code import ClaudeCodeParser
 
 from .._importers._read import read_session_lines
 from .._store import Event, ImportState, get_session
-from .._watcher.sources import ClaudeCodeWatcher, cloth_watcher
+from .._watcher.sources import FileSessionWatcher
 
 logger = logging.getLogger(__name__)
 
@@ -116,10 +116,22 @@ class ThreadPlan:
         return not self.warnings
 
 
+def _cc_shaped(source: str) -> bool:
+    """Whether ``source``'s transcripts are read by the Claude Code parser.
+
+    Asked of the registry rather than matched against a literal list, so a
+    harness that shares the format — built in or a plugin — is re-parsed by the
+    parser that actually reads it.
+    """
+    from .._providers import sources_using_parser
+
+    return source in {p.name for p in sources_using_parser("claude-code")}
+
+
 def _fresh_events(source: str, lines: list[dict]) -> list:
     """Re-parse a thread's source lines into freshly-built events (with dedup_keys),
-    in build order. CC + cloth share the Claude Code parser."""
-    if source in ("claude-code", "cloth"):
+    in build order."""
+    if _cc_shaped(source):
         parser = ClaudeCodeParser()
         session_data = {
             "provider": "claude-code",
@@ -209,11 +221,18 @@ def plan_thread(session, thread_id: int, source: str, lines: list[dict]) -> Thre
 
 
 def _iter_pairs() -> Iterator[tuple[str, Path, str]]:
-    for watcher, name in ((ClaudeCodeWatcher(), "claude-code"), (cloth_watcher(), "cloth")):
-        if not watcher.is_available():
+    """``(source, path, source_id)`` for every on-disk transcript the Claude Code
+    parser reads — every provider declaring that parser, not just Claude Code."""
+    from .._providers import sources_using_parser
+
+    for provider in sources_using_parser("claude-code"):
+        if provider.watcher is None:
             continue
-        for path, source_id in watcher._iter_files():
-            yield name, path, source_id
+        watcher = provider.watcher()
+        if not isinstance(watcher, FileSessionWatcher) or not watcher.is_available():
+            continue
+        for path, source_id in watcher.iter_files():
+            yield provider.name, path, source_id
 
 
 def run(

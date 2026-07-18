@@ -2,6 +2,125 @@
 
 ## Unreleased
 
+- **Providers are pluggable** — a harness archive has never heard of can now be
+  preserved without forking it. A provider is one `Provider` descriptor (where
+  its transcripts live, how to read them, what its format looks like, how it
+  presents itself) declared against a new public API at
+  `thread_archive.provider`, and found either through a
+  `thread_archive.providers` entry point or a `providers` entry in
+  `config.json` — the former is how a provider ships, the latter how one is
+  developed against a checkout. Discovery is fail-soft in both directions: a
+  plugin that raises on import is logged and skipped, because a third party's
+  code sitting in the ingest path must not be able to stop every other source
+  from capturing. `archive providers` lists what registered. Authoring guide in
+  `docs/providers.md`; `thread_archive.provider.testing` ships the golden
+  harness and isolated-home fixture so a plugin gets the same drift protection
+  the built-ins have.
+
+  The built-ins go through that same API rather than a private path — the
+  registry is now the single source of truth that the watcher set, importer
+  dispatch, setup's source list, export-drop classification, capture-coverage's
+  export-fed map and the re-parse tooling all read, replacing five hand-kept
+  lists that had no way to agree with each other. Making the built-ins the API's
+  first consumers is what keeps it honest: a seam they need and a plugin can't
+  reach is a bug rather than a private convenience.
+
+- **cloth is no longer built into archive** and now ships as a plugin at
+  `cloth/archive-plugin/` in the thread monorepo, where the transcript format
+  and the config describing it change in the same commit. Archive carries no
+  cloth knowledge; existing cloth threads import and read unchanged.
+
+- **A delegating source is validated as itself.** A harness that reuses another
+  provider's parser (cloth, Cowork, Claude Science all reuse Claude Code's) was
+  logging its parse drift under `claude-code` and being checked against Claude
+  Code's ledger. Parse identity and provenance identity are now separate: the
+  parser still reads the bundle as Claude Code, while validation resolves the
+  *source's* own `ProviderConfig`. `ProviderConfig.derive()` builds one from the
+  parent's, unioning ledgers so a derived provider declares only its additions
+  and stays current as the parent grows. cloth's `cloth_meta` line type and its
+  `cost` / `session_id` fields move out of `CLAUDE_CODE_CONFIG` accordingly —
+  Claude Code's ledger is a statement about Claude Code again, able to catch
+  those keys appearing there for real.
+
+- **Whether an event stores its branch metadata is declared, not listed.** New
+  `ProviderConfig.persist_branch_metadata`, separate from the existing
+  `has_branching`: the latter describes the format, the former is the decision
+  to persist parent links, and several formats that *can* branch reach the
+  archive as linear transcripts whose order already implies the chain. A
+  plugin whose source is a conversation tree now gets its tree rebuildable from
+  truth by declaring it.
+
+- **The `EventBuilder` protocol matched no working implementation** — its
+  `build_events` omitted `prev_occurred_at`, which `assemble_events` always
+  passes by keyword, so anything implementing the published protocol faithfully
+  raised `TypeError` on its first message. Corrected.
+
+- **Provider parser configs register before validation runs.** Config
+  registration is a push into the parser island (which imports nothing from the
+  rest of the package and so cannot fetch them itself), and the import path
+  didn't trigger it — leaving whether a provider's config was registered
+  dependent on whether something else had touched the registry first in that
+  process. The failure was silent in the worst direction: the provider fell back
+  to an all-permissive default, so its own known line types started reporting as
+  drift while its real drift stopped being caught.
+
+- **Tool-call FTS documents index every input key** — the extractor used to
+  index only the first "content-shaped" key of a tool's input and drop the
+  rest, which lost a Write's `file_path` behind its `content` and a Bash
+  `command` behind its `description`. Now every string body key (`content`,
+  `command`, `query`, …) is indexed whole and every remaining key is indexed
+  as `key=value` metadata (values capped at 500 chars), with metadata leading
+  the document so the 2000-char cap can't truncate small keys away behind a
+  large body. Requires an FTS rebuild for history (`rebuild_fts`).
+
+- **`thread_search` groups by thread on demand** — the thread-granular list view
+  an empty-query browse returns is now reachable from any keyword search, via
+  two new `group` modes. `group='browse'` lists the matched *threads* alone (one
+  row each: title, provider, size, when, hit count — no messages);
+  `group='nested'` keeps the messages, clustered under their thread in event
+  order. Both count `limit` in threads — nested caps each thread at 5 hits and
+  folds the remainder into its cluster header, so one sprawling thread can't eat
+  the view — and both enumerate every matched thread, standing down the
+  cross-thread duplicate fold that the ranked shapes use to save an agent's
+  result slots (dropping a forked thread off a list that exists to enumerate
+  threads is a different thing than folding a repeated row). Asking for a list
+  shape is explicit, so it outranks the suppressions that keep the ranked shape
+  ungrouped under a `thread_id` scope or a structural sort; `output='count'`
+  still wins, tallying per thread as before. Clustering breaks the
+  rank-order-is-row-order assumption the match-quality verdict and the MCP
+  widen-retry both rested on, so ranked position now rides along on each hit
+  (`_rank_pos`) and both read the head through `format.top_hit`.
+
+- **The FTS index stops storing the corpus twice** — `event_search` becomes an
+  external-content FTS5 table over the `events_fts` shadow: the index holds only
+  postings; column reads, snippets, and LIKE scans resolve through the shadow by
+  rowid (~4GB off a ~14GB index at the current corpus, and the amplification
+  stops compounding with scale). Shadow→index sync is trigger-based
+  (`events_fts_ai/_ad/_au`), so every writer — incremental import, thread-meta
+  sync, redaction, repair scripts — writes the shadow alone and the surfaces
+  can't drift. Verify's parity pairs the shadow count with the index's own row
+  ledger (the fts5 `%_docsize` shadow table) in one statement, and a new
+  `fts_triggers` component reports missing sync triggers. A live index predating
+  the layout is swapped for an empty current-shape table on open — lexical
+  search goes dark, not wrong — and stays deliberately triggerless until
+  `reindex` refills it: over a populated shadow and an empty index, a
+  trigger-fired FTS 'delete' targets postings that don't exist, which fts5
+  raises as SQLITE_CORRUPT (the in-place migration of the production store hit
+  exactly that; the dark window is triggerless so no one hits it again). The
+  conversion was validated with a golden-query capture over the production
+  pipeline — 23 query shapes, results byte-identical up to order among
+  exact-score ties (whose old arbiter, insertion-order rowids, no longer
+  exists).
+
+- **The semantic-search matrix is mmap'd, not resident** — the KNN serves every
+  content-type scope from one full-corpus pack (`vector-pack/` beside the
+  index: token-named `.npy` files, rebuilt whenever the vector store moves) via
+  row masks over an `np.load(mmap_mode='r')` matrix. Per-process RAM no longer
+  scales with the corpus: processes share one file-backed copy the OS can
+  reclaim under pressure, where each previously pinned its own float32 matrix
+  per cached scope. Same float32 bits, same scores — the golden capture diffs
+  empty against the pre-pack pipeline.
+
 - **Curation moves out of the core into the archive-librarian plugin** — the
   interactive curation surface (the `/librarian` skill, a new `/gardener`
   skill built from the drain prompt, the librarian-gate enforcement hook, the

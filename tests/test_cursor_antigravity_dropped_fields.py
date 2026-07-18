@@ -13,14 +13,13 @@ import json
 from sqlalchemy import select
 
 from thread_archive._importers import import_antigravity_session_incremental
+from thread_archive._importers.antigravity import _build_antigravity_messages
 from thread_archive._importers.cursor import (
     _cursor_to_normalized,
     import_cursor_from_payload,
 )
-from thread_archive._importers.antigravity import _build_antigravity_messages
 from thread_archive._store import Event, get_session, init_db
 from thread_archive._thread_import import DefaultEventBuilder
-
 
 # ── helpers ──────────────────────────────────────────────────────────────────
 

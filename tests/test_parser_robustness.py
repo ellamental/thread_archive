@@ -32,7 +32,6 @@ from thread_archive._store import Event, get_session, init_db
 from .test_provider_goldens import (
     ANTIGRAVITY,
     CLAUDE_CODE,
-    CLOTH,
     CODEX,
     GROK,
     GROK_SUMMARY,
@@ -53,14 +52,6 @@ def _run_claude_code(home: Path, text: str):
     f = home / "sess.jsonl"
     f.write_text(text, encoding="utf-8")
     return import_session_incremental(f, "proj:s1")
-
-
-def _run_cloth(home: Path, text: str):
-    from thread_archive._importers import import_cloth_session_incremental
-
-    f = home / "cloth.jsonl"
-    f.write_text(text, encoding="utf-8")
-    return import_cloth_session_incremental(f, "cloth-7")
 
 
 def _run_codex(home: Path, text: str):
@@ -92,7 +83,6 @@ def _run_antigravity(home: Path, text: str):
 
 PROVIDERS = [
     ("claude-code", CLAUDE_CODE, _run_claude_code),
-    ("cloth", CLOTH, _run_cloth),
     ("codex", CODEX, _run_codex),
     ("grok", GROK, _run_grok),
     ("antigravity", ANTIGRAVITY, _run_antigravity),

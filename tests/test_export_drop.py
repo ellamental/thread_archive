@@ -177,12 +177,12 @@ def test_failed_import_is_quarantined(archive_home, monkeypatch) -> None:
     dumps = archive_home / "dumps"
     _claude_batch_dir(dumps, "claude-export")
 
-    from thread_archive._watcher import export_drop
+    from thread_archive._importers import exports
 
     def _boom(path, **kw):
         raise RuntimeError("corrupt bundle")
 
-    monkeypatch.setattr(export_drop, "import_claude_ai_export", _boom)
+    monkeypatch.setattr(exports, "import_claude_ai_export", _boom)
 
     w = ExportDropWatcher(dumps_dir=dumps)
     w.poll()              # settle
@@ -201,13 +201,13 @@ def test_zero_processed_import_is_quarantined_not_deleted(archive_home, monkeypa
     dumps = archive_home / "dumps"
     export_dir = _claude_batch_dir(dumps, "claude-export")
 
+    from thread_archive._importers import exports
     from thread_archive._importers.exports import ExportImportResult
-    from thread_archive._watcher import export_drop
 
     def _empty(path, **kw):
         return ExportImportResult()  # processed=0: nothing matched the shape
 
-    monkeypatch.setattr(export_drop, "import_claude_ai_export", _empty)
+    monkeypatch.setattr(exports, "import_claude_ai_export", _empty)
 
     w = ExportDropWatcher(dumps_dir=dumps)
     w.poll()              # settle
@@ -228,14 +228,14 @@ def test_partially_errored_import_is_quarantined_not_retained(archive_home, monk
     dumps = archive_home / "dumps"
     export_dir = _claude_batch_dir(dumps, "claude-export")
 
+    from thread_archive._importers import exports
     from thread_archive._importers.exports import ExportImportResult
-    from thread_archive._watcher import export_drop
 
     def _partial(path, **kw):
         # processed>0 with a stubbed-out errored conversation: the old code deleted this.
         return ExportImportResult(processed=2, imported=1, skipped=0, events_created=3, errored=1)
 
-    monkeypatch.setattr(export_drop, "import_claude_ai_export", _partial)
+    monkeypatch.setattr(exports, "import_claude_ai_export", _partial)
 
     w = ExportDropWatcher(dumps_dir=dumps)
     w.poll()              # settle

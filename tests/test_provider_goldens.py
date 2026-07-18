@@ -34,7 +34,6 @@ import pytest
 from thread_archive._config import resolve_paths
 from thread_archive._importers import (
     import_antigravity_session_incremental,
-    import_cloth_session_incremental,
     import_codex_session_incremental,
     import_cursor_db,
     import_grok_session_incremental,
@@ -77,17 +76,6 @@ CLAUDE_CODE = [
     {"type": "assistant", "uuid": "a2", "parentUuid": "u2", "timestamp": "2026-01-01T10:00:08Z",
      "sessionId": "s1", "message": {"role": "assistant", "model": "claude-opus-4",
                                     "content": [{"type": "text", "text": "one file"}]}},
-]
-
-CLOTH = [
-    {"type": "user", "uuid": "u1", "timestamp": "2026-01-01T10:00:00Z", "sessionId": "cloth-7",
-     "message": {"role": "user", "content": "hello cloth golden"}},
-    {"type": "cloth_meta", "uuid": "m1", "parentUuid": "u1",
-     "timestamp": "2026-01-01T10:00:00.5Z", "sessionId": "cloth-7",
-     "meta": {"client": "cloth", "model": "deepseek/deepseek-v4-pro"}},
-    {"type": "assistant", "uuid": "a1", "timestamp": "2026-01-01T10:00:05Z", "sessionId": "cloth-7",
-     "message": {"role": "assistant", "model": "deepseek/deepseek-v4-pro",
-                 "content": [{"type": "text", "text": "hi from cloth"}]}},
 ]
 
 CODEX = [
@@ -318,14 +306,6 @@ def test_claude_code_golden(archive_home) -> None:
     _write_jsonl(f, CLAUDE_CODE, torn_tail='{"type": "assistant", "uuid": "a3", "mess')
     import_session_incremental(f, "proj:s1")
     _check_golden("claude-code", str(archive_home))
-
-
-def test_cloth_golden(archive_home) -> None:
-    init_db()
-    f = archive_home / "cloth.jsonl"
-    _write_jsonl(f, CLOTH)
-    import_cloth_session_incremental(f, "cloth-7")
-    _check_golden("cloth", str(archive_home))
 
 
 def test_codex_golden(archive_home) -> None:

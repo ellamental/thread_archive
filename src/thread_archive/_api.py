@@ -115,7 +115,9 @@ def search(
     thread, repeats folded into ``_thread_more`` / ``_dup_thread_ids``
     annotations; ``group='none'`` returns every hit as its own row, and
     ``group='dup'`` folds only cross-thread duplicate content, keeping each
-    surviving thread's own hits."""
+    surviving thread's own hits. ``group='browse'`` / ``group='nested'`` turn a
+    keyword search into the thread-granular list shapes — matched threads alone,
+    or every hit clustered under its thread — with ``limit`` counting threads."""
     open_archive(home)
     from ._retrieval import search as _search
 
@@ -216,10 +218,12 @@ def import_path(path, *, home: Optional[str] = None, provider: str = "claude-cod
     overlays, so it does not rewrite those snapshots.
     """
     open_archive(home)
-    from ._importers import DB_SCANNERS, LINE_STREAM_IMPORTERS
+    from ._importers import db_scanners, line_stream_importers
     from ._truth import checkpoint as _checkpoint
     from ._truth import shared_ingest_lock
 
+    line_streams = line_stream_importers(home)
+    scanners = db_scanners(home)
     p = Path(path)
     # Held shared across the truth append AND the SQLite commit: an unlocked import
     # racing a reindex can land in the truth after the rebuild's read point and
@@ -227,10 +231,10 @@ def import_path(path, *, home: Optional[str] = None, provider: str = "claude-cod
     # rather than skipping — a one-shot import has no later pass to retry on.
     result: object
     with shared_ingest_lock():
-        if provider in LINE_STREAM_IMPORTERS:
-            result = LINE_STREAM_IMPORTERS[provider](p, source_id or p.stem)
-        elif provider in DB_SCANNERS:
-            result = DB_SCANNERS[provider](p)
+        if provider in line_streams:
+            result = line_streams[provider](p, source_id or p.stem)
+        elif provider in scanners:
+            result = scanners[provider](p)
         else:
             raise ValueError(f"unknown provider {provider!r}")
 
@@ -346,7 +350,7 @@ def stats(*, home: Optional[str] = None, model_limit: Optional[int] = None) -> d
     source recorded it — cost, per provider), and ``by_model`` (the busiest models).
 
     Cost is only present for sources that record it (the pay-per-token harnesses, e.g.
-    cloth); subscription tools log tokens but no dollar figure, so their cost comes back
+    sources); subscription tools log tokens but no dollar figure, so their cost comes back
     null rather than a fabricated estimate. Backed by an incrementally-maintained rollup
     (:mod:`._store._metrics`) so it stays fast on a large archive — the first call after
     a reindex pays a one-time survey, the rest fold only new events."""

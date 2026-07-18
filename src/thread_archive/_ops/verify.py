@@ -196,29 +196,40 @@ def verify(
         str(r[0]) for r in qc_rows
     )
     # Search-surface parity, on the daily cadence (deep re-checks it with more
-    # detail): the FTS shadow and the FTS5 table commit in the same transaction
-    # as their events, so below the watermark the two row counts must match and
-    # no shadow row may point at a missing event. Both are index-internal drift
-    # — a reindex rebuilds them — but silently unsearchable content is loss in
-    # effect, so it must be *seen* daily, not only on the deep cadence.
+    # detail). ``event_search`` is an external-content FTS5 table — its column
+    # reads resolve through the ``events_fts`` shadow, so counting *it* would be
+    # tautological. The index's own row ledger is the fts5 ``%_docsize`` shadow
+    # table (one row per indexed rowid — documented fts5 internals): shadow count
+    # vs docsize count is the real two-sided parity, and both counts ride ONE
+    # statement so they come from a single read snapshot — a concurrent watcher
+    # write lands in both or neither (the sync trigger fires in the same
+    # statement as the shadow write). No shadow row may point at a missing event.
+    # All index-internal drift — a reindex rebuilds it — but silently
+    # unsearchable content is loss in effect, so it must be *seen* daily.
     fts_shadow = fts5 = fts_orphans = 0
+    fts_triggers_missing = False
     with get_session() as s:
         conn = s.connection().connection
         has_fts = conn.execute(
             "SELECT count(*) FROM sqlite_master WHERE name IN ('events_fts', 'event_search')"
         ).fetchone()[0] == 2
         if has_fts and watermark:
-            fts_shadow = conn.execute(
-                "SELECT count(*) FROM events_fts WHERE event_id <= ?", (watermark,)
-            ).fetchone()[0]
-            fts5 = conn.execute(
-                "SELECT count(*) FROM event_search WHERE event_id <= ?", (watermark,)
-            ).fetchone()[0]
+            fts_shadow, fts5 = conn.execute(
+                "SELECT (SELECT count(*) FROM events_fts), "
+                "(SELECT count(*) FROM event_search_docsize)"
+            ).fetchone()
             fts_orphans = conn.execute(
                 "SELECT count(*) FROM events_fts f WHERE f.event_id <= ? "
                 "AND NOT EXISTS(SELECT 1 FROM events e WHERE e.id = f.event_id)",
                 (watermark,),
             ).fetchone()[0]
+        if has_fts:
+            # The sync triggers ARE the write path — without them, shadow writes
+            # silently stop reaching the index from this moment on.
+            fts_triggers_missing = conn.execute(
+                "SELECT count(*) FROM sqlite_master WHERE type = 'trigger' AND "
+                "name IN ('events_fts_ai', 'events_fts_ad', 'events_fts_au')"
+            ).fetchone()[0] != 3
     # A populated index with no search surface at all is silently unsearchable —
     # the parity check above only fires when the tables exist, so this is the
     # separate signal that the whole FTS layer is gone (a reindex rebuilds it).
@@ -242,6 +253,8 @@ def verify(
         failed.append("integrity_check" if hashes else "quick_check")
     if fts_shadow != fts5 or fts_orphans:
         failed.append("fts_parity")
+    if fts_triggers_missing:
+        failed.append("fts_triggers")
     if fts_missing:
         failed.append("fts_missing")
     if not schema["ok"]:
@@ -263,6 +276,7 @@ def verify(
             "fts5_rows": int(fts5),
             "orphan_rows": int(fts_orphans),
             "missing": fts_missing,
+            "triggers_missing": fts_triggers_missing,
         },
     }
     if deep:
@@ -942,10 +956,14 @@ def _verify_deep(watermark: int) -> dict:
             "GROUP BY thread_id, dedup_key HAVING count(*) > 1)"
         )).scalar() or 0
 
-        # Search-surface parity. The FTS shadow (events_fts) and the FTS5 table
-        # (event_search) are written in the same transaction as their events, so
-        # below the watermark: no shadow row may point at a missing event (orphans),
-        # and the two surfaces must hold the same row count. Coverage — indexable
+        # Search-surface parity. ``event_search`` is external-content FTS5 — its
+        # column reads resolve through the ``events_fts`` shadow, so the index's
+        # independent row ledger is the fts5 ``%_docsize`` shadow table (one row
+        # per indexed rowid); shadow count vs docsize count is the real parity,
+        # both counts in ONE statement so they share a read snapshot (the sync
+        # trigger fires in the same statement as the shadow write, so any
+        # committed state holds them equal). No shadow row may point at a
+        # missing event (orphans). Coverage — indexable
         # events with no shadow row — is re-extracted event by event to split the
         # legitimately-empty (a payload that yields no searchable text has no row
         # by design) from the genuinely unindexed (extraction yields text today,
@@ -962,12 +980,9 @@ def _verify_deep(watermark: int) -> dict:
                 "SELECT count(*) FROM events_fts f WHERE f.event_id <= :wm "
                 "AND NOT EXISTS(SELECT 1 FROM events e WHERE e.id = f.event_id)"),
                 {"wm": watermark}).scalar() or 0
-            fts_shadow_rows = s.execute(sa_text(
-                "SELECT count(*) FROM events_fts WHERE event_id <= :wm"),
-                {"wm": watermark}).scalar() or 0
-            fts5_rows = s.execute(sa_text(
-                "SELECT count(*) FROM event_search WHERE event_id <= :wm"),
-                {"wm": watermark}).scalar() or 0
+            fts_shadow_rows, fts5_rows = s.execute(sa_text(
+                "SELECT (SELECT count(*) FROM events_fts), "
+                "(SELECT count(*) FROM event_search_docsize)")).one()
             from .._retrieval._extract import INDEXABLE_EVENT_TYPES, extract_fts_content
 
             # api_request_completed is twin-gated at index time (see the NB in

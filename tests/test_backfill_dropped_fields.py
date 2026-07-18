@@ -13,6 +13,7 @@ from __future__ import annotations
 import json
 import sqlite3
 
+import pytest
 from sqlalchemy import delete, select, update
 
 from thread_archive._importers import (
@@ -35,7 +36,7 @@ from thread_archive._scripts.backfill_reconcile import _fresh_events as cc_fresh
 from thread_archive._store import Event, Thread, get_session, init_db
 from thread_archive._thread_import.event_builder import compute_dedup_key
 
-# ── claude-code/cloth (lines fixture) ────────────────────────────────────────
+# ── Claude-Code-shaped harness (lines fixture) ───────────────────────────────
 
 USAGE = {
     "input_tokens": 11, "output_tokens": 7, "thinking_tokens": 0,
@@ -52,17 +53,47 @@ CC_LINES = [
 ]
 
 
-def _import_cloth(archive_home):
+@pytest.fixture
+def demo_harness():
+    """A registered provider whose harness writes Claude-Code-shaped JSONL.
+
+    The audit derives its Claude-Code-shaped adapters from the registry, so a
+    source is re-parsed exactly when a provider declares that parser. Registering
+    one is what makes the audit reach a source outside the built-in set — a
+    source with no adapter isn't audited, and nothing reports that it wasn't.
+    """
+    from thread_archive import _providers
+    from thread_archive.provider import Provider, claude_code_line_stream
+    from thread_archive.provider.parse import CLAUDE_CODE_CONFIG, register_provider_config
+
+    provider = Provider(
+        name="demo-harness", label="Demo",
+        parser_id="claude-code",
+        parser_config=CLAUDE_CODE_CONFIG.derive("demo-harness"),
+        kind="line-stream",
+        importer=claude_code_line_stream("demo-harness"),
+    )
+    builtin = dict(_providers.registry())
+    register_provider_config(provider.parser_config)
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(_providers, "registry",
+                   lambda *a, **kw: {**builtin, provider.name: provider})
+        yield provider
+    _providers.reset()
+
+
+def _import_demo_harness(archive_home):
     init_db()
     f = archive_home / "s1.jsonl"
     f.write_text("\n".join(json.dumps(x) for x in CC_LINES) + "\n", encoding="utf-8")
-    tid = import_session_incremental(f, "s1", source="cloth").thread_id
+    tid = import_session_incremental(f, "s1", source="demo-harness").thread_id
     return f, tid
 
 
-def _cloth_items(f):
-    return [WorkItem("cloth", "s1",
-                     fresh=lambda: cc_fresh("cloth", read_session_lines(f)), meta=None)]
+def _demo_harness_items(f):
+    return [WorkItem("demo-harness", "s1",
+                     fresh=lambda: cc_fresh("demo-harness", read_session_lines(f)),
+                     meta=None)]
 
 
 def _event(tid, event_type):
@@ -82,8 +113,8 @@ def _set_payload(eid, payload, dedup_key=None):
         s.commit()
 
 
-def test_missing_keys_zero_tokens_dry_run_and_idempotency(archive_home) -> None:
-    f, tid = _import_cloth(archive_home)
+def test_missing_keys_zero_tokens_dry_run_and_idempotency(archive_home, demo_harness) -> None:
+    f, tid = _import_demo_harness(archive_home)
     eid, payload, key = _event(tid, "api_request_completed")
     # OLD shape: cost + cache counts dropped, input_tokens the 0 placeholder.
     old = {k: v for k, v in payload.items()
@@ -91,7 +122,7 @@ def test_missing_keys_zero_tokens_dry_run_and_idempotency(archive_home) -> None:
     old["input_tokens"] = 0
     _set_payload(eid, old)
 
-    dry = run(apply=False, items=_cloth_items(f))
+    dry = run(apply=False, items=_demo_harness_items(f))
     t = dry["totals"]
     assert t["patches"] == 1
     assert t["field:cost"] == 1 and t["field:cache_read_tokens"] == 1
@@ -102,7 +133,7 @@ def test_missing_keys_zero_tokens_dry_run_and_idempotency(archive_home) -> None:
         assert s.get(Event, eid).payload["input_tokens"] == 0
     assert load_amendments() == []
 
-    applied = run(apply=True, items=_cloth_items(f))
+    applied = run(apply=True, items=_demo_harness_items(f))
     assert applied["totals"]["events_amended"] == 1
     with get_session() as s:
         p = s.get(Event, eid).payload
@@ -111,7 +142,7 @@ def test_missing_keys_zero_tokens_dry_run_and_idempotency(archive_home) -> None:
         assert p["input_tokens"] == 11
         assert s.get(Event, eid).dedup_key == key  # identity untouched
 
-    again = run(apply=True, items=_cloth_items(f))
+    again = run(apply=True, items=_demo_harness_items(f))
     assert again["totals"].get("patches", 0) == 0
     assert again["totals"]["already_complete"] >= 1
 
@@ -374,12 +405,12 @@ def test_cursor_model_placeholder_salvage(archive_home) -> None:
 
 # ── CLI ──────────────────────────────────────────────────────────────────────
 
-def test_main_prints_dry_run_table(archive_home, capsys) -> None:
-    f, tid = _import_cloth(archive_home)
+def test_main_prints_dry_run_table(archive_home, capsys, demo_harness) -> None:
+    f, tid = _import_demo_harness(archive_home)
     eid, payload, _ = _event(tid, "api_request_completed")
     _set_payload(eid, {k: v for k, v in payload.items() if k != "cost"})
-    main(["--limit", "5", "--source", "cloth"], items=_cloth_items(f))
+    main(["--limit", "5", "--source", "demo-harness"], items=_demo_harness_items(f))
     out = capsys.readouterr().out
     assert "[DRY-RUN] backfill-dropped-fields" in out
     assert "field:cost" in out
-    assert "cloth" in out
+    assert "demo-harness" in out

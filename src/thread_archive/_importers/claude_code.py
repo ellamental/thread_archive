@@ -194,7 +194,7 @@ def _import_cc(
 
     # Continuation / fork merge: a fresh CC session that continues an existing thread
     # (created on context compaction) merges into it instead of fragmenting into its
-    # own thread. Subagents are independent transcripts; cloth-shaped sources (source
+    # own thread. Subagents are independent transcripts; delegating sources (source
     # != "claude-code") don't carry CC's compaction markers, so both skip it.
     merged_continuation = False
     if thread_id is None and source == SOURCE and not is_subagent:
@@ -300,7 +300,7 @@ def import_session_incremental(
 
     ``source`` is the thread/import-state source label. It defaults to
     ``"claude-code"`` and is rarely overridden — the one case is a *host store that
-    writes Claude-Code-shaped JSONL under a different identity* (e.g. cloth's CLI
+    writes Claude-Code-shaped JSONL under a different identity* (a harness's own
     transcripts), which a deployment watcher imports under its own source so the
     threads carry the right provenance rather than masquerading as claude-code.
     """

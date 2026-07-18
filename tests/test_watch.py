@@ -68,36 +68,48 @@ def test_claude_code_watcher_unavailable_when_dir_absent(archive_home, tmp_path)
     assert not w.is_available()
 
 
-def test_cloth_watcher_detects_imports_and_self_gates(archive_home, tmp_path) -> None:
-    """cloth is a plain provider watcher like the rest: it imports its store's
-    sessions under ``source="cloth"`` with the bare file stem as ``source_id``,
-    dedups on re-poll, sits in
-    the default set, and self-gates (inert, process-free) when the cloth home is absent."""
+def test_rglob_watcher_imports_cc_shaped_source_and_self_gates(archive_home, tmp_path) -> None:
+    """The two properties every provider plugin's file watcher depends on, proven
+    through the public API a plugin is written against.
+
+    A harness writing Claude-Code-shaped JSONL reuses that parser via
+    ``claude_code_line_stream`` while keeping its own source identity, so its
+    threads carry its provenance instead of masquerading as Claude Code — and the
+    ``source_id`` is whatever ``source_id_of`` derives, here the bare file stem.
+    The watcher also self-gates: a store that isn't on this machine reports
+    unavailable, so a provider nobody has installed costs nothing per poll.
+    """
     from sqlalchemy import select
 
     from thread_archive._store import Thread
-    from thread_archive._watcher import cloth_watcher
-    from thread_archive._watcher.sources import default_watchers
+    from thread_archive.provider import RglobWatcher, claude_code_line_stream
 
-    assert "cloth" in [w.source_name for w in default_watchers()]
-    assert not cloth_watcher(threads_dir=tmp_path / "no-cloth-here").is_available()
+    def _watcher(root):
+        return RglobWatcher(
+            root, claude_code_line_stream("demo-harness"), lambda p: p.stem,
+            name="demo-harness",
+        )
+
+    assert not _watcher(tmp_path / "no-store-here").is_available()
 
     init_db()
-    threads_dir = tmp_path / "threads"
-    threads_dir.mkdir()
-    (threads_dir / "63.jsonl").write_text(
+    store = tmp_path / "sessions"
+    store.mkdir()
+    (store / "63.jsonl").write_text(
         "\n".join(json.dumps(ln) for ln in [USER, ASSISTANT]) + "\n", encoding="utf-8"
     )
 
-    w = cloth_watcher(threads_dir=threads_dir)
+    w = _watcher(store)
     assert w.is_available()
 
     r1 = w.poll()
     assert r1.items_imported == 1 and r1.events_created > 0
     n1 = _event_count()
     with get_session() as s:
-        t = s.execute(select(Thread).where(Thread.source == "cloth")).scalar_one()
+        t = s.execute(select(Thread).where(Thread.source == "demo-harness")).scalar_one()
         assert t.source_id == "63"  # bare session-file stem, no prefix
+        # Reusing Claude Code's parser must not store the thread as Claude Code.
+        assert s.execute(select(Thread).where(Thread.source == "claude-code")).first() is None
 
     # Unchanged file → fingerprint skip, no duplication.
     r2 = w.poll()

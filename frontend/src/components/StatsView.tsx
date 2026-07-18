@@ -5,8 +5,8 @@ import { hueStyle, modelHue } from '../modelColor'
 
 // The stats page: token & cost analytics over the whole archive, read from an
 // incrementally-maintained rollup (server-side). Cost is only present for the
-// pay-per-token sources that record it (cloth, …); subscription tools log tokens
-// but no dollar figure, so their cost shows as '—' rather than a fabricated 0.
+// pay-per-token sources that record it; subscription tools log tokens but no
+// dollar figure, so their cost shows as '—' rather than a fabricated 0.
 // The formatting helpers and table furniture are shared with the per-model
 // drill-down (ModelStatsView), which lives off this page's model links.
 
@@ -169,7 +169,7 @@ export function StatsView() {
         <h2 className="stat-h">By provider</h2>
         <ProviderTable rows={stats.by_source} />
         <p className="stat-note">
-          Cost is only recorded by pay-per-token sources (e.g. cloth); subscription tools log
+          Cost is only recorded by pay-per-token sources; subscription tools log
           tokens but no dollar figure, so their cost reads “—”.
         </p>
       </div>

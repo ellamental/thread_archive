@@ -40,6 +40,41 @@ def test_vector_store_upsert_and_knn(archive_home) -> None:
     assert vectors.get_status()["indexed"] == 3
 
 
+def test_knn_pack_mmap_lifecycle(archive_home) -> None:
+    """The KNN matrix serves from the on-disk pack: built once (mmap'd, not
+    resident), reused while the store token holds, rebuilt when vectors change,
+    and invalidated by the token-blind in-place upsert (meta unlink)."""
+    init_db()
+    vectors.ensure_index()
+    a, b = _unit((0, 1.0)), _unit((1, 1.0))
+    vectors.index_vectors([(1, "user", a), (2, "text", b)])
+
+    res = vectors._knn(a.tolist(), ("user",), cand=10)
+    assert [eid for eid, _, _ in res] == [1]
+    d = vectors._pack_dir()
+    mats = sorted(d.glob("mat-*.npy"))
+    assert len(mats) == 1
+    built = mats[0].stat().st_mtime_ns
+
+    # scope change reuses the same pack (row mask, no rebuild)
+    res = vectors._knn(a.tolist(), ("user", "text"), cand=10)
+    assert [eid for eid, _, _ in res] == [1, 2]
+    assert mats[0].stat().st_mtime_ns == built
+
+    # a real vector write moves the token → a fresh pack serves the new row
+    vectors.index_vectors([(3, "user", _unit((0, 0.5)))])
+    res = vectors._knn(a.tolist(), ("user",), cand=10)
+    assert [eid for eid, _, _ in res] == [1, 3]
+    assert len(list(d.glob("mat-*.npy"))) >= 1
+
+    # in-place upsert: count/maxrowid hold, but the metas are dropped so the
+    # next load rebuilds instead of serving the stale matrix
+    vectors.index_vectors([(1, "user", b)])
+    assert list(d.glob("meta-*.json")) == []
+    res = vectors._knn(b.tolist(), ("user",), cand=10)
+    assert [eid for eid, _, _ in res][0] == 1  # sees the upserted vector
+
+
 def test_index_events_local_incremental_cap_and_order(archive_home, monkeypatch) -> None:
     """The cohost's embed pass: incremental (anti-join), bounded by ``max_events``,
     newest-first. Stubs the embed backend so no model is needed."""

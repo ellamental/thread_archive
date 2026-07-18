@@ -6,7 +6,7 @@ parsing and validation. This moves configuration out of base.py and
 makes it owned by each provider.
 """
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Dict, Literal, Optional, Set
 
 # Type alias for thinking block expectations
@@ -32,6 +32,16 @@ class ProviderConfig:
             (only used when thinking_expectation="model_specific")
         has_branching: Whether conversations can have branches/alternate paths
         has_parent_references: Whether messages have parent references
+        persist_branch_metadata: Whether each event stores its parent link and
+            active-path flag as ``payload["branch"]``. Distinct from
+            ``has_branching``, which describes the *format*: a format can have
+            branches without the archive needing to persist them. Set it when the
+            source is delivered as a **tree** whose flat event order can't recover
+            which reply followed which prompt (an account export of regenerations
+            and edits) — there, the parent link is the only way to rebuild the
+            conversation from truth. A source whose log is an append-only
+            transcript already implies its chain by order, and a parent id on
+            every event would be noise.
         expected_roles: Valid role values for this provider
         expected_block_types: Valid content block types for this provider
         expected_unmodeled_line_types: Source line kinds the parser deliberately
@@ -60,6 +70,7 @@ class ProviderConfig:
     thinking_exempt_models: Set[str] = field(default_factory=set)
     has_branching: bool = False
     has_parent_references: bool = False
+    persist_branch_metadata: bool = False
     expected_roles: Set[str] = field(
         default_factory=lambda: {"user", "assistant", "system"}
     )
@@ -97,6 +108,48 @@ class ProviderConfig:
 
         return True  # Default: require thinking
 
+    def derive(
+        self,
+        provider_name: str,
+        *,
+        expected_roles: Optional[Set[str]] = None,
+        expected_block_types: Optional[Set[str]] = None,
+        expected_unmodeled_line_types: Optional[Set[str]] = None,
+        known_line_fields: Optional[Dict[str, Set[str]]] = None,
+        known_message_fields: Optional[Set[str]] = None,
+        **overrides: object,
+    ) -> "ProviderConfig":
+        """A config for another provider that shares this one's parser.
+
+        A harness that writes another provider's transcript shape reuses that
+        provider's parser but is its own source, with its own drift ledgers: it
+        may carry extra line types and extra fields the parent never emits.
+        Registering those on the parent's config would blame the parent for a
+        field it will never grow and blind the parent's ledger to that field
+        appearing for real.
+
+        The five ledger arguments **union** into the parent's sets rather than
+        replacing them — a derived provider is the parent's shape plus its own
+        additions. ``known_line_fields`` unions per role. Anything else about the
+        parent (thinking expectation, timestamp format, branching) carries over
+        unchanged unless named in ``overrides``.
+        """
+        merged_line_fields = {role: set(keys) for role, keys in self.known_line_fields.items()}
+        for role, keys in (known_line_fields or {}).items():
+            merged_line_fields[role] = merged_line_fields.get(role, set()) | set(keys)
+        return replace(
+            self,
+            provider_name=provider_name,
+            expected_roles=self.expected_roles | set(expected_roles or ()),
+            expected_block_types=self.expected_block_types | set(expected_block_types or ()),
+            expected_unmodeled_line_types=(
+                self.expected_unmodeled_line_types | set(expected_unmodeled_line_types or ())
+            ),
+            known_line_fields=merged_line_fields,
+            known_message_fields=self.known_message_fields | set(known_message_fields or ()),
+            **overrides,  # type: ignore[arg-type]
+        )
+
 
 # =============================================================================
 # Provider-specific configurations
@@ -133,6 +186,10 @@ CHATGPT_CONFIG = ProviderConfig(
     thinking_expectation="model_specific",
     thinking_exempt_models=_COMMON_EXEMPT_MODELS,
     has_branching=True,
+    # The export is a conversation tree: a node can have several children
+    # (regenerations), so flat event order can't recover which reply followed
+    # which prompt, nor which branch is the active one.
+    persist_branch_metadata=True,
     has_parent_references=True,
     expected_roles={"user", "assistant", "system", "tool"},
     expected_block_types={
@@ -155,6 +212,7 @@ CLAUDE_CONFIG = ProviderConfig(
     thinking_exempt_models=set(),
     has_branching=True,  # edit/regenerate tree via parent_message_uuid
     has_parent_references=True,
+    persist_branch_metadata=True,  # same tree shape as ChatGPT's export
     expected_roles={"user", "assistant", "human"},  # Claude uses "human" for user
     expected_block_types={
         "text",
@@ -202,16 +260,14 @@ CLAUDE_CODE_CONFIG = ProviderConfig(
         "mode",  # permission-mode switches (normal/plan/…)
         "permission-mode",  # newer sibling of "mode": current permission mode
         "file-history-delta",  # file-backup bookkeeping, sibling of file-history-snapshot
-        # cloth (a Claude-Code-shaped harness that shares this parser) writes a
-        # one-per-session identity header: client/model/system-prompt metadata,
-        # no message content. Preserved verbatim like the rest of this set.
-        "cloth_meta",
     },
     timestamp_format="iso",
     # Field-level drift ledger: every top-level key observed on real user /
-    # assistant lines (~/.claude/projects + cloth, which shares this parser).
-    # A key outside these sets is FUTURE drift — a field Claude Code grew that
-    # the parser has never seen — and warns via TypeValidator. Keep sorted.
+    # assistant lines under ~/.claude/projects. A key outside these sets is
+    # FUTURE drift — a field Claude Code grew that the parser has never seen —
+    # and warns via TypeValidator. A harness that shares this parser adds its
+    # own extra keys through ``ProviderConfig.derive``, not here, so this ledger
+    # stays a statement about Claude Code alone. Keep sorted.
     known_line_fields={
         "user": {
             # queued_command attachment lines are rebuilt as user-role messages,
@@ -262,7 +318,6 @@ CLAUDE_CODE_CONFIG = ProviderConfig(
             "parentUuid",
             "requestId",
             "sessionId",
-            "session_id",  # cloth's snake_case sibling of sessionId
             "slug",
             "supersedesUuids",
             "timestamp",
@@ -273,12 +328,11 @@ CLAUDE_CODE_CONFIG = ProviderConfig(
         },
     },
     # Known keys of line["message"], role-independent (union of user +
-    # assistant message objects; cost is cloth's). Keep sorted.
+    # assistant message objects). Keep sorted.
     known_message_fields={
         "container",
         "content",
         "context_management",
-        "cost",
         "diagnostics",
         "id",
         "model",
@@ -292,7 +346,12 @@ CLAUDE_CODE_CONFIG = ProviderConfig(
 )
 
 
-# Registry of all provider configs
+# Registry of all provider configs. Providers whose parser lives in this island
+# are seeded here; every other provider — a delegating source, a plugin — pushes
+# its config in via :func:`register_provider_config`. Registration is a push and
+# never a pull because this island imports nothing from the rest of the package:
+# reaching outward for a provider registry would couple the parsers to the store
+# and break the isolation `test_vendor_thread_import` locks.
 _PROVIDER_CONFIGS: Dict[str, ProviderConfig] = {
     "chatgpt": CHATGPT_CONFIG,
     "claude": CLAUDE_CONFIG,
@@ -300,11 +359,25 @@ _PROVIDER_CONFIGS: Dict[str, ProviderConfig] = {
 }
 
 
+def register_provider_config(config: ProviderConfig) -> None:
+    """Register ``config`` under its own ``provider_name``, replacing any prior one.
+
+    Idempotent: re-registering the same provider overwrites, so a repeated
+    registry load is a no-op rather than an error.
+    """
+    _PROVIDER_CONFIGS[config.provider_name] = config
+
+
+def registered_providers() -> list[str]:
+    """Every provider name with a registered config, sorted."""
+    return sorted(_PROVIDER_CONFIGS)
+
+
 def get_provider_config(provider: str) -> ProviderConfig:
     """Get the configuration for a provider.
 
     Args:
-        provider: Provider name (chatgpt, claude, claude-code, cursor)
+        provider: Provider name (chatgpt, claude, claude-code, …)
 
     Returns:
         ProviderConfig for the provider

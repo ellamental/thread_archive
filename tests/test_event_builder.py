@@ -205,8 +205,8 @@ def test_assistant_turn_emits_the_full_envelope() -> None:
 
 
 def test_assistant_completed_preserves_cost_and_extra_usage_fields() -> None:
-    # A pay-per-token source (cloth) records per-message cost + cache-token counts; none
-    # of it may be dropped from the api_request_completed summary.
+    # A pay-per-token source records per-message cost + cache-token counts; none of it
+    # may be dropped from the api_request_completed summary.
     provider_data = {
         "model": "deepseek/deepseek-v4-pro", "stop_reason": "end_turn",
         "usage": {"input_tokens": 100, "output_tokens": 20, "thinking_tokens": 0,

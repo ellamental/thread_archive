@@ -34,7 +34,6 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from sqlalchemy import delete
-from sqlalchemy import text as sa_text
 
 from thread_archive._api import open_archive
 from thread_archive._retrieval.fts import index_events

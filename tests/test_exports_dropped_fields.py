@@ -28,7 +28,6 @@ from thread_archive._thread_import.parsers.chatgpt_content import (
 )
 from thread_archive._thread_import.parsers.claude import ClaudeParser
 
-
 # ── claude.ai fixture ────────────────────────────────────────────────────────
 
 _CLAUDE_CONV = {

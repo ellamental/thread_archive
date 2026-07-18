@@ -39,8 +39,8 @@ from thread_archive._watcher.exthost import ExthostWatcher, parse_exthost_log
 from thread_archive._watcher.sources import (
     ClaudeCodeWatcher,
     CoworkWatcher,
+    DbScanWatcher,
     FileSessionWatcher,
-    _DbScanWatcher,
     codex_watcher,
     cursor_watcher,
     discover_claude_dirs,
@@ -100,8 +100,9 @@ def test_discover_claude_dirs_globs_and_falls_back(tmp_path, monkeypatch) -> Non
 
 
 def test_file_session_watcher_base_seams_raise() -> None:
-    """The base class leaves ``_iter_files`` / ``_import`` unimplemented; a subclass
-    that forgets them hits the NotImplementedError seams."""
+    """The base class leaves ``iter_files`` / ``import_session`` unimplemented; a
+    subclass that forgets them hits the NotImplementedError seams rather than
+    silently watching nothing."""
 
     class _Bare(FileSessionWatcher):
         source_name = "bare"
@@ -111,9 +112,9 @@ def test_file_session_watcher_base_seams_raise() -> None:
 
     w = _Bare()
     with pytest.raises(NotImplementedError):
-        w._iter_files()
+        w.iter_files()
     with pytest.raises(NotImplementedError):
-        w._import(Path("x.jsonl"), "sid")
+        w.import_session(Path("x.jsonl"), "sid")
 
 
 def test_probe_skips_unstattable_and_empty(tmp_path) -> None:
@@ -146,10 +147,10 @@ def test_claude_code_iter_files_skips_and_finds_subagents(tmp_path) -> None:
 
     missing = tmp_path / "missing-projects"  # a projects dir that doesn't exist
     w = ClaudeCodeWatcher(projects_dirs=[missing, projects])
-    names = {p.name for p, _ in w._iter_files()}
+    names = {p.name for p, _ in w.iter_files()}
     assert names == {"sess.jsonl", "a.jsonl"}
     # source_id carries the project-dir name prefix.
-    ids = {sid for _, sid in w._iter_files()}
+    ids = {sid for _, sid in w.iter_files()}
     assert "proj:sess" in ids and "proj:a" in ids
 
 
@@ -163,20 +164,20 @@ def test_claude_code_iter_files_tolerates_unstattable_in_sort(tmp_path) -> None:
     os.symlink(proj / "nonexistent-target", proj / "broken.jsonl")
 
     w = ClaudeCodeWatcher(projects_dirs=[projects])
-    names = sorted(p.name for p, _ in w._iter_files())
+    names = sorted(p.name for p, _ in w.iter_files())
     assert names == ["broken.jsonl", "real.jsonl"]  # both yielded, sort survived
 
 
 def test_rglob_watcher_skips_dirs_and_missing_root(tmp_path) -> None:
     missing = codex_watcher(sessions_dir=tmp_path / "no-codex")
-    assert list(missing._iter_files()) == []  # root absent → empty
+    assert list(missing.iter_files()) == []  # root absent → empty
 
     root = tmp_path / "codex"
     root.mkdir()
     (root / "dir.jsonl").mkdir()  # matches *.jsonl glob but is a directory
     (root / "real.jsonl").write_text("{}\n", encoding="utf-8")
     w = codex_watcher(sessions_dir=root)
-    files = list(w._iter_files())
+    files = list(w.iter_files())
     assert [p.name for p, _ in files] == ["real.jsonl"]  # the dir was skipped
 
 
@@ -253,7 +254,7 @@ def test_db_scan_poll_routes_scanner_raise_to_error(tmp_path) -> None:
     def boom(_p):
         raise RuntimeError("scan blew up")
 
-    w = _DbScanWatcher(db, "boomsrc", boom)
+    w = DbScanWatcher(db, "boomsrc", boom)
     res = w.poll()
     assert res.errors and "scan failed" in res.errors[0]
     assert "scan blew up" in res.errors[0]

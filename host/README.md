@@ -31,7 +31,6 @@ The nine providers with importers, at their default home-dir locations:
 | codex          | `~/.codex/sessions/**/*.jsonl`                               |
 | grok           | `~/.grok/sessions/**/chat_history.jsonl`                     |
 | antigravity    | `~/.gemini/antigravity-cli/brain/**/transcript.jsonl`       |
-| cloth          | `~/.cloth/threads/*.jsonl` (Claude-Code-shaped harness)      |
 | cursor         | Cursor `state.vscdb` (SQLite, mtime-gated)                   |
 | opencode       | `~/.local/share/opencode/opencode.db` (SQLite, WAL-gated)    |
 | cowork         | `~/Library/Application Support/Claude/local-agent-mode-sessions/` |
@@ -41,6 +40,9 @@ The nine providers with importers, at their default home-dir locations:
 A `(mtime_ns, size)` fingerprint skips unchanged files, so an idle system is a
 no-op. Thread identity is `(source, source_id)` and re-reads are idempotent on
 each event's `dedup_key`, so re-importing an already-seen file adds nothing.
+
+An installed provider plugin adds its own row to this set and rides the same
+loop — `archive providers` lists what is actually registered on this machine.
 
 **Steering recovery (`cc-exthost`).** Mid-turn steering messages typed into the
 Claude Code VS Code extension *while the model is streaming* reach the model but are

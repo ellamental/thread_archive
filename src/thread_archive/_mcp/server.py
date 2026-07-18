@@ -40,7 +40,7 @@ from .. import _api as api
 from .._retrieval import format_results, warm_models
 from .._retrieval import usage as _usage
 from .._retrieval._types import EventHit
-from .._retrieval.format import query_terms, term_hit_count
+from .._retrieval.format import query_terms, term_hit_count, top_hit
 
 logger = logging.getLogger(__name__)
 
@@ -121,7 +121,9 @@ def _default_scope_is_weak(hits: "list[EventHit]", query: str) -> bool:
         return False
     if not hits:
         return True
-    return term_hit_count(hits[0].get("full_content") or hits[0].get("snippet") or "", terms) == 0
+    # top_hit, not hits[0] — the nested shape orders rows by thread, not by rank.
+    top = top_hit(hits)
+    return term_hit_count(top.get("full_content") or top.get("snippet") or "", terms) == 0
 
 
 @mcp.tool()
@@ -197,12 +199,22 @@ def thread_search(
     ``agents='only'`` for just them ("what did my subagents do"). An explicit
     ``thread_id``/``topic_id`` scope always reaches them.
 
-    Ranked results are **one row per thread** — the thread's best hit, with its
-    other hits folded into a ``+N more in thread`` note (drill in with a
-    ``thread_id``-scoped search) and duplicate content from other threads
-    (forked sessions, fleet-spawned copies of one prompt) folded into a
-    ``= same content in thread(s) …`` note. Pass ``group='none'`` for every hit
-    as its own row.
+    ``group`` chooses how results relate to threads. Ranked results default to
+    **one row per thread** — the thread's best hit, with its other hits folded
+    into a ``+N more in thread`` note (drill in with a ``thread_id``-scoped
+    search) and duplicate content from other threads (forked sessions,
+    fleet-spawned copies of one prompt) folded into a ``= same content in
+    thread(s) …`` note. Pass ``group='none'`` for every hit as its own row.
+
+    Two modes turn any search into a thread-granular **list** — the shape an
+    empty-query browse returns, over your query's matches:
+    ``group='browse'`` lists the matched *threads* only (one row each: title,
+    provider, size, when — no messages), and ``group='nested'`` keeps the
+    messages, clustered under their thread in event order. Both count ``limit``
+    in threads and list every matched thread; nested shows up to 5 hits per
+    thread, the rest folded into its header. Reach for browse to see *which
+    conversations* touched something, nested to read *what they said* about it
+    with the thread structure intact.
 
     ``startswith`` does a structural prefix scan (content LIKE 'prefix%'; query text
     unused). ``sort='oldest'`` returns matches chronologically (find when something
@@ -439,7 +451,7 @@ def main() -> None:
 
     # Warm the embedding + cross-encoder models on a background daemon thread. The cold load
     # is tens of seconds; when it lands inside the first conceptual search it can exceed the
-    # client's MCP request timeout (cloth defaults to 60s), which surfaces to the model as a
+    # client's MCP request timeout (commonly 60s), which surfaces to the model as a
     # failed tool call. Warming at startup moves that cost off the request path — the models
     # are (usually) resident by the time the first query arrives, and _load()'s lock makes an
     # early query that races the warm wait on one load rather than kick off a second. Daemon

@@ -25,7 +25,7 @@ from sqlalchemy.orm import Session
 from .models import ImportState, Thread
 
 # The separator-suffix forms the watcher stores: claude-code ``{project}:{uuid}``
-# (":"), codex ``rollout-{ts}-{uuid}`` ("-"); cloth stores the bare uuid.
+# (":"), codex ``rollout-{ts}-{uuid}`` ("-"); others store the bare uuid.
 _SESSION_ID_SEPARATORS = (":", "-")
 
 

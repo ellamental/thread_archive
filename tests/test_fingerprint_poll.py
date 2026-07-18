@@ -1,6 +1,6 @@
 """The shared poll scaffold behind the file- and db-scan watchers.
 
-``fingerprint_poll`` is what every ``FileSessionWatcher`` / ``_DbScanWatcher``
+``fingerprint_poll`` is what every ``FileSessionWatcher`` / ``DbScanWatcher``
 subclass polls through, so its invariants — skip-unchanged, advance-the-
 fingerprint-only-after-success, prune-vanished — are pinned here once rather
 than re-proved per watcher.

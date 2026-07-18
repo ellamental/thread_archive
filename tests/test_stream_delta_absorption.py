@@ -1,8 +1,8 @@
 """Live-capture streams render and index like file imports.
 
 File importers emit per-block ``text_complete``/``thinking_complete`` twins
-beside each ``api_request_completed``; live-capture sources (cloth, loom,
-needle, officiant, …) emit token ``text_delta``/``thinking_delta`` events — or
+beside each ``api_request_completed``; live-capture sources (loom, needle,
+officiant, …) emit token ``text_delta``/``thinking_delta`` events — or
 nothing granular at all — and the assembled turn exists only in the summary's
 ``content_blocks``. One rule serves both surfaces: an api_call's content comes
 from its twins when they exist, else from the summary — matched by api_call_id
@@ -27,7 +27,7 @@ def _dt(minute: int) -> datetime:
     return datetime(2026, 1, 1, 10, minute, 0, tzinfo=timezone.utc)
 
 
-def _seed_thread(tid: int, events: list[tuple], source: str = "cloth") -> int:
+def _seed_thread(tid: int, events: list[tuple], source: str = "demo-harness") -> int:
     """events: (event_type, payload, api_call_id) triples in id order."""
     init_db()
     with use_session() as s:
@@ -192,7 +192,7 @@ def test_rebuild_stitches_deltas_when_summary_has_no_blocks(archive_home) -> Non
         ("text_delta", {"text": "ZETA", "block_index": 0}, "call-5"),
         ("api_request_completed", {"model": "m"}, "call-5"),  # no content_blocks
     ]
-    tid = _seed_thread(49, events, source="cloth-recovered")
+    tid = _seed_thread(49, events, source="demo-harness-recovered")
     with get_session() as s:
         rebuild_fts(s)
         s.commit()

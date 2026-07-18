@@ -554,9 +554,9 @@ def _absorb_stream_deltas(events: Sequence[Event]) -> list:
     """Give the renderers one assistant vocabulary across capture styles.
 
     File importers emit per-block ``text_complete``/``thinking_complete`` twins
-    beside each ``api_request_completed``; live-capture sources (cloth, loom,
-    needle, officiant, …) emit token ``text_delta``/``thinking_delta`` events —
-    or nothing granular at all — and the assembled turn exists only in the
+    beside each ``api_request_completed``; a source captured live as it streams
+    emits token ``text_delta``/``thinking_delta`` events — or nothing granular at
+    all — and the assembled turn exists only in the
     summary's ``content_blocks``. For every api_call with no complete-twin,
     synthesize the twins — slotted just before the ``api_request_completed``,
     where an importer's twins sit — and drop the raw deltas either way. Without
@@ -1431,7 +1431,7 @@ def _structured_event(
     # here, in the operator-facing viewer.
     if et == "hook_context":
         # A hook-context sidecar line: content a hook injected that never reaches
-        # the session JSONL (e.g. cloth's per-prompt kg_context).
+        # the session JSONL (a harness's per-prompt injected context).
         p = _payload(ev)
         text = p.get("context", "")
         if not text.strip():

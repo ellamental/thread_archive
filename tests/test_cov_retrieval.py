@@ -455,13 +455,20 @@ def test_fts_tool_use_paths() -> None:
     out = _fts_tool_use({"tool_name": "mcp__x__run",
                          "input": {"command": "first line\nsecond line"}})
     assert out and out[0][2] == "first line"  # heredoc first line as the tool name
-    # a known content key wins and gets frontmatter-stripped
+    # body keys get frontmatter-stripped; other keys survive as k=v metadata
     out2 = _fts_tool_use({"tool_name": "Write",
                           "input": {"content": "---\nfm: 1\n---\nreal content", "path": "/x"}})
     assert "real content" in out2[0][0]
-    # no known key → k=v join
+    assert "path=/x" in out2[0][0]
+    # metadata precedes body so the doc cap can't truncate small keys away
+    assert out2[0][0].index("path=/x") < out2[0][0].index("real content")
+    # no body key → k=v join
     out3 = _fts_tool_use({"tool_name": "Edit", "input": {"a": "1", "b": "2"}})
     assert "a=1" in out3[0][0] and "b=2" in out3[0][0]
+    # multiple body keys are all indexed (command no longer loses to description)
+    out5 = _fts_tool_use({"tool_name": "Bash",
+                          "input": {"command": "rg needle src/", "description": "Search for needle"}})
+    assert "rg needle src/" in out5[0][0] and "Search for needle" in out5[0][0]
     # non-dict input → str()
     out4 = _fts_tool_use({"tool_name": "Raw", "input": "plain string arg"})
     assert "plain string arg" in out4[0][0]

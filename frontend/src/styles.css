@@ -277,7 +277,7 @@ h1.topic-title { font-size: 19px; margin: 0 0 6px; }
   letter-spacing: .06em; flex: none; width: 58px;
 }
 
-/* ---- per-message info button + under-message drawer (modeled on cloth turn-meta) ---- */
+/* ---- per-message info button + under-message drawer ---- */
 .msg-foot { display: flex; justify-content: flex-end; align-items: center; gap: 6px; margin-top: 6px; }
 /* copy-permalink button: invisible until the message is hovered, like .msg-info */
 .msg-link {

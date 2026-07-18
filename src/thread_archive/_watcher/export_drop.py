@@ -43,12 +43,6 @@ import shutil
 from pathlib import Path
 from typing import Iterator, Optional
 
-from .._importers.exports import (
-    classify_export,
-    import_chatgpt_export,
-    import_claude_ai_export,
-    import_xai_export,
-)
 from .base import SourceWatcher, WatchResult
 
 logger = logging.getLogger(__name__)
@@ -132,35 +126,52 @@ class ExportDropWatcher(SourceWatcher):
             elif entry.is_file() and entry.suffix.lower() == ".zip":
                 yield entry
 
+    def _claim(self, path: Path):
+        """The first registered provider whose ``detect`` claims this bundle.
+
+        Each export-capable provider is asked in registry order and the first to
+        answer wins, so a plugin can accept a shape the built-ins don't. A
+        ``detect`` that raises is treated as "not mine" — a provider that can't
+        decide must not be able to block one that can.
+        """
+        from .._providers import export_specs
+
+        for provider, spec in export_specs():
+            try:
+                if spec.detect(path):
+                    return provider, spec
+            except Exception:  # noqa: BLE001 — a broken detect must not block the rest
+                logger.exception(
+                    "export-drop: provider %r failed to classify %s — treated as not its export",
+                    provider.name, path.name,
+                )
+        return None, None
+
     def _process(self, path: Path) -> WatchResult:
         name = path.name
-        kind = classify_export(path)
-        if kind is None:
+        provider, spec = self._claim(path)
+        if spec is None or provider is None:
+            from .._providers import export_specs
+
+            known = ", ".join(s.label for _, s in export_specs()) or "none registered"
             logger.warning(
-                "export-drop: %s is not a recognized claude.ai / ChatGPT / xAI export — quarantining",
-                name,
+                "export-drop: %s is not a recognized account export (%s) — quarantining",
+                name, known,
             )
             self._quarantine(path)
             return WatchResult(
                 sources_checked=1, errors=[f"export-drop: unrecognized export {name}"]
             )
 
-        logger.info("export-drop: importing %s export %s", kind, name)
+        kind = spec.kind
+        logger.info("export-drop: importing %s export %s", spec.label, name)
         try:
-            # Global-name dispatch (not a dict captured at import time), so tests
-            # can monkeypatch the importer functions on this module.
-            #
             # force=True: an account export is a full dump, so a redrop must *merge*
             # conversations that grew since the last export. Without force the importer
             # skips every already-present conversation id outright — new messages in an
             # old conversation would never land. The event-level dedup makes force safe:
             # an unchanged conversation imports nothing.
-            if kind == "xai":
-                res = import_xai_export(path, force=True)
-            elif kind == "chatgpt":
-                res = import_chatgpt_export(path, force=True)
-            else:
-                res = import_claude_ai_export(path, force=True)
+            res = spec.importer(path, force=True)
         except Exception as e:  # noqa: BLE001 — one bad export must not stop the loop
             logger.error(
                 "export-drop: import failed for %s: %s — quarantining", name, e

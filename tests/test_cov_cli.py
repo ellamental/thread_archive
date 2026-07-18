@@ -1028,7 +1028,7 @@ def test_coverage_full_surface_failed(monkeypatch, capsys) -> None:
                      "history": 20},
         },
         "disabled": {"antigravity": {"history": 0}},
-        "unwatched": {"cloth": {"newest_event_at": None}},
+        "unwatched": {"demo-harness": {"newest_event_at": None}},
         "skips": {"total": 7, "recent": 2, "recent_lines": 3, "days": 7.0},
         "drift": {"total": 0, "recent": 0, "recent_findings": 0, "days": 7.0},
     }
@@ -1040,7 +1040,7 @@ def test_coverage_full_surface_failed(monkeypatch, capsys) -> None:
     assert "codex" in out and "stale" in out
     assert "grok" in out and "lagging" in out
     assert "antigravity" in out and "disabled" in out
-    assert "cloth" in out and "unwatched" in out
+    assert "demo-harness" in out and "unwatched" in out
     assert "skips: 7 ledger records" in out
     assert "warning: opencode newest event is 30h old" in out
     assert "FAILED:" in out

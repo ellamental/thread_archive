@@ -229,6 +229,26 @@ def assemble_events(
     return len(batch), last_uuid
 
 
+def _ensure_provider_configs() -> None:
+    """Load the provider registry, which registers every provider's parser config.
+
+    Validation resolves a provider's config by name out of the parser island, and
+    the island is fed by a push at registry load. Without this, whether a
+    provider's config is registered depends on whether something *else* touched
+    the registry first in this process — and the failure is silent: the provider
+    falls back to an all-permissive default config, so its own known line types
+    and fields start reporting as drift while its real drift stops being caught.
+    Every validation call funnels through here, and the registry is cached, so
+    this is one dict lookup after the first import.
+    """
+    try:
+        from .._providers import registry
+
+        registry()
+    except Exception:  # noqa: BLE001 — validation is observability, never a gate
+        logger.exception("could not load the provider registry for parse validation")
+
+
 def log_parse_validation(
     messages: list,
     *,
@@ -248,6 +268,7 @@ def log_parse_validation(
     parses a *complete* conversation and passes ``False`` to run the full set."""
     if not messages:
         return
+    _ensure_provider_configs()
     context = validate_messages(
         messages, conversation_id, provider, batch_safe=batch_safe
     )
@@ -273,7 +294,15 @@ def import_lines(
     source_id: str = "",
     cross_pass_dedup: bool = False,
 ) -> tuple[int, Optional[str]]:
-    """Claude Code: parse a line bundle via the thread_import parser, then assemble."""
+    """Claude-Code-shaped lines: parse via the thread_import parser, then assemble.
+
+    The envelope's ``provider`` is the *parse* identity — it selects how
+    ``ClaudeCodeParser`` reads the bundle — and stays ``"claude-code"`` for every
+    source that shares the shape. ``source`` is the *provenance* identity, and it
+    is what validation is logged under, so a delegating harness's drift lands in
+    its own ledger against its own ``ProviderConfig`` instead of being blamed on
+    Claude Code.
+    """
     session_data = {
         "provider": "claude-code",
         "sessions": [{"session_id": "incremental", "project": "incremental", "lines": lines}],
@@ -281,7 +310,7 @@ def import_lines(
     messages = parser.parse_export(session_data)
     log_parse_validation(
         messages,
-        provider="claude-code",
+        provider=source,
         conversation_id=source_id or "incremental",
         batch_safe=True,
     )
