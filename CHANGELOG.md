@@ -2,6 +2,41 @@
 
 ## Unreleased
 
+- **Raw source mirror: the harness stores are preserved verbatim.** `archive
+  mirror` (and a new first stage of the nightly) copies every transcript file
+  the enabled watchers consume — plus small JSON sidecars, plus SQLite-backup
+  snapshots of the live DB stores — gzip-compressed under
+  `<home>/source-mirror/<provider>/<original path>.gz`, and never deletes.
+  Until now the harness's own store was the only raw layer, so every
+  after-the-fact source re-read (a parser taught a new field, a backfill
+  repairing an importer bug) raced Claude Code's ~30-day prune; the mirror
+  ends that race. Unchanged files are stat-skipped via a per-provider
+  manifest; a shrunken transcript rotates a numbered generation instead of
+  overwriting the only copy.
+
+- **A new field on a modeled line is now preserved, not just warned about.**
+  The field-level drift check's finding used to be literal data loss: the
+  value rode into `provider_data` and died at the builder seam. The import
+  seam now writes the *residual* — every raw-line key outside the provider's
+  field ledger, values included — onto the anchor event as
+  `annotations["unmodeled"]` (`parsers.residual`; one computation shared with
+  the validator, so warning and preservation cannot disagree). Annotations sit
+  outside dedup identity, so nothing forks. A turn with no anchor (a
+  tool-result-only line) attaches them to its first emitted event.
+
+- **Version tripwire.** The first sighting of a new harness version string on
+  a source line writes one advisory record to the validation-drift ledger
+  (state in `<home>/seen-versions.json`, bundled by backup). Format changes
+  ride version bumps, so this warns before any field drifts — and names the
+  release when one does.
+
+- **Active drift now pushes.** The ledgers were pull-only: drift was a
+  coverage *warning*, coverage warnings never fail the night, and the nightly
+  only notified on failure — so 671 drift records sat unread for a week. The
+  nightly now sends a second, softer notification whenever either capture
+  ledger took records in the last 24h; it goes quiet on its own the day after
+  the ledger does.
+
 - **Workflow subagent transcripts were never captured.** The Claude Code watcher
   globbed `*/subagents/*.jsonl` — exactly one level — while a workflow run nests
   its agents two further down (`subagents/workflows/<wf-id>/agent-*.jsonl`). Every

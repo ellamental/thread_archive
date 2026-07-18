@@ -17,6 +17,23 @@
 - Exposed over MCP (`thread_search`, `thread_read`), so Claude (or any MCP client) can search and read your entire history mid-conversation: *"what did we decide about the auth flow in March?"* just works.
 - Redaction with encrypted recovery bundles: scrub secrets from the archive without destroying them irrevocably.
 
+**Measured, and every layer earns its keep.** On a 17k-thread / 3.7M-event
+archive, 200 title-as-query probes (`scripts/retrieval_eval.py` — each thread's
+title is the query, its own messages must rank; titles are excluded from the
+searched scope so a query never matches itself):
+
+| search stack | MRR | recall@10 | p50 latency |
+|---|---|---|---|
+| core install (FTS5 lexical) | 0.43 | 0.62 | 0.7 s |
+| + librarian summaries | 0.52 | 0.76 | 0.7 s |
+| + local semantic fusion | 0.64 | 0.89 | 0.7 s |
+| + cross-encoder rerank | 0.68 | 0.88 | 4.2 s |
+
+Rows are cumulative. The lexical core already finds the right conversation in
+the top ten for 62% of queries; curation and embeddings are independent,
+stacking lifts (semantic's edge concentrates in code-shaped queries, the
+summaries' in natural-language ones).
+
 **A memory an agent can organize.** The optional **archive-librarian plugin** ([plugins/librarian/](https://github.com/ellamental/thread_archive/tree/main/plugins/librarian)) adds the curation surface: `/librarian` and `/gardener` skills and a write MCP server that let an AI agent curate the archive — creating topics, pinning key quotes, linking related threads into a knowledge graph, and tending that graph's hierarchy. Prefer it hands-off? `archive daemon install --librarian` / `--gardener` schedules headless curation drains (they run from the package — no plugin needed). Every curation act is event-sourced, so you can always see who connected what, and why. The core archive reads and renders the graph either way; without a curator it simply stays empty.
 
 **No server. No cloud. No subscription to lose your history to.** A background watcher keeps it current; everything runs locally.

@@ -17,6 +17,15 @@
   "event_type": "user_message_sent",
   "occurred_at": "2026-01-01T10:00:00+00:00",
   "payload": {
+   "annotations": {
+    "unmodeled": {
+     "line": {
+      "unknown_future_field": {
+       "v": 2
+      }
+     }
+    }
+   },
    "content": "hello golden",
    "provider_data": {
     "provider_message_id": "u1"

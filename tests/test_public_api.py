@@ -50,6 +50,7 @@ CLI_VERBS = {
     "restore",
     "nightly",
     "coverage",
+    "mirror",
     "repair",
     "redact",
     "unredact",

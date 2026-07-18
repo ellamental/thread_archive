@@ -65,6 +65,7 @@ _BUNDLE_HOME_FILES = (
     "config.json",
     "health.json",
     "capture-skips.jsonl",
+    "seen-versions.json",
     "validation-drift.jsonl",
     "verify-failures.jsonl",
 )
