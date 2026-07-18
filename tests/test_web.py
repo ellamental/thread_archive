@@ -119,10 +119,37 @@ def test_search_endpoint(archive_home):
     assert all(isinstance(h["occurred_at"], (str, type(None))) for h in payload["hits"])
 
 
-def test_empty_query_returns_no_hits(archive_home):
+def test_empty_query_browses(archive_home):
+    # Empty query = browse (the MCP thread_search contract): one row per thread
+    # by last activity, not an empty result page.
     _seed(archive_home)
     status, _, payload = _get("/api/search", q="   ")
-    assert status == 200 and payload["hits"] == []
+    assert status == 200 and payload["browse"] is True and payload["quality"] is None
+    assert len(payload["hits"]) == 1
+    row = payload["hits"][0]
+    assert row["thread_title"] and row["thread_source"] and row["n_events"] >= 2
+    # last activity serializes json-safe like every other hit timestamp
+    assert isinstance(row["occurred_at"], (str, type(None)))
+
+
+def test_browse_honors_source_filter(archive_home):
+    _seed(archive_home)
+    _seed_cloth(archive_home)
+    _, _, everything = _get("/api/search", q="")
+    assert len(everything["hits"]) == 2
+    _, _, payload = _get("/api/search", q="", source="cloth")
+    assert [h["thread_source"] for h in payload["hits"]] == ["cloth"]
+
+
+def test_search_quality_signal(archive_home):
+    # Ranked search carries the MCP header's match signal: a top-hit verdict
+    # plus a per-hit K-of-N term count the UI can badge.
+    _seed(archive_home)
+    _, _, payload = _get("/api/search", q="hello webview")
+    quality = payload["quality"]
+    assert quality["verdict"] == "strong" and quality["n_terms"] == 2
+    assert quality["note"] is None
+    assert payload["hits"][0]["term_hits"] == 2
 
 
 def _seed_grok(archive_home):
@@ -163,6 +190,54 @@ def test_search_snippet_is_a_context_window(archive_home):
     hit = next(h for h in payload["hits"] if "unmistakable marker" in h["snippet"])
     assert hit["snippet"] == body  # exactly the ±1 window (which is the whole 3-line body)
     assert "context" not in hit
+
+
+def _seed_forks(archive_home, n, text="the identical opening prompt"):
+    """n separate sessions that all open with the same line — the fork / fleet
+    shape (and what a common opener like "hey grok" looks like in the index).
+    Distinct cwd + day per session: same text in the same project on the same day
+    is a *resume*, and the continuation detector would fold them into one thread."""
+    for i in range(n):
+        f = archive_home / f"fork{i}.jsonl"
+        turns = [
+            dict(USER, uuid=f"fu{i}", cwd=f"/proj{i}",
+                 timestamp=f"2026-01-0{i + 1}T10:00:00Z",
+                 message={"role": "user", "content": text}),
+            dict(ASSISTANT, uuid=f"fa{i}", timestamp=f"2026-01-0{i + 1}T10:00:05Z",
+                 message={"role": "assistant", "model": "claude-opus-4",
+                          "content": [{"type": "text", "text": f"reply {i}"}]}),
+        ]
+        f.write_text("\n".join(json.dumps(ln) for ln in turns) + "\n", encoding="utf-8")
+        ta.import_path(f)
+
+
+def test_search_folds_threads_sharing_one_opening_line(archive_home):
+    # Four sessions opening with the same prompt collapse to one row carrying the
+    # other three, instead of spending the whole result page on the same line.
+    _seed_forks(archive_home, 4)
+    _, _, payload = _get("/api/search", q="identical opening prompt")
+    rows = [h for h in payload["hits"] if "identical opening prompt" in h["snippet"]]
+    assert len(rows) == 1
+    dups = rows[0]["dup_threads"]
+    assert len(dups) == 3
+    # Resolved to titles, not bare ids — the reader needs a name to decide.
+    assert all(d["thread_id"] and "title" in d for d in dups)
+    assert rows[0]["thread_id"] not in [d["thread_id"] for d in dups]
+
+
+def test_search_keeps_every_hit_within_one_thread(archive_home):
+    # The fold is cross-thread only: a thread matching on several of its own turns
+    # still lists each one (the viewer groups them into a card).
+    f = archive_home / "multi.jsonl"
+    turns = [dict(USER, uuid=f"m{i}", timestamp=f"2026-01-01T1{i}:00:00Z",
+                  message={"role": "user", "content": f"beacon reading number {i}"})
+             for i in range(3)]
+    f.write_text("\n".join(json.dumps(ln) for ln in turns) + "\n", encoding="utf-8")
+    ta.import_path(f)
+    _, _, payload = _get("/api/search", q="beacon reading")
+    assert len({h["thread_id"] for h in payload["hits"]}) == 1
+    assert len(payload["hits"]) == 3
+    assert not any("dup_threads" in h for h in payload["hits"])
 
 
 def test_threads_endpoint(archive_home):
@@ -327,6 +402,17 @@ def _seed_topics(archive_home):
     link_threads(a, conv_id, "works_on", evidence="came up here")
     add_topic_evidence(a, event_id, conv_id, "hello webview")
     return a, b, c, conv_id, event_id
+
+
+def test_search_subjects_lens(archive_home):
+    # Ranked results name the curated subjects they cluster under, each with its
+    # topic id so the UI can pivot into the topic page — the MCP header's
+    # subjects line, JSON-shaped.
+    a, _, _, _, _ = _seed_topics(archive_home)
+    _, _, payload = _get("/api/search", q="hello")
+    assert [s["topic_id"] for s in payload["subjects"]] == [a]
+    subj = payload["subjects"][0]
+    assert subj["title"] == "Graph Theory" and subj["chats"] == 1
 
 
 def test_topics_endpoint(archive_home):

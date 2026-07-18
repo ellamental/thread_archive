@@ -1,8 +1,10 @@
 """MCP client detection + wiring for the setup flow.
 
 Finds agent clients on this machine (currently: the ``claude`` CLI) and wires
-the archive's two MCP servers into them, or produces the JSON config block for
-any other client. Commands are wired by **absolute path** to this
+the archive's read server into them, or produces the JSON config block for
+any other client. The curation write server (``archive-librarian-mcp``) is the
+archive-librarian plugin's to wire — installing the plugin brings its own
+``.mcp.json``. Commands are wired by **absolute path** to this
 environment's console scripts — the client's runtime PATH may not include the
 env that installed the package (a venv, a pipx/uv tool dir), and a bare name
 that resolves today can silently stop resolving after a shell change.
@@ -18,7 +20,6 @@ from pathlib import Path
 from typing import Optional
 
 SEARCH_SERVER = "thread-archive"
-LIBRARIAN_SERVER = "thread-archive-librarian"
 
 _SUBPROCESS_TIMEOUT = 30.0
 
@@ -40,7 +41,6 @@ def mcp_config_block() -> str:
         {
             "mcpServers": {
                 SEARCH_SERVER: {"command": console_script("archive-mcp")},
-                LIBRARIAN_SERVER: {"command": console_script("archive-librarian-mcp")},
             }
         },
         indent=2,
@@ -67,16 +67,12 @@ def claude_has_server(cli: str, server: str = SEARCH_SERVER) -> Optional[bool]:
 
 
 def wire_claude(cli: str) -> list[str]:
-    """Add both servers to the claude CLI at user scope (all projects).
+    """Add the read server to the claude CLI at user scope (all projects).
 
-    Returns error strings, empty on full success. Each server is attempted
-    independently — the librarian failing must not lose the search server.
+    Returns error strings, empty on full success.
     """
     errors: list[str] = []
-    for server, script in (
-        (SEARCH_SERVER, "archive-mcp"),
-        (LIBRARIAN_SERVER, "archive-librarian-mcp"),
-    ):
+    for server, script in ((SEARCH_SERVER, "archive-mcp"),):
         argv = [cli, "mcp", "add", "--scope", "user", server, "--", console_script(script)]
         try:
             proc = _run(argv)

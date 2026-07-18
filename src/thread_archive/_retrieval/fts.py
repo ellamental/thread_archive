@@ -1,9 +1,17 @@
 """SQLite FTS5 lexical search.
 
 The embedded FTS arm, SQLite-native throughout. One in-DB FTS5 virtual table
-(``event_search``) over event content, derived from the ``events_fts`` shadow,
-which is in turn derived from the events. ``rebuild_fts`` does both derivations
-and is the FTS half of ``reindex``.
+(``event_search``) in **external-content** mode over the ``events_fts`` shadow,
+which is in turn derived from the events: the FTS table holds only the inverted
+index — column reads, snippets, and LIKE scans resolve through the shadow by
+rowid, so the corpus text is stored once, not twice. Shadow→index sync is
+trigger-based (``events_fts_ai``/``_ad``/``_au``): every writer — incremental
+import, thread-meta sync, redaction — writes the shadow alone and the triggers
+mirror it, so the two surfaces can't drift. ``rebuild_fts`` re-derives the
+shadow from the events and retokenizes the index, and is the FTS half of
+``reindex``; it is also the heal for an ``event_search`` that predates the
+external-content layout (``ensure_fts`` swaps such a table for an empty
+current-shape one, and lexical search stays dark until the reindex refills it).
 
 SQL is composed with literal table names + bound params (never f-strings) — the
 no-f-string-SQL convention.
@@ -31,13 +39,44 @@ from ._types import EventHit
 logger = logging.getLogger(__name__)
 
 # Content is indexed; everything else is UNINDEXED so it can still be filtered in
-# WHERE (thread/type/tool/time) without bloating the index.
+# WHERE (thread/type/tool/time) without bloating the index. External content:
+# the FTS table stores no column values of its own — every column read resolves
+# through the ``events_fts`` shadow by rowid.
 _CREATE_FTS = (
     "CREATE VIRTUAL TABLE event_search USING fts5("
     "content, event_id UNINDEXED, thread_id UNINDEXED, event_type UNINDEXED, "
     "content_type UNINDEXED, tool_name UNINDEXED, occurred_at UNINDEXED, "
+    "content='events_fts', content_rowid='id', "
     "tokenize = 'porter unicode61')"
 )
+
+_FTS_COLS = "content, event_id, thread_id, event_type, content_type, tool_name, occurred_at"
+_NEW_VALS = ", ".join("new." + c.strip() for c in _FTS_COLS.split(","))
+_OLD_VALS = ", ".join("old." + c.strip() for c in _FTS_COLS.split(","))
+
+# Shadow→index sync triggers. External-content FTS5 doesn't watch its content
+# table — every ``events_fts`` write must be mirrored, and removing a row's
+# postings (the 'delete' command form) needs the old column values, which only
+# a trigger still sees.
+_TRIGGERS = {
+    "events_fts_ai": (
+        "CREATE TRIGGER events_fts_ai AFTER INSERT ON events_fts BEGIN "
+        "INSERT INTO event_search(rowid, " + _FTS_COLS + ") "
+        "VALUES (new.id, " + _NEW_VALS + "); END"
+    ),
+    "events_fts_ad": (
+        "CREATE TRIGGER events_fts_ad AFTER DELETE ON events_fts BEGIN "
+        "INSERT INTO event_search(event_search, rowid, " + _FTS_COLS + ") "
+        "VALUES ('delete', old.id, " + _OLD_VALS + "); END"
+    ),
+    "events_fts_au": (
+        "CREATE TRIGGER events_fts_au AFTER UPDATE ON events_fts BEGIN "
+        "INSERT INTO event_search(event_search, rowid, " + _FTS_COLS + ") "
+        "VALUES ('delete', old.id, " + _OLD_VALS + "); "
+        "INSERT INTO event_search(rowid, " + _FTS_COLS + ") "
+        "VALUES (new.id, " + _NEW_VALS + "); END"
+    ),
+}
 
 # Plain FTS5 bm25 (more-negative = better) — via the hidden ``rank`` column, NOT
 # a literal ``bm25(event_search)`` expression. The two order identically (rank IS
@@ -85,16 +124,55 @@ def build_event_hit(
     }
 
 
-def ensure_fts(session: Optional[Session] = None) -> None:
-    """Create the FTS5 virtual table if absent. Idempotent."""
-    with use_session(session) as s:
+def _event_search_shape(s: Session) -> Optional[bool]:
+    """``None`` when ``event_search`` doesn't exist, ``True`` when it is the
+    current external-content shape, ``False`` when it predates it (a contentful
+    table storing its own copy of the corpus)."""
+    sql = s.execute(
+        sa_text("SELECT sql FROM sqlite_master WHERE name = :n"), {"n": "event_search"}
+    ).scalar()
+    if sql is None:
+        return None
+    return "content=" in sql
+
+
+def _create_triggers(s: Session) -> None:
+    for name, ddl in _TRIGGERS.items():
         exists = s.execute(
-            sa_text("SELECT 1 FROM sqlite_master WHERE name = :n"), {"n": "event_search"}
+            sa_text("SELECT 1 FROM sqlite_master WHERE type = 'trigger' AND name = :n"),
+            {"n": name},
         ).scalar()
         if not exists:
+            s.execute(sa_text(ddl))
+
+
+def _drop_triggers(s: Session) -> None:
+    for name in _TRIGGERS:
+        s.execute(sa_text("DROP TRIGGER IF EXISTS " + name))
+
+
+def ensure_fts(session: Optional[Session] = None) -> None:
+    """Create the FTS5 virtual table + its sync triggers if absent. Idempotent.
+
+    An ``event_search`` that predates the external-content layout is swapped for
+    an empty current-shape table: queries keep working (lexically dark) and the
+    next ``reindex`` refills it — heavy work stays on the operator-visible path,
+    per the schema module's "verify reports, reindex heals" rule."""
+    with use_session(session) as s:
+        shape = _event_search_shape(s)
+        if shape is False:
+            logger.warning(
+                "event_search predates the external-content layout; replaced with an "
+                "empty one — lexical search returns nothing until a reindex refills it"
+            )
+            _drop_triggers(s)
+            s.execute(sa_text("DROP TABLE event_search"))
+            shape = None
+        if shape is None:
             s.execute(sa_text(_CREATE_FTS))
-            if session is None:
-                s.commit()
+        _create_triggers(s)
+        if session is None:
+            s.commit()
 
 
 def _quote_all_tokens(text_: str) -> str:
@@ -403,13 +481,6 @@ def search_events(
     return hits
 
 
-_INSERT_SEARCH = sa_text(
-    "INSERT INTO event_search "
-    "(content, event_id, thread_id, event_type, content_type, tool_name, occurred_at) "
-    "VALUES (:content, :event_id, :thread_id, :event_type, :content_type, :tool_name, :occurred_at)"
-)
-
-
 def _write_doc(
     session: Session,
     *,
@@ -421,19 +492,15 @@ def _write_doc(
     tool_name: Optional[str],
     occurred_at: Optional[str],
 ) -> None:
-    """Write one search doc to BOTH surfaces — an ``events_fts`` shadow row and an
-    ``event_search`` FTS5 row. The single incremental-write seam that keeps the
-    two from drifting; ``rebuild_fts`` is the one exception (it bulk-loads the
-    shadow and derives ``event_search`` from it in one INSERT…SELECT)."""
+    """Write one search doc — a single ``events_fts`` shadow row; the sync
+    triggers mirror it into ``event_search``. The single incremental-write seam;
+    ``rebuild_fts`` is the one exception (it bulk-loads the shadow with the
+    triggers dropped and retokenizes the index in one 'rebuild' pass)."""
     session.add(EventFts(
         event_id=event_id, thread_id=thread_id, event_type=event_type,
         content=content, content_type=content_type, tool_name=tool_name,
+        occurred_at=occurred_at,
     ))
-    session.execute(_INSERT_SEARCH, {
-        "content": content, "event_id": event_id, "thread_id": thread_id,
-        "event_type": event_type, "content_type": content_type,
-        "tool_name": tool_name, "occurred_at": occurred_at,
-    })
 
 # Thread-meta docs: the thread's title and short summary, indexed as searchable
 # docs so "find the thread about X" works when X never appears verbatim in a
@@ -540,14 +607,8 @@ def index_thread_meta(session: Optional[Session] = None, thread_ids: Optional[li
         for key in stale:
             tid, ct = key
             rid, old_eid, _ = existing[key]
+            # The shadow delete cascades into event_search via the sync trigger.
             s.execute(sa_text("DELETE FROM events_fts WHERE id = :rid"), {"rid": rid})
-            s.execute(
-                sa_text(
-                    "DELETE FROM event_search WHERE event_type = :met "
-                    "AND thread_id = :tid AND content_type = :ct"
-                ),
-                {"met": THREAD_META_EVENT_TYPE, "tid": tid, "ct": ct},
-            )
             # Drop the doc's vector so the embed cohost's missing-vector anti-join
             # re-embeds the replacement (or forgets a removed doc).
             if have_vectors:
@@ -715,7 +776,12 @@ def index_events(session: Session, events: list) -> int:
 
 def rebuild_fts(session: Optional[Session] = None) -> int:
     """Rebuild the FTS surface from events: derive the ``events_fts`` shadow from
-    the indexable events, then (re)populate the ``event_search`` FTS5 table from it.
+    the indexable events, then retokenize ``event_search`` from it (the FTS5
+    'rebuild' command — an external-content index refills from its content table).
+
+    The sync triggers are dropped for the bulk refill — per-row trigger firings
+    would tokenize the corpus once on the DELETE and again on the refill — and
+    recreated before the thread-meta sync, which writes through them.
 
     The derived index is rebuilt from scratch (clear-and-refill) — the simplest
     correct reindex. Returns the number of indexed documents.
@@ -723,6 +789,7 @@ def rebuild_fts(session: Optional[Session] = None) -> int:
     ensure_fts(session)
     own = session is None
     with use_session(session) as s:
+        _drop_triggers(s)
         # 1. Derive the events_fts shadow from the events, in id-keyset batches so a
         #    multi-million-event corpus never materializes at once. Each batch's
         #    SELECT is fully read before its Core insert, so there's no open
@@ -808,16 +875,19 @@ def rebuild_fts(session: Optional[Session] = None) -> int:
         if orphan_batch:
             conn.execute(insert(fts_table), orphan_batch)
 
-        # 2. (Re)build the FTS5 table from the shadow.
-        s.execute(sa_text("DELETE FROM event_search"))
+        # 1c. Stamp occurred_at onto the refilled shadow in one set-based pass —
+        #     the stored text copied verbatim, so rebuilt rows collate with the
+        #     incremental writer's canonical_time_bound strings (same rendering).
         s.execute(sa_text(
-            "INSERT INTO event_search "
-            "(content, event_id, thread_id, event_type, content_type, tool_name, occurred_at) "
-            "SELECT f.content, f.event_id, f.thread_id, f.event_type, f.content_type, "
-            "f.tool_name, e.occurred_at "
-            "FROM events_fts f JOIN events e ON e.id = f.event_id "
-            "WHERE f.content IS NOT NULL AND f.content != ''"
+            "UPDATE events_fts SET occurred_at = "
+            "(SELECT e.occurred_at FROM events e WHERE e.id = events_fts.event_id)"
         ))
+
+        # 2. Retokenize the FTS5 index from the shadow, then restore the sync
+        #    triggers so the thread-meta sync below (and every later writer)
+        #    mirrors through them.
+        s.execute(sa_text("INSERT INTO event_search(event_search) VALUES('rebuild')"))
+        _create_triggers(s)
 
         # 3. Derive the thread-meta docs (titles + summaries). The shadow refill
         #    above dropped them, so the sync sees a clean slate and writes them all.

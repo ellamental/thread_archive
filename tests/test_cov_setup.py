@@ -395,7 +395,7 @@ def test_claude_has_server_probe_failure_is_unknown(monkeypatch) -> None:
     assert clients.claude_has_server("/bin/claude") is None
 
 
-def test_wire_claude_success_adds_both_servers(monkeypatch) -> None:
+def test_wire_claude_success_adds_read_server(monkeypatch) -> None:
     monkeypatch.setattr(clients, "console_script", lambda n: f"/env/bin/{n}")
     calls = []
 
@@ -405,11 +405,10 @@ def test_wire_claude_success_adds_both_servers(monkeypatch) -> None:
 
     monkeypatch.setattr(clients.subprocess, "run", fake_run)
     assert clients.wire_claude("/bin/claude") == []
-    assert len(calls) == 2
+    # Read server only — the librarian write server is the plugin's to wire.
+    assert len(calls) == 1
     assert calls[0][:6] == ["/bin/claude", "mcp", "add", "--scope", "user", "thread-archive"]
     assert calls[0][-1] == "/env/bin/archive-mcp"
-    assert calls[1][5] == "thread-archive-librarian"
-    assert calls[1][-1] == "/env/bin/archive-librarian-mcp"
 
 
 def test_wire_claude_reports_subprocess_errors(monkeypatch) -> None:
@@ -420,7 +419,7 @@ def test_wire_claude_reports_subprocess_errors(monkeypatch) -> None:
 
     monkeypatch.setattr(clients.subprocess, "run", raise_os)
     errors = clients.wire_claude("/bin/claude")
-    assert len(errors) == 2
+    assert len(errors) == 1
     assert all("exec format error" in e for e in errors)
 
 
@@ -428,15 +427,17 @@ def test_wire_claude_uses_stderr_detail_and_fallback(monkeypatch) -> None:
     monkeypatch.setattr(clients, "console_script", lambda n: f"/env/bin/{n}")
 
     def fake_run(argv, **kw):
-        server = argv[5]
-        if server == clients.SEARCH_SERVER:
-            return subprocess.CompletedProcess(argv, 1, "", "usage: claude mcp\nboom detail")
-        return subprocess.CompletedProcess(argv, 1, "", "")  # no detail → generic message
+        return subprocess.CompletedProcess(argv, 1, "", "usage: claude mcp\nboom detail")
 
     monkeypatch.setattr(clients.subprocess, "run", fake_run)
     errors = clients.wire_claude("/bin/claude")
-    assert errors[0] == "thread-archive: boom detail"
-    assert errors[1] == "thread-archive-librarian: claude mcp add failed"
+    assert errors == ["thread-archive: boom detail"]
+
+    def fake_run_no_detail(argv, **kw):
+        return subprocess.CompletedProcess(argv, 1, "", "")  # no detail → generic message
+
+    monkeypatch.setattr(clients.subprocess, "run", fake_run_no_detail)
+    assert clients.wire_claude("/bin/claude") == ["thread-archive: claude mcp add failed"]
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -485,7 +486,7 @@ def test_discover_exception_marks_source_absent(archive_home, capsys) -> None:
     good = FakeWatcher("claude-code")
     broken = FakeWatcher("cursor", discover_raises=True)
     rc = wizard.run_setup(
-        _args("setup", "--yes", "--skip-watcher", "--skip-backup", "--skip-mcp", "--skip-curation"),
+        _args("setup", "--yes", "--skip-watcher", "--skip-backup", "--skip-mcp"),
         watchers=[good, broken],
     )
     assert rc == 0
@@ -502,7 +503,7 @@ def test_import_skipped_when_owner_lock_unavailable(archive_home, monkeypatch, c
     monkeypatch.setattr(lazy, "try_ingest_owner_lock", not_owned)
     fake = FakeWatcher("claude-code")
     rc = wizard.run_setup(
-        _args("setup", "--yes", "--skip-watcher", "--skip-backup", "--skip-mcp", "--skip-curation"),
+        _args("setup", "--yes", "--skip-watcher", "--skip-backup", "--skip-mcp"),
         watchers=[fake],
     )
     assert rc == 0
@@ -515,7 +516,7 @@ def test_import_poll_failure_is_reported(archive_home, capsys) -> None:
     # (zero events), and the error summary is printed.
     boom = FakeWatcher("claude-code", poll_raises=True)
     rc = wizard.run_setup(
-        _args("setup", "--yes", "--skip-watcher", "--skip-backup", "--skip-mcp", "--skip-curation"),
+        _args("setup", "--yes", "--skip-watcher", "--skip-backup", "--skip-mcp"),
         watchers=[boom],
     )
     assert rc == 0
@@ -532,7 +533,6 @@ def test_setup_reports_web_viewer_and_missing_embeddings(archive_home, monkeypat
         offer_watcher=lambda args, interactive: "launchd",
         offer_backup=lambda args, interactive: {"status": "skipped"},
         offer_mcp=lambda args, interactive: "skipped",
-        offer_curation=lambda args, interactive: "skipped",
     )
     assert rc == 0
     out = capsys.readouterr().out
@@ -647,7 +647,7 @@ def test_offer_mcp_already_wired(archive_home, monkeypatch, capsys) -> None:
     monkeypatch.setattr(clients, "claude_cli", lambda: "/bin/claude")
     monkeypatch.setattr(clients, "claude_has_server", lambda cli: True)
     assert wizard._offer_mcp(_args("setup"), interactive=False) == "already-wired"
-    assert "already has the archive's MCP servers" in capsys.readouterr().out
+    assert "already has the archive's MCP server" in capsys.readouterr().out
 
 
 def test_offer_mcp_print_only_answer(archive_home, monkeypatch, capsys) -> None:

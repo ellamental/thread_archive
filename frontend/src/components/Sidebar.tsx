@@ -45,27 +45,30 @@ export function Sidebar() {
   }, [filter])
 
   function searchUrl(q: string, f: { source: string; since: string; until: string }): string {
-    const p = new URLSearchParams({ q })
+    const p = new URLSearchParams()
+    if (q) p.set('q', q)
     if (f.source) p.set('source', f.source)
     if (f.since) p.set('since', f.since)
     if (f.until) p.set('until', f.until)
-    return '/search?' + p.toString()
+    const qs = p.toString()
+    return '/search' + (qs ? '?' + qs : '')
   }
 
+  // Enter always lands on /search: with a query it searches, empty it browses
+  // (recent threads under the armed filters).
   function onSearchKey(e: KeyboardEvent<HTMLInputElement>) {
     if (e.key !== 'Enter') return
-    const q = term.trim()
-    navigate(q ? searchUrl(q, { source, since, until }) : '/')
+    navigate(searchUrl(term.trim(), { source, since, until }))
   }
 
-  // A filter change applies immediately when a search is already on screen;
-  // otherwise it just sits armed until Enter runs one.
+  // A filter change applies immediately when a search (or browse) is already on
+  // screen; otherwise it just sits armed until Enter runs one.
   function applyFilter(next: { source: string; since: string; until: string }) {
     setSource(next.source)
     setSince(next.since)
     setUntil(next.until)
     const q = (params.get('q') ?? term).trim()
-    if (pathname === '/search' && q) navigate(searchUrl(q, next), { replace: true })
+    if (pathname === '/search') navigate(searchUrl(q, next), { replace: true })
   }
 
   // Keep a URL-carried source selectable even if /api/sources failed or lags.

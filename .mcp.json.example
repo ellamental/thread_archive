@@ -1,12 +1,8 @@
 {
-  "_comment": "Template. Copy to .mcp.json and replace ABSOLUTE_REPO_PATH with this clone's absolute path (the install step does this for you). The two servers split read from write: thread-archive is read-only (search/read); thread-archive-librarian carries the curation writes + the librarian skill's reads.",
+  "_comment": "Template. Copy to .mcp.json and replace ABSOLUTE_REPO_PATH with this clone's absolute path (the install step does this for you). This is the read-only retrieval server (thread_search / thread_read). The curation write surface is the archive-librarian plugin (plugins/librarian/) — installing it brings its own server wiring.",
   "mcpServers": {
     "thread-archive": {
       "command": "ABSOLUTE_REPO_PATH/.venv/bin/archive-mcp",
-      "env": { "THREAD_ARCHIVE_HOME": "~/.thread/archive" }
-    },
-    "thread-archive-librarian": {
-      "command": "ABSOLUTE_REPO_PATH/.venv/bin/archive-librarian-mcp",
       "env": { "THREAD_ARCHIVE_HOME": "~/.thread/archive" }
     }
   }

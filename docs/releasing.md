@@ -1,10 +1,10 @@
 # Releasing thread-archive
 
-Distribution is a git clone: consumers install straight from the repo
-(`pip install -e .` in a checkout, or `pip install git+<repo-url>@vX.Y.Z`).
-There is no package registry. A release is therefore a *pointer*, not an
-upload: compress the changelog, bump the version, one release commit, an
-annotated tag pushed to GitHub. The tag is what a consumer can pin and what
+Distribution is a git clone: the clone is the install (`pip install -e .`
+into the clone's venv — see the README's Install section). There is no
+package registry. A release is therefore a *pointer*, not an upload:
+compress the changelog, bump the version, one release commit, an annotated
+tag pushed to GitHub. The tag is what a consumer can pin and what
 `archive status` / bug reports can be correlated against.
 
 The version's single source of truth is `__version__` in

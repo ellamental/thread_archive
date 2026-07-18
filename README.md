@@ -2,11 +2,10 @@
 
 [![CI](https://github.com/ellamental/thread_archive/actions/workflows/ci.yml/badge.svg)](https://github.com/ellamental/thread_archive/actions/workflows/ci.yml)
 [![Python](https://img.shields.io/badge/python-3.14-blue)](https://github.com/ellamental/thread_archive)
+[![Platform](https://img.shields.io/badge/platform-macOS-black)](https://github.com/ellamental/thread_archive)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 
-## Your AI conversations are your most valuable dataset. Stop losing them.
-
-**Thread Archive is a local-first memory system for everything you and your AI assistants have ever said.** It ingests conversations from every tool you use — Claude Code, Claude.ai, ChatGPT, Cursor, Codex, OpenCode, Grok — into one append-only archive you own, on your machine, forever.
+**Thread Archive is a local-first memory system for the AI agents that work on your machine.** It ingests every session your agent harnesses record — Claude Code, Codex, Cursor, OpenCode, Grok, and friends — into one append-only archive you own, on your Mac. Web chats (claude.ai, ChatGPT, xAI) import too, from account exports you download by hand; the live, self-feeding path is the agent tooling.
 
 **Built like a database, not a folder of exports.**
 - Plain JSONL files are the source of truth — human-readable, greppable, yours. The search index is disposable and rebuilds from them at any time.
@@ -18,53 +17,94 @@
 - Exposed over MCP (`thread_search`, `thread_read`), so Claude (or any MCP client) can search and read your entire history mid-conversation: *"what did we decide about the auth flow in March?"* just works.
 - Redaction with encrypted recovery bundles: scrub secrets from the archive without destroying them irrevocably.
 
-**A memory that organizes itself.** A second MCP server — the librarian — lets an AI agent curate the archive: creating topics, pinning key quotes, and linking related threads into a knowledge graph. The setup wizard schedules the curators too — an hourly librarian and a daily gardener run headlessly against those servers, so the organizing happens on its own, not just when you ask. Every curation act is itself event-sourced, so you can always see who connected what, and why.
+**A memory an agent can organize.** The optional **archive-librarian plugin** ([plugins/librarian/](https://github.com/ellamental/thread_archive/tree/main/plugins/librarian)) adds the curation surface: `/librarian` and `/gardener` skills and a write MCP server that let an AI agent curate the archive — creating topics, pinning key quotes, linking related threads into a knowledge graph, and tending that graph's hierarchy. Prefer it hands-off? `archive daemon install --librarian` / `--gardener` schedules headless curation drains (they run from the package — no plugin needed). Every curation act is event-sourced, so you can always see who connected what, and why. The core archive reads and renders the graph either way; without a curator it simply stays empty.
 
 **No server. No cloud. No subscription to lose your history to.** A background watcher keeps it current; everything runs locally.
 
+**Dev tooling for one well-provisioned Mac.** macOS is the supported platform — the daemons are LaunchAgents, the file locks are Unix — and the archive is single-user, single-machine. It assumes workstation-class headroom, too: optional semantic search keeps a multi-GB torch model resident, a normal cost on the machine this is for.
+
 ## How it works
 
-Serverless-native and single-user: it watches local AI-tool stores and imports
-provider transcripts into one event model. There is one storage/runtime path:
-**JSONL + SQLite**. No Postgres, no Neo4j, no external search engines, no ops
-service — deleting `index.db` and running `archive reindex` loses nothing.
+Serverless-native, single-user, single-machine: it watches this Mac's
+agent-harness stores and imports provider transcripts into one event model.
 
 It is a standalone, dependency-free package with no ties to any host
-application, usable as a Python library as well as over MCP.
+application. The supported interfaces are the MCP tools and the documented
+on-disk format (see Stability) — there is no public Python API.
 
 ## Install
 
-Installs the `thread_archive` setup command, the `archive` operator CLI,
-both MCP servers (`archive-mcp`, `archive-librarian-mcp`), and the pre-built
-web viewer — no node. pip needs Python ≥ 3.14.
+**The clone is the install.** thread-archive is not distributed as a package —
+there is no registry; a release is an annotated tag on the repo you can pin
+(see [docs/releasing.md](https://github.com/ellamental/thread_archive/blob/main/docs/releasing.md)).
+The product is the repo itself: the Python package, both MCP servers, the
+`.mcp.json` template that wires in the read server, and the optional
+archive-librarian plugin under `plugins/` — and the venv lives in the clone
+once it's built. Clone it, open it in Claude Code, and let the agent install
+its own memory:
 
 ```bash
-pip install git+https://github.com/ellamental/thread_archive.git   # lexical core (+ Leiden community detection)
-# optional: local semantic search (heavy: torch)
-pip install 'thread-archive[embeddings] @ git+https://github.com/ellamental/thread_archive.git'
-
-thread_archive                             # then: run setup
+git clone https://github.com/ellamental/thread_archive.git thread-archive && cd thread-archive
+claude     # then: "install this, following claude-install.md"
 ```
 
-`thread_archive` is the front door. On first run it discovers this machine's
-conversation stores and shows what it found — counts, sizes, date ranges —
-*before* touching anything, then asks: import (all, a selection, or skip),
-install the always-on watcher (macOS LaunchAgent; includes the web viewer at
-:8787), **schedule a nightly backup** (a second question — *where should
-backups go?* — that installs the daily backup → verify → restore-drill pipeline
-to a disk you name), wire the MCP servers into detected clients (the
-`claude` CLI, or it prints the JSON block for any other client), and **schedule
-self-curation** — an hourly librarian run (topic citations + a stored summary
-per new conversation) and a daily gardener run (merge duplicate topics, grow
-the hierarchy), each a headless `claude` spawn that gates on work left and
-skips cheaply when the queues are empty (`archive curate librarian|gardener`
-runs one by hand). Every choice is
-skippable and
-persists in `<home>/config.json`; a disabled source stays disabled across
-every ingest path. Re-running `thread_archive` shows status; `thread_archive
-setup` revisits the choices. Non-interactive (agents, scripts):
-`thread_archive --yes` accepts every default — without `--yes`, a non-TTY run
-only prints guidance and never ingests.
+[claude-install.md](https://github.com/ellamental/thread_archive/blob/main/claude-install.md)
+walks the agent through the whole thing — venv, tests green, MCP wiring,
+first import, and (if you want curation) the archive-librarian plugin plus an
+initial librarian pass over the backlog — stopping to ask you exactly twice:
+whether to add local semantic search (heavy: pulls torch), and whether/how
+much to curate now. macOS only; Python ≥ 3.14. The end state is a populated,
+searchable archive served over MCP, plus the `archive` operator CLI and the
+pre-built web viewer (no node).
+
+**Manual path (no agent).** The same install by hand:
+
+```bash
+python3 -m venv .venv
+.venv/bin/pip install -e .                 # lexical core (+ Leiden community detection)
+.venv/bin/pip install -e '.[embeddings]'   # optional: local semantic search (pulls torch — sized for a dev machine)
+.venv/bin/pytest tests/ -q                 # confirm green (add `-m package` for the wheel/sdist release lane)
+
+# wire the read MCP server into this clone's .mcp.json (absolute venv path)
+sed "s|ABSOLUTE_REPO_PATH|$(pwd)|g" .mcp.json.example > .mcp.json
+
+# bring conversations in, then check
+.venv/bin/archive watch --once             # or: archive import <path> --provider <name>
+.venv/bin/archive status
+```
+
+Restart Claude Code in the repo so it loads `.mcp.json` (the search/read MCP server).
+Want curation too? Install the **archive-librarian plugin** — the repo is its own
+plugin marketplace:
+
+```bash
+claude plugin marketplace add "$(pwd)"
+claude plugin install archive-librarian@thread-archive
+```
+
+Then `/librarian` works the queue until it's empty (topic citations + a stored
+summary per thread), or pass a per-run cap (`/librarian 25`) and re-run across
+sessions for a large backlog. See [plugins/librarian/](https://github.com/ellamental/thread_archive/tree/main/plugins/librarian)
+for what the plugin contains.
+
+**Always-on — the setup wizard.** Either path leaves a working archive that
+ingests lazily. `.venv/bin/thread_archive` upgrades it to always-on: on first
+run it discovers this machine's conversation stores and shows what it found —
+counts, sizes, date ranges — *before* touching anything, then asks: import
+(all, a selection, or skip), install the always-on watcher (macOS LaunchAgent;
+includes the web viewer at :8787), **schedule a nightly backup** (a second
+question — *where should backups go?* — that installs the daily backup →
+verify → restore-drill pipeline to a disk you name), wire the MCP servers into
+detected clients (the `claude` CLI, or it prints the JSON block for any other
+client). Every choice is skippable and persists in `<home>/config.json`; a
+disabled source stays disabled across every ingest path. Re-running
+`thread_archive` shows status; `thread_archive setup` revisits the choices.
+Non-interactive (agents, scripts): `thread_archive --yes` accepts every
+default — without `--yes`, a non-TTY run only prints guidance and never
+ingests. (Scheduled self-curation — an hourly librarian and a daily gardener,
+each a headless `claude` spawn that gates on work left and skips cheaply when
+the queues are empty — is `archive daemon install --librarian` / `--gardener`;
+`archive curate librarian|gardener` runs one drain by hand.)
 
 Skipped the watcher? Still covered: `archive-mcp` cohosts **lazy catch-up
 ingest** — a background pass at startup and (throttled) around tool calls
@@ -75,45 +115,12 @@ install`) is the always-fresh upgrade. With the daemon installed, the MCP
 servers' lazy passes degrade to no-op lock probes — exactly one process
 ingests at a time, however many Claude Code sessions are open.
 
-**The clone path — for curation.** Clone the repo, open it in Claude Code, and
-say *"install this — follow claude-install.md"*. The clone carries what a pip
-install doesn't: the `.mcp.json` template and the `/librarian` skill (+ its
-enforcement hook) that drives topic-graph curation and stored summaries. Take
-this route when you want the knowledge layer worked, not just search.
-
-```bash
-git clone https://github.com/ellamental/thread_archive.git thread-archive && cd thread-archive
-claude     # then: "install this, following claude-install.md"
-```
-
-**Manual path (from a clone).**
-
-```bash
-python3 -m venv .venv
-.venv/bin/pip install -e .                 # lexical core (+ Leiden community detection)
-.venv/bin/pip install -e '.[embeddings]'   # optional: local semantic search (heavy: torch)
-.venv/bin/pytest tests/ -q                 # confirm green (add `-m package` for the wheel/sdist release lane)
-
-# wire the two MCP servers into this clone's .mcp.json (absolute venv paths)
-sed "s|ABSOLUTE_REPO_PATH|$(pwd)|g" .mcp.json.example > .mcp.json
-
-# bring conversations in, then check
-.venv/bin/archive watch --once             # or: archive import <path> --provider <name>
-.venv/bin/archive status
-```
-
-Restart Claude Code in the repo so it loads `.mcp.json` (the search + librarian MCP
-servers) and `.claude/` (the `/librarian` skill + its enforcement hook). Then curate:
-`/librarian` works the queue until it's empty (topic citations + a stored summary per
-thread), or pass a per-run cap (`/librarian 25`) and re-run across sessions for a
-large backlog.
-
 ## CLI
 
-Two commands, split human from operator. **`thread_archive`** is the human
-front door — first-run setup (discover → consent → import → watcher → MCP
-wiring), then the status view; `thread_archive setup` re-enters the flow.
-**`archive`** is the operator seam:
+Two commands, split setup from operations. **`thread_archive`** is the setup
+wizard (discover → consent → import → watcher → backup → MCP wiring), then
+the status view; `thread_archive setup` re-enters the flow. **`archive`** is
+the operator seam:
 
 ```bash
 archive import <path>     # import a transcript / provider store
@@ -134,8 +141,10 @@ archive redact <thread>   # crypto-shred events (--events for a subset): content
 archive unredact <key_id> # restore a redaction from its encrypted bundle (key still in the keyring)
 archive status            # archive health / counts / last verify + backup + drill + coverage outcomes
 archive daemon <action>   # macOS: install/uninstall/restart/status a LaunchAgent — the always-on
-                          #   watcher (default), --mcp the shared server, or --backup the nightly
-                          #   pipeline (`daemon install --backup --dest <path> [--at HH:MM]`)
+                          #   watcher (default), --mcp the shared server, --backup the nightly
+                          #   pipeline (`daemon install --backup --dest <path> [--at HH:MM]`), or
+                          #   --librarian / --gardener the scheduled curation drains
+archive curate <kind>     # run one curation drain now (librarian | gardener); headless `claude`
 ```
 
 The CLI is private operational tooling (see Stability below) — the process
@@ -163,6 +172,7 @@ src/thread_archive/
   _launchd.py       # `archive daemon`: generates + loads the watcher / MCP / nightly-backup LaunchAgents (macOS)
   _thread_import/   # vendored provider parsers (a clean, dependency-free island)
 frontend/           # the viewer's React+Vite source (dev-only; builds into _web/static/)
+plugins/librarian/  # the archive-librarian Claude Code plugin: /librarian + /gardener skills, gate hook, write-MCP wiring
 host/               # operator layer: Makefile over `archive daemon`, family-manifest writer
 scripts/            # operator tools (coverage gate, retrieval eval)
 tests/install/      # isolated Docker install test + fixtures
@@ -201,7 +211,7 @@ No second daemon, and no standalone `web` verb: the viewer exists where the
 persistent URL is.
 
 **Runtime is node-free**: the bundle is built ahead of time and committed under
-`_web/static/`, so `pip install` never touches node. Node is a *build*-only tool:
+`_web/static/`, so the install never touches node. Node is a *build*-only tool:
 
 ```bash
 # rebuild the bundle after editing the frontend (node only here):
@@ -218,9 +228,12 @@ wins; ids that were never imported are skipped, not fatal.
 
 ## What it does
 
-- **Ingests 9 providers** into one event model — Claude Code, Codex, Grok, Antigravity,
-  cloth, Cowork (transcript line-streams) and Cursor, OpenCode, Claude Science (SQLite
-  scanners). Imports are idempotent, atomic, and survive a full reindex losslessly. A
+- **Ingests 9 agent harnesses** into one event model — Claude Code, Codex, Grok,
+  Antigravity, cloth, Cowork (transcript line-streams) and Cursor, OpenCode, Claude
+  Science (SQLite scanners). Web chats (claude.ai, ChatGPT, xAI) are the one manual
+  path: drop a downloaded account export into `<home>/dumps/` (picked up on the next
+  ingest pass) or run `archive import-export <path>` — a redrop merges, importing only
+  what grew. Imports are idempotent, atomic, and survive a full reindex losslessly. A
   `cc-exthost` watcher also recovers mid-turn Claude Code steering messages that never
   reach the session JSONL.
 - **Self-feeds** — the watcher tails local stores and ingests incrementally; events land
@@ -257,7 +270,7 @@ wins; ids that were never imported are skipped, not fatal.
   found" against a high-confidence memory is the one failure class the suite
   guards hardest.
 - **Curatable** — an event-sourced topic graph with Leiden communities (see below),
-  driven on demand by the `/librarian` skill, which also stores each conversation's
+  driven on demand by the archive-librarian plugin's `/librarian` skill, which also stores each conversation's
   search-first summary: a few dense sentences indexed into the default search scope
   and embedded for the semantic arm, plus a structured `indexed_summary`
   (event-anchored markdown) for long threads, served by
@@ -272,17 +285,16 @@ lock; `THREAD_ARCHIVE_MCP_INGEST=0` disables it). **`thread-archive-librarian`**
 (`archive-librarian-mcp`) is the curatorial *write* surface — topic/link/citation
 writes and stored-summary writes (`thread_set_summary`) + the reads the librarian
 needs (`review_queue`, `topic_search`, `thread_user_messages`). Keeping them
-separate means a read-only client never gets curation power. Client config:
+separate means a read-only client never gets curation power — the setup wizard
+and `.mcp.json.example` wire only the read server; the librarian server ships
+with the archive-librarian plugin (or wire it by hand the same way). Client
+config for the read server:
 
 ```json
 {
   "mcpServers": {
     "thread-archive": {
       "command": "archive-mcp",
-      "env": { "THREAD_ARCHIVE_HOME": "~/.thread/archive" }
-    },
-    "thread-archive-librarian": {
-      "command": "archive-librarian-mcp",
       "env": { "THREAD_ARCHIVE_HOME": "~/.thread/archive" }
     }
   }
@@ -312,7 +324,7 @@ transaction. The log is the source of truth for curation; `thread_links` / `topi
 are rebuildable from it — `reindex` replays the log (idempotent upsert + tombstone) to
 reconstruct them, so an unlink/merge/archive is recorded history, never silent loss.
 
-The librarian skill (`.claude/skills/librarian/`) drives the write MCP over
+The librarian skill (`plugins/librarian/skills/librarian/`) drives the write MCP over
 `review_queue` — event-bearing conversations still missing either half of its
 per-thread output, held back while a thread is still ingesting. Per thread it writes
 **~3+ topic citations** and a **stored summary** (`thread_set_summary`): a short,

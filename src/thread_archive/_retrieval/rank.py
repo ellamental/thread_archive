@@ -252,8 +252,37 @@ def collapse_same_anchor(results: list[EventHit]) -> list[EventHit]:
 
 def _norm_content(r: EventHit) -> str:
     """Whitespace-collapsed, lowercased hit content — the cross-thread duplicate
-    identity ``group_by_thread`` folds on."""
+    identity ``group_by_thread`` and ``fold_duplicate_threads`` fold on."""
     return " ".join((r.get("full_content") or r.get("snippet") or "").split()).lower()
+
+
+def fold_duplicate_threads(results: list[EventHit]) -> list[EventHit]:
+    """Fold *only* cross-thread duplicate content, leaving every surviving
+    thread's own hits intact — the half of :func:`group_by_thread` that removes
+    redundancy without also collapsing a thread to a single row.
+
+    A hit whose content is identical (:func:`_norm_content`) to a row already on
+    screen from a **different** thread folds into that row's ``_dup_thread_ids``.
+    Repeats *within* one thread survive: a reader paging a result list wants the
+    thread's several matches laid out, where an agent spending result slots
+    wants the one representative row.
+
+    Ranked order in, ranked order out. A thread whose hit folds here can still
+    appear on a later hit of its own that nothing else duplicates."""
+    by_content: dict[str, EventHit] = {}
+    out: list[EventHit] = []
+    for r in results:
+        norm = _norm_content(r)
+        dup = by_content.get(norm) if norm else None
+        if dup is not None and dup.get("thread_id") != r.get("thread_id"):
+            ids = dup.setdefault("_dup_thread_ids", [])
+            if r.get("thread_id") not in ids:
+                ids.append(r.get("thread_id"))
+            continue
+        if norm and dup is None:
+            by_content[norm] = r
+        out.append(r)
+    return out
 
 
 def group_by_thread(results: list[EventHit]) -> list[EventHit]:

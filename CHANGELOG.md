@@ -2,6 +2,60 @@
 
 ## Unreleased
 
+- **Curation moves out of the core into the archive-librarian plugin** — the
+  interactive curation surface (the `/librarian` skill, a new `/gardener`
+  skill built from the drain prompt, the librarian-gate enforcement hook, the
+  write-MCP wiring) leaves `.claude/` and becomes a
+  Claude Code plugin at `plugins/librarian/`; the repo is its own plugin
+  marketplace (`.claude-plugin/marketplace.json`), so
+  `claude plugin marketplace add <clone> && claude plugin install
+  archive-librarian@thread-archive` installs it anywhere, not just in the
+  clone. The core install correspondingly shrinks to preservation + retrieval:
+  `.mcp.json.example` and the wizard's MCP wiring carry only the read server
+  (`archive-mcp`) — a wizard-wired client no longer gets curation power by
+  default — and the wizard drops its scheduled-curation step and
+  `--skip-curation` flag. The knowledge layer, the librarian MCP server
+  (`archive-librarian-mcp`, which the plugin launches), and the headless
+  drains (`archive curate`, `archive daemon install --librarian/--gardener`,
+  their packaged prompts in `_curation/`) all stay in the package — existing
+  scheduled drains and curated graphs are untouched; the gate hook also
+  recognizes the plugin-namespaced `/archive-librarian:librarian` invocation.
+
+- **Viewer folds threads that repeat one line** — searching a common opener ("hey
+  grok") spent the whole result page on N threads showing the same text: the MCP
+  surface folded cross-thread duplicates, the viewer passed `group='none'` and
+  listed every hit. Search grows a third grouping mode, `group='dup'`
+  (`rank.fold_duplicate_threads`), that folds only the cross-thread twins and
+  keeps each surviving thread's own hits — the reader's shape, where
+  `group='thread'` collapses a thread to one row for an agent spending result
+  slots. The viewer uses it and renders the fold as a collapsed
+  "same text in N other threads" expander, `/api/search` resolving the folded ids
+  to titled links so a hidden thread stays reachable.
+
+- **Viewer inherits the agent contract's orientation signals** — the web viewer's
+  search now carries the three things the MCP surface had and it didn't: an
+  **empty query browses** (one row per thread by last activity — source, event
+  count, tail-anchored open — honoring the same source/date filters; Enter on an
+  empty search box lands there), the results line shows the **match-quality
+  verdict** (strong/partial/weak/semantic, with the caution note and per-hit K/N
+  term badges), and results name the **subjects** they cluster under as chips
+  linking into the topic pages. `/api/search` grows `browse`, `quality`, and
+  `subjects` fields plus per-hit `term_hits`, reusing the retrieval layer's
+  existing browse/quality/subjects machinery — no logic duplicated in the web
+  layer.
+
+- **Install story: the clone is the install** — the README drops the `pip install git+…`
+  front door (a leftover from the retired PyPI run; 0.0.3 already moved distribution to
+  clone-install) and now leads with the agent path: clone, open Claude Code, "install
+  this — follow claude-install.md". The old "clone path — for curation" framing was
+  stale twice over: the librarian/gardener drain prompts ship inside the package and the
+  wizard schedules curation on any install, so what the clone uniquely carries is the
+  interactive `/librarian` skill + gate hook and the project-scoped `.mcp.json`.
+  `thread_archive` is reframed as the setup wizard / always-on upgrade rather than a
+  rival front door; the wizard's semantic-search hint and releasing.md's distribution
+  line now speak clone-install, and claude-install.md's Done step points at
+  `thread_archive setup` for watcher/backup/scheduled-curation.
+
 - **Importer dropped-field sweep** — a full audit (prompted by the cloth `cost` bug) found
   every importer silently losing source data at one of two seams: the parser never read a
   field, or the builder dropped what the parser extracted. All fixed. The shared mechanism

@@ -3,8 +3,10 @@
 - ``rank.collapse_same_anchor`` folds rows sharing one (thread_id, event_id)
 - ``rank.group_by_thread`` folds same-thread repeats (``_thread_more``) and
   cross-thread duplicate content (``_dup_thread_ids``), preserving ranked order
+- ``rank.fold_duplicate_threads`` folds only the cross-thread duplicates
 - ``search`` groups the ranked shape by default; ``group='none'``, a
-  ``thread_id`` scope, and the structural shapes stay ungrouped
+  ``thread_id`` scope, and the structural shapes stay ungrouped, and
+  ``group='dup'`` keeps per-thread hits while folding cross-thread duplicates
 - ``format_results`` renders the fold annotations
 """
 
@@ -17,7 +19,11 @@ import pytest
 from thread_archive._importers import import_session_incremental
 from thread_archive._retrieval import search
 from thread_archive._retrieval.format import format_results
-from thread_archive._retrieval.rank import collapse_same_anchor, group_by_thread
+from thread_archive._retrieval.rank import (
+    collapse_same_anchor,
+    fold_duplicate_threads,
+    group_by_thread,
+)
 from thread_archive._store import init_db
 
 
@@ -90,6 +96,34 @@ def test_group_by_thread_folds_cross_thread_duplicate_content() -> None:
     assert out[2]["event_id"] == 4
 
 
+def test_fold_duplicate_threads_keeps_a_threads_own_repeats() -> None:
+    hits = [_hit(1, 100, "best hit"), _hit(2, 200, "other thread"),
+            _hit(3, 100, "second hit")]
+    out = fold_duplicate_threads(hits)
+    assert [h["event_id"] for h in out] == [1, 2, 3]
+    assert not any("_thread_more" in h for h in out)
+
+
+def test_fold_duplicate_threads_folds_cross_thread_duplicate_content() -> None:
+    hits = [_hit(1, 100, "calibrate the flux capacitor"),
+            _hit(2, 200, "calibrate the  flux CAPACITOR"),  # same after normalization
+            _hit(3, 300, "unrelated"),
+            _hit(4, 200, "a distinct later hit")]
+    out = fold_duplicate_threads(hits)
+    assert [h["event_id"] for h in out] == [1, 3, 4]
+    assert out[0]["_dup_thread_ids"] == [200]
+
+
+def test_fold_duplicate_threads_keeps_identical_text_within_one_thread() -> None:
+    """Two events in one thread carrying the same line are two real occurrences —
+    only the *cross*-thread twin is redundancy."""
+    hits = [_hit(1, 100, "same line"), _hit(2, 100, "same line"),
+            _hit(3, 200, "same line")]
+    out = fold_duplicate_threads(hits)
+    assert [h["event_id"] for h in out] == [1, 2]
+    assert out[0]["_dup_thread_ids"] == [200]
+
+
 def test_search_groups_one_row_per_thread(archive_home) -> None:
     _seed(archive_home)
     rows = search("tachyon")
@@ -108,6 +142,19 @@ def test_search_folds_forked_duplicate_content(archive_home) -> None:
     rows = search("flux capacitor")
     assert len(rows) == 1
     assert len(rows[0]["_dup_thread_ids"]) == 1
+
+
+def test_search_group_dup_folds_forks_but_keeps_a_threads_own_hits(archive_home) -> None:
+    """The viewer's shape: thread A's three tachyon turns all stay, while the
+    C/D fork of one prompt collapses to a single annotated row."""
+    _seed(archive_home)
+    rows = search("tachyon", group="dup")
+    assert len(rows) == 4  # every hit survives — nothing here is a cross-thread twin
+    assert not any(r.get("_thread_more") for r in rows)
+
+    forked = search("flux capacitor", group="dup")
+    assert len(forked) == 1
+    assert len(forked[0]["_dup_thread_ids"]) == 1
 
 
 def test_thread_scope_and_structural_shapes_stay_ungrouped(archive_home) -> None:

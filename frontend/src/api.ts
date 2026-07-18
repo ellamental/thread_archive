@@ -34,11 +34,46 @@ export interface SearchHit {
   full_content: string
   occurred_at: string | null
   _semantic?: number
+  // Ranked search only: how many of the query's terms literally appear in this
+  // hit (the response's quality.n_terms is the denominator).
+  term_hits?: number
+  // Other threads whose matching text is identical to this hit's — a forked
+  // session, a fleet of agents carrying one prompt. Folded into this row by the
+  // search rather than repeated as rows of their own.
+  dup_threads?: DupThread[]
+  // Browse rows only (empty-query search: one row per thread, by last activity;
+  // event_id is the thread's newest event — a ready tail anchor).
+  thread_source?: string | null
+  n_events?: number
+}
+
+export interface DupThread {
+  thread_id: number
+  title: string | null
+}
+
+// The top-hit match-quality verdict (the MCP header's signal): how much to
+// trust the ranking before reading. Verdicts below strong carry a caution note.
+export interface SearchQuality {
+  verdict: 'strong' | 'partial' | 'weak' | 'semantic'
+  note: string | null
+  n_terms: number
+}
+
+// A curated subject the result set clusters under (the topic-graph lens);
+// chats = how many of the result conversations it links.
+export interface SearchSubject {
+  topic_id: number
+  title: string
+  chats: number
 }
 
 export interface SearchResponse {
   query: string
+  browse?: boolean
   hits: SearchHit[]
+  quality?: SearchQuality | null
+  subjects?: SearchSubject[]
 }
 
 export interface TopicListItem {
@@ -334,6 +369,7 @@ export const api = {
   },
   threadTypes: () =>
     getJSON<{ types: ThreadTypeCount[] }>('/api/thread-types').then((d) => d.types),
+  // An empty q browses: one row per thread by last activity, same filters.
   search: (q: string, filters: SearchFilters = {}) => {
     const params = new URLSearchParams({ limit: String(SEARCH_LIMIT), q })
     for (const key of ['source', 'since', 'until'] as const)

@@ -4,8 +4,7 @@ The consumer front door: install the package, run ``thread_archive``, and the
 product explains itself — it discovers the machine's conversation stores and
 shows what it found *before* touching anything, states exactly where copies
 will live (local only), imports with consent and narration, then offers the
-always-on watcher, a scheduled nightly backup, MCP wiring, and scheduled
-self-curation (the hourly librarian + daily gardener drains). Every step can
+always-on watcher, a scheduled nightly backup, and MCP wiring. Every step can
 be skipped, and decisions persist in ``<home>/config.json`` (see
 :mod:`.._config`) where every ingest path respects them.
 
@@ -119,9 +118,8 @@ def run_setup(
     offer_watcher: Optional[Callable] = None,
     offer_backup: Optional[Callable] = None,
     offer_mcp: Optional[Callable] = None,
-    offer_curation: Optional[Callable] = None,
 ) -> int:
-    """Discover → consent → import → watcher → MCP wiring → curation. Returns
+    """Discover → consent → import → watcher → backup → MCP wiring. Returns
     exit code.
 
     The flow's collaborators are keyword parameters: ``interactive`` overrides
@@ -233,11 +231,7 @@ def run_setup(
     cfg["setup"]["clients"] = {"claude": (offer_mcp or _offer_mcp)(args, interactive)}
     _say()
 
-    # 7. Scheduled self-curation (after MCP wiring: it needs the same claude CLI).
-    cfg["setup"]["curation"] = (offer_curation or _offer_curation)(args, interactive)
-    _say()
-
-    # 8. Done.
+    # 7. Done.
     cfg["setup"]["completed_at"] = datetime.now().astimezone().isoformat(timespec="seconds")
     save_config(cfg, args.home)
     _say("Done. Ask your agent: \"what have we discussed about …?\"")
@@ -246,7 +240,7 @@ def run_setup(
         _say("  web viewer:       http://127.0.0.1:8787")
     _say(f"  account exports:  drop ZIPs into {paths.dumps_dir}")
     if not embeddings_installed():
-        _say("  semantic search:  not installed — `pip install 'thread-archive[embeddings]'` adds it (large: torch)")
+        _say("  semantic search:  not installed — `.venv/bin/pip install -e '.[embeddings]'` from the clone adds it (large: torch)")
     return 0
 
 
@@ -399,60 +393,6 @@ def _offer_backup(args: argparse.Namespace, interactive: bool) -> dict:
     return {"status": "launchd", "dest": str(dest_path)}
 
 
-def _offer_curation(
-    args: argparse.Namespace, interactive: bool, ask: Callable[..., str] = _ask
-) -> str:
-    """Offer the scheduled self-curation drains (hourly librarian + daily
-    gardener). Returns the recorded outcome."""
-    from . import clients
-
-    if args.skip_curation:
-        _say("Scheduled curation skipped (--skip-curation).")
-        return "skipped"
-    if sys.platform != "darwin":
-        _say("Keep it organized: scheduled curation ships for macOS only right now.")
-        _say("  Point your own scheduler at `archive curate librarian` (hourly) and")
-        _say("  `archive curate gardener` (daily) to get the same behavior.")
-        return "unavailable"
-    if clients.claude_cli() is None:
-        _say("Keep it organized: scheduled curation needs the `claude` CLI (Claude Code),")
-        _say("  which wasn't found. Once it's installed, `archive daemon install")
-        _say("  --librarian` and `--gardener` schedule the drains.")
-        return "no-claude"
-
-    from .. import _launchd
-
-    if curation_running(args.home):
-        _say("Keep it organized: the librarian/gardener schedule is already installed.")
-        return "already-installed"
-
-    _say("Keep it organized? Two scheduled agents (launchd) run Claude against this")
-    _say("archive's own MCP servers — an hourly librarian links and summarizes new")
-    _say("conversations so they're findable by topic, and a daily gardener tends the")
-    _say("topic graph (merges duplicates, grows the hierarchy). Runs are skipped")
-    _say("cheaply when there's no new work; launched runs spend your existing")
-    _say("`claude` login's usage.")
-    answer = ask(
-        "  [Enter] schedule both · s = skip (curate on demand: `archive curate …`)  > ",
-        default="", interactive=interactive,
-    )
-    if answer in ("s", "n", "no"):
-        _say("  Skipped — `archive curate librarian|gardener` runs one drain by hand;")
-        _say("  `thread_archive setup` to revisit.")
-        return "skipped"
-    try:
-        _launchd.install_librarian(args.home)
-        _launchd.install_gardener(args.home)
-    except SystemExit as e:
-        _say(f"  Could not schedule curation: {e}")
-        _say("  Retry with `archive daemon install --librarian` / `--gardener`.")
-        return "failed"
-    _say("  Scheduled — librarian hourly, gardener daily at "
-         f"{_launchd.GARDENER_DEFAULT_HOUR:02d}:{_launchd.GARDENER_DEFAULT_MINUTE:02d}; "
-         "logs in <archive home>/logs/.")
-    return "launchd"
-
-
 def _offer_mcp(
     args: argparse.Namespace, interactive: bool, ask: Callable[..., str] = _ask
 ) -> str:
@@ -469,11 +409,11 @@ def _offer_mcp(
         _say(_indent(clients.mcp_config_block()))
         return "printed"
     if clients.claude_has_server(cli):
-        _say("Connect your agents: claude already has the archive's MCP servers.")
+        _say("Connect your agents: claude already has the archive's MCP server.")
         return "already-wired"
     _say("Connect your agents? Found: claude (Claude Code).")
     answer = ask(
-        "  [Enter] wire MCP (search + librarian, user scope) · p = print config only · s = skip  > ",
+        "  [Enter] wire MCP (search/read, user scope) · p = print config only · s = skip  > ",
         default="", interactive=interactive,
     )
     if answer == "p":
@@ -491,8 +431,9 @@ def _offer_mcp(
         _say("  Manual config for any MCP client:")
         _say(_indent(clients.mcp_config_block()))
         return "failed"
-    _say("  Wired: thread-archive (search/read) + thread-archive-librarian (curation),")
-    _say("  user scope — every Claude Code session can now search this archive.")
+    _say("  Wired: thread-archive (search/read), user scope — every Claude Code")
+    _say("  session can now search this archive. Curation is the archive-librarian")
+    _say("  plugin (plugins/librarian/ in the repo) — install it to organize the archive.")
     return "wired"
 
 
@@ -614,8 +555,8 @@ def print_status(args: argparse.Namespace) -> int:
         if curation_running(args.home):
             _say("  curation: librarian (hourly) + gardener (daily) scheduled")
         else:
-            _say("  curation: not scheduled — `thread_archive setup` offers it "
-                 "(or `archive curate librarian|gardener` by hand)")
+            _say("  curation: not scheduled — `archive daemon install --librarian` / "
+                 "`--gardener` schedules it (or `archive curate librarian|gardener` by hand)")
     _say()
     _say("  search/read: the archive-mcp tools · web viewer: http://127.0.0.1:8787 (with the watcher)")
     _say("  re-run setup: thread_archive setup · operator CLI: archive --help")
@@ -662,8 +603,6 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--backup-dest", default=None, metavar="PATH",
                         help="setup: schedule nightly backups to PATH without prompting")
     parser.add_argument("--skip-mcp", action="store_true", help="setup: don't offer MCP wiring")
-    parser.add_argument("--skip-curation", action="store_true",
-                        help="setup: don't offer the scheduled librarian/gardener drains")
     parser.add_argument("--version", action="version", version=f"thread-archive {__version__}")
     return parser
 

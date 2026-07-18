@@ -47,6 +47,23 @@ describe('Sidebar search filters', () => {
     expect(screen.getByText('PAGE /search?q=hello&source=codex')).toBeInTheDocument()
   })
 
+  it('browses on Enter with an empty query, carrying the armed filters', async () => {
+    const user = userEvent.setup()
+    renderAt('/')
+    await user.click(screen.getByRole('button', { name: /filters/ }))
+    await user.selectOptions(await screen.findByLabelText('source'), 'cloth')
+    await user.type(screen.getByPlaceholderText('search conversations…'), '{Enter}')
+    expect(screen.getByText('PAGE /search?source=cloth')).toBeInTheDocument()
+  })
+
+  it('applies a filter change immediately on an open browse (no query)', async () => {
+    const user = userEvent.setup()
+    renderAt('/search')
+    await user.click(screen.getByRole('button', { name: /filters/ }))
+    await user.selectOptions(await screen.findByLabelText('source'), 'codex')
+    expect(screen.getByText('PAGE /search?source=codex')).toBeInTheDocument()
+  })
+
   it('clears every filter at once and re-runs the open search', async () => {
     const user = userEvent.setup()
     renderAt('/search?q=hello&source=cloth&since=2026-01-01')

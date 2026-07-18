@@ -79,15 +79,18 @@ packages = ["src/thread_archive"]
 artifacts = ["src/thread_archive/_web/static/**/*"]
 
 [tool.hatch.build.targets.sdist]
-# Ship the package sources, tests, docs, and the frontend sources that build the
-# committed _web/static bundle. Everything else (host/, .claude/, ci.toml, dev
-# scripts, node_modules — hatchling only reads the ROOT .gitignore, so nested
-# ignore files like frontend/.gitignore do NOT keep node_modules out) stays local.
+# Ship the package sources, tests, docs, the frontend sources that build the
+# committed _web/static bundle, and the archive-librarian plugin (the tests
+# exercise its gate hook, so the sdist must carry it). Everything else (host/,
+# ci.toml, dev scripts, node_modules — hatchling only reads the ROOT
+# .gitignore, so nested ignore files like frontend/.gitignore do NOT keep
+# node_modules out) stays local.
 only-include = [
     "src",
     "tests",
     "docs",
     "frontend",
+    "plugins",
     "scripts",
     "CHANGELOG.md",
     "claude-install.md",

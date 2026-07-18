@@ -37,9 +37,8 @@ read at fire time) and cadence — ``interval_minutes`` for the librarian,
 ``at`` ("HH:MM") for the gardener — read when the LaunchAgent is
 (re)installed.
 
-Requires the ``claude`` CLI (any login it already has pays for the runs); the
-wizard and ``archive daemon install --librarian/--gardener`` only offer the
-schedule when it's present.
+Requires the ``claude`` CLI (any login it already has pays for the runs);
+``archive daemon install --librarian/--gardener`` schedules the drains.
 """
 
 from __future__ import annotations

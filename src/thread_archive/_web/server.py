@@ -176,6 +176,63 @@ def _shape_search_hits(hits: "list[EventHit]", query: str) -> "list[EventHit]":
     return hits
 
 
+def _quality_signal(hits: "list[EventHit]", query: str) -> Optional[dict]:
+    """The match-quality signal the MCP render carries, JSON-shaped for the
+    viewer: a top-hit verdict (strong / partial / weak / semantic, with the
+    caution note the verdicts below strong carry) plus a ``term_hits`` count
+    stamped on every hit — how many of the query's ``n_terms`` terms literally
+    appear in it — so the UI can badge K/N per hit. None for a term-less query,
+    matching the MCP header. Runs before :func:`_shape_search_hits` rewrites
+    snippets: the count reads the raw hit text."""
+    from .._retrieval.format import _search_quality, query_terms, term_hit_count
+
+    terms = query_terms(query)
+    if not hits or not terms:
+        return None
+    for h in hits:
+        h["term_hits"] = term_hit_count(h.get("full_content") or h.get("snippet") or "", terms)
+    verdict, note = _search_quality(hits[0]["term_hits"], len(terms), bool(hits[0].get("_did_rerank")))
+    return {"verdict": verdict, "note": note, "n_terms": len(terms)}
+
+
+def _resolve_dup_threads(hits: "list[EventHit]") -> None:
+    """Resolve each hit's ``_dup_thread_ids`` fold into a ``dup_threads`` list of
+    ``{thread_id, title}`` — the other conversations whose matching text is
+    identical to this hit's (a forked session, a fleet of agents carrying one
+    prompt). Ids alone would render as bare numbers; the reader needs a name to
+    decide whether the twin is worth opening. One query for the whole page."""
+    from sqlalchemy import select
+
+    from .._store import Thread, get_session
+
+    wanted = {tid for h in hits for tid in h.get("_dup_thread_ids") or ()}
+    if not wanted:
+        return
+    with get_session() as s:
+        titles = dict(
+            s.execute(select(Thread.id, Thread.title).where(Thread.id.in_(wanted))).all()
+        )
+    for h in hits:
+        ids = h.get("_dup_thread_ids")
+        if ids:
+            h["dup_threads"] = [{"thread_id": t, "title": titles.get(t)} for t in ids]
+
+
+def _subjects_payload(hits: "list[EventHit]") -> list[dict]:
+    """The relevant-subjects lens over a result set (see
+    :mod:`.._retrieval.subjects`), JSON-shaped: the curated topics these hits
+    cluster under, each with how many result conversations it links. Empty when
+    the lens is disabled or the topic graph has nothing for these hits."""
+    from .._retrieval import subjects as _subjects
+
+    if not hits or not _subjects.enabled():
+        return []
+    return [
+        {"topic_id": tid, "title": title, "chats": chats}
+        for tid, title, chats in _subjects.subjects_for_results(hits)
+    ]
+
+
 # /api/status behind a small TTL cache. The survey counts every table — seconds
 # on a large archive — while the status bar asks on every page load, so requests
 # serve the cached survey and a stale one refreshes in the background; only the
@@ -562,7 +619,19 @@ def route(method: str, path: str, params: dict) -> Response:
     if path == "/api/search":
         q = (_first(params, "q") or "").strip()
         if not q:
-            return _ok({"query": "", "hits": []})
+            # Empty query = browse, the same contract as MCP thread_search: one
+            # row per thread by last activity, honoring the structural filters.
+            # Rows carry thread_source / n_events; content options don't apply.
+            hits = api.search(
+                "",
+                limit=_int(params, "limit", 30),
+                source=_csv(params, "source"),
+                since=_first(params, "since"),
+                until=_first(params, "until"),
+                agents=_first(params, "agents"),
+            )
+            return _ok({"query": "", "browse": True, "hits": hits,
+                        "quality": None, "subjects": _subjects_payload(hits)})
         hits = api.search(
             q,
             limit=_int(params, "limit", 30),
@@ -571,10 +640,17 @@ def route(method: str, path: str, params: dict) -> Response:
             since=_first(params, "since"),
             until=_first(params, "until"),
             agents=_first(params, "agents"),
-            group="none",  # the viewer lists every hit; fold annotations have no UI
+            # Fold cross-thread duplicate content only: a query matching a common
+            # opener ("hey grok") otherwise spends the whole page on N threads
+            # showing the same line. A thread's *own* several matches still each
+            # get a row — the reader is browsing, not spending result slots.
+            group="dup",
             context_lines=0,  # the viewer builds its own ±1 snippet from full_content
         )
-        return _ok({"query": q, "hits": _shape_search_hits(hits, q)})
+        quality = _quality_signal(hits, q)
+        _resolve_dup_threads(hits)
+        return _ok({"query": q, "browse": False, "hits": _shape_search_hits(hits, q),
+                    "quality": quality, "subjects": _subjects_payload(hits)})
 
     if path.startswith("/api/read/") or path.startswith("/api/thread/"):
         try:

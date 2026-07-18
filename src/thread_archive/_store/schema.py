@@ -39,6 +39,9 @@ logger = logging.getLogger(__name__)
 # baseline shipped; ALTERed in on open when a live index predates them.
 _ADDED_COLUMNS: dict[str, dict[str, str]] = {
     "import_state": {"last_content_hash": "TEXT"},
+    # The external-content FTS index reads occurred_at from the shadow, so the
+    # column must exist before ensure_fts can build the current-shape table.
+    "events_fts": {"occurred_at": "TEXT"},
 }
 
 

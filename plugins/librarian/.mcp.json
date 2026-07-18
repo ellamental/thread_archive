@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "thread-archive-librarian": {
+      "command": "${CLAUDE_PLUGIN_ROOT}/bin/librarian-mcp",
+      "env": { "THREAD_ARCHIVE_HOME": "~/.thread/archive" }
+    }
+  }
+}

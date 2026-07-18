@@ -1,0 +1,8 @@
+{
+  "name": "archive-librarian",
+  "version": "0.1.0",
+  "description": "The curatorial agent for thread-archive: the /librarian skill (curate conversations), the /gardener skill (tend the topic graph), the librarian's one-thread-at-a-time enforcement hook, and the librarian write MCP server. Requires a thread-archive install (the archive-librarian-mcp console script) and the read server (archive-mcp) wired into the client.",
+  "author": {
+    "name": "thread-archive"
+  }
+}

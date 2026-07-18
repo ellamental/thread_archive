@@ -1,5 +1,6 @@
 // The search page: loading / error / empty states, hits grouped per thread,
-// and clicking a group or hit navigates to the thread.
+// clicking a group or hit navigates to the thread, plus the empty-query browse
+// view and the quality / subjects orientation the results line carries.
 import { describe, expect, it } from 'vitest'
 import { render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
@@ -8,11 +9,16 @@ import { SearchView } from '../components/SearchView'
 import type { SearchHit } from '../api'
 import { mswError, mswJson, mswPending, recordRequests } from './msw'
 
-// Stub thread page that echoes where it was opened, so hit-click tests can
-// assert the deep-link (?e=<event_id>) and not just that navigation happened.
+// Stub pages that echo where they were opened, so click tests can assert the
+// deep-link (?e=<event_id>, /topic/:id) and not just that navigation happened.
 function ThreadStub() {
   const loc = useLocation()
   return <div>THREAD PAGE {loc.pathname + loc.search}</div>
+}
+
+function TopicStub() {
+  const loc = useLocation()
+  return <div>TOPIC PAGE {loc.pathname}</div>
 }
 
 function renderAt(url: string) {
@@ -21,6 +27,7 @@ function renderAt(url: string) {
       <Routes>
         <Route path="/search" element={<SearchView />} />
         <Route path="/archive/:id" element={<ThreadStub />} />
+        <Route path="/topic/:id" element={<TopicStub />} />
       </Routes>
     </MemoryRouter>,
   )
@@ -35,9 +42,39 @@ function hit(overrides: Partial<SearchHit>): SearchHit {
 }
 
 describe('SearchView', () => {
-  it('prompts for a query when none is given', () => {
+  it('browses recent threads when no query is given', async () => {
+    mswJson('/api/search', {
+      query: '', browse: true, quality: null, subjects: [],
+      hits: [
+        hit({ thread_id: 5, event_id: 99, thread_title: 'Latest Session',
+              thread_source: 'cloth', n_events: 12 }),
+        hit({ thread_id: 3, event_id: 42, thread_title: 'Older Session',
+              thread_source: 'codex', n_events: 1 }),
+      ],
+    })
     renderAt('/search')
-    expect(screen.getByText('Type a query above.')).toBeInTheDocument()
+    expect(await screen.findByText('Latest Session')).toBeInTheDocument()
+    expect(screen.getByText(/recent threads — newest activity first/)).toBeInTheDocument()
+    expect(screen.getByText('cloth')).toBeInTheDocument()
+    expect(screen.getByText('12 events')).toBeInTheDocument()
+    expect(screen.getByText('1 event')).toBeInTheDocument()
+  })
+
+  it('opens a browse row at the thread tail', async () => {
+    const user = userEvent.setup()
+    mswJson('/api/search', {
+      query: '', browse: true, quality: null, subjects: [],
+      hits: [hit({ thread_id: 5, event_id: 99, thread_title: 'Latest Session' })],
+    })
+    renderAt('/search')
+    await user.click(await screen.findByText('Latest Session'))
+    expect(screen.getByText('THREAD PAGE /archive/5?e=99')).toBeInTheDocument()
+  })
+
+  it('says when the browse window is empty', async () => {
+    mswJson('/api/search', { query: '', browse: true, quality: null, subjects: [], hits: [] })
+    renderAt('/search?source=cloth')
+    expect(await screen.findByText('no threads in this window')).toBeInTheDocument()
   })
 
   it('shows the loading state while the search is in flight', () => {
@@ -86,10 +123,81 @@ describe('SearchView', () => {
     expect(screen.getByText('THREAD PAGE /archive/42?e=9')).toBeInTheDocument()
   })
 
+  it('folds threads carrying the same text behind an expander, and opens them', async () => {
+    const user = userEvent.setup()
+    mswJson('/api/search', {
+      query: 'x',
+      hits: [hit({
+        dup_threads: [
+          { thread_id: 77, title: 'Fork One' },
+          { thread_id: 78, title: null },
+        ],
+      })],
+    })
+    renderAt('/search?q=x')
+    const toggle = await screen.findByRole('button', { name: /same text in 2 other threads/ })
+    // Collapsed by default: the fold is noise removal, not a second result list.
+    expect(toggle).toHaveAttribute('aria-expanded', 'false')
+    expect(screen.queryByText('Fork One')).not.toBeInTheDocument()
+
+    await user.click(toggle)
+    expect(toggle).toHaveAttribute('aria-expanded', 'true')
+    // A folded thread with no title still has to be reachable.
+    expect(screen.getByText('thread 78')).toBeInTheDocument()
+    await user.click(screen.getByText('Fork One'))
+    expect(screen.getByText('THREAD PAGE /archive/77')).toBeInTheDocument()
+  })
+
+  it('says "1 other thread" when a single thread folded', async () => {
+    mswJson('/api/search', {
+      query: 'x', hits: [hit({ dup_threads: [{ thread_id: 77, title: 'Fork One' }] })],
+    })
+    renderAt('/search?q=x')
+    expect(await screen.findByRole('button', { name: /same text in 1 other thread$/ })).toBeInTheDocument()
+  })
+
+  it('shows no fold affordance on a hit nothing duplicates', async () => {
+    mswJson('/api/search', { query: 'x', hits: [hit({})] })
+    renderAt('/search?q=x')
+    await screen.findByText('a snippet')
+    expect(screen.queryByRole('button', { name: /same text in/ })).not.toBeInTheDocument()
+  })
+
   it('badges semantic hits', async () => {
     mswJson('/api/search', { query: 'x', hits: [hit({ _semantic: 0.87 })] })
     renderAt('/search?q=x')
     expect(await screen.findByText('semantic')).toBeInTheDocument()
+  })
+
+  it('shows the quality verdict, its caution note, and per-hit K/N badges', async () => {
+    mswJson('/api/search', {
+      query: 'x',
+      quality: { verdict: 'partial', note: 'only some query terms matched the top hit — scan before trusting', n_terms: 3 },
+      hits: [hit({ term_hits: 2 }), hit({ event_id: 2, thread_id: 2, term_hits: 0, snippet: 'other' })],
+    })
+    renderAt('/search?q=x')
+    expect(await screen.findByText('quality: partial')).toBeInTheDocument()
+    expect(screen.getByText(/scan before trusting/)).toBeInTheDocument()
+    expect(screen.getByText('2/3')).toBeInTheDocument()
+    // a zero-term hit is badged like a semantic guess
+    expect(screen.getByText('0/3')).toHaveClass('sem')
+  })
+
+  it('lists the subjects the results cluster under, linking into the topic pages', async () => {
+    const user = userEvent.setup()
+    mswJson('/api/search', {
+      query: 'x',
+      subjects: [
+        { topic_id: 7, title: 'Graph Theory', chats: 2 },
+        { topic_id: 9, title: 'PageRank', chats: 1 },
+      ],
+      hits: [hit({})],
+    })
+    renderAt('/search?q=x')
+    expect(await screen.findByText('subjects:')).toBeInTheDocument()
+    expect(screen.getByText('PageRank (1)')).toBeInTheDocument()
+    await user.click(screen.getByText('Graph Theory (2)'))
+    expect(screen.getByText('TOPIC PAGE /topic/7')).toBeInTheDocument()
   })
 
   it('sends URL-carried filters with the search (until made day-inclusive)', async () => {

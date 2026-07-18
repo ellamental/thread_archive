@@ -155,7 +155,7 @@ def test_non_tty_without_yes_does_no_work(archive_home, capsys) -> None:
 
 def test_yes_setup_imports_and_records(archive_home, capsys) -> None:
     fakes = [FakeWatcher("claude-code"), FakeWatcher("codex", available=False)]
-    rc = wizard.run_setup(_args("setup", "--yes", "--skip-watcher", "--skip-backup", "--skip-mcp", "--skip-curation"), watchers=fakes)
+    rc = wizard.run_setup(_args("setup", "--yes", "--skip-watcher", "--skip-backup", "--skip-mcp"), watchers=fakes)
     assert rc == 0
     assert fakes[0].polled == 1 and fakes[1].polled == 0  # only the found store imports
     out = capsys.readouterr().out
@@ -172,7 +172,7 @@ def test_edit_selection_persists_opt_outs(archive_home, monkeypatch, capsys) -> 
     answers = iter(["e", "n", "y"])  # edit; drop claude-code; keep cursor
     fakes = [FakeWatcher("claude-code"), FakeWatcher("cursor")]
     rc = wizard.run_setup(
-        _args("setup", "--skip-watcher", "--skip-backup", "--skip-mcp", "--skip-curation"), watchers=fakes,
+        _args("setup", "--skip-watcher", "--skip-backup", "--skip-mcp"), watchers=fakes,
         interactive=True,
         ask=lambda prompt, *, default, interactive: next(answers, default),
     )
@@ -193,7 +193,7 @@ def test_edit_to_zero_disables_every_source(archive_home, monkeypatch, capsys) -
     answers = iter(["e", "n", "n"])
     fakes = [FakeWatcher("claude-code"), FakeWatcher("cursor")]
     rc = wizard.run_setup(
-        _args("setup", "--skip-watcher", "--skip-backup", "--skip-mcp", "--skip-curation"), watchers=fakes,
+        _args("setup", "--skip-watcher", "--skip-backup", "--skip-mcp"), watchers=fakes,
         interactive=True,
         ask=lambda prompt, *, default, interactive: next(answers, default),
     )
@@ -208,7 +208,7 @@ def test_edit_to_zero_disables_every_source(archive_home, monkeypatch, capsys) -
 def test_skip_import_keeps_sources_enabled(archive_home, capsys) -> None:
     fakes = [FakeWatcher("claude-code")]
     rc = wizard.run_setup(
-        _args("setup", "--yes", "--skip-import", "--skip-watcher", "--skip-backup", "--skip-mcp", "--skip-curation"), watchers=fakes
+        _args("setup", "--yes", "--skip-import", "--skip-watcher", "--skip-backup", "--skip-mcp"), watchers=fakes
     )
     assert rc == 0 and fakes[0].polled == 0
     cfg = json.loads((archive_home / "config.json").read_text())
@@ -219,7 +219,7 @@ def test_bare_rerun_lands_on_status(archive_home, monkeypatch, capsys) -> None:
     monkeypatch.setattr(wizard, "watcher_running", lambda home=None: False)
     monkeypatch.setattr(wizard, "backup_running", lambda home=None: False)
     wizard.run_setup(
-        _args("setup", "--yes", "--skip-import", "--skip-watcher", "--skip-backup", "--skip-mcp", "--skip-curation"), watchers=[]
+        _args("setup", "--yes", "--skip-import", "--skip-watcher", "--skip-backup", "--skip-mcp"), watchers=[]
     )
     capsys.readouterr()
     assert wizard.main([]) == 0
@@ -308,7 +308,7 @@ def test_setup_records_backup_outcome(archive_home, monkeypatch, capsys) -> None
     # End to end through run_setup: the offer's verdict lands in config under
     # setup.backup, the sibling of setup.watcher.
     rc = wizard.run_setup(
-        _args("setup", "--yes", "--skip-import", "--skip-watcher", "--skip-mcp", "--skip-curation"),
+        _args("setup", "--yes", "--skip-import", "--skip-watcher", "--skip-mcp"),
         watchers=[],
         offer_backup=lambda args, interactive: {"status": "skipped"},
     )
@@ -317,89 +317,15 @@ def test_setup_records_backup_outcome(archive_home, monkeypatch, capsys) -> None
     assert cfg["setup"]["backup"] == {"status": "skipped"}
 
 
-# ── the curation offer ────────────────────────────────────────────────────────
-#
-# Same stance as the backup offer: never a real launchctl install — the
-# install_* wrappers are monkeypatched to record, and platform/claude/running
-# probes are forced.
-
-
-def test_offer_curation_skipped_flag(archive_home) -> None:
-    assert wizard._offer_curation(_args("setup", "--skip-curation"), interactive=False) == "skipped"
-
-
-def test_offer_curation_non_darwin_is_unavailable(archive_home, monkeypatch, capsys) -> None:
-    monkeypatch.setattr(wizard.sys, "platform", "linux")
-    assert wizard._offer_curation(_args("setup"), interactive=False) == "unavailable"
-    # Non-mac users get the by-hand cadence to point their own scheduler at.
-    assert "archive curate librarian" in capsys.readouterr().out
-
-
-def test_offer_curation_without_claude_cli(archive_home, monkeypatch, capsys) -> None:
-    _force_darwin(monkeypatch)
-    monkeypatch.setattr(clients, "claude_cli", lambda: None)
-    assert wizard._offer_curation(_args("setup", "--yes"), interactive=False) == "no-claude"
-    assert "needs the `claude` CLI" in capsys.readouterr().out
-
-
-def test_offer_curation_yes_installs_both(archive_home, monkeypatch, capsys) -> None:
-    _force_darwin(monkeypatch)
-    monkeypatch.setattr(clients, "claude_cli", lambda: "/usr/local/bin/claude")
-    monkeypatch.setattr(wizard, "curation_running", lambda home=None: False)
-    installed = []
-    monkeypatch.setattr(_launchd, "install_librarian", lambda home=None, **kw: installed.append("librarian"))
-    monkeypatch.setattr(_launchd, "install_gardener", lambda home=None, **kw: installed.append("gardener"))
-    out = wizard._offer_curation(_args("setup", "--yes"), interactive=False)
-    assert out == "launchd"
-    assert installed == ["librarian", "gardener"]
-    assert "Scheduled" in capsys.readouterr().out
-
-
-def test_offer_curation_already_installed_left_alone(archive_home, monkeypatch) -> None:
-    _force_darwin(monkeypatch)
-    monkeypatch.setattr(clients, "claude_cli", lambda: "/usr/local/bin/claude")
-    monkeypatch.setattr(wizard, "curation_running", lambda home=None: True)
-    monkeypatch.setattr(
-        _launchd, "install_librarian",
-        lambda *a, **k: pytest.fail("must not re-install over the existing agents"),
-    )
-    assert wizard._offer_curation(_args("setup", "--yes"), interactive=False) == "already-installed"
-
-
-def test_offer_curation_declined(archive_home, monkeypatch, capsys) -> None:
-    _force_darwin(monkeypatch)
-    monkeypatch.setattr(clients, "claude_cli", lambda: "/usr/local/bin/claude")
-    monkeypatch.setattr(wizard, "curation_running", lambda home=None: False)
-    monkeypatch.setattr(
-        _launchd, "install_librarian",
-        lambda *a, **k: pytest.fail("declined must not install"),
-    )
-    out = wizard._offer_curation(
-        _args("setup"), interactive=True,
-        ask=lambda prompt, *, default, interactive: "s",
-    )
-    assert out == "skipped"
-    assert "archive curate librarian|gardener" in capsys.readouterr().out
-
-
-def test_setup_records_curation_outcome(archive_home) -> None:
-    rc = wizard.run_setup(
-        _args("setup", "--yes", "--skip-import", "--skip-watcher", "--skip-backup", "--skip-mcp"),
-        watchers=[],
-        offer_curation=lambda args, interactive: "launchd",
-    )
-    assert rc == 0
-    cfg = json.loads((archive_home / "config.json").read_text())
-    assert cfg["setup"]["curation"] == "launchd"
-
-
 # ── client wiring ────────────────────────────────────────────────────────────
 
 
-def test_mcp_config_block_names_both_servers() -> None:
+def test_mcp_config_block_names_read_server_only() -> None:
+    # The librarian write server is the archive-librarian plugin's to wire —
+    # the core wizard must not hand curation power to every client it touches.
     block = json.loads(clients.mcp_config_block())
     servers = block["mcpServers"]
-    assert set(servers) == {"thread-archive", "thread-archive-librarian"}
+    assert set(servers) == {"thread-archive"}
     assert servers["thread-archive"]["command"].endswith("archive-mcp")
 
 
@@ -410,7 +336,7 @@ def test_setup_prints_config_when_no_client_found(archive_home, monkeypatch, cap
     )
     assert rc == 0
     out = capsys.readouterr().out
-    assert "mcpServers" in out and "thread-archive-librarian" in out
+    assert "mcpServers" in out and "thread-archive" in out
     cfg = json.loads((archive_home / "config.json").read_text())
     assert cfg["setup"]["clients"]["claude"] == "printed"
 
@@ -434,7 +360,7 @@ def test_wholesale_import_skip_writes_no_opt_outs(archive_home, monkeypatch) -> 
     pinned here so a wizard regression can't silently mass-disable capture."""
     fakes = [FakeWatcher("claude-code"), FakeWatcher("cursor")]
     rc = wizard.run_setup(
-        _args("setup", "--skip-watcher", "--skip-backup", "--skip-mcp", "--skip-curation"), watchers=fakes,
+        _args("setup", "--skip-watcher", "--skip-backup", "--skip-mcp"), watchers=fakes,
         interactive=True,
         ask=lambda prompt, *, default, interactive: "s",
     )

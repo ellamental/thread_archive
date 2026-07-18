@@ -193,9 +193,12 @@ class Event(Base):
 class EventFts(Base):
     """Full-text search shadow for events.
 
-    Populated by application code as searchable events land; the FTS5 virtual table
-    (``event_search``) is built over these rows. ``event_id`` references
-    ``events.id`` (a soft reference, no FK by design).
+    Populated by application code as searchable events land; the FTS5 virtual
+    table (``event_search``) is an external-content index over these rows — this
+    table IS the stored corpus, mirrored into the index by the sync triggers (see
+    ``_retrieval.fts``). ``event_id`` references ``events.id`` (a soft reference,
+    no FK by design). ``occurred_at`` holds the store's canonical timestamp text
+    so the search surface can filter time lexicographically.
     """
 
     __tablename__ = "events_fts"
@@ -207,6 +210,7 @@ class EventFts(Base):
     content: Mapped[str] = mapped_column(Text)
     content_type: Mapped[str | None] = mapped_column(Text, default=None)
     tool_name: Mapped[str | None] = mapped_column(Text, default=None)
+    occurred_at: Mapped[str | None] = mapped_column(Text, default=None)
 
     __table_args__ = (
         Index("idx_events_fts_event_id", "event_id"),

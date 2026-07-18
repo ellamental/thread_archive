@@ -1,7 +1,9 @@
 export function Landing() {
   return (
     <div className="wrap">
-      <div className="empty">Search above, or pick a conversation from the left.</div>
+      <div className="empty">
+        Search above (an empty search browses recent threads), or pick a conversation from the left.
+      </div>
     </div>
   )
 }

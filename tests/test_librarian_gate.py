@@ -20,7 +20,10 @@ import pytest
 
 pytestmark = pytest.mark.integration
 
-HOOK = Path(__file__).resolve().parent.parent / ".claude" / "hooks" / "librarian-gate.py"
+HOOK = (
+    Path(__file__).resolve().parent.parent
+    / "plugins" / "librarian" / "hooks" / "librarian-gate.py"
+)
 
 READ = "mcp__thread-archive-librarian__thread_user_messages"
 ARCHIVE_READ = "mcp__thread-archive__thread_read"

@@ -336,17 +336,14 @@ def _table_exists(s, name: str) -> bool:
 
 
 def _purge_search_docs(s, event_ids: list[int]) -> None:
-    """Drop the events' search docs from the FTS shadow + FTS5 table. Thread-meta
-    docs (title/summary, anchored to a real event id) are content of the thread,
-    not of the event — they survive."""
+    """Drop the events' search docs from the FTS shadow; the sync triggers cascade
+    the deletes into the ``event_search`` index. Thread-meta docs (title/summary,
+    anchored to a real event id) are content of the thread, not of the event —
+    they survive."""
     ids = _ids_clause(event_ids)
     s.execute(sa_text(
         f"DELETE FROM events_fts WHERE event_id IN {ids} AND event_type != 'thread_meta'"
     ))
-    if _table_exists(s, "event_search"):
-        s.execute(sa_text(
-            f"DELETE FROM event_search WHERE event_id IN {ids} AND event_type != 'thread_meta'"
-        ))
 
 
 def _purge_vectors(s, d: Path, event_ids: list[int]) -> None:

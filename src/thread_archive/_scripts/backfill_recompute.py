@@ -228,15 +228,11 @@ def _threads_with_null_keys(session, limit: Optional[int]) -> list[int]:
 
 def _delete_events(session, ids: list[int]) -> None:
     """Delete event rows plus their FTS / vector shadow rows, one statement per
-    table (``event_search``'s event_id is UNINDEXED — per-id deletes would each
-    scan the whole FTS table)."""
+    table; the ``events_fts`` delete cascades into the ``event_search`` index via
+    the sync triggers."""
     marks = ",".join(str(int(i)) for i in ids)
     session.execute(sa_text(f"DELETE FROM events WHERE id IN ({marks})"))  # noqa: S608 — ints only
     session.execute(sa_text(f"DELETE FROM events_fts WHERE event_id IN ({marks})"))  # noqa: S608
-    if session.execute(sa_text(
-        "SELECT 1 FROM sqlite_master WHERE name = 'event_search'"
-    )).scalar():
-        session.execute(sa_text(f"DELETE FROM event_search WHERE event_id IN ({marks})"))  # noqa: S608
     if session.execute(sa_text(
         "SELECT 1 FROM sqlite_master WHERE name = 'event_vectors'"
     )).scalar():

@@ -206,8 +206,12 @@ def search(
     ``_thread_more`` count and cross-thread duplicate content (forks, fleets of
     spawned agents carrying one prompt) folded into ``_dup_thread_ids`` — the
     fold annotates rather than discards. ``group='none'`` returns every ranked
-    hit as its own row; a ``thread_id`` scope, the structural shapes, and the
-    ``count``/``linkable`` outputs are never grouped. Hits sharing one
+    hit as its own row; ``group='dup'`` folds only the cross-thread duplicates
+    (:func:`rank.fold_duplicate_threads`), keeping each surviving thread's own
+    hits — the reader's shape, where a result list lays a thread's matches out
+    rather than collapsing them to a count. A ``thread_id`` scope, the
+    structural shapes, and the ``count``/``linkable`` outputs are never grouped
+    by any mode. Hits sharing one
     ``(thread_id, event_id)`` anchor (a thread-meta title/summary doc and the
     first event it anchors to) collapse to the better-placed row in every
     row-shaped output, grouped or not."""
@@ -216,8 +220,8 @@ def search(
 
     if agents is not None and agents not in ("exclude", "include", "only"):
         raise ValueError("agents must be 'exclude', 'include', or 'only'")
-    if group is not None and group not in ("thread", "none"):
-        raise ValueError("group must be 'thread' or 'none'")
+    if group is not None and group not in ("thread", "dup", "none"):
+        raise ValueError("group must be 'thread', 'dup', or 'none'")
     # An explicit types list is the raw thread-type scope; the agents switch
     # stands down so types=['system'] just works without a second knob.
     agents_eff = "include" if types else (agents or "exclude")
@@ -257,7 +261,8 @@ def search(
     # annotate the surviving row instead of spending result slots on repeats.
     # Deliberate scopes stand it down — a thread_id scope wants every hit — and
     # count/linkable are ungrouped by shape ('count' already tallies per thread,
-    # 'linkable' links every event). group='none' turns it off.
+    # 'linkable' links every event). group='none' turns it off; group='dup'
+    # keeps per-thread hits and folds only cross-thread duplicate content.
     grouping = (group != "none" and not structural and thread_id is None
                 and output is None)
     # Candidate pool depth. 200 (not limit*5) because reachability dies at the pool
@@ -351,7 +356,8 @@ def search(
         # two rows that open identically in thread_read).
         ranked = _rank.collapse_same_anchor(ranked)
         if grouping:
-            ranked = _rank.group_by_thread(ranked)
+            ranked = (_rank.fold_duplicate_threads(ranked) if group == "dup"
+                      else _rank.group_by_thread(ranked))
 
     hits = ranked if is_count else ranked[:limit]
 

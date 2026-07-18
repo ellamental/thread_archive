@@ -113,7 +113,9 @@ def search(
     forces the cross-encoder stage (else auto-gated to conceptual queries when the
     ``[embeddings]`` extra is present). The ranked shape returns one row per
     thread, repeats folded into ``_thread_more`` / ``_dup_thread_ids``
-    annotations; ``group='none'`` returns every hit as its own row."""
+    annotations; ``group='none'`` returns every hit as its own row, and
+    ``group='dup'`` folds only cross-thread duplicate content, keeping each
+    surviving thread's own hits."""
     open_archive(home)
     from ._retrieval import search as _search
 

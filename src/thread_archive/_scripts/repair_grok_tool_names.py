@@ -106,10 +106,8 @@ def main() -> int:
             append_event_row(session, ev)
 
         ids = list(events)
+        # The shadow delete cascades into event_search via the sync triggers.
         session.execute(delete(EventFts).where(EventFts.event_id.in_(ids)))
-        for eid in ids:
-            session.execute(
-                sa_text("DELETE FROM event_search WHERE event_id = :id"), {"id": eid})
         session.flush()
         indexed = index_events(session, list(events.values()))
         session.commit()

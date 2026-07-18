@@ -130,7 +130,10 @@ def reset():
     # Any new user prompt clears stale state (escape valve).
     _clear()
 
-    if not message.startswith("/librarian"):
+    # Bare or plugin-namespaced invocation: `/librarian`, `/librarian 25`,
+    # `/archive-librarian:librarian`.
+    if not (message.startswith("/librarian")
+            or message.startswith("/archive-librarian:librarian")):
         return
 
     _save({
