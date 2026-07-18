@@ -7,6 +7,14 @@ compress the changelog, bump the version, one release commit, an annotated
 tag pushed to GitHub. The tag is what a consumer can pin and what
 `archive status` / bug reports can be correlated against.
 
+**Pushing the tag ships it.** Installs run auto-update by default (the
+watcher's daily `archive self-update`): once a pushed tag is 48 hours old
+(the soak window), every clean consumer clone fast-forwards to it, reinstalls,
+and restarts its daemons — unattended. The preflight below is therefore the
+release gate, not a formality, and the soak window is the yank window (see
+"Yanking a bad release"). This machine's clone runs ahead of every consumer,
+so a bad release should hurt here first.
+
 The version's single source of truth is `__version__` in
 `src/thread_archive/__init__.py`; pyproject declares `version` dynamic and
 hatch reads it from there. Nothing else carries the number.
@@ -87,6 +95,27 @@ on the release commit *is* the deployment — with two follow-throughs:
 - Restart whatever loaded the old code: `archive daemon restart` for the
   watcher/backup agents; MCP clients pick up the new server on their next
   session.
+
+## Yanking a bad release
+
+Two moves, both within the 48h soak window if at all possible:
+
+```bash
+git push origin :refs/tags/vX.Y.Z     # delete the remote tag
+```
+
+That stops every install that has not fetched it yet — which, inside the soak
+window, should be all of them. It does **not** heal a clone that already
+fetched the tag (auto-update fetches without pruning, so a deleted remote tag
+lingers locally). So always follow with the real fix:
+
+```bash
+# fix, then release vX.Y.(Z+1) normally
+```
+
+The higher tag outranks the lingering bad one everywhere, fetched or not.
+A truth-format bump can never be yanked back across — auto-update refuses to
+cross one unattended for exactly that reason.
 
 ## Who runs this
 

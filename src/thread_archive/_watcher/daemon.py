@@ -55,6 +55,7 @@ class Watcher:
         embed_batch: int = 512,
     ) -> None:
         self.watchers = watchers if watchers is not None else enabled_watchers(home)
+        self.home = home
         self.interval = interval
         self.maintenance_interval = maintenance_interval
         # Live vector cohost: keep the semantic arm current with ingest so recent
@@ -313,6 +314,7 @@ class Watcher:
         # leave the daemon running past a join. A fresh run needs a fresh Watcher.
         last_maintenance = time.monotonic()
         last_embed = time.monotonic()
+        last_update_probe = time.monotonic()
         dirty = False
         last_stamp = self._import_state_stamp()
         consecutive_errors = 0
@@ -375,6 +377,17 @@ class Watcher:
                                     self._backlog = False
                                     self._embed_more = False  # don't hot-loop a persistent failure
                                 last_embed = now
+
+                    # Self-update probe: hourly, OUTSIDE the ingest lock (it
+                    # touches no store — reads config/health, maybe spawns a
+                    # detached `archive self-update`, which does its own gating
+                    # and at most one real check per day). Fail-soft inside.
+                    probe_now = time.monotonic()
+                    if (probe_now - last_update_probe) >= 3600.0:
+                        last_update_probe = probe_now
+                        from .._update import maybe_spawn_self_update
+
+                        maybe_spawn_self_update(self.home)
                 except Exception:  # noqa: BLE001 — the loop must outlive any one pass
                     consecutive_errors += 1
                     delay = min(self.interval * (2 ** min(consecutive_errors, 6)), 300.0)

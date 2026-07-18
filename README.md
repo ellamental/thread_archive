@@ -7,14 +7,15 @@
 
 **Thread Archive is a local-first memory system for the AI agents that work on your machine.** It ingests every session your agent harnesses record — Claude Code, Codex, Cursor, OpenCode, Grok, and friends — into one append-only archive you own, on your Mac. Web chats (claude.ai, ChatGPT, xAI) import too, from account exports you download by hand; the live, self-feeding path is the agent tooling.
 
-**Built like a database, not a folder of exports.**
-- Plain JSONL files are the source of truth — human-readable, greppable, yours. The search index is disposable and rebuilds from them at any time.
-- Crash-safe writes with intent journaling, fsync discipline, and automatic recovery. Your history survives power loss, killed processes, and corrupted indexes.
-- Built-in backup, integrity verification, and restore drills: recovers from corruption or an errant delete, and the nightly pipeline checks that the backup actually restores. The archive is ordinary files on disk — whatever backs up the rest of your data covers it the same way.
+**Day one is the demo.** The history already exists — your Claude Code sessions are sitting in `~/.claude` right now, as JSONL nothing can search and the harness eventually rotates away. Point archive at them, and minutes later ask, mid-conversation:
+
+> *"what did we decide about the auth flow in March?"*
+
+Your agent calls `thread_search`, the right conversation comes back, and `thread_read` replays the decision with everything around it. No workflow to adopt, no notes you were supposed to be taking — the memory was being written all along. Archive keeps it, and finds it: on a 17k-thread archive, nine queries in ten land the right conversation in the top ten with the full search stack (measured below).
 
 **Searchable by you — and by your AI.**
 - Full-text and semantic search with reranking, filterable by time, source, tool, and content type.
-- Exposed over MCP (`thread_search`, `thread_read`), so Claude (or any MCP client) can search and read your entire history mid-conversation: *"what did we decide about the auth flow in March?"* just works.
+- Exposed over MCP (`thread_search`, `thread_read`), so Claude (or any MCP client) can search and read your entire history mid-conversation.
 - Redaction with encrypted recovery bundles: scrub secrets from the archive without destroying them irrevocably.
 
 **Measured, and every layer earns its keep.** On a 17k-thread / 3.7M-event
@@ -33,6 +34,11 @@ Rows are cumulative. The lexical core already finds the right conversation in
 the top ten for 62% of queries; curation and embeddings are independent,
 stacking lifts (semantic's edge concentrates in code-shaped queries, the
 summaries' in natural-language ones).
+
+**Built like a database, not a folder of exports.**
+- Plain JSONL files are the source of truth — human-readable, greppable, yours. The search index is disposable and rebuilds from them at any time.
+- Crash-safe writes with intent journaling, fsync discipline, and automatic recovery. Your history survives power loss, killed processes, and corrupted indexes.
+- Built-in backup, integrity verification, and restore drills: recovers from corruption or an errant delete, and the nightly pipeline checks that the backup actually restores. The archive is ordinary files on disk — whatever backs up the rest of your data covers it the same way.
 
 **A memory an agent can organize.** The optional **archive-librarian plugin** ([plugins/librarian/](https://github.com/ellamental/thread_archive/tree/main/plugins/librarian)) adds the curation surface: `/librarian` and `/gardener` skills and a write MCP server that let an AI agent curate the archive — creating topics, pinning key quotes, linking related threads into a knowledge graph, and tending that graph's hierarchy. Prefer it hands-off? `archive daemon install --librarian` / `--gardener` schedules headless curation drains (they run from the package — no plugin needed). Every curation act is event-sourced, so you can always see who connected what, and why. The core archive reads and renders the graph either way; without a curator it simply stays empty.
 
@@ -163,6 +169,8 @@ archive daemon <action>   # macOS: install/uninstall/restart/status a LaunchAgen
                           #   pipeline (`daemon install --backup --dest <path> [--at HH:MM]`), or
                           #   --librarian / --gardener the scheduled curation drains
 archive curate <kind>     # run one curation drain now (librarian | gardener); headless `claude`
+archive self-update       # fast-forward this clone to the newest released tag (the watcher
+                          #   runs this daily on its own; --check reports without changing anything)
 ```
 
 The CLI is private operational tooling (see Stability below) — the process
@@ -223,6 +231,31 @@ deliberately as it matures. `tests/test_public_api.py` ratchets the boundary.
 
 Releases (changelog compression, version bump, release commit, annotated tag)
 follow [docs/releasing.md](https://github.com/ellamental/thread_archive/blob/main/docs/releasing.md).
+
+## Not supported
+
+The scope is deliberately narrow. These are design decisions, not gaps waiting
+on a release:
+
+- **More than one machine — and merging archives.** An archive belongs to one
+  Mac. Thread and event ids are locally-minted integers that live *inside* the
+  truth layer: they are the JSONL filenames, they sit in every record, in the
+  append-only curatorial log, and in the inline `[e12345]` citations librarian
+  summaries carry. Two archives grown independently therefore occupy the same
+  id space with nothing to tell them apart, and cannot be combined. There is no
+  merge tool, no sync, and no federated search across archives. *Moving* an
+  archive to another machine is supported — carry the directory, or
+  `archive restore <mirror> --to <home>`; running two and reconciling them
+  later is not.
+- **Anything but macOS.** The daemons are LaunchAgents, the file locks are Unix.
+- **More than one user.** No accounts, no authentication, no per-user scoping.
+  The web viewer binds to `127.0.0.1` and assumes whoever reaches it owns
+  everything in the archive.
+- **Live capture of web chats.** claude.ai, ChatGPT, and xAI arrive from account
+  exports you download by hand. The self-feeding path is the local agent
+  harnesses.
+- **Driving a conversation.** The archive preserves and retrieves. It never
+  writes back to a harness store and never sends a message.
 
 ## Web viewer
 
@@ -285,6 +318,15 @@ wins; ids that were never imported are skipped, not fatal.
   annotations instead of spending result slots (`group='none'` for every hit).
 - **Rebuilds losslessly** — `rm index.db && archive reindex` reconstructs the entire
   index from the JSONL truth; a `cp`/`rsync` of the truth dir *is* the backup.
+- **Updates itself** — provider formats drift, and a parser fix only matters if it
+  reaches the machines that need it. The watcher checks the release tags daily and
+  fast-forwards the clone to the newest tag once it has soaked for 48 hours: fetch →
+  checkout → reinstall → smoke check → daemon restart, rolling back if the new
+  install doesn't stand up. It never touches a tree with local changes, and never
+  crosses a truth-format bump unattended (that needs a human:
+  `archive self-update --allow-format-bump`). Off switch and knobs in `config.json`:
+  `{"update": {"enabled": false, "min_age_hours": 48, "remote": "origin",
+  "check_interval_hours": 24}}`. Wheel installs (no clone) are untouched.
 - **Redacts without deleting history** — `archive redact` crypto-shreds content
   (truth lines, index rows and free pages, search docs, vectors, citation quotes,
   derived titles) into an encrypted bundle on the append-only redaction log, keyed

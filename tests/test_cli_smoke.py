@@ -24,6 +24,7 @@ def test_all_subcommands_present() -> None:
         "import", "import-export", "providers", "watch", "reindex", "embed",
         "status", "backup", "verify", "repair", "restore-drill", "restore",
         "nightly", "coverage", "mirror", "redact", "unredact", "daemon", "curate",
+        "self-update",
     }
 
 

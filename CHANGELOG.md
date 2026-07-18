@@ -2,6 +2,39 @@
 
 ## Unreleased
 
+- **The README opens with the payoff, not the machinery.** A day-one demo block
+  — your existing `~/.claude` history imported, then answered mid-conversation,
+  with the eval numbers as the receipt — now leads; the durability/"built like
+  a database" block moves below the measured table.
+
+- **Single-machine is now a stated boundary, not an assumption.** The README
+  gains a "Not supported" section naming what the product deliberately won't
+  do: multiple machines and archive merging, non-macOS platforms, multiple
+  users, live web-chat capture, and driving a conversation. The merge question
+  is the load-bearing one — thread and event ids are locally-minted integers
+  baked into the truth layer (filenames, record bodies, the curatorial log,
+  and inline citations in summaries), so independently-grown archives share an
+  id space with nothing to distinguish them. Supporting a merge would mean
+  either partitioning the id space per machine or moving to natural keys; both
+  cost the citation ergonomics the librarian depends on, and neither buys
+  anything for a single-user, single-Mac product. Moving an archive between
+  machines is unaffected and still supported.
+
+- **Installs update themselves from the release tags.** Provider formats drift,
+  and a parser fix is worthless on a machine it never reaches: the watcher now
+  probes daily and fast-forwards the clone to the newest annotated tag once it
+  has soaked 48h — fetch → checkout → `pip install -e` → smoke check (`archive
+  status` under the new install) → restart the long-running daemons, rolling
+  back to the previous commit if the new install doesn't stand up. Hard refusals:
+  a dirty tree, local commits off the release line, and (unattended) a
+  `TRUTH_FORMAT_VERSION` bump — that one-way door needs a human
+  (`archive self-update --allow-format-bump`). Manual verb `archive self-update`
+  (`--check` to report only); outcome on `archive status`'s new `update:` line;
+  config `{"update": {"enabled": …, "min_age_hours": …, "remote": …,
+  "check_interval_hours": …}}`, default on. Pushing a release tag is now
+  *shipping*; docs/releasing.md gains the yank procedure (delete the remote tag
+  inside the soak window, then release a fixed higher version).
+
 - **Raw source mirror: the harness stores are preserved verbatim.** `archive
   mirror` (and a new first stage of the nightly) copies every transcript file
   the enabled watchers consume — plus small JSON sidecars, plus SQLite-backup

@@ -343,6 +343,7 @@ def status(*, home: Optional[str] = None) -> dict:
         "last_watch_pass": health.get("watch_pass_last"),
         "last_coverage": health.get("coverage_last"),
         "last_source_mirror": health.get("source_mirror_last"),
+        "last_self_update": health.get("self_update_last"),
     }
 
 

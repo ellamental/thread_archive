@@ -911,6 +911,18 @@ def cmd_status(args: argparse.Namespace) -> int:
         print(line)
     else:
         print("ingest:  no pass recorded")
+    u = st.get("last_self_update")
+    if u:
+        # Only ever printed once a self-update check has run (clone installs
+        # with the mechanism enabled) — the line is how an operator discovers
+        # both the mechanism and why it stopped acting.
+        action = u.get("action", "?")
+        if action == "updated":
+            print(f"update:  {u.get('reason')} {u['at']} ({_age(u['at'])})")
+        elif u.get("ok"):
+            print(f"update:  {action} (v{u.get('current')}) checked {u['at']} ({_age(u['at'])})")
+        else:
+            print(f"update:  {action.upper()}: {u.get('reason')} {u['at']} ({_age(u['at'])})")
     w = st.get("last_watch_errors")
     if w:
         print(
@@ -920,6 +932,28 @@ def cmd_status(args: argparse.Namespace) -> int:
         for err in w.get("errors", [])[:3]:
             print(f"         {err}")
     return 0
+
+
+def cmd_self_update(args: argparse.Namespace) -> int:
+    from . import _update
+
+    res = _update.self_update(
+        home=args.home, check_only=args.check,
+        allow_format_bump=args.allow_format_bump,
+    )
+    action = res.get("action")
+    if action == "updated":
+        print(f"self-update: {res['reason']}")
+    elif action == "update":  # --check found one
+        print(f"self-update: {res['tag']} available ({res['reason']}) — "
+              "run `archive self-update` to apply")
+    elif action == "up-to-date":
+        print(f"self-update: up to date (v{res['current']}) — {res['reason']}")
+    else:
+        print(f"self-update: {action.upper() if action else '?'}: {res.get('reason')}")
+    for line in res.get("skipped") or []:
+        print(f"  · {line}")
+    return 0 if res.get("ok") else 1
 
 
 def cmd_coverage(args: argparse.Namespace) -> int:
@@ -1073,6 +1107,24 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _add_home_arg(p_mirror)
     p_mirror.set_defaults(func=cmd_mirror)
+
+    p_self_update = sub.add_parser(
+        "self-update",
+        help="update this clone to the newest released tag "
+             "(fetch, checkout, reinstall, restart the daemons)",
+    )
+    _add_home_arg(p_self_update)
+    p_self_update.add_argument(
+        "--check", action="store_true",
+        help="report what a scheduled run would do; change nothing",
+    )
+    p_self_update.add_argument(
+        "--allow-format-bump", action="store_true",
+        help="permit an update whose truth-format version is newer than this "
+             "install reads — one-way: after the new code touches the store, "
+             "rolling back leaves a reader that refuses it",
+    )
+    p_self_update.set_defaults(func=cmd_self_update)
 
     p_status = sub.add_parser("status", help="archive health / paths / counts")
     _add_home_arg(p_status)
