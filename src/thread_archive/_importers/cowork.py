@@ -14,6 +14,11 @@ CC session, handled by :func:`_normalize_cowork_line`:
 The normalized lines then run through the standard CC import path under
 ``source="cowork"`` (so continuation detection, which is CC-only, is skipped), with
 the title taken from the metadata file.
+
+Cowork also writes session-level aggregates (``total_cost_usd``, ``usage``,
+``modelUsage``, ``num_turns``) on its ``type: "result"`` lines. The CC parser keeps
+those lines raw; :func:`_session_stats` lifts the newest line's aggregates into the
+thread's ``source_metadata["session_stats"]`` after each import.
 """
 
 from __future__ import annotations
@@ -27,9 +32,10 @@ from typing import Optional
 from thread_archive._thread_import import DefaultEventBuilder
 from thread_archive._thread_import.parsers.claude_code import ClaudeCodeParser
 
-from .._store import get_session
+from .._store import Thread, get_session
 from ._read import parse_session_lines_counted, read_source_bytes
 from ._result import IncrementalImportResult
+from ._state import _restage_thread
 from .claude_code import _import_cc
 
 logger = logging.getLogger(__name__)
@@ -49,6 +55,41 @@ def _normalize_cowork_line(line: dict) -> dict:
     if not ts and audit_ts:
         return {**line, "timestamp": audit_ts}
     return line
+
+
+# Session-aggregate keys lifted off a ``type: "result"`` line into
+# source_metadata["session_stats"].
+_RESULT_STAT_KEYS = ("total_cost_usd", "usage", "modelUsage", "num_turns")
+
+
+def _session_stats(lines: list[dict]) -> Optional[dict]:
+    """The newest ``result`` line's session aggregates (present-only), or None.
+
+    A session accretes one result line per task turn; the aggregates are cumulative,
+    so the last line is the session's current totals."""
+    for line in reversed(lines):
+        if line.get("type") != "result":
+            continue
+        stats = {k: line[k] for k in _RESULT_STAT_KEYS if line.get(k) is not None}
+        return stats or None
+    return None
+
+
+def _merge_session_stats(session, thread_id: int, stats: Optional[dict]) -> None:
+    """Write ``stats`` into the thread's ``source_metadata["session_stats"]`` and
+    re-stage truth. No-op when absent/unchanged."""
+    if not stats or not thread_id:
+        return
+    thread = session.get(Thread, thread_id)
+    if thread is None:
+        return
+    meta = dict(thread.source_metadata or {})
+    if meta.get("session_stats") == stats:
+        return
+    meta["session_stats"] = stats
+    # Reassign a fresh dict so SQLAlchemy flags the JSON column dirty.
+    thread.source_metadata = meta
+    _restage_thread(session, thread)
 
 
 def _read_cowork_title(metadata_path: Optional[Path]) -> Optional[str]:
@@ -91,16 +132,19 @@ def import_cowork_session_incremental(
     lines = [_normalize_cowork_line(ln) for ln in parsed if isinstance(ln, dict)]
     title = _read_cowork_title(Path(metadata_path)) if metadata_path is not None else None
 
+    stats = _session_stats(lines)
     if session is not None:
         result = _import_cc(
             session, source_id, lines, source_bytes, parser, builder,
             source=SOURCE, title_override=title,
         )
+        _merge_session_stats(session, result.thread_id, stats)
         return replace(result, parse_errors=parse_errors) if parse_errors else result
     with get_session() as s:
         result = _import_cc(
             s, source_id, lines, source_bytes, parser, builder,
             source=SOURCE, title_override=title,
         )
+        _merge_session_stats(s, result.thread_id, stats)
         s.commit()
         return replace(result, parse_errors=parse_errors) if parse_errors else result

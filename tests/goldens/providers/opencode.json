@@ -8,6 +8,7 @@
    "agent": "build",
    "directory": "/proj",
    "opencode_session_id": "sgold",
+   "project_id": "proj",
    "provider": "opencode"
   },
   "title": "Golden OpenCode Session",

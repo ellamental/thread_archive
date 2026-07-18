@@ -2,6 +2,38 @@
 
 ## Unreleased
 
+- **Importer dropped-field sweep** — a full audit (prompted by the cloth `cost` bug) found
+  every importer silently losing source data at one of two seams: the parser never read a
+  field, or the builder dropped what the parser extracted. All fixed. The shared mechanism
+  is a new **annotations channel**: parsers put message-level extras in
+  `provider_data["annotations"]` and block-level extras in `block["annotations"]`; the
+  builder copies them onto the event payloads under `annotations`, deliberately outside the
+  dedup content keys — so identities stay stable, re-imports stay idempotent, and stored
+  events are enrichable via amendment. Per source: **opencode** cost/usage/stop_reason
+  (previously all zeroed), API + tool error detail, synthetic-text flags, project_id;
+  **codex** per-turn token usage (was 0 on every turn), pasted user images (were dropped
+  outright), git provenance in source_metadata, effort/personality; **claude-code/cloth**
+  effort, MCP/skill attribution, structured `toolUseResult`, tool-denial kind, mcpMeta,
+  permission mode, origin, todos, request/message ids, git branch; **cursor** real model
+  names (was the literal `"cursor"`), token usage, compaction summaries as
+  `context_summary` events, attached-code context; **antigravity** thinking blocks
+  (thinking-only steps were dropped whole), error text on failed tools, truncation
+  markers; **claude-science** per-message tokens and frame-level cost/token totals
+  (~$20/15M tokens were invisible), artifact/cell-image refs, rolling summaries;
+  **cowork** session cost/usage stats into source_metadata; **grok** model_fingerprint,
+  mid-turn-abort markers, session reasoning/kind config; **exports** claude.ai tool
+  pairing ids (100% of tool events were unpaired), citations, thinking summaries,
+  structured tool content, safety-flag blocks, `parent_message_uuid` branch metadata,
+  ChatGPT citations/content_references/canvas/assets, tether browsing text (was empty),
+  code-block language, and conversation-level metadata folded into thread
+  source_metadata. Structural guard: a **field-level drift ledger**
+  (`known_line_fields`/`known_message_fields` on ProviderConfig) makes a NEW field on a
+  known line type warn through the validation ledger instead of vanishing — the exact
+  blind spot that hid `cost`. Backfill scripts (`backfill_dropped_fields`,
+  `backfill_export_annotations`) enrich already-imported threads through the amendment
+  seam, with struct-anchor salvage for hollow errors / cursor model names and a guarded
+  dedup-key rewrite for claude.ai tool pairing.
+
 - **Images and attachments are viewable** — binary payload content (pasted screenshots,
   tool-result captures, base64 documents) now extracts at import into a content-addressed
   blob store (`truth/blobs/<hh>/<sha256><ext>`; exactly invertible, so dedup keys and the

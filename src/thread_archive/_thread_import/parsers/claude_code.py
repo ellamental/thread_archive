@@ -84,6 +84,42 @@ from .claude_code_ide import (
 )
 from .config import CLAUDE_CODE_CONFIG, ProviderConfig
 
+# Source-line extras carried into provider_data["annotations"] (the builder
+# copies that dict onto the anchor event's payload — see event_builder's
+# "Annotations" convention). (source key, annotation key); present-only, so a
+# line without the field contributes nothing (no null-stuffing).
+_ASSISTANT_LINE_ANNOTATIONS: Tuple[Tuple[str, str], ...] = (
+    ("effort", "effort"),  # reasoning effort ("medium", "xhigh", ...)
+    ("attributionMcpServer", "attribution_mcp_server"),
+    ("attributionMcpTool", "attribution_mcp_tool"),
+    ("attributionSkill", "attribution_skill"),
+    ("requestId", "request_id"),
+    ("gitBranch", "git_branch"),
+    ("version", "version"),
+)
+
+_USER_LINE_ANNOTATIONS: Tuple[Tuple[str, str], ...] = (
+    ("toolDenialKind", "tool_denial_kind"),
+    ("mcpMeta", "mcp_meta"),
+    ("permissionMode", "permission_mode"),
+    ("origin", "origin"),
+    ("promptSource", "prompt_source"),
+    ("todos", "todos"),
+    ("thinkingMetadata", "thinking_metadata"),
+)
+
+
+def _line_annotations(
+    line: Dict[str, Any], mapping: Tuple[Tuple[str, str], ...]
+) -> Dict[str, Any]:
+    """Collect the line's annotation-bound extras. Present-only: absent/None
+    source fields are omitted, never written as nulls."""
+    return {
+        dst: line[src]
+        for src, dst in mapping
+        if line.get(src) is not None
+    }
+
 
 class ClaudeCodeParser(ProviderParser):
     """Parser for Claude Code CLI session exports.
@@ -384,6 +420,32 @@ class ClaudeCodeParser(ProviderParser):
         created_at = _parse_iso_timestamp(timestamp)
         message_order = _timestamp_to_order(timestamp) if timestamp else 0
 
+        # The line-level toolUseResult is the STRUCTURED tool result (richer
+        # than the tool_result block's text rendering). Attach it as a
+        # block-level annotation on the line's tool_result block — sibling to
+        # the content fields, so dedup identity is untouched. A line carries at
+        # most one toolUseResult; on the rare multi-tool_result line it goes on
+        # the first block.
+        structured_result = line.get("toolUseResult")
+        if structured_result is not None:
+            for block in content_blocks:
+                if isinstance(block, dict) and block.get("type") == "tool_result":
+                    block["annotations"] = {"structured_result": structured_result}
+                    break
+
+        annotations = _line_annotations(line, _USER_LINE_ANNOTATIONS)
+
+        provider_data: Dict[str, Any] = {
+            "line": line,
+            "cwd": project_path or line.get("cwd"),
+            "git_branch": line.get("gitBranch"),
+            "version": line.get("version"),
+            "thinking_metadata": line.get("thinkingMetadata"),
+            "todos": line.get("todos"),
+        }
+        if annotations:
+            provider_data["annotations"] = annotations
+
         return {
             "source_provider": self.PROVIDER_NAME,
             "provider_message_id": uuid,
@@ -399,14 +461,7 @@ class ClaudeCodeParser(ProviderParser):
             "updated_at": None,
             "message_order": message_order,
             "is_active_path": not line.get("isSidechain", False),
-            "provider_data": {
-                "line": line,
-                "cwd": project_path or line.get("cwd"),
-                "git_branch": line.get("gitBranch"),
-                "version": line.get("version"),
-                "thinking_metadata": line.get("thinkingMetadata"),
-                "todos": line.get("todos"),
-            },
+            "provider_data": provider_data,
             "conversation_title": None,
             "conversation_metadata": {
                 "project_path": project_path or line.get("cwd"),
@@ -656,6 +711,33 @@ class ClaudeCodeParser(ProviderParser):
         # Extract usage info
         usage = msg_data.get("usage", {})
 
+        # Annotation extras: the request/session identifiers already extracted
+        # into provider_data top-level stay there (readers depend on them) AND
+        # are mirrored here — annotations are what the builder persists onto the
+        # api_request_completed payload, so this is what actually survives import.
+        annotations = _line_annotations(line, _ASSISTANT_LINE_ANNOTATIONS)
+        if msg_data.get("id") is not None:
+            annotations["message_id"] = msg_data["id"]
+        if msg_data.get("diagnostics") is not None:
+            annotations["diagnostics"] = msg_data["diagnostics"]
+
+        provider_data: Dict[str, Any] = {
+            "line": line,
+            "message_id": msg_data.get("id"),
+            "model": model,
+            "stop_reason": msg_data.get("stop_reason"),
+            "usage": usage,
+            # Per-message cost when the source records it (cloth writes it on every
+            # assistant message); None for subscription transcripts, dropped downstream.
+            "cost": msg_data.get("cost"),
+            "request_id": line.get("requestId"),
+            "cwd": project_path or line.get("cwd"),
+            "git_branch": line.get("gitBranch"),
+            "version": line.get("version"),
+        }
+        if annotations:
+            provider_data["annotations"] = annotations
+
         return {
             "source_provider": self.PROVIDER_NAME,
             "provider_message_id": uuid,
@@ -671,20 +753,7 @@ class ClaudeCodeParser(ProviderParser):
             "updated_at": None,
             "message_order": message_order,
             "is_active_path": not line.get("isSidechain", False),
-            "provider_data": {
-                "line": line,
-                "message_id": msg_data.get("id"),
-                "model": model,
-                "stop_reason": msg_data.get("stop_reason"),
-                "usage": usage,
-                # Per-message cost when the source records it (cloth writes it on every
-                # assistant message); None for subscription transcripts, dropped downstream.
-                "cost": msg_data.get("cost"),
-                "request_id": line.get("requestId"),
-                "cwd": project_path or line.get("cwd"),
-                "git_branch": line.get("gitBranch"),
-                "version": line.get("version"),
-            },
+            "provider_data": provider_data,
             "conversation_title": None,
             "conversation_metadata": {
                 "project_path": project_path or line.get("cwd"),

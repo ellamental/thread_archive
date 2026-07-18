@@ -421,6 +421,30 @@ def import_xai_export(
 # ── shared per-conversation write path ───────────────────────────────────────
 
 
+# conversation_metadata keys never folded into a thread's source_metadata:
+# `title` already names the thread; the rest is per-export UI/plumbing noise.
+_SOURCE_METADATA_SKIP = frozenset({"title", "moderation_results", "safe_urls", "plugin_ids"})
+
+
+def fold_conversation_metadata(source_metadata: dict, messages: list) -> dict:
+    """The thread's source_metadata with the conversation's parsed metadata folded
+    in: the fixed ``{provider, surface}`` base plus every meaningfully-present
+    conversation-level field (ChatGPT's gizmo_id/default_model_slug/is_starred/
+    is_archived, claude.ai's summary/project_*/account_*). Present-only — empty
+    values and noise keys are skipped, so nothing nulls out the base dict."""
+    first = messages[0] if messages and isinstance(messages[0], dict) else {}
+    conv_meta = first.get("conversation_metadata")
+    if not isinstance(conv_meta, dict):
+        return source_metadata
+    extras = {
+        k: v for k, v in conv_meta.items()
+        if k not in _SOURCE_METADATA_SKIP and not (v is None or v == "" or v == [] or v == {})
+    }
+    if not extras:
+        return source_metadata
+    return {**source_metadata, **extras}
+
+
 def _import_conversation_stub(
     source: str, source_id: str, title: str, source_metadata: dict,
     builder: DefaultEventBuilder, raw, error: Exception,
@@ -475,6 +499,7 @@ def _import_one(
             if not messages:
                 result.skipped += 1
                 return result
+            source_metadata = fold_conversation_metadata(source_metadata, messages)
             if existing and existing.id is not None:
                 # force re-import: the thread name is unique, so reuse the existing
                 # thread and let the dedup_key check collapse what it already holds —

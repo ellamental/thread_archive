@@ -29,6 +29,7 @@ KNOWN_BLOCK_TYPES: Set[str] = {
     "attachment",
     "model_change",
     "unknown_line",
+    "flag",  # claude.ai safety marker blocks, preserved raw
 }
 
 
@@ -49,9 +50,32 @@ class TypeValidator(BaseValidator):
         unknown_roles: Set[str] = set()
         unknown_block_types: Set[str] = set()
         unmodeled_line_types: Set[str] = set()
+        unknown_line_fields: Set[str] = set()
+        unknown_message_fields: Set[str] = set()
 
         for msg in messages:
             role = msg.get("role", "")
+
+            # Field-level drift: a NEW key on an already-modeled source line is
+            # invisible to the type/role/line-type ledgers — it rides into
+            # provider_data["line"] and is then dropped at the builder seam
+            # unless modeled or annotated. Compare the raw line's keys (and its
+            # nested message object's keys) against the provider's known sets.
+            if self.config.known_line_fields:
+                line = (msg.get("provider_data") or {}).get("line")
+                if isinstance(line, dict):
+                    known = self.config.known_line_fields.get(role)
+                    if known:
+                        unknown_line_fields.update(
+                            f"{role}.{k}" for k in line if k not in known
+                        )
+                    if self.config.known_message_fields:
+                        inner = line.get("message")
+                        if isinstance(inner, dict):
+                            unknown_message_fields.update(
+                                k for k in inner
+                                if k not in self.config.known_message_fields
+                            )
 
             # Check role against provider's expected roles
             if role and self.config.expected_roles:
@@ -104,5 +128,23 @@ class TypeValidator(BaseValidator):
                 context,
                 f"Unmodeled source line type '{line_type}' preserved verbatim - "
                 f"possible format change or new feature",
+                ValidationSeverity.warning,
+            )
+
+        for field_name in sorted(unknown_line_fields):
+            self._add_issue(
+                context,
+                f"Unmodeled source line field '{field_name}' - a new field on a "
+                f"known line type; its value is NOT persisted until modeled or "
+                f"annotated (field-level format drift)",
+                ValidationSeverity.warning,
+            )
+
+        for field_name in sorted(unknown_message_fields):
+            self._add_issue(
+                context,
+                f"Unmodeled message field '{field_name}' - a new field on a known "
+                f"message object; its value is NOT persisted until modeled or "
+                f"annotated (field-level format drift)",
                 ValidationSeverity.warning,
             )

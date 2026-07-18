@@ -764,14 +764,26 @@ def _run(config, messages, ctx):
     return ctx
 
 
+# The "never" path needs a dedicated config: CLAUDE_CONFIG is "optional" (claude.ai
+# exports carry thinking blocks for reasoning models).
+NEVER_CONFIG = ProviderConfig(provider_name="never", thinking_expectation="never")
+
+
 def test_thinking_never_flags_present_thinking():
-    ctx = _run(CLAUDE_CONFIG, [_assistant_msg(thinking=True)], _ctx(provider="claude"))
+    ctx = _run(NEVER_CONFIG, [_assistant_msg(thinking=True)], _ctx(provider="never"))
     assert ctx.has_errors
     assert "NEVER" in ctx.errors[0]
 
 
 def test_thinking_never_ok_without_thinking():
-    ctx = _run(CLAUDE_CONFIG, [_assistant_msg(thinking=False)], _ctx(provider="claude"))
+    ctx = _run(NEVER_CONFIG, [_assistant_msg(thinking=False)], _ctx(provider="never"))
+    assert not ctx.has_errors
+
+
+def test_claude_config_thinking_optional():
+    # claude.ai exports include thinking for reasoning models; present thinking
+    # must not error.
+    ctx = _run(CLAUDE_CONFIG, [_assistant_msg(thinking=True)], _ctx(provider="claude"))
     assert not ctx.has_errors
 
 

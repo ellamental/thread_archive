@@ -44,6 +44,15 @@ class ProviderConfig:
             - "unix_millis": Unix timestamp in milliseconds
             - "iso": ISO 8601 string
             - "mixed": Can be any of the above (auto-detect)
+        known_line_fields: Field-level drift ledger — role → the set of top-level
+            keys the parser knows about on that role's raw source line
+            (``provider_data["line"]``). The type/role/line-type ledgers above
+            cannot see a NEW FIELD appear on an already-modeled line — the class
+            of silent loss where a value rides into ``provider_data`` and is then
+            dropped at the builder seam. Any line key outside the role's set
+            warns. Empty dict (or a role absent from it) disables the check.
+        known_message_fields: Same ledger for the nested ``line["message"]``
+            object's keys, role-independent. Empty set disables.
     """
 
     provider_name: str
@@ -57,6 +66,8 @@ class ProviderConfig:
     expected_block_types: Set[str] = field(default_factory=set)
     expected_unmodeled_line_types: Set[str] = field(default_factory=set)
     timestamp_format: Literal["unix_seconds", "unix_millis", "iso", "mixed"] = "mixed"
+    known_line_fields: Dict[str, Set[str]] = field(default_factory=dict)
+    known_message_fields: Set[str] = field(default_factory=set)
 
     def requires_thinking(self, model: Optional[str]) -> bool:
         """Check if a specific model requires thinking blocks.
@@ -138,17 +149,20 @@ CHATGPT_CONFIG = ProviderConfig(
 
 CLAUDE_CONFIG = ProviderConfig(
     provider_name="claude",
-    # Claude.ai web exports NEVER include thinking blocks (server-side only)
-    thinking_expectation="never",
-    thinking_exempt_models=set(),  # Not applicable - expectation is "never"
-    has_branching=False,
-    has_parent_references=False,
+    # claude.ai exports include thinking blocks for reasoning models but not
+    # for non-reasoning ones — no per-model rule is reliable, so no validation.
+    thinking_expectation="optional",
+    thinking_exempt_models=set(),
+    has_branching=True,  # edit/regenerate tree via parent_message_uuid
+    has_parent_references=True,
     expected_roles={"user", "assistant", "human"},  # Claude uses "human" for user
     expected_block_types={
         "text",
+        "thinking",  # reasoning-model conversations export their thinking blocks
         "tool_use",
         "tool_result",
         "system_metadata",
+        "flag",  # safety marker blocks, preserved raw
     },
     timestamp_format="iso",
 )
@@ -186,6 +200,7 @@ CLAUDE_CODE_CONFIG = ProviderConfig(
         "ai-title",  # the auto-titler's current title (importer reads it for the thread title)
         "custom-title",  # a user rename (wins over ai-title; importer reads it too)
         "mode",  # permission-mode switches (normal/plan/…)
+        "permission-mode",  # newer sibling of "mode": current permission mode
         "file-history-delta",  # file-backup bookkeeping, sibling of file-history-snapshot
         # cloth (a Claude-Code-shaped harness that shares this parser) writes a
         # one-per-session identity header: client/model/system-prompt metadata,
@@ -193,6 +208,87 @@ CLAUDE_CODE_CONFIG = ProviderConfig(
         "cloth_meta",
     },
     timestamp_format="iso",
+    # Field-level drift ledger: every top-level key observed on real user /
+    # assistant lines (~/.claude/projects + cloth, which shares this parser).
+    # A key outside these sets is FUTURE drift — a field Claude Code grew that
+    # the parser has never seen — and warns via TypeValidator. Keep sorted.
+    known_line_fields={
+        "user": {
+            # queued_command attachment lines are rebuilt as user-role messages,
+            # so their one extra key is known here too.
+            "attachment",
+            "cwd",
+            "entrypoint",
+            "gitBranch",
+            "imagePasteIds",
+            "isCompactSummary",
+            "isMeta",
+            "isSidechain",
+            "isVisibleInTranscriptOnly",
+            "mcpMeta",
+            "message",
+            "origin",
+            "parentUuid",
+            "permissionMode",
+            "promptId",
+            "promptSource",
+            "sessionId",
+            "slug",
+            "sourceToolAssistantUUID",
+            "sourceToolUseID",
+            "thinkingMetadata",
+            "timestamp",
+            "todos",
+            "toolDenialKind",
+            "toolUseResult",
+            "type",
+            "userType",
+            "uuid",
+            "version",
+        },
+        "assistant": {
+            "apiErrorStatus",
+            "attributionMcpServer",
+            "attributionMcpTool",
+            "attributionSkill",
+            "cwd",
+            "effort",
+            "entrypoint",
+            "error",
+            "gitBranch",
+            "isApiErrorMessage",
+            "isSidechain",
+            "message",
+            "parentUuid",
+            "requestId",
+            "sessionId",
+            "session_id",  # cloth's snake_case sibling of sessionId
+            "slug",
+            "supersedesUuids",
+            "timestamp",
+            "type",
+            "userType",
+            "uuid",
+            "version",
+        },
+    },
+    # Known keys of line["message"], role-independent (union of user +
+    # assistant message objects; cost is cloth's). Keep sorted.
+    known_message_fields={
+        "container",
+        "content",
+        "context_management",
+        "cost",
+        "diagnostics",
+        "id",
+        "model",
+        "role",
+        "stop_details",
+        "stop_reason",
+        "stop_sequence",
+        "type",
+        "usage",
+    },
 )
 
 

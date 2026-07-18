@@ -140,6 +140,89 @@ def _extract_model(raw_msg: Dict[str, Any]) -> Optional[str]:
     return (raw_msg.get("metadata") or {}).get("model_slug")
 
 
+def _compact_citation(cit: Dict[str, Any]) -> Dict[str, Any]:
+    """A metadata.citations entry with the bulky redundancy removed: keeps the
+    index range + format and the source descriptors, drops ``metadata.text``
+    (the full fetched document, which already lives in the turn's tool output)."""
+    out = {
+        k: cit[k]
+        for k in ("start_ix", "end_ix", "citation_format_type", "matched_text")
+        if cit.get(k) is not None
+    }
+    meta = cit.get("metadata")
+    if isinstance(meta, dict):
+        kept = {
+            k: meta[k]
+            for k in ("type", "title", "url", "name", "id", "source", "pub_date", "snippet")
+            if meta.get(k) not in (None, "")
+        }
+        if kept:
+            out["metadata"] = kept
+    return out
+
+
+def _compact_content_reference(ref: Dict[str, Any]) -> Dict[str, Any]:
+    """A metadata.content_references entry compacted to what identifies the
+    reference: matched text span, type, alt rendering, urls, and per-item
+    title/url/snippet (refs/status/style plumbing dropped)."""
+    out = {
+        k: ref[k]
+        for k in ("type", "matched_text", "start_idx", "end_idx", "alt", "title", "url", "snippet")
+        if ref.get(k) not in (None, "")
+    }
+    if ref.get("safe_urls"):
+        out["safe_urls"] = ref["safe_urls"]
+    items = ref.get("items")
+    if isinstance(items, list) and items:
+        out["items"] = [
+            {
+                k: item[k]
+                for k in ("title", "url", "pub_date", "snippet", "attribution")
+                if item.get(k) not in (None, "")
+            }
+            for item in items
+            if isinstance(item, dict)
+        ]
+    return out
+
+
+def _collect_assets(content: Any) -> list:
+    """Compact descriptors for a multimodal message's ``assets`` arrays (on the
+    content object or its parts) — pointers to generated media whose bytes live
+    outside the export."""
+    assets: list = []
+    if not isinstance(content, dict):
+        return assets
+    if isinstance(content.get("assets"), list):
+        assets.extend(a for a in content["assets"] if a)
+    for part in content.get("parts") or []:
+        if isinstance(part, dict) and isinstance(part.get("assets"), list):
+            assets.extend(a for a in part["assets"] if a)
+    return assets
+
+
+def _message_annotations(raw_msg: Dict[str, Any]) -> Dict[str, Any]:
+    """Message-level provider extras → the annotations channel (copied onto the
+    anchor event's payload by the event builder; never dedup-key material)."""
+    md = raw_msg.get("msg_metadata") or {}
+    ann: Dict[str, Any] = {}
+    citations = md.get("citations")
+    if isinstance(citations, list) and citations:
+        ann["citations"] = [_compact_citation(c) for c in citations if isinstance(c, dict)]
+    refs = md.get("content_references")
+    if isinstance(refs, list) and refs:
+        ann["content_references"] = [
+            _compact_content_reference(r) for r in refs if isinstance(r, dict)
+        ]
+    canvas = md.get("canvas")
+    if isinstance(canvas, dict) and canvas:
+        ann["canvas"] = canvas
+    assets = _collect_assets(raw_msg.get("content"))
+    if assets:
+        ann["assets"] = assets
+    return ann
+
+
 class ChatGPTParser(ProviderParser):
     """Parser for ChatGPT conversations.json export.
 
@@ -269,6 +352,8 @@ class ChatGPTParser(ProviderParser):
             "conversation_template_id": conv.get("conversation_template_id"),
             "safe_urls": conv.get("safe_urls"),
             "is_archived": conv.get("is_archived"),
+            "is_starred": conv.get("is_starred"),
+            "default_model_slug": conv.get("default_model_slug"),
         }
 
         # Build active path set
@@ -635,6 +720,9 @@ class ChatGPTParser(ProviderParser):
             provider_data["model"] = raw_msg["model"]
         if raw_msg.get("synthetic_stub"):
             provider_data["synthetic_stub"] = True
+        annotations = _message_annotations(raw_msg)
+        if annotations:
+            provider_data["annotations"] = annotations
 
         return {
             "source_provider": "chatgpt",

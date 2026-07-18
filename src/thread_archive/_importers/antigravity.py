@@ -85,6 +85,15 @@ def _antigravity_tool_args(args: Any) -> dict[str, Any]:
     return out
 
 
+def _merge_truncated_fields(message: dict[str, Any], line: dict) -> None:
+    """Record Antigravity's own truncation marker (the step fields it clipped,
+    e.g. tool_calls) as a message annotation — data about the turn, never part
+    of its dedup identity."""
+    truncated = line.get("truncated_fields")
+    if truncated:
+        message["provider_data"].setdefault("annotations", {})["truncated_fields"] = truncated
+
+
 def _antigravity_model(lines: list[dict]) -> str:
     model = "gemini"
     for line in lines:
@@ -102,7 +111,9 @@ def _antigravity_has_importable_content(lines: list[dict]) -> bool:
         kind = _antigravity_kind(line)
         if kind == "user" and _antigravity_content(line):
             return True
-        if kind == "assistant" and (_antigravity_content(line) or line.get("tool_calls")):
+        if kind == "assistant" and (
+            _antigravity_content(line) or line.get("tool_calls") or line.get("thinking")
+        ):
             return True
     return False
 
@@ -177,9 +188,16 @@ def _build_antigravity_messages(
     def handle_assistant(line: dict, ts: Optional[str], content: str) -> None:
         nonlocal cur, tool_seq
         tool_calls = [tc for tc in (line.get("tool_calls") or []) if isinstance(tc, dict)]
-        if not content and not tool_calls:
+        thinking = line.get("thinking")
+        thinking = thinking.strip() if isinstance(thinking, str) else ""
+        # A thinking-only step is still an assistant turn — dropping it loses the
+        # model's reasoning; only a step with nothing at all is skipped.
+        if not content and not tool_calls and not thinking:
             return
         cur = new_assistant(ts)
+        _merge_truncated_fields(cur, line)
+        if thinking:
+            cur["content_blocks"].append({"type": "thinking", "text": thinking, "start_timestamp": ts})
         if content:
             cur["content_blocks"].append({"type": "text", "text": content, "start_timestamp": ts})
         for tc in tool_calls:
@@ -198,20 +216,31 @@ def _build_antigravity_messages(
         # it would leave its tool_use unpaired, so the NEXT outcome would mis-pair to
         # it FIFO. Keep it: pop the pending call (honest empty content), never drop.
         nonlocal tool_seq
+        if kind == "error" and not content:
+            # Most ERROR_MESSAGE steps carry their text only in `error` with
+            # content null — take it, or the failure detail is lost to a hollow
+            # tool_execution_error.
+            err = line.get("error")
+            if isinstance(err, str) and err.strip():
+                content = err.strip()
         if pending:
             tid, call_name, owner = pending.pop(0)
         else:
             owner = cur if cur is not None else new_assistant(ts)
             tid, call_name = f"agorphan-{tool_seq}", None
             tool_seq += 1
-        owner["content_blocks"].append({
+        block: dict[str, Any] = {
             "type": "tool_result",
             "tool_use_id": tid,
             "name": call_name or str(line.get("type") or "tool").lower(),
             "content": content,
             "is_error": kind == "error",
             "start_timestamp": ts,
-        })
+        }
+        truncated = line.get("truncated_fields")
+        if truncated:
+            block["annotations"] = {"truncated_fields": truncated}
+        owner["content_blocks"].append(block)
 
     for line in new_lines:
         if not isinstance(line, dict):
@@ -233,14 +262,16 @@ def _build_antigravity_messages(
             if not content:
                 continue
             cur = None
-            messages.append({
+            user_msg: dict[str, Any] = {
                 "role": "user",
                 "created_at": ts,
                 "content_text": content,
                 "content_blocks": [],
                 "provider_message_id": ts or "",
                 "provider_data": {"provider": "antigravity"},
-            })
+            }
+            _merge_truncated_fields(user_msg, line)
+            messages.append(user_msg)
         elif kind == "assistant":
             handle_assistant(line, ts, content)
         else:

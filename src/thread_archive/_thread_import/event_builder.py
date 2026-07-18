@@ -29,6 +29,24 @@ _DEDUP_CONTENT_KEYS = (
     "input", "data", "files", "summarizes", "model",
 )
 
+# ── Annotations: the sanctioned channel for provider extras ──────────────────
+#
+# A parser that finds source data beyond the modeled fields does NOT invent new
+# payload keys or stuff it into content fields. It puts the extras in a dict:
+#
+#   * message-level  → provider_data["annotations"]      (e.g. effort, request_id,
+#     git_branch, model_fingerprint, attribution, structured tool results)
+#   * block-level    → block["annotations"]              (e.g. a text block's
+#     citations, a thinking block's summaries, a tool_use block's MCP metadata)
+#
+# The builder copies each dict verbatim onto the emitted event's payload under
+# "annotations". That key is deliberately OUTSIDE _DEDUP_CONTENT_KEYS: adding or
+# enriching annotations never changes an event's dedup identity, so re-imports
+# stay idempotent and already-stored events can be enriched in place through
+# the amendment mechanism (_ops.amend) — which is what makes backfill possible.
+# Content that belongs in content fields (text, tool output, errors) still goes
+# there; annotations are for data *about* the turn, not the turn itself.
+
 
 def compute_content_hash(payload: dict) -> str:
     """Timestamp-free hash of an event's semantic content (see _DEDUP_CONTENT_KEYS)."""
@@ -171,21 +189,34 @@ class DefaultEventBuilder:
         return events
 
     @staticmethod
+    def _merge_block_annotations(block: Mapping[str, Any], payload: dict) -> None:
+        """Copy a block's ``annotations`` dict onto its event payload (see the
+        annotations convention at the top of this module). Never touches the api
+        summary blocks — those feed ``content_blocks``, which is content-identity
+        material, so annotations there would perturb dedup keys."""
+        ann = block.get("annotations")
+        if isinstance(ann, dict) and ann:
+            payload["annotations"] = dict(ann)
+
+    # Providers whose source is a conversation *tree* (edit/regenerate branches), so
+    # parent links must be persisted for the tree to be rebuildable from truth. A
+    # provider whose log is already a linear transcript gains nothing from a
+    # parent_id on every event (its order implies the chain) and stays out; Claude
+    # Code's sidechain structure is a separate format decision, not folded in here.
+    _BRANCHED_PROVIDERS = frozenset({"chatgpt", "claude"})
+
+    @staticmethod
     def _branch_metadata(message: NormalizedMessage) -> dict:
         """The message's place in a branching conversation, when it has one.
 
-        ChatGPT's export is a conversation *tree*: a node can have several children
+        ChatGPT's export is a conversation tree: a node can have several children
         (regenerations), so the flat event order can't recover which reply followed
-        which prompt, nor which branch is the active one. Its ``provider_parent_id`` +
-        ``is_active_path`` (nodes off the ``current_node`` path are ``False``) were
-        parsed but never persisted, so the tree couldn't be rebuilt from truth. Persist
-        them so it can.
-
-        Scoped to ChatGPT deliberately: a provider whose log is already a linear
-        transcript gains nothing from a ``parent_id`` on every event (its order implies
-        the chain), and Claude Code's sidechain structure is a separate format decision,
-        not folded in here."""
-        if message.get("source_provider") != "chatgpt":
+        which prompt, nor which branch is the active one. claude.ai exports carry the
+        same structure via ``parent_message_uuid``. Each branched provider's
+        ``provider_parent_id`` + ``is_active_path`` (nodes off the active path are
+        ``False``) are persisted as ``branch`` payload metadata so the tree can be
+        rebuilt from truth."""
+        if message.get("source_provider") not in DefaultEventBuilder._BRANCHED_PROVIDERS:
             return {}
         branch: dict = {}
         parent_id = message.get("provider_parent_id")
@@ -354,6 +385,10 @@ class DefaultEventBuilder:
                 "provider_data": {"provider_message_id": provider_message_id},
             }
 
+        annotations = (message.get("provider_data") or {}).get("annotations")
+        if isinstance(annotations, dict) and annotations:
+            payload["annotations"] = dict(annotations)
+
         events = []
 
         # Create user_message_sent when there's real user text OR images — an
@@ -490,6 +525,7 @@ class DefaultEventBuilder:
         # uuid that's guaranteed to dangle.
         if not tool_call_id:
             payload["unpaired"] = True
+        DefaultEventBuilder._merge_block_annotations(block, payload)
         return ThreadEvent(
             event_type=event_type,
             payload=payload,
@@ -546,6 +582,9 @@ class DefaultEventBuilder:
         payload: dict = {"role": role, "content": content_text}
         if content_blocks:
             payload["content_blocks"] = content_blocks
+        annotations = (message.get("provider_data") or {}).get("annotations")
+        if isinstance(annotations, dict) and annotations:
+            payload["annotations"] = dict(annotations)
         return [ThreadEvent(
             event_type="message",
             payload=payload,
@@ -710,6 +749,9 @@ class DefaultEventBuilder:
         cost = provider_data.get("cost")
         if cost is not None:
             completed_payload["cost"] = cost
+        annotations = provider_data.get("annotations")
+        if isinstance(annotations, dict) and annotations:
+            completed_payload["annotations"] = dict(annotations)
         events.append(ThreadEvent(
             event_type="api_request_completed",
             payload=completed_payload,
@@ -765,9 +807,11 @@ class DefaultEventBuilder:
         if block_type == "thinking":
             text = block.get("text", "")
             api_block = {"type": "thinking", "thinking": text}
+            payload = {"text": text, "block_index": idx}
+            self._merge_block_annotations(block, payload)
             events.append(ThreadEvent(
                 event_type="thinking_complete",
-                payload={"text": text, "block_index": idx},
+                payload=payload,
                 stream_id=stream_id,
                 api_call_id=api_call_id,
                 occurred_at=occurred_at,
@@ -776,9 +820,11 @@ class DefaultEventBuilder:
         elif block_type == "text":
             text = block.get("text", "")
             api_block = {"type": "text", "text": text}
+            payload = {"text": text, "block_index": idx}
+            self._merge_block_annotations(block, payload)
             events.append(ThreadEvent(
                 event_type="text_complete",
-                payload={"text": text, "block_index": idx},
+                payload=payload,
                 stream_id=stream_id,
                 api_call_id=api_call_id,
                 occurred_at=occurred_at,
@@ -806,6 +852,7 @@ class DefaultEventBuilder:
                 payload["unpaired"] = True
             if block.get("provider_tool_name"):
                 payload["provider_data"] = {"provider_tool_name": block["provider_tool_name"]}
+            self._merge_block_annotations(block, payload)
             events.append(ThreadEvent(
                 event_type="tool_use_complete",
                 payload=payload,

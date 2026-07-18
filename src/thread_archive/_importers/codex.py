@@ -32,7 +32,11 @@ def import_codex_session_incremental(session_path, source_id: str, *, session=No
         call_names, call_inputs = _codex_call_maps(all_lines)
         prior_lines = all_lines[: len(all_lines) - len(new_lines)]
         messages = _build_codex_messages(
-            new_lines, _codex_model(prior_lines), call_names, call_inputs
+            new_lines,
+            _codex_model(prior_lines),
+            call_names,
+            call_inputs,
+            ambient=_codex_ambient_annotations(prior_lines),
         )
         return assemble_events(sess, thread_id, messages, DefaultEventBuilder())
 
@@ -45,7 +49,7 @@ def import_codex_session_incremental(session_path, source_id: str, *, session=No
         prepare=lambda all_lines, _path: _codex_session_meta(all_lines),
         has_importable_content=_codex_has_importable_content,
         make_title=lambda all_lines, _meta: _codex_title(all_lines),
-        make_source_metadata=lambda meta: {"cwd": meta["cwd"]} if meta.get("cwd") else None,
+        make_source_metadata=_codex_source_metadata,
         import_lines=_do_import,
     )
 
@@ -57,6 +61,51 @@ def _codex_session_meta(lines: list[dict]) -> dict[str, Any]:
         payload = line.get("payload")
         return payload if isinstance(payload, dict) else {}
     return {}
+
+
+def _codex_source_metadata(meta: dict[str, Any]) -> Optional[dict[str, Any]]:
+    """Thread-level source_metadata from ``session_meta``: cwd, CLI version, and
+    git provenance (commit/branch/repo the session ran against)."""
+    out: dict[str, Any] = {}
+    if meta.get("cwd"):
+        out["cwd"] = meta["cwd"]
+    if meta.get("cli_version"):
+        out["cli_version"] = meta["cli_version"]
+    git = meta.get("git")
+    if isinstance(git, dict):
+        git_out = {k: git[k] for k in ("commit_hash", "branch", "repository_url") if git.get(k)}
+        if git_out:
+            out["git"] = git_out
+    return out or None
+
+
+def _codex_context_annotations(line: dict) -> dict[str, str]:
+    """The effort/personality a ``turn_context`` line names, ``{}`` when none.
+
+    Like the model (see :func:`codex_line_model`), these are declared per turn and
+    hold until re-declared, so they're tracked as ambient state over the stream."""
+    if line.get("type") != "turn_context":
+        return {}
+    payload = line.get("payload")
+    if not isinstance(payload, dict):
+        return {}
+    out: dict[str, str] = {}
+    for key in ("effort", "personality"):
+        value = payload.get(key)
+        if isinstance(value, str) and value.strip():
+            out[key] = value.strip()
+    return out
+
+
+def _codex_ambient_annotations(prior_lines: list[dict]) -> dict[str, str]:
+    """The effort/personality in effect entering a chunk (incremental imports
+    resume mid-session, so the turn_context that named them can sit behind the
+    watermark)."""
+    state: dict[str, str] = {}
+    for line in prior_lines:
+        if isinstance(line, dict):
+            state.update(_codex_context_annotations(line))
+    return state
 
 
 def codex_line_model(line: dict) -> Optional[str]:
@@ -196,17 +245,50 @@ def _codex_reasoning_text(payload: dict) -> str:
     return "\n".join(t for t in parts if t).strip()
 
 
+_CODEX_DATA_URL_RE = re.compile(r"^data:([^;,]+);base64,(.*)$", re.DOTALL)
+
+
+def _codex_image_block(url: str, ts: Optional[str]) -> dict[str, Any]:
+    """An image content block from a codex ``images`` entry (a ``data:`` URL,
+    decoded into the builder's base64 source shape) — or a pointer block keeping
+    the raw URL when it isn't one, so the reference survives either way."""
+    m = _CODEX_DATA_URL_RE.match(url)
+    if m:
+        return {
+            "type": "image",
+            "source": {"type": "base64", "media_type": m.group(1), "data": m.group(2)},
+            "start_timestamp": ts,
+        }
+    return {"type": "image", "url": url, "start_timestamp": ts}
+
+
 def _codex_user_message(payload: dict[str, Any], ts: Optional[str]) -> Optional[dict[str, Any]]:
     message = str(payload.get("message") or "")
-    if not message:
+    images = payload.get("images")
+    blocks = [
+        _codex_image_block(url, ts)
+        for url in (images if isinstance(images, list) else [])
+        if isinstance(url, str) and url
+    ]
+    if not message and not blocks:
         return None
+    annotations: dict[str, Any] = {}
+    local_images = payload.get("local_images")
+    if isinstance(local_images, list) and local_images:
+        annotations["local_images"] = local_images
+    text_elements = payload.get("text_elements")
+    if isinstance(text_elements, list) and text_elements:
+        annotations["text_elements"] = text_elements
+    provider_data: dict[str, Any] = {"provider": "codex"}
+    if annotations:
+        provider_data["annotations"] = annotations
     return {
         "role": "user",
         "created_at": ts,
         "content_text": message,
-        "content_blocks": [],
+        "content_blocks": blocks,
         "provider_message_id": payload.get("turn_id") or ts or "",
-        "provider_data": {"provider": "codex"},
+        "provider_data": provider_data,
     }
 
 
@@ -335,20 +417,58 @@ def _codex_assistant_block(
     return _codex_preserved_block(line_type, payload_type, payload, ts)
 
 
+_CODEX_USAGE_FIELDS = (
+    # source key in last_token_usage → canonical usage key
+    ("input_tokens", "input_tokens"),
+    ("output_tokens", "output_tokens"),
+    ("reasoning_output_tokens", "thinking_tokens"),
+    ("cached_input_tokens", "cache_read_tokens"),
+)
+
+
+def _codex_accumulate_usage(msg: dict[str, Any], payload: dict[str, Any]) -> None:
+    """Fold a ``token_count`` line's ``info.last_token_usage`` into the assistant
+    turn's ``provider_data["usage"]``.
+
+    Each token_count measures the one API request it follows; an assembled
+    assistant turn spans every request between two user messages, so the
+    per-request counts are summed — the turn's usage is the total it billed.
+    ``total_tokens`` is derivable and omitted. ``model_context_window`` rides as
+    an annotation (data about the turn, not tokens it consumed)."""
+    info = payload.get("info")
+    if not isinstance(info, dict):
+        return
+    last = info.get("last_token_usage")
+    if isinstance(last, dict):
+        usage = msg["provider_data"].setdefault("usage", {})
+        for src, dst in _CODEX_USAGE_FIELDS:
+            value = last.get(src)
+            if isinstance(value, int) and not isinstance(value, bool):
+                usage[dst] = usage.get(dst, 0) + value
+    window = info.get("model_context_window")
+    if isinstance(window, int) and not isinstance(window, bool):
+        msg["provider_data"].setdefault("annotations", {})["model_context_window"] = window
+
+
 def _build_codex_messages(
     lines: list[dict],
     model: str,
     call_names: dict[str, str],
     call_inputs: dict[str, dict[str, Any]],
+    ambient: Optional[dict[str, str]] = None,
 ) -> list[dict[str, Any]]:
     """Assemble codex's interleaved line stream into canonical NormalizedMessages.
 
     ``model`` is the model entering the chunk; the lines themselves re-declare it
     per turn (see :func:`codex_line_model`), so it is tracked as the stream is
     walked and each assistant turn carries the model that actually served it.
+    ``ambient`` is the effort/personality entering the chunk, tracked the same
+    way (turn_context re-declares them per turn) and carried onto each assistant
+    turn's annotations.
     """
     messages: list[dict[str, Any]] = []
     cur: Optional[dict[str, Any]] = None
+    ambient = dict(ambient or {})
 
     def flush() -> None:
         nonlocal cur
@@ -359,13 +479,16 @@ def _build_codex_messages(
     def assistant(ts: Optional[str]) -> dict[str, Any]:
         nonlocal cur
         if cur is None:
+            provider_data: dict[str, Any] = {"provider": "codex", "model": model}
+            if ambient:
+                provider_data["annotations"] = dict(ambient)
             cur = {
                 "role": "assistant",
                 "created_at": ts,
                 "content_text": "",
                 "content_blocks": [],
                 "provider_message_id": ts or "",
-                "provider_data": {"provider": "codex", "model": model},
+                "provider_data": provider_data,
             }
         return cur
 
@@ -388,6 +511,13 @@ def _build_codex_messages(
                 # in flight rather than only the ones after it.
                 cur["provider_data"]["model"] = model
 
+        named_ann = _codex_context_annotations(line)
+        if named_ann:
+            ambient.update(named_ann)
+            if cur is not None:
+                # Same mid-message correction as the model above.
+                cur["provider_data"].setdefault("annotations", {}).update(named_ann)
+
         if line_type == "event_msg" and payload_type == "user_message":
             user_msg = _codex_user_message(payload, ts)
             if user_msg is None:
@@ -401,6 +531,10 @@ def _build_codex_messages(
         )
         if block is not None:
             assistant(ts)["content_blocks"].append(block)
+            if line_type == "event_msg" and payload_type == "token_count":
+                # The raw line is preserved as a codex_token_count block above;
+                # this additionally maps it to structured usage on the turn.
+                _codex_accumulate_usage(assistant(ts), payload)
 
     flush()
     return messages

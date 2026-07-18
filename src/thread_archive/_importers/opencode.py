@@ -231,6 +231,7 @@ def _opencode_resolve_thread(session, import_state, session_id, source_id, sessi
         for k, v in {
             "provider": "opencode",
             "opencode_session_id": session_id,
+            "project_id": session_data.get("project_id"),
             "directory": session_data.get("directory"),
             "agent": session_data.get("agent"),
             "parent_id": session_data.get("parent_id"),
@@ -336,6 +337,10 @@ def _build_opencode_messages(
                     "model": _opencode_model(data),
                     "segments": _opencode_assistant_segments(parts),
                     "incomplete": True,
+                    "cost": data.get("cost"),
+                    "tokens": data.get("tokens"),
+                    "finish": data.get("finish"),
+                    "error": data.get("error"),
                 })
                 continue
             break
@@ -347,6 +352,10 @@ def _build_opencode_messages(
             "completed_at": mtime.get("completed"),
             "model": _opencode_model(data),
             "segments": _opencode_assistant_segments(parts),
+            "cost": data.get("cost"),
+            "tokens": data.get("tokens"),
+            "finish": data.get("finish"),
+            "error": data.get("error"),
         })
 
     return norm
@@ -372,13 +381,27 @@ def _opencode_text_segment(kind: str, p: dict[str, Any]) -> Optional[dict[str, A
     if not txt:
         return None
     ptime = p.get("time") or {}
-    return {"kind": kind, "text": txt, "ts": ptime.get("start")}
+    seg = {"kind": kind, "text": txt, "ts": ptime.get("start")}
+    if p.get("synthetic"):
+        # Injected text (system reminders, editor context) rather than model output.
+        seg["synthetic"] = True
+    return seg
 
 
 def _opencode_tool_segment(p: dict[str, Any]) -> dict[str, Any]:
     state = p.get("state") or {}
     stime = state.get("time") or {}
-    return {
+    metadata = state.get("metadata") or {}
+    annotations = {
+        k: v
+        for k, v in {
+            "exit": metadata.get("exit"),
+            "truncated": metadata.get("truncated"),
+            "title": state.get("title"),
+        }.items()
+        if v is not None
+    }
+    seg = {
         "kind": "tool",
         "call_id": p.get("callID") or "",
         "name": p.get("tool") or "unknown",
@@ -388,6 +411,11 @@ def _opencode_tool_segment(p: dict[str, Any]) -> dict[str, Any]:
         "ts": stime.get("start"),
         "end_ts": stime.get("end"),
     }
+    if state.get("error") is not None:
+        seg["error"] = state["error"]
+    if annotations:
+        seg["annotations"] = annotations
+    return seg
 
 
 def _opencode_assistant_segments(parts: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -486,7 +514,10 @@ def _opencode_to_normalized(msg: dict[str, Any]) -> dict[str, Any]:
         if kind == "thinking":
             blocks.append({"type": "thinking", "text": seg.get("text", ""), "start_timestamp": ts})
         elif kind == "text":
-            blocks.append({"type": "text", "text": seg.get("text", ""), "start_timestamp": ts})
+            block = {"type": "text", "text": seg.get("text", ""), "start_timestamp": ts}
+            if seg.get("synthetic"):
+                block["annotations"] = {"synthetic": True}
+            blocks.append(block)
         elif kind == "tool":
             call_id = seg.get("call_id") or ""
             name = seg.get("name") or "unknown"
@@ -494,11 +525,20 @@ def _opencode_to_normalized(msg: dict[str, Any]) -> dict[str, Any]:
                 "type": "tool_use", "id": call_id, "name": name,
                 "input": seg.get("input") or {}, "start_timestamp": ts,
             })
-            blocks.append({
+            # An errored tool usually has no output; the failure detail lives in
+            # state.error. Use it as the result content so the failure is readable
+            # rather than an empty error block.
+            content = seg.get("output", "")
+            if not content and seg.get("error"):
+                content = _opencode_stringify(seg.get("error"))
+            result_block: dict[str, Any] = {
                 "type": "tool_result", "tool_use_id": call_id, "name": name,
-                "content": seg.get("output", ""), "is_error": bool(seg.get("is_error")),
+                "content": content, "is_error": bool(seg.get("is_error")),
                 "start_timestamp": _opencode_iso(seg.get("end_ts")) or ts,
-            })
+            }
+            if seg.get("annotations"):
+                result_block["annotations"] = dict(seg["annotations"])
+            blocks.append(result_block)
         elif kind == "raw":
             # An unmodeled assistant part — emit an unmodeled content block so the
             # builder preserves it verbatim as a `content_block` event (raw under
@@ -509,12 +549,22 @@ def _opencode_to_normalized(msg: dict[str, Any]) -> dict[str, Any]:
                 "opencode_part": seg.get("raw"),
                 "start_timestamp": ts,
             })
-    provider_data = {"provider": "opencode", "model": msg.get("model") or "opencode"}
+    provider_data: dict[str, Any] = {"provider": "opencode", "model": msg.get("model") or "opencode"}
+    if msg.get("cost") is not None:
+        provider_data["cost"] = msg["cost"]
+    usage = _opencode_usage(msg.get("tokens"))
+    if usage:
+        provider_data["usage"] = usage
     if msg.get("incomplete"):
         # Abandoned/unsettled turn preserved via the staleness gate — tag it so it's
         # distinguishable from a normally-completed turn. stop_reason isn't part of
         # the dedup content, so a later settled version is still a distinct event.
         provider_data["stop_reason"] = "incomplete"
+    elif msg.get("finish"):
+        provider_data["stop_reason"] = msg["finish"]
+    error_ann = _opencode_error_annotation(msg.get("error"))
+    if error_ann:
+        provider_data["annotations"] = {"error": error_ann}
     return {
         "role": "assistant",
         "created_at": _opencode_iso(msg.get("started_at")),
@@ -523,6 +573,42 @@ def _opencode_to_normalized(msg: dict[str, Any]) -> dict[str, Any]:
         "provider_message_id": msg.get("id", ""),
         "provider_data": provider_data,
     }
+
+
+def _opencode_usage(tokens: Any) -> dict[str, Any]:
+    """Map OpenCode's per-message ``tokens`` dict onto the builder's usage shape.
+    ``total`` is omitted (derivable from the parts)."""
+    if not isinstance(tokens, dict):
+        return {}
+    cache = tokens.get("cache") or {}
+    usage = {
+        k: v
+        for k, v in {
+            "input_tokens": tokens.get("input"),
+            "output_tokens": tokens.get("output"),
+            "thinking_tokens": tokens.get("reasoning"),
+            "cache_read_tokens": cache.get("read") if isinstance(cache, dict) else None,
+            "cache_write_tokens": cache.get("write") if isinstance(cache, dict) else None,
+        }.items()
+        if v is not None
+    }
+    return usage
+
+
+def _opencode_error_annotation(error: Any) -> dict[str, Any]:
+    """Flatten an assistant message's ``error`` ({name, data:{message,...}}) into
+    an annotation dict: name + message + any other scalar data keys."""
+    if not isinstance(error, dict):
+        return {}
+    ann: dict[str, Any] = {}
+    if error.get("name") is not None:
+        ann["name"] = error["name"]
+    data = error.get("data")
+    if isinstance(data, dict):
+        for k, v in data.items():
+            if isinstance(v, (str, int, float, bool)) and k not in ann:
+                ann[k] = v
+    return ann
 
 
 def _parse_opencode_timestamp(ts: Any) -> Optional[datetime]:

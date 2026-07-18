@@ -108,6 +108,10 @@ def _grok_source_metadata(meta: dict[str, Any], source_id: str) -> dict[str, Any
         "git_commit": meta.get("head_commit"),
         "git_remotes": meta.get("git_remotes"),
         "created_at": meta.get("created_at"),
+        "reasoning_effort": meta.get("reasoning_effort"),
+        "session_kind": meta.get("session_kind"),
+        "sandbox_profile": meta.get("sandbox_profile"),
+        "request_id": meta.get("request_id"),
     }
     return {k: v for k, v in data.items() if v is not None}
 
@@ -303,8 +307,18 @@ def _grok_iso(dt: Optional[datetime]) -> Optional[str]:
     return dt.isoformat() if dt is not None else None
 
 
+def _grok_annotations(line: dict[str, Any], keys: tuple[str, ...]) -> dict[str, Any]:
+    """Collect the given line-level extras into an annotations dict (present-only).
+
+    Annotations ride under ``provider_data["annotations"]`` and land on the anchor
+    event payload via the shared builder — outside the dedup content keys, so
+    adding them never perturbs an event's identity."""
+    return {k: line[k] for k in keys if line.get(k) is not None}
+
+
 def _grok_build_user_message(
-    text: str, query: str, prompt_times: dict[str, list[datetime]], meta: dict[str, Any], pmid: str
+    line: dict[str, Any], text: str, query: str,
+    prompt_times: dict[str, list[datetime]], meta: dict[str, Any], pmid: str,
 ) -> dict[str, Any]:
     """Build a user NormalizedMessage carrying the FULL user-line text.
 
@@ -317,6 +331,11 @@ def _grok_build_user_message(
     query = query.strip()
     if query and query != text.strip():
         provider_data["user_query"] = query
+    # prior_turn_interrupt (e.g. "mid_turn_abort"): the previous assistant turn was
+    # aborted mid-stream. Kept as an annotation so it lands on user_message_sent.
+    annotations = _grok_annotations(line, ("prior_turn_interrupt",))
+    if annotations:
+        provider_data["annotations"] = annotations
     return {
         "role": "user",
         # Keep the prompt-time lookup keyed on the query span (unchanged behavior);
@@ -405,13 +424,19 @@ def _grok_build_assistant_message(
             "input": _grok_tool_input(tool_call),
             "start_timestamp": _grok_iso(tool_times.get(cid, {}).get("start")),
         })
+    provider_data = {**_grok_provider_data(meta, "assistant"), "model": model}
+    # model_fingerprint: the backend build that served this turn. Annotation-only,
+    # so it lands on api_request_completed without touching the dedup identity.
+    annotations = _grok_annotations(line, ("model_fingerprint",))
+    if annotations:
+        provider_data["annotations"] = annotations
     return {
         "role": "assistant",
         "created_at": _grok_iso(start_ts),
         "content_text": "",
         "content_blocks": blocks,
         "provider_message_id": pmid,
-        "provider_data": {**_grok_provider_data(meta, "assistant"), "model": model},
+        "provider_data": provider_data,
     }
 
 
@@ -447,13 +472,17 @@ def _grok_fold_tool_result(
     if block is None:
         return cur
     if cur is None:
+        provider_data = {**_grok_provider_data(meta, "assistant"), "model": model_default}
+        annotations = _grok_annotations(line, ("model_fingerprint",))
+        if annotations:
+            provider_data["annotations"] = annotations
         cur = {
             "role": "assistant",
             "created_at": block["start_timestamp"],
             "content_text": "",
             "content_blocks": [],
             "provider_message_id": pmid,
-            "provider_data": {**_grok_provider_data(meta, "assistant"), "model": model_default},
+            "provider_data": provider_data,
         }
     cur["content_blocks"].append(block)
     return cur
@@ -480,7 +509,7 @@ def _grok_user_turn(
     if text_content is None or not text_content.strip():
         return None
     query = _grok_extract_query(text_content)
-    return _grok_build_user_message(text_content, query, prompt_times, meta, pmid)
+    return _grok_build_user_message(line, text_content, query, prompt_times, meta, pmid)
 
 
 def _harvest_tool_names(lines: list[dict]) -> dict[str, str]:

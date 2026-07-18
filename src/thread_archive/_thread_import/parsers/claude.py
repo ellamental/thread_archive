@@ -15,13 +15,17 @@ File structure: ZIP archive containing:
 
 ## Edge Cases
 
-No Thinking Blocks (CRITICAL)
-    Claude.ai exports do NOT include extended thinking blocks. Thinking is
-    stored server-side and excluded from exports. For thinking blocks, use
-    Claude Code exports (``~/.claude/``) or Claude API responses.
+Thinking Blocks
+    Old claude.ai exports exclude extended thinking (server-side only); current
+    exports include ``thinking`` blocks with ``summaries`` and ``signature``.
+    Both shapes are handled.
 
-No Branching
-    Messages are strictly linear - no alternate paths or regeneration history.
+Branching
+    Each message carries ``parent_message_uuid``; a parent with several children
+    marks an edit/regeneration branch. The parent id is preserved as
+    ``provider_parent_id`` (a first message may reference a root uuid that has
+    no message row). The export does not mark which branch is active, so
+    ``is_active_path`` stays ``True``.
 
 Sender Normalization
     Claude uses ``"human"`` where we use ``"user"``. See :func:`_extract_role`.
@@ -30,17 +34,17 @@ Legacy Text Field
     Older exports use ``text`` instead of ``content`` array. Both handled
     transparently.
 
-## Validation
-
-- **Thinking blocks**: Never present. 0% expected; >0% indicates wrong parser.
-- **Parent references**: Not applicable (linear only).
-- **Branching**: None.
-
 ## Field Mapping
 
 - ``sender`` → ``role`` (``"human"`` → ``"user"``)
 - ``created_at`` → ``created_at`` (ISO timestamp)
 - ``content`` or ``text`` → ``content_blocks``
+- ``parent_message_uuid`` → ``provider_parent_id``
+
+Block-level provider extras (a text block's ``citations``, a thinking block's
+``summaries``, a tool block's integration/MCP fields and ``structured_content``)
+ride under ``block["annotations"]`` — the sanctioned channel the event builder
+copies onto the block's event payload without perturbing dedup identity.
 """
 
 from typing import Any, Dict, List, Optional, Union, cast
@@ -99,6 +103,12 @@ def _extract_role(msg: Dict[str, Any]) -> str:
 def _extract_text(msg: Dict[str, Any]) -> str:
     """Extract primary text content."""
     return msg.get("text", "")
+
+
+def _present_fields(raw: Dict[str, Any], keys: tuple) -> Dict[str, Any]:
+    """The subset of ``keys`` whose values are meaningfully present (not
+    None/empty). Used to build block ``annotations`` without null noise."""
+    return {k: raw[k] for k in keys if raw.get(k) not in (None, "", [], {})}
 
 
 class ClaudeParser(ProviderParser):
@@ -234,6 +244,7 @@ class ClaudeParser(ProviderParser):
 
             for msg_idx, msg in enumerate(chat_messages):
                 msg_id = msg.get("uuid")
+                parent_id = msg.get("parent_message_uuid") or None
 
                 # Apply explicit field mappings for semantic correctness
                 mapped_fields = self.apply_field_mappings(cast(Dict[str, Any], msg), self.MESSAGE_FIELD_MAPPINGS)
@@ -284,9 +295,11 @@ class ClaudeParser(ProviderParser):
                         "message": msg,
                         "conversation_title": conv_name,
                     },
-                    # Claude doesn't have branching like ChatGPT
-                    "provider_parent_id": None,
-                    "provider_parent_id_lower": None,
+                    # claude.ai branches on edit/regenerate; parent_message_uuid is the
+                    # tree link (the export doesn't mark the active branch, so
+                    # is_active_path stays True).
+                    "provider_parent_id": parent_id,
+                    "provider_parent_id_lower": parent_id.lower() if parent_id else None,
                     "is_active_path": True,
                     # Conversation metadata
                     "conversation_title": conv_name,
@@ -344,6 +357,7 @@ class ClaudeParser(ProviderParser):
         - tool_use: Tool/function call
         - tool_result: Tool/function result
         - token_budget: Internal token tracking (stored as system_metadata)
+        - flag: Safety marker (e.g. self_harm_risk + helpline), preserved raw
         """
         blocks: List[ContentBlock] = []
         seq = 0
@@ -359,6 +373,7 @@ class ClaudeParser(ProviderParser):
             "tool_result": self._block_tool_result,
             "token_budget": self._block_token_budget,
             "thinking": self._block_thinking,
+            "flag": self._block_flag,
         }
         for raw_block in raw_blocks:
             block_type = raw_block.get("type", "")
@@ -374,36 +389,47 @@ class ClaudeParser(ProviderParser):
         text = raw_block.get("text", "")
         if not text:
             return None
+        # Web-search citations (url + character index ranges) ride as annotations.
+        annotations = _present_fields(raw_block, ("citations", "citations_grouping_mode"))
         return self.create_text_block(
             text,
             seq,
             start_timestamp=raw_block.get("start_timestamp"),
             stop_timestamp=raw_block.get("stop_timestamp"),
+            annotations=annotations or None,
         )
 
     def _block_tool_use(self, raw_block: Dict, seq: int) -> Optional[ContentBlock]:
         name = raw_block.get("name", "unknown")
         input_data = raw_block.get("input", {})
+        # MCP/integration provenance (not icon urls / approval UI noise).
+        annotations = _present_fields(
+            raw_block, ("integration_name", "mcp_server_url", "is_mcp_app", "context"))
         return self.create_tool_use_block(
             name,
             input_data,
             seq,
+            tool_call_id=raw_block.get("id"),
             message=raw_block.get("message"),
             display_content=raw_block.get("display_content"),
             start_timestamp=raw_block.get("start_timestamp"),
             stop_timestamp=raw_block.get("stop_timestamp"),
+            annotations=annotations or None,
         )
 
     def _block_tool_result(self, raw_block: Dict, seq: int) -> Optional[ContentBlock]:
         name = raw_block.get("name", "unknown")
         content = raw_block.get("content")
         is_error = raw_block.get("is_error", False)
+        annotations = _present_fields(raw_block, ("structured_content", "integration_name"))
         return self.create_tool_result_block(
             name,
             content,
             seq,
             is_error=is_error,
+            tool_use_id=raw_block.get("tool_use_id"),
             display_content=raw_block.get("display_content"),
+            annotations=annotations or None,
         )
 
     def _block_token_budget(self, raw_block: Dict, seq: int) -> Optional[ContentBlock]:
@@ -428,7 +454,16 @@ class ClaudeParser(ProviderParser):
         # Preserve signature if present
         if raw_block.get("signature"):
             cast(Dict[str, Any], block)["signature"] = raw_block["signature"]
+        # Per-step thinking summaries ride as annotations.
+        annotations = _present_fields(raw_block, ("summaries",))
+        if annotations:
+            cast(Dict[str, Any], block)["annotations"] = annotations
         return block
+
+    def _block_flag(self, raw_block: Dict, seq: int) -> Optional[ContentBlock]:
+        # Safety marker (e.g. flag: self_harm_risk with a helpline reference).
+        # Preserved raw so it survives as a content_block event.
+        return cast(ContentBlock, {"type": "flag", "data": raw_block, "seq": seq})
 
     def _block_unknown(self, raw_block: Dict, seq: int) -> Optional[ContentBlock]:
         # Unknown block type - preserve as text if it has content

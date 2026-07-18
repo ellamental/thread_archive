@@ -43,7 +43,7 @@ from thread_archive._thread_import.parsers.claude_code import ClaudeCodeParser
 from thread_archive._thread_import.timestamps import parse_timestamp_iso
 
 from .._store import get_session
-from ._events import import_lines
+from ._events import assemble_events, log_parse_validation
 from ._result import DbScanResult
 from ._state import (
     adopt_if_unwatermarked,
@@ -64,6 +64,30 @@ SOURCE = "claude-science"
 # space messages a second apart from the frame's start — monotonic and stable per
 # ``idx``, which is all the assembler's ordering needs.
 _STEP_MS = 1000
+
+# Store `_tokens` keys → Anthropic usage-field names. Mapped into the synthesized
+# line's `message.usage` so the CC parser lifts them into provider_data["usage"] and
+# the builder emits them as structured token fields on api_request_completed.
+_TOKEN_KEY_MAP = (
+    ("input", "input_tokens"),
+    ("output", "output_tokens"),
+    ("cache_read", "cache_read_tokens"),
+    ("cache_write", "cache_write_tokens"),
+    ("uncached", "uncached_tokens"),
+)
+
+# Message-level store extras → annotation keys. These are science-specific (the CC
+# parser doesn't know them), so they ride outside the synthesized line and are merged
+# into provider_data["annotations"] on the parsed NormalizedMessage — the sanctioned
+# extras channel (see the annotations convention in event_builder), which never
+# perturbs dedup identity.
+_ANNOTATION_KEY_MAP = (
+    ("_artifact_refs", "artifact_refs"),
+    ("_cell_images", "cell_images"),
+    ("_rolling_summary", "rolling_summary"),
+    ("_harness_notice", "harness_notice"),
+    ("_harness_prompt", "harness_prompt"),
+)
 
 # Frames that aren't conversations: the per-project "User Uploads" container.
 _NON_CONVERSATION_TYPES = ("uploads",)
@@ -90,7 +114,12 @@ def _synthesize_line(frame_id: str, idx: int, msg: dict, model: Optional[str], b
     it drops straight into the CC line's ``message`` field; we only add the envelope
     (``type`` / ``uuid`` / synthetic ``timestamp`` / ``sessionId``) the parser keys
     off. A real ``_uuid`` is used when present so re-imports dedup on a stable id;
-    otherwise ``{frame_id}:{idx}`` is a stable synthetic stand-in."""
+    otherwise ``{frame_id}:{idx}`` is a stable synthetic stand-in.
+
+    Store extras ride along in the shape the CC parser already reads: per-message
+    ``_tokens`` become ``message.usage`` (Anthropic field names) and ``_response_id``
+    becomes ``message.id``, so they surface as structured tokens / ``message_id`` on
+    the assistant turn's api_request_completed."""
     role = msg.get("role")
     if role not in ("user", "assistant"):
         return None
@@ -98,8 +127,20 @@ def _synthesize_line(frame_id: str, idx: int, msg: dict, model: Optional[str], b
     if content is None:
         return None
     message: dict[str, Any] = {"role": role, "content": content}
-    if role == "assistant" and model:
-        message["model"] = model
+    if role == "assistant":
+        if model:
+            message["model"] = model
+        tokens = msg.get("_tokens")
+        if isinstance(tokens, dict):
+            usage = {
+                new: tokens[old]
+                for old, new in _TOKEN_KEY_MAP
+                if tokens.get(old) is not None
+            }
+            if usage:
+                message["usage"] = usage
+        if msg.get("_response_id"):
+            message["id"] = msg["_response_id"]
     return {
         "type": role,
         "uuid": msg.get("_uuid") or f"{frame_id}:{idx}",
@@ -108,6 +149,54 @@ def _synthesize_line(frame_id: str, idx: int, msg: dict, model: Optional[str], b
         "sessionId": frame_id,
         "message": message,
     }
+
+
+def _message_annotations(msg: dict) -> Optional[dict]:
+    """Science-specific extras of one store message, as an annotations dict
+    (present-only). None when the message carries none."""
+    ann = {new: msg[old] for old, new in _ANNOTATION_KEY_MAP if msg.get(old) is not None}
+    return ann or None
+
+
+def _import_science_lines(
+    session,
+    thread_id: int,
+    lines: list[dict],
+    annotations_by_uuid: dict[str, dict],
+    parser: ClaudeCodeParser,
+    builder: DefaultEventBuilder,
+    *,
+    source_id: str,
+) -> tuple[int, Optional[str]]:
+    """Parse synthesized CC lines and assemble, merging science-specific message
+    extras into ``provider_data["annotations"]`` on the parsed NormalizedMessages
+    (matched by provider_message_id) before the builder runs — the CC parser can't
+    carry keys it doesn't know, so the merge happens on its output."""
+    session_data = {
+        "provider": "claude-code",
+        "sessions": [{"session_id": "incremental", "project": "incremental", "lines": lines}],
+    }
+    messages = parser.parse_export(session_data)
+    log_parse_validation(
+        messages,
+        provider="claude-code",
+        conversation_id=source_id or "incremental",
+        batch_safe=True,
+    )
+    if annotations_by_uuid:
+        for message in messages:
+            ann = annotations_by_uuid.get(message.get("provider_message_id"))
+            if not ann:
+                continue
+            provider_data = message.get("provider_data")
+            if not isinstance(provider_data, dict):
+                provider_data = {}
+                message["provider_data"] = provider_data
+            existing = provider_data.get("annotations")
+            provider_data["annotations"] = (
+                {**existing, **ann} if isinstance(existing, dict) else dict(ann)
+            )
+    return assemble_events(session, thread_id, messages, builder)
 
 
 def _frame_title(frame: dict, lines: list[dict]) -> str:
@@ -130,7 +219,9 @@ def _frame_title(frame: dict, lines: list[dict]) -> str:
 
 def _frame_metadata(org_uuid: str, frame: dict) -> dict:
     """Origin metadata for a Claude Science thread — the org, the frame's identity in
-    the app, and (for a subagent) the parent/root frame it was spawned under."""
+    the app, its aggregate cost/token stats, and (for a subagent) the parent/root
+    frame it was spawned under. Stat columns are present-only: nulls and empties
+    (blank ``effort``, an empty ``mentioned_artifact_ids`` list) are skipped."""
     meta: dict[str, Any] = {
         "app": "claude-science",
         "org_uuid": org_uuid,
@@ -140,6 +231,22 @@ def _frame_metadata(org_uuid: str, frame: dict) -> dict:
         "project_id": frame.get("project_id"),
         "model": frame.get("model"),
     }
+    for col in _FRAME_STAT_COLUMNS:
+        value = frame.get(col)
+        if value is None:
+            continue
+        if col == "mentioned_artifact_ids":
+            # Stored as JSON text; keep the decoded list, skip empty/undecodable.
+            if isinstance(value, str):
+                try:
+                    value = json.loads(value)
+                except (json.JSONDecodeError, TypeError):
+                    continue
+            if not value:
+                continue
+        elif isinstance(value, str) and not value.strip():
+            continue
+        meta[col] = value
     if frame.get("parent_frame_id"):
         meta["is_subagent"] = True
         meta["parent_frame_id"] = frame.get("parent_frame_id")
@@ -167,6 +274,7 @@ def _run_frame(
     base_ms = int(frame.get("created_at") or 0)
     model = frame.get("model")
     lines: list[dict] = []
+    annotations_by_uuid: dict[str, dict] = {}
     for row in message_rows:
         idx, raw = row[0], row[1]
         try:
@@ -178,6 +286,9 @@ def _run_frame(
         line = _synthesize_line(frame_id, idx, msg, model, base_ms)
         if line is not None:
             lines.append(line)
+            ann = _message_annotations(msg)
+            if ann:
+                annotations_by_uuid[line["uuid"]] = ann
 
     # Resolve the thread (watermark wins, else lookup by source) before any create.
     thread_id: Optional[int] = (
@@ -208,8 +319,9 @@ def _run_frame(
         is_new_thread = True
 
     new_lines = lines[start:]
-    events_created, last_uuid = import_lines(
-        session, thread_id, new_lines, parser, builder, source=SOURCE, source_id=source_id,
+    events_created, last_uuid = _import_science_lines(
+        session, thread_id, new_lines, annotations_by_uuid, parser, builder,
+        source_id=source_id,
     )
 
     # A freshly-created thread that imported nothing (no importable content) is
@@ -254,10 +366,21 @@ def import_claude_science_frame(
         return result
 
 
-# The frame columns the importer reads (title/metadata/timestamps + identity).
+# The frame columns the importer requires (title/metadata/timestamps + identity).
 _FRAME_COLUMNS = (
     "id", "parent_frame_id", "root_frame_id", "agent_name", "conversation_type",
     "name", "task_summary", "model", "project_id", "created_at",
+)
+
+# Aggregate cost/token stat columns, surfaced into thread source_metadata. Selected
+# only when the DB carries them (the app's schema grows over time), so an older
+# store still imports.
+_FRAME_STAT_COLUMNS = (
+    "total_cost", "input_tokens", "output_tokens",
+    "cache_read_tokens", "cache_write_tokens",
+    "aux_cost", "aux_input_tokens", "aux_output_tokens",
+    "aux_cache_read_tokens", "aux_cache_write_tokens",
+    "effort", "mentioned_artifact_ids",
 )
 
 
@@ -278,10 +401,13 @@ def import_claude_science_db(db_path, org_uuid: str) -> DbScanResult:
         ).fetchone():
             return summary
 
+        have = {row[1] for row in conn.execute("PRAGMA table_info(frames)")}
+        columns = _FRAME_COLUMNS + tuple(c for c in _FRAME_STAT_COLUMNS if c in have)
+
         type_ph = ", ".join("?" for _ in _NON_CONVERSATION_TYPES)
         proj_ph = ", ".join("?" for _ in _SEEDED_PROJECT_IDS)
         frames = conn.execute(
-            f"SELECT {', '.join(_FRAME_COLUMNS)} FROM frames "
+            f"SELECT {', '.join(columns)} FROM frames "
             f"WHERE conversation_type NOT IN ({type_ph}) "
             f"  AND (project_id IS NULL OR project_id NOT IN ({proj_ph})) "
             f"ORDER BY created_at",
@@ -289,7 +415,7 @@ def import_claude_science_db(db_path, org_uuid: str) -> DbScanResult:
         ).fetchall()
 
         for frame_row in frames:
-            frame = dict(zip(_FRAME_COLUMNS, frame_row))
+            frame = dict(zip(columns, frame_row))
             frame_id = frame["id"]
             message_rows = conn.execute(
                 "SELECT idx, msg_json FROM frame_messages WHERE frame_id = ? ORDER BY idx",

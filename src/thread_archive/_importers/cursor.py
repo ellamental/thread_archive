@@ -284,6 +284,27 @@ def _build_cursor_messages(
             "created_at": bubble.get("createdAt"),
             "index": idx,
         }
+
+        # Per-bubble extras Cursor records alongside the text. Token counts feed
+        # the api_request_completed usage fields; the model name replaces the
+        # "cursor" placeholder; usageUuid joins to Cursor's usage table; attached
+        # code chunks are the file excerpts shown to the model with the turn.
+        token_count = bubble.get("tokenCount")
+        if isinstance(token_count, dict):
+            usage = {
+                "input_tokens": token_count.get("inputTokens", 0),
+                "output_tokens": token_count.get("outputTokens", 0),
+            }
+            if any(usage.values()):
+                message["usage"] = usage
+        model_info = bubble.get("modelInfo")
+        if isinstance(model_info, dict) and model_info.get("modelName"):
+            message["model"] = model_info["modelName"]
+        if bubble.get("usageUuid"):
+            message["usage_uuid"] = bubble["usageUuid"]
+        attached = _cursor_attached_code(bubble)
+        if attached:
+            message["attached_code"] = attached
         # An unmodeled bubble type keeps its raw payload + resolved type so the
         # normalized mapping can preserve the whole turn (content/thinking/tool/raw)
         # rather than drop it — see _cursor_to_normalized's unknown branch.
@@ -324,7 +345,75 @@ def _build_cursor_messages(
                 "result": tool_data.get("result"),
             }
         messages.append(message)
+
+        # A compaction summary rides on the bubble whose turn triggered it. Emit
+        # it as its own system message so the builder lands a context_summary
+        # event, mirroring the other providers' compaction handling.
+        summary_raw = bubble.get("cachedConversationSummary") or bubble.get("conversationSummary")
+        summary_text = _cursor_summary_text(summary_raw)
+        if summary_text:
+            messages.append({
+                "id": f"{bubble_id}:summary",
+                "role": "system",
+                "content": summary_text,
+                "created_at": bubble.get("createdAt"),
+                "index": idx,
+                "summary_type": "cursor_compaction",
+            })
     return messages
+
+
+def _cursor_summary_text(raw: Any) -> str:
+    """The compaction summary text out of Cursor's ``(cached)conversationSummary``.
+
+    The field arrives either as a JSON-encoded string (``'{"summary": "..."}'``),
+    a plain dict, or bare text; all reduce to the summary string."""
+    if raw is None:
+        return ""
+    if isinstance(raw, str):
+        try:
+            parsed = json.loads(raw)
+        except (json.JSONDecodeError, ValueError):
+            return raw.strip()
+        raw = parsed
+    if isinstance(raw, dict):
+        text = raw.get("summary")
+        if isinstance(text, str):
+            return text.strip()
+        return json.dumps(raw, ensure_ascii=False)
+    return str(raw).strip()
+
+
+def _cursor_attached_code(bubble: dict[str, Any]) -> list[dict[str, Any]]:
+    """Compact the code chunks Cursor attached to a turn (path + line range +
+    text when present). ``attachedFileCodeChunksMetadataOnly`` entries carry no
+    text by design and are marked ``metadata_only``."""
+    chunks: list[dict[str, Any]] = []
+    for key in ("attachedCodeChunks", "attachedFileCodeChunksMetadataOnly"):
+        for chunk in bubble.get(key) or []:
+            if not isinstance(chunk, dict):
+                continue
+            entry: dict[str, Any] = {"path": chunk.get("relativeWorkspacePath")}
+            if chunk.get("startLineNumber") is not None:
+                entry["start_line"] = chunk["startLineNumber"]
+            lines = chunk.get("lines")
+            if lines:
+                entry["text"] = "\n".join(lines) if isinstance(lines, list) else str(lines)
+            if key == "attachedFileCodeChunksMetadataOnly":
+                entry["metadata_only"] = True
+            chunks.append(entry)
+    return chunks
+
+
+def _cursor_annotations(msg: dict[str, Any]) -> dict[str, Any]:
+    """Message-level annotations (see the event builder's annotations convention):
+    data about the turn that must never perturb its dedup identity."""
+    annotations: dict[str, Any] = {}
+    if msg.get("usage_uuid"):
+        annotations["usage_uuid"] = msg["usage_uuid"]
+    if msg.get("attached_code"):
+        annotations["attached_code"] = msg["attached_code"]
+    return annotations
 
 
 def _cursor_iso(ts: Any) -> Optional[str]:
@@ -364,13 +453,21 @@ def _cursor_to_normalized(msg: dict[str, Any]) -> dict[str, Any]:
     created_at = _cursor_iso(msg.get("created_at"))
     pmid = msg.get("id", "")
     if role == "user":
+        provider_data: dict[str, Any] = {"provider": "cursor", "role": "user"}
+        annotations = _cursor_annotations(msg)
+        # A user bubble's token count has no api_request_completed to land on;
+        # keep it as an annotation rather than dropping it.
+        if msg.get("usage"):
+            annotations["usage"] = msg["usage"]
+        if annotations:
+            provider_data["annotations"] = annotations
         return {
             "role": "user",
             "created_at": created_at,
             "content_text": msg.get("content", ""),
             "content_blocks": [],
             "provider_message_id": pmid,
-            "provider_data": {"provider": "cursor", "role": "user"},
+            "provider_data": provider_data,
         }
     if role == "assistant":
         blocks: list[dict[str, Any]] = []
@@ -381,13 +478,34 @@ def _cursor_to_normalized(msg: dict[str, Any]) -> dict[str, Any]:
         tc = msg.get("tool_call")
         if tc and isinstance(tc, dict):
             blocks.extend(_cursor_tool_blocks(tc))
+        provider_data = {"provider": "cursor", "model": msg.get("model") or "cursor"}
+        if msg.get("usage"):
+            provider_data["usage"] = msg["usage"]
+        annotations = _cursor_annotations(msg)
+        if annotations:
+            provider_data["annotations"] = annotations
         return {
             "role": "assistant",
             "created_at": created_at,
             "content_text": "",
             "content_blocks": blocks,
             "provider_message_id": pmid,
-            "provider_data": {"provider": "cursor", "model": "cursor"},
+            "provider_data": provider_data,
+        }
+    if role == "system":
+        # A compaction summary synthesized in _build_cursor_messages: a system
+        # message with a context_summary block becomes a context_summary event.
+        text = msg.get("content", "")
+        return {
+            "role": "system",
+            "created_at": created_at,
+            "content_text": text,
+            "content_blocks": [{"type": "context_summary", "text": text}],
+            "provider_message_id": pmid,
+            "provider_data": {
+                "provider": "cursor",
+                "summary_type": msg.get("summary_type", "cursor_compaction"),
+            },
         }
     # An unmodeled bubble type. The shared builder preserves any non-user/assistant/
     # system role as a `message` event (role + content + content_blocks), so carry the
@@ -400,7 +518,12 @@ def _cursor_to_normalized(msg: dict[str, Any]) -> dict[str, Any]:
     tc = msg.get("tool_call")
     if tc and isinstance(tc, dict):
         unknown_blocks.extend(_cursor_tool_blocks(tc))
-    provider_data: dict[str, Any] = {"provider": "cursor", "role": role}
+    provider_data = {"provider": "cursor", "role": role}
+    annotations = _cursor_annotations(msg)
+    if msg.get("usage"):
+        annotations["usage"] = msg["usage"]
+    if annotations:
+        provider_data["annotations"] = annotations
     raw = msg.get("raw")
     if raw:
         provider_data["raw"] = raw

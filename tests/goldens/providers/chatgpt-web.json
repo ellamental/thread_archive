@@ -5,6 +5,7 @@
   "source": "chatgpt",
   "source_id": "gpt-conv-gold",
   "source_metadata": {
+   "current_node": "a2",
    "provider": "chatgpt",
    "surface": "web"
   },
@@ -274,6 +275,7 @@
   "source": "chatgpt",
   "source_id": "gpt-conv-gold",
   "source_metadata": {
+   "current_node": "a2",
    "models": [
     "gpt-4o"
    ],

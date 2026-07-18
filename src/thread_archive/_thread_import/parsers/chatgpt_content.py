@@ -25,6 +25,16 @@ STRUCTURAL_CONTENT_TYPES = {"code", "commentary", "metadata", "system"}
 # Content types that represent system context
 CONTEXT_CONTENT_TYPES = {"user_editable_context", "model_editable_context"}
 
+# Content types whose real payload lives outside the generic `text` field:
+# tether_browsing_display carries fetched page/search content under `result`
+# (with an optional `summary`); tether_quote carries `text` plus source
+# descriptors (url/domain/title).
+TETHER_CONTENT_TYPES = {"tether_browsing_display", "tether_quote"}
+
+# Block types the annotations convention models (the event builder copies
+# `annotations` from these onto the block's event payload).
+_ANNOTATABLE_BLOCK_TYPES = {"text", "thinking", "tool_use", "tool_result"}
+
 
 def extract_text_from_content(content: Any) -> str:
     """Extract text content from ChatGPT content object."""
@@ -34,8 +44,16 @@ def extract_text_from_content(content: Any) -> str:
         # Check for text field. Only trust a string value — a dict/None `text`
         # would otherwise be returned verbatim and crash downstream `.strip()`;
         # fall through to the parts handling (which yields "" if there are none).
-        if isinstance(content.get("text"), str):
+        if isinstance(content.get("text"), str) and (
+            content["text"] or content.get("content_type") not in TETHER_CONTENT_TYPES
+        ):
             return content["text"]
+        # Tether content keeps its real text under `result`/`summary` — without
+        # this the block comes out empty and the fetched content is dropped.
+        if content.get("content_type") in TETHER_CONTENT_TYPES:
+            for key in ("result", "summary"):
+                if isinstance(content.get(key), str) and content[key]:
+                    return content[key]
         # Check for parts array
         parts = content.get("parts", [])
         text_parts = []
@@ -202,6 +220,36 @@ def append_image_parts(blocks: List[ContentBlock], content: Any, seq: int) -> in
     return seq
 
 
+def content_type_annotations(content: Any, content_type: str) -> Dict[str, Any]:
+    """Source descriptors a content_type carries beside its text: a ``code``
+    message's language/response_format_name, a tether message's url/domain/title.
+    Attached as block annotations, never folded into content fields."""
+    if not isinstance(content, dict):
+        return {}
+    if content_type == "code":
+        keys = ("language", "response_format_name")
+    elif content_type in TETHER_CONTENT_TYPES:
+        keys = ("url", "domain", "title")
+    else:
+        return {}
+    return {k: content[k] for k in keys if content.get(k) not in (None, "")}
+
+
+def _annotate_first_block(
+    blocks: List[ContentBlock], content: Any, content_type: str
+) -> None:
+    """Merge the message's content-type descriptors onto its first modeled block."""
+    ann = content_type_annotations(content, content_type)
+    if not ann:
+        return
+    for block in blocks:
+        if isinstance(block, dict) and block.get("type") in _ANNOTATABLE_BLOCK_TYPES:
+            merged = dict(cast(Dict[str, Any], block).get("annotations") or {})
+            merged.update(ann)
+            cast(Dict[str, Any], block)["annotations"] = merged
+            return
+
+
 def extract_content_blocks(
     raw_msg: Dict,
     start_seq: int,
@@ -217,20 +265,21 @@ def extract_content_blocks(
     msg_metadata = raw_msg.get("msg_metadata", {})
 
     # Exclusive cases (stub / tool role / thinking / system context /
-    # recipient tool call) each fully handle the message and return early.
+    # recipient tool call) each fully handle the message.
     special = extract_special_block(
         raw_msg, content, content_type, role, msg_id, start_seq
     )
     if special is not None:
-        return special
-
-    # Additive sections: a message can carry any combination of metadata
-    # tool calls, regular text, and multimodal images, appended in that order.
-    blocks: List[ContentBlock] = []
-    seq = start_seq
-    seq = append_metadata_tool_calls(blocks, msg_metadata, msg_id, seq)
-    seq = append_text_content(blocks, content, seq)
-    seq = append_image_parts(blocks, content, seq)
+        blocks, seq = special
+    else:
+        # Additive sections: a message can carry any combination of metadata
+        # tool calls, regular text, and multimodal images, appended in that order.
+        blocks = []
+        seq = start_seq
+        seq = append_metadata_tool_calls(blocks, msg_metadata, msg_id, seq)
+        seq = append_text_content(blocks, content, seq)
+        seq = append_image_parts(blocks, content, seq)
+    _annotate_first_block(blocks, content, content_type)
     return blocks, seq
 
 
