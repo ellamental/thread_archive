@@ -143,9 +143,31 @@ def test_codex_hidden_blocks_stay_hidden_in_the_string_transcript(archive_home) 
 
 
 def test_non_codex_preserved_blocks_are_untouched(archive_home) -> None:
-    """The codex rules are keyed on the ``codex_`` block-type prefix — another provider's
-    preserved block still renders under its own type."""
+    """A block codex's policy declines renders under its own type.
+
+    The policy governs codex's own preserved kinds, not every block that reaches a
+    codex thread — anything else takes the reader's default flattening, so a
+    preserved-but-unmodeled block stays visible without a provider vouching for it.
+    """
+    from thread_archive._providers import render_policy
     from thread_archive._retrieval.read import _content_block_view
 
     payload = {"block_type": "redacted_thinking", "data": {"type": "redacted_thinking", "text": "hm"}}
-    assert _content_block_view(payload, {"hm"}) == ("redacted_thinking", "hm")
+    assert _content_block_view(payload, {"hm"}, render_policy("codex")) == ("redacted_thinking", "hm")
+
+
+def test_codex_hiding_does_not_reach_another_providers_thread(archive_home) -> None:
+    """Hiding rules are the *thread's* provider's, resolved once per read.
+
+    A block type is only meaningful within the provider that writes it, so a
+    provider's rules must not apply to a thread it didn't produce — otherwise one
+    provider's idea of machinery silently hides another's content."""
+    from thread_archive._providers import render_policy
+    from thread_archive._retrieval.read import _content_block_view
+
+    machinery = {"block_type": "codex_task_complete",
+                 "data": {"raw": {"last_agent_message": "done"}}}
+    # On a codex thread this is codex restating a turn it already rendered.
+    assert _content_block_view(machinery, frozenset(), render_policy("codex")) is None
+    # Claude Code declares no policy, so the same block is content and stays visible.
+    assert _content_block_view(machinery, frozenset(), render_policy("claude-code")) is not None

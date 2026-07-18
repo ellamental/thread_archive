@@ -58,6 +58,20 @@ Orthogonally, a provider may set ``export`` to accept downloaded account
 exports dropped into ``<home>/dumps/``. A source can have both — the Grok CLI
 watcher and xAI account exports are one provider.
 
+## Knowledge about a provider belongs to the provider
+
+Everything archive needs to know about a source is declared on its descriptor,
+including the parts that surface far from the importer: how its stored events
+should be *displayed* (``render``) and how a session id sits inside its
+``source_id`` (``session_id_separators``). Generic code asks the registry rather
+than carrying a list of provider names, so a plugin reaches those seams on the
+same terms a built-in does.
+
+That is a correctness property, not tidiness. A rule about one provider's format
+applied to every provider silently corrupts the others — a prompt-unwrapping
+rule eats a turn that merely quotes the wrapper, an id-composition rule resolves
+a uuid to a thread that merely ends the same way.
+
 ## Reusing a built-in parser
 
 A harness that writes another provider's transcript shape should reuse that
@@ -72,10 +86,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable, Literal, Optional
+from typing import Any, Callable, Container, Literal, Optional
 
 from .._importers._events import assemble_events, log_parse_validation
-from .._importers._line_stream import import_line_stream_session
+from .._importers._line_stream import line_stream_importer
 from .._importers._read import (
     parse_session_lines,
     parse_session_lines_counted,
@@ -95,7 +109,12 @@ from .._importers._state import (
     update_thread_title,
     upsert_import_state,
 )
-from .._store import get_session
+
+# Claude Code's format is deliberately published for reuse — a harness writing its
+# shape gets the parser wholesale. The helper is defined with that provider and
+# re-exported here, the same way the watcher bases are.
+from .._importers.claude_code import claude_code_line_stream
+from .._store import ImportState, get_session
 from .._watcher.base import (
     SourceDiscovery,
     SourceWatcher,
@@ -142,6 +161,55 @@ class ExportSpec:
     kind: str
 
 
+class _DefaultView:
+    """The sentinel type — see :data:`DEFAULT_VIEW`."""
+
+    def __repr__(self) -> str:
+        return "DEFAULT_VIEW"
+
+
+#: Returned by :attr:`RenderPolicy.block` to decline a block: the reader falls
+#: back to its own default view. Distinct from ``None``, which means *hide this
+#: block*. A policy that claims some of its provider's block types and not
+#: others needs all three answers, so they are three distinct return values.
+DEFAULT_VIEW = _DefaultView()
+
+#: ``(block_type, data, rendered_text) -> (label, text) | None | DEFAULT_VIEW``.
+BlockRenderer = Callable[[str, Any, Container[str]], Any]
+
+
+@dataclass(frozen=True)
+class RenderPolicy:
+    """How a reader presents this provider's stored events.
+
+    Rendering is the one place a provider's quirks legitimately reach outside
+    the importer: a harness that wraps the operator's prompt in a tag, or writes
+    its transcript twice, produces events that are correct as *stored truth* and
+    misleading as *displayed conversation*. Both readers (the CLI/MCP transcript
+    and the web viewer) apply the policy of the thread's own provider, so a quirk
+    can never reshape another provider's turns.
+
+    A policy is presentation only. It never changes what was stored, and the
+    untouched payload stays available in the event log and the viewer's raw view.
+
+    ``user_content(content) -> str`` rewrites a user turn for display — unwrapping
+    a harness's prompt wrapper, say. It must be **content-preserving or
+    explicitly lossy for one known shape**: it runs on every user turn of that
+    provider, including turns that merely quote the shape it looks for.
+
+    ``block(block_type, data, rendered_text) -> (label, text) | None |``
+    :data:`DEFAULT_VIEW` decides what a preserved ``content_block`` event looks
+    like: a rendered ``(label, text)``, ``None`` to hide it, or
+    :data:`DEFAULT_VIEW` to take the reader's default flattening. ``rendered_text``
+    holds the stripped text of every turn the modeled path already shows, so a
+    provider that records its transcript twice can suppress the copy by content
+    rather than by kind.
+    """
+
+    user_content: Optional[Callable[[str], str]] = None
+    block: Optional[BlockRenderer] = None
+
+
 @dataclass(frozen=True)
 class Provider:
     """One preservable source of conversations.
@@ -171,6 +239,22 @@ class Provider:
     #: itself. Tooling that re-parses transcripts groups by this.
     parser_id: Optional[str] = None
     export: Optional[ExportSpec] = None
+    #: How this provider presents its stored events to a reader. Leave unset and
+    #: the readers render the events as they are — the right answer for almost
+    #: every provider.
+    render: Optional[RenderPolicy] = None
+    #: The characters that separate a prefix from the session id inside this
+    #: provider's ``source_id``, when it composes one. Claude Code stores
+    #: ``{project}:{uuid}`` and declares ``(":",)``; codex stores
+    #: ``rollout-{timestamp}-{uuid}`` and declares ``("-",)``. Empty — the
+    #: default — means the ``source_id`` *is* the session id.
+    #:
+    #: It is what lets an agent holding only a bare session uuid resolve the
+    #: thread it names. Declaring it narrowly matters: every separator any
+    #: provider declares is tried when resolving a reference whose provider is
+    #: unknown, so a broad one invites a uuid resolving to another provider's
+    #: thread that merely ends the same way.
+    session_id_separators: tuple[str, ...] = ()
     #: True for a watcher that is archive's own machinery rather than a store an
     #: operator chose to have — the drop zone, a recovery pass over another
     #: source. Setup presents provider sources only; mechanisms ride along.
@@ -200,96 +284,11 @@ class Provider:
             )
         if self.follows == self.name:
             raise ValueError(f"provider {self.name!r} cannot follow itself")
-
-
-def line_stream_importer(
-    source: str,
-    *,
-    has_importable_content: Callable[[list[dict]], bool],
-    make_title: Callable[..., str],
-    import_lines: Callable[..., tuple[int, Optional[str]]],
-    prepare: Optional[Callable[..., Any]] = None,
-    make_source_metadata: Optional[Callable[[Any], Optional[dict]]] = None,
-    not_found_msg: Optional[str] = None,
-) -> Callable[..., IncrementalImportResult]:
-    """An importer for a one-JSONL-file-per-session provider, from five callbacks.
-
-    Everything an incremental import has to get right is supplied: reading the
-    file once and parsing from that buffer, the append proof that re-imports from
-    zero if the bytes under the cursor changed, thread creation and its discard
-    when a poll turns out to hold no events, the skip ledger, the watermark, and
-    the single transaction all of it commits in. A dedup key collapses anything
-    already held, so a re-import costs work but never duplicates.
-
-    The callbacks, in the order they run:
-
-    - ``prepare(all_lines, path) -> ctx`` — optional per-import context, passed
-      to the rest. Derive whole-file state here (ambient model, call maps): the
-      incremental path hands you every line, not only the new ones.
-    - ``has_importable_content(new_lines) -> bool`` — is there anything worth a
-      thread yet? False on a first poll records a skip and creates nothing, so a
-      store's bookkeeping-only preamble doesn't leave empty threads behind.
-    - ``make_title(all_lines, ctx) -> str`` — the new thread's title.
-    - ``make_source_metadata(ctx) -> dict | None`` — optional provenance stored
-      on the thread.
-    - ``import_lines(session, thread_id, all_lines, new_lines, ctx)`` — build
-      messages and write them, returning ``(events_created, last_message_uuid)``.
-      End in :func:`assemble_events`; it owns dedup, stream ids, monotonic
-      timestamps, the truth-log write and search indexing.
-
-    The returned importer is ``(session_path, source_id, *, session=None) ->``
-    :class:`IncrementalImportResult` — the shape a file watcher expects. Passing
-    ``session`` hands commit control to the caller.
-    """
-
-    def _import(session_path, source_id: str, *, session=None) -> IncrementalImportResult:
-        return import_line_stream_session(
-            session_path=session_path,
-            source_id=source_id,
-            source=source,
-            session=session,
-            prepare=prepare,
-            has_importable_content=has_importable_content,
-            make_title=make_title,
-            make_source_metadata=make_source_metadata,
-            import_lines=import_lines,
-            not_found_msg=not_found_msg or f"{source} transcript not found: {session_path}",
-        )
-
-    _import.__name__ = f"import_{source.replace('-', '_')}_session_incremental"
-    _import.__doc__ = f"Import one {source} transcript into the event log."
-    return _import
-
-
-def claude_code_line_stream(source: str) -> Callable[..., IncrementalImportResult]:
-    """A line-stream importer over Claude-Code-shaped JSONL, under ``source``.
-
-    A harness that writes Claude Code's transcript shape — ``user`` /
-    ``assistant`` lines, extra line kinds the parser preserves verbatim — reuses
-    Claude Code's parser wholesale instead of duplicating it. Threads land under
-    ``source`` with the harness's own provenance, and idempotence, the truth-log
-    seam and incremental watermarking all come from the shared path unchanged.
-
-    Register a ``ProviderConfig`` derived from ``CLAUDE_CODE_CONFIG`` alongside
-    it (``Provider.parser_config``) so the extra line types and fields the
-    harness emits are known rather than reported as Claude Code drift.
-
-    Claude Code's own continuation/fork merging and its ``.context.jsonl``
-    sidecar stay out: both key off conventions specific to Claude Code's store,
-    and applying them to another harness's ids would merge unrelated threads.
-    """
-    from .._importers.claude_code import import_session_incremental
-
-    def _import(session_path, source_id: str, *, session=None) -> IncrementalImportResult:
-        return import_session_incremental(
-            session_path, source_id, source=source, session=session
-        )
-
-    _import.__name__ = f"import_{source.replace('-', '_')}_session_incremental"
-    _import.__doc__ = (
-        f"Import one Claude-Code-shaped {source} transcript into the event log."
-    )
-    return _import
+        if not all(isinstance(sep, str) and sep for sep in self.session_id_separators):
+            raise ValueError(
+                f"provider {self.name!r}: session_id_separators must be non-empty strings; "
+                f"declare () when the source_id is the session id"
+            )
 
 
 def resolve_provider(obj: object) -> Provider:
@@ -316,6 +315,10 @@ __all__ = [
     "ExportSpec",
     "ImporterKind",
     "resolve_provider",
+    # Rendering
+    "RenderPolicy",
+    "BlockRenderer",
+    "DEFAULT_VIEW",
     # Watcher contract
     "SourceWatcher",
     "WatchResult",
@@ -342,6 +345,9 @@ __all__ = [
     "adopt_if_unwatermarked",
     "get_import_state",
     "upsert_import_state",
+    # The watermark row itself, for a db-scan importer that annotates the value
+    # ``get_import_state`` hands back (both of archive's do).
+    "ImportState",
     "set_thread_models_from_events",
     "update_thread_title",
     "update_thread_description",

@@ -2,6 +2,49 @@
 
 ## Unreleased
 
+- **Workflow subagent transcripts were never captured.** The Claude Code watcher
+  globbed `*/subagents/*.jsonl` — exactly one level — while a workflow run nests
+  its agents two further down (`subagents/workflows/<wf-id>/agent-*.jsonl`). Every
+  one of those transcripts was invisible to ingest; 499 sat unarchived on this
+  machine. The glob is recursive under `subagents/` now, and matches the
+  `agent-` prefix rather than `*.jsonl` — a workflow directory also holds a
+  `journal.jsonl` run ledger, which is not a transcript and whose name repeats
+  once per run, so matching it would land every run in a project on one
+  source_id. Capture-coverage could
+  not have caught it: `discover()` reports what `iter_files()` yields, so both
+  sides of the reconciliation shared the blind spot and it read as a clean 100%.
+
+- **The agents' open-file ceiling is raised to 4096.** launchd hands a process a
+  soft limit of 256 descriptors, and the truth log's own append-handle cache
+  (`MAX_OPEN_HANDLES`) is sized at 256 — leaving nothing for the database, the
+  locks, the vector pack or the logs. A pass touching many threads at once died
+  partway through on `[Errno 24] Too many open files`, and because the fingerprint
+  seam only advances after a successful import, it retried the same files forever
+  without progressing. Latent until an ingest pass got big enough to reach it.
+
+- **Subagent threads record which kind of agent ran.** Claude Code names it in
+  `attributionAgent` on every assistant line (`Explore`, `general-purpose`, a
+  custom agent name …); the importer read the transcript's `agentId` but not that,
+  so a subagent thread knew which run it was and whose child it was, but never
+  what it was. Now stamped as `source_metadata.agent_type` at import — once per
+  thread, since both fields are constant across a transcript.
+  `_scripts/backfill_subagent_type.py` fills in threads that predate it, from the
+  on-disk transcripts; a thread whose transcript Claude Code has since rotated
+  away is unrecoverable, as the field survives in no event payload.
+
+- **`agentId` / `attributionAgent` join the Claude Code field ledger,** which had
+  been reporting both as unmodeled drift on every subagent run — ~1200 findings a
+  week, drowning the real signal the ledger exists to carry.
+
+- **`toolEndsTurn` joins the Claude Code field ledger.** It flags the tool result
+  that ended an agent's turn — in practice a StructuredOutput result the schema
+  accepted — so every workflow agent given a schema was reporting one finding, at
+  the time the loudest entry in the ledger. Carried, not stored: the flag is
+  present exactly when the result's tool_use is StructuredOutput and the result is
+  not an error, and a schema rejection (which keeps the turn going) is already
+  modeled as `tool_execution_error`. Nothing is lost by not persisting it, which
+  is what separates this from the `attributionAgent` case above.
+
 - **Providers are pluggable** — a harness archive has never heard of can now be
   preserved without forking it. A provider is one `Provider` descriptor (where
   its transcripts live, how to read them, what its format looks like, how it
@@ -63,6 +106,63 @@
   process. The failure was silent in the worst direction: the provider fell back
   to an all-permissive default, so its own known line types started reporting as
   drift while its real drift stopped being caught.
+
+- **The built-in providers are built by the public factory they publish.** The
+  three line-stream built-ins (codex, Grok, Antigravity) each called the private
+  import engine directly, so `line_stream_importer` — the only line-stream path a
+  plugin has — had no users inside archive and nothing that ran exercised it.
+  They go through it now, and a ratchet keeps them there. Claude Code stays the
+  documented exception: it merges compaction continuations and forks into
+  existing threads, which the one-file-one-thread lifecycle can't express.
+
+  Converting them found the factory's callback contract too narrow to describe
+  archive's own providers. Grok's timestamps live in files *beside* the
+  transcript and Antigravity namespaces message ids by session, so both need the
+  path and the source id — which no callback received. `prepare` is handed both
+  now and carries them on the context the later callbacks read. A provider whose
+  session isn't a function of its JSONL alone could not have used the public
+  factory at all before this.
+
+  `line_stream_importer` moves to the import engine and `claude_code_line_stream`
+  to the Claude Code importer, leaving `thread_archive.provider` a pure
+  re-export surface — it had been the one generic module reaching into a
+  specific provider's implementation. `ImportState` joins the public API: both
+  db-scan built-ins annotate what `get_import_state` returns, and a plugin
+  couldn't name that type.
+
+- **One provider's display quirk no longer reshapes another's turns.** How a
+  thread's stored events should be *displayed* is now declared on its provider
+  as a `RenderPolicy` and resolved per thread, replacing rules that generic
+  reader code applied to every source. Three of them existed, two doing real
+  damage:
+
+  Grok's `<user_query>` unwrap ran on **every** user turn from every provider,
+  so a turn that merely *quoted* the wrapper — a bug report, a pasted transcript
+  — was replaced by whatever sat inside the tags it happened to contain. In the
+  live archive that hid a 3272-character Claude Code turn behind the 3
+  characters of an example span. The payload was intact throughout; only the
+  reader was lying, which is why nothing caught it.
+
+  Codex's block-hiding rules keyed off a `codex_` block-type prefix rather than
+  the thread's actual provider, so any source writing a block type under that
+  prefix inherited codex's idea of what counts as machinery. A policy that
+  declines a block returns `DEFAULT_VIEW` and the reader falls back to its
+  default flattening, so preserved-but-unmodeled content stays visible without
+  needing a provider to vouch for it.
+
+  A `RenderPolicy` is presentation only — it never changes what was stored, and
+  the untouched payload stays in the event log and the viewer's raw view.
+
+- **Session-id shapes are declared, not assumed.** Resolving a bare session id
+  to a thread used a hardcoded separator set (`:` and `-`) derived from Claude
+  Code and codex and applied to every provider. Providers now declare their own
+  `session_id_separators`, so a plugin composing `{workspace}|{session}` is
+  resolvable by its bare session id, and a provider storing the bare id is
+  matched exactly rather than by a suffix rule it never opted into. Naming the
+  source narrows the shape as well as the rows: a caller that knows where a
+  reference came from no longer risks a uuid resolving through a separator only
+  some *other* provider composes with. Separators are LIKE-escaped alongside
+  refs, so a provider may declare `_` without it acting as a wildcard.
 
 - **Tool-call FTS documents index every input key** — the extractor used to
   index only the first "content-shaped" key of a tool's input and drop the

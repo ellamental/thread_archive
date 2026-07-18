@@ -14,29 +14,16 @@ from typing import Any, Optional
 from thread_archive._thread_import import DefaultEventBuilder
 
 from ._events import assemble_events
-from ._line_stream import import_line_stream_session
-from ._result import IncrementalImportResult
+from ._line_stream import line_stream_importer
 
 logger = logging.getLogger(__name__)
 
 
-def import_antigravity_session_incremental(session_path, source_id: str, *, session=None) -> IncrementalImportResult:
-    """Import an Antigravity (Gemini agentic CLI) transcript.jsonl into the event log."""
+def _antigravity_import_lines(sess, thread_id, all_lines, new_lines, source_id):
+    messages = _build_antigravity_messages(new_lines, all_lines, source_id)
+    return assemble_events(sess, thread_id, messages, DefaultEventBuilder())
 
-    def _do_import(sess, thread_id, all_lines, new_lines, _ctx):
-        messages = _build_antigravity_messages(new_lines, all_lines, source_id)
-        return assemble_events(sess, thread_id, messages, DefaultEventBuilder())
 
-    return import_line_stream_session(
-        source="antigravity",
-        source_id=source_id,
-        session_path=session_path,
-        session=session,
-        not_found_msg=f"Antigravity session file not found: {session_path}",
-        has_importable_content=_antigravity_has_importable_content,
-        make_title=lambda all_lines, _ctx: _antigravity_title(all_lines),
-        import_lines=_do_import,
-    )
 
 
 _ANTIGRAVITY_USER_REQUEST_RE = re.compile(r"<USER_REQUEST>\s*(.*?)\s*</USER_REQUEST>", re.DOTALL)
@@ -283,3 +270,16 @@ def _build_antigravity_messages(
         m for m in messages
         if m["role"] == "user" or m["content_blocks"] or m.get("content_text", "").strip()
     ]
+
+
+#: Import one Antigravity (Gemini agentic CLI) ``transcript.jsonl`` into the event log.
+import_antigravity_session_incremental = line_stream_importer(
+    "antigravity",
+    # Message ids are namespaced by session, so the builder needs to know which
+    # one it is reading; ``prepare`` is where a callback learns that.
+    prepare=lambda _all_lines, _path, source_id: source_id,
+    has_importable_content=_antigravity_has_importable_content,
+    make_title=lambda all_lines, _ctx: _antigravity_title(all_lines),
+    import_lines=_antigravity_import_lines,
+    not_found_msg="Antigravity session file not found",
+)

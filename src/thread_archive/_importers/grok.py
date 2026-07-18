@@ -18,47 +18,49 @@ import logging
 import re
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, NamedTuple, Optional
 
 from thread_archive._thread_import import DefaultEventBuilder
 from thread_archive._thread_import.timestamps import parse_timestamp
 
 from ._events import assemble_events
-from ._line_stream import import_line_stream_session
-from ._result import IncrementalImportResult
+from ._line_stream import line_stream_importer
 
 logger = logging.getLogger(__name__)
 
 _GROK_USER_QUERY_RE = re.compile(r"<user_query>(.*?)</user_query>", re.S)
 
 
-def import_grok_session_incremental(session_path, source_id: str, *, session=None) -> IncrementalImportResult:
-    """Import a Grok CLI session (``chat_history.jsonl`` path) into the event log."""
-    session_path = Path(session_path)
+class _GrokContext(NamedTuple):
+    """What a Grok import needs beyond the transcript itself.
 
-    def _do_import(sess, thread_id, all_lines, new_lines, meta):
-        session_dir = session_path.parent
-        tool_times = _grok_tool_timestamps(session_dir)
-        prompt_times = _grok_prompt_ts_map(session_dir, source_id)
-        base_ts = _parse_grok_timestamp(meta.get("created_at")) or datetime.now(timezone.utc)
-        messages = _build_grok_messages(
-            new_lines, meta, tool_times, prompt_times, source_id,
-            prefix_lines=all_lines[: len(all_lines) - len(new_lines)],
-        )
-        return assemble_events(sess, thread_id, messages, DefaultEventBuilder(), base_prev_ts=base_ts)
+    Grok keeps a session's summary and its tool/prompt timestamps in *sibling*
+    files, so the import is not a function of the JSONL alone — it needs the
+    directory and the source id. ``prepare`` is the one callback handed both, so
+    it resolves them once and the rest read them from here.
+    """
 
-    return import_line_stream_session(
-        source="grok",
-        source_id=source_id,
-        session_path=session_path,
-        session=session,
-        not_found_msg=f"Grok session file not found: {session_path}",
-        prepare=lambda _all_lines, path: _grok_session_meta(path.parent),
-        has_importable_content=_grok_has_importable_content,
-        make_title=lambda all_lines, meta: _grok_title(all_lines, meta),
-        make_source_metadata=lambda meta: _grok_source_metadata(meta, source_id),
-        import_lines=_do_import,
+    meta: dict[str, Any]
+    session_dir: Path
+    source_id: str
+
+
+def _grok_prepare(_all_lines: list[dict], path: Path, source_id: str) -> _GrokContext:
+    session_dir = Path(path).parent
+    return _GrokContext(_grok_session_meta(session_dir), session_dir, source_id)
+
+
+def _grok_import_lines(sess, thread_id, all_lines, new_lines, ctx: _GrokContext):
+    tool_times = _grok_tool_timestamps(ctx.session_dir)
+    prompt_times = _grok_prompt_ts_map(ctx.session_dir, ctx.source_id)
+    base_ts = _parse_grok_timestamp(ctx.meta.get("created_at")) or datetime.now(timezone.utc)
+    messages = _build_grok_messages(
+        new_lines, ctx.meta, tool_times, prompt_times, ctx.source_id,
+        prefix_lines=all_lines[: len(all_lines) - len(new_lines)],
     )
+    return assemble_events(sess, thread_id, messages, DefaultEventBuilder(), base_prev_ts=base_ts)
+
+
 
 
 def _parse_grok_timestamp(ts: Any) -> Optional[datetime]:
@@ -147,6 +149,27 @@ def _grok_extract_query(text_content: str) -> str:
     if stripped.startswith(("<user_info>", "<system-reminder>", "<environment")):
         return ""
     return stripped
+
+
+def display_user_content(content: str) -> str:
+    """Grok's :attr:`~thread_archive.provider.RenderPolicy.user_content` hook:
+    show the operator's prompt, not the harness's wrapper.
+
+    The Grok CLI wraps what the operator typed in ``<user_query>`` and injects
+    ``<user_info>`` / ``<environment>`` / ``<system-reminder>`` context around it.
+    The importer stores the whole turn — capture everything — so the readers
+    narrow to the query span, the same span the thread title comes from.
+
+    A turn with no span, or one whose span is empty, is returned unchanged: the
+    context-only turns Grok emits are content too, and a wrapper that stops
+    matching must degrade to showing everything rather than to showing nothing.
+    """
+    match = _GROK_USER_QUERY_RE.search(content)
+    if match:
+        inner = match.group(1).strip()
+        if inner:
+            return inner
+    return content
 
 
 def _grok_reasoning_text(line: dict) -> str:
@@ -633,3 +656,15 @@ def _build_grok_messages(
 
     flush()
     return messages
+
+
+#: Import one Grok CLI session (a ``chat_history.jsonl`` path) into the event log.
+import_grok_session_incremental = line_stream_importer(
+    "grok",
+    prepare=_grok_prepare,
+    has_importable_content=_grok_has_importable_content,
+    make_title=lambda all_lines, ctx: _grok_title(all_lines, ctx.meta),
+    make_source_metadata=lambda ctx: _grok_source_metadata(ctx.meta, ctx.source_id),
+    import_lines=_grok_import_lines,
+    not_found_msg="Grok session file not found",
+)

@@ -144,6 +144,36 @@ def export_specs(cfg: Optional[dict] = None, home=None):
     return [(p, p.export) for p in registry(cfg, home).values() if p.export is not None]
 
 
+def render_policy(source: Optional[str], cfg: Optional[dict] = None, home=None):
+    """The :class:`~thread_archive.provider.RenderPolicy` for a thread's source.
+
+    None for a source with no policy, an unregistered source, or a thread with no
+    source at all — every one of which renders as stored. The readers ask once per
+    thread and apply the answer to that thread only, which is what keeps one
+    provider's display quirk off another provider's turns.
+    """
+    if not source:
+        return None
+    provider = registry(cfg, home).get(source)
+    return provider.render if provider is not None else None
+
+
+def session_id_separators(
+    source: Optional[str] = None, cfg: Optional[dict] = None, home=None
+) -> tuple[str, ...]:
+    """Separators to try when resolving a bare session id to a ``source_id``.
+
+    Scoped to one provider when ``source`` names a registered one; otherwise the
+    union across every provider, which is the widest a reference of unknown
+    origin can be resolved and the reason a provider should declare narrowly.
+    """
+    known = registry(cfg, home)
+    if source is not None:
+        provider = known.get(source)
+        return provider.session_id_separators if provider is not None else ()
+    return tuple(sorted({sep for p in known.values() for sep in p.session_id_separators}))
+
+
 __all__ = [
     "registry",
     "reset",
@@ -152,5 +182,7 @@ __all__ = [
     "labels",
     "importers",
     "export_specs",
+    "render_policy",
+    "session_id_separators",
     "builtin_providers",
 ]

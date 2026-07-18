@@ -1,4 +1,5 @@
-"""How the reader renders codex's preserved content blocks.
+"""Codex's :class:`~thread_archive.provider.RenderPolicy` — how a reader presents
+its preserved content blocks.
 
 The codex importer is an archivist: every line kind it doesn't model survives as a
 ``content_block`` event whose ``data`` carries the raw payload under a ``codex_<kind>``
@@ -25,6 +26,8 @@ from __future__ import annotations
 
 import json
 from typing import Any, Callable, Container, Optional
+
+from ..provider import DEFAULT_VIEW, RenderPolicy
 
 _PREFIX = "codex_"
 
@@ -155,3 +158,19 @@ def render_codex_block(
     if text and text.strip() in rendered_text:
         return None
     return label, text
+
+
+def _block(block_type: str, data: Any, rendered_text: Container[str]) -> Any:
+    """The :attr:`RenderPolicy.block` hook: dispatch on the ``codex_`` prefix.
+
+    A block in a codex thread that isn't one of codex's own preserved kinds takes
+    the reader's default view — the policy governs this provider's blocks, not
+    every block that reaches a thread of its.
+    """
+    kind = codex_kind(block_type)
+    if kind is None:
+        return DEFAULT_VIEW
+    return render_codex_block(kind, data, rendered_text)
+
+
+CODEX_RENDER = RenderPolicy(block=_block)

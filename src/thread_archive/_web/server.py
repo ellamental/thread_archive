@@ -159,21 +159,48 @@ _VIEWER_SNIPPET_MAX = 400
 
 
 def _shape_search_hits(hits: "list[EventHit]", query: str) -> "list[EventHit]":
-    """Rewrite each hit's ``snippet`` for the viewer: unwrap the Grok
-    ``<user_query>`` wrapper to the real prompt (the span the reader shows, so the
-    result list matches the thread it opens), then keep the matched line plus one
-    line of context on each side. The raw FTS/semantic snippet shows the wrapper
-    tags and the injected context around them."""
+    """Rewrite each hit's ``snippet`` for the viewer: apply the hit thread's own
+    provider display policy, then keep the matched line plus one line of context
+    on each side.
+
+    Applying the policy is what keeps a result row and the thread it opens
+    showing the same text — a harness whose prompts arrive wrapped in scaffolding
+    would otherwise match on a raw snippet the reader never displays. The policy
+    is per hit, not per result list: one search spans every provider, so the
+    lookup is grouped by thread and each hit gets its own thread's policy."""
+    from .._providers import render_policy
     from .._retrieval._context import context_window
     from .._retrieval.read import _display_user_content
 
+    sources = _hit_thread_sources(hits)
+    policies = {src: render_policy(src) for src in set(sources.values())}
     for h in hits:
-        content = _display_user_content(h.get("full_content") or h.get("snippet") or "")
+        render = policies.get(sources.get(h["thread_id"]))
+        content = _display_user_content(h.get("full_content") or h.get("snippet") or "", render)
         snip = context_window(content, query, _VIEWER_SNIPPET_LINES).strip()
         if len(snip) > _VIEWER_SNIPPET_MAX:
             snip = snip[:_VIEWER_SNIPPET_MAX].rstrip() + " …"
         h["snippet"] = snip or (h.get("snippet") or "").strip()
     return hits
+
+
+def _hit_thread_sources(hits: "list[EventHit]") -> "dict[int, Optional[str]]":
+    """``{thread_id: source}`` for the threads these hits belong to.
+
+    Hits already carrying ``thread_source`` (the grouped/browse shapes annotate it)
+    are taken as they are; the rest are looked up in one query. A thread that has
+    since vanished simply has no source and renders as stored."""
+    from sqlalchemy import select
+
+    from .._store import Thread, get_session
+
+    known = {h["thread_id"]: h["thread_source"] for h in hits if h.get("thread_source")}
+    missing = {h["thread_id"] for h in hits} - set(known)
+    if missing:
+        with get_session() as s:
+            rows = s.execute(select(Thread.id, Thread.source).where(Thread.id.in_(missing))).all()
+        known.update({r.id: r.source for r in rows})
+    return known
 
 
 def _quality_signal(hits: "list[EventHit]", query: str) -> Optional[dict]:

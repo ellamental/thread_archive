@@ -14,44 +14,24 @@ from typing import Any, Optional
 from thread_archive._thread_import import DefaultEventBuilder
 
 from ._events import assemble_events
-from ._line_stream import import_line_stream_session
-from ._result import IncrementalImportResult
+from ._line_stream import line_stream_importer
 
 logger = logging.getLogger(__name__)
 
 
-def import_codex_session_incremental(session_path, source_id: str, *, session=None) -> IncrementalImportResult:
-    """Import a Codex session JSONL into the archive's event log.
-
-    Codex writes a different JSONL shape from Claude Code: ``event_msg.user_message``
-    / ``event_msg.agent_message`` are the canonical transcript, and
-    ``response_item.function_call*`` / ``custom_tool_call*`` are tool events.
-    """
-
-    def _do_import(sess, thread_id, all_lines, new_lines, _meta):
-        call_names, call_inputs = _codex_call_maps(all_lines)
-        prior_lines = all_lines[: len(all_lines) - len(new_lines)]
-        messages = _build_codex_messages(
-            new_lines,
-            _codex_model(prior_lines),
-            call_names,
-            call_inputs,
-            ambient=_codex_ambient_annotations(prior_lines),
-        )
-        return assemble_events(sess, thread_id, messages, DefaultEventBuilder())
-
-    return import_line_stream_session(
-        source="codex",
-        source_id=source_id,
-        session_path=session_path,
-        session=session,
-        not_found_msg=f"Codex session file not found: {session_path}",
-        prepare=lambda all_lines, _path: _codex_session_meta(all_lines),
-        has_importable_content=_codex_has_importable_content,
-        make_title=lambda all_lines, _meta: _codex_title(all_lines),
-        make_source_metadata=_codex_source_metadata,
-        import_lines=_do_import,
+def _codex_import_lines(sess, thread_id, all_lines, new_lines, _meta):
+    call_names, call_inputs = _codex_call_maps(all_lines)
+    prior_lines = all_lines[: len(all_lines) - len(new_lines)]
+    messages = _build_codex_messages(
+        new_lines,
+        _codex_model(prior_lines),
+        call_names,
+        call_inputs,
+        ambient=_codex_ambient_annotations(prior_lines),
     )
+    return assemble_events(sess, thread_id, messages, DefaultEventBuilder())
+
+
 
 
 def _codex_session_meta(lines: list[dict]) -> dict[str, Any]:
@@ -538,3 +518,19 @@ def _build_codex_messages(
 
     flush()
     return messages
+
+
+#: Import one Codex session JSONL into the archive's event log.
+#:
+#: Codex writes a different JSONL shape from Claude Code: ``event_msg.user_message``
+#: / ``event_msg.agent_message`` are the canonical transcript, and
+#: ``response_item.function_call*`` / ``custom_tool_call*`` are tool events.
+import_codex_session_incremental = line_stream_importer(
+    "codex",
+    prepare=lambda all_lines, _path, _source_id: _codex_session_meta(all_lines),
+    has_importable_content=_codex_has_importable_content,
+    make_title=lambda all_lines, _meta: _codex_title(all_lines),
+    make_source_metadata=_codex_source_metadata,
+    import_lines=_codex_import_lines,
+    not_found_msg="Codex session file not found",
+)

@@ -54,6 +54,15 @@ BACKUP_LABEL = "com.thread-archive.backup"
 LIBRARIAN_LABEL = "com.thread-archive.librarian"
 GARDENER_LABEL = "com.thread-archive.gardener"
 
+# Open-file ceiling for the agents that touch the truth tree. launchd hands a
+# process a soft limit of 256 descriptors, which the truth log's own append-handle
+# cache (``_truth.drain.MAX_OPEN_HANDLES``, 256) is sized to fill on its own —
+# leaving nothing for the SQLite db/wal/shm, the vector pack, the locks and the
+# logs. A pass that touches many threads at once then fails on ``[Errno 24] Too
+# many open files`` partway through, which the fingerprint seam retries forever
+# without ever getting further. This is the headroom that cap always assumed.
+AGENT_MAX_FILES = 4096
+
 # When the nightly-backup agent fires (local time). 04:00 keeps it clear of the
 # working day; launchd runs it on wake if the box was asleep at the mark.
 BACKUP_DEFAULT_HOUR = 4
@@ -130,6 +139,7 @@ def watcher_plist(
         "ThrottleInterval": 5,
         # A live working-memory indexer: don't let App Nap stall the poll cadence.
         "ProcessType": "Standard",
+        "SoftResourceLimits": {"NumberOfFiles": AGENT_MAX_FILES},
         "WorkingDirectory": str(Path.home()),
         "StandardOutPath": str(log_dir / "watcher-stdout.log"),
         "StandardErrorPath": str(log_dir / "watcher-stderr.log"),
@@ -164,6 +174,8 @@ def mcp_plist(
         "ThrottleInterval": 5,
         # It serves interactive tool calls; don't let App Nap stall responses.
         "ProcessType": "Standard",
+        # Cohosts lazy catch-up ingest, so it holds truth handles like the watcher.
+        "SoftResourceLimits": {"NumberOfFiles": AGENT_MAX_FILES},
         "WorkingDirectory": str(Path.home()),
         "StandardOutPath": str(log_dir / "mcp-stdout.log"),
         "StandardErrorPath": str(log_dir / "mcp-stderr.log"),
@@ -210,6 +222,8 @@ def backup_plist(
         "LimitLoadToSessionType": "Aqua",
         # I/O-bound and not latency-sensitive: let it run nice.
         "ProcessType": "Background",
+        # Mirror + verify + restore drill walk the whole truth tree.
+        "SoftResourceLimits": {"NumberOfFiles": AGENT_MAX_FILES},
         "WorkingDirectory": str(Path.home()),
         "StandardOutPath": str(log_dir / "backup-stdout.log"),
         "StandardErrorPath": str(log_dir / "backup-stderr.log"),

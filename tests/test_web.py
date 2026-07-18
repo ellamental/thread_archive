@@ -160,18 +160,28 @@ def test_search_quality_signal(archive_home):
     assert payload["hits"][0]["term_hits"] == 2
 
 
+_WRAPPED = "<user_info>ella</user_info><user_query>\nhey grok!\n</user_query>"
+
+
 def _seed_grok(archive_home):
-    """A Grok-shaped session: the operator's prompt wrapped in ``<user_query>`` with
-    injected context around it — the truth the importer keeps verbatim."""
-    wrapped = {
-        "type": "user", "uuid": "g1", "timestamp": "2026-01-01T10:00:00Z", "cwd": "/proj",
-        "message": {"role": "user",
-                    "content": "<user_info>ella</user_info><user_query>\nhey grok!\n</user_query>"},
-    }
-    reply = dict(ASSISTANT, uuid="g2")
-    f = archive_home / "grok.jsonl"
-    f.write_text("\n".join(json.dumps(ln) for ln in (wrapped, reply)) + "\n", encoding="utf-8")
-    ta.import_path(f)
+    """A real Grok session: the operator's prompt wrapped in ``<user_query>`` with
+    injected context around it — the truth the importer keeps verbatim.
+
+    Driven through grok's own importer, so the thread's source is genuinely
+    ``grok``. Unwrapping is that provider's display policy, so a fixture merely
+    *shaped* like this one would prove nothing about it."""
+    from thread_archive._importers import import_grok_session_incremental
+    from thread_archive._store import init_db
+
+    init_db()
+    session_dir = archive_home / "grok-sess"
+    session_dir.mkdir()
+    f = session_dir / "chat_history.jsonl"
+    f.write_text("\n".join(json.dumps(ln) for ln in (
+        {"type": "user", "content": [{"type": "text", "text": _WRAPPED}]},
+        {"type": "assistant", "content": "hi there", "tool_calls": []},
+    )) + "\n", encoding="utf-8")
+    import_grok_session_incremental(f, "grok-sess")
 
 
 def test_search_snippet_unwraps_user_query(archive_home):
@@ -182,6 +192,28 @@ def test_search_snippet_unwraps_user_query(archive_home):
     snips = [h["snippet"] for h in payload["hits"]]
     assert any("hey grok!" in s for s in snips)
     assert all("<user_query>" not in s and "<user_info>" not in s for s in snips)
+
+
+def test_search_snippet_keeps_another_providers_quoted_wrapper(archive_home):
+    """A claude-code turn that *quotes* Grok's wrapper keeps its whole text.
+
+    Unwrapping is Grok's display policy, and a turn discussing that policy — a bug
+    report, a pasted transcript — is ordinary text. Applied globally the unwrap
+    replaces the entire turn with whatever sat inside the tags it happened to
+    contain, which on a long turn hides essentially all of it."""
+    body = "Here is the bug, in full:\n" + _WRAPPED + "\nEverything after the tag matters too."
+    f = archive_home / "cc.jsonl"
+    f.write_text("\n".join(json.dumps(ln) for ln in (
+        {"type": "user", "uuid": "c1", "timestamp": "2026-01-01T10:00:00Z", "cwd": "/proj",
+         "message": {"role": "user", "content": body}},
+        dict(ASSISTANT, uuid="c2"),
+    )) + "\n", encoding="utf-8")
+    ta.import_path(f)
+
+    _, _, payload = _get("/api/search", q="bug")
+    hits = [h for h in payload["hits"] if "bug" in h["snippet"]]
+    assert hits, "the claude-code turn should be findable"
+    assert any("Here is the bug" in h["snippet"] for h in hits)
 
 
 def test_search_snippet_is_a_context_window(archive_home):

@@ -229,6 +229,53 @@ def test_normal_lines_produce_no_field_drift_warnings() -> None:
     assert drift == []
 
 
+def test_subagent_provenance_fields_produce_no_field_drift_warnings() -> None:
+    """``agentId`` / ``attributionAgent`` ride every line of a subagent transcript.
+    They are thread-level provenance the importer stamps onto source_metadata, so
+    the ledger knows them and they must not warn — otherwise a real drift signal
+    drowns in one finding per subagent run."""
+    msgs = _parse([
+        _user_line({"agentId": "a1b2c3"}),
+        _assistant_line({"agentId": "a1b2c3", "attributionAgent": "Explore"}),
+    ])
+    ctx = validate_messages(msgs, "s1", "claude-code", batch_safe=True)
+    drift = [w for w in ctx.warnings if "field" in w.lower()]
+    assert drift == []
+
+
+def test_turn_ending_tool_result_flag_produces_no_field_drift_warnings() -> None:
+    """``toolEndsTurn`` rides the StructuredOutput result that closed a
+    schema-constrained subagent's turn — every workflow agent given a schema
+    contributes one, so an unledgered field here buries real drift."""
+    msgs = _parse([_user_line({"toolEndsTurn": True}, content=[
+        {"type": "tool_result", "tool_use_id": "toolu_1",
+         "content": "Structured output provided successfully"},
+    ])])
+    ctx = validate_messages(msgs, "s1", "claude-code", batch_safe=True)
+    drift = [w for w in ctx.warnings if "field" in w.lower()]
+    assert drift == []
+
+
+def test_rejected_structured_output_stays_distinguishable_without_the_flag() -> None:
+    """Why ``toolEndsTurn`` is carried but not stored: the accepted/rejected
+    split it encodes is already the ``tool_execution_completed`` /
+    ``tool_execution_error`` split. Claude Code omits the flag exactly when the
+    schema rejects the output and the turn continues, so persisting it would
+    restate this seam. If this distinction ever stops surviving, the ledger
+    comment is wrong and the field has to start being kept."""
+    def _result(is_error: bool) -> list:
+        (msg,) = _parse([_user_line(content=[
+            {"type": "tool_result", "tool_use_id": "toolu_1",
+             "content": "Output does not match required schema" if is_error
+             else "Structured output provided successfully",
+             "is_error": is_error},
+        ])])
+        return _events(msg)
+
+    assert _one(_result(False), "tool_execution_completed")
+    assert _one(_result(True), "tool_execution_error")
+
+
 def test_invented_line_field_warns() -> None:
     msgs = _parse([_user_line({"someBrandNewField": 1})])
     ctx = validate_messages(msgs, "s1", "claude-code", batch_safe=True)

@@ -206,7 +206,9 @@ def test_model_command_captured_as_event(archive_home) -> None:
 
 def test_subagent_filed_as_hidden_system_thread(archive_home) -> None:
     """A ``agent-*`` subagent transcript files as a hidden ``thread_type='system'``
-    thread with a 🤖 title and parent lineage stamped — kept out of the sidebar."""
+    thread with a 🤖 title and parent lineage stamped — kept out of the sidebar.
+    ``agent_type`` records which kind of agent ran (``attributionAgent``), so a
+    subagent thread is identifiable as more than an anonymous id."""
     init_db()
     f = archive_home / "agent.jsonl"
     sub_user = {"type": "user", "uuid": "su1", "timestamp": "2026-01-01T10:00:00Z",
@@ -214,6 +216,7 @@ def test_subagent_filed_as_hidden_system_thread(archive_home) -> None:
                 "message": {"role": "user", "content": "do the subtask"}}
     sub_asst = {"type": "assistant", "uuid": "sa1", "timestamp": "2026-01-01T10:00:05Z",
                 "sessionId": "parent-sess", "agentId": "agent-abc",
+                "attributionAgent": "Explore",
                 "message": {"role": "assistant", "model": "claude-opus-4",
                             "content": [{"type": "text", "text": "done"}]}}
     _write_jsonl(f, [sub_user, sub_asst])
@@ -226,6 +229,7 @@ def test_subagent_filed_as_hidden_system_thread(archive_home) -> None:
         assert t.title.startswith("🤖")
         assert t.source_metadata.get("is_subagent") is True
         assert t.source_metadata.get("agent_id") == "agent-abc"
+        assert t.source_metadata.get("agent_type") == "Explore"
         assert t.source_metadata.get("parent_session_id") == "parent-sess"
         assert t.exclude_from_search is False
 

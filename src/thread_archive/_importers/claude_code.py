@@ -91,10 +91,14 @@ def _cc_origin_metadata(all_lines: list[dict], source_id: str, *, session=None, 
     archive machinery (see :func:`_is_archive_operational`).
 
     For a subagent transcript also stamp ``is_subagent`` plus the spawning session
-    (``parent_session_id`` from the lines' ``sessionId``) and the subagent's own
-    ``agent_id`` (from ``agentId``), so the run can be joined back to its parent
-    thread. When a ``session`` is supplied and the parent resolves to no thread, the
-    gap is logged rather than lost silently."""
+    (``parent_session_id`` from the lines' ``sessionId``), the subagent's own
+    ``agent_id`` (from ``agentId``) and its ``agent_type`` (from
+    ``attributionAgent`` — the agent kind, e.g. ``Explore``/``general-purpose``),
+    so the run can be joined back to its parent thread and identified by what it
+    was. Both source fields are constant across a transcript, which is why they
+    live on the thread rather than on every message. When a ``session`` is
+    supplied and the parent resolves to no thread, the gap is logged rather than
+    lost silently."""
     meta: dict[str, Any] = {}
     for line in all_lines:
         cwd = line.get("cwd")
@@ -110,9 +114,11 @@ def _cc_origin_metadata(all_lines: list[dict], source_id: str, *, session=None, 
         for line in all_lines:
             if "agent_id" not in meta and line.get("agentId"):
                 meta["agent_id"] = line["agentId"]
+            if "agent_type" not in meta and line.get("attributionAgent"):
+                meta["agent_type"] = line["attributionAgent"]
             if "parent_session_id" not in meta and line.get("sessionId"):
                 meta["parent_session_id"] = line["sessionId"]
-            if "agent_id" in meta and "parent_session_id" in meta:
+            if "agent_id" in meta and "agent_type" in meta and "parent_session_id" in meta:
                 break
         parent_sid = meta.get("parent_session_id")
         project_dir = meta.get("project_dir")
@@ -334,3 +340,33 @@ def import_session_incremental(
         result = _run(s)
         s.commit()
         return result
+
+
+def claude_code_line_stream(source: str):
+    """A line-stream importer over Claude-Code-shaped JSONL, under ``source``.
+
+    A harness that writes Claude Code's transcript shape — ``user`` /
+    ``assistant`` lines, extra line kinds the parser preserves verbatim — reuses
+    Claude Code's parser wholesale instead of duplicating it. Threads land under
+    ``source`` with the harness's own provenance, and idempotence, the truth-log
+    seam and incremental watermarking all come from the shared path unchanged.
+
+    Register a ``ProviderConfig`` derived from ``CLAUDE_CODE_CONFIG`` alongside
+    it (``Provider.parser_config``) so the extra line types and fields the
+    harness emits are known rather than reported as Claude Code drift.
+
+    Claude Code's own continuation/fork merging and its ``.context.jsonl``
+    sidecar stay out: both key off conventions specific to Claude Code's store,
+    and applying them to another harness's ids would merge unrelated threads.
+    """
+
+    def _import(session_path, source_id: str, *, session=None):
+        return import_session_incremental(
+            session_path, source_id, source=source, session=session
+        )
+
+    _import.__name__ = f"import_{source.replace('-', '_')}_session_incremental"
+    _import.__doc__ = (
+        f"Import one Claude-Code-shaped {source} transcript into the event log."
+    )
+    return _import

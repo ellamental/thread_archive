@@ -161,6 +161,24 @@ def test_mcp_plist_shape() -> None:
     assert d["ProgramArguments"][2:] == ["--host", "127.0.0.1", "--port", "8788"]
 
 
+def test_truth_touching_agents_raise_the_open_file_limit() -> None:
+    """launchd's 256-descriptor default is smaller than the truth log's own
+    append-handle cache, so an agent that writes many threads in one pass runs
+    out of descriptors mid-pass. Every agent that touches the truth tree must
+    clear that cache with room to spare for the db, locks and logs."""
+    from thread_archive._truth.drain import MAX_OPEN_HANDLES
+
+    entry, log_dir = Path("/env/bin/archive"), Path("/arc/logs")
+    plists = [
+        _launchd.watcher_plist(entry, log_dir),
+        _launchd.mcp_plist(Path("/env/bin/archive-mcp"), log_dir),
+        _launchd.backup_plist(entry, log_dir, dest="/backups"),
+    ]
+    for p in plists:
+        limit = p["SoftResourceLimits"]["NumberOfFiles"]
+        assert limit > MAX_OPEN_HANDLES, f"{p['Label']} caps files at {limit}"
+
+
 def test_install_watcher_writes_plist_and_loads(tmp_path, monkeypatch) -> None:
     _force_darwin(monkeypatch, _launchd)
     monkeypatch.setenv("HOME", str(tmp_path / "home"))  # Path.home() → tmp plist dir

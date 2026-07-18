@@ -22,11 +22,11 @@ from __future__ import annotations
 import json
 from datetime import datetime, timezone
 
-from thread_archive._retrieval import search
-from thread_archive._retrieval._codex import (
+from thread_archive._providers._codex_render import (
     codex_kind,
     render_codex_block,
 )
+from thread_archive._retrieval import search
 from thread_archive._retrieval._extract import (
     _block_search_text,
     _fts_tool_completed,

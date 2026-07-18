@@ -76,7 +76,7 @@ def _run(
         )
 
     new_lines = all_lines[start_line:]
-    ctx = prepare(all_lines, session_path) if prepare is not None else None
+    ctx = prepare(all_lines, session_path, source_id) if prepare is not None else None
 
     thread_id: Optional[int] = (
         import_state.thread_id if (import_state and import_state.thread_id) else None
@@ -169,7 +169,10 @@ def import_line_stream_session(
     """Import a single-JSONL line-stream provider transcript incrementally.
 
     Callbacks:
-      - ``prepare(all_lines, path) -> ctx`` — read provider metadata once (or None).
+      - ``prepare(all_lines, path, source_id) -> ctx`` — read provider metadata once
+        (or None). It is the only callback handed the path and the source id, so
+        anything the later ones need about *which* session this is — a sibling
+        metadata file, a timestamp sidecar — is derived here and carried on ``ctx``.
       - ``has_importable_content(new_lines) -> bool``
       - ``make_title(all_lines, ctx) -> str``
       - ``make_source_metadata(ctx) -> dict | None`` — optional.
@@ -201,3 +204,45 @@ def import_line_stream_session(
         result = _run(s, **kwargs)
         s.commit()
         return replace(result, parse_errors=parse_errors)
+
+
+def line_stream_importer(
+    source: str,
+    *,
+    has_importable_content: Callable[[list[dict]], bool],
+    make_title: Callable[..., str],
+    import_lines: Callable[..., tuple[int, Optional[str]]],
+    prepare: Optional[Callable[..., Any]] = None,
+    make_source_metadata: Optional[Callable[[Any], Optional[dict]]] = None,
+    not_found_msg: Optional[str] = None,
+) -> Callable[..., IncrementalImportResult]:
+    """Build a one-JSONL-file-per-session importer from the callbacks above.
+
+    The public seam over :func:`import_line_stream_session` — archive's own
+    line-stream providers are built with it, and so is every plugin's, so the
+    orchestration they share has exactly one implementation.
+
+    ``not_found_msg`` is the phrase for a missing transcript; the path is appended
+    to it. The returned importer is ``(session_path, source_id, *, session=None)``
+    — the shape a file watcher expects. Passing ``session`` hands commit control
+    to the caller.
+    """
+    phrase = not_found_msg or f"{source} transcript not found"
+
+    def _import(session_path, source_id: str, *, session=None) -> IncrementalImportResult:
+        return import_line_stream_session(
+            session_path=session_path,
+            source_id=source_id,
+            source=source,
+            session=session,
+            prepare=prepare,
+            has_importable_content=has_importable_content,
+            make_title=make_title,
+            make_source_metadata=make_source_metadata,
+            import_lines=import_lines,
+            not_found_msg=f"{phrase}: {session_path}",
+        )
+
+    _import.__name__ = f"import_{source.replace('-', '_')}_session_incremental"
+    _import.__doc__ = f"Import one {source} transcript into the event log."
+    return _import

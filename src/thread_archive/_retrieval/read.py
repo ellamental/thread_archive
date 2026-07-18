@@ -24,7 +24,6 @@ from __future__ import annotations
 
 import json
 import os
-import re
 from collections.abc import Sequence
 from datetime import datetime
 from typing import Container, Optional
@@ -35,7 +34,7 @@ from sqlalchemy.orm import Session
 from .._store import Event, Thread, use_session
 from .._truth.blobs import materialize
 from .._truth.layout import is_redacted_payload
-from ._codex import codex_kind, render_codex_block
+from ..provider import DEFAULT_VIEW, RenderPolicy
 from ._extract import _block_search_text
 
 # Lifecycle / duplicate-summary events that carry no standalone transcript text.
@@ -155,15 +154,22 @@ def _rendered_text(events: list[Event]) -> set[str]:
     return seen
 
 
-def _content_block_view(p: dict, rendered_text: Container[str]) -> Optional[tuple[str, str]]:
+def _content_block_view(
+    p: dict, rendered_text: Container[str], render: Optional[RenderPolicy] = None
+) -> Optional[tuple[str, str]]:
     """``(label, text)`` for a preserved ``content_block`` event, or None to hide it.
 
-    Only codex blocks are ever hidden — see :mod:`._codex`. Every other provider's
-    preserved block renders under its own block type, flattened to its readable text."""
+    The thread's provider gets first refusal through its
+    :class:`~thread_archive.provider.RenderPolicy` — a provider that writes its
+    transcript twice hides the copy, one with a shape worth labelling renders it.
+    Absent a policy, or when the policy declines, the block renders under its own
+    block type, flattened to its readable text: preserved-and-unmodeled content
+    stays visible rather than needing a provider to vouch for it."""
     block_type = p.get("block_type") or "block"
-    kind = codex_kind(block_type)
-    if kind is not None:
-        return render_codex_block(kind, p.get("data"), rendered_text)
+    if render is not None and render.block is not None:
+        view = render.block(block_type, p.get("data"), rendered_text)
+        if view is not DEFAULT_VIEW:
+            return view
     data = p.get("data")
     text = _block_search_text(data)
     # A preserved document/image block (a pasted PDF, an unmodeled image) carries
@@ -332,27 +338,35 @@ _COMPACTION_PREFIX = "This session is being continued from a previous conversati
 
 _USER_TYPES = frozenset({"user_message_sent", "thread_message_sent"})
 
-# Grok / xAI-shaped harnesses wrap the operator's actual prompt in a
-# ``<user_query>`` tag and inject ``<user_info>`` / ``<environment>`` /
-# ``<system-reminder>`` context around it. The importer keeps the whole turn as
-# the event's truth (capture everything), so the readers surface just the query
-# span for the human-facing transcript — the same span the importer uses to derive
-# the thread title.
-_USER_QUERY_RE = re.compile(r"<user_query>\s*(.*?)\s*</user_query>", re.DOTALL)
+
+def _render_for(thread: Optional[Thread]) -> Optional[RenderPolicy]:
+    """The display policy of a thread's provider, or None to render as stored.
+
+    Resolved once per read and passed down, so a policy lookup can't cost a
+    registry read per event. A source with no registered provider — an older
+    thread, one written by a sibling product — has no policy and renders as
+    stored, which is the correct answer rather than a fallback.
+    """
+    from .._providers import render_policy
+
+    return render_policy(getattr(thread, "source", None))
 
 
-def _display_user_content(content: str) -> str:
-    """Unwrap a ``<user_query>…</user_query>`` span for the readable transcript.
+def _display_user_content(content: str, render: Optional[RenderPolicy] = None) -> str:
+    """A user turn's text as a reader should show it.
 
-    Both readers (the CLI/MCP string transcript and the web viewer's structured
-    blocks) render the query span rather than the raw wrapper + injected context.
-    The untouched original stays on the event and in the viewer's raw view; a turn
-    with no query span is returned as-is."""
-    match = _USER_QUERY_RE.search(content)
-    if match:
-        inner = match.group(1).strip()
-        if inner:
-            return inner
+    Some harnesses wrap what the operator typed in scaffolding — Grok's
+    ``<user_query>`` tag and the context injected around it. The importer stores
+    the whole turn (capture everything), so narrowing to the part a human typed
+    is the provider's own :class:`~thread_archive.provider.RenderPolicy`, applied
+    only to that provider's threads.
+
+    It has to be scoped that way. A turn *quoting* another harness's scaffolding
+    — a bug report, a transcript pasted into a prompt — is ordinary text, and a
+    global unwrap would replace the whole turn with whatever sat inside the tags
+    it happened to contain."""
+    if render is not None and render.user_content is not None:
+        return render.user_content(content)
     return content
 
 
@@ -398,7 +412,9 @@ def resolve_read_view(mode: Optional[str], user_only: Optional[bool]) -> tuple[b
     return True, False, False
 
 
-def _assistant_block(et: str, p: dict, rendered_text: Container[str]) -> Optional[dict]:
+def _assistant_block(
+    et: str, p: dict, rendered_text: Container[str], render: Optional[RenderPolicy] = None
+) -> Optional[dict]:
     """One assistant render block from a granular event, or None to skip.
 
     Tool *result* blocks (tool_execution_*) are built here but only rendered when
@@ -440,7 +456,7 @@ def _assistant_block(et: str, p: dict, rendered_text: Container[str]) -> Optiona
         c = p.get("content", "")
         return {"type": "text", "content": f"[context summary] {c}"} if c.strip() else None
     if et == "content_block":
-        view = _content_block_view(p, rendered_text)
+        view = _content_block_view(p, rendered_text, render)
         if view is None:
             return None
         block_type, text = view
@@ -610,11 +626,14 @@ def _absorb_stream_deltas(events: Sequence[Event]) -> list:
     return out
 
 
-def _build_steps(events: list[Event]) -> list[dict]:
+def _build_steps(events: list[Event], render: Optional[RenderPolicy] = None) -> list[dict]:
     """Fold the granular event stream into steps (the monorepo's regroup_by_steps
     analogue): a USER message is its own step; assistant block events accumulate
     into one step that closes at each text output. Tool calls + thinking thus group
-    under the step whose text they precede; trailing tools form a final step."""
+    under the step whose text they precede; trailing tools form a final step.
+
+    ``render`` is the thread provider's display policy, resolved once by the
+    caller that knows the thread and applied to every event under it."""
     steps: list[dict] = []
     rendered_text = _rendered_text(events)
     cur: Optional[dict] = None  # open assistant step
@@ -631,7 +650,7 @@ def _build_steps(events: list[Event]) -> list[dict]:
             image_lines = [_binary_marker(v) for v in _payload_image_views(p)]
             if not content.strip() and not image_lines:
                 continue
-            display = _display_user_content(content) if content.strip() else ""
+            display = _display_user_content(content, render) if content.strip() else ""
             if image_lines:
                 display = (display + "\n" if display else "") + "\n".join(image_lines)
             steps.append({
@@ -660,7 +679,7 @@ def _build_steps(events: list[Event]) -> list[dict]:
                     "is_compaction": False,
                 })
             continue
-        block = _assistant_block(et, p, rendered_text)
+        block = _assistant_block(et, p, rendered_text, render)
         if block is not None:
             is_result = block["type"] in ("tool_result", "tool_error")
             # A result event can land after the text that closed its step; glue it
@@ -1249,7 +1268,7 @@ def read_thread(
             select(Event).where(Event.thread_id == thread_id).order_by(Event.id)
         ).scalars().all()
 
-    steps = _build_steps(_absorb_stream_deltas(_slot_queued_events(events)))
+    steps = _build_steps(_absorb_stream_deltas(_slot_queued_events(events)), _render_for(thread))
 
     if summary_kind == "toc":
         return _thread_read_summary(
@@ -1419,7 +1438,8 @@ def _fold_request(meta: dict, event_type: str, p: dict) -> None:
 
 
 def _structured_event(
-    ev: Event, *, include_thinking: bool, include_tools: bool, rendered_text: Container[str]
+    ev: Event, *, include_thinking: bool, include_tools: bool, rendered_text: Container[str],
+    render: Optional[RenderPolicy] = None,
 ) -> Optional[tuple[str, dict]]:
     """Like the string transcript renderer, but returns ``(role, block)`` where ``block`` is a
     typed renderable dict — so the web viewer can render markdown, syntax-highlighted
@@ -1459,7 +1479,7 @@ def _structured_event(
         if not content.strip() and not images:
             return None
         block: dict = {"type": "text",
-                       "text": _display_user_content(content) if content.strip() else ""}
+                       "text": _display_user_content(content, render) if content.strip() else ""}
         if images:
             block["images"] = images
         return ("user", block)
@@ -1566,7 +1586,7 @@ def _structured_event(
                                   "from_model": frm, "to_model": to})
         if not include_tools:
             return None
-        view = _content_block_view(p, rendered_text)
+        view = _content_block_view(p, rendered_text, render)
         if view is None:
             return None
         block_type, text = view
@@ -1621,6 +1641,7 @@ def read_thread_structured(
     ended_at = events[-1].occurred_at if events else None
     events = _absorb_stream_deltas(_slot_queued_events(events))
     rendered_text = _rendered_text(events)
+    render = _render_for(thread)
 
     messages: list[dict] = []
     current: Optional[dict] = None
@@ -1654,7 +1675,7 @@ def read_thread_structured(
             continue
         rendered = _structured_event(
             ev, include_thinking=include_thinking, include_tools=include_tools,
-            rendered_text=rendered_text,
+            rendered_text=rendered_text, render=render,
         )
         if rendered is None:
             continue

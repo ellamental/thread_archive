@@ -272,6 +272,7 @@ CLAUDE_CODE_CONFIG = ProviderConfig(
         "user": {
             # queued_command attachment lines are rebuilt as user-role messages,
             # so their one extra key is known here too.
+            "agentId",  # subagent provenance: thread-level, see the assistant note
             "attachment",
             "cwd",
             "entrypoint",
@@ -296,6 +297,14 @@ CLAUDE_CODE_CONFIG = ProviderConfig(
             "timestamp",
             "todos",
             "toolDenialKind",
+            # Marks the tool result that ended the agent's turn — in practice a
+            # StructuredOutput result the schema accepted. Carried, not stored:
+            # it restates what the persisted blocks already say, since the flag
+            # is present exactly when the result's tool_use is StructuredOutput
+            # and the result is not an error (a schema rejection keeps the turn
+            # going, and is already modeled as tool_execution_error). Persisting
+            # it would duplicate that seam and give it a second place to drift.
+            "toolEndsTurn",
             "toolUseResult",
             "type",
             "userType",
@@ -303,7 +312,15 @@ CLAUDE_CODE_CONFIG = ProviderConfig(
             "version",
         },
         "assistant": {
+            # agentId / attributionAgent appear only on subagent transcripts, and
+            # both are constant across a whole file — they identify the agent the
+            # transcript IS, not anything about the message. So they are persisted
+            # once per thread (source_metadata's agent_id / agent_type, stamped by
+            # the importer's _cc_origin_metadata) rather than annotated onto every
+            # message, which would write the same constant onto every event.
+            "agentId",
             "apiErrorStatus",
+            "attributionAgent",
             "attributionMcpServer",
             "attributionMcpTool",
             "attributionSkill",

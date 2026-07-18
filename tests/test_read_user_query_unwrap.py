@@ -1,4 +1,5 @@
-"""Grok's ``<user_query>`` wrapper is unwrapped for the readable transcript.
+"""Grok's ``<user_query>`` wrapper is unwrapped for the readable transcript —
+on Grok's threads and no others.
 
 Grok / xAI-shaped harnesses wrap the operator's prompt in a ``<user_query>`` tag
 and inject ``<user_info>`` / ``<system-reminder>`` context around it. The importer
@@ -6,6 +7,11 @@ keeps the whole turn as the event's truth (capture everything — see
 ``test_preserve_grok``); both readers surface just the query span so the transcript
 and the web viewer don't render the raw wrapper. A turn with no query span (a
 context-only injection) is rendered as-is.
+
+Unwrapping is Grok's ``RenderPolicy``, applied per thread by its provider, so the
+tests come in pairs: the span is unwrapped on a grok thread and left alone on a
+thread from a provider that doesn't wrap — where the same tags are a quotation
+inside the content rather than scaffolding around it.
 """
 
 from __future__ import annotations
@@ -20,12 +26,12 @@ def _dt(minute: int) -> datetime:
     return datetime(2026, 1, 1, 10, minute, 0, tzinfo=timezone.utc)
 
 
-def _seed(events, tid=1):
+def _seed(events, tid=1, source="grok"):
     """events: (event_type, payload, minute); ids assigned in list order."""
     init_db()
     with use_session() as s:
         s.add(Thread(id=tid, name=f"t{tid}", title="Grok", thread_type="conversation",
-                     source="grok", source_id=f"grok-{tid}",
+                     source=source, source_id=f"{source}-{tid}",
                      inserted_at=_dt(0), updated_at=_dt(0)))
         s.commit()
         for i, (et, payload, minute) in enumerate(events, start=1):
@@ -81,3 +87,40 @@ def test_unwrap_leaves_ordinary_user_text_untouched(archive_home) -> None:
     ])
     out = read_thread(tid, mode="user")
     assert "how do I match a <user_query> tag in regex?" in out
+
+
+# A turn containing a real span, on a provider that doesn't wrap its prompts. This
+# is what a pasted transcript or a quoted bug report looks like, and the whole turn
+# is the content — the span is a quotation inside it, not scaffolding around it.
+_QUOTING = (
+    "Reproducing the reader bug. The stored turn contains:\n"
+    "<user_info>ella</user_info><user_query>what is 2+2</user_query>\n"
+    "and every line after the closing tag is part of the report."
+)
+
+
+def test_unwrap_is_scoped_to_the_providers_that_wrap(archive_home) -> None:
+    """A claude-code turn quoting the wrapper keeps all of its text.
+
+    Unwrapping is Grok's display policy. Applied to every provider it replaces the
+    whole turn with whatever sits inside the tags the turn happens to quote, which
+    on a long turn hides nearly all of it — silently, since the payload is intact
+    and only the reader is lying."""
+    tid = _seed([("user_message_sent", {"content": _QUOTING}, 1),
+                 ("text_complete", {"text": "ack"}, 1)], source="claude-code")
+    out = read_thread(tid, mode="user")
+    assert "Reproducing the reader bug" in out
+    assert "every line after the closing tag is part of the report" in out
+    assert "<user_query>" in out
+
+    res = read_thread_structured(tid, include_thinking=False, include_tools=False)
+    texts = [b["text"] for m in res["messages"] if m["role"] == "user" for b in m["blocks"]]
+    assert any("Reproducing the reader bug" in t for t in texts)
+
+
+def test_a_source_with_no_registered_provider_renders_as_stored(archive_home) -> None:
+    """Threads written by something that isn't a registered provider — a sibling
+    product, an older source — have no policy and are rendered verbatim."""
+    tid = _seed([("user_message_sent", {"content": _QUOTING}, 1)], source="gardener")
+    out = read_thread(tid, mode="user")
+    assert "every line after the closing tag is part of the report" in out

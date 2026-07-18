@@ -158,7 +158,16 @@ class ClaudeCodeWatcher(FileSessionWatcher):
                     continue
                 for session_file in project_dir.glob("*.jsonl"):
                     pairs.append((session_file, f"{project_dir.name}:{session_file.stem}"))
-                for agent_file in project_dir.glob("*/subagents/*.jsonl"):
+                # Recursive under subagents/, because workflow runs nest their
+                # agents a further two levels down
+                # (subagents/workflows/<wf-id>/agent-*.jsonl). Matched on the
+                # agent- prefix rather than *.jsonl: a workflow directory also
+                # holds a journal.jsonl, which is a run ledger rather than a
+                # transcript, and whose name — unlike the globally unique
+                # agent-<id> the source_id relies on — repeats once per run, so
+                # every journal in a project would land on one id and fight over
+                # it.
+                for agent_file in project_dir.glob("*/subagents/**/agent-*.jsonl"):
                     pairs.append((agent_file, f"{project_dir.name}:{agent_file.stem}"))
 
         # Import oldest-first so a continuation's parent thread already exists when

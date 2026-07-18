@@ -89,11 +89,19 @@ exports still declares itself so its threads have an identity and a label.
 ### A format of your own
 
 When your transcript isn't another provider's shape, build the importer from
-`line_stream_importer`. You supply five callbacks; it supplies everything that
-is easy to get wrong — reading the file once and parsing from that buffer, the
-append proof that re-imports from scratch if bytes under the cursor changed,
-thread creation and its discard when a poll turns out to hold nothing, the skip
-ledger, the watermark, and the single transaction all of it commits in.
+`line_stream_importer` — the same factory archive's own codex, Grok and
+Antigravity providers are built from. You supply five callbacks; it supplies
+everything that is easy to get wrong — reading the file once and parsing from
+that buffer, the append proof that re-imports from scratch if bytes under the
+cursor changed, thread creation and its discard when a poll turns out to hold
+nothing, the skip ledger, the watermark, and the single transaction all of it
+commits in.
+
+`prepare(all_lines, path, source_id)` is the only callback handed the path and
+the source id, so anything the others need about *which* session this is — a
+sibling metadata file, a timestamp sidecar — is resolved there and carried on
+the context it returns. (Grok's importer does exactly this: its timestamps live
+in files next to the transcript.)
 
 ```python
 from thread_archive.provider import line_stream_importer, assemble_events
@@ -101,6 +109,7 @@ from thread_archive.provider.parse import DefaultEventBuilder
 
 import_session = line_stream_importer(
     "myharness",
+    prepare=lambda all_lines, path, source_id: my_context(path.parent, source_id),
     has_importable_content=lambda new: any(ln.get("type") == "message" for ln in new),
     make_title=lambda all_lines, ctx: first_user_text(all_lines) or "My Harness Session",
     import_lines=lambda sess, tid, all_lines, new, ctx: assemble_events(
@@ -150,6 +159,21 @@ thread and re-imports from zero. Derive it from something the harness won't
 renumber: a session uuid in the filename, the directory the session lives in.
 If it isn't already globally unique, prefix it (`{project}:{session}`).
 
+If you do prefix it, declare the separator:
+
+```python
+Provider(name="myharness", ..., session_id_separators=(":",))
+```
+
+An agent usually knows a conversation by its bare session id, not by the
+composite `source_id` you stored. The separator is what lets `thread_read` and
+the viewer's deep links find the thread from that bare id. Leave it empty — the
+default — when the `source_id` *is* the session id.
+
+Declare it narrowly. Resolving a reference whose provider is unknown tries every
+separator every provider declares, so a broad one invites someone else's uuid
+resolving to your thread because it happens to end the same way.
+
 ## Declaring your format (ProviderConfig)
 
 `ProviderConfig` is a drift ledger, not a schema — it never rejects anything.
@@ -181,6 +205,44 @@ parser identity are separate on purpose: a harness writing Claude Code's shape
 must be *parsed* as Claude Code while being *stored, attributed and validated*
 as itself. Repair and audit tooling groups by `parser_id`, so getting it right
 is what keeps your provider inside those passes.
+
+## When stored truth and readable transcript differ (RenderPolicy)
+
+Most providers need nothing here — the events render as they are. Reach for a
+`RenderPolicy` when your format is *correct as stored* and *misleading as
+displayed*: a harness that wraps the operator's prompt in scaffolding, or writes
+its transcript twice.
+
+```python
+from thread_archive.provider import DEFAULT_VIEW, Provider, RenderPolicy
+
+def unwrap(content: str) -> str:
+    match = PROMPT_RE.search(content)
+    return match.group(1) if match else content        # no match → show everything
+
+def block(block_type, data, rendered_text):
+    if block_type == "myharness_telemetry":
+        return None                                     # hide: carries no conversation
+    if block_type == "myharness_search":
+        return ("web search", data["raw"]["query"])     # render under a label
+    return DEFAULT_VIEW                                 # not mine — reader decides
+
+Provider(name="myharness", ..., render=RenderPolicy(user_content=unwrap, block=block))
+```
+
+A policy applies **only to your own threads**. Both readers resolve the thread's
+provider first, so your quirk can never reshape another provider's turns — and
+theirs can't reshape yours.
+
+Two things to hold onto:
+
+- It is presentation, never deletion. The payload is untouched and stays in the
+  event log and the viewer's raw view. Hiding a block is a claim that the
+  conversation reads better without it, not that it wasn't worth keeping.
+- Degrade toward showing more. `user_content` runs on **every** user turn,
+  including turns that merely quote the shape it looks for, and a wrapper that
+  stops matching must fall back to the whole turn. A rewrite that can return
+  less than it was given will eventually eat a message nobody meant it to.
 
 ## Testing it
 
@@ -233,7 +295,8 @@ and reindex. None of it is per-provider.
 
 ## Reference
 
-- `thread_archive.provider` — `Provider`, `ExportSpec`, the watcher bases
+- `thread_archive.provider` — `Provider`, `ExportSpec`, `RenderPolicy` /
+  `DEFAULT_VIEW`, the watcher bases
   (`RglobWatcher`, `FileSessionWatcher`, `DbScanWatcher`), importer construction
   (`line_stream_importer`, `claude_code_line_stream`), `assemble_events`, thread
   and watermark state, source reading.

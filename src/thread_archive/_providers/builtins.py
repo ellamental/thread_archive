@@ -24,8 +24,10 @@ from .._importers import (
     import_opencode_db,
     import_session_incremental,
 )
-from ..provider import ExportSpec, Provider
+from .._importers.grok import display_user_content as grok_display_user_content
+from ..provider import ExportSpec, Provider, RenderPolicy
 from ..provider.parse import CHATGPT_CONFIG, CLAUDE_CODE_CONFIG, CLAUDE_CONFIG
+from ._codex_render import CODEX_RENDER
 
 # Cowork and Claude Science share Claude Code's parser under their own identity.
 # Same shape, own provenance: a config named for the harness keeps its drift out
@@ -85,6 +87,8 @@ def builtin_providers() -> list[Provider]:
             kind="line-stream",
             parser_config=CLAUDE_CODE_CONFIG,
             parser_id="claude-code",
+            # source_id is "{project}:{session uuid}".
+            session_id_separators=(":",),
             order=10,
         ),
         Provider(
@@ -93,6 +97,9 @@ def builtin_providers() -> list[Provider]:
             watcher=codex_watcher,
             importer=import_codex_session_incremental,
             kind="line-stream",
+            # source_id is "rollout-{timestamp}-{session uuid}".
+            session_id_separators=("-",),
+            render=CODEX_RENDER,
             order=20,
         ),
         Provider(
@@ -101,6 +108,7 @@ def builtin_providers() -> list[Provider]:
             watcher=grok_watcher,
             importer=import_grok_session_incremental,
             kind="line-stream",
+            render=RenderPolicy(user_content=grok_display_user_content),
             # The Grok CLI and xAI account exports are one source: CLI sessions
             # arrive live, web conversations only when an export is dropped.
             export=_export_spec("xai", "xAI/Grok", "import_xai_export"),
@@ -139,6 +147,8 @@ def builtin_providers() -> list[Provider]:
             kind="none",
             parser_config=COWORK_CONFIG,
             parser_id="claude-code",
+            # source_id is "{org}:{workspace}:{session uuid}".
+            session_id_separators=(":",),
             order=80,
         ),
         Provider(
@@ -150,6 +160,8 @@ def builtin_providers() -> list[Provider]:
             kind="none",
             parser_config=CLAUDE_SCIENCE_CONFIG,
             parser_id="claude-code",
+            # source_id is "{org uuid}:{session uuid}".
+            session_id_separators=(":",),
             order=90,
         ),
         Provider(

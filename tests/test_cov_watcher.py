@@ -143,15 +143,25 @@ def test_claude_code_iter_files_skips_and_finds_subagents(tmp_path) -> None:
     (proj / "sess.jsonl").write_text("{}\n", encoding="utf-8")
     agent = proj / "agent"
     (agent / "subagents").mkdir(parents=True)
-    (agent / "subagents" / "a.jsonl").write_text("{}\n", encoding="utf-8")
+    (agent / "subagents" / "agent-a.jsonl").write_text("{}\n", encoding="utf-8")
+    # A workflow run nests its agents deeper; these are transcripts like any
+    # other and a flat subagents glob misses every one of them.
+    nested = agent / "subagents" / "workflows" / "wf_1"
+    nested.mkdir(parents=True)
+    (nested / "agent-b.jsonl").write_text("{}\n", encoding="utf-8")
+    # …alongside a run ledger that is not a transcript. Its name repeats once
+    # per workflow run, so importing it would collapse every run in a project
+    # onto a single source_id.
+    (nested / "journal.jsonl").write_text("{}\n", encoding="utf-8")
 
     missing = tmp_path / "missing-projects"  # a projects dir that doesn't exist
     w = ClaudeCodeWatcher(projects_dirs=[missing, projects])
     names = {p.name for p, _ in w.iter_files()}
-    assert names == {"sess.jsonl", "a.jsonl"}
-    # source_id carries the project-dir name prefix.
+    assert names == {"sess.jsonl", "agent-a.jsonl", "agent-b.jsonl"}
+    # source_id carries the project-dir name prefix, and the stem alone
+    # identifies a nested agent — depth never reaches the id.
     ids = {sid for _, sid in w.iter_files()}
-    assert "proj:sess" in ids and "proj:a" in ids
+    assert "proj:sess" in ids and "proj:agent-a" in ids and "proj:agent-b" in ids
 
 
 def test_claude_code_iter_files_tolerates_unstattable_in_sort(tmp_path) -> None:
