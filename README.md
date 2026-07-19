@@ -11,29 +11,43 @@
 
 > *"what did we decide about the auth flow in March?"*
 
-Your agent calls `thread_search`, the right conversation comes back, and `thread_read` replays the decision with everything around it. No workflow to adopt, no notes you were supposed to be taking — the memory was being written all along. Archive keeps it, and finds it: on a 17k-thread archive, nine queries in ten land the right conversation in the top ten with the full search stack (measured below).
+Your agent calls `thread_search`, the right conversation comes back, and `thread_read` replays the decision with everything around it. No workflow to adopt, no notes you were supposed to be taking — the memory was being written all along. Archive keeps it, finds it, and measures the finding against its own logged usage rather than a synthetic benchmark (numbers below).
 
 **Searchable by you — and by your AI.**
 - Full-text and semantic search with reranking, filterable by time, source, tool, and content type.
 - Exposed over MCP (`thread_search`, `thread_read`), so Claude (or any MCP client) can search and read your entire history mid-conversation.
 - Redaction with encrypted recovery bundles: scrub secrets from the archive without destroying them irrevocably.
 
-**Measured, and every layer earns its keep.** On a 17k-thread / 3.7M-event
-archive, 200 title-as-query probes (`scripts/retrieval_eval.py` — each thread's
-title is the query, its own messages must rank; titles are excluded from the
-searched scope so a query never matches itself):
+**Measured against real usage, not a synthetic benchmark.** Every
+`thread_search` an agent runs is itself archived, along with the `thread_read`
+that followed — so the archive holds a click-labeled query log of its own use.
+The eval harness (`scripts/retrieval_eval.py --from-log`) mines those
+search→read pairs: each query is one an agent actually ran, and the thread the
+agent opened next is the answer that must rank. On a 17k-thread / 3.7M-event
+archive, 561 mined cases:
 
 | search stack | MRR | recall@10 | p50 latency |
 |---|---|---|---|
-| core install (FTS5 lexical) | 0.43 | 0.62 | 0.7 s |
-| + librarian summaries | 0.52 | 0.76 | 0.7 s |
-| + local semantic fusion | 0.64 | 0.89 | 0.7 s |
-| + cross-encoder rerank | 0.68 | 0.88 | 4.2 s |
+| core install (FTS5 lexical) | 0.19 | 0.33 | 0.6 s |
+| + local semantic fusion | 0.25 | 0.43 | 0.6 s |
+| + cross-encoder rerank | 0.25 | 0.44 | 3.1 s |
 
-Rows are cumulative. The lexical core already finds the right conversation in
-the top ten for 62% of queries; curation and embeddings are independent,
-stacking lifts (semantic's edge concentrates in code-shaped queries, the
-summaries' in natural-language ones).
+Rows are cumulative, and the labels carry a click's limits: the opened thread
+was the agent's pick from what search surfaced that day — not a verdict that
+nothing better existed — so relevant siblings score as misses, and a stack
+that surfaces what past search never could gets no credit for it. Good
+numbers here mean the stack reliably re-finds what real searches actually
+delivered; they cannot certify there was nothing better to find. Semantic fusion is the layer that pays — +10 points of recall@10
+over the lexical core at no latency cost. The cross-encoder adds about two
+more for 5× the latency, which is why the pipeline auto-gates it to
+conceptual queries instead of running it everywhere. Librarian summaries move
+these numbers by less than a point — whatever their value for browsing and
+curation, ranked search does not measurably ride on them. (An earlier
+title-as-query eval said otherwise on every count; its queries were LLM
+distillations of the threads they named, and it flattered every layer that
+searched other distillations. It survives in the harness as a quick local
+probe; CI runs a single lean gate — semantic arm verified alive directly,
+plus a small seeded sample of the log-mined cases as a collapse alarm.)
 
 **Built like a database, not a folder of exports.**
 - Plain JSONL files are the source of truth — human-readable, greppable, yours. The search index is disposable and rebuilds from them at any time.

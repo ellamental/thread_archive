@@ -17,7 +17,7 @@ from types import SimpleNamespace
 import pytest
 
 from thread_archive import _api as api
-from thread_archive import _launchd, _truth, _watcher, _web, cli
+from thread_archive import _launchd, _truth, _update, _watcher, _web, cli
 from thread_archive._importers import exports
 from thread_archive.cli import main
 
@@ -142,6 +142,63 @@ def test_import_unknown_provider_direct_call() -> None:
     with pytest.raises(SystemExit) as exc:
         cli.cmd_import(ns)
     assert "unknown provider 'bogus-provider'" in str(exc.value)
+
+
+# ── providers ─────────────────────────────────────────────────────────────────
+# Driven against the real registry: the verb's whole job is reporting what the
+# registry holds, so stubbing it would assert only the format string.
+
+
+def _providers_rows(out: str) -> dict[str, str]:
+    """The printed table as ``{provider name: rest of its line}``."""
+    return {
+        line.split()[0]: line.split(maxsplit=1)[1]
+        for line in out.splitlines()
+        if line and not line.startswith("(")
+    }
+
+
+def test_providers_lists_sources_not_mechanisms(archive_home, capsys) -> None:
+    rc = main(["providers", "--home", str(archive_home)])
+    assert rc == 0
+    out = capsys.readouterr().out
+    rows = _providers_rows(out)
+    # Archive's own machinery is held back unless asked for.
+    assert "export-drop" not in rows and "cc-exthost" not in rows
+    assert "on" in rows["claude-code"] and "Claude Code" in rows["claude-code"]
+    assert "line-stream" in rows["claude-code"]
+    assert "db-scan" in rows["cursor"]
+    # An export-only provider has no live store to poll; both traits are named.
+    assert "export:" in rows["chatgpt"] and "no live store" in rows["chatgpt"]
+    # A watched provider with no importer kind and no export carries no traits,
+    # so its line ends at the label — no empty parenthetical.
+    assert rows["cowork"].rstrip().endswith("Cowork")
+    assert "(--all also lists archive's own machinery)" in out
+
+
+def test_providers_all_includes_mechanisms(archive_home, capsys) -> None:
+    rc = main(["providers", "--all", "--home", str(archive_home)])
+    assert rc == 0
+    out = capsys.readouterr().out
+    rows = _providers_rows(out)
+    assert "mechanism" in rows["export-drop"]
+    assert "follows claude-code" in rows["cc-exthost"]
+    # The footer only advertises --all when it wasn't given.
+    assert "--all also lists" not in out
+
+
+def test_providers_marks_disabled_and_followers_off(archive_home, capsys) -> None:
+    """A disabled source reads ``off``, and so does the recovery pass that follows
+    it — the follower has no independent meaning once its primary is off."""
+    (archive_home / "config.json").write_text(
+        '{"sources": {"claude-code": {"enabled": false}}}', encoding="utf-8"
+    )
+    rc = main(["providers", "--all", "--home", str(archive_home)])
+    assert rc == 0
+    rows = _providers_rows(capsys.readouterr().out)
+    assert rows["claude-code"].startswith("off")
+    assert rows["cc-exthost"].startswith("off")
+    assert rows["codex"].startswith("on")
 
 
 # ── import-export ─────────────────────────────────────────────────────────────
@@ -1009,6 +1066,63 @@ def test_status_all_failed(monkeypatch, capsys) -> None:
     assert "no pass recorded" not in out
 
 
+def test_status_source_mirror_ok(monkeypatch, capsys) -> None:
+    old = "2026-07-10T00:00:00+00:00"
+    st = _status_base(
+        last_source_mirror={"ok": True, "copied": 12, "files": 340, "at": old},
+    )
+    monkeypatch.setattr(api, "status", lambda **kw: st)
+    assert main(["status"]) == 0
+    out = capsys.readouterr().out
+    assert "source mirror: ok (12 copied / 340 files)" in out
+
+
+def test_status_source_mirror_failed_counts_errors(monkeypatch, capsys) -> None:
+    old = "2026-07-10T00:00:00+00:00"
+    st = _status_base(
+        last_source_mirror={"ok": False, "copied": 0, "files": 5, "errors": 2, "at": old},
+    )
+    monkeypatch.setattr(api, "status", lambda **kw: st)
+    assert main(["status"]) == 0
+    out = capsys.readouterr().out
+    assert "source mirror: FAILED (0 copied / 5 files, 2 error(s))" in out
+
+
+def test_status_self_update_applied(monkeypatch, capsys) -> None:
+    old = "2026-07-10T00:00:00+00:00"
+    st = _status_base(
+        last_self_update={"ok": True, "action": "updated", "current": "0.9.0",
+                          "reason": "updated 0.9.0 → 0.9.1", "at": old},
+    )
+    monkeypatch.setattr(api, "status", lambda **kw: st)
+    assert main(["status"]) == 0
+    assert "update:  updated 0.9.0 → 0.9.1" in capsys.readouterr().out
+
+
+def test_status_self_update_checked_clean(monkeypatch, capsys) -> None:
+    old = "2026-07-10T00:00:00+00:00"
+    st = _status_base(
+        last_self_update={"ok": True, "action": "up-to-date", "current": "0.9.1",
+                          "reason": "newest tag is installed", "at": old},
+    )
+    monkeypatch.setattr(api, "status", lambda **kw: st)
+    assert main(["status"]) == 0
+    assert "update:  up-to-date (v0.9.1) checked" in capsys.readouterr().out
+
+
+def test_status_self_update_blocked_is_shouted(monkeypatch, capsys) -> None:
+    """A stopped update mechanism is the reason the line exists — it reads loud."""
+    old = "2026-07-10T00:00:00+00:00"
+    st = _status_base(
+        last_self_update={"ok": False, "action": "blocked", "current": "0.9.0",
+                          "reason": "truth format 4 > this install reads 3", "at": old},
+    )
+    monkeypatch.setattr(api, "status", lambda **kw: st)
+    assert main(["status"]) == 0
+    out = capsys.readouterr().out
+    assert "update:  BLOCKED: truth format 4 > this install reads 3" in out
+
+
 # ── coverage: source states, disabled/unwatched, skips, failure ──────────────
 
 
@@ -1045,6 +1159,126 @@ def test_coverage_full_surface_failed(monkeypatch, capsys) -> None:
     assert "warning: opencode newest event is 30h old" in out
     assert "FAILED:" in out
     assert "cursor stale > 48h" in out
+
+
+# ── self-update: the four outcomes, flag mapping, exit code ──────────────────
+
+
+def test_self_update_applied(monkeypatch, capsys) -> None:
+    seen = {}
+
+    def fake_update(*, home=None, check_only=False, allow_format_bump=False):
+        seen.update(home=home, check_only=check_only, allow_format_bump=allow_format_bump)
+        return {"ok": True, "action": "updated", "current": "0.9.0", "tag": "v0.9.1",
+                "reason": "updated 0.9.0 → v0.9.1"}
+
+    monkeypatch.setattr(_update, "self_update", fake_update)
+    rc = main(["self-update", "--home", "/h", "--allow-format-bump"])
+    assert rc == 0
+    assert seen == {"home": "/h", "check_only": False, "allow_format_bump": True}
+    assert "self-update: updated 0.9.0 → v0.9.1" in capsys.readouterr().out
+
+
+def test_self_update_check_reports_available(monkeypatch, capsys) -> None:
+    """``--check`` plans only, so its output has to name the verb that applies it."""
+    seen = {}
+
+    def fake_update(*, home=None, check_only=False, allow_format_bump=False):
+        seen.update(check_only=check_only)
+        return {"ok": True, "action": "update", "current": "0.9.0", "tag": "v0.9.1",
+                "reason": "tag is 30h old"}
+
+    monkeypatch.setattr(_update, "self_update", fake_update)
+    rc = main(["self-update", "--check"])
+    assert rc == 0
+    assert seen == {"check_only": True}
+    out = capsys.readouterr().out
+    assert "self-update: v0.9.1 available (tag is 30h old)" in out
+    assert "run `archive self-update` to apply" in out
+
+
+def test_self_update_up_to_date_lists_skipped(monkeypatch, capsys) -> None:
+    monkeypatch.setattr(
+        _update, "self_update",
+        lambda **kw: {"ok": True, "action": "up-to-date", "current": "0.9.1",
+                      "reason": "newest tag is installed",
+                      "skipped": ["v0.9.2: only 2h old", "v0.9.3: format bump"]},
+    )
+    rc = main(["self-update"])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "self-update: up to date (v0.9.1) — newest tag is installed" in out
+    assert "· v0.9.2: only 2h old" in out and "· v0.9.3: format bump" in out
+
+
+def test_self_update_blocked_returns_1(monkeypatch, capsys) -> None:
+    monkeypatch.setattr(
+        _update, "self_update",
+        lambda **kw: {"ok": False, "action": "blocked", "current": "0.9.0",
+                      "reason": "truth format 4 > this install reads 3"},
+    )
+    rc = main(["self-update"])
+    assert rc == 1
+    assert "self-update: BLOCKED: truth format 4 > this install reads 3" in capsys.readouterr().out
+
+
+def test_self_update_actionless_result_returns_1(monkeypatch, capsys) -> None:
+    """A result with no action at all still prints and still fails — the operator
+    must not read silence as success."""
+    monkeypatch.setattr(_update, "self_update", lambda **kw: {"ok": False})
+    rc = main(["self-update"])
+    assert rc == 1
+    assert "self-update: ?: None" in capsys.readouterr().out
+
+
+# ── mirror: per-provider rows, extras, unsupported, exit code ────────────────
+
+
+def _mirror_provider(**over) -> dict:
+    p = {"ok": True, "files": 10, "copied": 2, "unchanged": 8,
+         "bytes_in": 1000, "bytes_out": 400}
+    p.update(over)
+    return p
+
+
+def test_mirror_ok_minimal_rows(monkeypatch, capsys) -> None:
+    seen = {}
+    result = {
+        "ok": True, "root": "/h/source-mirror", "duration_s": 1.5,
+        "providers": {"claude-code": _mirror_provider()},
+        "unsupported": [],
+    }
+    monkeypatch.setattr(
+        api, "mirror_sources", lambda **kw: seen.update(kw) or result
+    )
+    rc = main(["mirror", "--home", "/h"])
+    assert rc == 0
+    assert seen == {"home": "/h"}
+    out = capsys.readouterr().out
+    assert "claude-code      ok       files=10 copied=2 unchanged=8 bytes=1000→400" in out
+    assert "OK → /h/source-mirror (1.5s)" in out
+
+
+def test_mirror_failed_provider_reports_extras_and_errors(monkeypatch, capsys) -> None:
+    result = {
+        "ok": False, "root": "/h/source-mirror", "duration_s": 4.0,
+        "providers": {
+            "codex": _mirror_provider(generations=3, sidecars_capped=7),
+            "cursor": _mirror_provider(ok=False, error_count=2,
+                                       errors=["sweep: OSError: disk full",
+                                               "db: locked"]),
+        },
+        "unsupported": ["demo-harness"],
+    }
+    monkeypatch.setattr(api, "mirror_sources", lambda **kw: result)
+    rc = main(["mirror"])
+    assert rc == 1
+    out = capsys.readouterr().out
+    assert "generations=3" in out and "capped=7" in out
+    assert "cursor" in out and "FAILED" in out and "errors=2" in out
+    assert "    sweep: OSError: disk full" in out and "    db: locked" in out
+    assert "demo-harness     unsupported (watcher shape has no mirror path)" in out
+    assert "FAILED → /h/source-mirror (4.0s)" in out
 
 
 # ── main() with no subcommand prints help ────────────────────────────────────

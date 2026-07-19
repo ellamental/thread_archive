@@ -12,15 +12,24 @@ segment), so the backfill runs against exactly the shape the live archive holds.
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
+import runpy
+import sys
+from datetime import datetime, timedelta, timezone
 
+import pytest
 from sqlalchemy import select
 
-from thread_archive._importers.exports import import_chatgpt_export, import_claude_ai_export
+from thread_archive._importers.exports import (
+    fold_conversation_metadata,
+    import_chatgpt_export,
+    import_claude_ai_export,
+)
 from thread_archive._scripts import backfill_export_annotations as mod
 from thread_archive._scripts.backfill_reconcile import _block
 from thread_archive._store import Event, Thread, get_session, init_db
+from thread_archive._thread_import import DefaultEventBuilder
 from thread_archive._thread_import.event_builder import compute_content_hash
+from thread_archive._thread_import.parsers.claude import ClaudeParser
 from thread_archive._truth.jsonl_log import _hash_key_check, _shard_depth, _thread_file, log_dir
 
 # ── fixtures (minimal shapes cribbed from tests/test_exports_dropped_fields.py) ──
@@ -129,12 +138,36 @@ _CHATGPT_CONV = {
 # ── helpers ──────────────────────────────────────────────────────────────────
 
 
-def _claude_bundle(root):
-    d = root / "claude_export"
+def _claude_bundle(root, convs=None, *, name="claude_export"):
+    d = root / name
     d.mkdir()
-    (d / "conversations.json").write_text(json.dumps([_CLAUDE_CONV]), encoding="utf-8")
+    (d / "conversations.json").write_text(json.dumps(convs or [_CLAUDE_CONV]), encoding="utf-8")
     (d / "users.json").write_text("[]", encoding="utf-8")
     return d
+
+
+def _conv_with_twin_user_turn(uuid: str) -> dict:
+    """``_CLAUDE_CONV`` with its opening turn repeated verbatim under ``uuid`` — two
+    fresh events sharing one content anchor (and one dedup_key when the uuid is
+    reused, since the key anchors on the provider message id)."""
+    conv = json.loads(json.dumps(_CLAUDE_CONV))
+    twin = json.loads(json.dumps(conv["chat_messages"][0]))
+    twin["uuid"] = uuid
+    conv["chat_messages"].insert(1, twin)
+    return conv
+
+
+def _conv_with_repeated_tool_block(*, start_timestamp: str | None = None) -> dict:
+    """``_CLAUDE_CONV`` with its tool_use block repeated verbatim — same tool id, same
+    input, so both fresh events carry one dedup_key. ``start_timestamp`` puts the
+    repeat on its own clock, which is what splits the two across pairing passes."""
+    conv = json.loads(json.dumps(_CLAUDE_CONV))
+    blocks = conv["chat_messages"][1]["content"]
+    twin = json.loads(json.dumps(blocks[1]))
+    if start_timestamp:
+        twin["start_timestamp"] = start_timestamp
+    blocks.insert(2, twin)
+    return conv
 
 
 def _chatgpt_bundle(root):
@@ -196,9 +229,71 @@ def _set_meta(tid: int, meta: dict) -> None:
         s.commit()
 
 
-def _seed_claude(archive_home):
+def _set_payload(tid: int, event_type: str, fn) -> int:
+    """Rewrite the payload of the thread's single event of ``event_type`` through
+    ``fn``, leaving its dedup_key where it is. Returns the event id."""
+    with get_session() as s:
+        ev = s.execute(select(Event).where(
+            Event.thread_id == tid, Event.event_type == event_type
+        )).scalar_one()
+        ev.payload = fn(json.loads(json.dumps(ev.payload)))
+        s.commit()
+        return ev.id
+
+
+def _copy_event(event_id: int, **overrides) -> int:
+    """Insert a second row carrying an existing event's content, keyless (the shape a
+    thread holds when the same block landed twice). Returns the new row's id."""
+    with get_session() as s:
+        src = s.get(Event, event_id)
+        row = Event(
+            thread_id=src.thread_id, stream_id=src.stream_id, api_call_id=src.api_call_id,
+            event_type=src.event_type, payload=json.loads(json.dumps(src.payload)),
+            occurred_at=src.occurred_at, dedup_key=None,
+        )
+        for field, value in overrides.items():
+            setattr(row, field, value)
+        s.add(row)
+        s.commit()
+        return row.id
+
+
+def _unkey(tid: int, event_type: str, *, drift_seconds: int = 0) -> int:
+    """Drop a stored row's dedup_key (the pre-dedup-key-era shape), optionally moving
+    it off its parsed timestamp too. Returns the event id."""
+    with get_session() as s:
+        ev = s.execute(select(Event).where(
+            Event.thread_id == tid, Event.event_type == event_type
+        )).scalar_one()
+        ev.dedup_key = None
+        if drift_seconds:
+            ev.occurred_at = ev.occurred_at + timedelta(seconds=drift_seconds)
+        s.commit()
+        return ev.id
+
+
+def _delete_event(tid: int, event_type: str, block_type: str | None = None) -> None:
+    with get_session() as s:
+        rows = s.execute(select(Event).where(
+            Event.thread_id == tid, Event.event_type == event_type
+        )).scalars().all()
+        if block_type is not None:
+            rows = [e for e in rows if (e.payload or {}).get("block_type") == block_type]
+        s.delete(rows[0])
+        s.commit()
+
+
+def _folded_meta(conv=None) -> dict:
+    """The conversation-level metadata the importer folds onto a thread at creation."""
+    single = {
+        "conversations": [conv or _CLAUDE_CONV], "memories": [], "projects": [], "users": [],
+    }
+    return fold_conversation_metadata({}, ClaudeParser().parse_export(single))
+
+
+def _seed_claude(archive_home, conv=None):
     init_db()
-    bundle = _claude_bundle(archive_home)
+    bundle = _claude_bundle(archive_home, [conv or _CLAUDE_CONV])
     assert import_claude_ai_export(bundle).imported == 1
     tid = _thread_id("claude")
     _degrade(tid)
@@ -455,8 +550,6 @@ def test_timestamp_drift_is_rescued_when_content_is_unique(archive_home) -> None
     """A stored event at a moved occurred_at (older imports resolved timestamps
     differently) still receives its amendment — and an unpaired tool twin still
     pairs — via the ts-free unique-content rescue."""
-    from datetime import timedelta
-
     bundle, tid = _seed_claude(archive_home)
     with get_session() as s:
         rows = s.execute(select(Event).where(
@@ -489,3 +582,379 @@ def test_thread_missing_from_store_is_counted(archive_home) -> None:
     totals = mod.run(bundles=[bundle], apply=False)
     assert totals["threads_missing"] == 1
     assert totals.get("threads_examined", 0) == 0
+
+
+# ── matching guards ──────────────────────────────────────────────────────────
+
+
+def test_keyless_row_matches_on_its_content_anchor(archive_home) -> None:
+    """A pre-dedup-key-era row still sitting at its parsed timestamp is found by the
+    exact content anchor — no ts-free rescue needed — and amends like a keyed twin."""
+    bundle, tid = _seed_claude(archive_home)
+    _unkey(tid, "thinking_complete")
+
+    totals = mod.run(bundles=[bundle], apply=True)
+    assert totals.get("matched_content_tsfree", 0) == 0
+    think = _one(_events(tid), "thinking_complete")
+    assert think.payload["annotations"]["summaries"] == [{"summary": "pondered briefly"}]
+
+
+def test_twin_turns_take_one_stored_row_each(archive_home) -> None:
+    """Two turns sharing a content anchor consume distinct rows: the second fresh twin
+    steps over the row the first took and lands on its own provider id."""
+    bundle, tid = _seed_claude(archive_home, conv=_conv_with_twin_user_turn("m1b"))
+    with get_session() as s:
+        for ev in s.execute(select(Event).where(
+            Event.thread_id == tid, Event.event_type == "user_message_sent"
+        )).scalars():
+            ev.dedup_key = None
+        s.commit()
+
+    totals = mod.run(bundles=[bundle], apply=True)
+    assert totals.get("dup_fresh", 0) == 0
+    users = [e for e in _events(tid) if e.event_type == "user_message_sent"]
+    assert len(users) == 2
+    assert all(e.payload["branch"]["parent_id"] == "root-0000" for e in users)
+    assert {e.payload["provider_data"]["provider_message_id"] for e in users} == {"m1", "m1b"}
+
+
+def test_turn_repeated_under_one_id_is_counted_as_duplicate_fresh(archive_home) -> None:
+    """An export repeating a message under the same uuid builds two fresh events with
+    one key; the stored side holds a single row, so the second is counted rather than
+    matched onto a row already taken."""
+    bundle, tid = _seed_claude(archive_home, conv=_conv_with_twin_user_turn("m1"))
+
+    totals = mod.run(bundles=[bundle], apply=False)
+    assert totals["dup_fresh"] == 1
+    assert len([e for e in _events(tid) if e.event_type == "user_message_sent"]) == 1
+
+
+def test_provider_id_disagreement_blocks_every_match(archive_home) -> None:
+    """Identical content under a different provider message id is a different turn.
+    Neither the anchored match nor the ts-free rescue may claim it."""
+    bundle, tid = _seed_claude(archive_home)
+    _unkey(tid, "user_message_sent")
+    _set_payload(tid, "user_message_sent", lambda p: {
+        **p, "provider_data": {**p["provider_data"], "provider_message_id": "someone-else"}
+    })
+
+    totals = mod.run(bundles=[bundle], apply=True)
+    assert totals["new_content_by_type"].get("user_message_sent") == 1
+    user = _one(_events(tid), "user_message_sent")
+    assert "branch" not in user.payload, "a mismatched turn must not be amended"
+
+
+def test_redacted_payload_refuses_the_amendment(archive_home) -> None:
+    """Redaction leaves the row's dedup_key in place, so a fresh twin still finds it —
+    and the amend gate refuses to merge fields into a sealed marker."""
+    bundle, tid = _seed_claude(archive_home)
+    marker = {"_redacted": {"key_id": "k-1", "at": "2026-01-02T00:00:00Z"}}
+    eid = _set_payload(tid, "thinking_complete", lambda p: dict(marker))
+
+    totals = mod.run(bundles=[bundle], apply=True)
+    assert totals["amend_refused"] == 1
+    with get_session() as s:
+        assert s.get(Event, eid).payload == marker
+
+
+def test_annotations_merge_fills_only_the_absent_subkeys(archive_home) -> None:
+    """A partially-annotated payload keeps every subkey it has and gains the rest."""
+    bundle, tid = _seed_claude(archive_home)
+    _set_payload(tid, "tool_execution_completed",
+                 lambda p: {**p, "annotations": {"integration_name": "HAND-SET"}})
+
+    mod.run(bundles=[bundle], apply=True)
+    res = _one(_events(tid), "tool_execution_completed")
+    assert res.payload["annotations"] == {
+        "integration_name": "HAND-SET", "structured_content": {"hits": 1},
+    }
+
+
+def test_foreign_annotations_value_is_left_alone(archive_home) -> None:
+    """An ``annotations`` that isn't a dict is hand-touched or foreign — there is no
+    safe way to fold into it, so it stands as it is while the rest of the patch lands."""
+    bundle, tid = _seed_claude(archive_home)
+    eid = _set_payload(tid, "thinking_complete", lambda p: {**p, "annotations": "hand-written"})
+
+    mod.run(bundles=[bundle], apply=True)
+    with get_session() as s:
+        payload = s.get(Event, eid).payload
+    assert payload["annotations"] == "hand-written"
+    assert payload["branch"]["parent_id"] == "m1"
+
+
+def test_api_summary_with_no_stored_twin_is_new_content(archive_home) -> None:
+    """The stale-summary exemption needs an unused stored twin at the same timestamp.
+    With none, the fresh summary is ordinary new content — counted, not inserted."""
+    bundle, tid = _seed_claude(archive_home)
+    _delete_event(tid, "api_request_completed")
+    n_before = len(_events(tid))
+
+    totals = mod.run(bundles=[bundle], apply=True)
+    assert totals.get("api_summary_stale", 0) == 0
+    assert totals["new_content_by_type"].get("api_request_completed") == 1
+    assert len(_events(tid)) == n_before
+
+
+# ── pairing guards ───────────────────────────────────────────────────────────
+
+
+def test_pairing_is_dropped_when_the_group_counts_disagree(archive_home) -> None:
+    """One stored row against two fresh twins: the order tie-break can't be trusted,
+    so the whole group is dropped rather than guessed at."""
+    bundle, tid = _seed_claude(archive_home, conv=_conv_with_repeated_tool_block())
+
+    totals = mod.run(bundles=[bundle], apply=True)
+    assert totals["pairing_ambiguous"] == 2
+    assert totals["pairs"] == 1  # the tool_result twin is unambiguous and still pairs
+    use = _one(_events(tid), "tool_use_complete")
+    assert use.payload["tool_call_id"] is None and "blk=" in use.dedup_key
+
+
+def test_pairing_refuses_a_key_it_has_already_planned(archive_home) -> None:
+    """Two stored twins, two fresh twins carrying one dedup_key: the first pairs, the
+    second would move onto the key this plan just claimed — dropped."""
+    bundle, tid = _seed_claude(archive_home, conv=_conv_with_repeated_tool_block())
+    _copy_event(_one(_events(tid), "tool_use_complete").id)
+
+    totals = mod.run(bundles=[bundle], apply=True)
+    # Dropped twice over: by the anchored pass, then by the rescue offered the same twin.
+    assert totals["pairing_key_collision"] == 2
+    assert totals["pairs"] == 2  # one tool_use twin + the tool_result
+    uses = [e for e in _events(tid) if e.event_type == "tool_use_complete"]
+    assert [e.payload["tool_call_id"] for e in uses] == ["toolu_1", None]
+
+
+def test_pairing_refuses_a_payload_the_amend_gate_rejects(archive_home) -> None:
+    """``check_patch`` gates the pairing patch as it gates an amendment: a payload it
+    refuses keeps its blank tool id and its old key."""
+    bundle, tid = _seed_claude(archive_home)
+    _set_payload(tid, "tool_use_complete", lambda p: {**p, "_redacted": {"key_id": "k-1"}})
+
+    totals = mod.run(bundles=[bundle], apply=True)
+    # Refused twice over: by the anchored pass, then by the rescue offered the same twin.
+    assert totals["pairing_refused"] == 2
+    assert totals["pairs"] == 1  # the tool_result still pairs
+    use = _one(_events(tid), "tool_use_complete")
+    assert use.payload["tool_call_id"] is None and "blk=" in use.dedup_key
+
+
+def test_ts_free_pairing_refuses_a_payload_the_amend_gate_rejects(archive_home) -> None:
+    """The same gate on the rescue path: a drifted row the amend gate refuses is left
+    unpaired instead of being rescued onto a new key."""
+    bundle, tid = _seed_claude(archive_home)
+    _set_payload(tid, "tool_use_complete", lambda p: {**p, "_redacted": {"key_id": "k-1"}})
+    _unkey(tid, "tool_use_complete", drift_seconds=7)
+
+    totals = mod.run(bundles=[bundle], apply=True)
+    assert totals["pairing_refused"] == 1
+    assert totals.get("pairs_tsfree", 0) == 0
+    use = _one(_events(tid), "tool_use_complete")
+    assert use.payload["tool_call_id"] is None and use.dedup_key is None
+
+
+def test_ts_free_pairing_refuses_a_malformed_fresh_key(archive_home, monkeypatch) -> None:
+    """The tail check is the explicit half of the content guard: no 16-hex hash on the
+    fresh key, no pair — the key move would otherwise land an unhashable key."""
+    bundle, tid = _seed_claude(archive_home)
+    _unkey(tid, "tool_use_complete", drift_seconds=7)
+
+    class _KeylessToolBuilder(DefaultEventBuilder):
+        """A builder whose tool events come out unkeyed — the malformed-key shape."""
+
+        def build_events(self, *args, **kwargs):
+            events = super().build_events(*args, **kwargs)
+            for e in events:
+                if e.event_type == "tool_use_complete":
+                    e.dedup_key = None
+            return events
+
+    monkeypatch.setattr(mod, "DefaultEventBuilder", _KeylessToolBuilder)
+    totals = mod.run(bundles=[bundle], apply=True)
+    assert totals["pairing_hash_mismatch"] == 1
+    assert totals.get("pairs_tsfree", 0) == 0
+    use = _one(_events(tid), "tool_use_complete")
+    assert use.payload["tool_call_id"] is None
+
+
+def test_ts_free_pairing_refuses_a_key_the_plan_already_claimed(archive_home) -> None:
+    """The repeated tool block reaches the rescue after the anchored pass claimed its
+    key: two rows would end up sharing one identity, so the rescue drops it."""
+    bundle, tid = _seed_claude(
+        archive_home, conv=_conv_with_repeated_tool_block(start_timestamp="2026-01-01T10:00:12Z")
+    )
+    use = _one(_events(tid), "tool_use_complete")
+    _copy_event(use.id, occurred_at=use.occurred_at + timedelta(seconds=30))
+
+    totals = mod.run(bundles=[bundle], apply=True)
+    assert totals["pairing_key_collision"] == 1
+    assert totals["pairs"] == 2  # the anchored tool_use twin + the tool_result
+    assert totals.get("pairs_tsfree", 0) == 0
+    uses = [e for e in _events(tid) if e.event_type == "tool_use_complete"]
+    assert [e.payload["tool_call_id"] for e in uses] == ["toolu_1", None]
+
+
+# ── apply seams ──────────────────────────────────────────────────────────────
+
+
+def test_apply_pairings_skips_rows_that_moved_since_planning(archive_home) -> None:
+    """Every pair is re-validated against the live row: an event that vanished and one
+    already carrying a tool id are skipped, never forced."""
+    bundle, tid = _seed_claude(archive_home)
+    mod.run(bundles=[bundle], apply=True)
+    use = _one(_events(tid), "tool_use_complete")
+    patch = {"tool_call_id": "toolu_1", "unpaired": False}
+
+    plan = mod.ThreadPlan(tid, "conv-bf")
+    plan.pairings = [
+        {"event_id": 10_000_000, "patch": patch, "old_key": "gone", "new_key": use.dedup_key},
+        {"event_id": use.id, "patch": patch, "old_key": use.dedup_key, "new_key": use.dedup_key},
+    ]
+    assert mod._apply_pairings(plan, None) == {"paired": 0, "skipped": 2}
+
+
+def test_apply_meta_skips_a_thread_that_vanished(archive_home) -> None:
+    _seed_claude(archive_home)
+    plan = mod.ThreadPlan(10_000_000, "conv-gone")
+    plan.meta_patch = {"account_uuid": "acct-1"}
+    assert mod._apply_meta(plan, None) is False
+
+
+def test_meta_fold_lost_to_a_concurrent_writer_is_not_counted(archive_home, monkeypatch) -> None:
+    """The fold is re-checked against the live row: keys another writer folded between
+    plan and apply are left alone, and the run claims no fold it did not make."""
+    bundle, tid = _seed_claude(archive_home)
+    amend = mod.amend_event_payloads
+
+    def _folding_first(patches, *, reason=None):
+        # Another writer lands the whole fold while this run is still amending events.
+        _set_meta(tid, {**_folded_meta(), "summary": "OLD SUMMARY"})
+        return amend(patches, reason=reason)
+
+    monkeypatch.setattr(mod, "amend_event_payloads", _folding_first)
+    totals = mod.run(bundles=[bundle], apply=True)
+    assert totals["meta_threads"] == 1
+    assert totals.get("meta_applied", 0) == 0
+    with get_session() as s:
+        assert s.get(Thread, tid).source_metadata["account_uuid"] == "acct-1"
+
+
+def test_metadata_only_thread_skips_the_event_writers(archive_home) -> None:
+    """A thread whose events are already enriched but whose fold was lost applies the
+    metadata alone."""
+    bundle, tid = _seed_claude(archive_home)
+    mod.run(bundles=[bundle], apply=True)
+    _set_meta(tid, {"provider": "claude"})
+
+    totals = mod.run(bundles=[bundle], apply=True)
+    assert totals["amend_events"] == 0
+    assert totals.get("pairs", 0) == 0
+    assert totals["meta_applied"] == 1
+    assert totals["threads_changed"] == 1
+
+
+# ── driver + CLI ─────────────────────────────────────────────────────────────
+
+
+def test_unreadable_bundle_is_counted_and_the_run_continues(archive_home) -> None:
+    """One bad bundle must not stop the run — the readable one behind it is examined."""
+    bundle, tid = _seed_claude(archive_home)
+    junk = archive_home / "not_an_export"
+    junk.mkdir()
+    (junk / "readme.txt").write_text("nothing here", encoding="utf-8")
+
+    totals = mod.run(bundles=[junk, bundle], apply=False)
+    assert totals["bundles"] == 2
+    assert totals["bundle_errors"] == 1
+    assert totals["threads_examined"] == 1
+    with pytest.raises(ValueError, match="export bundle"):
+        list(mod._iter_conversations(junk))
+
+
+def test_conversation_without_an_id_is_skipped(archive_home) -> None:
+    """An export row with no uuid cannot be matched to a thread — counted, not guessed."""
+    init_db()
+    anonymous = json.loads(json.dumps(_CLAUDE_CONV))
+    anonymous.pop("uuid")
+    anonymous["updated_at"] = "2025-01-01T00:00:00Z"  # sorts behind the identified one
+    bundle = _claude_bundle(archive_home, [_CLAUDE_CONV, anonymous])
+
+    totals = mod.run(bundles=[bundle], apply=False)
+    assert totals["conversations_no_id"] == 1
+    assert totals["conversations"] == 1
+    assert totals["threads_missing"] == 1
+
+
+def test_limit_caps_the_threads_examined(archive_home) -> None:
+    init_db()
+    second = json.loads(json.dumps(_CLAUDE_CONV))
+    second["uuid"] = "conv-bf-2"
+    second["updated_at"] = "2025-01-01T00:00:00Z"
+    bundle = _claude_bundle(archive_home, [_CLAUDE_CONV, second])
+    assert import_claude_ai_export(bundle).imported == 2
+
+    totals = mod.run(bundles=[bundle], apply=False, limit=1)
+    assert totals["threads_examined"] == 1
+    assert totals["conversations"] == 1
+
+
+def test_plan_errors_are_counted_and_leave_the_thread_alone(archive_home, monkeypatch) -> None:
+    bundle, tid = _seed_claude(archive_home)
+    before = [(e.id, json.dumps(e.payload, sort_keys=True), e.dedup_key) for e in _events(tid)]
+
+    def _boom(session, thread, messages):
+        raise RuntimeError("planning blew up")
+
+    monkeypatch.setattr(mod, "plan_thread", _boom)
+    totals = mod.run(bundles=[bundle], apply=True)
+    assert totals["plan_errors"] == 1
+    assert totals["threads_examined"] == 1
+    after = [(e.id, json.dumps(e.payload, sort_keys=True), e.dedup_key) for e in _events(tid)]
+    assert before == after
+
+
+def test_apply_errors_are_counted(archive_home, monkeypatch) -> None:
+    bundle, tid = _seed_claude(archive_home)
+
+    def _boom(patches, *, reason=None):
+        raise RuntimeError("write blew up")
+
+    monkeypatch.setattr(mod, "amend_event_payloads", _boom)
+    totals = mod.run(bundles=[bundle], apply=True)
+    assert totals["apply_errors"] == 1
+    assert totals.get("threads_changed", 0) == 0
+    use = _one(_events(tid), "tool_use_complete")
+    assert use.payload["tool_call_id"] is None, "the failed thread is left as it was"
+
+
+def test_main_dry_run_then_apply(archive_home, tmp_path, capsys) -> None:
+    bundle, tid = _seed_claude(archive_home)
+    _delete_event(tid, "content_block", "flag")  # gives the report a new-content breakdown
+
+    mod.main(["--bundle", str(bundle)])
+    out = capsys.readouterr().out
+    assert "[DRY-RUN]" in out
+    assert "content_block[flag]" in out
+    assert "APPLIED:" not in out
+    assert _one(_events(tid), "tool_use_complete").payload["tool_call_id"] is None
+
+    backup = tmp_path / "cli-backup.jsonl"
+    mod.main(["--bundle", str(bundle), "--apply", "--limit", "5", "--backup", str(backup), "-v"])
+    out = capsys.readouterr().out
+    assert "[APPLIED]" in out
+    assert "APPLIED: amended=" in out and "paired=2" in out
+    assert _one(_events(tid), "tool_use_complete").payload["tool_call_id"] == "toolu_1"
+    assert [json.loads(ln) for ln in backup.read_text().splitlines()]
+
+
+@pytest.mark.filterwarnings("ignore:.*found in sys.modules.*:RuntimeWarning")
+def test_module_is_runnable_as_a_script(archive_home, monkeypatch, capsys) -> None:
+    """``python -m thread_archive._scripts.backfill_export_annotations`` runs the CLI."""
+    bundle, _ = _seed_claude(archive_home)
+    monkeypatch.setattr(
+        sys, "argv", ["backfill-export-annotations", "--bundle", str(bundle)]
+    )
+    runpy.run_module(
+        "thread_archive._scripts.backfill_export_annotations", run_name="__main__"
+    )
+    assert "[DRY-RUN]" in capsys.readouterr().out

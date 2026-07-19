@@ -2,6 +2,45 @@
 
 ## Unreleased
 
+- **Retrieval is now measured against real usage, not just the title proxy.**
+  The eval harness gains a `--from-log` protocol: every `thread_search` an
+  agent has run is itself archived, along with the `thread_read` that followed,
+  so the archive's own tool-use trail is a click-labeled query log (561 cases
+  mined at introduction, legacy thread-commands calls included — the thread id
+  space carried over). Real-query numbers land far below the title proxy's
+  (fused MRR 0.245 / recall@10 0.43 vs 0.64 / 0.89): title-as-query overstates
+  quality because titles are LLM distillations of the threads they name. The
+  librarian-summaries lift the title protocol showed (+0.09 MRR) vanishes on
+  real queries (+0.001) — vocabulary correlation between two distillations of
+  the same thread, not retrieval value. The README's measured section now
+  reports the real-query table. The two CI retrieval rows collapsed into one
+  lean gate: `--require-semantic` asserts the embeddings arm is alive directly
+  (the failure a metric floor detects worst — fused silently degrading to
+  lexical — checked with zero queries), and a small seeded sample of log-mined
+  cases serves as a collapse alarm whose floors sit far below measured and are
+  never ratcheted (click labels are shaped by what past search surfaced, so a
+  modest dip under a reshaped ranker is not evidence of regression). The
+  title-as-query row is gone from CI; the protocol remains in the harness as a
+  quick local probe. `--cases FILE` accepts curated JSONL sets; the pairing
+  and scoring logic grew unit tests.
+
+- **The type gate is green again and the coverage ratchet moved up.** Eight
+  mypy errors had accumulated across the importers, the source mirror, the
+  retrieval pipeline and the web server; `EventHit` now declares the two
+  enrichment keys the web layer stamps on it (`term_hits`, `dup_threads`)
+  rather than the checker rejecting writes the viewer depends on. The backfill
+  scripts and the newer CLI verbs (self-update, mirror, providers) had landed
+  without tests, dropping `_scripts` to 79% and `cli` to 89%; both are now at
+  99% and their floors — plus TOTAL — are raised to follow.
+
+- **One unreadable export bundle no longer aborts the whole
+  backfill-export-annotations run.** `_iter_conversations` is a generator, so
+  the `try` around the call caught nothing — the classify/load work (and its
+  `ValueError` on a path that is not an export) ran on first iteration, outside
+  the guard. The `bundle_errors` counter was unreachable and a single bad path
+  in a multi-bundle run took the rest of the bundles down with it. The
+  conversation list is now materialized under the guard.
+
 - **The README opens with the payoff, not the machinery.** A day-one demo block
   — your existing `~/.claude` history imported, then answered mid-conversation,
   with the eval numbers as the receipt — now leads; the durability/"built like

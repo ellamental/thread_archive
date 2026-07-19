@@ -35,7 +35,12 @@ class EventHit(TypedDict):
     carries ``_group`` naming the shape, the same ``thread_source`` /
     ``n_events`` columns, and — under ``group='nested'``, whose clustering
     replaces ranked order with per-thread event order — ``_rank_pos``, so
-    ``format.top_hit`` can still find the head the quality verdict judges."""
+    ``format.top_hit`` can still find the head the quality verdict judges.
+
+    Two further keys are stamped by the web layer when it shapes hits for the
+    viewer's JSON: ``term_hits`` (how many query terms literally appear in the
+    hit, for the per-hit K/N badge) and ``dup_threads`` (``_dup_thread_ids``
+    resolved to ``{thread_id, title}`` so the fold renders as names)."""
 
     event_id: int
     thread_id: int
@@ -57,3 +62,5 @@ class EventHit(TypedDict):
     _rank_pos: NotRequired[int]
     thread_source: NotRequired[Optional[str]]
     n_events: NotRequired[int]
+    term_hits: NotRequired[int]
+    dup_threads: NotRequired[list[dict]]

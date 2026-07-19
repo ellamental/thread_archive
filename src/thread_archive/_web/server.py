@@ -236,9 +236,10 @@ def _resolve_dup_threads(hits: "list[EventHit]") -> None:
     if not wanted:
         return
     with get_session() as s:
-        titles = dict(
-            s.execute(select(Thread.id, Thread.title).where(Thread.id.in_(wanted))).all()
-        )
+        titles: dict[int, Optional[str]] = {
+            r.id: r.title
+            for r in s.execute(select(Thread.id, Thread.title).where(Thread.id.in_(wanted))).all()
+        }
     for h in hits:
         ids = h.get("_dup_thread_ids")
         if ids:

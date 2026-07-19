@@ -186,7 +186,8 @@ def _import_science_lines(
     )
     if annotations_by_uuid:
         for message in messages:
-            ann = annotations_by_uuid.get(message.get("provider_message_id"))
+            pmid = message.get("provider_message_id")
+            ann = annotations_by_uuid.get(pmid) if pmid else None
             if not ann:
                 continue
             provider_data = message.get("provider_data")

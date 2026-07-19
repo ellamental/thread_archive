@@ -55,7 +55,7 @@ import tempfile
 import time
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Iterator, Optional
+from typing import Any, Iterator, Optional
 
 from .._config import resolve_paths
 from .health import record_health
@@ -275,7 +275,7 @@ class _ProviderSweep:
 
     def result(self) -> dict:
         ok = not self.errors or len(self.errors) <= max(1, self.files) * _ERROR_FRACTION
-        out = {
+        out: dict[str, Any] = {
             "ok": ok,
             "files": self.files,
             "copied": self.copied,

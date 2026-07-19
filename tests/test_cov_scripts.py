@@ -1,11 +1,13 @@
 """Orchestration + edge-branch coverage for the migration/backfill scripts.
 
-The plan-level happy paths of these four scripts are covered by their sibling
-modules (``test_backfill_dedup_key`` / ``test_backfill_codex_model`` /
-``test_recover_dropped_events`` / ``test_migration_scripts``). This module drives
-the parts those bypass: the ``main`` CLI entrypoints, the ``run`` error/skip
-branches (plan errors, read/write errors, unmatched sources, limit caps), the pure
-anchor/normalize helpers, and the collision/collapse arms of ``backfill_recompute``.
+The plan-level happy paths of these scripts are covered by their sibling modules
+(``test_backfill_dedup_key`` / ``test_backfill_codex_model`` /
+``test_recover_dropped_events`` / ``test_migration_scripts`` / ``test_amend``).
+This module drives the parts those bypass: the ``main`` CLI entrypoints, the
+``run`` error/skip branches (plan errors, read/write errors, unmatched sources,
+source filters, limit caps), the pure anchor/normalize helpers, the
+collision/collapse arms of ``backfill_recompute``, and the fallback/ambiguity arms
+of the matchers in ``backfill_reconcile`` and ``backfill_usage_cost``.
 """
 
 from __future__ import annotations
@@ -361,6 +363,37 @@ def test_recompute_no_anchor_twin_variants(archive_home) -> None:
     assert totals["collapse_skipped_both_cited"] == 1    # tool pair
 
 
+def test_recompute_twin_already_claimed_is_left_null(archive_home) -> None:
+    """A keyed row can be at most one duplicate's other half.
+
+    The same tool result is stored three times: twice in a group whose anchor was
+    lost (collapsed against the keyed copy) and once more under a group that still
+    has its anchor. The third copy recomputes the very key the keyed row holds, but
+    that row is already spoken for — so it is counted as a collision and left NULL
+    rather than collapsed a second time onto a row that is about to survive one.
+    """
+    T = datetime(2026, 1, 1, 10, 0, 0, tzinfo=timezone.utc)
+    payload = {"tool_call_id": "tc1", "content": "output"}
+    key = compute_dedup_key("", "tool_execution_completed", payload)
+    _seed_recompute_thread(archive_home, [
+        # anchorless group — the keyed copy is claimed as this NULL's twin
+        {"stream_id": "sA", "api_call_id": "cA", "event_type": "tool_execution_completed",
+         "payload": dict(payload), "dedup_key": key, "occurred_at": T},
+        {"stream_id": "sA", "api_call_id": "cA", "event_type": "tool_execution_completed",
+         "payload": dict(payload), "dedup_key": None, "occurred_at": T},
+        # anchored group — recomputes the same key, whose owner is already claimed
+        {"stream_id": "sB", "api_call_id": "cB", "event_type": "api_request_started",
+         "payload": {"model": "m"}, "dedup_key": "anchor-key", "occurred_at": T},
+        {"stream_id": "sB", "api_call_id": "cB", "event_type": "tool_execution_completed",
+         "payload": dict(payload), "dedup_key": None, "occurred_at": T},
+    ])
+    totals = rc.run(apply=False, collapse=True)
+    assert totals["collapses"] == 1
+    assert totals["collisions"] == 1
+    assert totals["threads_with_warnings"] == 1
+    assert totals.get("backfills", 0) == 0, "the unclaimable NULL is left NULL, not keyed"
+
+
 def test_recompute_delete_events_clears_all_shadow_tables(archive_home) -> None:
     """``_delete_events`` sweeps events + FTS shadow + (when present)
     event_vectors rows; the ``event_search`` index empties via the sync
@@ -434,6 +467,95 @@ def test_reconcile_iter_pairs_yields_available_only(monkeypatch, tmp_path) -> No
     providers, expected = _cc_shaped_providers(tmp_path)
     monkeypatch.setattr(_providers, "sources_using_parser", lambda *a, **kw: providers)
     assert list(rec._iter_pairs()) == expected
+
+
+def test_reconcile_iter_pairs_skips_a_watcherless_provider(monkeypatch, tmp_path) -> None:
+    """A provider that declares the parser but ships no watcher (nothing on disk to
+    walk) contributes nothing rather than raising."""
+    from thread_archive import _providers
+    from thread_archive.provider import Provider, claude_code_line_stream
+
+    providers, expected = _cc_shaped_providers(tmp_path)
+    watcherless = Provider(
+        name="no-watcher", label="no-watcher", parser_id="claude-code",
+        kind="line-stream", importer=claude_code_line_stream("no-watcher"), watcher=None,
+    )
+    monkeypatch.setattr(
+        _providers, "sources_using_parser", lambda *a, **kw: [watcherless, *providers])
+    assert list(rec._iter_pairs()) == expected
+
+
+def test_reconcile_plan_skips_a_row_whose_turn_id_disagrees(archive_home) -> None:
+    """Same content, different turn: an anchor match whose stored
+    provider_message_id contradicts the fresh event's is not that event, so the
+    matcher walks past it to the row that does agree."""
+    tid, _ = _import_cc(archive_home)
+    with get_session() as s:
+        ev = s.execute(select(Event).where(
+            Event.thread_id == tid,
+            Event.event_type == "api_request_started")).scalars().one()
+        decoy_id, kept, when = ev.id, dict(ev.payload), ev.occurred_at
+        # a second row carries the turn the source names …
+        s.add(Event(thread_id=tid, stream_id="dup-stream", api_call_id="dup-call",
+                    event_type=ev.event_type, payload=kept,
+                    occurred_at=when, dedup_key=None))
+        # … while the first-considered row names a different one
+        s.execute(update(Event).where(Event.id == decoy_id).values(
+            payload={**kept, "provider_data": {"provider_message_id": "a-other"}}))
+        s.commit()
+    _null_all_keys(tid)
+
+    with get_session() as s:
+        plan = rec.plan_thread(s, tid, "claude-code", LINES)
+    assert plan.safe
+    keyed = dict(plan.backfills)
+    assert decoy_id not in keyed, "the disagreeing turn must not be keyed"
+    assert any(k.startswith("a1:api_request_started") for k in keyed.values())
+
+
+ECHO_LINES = [
+    {"type": "user", "uuid": "e1", "timestamp": "2026-02-01T10:00:00Z", "sessionId": "s2",
+     "cwd": "/p", "message": {"role": "user", "content": "say it again"}},
+    {"type": "assistant", "uuid": "ea", "parentUuid": "e1", "timestamp": "2026-02-01T10:00:05Z",
+     "sessionId": "s2", "message": {"role": "assistant", "model": "m",
+                                    "content": [{"type": "text", "text": "again"}]}},
+    # the same words a second time — kept (its timestamp differs), so the thread holds
+    # two user turns with identical content
+    {"type": "user", "uuid": "e2", "parentUuid": "ea", "timestamp": "2026-02-01T10:00:10Z",
+     "sessionId": "s2", "message": {"role": "user", "content": "say it again"}},
+]
+
+
+def test_reconcile_plan_never_claims_one_row_twice(archive_home) -> None:
+    """A persisted row already matched by key is not re-offered to a later fresh
+    event that shares its anchor.
+
+    The setup is the drifted-timestamp shape these repairs exist for: two user turns
+    with identical content, the first one's stored timestamp dragged onto the
+    second's. Both fresh events now anchor into the same bucket, and the second must
+    step over the row the first claimed and key the row that is genuinely its own.
+    """
+    init_db()
+    f = archive_home / "echo.jsonl"
+    f.write_text("\n".join(json.dumps(x) for x in ECHO_LINES) + "\n", encoding="utf-8")
+    tid = import_session_incremental(f, "proj:s2").thread_id
+
+    with get_session() as s:
+        turns = s.execute(select(Event).where(
+            Event.thread_id == tid,
+            Event.event_type == "user_message_sent").order_by(Event.id)).scalars().all()
+        first, second = turns
+        first_id, second_id, second_key = first.id, second.id, second.dedup_key
+        s.execute(update(Event).where(Event.id == first_id).values(
+            occurred_at=second.occurred_at))     # the stale-timestamp artifact
+        s.execute(update(Event).where(Event.id == second_id).values(dedup_key=None))
+        s.commit()
+
+    with get_session() as s:
+        plan = rec.plan_thread(s, tid, "claude-code", ECHO_LINES)
+    assert plan.safe
+    assert dict(plan.backfills)[second_id] == second_key
+    assert first_id not in dict(plan.backfills), "the claimed row keeps the key it has"
 
 
 def test_reconcile_plan_counts_unmatched_fresh_as_dropped(archive_home) -> None:
@@ -883,3 +1005,173 @@ def test_codex_main_reports_conflicts_and_rollout_errors(archive_home, monkeypat
     assert "[APPLIED]" in out
     assert "archive/rollout disagree" in out
     assert "rollout errors" in out
+
+
+# ══ backfill_usage_cost ══════════════════════════════════════════════════════
+
+from thread_archive._scripts import backfill_usage_cost as uc  # noqa: E402
+
+USAGE_LINES = [
+    {"type": "user", "uuid": "u1", "timestamp": "2026-01-01T10:00:00Z", "sessionId": "s1",
+     "cwd": "/p", "message": {"role": "user", "content": "hello there"}},
+    {"type": "assistant", "uuid": "a1", "parentUuid": "u1", "timestamp": "2026-01-01T10:00:05Z",
+     "sessionId": "s1", "message": {"role": "assistant", "model": "m", "cost": 0.0421,
+                                    "usage": {"input_tokens": 11, "output_tokens": 7,
+                                              "thinking_tokens": 0,
+                                              "cache_read_tokens": 1200,
+                                              "cache_write_tokens": 300},
+                                    "content": [{"type": "text", "text": "hi back"}]}},
+]
+
+DROPPED = ("cost", "cache_read_tokens", "cache_write_tokens")
+
+
+def _import_usage(archive_home, source_id="s1"):
+    init_db()
+    f = archive_home / f"{source_id}.jsonl"
+    f.write_text("\n".join(json.dumps(x) for x in USAGE_LINES) + "\n", encoding="utf-8")
+    return import_session_incremental(f, source_id).thread_id, f
+
+
+def _completed(tid: int) -> tuple[int, dict]:
+    with get_session() as s:
+        ev = s.execute(select(Event).where(
+            Event.thread_id == tid, Event.event_type == uc.TARGET_TYPE)).scalar_one()
+        return ev.id, dict(ev.payload)
+
+
+def _strip_usage(tid: int, **overrides) -> int:
+    """Reproduce the pre-fix import: the non-content usage fields never landed."""
+    eid, payload = _completed(tid)
+    stripped = {k: v for k, v in payload.items() if k not in DROPPED}
+    stripped.update(overrides)
+    with get_session() as s:
+        s.execute(update(Event).where(Event.id == eid).values(payload=stripped))
+        s.commit()
+    return eid
+
+
+def test_usage_cost_matches_by_content_anchor_when_the_key_is_null(archive_home) -> None:
+    """A pre-dedup_key-era row has no key to match on — the content anchor finds it,
+    and the patch lands exactly as the keyed path would have."""
+    tid, f = _import_usage(archive_home)
+    eid = _strip_usage(tid)
+    with get_session() as s:
+        s.execute(update(Event).where(Event.id == eid).values(dedup_key=None))
+        s.commit()
+
+    pairs = [("claude-code", f, "s1")]
+    assert uc.run(apply=False, pairs=pairs)["patches"] == 1
+    assert uc.run(apply=True, pairs=pairs)["events_amended"] == 1
+    with get_session() as s:
+        p = s.get(Event, eid).payload
+    assert p["cost"] == 0.0421 and p["cache_read_tokens"] == 1200
+
+
+def test_usage_cost_ambiguous_anchor_is_skipped(archive_home) -> None:
+    """Two keyless rows with the same content anchor: the fresh event cannot say
+    which one it is, so neither is patched."""
+    tid, f = _import_usage(archive_home)
+    eid = _strip_usage(tid)
+    with get_session() as s:
+        ev = s.get(Event, eid)
+        s.add(Event(thread_id=tid, stream_id="dup-stream", api_call_id="dup-call",
+                    event_type=ev.event_type, payload=dict(ev.payload),
+                    occurred_at=ev.occurred_at, dedup_key=None))
+        s.execute(update(Event).where(Event.id == eid).values(dedup_key=None))
+        s.commit()
+
+    totals = uc.run(apply=True, pairs=[("claude-code", f, "s1")])
+    assert totals["ambiguous"] == 1
+    assert totals.get("patches", 0) == 0
+    with get_session() as s:
+        assert "cost" not in s.get(Event, eid).payload
+
+
+def test_usage_cost_unmatched_fresh_is_counted(archive_home) -> None:
+    """A fresh event with no stored counterpart is reported, never inserted — this
+    backfill amends existing rows and nothing else."""
+    from sqlalchemy import delete
+
+    tid, f = _import_usage(archive_home)
+    eid, _payload = _completed(tid)
+    with get_session() as s:
+        s.execute(delete(Event).where(Event.id == eid))
+        s.commit()
+
+    totals = uc.run(apply=True, pairs=[("claude-code", f, "s1")])
+    assert totals["unmatched"] == 1
+    assert totals.get("patches", 0) == 0
+    with get_session() as s:
+        assert s.execute(select(Event).where(
+            Event.thread_id == tid, Event.event_type == uc.TARGET_TYPE)).scalars().all() == []
+
+
+def test_usage_cost_value_drift_is_reported_not_resolved(archive_home) -> None:
+    """Missing-only merge: a key already on the stored payload is kept even when the
+    fresh re-parse disagrees. The disagreement is counted, not applied."""
+    tid, f = _import_usage(archive_home)
+    eid = _strip_usage(tid, cost=0.0, cache_read_tokens=1200, cache_write_tokens=300)
+
+    totals = uc.run(apply=True, pairs=[("claude-code", f, "s1")])
+    assert totals["value_drift"] >= 1
+    assert totals["already_complete"] == 1
+    assert totals.get("patches", 0) == 0
+    with get_session() as s:
+        assert s.get(Event, eid).payload["cost"] == 0.0, "stored value wins"
+
+
+def test_usage_cost_run_filters_by_source_and_limit(archive_home) -> None:
+    tid, f = _import_usage(archive_home)
+    pairs = [("claude-code", f, "s1"), ("claude-code", f, "s1")]
+
+    assert uc.run(pairs=pairs, sources={"cowork"}).get("threads", 0) == 0
+    assert uc.run(pairs=pairs, sources={"claude-code"})["threads"] == 2
+    assert uc.run(pairs=pairs, limit=1)["threads"] == 1
+
+
+def test_usage_cost_run_skips_unmapped_source(archive_home) -> None:
+    _tid, f = _import_usage(archive_home)
+    assert uc.run(pairs=[("claude-code", f, "no-such-source")]).get("threads", 0) == 0
+
+
+def test_usage_cost_run_counts_plan_errors(archive_home, monkeypatch) -> None:
+    _tid, f = _import_usage(archive_home)
+
+    def _boom(path):
+        raise RuntimeError("cannot read")
+
+    monkeypatch.setattr(uc, "read_session_lines", _boom)
+    totals = uc.run(pairs=[("claude-code", f, "s1")], apply=True)
+    assert totals["plan_errors"] == 1
+    assert totals["threads"] == 1
+    assert totals.get("events_amended", 0) == 0
+
+
+def test_usage_cost_main_dry_then_apply(archive_home, capsys) -> None:
+    tid, f = _import_usage(archive_home)
+    eid = _strip_usage(tid)
+
+    uc.main([], pairs=iter([("claude-code", f, "s1")]))
+    out = capsys.readouterr().out
+    assert "[DRY-RUN]" in out
+    assert "threads examined:   1" in out
+    assert "patches planned:    1" in out
+    assert "cost" in out  # the per-field breakdown
+    with get_session() as s:
+        assert "cost" not in s.get(Event, eid).payload, "dry-run must not write"
+
+    uc.main(["--apply", "-v"], pairs=iter([("claude-code", f, "s1")]))
+    out = capsys.readouterr().out
+    assert "[APPLIED]" in out
+    assert "events amended:     1" in out
+    with get_session() as s:
+        assert s.get(Event, eid).payload["cost"] == 0.0421
+
+
+def test_usage_cost_main_source_filter_examines_nothing(archive_home, capsys) -> None:
+    _tid, f = _import_usage(archive_home)
+    uc.main(["--source", "cowork", "--limit", "5"],
+            pairs=iter([("claude-code", f, "s1")]))
+    out = capsys.readouterr().out
+    assert "threads examined:   0" in out

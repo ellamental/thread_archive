@@ -100,6 +100,64 @@ def test_denamespace_apply_writes_backup_then_strips_and_is_idempotent(archive_h
     assert totals2.get("threads", 0) == 0
 
 
+def test_denamespace_thread_listing_respects_limit(archive_home) -> None:
+    from thread_archive._scripts.denamespace_dedup_keys import _prefixed_thread_ids
+
+    tid, _ = _import_thread(archive_home)
+    _prefix_all_keys(tid)
+    with get_session() as s:
+        other = Thread(name="second-prefixed-thread", source="claude-code")
+        s.add(other)
+        s.flush()
+        s.add(Event(thread_id=other.id, stream_id="st", event_type="text_complete",
+                    payload={"block_index": 0, "text": "x"},
+                    occurred_at=datetime(2026, 1, 1, 10, 0, 0),
+                    dedup_key=f"{other.id}:c=abc:text_complete:blk=0:abc"))
+        s.commit()
+
+    with get_session() as s:
+        assert len(_prefixed_thread_ids(s, None)) == 2
+        assert len(_prefixed_thread_ids(s, 1)) == 1
+
+
+def test_denamespace_leaves_already_bare_keys_alone(archive_home) -> None:
+    """The two formats coexist mid-migration; only the prefixed rows are rewritten."""
+    from thread_archive._scripts.denamespace_dedup_keys import run
+
+    tid, _ = _import_thread(archive_home)
+    with get_session() as s:
+        evs = s.execute(select(Event).where(
+            Event.thread_id == tid, Event.dedup_key.is_not(None))).scalars().all()
+        bare = {e.id: e.dedup_key for e in evs}
+        prefixed = sorted(bare)[:2]
+        for eid in prefixed:
+            s.execute(update(Event).where(Event.id == eid).values(dedup_key=f"{tid}:{bare[eid]}"))
+        s.commit()
+
+    totals = run(apply=True)
+    assert totals["stripped"] == len(prefixed)
+    assert {eid: k for eid, k in _keys(tid).items() if k} == bare
+
+
+def test_denamespace_counts_a_collapse_onto_an_existing_bare_key(archive_home) -> None:
+    """A prefixed key whose bare form is already present is the same event identity
+    stored twice — de-prefixing still collapses them to one, and the pass says so."""
+    from thread_archive._scripts.denamespace_dedup_keys import run
+
+    tid, _ = _import_thread(archive_home)
+    with get_session() as s:
+        ev = s.execute(select(Event).where(
+            Event.thread_id == tid, Event.dedup_key.is_not(None))).scalars().first()
+        s.add(Event(thread_id=tid, stream_id="twin-stream", api_call_id="twin-call",
+                    event_type=ev.event_type, payload=dict(ev.payload),
+                    occurred_at=ev.occurred_at, dedup_key=f"{tid}:{ev.dedup_key}"))
+        s.commit()
+
+    totals = run(apply=False)
+    assert totals["stripped"] == 1
+    assert totals["collapses"] == 1
+
+
 def test_denamespace_main_reports_mode(archive_home, capsys) -> None:
     from thread_archive._scripts.denamespace_dedup_keys import main
 
@@ -239,16 +297,12 @@ def _write_grok_plan(tmp_path, monkeypatch, patches: list[dict]):
     return mod
 
 
-@pytest.fixture
-def grok_plan_seeded(archive_home, tmp_path, monkeypatch):
-    """Seed a store holding exactly the events a synthetic repair plan targets,
-    with the plan's asserted old values."""
+def _seed_grok_events(patches: list[dict]) -> None:
+    """A store holding exactly the events a repair plan targets, at its old values."""
     from thread_archive._retrieval.fts import ensure_fts
 
     init_db()
     ensure_fts()  # the script raw-DELETEs from event_search; a real store has it
-    patches = [_grok_plan_row(eid) for eid in (8225001, 8225002, 8225003)]
-    mod = _write_grok_plan(tmp_path, monkeypatch, patches)
     with get_session() as s:
         s.add(Thread(id=1, name="grok-repair-fixture", source="grok"))
         s.flush()
@@ -260,6 +314,15 @@ def grok_plan_seeded(archive_home, tmp_path, monkeypatch):
                 occurred_at=datetime.fromisoformat(p["old_occurred_at"]),
             ))
         s.commit()
+
+
+@pytest.fixture
+def grok_plan_seeded(archive_home, tmp_path, monkeypatch):
+    """Seed a store holding exactly the events a synthetic repair plan targets,
+    with the plan's asserted old values."""
+    patches = [_grok_plan_row(eid) for eid in (8225001, 8225002, 8225003)]
+    mod = _write_grok_plan(tmp_path, monkeypatch, patches)
+    _seed_grok_events(patches)
     return mod, patches
 
 
@@ -311,6 +374,48 @@ def test_grok_repair_aborts_on_missing_event(archive_home, tmp_path, monkeypatch
     monkeypatch.setattr("sys.argv", ["repair_grok_tool_names.py", "--apply"])
     assert mod.main() == 1
     assert "ABORT" in capsys.readouterr().out
+
+
+def test_grok_repair_retypes_and_rekeys(archive_home, tmp_path, monkeypatch, capsys) -> None:
+    """A plan row may move the event to a different type and name the dedup_key that
+    type change implies; both land, and the preview line names the retype."""
+    patch = _grok_plan_row(8225010)
+    patch["new_event_type"] = "tool_execution_error"
+    patch["new_dedup_key"] = "c=0123456789abcdef:tool_execution_error::0123456789abcdef"
+    # a pure retype: the timestamp and payload the plan asserts are the ones it keeps
+    patch["new_occurred_at"] = patch["old_occurred_at"]
+    patch["new_payload"] = patch["old_payload"]
+    mod = _write_grok_plan(tmp_path, monkeypatch, [patch])
+    _seed_grok_events([patch])
+    monkeypatch.setattr(mod, "BACKUP_PATH", tmp_path / "backup.json")
+    monkeypatch.setattr("sys.argv", ["repair_grok_tool_names.py", "--apply"])
+
+    assert mod.main() == 0
+    out = capsys.readouterr().out
+    assert "type tool_execution_completed -> tool_execution_error" in out
+    with get_session() as s:
+        ev = s.get(Event, patch["event_id"])
+        assert ev.event_type == "tool_execution_error"
+        assert ev.dedup_key == patch["new_dedup_key"]
+
+
+def test_grok_repair_aborts_on_event_type_mismatch(grok_plan_seeded, monkeypatch, tmp_path, capsys) -> None:
+    """The plan asserts the type it expects to find as well as the payload — a row
+    that has moved type since the plan was cut is not the row it describes."""
+    mod, patches = grok_plan_seeded
+    monkeypatch.setattr(mod, "BACKUP_PATH", tmp_path / "backup.json")
+    with get_session() as s:
+        s.execute(update(Event).where(Event.id == patches[0]["event_id"]).values(
+            event_type="text_complete"))
+        s.commit()
+
+    monkeypatch.setattr("sys.argv", ["repair_grok_tool_names.py", "--apply"])
+    assert mod.main() == 1
+    assert "!= plan" in capsys.readouterr().out
+    assert not (tmp_path / "backup.json").exists()
+    with get_session() as s:
+        for p in patches[1:]:
+            assert mod.canonical_json(s.get(Event, p["event_id"]).payload) == p["old_payload"]
 
 
 def test_grok_repair_aborts_on_payload_mismatch(grok_plan_seeded, monkeypatch, tmp_path, capsys) -> None:

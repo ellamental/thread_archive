@@ -68,23 +68,33 @@ name = "coverage-gate"
 argv = ["{repo}/.venv/bin/python", "{repo}/scripts/coverage_gate.py", "{repo}/coverage.json"]
 
 # Retrieval-quality gate: the one regression class no other row can see — a
-# search that returns plausible results while recall quietly craters (the
-# live-capture FTS gap sat through every green nightly). Runs the auto-titles
-# protocol (seeded sample of titled threads; the title is the query, the
-# thread's own messages must rank) against THIS machine's live archive —
-# read-only, and thread-ci runs where the archive lives. The fused pipeline
-# with the cross-encoder off (--rerank off): the production path, minus the
-# arm whose per-query inference would multiply the row's runtime. Floors are
-# a ratchet calibrated under measured values (MRR 0.464 / recall@10 0.710 at
-# calibration), with margin for sample drift as the titled population grows —
-# raise them when measured quality rises; recalibrate if the protocol or
-# sample size changes.
+# search that returns plausible results while quality quietly craters (the
+# live-capture FTS gap sat through every green nightly). Runs against THIS
+# machine's live archive — read-only, and thread-ci runs where the archive
+# lives. Two checks, each aimed directly at its failure mode:
+# --require-semantic asserts the embeddings arm is alive (a dead model
+# silently degrades fused search to lexical — a ~0.05 MRR shift a metric
+# floor detects worst, a direct check catches with zero queries), and a small
+# seeded sample of real queries mined from the archive's own tool-use trail
+# (--from-log: each query is one an agent actually ran; the thread it opened
+# next must rank) guards against collapse. Click labels are incumbent-shaped
+# — the gold is what past search surfaced and the agent picked — so this row
+# is a collapse alarm, not an arbiter: losing the ability to rank known-
+# relevant threads means real breakage, but a modest breach under a
+# deliberately reshaped ranker may be divergence from the logged incumbent's
+# shape, not regression. Floors sit far below measured values (MRR 0.283 /
+# recall@10 0.413 at calibration, n=75 seed 7) so only collapse trips them.
+# A breach means investigate, not revert; on a deliberate ranking redesign,
+# judge the change on its merits and recalibrate. Do not ratchet these
+# floors upward: the case pool increasingly comes from the current stack
+# labeling its own results, and chasing the number up compounds that
+# self-preference.
 [[suite]]
 name = "retrieval-gate"
 argv = ["{repo}/.venv/bin/python", "{repo}/scripts/retrieval_eval.py",
-        "--auto-titles", "100", "--rerank", "off",
-        "--min-mrr", "0.40", "--min-recall10", "0.62"]
-timeout = 1200
+        "--from-log", "75", "--rerank", "off", "--require-semantic",
+        "--min-mrr", "0.14", "--min-recall10", "0.20"]
+timeout = 600
 
 # The release lane: build the wheel + sdist, prove their contents, install the
 # wheel into a clean venv, and run the real CLI lifecycle from it. Deselected

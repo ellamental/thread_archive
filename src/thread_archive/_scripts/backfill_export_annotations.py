@@ -576,7 +576,12 @@ def run(
         for bundle in bundles:
             totals["bundles"] += 1
             try:
-                conversations = _iter_conversations(Path(bundle))
+                # Materialized under the guard: _iter_conversations is a generator, so
+                # its classify/load work runs on first iteration — left lazy, an
+                # unreadable bundle would raise out of the loop below and abort the
+                # whole run instead of being counted. The list holds parse thunks, not
+                # parsed conversations; the bundle itself is already resident.
+                conversations = list(_iter_conversations(Path(bundle)))
             except Exception as e:  # noqa: BLE001 — one bad bundle must not stop the run
                 logger.warning("bundle %s unreadable: %s", bundle, e)
                 totals["bundle_errors"] += 1

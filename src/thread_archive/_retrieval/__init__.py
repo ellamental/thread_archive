@@ -421,7 +421,7 @@ def search(
 
     # Per-hit enrichments the renderer reads. A pure tally (count) needs none.
     if not is_count:
-        if grouping and listing:
+        if grouping and listing and group is not None:
             # The list shapes render thread rows, so they need the thread columns.
             # 'browse' shows no message at all, so its per-hit match window would
             # be computed only to be discarded.
