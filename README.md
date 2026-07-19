@@ -5,7 +5,7 @@
 [![Platform](https://img.shields.io/badge/platform-macOS-black)](https://github.com/ellamental/thread_archive)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 
-**Thread Archive is a local-first memory system for the AI agents that work on your machine.** It ingests every session your agent harnesses record — Claude Code, Codex, Cursor, OpenCode, Grok, and friends — into one append-only archive you own, on your Mac. Web chats (claude.ai, ChatGPT, xAI) import too, from account exports you download by hand; the live, self-feeding path is the agent tooling.
+**Thread Archive is a local-first memory system for the AI agents that work on your machine — built by Claude Code, for Claude Code.** It ingests every session your agent harnesses record into one append-only archive you own, on your Mac. Claude Code is the supported, first-class source; the other harnesses it reads — Codex, Cursor, OpenCode, Grok, and friends — are best-effort and community-maintainable (see *When an import drifts*). Web chats (claude.ai, ChatGPT, xAI) import too, from account exports you download by hand; the live, self-feeding path is the agent tooling.
 
 **Day one is the demo.** The history already exists — your Claude Code sessions are sitting in `~/.claude` right now, as JSONL nothing can search and the harness eventually rotates away. Point archive at them, and minutes later ask, mid-conversation:
 
@@ -53,6 +53,8 @@ plus a small seeded sample of the log-mined cases as a collapse alarm.)
 - Plain JSONL files are the source of truth — human-readable, greppable, yours. The search index is disposable and rebuilds from them at any time.
 - Crash-safe writes with intent journaling, fsync discipline, and automatic recovery. Your history survives power loss, killed processes, and corrupted indexes.
 - Built-in backup, integrity verification, and restore drills: recovers from corruption or an errant delete, and the nightly pipeline checks that the backup actually restores. The archive is ordinary files on disk — whatever backs up the rest of your data covers it the same way.
+
+**Fixes itself where it broke.** A provider's transcript format drifts on the provider's schedule, not a maintainer's. Archive makes that drift loud and locally repairable: drift ledgers and a nightly coverage check catch the degradation, the raw source files are quarantined before the provider prunes them, the in-session search notice names the remedy, and `archive fix-import <provider>` scaffolds an override patch and spawns a headless Claude Code agent to write the fix on the machine that has the samples — gated by tests it cannot weaken, then re-imported so nothing consumed during the gap is lost. The supported provider's worst case is *preserved but partially modeled until fixed* — and the fix doesn't wait on a release.
 
 **A memory an agent can organize.** The optional **archive-librarian plugin** ([plugins/librarian/](https://github.com/ellamental/thread_archive/tree/main/plugins/librarian)) adds the curation surface: `/librarian` and `/gardener` skills and a write MCP server that let an AI agent curate the archive — creating topics, pinning key quotes, linking related threads into a knowledge graph, and tending that graph's hierarchy. Prefer it hands-off? `archive daemon install --librarian` / `--gardener` schedules headless curation drains (they run from the package — no plugin needed). Every curation act is event-sourced, so you can always see who connected what, and why. The core archive reads and renders the graph either way; without a curator it simply stays empty.
 
@@ -246,6 +248,41 @@ deliberately as it matures. `tests/test_public_api.py` ratchets the boundary.
 Releases (changelog compression, version bump, release commit, annotated tag)
 follow [docs/releasing.md](https://github.com/ellamental/thread_archive/blob/main/docs/releasing.md).
 
+## When an import drifts
+
+Providers change their on-disk formats without notice, and no maintainer runs a
+harness that exercises every variation at every provider release. Archive's
+answer is a support tier plus a repair loop, not a promise nobody can keep:
+
+- **Claude Code is first-class.** Its parser carries the full drift ledger
+  (validators, residual preservation, the version tripwire), so its worst
+  failure mode is *soft*: content is preserved — unmodeled fields ride along
+  under `annotations`, skipped files land on the audit ledgers — but partially
+  modeled until fixed. Everything else is best-effort: same machinery where it
+  reaches, community-maintainable via the plugin API.
+- **Drift is loud.** The skip and validation ledgers plus the nightly coverage
+  check produce per-source *degradation verdicts* (`archive coverage` prints
+  them; the MCP search notice prepends a one-liner naming the remedy the next
+  time you search, which is the moment you care).
+- **Preservation doesn't wait for the fix.** A degraded source's recently
+  active raw files are snapshotted into `dumps/drift/<source>/` — bounded,
+  incremental, never auto-deleted — so a fix that comes months later can still
+  recover everything the provider has since pruned.
+- **The user's own agent writes the fix.** `archive fix-import <provider>`
+  scaffolds an override patch under `<home>/plugins/` (module, tests, collected
+  samples, drift evidence, per-provider quirk notes) and spawns a headless
+  `claude` whose only job is the parse logic. Activation is deterministic —
+  the scaffold's tests must pass in a fresh subprocess (including a dedup
+  re-import guard) before the override is enabled and the ledger-driven
+  re-import recovers the gap. No Claude Code on the box? `--scaffold-only`
+  lays out the same scaffold for any agent or human.
+- **Patches are temporary by default.** The next self-update retires them (a
+  core release is the proper fix's vehicle; if drift persists, the notice
+  re-fires and the fix re-runs against the new core). `archive fix-import
+  <provider> --pin` keeps yours forever. Every lifecycle step is audited in
+  `patch-log.jsonl`, and `archive providers` shows `patched` / `patched
+  (pinned)` state.
+
 ## Not supported
 
 The scope is deliberately narrow. These are design decisions, not gaps waiting
@@ -422,6 +459,82 @@ done once it has both a citation/link and a summary. Summaries are deliberately 
 kg events: they're thread metadata like the title, made durable by the thread's own
 latest-wins truth record, which keeps redaction's thread-meta scrub the single place
 summary content ever needs erasing.
+
+## Similar and related projects
+
+Preserving and searching AI conversation history is a crowded space, and a lot
+of the work in it is good. If thread-archive isn't what you want, one of these
+probably is.
+
+**Session search over local agent transcripts** — the nearest neighbors, all
+local-first, all reading the same harness stores:
+
+- [CASS](https://github.com/Dicklesworthstone/coding_agent_session_search) —
+  Rust, the widest provider coverage in the space and the closest retrieval
+  stack to this one: BM25, local ONNX embeddings, rank fusion, and a
+  cross-encoder rerank over an append-only store. Its MCP surface is
+  inter-agent messaging; search is CLI and TUI.
+- [ctx](https://github.com/ctxrs/ctx) — Rust, many harnesses into local SQLite,
+  a read-only MCP server, session replay with windowing, and read-only SQL over
+  the index. Lexical retrieval, tuned for spending few tokens.
+- [deja-vu](https://github.com/vshulcz/deja-vu) — Go single binary; MCP `recall`
+  and `blame` tools, optional semantic search against a local Ollama or LM Studio
+  endpoint, credential redaction at index time. Its
+  [format registry](https://github.com/vshulcz/deja-vu/tree/main/docs/registry)
+  documents each harness's on-disk shape and quirks, and is the best public
+  reference for these formats.
+- [episodic-memory](https://github.com/obra/episodic-memory) — TypeScript;
+  copies transcripts into its own archive so search outlives harness pruning,
+  local embeddings, MCP `search` and `read`. Claude Code and Codex.
+- [synty](https://github.com/superlinked/synty) — Rust; a login-time tracker
+  daemon, append-only JSONL as its corpus, a rebuildable index, late-interaction
+  retrieval, and emergent topic clustering. Architecturally the closest cousin.
+- [agentsview](https://github.com/kenn-io/agentsview) — Go; a local SQLite
+  archive with full-text and optional semantic search, a web dashboard, and
+  token/cost analytics. Operator-facing rather than agent-facing.
+- [Agent Sessions](https://github.com/jazzyalex/agent-sessions) — a polished
+  native macOS browser across many harnesses. Reads in place: a viewer, not a
+  store.
+- Smaller and sharper: [ccrider](https://github.com/neilberkman/ccrider) (TUI
+  plus an MCP search server), [claude-historian](https://github.com/Vvkmnn/claude-historian-mcp)
+  (an MCP server that deliberately keeps no index at all),
+  [threadlens](https://github.com/moinulmoin/threadlens) (a lexical index that
+  is explicitly disposable), and the transcript renderers
+  [claude-code-log](https://github.com/daaain/claude-code-log) and
+  [claude-code-transcripts](https://github.com/simonw/claude-code-transcripts).
+
+**Multi-provider chat archives.** [MyChatArchive](https://github.com/1ch1n/mychatarchive)
+comes at the same premise from the consumer side: ChatGPT, Claude, and Grok
+exports alongside local Claude Code and Cursor sessions, in one SQLite archive
+with full-text search, embeddings, and MCP.
+
+**Agent memory layers** — [mem0](https://github.com/mem0ai/mem0),
+[Zep / Graphiti](https://github.com/getzep/graphiti),
+[Letta](https://github.com/letta-ai/letta),
+[Cognee](https://github.com/topoteretes/cognee),
+[supermemory](https://github.com/supermemoryai/supermemory),
+[Basic Memory](https://github.com/basicmachines-co/basic-memory) — solve an
+adjacent problem: distilling conversation into facts, entities, or a knowledge
+graph small enough to sit in context. They are complements rather than
+alternatives. They optimize for a short, high-signal context; an archive
+optimizes for keeping everything. Most also record conversations that flow
+*through* them, rather than ingesting a harness's own store after the fact.
+
+**Prior art outside AI.** [notmuch](https://notmuchmail.org/) is the
+architectural precedent: immutable mail files that are never modified, all
+mutable state in an index regenerable from them at any time, proven over
+decades and millions of messages. [Piler](https://www.mailpiler.org/) is the
+compliance-archive analogue — immutable storage, tamper verification, retention
+policy.
+
+**How thread-archive differs.** Most tools here treat the harness's own files
+as the record and their index as a cache over it. Archive treats preservation
+as the product: its own append-only truth log, backup with restore drills and
+integrity verification, crypto-shredding redaction that stays reversible, and
+unmodeled provider fields preserved verbatim so a format change costs fidelity
+instead of data. The retrieval stack and topic graph are built to be read by an
+agent mid-conversation rather than browsed by a person. Where these projects
+lead: broader provider coverage, platforms beyond macOS, and more mileage.
 
 ## License
 

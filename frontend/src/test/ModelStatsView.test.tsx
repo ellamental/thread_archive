@@ -47,8 +47,8 @@ function modelStats(overrides: Partial<ModelStats> = {}): ModelStats {
       { month: '2026-03', sessions: 0, requests: 0, input_tokens: 0, output_tokens: 0, tokens: 0, avg_tokens: null, cost: null, compactions: 3 },
     ],
     top_sessions: [
-      { thread_id: 77, title: 'the big refactor', source: 'claude-code', at: '2026-02-10 09:00:00', tokens: 400_000, requests: 120, compactions: 9 },
-      { thread_id: 78, title: null, source: 'demo-harness', at: null, tokens: 100_000, requests: 30, compactions: 0 },
+      { thread_id: '77', title: 'the big refactor', source: 'claude-code', at: '2026-02-10 09:00:00', tokens: 400_000, requests: 120, compactions: 9 },
+      { thread_id: '78', title: null, source: 'demo-harness', at: null, tokens: 100_000, requests: 30, compactions: 0 },
     ],
     ...overrides,
   }

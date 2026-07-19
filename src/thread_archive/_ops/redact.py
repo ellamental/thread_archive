@@ -372,7 +372,7 @@ def _purge_vectors(s, d: Path, event_ids: list[int]) -> None:
 
 
 # ── redact ───────────────────────────────────────────────────────────────────
-def redact_events(thread_id: int, event_ids: list[int] | None = None, *, reason: str | None = None) -> dict:
+def redact_events(thread_id: str, event_ids: list[int] | None = None, *, reason: str | None = None) -> dict:
     """Redact ``event_ids`` of ``thread_id`` (default: every event in the thread).
 
     Runs under the exclusive reindex lock — writers are quiescent, same
@@ -383,10 +383,10 @@ def redact_events(thread_id: int, event_ids: list[int] | None = None, *, reason:
         # scan would otherwise read as content).
         with _truth_write_lock():
             pass
-        return _redact_locked(int(thread_id), event_ids, reason)
+        return _redact_locked(str(thread_id), event_ids, reason)
 
 
-def _redact_locked(thread_id: int, event_ids: list[int] | None, reason: str | None) -> dict:
+def _redact_locked(thread_id: str, event_ids: list[int] | None, reason: str | None) -> dict:
     d = log_dir()
     path = _thread_file(d, thread_id, _shard_depth(d))
     if not path.exists():
@@ -497,7 +497,7 @@ def _redact_locked(thread_id: int, event_ids: list[int] | None, reason: str | No
         s.execute(sa_text("PRAGMA secure_delete=ON"))
         for eid in targets:
             ev = s.get(Event, eid)
-            if ev is not None and int(ev.thread_id) == thread_id:
+            if ev is not None and str(ev.thread_id) == thread_id:
                 ev.payload = dict(marker)
         for tm_id in tm_quotes:
             tm = s.get(TopicMessage, tm_id)
@@ -549,7 +549,7 @@ def _redact_locked(thread_id: int, event_ids: list[int] | None, reason: str | No
                     blobs_shredded.append(h)
 
     logger.warning(
-        "redact: thread %d — %d event(s) redacted under key %s (%d truth line(s), "
+        "redact: thread %s — %d event(s) redacted under key %s (%d truth line(s), "
         "%d topic quote(s), %d kg quote(s))",
         thread_id, len(targets), key_id, lines, len(tm_quotes), len(kg_quotes),
     )
@@ -605,7 +605,7 @@ def _unredact_locked(key_id: str) -> dict:
         )
     bundle = _decrypt_bundle(base64.b64decode(entry["key"]), key_id, rec)
 
-    thread_id = int(bundle["thread_id"])
+    thread_id = str(bundle["thread_id"])
     payloads = {int(e): p for e, p in bundle.get("events", {}).items()}
     tm_quotes = {int(i): q for i, q in bundle.get("topic_message_quotes", {}).items()}
     kg_quotes = {int(i): q for i, q in bundle.get("kg_event_quotes", {}).items()}
@@ -677,7 +677,7 @@ def _unredact_locked(key_id: str) -> dict:
 
     _append_redaction_record(d, {"type": "unredaction", "key_id": key_id, "at": _now_iso()})
     logger.warning(
-        "unredact: thread %d — %d event(s) restored under key %s", thread_id, len(restored), key_id
+        "unredact: thread %s — %d event(s) restored under key %s", thread_id, len(restored), key_id
     )
     return {
         "thread_id": thread_id, "key_id": key_id, "events_restored": len(restored),

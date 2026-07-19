@@ -11,7 +11,7 @@ export interface Status {
 }
 
 export interface ThreadListItem {
-  id: number
+  id: string
   title: string | null
   source: string | null
   // 'conversation' | 'system' (subagent runs) | 'topic' | legacy type strings —
@@ -27,7 +27,7 @@ export interface ThreadTypeCount {
 
 export interface SearchHit {
   event_id: number
-  thread_id: number
+  thread_id: string
   thread_title: string | null
   content_type: string | null
   snippet: string
@@ -48,7 +48,7 @@ export interface SearchHit {
 }
 
 export interface DupThread {
-  thread_id: number
+  thread_id: string
   title: string | null
 }
 
@@ -63,7 +63,7 @@ export interface SearchQuality {
 // A curated subject the result set clusters under (the topic-graph lens);
 // chats = how many of the result conversations it links.
 export interface SearchSubject {
-  topic_id: number
+  topic_id: string
   title: string
   chats: number
 }
@@ -77,7 +77,7 @@ export interface SearchResponse {
 }
 
 export interface TopicListItem {
-  id: number
+  id: string
   title: string | null
   topic_kind: string | null
   description: string | null
@@ -102,7 +102,7 @@ export interface TopicsResponse {
 }
 
 export interface TopicTreeNode {
-  id: number
+  id: string
   title: string | null
   topic_kind: string | null
   children: TopicTreeNode[]
@@ -116,7 +116,7 @@ export interface TopicTreeResponse {
 
 export interface TopicLink {
   direction: 'out' | 'in'
-  other_id: number
+  other_id: string
   other_title: string | null
   other_type: string // 'topic' | 'conversation'
   link_type: string
@@ -126,20 +126,20 @@ export interface TopicLink {
 
 export interface TopicEvidence {
   event_id: number
-  thread_id: number
+  thread_id: string
   thread_title: string | null
   quote: string
   created_at: string | null
 }
 
 export interface TopicPeer {
-  thread_id: number
+  thread_id: string
   title: string | null
   pagerank: number
 }
 
 export interface TopicDetail {
-  id: number
+  id: string
   title: string | null
   topic_kind: string | null
   description: string | null
@@ -217,7 +217,7 @@ export interface Message {
 }
 
 export interface StructuredThread {
-  thread_id: number
+  thread_id: string
   title: string | null
   source: string | null
   // Provenance for the reader header. `event_count` is the whole event log's
@@ -332,7 +332,7 @@ export interface ModelStatsMonth {
 }
 
 export interface ModelStatsSession {
-  thread_id: number
+  thread_id: string
   title: string | null
   source: string
   at: string | null
@@ -347,6 +347,85 @@ export interface ModelStats {
   per_session: ModelStatsPerSession
   by_month: ModelStatsMonth[]
   top_sessions: ModelStatsSession[]
+}
+
+// ── curation: what the librarian and gardener drains have done ──────────────
+
+export interface CurationDrain {
+  // null = the backlog gate query failed. The daemon fails open and launches
+  // anyway, so this must not render as "drained".
+  backlog: number | null
+  batch: number
+  model: string
+  effort: string | null
+  cadence: { kind: 'interval'; interval_s: number } | { kind: 'daily'; at: string }
+  // When the drain last fired — launched or skipped. null = never fired here.
+  heartbeat_at: string | null
+  heartbeat_age_s: number | null
+}
+
+export interface CurationGraph {
+  topics: number
+  in_hierarchy: number
+  singletons: number
+  uncited: number
+  unparented: number
+  dupe_pairs: number
+  hierarchy_pct: number | null
+}
+
+export interface CurationCoverage {
+  conversations: number
+  summarized: number
+  cited: number
+  topics_live: number
+  topics_archived: number
+  citations: number
+  links: number
+}
+
+// Conversation threads carrying events but no message — an ingest condition, not
+// backlog: no drain can ever clear them, so they're counted here instead of
+// silently sitting outside every queue.
+export interface CurationUncuratable {
+  threads: number
+  sample: { id: string; title: string | null; source: string | null; event_types: string | null }[]
+}
+
+export interface CurationDay {
+  day: string
+  citations: number
+  links: number
+  topics: number
+}
+
+export interface CurationRunDay {
+  day: string
+  librarian: number
+  gardener: number
+  requests: number
+  output_tokens: number
+}
+
+export interface CurationRun {
+  id: string
+  kind: 'librarian' | 'gardener' | 'unknown'
+  title: string | null
+  started_at: string | null
+  requests: number
+  output_tokens: number
+  model: string | null
+}
+
+export interface Curation {
+  generated_at: string
+  days: number
+  drains: { librarian: CurationDrain; gardener: CurationDrain }
+  graph: CurationGraph
+  coverage: CurationCoverage
+  uncuratable: CurationUncuratable
+  activity: CurationDay[]
+  runs: { by_day: CurationRunDay[]; recent: CurationRun[] }
 }
 
 async function getJSON<T>(url: string): Promise<T> {
@@ -378,20 +457,22 @@ export const api = {
   },
   sources: () =>
     getJSON<{ sources: SourceCount[] }>('/api/sources').then((d) => d.sources),
-  thread: (id: number, opts: { thinking: boolean; tools: boolean }) =>
+  thread: (id: string, opts: { thinking: boolean; tools: boolean }) =>
     getJSON<StructuredThread>(
       `/api/thread/${id}?thinking=${opts.thinking ? 1 : 0}&tools=${opts.tools ? 1 : 0}`,
     ),
-  // Resolve a pasted provider session id (a claude-code/codex uuid or stem) to
-  // its numeric archive thread. No source param → the server searches every provider.
+  // Resolve a pasted thread ref (a claude-code/codex session uuid or stem, or a
+  // legacy integer id) to its ULID archive thread. No source param → the server
+  // searches every provider.
   resolveLink: (id: string) =>
-    getJSON<{ thread_id: number; url: string }>(
+    getJSON<{ thread_id: string; url: string }>(
       '/api/archive-link?id=' + encodeURIComponent(id),
     ),
   topics: () => getJSON<TopicsResponse>('/api/topics'),
   topicTree: () => getJSON<TopicTreeResponse>('/api/topics/tree'),
-  topic: (id: number) => getJSON<TopicDetail>(`/api/topic/${id}`),
+  topic: (id: string) => getJSON<TopicDetail>(`/api/topic/${id}`),
   stats: () => getJSON<Stats>('/api/stats'),
+  curation: () => getJSON<Curation>('/api/curation'),
   // Model ids can contain '/' (router models), so the name is a percent-encoded
   // path tail, not a query param — the server decodes it back.
   modelStats: (model: string) =>

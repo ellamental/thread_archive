@@ -9,14 +9,14 @@ function fmtDate(iso: string | null): string {
 }
 
 interface Group {
-  threadId: number
+  threadId: string
   title: string | null
   hits: SearchHit[]
 }
 
 function group(hits: SearchHit[]): Group[] {
   const out: Group[] = []
-  const byId = new Map<number, Group>()
+  const byId = new Map<string, Group>()
   for (const h of hits) {
     let g = byId.get(h.thread_id)
     if (!g) {

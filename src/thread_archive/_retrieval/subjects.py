@@ -46,7 +46,7 @@ def enabled() -> bool:
 
 def subjects_for_results(
     hits: list[EventHit], *, session: Optional[Session] = None, limit: int = MAX_SUBJECTS
-) -> list[tuple[int, str, int]]:
+) -> list[tuple[str, str, int]]:
     """The subjects that best characterize ``hits`` — ``(topic_id, title, chats)``,
     coverage-ranked and specificity-damped, where ``chats`` is how many of the
     result conversations the subject links. Empty (a no-op) when there's no subject
@@ -61,10 +61,10 @@ def subjects_for_results(
         return []
 
 
-def _subjects(hits: list[EventHit], s: Session, limit: int) -> list[tuple[int, str, int]]:
+def _subjects(hits: list[EventHit], s: Session, limit: int) -> list[tuple[str, str, int]]:
     # Rank-decayed coverage weight per result conversation: a subject linked from
     # the top hits characterizes the result set more than one linked from the tail.
-    thread_w: dict[int, float] = {}
+    thread_w: dict[str, float] = {}
     for rank, h in enumerate(hits[:SEED_DEPTH]):
         tid = h.get("thread_id")
         if tid is None:
@@ -87,8 +87,8 @@ def _subjects(hits: list[EventHit], s: Session, limit: int) -> list[tuple[int, s
     if not rows:
         return []
 
-    rank_w: dict[int, float] = {}  # topic_id -> rank-decayed weight (tiebreak only)
-    chats: dict[int, set] = {}     # topic_id -> distinct result conversations it links
+    rank_w: dict[str, float] = {}  # topic_id -> rank-decayed weight (tiebreak only)
+    chats: dict[str, set] = {}     # topic_id -> distinct result conversations it links
     for topic_id, thread_id in rows:
         rank_w[topic_id] = rank_w.get(topic_id, 0.0) + thread_w.get(thread_id, 0.0)
         chats.setdefault(topic_id, set()).add(thread_id)
@@ -97,8 +97,8 @@ def _subjects(hits: list[EventHit], s: Session, limit: int) -> list[tuple[int, s
     # Specificity (IDF): a subject evidenced across many chats corpus-wide links
     # everything and means little — like a stopword — so its coverage is damped.
     bp: dict = {}
-    breadth: dict[int, int] = {
-        int(r[0]): int(r[1])
+    breadth: dict[str, int] = {
+        str(r[0]): int(r[1])
         for r in s.execute(
             sa_text(
                 "SELECT topic_id, COUNT(DISTINCT thread_id) FROM topic_messages "
@@ -114,14 +114,14 @@ def _subjects(hits: list[EventHit], s: Session, limit: int) -> list[tuple[int, s
     # subject links — so the subjects that *characterize* the result set lead;
     # specificity only damps the broad, stopword-like subjects. Rank-decayed
     # weight breaks ties (a subject on the top hits over one on the tail).
-    def score(t: int) -> float:
+    def score(t: str) -> float:
         return len(chats[t]) * (1.0 / (1.0 + math.log(1 + breadth.get(t, 1))))
 
     ranked = sorted(topics, key=lambda t: (-score(t), -rank_w[t], t))[:limit]
 
     tp: dict = {}
-    titles: dict[int, str] = {
-        int(r[0]): r[1]
+    titles: dict[str, str] = {
+        str(r[0]): r[1]
         for r in s.execute(
             sa_text(
                 "SELECT id, COALESCE(title, name) FROM threads WHERE "
@@ -133,7 +133,7 @@ def _subjects(hits: list[EventHit], s: Session, limit: int) -> list[tuple[int, s
     return [(t, titles.get(t) or f"topic {t}", len(chats.get(t, set()))) for t in ranked]
 
 
-def format_subjects_line(subjects: list[tuple[int, str, int]]) -> Optional[str]:
+def format_subjects_line(subjects: list[tuple[str, str, int]]) -> Optional[str]:
     """The one-line ``subjects:`` orientation header, or None when there's nothing
     to show. ``(N)`` is how many of the result conversations the subject links.
     Each subject carries its ``[topic <id>]`` so the lens is followable, not just

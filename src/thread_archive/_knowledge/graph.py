@@ -47,26 +47,26 @@ class _Projection:
     __slots__ = ("pagerank", "community", "degree", "component", "members", "titles",
                  "_pr_graph", "_kn_graph")
 
-    def __init__(self, pr_graph: "nx.Graph", kn_graph: "nx.Graph", titles: dict[int, str]):
+    def __init__(self, pr_graph: "nx.Graph", kn_graph: "nx.Graph", titles: dict[str, str]):
         self._pr_graph = pr_graph
         self._kn_graph = kn_graph
         self.titles = titles
-        self.pagerank: dict[int, float] = (
+        self.pagerank: dict[str, float] = (
             nx.pagerank(pr_graph, alpha=0.85, weight="weight") if pr_graph.number_of_nodes() else {}
         )
-        self.degree: dict[int, int] = dict(pr_graph.degree())
-        self.component: dict[int, int] = {}
+        self.degree: dict[str, int] = dict(pr_graph.degree())
+        self.component: dict[str, int] = {}
         for cid, comp in enumerate(nx.connected_components(pr_graph)):
             for n in comp:
                 self.component[n] = cid
-        self.community: dict[int, int] = {}
-        self.members: dict[int, list[int]] = {}
+        self.community: dict[str, int] = {}
+        self.members: dict[int, list[str]] = {}
         for cid, comm in enumerate(detect_communities(kn_graph)):
             self.members[cid] = sorted(comm)
             for n in comm:
                 self.community[n] = cid
 
-    def betweenness(self) -> dict[int, float]:
+    def betweenness(self) -> dict[str, float]:
         if not self._pr_graph.number_of_nodes():
             return {}
         return nx.betweenness_centrality(self._pr_graph, weight="weight")
@@ -89,7 +89,7 @@ def _build_projection() -> _Projection:
     kn_graph = nx.Graph()
     with get_session() as s:
         titles = {
-            int(r[0]): r[1] for r in s.execute(sa_text(
+            r[0]: r[1] for r in s.execute(sa_text(
                 "SELECT id, title FROM threads WHERE thread_type = 'topic' "
                 "AND (archived IS NULL OR archived = 0)"
             ))
@@ -112,7 +112,7 @@ def _build_projection() -> _Projection:
     return _Projection(pr_graph, kn_graph, titles)
 
 
-def _add_weighted(g: "nx.Graph", a: int, b: int, w: float) -> None:
+def _add_weighted(g: "nx.Graph", a: str, b: str, w: float) -> None:
     if g.has_edge(a, b):
         g[a][b]["weight"] += w
     else:
@@ -130,12 +130,12 @@ def _projection() -> Optional[_Projection]:
     return proj
 
 
-def get_topic_graph_metadata(thread_ids: list[int]) -> dict[int, dict]:
+def get_topic_graph_metadata(thread_ids: list[str]) -> dict[str, dict]:
     """Batch graph properties (pagerank / community / degree / link_count) for topics."""
     proj = _projection()
     if proj is None or not thread_ids:
         return {}
-    out: dict[int, dict] = {}
+    out: dict[str, dict] = {}
     for tid in thread_ids:
         if tid not in proj.degree and tid not in proj.pagerank:
             continue
@@ -149,18 +149,18 @@ def get_topic_graph_metadata(thread_ids: list[int]) -> dict[int, dict]:
     return out
 
 
-def get_topic_graph_meta(thread_id: int) -> dict | None:
+def get_topic_graph_meta(thread_id: str) -> dict | None:
     return get_topic_graph_metadata([thread_id]).get(thread_id)
 
 
-def get_community_topic_ids(community_id: int) -> list[int]:
+def get_community_topic_ids(community_id: int) -> list[str]:
     proj = _projection()
     if proj is None:
         return []
     return list(proj.members.get(community_id, []))
 
 
-def get_community_peers(thread_id: int, limit: int = 5) -> list[dict]:
+def get_community_peers(thread_id: str, limit: int = 5) -> list[dict]:
     """Other topics in the same community, highest-pagerank first."""
     proj = _projection()
     if proj is None:
@@ -174,7 +174,7 @@ def get_community_peers(thread_id: int, limit: int = 5) -> list[dict]:
             for t in peers[:limit]]
 
 
-def community_members_for(topic_ids: list[int]) -> dict[int, list[int]]:
+def community_members_for(topic_ids: list[str]) -> dict[str, list[str]]:
     """For each of ``topic_ids`` that sits in a community, its co-member topics
     (excluding itself), highest-pagerank first. Topics with no community are
     omitted. Empty dict when the graph is unavailable/empty — callers stay
@@ -183,7 +183,7 @@ def community_members_for(topic_ids: list[int]) -> dict[int, list[int]]:
     proj = _projection()
     if proj is None or not topic_ids:
         return {}
-    out: dict[int, list[int]] = {}
+    out: dict[str, list[str]] = {}
     for tid in topic_ids:
         cid = proj.community.get(tid)
         if cid is None:

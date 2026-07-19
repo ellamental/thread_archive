@@ -59,9 +59,17 @@ def _dt(minute: int) -> datetime:
     return datetime(2026, 1, 1, 10, minute, 0, tzinfo=timezone.utc)
 
 
+def _tid(n: int) -> str:
+    """A fixed, valid ULID for test seed ``n`` (26 chars, Crockford alphabet,
+    not all-digits so it resolves via the primary key, not legacy_id)."""
+    return f"01TEST{n:020d}"
+
+
 def _seed(events, *, tid=1, thread_type="conversation", title="T",
           source="claude-code", source_id=None):
     """events: (event_type, payload, minute) or (event_type, payload, minute, api_call_id)."""
+    if isinstance(tid, int):
+        tid = _tid(tid)
     init_db()
     with use_session() as s:
         s.add(Thread(id=tid, name=f"t{tid}", title=title, thread_type=thread_type,
@@ -655,12 +663,12 @@ def test_index_thread_meta_thread_without_events_has_no_anchor(archive_home) -> 
     # doc is skipped rather than written danglingly.
     init_db()
     with use_session() as s:
-        s.add(Thread(id=50, name="t50", title="Orphan Title No Events",
+        s.add(Thread(id=_tid(50), name="t50", title="Orphan Title No Events",
                      thread_type="conversation", source="claude-code",
                      inserted_at=_dt(0), updated_at=_dt(0)))
         s.commit()
     rebuild_fts()
-    assert index_thread_meta(thread_ids=[50]) == 0
+    assert index_thread_meta(thread_ids=[_tid(50)]) == 0
     assert not search("Orphan Title No Events", content_types=["title"])
 
 

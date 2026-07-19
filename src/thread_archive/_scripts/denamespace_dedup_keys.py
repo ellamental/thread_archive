@@ -41,7 +41,7 @@ def _prefixed_thread_ids(session, limit: Optional[int]) -> list[int]:
     return list(session.execute(q).scalars().all())
 
 
-def plan_thread(session, thread_id: int) -> tuple[list[tuple[int, str, str]], dict]:
+def plan_thread(session, thread_id: str) -> tuple[list[tuple[int, str, str]], dict]:
     """Return (updates, stats): (event_id, original_key, bare_key) for each prefixed row."""
     prefix = f"{thread_id}:"
     rows = list(

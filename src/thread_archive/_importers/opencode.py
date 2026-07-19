@@ -56,7 +56,7 @@ logger = logging.getLogger(__name__)
 @dataclass
 class OpenCodeImportResult:
     events_created: int
-    thread_id: int
+    thread_id: str
     is_new_thread: bool
 
 
@@ -174,11 +174,11 @@ def _run_opencode(session, session_id, session_data, messages, parts_by_message)
     import_state = get_import_state(session, "opencode", source_id)
 
     if _opencode_session_unchanged(import_state, session_data):
-        return OpenCodeImportResult(0, (import_state.thread_id or 0) if import_state else 0, False)
+        return OpenCodeImportResult(0, (import_state.thread_id or "") if import_state else "", False)
 
     norm = _build_opencode_messages(messages, parts_by_message, session_data=session_data)
     if not norm:
-        return OpenCodeImportResult(0, 0, False)
+        return OpenCodeImportResult(0, "", False)
 
     thread_id, is_new_thread = _opencode_resolve_thread(session, import_state, session_id, source_id, session_data)
 
@@ -216,7 +216,7 @@ def _opencode_session_unchanged(import_state: Optional[ImportState], session_dat
     return time_updated_ms <= last_import_epoch_ms(import_state)
 
 
-def _opencode_resolve_thread(session, import_state, session_id, source_id, session_data) -> tuple[int, bool]:
+def _opencode_resolve_thread(session, import_state, session_id, source_id, session_data) -> tuple[str, bool]:
     if import_state and import_state.thread_id:
         return import_state.thread_id, False
     existing = get_thread_by_source(session, "opencode", source_id)

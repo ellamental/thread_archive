@@ -80,7 +80,7 @@ def search(
     *,
     home: Optional[str] = None,
     limit: int = 20,
-    thread_id: Optional[int] = None,
+    thread_id: Optional[int | str] = None,
     topic_id: Optional[int] = None,
     content_types: Optional[list[str]] = None,
     exclude_content_types: Optional[list[str]] = None,
@@ -162,7 +162,7 @@ def read_thread(
 ) -> str:
     """Reconstruct a conversation thread as a readable transcript.
 
-    ``thread_id`` is the archive's integer thread id or a provider **session id**
+    ``thread_id`` is the archive's thread id or a provider **session id**
     (the uuid/source_id a tool knows the conversation by); the reserved ref
     ``'topics'`` renders the curated topic hierarchy instead. ``mode`` picks the view —
     ``user`` (default), ``chat``, ``full``, ``last`` (final assistant text only), or
@@ -200,7 +200,7 @@ def read_thread_structured(
     include_tools: bool = True,
 ) -> dict:
     """Reconstruct a thread as structured messages (typed render blocks) for the web
-    viewer. ``thread_id`` accepts an integer thread id or a provider session id.
+    viewer. ``thread_id`` accepts a thread id (or legacy integer id) or a provider session id.
     Returns ``{thread_id, title, source, messages}``; see
     :func:`thread_archive._retrieval.read_thread_structured`."""
     open_archive(home)
@@ -386,16 +386,23 @@ def repair(*, home: Optional[str] = None, dry_run: bool = False) -> dict:
 
 
 def redact(
-    thread_id: int, event_ids: Optional[list[int]] = None, *,
+    thread_id: int | str, event_ids: Optional[list[int]] = None, *,
     reason: Optional[str] = None, home: Optional[str] = None,
 ) -> dict:
     """Crypto-shred events: content replaced by a marker everywhere it lives, the
     original encrypted into ``truth/redactions.jsonl`` under a fresh key in
-    ``<home>/keyring.json``. See :mod:`thread_archive._ops.redact`."""
+    ``<home>/keyring.json``. ``thread_id`` accepts a thread id, a legacy integer
+    id, or a provider session id. See :mod:`thread_archive._ops.redact`."""
     open_archive(home)
     from ._ops.redact import redact_events
+    from ._retrieval import resolve_thread_ref
+    from ._store import get_session
 
-    return redact_events(thread_id, event_ids, reason=reason)
+    with get_session() as s:
+        resolved = resolve_thread_ref(s, thread_id)
+    if resolved is None:
+        raise ValueError(f"thread {thread_id!r} not found")
+    return redact_events(resolved, event_ids, reason=reason)
 
 
 def unredact(key_id: str, *, home: Optional[str] = None) -> dict:
@@ -407,7 +414,7 @@ def unredact(key_id: str, *, home: Optional[str] = None) -> dict:
 
 
 def amend(
-    patches: list[tuple[int, int, dict]], *,
+    patches: list[tuple[str, int, dict]], *,
     reason: Optional[str] = None, home: Optional[str] = None,
 ) -> dict:
     """Merge non-content fields onto events' payloads via superseding truth
@@ -468,6 +475,19 @@ def knowledge_status(*, home: Optional[str] = None) -> dict:
     return get_status()
 
 
+def curation_stats(*, home: Optional[str] = None, days: int = 30) -> dict:
+    """What the librarian and gardener drains have done, for the viewer's curation
+    page: each drain's remaining backlog (the same gate the daemon fires on),
+    cadence and liveness, per-day curation output, topic-graph health, and the
+    drains' own archived runs with their request/token cost. ``days`` bounds the
+    time series. Read-only; see :mod:`._curation.stats` for what each figure
+    means and which figures are deliberately absent."""
+    open_archive(home)
+    from ._curation.stats import collect_curation_stats
+
+    return collect_curation_stats(days=days, home=home)
+
+
 def bridge_topics(*, home: Optional[str] = None, limit: int = 20) -> list[dict]:
     """Highest-betweenness topics — the structural bridges between communities."""
     open_archive(home)
@@ -476,9 +496,17 @@ def bridge_topics(*, home: Optional[str] = None, limit: int = 20) -> list[dict]:
     return get_bridge_topics(limit=limit)
 
 
-def topic_peers(thread_id: int, *, home: Optional[str] = None, limit: int = 5) -> list[dict]:
-    """Topics in the same community as ``thread_id``, highest-pagerank first."""
+def topic_peers(thread_id: int | str, *, home: Optional[str] = None, limit: int = 5) -> list[dict]:
+    """Topics in the same community as ``thread_id``, highest-pagerank first.
+
+    ``thread_id`` is any thread ref (ULID, legacy integer, session id)."""
     open_archive(home)
     from ._knowledge import get_community_peers
+    from ._retrieval.read import resolve_thread_ref
+    from ._store import get_session
 
-    return get_community_peers(thread_id, limit=limit)
+    with get_session() as s:
+        resolved = resolve_thread_ref(s, thread_id)
+    if resolved is None:
+        return []
+    return get_community_peers(resolved, limit=limit)

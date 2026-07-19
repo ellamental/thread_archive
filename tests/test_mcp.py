@@ -112,6 +112,45 @@ def test_mcp_search_widens_to_text_when_default_scope_dry(archive_home) -> None:
     assert "hi from mcp" not in narrow and "note: no keyword match" not in narrow
 
 
+def test_mcp_search_prepends_degradation_notice(archive_home) -> None:
+    """A degraded source (coverage's verdict in health.json) prepends one line
+    naming the remedy — unconditionally, since a degraded source's freshest
+    content is exactly what search can't return."""
+    from thread_archive._ops.health import record_health
+
+    f = archive_home / "sess.jsonl"
+    _write_cc(f, [USER, ASSISTANT])
+    ta.import_path(f)
+
+    record_health("coverage_last", {"ok": True, "degraded": {
+        "claude-code": {"reason": "validation_drift",
+                        "since": "2026-07-12T00:00:00+00:00"}}})
+    out = thread_search("hello")
+    assert out.startswith("note: claude-code import is degraded")
+    assert "since 2026-07-12" in out
+    assert "archive fix-import claude-code" in out
+    assert "hello mcp" in out  # the notice prepends; results still render
+
+    # a healthy verdict clears it
+    record_health("coverage_last", {"ok": True, "degraded": {}})
+    assert "degraded" not in thread_search("hello")
+
+
+def test_mcp_degradation_notice_ignores_stale_verdicts(archive_home) -> None:
+    """A frozen verdict from a dead nightly must not nag forever — verdicts
+    older than the cutoff are ignored (the nightly's own staleness alarm is the
+    surface for that failure)."""
+    f = archive_home / "sess.jsonl"
+    _write_cc(f, [USER, ASSISTANT])
+    ta.import_path(f)
+
+    (archive_home / "health.json").write_text(json.dumps({"coverage_last": {
+        "at": "2020-01-01T00:00:00+00:00",
+        "degraded": {"claude-code": {"reason": "went_dark", "since": None}},
+    }}))
+    assert "degraded" not in thread_search("hello")
+
+
 def test_mcp_search_rendering(archive_home) -> None:
     """The shaping args render through the MCP wrapper: quality signal, count,
     linkable, startswith."""

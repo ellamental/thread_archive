@@ -37,7 +37,7 @@ _PARENT_JSONL_RE = re.compile(r"/([0-9a-f-]{36})\.jsonl")
 
 def detect_continuation_parent(
     session: Session, lines: list[dict], source_id: str
-) -> Optional[int]:
+) -> Optional[str]:
     """If this is a ``compact_boundary`` continuation, return the parent thread_id."""
     has_boundary = any(line.get("subtype") == "compact_boundary" for line in lines[:3])
     if not has_boundary:
@@ -57,7 +57,7 @@ def detect_continuation_parent(
 
 def find_thread_by_first_message(
     session: Session, lines: list[dict], parser: "ClaudeCodeParser", builder
-) -> Optional[int]:
+) -> Optional[str]:
     """Find an existing thread this session is a no-boundary *continuation* of.
 
     Match the first user message's **content + timestamp** (content-only over-merges
@@ -127,7 +127,7 @@ def find_thread_by_first_message(
 
 def resolve_continuation_thread(
     session: Session, lines: list[dict], source_id: str, parser: "ClaudeCodeParser", builder
-) -> Optional[int]:
+) -> Optional[str]:
     """The parent thread to merge this session into (boundary parent, else
     first-message superset), or None when it's a genuinely new/forked session."""
     parent = detect_continuation_parent(session, lines, source_id)

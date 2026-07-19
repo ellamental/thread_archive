@@ -172,7 +172,7 @@ def search(
     query: str,
     *,
     limit: int = 20,
-    thread_id: Optional[int] = None,
+    thread_id: Optional[int | str] = None,
     topic_id: Optional[int] = None,
     content_types: Optional[list[str]] = None,
     exclude_content_types: Optional[list[str]] = None,
@@ -266,10 +266,19 @@ def search(
     # stands down so types=['system'] just works without a second knob.
     agents_eff = "include" if types else (agents or "exclude")
 
+    # A thread scope arrives as a ref — a ULID, a legacy integer id, or a
+    # provider session id. Resolve it to the thread's id once, up front; an
+    # unresolvable ref matches nothing.
+    if thread_id is not None:
+        with use_session(session) as s:
+            thread_id = resolve_thread_ref(s, thread_id)
+        if thread_id is None:
+            return []
+
     # A topic scope resolves to the topic's member conversations (cited or linked)
     # and rides the same id-set filter in both arms. A topic with no members — or
     # a non-topic id — matches nothing rather than silently searching everything.
-    thread_ids: Optional[list[int]] = None
+    thread_ids: Optional[list[str]] = None
     if topic_id is not None:
         from .._knowledge.read import topic_thread_ids
 

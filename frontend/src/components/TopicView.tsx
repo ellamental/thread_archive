@@ -17,18 +17,20 @@ function linkLabel(l: TopicLink): string {
 
 export function TopicView() {
   const { id } = useParams()
-  const topicId = id ? parseInt(id, 10) : NaN
+  // The ref passes through raw — the server resolves ULID ids and legacy
+  // integer aliases alike.
+  const topicId = id ?? null
   const [data, setData] = useState<TopicDetail | null>(null)
   const [err, setErr] = useState<string | null>(null)
 
   useEffect(() => {
-    if (isNaN(topicId)) return
+    if (!topicId) return
     setData(null)
     setErr(null)
     api.topic(topicId).then(setData).catch((e) => setErr(String(e.message ?? e)))
   }, [topicId])
 
-  if (isNaN(topicId)) return <div className="wrap"><div className="empty">bad topic id</div></div>
+  if (!topicId) return <div className="wrap"><div className="empty">bad topic id</div></div>
   if (err) return <div className="wrap"><div className="empty">topic unavailable: {err}</div></div>
   if (!data) return <div className="wrap"><div className="empty">loading…</div></div>
 

@@ -17,7 +17,7 @@ class IncrementalImportResult:
 
     lines_processed: int
     events_created: int
-    thread_id: int
+    thread_id: str
     is_new_thread: bool
     last_message_uuid: Optional[str] = None
     parse_errors: int = 0

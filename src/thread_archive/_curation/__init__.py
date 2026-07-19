@@ -88,20 +88,31 @@ def librarian_backlog(home: Optional[str] = None) -> Optional[int]:
     """Count the conversation threads the librarian's queue still considers
     un-done.
 
-    Un-done = event-bearing, non-archived conversation thread missing either
-    half of the librarian's per-thread commit: a live topic citation (or a link
-    touching it), or a non-empty stored summary — mirroring
-    ``review_queue``'s eligibility, including its QUIET_MINUTES hold-back.
-    Read-only over the SQLite index; ``None`` when the query failed (the
-    caller fails open).
+    Un-done = non-archived conversation thread carrying at least one
+    message-bearing event and missing either half of the librarian's per-thread
+    commit: a live topic citation (or a link touching it), or a non-empty stored
+    summary — mirroring ``review_queue``'s eligibility, including both its
+    QUIET_MINUTES hold-back and its content requirement. That content clause is
+    load-bearing for the gate specifically: a thread with only bookkeeping events
+    can never be curated, so counting it would launch an instance every fire to
+    rediscover work it cannot do. Read-only over the SQLite index; ``None`` when
+    the query failed (the caller fails open).
     """
+    from .._retrieval._extract import INDEXABLE_EVENT_TYPES
+
+    # Bound one parameter per type rather than interpolating, and take the list
+    # from the extractor so the gate cannot drift from what the index (and so
+    # review_queue) considers content.
+    type_params = {f"t{i}": t for i, t in enumerate(INDEXABLE_EVENT_TYPES)}
+    type_list = ", ".join(f":{k}" for k in type_params)
     try:
         conn = sqlite3.connect(f"file:{_index_path(home)}?mode=ro", uri=True, timeout=30)
         try:
             row = conn.execute(
                 "SELECT count(*) FROM threads t "
                 "WHERE t.thread_type = 'conversation' AND NOT t.archived "
-                "  AND EXISTS (SELECT 1 FROM events e WHERE e.thread_id = t.id) "
+                "  AND EXISTS (SELECT 1 FROM events e WHERE e.thread_id = t.id "
+                f"                 AND e.event_type IN ({type_list})) "
                 "  AND NOT EXISTS (SELECT 1 FROM events eq WHERE eq.thread_id = t.id "
                 "                  AND eq.recorded_at >= datetime('now', :quiet)) "
                 "  AND ( "
@@ -114,7 +125,7 @@ def librarian_backlog(home: Optional[str] = None) -> Optional[int]:
                 "                    OR tl.target_thread_id = t.id) "
                 "    ) "
                 "  )",
-                {"quiet": f"-{QUIET_MINUTES} minutes"},
+                {"quiet": f"-{QUIET_MINUTES} minutes", **type_params},
             ).fetchone()
             return int(row[0] or 0)
         finally:

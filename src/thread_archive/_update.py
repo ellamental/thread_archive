@@ -311,6 +311,15 @@ def _default_restart() -> None:
             logger.warning("self-update: could not restart %s: %s", label, e)
 
 
+def _default_retire(home: Optional[str], tag: str) -> None:
+    """Disable unpinned ``archive fix-import`` override patches built against a
+    core older than ``tag`` — patches are temporary bridges to the next release
+    by default, and pinned ones opt out (see :mod:`._repair.retire`)."""
+    from ._repair import retire_patches
+
+    retire_patches(home, target=tag)
+
+
 def apply_update(
     repo: Path,
     plan: UpdatePlan,
@@ -319,14 +328,20 @@ def apply_update(
     reinstall: Optional[Callable[[Path], None]] = None,
     smoke: Optional[Callable[[Optional[str]], None]] = None,
     restart: Optional[Callable[[], None]] = None,
+    retire: Optional[Callable[[Optional[str], str], None]] = None,
 ) -> dict:
-    """Execute an ``update`` plan: checkout → reinstall → smoke → restart, with
-    rollback to the pre-update commit if the new install doesn't stand up.
-    Returns the result dict that also lands in ``health.json``."""
+    """Execute an ``update`` plan: checkout → reinstall → smoke → retire →
+    restart, with rollback to the pre-update commit if the new install doesn't
+    stand up. ``retire`` disables unpinned fix-import override patches built
+    against the older core (see :mod:`._repair.retire`) — after smoke so it
+    only ever runs on a proven install, before restart so the reloading agents
+    come back without stale overrides. Returns the result dict that also lands
+    in ``health.json``."""
     assert plan.action == "update" and plan.tag
     reinstall = _default_reinstall if reinstall is None else reinstall
     smoke = _default_smoke if smoke is None else smoke
     restart = _default_restart if restart is None else restart
+    retire = _default_retire if retire is None else retire
 
     prev = _git(repo, "rev-parse", "HEAD").stdout.strip()
     r = _git(repo, "checkout", "--quiet", plan.tag)
@@ -355,6 +370,10 @@ def apply_update(
                 "current": plan.current, "tag": plan.tag, "reason": reason}
 
     try:
+        retire(home, plan.tag)
+    except Exception as e:  # noqa: BLE001 — advisory; a good update must not roll back on this
+        logger.warning("self-update: patch retirement after %s: %s", plan.tag, e)
+    try:
         restart()
     except Exception as e:  # noqa: BLE001 — advisory; the update itself succeeded
         logger.warning("self-update: agent restart after %s: %s", plan.tag, e)
@@ -373,6 +392,7 @@ def self_update(
     reinstall: Optional[Callable[[Path], None]] = None,
     smoke: Optional[Callable[[Optional[str]], None]] = None,
     restart: Optional[Callable[[], None]] = None,
+    retire: Optional[Callable[[Optional[str], str], None]] = None,
 ) -> dict:
     """One full check-and-maybe-apply, recorded in ``health.json`` (the record
     is both the ``archive status`` line and the once-per-interval stamp the
@@ -393,7 +413,8 @@ def self_update(
     )
     if plan.action == "update" and not check_only:
         result = apply_update(repo, plan, home=home,
-                              reinstall=reinstall, smoke=smoke, restart=restart)
+                              reinstall=reinstall, smoke=smoke, restart=restart,
+                              retire=retire)
     else:
         result = {"ok": plan.action != "blocked", "action": plan.action,
                   "current": plan.current, "tag": plan.tag, "reason": plan.reason}

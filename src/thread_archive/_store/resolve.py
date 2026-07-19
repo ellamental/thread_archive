@@ -68,7 +68,7 @@ def _separators_for(source: Optional[str]) -> tuple[str, ...]:
 
 def resolve_session_source_id(
     s: Session, ref: str, *, source: Optional[str] = None
-) -> Optional[int]:
+) -> Optional[str]:
     """The thread id a provider session id refers to, or None.
 
     ``Thread.source_id`` first (newest thread wins), then the ``ImportState``

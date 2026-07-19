@@ -97,6 +97,9 @@ class FileSessionWatcher(SourceWatcher):
     def discover(self) -> SourceDiscovery:
         return stat_discovery(self.source_name, (p for p, _ in self.iter_files()))
 
+    def store_paths(self) -> Iterator[Path]:
+        return (p for p, _ in self.iter_files())
+
     def _probe(self, target: tuple[Path, str]):
         session_file, _ = target
         try:
@@ -339,6 +342,9 @@ class DbScanWatcher(SourceWatcher):
                 if mtime is not None:
                     report.latest = max(report.latest or 0.0, mtime)
         return report
+
+    def store_paths(self) -> Iterator[Path]:
+        return (db for db, _, _ in self._targets() if db is not None)
 
     def _probe(self, target: tuple[Optional[Path], Callable, str]):
         db_path, _, label = target

@@ -8,6 +8,7 @@ import { TopicView } from './components/TopicView'
 import { AllThreadsView } from './components/AllThreadsView'
 import { StatsView } from './components/StatsView'
 import { ModelStatsView } from './components/ModelStatsView'
+import { CurationView } from './components/CurationView'
 import { Landing } from './components/Landing'
 
 export function App() {
@@ -25,6 +26,7 @@ export function App() {
             <Route path="/threads" element={<AllThreadsView />} />
             <Route path="/stats" element={<StatsView />} />
             <Route path="/stats/model/:model" element={<ModelStatsView />} />
+            <Route path="/curation" element={<CurationView />} />
             <Route path="/archive/:id" element={<ThreadView />} />
           </Routes>
         </div>

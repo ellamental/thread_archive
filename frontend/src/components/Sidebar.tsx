@@ -16,8 +16,9 @@ export function Sidebar() {
   const { pathname } = useLocation()
   const [params] = useSearchParams()
   const onTopics = pathname === '/topics' || pathname.startsWith('/topic/')
-  // Only a numeric id maps to a rail item; a not-yet-resolved uuid highlights nothing.
-  const activeId = id && /^\d+$/.test(id) ? parseInt(id, 10) : null
+  // Rail items carry canonical ULID ids, so only a ULID address highlights one;
+  // a not-yet-resolved ref (legacy integer, session uuid) highlights nothing.
+  const activeId = id ?? null
 
   const [term, setTerm] = useState(params.get('q') ?? '')
   const [threads, setThreads] = useState<ThreadListItem[]>([])
@@ -150,6 +151,9 @@ export function Sidebar() {
         </Link>
         <Link className={'rail-link' + (pathname === '/stats' ? ' active' : '')} to="/stats">
           stats
+        </Link>
+        <Link className={'rail-link' + (pathname === '/curation' ? ' active' : '')} to="/curation">
+          curation
         </Link>
       </nav>
       <div className="rail-head">

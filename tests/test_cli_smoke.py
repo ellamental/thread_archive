@@ -24,7 +24,7 @@ def test_all_subcommands_present() -> None:
         "import", "import-export", "providers", "watch", "reindex", "embed",
         "status", "backup", "verify", "repair", "restore-drill", "restore",
         "nightly", "coverage", "mirror", "redact", "unredact", "daemon", "curate",
-        "self-update",
+        "fix-import", "self-update",
     }
 
 
@@ -242,7 +242,7 @@ def test_redact_cli_dispatches(monkeypatch, capsys) -> None:
     )
     rc = main(["redact", "7", "--events", "3,5", "--reason", "pii", "--home", "/h"])
     assert rc == 0
-    assert seen == {"thread_id": 7, "event_ids": [3, 5], "reason": "pii", "home": "/h"}
+    assert seen == {"thread_id": "7", "event_ids": [3, 5], "reason": "pii", "home": "/h"}
     out = capsys.readouterr().out
     assert "redacted 2 event(s) in thread 7 under key k1" in out
     assert "scrubbed 1 topic quote(s)" in out

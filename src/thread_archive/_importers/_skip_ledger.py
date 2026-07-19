@@ -80,9 +80,15 @@ def summarize_skips(*, days: float = 7.0) -> dict:
     ``recent_substantive`` is the subset of recent records whose reason is not the
     routine empty-session case (see ``_ROUTINE_SKIP_REASON``) — the count the
     coverage warning fires on, so a steady trickle of empty sessions doesn't cry
-    wolf. Malformed ledger lines are counted as records but excluded from recency."""
+    wolf. ``by_source`` breaks the recent window down per source —
+    ``{source: {recent, recent_substantive, since}}``, where ``since`` is the
+    oldest recent *substantive* record's timestamp (the ledger is append-only
+    chronological, so first seen is oldest) — the per-source signal coverage's
+    degradation verdicts key on. Malformed ledger lines are counted as records
+    but excluded from recency."""
     path = resolve_paths().home / LEDGER_FILE
     total = recent = recent_lines = recent_substantive = 0
+    by_source: dict[str, dict] = {}
     cutoff = datetime.now(timezone.utc).timestamp() - days * 86400
     try:
         with open(path, encoding="utf-8") as fh:
@@ -98,8 +104,16 @@ def summarize_skips(*, days: float = 7.0) -> dict:
                     if at.timestamp() >= cutoff:
                         recent += 1
                         recent_lines += int(rec.get("lines_skipped") or 0)
+                        per = by_source.setdefault(
+                            str(rec.get("source") or ""),
+                            {"recent": 0, "recent_substantive": 0, "since": None},
+                        )
+                        per["recent"] += 1
                         if rec.get("reason") != _ROUTINE_SKIP_REASON:
                             recent_substantive += 1
+                            per["recent_substantive"] += 1
+                            if per["since"] is None:
+                                per["since"] = rec["at"]
                 except (ValueError, KeyError, TypeError):
                     continue
     except OSError:
@@ -109,5 +123,6 @@ def summarize_skips(*, days: float = 7.0) -> dict:
         "recent": recent,
         "recent_lines": recent_lines,
         "recent_substantive": recent_substantive,
+        "by_source": by_source,
         "days": days,
     }

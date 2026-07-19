@@ -219,8 +219,49 @@ def test_gates_count_real_index(archive_home) -> None:
         conn.execute(text(
             "INSERT INTO events (id, thread_id, stream_id, event_type, payload, "
             "occurred_at, recorded_at) VALUES "
-            "(1, 1, 's1', 'user_query', '{}', "
+            "(1, 1, 's1', 'user_message_sent', '{}', "
             "datetime('now', '-2 hours'), datetime('now', '-2 hours'))"
         ))
     assert _curation.librarian_backlog() == 1
     assert _curation.gardener_backlog() == 1
+
+
+def test_librarian_gate_ignores_threads_with_no_curatable_content(archive_home) -> None:
+    # A thread carrying only bookkeeping events (an empty file_snapshot, a
+    # queue_operation) has nothing to cite and nothing to summarize, so it is not
+    # backlog. It would otherwise be permanently un-drainable — and since the
+    # queue is newest-first, it would sit at the head and relaunch an instance
+    # every fire to rediscover work it cannot do.
+    from thread_archive._store import _base
+    from thread_archive._store.models import Base
+
+    engine = _base.get_engine()
+    Base.metadata.create_all(engine)
+    with engine.begin() as conn:
+        from sqlalchemy import text
+
+        conn.execute(text(
+            "INSERT INTO threads (id, name, thread_type, archived, title) VALUES "
+            "(1, 'shell-1', 'conversation', 0, 'Claude Code Session')"
+        ))
+        conn.execute(text(
+            "INSERT INTO events (id, thread_id, stream_id, event_type, payload, "
+            "occurred_at, recorded_at) VALUES "
+            "(1, 1, 's1', 'file_snapshot', '{\"files\": []}', "
+            "datetime('now', '-2 hours'), datetime('now', '-2 hours')), "
+            "(2, 1, 's1', 'queue_operation', '{\"operation\": \"dequeue\"}', "
+            "datetime('now', '-2 hours'), datetime('now', '-2 hours'))"
+        ))
+    assert _curation.librarian_backlog() == 0
+
+    # One real message flips the same thread into backlog.
+    with engine.begin() as conn:
+        from sqlalchemy import text
+
+        conn.execute(text(
+            "INSERT INTO events (id, thread_id, stream_id, event_type, payload, "
+            "occurred_at, recorded_at) VALUES "
+            "(3, 1, 's1', 'user_message_sent', '{\"content\": \"hi\"}', "
+            "datetime('now', '-2 hours'), datetime('now', '-2 hours'))"
+        ))
+    assert _curation.librarian_backlog() == 1

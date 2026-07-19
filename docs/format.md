@@ -18,8 +18,18 @@ promise.
 
 ## Versioning
 
-`manifest.json` carries `"version"` — the **format version**, currently **1**.
+`manifest.json` carries `"version"` — the **format version**, currently **2**.
 It is independent of the package version.
+
+Version 2's shape: thread ids are **ULIDs** — 26-character Crockford base32
+strings whose embedded 48-bit timestamp is the thread's start, so
+lexicographic id order is chronological order and ids are globally unique
+(archives merge without rewriting). A thread that ever had an integer id
+carries it as `legacy_id`, a permanent alias resolvable everywhere a thread
+ref is accepted. Shard buckets are derived from the sha256 of the id string
+(byte *i* names the level-*i* bucket directory), not from the id's numeric
+value. Version-1 archives are migrated by
+`thread_archive._scripts.migrate_thread_ulids`.
 
 - The version bumps only for a change an existing reader would *misinterpret*:
   record shapes, file layout, sharding semantics. Adding an optional field to a
@@ -45,8 +55,8 @@ truth/
   manifest.json          # format version, shard depth, checkpoint watermark
   threads/               # one file per thread (conversation or topic)
     <id>.jsonl           #   shard_depth 0 (flat)
-    <hh>/<id>.jsonl      #   shard_depth 1: hh = id % 256 as two lowercase hex digits
-    <hh>/<hh>/<id>.jsonl #   shard_depth 2: id % 256, then (id // 256) % 256
+    <hh>/<id>.jsonl      #   shard_depth 1: hh = sha256(id)[0:2] (lowercase hex)
+    <hh>/<hh>/<id>.jsonl #   shard_depth 2: sha256(id)[0:2], then sha256(id)[2:4]
   blobs/                 # content-addressed binary content (images, documents)
     <hh>/<sha256><ext>   #   hh = first two hex chars; ext from media type (.png, .pdf, .bin)
   kg_events.jsonl        # append-only curatorial event log (knowledge layer)
@@ -80,8 +90,9 @@ repeat; for the thread record and for events sharing an `id`, the **latest
 line wins** on load. Appends are fsynced before the SQLite transaction they
 belong to commits (truth ⊇ index, always).
 
-**Thread record** — `type: "thread"` plus the thread's fields: `id` (int),
-`name` (unique slug), `title`, `thread_type` (`"conversation"` | `"topic"`),
+**Thread record** — `type: "thread"` plus the thread's fields: `id` (ULID
+string), `legacy_id` (int or absent — the pre-ULID integer id, kept as a
+permanent alias), `name` (unique slug), `title`, `thread_type` (`"conversation"` | `"topic"`),
 `description`, `search_description`, `summary`, `indexed_summary`, `source`
 (provider, e.g. `"claude-code"`), `source_id`, `source_metadata` (object),
 `thought_count`, `user_id`, `experiment_id`, `archived` (bool),
@@ -89,7 +100,7 @@ belong to commits (truth ⊇ index, always).
 `epistemological_type`, `inserted_at`, `updated_at`.
 
 **Event record** — `type: "event"` plus: `id` (int, globally unique),
-`thread_id`, `stream_id` (turn grouping), `api_call_id`, `event_type` (e.g.
+`thread_id` (ULID string), `stream_id` (turn grouping), `api_call_id`, `event_type` (e.g.
 `user_message_sent`, `thought_generated`, `tool_called`, `tool_returned`),
 `payload` (object; the event's content — shape varies by `event_type`),
 `occurred_at`, `recorded_at`, `caused_by_event_id`, `correlation_id`,

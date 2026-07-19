@@ -29,7 +29,7 @@ def get_thread_by_source(session: Session, source: str, source_id: str) -> Optio
 
 def lookup_parent_thread(
     session: Session, parent_source_id: str, *, source: str = "claude-code"
-) -> Optional[int]:
+) -> Optional[str]:
     """Resolve a parent session's thread_id by ``(source, parent_source_id)`` —
     the import-state watermark first (authoritative even before the thread row is
     visible), then the threads table. None when unknown."""
@@ -45,7 +45,7 @@ def adopt_if_unwatermarked(
     *,
     source: str,
     source_id: str,
-    thread_id: Optional[int],
+    thread_id: Optional[str],
     total_lines: int,
     file_size: int,
     content_hash: Optional[str] = None,
@@ -94,9 +94,22 @@ def create_thread(
     description: Optional[str] = None,
     source_metadata: Optional[dict] = None,
     exclude_from_search: bool = False,
-) -> int:
-    """Create a thread for ``(source, source_id)`` and return its id (flushed)."""
+    started_at: Optional[datetime] = None,
+) -> str:
+    """Create a thread for ``(source, source_id)`` and return its id (flushed).
+
+    The id is a ULID — the single choke point where new thread ids come into
+    being. ``started_at`` (when the importer knows it, e.g. a historical export)
+    stamps the ULID's timestamp with the conversation's real start so id order
+    matches history; omitted, the id carries creation time, which for live
+    tailing is the same thing."""
+    from .._store import mint_ulid
+
+    tid = mint_ulid(
+        int(started_at.timestamp() * 1000) if started_at is not None else None
+    )
     thread = Thread(
+        id=tid,
         name=f"{source}:{source_id}",
         title=title,
         thread_type=thread_type,
@@ -116,7 +129,7 @@ def create_thread(
     return thread.id
 
 
-def discard_new_thread(session: Session, thread_id: int) -> None:
+def discard_new_thread(session: Session, thread_id: str) -> None:
     """Remove a just-created thread that imported nothing — row AND staged truth.
 
     The complement of :func:`create_thread` for the empty-import cleanup path.

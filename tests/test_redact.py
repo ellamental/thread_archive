@@ -34,7 +34,7 @@ def _import_secret_session(tmp_path, name: str = "sess"):
         row = s.execute(text(
             "SELECT id, thread_id FROM events WHERE event_type = 'user_message_sent'"
         )).first()
-    return f, int(row[0]), int(row[1])
+    return f, int(row[0]), row[1]
 
 
 def _files_holding(home, needle: bytes) -> list:

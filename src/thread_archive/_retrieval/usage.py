@@ -92,13 +92,13 @@ def record_search(
         record["widened"] = True
     if duration_ms is not None:
         record["duration_ms"] = round(duration_ms, 1)
-    results: list[list[int]] = []
+    results: list[list[int | str]] = []
     if isinstance(hits, list):
         record["n_hits"] = len(hits)
         for hit in hits[:_MAX_RESULT_IDS]:
             if isinstance(hit, dict) and "event_id" in hit and "thread_id" in hit:
                 try:
-                    results.append([int(hit["event_id"]), int(hit["thread_id"])])
+                    results.append([int(hit["event_id"]), str(hit["thread_id"])])
                 except (TypeError, ValueError):
                     continue
     if results:
@@ -112,10 +112,10 @@ def record_read(
     params: Optional[dict[str, Any]] = None,
     duration_ms: Optional[float] = None,
 ) -> None:
-    """Record one ``thread_read`` call: the id as the caller passed it (integer
-    thread id or provider session uuid — searches log integer ids, so joins work
-    for the id-from-search path) plus the non-default view parameters and the
-    read's latency."""
+    """Record one ``thread_read`` call: the id as the caller passed it (thread
+    id, legacy integer id, or provider session uuid — searches log thread ids,
+    so joins work for the id-from-search path) plus the non-default view
+    parameters and the read's latency."""
     if not _enabled():
         return
     record: dict[str, Any] = {

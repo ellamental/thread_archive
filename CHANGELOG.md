@@ -2,6 +2,112 @@
 
 ## Unreleased
 
+- **The test suite runs four-wide, and one test stopped deleting the database out
+  from under a live engine.** The `pytest` row swept 2147 tests in a single
+  process; it now runs `-n 4 --dist=loadfile`, taking the row from ~240s to ~50s
+  with coverage still gating (a file's tests stay on one worker, and coverage is a
+  union over the workers, so the floors gate the same numbers). Parallelism
+  surfaced a latent bug it did not cause: `test_verify_hash_gate_and_reindex`
+  unlinked `index.db` while the module-global engine still held pooled connections
+  to that inode, so the next connection reused could raise `disk I/O error` from a
+  `PRAGMA` against a deleted file. It closes the archive first now, the way every
+  other test that deletes a live index already did.
+
+- **The librarian's queue has a floor, and the drains no longer pay to
+  rediscover it.** `review_queue` treated any thread with a row in `events` as
+  curatable, but a session can register a thread and write only bookkeeping (an
+  empty `file_snapshot`, a `queue_operation`) — no message to cite, no content to
+  summarize. Those threads could never leave the queue, and since it is
+  newest-first they collected at its head: on this archive, 41 of them, re-read
+  by every hourly drain, one of which curated nothing at all. Eligibility now
+  requires an event whose type is in `INDEXABLE_EVENT_TYPES` — the same set that
+  decides whether an event reaches the search index, so the rule is one rule: if
+  it can't be found, it can't be curated. `_curation.librarian_backlog` carries
+  the identical clause (it reads the type list from the extractor rather than
+  restating it), which matters more there than in the queue: the daemon already
+  skipped a fire on an empty queue, but was being handed a count that could never
+  reach zero. Content-free threads are an ingest condition, not backlog, so they
+  are now *counted* rather than silently excluded — see the curation page.
+
+- **A curation page in the viewer (`/curation`), and `/api/curation` behind it.**
+  What the two unattended drains have done, in one place: each drain's remaining
+  backlog (read through the same gate the daemon fires on, so page and daemon
+  cannot disagree), cadence, model and liveness; per-day citations, links and new
+  topics; topic-graph health; summary/citation coverage; the content-free thread
+  count; and the drains' own cost — the runs archive themselves like any other
+  session, so the archive reports what curating it cost. Cost is requests and
+  output tokens, never dollars (the drains run on a subscription login that
+  records no per-token price) and never input tokens (the recorded figure excludes
+  cached context). There is no per-day summary count: a stored summary has no
+  set-time of its own, so summaries appear as coverage instead of an invented
+  series. New `_curation.stats`; the viewer's status cache generalized to serve
+  both surveys, with a cold-fill guard so a page load racing the startup prewarm
+  waits for that pass instead of starting a second one against the same database.
+
+- **Thread ids are ULIDs (truth format v2).** `Thread.id` moved from a
+  SQLite-autoincrement integer to a 26-char Crockford-base32 ULID minted at
+  creation (timestamp = thread start, so id order is chronological and ids are
+  globally unique — a future second archive can merge without collision or
+  rewrite). The old integer ids live on as `Thread.legacy_id`, a permanent
+  alias: `resolve_thread_ref` now resolves three ref shapes by form alone —
+  all-digits → legacy alias, 26-char base32 → primary key, anything else →
+  provider session id — so every integer id ever pasted into a conversation
+  keeps resolving. Truth sharding now buckets by sha256 of the id string;
+  `TRUTH_FORMAT_VERSION` bumped to 2; the threads table dropped its
+  autoincrement high-water machinery (events/kg_events keep theirs). One-shot
+  migration: `thread_archive._scripts.migrate_thread_ulids` (build-new →
+  swap → reindex; the pre-migration truth is kept in `pre-ulid-backup/`, the
+  id mapping in `ulid-mapping.json`). All consumer surfaces (MCP retrieval +
+  librarian tools, web viewer + frontend, CLI, importers) accept string ids
+  and keep accepting legacy integers as refs.
+
+- **The product is Claude Code-first, and a drifted import is now locally
+  repairable end to end (`archive fix-import`).** The positioning change
+  (README): Claude Code is the supported, first-class source; every other
+  harness is best-effort and community-maintainable. The machinery change is a
+  full self-repair loop for provider format drift, built on the seams that
+  already existed. Detection: the skip/validation ledger summaries gained
+  per-source breakdowns, and the coverage check composes them (with its
+  went-dark / stale-ingest FAILs) into per-source **degradation verdicts**
+  (`{reason, since}`) persisted in health.json's `coverage_last` — sustained
+  ledger volume (≥3 recent records) degrades; a single benign record still
+  only warns. Preservation: a degraded source's recently-active raw store
+  files are snapshotted into `dumps/drift/<source>/<stamp>/` (new
+  `_watcher/drift_snapshot.py`, riding a new `SourceWatcher.store_paths()`
+  hook; incremental generations, bounded and loud about truncation, never
+  auto-deleted, SQLite via the backup API, source_ids recorded for replay).
+  Notification: the MCP server prepends one `note:` line per degraded source
+  to `thread_search` results naming the remedy (unconditional on the result
+  set — a degraded source's freshest content is exactly what search can't
+  return; verdicts older than 14d are ignored so a dead nightly can't nag).
+  Repair: `archive fix-import <provider>` scaffolds an override patch under
+  `<home>/plugins/<provider>/` — patch module built on the new public
+  `provider.builtin(name)` helper, pre-wired test suite (fixtures import,
+  no validation findings, and a watermark-reset re-import dedup guard — the
+  one way a fix corrupts rather than degrades), collected samples (ledgered
+  files first), drift evidence digest, per-provider quirk docs (claude-code's
+  is substantive; others get the generic doc) — then spawns a headless
+  `claude` (curate's spawn shape: repo-hosted prompt, `--print`,
+  strict-empty MCP config, group-kill timeout; foreground, since the user
+  invoked it) whose only job is parse logic. `--activate` is the
+  deterministic gate: module loads and resolves to an override of the right
+  name, scaffold suite green in a fresh subprocess, only then `enabled: true`
+  in config.json, registry reset, and the ledger-driven re-import (reset
+  ledgered watermarks → one poll; drift-quarantine copies whose originals
+  were pruned replay through the importer). Lifecycle: patches record
+  `built_against` and are temporary by default — self-update's new injectable
+  `retire` collaborator (after smoke, before restart) disables unpinned
+  patches built against an older core, with no cleverness about whether the
+  release fixed that provider (if drift persists the notice re-fires and the
+  fix re-runs); `--pin` opts out ("I always want mine"); hand-installed
+  plugins without a `patch` block are never touched. Every transition lands
+  in a new `patch-log.jsonl` audit ledger; `archive providers` shows
+  `patched` / `patched (pinned)` / `patch retired`; `archive coverage` prints
+  the degraded verdicts and any snapshots taken. docs/providers.md documents
+  override patches and `builtin()`; the README carries the honest promise:
+  the supported provider's worst case is preserved but partially modeled
+  until fixed.
+
 - **Retrieval is now measured against real usage, not just the title proxy.**
   The eval harness gains a `--from-log` protocol: every `thread_search` an
   agent has run is itself archived, along with the `thread_read` that followed,

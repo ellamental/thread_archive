@@ -17,7 +17,14 @@ from __future__ import annotations
 from datetime import datetime, timezone
 
 from thread_archive._retrieval import read_thread, resolve_thread_ref
-from thread_archive._store import Event, Thread, TopicMessage, init_db, use_session
+from thread_archive._store import (
+    Event,
+    Thread,
+    TopicMessage,
+    init_db,
+    mint_ulid,
+    use_session,
+)
 
 _COMPACTION = "This session is being continued from a previous conversation. Summary: blah."
 
@@ -45,12 +52,13 @@ _CORPUS = [
 ]
 
 
-def _seed(events=_CORPUS, *, thread_type="conversation", title="Test Thread", tid=1,
-          source="claude-code", source_id=None, updated_minute=0):
+def _seed(events=_CORPUS, *, thread_type="conversation", title="Test Thread", tid=None,
+          source="claude-code", source_id=None, updated_minute=0, legacy_id=None):
     init_db()
+    tid = tid or mint_ulid()
     with use_session() as s:
-        s.add(Thread(id=tid, name=f"t{tid}", title=title, thread_type=thread_type,
-                     source=source, source_id=source_id,
+        s.add(Thread(id=tid, legacy_id=legacy_id, name=f"t{tid}", title=title,
+                     thread_type=thread_type, source=source, source_id=source_id,
                      inserted_at=_dt(0), updated_at=_dt(updated_minute)))
         s.commit()  # parent before children (FK)
         for i, (et, payload, minute) in enumerate(events, start=1):
@@ -124,7 +132,7 @@ def test_tool_error_rendered_with_results(archive_home) -> None:
         ("tool_use_complete", {"tool_name": "Bash", "input": {"command": "boom"}}, 2),
         ("tool_execution_error", {"error": "ERRTEXT command failed"}, 2),
         ("text_complete", {"text": "that failed"}, 3),
-    ], tid=5)
+    ])
     assert "ERRTEXT" not in read_thread(tid, mode="full")  # off by default
     out = read_thread(tid, mode="full", tool_results=True)
     assert "[tool error] ERRTEXT command failed" in out
@@ -137,7 +145,7 @@ def test_tool_result_truncated(archive_home) -> None:
         ("tool_use_complete", {"tool_name": "Bash", "input": {"command": "c"}}, 2),
         ("tool_execution_completed", {"output": big}, 2),
         ("text_complete", {"text": "done"}, 3),
-    ], tid=6)
+    ])
     out = read_thread(tid, mode="full", tool_results=True)
     assert "… (truncated)" in out
     assert out.count("X") <= 2100  # capped near _TOOL_RESULT_CAP, not the full 5000
@@ -228,7 +236,7 @@ def test_mode_ends_budget_keeps_outermost_turns(archive_home) -> None:
     for i, word in enumerate(("alpha", "beta", "gamma", "delta")):
         events.append(("user_message_sent", {"content": f"q{i}"}, i * 2 + 1))
         events.append(("text_complete", {"text": word + " " + "A" * 200}, i * 2 + 2))
-    tid = _seed(events, tid=7)
+    tid = _seed(events)
     out = read_thread(tid, mode="ends", context_turns=2, max_chars=600)
     # each end trims inward: the opening and closing turns survive, the inner
     # requested turns drop with a note
@@ -272,7 +280,7 @@ def test_summary_pagination(archive_home) -> None:
 
 # ── stored summaries (summary='short' / 'indexed') ──────────────────────────
 
-def _set_summaries(tid: int, *, short=None, indexed=None) -> None:
+def _set_summaries(tid: str, *, short=None, indexed=None) -> None:
     with use_session() as s:
         t = s.get(Thread, tid)
         t.summary = short
@@ -446,14 +454,14 @@ def test_missing_thread(archive_home) -> None:
 
 
 def test_empty_conversation(archive_home) -> None:
-    tid = _seed([], tid=7)
+    tid = _seed([])
     assert "has no messages yet" in read_thread(tid)
 
 
 def test_topic_thread_message(archive_home) -> None:
-    tid = _seed([], thread_type="topic", title="A Topic", tid=9)
+    tid = _seed([], thread_type="topic", title="A Topic")
     with use_session() as s:
-        s.add(TopicMessage(topic_id=9, event_id=1, thread_id=9, quote="q", actor="test"))
+        s.add(TopicMessage(topic_id=tid, event_id=1, thread_id=tid, quote="q", actor="test"))
         s.commit()
     out = read_thread(tid)
     assert f"# Topic {tid}: A Topic" in out
@@ -462,7 +470,7 @@ def test_topic_thread_message(archive_home) -> None:
     assert f"# Topic {tid}: A Topic" in read_thread(tid, summary=True)
 
 
-# ── thread_id ref resolution: integer PK or provider session uuid ─────────────
+# ── thread_id ref resolution: ULID PK, legacy int, or provider session uuid ──
 
 _UUID = "3f2a9c1e-0b44-4d27-9a11-77c0de9912ab"
 
@@ -473,61 +481,76 @@ def test_read_by_bare_session_uuid(archive_home) -> None:
     Sources differ in whether they prefix their ids; one that stores the bare
     session uuid has to resolve on the exact match, not only the suffix path the
     prefixed sources take."""
-    _seed(tid=11, source="claude-code", source_id=_UUID)
+    tid = _seed(source="claude-code", source_id=_UUID)
     out = read_thread(_UUID)
     assert "first question about authentication" in out
-    assert "# Thread 11:" in out  # resolved to the integer id in the header
+    assert f"# Thread {tid}:" in out  # resolved to the ULID id in the header
 
 
 def test_read_by_project_prefixed_source_id(archive_home) -> None:
     """The watcher stores source_id as ``{project}:{uuid}``; a bare uuid suffix-matches."""
-    _seed(tid=12, source="claude-code", source_id=f"my-project:{_UUID}")
+    tid = _seed(source="claude-code", source_id=f"my-project:{_UUID}")
     out = read_thread(_UUID)
-    assert "# Thread 12:" in out
+    assert f"# Thread {tid}:" in out
     assert "first question about authentication" in out
 
 
-def test_integer_pk_still_works_as_string(archive_home) -> None:
-    """A digit string resolves as the primary key first (back-compat)."""
-    _seed(tid=13, source_id=_UUID)
-    assert read_thread(13) == read_thread("13")
+def test_legacy_integer_id_resolves_via_alias(archive_home) -> None:
+    """A digit ref resolves through ``Thread.legacy_id``, the permanent alias
+    for pre-ULID integer ids — never the primary key."""
+    tid = _seed(legacy_id=13, source_id=_UUID)
+    out = read_thread(13)
+    assert f"# Thread {tid}:" in out  # header shows the ULID, not the legacy int
+    assert read_thread(13) == read_thread("13") == read_thread(tid)
+
+
+def test_ulid_ref_resolves_including_lowercase(archive_home) -> None:
+    """The ULID PK resolves directly, case-insensitively (Crockford base32)."""
+    tid = _seed()
+    assert read_thread(tid) == read_thread(tid.lower())
+    assert f"# Thread {tid}:" in read_thread(tid.lower())
 
 
 def test_numeric_source_id_falls_through_to_resolution(archive_home) -> None:
-    """A digit ref that is not a PK falls back to source_id (e.g. grok numeric ids)."""
-    _seed(tid=14, source="grok", source_id="987654")
-    out = read_thread("987654")  # not a thread PK, but a source_id
-    assert "# Thread 14:" in out
+    """A digit ref that matches no legacy_id falls back to source_id (e.g. grok
+    numeric session ids)."""
+    tid = _seed(source="grok", source_id="987654")
+    out = read_thread("987654")  # not a legacy id, but a source_id
+    assert f"# Thread {tid}:" in out
 
 
 def test_unknown_uuid_reports_not_found(archive_home) -> None:
-    _seed(tid=15, source_id=_UUID)
+    _seed(source_id=_UUID)
     assert "not found" in read_thread("00000000-dead-beef-0000-000000000000")
 
 
 def test_resolve_thread_ref_unit(archive_home) -> None:
-    _seed(tid=16, source="claude-code", source_id=f"proj:{_UUID}")
+    tid = _seed(legacy_id=16, source="claude-code", source_id=f"proj:{_UUID}")
     with use_session() as s:
-        assert resolve_thread_ref(s, 16) == 16
-        assert resolve_thread_ref(s, "16") == 16
-        assert resolve_thread_ref(s, _UUID) == 16          # suffix match
-        assert resolve_thread_ref(s, f"proj:{_UUID}") == 16  # exact match
+        assert resolve_thread_ref(s, 16) == tid            # legacy alias, int
+        assert resolve_thread_ref(s, "16") == tid          # legacy alias, digit string
+        assert resolve_thread_ref(s, tid) == tid           # ULID PK
+        assert resolve_thread_ref(s, tid.lower()) == tid   # ULID, case-insensitive
+        assert resolve_thread_ref(s, _UUID) == tid          # suffix match
+        assert resolve_thread_ref(s, f"proj:{_UUID}") == tid  # exact match
         assert resolve_thread_ref(s, "nope") is None
 
 
 def test_resolve_ref_underscore_matches_literally(archive_home) -> None:
     """A ref's ``_`` is escaped in the suffix LIKE — unescaped it would act as a
     single-char wildcard and silently resolve to the WRONG thread."""
-    _seed(tid=40, source_id="proj:abcXdef")
+    _seed(source_id="proj:abcXdef")
     with use_session() as s:
         assert resolve_thread_ref(s, "abc_def") is None  # no wildcard match
+    literal_tid = mint_ulid()
     with use_session() as s:
-        s.add(Thread(id=41, name="t41", title="literal", thread_type="conversation",
+        s.add(Thread(id=literal_tid, name="t41", title="literal",
+                     thread_type="conversation",
                      source="claude-code", source_id="proj:abc_def",
                      inserted_at=_dt(0), updated_at=_dt(2)))
         s.commit()
     with use_session() as s:
-        assert resolve_thread_ref(s, "abc_def") == 41
+        assert resolve_thread_ref(s, "abc_def") == literal_tid
 
 
 def test_resolve_scoped_to_a_source_uses_only_its_separators(archive_home) -> None:
@@ -539,12 +562,12 @@ def test_resolve_scoped_to_a_source_uses_only_its_separators(archive_home) -> No
     uuid resolve through a separator only some *other* provider composes with."""
     from thread_archive._store.resolve import resolve_session_source_id
 
-    _seed(tid=50, source="cursor", source_id=f"weird-{_UUID}")
+    tid = _seed(source="cursor", source_id=f"weird-{_UUID}")
     with use_session() as s:
         # cursor declares no separators: its source_id IS the session id, so a
         # bare uuid with a prefix in front of it is not a reference to it.
         assert resolve_session_source_id(s, _UUID, source="cursor") is None
-        assert resolve_session_source_id(s, f"weird-{_UUID}", source="cursor") == 50
+        assert resolve_session_source_id(s, f"weird-{_UUID}", source="cursor") == tid
 
 
 def test_resolve_across_sources_tries_every_declared_separator(archive_home) -> None:
@@ -552,23 +575,24 @@ def test_resolve_across_sources_tries_every_declared_separator(archive_home) -> 
     provider composes — which is why declaring a separator narrowly matters."""
     from thread_archive._store.resolve import resolve_session_source_id
 
-    _seed(tid=51, source="codex", source_id=f"rollout-2026-01-01T10-00-00-{_UUID}")
+    tid = _seed(source="codex", source_id=f"rollout-2026-01-01T10-00-00-{_UUID}")
     with use_session() as s:
-        assert resolve_session_source_id(s, _UUID) == 51
-        assert resolve_session_source_id(s, _UUID, source="codex") == 51
+        assert resolve_session_source_id(s, _UUID) == tid
+        assert resolve_session_source_id(s, _UUID, source="codex") == tid
 
 
 def test_resolve_newest_thread_wins(archive_home) -> None:
     """Two threads sharing a source_id → the most recently updated resolves."""
-    _seed(tid=20, source_id=_UUID, updated_minute=1)
+    _seed(source_id=_UUID, updated_minute=1)
     # second thread, same uuid, newer updated_at — seed without re-init_db
+    newer_tid = mint_ulid()
     with use_session() as s:
-        s.add(Thread(id=21, name="t21", title="newer", thread_type="conversation",
+        s.add(Thread(id=newer_tid, name="t21", title="newer", thread_type="conversation",
                      source="claude-code", source_id=_UUID,
                      inserted_at=_dt(0), updated_at=_dt(5)))
         s.commit()
     with use_session() as s:
-        assert resolve_thread_ref(s, _UUID) == 21
+        assert resolve_thread_ref(s, _UUID) == newer_tid
 
 
 def test_resolve_via_import_state_watermark(archive_home) -> None:
@@ -579,7 +603,7 @@ def test_resolve_via_import_state_watermark(archive_home) -> None:
     from thread_archive._store import ImportState
 
     cont_uuid = "cccccccc-1111-2222-3333-444444444444"
-    tid = _seed(tid=30, source_id=f"proj:{_UUID}")
+    tid = _seed(source_id=f"proj:{_UUID}")
     with use_session() as s:
         s.add(ImportState(source="claude-code", source_id=f"proj:{cont_uuid}",
                           thread_id=tid, last_import_at=_dt(6)))
@@ -596,7 +620,7 @@ def test_resolvers_agree_across_surfaces(archive_home) -> None:
     from thread_archive._web import resolve_archive_link
 
     is_only = "dddddddd-1111-2222-3333-444444444444"
-    tid = _seed(tid=31, source_id=f"proj:{_UUID}")
+    tid = _seed(source_id=f"proj:{_UUID}")
     with use_session() as s:
         s.add(ImportState(source="claude-code", source_id=f"proj:{is_only}",
                           thread_id=tid, last_import_at=_dt(6)))

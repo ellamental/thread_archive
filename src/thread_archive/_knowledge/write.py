@@ -79,7 +79,7 @@ def _emit(
     entity_id,
     payload: dict,
     actor: str,
-    actor_thread_id: Optional[int],
+    actor_thread_id: Optional[str],
 ) -> KgEvent:
     """Append a ``KgEvent`` and fold it into the projection, in the caller's session.
 
@@ -110,7 +110,7 @@ def create_topic(
     *,
     topic_kind: Optional[str] = None,
     actor: str = "librarian",
-    actor_thread_id: Optional[int] = None,
+    actor_thread_id: Optional[str] = None,
     session: Optional[Session] = None,
 ) -> dict:
     """Create a topic (a ``thread_type='topic'`` thread) and return ``{topic_id, ...}``.
@@ -144,8 +144,8 @@ def create_topic(
 
 @_locked_write
 def rename_topic(
-    topic_id: int, title: str, *, description: Optional[str] = None,
-    actor: str = "librarian", actor_thread_id: Optional[int] = None,
+    topic_id: str, title: str, *, description: Optional[str] = None,
+    actor: str = "librarian", actor_thread_id: Optional[str] = None,
     session: Optional[Session] = None,
 ) -> dict:
     """Rename (and optionally re-describe) a topic."""
@@ -162,7 +162,7 @@ def rename_topic(
             payload["description"] = description
         ev = _emit(s, event_type="topic.renamed", entity_type="topic", entity_id=topic_id,
                    payload=payload, actor=actor, actor_thread_id=actor_thread_id)
-        result = {"topic_id": int(topic_id), "title": title, "event_id": ev.id}
+        result = {"topic_id": topic_id, "title": title, "event_id": ev.id}
         if own:
             s.commit()
             reset_cache()
@@ -171,7 +171,7 @@ def rename_topic(
 
 @_locked_write
 def archive_topic(
-    topic_id: int, *, actor: str = "librarian", actor_thread_id: Optional[int] = None,
+    topic_id: str, *, actor: str = "librarian", actor_thread_id: Optional[str] = None,
     session: Optional[Session] = None,
 ) -> dict:
     """Archive a topic (drops it from the live graph; the thread stays reachable)."""
@@ -183,7 +183,7 @@ def archive_topic(
         record_thread(s, topic)
         ev = _emit(s, event_type="topic.archived", entity_type="topic", entity_id=topic_id,
                    payload={}, actor=actor, actor_thread_id=actor_thread_id)
-        result = {"topic_id": int(topic_id), "archived": True, "event_id": ev.id}
+        result = {"topic_id": topic_id, "archived": True, "event_id": ev.id}
         if own:
             s.commit()
             reset_cache()
@@ -192,8 +192,8 @@ def archive_topic(
 
 @_locked_write
 def merge_topics(
-    from_id: int, into_id: int, *, actor: str = "librarian",
-    actor_thread_id: Optional[int] = None, session: Optional[Session] = None,
+    from_id: str, into_id: str, *, actor: str = "librarian",
+    actor_thread_id: Optional[str] = None, session: Optional[Session] = None,
 ) -> dict:
     """Merge ``from_id`` into ``into_id``: repoint its links + citations, archive it."""
     own = session is None
@@ -201,14 +201,14 @@ def merge_topics(
         from_topic = _require_topic(s, from_id)
         _require_topic(s, into_id)
         ev = _emit(s, event_type="topic.merged", entity_type="topic", entity_id=into_id,
-                   payload={"from_id": int(from_id), "into_id": int(into_id)},
+                   payload={"from_id": from_id, "into_id": into_id},
                    actor=actor, actor_thread_id=actor_thread_id)
         # Persist the merged-away topic's archival to its per-thread file too (the fold
         # archived it in the table; this records it in the truth the file carries).
         from_topic.archived = True
         from_topic.updated_at = ev.occurred_at
         record_thread(s, from_topic)
-        result = {"from_id": int(from_id), "into_id": int(into_id), "event_id": ev.id}
+        result = {"from_id": from_id, "into_id": into_id, "event_id": ev.id}
         if own:
             s.commit()
             reset_cache()
@@ -218,9 +218,9 @@ def merge_topics(
 # ── links ──────────────────────────────────────────────────────────────────────
 @_locked_write
 def link_threads(
-    source_id: int, target_id: int, link_type: str = "related", *,
+    source_id: str, target_id: str, link_type: str = "related", *,
     strength: float = 1.0, evidence: Optional[str] = None, actor: str = "librarian",
-    actor_thread_id: Optional[int] = None, session: Optional[Session] = None,
+    actor_thread_id: Optional[str] = None, session: Optional[Session] = None,
 ) -> dict:
     """Create (or update) a directed link between two threads/topics. Idempotent on
     ``(source, target, link_type)``. Both endpoints must exist — the kg log is
@@ -228,20 +228,20 @@ def link_threads(
     own = session is None
     with use_session(session) as s:
         for tid in (source_id, target_id):
-            if s.get(Thread, int(tid)) is None:
+            if s.get(Thread, tid) is None:
                 raise ValueError(f"no thread with id {tid} — link endpoints must exist")
         ev = _emit(
             s, event_type="link.created", entity_type="link",
-            entity_id=f"{int(source_id)}:{int(target_id)}:{link_type}",
+            entity_id=f"{source_id}:{target_id}:{link_type}",
             payload={
-                "source_thread_id": int(source_id), "target_thread_id": int(target_id),
+                "source_thread_id": source_id, "target_thread_id": target_id,
                 "link_type": link_type, "strength": float(strength),
                 "evidence": evidence, "created_by": actor,
             },
             actor=actor, actor_thread_id=actor_thread_id,
         )
         result = {
-            "source_thread_id": int(source_id), "target_thread_id": int(target_id),
+            "source_thread_id": source_id, "target_thread_id": target_id,
             "link_type": link_type, "event_id": ev.id,
         }
         if own:
@@ -252,8 +252,8 @@ def link_threads(
 
 @_locked_write
 def unlink_threads(
-    source_id: int, target_id: int, link_type: str = "related", *,
-    actor: str = "librarian", actor_thread_id: Optional[int] = None,
+    source_id: str, target_id: str, link_type: str = "related", *,
+    actor: str = "librarian", actor_thread_id: Optional[str] = None,
     session: Optional[Session] = None,
 ) -> dict:
     """Remove a link (a tombstone event — the operation is recorded, not erased)."""
@@ -261,12 +261,12 @@ def unlink_threads(
     with use_session(session) as s:
         ev = _emit(
             s, event_type="link.deleted", entity_type="link",
-            entity_id=f"{int(source_id)}:{int(target_id)}:{link_type}",
-            payload={"source_thread_id": int(source_id), "target_thread_id": int(target_id),
+            entity_id=f"{source_id}:{target_id}:{link_type}",
+            payload={"source_thread_id": source_id, "target_thread_id": target_id,
                      "link_type": link_type},
             actor=actor, actor_thread_id=actor_thread_id,
         )
-        result = {"source_thread_id": int(source_id), "target_thread_id": int(target_id),
+        result = {"source_thread_id": source_id, "target_thread_id": target_id,
                   "link_type": link_type, "event_id": ev.id}
         if own:
             s.commit()
@@ -277,8 +277,8 @@ def unlink_threads(
 # ── evidence (message → topic citations) ─────────────────────────────────────────
 @_locked_write
 def add_topic_evidence(
-    topic_id: int, event_id: int, thread_id: int, quote: str, *,
-    actor: str = "librarian", actor_thread_id: Optional[int] = None,
+    topic_id: str, event_id: int, thread_id: str, quote: str, *,
+    actor: str = "librarian", actor_thread_id: Optional[str] = None,
     session: Optional[Session] = None,
 ) -> dict:
     """Cite a conversation message as evidence for a topic. Idempotent on
@@ -296,19 +296,19 @@ def add_topic_evidence(
             raise ValueError(
                 f"no event with id {event_id} — citations must reference a real archived message"
             )
-        if int(cited.thread_id) != int(thread_id):
+        if cited.thread_id != thread_id:
             raise ValueError(
                 f"event {event_id} belongs to thread {cited.thread_id}, not {thread_id} — "
                 "check which message you meant to cite"
             )
         ev = _emit(
             s, event_type="evidence.added", entity_type="topic_message",
-            entity_id=f"{int(topic_id)}:{int(event_id)}",
-            payload={"topic_id": int(topic_id), "event_id": int(event_id),
-                     "thread_id": int(thread_id), "quote": quote, "actor": actor},
+            entity_id=f"{topic_id}:{int(event_id)}",
+            payload={"topic_id": topic_id, "event_id": int(event_id),
+                     "thread_id": thread_id, "quote": quote, "actor": actor},
             actor=actor, actor_thread_id=actor_thread_id,
         )
-        result = {"topic_id": int(topic_id), "event_id": int(event_id), "kg_event_id": ev.id}
+        result = {"topic_id": topic_id, "event_id": int(event_id), "kg_event_id": ev.id}
         if own:
             s.commit()
     return result
@@ -316,19 +316,19 @@ def add_topic_evidence(
 
 @_locked_write
 def archive_topic_evidence(
-    topic_id: int, event_id: int, *, actor: str = "librarian",
-    actor_thread_id: Optional[int] = None, session: Optional[Session] = None,
+    topic_id: str, event_id: int, *, actor: str = "librarian",
+    actor_thread_id: Optional[str] = None, session: Optional[Session] = None,
 ) -> dict:
     """Archive a citation (tombstone — sets ``archived_at``, keeps the row + history)."""
     own = session is None
     with use_session(session) as s:
         ev = _emit(
             s, event_type="evidence.archived", entity_type="topic_message",
-            entity_id=f"{int(topic_id)}:{int(event_id)}",
-            payload={"topic_id": int(topic_id), "event_id": int(event_id)},
+            entity_id=f"{topic_id}:{int(event_id)}",
+            payload={"topic_id": topic_id, "event_id": int(event_id)},
             actor=actor, actor_thread_id=actor_thread_id,
         )
-        result = {"topic_id": int(topic_id), "event_id": int(event_id), "kg_event_id": ev.id}
+        result = {"topic_id": topic_id, "event_id": int(event_id), "kg_event_id": ev.id}
         if own:
             s.commit()
     return result
@@ -344,7 +344,7 @@ INDEXED_SUMMARY_MAX_CHARS = 24_000
 
 @_locked_write
 def set_thread_summary(
-    thread_id: int,
+    thread_id: str,
     summary: Optional[str] = None,
     *,
     indexed_summary: Optional[str] = None,
@@ -379,7 +379,7 @@ def set_thread_summary(
         )
     own = session is None
     with use_session(session) as s:
-        t = s.get(Thread, int(thread_id))
+        t = s.get(Thread, thread_id)
         if t is None:
             raise ValueError(f"no thread with id {thread_id}")
         if t.thread_type == "topic":
@@ -402,8 +402,8 @@ def set_thread_summary(
         # does — the retrieval package is heavier than this module needs at import.
         from .._retrieval.fts import index_thread_meta
 
-        index_thread_meta(s, [int(thread_id)])
-        result = {"thread_id": int(thread_id), "fields": fields}
+        index_thread_meta(s, [thread_id])
+        result = {"thread_id": thread_id, "fields": fields}
         if own:
             s.commit()
     return result
@@ -416,10 +416,11 @@ def review_queue(
 ) -> list[dict]:
     """Conversation threads with librarian work left — the backlog.
 
-    Event-bearing, non-archived conversation threads still missing either half of the
-    librarian's per-thread output — a live topic citation/link, or a stored short
-    summary — newest first. Pass ``exclude_source_id`` to drop the caller's own live
-    session (its still-growing transcript sits at the top of its own queue otherwise).
+    Non-archived conversation threads carrying at least one message-bearing event and
+    still missing either half of the librarian's per-thread output — a live topic
+    citation/link, or a stored short summary — newest first. Pass ``exclude_source_id``
+    to drop the caller's own live session (its still-growing transcript sits at the top
+    of its own queue otherwise).
 
     **State is the data, not a ledger.** 'Done' is *derived from the curation a thread
     carries* — a thread leaves the queue the instant it has BOTH its first live topic
@@ -432,7 +433,26 @@ def review_queue(
     ``quiet_minutes`` holds back still-ingesting threads: one whose newest event was
     *ingested* inside the window (``recorded_at``, uniform naive-UTC) is likely a live
     session — its citations would be premature and its summary stale on arrival."""
-    has_events = select(Event.id).where(Event.thread_id == Thread.id).exists()
+    # Eligibility needs *curatable* content, not merely rows in `events`. A thread
+    # can carry bookkeeping-only events (an empty `file_snapshot`, a
+    # `queue_operation`) and no message at all — nothing to cite, nothing to
+    # summarize. Those are permanently un-drainable, and because the queue is
+    # newest-first they pile up at its head and every drain re-reads them forever.
+    # INDEXABLE_EVENT_TYPES is the same set that decides whether an event reaches
+    # the search index, which makes the rule one rule: if it can't be found, it
+    # can't be curated. Imported here like index_thread_meta above — the retrieval
+    # package is heavier than this module needs at import, and imports back into
+    # this one.
+    from .._retrieval._extract import INDEXABLE_EVENT_TYPES
+
+    has_curatable_content = (
+        select(Event.id)
+        .where(
+            Event.thread_id == Thread.id,
+            Event.event_type.in_(INDEXABLE_EVENT_TYPES),
+        )
+        .exists()
+    )
     # 'Curated' = the librarian drew something from this thread: a live (non-archived)
     # topic citation sourced from it, or a link touching it.
     is_curated = or_(
@@ -459,7 +479,7 @@ def review_queue(
         Thread.thread_type == "conversation",
         or_(~is_curated, ~is_summarized),
         or_(Thread.archived.is_(False), Thread.archived.is_(None)),
-        has_events,
+        has_curatable_content,
         ~recently_ingested,
     ]
     if exclude_source_id:
@@ -487,12 +507,12 @@ def topic_search(query: str, limit: int = 10, *, session: Optional[Session] = No
 
 
 def thread_user_messages(
-    thread_id: int, *, limit: Optional[int] = None, session: Optional[Session] = None,
+    thread_id: str, *, limit: Optional[int] = None, session: Optional[Session] = None,
 ) -> list[dict]:
     """A thread's user messages as ``[{event_id, text}]`` — the cheap, high-signal read
     the librarian cites from (citations anchor on these ``event_id`` values)."""
     q = select(Event.id, Event.payload).where(
-        Event.thread_id == int(thread_id),
+        Event.thread_id == thread_id,
         Event.event_type.in_(("user_message_sent", "thread_message_sent")),
     ).order_by(Event.id)
     if limit:
@@ -507,8 +527,8 @@ def thread_user_messages(
     return out
 
 
-def _require_topic(session: Session, topic_id: int) -> Thread:
-    topic = session.get(Thread, int(topic_id))
+def _require_topic(session: Session, topic_id: str) -> Thread:
+    topic = session.get(Thread, topic_id)
     if topic is None or topic.thread_type != "topic":
         raise ValueError(f"no topic with id {topic_id}")
     return topic

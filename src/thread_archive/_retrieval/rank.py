@@ -303,7 +303,7 @@ def group_by_thread(results: list[EventHit], *, fold_duplicates: bool = True) ->
 
     Ranked order in, ranked order out: a thread ranks where its best hit ranks.
     """
-    by_thread: dict[int, EventHit] = {}
+    by_thread: dict[str, EventHit] = {}
     by_content: dict[str, EventHit] = {}
     out: list[EventHit] = []
     for r in results:
@@ -350,9 +350,9 @@ def cluster_by_thread(
     ``_thread_more``. Unlike :func:`group_by_thread` no cross-thread duplicate
     fold runs: a nested view enumerates what matched.
     """
-    order: list[int] = []
-    buckets: dict[int, list[EventHit]] = {}
-    overflow: dict[int, int] = {}
+    order: list[str] = []
+    buckets: dict[str, list[EventHit]] = {}
+    overflow: dict[str, int] = {}
     for pos, r in enumerate(results):
         tid = r.get("thread_id")
         if tid not in buckets:

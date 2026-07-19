@@ -4,7 +4,8 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from typing import Callable, Iterable, Optional, TypeVar, Union
+from pathlib import Path
+from typing import Callable, Iterable, Iterator, Optional, TypeVar, Union
 
 T = TypeVar("T")
 F = TypeVar("F")
@@ -127,3 +128,10 @@ class SourceWatcher(ABC):
         :class:`SourceDiscovery`). Base form: availability only; watchers that
         can stat their stores cheaply override with counts/sizes/ranges."""
         return SourceDiscovery(name=self.source_name, available=self.is_available())
+
+    def store_paths(self) -> Iterator[Path]:
+        """The store's constituent files, for preservation snapshots (the drift
+        quarantine, :mod:`.drift_snapshot`). Base form: none — a watcher that
+        cannot enumerate its store cheaply yields nothing and its source is
+        snapshot-exempt."""
+        return iter(())

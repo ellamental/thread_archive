@@ -71,7 +71,15 @@ def demo_provider(archive_home):
     _providers.reset()
 
 
+def _tid(n: int) -> str:
+    """A fixed, valid ULID for test seed ``n`` (26 chars, Crockford alphabet,
+    not all-digits so it resolves via the primary key, not legacy_id)."""
+    return f"01TEST{n:020d}"
+
+
 def _seed(events, *, tid=1, source="demo", source_id="demo-1"):
+    if isinstance(tid, int):
+        tid = _tid(tid)
     init_db()
     with use_session() as s:
         s.add(Thread(id=tid, name=f"t{tid}", title="Demo", thread_type="conversation",

@@ -35,7 +35,7 @@ function renderAt(url: string) {
 
 function hit(overrides: Partial<SearchHit>): SearchHit {
   return {
-    event_id: 1, thread_id: 1, thread_title: 'Thread One', content_type: 'text',
+    event_id: 1, thread_id: '1', thread_title: 'Thread One', content_type: 'text',
     snippet: 'a snippet', full_content: 'full', occurred_at: '2026-01-01T10:00:00Z',
     ...overrides,
   }
@@ -46,9 +46,9 @@ describe('SearchView', () => {
     mswJson('/api/search', {
       query: '', browse: true, quality: null, subjects: [],
       hits: [
-        hit({ thread_id: 5, event_id: 99, thread_title: 'Latest Session',
+        hit({ thread_id: '5', event_id: 99, thread_title: 'Latest Session',
               thread_source: 'demo-harness', n_events: 12 }),
-        hit({ thread_id: 3, event_id: 42, thread_title: 'Older Session',
+        hit({ thread_id: '3', event_id: 42, thread_title: 'Older Session',
               thread_source: 'codex', n_events: 1 }),
       ],
     })
@@ -64,7 +64,7 @@ describe('SearchView', () => {
     const user = userEvent.setup()
     mswJson('/api/search', {
       query: '', browse: true, quality: null, subjects: [],
-      hits: [hit({ thread_id: 5, event_id: 99, thread_title: 'Latest Session' })],
+      hits: [hit({ thread_id: '5', event_id: 99, thread_title: 'Latest Session' })],
     })
     renderAt('/search')
     await user.click(await screen.findByText('Latest Session'))
@@ -99,9 +99,9 @@ describe('SearchView', () => {
     mswJson('/api/search', {
       query: 'x',
       hits: [
-        hit({ event_id: 1, thread_id: 1 }),
-        hit({ event_id: 2, thread_id: 1, snippet: 'second snippet' }),
-        hit({ event_id: 3, thread_id: 2, thread_title: 'Thread Two', snippet: 'other thread' }),
+        hit({ event_id: 1, thread_id: '1' }),
+        hit({ event_id: 2, thread_id: '1', snippet: 'second snippet' }),
+        hit({ event_id: 3, thread_id: '2', thread_title: 'Thread Two', snippet: 'other thread' }),
       ],
     })
     renderAt('/search?q=x')
@@ -116,7 +116,7 @@ describe('SearchView', () => {
   it('navigates to the thread at the matching event when a hit is clicked', async () => {
     const user = userEvent.setup()
     mswJson('/api/search', {
-      query: 'x', hits: [hit({ event_id: 9, thread_id: 42, thread_title: 'Target' })],
+      query: 'x', hits: [hit({ event_id: 9, thread_id: '42', thread_title: 'Target' })],
     })
     renderAt('/search?q=x')
     await user.click(await screen.findByText('a snippet'))
@@ -129,8 +129,8 @@ describe('SearchView', () => {
       query: 'x',
       hits: [hit({
         dup_threads: [
-          { thread_id: 77, title: 'Fork One' },
-          { thread_id: 78, title: null },
+          { thread_id: '77', title: 'Fork One' },
+          { thread_id: '78', title: null },
         ],
       })],
     })
@@ -150,7 +150,7 @@ describe('SearchView', () => {
 
   it('says "1 other thread" when a single thread folded', async () => {
     mswJson('/api/search', {
-      query: 'x', hits: [hit({ dup_threads: [{ thread_id: 77, title: 'Fork One' }] })],
+      query: 'x', hits: [hit({ dup_threads: [{ thread_id: '77', title: 'Fork One' }] })],
     })
     renderAt('/search?q=x')
     expect(await screen.findByRole('button', { name: /same text in 1 other thread$/ })).toBeInTheDocument()
@@ -173,7 +173,7 @@ describe('SearchView', () => {
     mswJson('/api/search', {
       query: 'x',
       quality: { verdict: 'partial', note: 'only some query terms matched the top hit — scan before trusting', n_terms: 3 },
-      hits: [hit({ term_hits: 2 }), hit({ event_id: 2, thread_id: 2, term_hits: 0, snippet: 'other' })],
+      hits: [hit({ term_hits: 2 }), hit({ event_id: 2, thread_id: '2', term_hits: 0, snippet: 'other' })],
     })
     renderAt('/search?q=x')
     expect(await screen.findByText('quality: partial')).toBeInTheDocument()
@@ -188,8 +188,8 @@ describe('SearchView', () => {
     mswJson('/api/search', {
       query: 'x',
       subjects: [
-        { topic_id: 7, title: 'Graph Theory', chats: 2 },
-        { topic_id: 9, title: 'PageRank', chats: 1 },
+        { topic_id: '7', title: 'Graph Theory', chats: 2 },
+        { topic_id: '9', title: 'PageRank', chats: 1 },
       ],
       hits: [hit({})],
     })
@@ -216,7 +216,7 @@ describe('SearchView', () => {
   it('says when only the top page of hits is shown', async () => {
     mswJson('/api/search', {
       query: 'x',
-      hits: Array.from({ length: 40 }, (_, i) => hit({ event_id: i + 1, thread_id: 1 })),
+      hits: Array.from({ length: 40 }, (_, i) => hit({ event_id: i + 1, thread_id: '1' })),
     })
     renderAt('/search?q=x')
     expect(await screen.findByText(/top 40 hits shown/)).toBeInTheDocument()

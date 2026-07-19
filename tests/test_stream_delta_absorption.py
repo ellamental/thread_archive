@@ -27,16 +27,18 @@ def _dt(minute: int) -> datetime:
     return datetime(2026, 1, 1, 10, minute, 0, tzinfo=timezone.utc)
 
 
-def _seed_thread(tid: int, events: list[tuple], source: str = "demo-harness") -> int:
-    """events: (event_type, payload, api_call_id) triples in id order."""
+def _seed_thread(n: int, events: list[tuple], source: str = "demo-harness") -> str:
+    """events: (event_type, payload, api_call_id) triples in id order.
+    ``n`` numbers the fixture thread; the minted id is a fixed ULID built from it."""
     init_db()
+    tid = f"01STREAMTEST00000000000{n:03d}"
     with use_session() as s:
-        s.add(Thread(id=tid, name=f"t{tid}", title=f"stream {tid}", thread_type="conversation",
-                     source=source, source_id=f"sess-{tid}",
+        s.add(Thread(id=tid, name=f"t{n}", title=f"stream {n}", thread_type="conversation",
+                     source=source, source_id=f"sess-{n}",
                      inserted_at=_dt(0), updated_at=_dt(0)))
         s.commit()
         for i, (et, payload, ac) in enumerate(events, start=1):
-            s.add(Event(id=tid * 1000 + i, thread_id=tid, stream_id="s", event_type=et,
+            s.add(Event(id=n * 1000 + i, thread_id=tid, stream_id="s", event_type=et,
                         payload=payload, api_call_id=ac, occurred_at=_dt(i)))
         s.commit()
     return tid
@@ -124,7 +126,7 @@ def test_doubly_captured_turn_renders_once(archive_home) -> None:
 
 # ── the index side: the same gate, same rule ─────────────────────────────────
 
-def _fts_contents(tid: int) -> list[tuple[str, str]]:
+def _fts_contents(tid: str) -> list[tuple[str, str]]:
     from sqlalchemy import select
 
     from thread_archive._store import EventFts
@@ -201,7 +203,7 @@ def test_rebuild_stitches_deltas_when_summary_has_no_blocks(archive_home) -> Non
     # reader renders the same stitched text, anchored at the summary's event id
     out = read_thread(tid, mode="chat")
     assert "recovered ZETA" in out
-    assert f"event:{tid * 1000 + 4}" in out  # the api_request_completed's id
+    assert f"event:{49 * 1000 + 4}" in out  # the api_request_completed's id
     # deep verify's coverage check judges the same stitched text as covered
     # (the seeded events have no truth files, so only the fts section applies)
     from thread_archive import _api as ta
@@ -228,7 +230,7 @@ def test_rebuild_indexes_arcless_call_at_delta_anchor(archive_home) -> None:
     assert ("dying words ETA", "text") in rows
     out = read_thread(tid, mode="chat")
     assert "dying words ETA" in out
-    assert f"event:{tid * 1000 + 3}" in out  # the last delta's id, both surfaces
+    assert f"event:{50 * 1000 + 3}" in out  # the last delta's id, both surfaces
 
 
 def test_incremental_index_gates_like_rebuild(archive_home) -> None:

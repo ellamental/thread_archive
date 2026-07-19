@@ -150,7 +150,7 @@ def _model_at(timeline: list[tuple[datetime, str]], end: Optional[datetime]) -> 
 
 
 def plan_thread(
-    session, thread_id: int, timeline: Optional[list[tuple[datetime, str]]] = None,
+    session, thread_id: str, timeline: Optional[list[tuple[datetime, str]]] = None,
 ) -> tuple[dict[int, str], int, int]:
     """``({event id: model}, placeholder_events, conflicts)`` for one thread.
 
@@ -228,7 +228,7 @@ def rekey(key: str, payload: dict) -> str:
     return f"{anchor}:{event_type}:{block}:{content_hash}"
 
 
-def patch_truth(thread_id: int, patched: dict[int, dict]) -> int:
+def patch_truth(thread_id: str, patched: dict[int, dict]) -> int:
     """Rewrite a thread's truth file so the given events carry their new payload+key.
 
     Every line the repair doesn't own is copied through verbatim; the file is fsynced

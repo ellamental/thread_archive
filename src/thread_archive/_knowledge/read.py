@@ -22,14 +22,14 @@ from sqlalchemy.orm import Session
 from .._store import Thread, ThreadLink, TopicMessage, use_session
 
 
-def _require_topic(session: Session, topic_id: int) -> Thread:
-    topic = session.get(Thread, int(topic_id))
+def _require_topic(session: Session, topic_id: str) -> Thread:
+    topic = session.get(Thread, topic_id)
     if topic is None or topic.thread_type != "topic":
         raise ValueError(f"no topic with id {topic_id}")
     return topic
 
 
-def topic_get(topic_id: int, *, session: Optional[Session] = None) -> dict:
+def topic_get(topic_id: str, *, session: Optional[Session] = None) -> dict:
     """One topic with everything attached: metadata, links (both directions),
     citation count, member threads, graph metadata, and community peers.
 
@@ -49,7 +49,7 @@ def topic_get(topic_id: int, *, session: Optional[Session] = None) -> dict:
                 select(ThreadLink.link_type, ThreadLink.strength, ThreadLink.evidence,
                        other.c.id, other.c.title, other.c.name, other.c.thread_type)
                 .join(other, other.c.id == other_col)
-                .where(own_col == int(topic_id))
+                .where(own_col == topic_id)
                 .order_by(ThreadLink.strength.desc(), other.c.id)
             ).all()
             links.extend(
@@ -66,7 +66,7 @@ def topic_get(topic_id: int, *, session: Optional[Session] = None) -> dict:
             )
         citation_count = s.execute(
             select(func.count()).select_from(TopicMessage)
-            .where(TopicMessage.topic_id == int(topic_id),
+            .where(TopicMessage.topic_id == topic_id,
                    TopicMessage.archived_at.is_(None))
         ).scalar_one()
         member = Thread.__table__.alias("member")
@@ -76,7 +76,7 @@ def topic_get(topic_id: int, *, session: Optional[Session] = None) -> dict:
                 select(TopicMessage.thread_id, member.c.title, member.c.name,
                        func.count().label("n"))
                 .join(member, member.c.id == TopicMessage.thread_id)
-                .where(TopicMessage.topic_id == int(topic_id),
+                .where(TopicMessage.topic_id == topic_id,
                        TopicMessage.archived_at.is_(None))
                 .group_by(TopicMessage.thread_id, member.c.title, member.c.name)
                 .order_by(func.count().desc(), TopicMessage.thread_id)
@@ -92,13 +92,13 @@ def topic_get(topic_id: int, *, session: Optional[Session] = None) -> dict:
             "member_threads": member_threads,
         }
     detail["links"] = links
-    detail["graph"] = get_topic_graph_meta(int(topic_id))
-    detail["peers"] = get_community_peers(int(topic_id), limit=8)
+    detail["graph"] = get_topic_graph_meta(topic_id)
+    detail["peers"] = get_community_peers(topic_id, limit=8)
     return detail
 
 
 def topic_members(
-    topic_id: int, *, limit: int = 200, session: Optional[Session] = None,
+    topic_id: str, *, limit: int = 200, session: Optional[Session] = None,
 ) -> list[dict]:
     """A topic's live citations, oldest event first: ``{event_id, thread_id,
     thread_title, quote}``. These are the verbatim receipts behind the topic — each
@@ -112,7 +112,7 @@ def topic_members(
             select(TopicMessage.event_id, TopicMessage.thread_id, TopicMessage.quote,
                    cited.c.title, cited.c.name)
             .join(cited, cited.c.id == TopicMessage.thread_id)
-            .where(TopicMessage.topic_id == int(topic_id),
+            .where(TopicMessage.topic_id == topic_id,
                    TopicMessage.archived_at.is_(None))
             .order_by(TopicMessage.event_id)
             .limit(limit)
@@ -128,7 +128,7 @@ def topic_members(
     ]
 
 
-def topic_thread_ids(topic_id: int, *, session: Optional[Session] = None) -> list[int]:
+def topic_thread_ids(topic_id: str, *, session: Optional[Session] = None) -> list[str]:
     """The conversation threads a topic covers: every thread with a live citation
     under the topic, plus every *conversation* thread directly linked to it (either
     direction). This is the scope ``search(topic_id=...)`` restricts to.
@@ -139,7 +139,7 @@ def topic_thread_ids(topic_id: int, *, session: Optional[Session] = None) -> lis
         ids = {
             r[0] for r in s.execute(
                 select(TopicMessage.thread_id).distinct()
-                .where(TopicMessage.topic_id == int(topic_id),
+                .where(TopicMessage.topic_id == topic_id,
                        TopicMessage.archived_at.is_(None))
             )
         }
@@ -153,7 +153,7 @@ def topic_thread_ids(topic_id: int, *, session: Optional[Session] = None) -> lis
                     select(other.c.id)
                     .select_from(ThreadLink)
                     .join(other, other.c.id == other_col)
-                    .where(own_col == int(topic_id),
+                    .where(own_col == topic_id,
                            other.c.thread_type != "topic")
                 )
             )
@@ -186,7 +186,7 @@ def topic_tree(*, session: Optional[Session] = None) -> dict:
             .where(ThreadLink.link_type.in_((HIERARCHY_UP, HIERARCHY_DOWN)))
         ).all()
 
-    children: dict[int, set[int]] = {}
+    children: dict[str, set[str]] = {}
     for src, tgt, link_type in rows:
         child, parent = (src, tgt) if link_type == HIERARCHY_UP else (tgt, src)
         if child == parent or child not in live or parent not in live:
@@ -195,7 +195,7 @@ def topic_tree(*, session: Optional[Session] = None) -> dict:
 
     child_ids = {c for kids in children.values() for c in kids}
 
-    def build(tid: int, ancestors: frozenset) -> dict:
+    def build(tid: str, ancestors: frozenset) -> dict:
         node = dict(live[tid])
         kids = sorted(
             children.get(tid, set()) - ancestors,

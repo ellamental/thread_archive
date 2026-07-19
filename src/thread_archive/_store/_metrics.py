@@ -297,7 +297,7 @@ def collect_model_stats(model: str) -> dict | None:
 
         # Compactions in those sessions, split by thread (for the top-sessions list)
         # and by the event's own month (for the time series).
-        compact_by_thread: dict[int, int] = {}
+        compact_by_thread: dict[str, int] = {}
         compact_by_month: dict[str, int] = {}
         for tid, month, n in s.execute(
             text(
@@ -311,13 +311,13 @@ def collect_model_stats(model: str) -> dict | None:
             ),
             {"model": model},
         ).all():
-            compact_by_thread[tid] = compact_by_thread.get(tid, 0) + int(n)
+            compact_by_thread[str(tid)] = compact_by_thread.get(str(tid), 0) + int(n)
             if month:
                 compact_by_month[month] = compact_by_month.get(month, 0) + int(n)
 
     sessions = [
         {
-            "thread_id": int(tid),
+            "thread_id": str(tid),
             "title": title,
             "source": source or "(unknown)",
             "at": str(at) if at else None,
@@ -329,7 +329,7 @@ def collect_model_stats(model: str) -> dict | None:
             "thinking_tokens": int(ttok or 0),
             "cost": float(cost or 0.0),
             "cost_requests": int(creq or 0),
-            "compactions": compact_by_thread.get(int(tid), 0),
+            "compactions": compact_by_thread.get(str(tid), 0),
         }
         for tid, title, source, at, req, itok, otok, ttok, cost, creq in rows
     ]

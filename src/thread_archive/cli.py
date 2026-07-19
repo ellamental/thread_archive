@@ -119,6 +119,13 @@ def cmd_providers(args: argparse.Namespace) -> int:
             traits.append("mechanism")
         if p.follows:
             traits.append(f"follows {p.follows}")
+        plugin_entry = (cfg.get("providers") or {}).get(p.name)
+        if isinstance(plugin_entry, dict) and isinstance(plugin_entry.get("patch"), dict):
+            if plugin_entry.get("enabled"):
+                pinned = plugin_entry["patch"].get("pinned")
+                traits.append("patched (pinned)" if pinned else "patched")
+            elif plugin_entry["patch"].get("retired"):
+                traits.append("patch retired")
         disabled = not source_enabled(cfg, p.name) or (
             bool(p.follows) and not source_enabled(cfg, p.follows or "")
         )
@@ -344,6 +351,40 @@ def cmd_curate(args: argparse.Namespace) -> int:
     return _curation.run(
         args.kind, args.home, batch=args.batch, timeout=args.timeout
     )
+
+
+def cmd_fix_import(args: argparse.Namespace) -> int:
+    import logging
+
+    from . import _repair
+
+    logging.basicConfig(
+        level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s"
+    )
+    try:
+        if args.pin or args.unpin:
+            _repair.set_pinned(args.provider, bool(args.pin), args.home)
+            return 0
+        if args.activate:
+            summary = _repair.activate(
+                args.provider, args.home, reimport=not args.no_reimport
+            )
+            re = summary.get("reimport") or {}
+            if re:
+                print(
+                    f"re-import: {re['watermarks_reset']} watermark(s) reset, "
+                    f"{re['poll_events']} event(s) from the live store, "
+                    f"{re['snapshot_events']} from quarantine snapshots"
+                )
+            print("patch active")
+            return 0
+        if args.scaffold_only:
+            print(_repair.scaffold(args.provider, args.home))
+            return 0
+    except (_repair.ActivationError, ValueError) as e:
+        print(e)
+        return 1
+    return _repair.run(args.provider, args.home, timeout=args.timeout)
 
 
 def cmd_reindex(args: argparse.Namespace) -> int:
@@ -793,7 +834,9 @@ def cmd_redact(args: argparse.Namespace) -> int:
               "(or --list / --show-key / --forget / --restore-key)")
         return 2
     event_ids = [int(e) for e in args.events.split(",")] if args.events else None
-    res = api.redact(int(args.thread), event_ids, reason=args.reason, home=args.home)
+    # args.thread is a ref — ULID id, legacy integer alias, or provider session
+    # id — passed through raw; the API layer resolves it.
+    res = api.redact(args.thread, event_ids, reason=args.reason, home=args.home)
     print(
         f"redacted {res['events_redacted']} event(s) in thread {res['thread_id']}"
         + (f" under key {res['key_id']}" if res.get("key_id") else "")
@@ -983,6 +1026,14 @@ def cmd_coverage(args: argparse.Namespace) -> int:
             f"validation drift: {dr['total']} ledger records, {dr['recent']} in last "
             f"{dr['days']:.0f}d ({dr['recent_findings']} findings) — validation-drift.jsonl"
         )
+    for name, v in sorted((r.get("degraded") or {}).items()):
+        since = f" since {str(v.get('since'))[:10]}" if v.get("since") else ""
+        print(
+            f"degraded: {name} ({v.get('reason')}{since}) — "
+            f"remedy: archive fix-import {name}"
+        )
+    for name, gen in sorted((r.get("drift_snapshots") or {}).items()):
+        print(f"quarantined: {name} raw store snapshot → {gen}")
     for msg in r["warnings"]:
         print(f"warning: {msg}")
     if r["ok"]:
@@ -1243,7 +1294,10 @@ def build_parser() -> argparse.ArgumentParser:
              "revocable key in <home>/keyring.json",
     )
     _add_home_arg(p_redact)
-    p_redact.add_argument("thread", nargs="?", help="thread id")
+    p_redact.add_argument(
+        "thread", nargs="?",
+        help="thread ref: ULID id, legacy integer id, or provider session id",
+    )
     p_redact.add_argument(
         "--events", help="comma-separated event ids (default: the whole thread)"
     )
@@ -1299,6 +1353,49 @@ def build_parser() -> argparse.ArgumentParser:
              "it is normal — the next fire continues)",
     )
     p_curate.set_defaults(func=cmd_curate)
+
+    p_fix = sub.add_parser(
+        "fix-import",
+        help="repair a drifted provider import on this machine: scaffold an "
+             "override patch under <home>/plugins/, spawn a headless `claude` "
+             "to write the parse fix, then gate it through tests, activation, "
+             "and a ledger-driven re-import. Patches retire on the next "
+             "self-update unless pinned",
+    )
+    _add_home_arg(p_fix)
+    p_fix.add_argument(
+        "provider", help="the drifted provider (`archive providers` lists them)"
+    )
+    p_fix.add_argument(
+        "--activate", action="store_true",
+        help="the deterministic gate: load the patch, run its test suite, and "
+             "only on green enable the override and re-import what the broken "
+             "parser consumed",
+    )
+    p_fix.add_argument(
+        "--scaffold-only", action="store_true",
+        help="generate/refresh the scaffold and stop — fix by hand or with "
+             "your own agent, then --activate",
+    )
+    p_fix.add_argument(
+        "--no-reimport", action="store_true",
+        help="with --activate: skip the ledger-driven re-import",
+    )
+    pin_group = p_fix.add_mutually_exclusive_group()
+    pin_group.add_argument(
+        "--pin", action="store_true",
+        help="keep this patch across self-updates (\"I always want mine\")",
+    )
+    pin_group.add_argument(
+        "--unpin", action="store_true",
+        help="return the patch to the default retire-on-update lifecycle",
+    )
+    from ._repair import TIMEOUT_S as REPAIR_TIMEOUT_S
+    p_fix.add_argument(
+        "--timeout", type=int, default=REPAIR_TIMEOUT_S, metavar="SECONDS",
+        help=f"hard wall-clock stop for the repair agent (default {REPAIR_TIMEOUT_S})",
+    )
+    p_fix.set_defaults(func=cmd_fix_import)
 
     p_daemon = sub.add_parser(
         "daemon",

@@ -36,7 +36,7 @@ def _make_stale_flat_twin(archive_home, *, fresh_title="fresh title", drop_canon
     ``(thread_id, flat_path, canonical_path)``."""
     d = archive_home / "truth"
     flat = one_thread_file(archive_home)
-    tid = int(flat.stem)
+    tid = flat.stem
     jsonl_log.reset_handles()
 
     canonical = jsonl_log._thread_file(d, tid, 1)

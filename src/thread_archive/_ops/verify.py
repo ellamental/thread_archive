@@ -627,12 +627,13 @@ def _verify_hashes(watermark: int) -> dict:
     if threads_dir.exists():
         for path in threads_dir.rglob("*.jsonl"):
             files_by_stem.setdefault(path.stem, []).append(path)
-    truth_tids: set[int] = set()
+    from .._store import normalize_ulid
+
+    truth_tids: set[str] = set()
     for stem in files_by_stem:
-        try:
-            truth_tids.add(int(stem))
-        except ValueError:  # pragma: no cover — stray file
-            continue
+        if normalize_ulid(stem) is not None:
+            truth_tids.add(stem)
+        # else: stray file — not a thread id
 
     with get_session() as s:
         conn = s.connection().connection  # raw sqlite3 — stream, don't materialize
@@ -641,7 +642,7 @@ def _verify_hashes(watermark: int) -> dict:
             (watermark,),
         ).fetchone()[0]
         idx_tids = {
-            int(r[0]) for r in conn.execute(
+            str(r[0]) for r in conn.execute(
                 "SELECT DISTINCT thread_id FROM events WHERE id <= ?", (watermark,)
             )
         }
@@ -819,9 +820,9 @@ def _verify_deep(watermark: int) -> dict:
     # Pass 1 — truth ids per thread (≤ watermark), which files hold each thread,
     # and the winning (last, in reindex's load order — canonical-depth file
     # last) thread record per id.
-    truth_ids: dict[int, set[int]] = {}
-    thread_files: dict[int, list] = {}
-    truth_meta: dict[int, dict] = {}
+    truth_ids: dict[str, set[int]] = {}
+    thread_files: dict[str, list] = {}
+    truth_meta: dict[str, dict] = {}
     if threads_dir.exists():
         for path in thread_file_load_order(d):
             # log=False: scan_truth_counts already logged/classified any torn line
@@ -829,15 +830,15 @@ def _verify_deep(watermark: int) -> dict:
             for rec in _iter_jsonl(path, log=False):
                 if rec.get("type", "event") == "thread":
                     if rec.get("id") is not None:
-                        truth_meta[int(rec["id"])] = rec
+                        truth_meta[str(rec["id"])] = rec
                     continue
                 if rec.get("type", "event") != "event":
                     continue
                 ev_id, tid = rec.get("id"), rec.get("thread_id")
                 if ev_id is None or tid is None or ev_id > watermark:
                     continue
-                truth_ids.setdefault(int(tid), set()).add(int(ev_id))
-                files = thread_files.setdefault(int(tid), [])
+                truth_ids.setdefault(str(tid), set()).add(int(ev_id))
+                files = thread_files.setdefault(str(tid), [])
                 if path not in files:
                     files.append(path)
 
@@ -883,16 +884,16 @@ def _verify_deep(watermark: int) -> dict:
         # and this query legitimately shows index-newer-than-truth; a *persistent*
         # mismatch means a re-stage was missed, and the next reindex would silently
         # revert the index to the stale truth record.
-        meta_mismatch: list[int] = []
+        meta_mismatch: list[str] = []
         meta_rows = s.execute(sa_text(
             "SELECT id, title, description, summary FROM threads")).all()
         for tid, *idx_fields in meta_rows:
-            rec = truth_meta.get(int(tid))
+            rec = truth_meta.get(str(tid))
             if rec is None:
                 continue  # count parity (shallow verify) owns missing records
             for field, idx_val in zip(("title", "description", "summary"), idx_fields):
                 if (rec.get(field) or None) != (idx_val or None):
-                    meta_mismatch.append(int(tid))
+                    meta_mismatch.append(str(tid))
                     break
 
         # Knowledge layer: the kg truth log vs its table, by id — both sides

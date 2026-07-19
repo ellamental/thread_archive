@@ -43,7 +43,7 @@ class EventHit(TypedDict):
     resolved to ``{thread_id, title}`` so the fold renders as names)."""
 
     event_id: int
-    thread_id: int
+    thread_id: str
     thread_title: Optional[str]
     event_type: str
     content_type: Optional[str]
@@ -54,7 +54,7 @@ class EventHit(TypedDict):
     _rrf: NotRequired[float]
     _did_rerank: NotRequired[bool]
     _thread_more: NotRequired[int]
-    _dup_thread_ids: NotRequired[list[int]]
+    _dup_thread_ids: NotRequired[list[str]]
     context: NotRequired[str]
     context_events: NotRequired[dict]
     _browse: NotRequired[bool]

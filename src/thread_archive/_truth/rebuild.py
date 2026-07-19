@@ -25,6 +25,7 @@ from .._store import (
     get_engine,
     get_session,
     init_db,
+    normalize_ulid,
     use_engine,
 )
 from .layout import (
@@ -52,7 +53,7 @@ logger = logging.getLogger(__name__)
 
 # ── integrity scan (the primitive behind `archive verify`) ───────────────────
 def scan_truth_counts(
-    *, event_id_max: int | None = None, thread_id_max: int | None = None,
+    *, event_id_max: int | None = None, thread_id_max: str | None = None,
     kg_event_id_max: int | None = None, truth_dir: Path | None = None,
 ) -> dict:
     """Count threads + event lines across the truth directory — the per-thread
@@ -99,12 +100,10 @@ def scan_truth_counts(
     files_by_stem: dict[str, list[Path]] = {}
     if threads_dir.exists():
         for path in threads_dir.rglob("*.jsonl"):
-            if thread_id_max is not None:
-                try:
-                    if int(path.stem) > thread_id_max:
-                        continue
-                except ValueError:  # pragma: no cover — stray file
-                    pass
+            # ULID order is creation order, so the watermark bound is a plain
+            # lexicographic comparison on the file stem.
+            if thread_id_max is not None and path.stem > thread_id_max:
+                continue
             files_by_stem.setdefault(path.stem, []).append(path)
     for paths in files_by_stem.values():
         seen_ids: set = set()
@@ -217,10 +216,7 @@ def thread_file_load_order(d: Path) -> list[Path]:
     depth = _shard_depth(d)
 
     def _canonical(path: Path) -> bool:
-        try:
-            return path == _thread_file(d, int(path.stem), depth)
-        except ValueError:
-            return False
+        return path == _thread_file(d, path.stem, depth)
 
     paths = sorted(threads_dir.rglob("*.jsonl"))
     paths.sort(key=_canonical)  # stable: non-canonical first, canonical last
@@ -257,7 +253,7 @@ def load_thread_files(
             ne += len(event_buf)
             event_buf.clear()
 
-    have_meta: set[int] = set()  # tids with a real thread record already loaded
+    have_meta: set[str] = set()  # tids with a real thread record already loaded
     for path in thread_file_load_order(d):
         last_thread: dict | None = None
         events: list[dict] = []
@@ -268,9 +264,10 @@ def load_thread_files(
             else:
                 events.append(rec)
         if last_thread is None:
-            try:
-                tid = int(path.stem)
-            except ValueError:  # pragma: no cover
+            tid = path.stem
+            if normalize_ulid(tid) is None:
+                # A stray file whose stem isn't a thread id must never crash
+                # (or pollute) the rebuild — skip it, as verify skips it.
                 continue
             if tid in have_meta:
                 # A twin of this thread already supplied its real record; a
@@ -279,11 +276,8 @@ def load_thread_files(
             else:
                 last_thread = {"id": tid, "name": f"thread:{tid}"}
                 logger.warning("reindex: %s had no thread record — synthesized minimal", path.name)
-        else:
-            try:
-                have_meta.add(int(last_thread.get("id")))
-            except (TypeError, ValueError):  # pragma: no cover — malformed record
-                pass
+        elif last_thread.get("id") is not None:
+            have_meta.add(str(last_thread.get("id")))
         if last_thread is not None:
             thread_buf.append(_coerce(Thread, last_thread))
         for ev in events:
@@ -516,13 +510,13 @@ def _build_fk_violations(tmp_path: Path) -> list[tuple]:
         conn.close()
 
 
-def _files_for_thread(d: Path, thread_id: int) -> list[Path]:
+def _files_for_thread(d: Path, thread_id: str) -> list[Path]:
     """Every truth file for ``thread_id`` — its canonical-depth file plus any
     stale twin at another shard depth."""
     threads_dir = d / THREADS_SUBDIR
     if not threads_dir.exists():
         return []
-    return list(threads_dir.rglob(f"{int(thread_id)}.jsonl"))
+    return list(threads_dir.rglob(f"{thread_id}.jsonl"))
 
 
 def _reconcile_collapsed_citations(d: Path, engine) -> dict:
@@ -562,9 +556,9 @@ def _reconcile_collapsed_citations(d: Path, engine) -> dict:
         # dedup_key of each discarded id, recovered from its thread's truth
         # file(s). dedup_key is thread-scoped (same content in two threads
         # shares a key), so the survivor lookup stays scoped to the thread.
-        wanted_by_thread: dict[int, set[int]] = {}
+        wanted_by_thread: dict[str, set[int]] = {}
         for _, _, ev_id, tid in dangling:
-            wanted_by_thread.setdefault(int(tid), set()).add(int(ev_id))
+            wanted_by_thread.setdefault(str(tid), set()).add(int(ev_id))
         keys: dict[int, str] = {}
         for tid, wanted in wanted_by_thread.items():
             for path in _files_for_thread(d, tid):
@@ -581,13 +575,13 @@ def _reconcile_collapsed_citations(d: Path, engine) -> dict:
                     continue
                 survivor = conn.exec_driver_sql(
                     "SELECT id FROM events WHERE thread_id = ? AND dedup_key = ?",
-                    (int(tid), key),
+                    (str(tid), key),
                 ).fetchone()
                 if survivor is None:
                     continue
                 already = conn.exec_driver_sql(
                     "SELECT 1 FROM topic_messages WHERE topic_id = ? AND event_id = ?",
-                    (int(topic_id), int(survivor[0])),
+                    (str(topic_id), int(survivor[0])),
                 ).fetchone()
                 if already is not None:
                     conn.exec_driver_sql(
@@ -892,7 +886,7 @@ def reindex(*, vectors: bool = False, salvage: bool = False) -> dict:
 
 
 # ── truth emit (the single per-thread file writer; no-drift seam) ────────────
-def emit_thread_file(d: Path, thread_id: int, depth: int, thread_record, event_records) -> int:
+def emit_thread_file(d: Path, thread_id: str, depth: int, thread_record, event_records) -> int:
     """Atomically (re)write one ``threads/<id>.jsonl``: an optional ``type:thread``
     record then the ``type:event`` records, in order. The one place the on-disk
     per-thread format is produced (used by the store re-emit), so the layout can't
@@ -1027,9 +1021,8 @@ def _truth_units_missing_from_store(d: Path) -> tuple[int, list[str], dict[str, 
     with get_session() as s:
         conn = s.connection().connection  # raw sqlite3 — stream, don't materialize
         for stem, paths in files_by_stem.items():
-            try:
-                tid = int(stem)
-            except ValueError:  # pragma: no cover — stray file
+            tid = stem
+            if normalize_ulid(tid) is None:  # stray file — not a thread id
                 continue
             units: set = set()
             for path in paths:
@@ -1156,10 +1149,7 @@ def _rebuild_truth_from_store_locked(d: Path) -> dict:
     # fresh (possibly repaired) row for the same event id. Files whose ids the store
     # does NOT hold are left untouched.
     for path in list((d / THREADS_SUBDIR).rglob("*.jsonl")):
-        try:
-            tid = int(path.stem)
-        except ValueError:  # pragma: no cover — stray file
-            continue
+        tid = path.stem
         if tid in emitted and path != _thread_file(d, tid, depth):
             path.unlink()
 

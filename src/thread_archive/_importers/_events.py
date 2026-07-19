@@ -42,7 +42,7 @@ _KEY_CHUNK = 500
 
 
 def _existing_dedup_keys(
-    session: Session, thread_id: int, keys: Optional[Iterable[str]] = None
+    session: Session, thread_id: str, keys: Optional[Iterable[str]] = None
 ) -> set[str]:
     """Which of ``keys`` the thread already holds — or *all* its keys when ``keys``
     is None.
@@ -69,7 +69,7 @@ def _existing_dedup_keys(
     return found
 
 
-def _last_stream_id(session: Session, thread_id: int) -> Optional[str]:
+def _last_stream_id(session: Session, thread_id: str) -> Optional[str]:
     """The stream id of the thread's newest event — the open turn a continuing
     assistant message belongs to. None on a thread with no events yet."""
     return session.execute(
@@ -89,7 +89,7 @@ def _anchor_event(events: list, event_type: str):
     return None
 
 
-def _message_already_present(session: Session, thread_id: int, anchor) -> bool:
+def _message_already_present(session: Session, thread_id: str, anchor) -> bool:
     """True when an event with the same (type, content, occurred_at) already exists
     in the thread. Used to suppress the replayed prefix when a CC continuation /
     fork-resume merges into an existing thread (its fresh UUIDs defeat the dedup_key
@@ -113,7 +113,7 @@ def _message_already_present(session: Session, thread_id: int, anchor) -> bool:
     ).first() is not None
 
 
-def _to_event(thread_id: int, te) -> Event:
+def _to_event(thread_id: str, te) -> Event:
     """Map a portable ThreadEvent onto an Event row (thread_id added at write time)."""
     return Event(
         thread_id=thread_id,
@@ -129,7 +129,7 @@ def _to_event(thread_id: int, te) -> Event:
 
 def assemble_events(
     session: Session,
-    thread_id: int,
+    thread_id: str,
     messages: list,
     builder: DefaultEventBuilder,
     *,
@@ -311,7 +311,7 @@ def log_parse_validation(
 
 def import_lines(
     session: Session,
-    thread_id: int,
+    thread_id: str,
     lines: list[dict],
     parser,
     builder: DefaultEventBuilder,

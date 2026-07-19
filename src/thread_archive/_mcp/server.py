@@ -70,6 +70,18 @@ class IngestThrottle:
 INGEST = IngestThrottle()
 
 
+def _resolve_ref(ref: int | str) -> Optional[str]:
+    """Resolve a thread/topic ref — a ULID thread id, a legacy integer alias, or
+    a provider session id — to the archive's ULID thread id; None when nothing
+    matches. See :func:`thread_archive._retrieval.read.resolve_thread_ref`."""
+    from .._retrieval.read import resolve_thread_ref
+    from .._store import get_session
+
+    api.open_archive()
+    with get_session() as s:
+        return resolve_thread_ref(s, ref)
+
+
 def _maybe_catch_up() -> None:
     """Kick a background catch-up pass, throttled. Never blocks the caller and
     never raises — retrieval must work identically with ingest disabled, owned
@@ -126,12 +138,66 @@ def _default_scope_is_weak(hits: "list[EventHit]", query: str) -> bool:
     return term_hit_count(top.get("full_content") or top.get("snippet") or "", terms) == 0
 
 
+# ── degradation notice ────────────────────────────────────────────────────────
+# Coverage's per-source degradation verdicts (health.json → coverage_last.degraded)
+# surfaced where the user actually is: prepended to search results, naming the
+# remedy. Import drift is otherwise operator-shaped state (ledgers, `archive
+# coverage`) that a user has no reason to look at — the moment they care about
+# their archive is the moment they search it. Unconditional on the result set:
+# a degraded source's freshest content is exactly what search CAN'T return, so
+# gating the notice on its hits would hide it precisely when it matters most.
+# Verdicts older than the cutoff are ignored — a dead nightly must not nag
+# forever on a frozen verdict (its own staleness alarm lives elsewhere).
+_NOTICE_MAX_AGE_DAYS = 14.0
+_DEGRADED_PHRASES = {
+    "went_dark": "its store is missing or empty",
+    "stale_ingest": "store activity is not becoming events",
+    "validation_drift": "the parser no longer fully models its format",
+    "capture_skips": "content is being consumed without importing",
+}
+
+
+def _degradation_notices() -> str:
+    """One ``note:`` line per currently-degraded source, newline-terminated;
+    empty string when all sources are healthy. Fail-soft: retrieval must work
+    identically when health.json is absent, stale, or unreadable."""
+    try:
+        from datetime import datetime, timezone
+
+        from .._ops.health import read_health
+
+        rec = read_health().get("coverage_last") or {}
+        degraded = rec.get("degraded") or {}
+        if not degraded:
+            return ""
+        at = datetime.fromisoformat(str(rec.get("at")))
+        if at.tzinfo is None:
+            at = at.replace(tzinfo=timezone.utc)
+        age = datetime.now(timezone.utc) - at
+        if age.total_seconds() > _NOTICE_MAX_AGE_DAYS * 86400:
+            return ""
+        lines = []
+        for source in sorted(degraded):
+            verdict = degraded[source] or {}
+            phrase = _DEGRADED_PHRASES.get(verdict.get("reason"), "import degraded")
+            since = str(verdict.get("since") or "")[:10]
+            lines.append(
+                f"note: {source} import is degraded ({phrase}"
+                + (f" since {since}" if since else "")
+                + f") — recent {source} content may be missing from results. "
+                f"remedy: archive fix-import {source}"
+            )
+        return "\n".join(lines) + "\n"
+    except Exception:  # noqa: BLE001 — advisory; retrieval must not care
+        return ""
+
+
 @mcp.tool()
 def thread_search(
     query: str,
     limit: int = 10,
-    thread_id: Optional[int] = None,
-    topic_id: Optional[int] = None,
+    thread_id: Optional[int | str] = None,
+    topic_id: Optional[int | str] = None,
     content_type: Optional[str] = None,
     exclude_content_type: Optional[str] = None,
     since: Optional[str] = None,
@@ -184,7 +250,9 @@ def thread_search(
     Query grammar: natural language, "quoted phrases", boolean AND/OR/NOT,
     pipe-OR (a|b), and code identifiers (get_session, a.b.c). Filter by
     ``thread_id``, ``topic_id`` (scope to a curated topic's member conversations —
-    the threads cited under it or linked to it in the knowledge graph),
+    the threads cited under it or linked to it in the knowledge graph) — both
+    accept a ULID thread id, a legacy integer alias, or a provider session id,
+    the same ref shapes ``thread_read`` takes —
     ``content_type`` (default user+title+summary; 'all' searches
     everything),
     ``exclude_content_type`` (comma-separated types to drop), ``tool_name``,
@@ -235,6 +303,21 @@ def thread_search(
     # exactly this reason; context_lines is a per-hit window, bounded likewise.
     limit = max(1, min(int(limit), 500))
     context_lines = max(0, min(int(context_lines), 50))
+    # Resolve id-shaped filters up front (ULID / legacy integer alias / provider
+    # session id) so the engine only ever sees canonical ULID thread ids, and a
+    # ref that matches nothing says so instead of silently returning zero hits.
+    if thread_id is not None:
+        resolved = _resolve_ref(thread_id)
+        if resolved is None:
+            return (f"thread {thread_id} not found — thread_id takes a ULID thread id, "
+                    f"a legacy integer id, or a provider session id")
+        thread_id = resolved
+    if topic_id is not None:
+        resolved = _resolve_ref(topic_id)
+        if resolved is None:
+            return (f"topic {topic_id} not found — topic_id takes a topic's ULID id "
+                    f"or its legacy integer id")
+        topic_id = resolved
     # Default scope is user messages only; an explicit type targets it, and
     # content_type='all' clears the filter to search everything (see the constant).
     if content_type == "all":
@@ -310,7 +393,7 @@ def thread_search(
     if widened:
         rendered = ("note: no keyword match in the default scope (user/title/summary) — "
                     "results below include assistant text\n" + rendered)
-    return rendered
+    return _degradation_notices() + rendered
 
 
 @mcp.tool()
@@ -329,11 +412,14 @@ def thread_read(
 ) -> str:
     """Read a thread's conversation, reconstructed from the event log.
 
-    ``thread_id`` accepts either the archive's own integer thread id OR a provider
-    **session uuid** (the id a tool like claude-code / cursor / codex knows the
-    conversation by — its ``source_id``). The uuid is resolved to the thread
-    automatically (newest match wins), so you can pass a session uuid straight
-    through without looking the integer id up first.
+    ``thread_id`` accepts three ref shapes, distinguished by form alone: the
+    archive's own **ULID** thread id (26-char Crockford base32 — what search
+    results and topic pages carry); an all-digit **legacy integer id** (a
+    permanent alias — integer ids pasted in old conversations keep resolving);
+    or a provider **session uuid** (the id a tool like claude-code / cursor /
+    codex knows the conversation by — its ``source_id``, newest match wins).
+    Any of the three can be passed straight through without looking the ULID up
+    first.
 
     A **topic id** (from a search header's ``subjects:`` line, or a topic link)
     reads as the topic's curated page instead of a transcript: description, links
@@ -381,8 +467,8 @@ def thread_read(
     prefer ``mode``, which wins if both are set.
 
     Args:
-        thread_id: Integer thread id, or a provider session uuid (source_id) which
-            is resolved to the thread automatically.
+        thread_id: ULID thread id, legacy integer alias, or a provider session
+            uuid (source_id) — all resolved to the thread automatically.
         limit: Max turns per chunk (safety cap; the char budget usually bites first).
             Default: 200.
         offset: Skip first N turns. Use the offset from a CHUNKED footer to read the

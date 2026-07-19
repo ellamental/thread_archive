@@ -41,7 +41,7 @@ DUPE_THRESHOLD = 0.75
 _TOKEN_RE = re.compile(r"[a-z0-9]+")
 
 
-def _live_topics(s: Session) -> dict[int, dict]:
+def _live_topics(s: Session) -> dict[str, dict]:
     rows = s.execute(
         select(Thread.id, Thread.title, Thread.name, Thread.description)
         .where(
@@ -55,7 +55,7 @@ def _live_topics(s: Session) -> dict[int, dict]:
     }
 
 
-def _hierarchy_member_ids(s: Session, live: set[int]) -> set[int]:
+def _hierarchy_member_ids(s: Session, live: set[str]) -> set[str]:
     """Topics participating in the derived hierarchy — either endpoint of a
     part-of/contains edge between two distinct live topics (the same edges the
     web viewer's tree is built from)."""
@@ -63,14 +63,14 @@ def _hierarchy_member_ids(s: Session, live: set[int]) -> set[int]:
         select(ThreadLink.source_thread_id, ThreadLink.target_thread_id)
         .where(ThreadLink.link_type.in_((HIERARCHY_UP, HIERARCHY_DOWN)))
     ).all()
-    members: set[int] = set()
+    members: set[str] = set()
     for src, tgt in rows:
         if src != tgt and src in live and tgt in live:
             members.update((src, tgt))
     return members
 
 
-def _uncited_ids(s: Session, live: set[int]) -> set[int]:
+def _uncited_ids(s: Session, live: set[str]) -> set[str]:
     """Live topics with no live (non-tombstoned) citation."""
     cited = {
         r[0] for r in s.execute(
@@ -81,7 +81,7 @@ def _uncited_ids(s: Session, live: set[int]) -> set[int]:
     return live - cited
 
 
-def _degrees(live: set[int]) -> dict[int, int]:
+def _degrees(live: set[str]) -> dict[str, int]:
     """Projection degree per live topic (0 for topics the graph has no edges for)."""
     from .graph import get_topic_graph_metadata
 
@@ -96,16 +96,16 @@ def _title_tokens(title: str) -> frozenset[str]:
     return frozenset(t[:-1] if len(t) >= 4 and t.endswith("s") else t for t in toks)
 
 
-def _dupe_pairs(live: dict[int, dict]) -> list[dict]:
+def _dupe_pairs(live: dict[str, dict]) -> list[dict]:
     """Near-duplicate title pairs by token-set Jaccard, best-first. Pairs are
     generated via an inverted token index, so only titles sharing a token are
     compared."""
     tokens = {tid: _title_tokens(t["title"]) for tid, t in live.items()}
-    by_token: dict[str, list[int]] = {}
+    by_token: dict[str, list[str]] = {}
     for tid, toks in tokens.items():
         for tok in toks:
             by_token.setdefault(tok, []).append(tid)
-    seen: set[tuple[int, int]] = set()
+    seen: set[tuple[str, str]] = set()
     pairs: list[dict] = []
     for ids in by_token.values():
         for i, a in enumerate(ids):
@@ -178,7 +178,7 @@ def garden_queue(kind: str, limit: int = 20, *, session: Optional[Session] = Non
         degrees = _degrees(live_ids)
         if kind == "singleton":
             singles = [tid for tid, d in degrees.items() if d == 0]
-            counts: dict[int, int] = dict(
+            counts: dict[str, int] = dict(
                 s.execute(
                     select(TopicMessage.topic_id, func.count())
                     .where(

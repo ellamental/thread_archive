@@ -380,8 +380,8 @@ def _recover_crashed_drain() -> None:
 _PENDING = "_jsonl_pending"
 
 
-def _stage(session: Session, kind: str, thread_id: int, row: dict) -> None:
-    session.info.setdefault(_PENDING, []).append((kind, int(thread_id), row))
+def _stage(session: Session, kind: str, thread_id: str, row: dict) -> None:
+    session.info.setdefault(_PENDING, []).append((kind, str(thread_id), row))
 
 
 def append_event_row(session: Session, event_row: object) -> None:
@@ -398,7 +398,7 @@ def record_thread(session: Session, thread: object) -> None:
     _stage(session, "thread", thread.id, _row_dict(thread))  # type: ignore[attr-defined]
 
 
-def unstage_thread(session: Session, thread_id: int) -> None:
+def unstage_thread(session: Session, thread_id: str) -> None:
     """Discard any staged truth rows for ``thread_id`` (its metadata record and any
     events) from the session's pending buffer — the complement of the staging seam
     for the discard-an-empty-thread path. A thread row deleted before its commit
@@ -409,7 +409,7 @@ def unstage_thread(session: Session, thread_id: int) -> None:
     pending = session.info.get(_PENDING)
     if not pending:
         return
-    tid = int(thread_id)
+    tid = str(thread_id)
     session.info[_PENDING] = [
         (kind, t, row) for kind, t, row in pending
         if not (t == tid and kind in ("thread", "event"))

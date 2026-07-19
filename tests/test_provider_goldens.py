@@ -260,7 +260,8 @@ def _normalized_truth(tmp: str) -> list[dict]:
     streams: dict[str, str] = {}
     calls: dict[str, str] = {}
     out: list[dict] = []
-    for f in sorted(threads_dir.rglob("*.jsonl"), key=lambda p: int(p.stem)):
+    # ULID stems sort lexicographically in mint order (time-prefixed).
+    for f in sorted(threads_dir.rglob("*.jsonl"), key=lambda p: p.stem):
         for raw in f.read_text(encoding="utf-8").splitlines():
             rec = json.loads(raw)
             if rec["type"] == "thread":

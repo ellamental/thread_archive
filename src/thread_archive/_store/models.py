@@ -37,6 +37,7 @@ from sqlalchemy.orm import Mapped, mapped_column
 from ._base import Base
 from ._defaults import now_default, text_default
 from ._types import ARRAY, JSONB, REAL, BigIntPK
+from .ulid import mint_ulid
 
 
 class Thread(Base):
@@ -50,14 +51,23 @@ class Thread(Base):
     Legacy imports carry other type strings (canvas, patch, outliner, …); readers
     treat the column as an open vocabulary. Modeling a topic *as* a thread is
     deliberate, not leftover polymorphism: it gives topics thread ids, so the graph's
-    edges and citations reference a single id space. ``source`` tracks origin
+    edges and citations reference a single id space.
+
+    ``id`` is a ULID (26-char Crockford base32; see :mod:`.ulid`) minted at
+    creation — lexicographic order is start-time order, and ids are globally
+    unique so archives can merge without rewriting. ``legacy_id`` carries the
+    integer id a thread had before ULIDs; it is a permanent alias, not a
+    transition shim — archived conversations are full of pasted integer ids, and
+    ``resolve_thread_ref`` keeps them resolvable forever. New threads have none.
+    ``source`` tracks origin
     ('claude-code', 'cursor', 'codex', ...). ``source_metadata`` (JSON) carries branching
     info (branched_from, branch_event_id, quoted_event_id, ...).
     """
 
     __tablename__ = "threads"
 
-    id: Mapped[int] = mapped_column(primary_key=True)
+    id: Mapped[str] = mapped_column(String(26), primary_key=True, default=mint_ulid)
+    legacy_id: Mapped[int | None] = mapped_column(BigInteger, default=None)
     name: Mapped[str] = mapped_column(Text, unique=True)
     title: Mapped[str | None] = mapped_column(Text, default=None)
     thread_type: Mapped[str] = mapped_column(
@@ -119,13 +129,9 @@ class Thread(Base):
         Index("idx_threads_workspace_type", "workspace", "thread_type"),
         Index("idx_threads_epistemic_type", "epistemological_type"),
         Index("idx_threads_topic_kind", "topic_kind"),
-        # AUTOINCREMENT: keep a persistent id high-water (sqlite_sequence) that DELETE
-        # does NOT reset. reindex clears + reloads with explicit ids; without this a
-        # concurrent writer mid-reindex gets a low rowid (max+1 of the partially loaded
-        # table) that collides with a not-yet-reloaded historical row. With it, new ids
-        # always continue past the high-water and are never reused. See
-        # truth.jsonl_log.reindex.
-        {"sqlite_autoincrement": True},
+        # Unique among the threads that have one; NULLs (post-ULID threads) are
+        # exempt, and SQLite unique indexes permit any number of NULLs.
+        Index("uq_threads_legacy_id", "legacy_id", unique=True),
     )
 
 
@@ -148,7 +154,7 @@ class Event(Base):
     __tablename__ = "events"
 
     id: Mapped[int] = mapped_column(BigIntPK, primary_key=True)
-    thread_id: Mapped[int] = mapped_column(ForeignKey("threads.id", ondelete="RESTRICT"))
+    thread_id: Mapped[str] = mapped_column(ForeignKey("threads.id", ondelete="RESTRICT"))
     stream_id: Mapped[str] = mapped_column(Text)
     api_call_id: Mapped[str | None] = mapped_column(Text, default=None)
     event_type: Mapped[str] = mapped_column(Text)
@@ -183,9 +189,15 @@ class Event(Base):
             sqlite_where=text("dedup_key IS NOT NULL"),
             postgresql_where=text("(dedup_key IS NOT NULL)"),
         ),
-        # Persistent id high-water across DELETE — see the Thread note. The live
-        # watcher mints event ids on insert, so a reindex running against a live
-        # watcher must not be able to recycle a historical id.
+        # AUTOINCREMENT: keep a persistent id high-water (sqlite_sequence) that DELETE
+        # does NOT reset. reindex clears + reloads with explicit ids; without this a
+        # concurrent writer mid-reindex gets a low rowid (max+1 of the partially loaded
+        # table) that collides with a not-yet-reloaded historical row. With it, new ids
+        # always continue past the high-water and are never reused. The live watcher
+        # mints event ids on insert, so a reindex running against a live watcher must
+        # not be able to recycle a historical id. See truth.jsonl_log.reindex.
+        # (Thread ids are ULIDs minted in application code, so threads need none of
+        # this machinery.)
         {"sqlite_autoincrement": True},
     )
 
@@ -205,7 +217,7 @@ class EventFts(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True)
     event_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
-    thread_id: Mapped[int] = mapped_column(Integer)
+    thread_id: Mapped[str] = mapped_column(Text)
     event_type: Mapped[str] = mapped_column(Text)
     content: Mapped[str] = mapped_column(Text)
     content_type: Mapped[str | None] = mapped_column(Text, default=None)
@@ -239,7 +251,7 @@ class ImportState(Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     source: Mapped[str] = mapped_column(Text)
     source_id: Mapped[str] = mapped_column(Text)
-    thread_id: Mapped[int | None] = mapped_column(
+    thread_id: Mapped[str | None] = mapped_column(
         ForeignKey("threads.id", ondelete="RESTRICT"), default=None
     )
     last_line_count: Mapped[int] = mapped_column(default=0, server_default=text("0"))
@@ -275,12 +287,12 @@ class ThreadLink(Base):
     __tablename__ = "thread_links"
 
     id: Mapped[int] = mapped_column(primary_key=True)
-    source_thread_id: Mapped[int] = mapped_column(ForeignKey("threads.id", ondelete="RESTRICT"))
-    target_thread_id: Mapped[int] = mapped_column(ForeignKey("threads.id", ondelete="RESTRICT"))
+    source_thread_id: Mapped[str] = mapped_column(ForeignKey("threads.id", ondelete="RESTRICT"))
+    target_thread_id: Mapped[str] = mapped_column(ForeignKey("threads.id", ondelete="RESTRICT"))
     link_type: Mapped[str] = mapped_column(Text, default="related", server_default=text_default("related"))
     strength: Mapped[float] = mapped_column(REAL, default=1.0, server_default=text("1.0"))
     created_by: Mapped[str] = mapped_column(Text, default="auto", server_default=text_default("auto"))
-    created_by_thread_id: Mapped[int | None] = mapped_column(
+    created_by_thread_id: Mapped[str | None] = mapped_column(
         ForeignKey("threads.id", ondelete="SET NULL"), default=None
     )
     evidence: Mapped[str | None] = mapped_column(Text, default=None)
@@ -309,11 +321,11 @@ class TopicMessage(Base):
     __tablename__ = "topic_messages"
 
     id: Mapped[int] = mapped_column(primary_key=True)
-    topic_id: Mapped[int] = mapped_column(ForeignKey("threads.id", ondelete="RESTRICT"))
+    topic_id: Mapped[str] = mapped_column(ForeignKey("threads.id", ondelete="RESTRICT"))
     event_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
-    thread_id: Mapped[int] = mapped_column(ForeignKey("threads.id", ondelete="RESTRICT"))
+    thread_id: Mapped[str] = mapped_column(ForeignKey("threads.id", ondelete="RESTRICT"))
     quote: Mapped[str] = mapped_column(Text)
-    created_by_thread_id: Mapped[int | None] = mapped_column(default=None)
+    created_by_thread_id: Mapped[str | None] = mapped_column(Text, default=None)
     actor: Mapped[str] = mapped_column("actor", String, nullable=False, server_default=text("'unknown'"))
     archived_at: Mapped[datetime | None] = mapped_column("archived_at", DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
@@ -353,7 +365,7 @@ class ThreadMetrics(Base):
 
     __tablename__ = "thread_metrics"
 
-    thread_id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    thread_id: Mapped[str] = mapped_column(Text, primary_key=True)
     # The model that produced these requests, exactly as the event payload records it
     # (e.g. 'anthropic/claude-opus-4-8', 'deepseek/deepseek-v4-pro'); '' for a request
     # whose payload named no model. Placeholder values ('', 'unknown', '<synthetic>')
@@ -413,7 +425,7 @@ class KgEvent(Base):
     actor: Mapped[str] = mapped_column(
         Text, default="librarian", server_default=text_default("librarian")
     )
-    actor_thread_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    actor_thread_id: Mapped[str | None] = mapped_column(Text, nullable=True)
     caused_by_event_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     correlation_id: Mapped[str | None] = mapped_column(Text, default=None)
     occurred_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))

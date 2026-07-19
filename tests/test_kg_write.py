@@ -78,7 +78,9 @@ def _links() -> set[tuple[int, int, str]]:
 def test_create_topic_writes_thread_and_event_log(archive_home):
     ta.open_archive()
     r = create_topic("Auth", "authentication concerns")
-    assert r["topic_id"] > 0
+    import re
+
+    assert re.fullmatch(r"[0-9A-HJKMNP-TV-Z]{26}", r["topic_id"])  # a minted ULID
 
     with get_session() as s:
         topic = s.get(Thread, r["topic_id"])
@@ -156,6 +158,57 @@ def test_review_queue_excludes_own_session(archive_home):
     conv, _ = _seed_conversation("sess-self")
     assert any(r["id"] == conv for r in review_queue())
     assert all(r["id"] != conv for r in review_queue(exclude_source_id="sess-self"))
+
+
+def test_review_queue_skips_threads_with_no_curatable_content(archive_home):
+    """A thread whose only events are bookkeeping never enters the queue.
+
+    There is no message to cite and nothing to summarize, so it can never satisfy
+    the librarian's commit — it would sit at the head of a newest-first queue
+    forever, and every drain would re-read it before finding real work.
+    """
+    ta.open_archive()
+    with get_session() as s:
+        t = Thread(
+            name="claude-code:sess-shell", title="Claude Code Session",
+            thread_type="conversation", source="claude-code", source_id="sess-shell",
+        )
+        s.add(t)
+        s.flush()
+        for i, (etype, payload) in enumerate((
+            ("file_snapshot", {"files": []}),
+            ("queue_operation", {"operation": "dequeue"}),
+        )):
+            e = Event(
+                thread_id=t.id, stream_id="sess-shell", event_type=etype,
+                payload=payload, occurred_at=NOW,
+            )
+            e.recorded_at = NOW.replace(tzinfo=None)
+            s.add(e)
+        s.flush()
+        shell = t.id
+        s.commit()
+
+    assert all(r["id"] != shell for r in review_queue())
+
+    # The gate the librarian daemon fires on must agree with the queue it drains,
+    # or the daemon launches an instance to discover there is nothing to do.
+    from thread_archive._curation import librarian_backlog
+
+    assert librarian_backlog() == 0
+
+    # A single real message makes the same thread curatable, by both.
+    with get_session() as s:
+        e = Event(
+            thread_id=shell, stream_id="sess-shell", event_type="user_message_sent",
+            payload={"content": "a real message"}, occurred_at=NOW,
+        )
+        e.recorded_at = NOW.replace(tzinfo=None)
+        s.add(e)
+        s.commit()
+
+    assert any(r["id"] == shell for r in review_queue())
+    assert librarian_backlog() == 1
 
 
 def test_curation_read_helpers(archive_home):
@@ -277,7 +330,7 @@ def test_kg_writes_reject_bad_references(archive_home) -> None:
     with pytest.raises(ValueError, match="no event"):
         add_topic_evidence(topic, 99_999_999, tid, "q")
     with pytest.raises(ValueError, match="belongs to thread"):
-        add_topic_evidence(topic, ev_id, tid + 1, "q")
+        add_topic_evidence(topic, ev_id, "01B0GVSB0GVSB0GVSB0GVSB0GV", "q")
     with pytest.raises(ValueError, match="no topic"):
         add_topic_evidence(99_999_999, ev_id, tid, "q")
     with pytest.raises(ValueError, match="link endpoints"):

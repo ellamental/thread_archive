@@ -87,7 +87,7 @@ def _pmid(payload: dict) -> Optional[str]:
     return pd.get("provider_message_id") if isinstance(pd, dict) else None
 
 
-def _norm_key(key: Optional[str], thread_id: int) -> Optional[str]:
+def _norm_key(key: Optional[str], thread_id: str) -> Optional[str]:
     """Normalize a stored dedup_key to the current (un-prefixed) format for comparison.
 
     A retired code path namespaced keys as ``{thread_id}:{compute_dedup_key(...)}``;
@@ -105,7 +105,7 @@ def _norm_key(key: Optional[str], thread_id: int) -> Optional[str]:
 class ThreadPlan:
     __slots__ = ("thread_id", "backfills", "warnings", "stats")
 
-    def __init__(self, thread_id: int) -> None:
+    def __init__(self, thread_id: str) -> None:
         self.thread_id = thread_id
         self.backfills: list[tuple[int, str]] = []        # (event_id, dedup_key)
         self.warnings: list[str] = []
@@ -155,7 +155,7 @@ def _fresh_events(source: str, lines: list[dict]) -> list:
     return out
 
 
-def plan_thread(session, thread_id: int, source: str, lines: list[dict]) -> ThreadPlan:
+def plan_thread(session, thread_id: str, source: str, lines: list[dict]) -> ThreadPlan:
     """Plan the dedup_key backfill for one thread. Pure planning — no writes.
 
     Match each freshly-built event to a persisted row by EXACT content anchor

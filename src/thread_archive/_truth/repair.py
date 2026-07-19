@@ -200,8 +200,8 @@ def _repair_locked(d: Path, *, dry_run: bool) -> dict:
     # a repair killed between its rewrite and this restore, or any other source of
     # index ⊃ truth drift, is healed by the next run — repair is the inverse of
     # verify, so it must converge on verify-green regardless of how the drift arose.
-    truth_event_ids: dict[int, set[int]] = {}
-    tids_with_meta: set[int] = set()
+    truth_event_ids: dict[str, set[int]] = {}
+    tids_with_meta: set[str] = set()
     # log=False: a freshly-quarantined torn line was already logged by the rewrite
     # above (and dry-run deliberately tolerates it) — don't warn about it again here.
     for path in (sorted(threads_dir.rglob("*.jsonl")) if threads_dir.exists() else []):
@@ -209,11 +209,11 @@ def _repair_locked(d: Path, *, dry_run: bool) -> dict:
             kind = rec.get("type", "event")
             if kind == "thread":
                 if rec.get("id") is not None:
-                    tids_with_meta.add(int(rec["id"]))
+                    tids_with_meta.add(str(rec["id"]))
             elif kind == "event":
                 ev_id, tid = rec.get("id"), rec.get("thread_id")
                 if ev_id is not None and tid is not None:
-                    truth_event_ids.setdefault(int(tid), set()).add(int(ev_id))
+                    truth_event_ids.setdefault(str(tid), set()).add(int(ev_id))
     kg_line_ids: set[int] = set()
     if (d / KG_EVENTS_FILE).exists():
         for rec in _iter_jsonl(d / KG_EVENTS_FILE, log=False):
@@ -224,10 +224,10 @@ def _repair_locked(d: Path, *, dry_run: bool) -> dict:
     empty: set[int] = set()
     with get_session() as s:
         conn = s.connection().connection  # raw sqlite3 — stream, don't materialize
-        missing_by_tid: dict[int, list[int]] = {}
+        missing_by_tid: dict[str, list[int]] = {}
         for ev_id, tid in conn.execute("SELECT id, thread_id FROM events"):
-            if int(ev_id) not in truth_event_ids.get(int(tid), empty):
-                missing_by_tid.setdefault(int(tid), []).append(int(ev_id))
+            if int(ev_id) not in truth_event_ids.get(str(tid), empty):
+                missing_by_tid.setdefault(str(tid), []).append(int(ev_id))
         missing_kg = sorted(
             int(r[0]) for r in conn.execute("SELECT id FROM kg_events")
             if int(r[0]) not in kg_line_ids
@@ -236,9 +236,9 @@ def _repair_locked(d: Path, *, dry_run: bool) -> dict:
         # damaged-thread-line case (reindex would synthesize a stub otherwise).
         # Only threads that have (or are about to get) a truth file qualify.
         meta_missing = {
-            int(r[0]) for r in conn.execute("SELECT id FROM threads")
-            if int(r[0]) not in tids_with_meta
-            and (int(r[0]) in truth_event_ids or int(r[0]) in missing_by_tid)
+            str(r[0]) for r in conn.execute("SELECT id FROM threads")
+            if str(r[0]) not in tids_with_meta
+            and (str(r[0]) in truth_event_ids or str(r[0]) in missing_by_tid)
         }
 
         result["events_restored_from_index"] = sum(len(v) for v in missing_by_tid.values())
@@ -280,7 +280,7 @@ def _repair_locked(d: Path, *, dry_run: bool) -> dict:
             if records:
                 _append_records(_thread_file(d, tid, depth), records)
                 logger.warning(
-                    "repair: restored %d record(s) to thread %d from the index", len(records), tid
+                    "repair: restored %d record(s) to thread %s from the index", len(records), tid
                 )
         if missing_kg:
             records = []

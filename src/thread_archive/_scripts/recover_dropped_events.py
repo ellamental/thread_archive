@@ -60,7 +60,7 @@ logger = logging.getLogger(__name__)
 RECOVERABLE_TYPES = frozenset({"ide_context", "content_block", "message"})
 
 
-def _existing(session, thread_id: int) -> tuple[set[str], dict[str, tuple[str, Optional[str]]]]:
+def _existing(session, thread_id: str) -> tuple[set[str], dict[str, tuple[str, Optional[str]]]]:
     """Return ``(dedup_keys, anchor→(stream_id, api_call_id))`` for a thread's events.
 
     The anchor is the source message id (dedup-key prefix); it lets a recovered event
@@ -74,7 +74,7 @@ def _existing(session, thread_id: int) -> tuple[set[str], dict[str, tuple[str, O
     return keys, anchor
 
 
-def plan_thread(session, thread_id: int, lines: list[dict]) -> list[Event]:
+def plan_thread(session, thread_id: str, lines: list[dict]) -> list[Event]:
     """Re-parse a thread's source lines and return the recoverable Event rows not yet
     present. Pure planning — writes nothing."""
     parser = ClaudeCodeParser()

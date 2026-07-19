@@ -192,6 +192,35 @@ def test_apply_checks_out_reinstalls_and_restarts(repo: Path) -> None:
         _git(repo, "rev-parse", "v0.0.5^{commit}").strip()
 
 
+def test_apply_retires_patches_after_smoke_before_restart(repo: Path) -> None:
+    """Unpinned fix-import overrides are temporary bridges to the next release:
+    the update that might carry the proper fix disables them — after smoke (only
+    on a proven install), before restart (the reloading agents must not come
+    back under stale overrides). A retirement failure is advisory."""
+    _release(repo, "v0.0.5")
+    _git(repo, "checkout", "-q", "v0.0.4")
+    calls: list[str] = []
+    res = apply_update(
+        repo, _plan(repo),
+        reinstall=lambda r: calls.append("reinstall"),
+        smoke=lambda h: calls.append("smoke"),
+        restart=lambda: calls.append("restart"),
+        retire=lambda home, tag: calls.append(f"retire:{tag}"),
+    )
+    assert res["ok"]
+    assert calls == ["reinstall", "smoke", "retire:v0.0.5", "restart"]
+
+    def _boom(home, tag):
+        raise RuntimeError("retirement hiccup")
+
+    _release(repo, "v0.0.6")
+    _git(repo, "checkout", "-q", "v0.0.5")
+    res = apply_update(repo, _plan(repo, current_version="0.0.5"),
+                       reinstall=lambda r: None, smoke=lambda h: None,
+                       restart=lambda: None, retire=_boom)
+    assert res["ok"] and res["action"] == "updated"  # advisory, never a rollback
+
+
 def test_apply_rolls_back_when_smoke_fails(repo: Path) -> None:
     _release(repo, "v0.0.5")
     _git(repo, "checkout", "-q", "v0.0.4")
@@ -202,7 +231,8 @@ def test_apply_rolls_back_when_smoke_fails(repo: Path) -> None:
 
     plan = _plan(repo)
     res = apply_update(repo, plan, reinstall=lambda r: None, smoke=smoke,
-                       restart=lambda: pytest.fail("must not restart onto a rollback"))
+                       restart=lambda: pytest.fail("must not restart onto a rollback"),
+                       retire=lambda h, t: pytest.fail("must not retire on a rollback"))
     assert not res["ok"] and res["action"] == "rolled-back"
     assert _git(repo, "rev-parse", "HEAD").strip() == prev
 

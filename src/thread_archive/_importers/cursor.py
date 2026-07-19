@@ -35,7 +35,7 @@ logger = logging.getLogger(__name__)
 @dataclass
 class CursorImportResult:
     events_created: int
-    thread_id: int
+    thread_id: str
     is_new_thread: bool
 
 
@@ -198,11 +198,11 @@ def _run_cursor(session, composer_id, composer_data, bubbles) -> CursorImportRes
     import_state = get_import_state(session, "cursor", source_id)
 
     if _cursor_composer_unchanged(import_state, composer_data):
-        return CursorImportResult(0, (import_state.thread_id or 0) if import_state else 0, False)
+        return CursorImportResult(0, (import_state.thread_id or "") if import_state else "", False)
 
     messages = _build_cursor_messages(composer_id, composer_data, bubbles)
     if not messages:
-        return CursorImportResult(0, 0, False)
+        return CursorImportResult(0, "", False)
 
     thread_id, is_new_thread = _cursor_resolve_thread(session, import_state, source_id, composer_data)
 
@@ -240,7 +240,7 @@ def _cursor_composer_unchanged(import_state: Optional[ImportState], composer_dat
     return last_updated_ms <= last_import_epoch_ms(import_state)
 
 
-def _cursor_resolve_thread(session, import_state, source_id, composer_data) -> tuple[int, bool]:
+def _cursor_resolve_thread(session, import_state, source_id, composer_data) -> tuple[str, bool]:
     if import_state and import_state.thread_id:
         return import_state.thread_id, False
     existing = get_thread_by_source(session, "cursor", source_id)

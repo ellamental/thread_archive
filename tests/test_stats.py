@@ -129,6 +129,10 @@ def test_refresh_is_incremental(archive_home):
     assert abs(s2["overview"]["cost"] - 0.03) < 1e-9
 
 
+# Fixed ULID thread ids for the per-model drill-down fixture (index 0 unused).
+STATS_TIDS = [None] + [f"01STATSTEST0000000000000{i:02d}" for i in range(1, 4)]
+
+
 def _seed_model_detail(archive_home):
     """Fixture for the per-model drill-down: two 'mx' sessions in different months
     (one mixed-model, one cost-bearing), a third session that never used 'mx', and
@@ -139,7 +143,7 @@ def _seed_model_detail(archive_home):
     from thread_archive._store import get_engine
 
     with get_engine().begin() as c:
-        for tid, source, at in [
+        for n, source, at in [
             (1, "demo-harness", "2026-01-05 10:00:00"),
             (2, "claude-code", "2026-01-20 09:00:00"),
             (3, "claude-code", "2026-02-02 08:00:00"),
@@ -149,14 +153,15 @@ def _seed_model_detail(archive_home):
                     "INSERT INTO threads (id, name, title, thread_type, source, archived, inserted_at) "
                     "VALUES (:id, :name, :title, 'conversation', :source, 0, :at)"
                 ),
-                {"id": tid, "name": f"thread-{tid}", "title": f"session {tid}", "source": source, "at": at},
+                {"id": STATS_TIDS[n], "name": f"thread-{n}", "title": f"session {n}",
+                 "source": source, "at": at},
             )
         completions = [
-            (1, "mx", 100, 10, 0.01),
-            (1, "mx", 200, 20, None),
-            (2, "mx", 1000, 100, None),
-            (2, "my", 5000, 500, None),  # another model's share of the mixed session
-            (3, "my", 70, 7, None),  # a session mx never touched
+            (STATS_TIDS[1], "mx", 100, 10, 0.01),
+            (STATS_TIDS[1], "mx", 200, 20, None),
+            (STATS_TIDS[2], "mx", 1000, 100, None),
+            (STATS_TIDS[2], "my", 5000, 500, None),  # another model's share of the mixed session
+            (STATS_TIDS[3], "my", 70, 7, None),  # a session mx never touched
         ]
         for j, (tid, model, itok, otok, cost) in enumerate(completions):
             payload = {"model": model, "input_tokens": itok, "output_tokens": otok, "thinking_tokens": 0}
@@ -170,10 +175,10 @@ def _seed_model_detail(archive_home):
                 {"tid": tid, "sid": f"s{j}", "payload": json.dumps(payload), "ts": "2026-01-05T10:00:00Z"},
             )
         for k, (tid, ts) in enumerate([
-            (1, "2026-01-05T12:00:00Z"),
-            (2, "2026-01-20T11:00:00Z"),
-            (2, "2026-02-01T09:00:00Z"),  # session started in Jan, compacted again in Feb
-            (3, "2026-02-02T09:00:00Z"),  # non-mx session: never attributed to mx
+            (STATS_TIDS[1], "2026-01-05T12:00:00Z"),
+            (STATS_TIDS[2], "2026-01-20T11:00:00Z"),
+            (STATS_TIDS[2], "2026-02-01T09:00:00Z"),  # session started in Jan, compacted again in Feb
+            (STATS_TIDS[3], "2026-02-02T09:00:00Z"),  # non-mx session: never attributed to mx
         ]):
             c.execute(
                 text(
@@ -218,7 +223,7 @@ def test_model_stats_detail(archive_home):
     assert feb["cost"] is None and feb["avg_tokens"] is None
 
     top = payload["top_sessions"]
-    assert [t["thread_id"] for t in top] == [2, 1]  # heaviest mx share first
+    assert [t["thread_id"] for t in top] == [STATS_TIDS[2], STATS_TIDS[1]]  # heaviest mx share first
     assert top[0]["tokens"] == 1100 and top[0]["compactions"] == 2
     assert top[0]["title"] == "session 2" and top[0]["source"] == "claude-code"
 

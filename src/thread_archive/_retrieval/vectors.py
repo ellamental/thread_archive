@@ -598,7 +598,7 @@ def _in_clause(column: str, values: list, prefix: str, params: dict, negate: boo
 
 def search(
     query: str,
-    thread_id: Optional[int] = None,
+    thread_id: Optional[str] = None,
     content_types: Optional[list[str]] = None,
     limit: int = 20,
     since: Optional[str] = None,
@@ -606,7 +606,7 @@ def search(
     tool_name: Optional[str] = None,
     exclude_content_types: Optional[list[str]] = None,
     source: Optional[list[str]] = None,
-    thread_ids: Optional[list[int]] = None,
+    thread_ids: Optional[list[str]] = None,
     agents: str = "exclude",
 ) -> Optional[list[EventHit]]:
     """Embedded semantic search: embed the query, brute-force cosine KNN, hydrate.

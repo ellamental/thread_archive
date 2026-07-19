@@ -26,7 +26,7 @@ function renderAt(url: string) {
 
 function detail(overrides: Partial<TopicDetail>): TopicDetail {
   return {
-    id: 5, title: 'Graph Theory', topic_kind: 'concept', description: 'nodes and edges',
+    id: '5', title: 'Graph Theory', topic_kind: 'concept', description: 'nodes and edges',
     summary: null, archived: false, created_at: '2026-01-01T10:00:00Z',
     updated_at: '2026-01-02T10:00:00Z',
     graph: { pagerank: 0.4, community: 3, degree: 2 },
@@ -48,9 +48,12 @@ describe('TopicView', () => {
     expect(await screen.findByText(/topic unavailable: 404/)).toBeInTheDocument()
   })
 
-  it('rejects a non-numeric id without fetching', () => {
+  it('surfaces an unresolvable ref as the server 404', async () => {
+    // Any ref shape passes through raw (ULID, legacy integer, whatever was
+    // pasted); the server resolves and 404s what matches nothing.
+    mswError('/api/topic/:id', 404, 'no topic with id nope')
     renderAt('/topic/nope')
-    expect(screen.getByText('bad topic id')).toBeInTheDocument()
+    expect(await screen.findByText(/topic unavailable: 404/)).toBeInTheDocument()
   })
 
   it('renders title, badges, and description', async () => {
@@ -75,9 +78,9 @@ describe('TopicView', () => {
     const user = userEvent.setup()
     mswJson('/api/topic/:id', detail({
       links: [
-        { direction: 'out', other_id: 9, other_title: 'PageRank', other_type: 'topic',
+        { direction: 'out', other_id: '9', other_title: 'PageRank', other_type: 'topic',
           link_type: 'related', strength: 0.9, evidence: null },
-        { direction: 'out', other_id: 42, other_title: 'A Conversation', other_type: 'conversation',
+        { direction: 'out', other_id: '42', other_title: 'A Conversation', other_type: 'conversation',
           link_type: 'works_on', strength: 1, evidence: 'came up here' },
       ],
     }))
@@ -92,7 +95,7 @@ describe('TopicView', () => {
 
   it('flips the arrow on an incoming link', async () => {
     mswJson('/api/topic/:id', detail({
-      links: [{ direction: 'in', other_id: 9, other_title: 'PageRank', other_type: 'topic',
+      links: [{ direction: 'in', other_id: '9', other_title: 'PageRank', other_type: 'topic',
                 link_type: 'implements', strength: 0.5, evidence: null }],
     }))
     renderAt('/topic/5')
@@ -102,7 +105,7 @@ describe('TopicView', () => {
   it('deep-links a citation to its message in the thread reader', async () => {
     const user = userEvent.setup()
     mswJson('/api/topic/:id', detail({
-      evidence: [{ event_id: 77, thread_id: 12, thread_title: 'Source Thread',
+      evidence: [{ event_id: 77, thread_id: '12', thread_title: 'Source Thread',
                    quote: 'the exact words', created_at: '2026-01-03T10:00:00Z' }],
     }))
     renderAt('/topic/5')
@@ -114,14 +117,14 @@ describe('TopicView', () => {
     const user = userEvent.setup()
     mswJson('/api/topic/:id', detail({
       links: [
-        { direction: 'out', other_id: 2, other_title: 'Needle', other_type: 'topic',
+        { direction: 'out', other_id: '2', other_title: 'Needle', other_type: 'topic',
           link_type: 'part-of', strength: 1, evidence: null },
-        { direction: 'in', other_id: 3, other_title: 'quote selection', other_type: 'topic',
+        { direction: 'in', other_id: '3', other_title: 'quote selection', other_type: 'topic',
           link_type: 'part-of', strength: 1, evidence: null },
-        { direction: 'out', other_id: 4, other_title: 'scoring', other_type: 'topic',
+        { direction: 'out', other_id: '4', other_title: 'scoring', other_type: 'topic',
           link_type: 'contains', strength: 1, evidence: null },
         // a hierarchy edge to a conversation is a link-list row, not a strip chip
-        { direction: 'in', other_id: 42, other_title: 'A Conversation', other_type: 'conversation',
+        { direction: 'in', other_id: '42', other_title: 'A Conversation', other_type: 'conversation',
           link_type: 'part-of', strength: 1, evidence: null },
       ],
     }))
@@ -142,7 +145,7 @@ describe('TopicView', () => {
 
   it('renders no hierarchy strip without hierarchy links', async () => {
     mswJson('/api/topic/:id', detail({
-      links: [{ direction: 'out', other_id: 9, other_title: 'PageRank', other_type: 'topic',
+      links: [{ direction: 'out', other_id: '9', other_title: 'PageRank', other_type: 'topic',
                 link_type: 'related', strength: 0.9, evidence: null }],
     }))
     renderAt('/topic/5')
@@ -153,7 +156,7 @@ describe('TopicView', () => {
 
   it('renders community peers as chips linking to their topics', async () => {
     mswJson('/api/topic/:id', detail({
-      peers: [{ thread_id: 8, title: 'Leiden', pagerank: 0.2 }],
+      peers: [{ thread_id: '8', title: 'Leiden', pagerank: 0.2 }],
     }))
     renderAt('/topic/5')
     expect(await screen.findByText('community peers')).toBeInTheDocument()

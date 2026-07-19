@@ -284,11 +284,8 @@ def _split_rehomed_twins(src: Path, dest: Path, doomed: list[Path]) -> tuple[lis
     for dp in doomed:
         rel = dp.relative_to(dest)
         if rel.parts[0] == THREADS_SUBDIR and dp.suffix == ".jsonl":
-            try:
-                tid = int(dp.stem)
-            except ValueError:
-                tid = None
-            if tid is not None:
+            tid = dp.stem
+            if tid:
                 canonical = _thread_relpath(tid, depth)
                 try:
                     if (

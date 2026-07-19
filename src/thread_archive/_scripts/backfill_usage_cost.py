@@ -45,7 +45,7 @@ logger = logging.getLogger(__name__)
 TARGET_TYPE = "api_request_completed"
 
 
-def plan_thread(session, thread_id: int, source: str, lines: list[dict]) -> dict:
+def plan_thread(session, thread_id: str, source: str, lines: list[dict]) -> dict:
     """Plan the usage/cost patches for one thread. Pure planning — no writes.
 
     Returns ``{"patches": [(event_id, patch)], "stats": {...}}``. A fresh event

@@ -406,6 +406,59 @@ a.session-link:hover { color: var(--accent); }
   }
 }
 
+/* ---- curation page ---- */
+/* One card per drain: its queue depth, cadence and liveness. */
+.drain-cards {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 12px; margin-bottom: 26px;
+}
+.drain-card {
+  border: 1px solid var(--line); border-radius: 10px; background: var(--panel);
+  padding: 14px 16px;
+}
+.drain-head { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; }
+.drain-name { font-size: 15px; font-weight: 600; }
+/* Queue depth is the headline. A drained queue is the good state, an unknown
+   count is not — the daemon launches on an unknown, so it reads as neither. */
+.drain-state { font-size: 13px; font-variant-numeric: tabular-nums; color: var(--accent); }
+.drain-state.ok { color: var(--muted); }
+.drain-state.unknown { color: var(--muted); font-style: italic; }
+.drain-facts { display: grid; grid-template-columns: 1fr 1fr; gap: 8px 14px; margin: 12px 0 0; }
+.drain-facts div { min-width: 0; }
+.drain-facts dt {
+  color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: .06em;
+}
+.drain-facts dd { margin: 2px 0 0; font-size: 13px; overflow: hidden; text-overflow: ellipsis; }
+
+/* Small multiples: each measure keeps its own scale, so they sit side by side
+   without implying a shared axis. */
+.day-charts {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 16px;
+}
+.day-chart {
+  border: 1px solid var(--line); border-radius: 10px; background: var(--panel);
+  padding: 12px 14px;
+}
+.day-chart-head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
+.day-chart-title { font-size: 13px; font-weight: 600; margin: 0; }
+/* Doubles as the hover readout, so the value appears without a floating layer
+   that would clip inside the card. */
+.day-chart-readout {
+  color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; white-space: nowrap;
+}
+.day-cols { display: flex; align-items: flex-end; gap: 2px; height: 64px; margin-top: 10px; }
+/* The column is the hit target; the fill inside it is the mark. */
+.day-col { flex: 1; min-width: 2px; height: 100%; display: flex; align-items: flex-end; }
+.day-col-fill {
+  width: 100%; background: var(--accent); border-radius: 3px 3px 0 0; opacity: .85;
+}
+.day-col.hot .day-col-fill { opacity: 1; }
+.day-col.hot { background: var(--accent-soft); border-radius: 3px; }
+.day-axis {
+  display: flex; justify-content: space-between; margin-top: 6px;
+  color: var(--muted); font-size: 11px;
+}
+
 /* Binary content on a block (pasted screenshots, tool-result images, documents).
    Images render inline at a bounded height; click opens the full-size blob. */
 .block-images { display: flex; flex-wrap: wrap; gap: 8px; margin: 8px 0; padding: 0 2px; }

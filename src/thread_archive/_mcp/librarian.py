@@ -41,6 +41,18 @@ def _dump(value) -> str:
     return json.dumps(value, ensure_ascii=False, default=str)
 
 
+def _resolve_ref(ref: int | str) -> Optional[str]:
+    """Resolve a thread/topic ref to the archive's ULID thread id: a ULID
+    resolves as the primary key, an all-digit ref via the permanent
+    ``legacy_id`` alias, anything else as a provider session id. None when
+    nothing matches. Callers must have opened the archive."""
+    from .._retrieval.read import resolve_thread_ref
+    from .._store import get_session
+
+    with get_session() as s:
+        return resolve_thread_ref(s, ref)
+
+
 # ── curation-read ────────────────────────────────────────────────────────────
 @mcp.tool()
 def review_queue(limit: int = 20, exclude_source_id: Optional[str] = None) -> str:
@@ -65,36 +77,46 @@ def topic_search(query: str, limit: int = 10) -> str:
 
 
 @mcp.tool()
-def topic_get(topic_id: int) -> str:
+def topic_get(topic_id: int | str) -> str:
     """Read one topic back out of the graph: metadata, links (both directions),
     citation + member-thread counts, graph metadata (community, pagerank), and
     community peers. The JSON twin of a topic page — use ``topic_members`` for the
-    citations themselves."""
+    citations themselves. Id params here and across the librarian tools take a
+    ULID thread/topic id or a legacy integer alias."""
     api.open_archive()
+    tid = _resolve_ref(topic_id)
+    if tid is None:
+        return f"Error: Topic {topic_id} not found"
     try:
-        return _dump(_read.topic_get(topic_id))
+        return _dump(_read.topic_get(tid))
     except ValueError as e:
         return f"Error: {e}"
 
 
 @mcp.tool()
-def topic_members(topic_id: int, limit: int = 200) -> str:
+def topic_members(topic_id: int | str, limit: int = 200) -> str:
     """A topic's live citations, oldest first — JSON ``[{event_id, thread_id,
     thread_title, quote}]``. Each ``event_id`` opens in ``thread_read`` via
     ``around_event``."""
     api.open_archive()
+    tid = _resolve_ref(topic_id)
+    if tid is None:
+        return f"Error: Topic {topic_id} not found"
     try:
-        return _dump(_read.topic_members(topic_id, limit=limit))
+        return _dump(_read.topic_members(tid, limit=limit))
     except ValueError as e:
         return f"Error: {e}"
 
 
 @mcp.tool()
-def thread_user_messages(thread_id: int, limit: Optional[int] = None) -> str:
+def thread_user_messages(thread_id: int | str, limit: Optional[int] = None) -> str:
     """A thread's user messages as ``[{event_id, text}]`` — the cheap, high-signal read
     to cite from (cite the ``event_id`` values)."""
     api.open_archive()
-    return _dump(_write.thread_user_messages(thread_id, limit=limit))
+    tid = _resolve_ref(thread_id)
+    if tid is None:
+        return f"Error: Thread {thread_id} not found"
+    return _dump(_write.thread_user_messages(tid, limit=limit))
 
 
 # ── gardener diagnostics ──────────────────────────────────────────────────────
@@ -144,31 +166,43 @@ def topic_create(title: str, description: Optional[str] = None) -> str:
 
 
 @mcp.tool()
-def topic_rename(topic_id: int, title: str, description: Optional[str] = None) -> str:
+def topic_rename(topic_id: int | str, title: str, description: Optional[str] = None) -> str:
     """Rename (and optionally re-describe) a topic."""
     api.open_archive()
+    tid = _resolve_ref(topic_id)
+    if tid is None:
+        return f"Error: Topic {topic_id} not found"
     try:
-        return _dump(_write.rename_topic(topic_id, title, description=description))
+        return _dump(_write.rename_topic(tid, title, description=description))
     except ValueError as e:
         return f"Error: {e}"
 
 
 @mcp.tool()
-def topic_archive(topic_id: int) -> str:
+def topic_archive(topic_id: int | str) -> str:
     """Archive a topic — it drops out of the live graph (the thread stays reachable)."""
     api.open_archive()
+    tid = _resolve_ref(topic_id)
+    if tid is None:
+        return f"Error: Topic {topic_id} not found"
     try:
-        return _dump(_write.archive_topic(topic_id))
+        return _dump(_write.archive_topic(tid))
     except ValueError as e:
         return f"Error: {e}"
 
 
 @mcp.tool()
-def topic_merge(from_id: int, into_id: int) -> str:
+def topic_merge(from_id: int | str, into_id: int | str) -> str:
     """Merge ``from_id`` into ``into_id``: repoint its links + citations, archive it."""
     api.open_archive()
+    src = _resolve_ref(from_id)
+    if src is None:
+        return f"Error: Topic {from_id} not found"
+    dst = _resolve_ref(into_id)
+    if dst is None:
+        return f"Error: Topic {into_id} not found"
     try:
-        return _dump(_write.merge_topics(from_id, into_id))
+        return _dump(_write.merge_topics(src, dst))
     except ValueError as e:
         return f"Error: {e}"
 
@@ -176,48 +210,69 @@ def topic_merge(from_id: int, into_id: int) -> str:
 # ── links + citations ─────────────────────────────────────────────────────────
 @mcp.tool()
 def topic_link(
-    source_id: int, target_id: int, link_type: str = "related",
+    source_id: int | str, target_id: int | str, link_type: str = "related",
     strength: float = 1.0, evidence: Optional[str] = None,
 ) -> str:
     """Link two threads/topics (idempotent on source+target+link_type). ``link_type`` is
     e.g. related / implements / example-of / contrast / supersedes / works_on."""
     api.open_archive()
+    src = _resolve_ref(source_id)
+    if src is None:
+        return f"Error: Thread/topic {source_id} not found"
+    dst = _resolve_ref(target_id)
+    if dst is None:
+        return f"Error: Thread/topic {target_id} not found"
     try:
         return _dump(_write.link_threads(
-            source_id, target_id, link_type, strength=strength, evidence=evidence))
+            src, dst, link_type, strength=strength, evidence=evidence))
     except ValueError as e:
         return f"Error: {e}"
 
 
 @mcp.tool()
-def topic_unlink(source_id: int, target_id: int, link_type: str = "related") -> str:
+def topic_unlink(source_id: int | str, target_id: int | str, link_type: str = "related") -> str:
     """Remove a link (a tombstone event — recorded, not erased from history)."""
     api.open_archive()
-    return _dump(_write.unlink_threads(source_id, target_id, link_type))
+    src = _resolve_ref(source_id)
+    if src is None:
+        return f"Error: Thread/topic {source_id} not found"
+    dst = _resolve_ref(target_id)
+    if dst is None:
+        return f"Error: Thread/topic {target_id} not found"
+    return _dump(_write.unlink_threads(src, dst, link_type))
 
 
 @mcp.tool()
-def topic_cite(topic_id: int, event_id: int, thread_id: int, quote: str) -> str:
+def topic_cite(topic_id: int | str, event_id: int, thread_id: int | str, quote: str) -> str:
     """Cite a conversation message (``event_id`` in ``thread_id``) as evidence for a
     topic. Idempotent on (topic_id, event_id)."""
     api.open_archive()
+    top = _resolve_ref(topic_id)
+    if top is None:
+        return f"Error: Topic {topic_id} not found"
+    thr = _resolve_ref(thread_id)
+    if thr is None:
+        return f"Error: Thread {thread_id} not found"
     try:
-        return _dump(_write.add_topic_evidence(topic_id, event_id, thread_id, quote))
+        return _dump(_write.add_topic_evidence(top, event_id, thr, quote))
     except ValueError as e:
         return f"Error: {e}"
 
 
 @mcp.tool()
-def topic_uncite(topic_id: int, event_id: int) -> str:
+def topic_uncite(topic_id: int | str, event_id: int) -> str:
     """Archive a citation (tombstone — sets archived_at, keeps the row + history)."""
     api.open_archive()
-    return _dump(_write.archive_topic_evidence(topic_id, event_id))
+    tid = _resolve_ref(topic_id)
+    if tid is None:
+        return f"Error: Topic {topic_id} not found"
+    return _dump(_write.archive_topic_evidence(tid, event_id))
 
 
 # ── stored summaries ──────────────────────────────────────────────────────────
 @mcp.tool()
 def thread_set_summary(
-    thread_id: int, summary: Optional[str] = None, indexed_summary: Optional[str] = None,
+    thread_id: int | str, summary: Optional[str] = None, indexed_summary: Optional[str] = None,
 ) -> str:
     """Store a conversation thread's summary — the second half of the librarian's
     per-thread commit (citations are the first).
@@ -231,9 +286,12 @@ def thread_set_summary(
     overwrites the stored one (re-summarizing is an update). Topics are refused
     (their description is their summary surface — ``topic_rename``)."""
     api.open_archive()
+    tid = _resolve_ref(thread_id)
+    if tid is None:
+        return f"Error: Thread {thread_id} not found"
     try:
         return _dump(_write.set_thread_summary(
-            thread_id, summary, indexed_summary=indexed_summary))
+            tid, summary, indexed_summary=indexed_summary))
     except ValueError as e:
         return f"Error: {e}"
 

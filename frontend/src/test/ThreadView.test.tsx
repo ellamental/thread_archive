@@ -8,6 +8,11 @@ import { ThreadView } from '../components/ThreadView'
 import type { Message, StructuredThread } from '../api'
 import { mswError, mswJson, mswPending, recordRequests } from './msw'
 
+// Canonical (ULID) thread ids: only a 26-char Crockford-base32 ref loads
+// directly — anything else goes through /api/archive-link first.
+const TID = '01ARZ3NDEKTSV4RRFFQ69G5FAV'
+const TID2 = '01BX5ZZKBKACTAV9WEVGEMMVRZ'
+
 function renderAt(url: string) {
   return render(
     <MemoryRouter initialEntries={[url]}>
@@ -19,7 +24,7 @@ function renderAt(url: string) {
 }
 
 function thread(messages: Message[], overrides: Partial<StructuredThread> = {}): StructuredThread {
-  return { thread_id: 5, title: 'A Thread', source: 'claude-code', messages, ...overrides }
+  return { thread_id: TID, title: 'A Thread', source: 'claude-code', messages, ...overrides }
 }
 
 const asst = (text: string, model: string): Message => ({
@@ -31,25 +36,25 @@ const asst = (text: string, model: string): Message => ({
 describe('ThreadView', () => {
   it('shows the loading state while the thread is in flight', () => {
     mswPending('/api/thread/:id')
-    renderAt('/archive/5')
-    expect(screen.getByText('loading thread 5…')).toBeInTheDocument()
+    renderAt(`/archive/${TID}`)
+    expect(screen.getByText(`loading thread ${TID}…`)).toBeInTheDocument()
   })
 
   it('surfaces a read error', async () => {
     mswError('/api/thread/:id', 404, 'nope')
-    renderAt('/archive/5')
+    renderAt(`/archive/${TID}`)
     expect(await screen.findByText(/read error: 404: nope/)).toBeInTheDocument()
   })
 
   it('resolves a pasted provider uuid to its thread instead of truncating it', async () => {
     const uuid = '27056da6-8578-4a8c-ab90-d634702dc42d'
     const requests = recordRequests()
-    mswJson('/api/archive-link', { thread_id: 7, url: '/archive/7' })
-    mswJson('/api/thread/:id', thread([asst('resolved!', 'opus')], { thread_id: 7 }))
+    mswJson('/api/archive-link', { thread_id: TID2, url: `/archive/${TID2}` })
+    mswJson('/api/thread/:id', thread([asst('resolved!', 'opus')], { thread_id: TID2 }))
     renderAt(`/archive/${uuid}`)
     expect(await screen.findByText('resolved!')).toBeInTheDocument()
     expect(requests[0]).toBe(`/api/archive-link?id=${encodeURIComponent(uuid)}`)
-    expect(requests[1]).toMatch(/^\/api\/thread\/7\?/)
+    expect(requests[1]).toMatch(new RegExp(`^/api/thread/${TID2}\\?`))
   })
 
   it('reports a dead provider link', async () => {
@@ -60,13 +65,13 @@ describe('ThreadView', () => {
 
   it('shows an empty state for a thread with no renderable content', async () => {
     mswJson('/api/thread/:id', thread([]))
-    renderAt('/archive/5')
+    renderAt(`/archive/${TID}`)
     expect(await screen.findByText('(no renderable content)')).toBeInTheDocument()
   })
 
   it('lists each model once in the header, first-seen order', async () => {
     mswJson('/api/thread/:id', thread([asst('one', 'opus'), asst('two', 'opus'), asst('three', 'haiku')]))
-    renderAt('/archive/5')
+    renderAt(`/archive/${TID}`)
     await screen.findByText('A Thread')
     // 'opus' appears as a header tag exactly once despite two opus messages
     expect(screen.getAllByText('opus')).toHaveLength(1)
@@ -79,7 +84,7 @@ describe('ThreadView', () => {
       asst('tool loop continues', 'opus'),
       asst('fallback answer', 'haiku'),
     ]))
-    renderAt('/archive/5')
+    renderAt(`/archive/${TID}`)
     await screen.findByText('first inference')
     // two labelled groups: the opus run (labelled once) and the haiku switch
     expect(screen.getAllByText('assistant')).toHaveLength(2)
@@ -88,9 +93,9 @@ describe('ThreadView', () => {
   it('requests the thread with the thinking/tools flags of the toggles', async () => {
     const requests = recordRequests()
     mswJson('/api/thread/:id', thread([asst('hi', 'opus')]))
-    renderAt('/archive/5')
+    renderAt(`/archive/${TID}`)
     await screen.findByText('hi')
-    expect(requests[0]).toBe('/api/thread/5?thinking=0&tools=1')
+    expect(requests[0]).toBe(`/api/thread/${TID}?thinking=0&tools=1`)
   })
 
   it('highlights and scrolls to the message a search hit deep-linked (?e=)', async () => {
@@ -100,7 +105,7 @@ describe('ThreadView', () => {
       { ...asst('earlier turn', 'opus'), event_ids: [11] },
       { ...asst('the hit turn', 'opus'), event_ids: [12] },
     ]))
-    renderAt('/archive/5?e=12')
+    renderAt(`/archive/${TID}?e=12`)
     const msg = (await screen.findByText('the hit turn')).closest('.msg')
     expect(msg).toHaveClass('hit-target')
     expect(msg).toHaveAttribute('id', 'm-1')
@@ -117,7 +122,7 @@ describe('ThreadView', () => {
       { ...asst('first', 'opus'), event_ids: [11] },
       { ...asst('second', 'opus'), event_ids: [14] },
     ]))
-    renderAt('/archive/5?e=15')
+    renderAt(`/archive/${TID}?e=15`)
     const msg = (await screen.findByText('second')).closest('.msg')
     expect(msg).toHaveClass('hit-target')
   })
@@ -129,7 +134,7 @@ describe('ThreadView', () => {
       ended_at: '2026-01-01T11:23:00Z',
       event_count: 1234,
     }))
-    renderAt('/archive/5')
+    renderAt(`/archive/${TID}`)
     await screen.findByText('hi')
     expect(screen.getByText('1,234 events')).toBeInTheDocument()
     expect(screen.getByText('27056da6-8578-4a8c-ab90-d634702dc42d')).toBeInTheDocument()
@@ -141,10 +146,10 @@ describe('ThreadView', () => {
     const writeText = vi.fn().mockResolvedValue(undefined)
     Object.defineProperty(navigator, 'clipboard', { value: { writeText }, configurable: true })
     mswJson('/api/thread/:id', thread([{ ...asst('linked turn', 'opus'), event_ids: [11, 12] }]))
-    renderAt('/archive/5')
+    renderAt(`/archive/${TID}`)
     await screen.findByText('linked turn')
     fireEvent.click(screen.getByRole('button', { name: 'copy link to this message' }))
     expect(await screen.findByText('✓ copied')).toBeInTheDocument()
-    expect(writeText).toHaveBeenCalledWith(expect.stringContaining('/archive/5?e=11'))
+    expect(writeText).toHaveBeenCalledWith(expect.stringContaining(`/archive/${TID}?e=11`))
   })
 })

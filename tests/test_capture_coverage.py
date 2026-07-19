@@ -404,6 +404,88 @@ def test_out_of_band_coverage_run_retires_nightly_stage(archive_home):
     assert verdict["recovered_stages"] == ["coverage"]
 
 
+def test_coverage_failed_sources_carry_degraded_verdicts(archive_home, tmp_path):
+    """A coverage FAIL is a degradation verdict outright, persisted (with its
+    reason and onset) into health.json's compact record — the state the MCP
+    search notice and `archive fix-import` key on."""
+    import_cc_session(tmp_path, "degv")
+    r = check_coverage(
+        watchers=[StubWatcher("claude-code", latest=time.time())], min_history=1
+    )
+    verdict = r["degraded"]["claude-code"]
+    assert verdict["reason"] == "stale_ingest"
+    assert verdict["since"] == r["sources"]["claude-code"]["newest_event_at"]
+    assert read_health()["coverage_last"]["degraded"]["claude-code"]["reason"] == (
+        "stale_ingest"
+    )
+
+
+def test_coverage_degrades_on_sustained_ledger_volume_only(archive_home):
+    """Per-source ledger volume below the threshold warns but does not degrade;
+    at the threshold it degrades with the oldest recent record as the onset.
+    One benign record must not put a repair prompt in every search result."""
+    import datetime as dt
+
+    from thread_archive._importers._validation_ledger import (
+        LEDGER_FILE as DRIFT_FILE,
+    )
+
+    ta.open_archive()
+    now = dt.datetime.now(dt.timezone.utc)
+    stamps = [(now - dt.timedelta(hours=3 - i)).isoformat() for i in range(3)]
+    rec = lambda at: json.dumps(  # noqa: E731
+        {"at": at, "provider": "codex", "source_id": "s", "count": 1}) + "\n"
+
+    (archive_home / DRIFT_FILE).write_text(rec(stamps[0]) + rec(stamps[1]))
+    r = check_coverage(watchers=[])
+    assert "codex" not in r["degraded"]
+    assert any("format drift" in msg for msg in r["warnings"])  # still warns
+
+    with open(archive_home / DRIFT_FILE, "a") as fh:
+        fh.write(rec(stamps[2]))
+    r = check_coverage(watchers=[])
+    assert r["degraded"]["codex"] == {
+        "reason": "validation_drift", "since": stamps[0]}
+
+    # substantive skips degrade the same way, without stealing a stronger verdict
+    skip = lambda at: json.dumps(  # noqa: E731
+        {"at": at, "source": "grok", "source_id": "g",
+         "reason": "empty_import_discarded", "lines_skipped": 1}) + "\n"
+    (archive_home / LEDGER_FILE).write_text("".join(skip(s) for s in stamps))
+    r = check_coverage(watchers=[])
+    assert r["degraded"]["grok"]["reason"] == "capture_skips"
+    assert r["degraded"]["codex"]["reason"] == "validation_drift"
+
+
+def test_degraded_source_gets_quarantine_snapshot(archive_home, tmp_path):
+    """Coverage's degradation verdict triggers the preservation snapshot: the
+    raw store lands under dumps/drift/<source>/ before the provider can prune
+    it. StubWatcher can't enumerate files, so a store-backed watcher stands in."""
+    from thread_archive._watcher.sources import RglobWatcher
+
+    store = tmp_path / "cc-store"
+    store.mkdir()
+    (store / "sess.jsonl").write_text('{"drifted": true}\n')
+
+    import_cc_session(tmp_path, "snap")
+
+    def _no_import(path, source_id):
+        raise AssertionError("coverage must never import")
+
+    w = RglobWatcher(store, _no_import, lambda f: f.stem, name="claude-code")
+    r = check_coverage(watchers=[w], min_history=1)
+    assert r["degraded"]["claude-code"]["reason"] == "stale_ingest"
+    gen = r["drift_snapshots"]["claude-code"]
+    manifest = json.loads((archive_home / "dumps" / "drift" / "claude-code" /
+                           gen.rsplit("/", 1)[-1] / "manifest.json").read_text())
+    assert manifest["reason"] == "stale_ingest"
+    assert manifest["files"][0]["path"].endswith("sess.jsonl")
+
+    # snapshot=False (and a healthy pass) never touches the quarantine
+    r = check_coverage(watchers=[w], min_history=1, snapshot=False)
+    assert r["drift_snapshots"] == {}
+
+
 def test_disabled_source_reports_store_activity(archive_home):
     """A source disabled in config stays report-only (never red), but its
     store's current activity must be visible in the report: the sanctioned

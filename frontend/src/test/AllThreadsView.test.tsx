@@ -33,7 +33,7 @@ const TYPES: ThreadTypeCount[] = [
 
 function thread(overrides: Partial<ThreadListItem>): ThreadListItem {
   return {
-    id: 1, title: 'a session', source: 'claude-code', thread_type: 'conversation',
+    id: '1', title: 'a session', source: 'claude-code', thread_type: 'conversation',
     updated_at: '2026-01-01T10:00:00Z',
     ...overrides,
   }
@@ -67,9 +67,9 @@ describe('AllThreadsView', () => {
     const seen = recordRequests()
     mswJson('/api/thread-types', { types: TYPES })
     stubThreads([
-      thread({ id: 1, title: 'a session' }),
-      thread({ id: 2, title: '🤖 a subagent run', thread_type: 'system' }),
-      thread({ id: 3, title: 'a topic', thread_type: 'topic', source: null }),
+      thread({ id: '1', title: 'a session' }),
+      thread({ id: '2', title: '🤖 a subagent run', thread_type: 'system' }),
+      thread({ id: '3', title: 'a topic', thread_type: 'topic', source: null }),
     ])
     renderThreads()
     expect(await screen.findByText('a session')).toBeInTheDocument()
@@ -87,8 +87,8 @@ describe('AllThreadsView', () => {
     const user = userEvent.setup()
     mswJson('/api/thread-types', { types: TYPES })
     stubThreads([
-      thread({ id: 1, title: 'a session' }),
-      thread({ id: 2, title: '🤖 a subagent run', thread_type: 'system' }),
+      thread({ id: '1', title: 'a session' }),
+      thread({ id: '2', title: '🤖 a subagent run', thread_type: 'system' }),
     ])
     renderThreads()
     await screen.findByText('🤖 a subagent run')
@@ -100,7 +100,7 @@ describe('AllThreadsView', () => {
   it('opens straight into a filtered view via ?hide=', async () => {
     const seen = recordRequests()
     mswJson('/api/thread-types', { types: TYPES })
-    stubThreads([thread({ id: 1, title: 'a session' })])
+    stubThreads([thread({ id: '1', title: 'a session' })])
     renderThreads('/threads?hide=system,topic')
     expect(await screen.findByText('a session')).toBeInTheDocument()
     expect(screen.getByRole('checkbox', { name: /system/ })).not.toBeChecked()
@@ -121,8 +121,8 @@ describe('AllThreadsView', () => {
   it('routes topic rows to the topic page and the rest to the reader', async () => {
     mswJson('/api/thread-types', { types: TYPES })
     stubThreads([
-      thread({ id: 5, title: 'a session' }),
-      thread({ id: 9, title: 'a topic', thread_type: 'topic' }),
+      thread({ id: '5', title: 'a session' }),
+      thread({ id: '9', title: 'a topic', thread_type: 'topic' }),
     ])
     renderThreads()
     const session = await screen.findByText('a session')
@@ -134,7 +134,7 @@ describe('AllThreadsView', () => {
     const user = userEvent.setup()
     const seen = recordRequests()
     mswJson('/api/thread-types', { types: TYPES })
-    stubThreads([thread({ id: 1, title: 'a session' })])
+    stubThreads([thread({ id: '1', title: 'a session' })])
     renderThreads()
     await screen.findByText('a session')
     await user.type(screen.getByPlaceholderText('filter by title…'), 'needle')
@@ -144,7 +144,7 @@ describe('AllThreadsView', () => {
   it('flags a full page as truncated instead of pretending it is complete', async () => {
     mswJson('/api/thread-types', { types: TYPES })
     mswJson('/api/threads', {
-      threads: Array.from({ length: ALL_THREADS_LIMIT }, (_, i) => thread({ id: i + 1 })),
+      threads: Array.from({ length: ALL_THREADS_LIMIT }, (_, i) => thread({ id: String(i + 1) })),
     })
     renderThreads()
     expect(await screen.findByText(/newest 500 shown/)).toBeInTheDocument()

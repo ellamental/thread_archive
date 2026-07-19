@@ -313,12 +313,31 @@ def resolve_provider(obj: object) -> Provider:
     raise TypeError(f"expected a Provider or a callable returning one, got {type(obj).__name__}")
 
 
+def builtin(name: str) -> Provider:
+    """The built-in :class:`Provider` named ``name``, bypassing plugin overrides.
+
+    The starting point for an override plugin: shadowing a built-in usually means
+    changing one thing about it — ``dataclasses.replace(builtin("codex"),
+    parser_config=...)`` — not rebuilding the descriptor from scratch. Reading
+    through the registry instead would hand an override plugin *itself* back
+    while it loads (a cycle); this reads the built-in set directly. Raises
+    ``KeyError`` for a name no built-in claims.
+    """
+    from .._providers.builtins import builtin_providers
+
+    for provider in builtin_providers():
+        if provider.name == name:
+            return provider
+    raise KeyError(f"no built-in provider named {name!r}")
+
+
 __all__ = [
     # Descriptor
     "Provider",
     "ExportSpec",
     "ImporterKind",
     "resolve_provider",
+    "builtin",
     # Rendering
     "RenderPolicy",
     "BlockRenderer",

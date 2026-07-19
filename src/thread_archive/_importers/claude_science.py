@@ -103,7 +103,7 @@ _SEEDED_PROJECT_IDS = ("proj_example",)
 @dataclass
 class ClaudeScienceImportResult:
     events_created: int
-    thread_id: int
+    thread_id: str
     is_new_thread: bool
 
 
@@ -160,7 +160,7 @@ def _message_annotations(msg: dict) -> Optional[dict]:
 
 def _import_science_lines(
     session,
-    thread_id: int,
+    thread_id: str,
     lines: list[dict],
     annotations_by_uuid: dict[str, dict],
     parser: ClaudeCodeParser,
@@ -271,7 +271,7 @@ def _run_frame(
     total = len(message_rows)
     start = import_state.last_line_count if import_state else 0
     if import_state and start >= total:
-        return ClaudeScienceImportResult(0, import_state.thread_id or 0, False)
+        return ClaudeScienceImportResult(0, import_state.thread_id or "", False)
 
     base_ms = int(frame.get("created_at") or 0)
     model = frame.get("model")
@@ -293,7 +293,7 @@ def _run_frame(
                 annotations_by_uuid[line["uuid"]] = ann
 
     # Resolve the thread (watermark wins, else lookup by source) before any create.
-    thread_id: Optional[int] = (
+    thread_id: Optional[str] = (
         import_state.thread_id if (import_state and import_state.thread_id) else None
     )
     if thread_id is None:
@@ -306,7 +306,7 @@ def _run_frame(
         session, source=SOURCE, source_id=source_id,
         thread_id=thread_id, total_lines=total, file_size=0,
     ):
-        return ClaudeScienceImportResult(0, thread_id or 0, False)
+        return ClaudeScienceImportResult(0, thread_id or "", False)
 
     is_new_thread = False
     if thread_id is None:
@@ -331,7 +331,7 @@ def _run_frame(
     # record, so no ghost threads/<id>.jsonl survives the commit.
     if is_new_thread and events_created == 0:
         discard_new_thread(session, thread_id)
-        thread_id = 0
+        thread_id = ""
         is_new_thread = False
     elif thread_id and events_created:
         set_thread_models_from_events(session, thread_id)
@@ -345,7 +345,7 @@ def _run_frame(
         last_file_size=0,
         last_message_uuid=last_uuid,
     )
-    return ClaudeScienceImportResult(events_created, thread_id or 0, is_new_thread)
+    return ClaudeScienceImportResult(events_created, thread_id or "", is_new_thread)
 
 
 def import_claude_science_frame(

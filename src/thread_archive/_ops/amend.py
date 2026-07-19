@@ -112,7 +112,7 @@ def check_patch(payload: object, patch: dict) -> str | None:
 
 
 def amend_event_payloads(
-    patches: Iterable[tuple[int, int, dict]], *, reason: str | None = None
+    patches: Iterable[tuple[str, int, dict]], *, reason: str | None = None
 ) -> dict:
     """Merge ``patch`` into each ``(thread_id, event_id, patch)`` event's payload.
 
@@ -132,9 +132,9 @@ def amend_event_payloads(
 
     Returns ``{"events_amended": n, "events_skipped": n, "threads": n}``.
     """
-    by_thread: dict[int, list[tuple[int, dict]]] = {}
+    by_thread: dict[str, list[tuple[int, dict]]] = {}
     for thread_id, event_id, patch in patches:
-        by_thread.setdefault(int(thread_id), []).append((int(event_id), patch))
+        by_thread.setdefault(str(thread_id), []).append((int(event_id), patch))
 
     d = log_dir()
     now = datetime.now(timezone.utc).isoformat()
@@ -145,7 +145,7 @@ def amend_event_payloads(
             with get_session() as s:
                 for event_id, patch in entries:
                     ev = s.get(Event, event_id)
-                    if ev is None or int(ev.thread_id) != thread_id:
+                    if ev is None or str(ev.thread_id) != thread_id:
                         raise ValueError(f"event {event_id} is not in thread {thread_id}")
                     problem = check_patch(ev.payload, patch)
                     if problem == "empty patch":

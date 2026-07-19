@@ -181,7 +181,7 @@ def test_reindex_aligns_citation_thread_with_event(archive_home, tmp_path):
     d = archive_home / "truth"
     snap = d / "topic_messages.jsonl"
     rows = [json.loads(ln) for ln in snap.read_text(encoding="utf-8").splitlines()]
-    rows[0]["thread_id"] = tid + 12345
+    rows[0]["thread_id"] = "01B0GVSB0GVSB0GVSB0GVSB0GV"  # a thread id that isn't the event's
     snap.write_text("\n".join(json.dumps(r) for r in rows) + "\n", encoding="utf-8")
     (d / jsonl_log.KG_EVENTS_FILE).unlink()
     with get_session() as s:

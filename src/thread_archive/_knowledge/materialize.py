@@ -61,7 +61,7 @@ def _topic_renamed(session, p: dict, ev) -> None:
     fields = {k: p[k] for k in ("title", "description") if k in p}
     if not fields:
         return
-    _update_thread(session, _entity_int(ev), fields)
+    _update_thread(session, ev.entity_id, fields)
 
 
 def _topic_updated(session, p: dict, ev) -> None:
@@ -69,18 +69,18 @@ def _topic_updated(session, p: dict, ev) -> None:
     allowed = {k: v for k, v in fields.items()
                if k in ("title", "description", "topic_kind", "epistemological_type", "search_description")}
     if allowed:
-        _update_thread(session, _entity_int(ev), allowed)
+        _update_thread(session, ev.entity_id, allowed)
 
 
 def _topic_archived(session, p: dict, ev) -> None:
-    _update_thread(session, _entity_int(ev), {"archived": True})
+    _update_thread(session, ev.entity_id, {"archived": True})
 
 
 def _topic_merged(session, p: dict, ev) -> None:
     """Repoint every link + evidence from ``from_id`` onto ``into_id``, then archive
     ``from_id``. Repointing can collide with an existing edge/evidence (unique keys),
     so it is done row-by-row with a duplicate guard rather than a blind UPDATE."""
-    from_id, into_id = int(p["from_id"]), int(p["into_id"])
+    from_id, into_id = p["from_id"], p["into_id"]
     if from_id == into_id:
         return
     _repoint_links(session, from_id, into_id)
@@ -90,7 +90,7 @@ def _topic_merged(session, p: dict, ev) -> None:
 
 # ── links (the topic-graph edge set) ──────────────────────────────────────────
 def _link_created(session, p: dict, ev) -> None:
-    src, tgt, lt = int(p["source_thread_id"]), int(p["target_thread_id"]), p.get("link_type", "related")
+    src, tgt, lt = p["source_thread_id"], p["target_thread_id"], p.get("link_type", "related")
     row = _find_link(session, src, tgt, lt)
     if row is None:
         row = ThreadLink(source_thread_id=src, target_thread_id=tgt, link_type=lt, created_at=ev.occurred_at)
@@ -103,7 +103,7 @@ def _link_created(session, p: dict, ev) -> None:
 
 
 def _link_updated(session, p: dict, ev) -> None:
-    row = _find_link(session, int(p["source_thread_id"]), int(p["target_thread_id"]),
+    row = _find_link(session, p["source_thread_id"], p["target_thread_id"],
                      p.get("link_type", "related"))
     if row is None:
         return
@@ -115,15 +115,15 @@ def _link_updated(session, p: dict, ev) -> None:
 
 def _link_deleted(session, p: dict, ev) -> None:
     session.execute(delete(ThreadLink).where(
-        ThreadLink.source_thread_id == int(p["source_thread_id"]),
-        ThreadLink.target_thread_id == int(p["target_thread_id"]),
+        ThreadLink.source_thread_id == p["source_thread_id"],
+        ThreadLink.target_thread_id == p["target_thread_id"],
         ThreadLink.link_type == p.get("link_type", "related"),
     ))
 
 
 # ── evidence (message → topic citations) ──────────────────────────────────────
 def _evidence_added(session, p: dict, ev) -> None:
-    topic_id, event_id = int(p["topic_id"]), int(p["event_id"])
+    topic_id, event_id = p["topic_id"], int(p["event_id"])
     # The cited event's own row is authoritative for the thread; the payload
     # value is the fallback for a citation whose event the store doesn't hold
     # (a dangling reference replayed from an older, unvalidated write). Looked
@@ -133,7 +133,7 @@ def _evidence_added(session, p: dict, ev) -> None:
     if row is None:
         row = TopicMessage(topic_id=topic_id, event_id=event_id, created_at=ev.occurred_at)
         session.add(row)
-    row.thread_id = int(cited.thread_id) if cited is not None else int(p["thread_id"])
+    row.thread_id = cited.thread_id if cited is not None else p["thread_id"]
     row.quote = p.get("quote", "")
     row.actor = p.get("actor") or getattr(ev, "actor", "librarian")
     row.created_by_thread_id = getattr(ev, "actor_thread_id", None)
@@ -142,21 +142,17 @@ def _evidence_added(session, p: dict, ev) -> None:
 
 def _evidence_archived(session, p: dict, ev) -> None:
     session.execute(update(TopicMessage).where(
-        TopicMessage.topic_id == int(p["topic_id"]),
+        TopicMessage.topic_id == p["topic_id"],
         TopicMessage.event_id == int(p["event_id"]),
     ).values(archived_at=ev.occurred_at))
 
 
 # ── helpers ───────────────────────────────────────────────────────────────────
-def _entity_int(ev) -> int:
-    return int(ev.entity_id)
-
-
-def _update_thread(session, thread_id: int, fields: dict) -> None:
+def _update_thread(session, thread_id: str, fields: dict) -> None:
     session.execute(update(Thread).where(Thread.id == thread_id).values(**fields))
 
 
-def _find_link(session, src: int, tgt: int, link_type: str):
+def _find_link(session, src: str, tgt: str, link_type: str):
     return session.execute(select(ThreadLink).where(
         ThreadLink.source_thread_id == src,
         ThreadLink.target_thread_id == tgt,
@@ -164,14 +160,14 @@ def _find_link(session, src: int, tgt: int, link_type: str):
     )).scalars().first()
 
 
-def _find_evidence(session, topic_id: int, event_id: int):
+def _find_evidence(session, topic_id: str, event_id: int):
     return session.execute(select(TopicMessage).where(
         TopicMessage.topic_id == topic_id,
         TopicMessage.event_id == event_id,
     )).scalars().first()
 
 
-def _repoint_links(session, from_id: int, into_id: int) -> None:
+def _repoint_links(session, from_id: str, into_id: str) -> None:
     links = session.execute(select(ThreadLink).where(
         (ThreadLink.source_thread_id == from_id) | (ThreadLink.target_thread_id == from_id)
     )).scalars().all()
@@ -187,7 +183,7 @@ def _repoint_links(session, from_id: int, into_id: int) -> None:
         link.source_thread_id, link.target_thread_id = new_src, new_tgt
 
 
-def _repoint_evidence(session, from_id: int, into_id: int) -> None:
+def _repoint_evidence(session, from_id: str, into_id: str) -> None:
     rows = session.execute(
         select(TopicMessage).where(TopicMessage.topic_id == from_id)
     ).scalars().all()

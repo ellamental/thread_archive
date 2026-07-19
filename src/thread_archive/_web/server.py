@@ -184,7 +184,7 @@ def _shape_search_hits(hits: "list[EventHit]", query: str) -> "list[EventHit]":
     return hits
 
 
-def _hit_thread_sources(hits: "list[EventHit]") -> "dict[int, Optional[str]]":
+def _hit_thread_sources(hits: "list[EventHit]") -> "dict[str, Optional[str]]":
     """``{thread_id: source}`` for the threads these hits belong to.
 
     Hits already carrying ``thread_source`` (the grouped/browse shapes annotate it)
@@ -236,7 +236,7 @@ def _resolve_dup_threads(hits: "list[EventHit]") -> None:
     if not wanted:
         return
     with get_session() as s:
-        titles: dict[int, Optional[str]] = {
+        titles: dict[str, Optional[str]] = {
             r.id: r.title
             for r in s.execute(select(Thread.id, Thread.title).where(Thread.id.in_(wanted))).all()
         }
@@ -261,41 +261,80 @@ def _subjects_payload(hits: "list[EventHit]") -> list[dict]:
     ]
 
 
-# /api/status behind a small TTL cache. The survey counts every table — seconds
-# on a large archive — while the status bar asks on every page load, so requests
-# serve the cached survey and a stale one refreshes in the background; only the
-# first request a process ever sees pays the full cost (and serve_in_thread
-# prewarms, so in the cohosted watcher not even that). Keyed by home: one
-# process normally serves one archive, but tests point the engine at a fresh
-# home per test and must not read a stale survey of the previous one.
+# The two whole-archive surveys (/api/status, /api/curation) behind a small TTL
+# cache. Both count across every row — seconds on a large archive — while the
+# status bar asks on every page load, so requests serve the cached survey and a
+# stale one refreshes in the background; only the first request a process ever
+# sees pays the full cost (and serve_in_thread prewarms, so in the cohosted
+# watcher not even that). Keyed by (survey, home): one process normally serves
+# one archive, but tests point the engine at a fresh home per test and must not
+# read a stale survey of the previous one.
 _STATUS_TTL = 60.0
-_status_lock = threading.Lock()
-_status_cache: dict[str, tuple[float, dict]] = {}
-_status_refreshing: set[str] = set()
+# Curation's pass is the heavier of the two — its backlog gate walks every
+# conversation's events — and its numbers move on a drain's cadence, not a
+# page's, so it holds longer.
+_CURATION_TTL = 300.0
+_survey_lock = threading.Lock()
+_survey_cache: dict[tuple[str, str], tuple[float, dict]] = {}
+_survey_refreshing: set[tuple[str, str]] = set()
+# Cold-fill guard: the first request for a key computes, and any request that
+# arrives while that pass is running waits for its result instead of starting a
+# second. Without it the prewarm and the page load that races it both survey the
+# whole archive, and the two contend for the same database — measurably slower
+# than either pass alone.
+_survey_inflight: dict[tuple[str, str], threading.Event] = {}
+# How long a waiter blocks before deciding the filling thread is gone and taking
+# the work itself. Only reached if that thread died without setting its event.
+_SURVEY_WAIT_S = 60.0
 
 
-def _refresh_status(home: str) -> dict:
-    fresh = api.status()
-    with _status_lock:
-        _status_cache[home] = (time.monotonic(), fresh)
-        _status_refreshing.discard(home)
+def _refresh_survey(key: tuple[str, str], compute) -> dict:
+    fresh = compute()
+    with _survey_lock:
+        _survey_cache[key] = (time.monotonic(), fresh)
+        _survey_refreshing.discard(key)
     return fresh
 
 
+def _survey(name: str, compute, ttl: float) -> dict:
+    """One named survey, served from cache and refreshed off the request path."""
+    key = (name, str(api.open_archive().home))
+    while True:
+        with _survey_lock:
+            cached = _survey_cache.get(key)
+            if cached is not None:
+                age = time.monotonic() - cached[0]
+                if age >= ttl and key not in _survey_refreshing:
+                    _survey_refreshing.add(key)
+                    threading.Thread(
+                        target=_refresh_survey, args=(key, compute),
+                        name=f"archive-web-{name}", daemon=True,
+                    ).start()
+                return cached[1]
+            existing = _survey_inflight.get(key)
+            mine = existing is None
+            waiting = existing if existing is not None else threading.Event()
+            if mine:
+                _survey_inflight[key] = waiting
+        if mine:
+            try:
+                return _refresh_survey(key, compute)
+            finally:
+                # Wake the waiters whether the pass succeeded or raised: on a
+                # failure they find the cache still empty and one of them retries,
+                # rather than every waiter blocking out its full timeout.
+                with _survey_lock:
+                    _survey_inflight.pop(key, None)
+                waiting.set()
+        waiting.wait(_SURVEY_WAIT_S)
+
+
 def _status() -> dict:
-    home = str(api.open_archive().home)
-    with _status_lock:
-        cached = _status_cache.get(home)
-        if cached is not None:
-            age = time.monotonic() - cached[0]
-            if age >= _STATUS_TTL and home not in _status_refreshing:
-                _status_refreshing.add(home)
-                threading.Thread(
-                    target=_refresh_status, args=(home,),
-                    name="archive-web-status", daemon=True,
-                ).start()
-            return cached[1]
-    return _refresh_status(home)
+    return _survey("status", api.status, _STATUS_TTL)
+
+
+def _curation() -> dict:
+    return _survey("curation", api.curation_stats, _CURATION_TTL)
 
 
 def _list_sources() -> list[dict]:
@@ -421,7 +460,7 @@ def _list_topics(*, limit: int, q: Optional[str]) -> dict:
         stmt = stmt.where(Thread.title.ilike(like) | Thread.name.ilike(like))
     with get_session() as s:
         rows = s.execute(stmt).all()
-        evidence_counts: dict[int, int] = dict(
+        evidence_counts: dict[str, int] = dict(
             s.execute(
                 select(TopicMessage.topic_id, func.count())
                 .where(TopicMessage.archived_at.is_(None))
@@ -457,7 +496,7 @@ def _topic_tree() -> dict:
     return topic_tree()
 
 
-def _topic_detail(topic_id: int, *, evidence_limit: int) -> Optional[dict]:
+def _topic_detail(topic_id: str, *, evidence_limit: int) -> Optional[dict]:
     """One topic with its links, citations, and community peers — the reader's
     whole page in one response. ``None`` when the id isn't a topic (conversations
     have their own reader). Archived topics still render (a merged-away topic
@@ -533,29 +572,33 @@ def _topic_detail(topic_id: int, *, evidence_limit: int) -> Optional[dict]:
     return detail
 
 
-def resolve_archive_link(link_id: str, source: Optional[str] = None) -> Optional[int]:
-    """Resolve a provider session id to its archive thread id.
+def resolve_archive_link(link_id: str, source: Optional[str] = None) -> Optional[str]:
+    """Resolve a pasted/sprayed ref to its archive (ULID) thread id.
 
     This is the archive-link lookup an editor needs ("I have a session uuid, open the
-    conversation"), and the same lookup that lets a bare uuid be pasted straight into
-    ``/archive/<uuid>``. Resolution is the shared
-    :func:`thread_archive._store.resolve.resolve_session_source_id` union —
-    ``Thread.source_id`` (export importers never write ``ImportState``) plus the
-    ``ImportState`` watermarks (a compaction continuation's uuid lives only there) —
-    the same union the MCP reader uses, so both surfaces answer alike.
-    Deliberately **no** integer primary-key branch: callers spray candidate ids
-    that are expected not to resolve (see ``/api/archive-link``), and an all-digit
-    junk candidate must never land on an unrelated PK. ``source`` narrows to one
-    provider (an editor knows its own); omit it to resolve across every provider.
-    Owned here: the watcher cohosts the persistent server, so the archive serves
-    its own editor links."""
+    conversation"), and the same lookup that lets a bare ref be pasted straight into
+    ``/archive/<ref>``. Without ``source`` it is exactly
+    :func:`thread_archive._retrieval.read.resolve_thread_ref` — the three ref
+    shapes every surface accepts: a ULID (the primary key), an all-digit legacy
+    integer alias (``Thread.legacy_id``, a permanent alias — pasted integer links
+    keep resolving), or a provider session id via the shared
+    :func:`thread_archive._store.resolve.resolve_session_source_id` union
+    (``Thread.source_id`` plus the ``ImportState`` watermarks — a compaction
+    continuation's uuid lives only there), the same union the MCP reader uses, so
+    every surface answers alike. ``source`` narrows to one provider (an editor
+    knows its own and sprays session-id candidates only — see
+    ``/api/archive-link``), so with it resolution is session-id-only: a sprayed
+    junk candidate must never land on an unrelated thread through the ULID or
+    legacy-alias branches. Owned here: the watcher cohosts the persistent server,
+    so the archive serves its own editor links."""
+    from .._retrieval.read import resolve_thread_ref
     from .._store import get_session, resolve_session_source_id
 
     api.open_archive()
     with get_session() as s:
-        return resolve_session_source_id(
-            s, link_id, source=source.replace("_", "-") if source else None
-        )
+        if source:
+            return resolve_session_source_id(s, link_id, source=source.replace("_", "-"))
+        return resolve_thread_ref(s, link_id)
 
 
 # ---------------------------------------------------------------------------
@@ -579,6 +622,12 @@ def route(method: str, path: str, params: dict) -> Response:
 
     if path == "/api/sources":
         return _ok({"sources": _list_sources()})
+
+    if path == "/api/curation":
+        # What the two curation drains have done: queue depth, per-day output,
+        # graph health, and the drains' own run cost. Behind the survey cache —
+        # the librarian's backlog gate walks every conversation's events.
+        return _ok(_curation())
 
     if path == "/api/stats":
         # Token/cost analytics. Backed by an incrementally-maintained rollup
@@ -681,10 +730,12 @@ def route(method: str, path: str, params: dict) -> Response:
                     "quality": quality, "subjects": _subjects_payload(hits)})
 
     if path.startswith("/api/read/") or path.startswith("/api/thread/"):
-        try:
-            tid = int(path.rsplit("/", 1)[-1])
-        except ValueError:
-            return _text(404, "bad thread id")
+        # The tail is a thread ref — a ULID id, a legacy integer alias, or a
+        # provider session id — resolved the same way every other surface does.
+        ref = unquote(path.rsplit("/", 1)[-1])
+        tid = resolve_archive_link(ref)
+        if tid is None:
+            return _text(404, f"no thread with id {ref}")
         thinking = _bool(params, "thinking", path.startswith("/api/thread/"))
         tools = _bool(params, "tools", True)
         if path.startswith("/api/thread/"):
@@ -716,13 +767,16 @@ def route(method: str, path: str, params: dict) -> Response:
         return _ok(_list_topics(limit=_int(params, "limit", 200), q=_first(params, "q")))
 
     if path.startswith("/api/topic/"):
-        try:
-            tid = int(path.rsplit("/", 1)[-1])
-        except ValueError:
-            return _text(404, "bad topic id")
-        detail = _topic_detail(tid, evidence_limit=_int(params, "evidence_limit", 200))
+        # Same ref shapes as /api/thread/ — a topic is a thread row, so its ULID
+        # and legacy integer alias resolve the same way.
+        ref = unquote(path.rsplit("/", 1)[-1])
+        tid = resolve_archive_link(ref)
+        detail = (
+            _topic_detail(tid, evidence_limit=_int(params, "evidence_limit", 200))
+            if tid is not None else None
+        )
         if detail is None:
-            return 404, "application/json", json.dumps({"error": f"no topic with id {tid}"}).encode(), {}
+            return 404, "application/json", json.dumps({"error": f"no topic with id {ref}"}).encode(), {}
         return _ok(detail)
 
     # unmatched API path — don't fall through to the SPA shell
@@ -808,7 +862,18 @@ def serve_in_thread(*, host: str = "127.0.0.1", port: int = 8787) -> ThreadingHT
     # background so the first /api/stats serves an already-warm table. Only the very
     # first build (or the one after a reindex) is slow; a restart folds just the delta.
     threading.Thread(target=_prewarm_stats, name="archive-web-stats-warm", daemon=True).start()
+    # And the curation survey, the heaviest of the three: its backlog gate walks
+    # every conversation's events, so a cold /api/curation is tens of seconds.
+    threading.Thread(target=_prewarm_curation, name="archive-web-curation-warm", daemon=True).start()
     return httpd
+
+
+def _prewarm_curation() -> None:
+    """Best-effort background curation survey at server start; see _prewarm_stats."""
+    try:
+        _curation()
+    except Exception:  # noqa: BLE001 — warm-up must never crash the server thread
+        log.debug("curation prewarm failed", exc_info=True)
 
 
 def _prewarm_stats() -> None:

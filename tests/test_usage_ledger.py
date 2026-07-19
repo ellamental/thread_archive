@@ -37,7 +37,7 @@ def test_record_search_writes_ids_and_omits_none_params(archive_home) -> None:
     assert rec["limit"] == 10 and "source" not in rec
     assert rec["widened"] is True
     assert rec["n_hits"] == 2
-    assert rec["results"] == [[7, 3], [8, 3]]
+    assert rec["results"] == [[7, "3"], [8, "3"]]  # event id int, thread id string
     # ids only — never content
     assert "SECRET CONTENT" not in json.dumps(rec)
 

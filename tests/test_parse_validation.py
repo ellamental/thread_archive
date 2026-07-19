@@ -202,7 +202,8 @@ def test_clean_import_writes_no_drift_record(archive_home):
         provider="claude", conversation_id="s1", batch_safe=True,
     )
     assert _drift_records(archive_home) == []
-    assert summarize_drift() == {"total": 0, "recent": 0, "recent_findings": 0, "days": 7.0}
+    assert summarize_drift() == {"total": 0, "recent": 0, "recent_findings": 0,
+                                 "days": 7.0, "by_provider": {}}
 
 
 def test_record_drift_empty_findings_is_a_noop(archive_home):
@@ -221,5 +222,8 @@ def test_drift_surfaces_in_the_coverage_check(archive_home):
         findings=["Unknown content block type 'wobble'"], batch_safe=True,
     )
     r = check_coverage(watchers=[])
-    assert r["drift"] == {"total": 1, "recent": 1, "recent_findings": 1, "days": 7.0}
+    drift = r["drift"]
+    assert drift["by_provider"]["claude-code"].pop("since")  # volatile timestamp
+    assert drift == {"total": 1, "recent": 1, "recent_findings": 1, "days": 7.0,
+                     "by_provider": {"claude-code": {"recent": 1, "recent_findings": 1}}}
     assert read_health()["coverage_last"]["drift_recent"] == 1

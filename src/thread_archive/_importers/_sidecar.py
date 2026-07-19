@@ -39,7 +39,7 @@ def read_sidecar_lines(session_path) -> Optional[list[dict]]:
 
 
 def import_sidecar_lines(
-    session: Session, thread_id: int, source_id: str, sidecar_lines: list[dict]
+    session: Session, thread_id: str, source_id: str, sidecar_lines: list[dict]
 ) -> int:
     """Import grown hook-context sidecar lines as ``hook_context`` events. Returns
     the number written (idempotent: dedup_key membership + a line-count cursor)."""

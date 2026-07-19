@@ -293,10 +293,40 @@ resume, thread-scoped dedup, full-text and semantic search, the web viewer,
 switch, capture-coverage staleness reporting, and inclusion in backup, verify
 and reindex. None of it is per-provider.
 
+## Overriding a built-in (patches)
+
+A plugin whose `name` matches a built-in **replaces** it — that is deliberate,
+logged at load, and is how a provider gets maintained (or repaired) outside
+the package. `builtin(name)` from `thread_archive.provider` hands you the
+built-in descriptor so an override changes only what it means to:
+
+```python
+from dataclasses import replace
+from thread_archive.provider import builtin
+
+PROVIDER = replace(builtin("codex"), parser_config=...)
+```
+
+`archive fix-import <provider>` automates the repair case end to end: it
+scaffolds exactly this shape under `<home>/plugins/<provider>/` (module, tests,
+drift evidence, collected samples), spawns a headless `claude` to fill in the
+parse logic, and gates the result through `--activate` — the scaffold's test
+suite green in a fresh subprocess, then the override enabled in `config.json`,
+then a ledger-driven re-import of everything the broken parser consumed.
+
+Patches carry a `patch` block in their `config.json` entry
+(`built_against`, `pinned`, lifecycle stamps). They are **temporary by
+default**: a self-update to a newer core disables any unpinned patch (the
+release is the proper fix's vehicle; if the drift persists, the coverage
+notice re-fires and the fix re-runs against the new core). `--pin` opts a
+patch out of retirement; `patch-log.jsonl` in the archive home is the audit
+trail of every transition. A hand-installed plugin without a `patch` block is
+never touched by retirement.
+
 ## Reference
 
 - `thread_archive.provider` — `Provider`, `ExportSpec`, `RenderPolicy` /
-  `DEFAULT_VIEW`, the watcher bases
+  `DEFAULT_VIEW`, `builtin`, the watcher bases
   (`RglobWatcher`, `FileSessionWatcher`, `DbScanWatcher`), importer construction
   (`line_stream_importer`, `claude_code_line_stream`), `assemble_events`, thread
   and watermark state, source reading.

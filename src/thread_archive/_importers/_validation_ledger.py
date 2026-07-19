@@ -65,9 +65,15 @@ def record_drift(
 
 def summarize_drift(*, days: float = 7.0) -> dict:
     """Ledger volume: total records ever, and records + findings within ``days``.
-    Malformed ledger lines are counted as records but excluded from recency."""
+    ``by_provider`` breaks the recent window down per provider —
+    ``{provider: {recent, recent_findings, since}}``, where ``since`` is the
+    oldest recent record's timestamp (the ledger is append-only chronological,
+    so first seen is oldest) — the per-source signal coverage's degradation
+    verdicts key on. Malformed ledger lines are counted as records but excluded
+    from recency."""
     path = resolve_paths().home / LEDGER_FILE
     total = recent = recent_findings = 0
+    by_provider: dict[str, dict] = {}
     cutoff = datetime.now(timezone.utc).timestamp() - days * 86400
     try:
         with open(path, encoding="utf-8") as fh:
@@ -83,8 +89,22 @@ def summarize_drift(*, days: float = 7.0) -> dict:
                     if at.timestamp() >= cutoff:
                         recent += 1
                         recent_findings += int(rec.get("count") or 0)
+                        per = by_provider.setdefault(
+                            str(rec.get("provider") or ""),
+                            {"recent": 0, "recent_findings": 0, "since": None},
+                        )
+                        per["recent"] += 1
+                        per["recent_findings"] += int(rec.get("count") or 0)
+                        if per["since"] is None:
+                            per["since"] = rec["at"]
                 except (ValueError, KeyError, TypeError):
                     continue
     except OSError:
         pass
-    return {"total": total, "recent": recent, "recent_findings": recent_findings, "days": days}
+    return {
+        "total": total,
+        "recent": recent,
+        "recent_findings": recent_findings,
+        "by_provider": by_provider,
+        "days": days,
+    }

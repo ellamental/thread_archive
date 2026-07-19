@@ -43,7 +43,7 @@ def leiden_available() -> bool:
     return _LEIDEN_AVAILABLE
 
 
-def detect_communities(graph: "nx.Graph") -> list[list[int]]:
+def detect_communities(graph: "nx.Graph") -> list[list[str]]:
     """Partition ``graph`` into communities (lists of node ids), maximizing modularity.
 
     Uses Leiden when available, else networkx Louvain. Edge ``weight`` attributes are
@@ -59,7 +59,7 @@ def detect_communities(graph: "nx.Graph") -> list[list[int]]:
     return [sorted(c) for c in louvain_communities(graph, weight="weight", seed=SEED)]
 
 
-def _leiden(graph: "nx.Graph") -> list[list[int]]:
+def _leiden(graph: "nx.Graph") -> list[list[str]]:
     import igraph as ig
     import leidenalg as la
 

@@ -396,6 +396,105 @@ def test_status_survey_is_cached(archive_home, monkeypatch):
     assert calls["n"] == 1
 
 
+def test_curation_endpoint(archive_home):
+    _seed(archive_home)
+    status, _, payload = _get("/api/curation")
+    assert status == 200
+    assert set(payload["drains"]) == {"librarian", "gardener"}
+    assert payload["coverage"]["conversations"] >= 1
+    # The window is dense: every day is present, so a drain's quiet stretch shows
+    # as a run of zeros rather than vanishing from the series.
+    assert len(payload["activity"]) == payload["days"]
+    assert len(payload["runs"]["by_day"]) == payload["days"]
+    # The seeded thread ingested just now, so review_queue's quiet window still
+    # holds it back — a live session's curation would be premature.
+    assert payload["drains"]["librarian"]["backlog"] == 0
+
+
+def test_curation_counts_content_free_threads_outside_the_queues(archive_home):
+    # A thread with events but no message can never be curated, so it is not
+    # backlog — but it must still be counted somewhere, or an ingest fault that
+    # produces them is invisible.
+    _seed(archive_home)
+    from datetime import datetime, timedelta, timezone
+
+    from thread_archive._store import Event, Thread, get_session
+
+    stamp = (datetime.now(timezone.utc) - timedelta(hours=2)).replace(tzinfo=None)
+    with get_session() as s:
+        t = Thread(name="shell-1", title="Claude Code Session",
+                   thread_type="conversation", source="claude-code")
+        s.add(t)
+        s.flush()
+        e = Event(thread_id=t.id, stream_id="s", event_type="file_snapshot",
+                  payload={"files": []}, occurred_at=stamp)
+        e.recorded_at = stamp
+        s.add(e)
+        s.commit()
+
+    _, _, payload = _get("/api/curation")
+    assert payload["uncuratable"]["threads"] == 1
+    assert payload["uncuratable"]["sample"][0]["event_types"] == "file_snapshot"
+    assert payload["drains"]["librarian"]["backlog"] == 0
+
+
+def test_curation_survey_is_cached(archive_home, monkeypatch):
+    # Same TTL cache as /api/status; curation's pass is the heavier of the two
+    # (its backlog gate walks every conversation's events).
+    from thread_archive._web import server as web_server
+
+    _seed(archive_home)
+    calls = {"n": 0}
+    real = web_server.api.curation_stats
+
+    def counting(**kw):
+        calls["n"] += 1
+        return real(**kw)
+
+    monkeypatch.setattr(web_server.api, "curation_stats", counting)
+    first = _get("/api/curation")
+    second = _get("/api/curation")
+    assert first == second
+    assert calls["n"] == 1
+
+
+def test_survey_cold_fill_is_shared(archive_home):
+    # Requests racing the cold fill must wait for it, not each start their own
+    # pass: the prewarm and the first page load would otherwise survey the whole
+    # archive twice and contend for the same database.
+    import threading
+
+    from thread_archive._web import server as web_server
+
+    started = threading.Event()
+    release = threading.Event()
+    calls = {"n": 0}
+
+    def slow():
+        calls["n"] += 1
+        started.set()
+        release.wait(5)
+        return {"ok": True}
+
+    results: list[dict] = []
+
+    def go():
+        results.append(web_server._survey("probe", slow, ttl=60.0))
+
+    first = threading.Thread(target=go)
+    first.start()
+    assert started.wait(5), "the first caller never began the survey"
+    racers = [threading.Thread(target=go) for _ in range(3)]
+    for t in racers:
+        t.start()
+    release.set()
+    for t in (first, *racers):
+        t.join(10)
+
+    assert calls["n"] == 1
+    assert results == [{"ok": True}] * 4
+
+
 def test_sources_endpoint(archive_home):
     _seed(archive_home)
     status, _, payload = _get("/api/sources")

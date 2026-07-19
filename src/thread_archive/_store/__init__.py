@@ -32,6 +32,7 @@ from .models import (
 )
 from .resolve import resolve_session_source_id
 from .schema import init_db
+from .ulid import mint_ulid, normalize_ulid, ulid_timestamp_ms
 
 __all__ = [
     # engine + session
@@ -51,6 +52,10 @@ __all__ = [
     "init_db",
     # session-id resolution
     "resolve_session_source_id",
+    # thread-id format
+    "mint_ulid",
+    "normalize_ulid",
+    "ulid_timestamp_ms",
     # models
     "Thread",
     "Event",

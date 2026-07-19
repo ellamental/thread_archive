@@ -155,7 +155,7 @@ def _import_cc(
         return IncrementalImportResult(
             lines_processed=0,
             events_created=0,
-            thread_id=import_state.thread_id or 0,
+            thread_id=import_state.thread_id or "",
             is_new_thread=False,
             last_message_uuid=import_state.last_message_uuid,
         )
@@ -174,7 +174,7 @@ def _import_cc(
         return IncrementalImportResult(
             lines_processed=0,
             events_created=0,
-            thread_id=(import_state.thread_id or 0) if import_state else 0,
+            thread_id=(import_state.thread_id or "") if import_state else "",
             is_new_thread=False,
             last_message_uuid=import_state.last_message_uuid if import_state else None,
         )
@@ -182,7 +182,7 @@ def _import_cc(
     new_lines = all_lines[start_line:]
 
     # Resolve the thread: the watermark's thread_id wins, else lookup by source.
-    thread_id: Optional[int] = (
+    thread_id: Optional[str] = (
         import_state.thread_id if (import_state and import_state.thread_id) else None
     )
     if thread_id is None:
@@ -194,7 +194,7 @@ def _import_cc(
         thread_id=thread_id, total_lines=total_lines, file_size=current_file_size,
         content_hash=cursor.content_hash,
     ):
-        return IncrementalImportResult(0, 0, thread_id or 0, False, None)
+        return IncrementalImportResult(0, 0, thread_id or "", False, None)
 
     is_subagent = _is_subagent_source_id(source_id)
 
@@ -246,7 +246,7 @@ def _import_cc(
     # gone blind to a changed format.
     if is_new_thread and events_created == 0:
         discard_new_thread(session, thread_id)
-        thread_id = 0
+        thread_id = ""
         is_new_thread = False
         record_skip(
             source, source_id,
@@ -283,7 +283,7 @@ def _import_cc(
     return IncrementalImportResult(
         lines_processed=len(new_lines),
         events_created=events_created,
-        thread_id=thread_id or 0,
+        thread_id=thread_id or "",
         is_new_thread=is_new_thread,
         last_message_uuid=last_uuid,
     )

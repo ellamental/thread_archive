@@ -27,7 +27,7 @@ function renderTopics(url = '/topics') {
 
 function topic(overrides: Partial<TopicListItem>): TopicListItem {
   return {
-    id: 1, title: 'Graph Theory', topic_kind: 'concept', description: 'nodes and edges',
+    id: '1', title: 'Graph Theory', topic_kind: 'concept', description: 'nodes and edges',
     evidence_count: 2, link_count: 3, community: 0, pagerank: 0.4,
     updated_at: '2026-01-01T10:00:00Z',
     ...overrides,
@@ -62,9 +62,9 @@ describe('TopicsView', () => {
 
   it('groups topics by community, unlinked last, anchored by the top topic', async () => {
     mswJson('/api/topics', response([
-      topic({ id: 1, title: 'Graph Theory', community: 0, pagerank: 0.4 }),
-      topic({ id: 2, title: 'PageRank', community: 0, pagerank: 0.2 }),
-      topic({ id: 3, title: 'Lone Island', community: null, pagerank: 0, link_count: 0, evidence_count: 0 }),
+      topic({ id: '1', title: 'Graph Theory', community: 0, pagerank: 0.4 }),
+      topic({ id: '2', title: 'PageRank', community: 0, pagerank: 0.2 }),
+      topic({ id: '3', title: 'Lone Island', community: null, pagerank: 0, link_count: 0, evidence_count: 0 }),
     ]))
     renderTopics()
     // the community group is headed by its highest-pagerank member
@@ -88,8 +88,8 @@ describe('TopicsView', () => {
   it('filters topics by title or description', async () => {
     const user = userEvent.setup()
     mswJson('/api/topics', response([
-      topic({ id: 1, title: 'Graph Theory' }),
-      topic({ id: 2, title: 'Leiden', description: 'community detection' }),
+      topic({ id: '1', title: 'Graph Theory' }),
+      topic({ id: '2', title: 'Leiden', description: 'community detection' }),
     ]))
     renderTopics()
     await screen.findAllByText('Graph Theory')
@@ -101,7 +101,7 @@ describe('TopicsView', () => {
 
   it('navigates to the topic when a row is clicked', async () => {
     const user = userEvent.setup()
-    mswJson('/api/topics', response([topic({ id: 7, title: 'Graph Theory' })]))
+    mswJson('/api/topics', response([topic({ id: '7', title: 'Graph Theory' })]))
     renderTopics()
     // the title shows in the community header too — the row's copy is the last one
     const rows = await screen.findAllByText('Graph Theory')
@@ -113,7 +113,7 @@ describe('TopicsView', () => {
 })
 
 function node(overrides: Partial<TopicTreeNode>): TopicTreeNode {
-  return { id: 1, title: 'Needle', topic_kind: 'artifact', children: [], ...overrides }
+  return { id: '1', title: 'Needle', topic_kind: 'artifact', children: [], ...overrides }
 }
 
 describe('TopicsView hierarchy', () => {
@@ -131,7 +131,7 @@ describe('TopicsView hierarchy', () => {
 
   it('opens straight into the tree via ?view=tree', async () => {
     mswJson('/api/topics/tree', {
-      roots: [node({ id: 1, title: 'Needle', children: [node({ id: 2, title: 'compression' })] })],
+      roots: [node({ id: '1', title: 'Needle', children: [node({ id: '2', title: 'compression' })] })],
       topics_in_hierarchy: 2,
       topics_total: 10,
     })
@@ -145,7 +145,7 @@ describe('TopicsView hierarchy', () => {
   it('collapses and expands a subtree from the caret', async () => {
     const user = userEvent.setup()
     mswJson('/api/topics/tree', {
-      roots: [node({ id: 1, title: 'Needle', children: [node({ id: 2, title: 'compression' })] })],
+      roots: [node({ id: '1', title: 'Needle', children: [node({ id: '2', title: 'compression' })] })],
       topics_in_hierarchy: 2,
       topics_total: 2,
     })
@@ -161,8 +161,8 @@ describe('TopicsView hierarchy', () => {
     const user = userEvent.setup()
     mswJson('/api/topics/tree', {
       roots: [node({
-        id: 1, title: 'Needle',
-        children: [node({ id: 2, title: 'compression', children: [node({ id: 3, title: 're-compression' })] })],
+        id: '1', title: 'Needle',
+        children: [node({ id: '2', title: 'compression', children: [node({ id: '3', title: 're-compression' })] })],
       })],
       topics_in_hierarchy: 3,
       topics_total: 3,
@@ -178,7 +178,7 @@ describe('TopicsView hierarchy', () => {
   it('navigates to the topic from a tree title', async () => {
     const user = userEvent.setup()
     mswJson('/api/topics/tree', {
-      roots: [node({ id: 9, title: 'Needle' })],
+      roots: [node({ id: '9', title: 'Needle' })],
       topics_in_hierarchy: 1,
       topics_total: 1,
     })

@@ -602,14 +602,14 @@ def _insertable(source: str, ev) -> bool:
 
 @dataclass
 class ThreadPlan:
-    thread_id: int
+    thread_id: str
     patches: list          # [(event_id, patch)]
     inserts: list          # [ThreadEvent] with borrowed stream/api ids set
     meta_missing: dict     # thread source_metadata keys to add
     stats: dict
 
 
-def plan_thread(session, thread_id: int, source: str, fresh: list) -> ThreadPlan:
+def plan_thread(session, thread_id: str, source: str, fresh: list) -> ThreadPlan:
     """Match fresh events to stored rows and plan patches/inserts. Pure planning."""
     stats: dict[str, int] = defaultdict(int)
     stored = list(
@@ -727,7 +727,7 @@ def plan_thread(session, thread_id: int, source: str, fresh: list) -> ThreadPlan
     return ThreadPlan(thread_id, patches, inserts, {}, dict(stats))
 
 
-def _plan_meta(session, thread_id: int, fresh_meta: Optional[dict]) -> dict:
+def _plan_meta(session, thread_id: str, fresh_meta: Optional[dict]) -> dict:
     """Thread source_metadata keys the fixed importer derives that the stored
     thread lacks. Missing-only — an existing key is never touched."""
     if not fresh_meta:
@@ -753,7 +753,7 @@ def _iter_default_items(sources: Optional[set[str]], totals) -> Iterator[WorkIte
             totals[name]["source_unavailable_or_empty"] += 1
 
 
-def _apply_thread(thread_id: int, source: str, source_id: str, plan: ThreadPlan, backup) -> dict:
+def _apply_thread(thread_id: str, source: str, source_id: str, plan: ThreadPlan, backup) -> dict:
     """Write one thread's planned changes: amendments (their own locked seam),
     then inserts through write_events (truth + index atomic per commit), then the
     metadata merge. Returns applied counters."""

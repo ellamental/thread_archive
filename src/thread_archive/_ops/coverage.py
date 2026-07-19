@@ -76,6 +76,14 @@ MIN_HISTORY_FOR_DARK = 5
 # cadence, with no escalation path. Reviewers: a long-stale export is the
 # operator's chosen tempo, not a broken loop for the product to close.
 EXPORT_STALE_DAYS = 45.0
+# Sustained-drift thresholds for the per-source degradation verdict (the one
+# that names ``archive fix-import`` as the remedy, reaches agents in-session
+# via the MCP search notice, and triggers a preservation snapshot). Stricter
+# than the coverage *warning*, which fires on a single ledger record: one
+# benign record deserves an operator glance, not a repair prompt in every
+# search result.
+DEGRADED_DRIFT_MIN = 3
+DEGRADED_SKIPS_MIN = 3
 
 
 def export_fed_sources() -> dict[str, str]:
@@ -169,14 +177,19 @@ def check_coverage(
     grace_hours: float = GRACE_HOURS,
     min_history: int = MIN_HISTORY_FOR_DARK,
     export_stale_days: float = EXPORT_STALE_DAYS,
+    snapshot: bool = True,
 ) -> dict:
     """Reconcile every enabled source's store against the archive (see module
     docstring for the checks). Returns the full report; records a compact
-    ``coverage_last`` in health.json. ``watchers`` overrides the enabled set
-    (tests inject stubs); ``all_watchers`` overrides the full known set the
-    disabled/unwatched reporting is computed against — when only ``watchers``
-    is injected it doubles as the full set, so a stub-driven test never
-    discovers the real machine's stores."""
+    ``coverage_last`` in health.json — including the per-source ``degraded``
+    verdicts the MCP search notice and ``archive fix-import`` key on. A
+    degraded source's raw store is snapshotted into the drift quarantine
+    (:mod:`.._watcher.drift_snapshot`) unless ``snapshot`` is false.
+    ``watchers`` overrides the enabled set (tests inject stubs);
+    ``all_watchers`` overrides the full known set the disabled/unwatched
+    reporting is computed against — when only ``watchers`` is injected it
+    doubles as the full set, so a stub-driven test never discovers the real
+    machine's stores."""
     from .._api import open_archive
     from .._importers._skip_ledger import summarize_skips
     from .._importers._validation_ledger import summarize_drift
@@ -320,6 +333,39 @@ def check_coverage(
             f"unimported content in the last {skips['days']:.0f}d — store content "
             "was consumed without becoming events; see the skip ledger"
         )
+
+    # Per-source degradation verdicts: the machine-readable "this source's
+    # import needs fixing" map. A coverage FAIL is degradation outright; below
+    # that, sustained ledger volume for one source is (thresholds above). One
+    # reason per source, strongest first — the verdict names the remedy, and
+    # the remedy (`archive fix-import <source>`) is the same either way.
+    # ``since`` is the best available drift-onset timestamp for that reason.
+    degraded: dict[str, dict] = {}
+    for name, entry in sources.items():
+        if entry.get("failed") == "went_dark":
+            degraded[name] = {"reason": "went_dark", "since": entry["last_import_at"]}
+        elif entry.get("failed") == "stale_ingest":
+            degraded[name] = {"reason": "stale_ingest", "since": entry["newest_event_at"]}
+    for name, per in drift["by_provider"].items():
+        if name and name not in degraded and per["recent"] >= DEGRADED_DRIFT_MIN:
+            degraded[name] = {"reason": "validation_drift", "since": per["since"]}
+    for name, per in skips["by_source"].items():
+        if (
+            name
+            and name not in degraded
+            and per["recent_substantive"] >= DEGRADED_SKIPS_MIN
+        ):
+            degraded[name] = {"reason": "capture_skips", "since": per["since"]}
+
+    snapshots: dict[str, str] = {}
+    if snapshot and degraded:
+        from .._watcher.drift_snapshot import snapshot_degraded
+
+        try:
+            snapshots = snapshot_degraded(watchers, degraded, home=home)
+        except Exception:  # noqa: BLE001 — preservation must never break the report
+            logger.exception("coverage: drift snapshot pass failed")
+
     result = {
         "ok": not failed,
         "failed": failed,
@@ -329,6 +375,8 @@ def check_coverage(
         "unwatched": unwatched,
         "skips": skips,
         "drift": drift,
+        "degraded": degraded,
+        "drift_snapshots": snapshots,
     }
     record_health("coverage_last", {
         "ok": result["ok"],
@@ -337,6 +385,7 @@ def check_coverage(
         "sources_checked": len(sources),
         "skips_recent": skips["recent"],
         "drift_recent": drift["recent"],
+        "degraded": degraded,
     })
     stamp_heartbeat()
     return result

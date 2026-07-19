@@ -300,29 +300,43 @@ def _web_binary(view: dict) -> dict:
     }
 
 
-def resolve_thread_ref(s: Session, ref: int | str) -> Optional[int]:
-    """Resolve a thread reference to the archive's integer thread id.
+def resolve_thread_ref(s: Session, ref: int | str) -> Optional[str]:
+    """Resolve a thread reference to the archive's ULID thread id.
 
-    ``ref`` is either the archive's own integer thread id (the primary key) or a
-    provider **session id** — the uuid/source_id a tool like claude-code knows a
-    conversation by. An integer (or all-digit) ref resolves as a primary-key lookup
-    first, preserving the original ``thread_id`` contract exactly; anything that
-    isn't an existing PK resolves as a session id via the shared
-    :func:`thread_archive._store.resolve.resolve_session_source_id` — the
-    ``Thread.source_id`` ∪ ``ImportState`` union the web viewer's
-    ``resolve_archive_link`` also uses. The union matters: a compaction
-    continuation's session uuid exists only in ``ImportState`` (its events merge
-    into the original thread, but its watermark is its own), and that uuid is
-    exactly what an agent inside the continued session holds. None when nothing
-    matches."""
-    if isinstance(ref, int) or (isinstance(ref, str) and ref.isdigit()):
-        tid = int(ref)
-        if s.get(Thread, tid) is not None:
+    Three ref shapes, distinguishable by form alone:
+
+    - a **ULID** (26-char Crockford base32) — the primary key itself; resolved
+      by direct lookup after normalization (case, confusable characters);
+    - an **integer** (or all-digit string) — a legacy id from before ULIDs, or
+      an id pasted into an archived conversation; resolved via
+      ``Thread.legacy_id``, which is a permanent alias, never sunset;
+    - anything else — a provider **session id** (the uuid/source_id a tool like
+      claude-code knows a conversation by), resolved via the shared
+      :func:`thread_archive._store.resolve.resolve_session_source_id` — the
+      ``Thread.source_id`` ∪ ``ImportState`` union the web viewer's
+      ``resolve_archive_link`` also uses. The union matters: a compaction
+      continuation's session uuid exists only in ``ImportState`` (its events
+      merge into the original thread, but its watermark is its own), and that
+      uuid is exactly what an agent inside the continued session holds.
+
+    A digit ref that matches no ``legacy_id`` still falls through to session
+    resolution (some providers use numeric session ids, e.g. grok). None when
+    nothing matches."""
+    from .._store import normalize_ulid, resolve_session_source_id
+    from sqlalchemy import select as _select
+
+    if isinstance(ref, int) or (isinstance(ref, str) and ref.strip().isdigit()):
+        tid = s.execute(
+            _select(Thread.id).where(Thread.legacy_id == int(ref))
+        ).scalars().first()
+        if tid is not None:
             return tid
-        # A digit ref that isn't a PK may still be a numeric provider session id
-        # (e.g. grok), so fall through to source_id resolution.
-    from .._store import resolve_session_source_id
-
+        # Fall through: a digit ref may be a numeric provider session id.
+    else:
+        canonical = normalize_ulid(str(ref).strip())
+        if canonical is not None and s.get(Thread, canonical) is not None:
+            return canonical
+        # Fall through: a 26-char source_id could shape-match a ULID.
     return resolve_session_source_id(s, str(ref))
 
 
@@ -900,7 +914,7 @@ def _topic_read_message(thread: Thread, *, session: Optional[Session] = None) ->
 
     if members:
         lines += ["", f"## Citations ({detail['citation_count']})"]
-        by_thread: dict[int, list[dict]] = {}
+        by_thread: dict[str, list[dict]] = {}
         for m in members:
             by_thread.setdefault(m["thread_id"], []).append(m)
         for tid, cites in by_thread.items():
@@ -1211,7 +1225,7 @@ def read_thread(
 ) -> str:
     """Read a thread's conversation as a transcript, reconstructed from its events.
 
-    ``thread_id`` is either the archive's integer thread id or a provider **session
+    ``thread_id`` is either the archive's thread id or a provider **session
     id** (the uuid/source_id a tool knows the conversation by) — see
     :func:`resolve_thread_ref`. The reserved ref ``'topics'`` renders the curated
     topic hierarchy instead (:func:`_topic_tree_page`), budgeted by ``max_chars``.
@@ -1607,7 +1621,7 @@ def read_thread_structured(
 ) -> dict:
     """Reconstruct a thread as structured messages for the web viewer.
 
-    ``thread_id`` accepts an integer thread id or a provider session id, same as
+    ``thread_id`` accepts a thread id (or legacy integer id) or a provider session id, same as
     :func:`read_thread` (see :func:`resolve_thread_ref`). Returns
     ``{thread_id, title, source, source_id, started_at, ended_at, event_count,
     messages}`` — the provenance fields feed the viewer's reader header

@@ -564,7 +564,7 @@ def test_empty_import_leaves_no_ghost_thread_or_truth_file(archive_home) -> None
 
     result = import_session_incremental(f, "proj:empty")
     assert result.events_created == 0
-    assert result.thread_id == 0
+    assert result.thread_id == ""
     assert result.is_new_thread is False
 
     with get_session() as s:

@@ -179,7 +179,7 @@ def test_grok_no_importable_content_is_skipped_not_threaded(archive_home) -> Non
         {"type": "system", "content": "just a system prompt, no turns"},
     ])
     r = import_grok_session_incremental(f, "grok-empty")
-    assert r.events_created == 0 and r.thread_id == 0 and not r.is_new_thread
+    assert r.events_created == 0 and r.thread_id == "" and not r.is_new_thread
     assert _threads() == {}
 
 
@@ -652,7 +652,7 @@ def test_cursor_empty_headers_imports_nothing(archive_home) -> None:
             composer_id="cE", composer_data={"name": "Empty", "fullConversationHeadersOnly": []},
             bubbles={}, session=s)
         s.commit()
-    assert result.events_created == 0 and result.thread_id == 0
+    assert result.events_created == 0 and result.thread_id == ""
 
 
 def test_cursor_reimport_no_new_messages_resolves_existing_thread(archive_home) -> None:

@@ -226,10 +226,7 @@ def _maybe_rebalance(d: Path, depth: int) -> int:
             # and our acquisition has already re-homed what we would move again.
             misplaced: list[tuple[Path, Path]] = []
             for path in threads_dir.rglob("*.jsonl"):
-                try:
-                    tid = int(path.stem)
-                except ValueError:  # pragma: no cover — stray file
-                    continue
+                tid = path.stem
                 dest = _thread_file(d, tid, target)
                 if dest != path:
                     misplaced.append((path, dest))

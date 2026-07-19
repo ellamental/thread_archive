@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import copy
 import fcntl
+import hashlib
 import json
 import logging
 import os
@@ -92,7 +93,9 @@ def _fsync_dir(d: Path) -> None:
 # misinterpret (record shapes, file layout, sharding semantics) — additive
 # optional fields don't count. Code that meets a *newer* version must refuse
 # the archive rather than guess (see :func:`_read_manifest`).
-TRUTH_FORMAT_VERSION = 1
+# Version 2: thread ids are ULID strings (integer alias in ``legacy_id``);
+# shard buckets hash the id string instead of taking integer modulos.
+TRUTH_FORMAT_VERSION = 2
 
 
 class TruthFormatError(RuntimeError):
@@ -239,19 +242,21 @@ def _shard_depth(d: Path) -> int:
 
 
 # ── per-thread file paths (sharded by recorded depth) ────────────────────────
-def _thread_relpath(thread_id: int, depth: int) -> Path:
+def _thread_relpath(thread_id: str, depth: int) -> Path:
     """Relative path of a thread's file at ``depth``: flat (depth 0), else nested
-    id-bucket dirs (``<id%256>/...``). Deterministic — readers and writers compute
-    the same location from the manifest's depth."""
+    two-hex-digit bucket dirs taken from the sha256 of the id string (byte ``i``
+    names the level-``i`` bucket). Deterministic — readers and writers compute
+    the same location from the manifest's depth; hashing keeps buckets uniform
+    regardless of the id format's structure (ULIDs share a timestamp prefix)."""
+    tid = str(thread_id)
     parts: list[str] = []
-    x = int(thread_id)
-    for _ in range(depth):
-        parts.append(f"{x % _BUCKET:02x}")
-        x //= _BUCKET
-    return Path(THREADS_SUBDIR, *parts, f"{int(thread_id)}.jsonl")
+    if depth:
+        digest = hashlib.sha256(tid.encode("utf-8")).hexdigest()
+        parts = [digest[2 * i : 2 * i + 2] for i in range(depth)]
+    return Path(THREADS_SUBDIR, *parts, f"{tid}.jsonl")
 
 
-def _thread_file(d: Path, thread_id: int, depth: int) -> Path:
+def _thread_file(d: Path, thread_id: str, depth: int) -> Path:
     return d / _thread_relpath(thread_id, depth)
 
 

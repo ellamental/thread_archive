@@ -154,7 +154,10 @@ def test_verify_hash_gate_and_reindex(tmp_path, archive_home):
     assert scan["mismatched"] == 0
     assert scan["checked"] > 0
 
-    # reindex rebuilds the projection from extracted truth without loss
+    # reindex rebuilds the projection from extracted truth without loss. Close
+    # first: unlinking the index under a live engine leaves pooled connections
+    # bound to the deleted inode, and the next one reused raises "disk I/O error".
+    ta.close()
     (archive_home / "index.db").unlink()
     ta.reindex()
     scan = _hash_scan_truth_dir(archive_home / "truth", None)
@@ -174,7 +177,7 @@ def test_redact_shreds_blob_and_unredact_restores(tmp_path, archive_home):
 
     with get_session() as s:
         tid = s.execute(text("SELECT DISTINCT thread_id FROM events")).scalar()
-    result = rd.redact_events(int(tid), None)  # whole thread
+    result = rd.redact_events(tid, None)  # whole thread
     assert result["blobs_shredded"] == 1
     assert _blob_files(archive_home) == []
     # nothing under the home still holds the image bytes outside the ciphertext
@@ -202,7 +205,7 @@ def test_redact_keeps_blob_shared_with_live_thread(tmp_path, archive_home):
     from thread_archive._ops import redact as rd
 
     with get_session() as s:
-        tids = sorted(int(r[0]) for r in s.execute(
+        tids = sorted(r[0] for r in s.execute(
             text("SELECT DISTINCT thread_id FROM events")))
     assert len(tids) == 2
     result = rd.redact_events(tids[0], None)
@@ -214,7 +217,7 @@ def test_redact_keeps_blob_shared_with_live_thread(tmp_path, archive_home):
 def test_read_renders_image_paths(tmp_path, archive_home):
     _import_image_session(tmp_path)
     with get_session() as s:
-        tid = int(s.execute(text("SELECT DISTINCT thread_id FROM events")).scalar())
+        tid = s.execute(text("SELECT DISTINCT thread_id FROM events")).scalar()
 
     user_view = ta.read_thread(tid, mode="user")
     assert "[image image/png 4 KB — " in user_view
@@ -251,7 +254,7 @@ def test_image_only_turn_is_not_dropped(tmp_path, archive_home):
     ])
     ta.import_path(f)
     with get_session() as s:
-        tid = int(s.execute(text("SELECT DISTINCT thread_id FROM events")).scalar())
+        tid = s.execute(text("SELECT DISTINCT thread_id FROM events")).scalar()
     assert "[image image/png" in ta.read_thread(tid, mode="user")
 
 
@@ -265,7 +268,7 @@ def test_inline_history_materializes_on_read(tmp_path, archive_home):
     assert _blob_files(archive_home) == []
 
     with get_session() as s:
-        tid = int(s.execute(text("SELECT DISTINCT thread_id FROM events")).scalar())
+        tid = s.execute(text("SELECT DISTINCT thread_id FROM events")).scalar()
     view = ta.read_thread(tid, mode="user")
     assert "/truth/blobs/" in view  # materialized on read
     assert len(_blob_files(archive_home)) == 1

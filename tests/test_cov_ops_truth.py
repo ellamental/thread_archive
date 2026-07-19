@@ -50,7 +50,7 @@ def _import_secret_session(tmp_path, name="sess"):
             "SELECT id FROM events WHERE event_type != 'user_message_sent' "
             "ORDER BY id LIMIT 1"
         )).first()
-    return f, int(u[0]), int(u[1]), int(a[0])
+    return f, int(u[0]), u[1], int(a[0])
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -109,7 +109,7 @@ def test_verify_hashes_tolerates_unparseable_index_payload(archive_home, tmp_pat
 # ══════════════════════════════════════════════════════════════════════════════
 def test_redact_missing_thread_raises(archive_home, tmp_path) -> None:
     import_cc_session(tmp_path)
-    with pytest.raises(ValueError, match="no truth file"):
+    with pytest.raises(ValueError, match="not found"):
         ta.redact(987654, [1])
 
 
@@ -550,12 +550,15 @@ def test_scan_truth_counts_bounds_ids_above_watermark(archive_home, tmp_path):
     tf = one_thread_file(archive_home)
     append_jsonl(tf, [{"type": "event", "id": ev_max + 6000, "thread_id": th_max,
                        "payload": {"content": "future"}}])
-    # A truth thread file whose id is above the watermark (skipped by the stem bound).
-    high_thread = jsonl_log._thread_file(d, th_max + 5000, jsonl_log._shard_depth(d))
+    # A truth thread file whose id is above the watermark (skipped by the stem
+    # bound — ULIDs compare lexicographically, so this stem sorts after th_max).
+    high_tid = "7ZZZZZZZZZZZZZZZZZZZZZZZZZ"
+    assert high_tid > th_max
+    high_thread = jsonl_log._thread_file(d, high_tid, jsonl_log._shard_depth(d))
     high_thread.parent.mkdir(parents=True, exist_ok=True)
     high_thread.write_text(
-        json.dumps({"type": "thread", "id": th_max + 5000, "name": "future"}) + "\n"
-        + json.dumps({"type": "event", "id": ev_max + 5000, "thread_id": th_max + 5000,
+        json.dumps({"type": "thread", "id": high_tid, "name": "future"}) + "\n"
+        + json.dumps({"type": "event", "id": ev_max + 5000, "thread_id": high_tid,
                       "payload": {"content": "future"}}) + "\n",
         encoding="utf-8",
     )
@@ -575,7 +578,7 @@ def test_reindex_synthesizes_missing_thread_record(archive_home, tmp_path):
     import_cc_session(tmp_path)
     before = event_count()
     tf = one_thread_file(archive_home)
-    tid = int(tf.stem)
+    tid = tf.stem
     # Strip the metadata record: the file now carries only event lines.
     kept = [
         ln for ln in tf.read_text(encoding="utf-8").splitlines()
@@ -603,7 +606,7 @@ def test_reindex_mixes_full_and_event_only_thread_files(archive_home, tmp_path):
     files = sorted((archive_home / "truth" / jsonl_log.THREADS_SUBDIR).rglob("*.jsonl"))
     assert len(files) == 2  # two distinct threads land in one reindex batch
     stub_file = files[-1]
-    stub_tid = int(stub_file.stem)
+    stub_tid = stub_file.stem
     kept = [
         ln for ln in stub_file.read_text(encoding="utf-8").splitlines()
         if json.loads(ln).get("type", "event") != "thread"

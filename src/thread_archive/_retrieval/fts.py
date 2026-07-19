@@ -92,7 +92,7 @@ _RANK_EXPR = "rank"
 def build_event_hit(
     *,
     event_id: int,
-    thread_id: int,
+    thread_id: str,
     event_type: str,
     content_type: Optional[str],
     snippet: str,
@@ -286,7 +286,7 @@ class _Pass:
 
 def search_events(
     query: str,
-    thread_id: Optional[int] = None,
+    thread_id: Optional[str] = None,
     content_types: Optional[list[str]] = None,
     limit: int = 50,
     since: Optional[str] = None,
@@ -297,7 +297,7 @@ def search_events(
     types: Optional[list[str]] = None,
     startswith: Optional[str] = None,
     *,
-    thread_ids: Optional[list[int]] = None,
+    thread_ids: Optional[list[str]] = None,
     agents: str = "exclude",
     oldest_first: bool = False,
     or_fallback: bool = True,
@@ -499,7 +499,7 @@ def _write_doc(
     session: Session,
     *,
     event_id: int,
-    thread_id: int,
+    thread_id: str,
     event_type: str,
     content: str,
     content_type: Optional[str],
@@ -525,7 +525,7 @@ THREAD_META_EVENT_TYPE = "thread_meta"
 THREAD_META_CONTENT_TYPES = ("title", "summary")
 
 
-def _thread_meta_desired(s: Session, thread_ids: Optional[list[int]]) -> dict[tuple[int, str], str]:
+def _thread_meta_desired(s: Session, thread_ids: Optional[list[str]]) -> dict[tuple[str, str], str]:
     """The meta docs that *should* exist: ``(thread_id, content_type) → content``.
     Conversations only (topics have their own librarian search surface), search-
     excluded threads omitted, empty title/summary omitted."""
@@ -538,7 +538,7 @@ def _thread_meta_desired(s: Session, thread_ids: Optional[list[int]]) -> dict[tu
     rows = s.execute(
         sa_text("SELECT t.id, t.title, t.summary FROM threads t WHERE " + where), params
     ).all()
-    desired: dict[tuple[int, str], str] = {}
+    desired: dict[tuple[str, str], str] = {}
     for tid, title, summary in rows:
         if title and title.strip():
             desired[(tid, "title")] = title.strip()
@@ -547,7 +547,7 @@ def _thread_meta_desired(s: Session, thread_ids: Optional[list[int]]) -> dict[tu
     return desired
 
 
-def index_thread_meta(session: Optional[Session] = None, thread_ids: Optional[list[int]] = None) -> int:
+def index_thread_meta(session: Optional[Session] = None, thread_ids: Optional[list[str]] = None) -> int:
     """Sync thread titles + short summaries into the FTS surface (shadow + FTS5)
     as thread-meta docs. Diff-based: an unchanged thread writes nothing, a changed
     title/summary replaces its rows (and drops its stale vector so the embed cohost
@@ -583,7 +583,7 @@ def index_thread_meta(session: Optional[Session] = None, thread_ids: Optional[li
         # Anchor each thread at its first indexed event; a thread with no indexed
         # events gets no meta docs (nothing to anchor a read to).
         need_anchor = sorted({tid for tid, _ in fresh})
-        anchors: dict[int, tuple[int, Optional[str]]] = {}
+        anchors: dict[str, tuple[int, Optional[str]]] = {}
         for chunk_start in range(0, len(need_anchor), 500):
             chunk = need_anchor[chunk_start:chunk_start + 500]
             aparams: dict = {"met": THREAD_META_EVENT_TYPE}
@@ -657,7 +657,7 @@ def index_thread_meta(session: Optional[Session] = None, thread_ids: Optional[li
 _ARC_TWIN_TYPES = ("text_complete", "thinking_complete")
 
 
-def _cached_twin_texts(session: Session, thread_id: int, cache: dict) -> set[str]:
+def _cached_twin_texts(session: Session, thread_id: str, cache: dict) -> set[str]:
     """The thread's twin-text set via the per-run cache — the one place the
     cache's bound (drop everything past 64 threads; a rebuild walks threads in
     id-clusters, so evicting wholesale is cheap and simple) is enforced."""
@@ -668,7 +668,7 @@ def _cached_twin_texts(session: Session, thread_id: int, cache: dict) -> set[str
     return cache[thread_id]
 
 
-def _twin_texts(session: Session, thread_id: int) -> set[str]:
+def _twin_texts(session: Session, thread_id: str) -> set[str]:
     """The (stripped) texts of a thread's granular complete events."""
     rows = session.execute(
         select(Event.payload).where(
@@ -717,7 +717,7 @@ def _gate_arc_tuples(
     session: Session,
     *,
     api_call_id: Optional[str],
-    thread_id: int,
+    thread_id: str,
     tuples: list,
     twin_text_cache: dict,
     twinned_calls: Optional[set] = None,

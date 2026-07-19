@@ -70,7 +70,7 @@ _ANCHOR_TYPES = frozenset({"api_request_started", "user_message_sent"})
 
 
 def plan_thread(
-    session, thread_id: int, *, collapse: bool = False,
+    session, thread_id: str, *, collapse: bool = False,
 ) -> tuple[list[tuple[int, str]], list[tuple[int, int, str]], list[str], dict]:
     """Return (backfills, collapses, warnings, stats) for one thread — pure planning.
 

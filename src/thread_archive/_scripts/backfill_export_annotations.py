@@ -194,7 +194,7 @@ def _missing_field_patch(stored_payload: dict, fresh_payload: dict) -> dict:
 class ThreadPlan:
     __slots__ = ("thread_id", "source_id", "amends", "pairings", "meta_patch", "stats")
 
-    def __init__(self, thread_id: int, source_id: str) -> None:
+    def __init__(self, thread_id: str, source_id: str) -> None:
         self.thread_id = thread_id
         self.source_id = source_id
         self.amends: list[tuple[int, dict]] = []           # (event_id, payload patch)
@@ -466,7 +466,7 @@ def _apply_pairings(plan: ThreadPlan, backup) -> dict[str, int]:
                 new_key = p["new_key"]
                 if (
                     ev is None
-                    or int(ev.thread_id) != plan.thread_id
+                    or ev.thread_id != plan.thread_id
                     or payload is None
                     or payload.get("tool_call_id")
                     or compute_content_hash(payload) != new_key.rsplit(":", 1)[-1]

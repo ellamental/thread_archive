@@ -506,9 +506,10 @@ def test_rebuild_truth_removes_stale_other_depth_twin(archive_home) -> None:
     twin.parent.mkdir(parents=True, exist_ok=True)
     twin.write_text(json.dumps({"type": "event", "id": 424242, "thread_id": tid}) + "\n")
     # ...and a file for an id the store does NOT hold, which must be preserved.
-    ghost = jsonl_log._thread_file(d, tid + 1000, 1)
+    ghost_id = "01GH0STGH0STGH0STGH0STGH0S"  # an id the store does not hold
+    ghost = jsonl_log._thread_file(d, ghost_id, 1)
     ghost.parent.mkdir(parents=True, exist_ok=True)
-    ghost.write_text(json.dumps({"type": "thread", "id": tid + 1000, "name": "ghost"}) + "\n")
+    ghost.write_text(json.dumps({"type": "thread", "id": ghost_id, "name": "ghost"}) + "\n")
 
     # The twin's fabricated event id is content the store lacks, so the re-emit's
     # pre-flight (correctly) refuses without force — this test is about the

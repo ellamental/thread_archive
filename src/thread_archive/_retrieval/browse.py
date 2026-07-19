@@ -57,8 +57,8 @@ def browse_threads(
     source: Optional[list[str]] = None,
     types: Optional[list[str]] = None,
     agents: str = "exclude",
-    thread_id: Optional[int] = None,
-    thread_ids: Optional[list[int]] = None,
+    thread_id: Optional[str] = None,
+    thread_ids: Optional[list[str]] = None,
     oldest_first: bool = False,
     session: Optional[Session] = None,
 ) -> list[EventHit]:
@@ -100,7 +100,7 @@ def browse_threads(
         .where(Thread.archived.is_(False))
     )
     if thread_id is not None:
-        stmt = stmt.where(Thread.id == int(thread_id))
+        stmt = stmt.where(Thread.id == thread_id)
     elif thread_ids is not None:
         if not thread_ids:
             return []

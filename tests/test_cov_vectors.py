@@ -804,7 +804,7 @@ def test_search_scoped_by_thread(archive_home, monkeypatch) -> None:
     monkeypatch.setattr(embed, "embed_query", lambda text: q.tolist())
     _index_user_and_text(q)
     with get_session() as s:
-        tid = int(s.execute(sa_text("SELECT id FROM threads LIMIT 1")).scalar())
+        tid = s.execute(sa_text("SELECT id FROM threads LIMIT 1")).scalar()
     hits = vectors.search("hello", thread_id=tid)
     assert hits and all(h["thread_id"] == tid for h in hits)
 
@@ -914,9 +914,9 @@ def test_search_hydration_skips_row_without_candidate_sim(archive_home, monkeypa
         uid = int(s.execute(sa_text(
             "SELECT event_id FROM events_fts WHERE content_type='user' LIMIT 1"
         )).scalar())
-        tid = int(s.execute(sa_text(
+        tid = s.execute(sa_text(
             "SELECT thread_id FROM events_fts WHERE event_id=:e LIMIT 1"), {"e": uid}
-        ).scalar())
+        ).scalar()
         s.execute(sa_text(
             "INSERT INTO events_fts "
             "(event_id, thread_id, event_type, content, content_type, tool_name) "

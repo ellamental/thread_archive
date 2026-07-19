@@ -75,7 +75,7 @@ def _session_stats(lines: list[dict]) -> Optional[dict]:
     return None
 
 
-def _merge_session_stats(session, thread_id: int, stats: Optional[dict]) -> None:
+def _merge_session_stats(session, thread_id: str, stats: Optional[dict]) -> None:
     """Write ``stats`` into the thread's ``source_metadata["session_stats"]`` and
     re-stage truth. No-op when absent/unchanged."""
     if not stats or not thread_id:

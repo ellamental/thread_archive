@@ -49,12 +49,12 @@ function fmtSpan(start?: string | null, end?: string | null): string | null {
 export function ThreadView() {
   const { id } = useParams()
   const navigate = useNavigate()
-  // A purely numeric id is an archive thread PK; anything else (a claude-code/
-  // codex session uuid or stem pasted straight into the URL) is a provider link id we
-  // resolve to its numeric thread and redirect to. Parsing the uuid as an int would
-  // silently truncate "27056da6-…" to 27056 and open the wrong thread.
-  const isNumeric = !!id && /^\d+$/.test(id)
-  const threadId = isNumeric ? parseInt(id as string, 10) : NaN
+  // A 26-char Crockford-base32 ULID is the archive thread PK itself; anything
+  // else (a legacy integer id, or a claude-code/codex session uuid or stem
+  // pasted straight into the URL) is a ref we resolve server-side and redirect
+  // to its canonical ULID address.
+  const isCanonical = !!id && /^[0-9a-hjkmnp-tv-z]{26}$/i.test(id)
+  const threadId = isCanonical ? (id as string) : null
   const [params] = useSearchParams()
   const focusEvent = params.get('e') ? parseInt(params.get('e') as string, 10) : NaN
   const [thinking, setThinking] = useState(false)
@@ -63,16 +63,16 @@ export function ThreadView() {
   const [err, setErr] = useState<string | null>(null)
 
   useEffect(() => {
-    if (!id || isNumeric) return
+    if (!id || isCanonical) return
     setErr(null)
     api
       .resolveLink(id)
       .then((r) => navigate('/archive/' + r.thread_id, { replace: true }))
       .catch((e) => setErr(String(e.message ?? e)))
-  }, [id, isNumeric, navigate])
+  }, [id, isCanonical, navigate])
 
   useEffect(() => {
-    if (isNaN(threadId)) return
+    if (!threadId) return
     setData(null)
     setErr(null)
     api
@@ -89,7 +89,7 @@ export function ThreadView() {
   }, [data, focusIdx])
 
   if (err) return <div className="wrap"><div className="empty">read error: {err}</div></div>
-  if (!isNumeric) return <div className="wrap"><div className="empty">resolving {id}…</div></div>
+  if (!isCanonical) return <div className="wrap"><div className="empty">resolving {id}…</div></div>
   if (!data) return <div className="wrap"><div className="empty">loading thread {threadId}…</div></div>
 
   const models = threadModels(data)
