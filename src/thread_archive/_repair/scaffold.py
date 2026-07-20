@@ -371,7 +371,7 @@ def _write_evidence(provider, target_dir: Path, home: Optional[str], samples: di
         "",
         f"- provider: `{name}` (kind `{provider.kind}`, parser `{provider.parser_id or '—'}`)",
         f"- archive core: `{__version__}`",
-        f"- coverage verdict: "
+        "- coverage verdict: "
         + (
             f"**degraded** — {verdict['reason']} since {verdict.get('since') or 'unknown'}"
             if verdict

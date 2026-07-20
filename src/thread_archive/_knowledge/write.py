@@ -412,7 +412,8 @@ def set_thread_summary(
 # ── curation-read surface ────────────────────────────────────────────────────────
 def review_queue(
     limit: int = 20, *, exclude_source_id: Optional[str] = None,
-    quiet_minutes: int = 60, session: Optional[Session] = None,
+    quiet_minutes: int = 60, horizon: Optional[datetime] = None, catchup: int = 0,
+    session: Optional[Session] = None,
 ) -> list[dict]:
     """Conversation threads with librarian work left — the backlog.
 
@@ -432,7 +433,23 @@ def review_queue(
 
     ``quiet_minutes`` holds back still-ingesting threads: one whose newest event was
     *ingested* inside the window (``recorded_at``, uniform naive-UTC) is likely a live
-    session — its citations would be premature and its summary stale on arrival."""
+    session — its citations would be premature and its summary stale on arrival.
+
+    ``horizon`` splits the queue in two. A thread with any event at or after it is
+    **forward** work — a conversation that happened while curation was running — and
+    is always queued. Everything older is **catch-up**: the history that was already
+    on disk when curation was switched on, of which at most ``catchup`` threads join
+    each queue, after the forward work. With no horizon the whole backlog is forward
+    (the queue is undivided), and with ``catchup`` at 0 a horizon means history is
+    never curated at all — which is the point. An install pointed at years of
+    existing sessions would otherwise open with a five-figure queue and bill an
+    unattended Opus run against it every hour.
+
+    The two clocks are deliberately different: the quiet window asks *when did this
+    reach us* (``recorded_at``), because that is what says a session is still
+    growing; the horizon asks *when did this happen* (``occurred_at``), because a
+    first import stamps its whole history as ingested today and ingest time cannot
+    tell a decade of transcripts from this morning's."""
     # Eligibility needs *curatable* content, not merely rows in `events`. A thread
     # can carry bookkeeping-only events (an empty `file_snapshot`, a
     # `queue_operation`) and no message at all — nothing to cite, nothing to
@@ -484,12 +501,41 @@ def review_queue(
     ]
     if exclude_source_id:
         conds.append(or_(Thread.source_id.is_(None), Thread.source_id != exclude_source_id))
-    with use_session(session) as s:
-        rows = s.execute(
+
+    def _rows(s: Session, extra, cap: int) -> list:
+        if cap <= 0:
+            return []
+        return list(s.execute(
             select(Thread.id, Thread.title, Thread.source_id)
-            .where(*conds).order_by(Thread.id.desc()).limit(limit)
-        ).all()
-    return [{"id": r.id, "title": r.title, "source_id": r.source_id} for r in rows]
+            .where(*conds, *extra).order_by(Thread.id.desc()).limit(cap)
+        ).all())
+
+    with use_session(session) as s:
+        if horizon is None:
+            rows = _rows(s, (), limit)
+            marks = [False] * len(rows)
+        else:
+            # 'Has activity at or after the horizon' rather than 'newest event is
+            # after it': a session that began before curation was switched on and
+            # continued past it is live work, not history.
+            cut = horizon.replace(tzinfo=None) if horizon.tzinfo else horizon
+            after = (
+                select(Event.id)
+                .where(Event.thread_id == Thread.id, Event.occurred_at >= cut)
+                .exists()
+            )
+            rows = _rows(s, (after,), limit)
+            marks = [False] * len(rows)
+            # Catch-up rides along in whatever room the forward work left, so a
+            # busy day of real sessions never loses its slots to history.
+            room = min(catchup, limit - len(rows))
+            old = _rows(s, (~after,), room)
+            rows += old
+            marks += [True] * len(old)
+    return [
+        {"id": r.id, "title": r.title, "source_id": r.source_id, "catchup": mark}
+        for r, mark in zip(rows, marks)
+    ]
 
 
 def topic_search(query: str, limit: int = 10, *, session: Optional[Session] = None) -> list[dict]:

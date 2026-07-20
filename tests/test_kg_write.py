@@ -211,6 +211,91 @@ def test_review_queue_skips_threads_with_no_curatable_content(archive_home):
     assert librarian_backlog() == 1
 
 
+def _seed_at(source_id: str, occurred: datetime) -> str:
+    """A curatable conversation whose message *happened* at ``occurred``.
+
+    ``recorded_at`` stays backdated regardless: when a thread reached the archive
+    (the quiet window) and when the conversation happened (the horizon) are
+    different questions, and a first import answers the first one with 'today'
+    for its entire history.
+    """
+    with get_session() as s:
+        t = Thread(
+            name=f"claude-code:{source_id}", title=source_id, thread_type="conversation",
+            source="claude-code", source_id=source_id,
+        )
+        s.add(t)
+        s.flush()
+        e = Event(
+            thread_id=t.id, stream_id=source_id, event_type="user_message_sent",
+            payload={"content": "hello"}, occurred_at=occurred,
+        )
+        e.recorded_at = NOW.replace(tzinfo=None)
+        s.add(e)
+        s.flush()
+        tid = t.id
+        s.commit()
+    return tid
+
+
+def test_review_queue_horizon_leads_with_forward_work(archive_home):
+    """The horizon splits the queue: live work first, history at a set rate.
+
+    A machine with years of sessions on disk would otherwise hand an unattended
+    drain a five-figure queue on its first fire.
+    """
+    ta.open_archive()
+    horizon = datetime(2026, 6, 1, tzinfo=timezone.utc)
+    old_a = _seed_at("old-a", datetime(2025, 3, 1, tzinfo=timezone.utc))
+    old_b = _seed_at("old-b", datetime(2025, 4, 1, tzinfo=timezone.utc))
+    new_a = _seed_at("new-a", datetime(2026, 6, 2, tzinfo=timezone.utc))
+    new_b = _seed_at("new-b", datetime(2026, 6, 3, tzinfo=timezone.utc))
+
+    # No horizon: the queue is undivided.
+    assert {r["id"] for r in review_queue()} == {old_a, old_b, new_a, new_b}
+
+    # Default policy — history is not curated at all.
+    forward = review_queue(horizon=horizon)
+    assert {r["id"] for r in forward} == {new_a, new_b}
+    assert all(r["catchup"] is False for r in forward)
+
+    # A rate lets history ride along *behind* the live work, capped. Order
+    # between the forward rows isn't asserted: ids are ULIDs, and two minted in
+    # the same millisecond tie on their timestamp.
+    blended = review_queue(horizon=horizon, catchup=1)
+    assert len(blended) == 3
+    assert {r["id"] for r in blended[:2]} == {new_a, new_b}
+    assert all(r["catchup"] is False for r in blended[:2])
+    assert blended[2]["catchup"] is True and blended[2]["id"] in {old_a, old_b}
+
+    # The cap is per run, not a filter: a bigger rate reaches more history.
+    assert len(review_queue(horizon=horizon, catchup=5)) == 4
+
+    # Forward work keeps its slots when the run cap is tight.
+    tight = review_queue(limit=2, horizon=horizon, catchup=5)
+    assert {r["id"] for r in tight} == {new_a, new_b}
+
+
+def test_review_queue_horizon_keeps_a_straddling_session_forward(archive_home):
+    # A session that began before curation was switched on and continued past it
+    # is live work, not history — it is judged by having activity after the
+    # horizon, not by when it started.
+    ta.open_archive()
+    horizon = datetime(2026, 6, 1, tzinfo=timezone.utc)
+    straddle = _seed_at("straddle", datetime(2026, 5, 30, tzinfo=timezone.utc))
+    with get_session() as s:
+        e = Event(
+            thread_id=straddle, stream_id="straddle", event_type="user_message_sent",
+            payload={"content": "still going"},
+            occurred_at=datetime(2026, 6, 2, tzinfo=timezone.utc),
+        )
+        e.recorded_at = NOW.replace(tzinfo=None)
+        s.add(e)
+        s.commit()
+
+    assert [r["id"] for r in review_queue(horizon=horizon)] == [straddle]
+
+
 def test_curation_read_helpers(archive_home):
     ta.open_archive()
     conv, eid = _seed_conversation("sess-read", content="find me later")

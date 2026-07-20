@@ -139,10 +139,11 @@ def run_setup(
     ask: Callable[..., str] = _ask,
     offer_watcher: Optional[Callable] = None,
     offer_backup: Optional[Callable] = None,
+    offer_curation: Optional[Callable] = None,
     offer_mcp: Optional[Callable] = None,
 ) -> int:
-    """Discover → consent → import → watcher → backup → MCP wiring. Returns
-    exit code.
+    """Discover → consent → import → watcher → backup → curation → MCP wiring.
+    Returns exit code.
 
     The flow's collaborators are keyword parameters: ``interactive`` overrides
     the TTY auto-detect, ``ask`` is the prompt, and the ``offer_*`` steps
@@ -254,11 +255,15 @@ def run_setup(
     cfg["setup"]["backup"] = (offer_backup or _offer_backup)(args, interactive)
     _say()
 
-    # 6. MCP wiring.
+    # 6. The scheduled curation drains.
+    cfg["setup"]["curation"] = (offer_curation or _offer_curation)(args, interactive)
+    _say()
+
+    # 7. MCP wiring.
     cfg["setup"]["clients"] = {"claude": (offer_mcp or _offer_mcp)(args, interactive)}
     _say()
 
-    # 7. Done.
+    # 8. Done.
     cfg["setup"]["completed_at"] = datetime.now().astimezone().isoformat(timespec="seconds")
     save_config(cfg, args.home)
     _say("Done. Ask your agent: \"what have we discussed about …?\"")
@@ -368,6 +373,117 @@ def _offer_watcher(
         return "failed"
     _say("  Installed — always-on, restarts on crash, web viewer at http://127.0.0.1:8787.")
     return "launchd"
+
+
+def _conversation_count(home: Optional[str]) -> int:
+    """Conversations already on disk — the size of the history a catch-up would
+    work through. Best-effort: the offer degrades to a generic prompt, never an
+    error, if the store can't be counted."""
+    try:
+        from sqlalchemy import func, select
+
+        from .. import _api as api
+        from .._store import Thread, get_session
+
+        api.open_archive(home)
+        with get_session() as s:
+            return int(s.execute(
+                select(func.count()).select_from(Thread).where(
+                    Thread.thread_type == "conversation"
+                )
+            ).scalar_one() or 0)
+    except Exception:  # noqa: BLE001 — a count is not worth failing setup over
+        return 0
+
+
+def _offer_curation(args: argparse.Namespace, interactive: bool) -> dict:
+    """Offer to schedule the two curation drains, and settle what happens to the
+    history already on disk.
+
+    The default is deliberately the cheap one: curate from here on. Each fire
+    spends a Claude Code instance, so pointing a fresh install at years of
+    existing sessions is the difference between a few runs a day and an
+    unattended Opus run every hour for weeks. Catch-up is offered as a rate
+    rather than a switch, so an operator who wants their history curated gets it
+    at a pace they chose.
+    """
+    from datetime import datetime, timezone
+
+    if getattr(args, "skip_curation", False):
+        _say("Curation skipped (--skip-curation).")
+        return {"status": "skipped"}
+    if sys.platform != "darwin":
+        _say("Curation: the scheduled drains ship for macOS only right now.")
+        _say("  Run one by hand anytime with `archive curate librarian|gardener`.")
+        return {"status": "unavailable"}
+
+    from .. import _curation, _launchd
+
+    if curation_running(args.home):
+        _say("Curation: the librarian and gardener are already scheduled.")
+        return {"status": "already-installed"}
+
+    _say("Curation: an agent that organizes the archive — it links conversations to")
+    _say("topics and writes each a short summary, so search has something to find.")
+    _say("Two scheduled jobs: the librarian (hourly) and the gardener (daily). Each")
+    _say("run spends a Claude Code instance, so this costs usage against your login.")
+    # Recurring spend is never opted into by silence: with no terminal to answer,
+    # scheduling happens only when it was asked for outright (--curation).
+    asked_for = getattr(args, "curation", False)
+    choice = "y" if asked_for else _ask(
+        "  Schedule it? [Y/n] > ", default="y" if interactive else "n",
+        interactive=interactive,
+    )
+    if choice not in ("y", "yes"):
+        _say("  Skipped — `archive daemon install --librarian --gardener` schedules it later.")
+        return {"status": "skipped"}
+
+    existing = _conversation_count(args.home)
+    _say()
+    _say(f"  The {existing:,} conversation(s) already on disk are history: by default"
+         if existing else "  By default")
+    _say("  the librarian curates only what happens from now on. Working through the")
+    _say("  backlog is optional, and it is the expensive part.")
+    flag_rate = getattr(args, "catchup_per_run", None)
+    raw = str(flag_rate) if flag_rate is not None else _ask(
+        "  How many older conversations per run? 0 = leave them alone, "
+        "'all' = no limit,\n  [Enter] for 0  > ",
+        default="0", interactive=interactive,
+    )
+    catch_all = raw in ("all", "everything")
+    try:
+        rate = 0 if catch_all else max(0, int(raw or "0"))
+    except ValueError:
+        _say(f"  '{raw}' isn't a number — leaving the history alone.")
+        rate = 0
+
+    _curation.set_curation_policy(
+        args.home,
+        horizon=None if catch_all else datetime.now(timezone.utc),
+        clear_horizon=catch_all,
+        catchup_per_run=rate,
+    )
+    try:
+        _launchd.install_librarian(
+            args.home, interval=_launchd.resolved_librarian_interval(args.home)
+        )
+        hour, minute = _launchd.resolved_gardener_schedule(args.home)
+        _launchd.install_gardener(args.home, hour=hour, minute=minute)
+    except SystemExit as e:
+        _say(f"  Could not schedule curation: {e}")
+        _say("  Retry with `archive daemon install --librarian --gardener`.")
+        return {"status": "failed"}
+
+    if catch_all:
+        _say("  Scheduled — curating the whole archive, history included.")
+    elif rate:
+        _say(f"  Scheduled — curating from now on, plus up to {rate} older "
+             f"conversation(s) per run.")
+    else:
+        _say("  Scheduled — curating from now on; the history is left alone.")
+        _say("  Change your mind: set curation.librarian.catchup_per_run in config.json.")
+    _say("  Each fire skips cheaply when there's nothing to do.")
+    return {"status": "launchd", "catchup_per_run": rate, "catch_up_all": catch_all}
 
 
 def _offer_backup(args: argparse.Namespace, interactive: bool) -> dict:
@@ -629,6 +745,15 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--skip-backup", action="store_true", help="setup: don't offer nightly backup")
     parser.add_argument("--backup-dest", default=None, metavar="PATH",
                         help="setup: schedule nightly backups to PATH without prompting")
+    parser.add_argument("--skip-curation", action="store_true",
+                        help="setup: don't offer the scheduled curation drains")
+    parser.add_argument("--curation", action="store_true",
+                        help="setup: schedule the curation drains without prompting "
+                             "(curating from now on; --catchup-per-run works through "
+                             "the history already on disk)")
+    parser.add_argument("--catchup-per-run", type=int, default=None, metavar="N",
+                        help="setup: with --curation, how many older conversations may "
+                             "ride along in each run (default 0 — history untouched)")
     parser.add_argument("--skip-mcp", action="store_true", help="setup: don't offer MCP wiring")
     parser.add_argument("--version", action="version", version=f"thread-archive {__version__}")
     return parser

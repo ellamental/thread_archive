@@ -35,12 +35,19 @@ no direct file edits.
 ## The queue
 
 Call `review_queue(limit=20)`. It returns a JSON list of `{id, title,
-source_id}` — event-bearing conversation threads still missing a citation/link
-or a stored summary, newest first. State *is* the data: a thread leaves the
-queue the instant it has both halves, so the queue is idempotent (a half-done
-thread simply reappears) and safe to redrain. Threads that ingested events
-within the last hour are held back automatically (a live session's curation
-would go stale on arrival).
+source_id, catchup}` — conversation threads carrying real messages and still
+missing a citation/link or a stored summary, newest first. State *is* the data:
+a thread leaves the queue the instant it has both halves, so the queue is
+idempotent (a half-done thread simply reappears) and safe to redrain. Threads
+that ingested events within the last hour are held back automatically (a live
+session's curation would go stale on arrival), as are threads with no message
+in them at all — there is nothing in those to cite or summarize.
+
+Where the operator set a curation horizon, the queue leads with conversations
+that happened after it and appends a few older ones flagged `catchup: true`,
+which is how their history gets worked through at a rate they chose. Curate a
+catch-up thread exactly like any other — the flag only explains why something
+old is sitting at the bottom of a newest-first queue.
 
 **Skip the thread you're in.** This librarian run is *itself* an AI
 conversation, and the archive's watcher may ingest it live — so your own

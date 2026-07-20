@@ -106,6 +106,7 @@ function DrainCard({ name, drain }: { name: string; drain: CurationDrain }) {
   // open and launches on an unknown count, so "0" here would be a lie about
   // what the next fire will do.
   const backlog = drain.backlog
+  const p = drain.policy
   const state =
     backlog == null ? 'unknown' : backlog === 0 ? 'drained' : `${fmtInt(backlog)} queued`
   return (
@@ -125,7 +126,40 @@ function DrainCard({ name, drain }: { name: string; drain: CurationDrain }) {
           <dd>{drain.model}{drain.effort ? ` · ${drain.effort}` : ''}</dd>
         </div>
       </dl>
+      {p && <Policy policy={p} />}
     </div>
+  )
+}
+
+// The queue above counts forward work plus one run's worth of history, so
+// without this a page showing "12 queued" would say nothing about the thousands
+// of older conversations deliberately left alone.
+function Policy({ policy }: { policy: NonNullable<CurationDrain['policy']> }) {
+  const { horizon, catchup_per_run: rate, history } = policy
+  if (!horizon) {
+    return <p className="drain-policy">Curating the whole archive, history included.</p>
+  }
+  const since = new Date(horizon)
+  const sinceLabel = isNaN(since.getTime())
+    ? 'the install point'
+    : since.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })
+  return (
+    <p className="drain-policy">
+      Curating conversations since {sinceLabel}.{' '}
+      {history == null ? null : history === 0 ? (
+        <>No older conversations are waiting.</>
+      ) : rate > 0 ? (
+        <>
+          {fmtInt(history)} older {history === 1 ? 'conversation' : 'conversations'} behind
+          it, worked at {rate} per run.
+        </>
+      ) : (
+        <>
+          {fmtInt(history)} older {history === 1 ? 'conversation' : 'conversations'} left
+          alone — set <code>curation.librarian.catchup_per_run</code> to work through them.
+        </>
+      )}
+    </p>
   )
 }
 

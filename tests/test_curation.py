@@ -8,6 +8,7 @@ shape, not this machine's archive or Claude login.
 from __future__ import annotations
 
 import json
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
@@ -224,6 +225,63 @@ def test_gates_count_real_index(archive_home) -> None:
         ))
     assert _curation.librarian_backlog() == 1
     assert _curation.gardener_backlog() == 1
+
+
+def _seed_gate_index(rows: list[tuple[str, str]]) -> None:
+    """A tiny index of curatable conversations: ``(thread_name, occurred_at)``."""
+    from sqlalchemy import text
+
+    from thread_archive._store import _base
+    from thread_archive._store.models import Base
+
+    engine = _base.get_engine()
+    Base.metadata.create_all(engine)
+    with engine.begin() as conn:
+        for i, (name, occurred) in enumerate(rows, start=1):
+            conn.execute(
+                text("INSERT INTO threads (id, name, thread_type, archived, title) "
+                     "VALUES (:i, :n, 'conversation', 0, :n)"),
+                {"i": str(i), "n": name},
+            )
+            conn.execute(
+                text("INSERT INTO events (id, thread_id, stream_id, event_type, "
+                     "payload, occurred_at, recorded_at) VALUES "
+                     "(:i, :t, 's', 'user_message_sent', '{}', :o, "
+                     " datetime('now', '-2 hours'))"),
+                {"i": i, "t": str(i), "o": occurred},
+            )
+
+
+def test_librarian_gate_counts_only_what_the_queue_would_hand_out(archive_home) -> None:
+    # The gate decides whether a fire happens at all, so it has to mirror
+    # review_queue's horizon split. Counting history the queue will never serve
+    # would launch an Opus run every hour to discover there is nothing to do.
+    from thread_archive import _curation
+
+    _seed_gate_index([
+        ("old-a", "2025-03-01 10:00:00"),
+        ("old-b", "2025-04-01 10:00:00"),
+        ("old-c", "2025-05-01 10:00:00"),
+        ("new-a", "2026-06-02 10:00:00"),
+    ])
+
+    # No horizon: everything counts.
+    assert _curation.librarian_backlog() == 4
+
+    # Default policy: only what happened after the install point.
+    _curation.set_curation_policy(horizon=datetime(2026, 6, 1, tzinfo=timezone.utc))
+    assert _curation.librarian_backlog() == 1
+
+    # A rate adds only as much history as a run would actually take — an archive
+    # of thousands with a cap of 2 is 2 items of backlog, not thousands.
+    _curation.set_curation_policy(catchup_per_run=2)
+    assert _curation.librarian_backlog() == 3
+    _curation.set_curation_policy(catchup_per_run=99)
+    assert _curation.librarian_backlog() == 4
+
+    # Opting back in to the whole archive.
+    _curation.set_curation_policy(clear_horizon=True)
+    assert _curation.librarian_backlog() == 4
 
 
 def test_librarian_gate_ignores_threads_with_no_curatable_content(archive_home) -> None:

@@ -80,9 +80,23 @@ def _heartbeat(kind: str, home: Optional[str]) -> dict:
 
 
 def _drains(home: Optional[str]) -> dict:
-    """Per-drain: backlog (the daemon's own gate), cadence, model, heartbeat."""
+    """Per-drain: backlog (the daemon's own gate), cadence, model, heartbeat.
+
+    The librarian also reports its catch-up policy and the history sitting behind
+    it. Without that the page would show a forward-only backlog of a few dozen
+    while thousands of older conversations go uncurated by design, and nothing on
+    the page would say so.
+    """
     from .. import _launchd
-    from . import DRAINS, curation_settings, gardener_backlog, librarian_backlog
+    from . import (
+        DRAINS,
+        curation_settings,
+        gardener_backlog,
+        librarian_backlog,
+        librarian_catchup,
+        librarian_counts,
+        librarian_horizon,
+    )
 
     hour, minute = _launchd.resolved_gardener_schedule(home)
     cadence = {
@@ -108,6 +122,14 @@ def _drains(home: Optional[str]) -> dict:
             "cadence": cadence[kind],
             **_heartbeat(kind, home),
         }
+    counts = librarian_counts(home)
+    horizon = librarian_horizon(home)
+    out["librarian"]["policy"] = {
+        "horizon": _iso(horizon),
+        "catchup_per_run": librarian_catchup(home),
+        "forward": (counts or {}).get("forward"),
+        "history": (counts or {}).get("history"),
+    }
     return out
 
 

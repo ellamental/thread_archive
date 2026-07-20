@@ -53,6 +53,33 @@ def test_classify_tool_rejects_lookalikes():
         assert retrieval_eval.classify_tool(name) is None, name
 
 
+# ── resolve_read_refs ────────────────────────────────────────────────────────
+
+def test_resolve_read_refs_canonicalizes_and_drops_unresolvable():
+    table = {"3024": "01AAAAAAAAAAAAAAAAAAAAAAAA", "sess-uuid-7": "01BBBBBBBBBBBBBBBBBBBBBBBB"}
+    events = [
+        ("S1", "search", "q"),
+        ("S1", "read", 3024),            # legacy int
+        ("S1", "read", "sess-uuid-7"),   # provider session id
+        ("S1", "read", 999999),          # resolves to nothing: dropped
+    ]
+    out = retrieval_eval.resolve_read_refs(events, lambda r: table.get(str(r)))
+    assert out == [
+        ("S1", "search", "q"),
+        ("S1", "read", "01AAAAAAAAAAAAAAAAAAAAAAAA"),
+        ("S1", "read", "01BBBBBBBBBBBBBBBBBBBBBBBB"),
+    ]
+
+
+def test_resolve_read_refs_enables_self_session_exclusion():
+    # A read of the session's own thread must canonicalize to the session id
+    # so pair_log_events can exclude it.
+    ulid = "01CCCCCCCCCCCCCCCCCCCCCCCC"
+    events = retrieval_eval.resolve_read_refs(
+        [(ulid, "search", "q"), (ulid, "read", 555)], lambda r: ulid)
+    assert retrieval_eval.pair_log_events(events) == []
+
+
 # ── pair_log_events ──────────────────────────────────────────────────────────
 
 def test_pairing_attributes_reads_to_most_recent_search():
@@ -102,6 +129,44 @@ def test_pairing_keeps_sessions_independent():
         (1, "read", 100),
     ])
     assert cases == [{"query": "q", "gold": [100], "sessions": [1]}]
+
+
+# ── behavior_report ──────────────────────────────────────────────────────────
+
+def test_behavior_outcomes_clicked_reformulated_abandoned():
+    report = retrieval_eval.behavior_report([
+        ("S1", "search", "q1"),
+        ("S1", "read", "T1"),      # q1: clicked
+        ("S1", "search", "q2"),
+        ("S1", "search", "q3"),    # q2: reformulated (no click before next search)
+        ("S1", "read", "T2"),
+        ("S1", "read", "T3"),      # q3: clicked, 2 reads
+        ("S2", "search", "q4"),    # q4: abandoned (session trail ends)
+    ])
+    assert report["n_searches"] == 4
+    assert report["n_sessions"] == 2
+    assert report["clicked"] == 2
+    assert report["reformulated"] == 1
+    assert report["abandoned"] == 1
+    assert report["reads_per_click"] == 1.5
+
+
+def test_behavior_self_and_repeat_reads_are_not_clicks():
+    report = retrieval_eval.behavior_report([
+        ("S1", "read", "T1"),      # pre-search read: T1 is known
+        ("S1", "search", "q1"),
+        ("S1", "read", "S1"),      # own session
+        ("S1", "read", "T1"),      # already seen
+    ])
+    assert report["clicked"] == 0
+    assert report["abandoned"] == 1
+
+
+def test_behavior_reads_without_search_are_ignored():
+    report = retrieval_eval.behavior_report([("S1", "read", "T1")])
+    assert report["n_searches"] == 0
+    assert report["n_sessions"] == 0
+    assert report["click_rate"] == 0.0
 
 
 # ── evaluate: multi-gold, session-skip scoring ───────────────────────────────

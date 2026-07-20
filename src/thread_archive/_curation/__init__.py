@@ -53,11 +53,12 @@ import sqlite3
 import subprocess
 from collections.abc import Callable
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from importlib import resources
 from pathlib import Path
 from typing import Optional
 
-from .._config import load_config, resolve_paths
+from .._config import load_config, resolve_paths, save_config
 
 logger = logging.getLogger(__name__)
 
@@ -84,9 +85,9 @@ def _index_path(home: Optional[str]) -> Path:
     return resolve_paths(home).index_path
 
 
-def librarian_backlog(home: Optional[str] = None) -> Optional[int]:
-    """Count the conversation threads the librarian's queue still considers
-    un-done.
+def librarian_counts(home: Optional[str] = None) -> Optional[dict]:
+    """The librarian's un-done work, split by the curation horizon:
+    ``{"forward": n, "history": n}`` — ``None`` when the query failed.
 
     Un-done = non-archived conversation thread carrying at least one
     message-bearing event and missing either half of the librarian's per-thread
@@ -95,8 +96,12 @@ def librarian_backlog(home: Optional[str] = None) -> Optional[int]:
     QUIET_MINUTES hold-back and its content requirement. That content clause is
     load-bearing for the gate specifically: a thread with only bookkeeping events
     can never be curated, so counting it would launch an instance every fire to
-    rediscover work it cannot do. Read-only over the SQLite index; ``None`` when
-    the query failed (the caller fails open).
+    rediscover work it cannot do.
+
+    ``forward`` is what happened at or after the horizon and is always queued;
+    ``history`` is everything older, reached only at ``catchup_per_run`` a run.
+    With no horizon it is all forward. Both halves come from one pass over the
+    eligibility predicate — the expensive part — rather than a query each.
     """
     from .._retrieval._extract import INDEXABLE_EVENT_TYPES
 
@@ -105,34 +110,69 @@ def librarian_backlog(home: Optional[str] = None) -> Optional[int]:
     # review_queue) considers content.
     type_params = {f"t{i}": t for i, t in enumerate(INDEXABLE_EVENT_TYPES)}
     type_list = ", ".join(f":{k}" for k in type_params)
+    horizon = librarian_horizon(home)
+    eligible = (
+        "FROM threads t "
+        "WHERE t.thread_type = 'conversation' AND NOT t.archived "
+        "  AND EXISTS (SELECT 1 FROM events e WHERE e.thread_id = t.id "
+        f"                 AND e.event_type IN ({type_list})) "
+        "  AND NOT EXISTS (SELECT 1 FROM events eq WHERE eq.thread_id = t.id "
+        "                  AND eq.recorded_at >= datetime('now', :quiet)) "
+        "  AND ( "
+        "    t.summary IS NULL OR trim(t.summary) = '' "
+        "    OR NOT ( "
+        "      EXISTS (SELECT 1 FROM topic_messages tm "
+        "              WHERE tm.thread_id = t.id AND tm.archived_at IS NULL) "
+        "      OR EXISTS (SELECT 1 FROM thread_links tl "
+        "                 WHERE tl.source_thread_id = t.id "
+        "                    OR tl.target_thread_id = t.id) "
+        "    ) "
+        "  )"
+    )
+    # Mirrors review_queue's split, and must keep mirroring it: the gate derived
+    # from these counts decides whether a fire happens at all, so counting history
+    # the queue will never hand out would launch an Opus run every hour to find
+    # nothing to do.
+    after = (
+        "EXISTS (SELECT 1 FROM events eh WHERE eh.thread_id = t.id "
+        "        AND eh.occurred_at >= :horizon)"
+    )
+    params = {"quiet": f"-{QUIET_MINUTES} minutes", **type_params}
     try:
         conn = sqlite3.connect(f"file:{_index_path(home)}?mode=ro", uri=True, timeout=30)
         try:
+            if horizon is None:
+                row = conn.execute(f"SELECT count(*) {eligible}", params).fetchone()
+                return {"forward": int(row[0] or 0), "history": 0}
+            params["horizon"] = horizon.astimezone(timezone.utc).replace(
+                tzinfo=None
+            ).isoformat(sep=" ")
             row = conn.execute(
-                "SELECT count(*) FROM threads t "
-                "WHERE t.thread_type = 'conversation' AND NOT t.archived "
-                "  AND EXISTS (SELECT 1 FROM events e WHERE e.thread_id = t.id "
-                f"                 AND e.event_type IN ({type_list})) "
-                "  AND NOT EXISTS (SELECT 1 FROM events eq WHERE eq.thread_id = t.id "
-                "                  AND eq.recorded_at >= datetime('now', :quiet)) "
-                "  AND ( "
-                "    t.summary IS NULL OR trim(t.summary) = '' "
-                "    OR NOT ( "
-                "      EXISTS (SELECT 1 FROM topic_messages tm "
-                "              WHERE tm.thread_id = t.id AND tm.archived_at IS NULL) "
-                "      OR EXISTS (SELECT 1 FROM thread_links tl "
-                "                 WHERE tl.source_thread_id = t.id "
-                "                    OR tl.target_thread_id = t.id) "
-                "    ) "
-                "  )",
-                {"quiet": f"-{QUIET_MINUTES} minutes", **type_params},
+                f"SELECT sum(CASE WHEN {after} THEN 1 ELSE 0 END), "
+                f"       sum(CASE WHEN {after} THEN 0 ELSE 1 END) {eligible}",
+                params,
             ).fetchone()
-            return int(row[0] or 0)
+            return {"forward": int(row[0] or 0), "history": int(row[1] or 0)}
         finally:
             conn.close()
     except Exception:
         logger.exception("librarian: backlog count failed")
         return None
+
+
+def librarian_backlog(home: Optional[str] = None) -> Optional[int]:
+    """What the next fire would actually be handed: the forward work plus at most
+    one run's worth of history. ``None`` when the count failed (caller fails open).
+
+    The cap is what makes a horizon cheap to sit behind — an archive of ten
+    thousand historical threads with a catch-up rate of 5 is 5 items of backlog,
+    not ten thousand, so a drained forward queue skips its fire instead of
+    launching into work it would only nibble.
+    """
+    counts = librarian_counts(home)
+    if counts is None:
+        return None
+    return counts["forward"] + min(librarian_catchup(home), counts["history"])
 
 
 def gardener_backlog(home: Optional[str] = None) -> Optional[int]:
@@ -236,6 +276,83 @@ def curation_settings(kind: str, home: Optional[str] = None) -> tuple[str, str]:
     elif not isinstance(effort, str):
         effort = DEFAULT_EFFORT
     return model.strip(), effort.strip()
+
+
+def librarian_horizon(home: Optional[str] = None) -> Optional[datetime]:
+    """The install point the librarian curates forward from, or ``None`` for an
+    undivided queue (every thread is fair game).
+
+    Config key: ``curation.librarian.horizon``, an ISO-8601 timestamp — stamped
+    when the drain is scheduled, so a machine with years of existing sessions
+    starts curating what happens *next* instead of opening with a five-figure
+    queue. History is reached through ``catchup_per_run``, not through this.
+    Naive values are read as UTC, matching the store's uniform naive-UTC stamps.
+    """
+    raw = drain_config("librarian", home).get("horizon")
+    if raw is None:
+        return None
+    if isinstance(raw, str):
+        try:
+            parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+        except ValueError:
+            pass
+        else:
+            return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+    logger.warning(
+        "librarian: config horizon=%r is not an ISO-8601 timestamp — curating "
+        "the whole backlog", raw,
+    )
+    return None
+
+
+def librarian_catchup(home: Optional[str] = None) -> int:
+    """How many pre-horizon (historical) threads may ride along in one run.
+
+    Config key: ``curation.librarian.catchup_per_run``; 0 (the default) means
+    history is never curated. The cap is per *run*, not per day: it is the rate
+    at which an existing archive is worked through, alongside — never instead of
+    — the forward work each fire is really for.
+    """
+    raw = drain_config("librarian", home).get("catchup_per_run")
+    if raw is None:
+        return 0
+    if isinstance(raw, (int, float)) and not isinstance(raw, bool) and raw >= 0:
+        return int(raw)
+    logger.warning(
+        "librarian: config catchup_per_run=%r is not a non-negative number — "
+        "not curating history", raw,
+    )
+    return 0
+
+
+def set_curation_policy(
+    home: Optional[str] = None, *,
+    horizon: Optional[datetime] = None, catchup_per_run: Optional[int] = None,
+    clear_horizon: bool = False,
+) -> dict:
+    """Write the librarian's catch-up policy into ``config.json`` and return the
+    resulting ``curation.librarian`` entry.
+
+    Only the fields passed are touched, so setting a rate later doesn't disturb
+    an existing horizon. ``clear_horizon`` removes it outright — the "curate
+    everything, it's all mine" choice — and wins over ``horizon``.
+    """
+    cfg = load_config(home)
+    curation = cfg.setdefault("curation", {})
+    if not isinstance(curation, dict):
+        curation = cfg["curation"] = {}
+    entry = curation.setdefault("librarian", {})
+    if not isinstance(entry, dict):
+        entry = curation["librarian"] = {}
+    if clear_horizon:
+        entry.pop("horizon", None)
+    elif horizon is not None:
+        stamp = horizon if horizon.tzinfo else horizon.replace(tzinfo=timezone.utc)
+        entry["horizon"] = stamp.astimezone(timezone.utc).isoformat()
+    if catchup_per_run is not None:
+        entry["catchup_per_run"] = max(0, int(catchup_per_run))
+    save_config(cfg, home)
+    return entry
 
 
 def librarian_interval(home: Optional[str] = None) -> Optional[int]:

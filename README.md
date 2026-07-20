@@ -49,6 +49,26 @@ searched other distillations. It survives in the harness as a quick local
 probe; CI runs a single lean gate — semantic arm verified alive directly,
 plus a small seeded sample of the log-mined cases as a collapse alarm.)
 
+The same trail powers three more instruments, each aimed at a limit of the
+click labels. Every CI gate run appends its numbers to a trend ledger
+(`~/.thread/archive/retrieval-trend.jsonl`), so quality is a time series, not
+a launch-day screenshot, and `--mined-after` holds out only the cases mined
+after a ranking change shipped. `--behavior` reports zero-label usage
+signals — for every search the trail shows whether the agent opened a
+result, searched again, or walked away — rates that move only when something
+real moves. And `scripts/retrieval_judge.py` runs a sample of the mined
+queries through the production stack and has a headless `claude` grade every
+top-10 thread, yielding graded precision, a calibration of the click labels
+themselves, and explicit credit for relevant results the click protocol can
+only score as misses. The knowledge graph gets its own usage meter:
+`scripts/topic_eval.py` measures **subject uptake** — the graph's delivery
+path into work is the relevant-subjects lens on every search result, so the
+metric is how often a topic read follows a search — split by searcher
+(working sessions vs. curation machinery), alongside a curation-ergonomics
+check of the librarian's dedup `topic_search`. A lens nobody pivots through
+is a terrarium, however well curated; uptake is the number that says which
+it is.
+
 **Built like a database, not a folder of exports.**
 - Plain JSONL files are the source of truth — human-readable, greppable, yours. The search index is disposable and rebuilds from them at any time.
 - Crash-safe writes with intent journaling, fsync discipline, and automatic recovery. Your history survives power loss, killed processes, and corrupted indexes.

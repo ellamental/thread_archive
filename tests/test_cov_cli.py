@@ -442,7 +442,12 @@ def test_daemon_watcher_uninstall_restart_status(monkeypatch, capsys) -> None:
 # ── daemon: librarian / gardener drain agents ────────────────────────────────
 
 
-def test_daemon_librarian_lifecycle(monkeypatch, capsys) -> None:
+def test_daemon_librarian_lifecycle(monkeypatch, capsys, tmp_path) -> None:
+    # A real home: installing stamps the curation horizon into config.json, and a
+    # horizon that failed to persist would silently mean "curate everything" —
+    # the expensive default the horizon exists to avoid — so the write is not
+    # something to fake away.
+    home = str(tmp_path / "arc")
     seen = {}
     monkeypatch.setattr(_launchd, "resolved_librarian_interval", lambda home: 1800)
     monkeypatch.setattr(
@@ -450,12 +455,23 @@ def test_daemon_librarian_lifecycle(monkeypatch, capsys) -> None:
         lambda home, *, interval: seen.update(home=home, interval=interval)
         or "/plist/librarian.plist",
     )
-    rc = main(["daemon", "install", "--librarian", "--home", "/h"])
+    rc = main(["daemon", "install", "--librarian", "--home", home])
     assert rc == 0
-    assert seen == {"home": "/h", "interval": 1800}
+    assert seen == {"home": home, "interval": 1800}
     out = capsys.readouterr().out
     assert f"installed {_launchd.LIBRARIAN_LABEL}" in out
     assert "every 30 min" in out
+    assert "curating from now on" in out
+
+    from thread_archive import _curation
+
+    assert _curation.librarian_horizon(home) is not None
+    assert _curation.librarian_catchup(home) == 0  # history left alone by default
+
+    # --catch-up is the opt-in to the whole archive.
+    assert main(["daemon", "install", "--librarian", "--home", home, "--catch-up"]) == 0
+    assert "history included" in capsys.readouterr().out
+    assert _curation.librarian_horizon(home) is None
 
     monkeypatch.setattr(_launchd, "uninstall_librarian", lambda: None)
     assert main(["daemon", "uninstall", "--librarian"]) == 0

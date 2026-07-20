@@ -58,14 +58,29 @@ def _resolve_ref(ref: int | str) -> Optional[str]:
 def review_queue(limit: int = 20, exclude_source_id: Optional[str] = None) -> str:
     """Conversation threads with librarian work left (the backlog), newest first.
 
-    Event-bearing conversations still missing either half of the librarian's output —
-    a thread leaves the queue once it has BOTH its first topic citation/link AND a
-    stored summary. Threads that ingested events within the last hour are held back
-    (a live session's curation would be premature). Pass your own session's
-    ``source_id`` as ``exclude_source_id`` to drop your still-growing transcript from the
-    queue. Returns a JSON list of ``{id, title, source_id}``."""
+    Conversations carrying real messages and still missing either half of the
+    librarian's output — a thread leaves the queue once it has BOTH its first topic
+    citation/link AND a stored summary. Threads that ingested events within the last
+    hour are held back (a live session's curation would be premature). Pass your own
+    session's ``source_id`` as ``exclude_source_id`` to drop your still-growing
+    transcript from the queue.
+
+    Where a curation horizon is configured, the queue leads with conversations that
+    happened after it and appends at most the configured number of older ones, each
+    flagged ``catchup: true`` — history is worked at a deliberate rate, behind the
+    live work. Curate them the same way; the flag is there to explain why an old
+    thread appears at the bottom of a newest-first queue.
+
+    Returns a JSON list of ``{id, title, source_id, catchup}``."""
     api.open_archive()
-    return _dump(_write.review_queue(limit=limit, exclude_source_id=exclude_source_id))
+    from .._curation import librarian_catchup, librarian_horizon
+
+    return _dump(_write.review_queue(
+        limit=limit,
+        exclude_source_id=exclude_source_id,
+        horizon=librarian_horizon(),
+        catchup=librarian_catchup(),
+    ))
 
 
 @mcp.tool()

@@ -2,6 +2,41 @@
 
 ## Unreleased
 
+- **The log-mined eval survives the ULID migration, and the proof story grew
+  teeth.** The `--from-log` miner resolved read refs by integer comparison
+  against `threads.id`; ULID primary keys made that intersection empty, so the
+  protocol mined zero cases and the CI retrieval-gate went red (the collapse
+  alarm firing for a real collapse — of the eval, not the ranker). The miner
+  now canonicalizes every trail ref (legacy integer id, ULID, provider session
+  id) through `resolve_thread_ref`, the same resolution `thread_read` itself
+  applies; 563 cases mine again and the gate is green at MRR 0.228 / R@10
+  0.387 (floors 0.14 / 0.20). Around that fix, three new instruments close
+  the click labels' known gaps: `--trend-out` appends any run's report as one
+  JSONL row and the gate row now writes `~/.thread/archive/retrieval-trend.jsonl`
+  every sweep (quality as a time series, not a launch-day number);
+  `--behavior` reports zero-label usage signals — per search: clicked,
+  reformulated, or abandoned — from the whole trail; `--mined-after` is the
+  time-based holdout (only cases mined after a date, for judging a ranking
+  change on post-change usage). New `scripts/retrieval_judge.py` sends a
+  sample of mined queries through the production stack and has a headless
+  `claude` grade every top-10 thread — graded precision, click-label
+  calibration, and beyond-click credit the click protocol structurally can't
+  award. The rerank/fusion docstrings now name the protocol behind their
+  tuning numbers (title-proxy) instead of citing them as if real-query.
+  `scripts/topic_eval.py` gives the knowledge graph a usage meter aimed at
+  its actual delivery path: the relevant-subjects lens annotates every
+  search result set with openable topics, so the headline metric is
+  **subject uptake** — how often a topic read follows a `thread_search`,
+  split by working sessions vs. curation machinery, with cold topic reads
+  (tree navigation) counted alongside. First measurement: 0.2% of all 3,408
+  trail searches ever led to a topic read — but the lens shipped 2026-07-15,
+  and post-ship the rate is ~9% in working sessions (5/56; small n, real
+  signal). Secondary and labeled curation ergonomics: the librarian's dedup
+  `topic_search` under the click protocol — 4,547 calls, 16% found a topic
+  to act on, 4.6% created one instead, 79% nothing; re-findability of
+  acted-on topics MRR 0.244 / R@10 0.343 (title-substring match hits at
+  rank 1 or never: R@20 ≈ R@10).
+
 - **The test suite runs four-wide, and one test stopped deleting the database out
   from under a live engine.** The `pytest` row swept 2147 tests in a single
   process; it now runs `-n 4 --dist=loadfile`, taking the row from ~240s to ~50s
@@ -12,6 +47,30 @@
   to that inode, so the next connection reused could raise `disk I/O error` from a
   `PRAGMA` against a deleted file. It closes the archive first now, the way every
   other test that deletes a live index already did.
+
+- **A new install curates what happens next, not what it found.** Scheduling the
+  librarian stamps a **curation horizon** (`curation.librarian.horizon`, set at
+  install): conversations from that point on are curated as they happen, and the
+  sessions already on disk are history, left alone by default. Without it, an
+  install pointed at years of existing transcripts opens with a five-figure queue
+  and bills an unattended Opus run against it every hour for weeks — the drain is
+  hourly and batch-capped, so a large history is a long, expensive tail nobody
+  asked for. History is reached through a **rate**, not a switch:
+  `curation.librarian.catchup_per_run` (default 0) sets how many older threads
+  ride along in each run, always *behind* that run's live work, and the queue
+  flags them `catchup: true` so the drain knows why an old thread is at the
+  bottom of a newest-first list. The gate mirrors the split and counts history
+  only up to one run's worth, so a drained forward queue still skips its fire
+  instead of launching into work it would only nibble. The horizon compares
+  against when a conversation *happened* (`occurred_at`), not when it was
+  ingested: a first import stamps its whole history as arriving today, so ingest
+  time cannot tell a decade of transcripts from this morning's. A session that
+  straddles the horizon counts as forward. Setup offers all of this
+  (`thread_archive setup`, or `--curation --catchup-per-run N`), as does
+  `archive daemon install --librarian` (`--catch-up` opts into the whole
+  archive). An existing install without a horizon is unchanged: the queue stays
+  undivided. Recurring spend is never opted into by silence — with no terminal
+  to answer, curation schedules only when asked for outright.
 
 - **The librarian's queue has a floor, and the drains no longer pay to
   rediscover it.** `review_queue` treated any thread with a row in `events` as

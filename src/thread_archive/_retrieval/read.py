@@ -322,8 +322,9 @@ def resolve_thread_ref(s: Session, ref: int | str) -> Optional[str]:
     A digit ref that matches no ``legacy_id`` still falls through to session
     resolution (some providers use numeric session ids, e.g. grok). None when
     nothing matches."""
-    from .._store import normalize_ulid, resolve_session_source_id
     from sqlalchemy import select as _select
+
+    from .._store import normalize_ulid, resolve_session_source_id
 
     if isinstance(ref, int) or (isinstance(ref, str) and ref.strip().isdigit()):
         tid = s.execute(

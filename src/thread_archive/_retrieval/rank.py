@@ -51,7 +51,9 @@ _CONTENT_TYPE_WEIGHT = {
 }
 
 # Cross-backend RRF fusion weight — the MRR optimum once the vector arm joined the
-# federation (the fusion-sweep: 50.0 Pareto-dominates 0.0 on R@1/10/20 and MRR).
+# federation (the fusion-sweep: 50.0 Pareto-dominates 0.0 on R@1/10/20 and MRR;
+# swept on the title-proxy eval — re-sweep on the log protocol before treating
+# the exact value as optimal for real queries).
 # Lexical scoring is ~0 for a semantic-only hit, so without this term a
 # vocab-mismatch hit the vector arm surfaced would sink regardless of its rank.
 _SEARCH_FUSION_WEIGHT = 50.0

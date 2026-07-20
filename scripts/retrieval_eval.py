@@ -17,7 +17,10 @@ searcher at the moment of searching — real query vocabulary, multi-gold, no
 curation. Pairing rules: a read labels the most recent prior search in its
 session; reads of threads the agent had already opened before searching don't
 count (it knew them without the search); the originating session is skipped
-during ranking (it quotes the query verbatim). A click is the pick from what
+during ranking (it quotes the query verbatim). Read refs in the trail come in
+every shape the read tool accepts — legacy integer ids, ULIDs, provider
+session ids — and are canonicalized through the same resolver the tool uses;
+reads that resolve to nothing are dropped. A click is the pick from what
 past search surfaced, not a corpus-wide judgment: golds are incumbent-shaped,
 so credit for surfacing relevant threads past search never reached is
 invisible here, and a clicked thread wasn't necessarily satisfying (opened is
@@ -34,8 +37,17 @@ rows (optional ``"sessions"``: thread ids to skip while ranking) — the hook
 for hand-curated or generated query sets. Mined and curated case files contain
 real usage; keep them out of the repo.
 
+``--behavior`` runs no ranking at all: it reports zero-label behavioral
+signals from the whole trail — per search, did the agent click a result,
+reformulate, or abandon? Proxies, not judgments; their value is the trend.
+
 Reports MRR and recall@1/5/10/20 at thread-level relevance, overall and
 per query-shape (so a lexical regression can't hide behind semantic wins).
+``--mined-after`` restricts the log protocols to trail events after a date
+(the time-based holdout); ``--trend-out`` appends any run's report as one
+JSONL row, turning point measurements into a time series (the CI gate row
+writes ~/.thread/archive/retrieval-trend.jsonl; LLM-judged relevance grades
+from scripts/retrieval_judge.py land beside it).
 
 Read-only. Run against the live archive:
 
@@ -58,6 +70,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 from sqlalchemy import text as sa_text  # noqa: E402
 
 from thread_archive import _api as api  # noqa: E402
+from thread_archive._retrieval.read import resolve_thread_ref  # noqa: E402
 from thread_archive._store import use_session  # noqa: E402
 
 RECALL_KS = (1, 5, 10, 20)
@@ -95,20 +108,41 @@ def sample_title_cases(n: int, seed: int) -> list[dict]:
     return [{"query": title, "gold": [tid], "sessions": []} for tid, title in rows[:n]]
 
 
-def pair_log_events(events: list[tuple[int, str, object]]) -> list[dict]:
+def resolve_read_refs(
+    events: list[tuple[object, str, object]], resolve,
+) -> list[tuple[object, str, object]]:
+    """Canonicalize read refs to thread ids; drop reads that resolve to nothing.
+
+    The trail holds whatever ref the agent passed to ``thread_read`` — a legacy
+    integer id, the ULID primary key, or a provider session id. ``resolve``
+    maps a ref to the canonical thread id (None = unresolvable). Search events
+    pass through untouched. Pure — the caller supplies the DB-backed resolver.
+    """
+    out: list[tuple[object, str, object]] = []
+    for sess, kind, value in events:
+        if kind == "read":
+            value = resolve(value)
+            if value is None:
+                continue
+        out.append((sess, kind, value))
+    return out
+
+
+def pair_log_events(events: list[tuple[object, str, object]]) -> list[dict]:
     """Pair search calls with the reads that followed them.
 
-    ``events``: (session_thread_id, kind, value) in occurrence order, where kind
-    is 'search' (value: query string) or 'read' (value: thread id). Pure — DB
+    ``events``: (session_thread_id, kind, value) in occurrence order, where
+    kind is 'search' (value: query string) or 'read' (value: canonical thread
+    id — refs already resolved, e.g. via :func:`resolve_read_refs`). Pure — DB
     filtering (gold existence, exclude_from_search) happens in the caller.
     """
-    per_session: dict[int, list[tuple[str, object]]] = {}
+    per_session: dict[object, list[tuple[str, object]]] = {}
     for sess, kind, value in events:
         per_session.setdefault(sess, []).append((kind, value))
 
     cases: list[dict] = []
     for sess, evs in per_session.items():
-        seen_reads: set[int] = set()
+        seen_reads: set[object] = set()
         current: tuple[str, set[int]] | None = None
 
         def flush() -> None:
@@ -129,32 +163,115 @@ def pair_log_events(events: list[tuple[int, str, object]]) -> list[dict]:
     return cases
 
 
-def mine_log_cases(n: int, seed: int) -> list[dict]:
+def behavior_report(events: list[tuple[object, str, object]]) -> dict:
+    """Zero-label quality signals from the trail: how searches actually end.
+
+    Per search, the outcome is ``clicked`` (a later read in the session was
+    attributed to it), ``reformulated`` (no click, and another search followed
+    in the same session — the agent tried again), or ``abandoned`` (no click
+    and the session's trail ends there — the agent gave up or went elsewhere).
+    Attribution follows the pairing rules: self-session reads and threads the
+    agent had already opened don't count as clicks. Pure — takes the resolved
+    event stream :func:`_trail_events` produces.
+
+    These are behavioral proxies, not judgments: a click isn't satisfaction
+    and an abandonment isn't always failure (the answer may have been in the
+    search snippets themselves). Their value is the trend — a ranking change
+    that moves click-through or abandonment moved something real.
+    """
+    per_session: dict[object, list[tuple[str, object]]] = {}
+    for sess, kind, value in events:
+        per_session.setdefault(sess, []).append((kind, value))
+
+    outcomes = {"clicked": 0, "reformulated": 0, "abandoned": 0}
+    clicked_read_counts: list[int] = []
+    sessions_with_search = 0
+    for sess, evs in per_session.items():
+        seen: set[object] = set()
+        pending: int | None = None  # click count of the currently open search
+        had_search = False
+        for kind, value in evs:
+            if kind == "search":
+                had_search = True
+                if pending is not None:
+                    outcomes["clicked" if pending else "reformulated"] += 1
+                    if pending:
+                        clicked_read_counts.append(pending)
+                pending = 0
+            else:
+                if pending is not None and value != sess and value not in seen:
+                    pending += 1
+                seen.add(value)
+        if pending is not None:
+            outcomes["clicked" if pending else "abandoned"] += 1
+            if pending:
+                clicked_read_counts.append(pending)
+        if had_search:
+            sessions_with_search += 1
+
+    n = sum(outcomes.values())
+    return {
+        "n_searches": n,
+        "n_sessions": sessions_with_search,
+        **outcomes,
+        "click_rate": outcomes["clicked"] / n if n else 0.0,
+        "reformulation_rate": outcomes["reformulated"] / n if n else 0.0,
+        "abandonment_rate": outcomes["abandoned"] / n if n else 0.0,
+        "reads_per_click": (
+            sum(clicked_read_counts) / len(clicked_read_counts)
+            if clicked_read_counts else 0.0
+        ),
+    }
+
+
+def _trail_events(s, after: str | None = None) -> list[tuple[object, str, object]]:
+    """(session, kind, value) events from the tool-use trail, refs resolved.
+
+    ``after`` (ISO date/datetime) keeps only trail events that occurred at or
+    after it — the time-based holdout: cases mined strictly after a ranking
+    change shipped carry less of the old incumbent's shape.
+    """
+    sql = (
+        "SELECT thread_id, payload FROM events "
+        "WHERE event_type = 'tool_use_complete' "
+        "AND (payload LIKE '%thread_search%' OR payload LIKE '%thread_read%') "
+    )
+    params: dict[str, str] = {}
+    if after:
+        sql += "AND occurred_at >= :after "
+        params["after"] = after
+    sql += "ORDER BY thread_id, id"
+    rows = s.execute(sa_text(sql), params).all()
+
+    events: list[tuple[object, str, object]] = []
+    for sess, payload in rows:
+        p = payload if isinstance(payload, dict) else json.loads(payload)
+        kind = classify_tool(p.get("tool_name"))
+        inp = p.get("input") or {}
+        if kind == "search":
+            q = inp.get("query")
+            if isinstance(q, str) and q.strip():
+                events.append((sess, "search", q.strip()))
+        elif kind == "read":
+            ref = inp.get("thread_id")
+            if isinstance(ref, (int, str)) and str(ref).strip():
+                events.append((sess, "read", ref))
+
+    memo: dict[str, str | None] = {}
+
+    def _resolve(ref: object) -> str | None:
+        key = str(ref).strip()
+        if key not in memo:
+            memo[key] = resolve_thread_ref(s, key)
+        return memo[key]
+
+    return resolve_read_refs(events, _resolve)
+
+
+def mine_log_cases(n: int, seed: int, after: str | None = None) -> list[dict]:
     """Real search->read pairs from the archive's own tool-use trail."""
     with use_session() as s:
-        rows = s.execute(sa_text(
-            "SELECT thread_id, payload FROM events "
-            "WHERE event_type = 'tool_use_complete' "
-            "AND (payload LIKE '%thread_search%' OR payload LIKE '%thread_read%') "
-            "ORDER BY thread_id, id"
-        )).all()
-
-        events: list[tuple[int, str, object]] = []
-        for sess, payload in rows:
-            p = payload if isinstance(payload, dict) else json.loads(payload)
-            kind = classify_tool(p.get("tool_name"))
-            inp = p.get("input") or {}
-            if kind == "search":
-                q = inp.get("query")
-                if isinstance(q, str) and q.strip():
-                    events.append((sess, "search", q.strip()))
-            elif kind == "read":
-                try:
-                    events.append((sess, "read", int(inp.get("thread_id"))))
-                except (TypeError, ValueError):
-                    continue
-
-        cases = pair_log_events(events)
+        cases = pair_log_events(_trail_events(s, after))
 
         # Keep only golds that are live, searchable threads; merge duplicate
         # queries (same query issued in several sessions) into one multi-gold,
@@ -263,6 +380,20 @@ def main() -> None:
     proto.add_argument("--cases", type=Path, metavar="FILE",
                        help="evaluate a JSONL case file: "
                        '{"query", "gold": [thread ids], "sessions": [...]}')
+    proto.add_argument("--behavior", action="store_true",
+                       help="no ranking run at all: report zero-label "
+                       "behavioral signals from the whole trail — click rate, "
+                       "reformulation rate, abandonment rate per search")
+    ap.add_argument("--mined-after", metavar="ISO", default=None,
+                    help="--from-log/--behavior: only trail events at or after "
+                    "this date — the time-based holdout (cases mined after a "
+                    "ranking change shipped carry less of the old incumbent's "
+                    "shape)")
+    ap.add_argument("--trend-out", type=Path, metavar="FILE", default=None,
+                    help="append this run's report as one JSONL row (~ ok) — "
+                    "the time series that turns a snapshot number into a "
+                    "trend; the CI gate row points it at "
+                    "~/.thread/archive/retrieval-trend.jsonl")
     ap.add_argument("--seed", type=int, default=7, help="case sampling seed")
     ap.add_argument("--limit", type=int, default=20, help="results per query (recall ceiling)")
     ap.add_argument("--rerank", choices=["auto", "on", "off"], default="auto",
@@ -311,6 +442,35 @@ def main() -> None:
         rerank_mod.is_available = lambda: False  # type: ignore[method-assign]
 
     api.open_archive()
+
+    def append_trend(row: dict) -> None:
+        if not args.trend_out:
+            return
+        from datetime import datetime, timezone
+
+        out = args.trend_out.expanduser()
+        out.parent.mkdir(parents=True, exist_ok=True)
+        stamped = {"at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                   **row}
+        with out.open("a") as f:
+            f.write(json.dumps(stamped) + "\n")
+
+    if args.behavior:
+        with use_session() as s:
+            report = behavior_report(_trail_events(s, args.mined_after))
+        if args.json:
+            print(json.dumps(report, indent=2))
+        else:
+            print(f"searches: {report['n_searches']}   "
+                  f"sessions: {report['n_sessions']}   "
+                  f"click: {report['click_rate']:.3f}   "
+                  f"reformulate: {report['reformulation_rate']:.3f}   "
+                  f"abandon: {report['abandonment_rate']:.3f}   "
+                  f"reads/click: {report['reads_per_click']:.2f}")
+        append_trend({"protocol": "behavior",
+                      "mined_after": args.mined_after, **report})
+        return
+
     if args.require_semantic:
         from thread_archive._retrieval import embed
 
@@ -322,7 +482,7 @@ def main() -> None:
         cases = sample_title_cases(args.auto_titles, args.seed)
         exclude = None if args.include_meta else EXCLUDE_META
     elif args.from_log is not None:
-        cases = mine_log_cases(args.from_log, args.seed)
+        cases = mine_log_cases(args.from_log, args.seed, args.mined_after)
         exclude = None
     else:
         cases = load_case_file(args.cases)
@@ -338,6 +498,17 @@ def main() -> None:
 
     report = evaluate(cases, limit=args.limit, rerank=rerank,
                       content_type=args.content_type, exclude_content_types=exclude)
+
+    protocol = ("auto-titles" if args.auto_titles is not None
+                else "from-log" if args.from_log is not None else "cases")
+    append_trend({
+        "protocol": protocol, "seed": args.seed, "limit": args.limit,
+        "rerank": args.rerank, "lexical_only": args.lexical_only,
+        "mined_after": args.mined_after,
+        "n": report["n"], "mrr": report["mrr"],
+        "recall": {str(k): v for k, v in report["recall"].items()},
+        "latency_p50_ms": report["latency_p50_ms"],
+    })
 
     if args.json:
         print(json.dumps(report, indent=2))

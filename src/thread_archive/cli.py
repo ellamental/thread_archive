@@ -264,10 +264,35 @@ def cmd_daemon(args: argparse.Namespace) -> int:
             # curation.<kind> entry, else the defaults (hourly / daily 05:00).
             if args.librarian:
                 interval = _launchd.resolved_librarian_interval(args.home)
+                # Scheduling is the install point: from here on, conversations are
+                # curated as they happen. What was already on disk is history, and
+                # is only touched if asked for — an archive of years of sessions
+                # would otherwise open with a queue that bills an unattended Opus
+                # run every hour until it drains.
+                from datetime import datetime, timezone
+
+                from . import _curation as _cur
+
+                policy = _cur.set_curation_policy(
+                    args.home,
+                    horizon=None if args.catch_up else datetime.now(timezone.utc),
+                    clear_horizon=args.catch_up,
+                    catchup_per_run=args.catchup_per_run,
+                )
                 plist = _launchd.install_librarian(args.home, interval=interval)
                 print(f"installed {label} ({plist})")
                 print(f"the librarian drains the review queue every "
                       f"{interval // 60} min (links + summaries);")
+                rate = policy.get("catchup_per_run") or 0
+                if not policy.get("horizon"):
+                    print("curating the whole archive, history included.")
+                elif rate:
+                    print(f"curating from now on, plus up to {rate} older "
+                          f"thread(s) per run.")
+                else:
+                    print("curating from now on; the sessions already on disk are "
+                          "left alone (--catch-up, or set "
+                          "curation.librarian.catchup_per_run, to work through them).")
             else:
                 hour, minute = (
                     _parse_hhmm(args.at) if args.at
@@ -1446,6 +1471,18 @@ def build_parser() -> argparse.ArgumentParser:
         "--notify-url", default=None, metavar="URL",
         help="--backup install only: POST {title, message} on any stage failure "
              "(lab's /api/notify shape)",
+    )
+    p_daemon.add_argument(
+        "--catch-up", action="store_true",
+        help="--librarian install only: curate the sessions already on disk too. "
+             "Off by default — a first install curates what happens from now on, so "
+             "an existing history doesn't become a five-figure queue billed hourly",
+    )
+    p_daemon.add_argument(
+        "--catchup-per-run", type=int, default=None, metavar="N",
+        help="--librarian install only: how many historical threads may ride along "
+             "in each run, behind that run's live work (default 0 — none). Sets "
+             "config.json curation.librarian.catchup_per_run",
     )
     p_daemon.add_argument(
         "--no-web", dest="web", action="store_false",

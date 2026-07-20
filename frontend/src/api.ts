@@ -362,6 +362,15 @@ export interface CurationDrain {
   // When the drain last fired — launched or skipped. null = never fired here.
   heartbeat_at: string | null
   heartbeat_age_s: number | null
+  // Librarian only: what it curates. A horizon means conversations from that
+  // point on; everything older is `history`, reached at `catchup_per_run` a run
+  // (0 = never). No horizon means the whole archive is fair game.
+  policy?: {
+    horizon: string | null
+    catchup_per_run: number
+    forward: number | null
+    history: number | null
+  }
 }
 
 export interface CurationGraph {

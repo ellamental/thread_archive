@@ -11,7 +11,6 @@ from thread_archive import _api as ta
 from thread_archive import _knowledge as knowledge
 from thread_archive._store import Thread, ThreadLink, get_session, init_db
 
-
 # Fixed ULID ids for the seeded topic graph (index 0 unused, so edges read 1-based).
 TIDS = [None] + [f"01T0PIC000000000000000000{i}" for i in range(1, 7)]
 

@@ -429,6 +429,14 @@ a.session-link:hover { color: var(--accent); }
   color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: .06em;
 }
 .drain-facts dd { margin: 2px 0 0; font-size: 13px; overflow: hidden; text-overflow: ellipsis; }
+/* What the librarian curates, and what it is deliberately not curating. */
+.drain-policy {
+  margin: 12px 0 0; padding-top: 10px; border-top: 1px solid var(--line);
+  color: var(--muted); font-size: 12px; line-height: 1.5;
+}
+.drain-policy code {
+  font-size: 11px; background: var(--badge); padding: 1px 4px; border-radius: 4px;
+}
 
 /* Small multiples: each measure keeps its own scale, so they sit side by side
    without implying a shared axis. */
