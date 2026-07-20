@@ -20,6 +20,7 @@ performs no work — discovery and guidance only, never a surprise ingest.
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import logging
 import sys
 import time
@@ -396,20 +397,29 @@ def _conversation_count(home: Optional[str]) -> int:
         return 0
 
 
-def _offer_curation(args: argparse.Namespace, interactive: bool) -> dict:
-    """Point at the curation plugin — the drains are not the core's to schedule.
+def curation_package_present() -> bool:
+    """Whether the optional curation package is importable in this env — the
+    gate on every setup surface that would otherwise recommend a command the
+    machine doesn't have."""
+    return importlib.util.find_spec("thread_librarian") is not None
 
-    Curation (the librarian/gardener drains, their MCP write surface, the
-    Claude Code skills) is the separate ``thread-librarian`` package. Setup
-    only says so; that package's own ``thread-librarian daemon install``
-    schedules the drains, with the catch-up policy prompts living there.
+
+def _offer_curation(args: argparse.Namespace, interactive: bool) -> dict:
+    """Report curation state — the drains are not the core's to schedule.
+
+    The drains, their MCP write surface, and the Claude Code skills belong to
+    an optional companion package (``thread_librarian``); its own
+    ``thread-librarian daemon install`` schedules them, with the catch-up
+    policy prompts living there. When that package isn't on the machine, setup
+    stays quiet: there is nothing installable to point at.
     """
     if curation_running(args.home):
-        _say("Curation: the librarian and gardener are already scheduled "
-             "(the thread-librarian plugin's agents).")
+        _say("Curation: the librarian and gardener drains are already scheduled.")
         return {"status": "already-installed"}
+    if not curation_package_present():
+        return {"status": "unavailable"}
     _say("Curation — an agent that links conversations to topics and writes each a")
-    _say("search-first summary — is the thread-librarian plugin, installed separately:")
+    _say("search-first summary — is installed but not scheduled:")
     _say("  thread-librarian daemon install --librarian   # hourly drain")
     _say("  thread-librarian daemon install --gardener    # daily drain")
     return {"status": "plugin"}
@@ -504,8 +514,7 @@ def _offer_mcp(
         _say(_indent(clients.mcp_config_block()))
         return "failed"
     _say("  Wired: thread-archive (search/read), user scope — every Claude Code")
-    _say("  session can now search this archive. Curation is the thread-librarian")
-    _say("  plugin (its own repo) — install it to organize the archive.")
+    _say("  session can now search this archive.")
     return "wired"
 
 
@@ -546,8 +555,16 @@ def _agent_covers_home(label: str, home: Optional[str]) -> bool:
         plist = plistlib.loads(_launchd._plist_path(label).read_bytes())
         agent_home = plist.get("EnvironmentVariables", {}).get("THREAD_ARCHIVE_HOME")
     except (OSError, plistlib.InvalidFileException):
-        return True  # loaded, plist unreadable — assume the default wiring
-    return resolve_paths(agent_home).home == resolve_paths(home).home
+        agent_home = None  # loaded, plist unreadable — assume the default wiring
+    # An agent with no plist home env runs against the *default* home — launchd
+    # gives it no shell env, and this process's $THREAD_ARCHIVE_HOME is not
+    # evidence (open_archive pins the currently-selected home there, so reading
+    # it would make every agent appear to cover whatever home is being asked
+    # about). Compare literal paths, not env-mediated resolution.
+    from .._config import default_home
+
+    agent_path = Path(agent_home).expanduser() if agent_home else default_home()
+    return agent_path == resolve_paths(home).home
 
 
 def watcher_running(home: Optional[str] = None) -> bool:
@@ -563,8 +580,8 @@ def backup_running(home: Optional[str] = None) -> bool:
 
 
 def curation_running(home: Optional[str] = None) -> bool:
-    """Both curation drains scheduled for this home — the thread-librarian
-    plugin's agents; archive only reads their labels for status. A
+    """Both curation drains scheduled for this home — the optional curation
+    package's agents; archive only reads their labels for status. A
     half-installed pair reads as not running."""
     return _agent_covers_home("com.thread-archive.librarian", home) and _agent_covers_home(
         "com.thread-archive.gardener", home
@@ -624,9 +641,9 @@ def print_status(args: argparse.Namespace) -> int:
                  "(or `archive daemon install --backup --dest <path>`)")
         if curation_running(args.home):
             _say("  curation: librarian (hourly) + gardener (daily) scheduled")
-        else:
-            _say("  curation: not scheduled — the thread-librarian plugin schedules it "
-                 "(`thread-librarian daemon install --librarian` / `--gardener`)")
+        elif curation_package_present():
+            _say("  curation: not scheduled — `thread-librarian daemon install "
+                 "--librarian` / `--gardener` schedules it")
     _say()
     _say("  search/read: the archive-mcp tools · web viewer: http://127.0.0.1:8787 (with the watcher)")
     _say("  re-run setup: thread_archive setup · operator CLI: archive --help")

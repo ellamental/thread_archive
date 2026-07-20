@@ -151,14 +151,25 @@ def _tag_timestamp(repo: Path, tag: str) -> Optional[float]:
         return None
 
 
+# Where TRUTH_FORMAT_VERSION lives. The anchored probe reads exactly this file
+# so an unrelated assignment elsewhere in the tag (a test, a fixture) can never
+# shadow the real constant on a safety gate.
+_FORMAT_HOME = "src/thread_archive/_truth/layout.py"
+
+
 def _tag_format_version(repo: Path, tag: str) -> Optional[int]:
     """The ``TRUTH_FORMAT_VERSION`` a tag's code declares, read out of the tag
-    itself. ``git grep`` over the whole tag rather than one path, so the check
-    survives the constant's module moving. ``None`` when it can't be found —
-    callers treat that as a gate, not a pass."""
+    itself. Probes the constant's home module first; a whole-tag ``git grep``
+    is the fallback so the check survives the module moving in a future
+    release. ``None`` when it can't be found — callers treat that as a gate,
+    not a pass."""
     r = _git(repo, "grep", "-h", "-E", "TRUTH_FORMAT_VERSION[[:space:]]*=", tag,
-             "--", "*.py")
+             "--", _FORMAT_HOME)
     m = _FORMAT_RE.search(r.stdout)
+    if m is None:
+        r = _git(repo, "grep", "-h", "-E", "TRUTH_FORMAT_VERSION[[:space:]]*=", tag,
+                 "--", "*.py")
+        m = _FORMAT_RE.search(r.stdout)
     return int(m.group(1)) if m else None
 
 

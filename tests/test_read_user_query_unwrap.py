@@ -48,7 +48,7 @@ _CORPUS = [
     # A wrapped query with injected context around it — the query span wins, the
     # injected <user_info> drops out of the readable view.
     ("user_message_sent",
-     {"content": "<user_info>ella, plural</user_info><user_query>what is 2+2</user_query>"}, 2),
+     {"content": "<user_info>sam, curious</user_info><user_query>what is 2+2</user_query>"}, 2),
     ("text_complete", {"text": "4"}, 2),
     # A context-only turn (no query span) is rendered unchanged, not dropped.
     ("user_message_sent", {"content": "<system-reminder>stay terse</system-reminder>"}, 3),
@@ -94,7 +94,7 @@ def test_unwrap_leaves_ordinary_user_text_untouched(archive_home) -> None:
 # is the content — the span is a quotation inside it, not scaffolding around it.
 _QUOTING = (
     "Reproducing the reader bug. The stored turn contains:\n"
-    "<user_info>ella</user_info><user_query>what is 2+2</user_query>\n"
+    "<user_info>sam</user_info><user_query>what is 2+2</user_query>\n"
     "and every line after the closing tag is part of the report."
 )
 

@@ -61,7 +61,7 @@ def test_compact_boundary_continuation_merges_into_parent(archive_home) -> None:
         {"type": "user", "uuid": "cu1", "timestamp": "2026-01-01T11:00:01Z",
          "sessionId": "22222222-2222-2222-2222-222222222222", "cwd": "/proj",
          "message": {"role": "user",
-                     "content": f"This session is being continued from /Users/ella/.claude/projects/proj/{PARENT_UUID}.jsonl\n\nfollow up question"}},
+                     "content": f"This session is being continued from /Users/sam/.claude/projects/proj/{PARENT_UUID}.jsonl\n\nfollow up question"}},
         {"type": "assistant", "uuid": "ca1", "timestamp": "2026-01-01T11:00:05Z",
          "message": {"role": "assistant", "model": "claude-opus-4",
                      "content": [{"type": "text", "text": "follow up answer"}]}},

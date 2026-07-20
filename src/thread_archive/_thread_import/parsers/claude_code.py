@@ -324,7 +324,7 @@ class ClaudeCodeParser(ProviderParser):
 
         ``summary``/``file-history-snapshot`` are stored (not dropped) as their
         own message kinds; ``attachment`` lines carry a ``queued_command``
-        sub-kind (a steering message Ella typed mid-turn) that must survive as a
+        sub-kind (a steering message the user typed mid-turn) that must survive as a
         user message; unrecognized line types yield ``None``.
         """
         # Parsers taking (line, session_id, project_path).
@@ -480,7 +480,7 @@ class ClaudeCodeParser(ProviderParser):
         Claude Code writes several attachment sub-kinds. Most are context
         injections (todo reminders, tool/agent/skill listing deltas) with no
         user signal, and are dropped. The exception is ``queued_command`` — a
-        message Ella typed *while the agent was mid-turn* (a "steering"
+        message the user typed *while the agent was mid-turn* (a "steering"
         message). Its text lives only here: it is delivered to the model but
         never re-emitted as a normal ``user`` line, and the ``queue-operation``
         bookkeeping records carry no content. So if we don't reconstruct it, the

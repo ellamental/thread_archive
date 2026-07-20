@@ -2,6 +2,10 @@
 .venv/
 venv/
 
+# node — build-time only (frontend/ has its own ignore; this catches strays at
+# the root, e.g. a vitest cache from a run invoked with the wrong cwd)
+/node_modules/
+
 # python
 __pycache__/
 *.py[cod]

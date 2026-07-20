@@ -624,7 +624,7 @@ CLAUDE_BUNDLE = {
     "conversations": CLAUDE_CONV,
     "memories": {"project_memories": {"proj-1": "remembered"}},
     "projects": [{"uuid": "proj-1", "name": "Proj", "description": "desc"}],
-    "users": [{"uuid": "acc-1", "full_name": "Ella"}],
+    "users": [{"uuid": "acc-1", "full_name": "Sam"}],
 }
 
 
@@ -655,7 +655,7 @@ def test_claude_parse_export_bundle_all_block_types():
     # Enrichment from the bundle lookups.
     assert m2["conversation_metadata"]["project_name"] == "Proj"
     assert m2["conversation_metadata"]["project_memory"] == "remembered"
-    assert m2["conversation_metadata"]["account_name"] == "Ella"
+    assert m2["conversation_metadata"]["account_name"] == "Sam"
 
     # Fallback text used when content blocks produce no display text.
     assert by_id["m3"]["content_text"] == "fallback text"

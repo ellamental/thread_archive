@@ -144,13 +144,25 @@ def _args(*argv: str):
     return wizard.build_parser().parse_args(list(argv))
 
 
-def test_curation_offer_points_at_the_plugin(archive_home, monkeypatch, capsys) -> None:
-    """The core schedules nothing: curation is the thread-librarian plugin's,
-    and the step only says so (no launchctl, no config writes)."""
+def test_curation_offer_points_at_the_installed_package(archive_home, monkeypatch, capsys) -> None:
+    """The core schedules nothing: when the curation package is importable but
+    its drains aren't scheduled, the step points at its installer and does no
+    work itself (no launchctl, no config writes)."""
     monkeypatch.setattr(wizard, "curation_running", lambda home=None: False)
+    monkeypatch.setattr(wizard, "curation_package_present", lambda: True)
     out = wizard._offer_curation(_args("setup", "--yes"), interactive=False)
     assert out == {"status": "plugin"}
-    assert "thread-librarian" in capsys.readouterr().out
+    assert "thread-librarian daemon install" in capsys.readouterr().out
+
+
+def test_curation_offer_is_silent_without_the_package(archive_home, monkeypatch, capsys) -> None:
+    """No curation package on the machine → nothing installable to recommend,
+    so the step says nothing at all."""
+    monkeypatch.setattr(wizard, "curation_running", lambda home=None: False)
+    monkeypatch.setattr(wizard, "curation_package_present", lambda: False)
+    out = wizard._offer_curation(_args("setup", "--yes"), interactive=False)
+    assert out == {"status": "unavailable"}
+    assert capsys.readouterr().out == ""
 
 
 def test_curation_offer_reports_already_scheduled(archive_home, monkeypatch, capsys) -> None:

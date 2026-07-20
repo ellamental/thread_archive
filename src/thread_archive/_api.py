@@ -56,7 +56,7 @@ def open_archive(home: Optional[str] = None) -> ArchivePaths:
     # Pin the home so engine + truth + search resolve consistently for the process.
     os.environ[ENV_HOME] = str(paths.home)
     init_engine(target)  # rebuilds when the DSN changed
-    # Read-path convergence: long-lived processes (the librarian MCP, the web
+    # Read-path convergence: long-lived processes (a curation MCP server, the web
     # app) pass through here on every call, so a reindex's index.db swap is
     # picked up on the next call. Writers get the authoritative check on
     # ingest-lock *acquire* (see _truth.shared_ingest_lock) — this one runs
@@ -477,12 +477,12 @@ def knowledge_status(*, home: Optional[str] = None) -> dict:
 
 
 def curation_stats(*, home: Optional[str] = None, days: int = 30) -> dict:
-    """What the librarian and gardener drains have done, for the viewer's curation
+    """What the curation drains have done, for the viewer's curation
     page: each drain's remaining backlog (the same gate the daemon fires on),
     cadence and liveness, per-day curation output, topic-graph health, and the
     drains' own archived runs with their request/token cost. ``days`` bounds the
-    time series. Read-only. The figures come from the thread-librarian plugin
-    (:mod:`thread_librarian.curate.stats`); without it installed this returns
+    time series. Read-only. The figures come from the optional
+    :mod:`thread_librarian` package; without it installed this returns
     ``{"available": False}`` — there is nothing curating, so there is nothing
     to report."""
     open_archive(home)

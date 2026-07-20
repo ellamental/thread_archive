@@ -6,17 +6,17 @@ per-block events (text_complete / thinking_complete / tool_use_complete /
 tool_execution_*) plus lifecycle/summary events (api_request_*, stream_completed)
 — we render from the granular events and skip the lifecycle ones.
 
-:func:`read_thread` is the string transcript surface (CLI / MCP). It mirrors the
-monorepo ``thread_read`` contract: a ``mode`` view knob (user / chat / full, plus
-the standalone-only ``last`` — the closing assistant message — and ``ends`` — the
-first and last turns in one read),
+:func:`read_thread` is the string transcript surface (CLI / MCP) — the
+``thread_read`` contract: a ``mode`` view knob (user / chat / full, plus
+``last`` — the closing assistant message — and ``ends`` — the first and last
+turns in one read),
 turn-based pagination (``limit`` / ``offset`` / ``after_event``), focused reads
 around a search-result event (``around_event`` / ``context_turns``), a per-chunk
 ``max_chars`` budget with a CHUNKED footer, and ``summary`` for the summary views
 (true/'toc' = compact TOC; 'short' / 'indexed' = the stored thread summaries). The
-default view is ``user`` — only the user turns, the cheap signal — exactly as the
-monorepo defaults. Tool *results* are never rendered (the transcript shows tool
-calls, not their output), also matching the monorepo. :func:`read_thread_structured`
+default view is ``user`` — only the user turns, the cheap signal. Tool *results*
+are never rendered in the string transcript (it shows tool calls, not their
+output). :func:`read_thread_structured`
 is the render-friendly sibling for the web viewer (typed blocks, results included).
 """
 
@@ -344,7 +344,7 @@ def resolve_thread_ref(s: Session, ref: int | str) -> Optional[str]:
 # Default per-read character budget for the budgeted "view" read (the thread_read
 # tool + CLI). ~48k chars ≈ 12-15k tokens — under the MCP output cap with headroom,
 # big enough that most threads read in one chunk; larger threads come back chunked
-# with a footer naming the next offset. Mirrors the monorepo's DEFAULT_READ_CHAR_BUDGET.
+# with a footer naming the next offset.
 DEFAULT_READ_CHAR_BUDGET = 48000
 
 # A context-compaction continuation opens with this sentinel as its first user
@@ -409,7 +409,7 @@ def resolve_read_view(mode: Optional[str], user_only: Optional[bool]) -> tuple[b
 
     ``mode`` is the primary knob; ``user_only`` is a back-compat alias (True→user,
     False→full) and ``mode`` wins when both are set. Default (neither set, or an
-    unrecognised mode) is ``user`` — the cheap default, matching the monorepo.
+    unrecognised mode) is ``user`` — the cheap default.
     (``mode='last'`` and ``mode='ends'`` are selections, not strip-sets —
     :func:`read_thread` handles them before this resolver runs.)
     """
@@ -433,8 +433,8 @@ def _assistant_block(
     """One assistant render block from a granular event, or None to skip.
 
     Tool *result* blocks (tool_execution_*) are built here but only rendered when
-    the caller opts in (``tool_results=True``); they're off by default, the way the
-    monorepo never shows them — but reachable, unlike the monorepo, which can't."""
+    the caller opts in (``tool_results=True``); off by default — a transcript shows
+    tool calls, not their output — but reachable for the viewers that want them."""
     if et == "thinking_complete":
         t = p.get("text", "")
         return {"type": "thinking", "content": t} if t.strip() else None

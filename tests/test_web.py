@@ -160,7 +160,7 @@ def test_search_quality_signal(archive_home):
     assert payload["hits"][0]["term_hits"] == 2
 
 
-_WRAPPED = "<user_info>ella</user_info><user_query>\nhey grok!\n</user_query>"
+_WRAPPED = "<user_info>sam</user_info><user_query>\nhey grok!\n</user_query>"
 
 
 def _seed_grok(archive_home):

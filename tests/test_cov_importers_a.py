@@ -112,7 +112,7 @@ def test_grok_full_session_tools_reasoning_and_siblings(archive_home) -> None:
         archive_home,
         [
             {"type": "user", "content": [{"type": "text",
-             "text": "<user_info>ella</user_info><user_query>read a file</user_query>"}]},
+             "text": "<user_info>sam</user_info><user_query>read a file</user_query>"}]},
             {"type": "reasoning", "summary": [{"type": "summary_text", "text": "I should read it"}]},
             {"type": "assistant", "content": "reading", "model_id": "grok-4-custom",
              "tool_calls": [{"id": "call1", "name": "read_file", "arguments": "{\"path\": \"/x\"}"}]},

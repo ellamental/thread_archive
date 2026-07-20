@@ -38,23 +38,14 @@ jobs:
           cache: pip
           cache-dependency-path: pyproject.toml
 
+      # Base + [dev] only. The optional thread-librarian package (curation; its
+      # own repo) is deliberately NOT installed: nothing in this repo may
+      # require it, in CI or anywhere else. The tests that exercise the curated
+      # data plane seed through its write surface and importorskip without it;
+      # the coverage floors are set to hold on this librarian-free run, so a
+      # fork PR needs no secrets and no sibling checkout.
       - name: Install
         run: pip install -e ".[dev]"
-
-      # The suite's curated-data-plane tests seed through thread-librarian's
-      # write surface (they importorskip without it, which drops real coverage
-      # of archive's own read paths below the floors). It lives in a private
-      # sibling repo, reachable read-only via a deploy key; --no-deps because
-      # its thread-archive dependency is the checkout just installed above.
-      - name: Install thread-librarian (private sibling)
-        env:
-          LIBRARIAN_SSH_KEY: ${{ secrets.LIBRARIAN_SSH_KEY }}
-        run: |
-          mkdir -p ~/.ssh
-          printf '%s\n' "$LIBRARIAN_SSH_KEY" > ~/.ssh/id_ed25519
-          chmod 600 ~/.ssh/id_ed25519
-          ssh-keyscan github.com >> ~/.ssh/known_hosts
-          pip install --no-deps "thread-librarian @ git+ssh://git@github.com/ellamental/thread_archive_librarian.git"
 
       - name: Ruff
         run: ruff check .

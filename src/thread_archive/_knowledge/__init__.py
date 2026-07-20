@@ -15,8 +15,8 @@ The archive owns the knowledge graph's **data** and its **analytics**:
   tables — no curation code involved.
 
 What *writes* this data — the librarian/gardener curation agents, their MCP
-write surface, and the drains — is the separate ``thread-librarian`` package
-(its own repo), which builds on these modules. The graph is empty (all queries
+write surface, and the drains — belongs to a separate curation package that
+builds on these modules. The graph is empty (all queries
 return empty) until topics + links exist; the core archive works uncurated.
 """
 

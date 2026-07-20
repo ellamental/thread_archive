@@ -75,7 +75,7 @@ def test_grok_user_context_is_not_stripped_or_dropped(archive_home) -> None:
     init_db()
     f = _write_grok_session(archive_home, [
         {"type": "user", "content": [{"type": "text",
-         "text": "<user_info>ella, plural</user_info><user_query>what is 2+2</user_query>"}]},
+         "text": "<user_info>sam, curious</user_info><user_query>what is 2+2</user_query>"}]},
         {"type": "assistant", "content": "4", "tool_calls": []},
         {"type": "user", "content": [{"type": "text", "text": "<system-reminder>stay terse</system-reminder>"}]},
         {"type": "assistant", "content": "ok", "tool_calls": []},
@@ -88,7 +88,7 @@ def test_grok_user_context_is_not_stripped_or_dropped(archive_home) -> None:
     # tags discarded).
     wrapped = next((c for c in user_texts if "what is 2+2" in c), None)
     assert wrapped is not None
-    assert "<user_info>" in wrapped and "ella, plural" in wrapped
+    assert "<user_info>" in wrapped and "sam, curious" in wrapped
 
     # The context-only turn (no <user_query>) is preserved, not dropped.
     assert any("stay terse" in c for c in user_texts), "context-only user turn was dropped"

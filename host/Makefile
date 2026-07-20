@@ -43,8 +43,8 @@ install-agent:
 	@echo "to tail:                      make logs"
 
 # (Re)write the family manifest alone — <home>/product.json, the discovery
-# record consumers glob for (spec: docs/spec/product-json.md in the thread
-# monorepo). install-agent already does this; use this target after a version
+# record consumers glob for (write-manifest.py is the reference for its
+# shape). install-agent already does this; use this target after a version
 # bump or a path change without reloading the agent. `make manifest WEB=0`
 # omits the console/health surfaces (a box with no watcher agent serving :8787).
 manifest:

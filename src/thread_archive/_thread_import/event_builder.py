@@ -347,7 +347,7 @@ class DefaultEventBuilder:
             if isinstance(b, dict) and b.get("type") == "tool_result"
         ]
         # IDE context blocks (opened files, selections) the parser lifted out of the
-        # raw turn — "what Ella was looking at when she sent this". Preserved as their
+        # raw turn — "what the user was looking at when they sent this". Preserved as their
         # own events below rather than stripped away with the tags.
         ide_context_blocks = [
             b for b in content_blocks

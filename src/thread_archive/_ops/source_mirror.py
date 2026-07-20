@@ -11,7 +11,7 @@ the retention race behind every source re-read — a parser taught a new field,
 a backfill repairing an importer bug — which otherwise loses whatever the
 harness pruned first.
 
-Layout mirrors the source paths exactly (``…/claude-code/Users/ella/.claude/
+Layout mirrors the source paths exactly (``…/claude-code/Users/<you>/.claude/
 projects/<proj>/<session>.jsonl.gz``), so re-parse tooling can reconstruct the
 original path and source_id without a lookup table. A per-provider
 ``.manifest.json`` maps each source path to the ``(size, mtime_ns)`` it was

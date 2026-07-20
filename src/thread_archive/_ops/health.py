@@ -203,7 +203,7 @@ def pipeline_verdict(health: Optional[dict] = None) -> dict:
     (~1h, restore-drill dominated). An operator who fixes the cause and proves it
     fixed — at a stronger tier than the one that failed — still faces a board
     asserting the archive is unprotected until 04:00 comes around. That is a stale
-    alarm on the one signal that says whether Ella's memory is recoverable, and a
+    alarm on the one signal that says whether the operator's memory is recoverable, and a
     signal that keeps crying after the fire is out is one that stops being read.
     """
     health = read_health() if health is None else health

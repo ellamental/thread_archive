@@ -205,7 +205,7 @@ def test_nightly_skips_heartbeat_without_family_logs_dir(
 # ── Stage retirement: a failed stage re-proven out of band ───────────────────
 # The pipeline is ~1h (drill-dominated), so if only another full nightly could
 # retire a fault, an archive that was fixed AND proven fixed would keep telling
-# Ella her memory is unprotected until 04:00. `_pipeline_verdict` retires a
+# the operator their memory is unprotected until 04:00. `_pipeline_verdict` retires a
 # failed stage on a later, at-least-as-strong green run — with the strength
 # comparison as the guard that keeps a cheap check from laundering an expensive
 # red.

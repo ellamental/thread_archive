@@ -11,16 +11,22 @@ deterministic activation (:mod:`.activate`) — tests green, then enabled, then
 the ledger-driven re-import recovers everything the broken parser consumed
 (:mod:`.reimport`).
 
-The spawn copies the ``archive curate`` shape: repo-hosted prompt text loaded
-via ``importlib.resources``, ``--print`` + ``--strict-mcp-config``, group-kill
-on timeout. Two deliberate differences. It runs in the *foreground* with
-stdout/stderr inherited — the user invoked it and watches it work; this is a
-repair they asked for, not scheduled machinery. And its strict MCP config is
-**empty**: the fix needs only the files the scaffold laid out in its cwd, and
-an unattended ``bypassPermissions`` run must not inherit whatever MCP servers
-the operator's own config would otherwise inject. The real containment is the
-activation gate — nothing the spawned agent claims enables a patch; only the
-scaffold's tests passing in a subprocess does.
+The spawn: repo-hosted prompt text loaded via ``importlib.resources``,
+``--print`` + ``--strict-mcp-config``, group-kill on timeout. It runs in the
+*foreground* with stdout/stderr inherited — the user invoked it and watches it
+work; this is a repair they asked for, not scheduled machinery.
+
+The permission surface is scoped, not bypassed. The samples the agent reads
+are transcript data — untrusted input to an agent, like everything else in an
+archive — so the spawn gets ``acceptEdits`` (file edits auto-approve only
+inside the scaffold cwd; core source stays out of reach), a Bash allowlist
+carrying exactly the protocol's commands (``python``/``pytest``, the
+``archive`` activation verb), and an **empty** strict MCP config so the
+operator's own servers are never injected into an unattended run. Scoping
+narrows the blast radius; it is not a sandbox — running the scaffold's tests
+is still running code. What it cannot do is silently ship: nothing the
+spawned agent claims enables a patch; only the scaffold's tests passing in a
+fresh subprocess does (:mod:`.activate`).
 
 Patches are temporary by default (retired by the next self-update —
 :mod:`.retire`) and pinnable for "I always want mine". Every lifecycle
@@ -34,7 +40,9 @@ import logging
 import os
 import signal
 import subprocess
+import sys
 from importlib import resources
+from pathlib import Path
 from typing import Optional
 
 from .._config import load_config, resolve_paths
@@ -47,15 +55,25 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_MODEL = "opus"
 DEFAULT_EFFORT = "xhigh"
-# A parser fix iterates (diagnose, fixture, implement, test, activate) — twice
-# the curation budget.
+# A parser fix iterates (diagnose, fixture, implement, test, activate) — a
+# generous budget for a whole repair.
 TIMEOUT_S = 3600
+
+# The spawn's whole shell surface: the protocol's commands, bare-name spellings
+# only. The spawn prepends this venv's bin dir to PATH so `python`, `pytest`,
+# and `archive` resolve to the running install without absolute paths (which
+# would not match these patterns).
+_SPAWN_ALLOWED_TOOLS = ",".join((
+    "Bash(python:*)",
+    "Bash(python3:*)",
+    "Bash(pytest:*)",
+    "Bash(archive:*)",
+))
 
 
 def resolve_claude() -> Optional[str]:
     """Locate the claude CLI: PATH first, then the standard ~/.local/bin install."""
     import shutil
-    from pathlib import Path
 
     found = shutil.which("claude")
     if found:
@@ -127,10 +145,14 @@ def run(
     args = [
         cli,
         "--print",
-        # Headless run: nobody approves tool calls mid-flight. Containment is
-        # the empty strict MCP surface plus the activation gate — the spawn
-        # cannot enable its own patch; only a green test suite can.
-        "--permission-mode", "bypassPermissions",
+        # Headless run: nobody approves tool calls mid-flight, so the
+        # permission surface is pinned up front instead of bypassed (the
+        # samples are untrusted input — see the module docstring). acceptEdits
+        # auto-approves edits only inside the scaffold cwd; the allowlist
+        # covers the protocol's commands and nothing else; denied calls come
+        # back as denials the agent can adapt to.
+        "--permission-mode", "acceptEdits",
+        "--allowedTools", _SPAWN_ALLOWED_TOOLS,
         "--model", model,
         *(["--effort", effort] if effort else []),
         "--mcp-config", str(mcp_path),
@@ -141,8 +163,10 @@ def run(
         "%s: launching repair agent (model=%s%s, timeout=%ds) — output follows",
         provider_name, model, f", effort={effort}" if effort else "", timeout,
     )
+    env = dict(os.environ)
+    env["PATH"] = str(Path(sys.executable).parent) + os.pathsep + env.get("PATH", "")
     try:
-        proc = subprocess.Popen(args, cwd=str(target), start_new_session=True)
+        proc = subprocess.Popen(args, cwd=str(target), start_new_session=True, env=env)
         try:
             proc.wait(timeout=timeout)
         except subprocess.TimeoutExpired:

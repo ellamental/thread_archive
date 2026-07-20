@@ -130,8 +130,8 @@ make restart           # after a code edit
 make uninstall-agent
 ```
 
-(Outside the monorepo, `archive daemon install` alone is the whole install —
-the Makefile's only addition is the family manifest.)
+(For a standalone install, `archive daemon install` alone is the whole
+install — the Makefile's only addition is the family manifest.)
 
 Requires the `archive` console script in the repo venv (`pip install -e .` at the
 repo root). Logs go to `~/.thread/archive/logs/`. The agent writes to the default

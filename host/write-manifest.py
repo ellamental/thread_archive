@@ -2,8 +2,8 @@
 
 Every installed thread-family product declares itself with one small JSON file
 in its home directory; discovery is enumeration (a consumer globs
-``~/.thread/*/product.json``), no registry. Spec: ``docs/spec/product-json.md``
-in the thread monorepo.
+``~/.thread/*/product.json``), no registry. This writer is the reference for
+the manifest's shape.
 
 This is installer machinery, not library code: it lives in ``host/`` (never
 packaged — see ``pyproject.toml``'s sdist ``only-include``) because it depends

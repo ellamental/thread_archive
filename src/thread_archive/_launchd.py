@@ -24,9 +24,9 @@ Three agents live here:
   (and the TCC grant a background job needs to touch them) are an outer
   operator layer's concern (a wrapper script), not this builder's.
 
-The curation drains (``com.thread-archive.librarian`` / ``.gardener``) are the
-thread-librarian plugin's agents, managed by its own ``thread-librarian
-daemon`` command.
+The curation drains (``com.thread-archive.librarian`` / ``.gardener``) are an
+optional curation package's agents, managed by that package's own daemon
+command.
 
 macOS only, deliberately (launchd is the product's process manager). Each
 plist mirrors what its agent needs and nothing else: run at login in the Aqua

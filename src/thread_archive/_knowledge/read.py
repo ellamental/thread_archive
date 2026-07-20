@@ -1,6 +1,6 @@
 """The knowledge-graph read API — getting curated topics *back out*.
 
-The write layer (thread-librarian's ``write`` module) accumulates topics, links,
+The write layer (a separate curation package's) accumulates topics, links,
 and citations; this module
 is the library surface that reads them back: one topic with everything attached
 (:func:`topic_get`), its citations with quotes (:func:`topic_members`), and the set of
@@ -23,8 +23,7 @@ from sqlalchemy.orm import Session
 from .._store import Thread, ThreadLink, TopicMessage, use_session
 
 # The hierarchy vocabulary: the two link types the topic tree is built from.
-# Data-plane constants — the gardener's structural queues (thread-librarian)
-# share them from here.
+# Data-plane constants — the gardener's structural queues share them from here.
 HIERARCHY_UP = "part-of"
 HIERARCHY_DOWN = "contains"
 

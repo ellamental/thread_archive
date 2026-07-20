@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+- Public-release hardening sweep (2026-07-20). The `fix-import` repair spawn drops `bypassPermissions` for a scoped
+  surface: `acceptEdits` bounded to the scaffold cwd, a Bash allowlist of the protocol's commands (the venv's bin dir
+  now leads the spawn's PATH so bare names resolve), no injected MCP servers; docs state the posture honestly.
+  GitHub CI no longer installs the private thread-librarian sibling — nothing may require it anywhere — and
+  `coverage_gate.py` carries a second, measured floor set for librarian-free runs, so fork PRs pass without secrets.
+  Self-update's truth-format probe anchors on `_truth/layout.py` (whole-tag grep only as fallback) so a stray
+  assignment can't shadow the gate. New SECURITY.md (trust model, self-update supply chain, vuln reporting) and
+  CONTRIBUTING.md; releasing.md gains standing repo-hardening requirements (2FA, tag/branch protection).
+  Personal references scrubbed from docstrings and test fixtures; README repairs (broken Install sentence,
+  "dependency-free" wording, platform story, fix-import claims, third-party notices for the bundled viewer via
+  `scripts/gen_third_party_notices.py`); the stray root `node_modules/` vitest artifact is untracked and ignored.
+  thread-librarian disappears from the public surfaces entirely — docs describe curation generically, and the setup
+  wizard/status only mention the curation package's commands when it is actually importable on the machine.
+
 ## 0.0.5 — 2026-07-20
 
 - Thread ids are ULIDs (truth format v2); legacy integer ids resolve forever as aliases; a one-shot migration ships.

@@ -412,7 +412,20 @@ def test_run_spawns_bounded_headless_claude(archive_home, spawned):
     (proc,) = spawned.calls
     assert proc.argv[0] == "/fake/claude"
     assert "--print" in proc.argv
-    assert proc.argv[proc.argv.index("--permission-mode") + 1] == "bypassPermissions"
+    # Scoped, not bypassed: edits auto-approve only inside the scaffold cwd,
+    # and the shell surface is exactly the protocol's commands.
+    assert proc.argv[proc.argv.index("--permission-mode") + 1] == "acceptEdits"
+    allowed = proc.argv[proc.argv.index("--allowedTools") + 1]
+    assert set(allowed.split(",")) == {
+        "Bash(python:*)", "Bash(python3:*)", "Bash(pytest:*)", "Bash(archive:*)",
+    }
+    # The venv's bin dir leads PATH so the allowlist's bare names resolve here.
+    import os
+    import sys
+    from pathlib import Path as _Path
+
+    spawn_path = proc.kwargs["env"]["PATH"]
+    assert spawn_path.split(os.pathsep)[0] == str(_Path(sys.executable).parent)
     assert proc.argv[proc.argv.index("--model") + 1] == "opus"
     assert proc.argv[proc.argv.index("--effort") + 1] == "xhigh"
     assert "--strict-mcp-config" in proc.argv

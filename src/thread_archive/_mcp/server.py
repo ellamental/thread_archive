@@ -462,7 +462,7 @@ def thread_read(
     summary view instead of the transcript: ``true``/``'toc'`` = a compact per-message
     TOC; ``'short'`` = the thread's stored short summary (a few sentences);
     ``'indexed'`` = the stored indexed summary (structured, with event anchors) —
-    the stored kinds exist only where the librarian has covered the thread.
+    the stored kinds exist only where a curator has covered the thread.
     ``user_only`` is a back-compat alias for ``mode`` (true→user, false→full);
     prefer ``mode``, which wins if both are set.
 

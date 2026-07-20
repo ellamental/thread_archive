@@ -40,7 +40,7 @@ numbers here mean the stack reliably re-finds what real searches actually
 delivered; they cannot certify there was nothing better to find. Semantic fusion is the layer that pays — +10 points of recall@10
 over the lexical core at no latency cost. The cross-encoder adds about two
 more for 5× the latency, which is why the pipeline auto-gates it to
-conceptual queries instead of running it everywhere. Librarian summaries move
+conceptual queries instead of running it everywhere. Curated thread summaries move
 these numbers by less than a point — whatever their value for browsing and
 curation, ranked search does not measurably ride on them. (An earlier
 title-as-query eval said otherwise on every count; its queries were LLM
@@ -65,7 +65,7 @@ only score as misses. The knowledge graph gets its own usage meter:
 path into work is the relevant-subjects lens on every search result, so the
 metric is how often a topic read follows a search — split by searcher
 (working sessions vs. curation machinery), alongside a curation-ergonomics
-check of the librarian's dedup `topic_search`. A lens nobody pivots through
+check of the curator's dedup topic search. A lens nobody pivots through
 is a terrarium, however well curated; uptake is the number that says which
 it is.
 
@@ -74,9 +74,9 @@ it is.
 - Crash-safe writes with intent journaling, fsync discipline, and automatic recovery. Your history survives power loss, killed processes, and corrupted indexes.
 - Built-in backup, integrity verification, and restore drills: recovers from corruption or an errant delete, and the nightly pipeline checks that the backup actually restores. The archive is ordinary files on disk — whatever backs up the rest of your data covers it the same way.
 
-**Fixes itself where it broke.** A provider's transcript format drifts on the provider's schedule, not a maintainer's. Archive makes that drift loud and locally repairable: drift ledgers and a nightly coverage check catch the degradation, the raw source files are quarantined before the provider prunes them, the in-session search notice names the remedy, and `archive fix-import <provider>` scaffolds an override patch and spawns a headless Claude Code agent to write the fix on the machine that has the samples — gated by tests it cannot weaken, then re-imported so nothing consumed during the gap is lost. The supported provider's worst case is *preserved but partially modeled until fixed* — and the fix doesn't wait on a release.
+**Fixes itself where it broke.** A provider's transcript format drifts on the provider's schedule, not a maintainer's. Archive makes that drift loud and locally repairable: drift ledgers and a nightly coverage check catch the degradation, the raw source files are quarantined before the provider prunes them, the in-session search notice names the remedy, and `archive fix-import <provider>` scaffolds an override patch and spawns a permission-scoped headless Claude Code agent to write the fix on the machine that has the samples — the patch goes live only when its scaffolded test suite passes in a fresh subprocess, then re-import recovers everything consumed during the gap. The supported provider's worst case is *preserved but partially modeled until fixed* — and the fix doesn't wait on a release.
 
-**A memory an agent can organize.** The optional **thread-librarian** package (its own repo) adds the curation surface: `/librarian` and `/gardener` skills, a write MCP server, and scheduled headless curation drains that let an AI agent curate the archive — creating topics, pinning key quotes, linking related threads into a knowledge graph, and tending that graph's hierarchy. Every curation act is event-sourced into this archive's truth log, so you can always see who connected what, and why. The core archive owns the data plane *and* the graph analytics over it (PageRank, Leiden communities, bridges — a pure projection over its own tables); without a curator the graph simply stays empty.
+**A memory an agent can organize.** The archive carries an event-sourced topic graph a curating agent can build over it — creating topics, pinning key quotes, linking related threads, tending the hierarchy. Every curation act lands in the archive's truth log, so you can always see who connected what, and why. The archive owns the data plane *and* the graph analytics over it (PageRank, Leiden communities, bridges — a pure projection over its own tables); without a curator the graph simply stays empty, and nothing else depends on it.
 
 **No server. No cloud. No subscription to lose your history to.** A background watcher keeps it current; everything runs locally.
 
@@ -87,8 +87,8 @@ it is.
 Serverless-native, single-user, single-machine: it watches this Mac's
 agent-harness stores and imports provider transcripts into one event model.
 
-It is a standalone, dependency-free package with no ties to any host
-application. The supported interfaces are the MCP tools and the documented
+It is a standalone package — no server, no cloud service, no host application
+it depends on. The supported interfaces are the MCP tools and the documented
 on-disk format (see Stability) — there is no public Python API.
 
 ## Install
@@ -96,11 +96,10 @@ on-disk format (see Stability) — there is no public Python API.
 **The clone is the install.** thread-archive is not distributed as a package —
 there is no registry; a release is an annotated tag on the repo you can pin
 (see [docs/releasing.md](https://github.com/ellamental/thread_archive/blob/main/docs/releasing.md)).
-The product is the repo itself: the Python package, both MCP servers, the
-`.mcp.json` template that wires in the read server, and the optional
-and the venv lives in the clone
-once it's built. Clone it, open it in Claude Code, and let the agent install
-its own memory:
+The product is the repo itself: the Python package, the read MCP server, the
+`.mcp.json` template that wires it in, and the pre-built web viewer; the venv
+lives in the clone once it's built. Clone it, open it in Claude Code, and let
+the agent install its own memory:
 
 ```bash
 git clone https://github.com/ellamental/thread_archive.git thread-archive && cd thread-archive
@@ -109,12 +108,10 @@ claude     # then: "install this, following claude-install.md"
 
 [claude-install.md](https://github.com/ellamental/thread_archive/blob/main/claude-install.md)
 walks the agent through the whole thing — venv, tests green, MCP wiring,
-first import, and (if you want curation) a pointer at the thread-librarian
-plugin — stopping to ask you exactly twice:
-whether to add local semantic search (heavy: pulls torch), and whether/how
-much to curate now. macOS only; Python ≥ 3.14. The end state is a populated,
-searchable archive served over MCP, plus the `archive` operator CLI and the
-pre-built web viewer (no node).
+first import — stopping to ask you exactly once: whether to add local
+semantic search (heavy: pulls torch). macOS only; Python ≥ 3.14. The end
+state is a populated, searchable archive served over MCP, plus the `archive`
+operator CLI and the pre-built web viewer (no node).
 
 **Manual path (no agent).** The same install by hand:
 
@@ -133,18 +130,6 @@ sed "s|ABSOLUTE_REPO_PATH|$(pwd)|g" .mcp.json.example > .mcp.json
 ```
 
 Restart Claude Code in the repo so it loads `.mcp.json` (the search/read MCP server).
-Want curation too? Install the **thread-librarian** package — its repo is its own
-plugin marketplace:
-
-```bash
-claude plugin marketplace add /path/to/thread-librarian
-claude plugin install archive-librarian@thread-librarian
-```
-
-Then `/librarian` works the queue until it's empty (topic citations + a stored
-summary per thread), or pass a per-run cap (`/librarian 25`) and re-run across
-sessions for a large backlog. See the thread-librarian repo
-for what the plugin contains.
 
 **Always-on — the setup wizard.** Either path leaves a working archive that
 ingests lazily. `.venv/bin/thread_archive` upgrades it to always-on: on first
@@ -160,11 +145,7 @@ disabled source stays disabled across every ingest path. Re-running
 `thread_archive` shows status; `thread_archive setup` revisits the choices.
 Non-interactive (agents, scripts): `thread_archive --yes` accepts every
 default — without `--yes`, a non-TTY run only prints guidance and never
-ingests. (Scheduled self-curation — an hourly librarian and a daily gardener,
-each a headless `claude` spawn that gates on work left and skips cheaply when
-the queues are empty — is thread-librarian's `thread-librarian daemon install
---librarian` / `--gardener`; `thread-librarian curate librarian|gardener` runs
-one drain by hand.)
+ingests.
 
 Skipped the watcher? Still covered: `archive-mcp` cohosts **lazy catch-up
 ingest** — a background pass at startup and (throttled) around tool calls
@@ -289,7 +270,11 @@ answer is a support tier plus a repair loop, not a promise nobody can keep:
 - **The user's own agent writes the fix.** `archive fix-import <provider>`
   scaffolds an override patch under `<home>/plugins/` (module, tests, collected
   samples, drift evidence, per-provider quirk notes) and spawns a headless
-  `claude` whose only job is the parse logic. Activation is deterministic —
+  `claude` whose only job is the parse logic. The spawn is permission-scoped,
+  not permission-bypassing: edits auto-approve only inside the scaffold, its
+  shell allowlist is the repair protocol's commands, and no MCP servers are
+  injected — the samples are transcript data, which an agent should always
+  treat as untrusted input (see [SECURITY.md](SECURITY.md)). Activation is deterministic —
   the scaffold's tests must pass in a fresh subprocess (including a dedup
   re-import guard) before the override is enabled and the ledger-driven
   re-import recovers the gap. No Claude Code on the box? `--scaffold-only`
@@ -307,16 +292,20 @@ The scope is deliberately narrow. These are design decisions, not gaps waiting
 on a release:
 
 - **More than one machine — and merging archives.** An archive belongs to one
-  Mac. Thread and event ids are locally-minted integers that live *inside* the
+  Mac. Thread and event ids are locally minted and live *inside* the
   truth layer: they are the JSONL filenames, they sit in every record, in the
-  append-only curatorial log, and in the inline `[e12345]` citations librarian
+  append-only curatorial log, and in the inline `[e12345]` citations stored
   summaries carry. Two archives grown independently therefore occupy the same
   id space with nothing to tell them apart, and cannot be combined. There is no
   merge tool, no sync, and no federated search across archives. *Moving* an
   archive to another machine is supported — carry the directory, or
   `archive restore <mirror> --to <home>`; running two and reconciling them
   later is not.
-- **Anything but macOS.** The daemons are LaunchAgents, the file locks are Unix.
+- **Anything but macOS.** macOS is the supported platform: the daemons are
+  LaunchAgents, the file locks are Unix. The Python core happens to import and
+  pass its suite on Linux (public CI runs there), but the always-on pieces —
+  watcher, scheduled backup, MCP LaunchAgent — do not exist off macOS, and no
+  other platform is tested end to end or supported.
 - **More than one user.** No accounts, no authentication, no per-user scoping.
   The web viewer binds to `127.0.0.1` and assumes whoever reaches it owns
   everything in the archive.
@@ -374,10 +363,11 @@ wins; ids that were never imported are skipped, not fatal.
   by default (`archive-mcp` cohosts lazy catch-up ingest), with a one-command macOS
   LaunchAgent upgrade (`archive daemon install`) for always-fresh — no external service
   either way.
-- **Declares itself** — the installer writes the thread-family manifest
+- **Declares itself** — the installer writes a small discovery manifest
   `<home>/product.json` (`host/write-manifest.py`; `make install-agent` runs
-  it), so family consumers discover the archive by enumeration. Spec:
-  `docs/spec/product-json.md` in the thread monorepo.
+  it): name, version, data paths, and the viewer URL when the watcher serves
+  one, so sibling tooling can find the archive by enumeration. The writer is
+  the reference for its shape; harmless when nothing consumes it.
 - **Searches locally** — FTS5 lexical (boolean / phrase / pipe-OR / code-identifier),
   optionally fused with local semantic vectors and a cross-encoder re-rank; plus
   transcript reconstruction for reading. An empty query **browses**: one row per
@@ -412,7 +402,7 @@ wins; ids that were never imported are skipped, not fatal.
   found" against a high-confidence memory is the one failure class the suite
   guards hardest.
 - **Curatable** — an event-sourced topic graph with Leiden communities (see below),
-  driven on demand by thread-librarian's `/librarian` skill, which also stores each conversation's
+  built by a curating agent, which also stores each conversation's
   search-first summary: a few dense sentences indexed into the default search scope
   and embedded for the semantic arm, plus a structured `indexed_summary`
   (event-anchored markdown) for long threads, served by
@@ -420,17 +410,12 @@ wins; ids that were never imported are skipped, not fatal.
 
 ## MCP
 
-Two servers, split read from write. **`thread-archive`** (`archive-mcp`) serves the
-read-only tools — `thread_search` / `thread_read` — and cohosts lazy catch-up
+One server, read-only. **`thread-archive`** (`archive-mcp`) serves
+`thread_search` / `thread_read` and cohosts lazy catch-up
 ingest in its own process (throttled, cross-process-safe via the ingest-owner
-lock; `THREAD_ARCHIVE_MCP_INGEST=0` disables it). **`thread-archive-librarian`**
-(`archive-librarian-mcp`, shipped by thread-librarian) is the curatorial *write*
-surface — topic/link/citation writes and stored-summary writes (`thread_set_summary`) + the reads the librarian
-needs (`review_queue`, `topic_search`, `thread_user_messages`). Keeping them
-separate means a read-only client never gets curation power — the setup wizard
-and `.mcp.json.example` wire only the read server; the librarian server ships
-with the thread-librarian package (or wire it by hand the same way). Client
-config for the read server:
+lock; `THREAD_ARCHIVE_MCP_INGEST=0` disables it). Curation writes deliberately
+have no MCP surface in this package — a client wired to the archive can search
+and read, never mutate. Client config:
 
 ```json
 {
@@ -452,7 +437,7 @@ Reads/analytics live in the knowledge layer (`_knowledge/`) — PageRank,
 communities (**Leiden**, the algorithm Neo4j GDS ran, with a networkx-Louvain fail-soft
 fallback), bridges, peers.
 
-The graph is consumable from the public read surface, not just the librarian's: search
+The graph is consumable from the public read surface: search
 headers name the subjects a result set clusters under with their `[topic <id>]`s,
 `thread_read` on a topic id renders the topic's curated page (description, links, cited
 quotes — each quote anchored to open via `around_event`), `thread_read('topics')` renders
@@ -466,10 +451,10 @@ transaction. The log is the source of truth for curation; `thread_links` / `topi
 are rebuildable from it — `reindex` replays the log (idempotent upsert + tombstone) to
 reconstruct them, so an unlink/merge/archive is recorded history, never silent loss.
 
-The librarian skill (thread-librarian's `plugins/librarian/skills/librarian/`) drives the write MCP over
-`review_queue` — event-bearing conversations still missing either half of its
-per-thread output, held back while a thread is still ingesting. Per thread it writes
-**~3+ topic citations** and a **stored summary** (`thread_set_summary`): a short,
+A curating agent works a **review queue** — event-bearing conversations still
+missing either half of the per-thread output, held back while a thread is still
+ingesting. Per thread the curator writes
+**~3+ topic citations** and a **stored summary**: a short,
 dense `summary` that immediately becomes a thread-meta search doc (the default search
 scope is user + title + summary, and the embed cohost picks it up for the semantic
 arm), plus an event-anchored `indexed_summary` for long threads. A conversation is
@@ -557,10 +542,15 @@ lead: broader provider coverage, platforms beyond macOS, and more mileage.
 ## License
 
 MIT — see [LICENSE](https://github.com/ellamental/thread_archive/blob/main/LICENSE).
+The pre-built web viewer bundle contains third-party open-source packages (all
+MIT/ISC/BSD); their license texts ship in
+`src/thread_archive/_web/THIRD_PARTY_NOTICES.md`
+(regenerate with `scripts/gen_third_party_notices.py` when frontend
+dependencies change).
 
 ## Origin
 
 thread-archive is the standalone member of a larger personal project ("thread"), built to
-stand on its own — serverless, dependency-free, no backend or external services. The
-package is self-contained, but it's young: expect the occasional rough edge or stray
-reference to its parent project.
+stand on its own — serverless, self-contained, no backend or external services. It's
+young, though: expect the occasional rough edge or stray reference to its parent
+project.

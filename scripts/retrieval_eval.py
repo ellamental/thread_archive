@@ -415,7 +415,7 @@ def main() -> None:
                     help="drop a content type from the searched scope "
                     "(repeatable; overrides the protocol's default exclusions "
                     "— e.g. --exclude-content-type summary measures a scope "
-                    "without librarian summaries)")
+                    "without stored summaries)")
     ap.add_argument("--require-semantic", action="store_true",
                     help="exit 1 if the semantic arm is unavailable — without "
                     "this, a dead embeddings model silently degrades the "

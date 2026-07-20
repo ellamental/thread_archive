@@ -19,6 +19,17 @@ The version's single source of truth is `__version__` in
 `src/thread_archive/__init__.py`; pyproject declares `version` dynamic and
 hatch reads it from there. Nothing else carries the number.
 
+## 0. The repo is release infrastructure — keep it hardened
+
+Because a pushed tag reaches unattended installs (SECURITY.md documents the
+trust model: transport security to the remote, no signature layer), the
+GitHub repo's own protections are part of the release mechanism, not
+optional hygiene. The standing requirements: two-factor auth on every
+account that can push, a tag protection rule covering `v*` (nobody but the
+release path can create or move release tags), and branch protection on
+`main`. A compromised push credential is remote code execution on every
+consumer install one soak window later — guard it like that.
+
 ## 1. Preflight — the tree must already be releasable
 
 - Full suite green: `.venv/bin/pytest tests/`.
@@ -121,7 +132,6 @@ cross one unattended for exactly that reason.
 
 The agent, end to end — preflight, changelog compression, version bump,
 release commit, tag, push, verification, and rolling the local deployment.
-The monorepo's no-commit rule does not apply here: `archive/` is its own
-repository, and the release commit + tag are part of the release process the
-agent is executing, not tree-snapshot cadence. Asking for release means
-asking for all of it.
+The release commit + tag are part of the release process the agent is
+executing (an explicit exception to any standing no-commit convention in the
+operator's environment). Asking for release means asking for all of it.
