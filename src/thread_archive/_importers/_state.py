@@ -158,7 +158,7 @@ def _restage_thread(session: Session, thread: Thread) -> None:
     record_thread(session, thread)
 
 
-def update_thread_title(session: Session, thread_id: int, title: str) -> bool:
+def update_thread_title(session: Session, thread_id: str, title: str) -> bool:
     """Set a thread's title and re-stage it to truth. No-op if unchanged/missing."""
     thread = session.get(Thread, thread_id)
     if not thread or thread.title == title:
@@ -168,7 +168,7 @@ def update_thread_title(session: Session, thread_id: int, title: str) -> bool:
     return True
 
 
-def update_thread_description(session: Session, thread_id: int, description: str) -> bool:
+def update_thread_description(session: Session, thread_id: str, description: str) -> bool:
     """Set a thread's one-line description and re-stage it to truth."""
     thread = session.get(Thread, thread_id)
     if not thread:
@@ -178,7 +178,7 @@ def update_thread_description(session: Session, thread_id: int, description: str
     return True
 
 
-def set_thread_models_from_events(session: Session, thread_id: int) -> list[str]:
+def set_thread_models_from_events(session: Session, thread_id: str) -> list[str]:
     """Denormalize a thread's models into ``source_metadata['models']`` from its
     ``api_request_completed`` events (distinct, first-appearance order), so new
     imports land in the sidebar's model filter. Falls back to the operative
@@ -243,7 +243,7 @@ def upsert_import_state(
     *,
     source: str,
     source_id: str,
-    thread_id: Optional[int],
+    thread_id: Optional[str],
     last_line_count: int,
     last_file_size: int,
     last_message_uuid: Optional[str],

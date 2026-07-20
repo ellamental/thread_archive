@@ -81,7 +81,7 @@ def search(
     home: Optional[str] = None,
     limit: int = 20,
     thread_id: Optional[int | str] = None,
-    topic_id: Optional[int] = None,
+    topic_id: Optional[str] = None,
     content_types: Optional[list[str]] = None,
     exclude_content_types: Optional[list[str]] = None,
     since: Optional[str] = None,

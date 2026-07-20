@@ -15,7 +15,7 @@ from kg history) — it just carries no live graph metadata.
 
 from __future__ import annotations
 
-from typing import Optional
+from typing import Any, Optional
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
@@ -89,7 +89,7 @@ def topic_get(topic_id: str, *, session: Optional[Session] = None) -> dict:
                 .order_by(func.count().desc(), TopicMessage.thread_id)
             ).all()
         ]
-        detail = {
+        detail: dict[str, Any] = {
             "id": t.id,
             "title": t.title or t.name,
             "topic_kind": t.topic_kind,

@@ -69,16 +69,17 @@ def _reset_watermarks(source: str, source_ids: set[str]) -> int:
         return 0
     from sqlalchemy import delete
 
-    from .._store import ImportState, get_session
+    from .._store import ImportState, dml_rowcount, get_session
 
     with get_session() as s:
-        result = s.execute(
+        count = dml_rowcount(
+            s,
             delete(ImportState).where(
                 ImportState.source == source, ImportState.source_id.in_(source_ids)
-            )
+            ),
         )
         s.commit()
-    return int(result.rowcount or 0)
+    return count
 
 
 def _replay_snapshots(provider, *, home: Optional[str]) -> dict:

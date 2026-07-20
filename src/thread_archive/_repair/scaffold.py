@@ -259,7 +259,7 @@ def _recent_ledger_records(
         lines = (resolve_paths(home).home / filename).read_text(encoding="utf-8").splitlines()
     except OSError:
         return []
-    out = []
+    out: list[dict] = []
     for line in reversed(lines):  # newest last on disk → newest first here
         if len(out) >= limit:
             break

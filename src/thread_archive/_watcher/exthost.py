@@ -238,11 +238,11 @@ class ExthostWatcher(SourceWatcher):
 
         # Resolve each message's thread from its channel and group by thread —
         # keeping only the genuinely-lost ones (uuid absent from the session JSONL).
-        by_thread: dict[tuple[int, str], list[tuple[str, dict]]] = defaultdict(list)
+        by_thread: dict[tuple[str, str], list[tuple[str, dict]]] = defaultdict(list)
         jsonl_cache: dict[str, str] = {}  # session-file path → its text, read once per poll
         deferred = 0
         with get_session() as s:
-            thread_cache: dict[str, Optional[int]] = {}
+            thread_cache: dict[str, Optional[str]] = {}
             for ch, uuid, content, iso in webview_users:
                 cwd = chan_cwd.get(ch)
                 session_id = chan_session.get(ch)

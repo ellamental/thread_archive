@@ -179,7 +179,7 @@ def _degradation_notices() -> str:
         lines = []
         for source in sorted(degraded):
             verdict = degraded[source] or {}
-            phrase = _DEGRADED_PHRASES.get(verdict.get("reason"), "import degraded")
+            phrase = _DEGRADED_PHRASES.get(str(verdict.get("reason") or ""), "import degraded")
             since = str(verdict.get("since") or "")[:10]
             lines.append(
                 f"note: {source} import is degraded ({phrase}"

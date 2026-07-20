@@ -20,7 +20,7 @@ import time
 from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING, Any, Optional
 from urllib.parse import parse_qs, unquote, urlparse
 
 from .. import _api as api
@@ -555,7 +555,7 @@ def _topic_detail(topic_id: str, *, evidence_limit: int) -> Optional[dict]:
                 .limit(evidence_limit)
             ).all()
         ]
-        detail = {
+        detail: dict[str, Any] = {
             "id": t.id,
             "title": t.title or t.name,
             "topic_kind": t.topic_kind,

@@ -231,7 +231,7 @@ def test_installed_mcp_search_and_read_over_imported_data(installed, tmp_path) -
          "params": {"name": "thread_search",
                     "arguments": {"query": "packaged lifecycle"}}},
         {"jsonrpc": "2.0", "id": 3, "method": "tools/call",
-         "params": {"name": "thread_read", "arguments": {"thread_id": 1}}},
+         "params": {"name": "thread_read", "arguments": {"thread_id": "sess"}}},
     ])
     search = _tool_result(responses, 2)
     assert not search.get("isError"), search["content"][0]["text"]
