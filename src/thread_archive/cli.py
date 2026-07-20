@@ -415,6 +415,11 @@ def report_backup(res: dict) -> int:
             f"rebalance twins: {res['rehomed_twins_deleted']} superseded old-layout "
             "copies removed from the backup"
         )
+    if res.get("renamed_twins_deleted"):
+        print(
+            f"migration twins: {res['renamed_twins_deleted']} superseded legacy-id "
+            "copies removed from the backup"
+        )
     if res["deletions_skipped"]:
         print(
             f"WARNING: {res['deletions_skipped']} stale destination files kept — "

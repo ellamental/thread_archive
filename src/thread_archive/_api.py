@@ -55,14 +55,24 @@ def open_archive(home: Optional[str] = None) -> ArchivePaths:
         reset_handles()  # stale handles point at the previous home's files
     # Pin the home so engine + truth + search resolve consistently for the process.
     os.environ[ENV_HOME] = str(paths.home)
-    init_engine(target)  # rebuilds when the DSN changed
-    # Read-path convergence: long-lived processes (a curation MCP server, the web
-    # app) pass through here on every call, so a reindex's index.db swap is
-    # picked up on the next call. Writers get the authoritative check on
-    # ingest-lock *acquire* (see _truth.shared_ingest_lock) — this one runs
-    # before any blocking wait and can go stale during it.
-    reconnect_if_swapped()
-    init_db()
+    try:
+        init_engine(target)  # rebuilds when the DSN changed
+        # Read-path convergence: long-lived processes (a curation MCP server, the web
+        # app) pass through here on every call, so a reindex's index.db swap is
+        # picked up on the next call. Writers get the authoritative check on
+        # ingest-lock *acquire* (see _truth.shared_ingest_lock) — this one runs
+        # before any blocking wait and can go stale during it.
+        reconnect_if_swapped()
+        init_db()
+    except Exception:
+        # A failed first connection (corrupt index, permissions, failed PRAGMA)
+        # must not leave its partially initialized pool pinned globally. Apart
+        # from leaking the DB-API connection, a later call would keep retrying
+        # through the poisoned engine instead of starting from a clean binding.
+        from ._store import close_engine
+
+        close_engine()
+        raise
     return paths
 
 

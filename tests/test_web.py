@@ -775,7 +775,10 @@ def test_serve_in_thread_cohosts(archive_home):
     httpd = serve_in_thread(host="127.0.0.1", port=0)
     try:
         port = httpd.server_address[1]
-        body = urllib.request.urlopen(f"http://127.0.0.1:{port}/api/status", timeout=5).read()
+        with urllib.request.urlopen(
+            f"http://127.0.0.1:{port}/api/status", timeout=5
+        ) as response:
+            body = response.read()
         assert json.loads(body)["threads"] == 1
     finally:
         httpd.shutdown()
@@ -909,6 +912,7 @@ def test_error_body_is_generic(tmp_path, monkeypatch, caplog):
                 urllib.request.urlopen(f"http://127.0.0.1:{port}/api/status", timeout=5)
         assert excinfo.value.code == 500
         body = excinfo.value.read()
+        excinfo.value.close()
         assert json.loads(body) == {"error": "internal error"}
         assert str(broken).encode() not in body  # no path leaked to the client
         # …while the operator still gets the failure, with its path, in the log.

@@ -33,6 +33,7 @@ import logging
 import os
 import shutil
 import sqlite3
+from contextlib import closing
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
@@ -114,10 +115,9 @@ def _copy_file(src: Path, dest: Path) -> None:
     if is_sqlite:
         # Backup API: a consistent copy of a live DB, WAL content included —
         # a plain copy of a mid-write DB can be unreadable.
-        with sqlite3.connect(f"file:{src}?mode=ro", uri=True) as conn, sqlite3.connect(
-            dest
-        ) as out:
-            conn.backup(out)
+        with closing(sqlite3.connect(f"file:{src}?mode=ro", uri=True)) as conn:
+            with closing(sqlite3.connect(dest)) as out:
+                conn.backup(out)
         return
     shutil.copy2(src, dest)
 

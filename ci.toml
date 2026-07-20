@@ -28,16 +28,19 @@ argv = ["{repo}/.venv/bin/ruff", "check", "."]
 name = "mypy"
 argv = ["{repo}/.venv/bin/mypy"]
 
-# Frontend type gate. Deliberately `tsc --noEmit`, NOT `npm run build`: vite
-# builds into the COMMITTED src/thread_archive/_web/static (the SPA ships
-# pre-built), so a CI build would rewrite tracked hash-named assets on every
-# sweep. Types are the drift that bites silently; the build itself is exercised
-# by `archive web` development. npx is which-gated, so a host without node
-# records error, never a silent green.
+# Frontend type gate. npx is which-gated, so a host without node records error,
+# never a silent green.
 [[suite]]
 name = "frontend-typecheck"
 argv = ["npx", "tsc", "--noEmit"]
 cwd = "frontend"
+
+# The SPA ships as a committed build. Build into a throwaway directory and
+# compare bytes so source changes can never ship the previous bundle. The
+# checker deliberately leaves the committed static directory untouched.
+[[suite]]
+name = "frontend-build"
+argv = ["{repo}/.venv/bin/python", "{repo}/scripts/check_frontend_build.py"]
 
 # Component behavior (Vitest + Testing Library over jsdom): block rendering,
 # loading/error/empty states, search grouping, uuid→thread redirects. Network is

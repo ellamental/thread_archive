@@ -105,6 +105,12 @@ def _fsync_dir(d: Path) -> None:
 # shard buckets hash the id string instead of taking integer modulos.
 TRUTH_FORMAT_VERSION = 2
 
+# The v1→v2 migration's durable legacy-id → ULID record, written beside the
+# truth dir (at the home root) by ``_scripts.migrate_thread_ulids``. Consumers
+# (e.g. the backup mirror's renamed-twin detection) treat a missing or
+# unreadable file as "never migrated".
+ULID_MAPPING_FILE = "ulid-mapping.json"
+
 
 class TruthFormatError(RuntimeError):
     """The truth directory declares a format version newer than this code reads."""
@@ -145,14 +151,15 @@ def _infer_shard_depth(d: Path) -> int:
     cur = d / THREADS_SUBDIR
     while depth < 4:  # bound: depths beyond 2 don't exist, but never loop unbounded
         try:
-            bucket = next(
-                (
-                    e for e in os.scandir(cur)
-                    if e.is_dir() and len(e.name) == 2
-                    and all(c in "0123456789abcdef" for c in e.name)
-                ),
-                None,
-            )
+            with os.scandir(cur) as entries:
+                bucket = next(
+                    (
+                        e for e in entries
+                        if e.is_dir() and len(e.name) == 2
+                        and all(c in "0123456789abcdef" for c in e.name)
+                    ),
+                    None,
+                )
         except OSError:
             break
         if bucket is None:
@@ -395,4 +402,3 @@ def _iter_jsonl(
                     logger.warning("truth: skipping unparseable line %s:%d", path, lineno)
                 if errors is not None:
                     errors.append((str(path), lineno))
-

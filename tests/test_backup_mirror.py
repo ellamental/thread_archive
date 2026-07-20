@@ -3,9 +3,11 @@
 The backup is a true mirror with guardrails:
 
 * destination files with no source counterpart are deleted, so a shard
-  rebalance can't leave a stale layout that shadows current records on restore
-  — but re-homed twins are the only deletions exempt from the safety cap, and
-  a run that *skips* deletions exits nonzero so the scheduled wrapper alerts;
+  rebalance or the ULID migration can't leave a stale generation that shadows
+  current records on restore — but provably superseded twins (rebalance
+  re-homes, migration renames) are the only deletions exempt from the safety
+  cap, and a run that *skips* deletions exits nonzero so the scheduled wrapper
+  alerts;
 * an append-only truth file that is *smaller* at the source than in the backup
   is never copied over the last good backup copy (``--allow-shrink`` is the
   deliberate override), and a source that fails the pre-backup verify still
@@ -126,6 +128,53 @@ def test_mirror_deletes_rehomed_twins_beyond_cap(archive_home, tmp_path, monkeyp
         assert not (dest / rel).exists(), f"stale twin {rel} must be gone from the backup"
     assert all(p.exists() for p in stale), "non-twin deletions stay capped"
     assert res["deletions_skipped"] == len(stale)
+    assert res["mirror_complete"] is True
+
+
+def test_mirror_deletes_ulid_migration_twins_beyond_cap(archive_home, tmp_path) -> None:
+    """The ULID migration renames every thread file at once, so a pre-migration
+    backup holds a stale legacy-named generation far past the deletion cap. The
+    migration's durable mapping proves each one superseded — the mirror must
+    converge, while mapped-but-unlanded ids and unmapped strays stay capped."""
+    import thread_archive._ops.backup as ops_backup
+    from thread_archive._truth.layout import ULID_MAPPING_FILE
+
+    import_cc_session(tmp_path)
+    dest = tmp_path / "dest"
+    assert ta.backup(str(dest))["mirror_complete"] is True
+
+    # Fabricate the post-migration destination state: for every live ULID
+    # thread file, a stale legacy-named copy plus the mapping naming it as
+    # that file's predecessor.
+    live_rels = sorted(
+        p.relative_to(archive_home / "truth")
+        for p in (archive_home / "truth" / "threads").rglob("*.jsonl")
+    )
+    assert live_rels
+    mapping = {str(100 + i): rel.stem for i, rel in enumerate(live_rels)}
+    twins = []
+    for legacy in mapping:
+        p = dest / "threads" / f"{legacy}.jsonl"
+        p.write_text(
+            f'{{"type": "thread", "id": {legacy}, "name": "pre-ulid"}}\n',
+            encoding="utf-8",
+        )
+        twins.append(p)
+    # A mapped legacy id whose ULID successor never landed anywhere must not
+    # be deleted on the mapping's word alone.
+    mapping["99"] = "01KF0000000000000000000000"
+    unlanded = dest / "threads" / "99.jsonl"
+    unlanded.write_text('{"type": "thread", "id": 99, "name": "pre-ulid"}\n', encoding="utf-8")
+    (archive_home / ULID_MAPPING_FILE).write_text(json.dumps(mapping), encoding="utf-8")
+    # Unmapped stale files beyond the cap stay protected.
+    stale = _stale_non_twins(dest, ops_backup.MIRROR_DELETE_FLOOR + 1)
+
+    res = ta.backup(str(dest))
+    assert res["renamed_twins_deleted"] == len(twins)
+    assert not any(p.exists() for p in twins), "the stale generation must converge out"
+    assert unlanded.exists()
+    assert all(p.exists() for p in stale)
+    assert res["deletions_skipped"] == len(stale) + 1
     assert res["mirror_complete"] is True
 
 

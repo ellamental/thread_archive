@@ -41,6 +41,7 @@ from .._store.ulid import mint_ulid
 from .._truth.layout import (
     THREADS_SUBDIR,
     TRUTH_FORMAT_VERSION,
+    ULID_MAPPING_FILE,
     _depth_for,
     _thread_relpath,
     update_manifest,
@@ -270,8 +271,9 @@ def main(argv: list[str] | None = None) -> int:
         print(f"  ! minted {m.minted_unindexed} id(s) for threads unknown to the index")
 
     # Persist the mapping — the durable record of which legacy id became which
-    # ULID, independent of the thread records themselves.
-    (home / "ulid-mapping.json").write_text(json.dumps(
+    # ULID, independent of the thread records themselves. The backup mirror's
+    # renamed-twin detection reads it to converge a pre-migration backup.
+    (home / ULID_MAPPING_FILE).write_text(json.dumps(
         {str(k): v for k, v in sorted(m.mapping.items())}, indent=0))
 
     if args.dry_run:

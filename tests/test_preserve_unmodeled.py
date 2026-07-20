@@ -11,6 +11,7 @@ version writes one drift-ledger sighting, and only one.
 from __future__ import annotations
 
 import json
+import random
 
 from sqlalchemy import text
 
@@ -24,6 +25,29 @@ from thread_archive._thread_import.parsers.residual import (
 from thread_archive._thread_import.parsers.validators import validate_messages
 
 from .helpers import cc_assistant, cc_user, write_jsonl
+
+
+def _generated_json_values() -> list[object]:
+    """A deterministic corpus spanning nested JSON types and awkward text."""
+    rng = random.Random(20260720)
+
+    def value(depth: int) -> object:
+        leaves: list[object] = [
+            None,
+            rng.choice([True, False]),
+            rng.randint(-(2**31), 2**31),
+            rng.uniform(-1_000_000, 1_000_000),
+            "".join(rng.choice("abc XYZ\n\t☃🦆<>&") for _ in range(rng.randrange(20))),
+        ]
+        if depth == 0:
+            return rng.choice(leaves)
+        return rng.choice([
+            *leaves,
+            [value(depth - 1) for _ in range(rng.randrange(4))],
+            {f"k{i}": value(depth - 1) for i in range(rng.randrange(4))},
+        ])
+
+    return [value(3) for _ in range(24)]
 
 
 def _msg(role: str = "user", line: dict | None = None) -> dict:
@@ -106,6 +130,35 @@ def test_import_persists_residual_on_tool_result_only_turn(archive_home, tmp_pat
     assert tool_payloads[0]["annotations"]["unmodeled"]["line"] == {"zzToolField": True}
     # The real user turn kept its own anchor clean.
     assert "annotations" not in _payloads("user_message_sent")[0]
+
+
+def test_generated_unknown_json_roundtrips_idempotently(archive_home, tmp_path) -> None:
+    """Every JSON value survives import, duplicate import, and truth rebuild."""
+    values = _generated_json_values()
+    lines: list[dict] = []
+    for i, value in enumerate(values):
+        name = f"generated-{i}"
+        user = cc_user(name, content=f"generated preservation turn {i}")
+        user["zzGenerated"] = value
+        lines.extend([user, cc_assistant(name)])
+
+    source = tmp_path / "generated.jsonl"
+    write_jsonl(source, lines)
+    first = ta.import_path(source, source_id="generated-residuals")
+    assert first.events_created > 0
+
+    expected = sorted(json.dumps(value, sort_keys=True) for value in values)
+
+    def preserved() -> list[str]:
+        return sorted(
+            json.dumps(payload["annotations"]["unmodeled"]["line"]["zzGenerated"], sort_keys=True)
+            for payload in _payloads("user_message_sent")
+        )
+
+    assert preserved() == expected
+    assert ta.import_path(source, source_id="generated-residuals").events_created == 0
+    ta.reindex()
+    assert preserved() == expected
 
 
 def test_version_tripwire_records_first_sighting_once(archive_home, tmp_path) -> None:

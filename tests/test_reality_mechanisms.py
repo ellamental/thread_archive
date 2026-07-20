@@ -8,7 +8,7 @@ regression class without carrying anyone's data. The bar is deliberately low:
 against a conversation that is right there — the archive telling its operator
 that part of their own history didn't happen.
 
-The three mechanisms:
+The four mechanisms:
 
 - **rare bigram under a frequency flood** — a two-word query whose first token
   is high-frequency must not have its exact-match threads drowned by newer
@@ -19,9 +19,14 @@ The three mechanisms:
 - **a distinctive phrase stays findable thread-scoped, across reindex** — the
   record of a conversation must survive index rebuilds, not just the write
   that indexed it.
+- **one thread cannot monopolize a grouped result pool** — repeated copies of
+  one matching prompt must not fill the event-level candidate window before
+  deduplication and hide every other matching conversation.
 """
 
 from __future__ import annotations
+
+import pytest
 
 from thread_archive import _api as api
 
@@ -47,6 +52,20 @@ def _import(tmp_path, name: str, lines: list[dict]) -> int:
     f = tmp_path / f"{name}.jsonl"
     write_jsonl(f, lines)
     return api.import_path(f).thread_id
+
+
+def _repeated_user_lines(name: str, day: int, text: str, count: int) -> list[dict]:
+    """A burst of distinct user events carrying the same text in one thread."""
+    return [
+        {
+            "type": "user",
+            "uuid": f"u-{name}-{i}",
+            "timestamp": f"2026-01-{day:02d}T10:{i // 60:02d}:{i % 60:02d}Z",
+            "cwd": "/proj",
+            "message": {"role": "user", "content": text},
+        }
+        for i in range(count)
+    ]
 
 
 def test_rare_bigram_survives_frequency_flood(tmp_path) -> None:
@@ -75,6 +94,45 @@ def test_rare_bigram_survives_frequency_flood(tmp_path) -> None:
         f"single-token flood (top-{RECALL_LIMIT} threads: {sorted(surfaced)}) — "
         "the OR-split failure shape is back."
     )
+
+
+@pytest.mark.xfail(
+    reason="grouped search caps event candidates before duplicate/thread folding",
+    strict=True,
+)
+def test_duplicate_prompt_flood_cannot_monopolize_grouped_result_pool(tmp_path) -> None:
+    # The default result shape spends its limit on threads, not events. A single
+    # noisy thread can nevertheless put hundreds of identical events at the head
+    # of FTS's event-level candidate pool. If deduplication happens only after
+    # that finite pool is fetched, the copies collapse to one displayed row but
+    # leave no candidate from the conversation that recorded the actual answer.
+    query = "amber lattice deadlock fix"
+    answer = _import(tmp_path, "answer", _session_lines(
+        "answer", 1,
+        "amber lattice deadlock fix: serialize reclamation at the generation barrier",
+        "the generation barrier is the definitive resolution",
+    ))
+    noise = _import(
+        tmp_path,
+        "duplicate-flood",
+        _repeated_user_lines("duplicate-flood", 2, query, RECALL_LIMIT * 10),
+    )
+
+    # Control: this is a placement failure, not an indexing failure.
+    assert api.search(
+        query, thread_id=answer, content_types=["user"], rerank=False,
+    )
+
+    hits = api.search(
+        query, limit=RECALL_LIMIT, content_types=["user"], rerank=False,
+    )
+    placed_threads = [h["thread_id"] for h in hits]
+    assert noise in placed_threads
+    assert answer in placed_threads, (
+        f"the answer thread {answer} was buried by repeated events from one noisy "
+        f"thread (top-{RECALL_LIMIT} threads: {placed_threads})"
+    )
+    assert placed_threads.index(answer) < 2
 
 
 def test_tool_call_events_are_searchable(tmp_path) -> None:

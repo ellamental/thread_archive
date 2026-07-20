@@ -27,18 +27,26 @@ FLOORS = {
     "_api": 90.0,  # thin dispatch layer over the private machinery
     "_importers": 92.0,
     "_knowledge": 90.0,
+    "_launchd": 95.0,
     "_mcp": 92.0,
     "_ops": 90.0,  # the durability kit
+    "_providers": 90.0,
+    "_repair": 82.0,
     "_retrieval": 94.0,
     "_scripts": 97.0,
+    "_setup": 94.0,
     "_store": 95.0,
     "_thread_import": 92.0,  # vendored provider parsers, exercised end-to-end by the parser + golden suites
     "_truth": 93.0,
+    "_update": 70.0,
     "_watcher": 94.0,
     "_web": 92.0,
     "cli": 98.0,  # full verb→api dispatch coverage; heavy verbs stubbed at the api seam
+    "provider": 48.0,  # public plugin API + optional pytest harness
     "TOTAL": 94.0,
 }
+
+EXEMPT_PACKAGES = {"__init__", "_config"}
 
 # The optional thread-librarian package (its own repo) seeds the curated-data-
 # plane tests through its write surface; without it installed those tests
@@ -103,9 +111,11 @@ def main(argv: list[str]) -> int:
         if pct < floor:
             breaches.append(f"  {pkg}: {pct:.1f}% < floor {floor:.0f}%")
 
-    unfloored = sorted(set(agg) - set(FLOORS) - {"__init__", "_config"})
+    unfloored = sorted(set(agg) - set(FLOORS) - EXEMPT_PACKAGES)
     if unfloored:
-        print(f"  (unfloored packages: {', '.join(unfloored)})")
+        breaches.append(
+            f"  unfloored production packages: {', '.join(unfloored)}"
+        )
 
     if breaches:
         print("\ncoverage regression:")

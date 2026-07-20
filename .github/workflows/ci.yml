@@ -64,9 +64,8 @@ jobs:
       - name: Coverage floors
         run: python scripts/coverage_gate.py coverage.json
 
-  # The web viewer's gates. tsc --noEmit (not a build — the SPA ships pre-built
-  # into the committed _web/static) plus the Vitest component suite with its
-  # coverage floor.
+  # The web viewer's gates: types, committed-build freshness, and component
+  # behavior with coverage floors.
   frontend:
     runs-on: ubuntu-latest
     defaults:
@@ -86,6 +85,9 @@ jobs:
 
       - name: Typecheck
         run: npx tsc --noEmit
+
+      - name: Committed build is current
+        run: python3 ../scripts/check_frontend_build.py
 
       - name: Test
         run: npx vitest run --coverage

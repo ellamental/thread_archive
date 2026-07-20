@@ -147,7 +147,10 @@ def _model_cached(name: str) -> bool:
     folder = "models--" + name.replace("/", "--")
     snaps = os.path.join(_hub_cache_dir(), folder, "snapshots")
     try:
-        return os.path.isdir(snaps) and any(os.scandir(snaps))
+        if not os.path.isdir(snaps):
+            return False
+        with os.scandir(snaps) as entries:
+            return next(entries, None) is not None
     except OSError:
         return False
 

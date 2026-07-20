@@ -694,6 +694,29 @@ class _Handler(BaseHTTPRequestHandler):
         pass
 
 
+class _ArchiveHTTPServer(ThreadingHTTPServer):
+    """HTTP server that owns the background work it starts.
+
+    The stdlib server tracks request threads, but the three startup prewarms are
+    ours. Joining them on a clean close prevents a stopped cohost from leaving
+    database work running against an archive the caller has already torn down.
+    """
+
+    def __init__(self, server_address, handler) -> None:
+        super().__init__(server_address, handler)
+        self._prewarm_threads: list[threading.Thread] = []
+
+    def start_prewarm(self, target, *, name: str) -> None:
+        thread = threading.Thread(target=target, name=name, daemon=True)
+        self._prewarm_threads.append(thread)
+        thread.start()
+
+    def server_close(self) -> None:
+        super().server_close()
+        for thread in self._prewarm_threads:
+            thread.join(timeout=5)
+
+
 def serve_in_thread(*, host: str = "127.0.0.1", port: int = 8787) -> ThreadingHTTPServer:
     """Start the viewer on a background daemon thread and return the server.
 
@@ -710,18 +733,18 @@ def serve_in_thread(*, host: str = "127.0.0.1", port: int = 8787) -> ThreadingHT
             f"refusing non-loopback bind {host!r}: the viewer has no auth and serves "
             f"the full archive. Set {_NONLOCAL_OPTIN}=1 to expose it deliberately."
         )
-    httpd = ThreadingHTTPServer((host, port), _Handler)
+    httpd = _ArchiveHTTPServer((host, port), _Handler)
     threading.Thread(target=httpd.serve_forever, name="archive-web", daemon=True).start()
     # Prewarm the status survey so even the first /api/status a fresh process
     # serves comes from cache instead of paying the multi-second count.
-    threading.Thread(target=_prewarm_status, name="archive-web-status-warm", daemon=True).start()
+    httpd.start_prewarm(_prewarm_status, name="archive-web-status-warm")
     # Prewarm the stats rollup the same way: build/refresh the token-cost cache in the
     # background so the first /api/stats serves an already-warm table. Only the very
     # first build (or the one after a reindex) is slow; a restart folds just the delta.
-    threading.Thread(target=_prewarm_stats, name="archive-web-stats-warm", daemon=True).start()
+    httpd.start_prewarm(_prewarm_stats, name="archive-web-stats-warm")
     # And the curation survey, the heaviest of the three: its backlog gate walks
     # every conversation's events, so a cold /api/curation is tens of seconds.
-    threading.Thread(target=_prewarm_curation, name="archive-web-curation-warm", daemon=True).start()
+    httpd.start_prewarm(_prewarm_curation, name="archive-web-curation-warm")
     return httpd
 
 

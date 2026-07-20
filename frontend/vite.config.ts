@@ -28,14 +28,15 @@ export default defineConfig({
       include: ['src/**/*.{ts,tsx}'],
       // Test scaffolding and the Vite entry shim carry no behavior worth covering.
       exclude: ['src/test/**', 'src/main.tsx'],
-      // Floor, not target: sits just under the measured 75.58% lines, so a
-      // regression reds the suite without making the number a thing to chase.
-      // Only fires under --coverage, which only the CI row passes — a plain
-      // local `npx vitest run` stays fast and ungated. Lines only, the same one
-      // ratchet lab/web holds; the shell components (Sidebar, StatusBar,
-      // Landing, App) are the untested surface the number is waiting on.
+      // Regression floors sit just under the measured suite. They fire only
+      // under --coverage, which the CI row passes; a plain local `vitest run`
+      // stays fast and ungated. Keep every dimension gated so deleting branch-
+      // heavy interaction tests cannot hide behind unchanged line coverage.
       thresholds: {
-        lines: 75,
+        statements: 88,
+        branches: 74,
+        functions: 86,
+        lines: 91,
       },
     },
   },

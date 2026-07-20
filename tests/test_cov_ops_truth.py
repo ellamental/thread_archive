@@ -272,10 +272,10 @@ def test_atomic_copy_cleans_tmp_on_error(tmp_path):
     assert not dst.exists()
 
 
-def test_split_rehomed_twins_classifies_edge_files(tmp_path):
+def test_split_superseded_twins_classifies_edge_files(tmp_path):
     """Non-int stems, non-threads files, and a missing canonical dest copy all
     fall through to 'rest' (kept under the deletion cap), never mis-flagged as
-    rebalance twins."""
+    rebalance or migration twins."""
     src = tmp_path / "src"
     dest = tmp_path / "dest"
     (src / "threads").mkdir(parents=True)
@@ -297,9 +297,44 @@ def test_split_rehomed_twins_classifies_edge_files(tmp_path):
     flat_twin.write_text('{"type":"event","id":501}\n')
 
     doomed = [non_int, non_threads, flat_twin]
-    twins, rest = bk._split_rehomed_twins(src, dest, doomed)
-    assert twins == []
+    rehomed, renamed, rest = bk._split_superseded_twins(src, dest, doomed)
+    assert rehomed == [] and renamed == []
     assert set(rest) == set(doomed)
+
+
+def test_split_superseded_twins_requires_mapped_successor_at_both_ends(tmp_path):
+    """A legacy-named file is a migration twin only when the durable mapping
+    names its successor AND that successor's file exists at the source with a
+    non-empty destination copy — anything less stays capped."""
+    import json as _json
+
+    from thread_archive._truth.layout import ULID_MAPPING_FILE
+
+    src = tmp_path / "src"
+    dest = tmp_path / "dest"
+    (src / "threads").mkdir(parents=True)
+    (dest / "threads").mkdir(parents=True)
+    jsonl_log._write_manifest(src, {"version": 2, "shard_depth": 0, "last_checkpoint_at": None})
+
+    ulid_ok = "01KF0HMW9M0X6M2N55AJKYGH0S"
+    ulid_gone = "01KF0HVJXGA9N0AGEGSVPNFM3D"
+    (src / "threads" / f"{ulid_ok}.jsonl").write_text('{"type":"thread"}\n')
+    (dest / "threads" / f"{ulid_ok}.jsonl").write_text('{"type":"thread"}\n')
+    (tmp_path / ULID_MAPPING_FILE).write_text(
+        _json.dumps({"7": ulid_ok, "8": ulid_gone}))
+
+    proven = dest / "threads" / "7.jsonl"  # mapped, successor at both ends
+    proven.write_text('{"type":"thread","id":7}\n')
+    unlanded = dest / "threads" / "8.jsonl"  # mapped, successor nowhere
+    unlanded.write_text('{"type":"thread","id":8}\n')
+    unmapped = dest / "threads" / "9.jsonl"  # not in the mapping at all
+    unmapped.write_text('{"type":"thread","id":9}\n')
+
+    rehomed, renamed, rest = bk._split_superseded_twins(
+        src, dest, [proven, unlanded, unmapped])
+    assert rehomed == []
+    assert renamed == [proven]
+    assert set(rest) == {unlanded, unmapped}
 
 
 def test_backup_cleans_stale_tmp_generation(archive_home, tmp_path):

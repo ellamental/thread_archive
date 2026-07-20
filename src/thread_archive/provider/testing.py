@@ -109,6 +109,8 @@ def _scrub(value: Any, tmp: str) -> Any:
 def normalized_truth(home) -> list[dict]:
     """Every truth record in thread-file order, volatile fields normalized.
 
+    Thread files are ULID-named, so plain lexicographic sort is mint order.
+
     The comparable form of what an import actually wrote. Stream and api-call
     uuids are replaced by ordinals in first-seen order — they are freshly minted
     each run, so comparing them raw would fail every time while still hiding a
@@ -120,7 +122,7 @@ def normalized_truth(home) -> list[dict]:
     out: list[dict] = []
     if not threads_dir.exists():
         return out
-    for f in sorted(threads_dir.rglob("*.jsonl"), key=lambda p: int(p.stem)):
+    for f in sorted(threads_dir.rglob("*.jsonl")):
         for raw in f.read_text(encoding="utf-8").splitlines():
             rec = json.loads(raw)
             if rec.get("type") == "thread":

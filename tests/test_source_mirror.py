@@ -107,7 +107,11 @@ def test_sqlite_store_snapshots_with_one_prev_generation(archive_home, tmp_path)
     snap = dest_dir / "state.db.gz"
     restored = tmp_path / "restored.db"
     restored.write_bytes(gzip.decompress(snap.read_bytes()))
-    rows = sqlite3.connect(restored).execute("SELECT v FROM t").fetchall()
+    conn = sqlite3.connect(restored)
+    try:
+        rows = conn.execute("SELECT v FROM t").fetchall()
+    finally:
+        conn.close()
     assert rows == [("first",)]
 
     # Unchanged → skipped; changed → resnapshot with the old copy kept as .prev.
@@ -121,7 +125,11 @@ def test_sqlite_store_snapshots_with_one_prev_generation(archive_home, tmp_path)
     prev = dest_dir / "state.db.prev.gz"
     assert prev.exists()
     restored.write_bytes(gzip.decompress(prev.read_bytes()))
-    assert sqlite3.connect(restored).execute("SELECT count(*) FROM t").fetchone() == (1,)
+    conn = sqlite3.connect(restored)
+    try:
+        assert conn.execute("SELECT count(*) FROM t").fetchone() == (1,)
+    finally:
+        conn.close()
 
 
 def test_unsupported_watcher_shape_is_reported(archive_home):

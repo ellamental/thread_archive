@@ -21,6 +21,7 @@ arguments (see ``test_vectors.py``, ``test_rerank.py``).
 from __future__ import annotations
 
 import atexit
+import gc
 import os
 import shutil
 import tempfile
@@ -84,6 +85,13 @@ def _isolate_archive(tmp_path, monkeypatch):
     yield
     jsonl_log.reset_handles()
     _base.close_engine()
+    # sqlite3 and subprocess objects can participate in cycles, delaying their
+    # ResourceWarning until an unrelated later test. Collect at the isolation
+    # boundary so a leaked resource fails the test that created it. Generation 0
+    # only: the cycles a just-finished test leaves behind are still young, while a
+    # full collection walks the entire heap once per test — at this suite's size
+    # that alone is the majority of its runtime.
+    gc.collect(0)
 
 
 @pytest.fixture

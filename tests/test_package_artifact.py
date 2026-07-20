@@ -192,6 +192,7 @@ def _mcp_session(bin_dir: Path, home: Path, requests: list[dict]) -> dict[int, d
         killer.cancel()
         proc.stdin.close()
         proc.wait(timeout=30)
+        proc.stdout.close()
     assert responses, "archive-mcp produced no JSON-RPC responses"
     return responses
 

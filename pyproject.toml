@@ -113,6 +113,10 @@ markers = [
     "integration: opens real sockets or spawns real subprocesses; deselect (-m 'not integration') for a fully hermetic run, e.g. in a no-network sandbox",
     "package: builds the wheel/sdist and installs into a throwaway venv; slow, selected explicitly with -m package",
 ]
+filterwarnings = [
+    "error::ResourceWarning",
+    "error::pytest.PytestUnraisableExceptionWarning",
+]
 
 # The family lint bar (same shape as the thread monorepo products): pycodestyle +
 # pyflakes + import sort, long lines tolerated. Gated by the ruff row in ci.toml.
@@ -130,6 +134,7 @@ ignore = ["E501"]
 [tool.mypy]
 files = ["src/thread_archive"]
 ignore_missing_imports = true  # mcp (and the optional thread_librarian) ship no stubs
+check_untyped_defs = true  # unannotated bodies still execute in production; inspect them too
 
 [[tool.mypy.overrides]]
 module = [

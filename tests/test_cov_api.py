@@ -42,6 +42,23 @@ def test_import_path_unknown_provider_raises(archive_home) -> None:
         ta.import_path(f, provider="nope")
 
 
+def test_open_archive_discards_engine_when_initialization_fails(
+    archive_home, tmp_path
+) -> None:
+    """A corrupt index cannot leave its failed pool installed for later calls."""
+    from thread_archive._store import active_dsn
+
+    broken = tmp_path / "broken-home"
+    broken.mkdir()
+    (broken / "index.db").write_bytes(b"not a sqlite database")
+
+    with pytest.raises(Exception, match="not a database"):
+        ta.open_archive(str(broken))
+
+    assert active_dsn() is None
+    assert ta.open_archive(str(archive_home)).home == archive_home
+
+
 def test_import_path_routes_to_db_scanner(archive_home) -> None:
     """A ``db-scan`` provider is handed the whole store, not a session path, and
     its result comes back verbatim — the dispatch difference between the two
@@ -192,6 +209,8 @@ def test_watch_loop_keeps_polling(archive_home, tmp_path) -> None:
     finally:
         proc.terminate()
         proc.wait(timeout=30)
+        if proc.stdout is not None:
+            proc.stdout.close()
 
 
 def test_redactions_delegates(archive_home) -> None:

@@ -2,6 +2,27 @@
 
 ## Unreleased
 
+- The backup mirror's delete-sync now recognizes *renamed* twins alongside
+  re-homed ones: a stale legacy-integer-named thread file at the destination
+  whose id the ULID migration's durable `ulid-mapping.json` maps to a ULID
+  present at both the source and the destination is provably superseded and
+  deleted regardless of the deletion cap (`renamed_twins_deleted`). Without
+  this, a pre-migration backup kept both generations forever — the cap
+  (correctly) refused ~17k deletions, a rebuild loaded every thread twice, and
+  the restore drill aborted on FK violations.
+- CI now treats resource leaks as test failures. SQLite snapshot connections,
+  filesystem iterators, subprocess pipes, HTTP responses, and test database
+  probes are closed deterministically instead of relying on garbage collection.
+- Coverage floors cover every production package, and the gate fails when a
+  future package has no floor. The previously unfloored update, repair, setup,
+  provider, and launchd surfaces now have explicit regression thresholds.
+- The committed web viewer bundle is rebuilt in a temporary directory and
+  compared byte-for-byte in local and public CI. Frontend coverage gates lines,
+  statements, branches, and functions, and the real application shell and
+  landing route are exercised together.
+- Mypy checks untyped function bodies, and generated nested JSON values are
+  tested through unknown-field preservation, duplicate import, and truth
+  rebuild.
 - `backfill_subagent_type.main(argv=None)` parses its arguments with argparse
   and takes them as a parameter, matching every other script in `_scripts/`
   instead of reading `sys.argv` directly.

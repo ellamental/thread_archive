@@ -295,6 +295,11 @@ def test_stdio_server_answers_a_real_client_over_the_module_entry(archive_home) 
         watchdog.cancel()
         if proc.poll() is None:  # pragma: no cover — only on a hung server
             proc.kill()
+            proc.wait(timeout=30)
+        if proc.stdout is not None:
+            proc.stdout.close()
+        if proc.stderr is not None:
+            proc.stderr.close()
     replies = {d["id"]: d for d in (json.loads(ln) for ln in lines if ln.strip())}
     assert replies[1]["result"]["serverInfo"]["name"] == "thread-archive"
     assert {t["name"] for t in replies[2]["result"]["tools"]} == {"thread_search", "thread_read"}
@@ -349,6 +354,8 @@ def test_http_server_serves_the_shared_streamable_transport(archive_home) -> Non
     finally:
         proc.terminate()
         proc.wait(timeout=30)
+        if proc.stdout is not None:
+            proc.stdout.close()
 
 
 def test_mcp_search_resolves_thread_and_topic_refs(archive_home) -> None:
@@ -493,3 +500,14 @@ def test_maybe_catch_up_throttles_repeat_attempts(archive_home, monkeypatch) -> 
         assert first > 0.0
         throttle.maybe_catch_up()
         assert throttle.last == first  # throttled: no second attempt marked
+    # Releasing the owner flock lets the already-started background probe run.
+    # Wait for it before fixture teardown closes the process-global engine;
+    # otherwise this test races teardown and strands the probe's SQLite pool.
+    deadline = time.monotonic() + 10
+    while time.monotonic() < deadline:
+        if throttle.running.acquire(blocking=False):
+            throttle.running.release()
+            break
+        time.sleep(0.01)
+    else:  # pragma: no cover — catch-up finishes in milliseconds
+        raise AssertionError("the background pass never released the slot")

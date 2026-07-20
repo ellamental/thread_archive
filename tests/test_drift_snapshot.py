@@ -49,7 +49,7 @@ def test_snapshot_copies_store_with_manifest_and_source_ids(archive_home, store)
     for f in manifest["files"]:
         stored = gen_dir / f["stored"]
         assert stored.is_file()
-        assert stored.read_bytes() == open(f["path"], "rb").read()
+        assert stored.read_bytes() == Path(f["path"]).read_bytes()
 
 
 def _age_generations(source_dir, hours: float):

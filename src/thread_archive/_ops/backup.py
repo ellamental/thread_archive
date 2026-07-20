@@ -168,15 +168,19 @@ def mirror_dir(
     destination's files, they are skipped (``deletions_skipped``) — the mirror
     stays additive rather than letting a gutted source strip the backup.
 
-    **Re-homed twins are exempt from that bound.** A rebalance moves every thread
-    file at once, so the stale old-layout copies at the destination can vastly
-    exceed the cap — and skipping them forever leaves the backup double-sized and
-    holding records a restore must not see. A doomed ``threads/**`` file whose
-    thread has a file at the source's canonical shard depth — present at *both*
-    ends, with the destination's canonical copy at least as large as the stale
-    one — is provably superseded (the sweep moves/merges, never truncates), so it
-    is deleted (``rehomed_twins_deleted``) regardless of the cap. Everything else
-    stays capped.
+    **Provably superseded twins are exempt from that bound.** A shard rebalance
+    moves every thread file at once, and the one-shot ULID migration renames
+    every thread id at once — either way the stale old-generation copies at the
+    destination can vastly exceed the cap, and skipping them forever leaves the
+    backup double-sized and holding records a restore must not see (a rebuild
+    loads each thread twice and aborts). A doomed ``threads/**`` file whose
+    supersession is provable at *both* ends is deleted regardless of the cap
+    (see :func:`_split_superseded_twins`): *re-homed* — its thread has a file at
+    the source's canonical shard depth and the destination's canonical copy is
+    at least as large as the stale one (``rehomed_twins_deleted``) — or
+    *renamed* — the ULID migration's durable mapping names its successor, whose
+    file exists at the source with a non-empty destination copy
+    (``renamed_twins_deleted``). Everything else stays capped.
 
     **Shrink guard.** An append-only truth file (``threads/**``, ``kg_events.jsonl``)
     whose source copy is *smaller* than its backup copy means the source lost data —
@@ -227,7 +231,7 @@ def mirror_dir(
         synced_dirs.add(dp.parent)
     for sd in synced_dirs:
         _fsync_dir(sd)  # the renames that published this pass's copies must stick
-    twins_deleted = 0
+    twins_deleted = renamed_deleted = 0
     if delete:
         # The generations subtree (hardlink snapshots of prior mirror runs) and
         # the recovery bundle (synced by its own pass, with its own deletion
@@ -240,11 +244,12 @@ def mirror_dir(
         ]
         doomed = [dp for dp in dest_files if not (src / dp.relative_to(dest)).exists()]
         if doomed:
-            twins, doomed = _split_rehomed_twins(src, dest, doomed)
-            for dp in twins:
+            rehomed, renamed, doomed = _split_superseded_twins(src, dest, doomed)
+            for dp in (*rehomed, *renamed):
                 dp.unlink()
-                twins_deleted += 1
                 deleted += 1
+            twins_deleted = len(rehomed)
+            renamed_deleted = len(renamed)
         limit = max(MIRROR_DELETE_FLOOR, int(len(dest_files) * MIRROR_DELETE_MAX_FRACTION))
         if len(doomed) > limit:
             skipped = len(doomed)
@@ -263,23 +268,56 @@ def mirror_dir(
         "bytes_copied": total,
         "files_deleted": deleted,
         "rehomed_twins_deleted": twins_deleted,
+        "renamed_twins_deleted": renamed_deleted,
         "deletions_skipped": skipped,
         "shrinks_skipped": shrinks,
         "shrink_sample": shrink_sample,
     }
 
 
-def _split_rehomed_twins(src: Path, dest: Path, doomed: list[Path]) -> tuple[list[Path], list[Path]]:
-    """Partition planned mirror deletions into provably-superseded rebalance
-    twins and everything else (see :func:`mirror_dir`). A twin qualifies only
-    when its thread's canonical-depth file exists at the source *and* the
-    destination's copy of that canonical file is at least as large as the stale
-    one — the rebalance sweep moves/merges whole files, so a genuine re-home can
-    never leave the canonical copy smaller."""
+def _ulid_mapping(src: Path) -> dict[str, str]:
+    """The ULID migration's durable legacy-id → ULID record, read from
+    ``ULID_MAPPING_FILE`` beside the truth dir. Empty when the home never
+    migrated or the file is unreadable — renamed-twin detection simply stays
+    off and those deletions remain capped."""
+    import json
+
+    from .._truth.layout import ULID_MAPPING_FILE
+
+    try:
+        raw = json.loads((src.parent / ULID_MAPPING_FILE).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    if not isinstance(raw, dict):
+        return {}
+    return {str(k): str(v) for k, v in raw.items()}
+
+
+def _split_superseded_twins(
+    src: Path, dest: Path, doomed: list[Path]
+) -> tuple[list[Path], list[Path], list[Path]]:
+    """Partition planned mirror deletions into provably-superseded twins —
+    re-homed or renamed — and everything else, which stays under the deletion
+    cap (see :func:`mirror_dir`).
+
+    A *re-homed* twin (shard rebalance) qualifies only when its thread's
+    canonical-depth file exists at the source *and* the destination's copy of
+    that canonical file is at least as large as the stale one — the rebalance
+    sweep moves/merges whole files, so a genuine re-home can never leave the
+    canonical copy smaller.
+
+    A *renamed* twin (ULID migration) is a legacy-integer-named file whose id
+    the migration's durable mapping (:func:`_ulid_mapping`) maps to a ULID
+    whose canonical file exists at the source *and* has a non-empty copy at the
+    destination. Sizes are not comparable across the migration's rewrite (every
+    line changed), so the proof is the mapping record plus the successor's
+    presence at both ends."""
     from .._truth.jsonl_log import THREADS_SUBDIR, _shard_depth, _thread_relpath
 
     depth = _shard_depth(src)
-    twins: list[Path] = []
+    mapping: Optional[dict[str, str]] = None  # loaded on the first legacy-named candidate
+    rehomed: list[Path] = []
+    renamed: list[Path] = []
     rest: list[Path] = []
     for dp in doomed:
         rel = dp.relative_to(dest)
@@ -293,12 +331,24 @@ def _split_rehomed_twins(src: Path, dest: Path, doomed: list[Path]) -> tuple[lis
                         and (src / canonical).exists()
                         and (dest / canonical).stat().st_size >= dp.stat().st_size
                     ):
-                        twins.append(dp)
+                        rehomed.append(dp)
                         continue
                 except OSError:  # canonical dest copy missing/unreadable — stay capped
                     pass
+            if tid.isdigit():
+                if mapping is None:
+                    mapping = _ulid_mapping(src)
+                successor = mapping.get(tid)
+                if successor:
+                    srel = _thread_relpath(successor, depth)
+                    try:
+                        if (src / srel).exists() and (dest / srel).stat().st_size > 0:
+                            renamed.append(dp)
+                            continue
+                    except OSError:  # successor dest copy missing/unreadable — stay capped
+                        pass
         rest.append(dp)
-    return twins, rest
+    return rehomed, renamed, rest
 
 
 def _snapshot_generation(dest: Path) -> dict:
