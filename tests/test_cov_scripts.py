@@ -19,13 +19,19 @@ import pytest
 from sqlalchemy import select, update
 from sqlalchemy import text as sa_text
 
-from thread_archive._importers import codex as codex_mod
 from thread_archive._importers import (
     import_codex_session_incremental,
     import_session_incremental,
 )
 from thread_archive._store import Event, ImportState, Thread, get_session, init_db
 from thread_archive._thread_import.event_builder import compute_dedup_key
+
+from .helpers import (
+    TORN_ROLLOUT,
+    age_codex_thread_to_placeholder,
+    install_cc_shaped_plugin,
+    install_codex_store,
+)
 
 # ── shared CC fixture ────────────────────────────────────────────────────────
 
@@ -64,47 +70,33 @@ def _null_all_keys(tid: int) -> None:
         s.commit()
 
 
-class FakeWatcher:
-    """A watcher whose availability and file listing are fixed for a test."""
+@pytest.fixture
+def cc_shaped_plugin(archive_home, tmp_path, monkeypatch):
+    """Three plugin providers declaring the Claude Code parser, and the pairs a walk
+    over the registry must yield.
 
-    def __init__(self, available: bool, files=()) -> None:
-        self._available = available
-        self._files = list(files)
+    The repair passes find their work through the provider registry rather than a
+    hardcoded watcher list, so what they walk is every provider that reuses the
+    Claude Code parser — a plugin on the same terms as a built-in.
 
-    def is_available(self) -> bool:
-        return self._available
-
-    def iter_files(self):
-        yield from self._files
-
-
-def _cc_shaped_providers(tmp_path):
-    """Two providers declaring the Claude Code parser — one whose store is on this
-    machine, one whose isn't — and the pairs a walk over them must yield.
-
-    The repair passes find their work through the registry rather than a hardcoded
-    watcher list, so what they walk is every provider that reuses the Claude Code
-    parser. A provider whose store is absent is the ordinary case (a tool this
-    machine doesn't have), not an error, and must contribute nothing.
+    One's store is on this machine, one's isn't (the ordinary case, a tool this box
+    doesn't have, which must contribute nothing rather than error), and one ships
+    no watcher at all.
     """
-    from thread_archive.provider import Provider, RglobWatcher, claude_code_line_stream
+    from thread_archive import _providers
 
     present = tmp_path / "present-store"
     present.mkdir()
     session = present / "sid-a.jsonl"
     session.write_text("", encoding="utf-8")
 
-    def _provider(name: str, root):
-        return Provider(
-            name=name, label=name, parser_id="claude-code", kind="line-stream",
-            importer=claude_code_line_stream(name),
-            watcher=lambda: RglobWatcher(
-                root, claude_code_line_stream(name), lambda p: p.stem, name=name),
-        )
-
-    providers = [_provider("present-store", present),
-                 _provider("absent-store", tmp_path / "absent-store")]
-    return providers, [("present-store", session, "sid-a")]
+    install_cc_shaped_plugin(
+        archive_home, monkeypatch,
+        stores={"present-store": present, "absent-store": tmp_path / "absent-store"},
+        watcherless=["no-watcher"],
+    )
+    yield [("present-store", session, "sid-a")]
+    _providers.reset()
 
 
 # ══ backfill_recompute ═══════════════════════════════════════════════════════
@@ -188,14 +180,20 @@ def test_recompute_main_collapse_reports_and_backs_up(archive_home, tmp_path, ca
     assert rows and any(r["collapses"] for r in rows)
 
 
-def test_recompute_run_counts_plan_errors(archive_home, monkeypatch) -> None:
+def test_recompute_run_counts_plan_errors(archive_home) -> None:
+    """A stored row whose payload is not an object at all — a shape no builder can
+    hash — costs its thread the recompute and nothing else: counted, and the sweep
+    carries on rather than aborting on one corrupt row."""
     tid, _ = _import_cc(archive_home)
     _null_all_keys(tid)
+    with get_session() as s:
+        eid = s.execute(select(Event.id).where(
+            Event.thread_id == tid,
+            Event.event_type == "text_complete")).scalars().first()
+        s.execute(sa_text("UPDATE events SET payload = :p WHERE id = :i"),
+                  {"p": json.dumps([1, 2, 3]), "i": eid})
+        s.commit()
 
-    def _boom(session, thread_id, *, collapse=False):
-        raise RuntimeError("planning blew up")
-
-    monkeypatch.setattr(rc, "plan_thread", _boom)
     totals = rc.run(apply=False)
     assert totals["plan_errors"] == 1
     assert totals["threads"] == 1
@@ -461,28 +459,14 @@ def test_reconcile_fresh_events_rejects_unknown_source() -> None:
         rec._fresh_events("grok", [])
 
 
-def test_reconcile_iter_pairs_yields_available_only(monkeypatch, tmp_path) -> None:
-    from thread_archive import _providers
+def test_reconcile_iter_pairs_yields_available_only(cc_shaped_plugin) -> None:
+    """Only the provider whose store is on this machine contributes pairs — and the
+    walk reaches a plugin provider, not just the built-ins.
 
-    providers, expected = _cc_shaped_providers(tmp_path)
-    monkeypatch.setattr(_providers, "sources_using_parser", lambda *a, **kw: providers)
-    assert list(rec._iter_pairs()) == expected
-
-
-def test_reconcile_iter_pairs_skips_a_watcherless_provider(monkeypatch, tmp_path) -> None:
-    """A provider that declares the parser but ships no watcher (nothing on disk to
-    walk) contributes nothing rather than raising."""
-    from thread_archive import _providers
-    from thread_archive.provider import Provider, claude_code_line_stream
-
-    providers, expected = _cc_shaped_providers(tmp_path)
-    watcherless = Provider(
-        name="no-watcher", label="no-watcher", parser_id="claude-code",
-        kind="line-stream", importer=claude_code_line_stream("no-watcher"), watcher=None,
-    )
-    monkeypatch.setattr(
-        _providers, "sources_using_parser", lambda *a, **kw: [watcherless, *providers])
-    assert list(rec._iter_pairs()) == expected
+    The watcherless plugin is in the same registry: a provider that declares the
+    parser but ships no watcher contributes nothing rather than raising.
+    """
+    assert list(rec._iter_pairs()) == cc_shaped_plugin
 
 
 def test_reconcile_plan_skips_a_row_whose_turn_id_disagrees(archive_home) -> None:
@@ -679,12 +663,8 @@ def test_recover_existing_ignores_null_key_rows(archive_home) -> None:
     assert all(v is not None for v in keys)
 
 
-def test_recover_iter_pairs_yields_available_only(monkeypatch, tmp_path) -> None:
-    from thread_archive import _providers
-
-    providers, expected = _cc_shaped_providers(tmp_path)
-    monkeypatch.setattr(_providers, "sources_using_parser", lambda *a, **kw: providers)
-    assert list(rec2._iter_pairs()) == expected
+def test_recover_iter_pairs_yields_available_only(cc_shaped_plugin) -> None:
+    assert list(rec2._iter_pairs()) == cc_shaped_plugin
 
 
 def test_recover_run_skips_unmapped_source(archive_home, monkeypatch) -> None:
@@ -717,17 +697,29 @@ def test_recover_run_counts_read_errors(archive_home, tmp_path) -> None:
     assert totals["read_errors"] == 1
 
 
-def test_recover_run_counts_write_errors(archive_home, monkeypatch) -> None:
+def test_recover_run_counts_write_errors(archive_home) -> None:
+    """The thread's truth file can't be opened for append (a directory stands where
+    it belongs), so the drain aborts the commit. The thread is counted and rolled
+    back — nothing lands in the index the truth doesn't hold — and the run goes on."""
+    from thread_archive._truth.jsonl_log import (
+        _shard_depth,
+        _thread_file,
+        log_dir,
+        reset_handles,
+    )
+
     tid, f = _import_cc(archive_home)
-    _strip_recoverable(tid)
-    pairs = iter([("claude-code", f, "proj:s1")])
+    before = _strip_recoverable(tid)
+    reset_handles()
+    truth = _thread_file(log_dir(), tid, _shard_depth(log_dir()))
+    truth.unlink()
+    truth.mkdir()
 
-    def _boom(session, rows):
-        raise RuntimeError("write failed")
-
-    monkeypatch.setattr(rec2, "write_events", _boom)
-    totals = rec2.run(pairs=pairs, apply=True)
+    totals = rec2.run(pairs=iter([("claude-code", f, "proj:s1")]), apply=True)
     assert totals["write_errors"] == 1
+    with get_session() as s:
+        kept = s.execute(select(Event).where(Event.thread_id == tid)).scalars().all()
+    assert len(kept) < before, "the recovered rows must not have reached the index"
 
 
 def test_recover_run_nothing_to_recover_is_noop(archive_home, monkeypatch) -> None:
@@ -796,12 +788,14 @@ CODEX_MODELLESS = [
 
 
 def _seed_codex(archive_home, lines=CODEX_SESSION, name="codex.jsonl", source_id="s1") -> int:
+    """Import a codex rollout, then age the thread back to the pre-fix state the
+    repair exists for."""
     init_db()
     f = archive_home / name
     f.write_text("\n".join(json.dumps(ln) for ln in lines) + "\n", encoding="utf-8")
-    with pytest.MonkeyPatch.context() as mp:
-        mp.setattr(codex_mod, "codex_line_model", lambda line: None)
-        return import_codex_session_incremental(f, source_id).thread_id
+    tid = import_codex_session_incremental(f, source_id).thread_id
+    age_codex_thread_to_placeholder(tid)
+    return tid
 
 
 def _codex_models(tid: int) -> set[str]:
@@ -912,24 +906,25 @@ def test_codex_codex_threads_limit(archive_home) -> None:
         assert len(cx._codex_threads(s, 1)) == 1
 
 
-def test_codex_rollout_index_from_available_watcher(archive_home, monkeypatch) -> None:
-    fake = FakeWatcher(True, [("/tmp/roll.jsonl", "s1")])
-    monkeypatch.setattr(cx, "codex_watcher", lambda: fake)
-    assert cx.rollout_index() == {"s1": "/tmp/roll.jsonl"}
-    monkeypatch.setattr(cx, "codex_watcher", lambda: FakeWatcher(False))
+def test_codex_rollout_index_reads_the_operatorsinstall_codex_store(
+    archive_home, tmp_path, monkeypatch,
+) -> None:
+    """The index is resolved by the codex watcher over the store on this machine, so
+    it keys rollouts by the same source ids the import recorded. A machine with no
+    codex store at all yields nothing to read back from — not an error."""
+    expected = install_codex_store(tmp_path / "with-codex", {"s1": CODEX_SESSION}, monkeypatch)
+    assert cx.rollout_index() == expected
+
+    (tmp_path / "no-codex").mkdir()
+    monkeypatch.setenv("HOME", str(tmp_path / "no-codex"))
     assert cx.rollout_index() == {}
 
 
-def test_codex_run_counts_rollout_errors(archive_home, monkeypatch) -> None:
+def test_codex_run_counts_rollout_errors(archive_home, tmp_path, monkeypatch) -> None:
+    """A rollout the reader chokes on costs its own thread the outside source and
+    nothing more: counted, and the run carries on."""
     _seed_codex(archive_home, source_id="s1")
-    bad = archive_home / "rollout.jsonl"
-    bad.write_text("{}\n", encoding="utf-8")
-    monkeypatch.setattr(cx, "rollout_index", lambda: {"s1": bad})
-
-    def _boom(path):
-        raise RuntimeError("torn rollout")
-
-    monkeypatch.setattr(cx, "rollout_timeline", _boom)
+    install_codex_store(tmp_path / "home", {"s1": TORN_ROLLOUT}, monkeypatch)
     totals = cx.run(apply=False)
     assert totals["rollout_errors"] == 1
 
@@ -951,10 +946,24 @@ def test_codex_apply_handles_event_without_dedup_key(archive_home) -> None:
     assert row.dedup_key is None  # stayed None; no key to rehash
 
 
-def test_codex_run_counts_write_errors(archive_home, monkeypatch) -> None:
+def test_codex_run_counts_write_errors(archive_home) -> None:
+    """The repaired key already belongs to another row of the same thread, so the
+    store patch trips the unique index. The thread is rolled back and counted, and
+    the run does not abort."""
     tid = _seed_codex(archive_home)
-    # force every rewritten event onto one dedup_key → the commit trips the unique index
-    monkeypatch.setattr(cx, "rekey", lambda key, payload: "collide")
+    with get_session() as s:
+        ev = s.execute(select(Event).where(
+            Event.thread_id == tid,
+            Event.event_type == "api_request_started")).scalars().one()
+        # the key this event will carry once its model is repaired …
+        repaired = cx.rekey(ev.dedup_key, {**ev.payload, "model": "gpt-5.6-sol"})
+        assert repaired != ev.dedup_key
+        # … is already taken. api_call_id NULL keeps the squatter out of the plan.
+        s.add(Event(thread_id=tid, stream_id="squatter", api_call_id=None,
+                    event_type="text_complete", payload={"text": "x"},
+                    occurred_at=ev.occurred_at, dedup_key=repaired))
+        s.commit()
+
     totals = cx.run(apply=True)
     assert totals["write_errors"] >= 1
     # the failed thread rolled back — the placeholder is still in place, not half-written
@@ -973,29 +982,17 @@ def test_codex_main_dry_and_apply(archive_home, capsys) -> None:
     assert _codex_models(tid) == {"gpt-5.6-sol"}
 
 
-def test_codex_main_reports_conflicts_and_rollout_errors(archive_home, monkeypatch, capsys) -> None:
-    """A rollout that both disagrees (conflict) and, for a second thread, is
-    unreadable (rollout error) surfaces both footer lines in ``main``."""
+def test_codex_main_reports_conflicts_and_rollout_errors(
+    archive_home, tmp_path, monkeypatch, capsys,
+) -> None:
+    """A codex store holding one rollout that disagrees with the archive (conflict)
+    and one that is torn (rollout error) surfaces both footer lines in ``main``."""
     _seed_codex(archive_home, source_id="s1", name="a.jsonl")
-    # rollout names a different model for s1's turn → conflict; s-missing raises
+    _seed_codex(archive_home, source_id="s2", name="b.jsonl")
+    # s1's rollout names a different model for the turn the archive already answers
     lying = [dict(ln, payload=dict(ln["payload"], model="gpt-9-imaginary"))
              if ln["type"] == "turn_context" else ln for ln in CODEX_SESSION]
-    roll = archive_home / "rollout-s1.jsonl"
-    roll.write_text("\n".join(json.dumps(ln) for ln in lying) + "\n", encoding="utf-8")
-
-    real_timeline = cx.rollout_timeline
-
-    def _timeline(path):
-        if path == roll:
-            return real_timeline(path)
-        raise RuntimeError("torn rollout")
-
-    # s1 → conflicting rollout; a phantom source id → unreadable rollout
-    _seed_codex(archive_home, source_id="s2", name="b.jsonl")
-    bad = archive_home / "rollout-s2.jsonl"
-    bad.write_text("garbage\n", encoding="utf-8")
-    monkeypatch.setattr(cx, "rollout_index", lambda: {"s1": roll, "s2": bad})
-    monkeypatch.setattr(cx, "rollout_timeline", _timeline)
+    install_codex_store(tmp_path / "home", {"s1": lying, "s2": TORN_ROLLOUT}, monkeypatch)
 
     cx.main(["--apply"])
     out = capsys.readouterr().out
@@ -1132,14 +1129,14 @@ def test_usage_cost_run_skips_unmapped_source(archive_home) -> None:
     assert uc.run(pairs=[("claude-code", f, "no-such-source")]).get("threads", 0) == 0
 
 
-def test_usage_cost_run_counts_plan_errors(archive_home, monkeypatch) -> None:
-    _tid, f = _import_usage(archive_home)
+def test_usage_cost_run_counts_plan_errors(archive_home, tmp_path) -> None:
+    """The transcript the thread was imported from is gone and a directory stands
+    where it was — the thread is counted and skipped, nothing amended."""
+    _tid, _f = _import_usage(archive_home)
+    unreadable = tmp_path / "not-a-session"
+    unreadable.mkdir()
 
-    def _boom(path):
-        raise RuntimeError("cannot read")
-
-    monkeypatch.setattr(uc, "read_session_lines", _boom)
-    totals = uc.run(pairs=[("claude-code", f, "s1")], apply=True)
+    totals = uc.run(pairs=[("claude-code", unreadable, "s1")], apply=True)
     assert totals["plan_errors"] == 1
     assert totals["threads"] == 1
     assert totals.get("events_amended", 0) == 0

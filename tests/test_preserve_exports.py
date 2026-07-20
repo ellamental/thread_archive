@@ -132,67 +132,41 @@ def test_xai_normal_text_turns_unchanged(archive_home) -> None:
 # ── 4. A conversation that blows up mid-import surfaces a stub ─────────────────
 
 
-def test_failed_conversation_preserved_as_stub(archive_home, monkeypatch) -> None:
+# A conversation whose ``responses`` entries are bare strings instead of the
+# ``{"response": {...}}`` records the format defines — the shape a truncated or
+# format-changed export leaves, and one no reader of xAI responses can interpret.
+_MALFORMED_CONV = {
+    "conversation": {"id": "conv-boom", "title": "Boom", "create_time": "2026-01-01T10:00:00Z"},
+    "responses": ["this is not a response record"],
+}
+
+
+def test_failed_conversation_preserved_as_stub(archive_home) -> None:
     """A conversation that raises mid-import must not be silently skipped: it must
     surface a stub thread carrying id + raw + error, and count as `errored`."""
-    payload = {"conversations": [{
-        "conversation": {"id": "conv-boom", "title": "Boom", "create_time": "2026-01-01T10:00:00Z"},
-        "responses": [
-            {"response": {"_id": "r1", "sender": "human", "message": "q",
-                          "create_time": "2026-01-01T10:00:00Z"}},
-        ],
-    }]}
     init_db()
-    root = _write_xai(archive_home, payload)
-
-    import thread_archive._importers.exports as exports_mod
-
-    real_assemble = exports_mod.assemble_events
-    calls = {"n": 0}
-
-    def _boom(session, thread_id, messages, builder, **kw):
-        # Fail the real conversation's assemble, but let the stub's assemble through.
-        calls["n"] += 1
-        if calls["n"] == 1:
-            raise RuntimeError("simulated assemble failure")
-        return real_assemble(session, thread_id, messages, builder, **kw)
-
-    monkeypatch.setattr(exports_mod, "assemble_events", _boom)
+    root = _write_xai(archive_home, {"conversations": [_MALFORMED_CONV]})
 
     result = import_xai_export(root)  # must not raise
     assert result.errored == 1, "failed conversation was not counted as errored"
     threads = _threads()
     assert "conv-boom:import-error" in threads, "failed conversation vanished with no stub"
     blob = json.dumps(_events())
-    assert "simulated assemble failure" in blob, "the error was not preserved on the stub"
+    assert "'str' object has no attribute 'get'" in blob, \
+        "the error was not preserved on the stub"
+    assert "this is not a response record" in blob, "the raw conversation was not preserved"
     # The real source_id stays unimported (retryable), not shadowed by the stub.
     assert "conv-boom" not in threads
 
 
-def test_failed_conversation_stub_idempotent(archive_home, monkeypatch) -> None:
+def test_failed_conversation_stub_idempotent(archive_home) -> None:
     """Re-running an export whose conversation keeps failing must not restack the
     stub events."""
-    payload = {"conversations": [{
-        "conversation": {"id": "conv-dupe", "title": "Dupe", "create_time": "2026-01-01T10:00:00Z"},
-        "responses": [
-            {"response": {"_id": "r1", "sender": "human", "message": "q",
-                          "create_time": "2026-01-01T10:00:00Z"}},
-        ],
-    }]}
     init_db()
-    root = _write_xai(archive_home, payload)
-
-    import thread_archive._importers.exports as exports_mod
-
-    real_assemble = exports_mod.assemble_events
-
-    def _fail_real(session, thread_id, messages, builder, **kw):
-        # Only the stub message (role ending in _import_error) is allowed through.
-        if messages and str(messages[0].get("role", "")).endswith("_import_error"):
-            return real_assemble(session, thread_id, messages, builder, **kw)
-        raise RuntimeError("still failing")
-
-    monkeypatch.setattr(exports_mod, "assemble_events", _fail_real)
+    root = _write_xai(archive_home, {"conversations": [
+        dict(_MALFORMED_CONV,
+             conversation={"id": "conv-dupe", "title": "Dupe",
+                           "create_time": "2026-01-01T10:00:00Z"})]})
 
     import_xai_export(root)
     n = len(_events())

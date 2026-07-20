@@ -89,7 +89,12 @@ def test_malformed_boolean_queries_return_rather_than_raise(archive_home) -> Non
 
 def test_residual_fts_syntax_error_retries_quoted(archive_home, monkeypatch) -> None:
     """A MATCH expression FTS5 still rejects (past the builder's validation)
-    retries once with the everything-quoted form instead of propagating."""
+    retries once with the everything-quoted form instead of propagating.
+
+    The builder is what stops such an expression reaching MATCH — the tests
+    above hold it to that over every shape of operator misuse — so the retry
+    can only be reached by handing the executor an expression the builder would
+    never have produced."""
     from thread_archive._retrieval import fts as fts_mod
 
     _seed_corpus(archive_home)
@@ -130,7 +135,12 @@ def test_underscore_identifier_matches_literally(archive_home) -> None:
 
 def test_oldest_sort_missing_timestamp_sorts_last(archive_home, monkeypatch) -> None:
     """``sort='oldest'``: a hit with no parseable ``occurred_at`` lands after the
-    dated hits, not first (an empty key would sort before every date)."""
+    dated hits, not first (an empty key would sort before every date).
+
+    ``Event.occurred_at`` is not nullable and the importers backfill a missing
+    timestamp from the preceding line, so an undated hit is a shape the store
+    cannot hold — the sort key is defensive against a pool that arrives from
+    somewhere else, and the pool has to be supplied to reach it."""
     from datetime import datetime
 
     import thread_archive._retrieval as retrieval

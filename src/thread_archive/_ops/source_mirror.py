@@ -305,7 +305,7 @@ def _db_targets(watcher) -> Iterator[Path]:
             yield db_path
 
 
-def mirror_sources(home: Optional[str] = None) -> dict:
+def mirror_sources(home: Optional[str] = None, *, watchers: Optional[list] = None) -> dict:
     """Sweep every enabled source into the mirror. Returns the summary it also
     records as the ``source_mirror_last`` health record.
 
@@ -314,7 +314,12 @@ def mirror_sources(home: Optional[str] = None) -> dict:
     automatically, and the two can't drift apart. ``DbScanWatcher._targets``
     is package-internal by name, but this module and the watchers are one
     codebase; a third watcher shape lands in ``unsupported`` loudly rather
-    than being half-mirrored."""
+    than being half-mirrored.
+
+    ``watchers`` sweeps an explicit set instead of the machine's enabled one —
+    the same seam :func:`.coverage.check_coverage` and
+    :class:`.._watcher.Watcher` take, so a caller that already resolved its
+    provider set doesn't resolve it twice."""
     from .._watcher.sources import DbScanWatcher, FileSessionWatcher, enabled_watchers
 
     started = time.monotonic()
@@ -322,7 +327,7 @@ def mirror_sources(home: Optional[str] = None) -> dict:
     providers: dict[str, dict] = {}
     unsupported: list[str] = []
     ok = True
-    for watcher in enabled_watchers(home):
+    for watcher in (enabled_watchers(home) if watchers is None else watchers):
         name = watcher.source_name
         try:
             if not watcher.is_available():

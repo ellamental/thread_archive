@@ -79,14 +79,28 @@ def test_backup_deletes_files_the_source_no_longer_has(archive_home, tmp_path) -
     assert src_files == dest_files
 
 
+def _stale_non_twins(dest, n: int) -> list:
+    """Seed ``n`` destination-only thread files whose ids have no source
+    counterpart at any shard depth — deletion candidates that the twin exemption
+    cannot rescue, enough of them to exceed the real delete-sync cap."""
+    (dest / "threads").mkdir(parents=True, exist_ok=True)
+    stale = []
+    for i in range(n):
+        p = dest / "threads" / f"{900000 + i}.jsonl"
+        p.write_text(
+            f'{{"type": "thread", "id": {900000 + i}, "name": "stale-{i}"}}\n',
+            encoding="utf-8",
+        )
+        stale.append(p)
+    return stale
+
+
 def test_mirror_deletes_rehomed_twins_beyond_cap(archive_home, tmp_path, monkeypatch) -> None:
     import thread_archive._ops.backup as ops_backup
 
-    # Cap at zero: every non-twin deletion is skipped, so anything that DOES get
-    # deleted went through the twin exemption.
-    monkeypatch.setattr(ops_backup, "MIRROR_DELETE_FLOOR", 0)
-    monkeypatch.setattr(ops_backup, "MIRROR_DELETE_MAX_FRACTION", 0.0)
-
+    # The real cap: enough stale non-twins at the destination to exceed
+    # MIRROR_DELETE_FLOOR, so every non-twin deletion is skipped and anything
+    # that DOES get deleted went through the twin exemption.
     for name in ("one", "two"):
         import_cc_session(tmp_path, name=name)
     dest = tmp_path / "dest"
@@ -103,34 +117,29 @@ def test_mirror_deletes_rehomed_twins_beyond_cap(archive_home, tmp_path, monkeyp
     assert jsonl_log._shard_depth(archive_home / "truth") == 1
     assert not any((archive_home / "truth" / rel).exists() for rel in flat_rels)
 
-    # A stale non-twin at the destination stays protected by the zero cap.
-    stale = dest / "threads" / "999999.jsonl"
-    stale.write_text('{"type": "thread", "id": 999999, "name": "stale"}\n', encoding="utf-8")
+    # Stale non-twins at the destination, past the cap, stay protected.
+    stale = _stale_non_twins(dest, ops_backup.MIRROR_DELETE_FLOOR + 1)
 
     res = ta.backup(str(dest))
     assert res["rehomed_twins_deleted"] == len(flat_rels)
     for rel in flat_rels:
         assert not (dest / rel).exists(), f"stale twin {rel} must be gone from the backup"
-    assert stale.exists(), "non-twin deletions stay capped"
-    assert res["deletions_skipped"] == 1
+    assert all(p.exists() for p in stale), "non-twin deletions stay capped"
+    assert res["deletions_skipped"] == len(stale)
     assert res["mirror_complete"] is True
 
 
-def test_backup_cli_fails_on_skipped_deletions(archive_home, tmp_path, monkeypatch) -> None:
+def test_backup_cli_fails_on_skipped_deletions(archive_home, tmp_path) -> None:
     import thread_archive._ops.backup as ops_backup
     from thread_archive.cli import main
-
-    monkeypatch.setattr(ops_backup, "MIRROR_DELETE_FLOOR", 0)
-    monkeypatch.setattr(ops_backup, "MIRROR_DELETE_MAX_FRACTION", 0.0)
 
     import_cc_session(tmp_path)
     dest = tmp_path / "dest"
     assert main(["backup", str(dest)]) == 0
 
-    stale = dest / "threads" / "999999.jsonl"
-    stale.write_text('{"type": "thread", "id": 999999, "name": "stale"}\n', encoding="utf-8")
+    stale = _stale_non_twins(dest, ops_backup.MIRROR_DELETE_FLOOR + 1)
     assert main(["backup", str(dest)]) == 1, "a skipped deletion must fail the run"
-    assert stale.exists()
+    assert all(p.exists() for p in stale)
 
 
 # ── source-damage guards: shrink + pre-backup verify ─────────────────────────

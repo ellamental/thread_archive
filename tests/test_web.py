@@ -28,6 +28,22 @@ def _seed(archive_home):
     ta.import_path(f)
 
 
+def _seed_many_matches(archive_home, *, n: int):
+    """One imported session holding ``n`` distinct user turns that all match
+    ``hello`` — enough rows to read a result-limit clamp straight off the page.
+    Distinct text per turn, or the route's cross-thread dup fold would collapse
+    them into one row."""
+    lines = []
+    for i in range(n):
+        lines.append({"type": "user", "uuid": f"u{i}",
+                      "timestamp": f"2026-01-01T10:{i // 60:02d}:{i % 60:02d}Z",
+                      "cwd": "/proj",
+                      "message": {"role": "user", "content": f"hello turn number {i}"}})
+    f = archive_home / "many.jsonl"
+    f.write_text("\n".join(json.dumps(ln) for ln in lines) + "\n", encoding="utf-8")
+    ta.import_path(f)
+
+
 def _get(path, **params):
     qp = {k: [str(v)] for k, v in params.items()}
     status, ctype, body, _ = route("GET", path, qp)
@@ -398,24 +414,22 @@ def test_read_endpoint(archive_home):
     assert "[USER" in payload["transcript"] and "hello webview" in payload["transcript"]
 
 
-def test_status_survey_is_cached(archive_home, monkeypatch):
+def test_status_survey_is_cached(archive_home):
     # The status bar asks on every page load while the survey counts every
-    # table, so the route serves a per-home TTL cache: two requests, one survey.
+    # table, so the route serves a per-home TTL cache. A thread that lands
+    # between two requests proves it: the second answer is the first one, not a
+    # fresh count.
     from thread_archive._web import server as web_server
 
     _seed(archive_home)
-    calls = {"n": 0}
-    real = web_server.api.status
-
-    def counting_status(**kw):
-        calls["n"] += 1
-        return real(**kw)
-
-    monkeypatch.setattr(web_server.api, "status", counting_status)
     first = _get("/api/status")
-    second = _get("/api/status")
-    assert first == second
-    assert calls["n"] == 1
+    assert first[2]["threads"] == 1
+
+    _seed_demo_harness(archive_home)  # a second real thread, mid-TTL
+    assert _get("/api/status") == first  # served from cache, not re-counted
+
+    web_server._survey_cache.clear()
+    assert _get("/api/status")[2]["threads"] == 2  # a cold survey does see it
 
 
 def test_curation_endpoint(archive_home):
@@ -462,24 +476,21 @@ def test_curation_counts_content_free_threads_outside_the_queues(archive_home):
     assert payload["drains"]["librarian"]["backlog"] == 0
 
 
-def test_curation_survey_is_cached(archive_home, monkeypatch):
+def test_curation_survey_is_cached(archive_home):
     # Same TTL cache as /api/status; curation's pass is the heavier of the two
-    # (its backlog gate walks every conversation's events).
+    # (its backlog gate walks every conversation's events), so it holds longer.
+    pytest.importorskip("thread_librarian")  # the stats collector lives in the plugin
     from thread_archive._web import server as web_server
 
     _seed(archive_home)
-    calls = {"n": 0}
-    real = web_server.api.curation_stats
-
-    def counting(**kw):
-        calls["n"] += 1
-        return real(**kw)
-
-    monkeypatch.setattr(web_server.api, "curation_stats", counting)
     first = _get("/api/curation")
-    second = _get("/api/curation")
-    assert first == second
-    assert calls["n"] == 1
+    assert first[2]["coverage"]["conversations"] == 1
+
+    _seed_demo_harness(archive_home)  # a second real conversation, mid-TTL
+    assert _get("/api/curation") == first  # served from cache, not re-surveyed
+
+    web_server._survey_cache.clear()
+    assert _get("/api/curation")[2]["coverage"]["conversations"] == 2
 
 
 def test_survey_cold_fill_is_shared(archive_home):
@@ -830,27 +841,28 @@ def test_rebound_host_rejected(archive_home, monkeypatch):
         httpd.server_close()
 
 
-def test_search_limit_clamped(archive_home, monkeypatch):
+def test_search_limit_clamped(archive_home):
     # limit=-1 would reach SQLite as LIMIT -1 (unlimited); huge values are an
-    # unbounded read. Both clamp to [1, 500] before touching the api.
+    # unbounded read. Both clamp to [1, 500] before touching the api, so the
+    # clamp is readable off the rows a real search comes back with.
     from thread_archive._web import server
 
-    _seed(archive_home)
-    seen = {}
+    _seed_many_matches(archive_home, n=40)
 
-    def fake_search(q, **kwargs):
-        seen["limit"] = kwargs["limit"]
-        return []
+    status, _, body = _get("/api/search", q="hello", limit=-1)
+    assert status == 200
+    assert len(body["hits"]) == 1  # lo-clamped to 1, not unlimited
 
-    monkeypatch.setattr(server.api, "search", fake_search)
-    status, _, _ = _get("/api/search", q="hello", limit=-1)
-    assert status == 200 and seen["limit"] == 1
-    _get("/api/search", q="hello", limit=999999)
-    assert seen["limit"] == 500
-    _get("/api/search", q="hello", limit=40)
-    assert seen["limit"] == 40
-    _get("/api/search", q="hello", limit="not-a-number")
-    assert seen["limit"] == 30  # the default
+    _, _, body = _get("/api/search", q="hello", limit=999999)
+    assert len(body["hits"]) == 40  # hi-clamp holds without erroring…
+    # …and the hi bound itself is _int's own contract:
+    assert server._int({"limit": ["999999"]}, "limit", 100) == 500
+
+    _, _, body = _get("/api/search", q="hello", limit=35)
+    assert len(body["hits"]) == 35  # a value inside the range passes through
+
+    _, _, body = _get("/api/search", q="hello", limit="not-a-number")
+    assert len(body["hits"]) == 30  # unparseable → the route's default
 
 
 def test_threads_limit_clamped(archive_home):
@@ -872,24 +884,36 @@ def test_threads_limit_clamped(archive_home):
     assert server._int({"limit": ["999999"]}, "limit", 100) == 500
 
 
-def test_error_body_is_generic(monkeypatch):
-    # exception detail (paths, SQL, query internals) stays server-side
+def test_error_body_is_generic(tmp_path, monkeypatch, caplog):
+    """Exception detail (paths, SQL, query internals) stays server-side.
+
+    Driven by a genuinely unopenable archive — a directory where ``index.db``
+    belongs — so the 500 comes out of the real handler over a real SQLAlchemy
+    error carrying the home path, not a planted one.
+    """
     import urllib.error
     import urllib.request
 
+    from thread_archive._config import ENV_HOME
     from thread_archive._web import server
 
-    def boom(method, path, params):
-        raise RuntimeError("secret detail: /Users/somebody/private.db")
+    broken = tmp_path / "broken-archive"
+    (broken / "index.db").mkdir(parents=True)
+    monkeypatch.setenv(ENV_HOME, str(broken))
 
-    monkeypatch.setattr(server, "route", boom)
     httpd = server.serve_in_thread(host="127.0.0.1", port=0)
     try:
         port = httpd.server_address[1]
-        with pytest.raises(urllib.error.HTTPError) as excinfo:
-            urllib.request.urlopen(f"http://127.0.0.1:{port}/api/status", timeout=5)
+        with caplog.at_level("ERROR", logger="thread_archive._web.server"):
+            with pytest.raises(urllib.error.HTTPError) as excinfo:
+                urllib.request.urlopen(f"http://127.0.0.1:{port}/api/status", timeout=5)
         assert excinfo.value.code == 500
-        assert json.loads(excinfo.value.read()) == {"error": "internal error"}
+        body = excinfo.value.read()
+        assert json.loads(body) == {"error": "internal error"}
+        assert str(broken).encode() not in body  # no path leaked to the client
+        # …while the operator still gets the failure, with its path, in the log.
+        assert any("web request failed: /api/status" in r.getMessage()
+                   for r in caplog.records)
     finally:
         httpd.shutdown()
         httpd.server_close()

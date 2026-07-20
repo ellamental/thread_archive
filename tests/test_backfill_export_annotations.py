@@ -12,7 +12,9 @@ segment), so the backfill runs against exactly the shape the live archive holds.
 from __future__ import annotations
 
 import json
-import runpy
+import os
+import shutil
+import subprocess
 import sys
 from datetime import datetime, timedelta, timezone
 
@@ -30,7 +32,13 @@ from thread_archive._store import Event, Thread, get_session, init_db
 from thread_archive._thread_import import DefaultEventBuilder
 from thread_archive._thread_import.event_builder import compute_content_hash
 from thread_archive._thread_import.parsers.claude import ClaudeParser
-from thread_archive._truth.jsonl_log import _hash_key_check, _shard_depth, _thread_file, log_dir
+from thread_archive._truth.jsonl_log import (
+    _hash_key_check,
+    _shard_depth,
+    _thread_file,
+    log_dir,
+    reset_handles,
+)
 
 # ── fixtures (minimal shapes cribbed from tests/test_exports_dropped_fields.py) ──
 
@@ -755,7 +763,13 @@ def test_ts_free_pairing_refuses_a_payload_the_amend_gate_rejects(archive_home) 
 
 def test_ts_free_pairing_refuses_a_malformed_fresh_key(archive_home, monkeypatch) -> None:
     """The tail check is the explicit half of the content guard: no 16-hex hash on the
-    fresh key, no pair — the key move would otherwise land an unhashable key."""
+    fresh key, no pair — the key move would otherwise land an unhashable key.
+
+    Patched builder, deliberately: the guard defends against a fresh event with no
+    usable key, and the real builder keys every event it emits, so no input can
+    reach this arm. A parameter for "which builder" would be a seam no caller of
+    ``run`` would ever pass — the fake belongs here, admitted, not in the product.
+    """
     bundle, tid = _seed_claude(archive_home)
     _unkey(tid, "tool_use_complete", drift_seconds=7)
 
@@ -822,7 +836,13 @@ def test_apply_meta_skips_a_thread_that_vanished(archive_home) -> None:
 
 def test_meta_fold_lost_to_a_concurrent_writer_is_not_counted(archive_home, monkeypatch) -> None:
     """The fold is re-checked against the live row: keys another writer folded between
-    plan and apply are left alone, and the run claims no fold it did not make."""
+    plan and apply are left alone, and the run claims no fold it did not make.
+
+    Patched amend seam, deliberately: what is under test is an *interleaving* — a
+    second writer landing the fold inside this run's apply window. Nothing but
+    running at that instant produces it, and a hook for "call me mid-apply" is a
+    seam no product caller wants.
+    """
     bundle, tid = _seed_claude(archive_home)
     amend = mod.amend_event_payloads
 
@@ -898,14 +918,15 @@ def test_limit_caps_the_threads_examined(archive_home) -> None:
     assert totals["conversations"] == 1
 
 
-def test_plan_errors_are_counted_and_leave_the_thread_alone(archive_home, monkeypatch) -> None:
+def test_plan_errors_are_counted_and_leave_the_thread_alone(archive_home) -> None:
+    """The bundle's copy of an already-imported conversation has gone wrong-shaped —
+    ``chat_messages`` is a string, not a list of turns — so the re-parse raises.
+    The thread is counted and left exactly as it was."""
     bundle, tid = _seed_claude(archive_home)
     before = [(e.id, json.dumps(e.payload, sort_keys=True), e.dedup_key) for e in _events(tid)]
+    broken = {**json.loads(json.dumps(_CLAUDE_CONV)), "chat_messages": "not-a-list"}
+    (bundle / "conversations.json").write_text(json.dumps([broken]), encoding="utf-8")
 
-    def _boom(session, thread, messages):
-        raise RuntimeError("planning blew up")
-
-    monkeypatch.setattr(mod, "plan_thread", _boom)
     totals = mod.run(bundles=[bundle], apply=True)
     assert totals["plan_errors"] == 1
     assert totals["threads_examined"] == 1
@@ -913,13 +934,16 @@ def test_plan_errors_are_counted_and_leave_the_thread_alone(archive_home, monkey
     assert before == after
 
 
-def test_apply_errors_are_counted(archive_home, monkeypatch) -> None:
+def test_apply_errors_are_counted(archive_home) -> None:
+    """A file standing where the truth's ``threads/`` directory belongs takes the
+    amend write down. The thread is counted as an apply error and left as it was —
+    the run does not abort, and nothing half-lands."""
     bundle, tid = _seed_claude(archive_home)
+    reset_handles()
+    threads_dir = log_dir() / "threads"
+    shutil.rmtree(threads_dir, ignore_errors=True)
+    threads_dir.write_text("not a directory\n", encoding="utf-8")
 
-    def _boom(patches, *, reason=None):
-        raise RuntimeError("write blew up")
-
-    monkeypatch.setattr(mod, "amend_event_payloads", _boom)
     totals = mod.run(bundles=[bundle], apply=True)
     assert totals["apply_errors"] == 1
     assert totals.get("threads_changed", 0) == 0
@@ -947,14 +971,14 @@ def test_main_dry_run_then_apply(archive_home, tmp_path, capsys) -> None:
     assert [json.loads(ln) for ln in backup.read_text().splitlines()]
 
 
-@pytest.mark.filterwarnings("ignore:.*found in sys.modules.*:RuntimeWarning")
-def test_module_is_runnable_as_a_script(archive_home, monkeypatch, capsys) -> None:
-    """``python -m thread_archive._scripts.backfill_export_annotations`` runs the CLI."""
+def test_module_is_runnable_as_a_script(archive_home) -> None:
+    """``python -m thread_archive._scripts.backfill_export_annotations`` runs the CLI
+    — a real child process, parsing its own argv."""
     bundle, _ = _seed_claude(archive_home)
-    monkeypatch.setattr(
-        sys, "argv", ["backfill-export-annotations", "--bundle", str(bundle)]
+    proc = subprocess.run(
+        [sys.executable, "-m", mod.__name__, "--bundle", str(bundle)],
+        capture_output=True, text=True,
+        env={**os.environ, "THREAD_ARCHIVE_HOME": str(archive_home)},
     )
-    runpy.run_module(
-        "thread_archive._scripts.backfill_export_annotations", run_name="__main__"
-    )
-    assert "[DRY-RUN]" in capsys.readouterr().out
+    assert proc.returncode == 0, proc.stderr
+    assert "[DRY-RUN]" in proc.stdout

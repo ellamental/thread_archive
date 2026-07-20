@@ -367,9 +367,8 @@ def _offer_watcher(
         return "already-running"
     _say("Keep it fresh? A background watcher (launchd) tails these stores so new")
     _say("conversations land within seconds, and serves the web viewer at http://127.0.0.1:8787.")
-    _say("It also keeps itself current: about once a day it applies the newest release")
-    _say('tag from the repository this clone came from (self-update; opt out anytime')
-    _say('with {"update": {"enabled": false}} in config.json).')
+    _say("It also checks release tags about once a day and reports when an update is")
+    _say("available. Applying it is explicit: `archive self-update`.")
     answer = ask(
         "  [Enter] install watcher · s = skip (catch-up runs whenever the archive is used)  > ",
         default="", interactive=interactive,

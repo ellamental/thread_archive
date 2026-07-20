@@ -31,10 +31,15 @@ _CONV = {
 }
 
 
-def _claude_batch_dir(parent, name, conv=_CONV):
+def _claude_batch_dir(parent, name, conv=_CONV, *, convs=None, raw=None):
+    """A claude.ai batch-export directory. ``raw`` writes ``conversations.json``
+    verbatim, for a bundle that is damaged rather than well-formed; ``users.json``
+    is the sibling marker that classifies the bundle without parsing it."""
     d = parent / name
     d.mkdir(parents=True)
-    (d / "conversations.json").write_text(json.dumps([conv]), encoding="utf-8")
+    (d / "conversations.json").write_text(
+        raw if raw is not None else json.dumps(convs if convs is not None else [conv]),
+        encoding="utf-8")
     (d / "users.json").write_text(json.dumps([{"uuid": "user-1"}]), encoding="utf-8")
     return d
 
@@ -171,18 +176,13 @@ def test_unrecognized_zip_is_quarantined_not_deleted(archive_home) -> None:
     assert r2.sources_checked == 0 and not r2.errors
 
 
-def test_failed_import_is_quarantined(archive_home, monkeypatch) -> None:
-    """If the bulk importer raises mid-export, the drop is quarantined, not lost."""
+def test_failed_import_is_quarantined(archive_home) -> None:
+    """A truncated download: the sibling markers still classify it as a claude.ai
+    export, and the bulk importer raises on the half-written ``conversations.json``.
+    The drop is quarantined, not lost."""
     init_db()
     dumps = archive_home / "dumps"
-    _claude_batch_dir(dumps, "claude-export")
-
-    from thread_archive._importers import exports
-
-    def _boom(path, **kw):
-        raise RuntimeError("corrupt bundle")
-
-    monkeypatch.setattr(exports, "import_claude_ai_export", _boom)
+    _claude_batch_dir(dumps, "claude-export", raw='[{"uuid": "conv-1", "chat_mess')
 
     w = ExportDropWatcher(dumps_dir=dumps)
     w.poll()              # settle
@@ -193,21 +193,17 @@ def test_failed_import_is_quarantined(archive_home, monkeypatch) -> None:
     assert (dumps / "failed" / "claude-export").exists()
 
 
-def test_zero_processed_import_is_quarantined_not_deleted(archive_home, monkeypatch) -> None:
-    """A recognized export whose import processes zero conversations (a
-    misclassification or a provider format change) is quarantined — deleting it
-    would destroy the user's download over an import of nothing."""
+def test_zero_processed_import_is_quarantined_not_deleted(archive_home) -> None:
+    """A recognized export whose import processes zero conversations — here every
+    conversation carries no ``chat_messages`` at all, the shape a provider format
+    change leaves — is quarantined. Deleting it would destroy the user's download
+    over an import of nothing."""
     init_db()
     dumps = archive_home / "dumps"
-    export_dir = _claude_batch_dir(dumps, "claude-export")
-
-    from thread_archive._importers import exports
-    from thread_archive._importers.exports import ExportImportResult
-
-    def _empty(path, **kw):
-        return ExportImportResult()  # processed=0: nothing matched the shape
-
-    monkeypatch.setattr(exports, "import_claude_ai_export", _empty)
+    export_dir = _claude_batch_dir(dumps, "claude-export", convs=[
+        {"uuid": "conv-1", "name": "Nothing Matched",
+         "created_at": "2026-01-01T10:00:00Z", "updated_at": "2026-01-01T10:00:10Z"},
+    ])
 
     w = ExportDropWatcher(dumps_dir=dumps)
     w.poll()              # settle
@@ -219,23 +215,20 @@ def test_zero_processed_import_is_quarantined_not_deleted(archive_home, monkeypa
     assert _claude_count() == 0
 
 
-def test_partially_errored_import_is_quarantined_not_retained(archive_home, monkeypatch) -> None:
-    """An import where some conversations errored (preserved as stubs) is quarantined
-    for review — not retained as if clean, and above all not deleted. Sol's finding:
-    the watcher used to clear the export whenever it processed ≥1 conversation, even
-    when some errored."""
+def test_partially_errored_import_is_quarantined_not_retained(archive_home) -> None:
+    """An export holding one good conversation and one whose ``chat_messages`` is
+    the wrong shape entirely: the bad one is preserved as a stub and counted as an
+    error, so the bundle is quarantined for review — not retained as if clean, and
+    above all not deleted. Sol's finding: the watcher used to clear the export
+    whenever it processed ≥1 conversation, even when some errored."""
     init_db()
     dumps = archive_home / "dumps"
-    export_dir = _claude_batch_dir(dumps, "claude-export")
-
-    from thread_archive._importers import exports
-    from thread_archive._importers.exports import ExportImportResult
-
-    def _partial(path, **kw):
-        # processed>0 with a stubbed-out errored conversation: the old code deleted this.
-        return ExportImportResult(processed=2, imported=1, skipped=0, events_created=3, errored=1)
-
-    monkeypatch.setattr(exports, "import_claude_ai_export", _partial)
+    export_dir = _claude_batch_dir(dumps, "claude-export", convs=[
+        _CONV,
+        {"uuid": "conv-broken", "name": "Wrong Shape",
+         "created_at": "2026-01-01T11:00:00Z", "updated_at": "2026-01-01T11:00:10Z",
+         "chat_messages": "not-a-list"},
+    ])
 
     w = ExportDropWatcher(dumps_dir=dumps)
     w.poll()              # settle
@@ -245,6 +238,12 @@ def test_partially_errored_import_is_quarantined_not_retained(archive_home, monk
     assert not export_dir.exists()
     assert (dumps / "failed" / "claude-export").exists()
     assert not (dumps / "imported" / "claude-export").exists()
+    # the errored conversation was preserved, not dropped on the floor
+    with get_session() as s:
+        kept = s.execute(select(Thread).where(
+            Thread.source == "claude",
+            Thread.source_id == "conv-broken:import-error")).scalars().all()
+    assert len(kept) == 1
 
 
 def test_dropped_chatgpt_zip_imports_as_chatgpt(archive_home) -> None:

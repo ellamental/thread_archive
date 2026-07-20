@@ -4,13 +4,19 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
+import socket
+import subprocess
 import sys
+import threading
+import time
+import urllib.request
 
 import pytest
 
 from thread_archive import _api as ta
 from thread_archive._mcp import server
-from thread_archive._mcp.server import mcp, thread_read, thread_search
+from thread_archive._mcp.server import IngestThrottle, ServePlan, mcp, thread_read, thread_search
 
 USER = {"type": "user", "uuid": "u1", "timestamp": "2026-01-01T10:00:00Z",
         "cwd": "/proj", "message": {"role": "user", "content": "hello mcp"}}
@@ -189,78 +195,160 @@ def test_mcp_call_tool_dispatch(archive_home) -> None:
     assert "hello mcp" in text
 
 
-class _RecordingThread:
-    """Stand-in for ``threading.Thread`` that records the warm-models decision
-    without spawning anything — ``main()``'s warm branch is what we're pinning."""
-
-    instances: list["_RecordingThread"] = []
-
-    def __init__(self, target=None, name=None, daemon=None):
-        self.target, self.name, self.daemon = target, name, daemon
-        self.started = False
-        _RecordingThread.instances.append(self)
-
-    def start(self):
-        self.started = True
+def test_plan_stdio_default_neither_warms_nor_serves_http(monkeypatch) -> None:
+    monkeypatch.delenv("THREAD_ARCHIVE_MCP_WARM", raising=False)
+    # stdio default: no transport argument for run(), and no model warm.
+    assert server.plan_serve([]) == ServePlan(transport=None, warm=False)
 
 
-def _drive_main(monkeypatch, argv):
-    """Run ``server.main()`` with argv, stubbing the three things that would
-    block or do real work: the model warm thread, catch-up ingest, and the
-    server run-loop. Returns the recorded ``mcp.run`` transport args."""
-    _RecordingThread.instances = []
-    run_calls: list[tuple] = []
-    monkeypatch.setattr(sys, "argv", argv)
-    monkeypatch.setattr(server.threading, "Thread", _RecordingThread)
-    monkeypatch.setenv("THREAD_ARCHIVE_MCP_INGEST", "0")  # the ingest kill-switch
-    monkeypatch.setattr(server.mcp, "run", lambda *a: run_calls.append(a))
-    server.main()
-    return run_calls
+def test_plan_http_warms_and_serves_streamable() -> None:
+    plan = server.plan_serve(["--http", "--host", "localhost", "--port", "9999"])
+    # --http picks the shared transport, carries the bind, and warms the model
+    # stack (one resident copy every client shares).
+    assert plan == ServePlan(transport="streamable-http", warm=True,
+                             host="localhost", port=9999)
+    # Applying it points the server at that bind, in the many-agents shape.
+    server.apply_settings(plan)
+    assert mcp.settings.host == "localhost" and mcp.settings.port == 9999
+    assert mcp.settings.stateless_http is True and mcp.settings.json_response is True
 
 
-def test_main_stdio_default_neither_warms_nor_http(monkeypatch) -> None:
-    run_calls = _drive_main(monkeypatch, ["archive-mcp"])
-    # stdio default: run() with no transport arg, and no warm thread started.
-    assert run_calls == [()]
-    assert not any(t.name == "archive-warm-models" for t in _RecordingThread.instances)
-
-
-def test_main_http_warms_and_serves_streamable(monkeypatch) -> None:
-    run_calls = _drive_main(
-        monkeypatch, ["archive-mcp", "--http", "--host", "localhost", "--port", "9999"]
-    )
-    assert run_calls == [("streamable-http",)]
-    # --http applies the loopback-share settings and warms the model stack.
-    assert mcp.settings.host == "localhost"
-    assert mcp.settings.port == 9999
-    assert mcp.settings.stateless_http is True
-    assert mcp.settings.json_response is True
-    warm = [t for t in _RecordingThread.instances if t.name == "archive-warm-models"]
-    assert len(warm) == 1 and warm[0].started and warm[0].daemon is True
-
-
-def test_main_http_refuses_nonloopback_host_without_optin(monkeypatch, capsys) -> None:
+def test_plan_http_refuses_nonloopback_host_without_optin(monkeypatch, capsys) -> None:
     # The server is unauthenticated full read of the archive: binding beyond
     # loopback must be an explicit opt-in, exactly like the web viewer.
     monkeypatch.delenv("THREAD_ARCHIVE_MCP_NONLOCAL", raising=False)
     with pytest.raises(SystemExit):
-        _drive_main(monkeypatch, ["archive-mcp", "--http", "--host", "1.2.3.4"])
+        server.plan_serve(["--http", "--host", "1.2.3.4"])
     assert "refusing non-loopback bind" in capsys.readouterr().err
 
 
-def test_main_http_nonloopback_host_with_optin(monkeypatch) -> None:
+def test_plan_http_nonloopback_host_with_optin(monkeypatch) -> None:
     monkeypatch.setenv("THREAD_ARCHIVE_MCP_NONLOCAL", "1")
-    run_calls = _drive_main(
-        monkeypatch, ["archive-mcp", "--http", "--host", "1.2.3.4", "--port", "9999"]
-    )
-    assert run_calls == [("streamable-http",)]
-    assert mcp.settings.host == "1.2.3.4"
+    plan = server.plan_serve(["--http", "--host", "1.2.3.4", "--port", "9999"])
+    assert plan.transport == "streamable-http" and plan.host == "1.2.3.4"
 
 
-def test_main_stdio_warms_when_env_opts_in(monkeypatch) -> None:
+def test_plan_stdio_warms_when_env_opts_in(monkeypatch) -> None:
     monkeypatch.setenv("THREAD_ARCHIVE_MCP_WARM", "1")
-    _drive_main(monkeypatch, ["archive-mcp"])
-    assert any(t.name == "archive-warm-models" for t in _RecordingThread.instances)
+    assert server.plan_serve([]).warm is True
+
+
+# ── the two real deployments ─────────────────────────────────────────────────
+# stdio (one server per MCP client) and streamable-HTTP (one shared always-on
+# server) are the documented invocations, so they are exercised as invocations:
+# a real child process running the real entry point, spoken to over the real
+# transport. Nothing about the server is stubbed — these are the tests that
+# would catch a transport, registration, or startup break.
+
+
+def _server_env(home) -> dict:
+    """The environment an MCP client gives the server, pinned to a throwaway
+    archive and model-free (the child does not inherit the suite's fixtures)."""
+    return {**os.environ,
+            "THREAD_ARCHIVE_HOME": str(home),
+            "THREAD_ARCHIVE_MCP_INGEST": "0",
+            "THREAD_ARCHIVE_EMBED": "off",
+            "THREAD_ARCHIVE_RERANK": "off"}
+
+
+def _free_port() -> int:
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0))
+        return int(s.getsockname()[1])
+
+
+@pytest.mark.integration
+def test_stdio_server_answers_a_real_client_over_the_module_entry(archive_home) -> None:
+    """``python -m thread_archive._mcp.server`` — the documented per-client
+    stdio invocation — completes a real MCP handshake, lists its tools, and
+    searches a seeded archive."""
+    f = archive_home / "sess.jsonl"
+    _write_cc(f, [USER, ASSISTANT])
+    ta.import_path(f)
+
+    frames = [
+        {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {
+            "protocolVersion": "2024-11-05", "capabilities": {},
+            "clientInfo": {"name": "test-client", "version": "0"}}},
+        {"jsonrpc": "2.0", "method": "notifications/initialized"},
+        {"jsonrpc": "2.0", "id": 2, "method": "tools/list"},
+        {"jsonrpc": "2.0", "id": 3, "method": "tools/call",
+         "params": {"name": "thread_search", "arguments": {"query": "hello"}}},
+    ]
+    proc = subprocess.Popen(
+        [sys.executable, "-m", "thread_archive._mcp.server"],
+        stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+        env=_server_env(archive_home),
+    )
+    # A client holds stdin open while it waits: EOF is how it says goodbye, and
+    # the server takes it as one, cancelling anything still in flight.
+    watchdog = threading.Timer(120, proc.kill)
+    watchdog.start()
+    try:
+        assert proc.stdin is not None and proc.stdout is not None
+        proc.stdin.write("".join(json.dumps(fr) + "\n" for fr in frames))
+        proc.stdin.flush()
+        lines = [proc.stdout.readline() for _ in range(3)]
+        proc.stdin.close()
+        assert proc.wait(timeout=60) == 0
+    finally:
+        watchdog.cancel()
+        if proc.poll() is None:  # pragma: no cover — only on a hung server
+            proc.kill()
+    replies = {d["id"]: d for d in (json.loads(ln) for ln in lines if ln.strip())}
+    assert replies[1]["result"]["serverInfo"]["name"] == "thread-archive"
+    assert {t["name"] for t in replies[2]["result"]["tools"]} == {"thread_search", "thread_read"}
+    assert "hello mcp" in json.dumps(replies[3]["result"])
+
+
+@pytest.mark.integration
+def test_http_server_serves_the_shared_streamable_transport(archive_home) -> None:
+    """``archive-mcp --http`` binds the requested loopback port and answers
+    stateless JSON requests — the shared always-on deployment the LaunchAgent
+    runs and every client points at."""
+    f = archive_home / "sess.jsonl"
+    _write_cc(f, [USER, ASSISTANT])
+    ta.import_path(f)
+
+    port = _free_port()
+    proc = subprocess.Popen(
+        [sys.executable, "-m", "thread_archive._mcp.server", "--http",
+         "--host", "127.0.0.1", "--port", str(port)],
+        stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+        env=_server_env(archive_home),
+    )
+    try:
+        deadline = time.monotonic() + 60
+        while time.monotonic() < deadline:
+            assert proc.poll() is None, "server exited before binding"
+            try:
+                socket.create_connection(("127.0.0.1", port), timeout=0.2).close()
+                break
+            except OSError:
+                time.sleep(0.05)
+        else:  # pragma: no cover — the bind is sub-second in practice
+            raise AssertionError(f"server never bound 127.0.0.1:{port}")
+
+        def _call(payload: dict) -> dict:
+            req = urllib.request.Request(
+                f"http://127.0.0.1:{port}/mcp", data=json.dumps(payload).encode(),
+                headers={"Content-Type": "application/json",
+                         "Accept": "application/json, text/event-stream"},
+            )
+            with urllib.request.urlopen(req, timeout=30) as resp:
+                assert resp.status == 200
+                return json.loads(resp.read())
+
+        # Stateless: each request stands alone, no session handshake to carry.
+        listed = _call({"jsonrpc": "2.0", "id": 1, "method": "tools/list"})
+        assert {t["name"] for t in listed["result"]["tools"]} == {"thread_search", "thread_read"}
+        called = _call({"jsonrpc": "2.0", "id": 2, "method": "tools/call",
+                        "params": {"name": "thread_read",
+                                   "arguments": {"thread_id": ta.search("hello")[0]["thread_id"]}}})
+        assert "hello mcp" in json.dumps(called["result"])
+    finally:
+        proc.terminate()
+        proc.wait(timeout=30)
 
 
 def test_mcp_search_resolves_thread_and_topic_refs(archive_home) -> None:
@@ -283,47 +371,75 @@ def test_mcp_search_resolves_thread_and_topic_refs(archive_home) -> None:
     assert "topic 999999999 not found" in missing_topic
 
 
-def test_maybe_catch_up_skips_when_a_pass_is_in_flight(monkeypatch) -> None:
-    """One in-flight catch-up per process: while the lock is held, another call
-    returns without recording an attempt."""
+def test_throttle_skips_when_a_pass_is_in_flight(monkeypatch) -> None:
+    """One in-flight catch-up per process: while the slot is taken, another
+    claim is refused without recording an attempt."""
     monkeypatch.delenv("THREAD_ARCHIVE_MCP_INGEST", raising=False)
-    monkeypatch.setattr(server.INGEST, "last", 0.0)
-    assert server.INGEST.running.acquire(blocking=False)
-    try:
-        server._maybe_catch_up()
-        assert server.INGEST.last == 0.0  # bailed before marking the attempt
-    finally:
-        server.INGEST.running.release()
+    throttle = IngestThrottle()
+    assert throttle.running.acquire(blocking=False)  # a pass is under way
+    assert not throttle.claim()
+    assert throttle.last == 0.0  # refused before the attempt was marked
+    throttle.release()
+
+    # Free slot → claimed, and the attempt marked.
+    assert throttle.claim()
+    marked = throttle.last
+    assert marked > 0.0
+    throttle.release()
+    # Released, but the interval now holds the next attempt back.
+    assert not throttle.claim()
+    assert throttle.last == marked
 
 
-class _InlineThread:
-    """threading.Thread stand-in that runs the target synchronously on start()."""
+def test_throttle_refuses_while_the_kill_switch_is_set(monkeypatch) -> None:
+    """``THREAD_ARCHIVE_MCP_INGEST=0`` stops the pass before anything is
+    claimed or recorded — read per call, so it applies whenever it is set."""
+    throttle = IngestThrottle()
+    monkeypatch.setenv("THREAD_ARCHIVE_MCP_INGEST", "0")
+    throttle.maybe_catch_up()
+    assert throttle.last == 0.0
+    monkeypatch.delenv("THREAD_ARCHIVE_MCP_INGEST")
+    assert throttle.claim()
 
-    def __init__(self, target=None, name=None, daemon=None):
-        self.target = target
 
-    def start(self):
-        self.target()
-
-
-def test_maybe_catch_up_swallows_ingest_failure_and_releases(monkeypatch) -> None:
+def test_pass_swallows_ingest_failure_and_releases(archive_home, monkeypatch) -> None:
     """A failing catch-up pass is advisory: it must not raise into the tool call
-    and must release the in-flight lock for the next attempt."""
-    import thread_archive._watcher as watcher
+    and must release the in-flight slot for the next attempt."""
+    # A home that cannot exist (its parent is a file) — the pass hits a real
+    # OSError opening the archive, the way a broken/unmounted home would.
+    blocker = archive_home / "not-a-directory"
+    blocker.write_text("", encoding="utf-8")
+    monkeypatch.setenv("THREAD_ARCHIVE_HOME", str(blocker / "home"))
+    monkeypatch.delenv("THREAD_ARCHIVE_MCP_INGEST", raising=False)
+
+    throttle = IngestThrottle()
+    assert throttle.claim()
+    throttle.run_pass()  # must not raise
+    # the slot was released in the finally — the next pass can claim it
+    assert throttle.running.acquire(blocking=False)
+    throttle.running.release()
+
+
+def test_maybe_catch_up_runs_the_pass_off_the_caller_thread(archive_home, monkeypatch) -> None:
+    """The kick is a background pass: the tool call returns immediately, and the
+    pass releases the slot when it finishes. With another process owning ingest
+    (the always-on watcher's flock), that pass is a no-op probe."""
+    from thread_archive._watcher import try_ingest_owner_lock
 
     monkeypatch.delenv("THREAD_ARCHIVE_MCP_INGEST", raising=False)
-    monkeypatch.setattr(server.INGEST, "last", 0.0)
-    monkeypatch.setattr(server.threading, "Thread", _InlineThread)
-
-    def boom():
-        raise RuntimeError("ingest broke")
-
-    monkeypatch.setattr(watcher, "catch_up_once", boom)
-    server._maybe_catch_up()  # must not raise
-    assert server.INGEST.last > 0.0
-    # the lock was released in the finally — the next pass can acquire it
-    assert server.INGEST.running.acquire(blocking=False)
-    server.INGEST.running.release()
+    throttle = IngestThrottle()
+    with try_ingest_owner_lock() as owned:  # stand in for the watcher daemon
+        assert owned
+        throttle.maybe_catch_up()
+        assert throttle.last > 0.0  # the attempt was marked
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline:
+            if throttle.running.acquire(blocking=False):
+                throttle.running.release()
+                break
+            time.sleep(0.01)
+        else:  # pragma: no cover — the probe returns in milliseconds
+            raise AssertionError("the background pass never released the slot")
 
 
 def test_default_scope_weakness_needs_query_terms() -> None:
@@ -363,32 +479,17 @@ def test_degradation_notice_fails_soft_on_unparseable_record(archive_home) -> No
     assert server._degradation_notices() == ""
 
 
-def test_server_module_is_runnable_as_a_script(monkeypatch) -> None:
-    """``python -m thread_archive._mcp.server`` dispatches to main() — the
-    documented per-client stdio invocation."""
-    import runpy
-
-    from mcp.server.fastmcp import FastMCP
-
-    calls: list[tuple] = []
-    monkeypatch.setattr(sys, "argv", ["archive-mcp"])
-    monkeypatch.setenv("THREAD_ARCHIVE_MCP_INGEST", "0")
-    monkeypatch.setattr(FastMCP, "run", lambda self, *a, **kw: calls.append(a))
-    # Run off a cold import, the way the interpreter would (runpy warns about
-    # executing an already-imported module).
-    monkeypatch.delitem(sys.modules, "thread_archive._mcp.server")
-    runpy.run_module("thread_archive._mcp.server", run_name="__main__")
-    assert calls == [()]  # stdio default: run() with no transport arg
-
-
-def test_maybe_catch_up_throttles_repeat_attempts(monkeypatch) -> None:
+def test_maybe_catch_up_throttles_repeat_attempts(archive_home, monkeypatch) -> None:
     """A recent attempt suppresses the next one — at most one catch-up kick per
     interval per process."""
-    import time as _time
+    from thread_archive._watcher import try_ingest_owner_lock
 
     monkeypatch.delenv("THREAD_ARCHIVE_MCP_INGEST", raising=False)
-    monkeypatch.setattr(server.INGEST, "last", _time.monotonic())
-    started: list[object] = []
-    monkeypatch.setattr(server.threading, "Thread", lambda **kw: started.append(kw))
-    server._maybe_catch_up()
-    assert started == []  # throttled: no pass kicked
+    throttle = IngestThrottle()
+    with try_ingest_owner_lock() as owned:
+        assert owned
+        throttle.maybe_catch_up()
+        first = throttle.last
+        assert first > 0.0
+        throttle.maybe_catch_up()
+        assert throttle.last == first  # throttled: no second attempt marked

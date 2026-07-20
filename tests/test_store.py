@@ -183,14 +183,16 @@ def test_add_missing_column_backfills_and_is_idempotent(tmp_path) -> None:
     eng.dispose()
 
 
-def test_add_missing_column_absorbs_cross_process_race(tmp_path, monkeypatch) -> None:
-    # The daemon and MCP server open the store concurrently; a racer in another
-    # process can win the ADD between our PRAGMA read and our ALTER, so the ALTER
-    # raises "duplicate column name". init_db must absorb that (idempotent outcome),
-    # but any OTHER OperationalError is a real fault and must still propagate.
+def test_add_missing_column_absorbs_duplicate_column_but_not_other_faults(tmp_path) -> None:
+    # The ALTER can find the column already there — a racer (the daemon and MCP
+    # server open the store concurrently, so another process can win the ADD
+    # between our PRAGMA read and our ALTER) or, as here, a declaration whose
+    # spelling the PRAGMA comparison doesn't match though SQLite does. Either way
+    # SQLite answers "duplicate column name" and the outcome is already what the
+    # backfill wanted, so it is absorbed — but any OTHER OperationalError is a
+    # real fault and must still propagate.
     import pytest
     from sqlalchemy import text
-    from sqlalchemy.engine import Connection
     from sqlalchemy.exc import OperationalError
 
     from thread_archive._store import schema as schema_mod
@@ -199,26 +201,31 @@ def test_add_missing_column_absorbs_cross_process_race(tmp_path, monkeypatch) ->
     init_db(eng)
     with eng.begin() as conn:
         conn.execute(text("ALTER TABLE import_state DROP COLUMN last_content_hash"))
+        conn.execute(text("ALTER TABLE import_state ADD COLUMN LAST_CONTENT_HASH TEXT"))
+        have = {row[1] for row in conn.execute(text("PRAGMA table_info(import_state)"))}
+    assert "last_content_hash" not in have, "the backfill will try to add it"
 
-    real_execute = Connection.execute
-
-    def racer_won(self, statement, *a, **k):
-        if "ADD COLUMN last_content_hash" in str(statement):
-            raise OperationalError(str(statement), {}, Exception("duplicate column name: last_content_hash"))
-        return real_execute(self, statement, *a, **k)
-
-    monkeypatch.setattr(Connection, "execute", racer_won)
-    schema_mod._add_missing_columns(eng)  # duplicate-column race is absorbed, no raise
-
-    def other_fault(self, statement, *a, **k):
-        if "ADD COLUMN last_content_hash" in str(statement):
-            raise OperationalError(str(statement), {}, Exception("database is locked"))
-        return real_execute(self, statement, *a, **k)
-
-    monkeypatch.setattr(Connection, "execute", other_fault)
-    with pytest.raises(OperationalError):
-        schema_mod._add_missing_columns(eng)  # a non-duplicate error still surfaces
+    schema_mod._add_missing_columns(eng)  # duplicate-column answer is absorbed, no raise
+    with eng.begin() as conn:  # and the column that was already there is untouched
+        have = {row[1] for row in conn.execute(text("PRAGMA table_info(import_state)"))}
+    assert "LAST_CONTENT_HASH" in have and "last_content_hash" not in have
     eng.dispose()
+
+    # A real non-duplicate fault: the index file cannot be written at all.
+    other = tmp_path / "readonly.db"
+    eng = build_engine(f"sqlite:///{other}")
+    init_db(eng)
+    with eng.begin() as conn:
+        conn.execute(text("ALTER TABLE import_state DROP COLUMN last_content_hash"))
+    eng.dispose()
+    other.chmod(0o400)
+    eng = build_engine(f"sqlite:///{other}")
+    try:
+        with pytest.raises(OperationalError, match="readonly"):
+            schema_mod._add_missing_columns(eng)
+    finally:
+        eng.dispose()
+        other.chmod(0o600)
 
 
 def test_thread_name_unique(tmp_path) -> None:

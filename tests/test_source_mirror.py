@@ -1,7 +1,8 @@
 """The raw source mirror: verbatim, compressed, and never deleted.
 
-Exercises the real sweep against stub watchers (the conftest keeps the real
-enabled set away from tests): file transcripts round-trip byte-for-byte
+Exercises the real sweep over an explicit watcher set, handed in through the
+sweep's own ``watchers`` argument so the machine's real stores stay out of it:
+file transcripts round-trip byte-for-byte
 through gzip, unchanged files are stat-skipped, a shrunken transcript rotates
 a generation instead of overwriting the only copy, JSON sidecars ride along
 under the size cap, SQLite stores snapshot consistently via the backup API
@@ -15,24 +16,9 @@ import gzip
 import json
 import sqlite3
 
-import pytest
-
 from thread_archive._ops.source_mirror import MIRROR_SUBDIR, mirror_sources
 from thread_archive._watcher.base import SourceWatcher
 from thread_archive._watcher.sources import DbScanWatcher, RglobWatcher
-
-
-@pytest.fixture
-def stub_watchers(monkeypatch):
-    """Install the given watchers as the enabled set for mirror_sources."""
-    from thread_archive._watcher import sources as watcher_sources
-
-    def install(watchers):
-        monkeypatch.setattr(
-            watcher_sources, "enabled_watchers", lambda home=None: watchers
-        )
-
-    return install
 
 
 def _file_watcher(root) -> RglobWatcher:
@@ -48,7 +34,7 @@ def _mirrored(archive_home, provider: str, src) -> bytes:
     return gzip.decompress(dest.with_name(dest.name + ".gz").read_bytes())
 
 
-def test_transcripts_and_sidecars_round_trip(archive_home, tmp_path, stub_watchers):
+def test_transcripts_and_sidecars_round_trip(archive_home, tmp_path):
     store = tmp_path / "store"
     (store / "sess").mkdir(parents=True)
     transcript = store / "sess" / "one.jsonl"
@@ -57,9 +43,9 @@ def test_transcripts_and_sidecars_round_trip(archive_home, tmp_path, stub_watche
     sidecar.write_text('{"title": "t"}', encoding="utf-8")
     big = store / "sess" / "big.json"
     big.write_text("x" * (2 * 1024 * 1024 + 1), encoding="utf-8")
-    stub_watchers([_file_watcher(store)])
+    watchers = [_file_watcher(store)]
 
-    r = mirror_sources(home=str(archive_home))
+    r = mirror_sources(home=str(archive_home), watchers=watchers)
 
     assert r["ok"] is True
     p = r["providers"]["stubprov"]
@@ -71,28 +57,28 @@ def test_transcripts_and_sidecars_round_trip(archive_home, tmp_path, stub_watche
     assert health["source_mirror_last"]["ok"] is True
 
     # Second sweep: nothing changed, nothing copied — stat-skip via manifest.
-    r2 = mirror_sources(home=str(archive_home))
+    r2 = mirror_sources(home=str(archive_home), watchers=watchers)
     p2 = r2["providers"]["stubprov"]
     assert p2["copied"] == 0 and p2["unchanged"] == p["copied"]
 
     # Growth recopies; the mirror follows the source.
     with open(transcript, "a", encoding="utf-8") as fh:
         fh.write('{"type": "assistant"}\n')
-    r3 = mirror_sources(home=str(archive_home))
+    r3 = mirror_sources(home=str(archive_home), watchers=watchers)
     assert r3["providers"]["stubprov"]["copied"] == 1
     assert _mirrored(archive_home, "stubprov", transcript) == transcript.read_bytes()
 
 
-def test_shrunken_transcript_rotates_a_generation(archive_home, tmp_path, stub_watchers):
+def test_shrunken_transcript_rotates_a_generation(archive_home, tmp_path):
     store = tmp_path / "store"
     store.mkdir()
     transcript = store / "one.jsonl"
     transcript.write_text("line-1\nline-2\n", encoding="utf-8")
-    stub_watchers([_file_watcher(store)])
-    mirror_sources(home=str(archive_home))
+    watchers = [_file_watcher(store)]
+    mirror_sources(home=str(archive_home), watchers=watchers)
 
     transcript.write_text("rewritten\n", encoding="utf-8")
-    r = mirror_sources(home=str(archive_home))
+    r = mirror_sources(home=str(archive_home), watchers=watchers)
 
     assert r["providers"]["stubprov"]["generations"] == 1
     assert _mirrored(archive_home, "stubprov", transcript) == b"rewritten\n"
@@ -103,18 +89,16 @@ def test_shrunken_transcript_rotates_a_generation(archive_home, tmp_path, stub_w
     assert gzip.decompress(gen.read_bytes()) == b"line-1\nline-2\n"
 
 
-def test_sqlite_store_snapshots_with_one_prev_generation(
-    archive_home, tmp_path, stub_watchers
-):
+def test_sqlite_store_snapshots_with_one_prev_generation(archive_home, tmp_path):
     db = tmp_path / "state.db"
     conn = sqlite3.connect(db)
     conn.execute("CREATE TABLE t (v TEXT)")
     conn.execute("INSERT INTO t VALUES ('first')")
     conn.commit()
     conn.close()
-    stub_watchers([DbScanWatcher(db, "stubdb", scanner=lambda *a: None)])
+    watchers = [DbScanWatcher(db, "stubdb", scanner=lambda *a: None)]
 
-    r = mirror_sources(home=str(archive_home))
+    r = mirror_sources(home=str(archive_home), watchers=watchers)
     assert r["providers"]["stubdb"]["copied"] == 1
 
     dest_dir = (archive_home / MIRROR_SUBDIR / "stubdb").joinpath(
@@ -127,12 +111,12 @@ def test_sqlite_store_snapshots_with_one_prev_generation(
     assert rows == [("first",)]
 
     # Unchanged → skipped; changed → resnapshot with the old copy kept as .prev.
-    assert mirror_sources(home=str(archive_home))["providers"]["stubdb"]["unchanged"] == 1
+    assert mirror_sources(home=str(archive_home), watchers=watchers)["providers"]["stubdb"]["unchanged"] == 1
     conn = sqlite3.connect(db)
     conn.execute("INSERT INTO t VALUES ('second')")
     conn.commit()
     conn.close()
-    r3 = mirror_sources(home=str(archive_home))
+    r3 = mirror_sources(home=str(archive_home), watchers=watchers)
     assert r3["providers"]["stubdb"]["copied"] == 1
     prev = dest_dir / "state.db.prev.gz"
     assert prev.exists()
@@ -140,7 +124,7 @@ def test_sqlite_store_snapshots_with_one_prev_generation(
     assert sqlite3.connect(restored).execute("SELECT count(*) FROM t").fetchone() == (1,)
 
 
-def test_unsupported_watcher_shape_is_reported(archive_home, stub_watchers):
+def test_unsupported_watcher_shape_is_reported(archive_home):
     class OddWatcher(SourceWatcher):
         @property
         def source_name(self) -> str:
@@ -155,13 +139,13 @@ def test_unsupported_watcher_shape_is_reported(archive_home, stub_watchers):
         def poll(self):  # pragma: no cover — never called by the mirror
             raise NotImplementedError
 
-    stub_watchers([OddWatcher()])
-    r = mirror_sources(home=str(archive_home))
+    watchers = [OddWatcher()]
+    r = mirror_sources(home=str(archive_home), watchers=watchers)
     assert r["unsupported"] == ["odd"]
     assert r["providers"] == {}
 
 
-def test_unreadable_file_costs_only_itself(archive_home, tmp_path, stub_watchers):
+def test_unreadable_file_costs_only_itself(archive_home, tmp_path):
     store = tmp_path / "store"
     store.mkdir()
     good = store / "good.jsonl"
@@ -169,9 +153,9 @@ def test_unreadable_file_costs_only_itself(archive_home, tmp_path, stub_watchers
     bad = store / "bad.jsonl"
     bad.write_text("secret\n", encoding="utf-8")
     bad.chmod(0o000)
-    stub_watchers([_file_watcher(store)])
+    watchers = [_file_watcher(store)]
     try:
-        r = mirror_sources(home=str(archive_home))
+        r = mirror_sources(home=str(archive_home), watchers=watchers)
     finally:
         bad.chmod(0o644)
     p = r["providers"]["stubprov"]

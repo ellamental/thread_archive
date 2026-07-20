@@ -261,18 +261,26 @@ def embed(
     rebuild: bool = False,
     max_events: Optional[int] = None,
     newest_first: bool = False,
+    embedder=None,
 ) -> dict:
     """Embed the user/text events that are missing a vector (incremental anti-join).
 
     The catch-up counterpart to the watcher's live cohost: ``reindex(vectors=True)``
     rebuilds the whole vector index, this just fills the gap. ``rebuild=True``
     re-embeds everything; ``max_events`` caps one call; ``newest_first`` drains the
-    freshest gap first (recent threads become semantically findable soonest). No-op
-    without the ``[embeddings]`` extra. Returns ``{'embedded': n}``."""
+    freshest gap first (recent threads become semantically findable soonest).
+    ``embedder`` is the model the vectors are computed with (default: the process
+    embedder, and its space is the one queries resolve in) — the coordination
+    layer passes it straight through to
+    :func:`thread_archive._retrieval.vectors.index_events_local`, so a caller
+    holding a loaded model, or indexing into a second embedding space, does not
+    have to reach past this surface for it. No-op without the ``[embeddings]``
+    extra. Returns ``{'embedded': n}``."""
     open_archive(home)
     from ._retrieval.vectors import index_events_local
 
-    n = index_events_local(rebuild=rebuild, max_events=max_events, newest_first=newest_first)
+    n = index_events_local(rebuild=rebuild, max_events=max_events,
+                           newest_first=newest_first, embedder=embedder)
     return {"embedded": n}
 
 

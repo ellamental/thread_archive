@@ -6,7 +6,7 @@ no route layer. The server is library-native: it dispatches straight to the API
 functions in-process.
 
 The *tools* are read-only, but the server process also cohosts lazy catch-up
-ingest (see :func:`_maybe_catch_up` and :mod:`.._watcher.lazy`): a throttled
+ingest (see :class:`IngestThrottle` and :mod:`.._watcher.lazy`): a throttled
 background pass at startup and around tool calls keeps the archive current
 with no daemon installed, and degrades to a no-op flock probe when the
 always-on watcher owns ingest. ``THREAD_ARCHIVE_MCP_INGEST=0`` disables it.
@@ -32,7 +32,9 @@ import logging
 import os
 import threading
 import time
-from typing import Optional
+from collections.abc import Sequence
+from dataclasses import dataclass
+from typing import Literal, Optional
 
 from mcp.server.fastmcp import FastMCP
 
@@ -57,14 +59,67 @@ mcp = FastMCP("thread-archive")
 _INGEST_MIN_INTERVAL = 300.0  # seconds between catch-up attempts in this process
 
 
+def ingest_enabled() -> bool:
+    """Whether the cohosted catch-up ingest may run — ``THREAD_ARCHIVE_MCP_INGEST``
+    is its kill-switch. Read per call, so a value set after import is honored."""
+    return os.environ.get("THREAD_ARCHIVE_MCP_INGEST", "1").strip().lower() not in (
+        "0", "false", "no", "off",
+    )
+
+
 class IngestThrottle:
-    """Per-process lazy-ingest throttle state — public so tests reset it
-    (``monkeypatch.setattr(server.INGEST, "last", 0.0)``) instead of poking
-    module globals."""
+    """The gate on one process's cohosted catch-up ingest: at most one pass in
+    flight, at most one attempt per ``_INGEST_MIN_INTERVAL``, and none at all
+    while the kill-switch is off.
+
+    The server's own gate is the module-level :data:`INGEST`; the state is held
+    on the instance rather than in module globals, so a caller that wants an
+    independent gate constructs its own.
+    """
 
     def __init__(self) -> None:
         self.last = 0.0  # monotonic time of the last attempt (0 = never)
         self.running = threading.Lock()  # one in-flight catch-up per process
+
+    def claim(self) -> bool:
+        """Take the in-flight slot for a catch-up pass, or refuse it. A true
+        return means the caller owns the slot and must :meth:`release` it."""
+        if not ingest_enabled():
+            return False
+        now = time.monotonic()
+        if self.last and now - self.last < _INGEST_MIN_INTERVAL:
+            return False
+        if not self.running.acquire(blocking=False):
+            return False  # a catch-up is already in flight in this process
+        self.last = now
+        return True
+
+    def release(self) -> None:
+        """Hand the in-flight slot back, so the next attempt past the interval
+        can claim it."""
+        self.running.release()
+
+    def run_pass(self) -> None:
+        """Run one catch-up pass on a claimed slot, releasing it whatever
+        happens. Never raises — ingest is advisory to retrieval."""
+        try:
+            from .._watcher import catch_up_once
+
+            catch_up_once()
+        except Exception:  # noqa: BLE001 — advisory; retrieval must not care
+            logger.exception("lazy catch-up ingest failed")
+        finally:
+            self.release()
+
+    def maybe_catch_up(self) -> None:
+        """Kick a background catch-up pass, throttled. Never blocks the caller and
+        never raises — retrieval must work identically with ingest disabled, owned
+        by another process, or broken."""
+        if not self.claim():
+            return
+        threading.Thread(
+            target=self.run_pass, name="archive-lazy-ingest", daemon=True
+        ).start()
 
 
 INGEST = IngestThrottle()
@@ -81,33 +136,6 @@ def _resolve_ref(ref: int | str) -> Optional[str]:
     with get_session() as s:
         return resolve_thread_ref(s, ref)
 
-
-def _maybe_catch_up() -> None:
-    """Kick a background catch-up pass, throttled. Never blocks the caller and
-    never raises — retrieval must work identically with ingest disabled, owned
-    by another process, or broken."""
-    if os.environ.get("THREAD_ARCHIVE_MCP_INGEST", "1").strip().lower() in (
-        "0", "false", "no", "off",
-    ):
-        return
-    now = time.monotonic()
-    if INGEST.last and now - INGEST.last < _INGEST_MIN_INTERVAL:
-        return
-    if not INGEST.running.acquire(blocking=False):
-        return  # a catch-up is already in flight in this process
-    INGEST.last = now
-
-    def _run() -> None:
-        try:
-            from .._watcher import catch_up_once
-
-            catch_up_once()
-        except Exception:  # noqa: BLE001 — advisory; retrieval must not care
-            logger.exception("lazy catch-up ingest failed")
-        finally:
-            INGEST.running.release()
-
-    threading.Thread(target=_run, name="archive-lazy-ingest", daemon=True).start()
 
 # The agent-facing default search scope: USER messages plus the thread-meta docs
 # (title + stored summary) — the intentional signals of what a thread was about.
@@ -288,7 +316,7 @@ def thread_search(
     re-rank on/off (else auto-gated: conceptual queries whose top hit isn't
     already a strong literal match, when the ``[embeddings]`` extra is installed).
     """
-    _maybe_catch_up()
+    INGEST.maybe_catch_up()
     # Bound caller-supplied sizing before it reaches the engine: limit drives a
     # candidate pool of max(limit*5, 200) rows, so an unclamped value forces a
     # multi-million-row FTS scan. The web layer clamps to the same [1, 500] for
@@ -478,7 +506,7 @@ def thread_read(
         context_turns: Turns to include before and after around_event, or per end
             for mode='ends'. Default: 1.
     """
-    _maybe_catch_up()
+    INGEST.maybe_catch_up()
     # Log in a finally so a raising read still leaves its usage record —
     # a failed read is usage evidence too — with the latency it burned.
     started = time.monotonic()
@@ -508,7 +536,28 @@ def thread_read(
         )
 
 
-def main() -> None:
+LOOPBACK_HOSTS = ("127.0.0.1", "::1", "localhost")
+
+# The transports FastMCP.run() serves.
+Transport = Literal["stdio", "sse", "streamable-http"]
+
+
+@dataclass(frozen=True)
+class ServePlan:
+    """What one ``archive-mcp`` invocation decided to do.
+
+    ``transport`` is the argument :meth:`FastMCP.run` takes, or ``None`` for the
+    stdio default. ``host``/``port`` are the parsed bind and apply to the HTTP
+    transport only.
+    """
+
+    transport: Optional[Transport] = None
+    warm: bool = False
+    host: str = "127.0.0.1"
+    port: int = 8788
+
+
+def _parser() -> argparse.ArgumentParser:
     # stdio (default) is one server per client — every connecting agent spawns its own
     # process, and this one loads the ~3 GB embedding + cross-encoder stack. --http instead
     # serves streamable-HTTP on one loopback port so every agent shares a single always-on
@@ -522,8 +571,62 @@ def main() -> None:
     )
     parser.add_argument("--host", default="127.0.0.1", help="HTTP bind host (--http only)")
     parser.add_argument("--port", type=int, default=8788, help="HTTP bind port (--http only)")
-    args = parser.parse_args()
+    return parser
 
+
+def plan_serve(argv: Optional[Sequence[str]] = None) -> ServePlan:
+    """Read a command line (the process's when ``argv`` is None) into the plan
+    :func:`main` executes — transport, bind, and whether to warm the models.
+
+    Exits through the parser's usage error when the requested bind is not
+    loopback and ``THREAD_ARCHIVE_MCP_NONLOCAL=1`` is unset — the same guard
+    the web viewer applies, for the same reason: this server is unauthenticated
+    full read of the archive, so exposing it beyond the machine must be a
+    deliberate act, not a typo'd ``--host``.
+    """
+    parser = _parser()
+    args = parser.parse_args(argv)
+
+    # Only the shared HTTP server warms the model stack: it's the one hot copy every client
+    # shares, so its ~3 GB of models pays off. A per-client stdio server stays lean (models
+    # unloaded, load is lazy on first use) — a client that only reads, never searches, or
+    # whose config points at stdio rather than the shared server, shouldn't each hold 3 GB. A
+    # standalone stdio deployment with no shared server opts back in with
+    # THREAD_ARCHIVE_MCP_WARM=1.
+    warm = args.http or os.environ.get("THREAD_ARCHIVE_MCP_WARM", "").strip().lower() in (
+        "1", "true", "yes", "on",
+    )
+    if not args.http:
+        return ServePlan(transport=None, warm=warm, host=args.host, port=args.port)
+    if args.host not in LOOPBACK_HOSTS and os.environ.get(
+        "THREAD_ARCHIVE_MCP_NONLOCAL"
+    ) != "1":
+        parser.error(
+            f"refusing non-loopback bind {args.host!r}: archive-mcp has no auth and "
+            f"serves the full archive. Set THREAD_ARCHIVE_MCP_NONLOCAL=1 to expose "
+            f"it deliberately."
+        )
+    return ServePlan(transport="streamable-http", warm=warm, host=args.host, port=args.port)
+
+
+def apply_settings(plan: ServePlan) -> None:
+    """Point the server at the plan's bind, ready for its HTTP transport.
+
+    Stateless + JSON responses: each request is self-contained (no held-open
+    per-client SSE stream or server-side session to track across many agents),
+    and the read-only tools have nothing to push back. ``run()`` reads these off
+    ``mcp.settings`` when it starts, so they are set before it is called.
+    """
+    mcp.settings.host = plan.host
+    mcp.settings.port = plan.port
+    mcp.settings.stateless_http = True
+    mcp.settings.json_response = True
+
+
+def main(argv: Optional[Sequence[str]] = None) -> None:
+    """Serve, per ``argv`` (the process's command line by default). Blocks in the
+    transport's run loop until the client disconnects or the process is stopped."""
+    plan = plan_serve(argv)
     # Warm the embedding + cross-encoder models on a background daemon thread. The cold load
     # is tens of seconds; when it lands inside the first conceptual search it can exceed the
     # client's MCP request timeout (commonly 60s), which surfaces to the model as a
@@ -531,46 +634,18 @@ def main() -> None:
     # are (usually) resident by the time the first query arrives, and _load()'s lock makes an
     # early query that races the warm wait on one load rather than kick off a second. Daemon
     # so it never holds up interpreter exit; warm_models is fail-soft (a missing extra / load
-    # failure just restores the old lazy behaviour).
-    #
-    # Only the shared HTTP server warms: it's the one hot copy every client shares, so its
-    # ~3 GB model stack pays off. A per-client stdio server stays lean (~model unloaded, load
-    # is lazy on first use) — a client that only reads, never searches, or whose config was
-    # snapshotted to stdio before the HTTP switch shouldn't each hold 3 GB. A standalone stdio
-    # deployment with no shared server can opt back into warming with THREAD_ARCHIVE_MCP_WARM=1.
-    warm = args.http or os.environ.get("THREAD_ARCHIVE_MCP_WARM", "").strip().lower() in (
-        "1", "true", "yes", "on",
-    )
-    if warm:
+    # failure just restores the lazy behaviour).
+    if plan.warm:
         threading.Thread(target=warm_models, name="archive-warm-models", daemon=True).start()
     # Startup catch-up: whatever landed in the local stores since the last
     # ingest (by any process) is searchable by the time the first query
     # arrives — or shortly after; the pass is additive, never blocking.
-    _maybe_catch_up()
-
-    if args.http:
-        # Refuse a non-loopback bind unless THREAD_ARCHIVE_MCP_NONLOCAL=1 — the same
-        # guard the web viewer applies, for the same reason: this server is
-        # unauthenticated full read of the archive, so exposing it beyond the
-        # machine must be a deliberate act, not a typo'd --host.
-        if args.host not in ("127.0.0.1", "::1", "localhost") and (
-            os.environ.get("THREAD_ARCHIVE_MCP_NONLOCAL") != "1"
-        ):
-            parser.error(
-                f"refusing non-loopback bind {args.host!r}: archive-mcp has no auth and "
-                f"serves the full archive. Set THREAD_ARCHIVE_MCP_NONLOCAL=1 to expose "
-                f"it deliberately."
-            )
-        # Stateless + JSON responses: each request is self-contained (no held-open per-client
-        # SSE stream or server-side session to track across many agents), and the read-only
-        # tools have nothing to push back. run() reads these off mcp.settings at start.
-        mcp.settings.host = args.host
-        mcp.settings.port = args.port
-        mcp.settings.stateless_http = True
-        mcp.settings.json_response = True
-        mcp.run("streamable-http")
-    else:
+    INGEST.maybe_catch_up()
+    if plan.transport is None:
         mcp.run()
+        return
+    apply_settings(plan)
+    mcp.run(plan.transport)
 
 
 if __name__ == "__main__":

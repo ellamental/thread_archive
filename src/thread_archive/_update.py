@@ -30,19 +30,24 @@ history:
   the previous commit is checked out and reinstalled — the archive keeps
   running the code that worked.
 
-Delivery is the watcher's job: its poll loop probes :func:`maybe_spawn_self_update`
-hourly, which spawns a detached ``archive self-update`` at most once per
+Release discovery is the watcher's job: its poll loop probes
+:func:`maybe_spawn_self_update` hourly, which spawns a detached
+``archive self-update --check`` at most once per
 ``update.check_interval_hours`` (default 24, stamped in ``health.json``).
-Detached matters — the updater restarts the watcher that spawned it. Config
-rides ``config.json``::
+Checks fetch release tags and report availability without changing the clone.
+Applying an update is an explicit ``archive self-update`` operation unless the
+operator deliberately opts back into unattended apply. Config rides
+``config.json``::
 
-    {"update": {"enabled": true, "min_age_hours": 48,
+    {"update": {"enabled": true, "auto_apply": false, "min_age_hours": 48,
                 "remote": "origin", "check_interval_hours": 24}}
 
-``enabled: false`` turns the whole mechanism off (the manual verb still
-works). A wheel install (no clone) has nothing to update against and is
-reported as unavailable. Trust anchor: HTTPS to the remote the user cloned
-from — the same trust the install itself made; there is no signature layer.
+``enabled: false`` turns scheduled checks off (the manual verb still works).
+``auto_apply: true`` makes a scheduled check apply an eligible release using
+the guarded checkout/reinstall/rollback path below. A wheel install (no clone)
+has nothing to update against and is reported as unavailable. Trust anchor:
+HTTPS to the remote the user cloned from — the same trust the install itself
+made; there is no signature layer.
 """
 
 from __future__ import annotations
@@ -97,6 +102,15 @@ def update_config(home: Optional[str] = None) -> dict:
 
 def update_enabled(home: Optional[str] = None) -> bool:
     return bool(update_config(home).get("enabled", True))
+
+
+def auto_apply_enabled(home: Optional[str] = None) -> bool:
+    """Whether scheduled release checks may mutate the installed clone.
+
+    False by default: finding an update and applying it are separate trust
+    decisions. The explicit ``archive self-update`` command is unaffected.
+    """
+    return bool(update_config(home).get("auto_apply", False))
 
 
 def _running_version() -> str:
@@ -408,8 +422,8 @@ def self_update(
     """One full check-and-maybe-apply, recorded in ``health.json`` (the record
     is both the ``archive status`` line and the once-per-interval stamp the
     watcher's spawner gates on). ``check_only`` plans and reports without
-    touching anything — and without stamping, so a manual ``--check`` never
-    postpones the scheduled real one."""
+    changing the installed checkout. A manual check counts as the latest check,
+    so the watcher does not immediately repeat the same network work."""
     repo = install_repo()
     if repo is None:
         return {"ok": False, "action": "unavailable", "current": "",
@@ -432,13 +446,12 @@ def self_update(
     if plan.skipped:
         result["skipped"] = plan.skipped
 
-    if not check_only:
-        try:
-            from ._ops.health import record_health
+    try:
+        from ._ops.health import record_health
 
-            record_health(HEALTH_KEY, result)
-        except Exception:  # noqa: BLE001 — advisory
-            logger.exception("self-update: could not record outcome in health.json")
+        record_health(HEALTH_KEY, result)
+    except Exception:  # noqa: BLE001 — advisory
+        logger.exception("self-update: could not record outcome in health.json")
     return result
 
 
@@ -456,9 +469,10 @@ def check_due(home: Optional[str] = None) -> bool:
 
 def maybe_spawn_self_update(home: Optional[str] = None) -> bool:
     """The watcher's hourly probe: when enabled, installed from a clone, and
-    due, spawn a **detached** ``archive self-update`` (it restarts the watcher
-    that spawned it, so it must outlive us) with its output appended to
-    ``<home>/logs/self-update.log``. Returns whether a spawn happened.
+    due, spawn a **detached** ``archive self-update --check`` with its output
+    appended to ``<home>/logs/self-update.log``. ``update.auto_apply=true``
+    deliberately removes ``--check`` and restores guarded unattended apply.
+    Returns whether a spawn happened.
     Fail-soft throughout — the poll loop must never die to an update probe."""
     try:
         if not update_enabled(home):
@@ -473,12 +487,18 @@ def maybe_spawn_self_update(home: Optional[str] = None) -> bool:
         log_dir = resolve_paths(home).home / "logs"
         log_dir.mkdir(parents=True, exist_ok=True)
         cmd = [str(_entry_path("archive")), "self-update"]
+        auto_apply = auto_apply_enabled(home)
+        if not auto_apply:
+            cmd.append("--check")
         if home:
             cmd += ["--home", str(home)]
         with open(log_dir / "self-update.log", "a", encoding="utf-8") as fh:
             subprocess.Popen(cmd, stdout=fh, stderr=subprocess.STDOUT,
                              start_new_session=True)
-        logger.info("self-update: spawned scheduled check")
+        logger.info(
+            "self-update: spawned scheduled %s",
+            "apply" if auto_apply else "check",
+        )
         return True
     except Exception:  # noqa: BLE001 — advisory; the caller is the ingest loop
         logger.exception("self-update: scheduled spawn failed")

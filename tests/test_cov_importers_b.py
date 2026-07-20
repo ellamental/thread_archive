@@ -13,6 +13,7 @@ record shapes. Coverage tag: impb.
 from __future__ import annotations
 
 import json
+import shutil
 import sqlite3
 import zipfile
 from datetime import datetime, timezone
@@ -39,6 +40,18 @@ from thread_archive._store import (
     get_session,
     init_db,
 )
+from thread_archive._thread_import.parsers.claude_code import ClaudeCodeParser
+from thread_archive._truth.jsonl_log import log_dir, reset_handles
+
+
+def _wreck_truth_threads_dir() -> None:
+    """Put a plain file where the truth's ``threads/`` directory belongs, so no
+    thread file can be opened for append and every write fails at its commit —
+    the shape a botched restore leaves behind."""
+    reset_handles()
+    threads_dir = log_dir() / "threads"
+    shutil.rmtree(threads_dir, ignore_errors=True)
+    threads_dir.write_text("not a directory\n", encoding="utf-8")
 
 # ══════════════════════════════════════════════════════════════════════════════
 # _titles.py — pure title/description derivation
@@ -170,14 +183,17 @@ def test_extract_title_default_when_no_messages() -> None:
     assert titles.extract_title([]) == "Claude Code Session"
 
 
-def test_extract_title_parser_exception_falls_back(monkeypatch) -> None:
-    class _Boom:
-        def parse_export(self, *a, **k):
-            raise RuntimeError("parser blew up")
-
-    monkeypatch.setattr(titles, "ClaudeCodeParser", _Boom)
+def test_extract_title_parser_exception_falls_back() -> None:
+    """A line whose ``message`` is a bare string, not the envelope the format
+    defines: the parser has no way to read it and raises, and the title falls back
+    to the default rather than taking the import down with it."""
+    lines = [{"type": "user", "uuid": "u1", "message": "not the message envelope"}]
+    with pytest.raises(AttributeError):
+        ClaudeCodeParser().parse_export(
+            {"provider": "claude-code",
+             "sessions": [{"session_id": "t", "project": "t", "lines": lines}]})
     # No session title present → parser path → raises → default.
-    assert titles.extract_title([{"type": "user"}]) == "Claude Code Session"
+    assert titles.extract_title(lines) == "Claude Code Session"
 
 
 def test_user_content_texts_str_and_blocks() -> None:
@@ -507,14 +523,14 @@ def test_import_one_skips_when_no_source_id(archive_home) -> None:
     assert out.skipped == 1
 
 
-def test_import_one_new_thread_with_zero_events_discarded(archive_home, monkeypatch) -> None:
-    """A brand-new conversation whose assemble yields zero events must not leave a
-    ghost thread — the row + staged truth record are discarded."""
+def test_import_one_new_thread_with_zero_events_discarded(archive_home) -> None:
+    """A brand-new conversation whose only turn carries nothing at all assembles to
+    zero events, and must not leave a ghost thread — the row + staged truth record
+    are discarded."""
     init_db()
-    monkeypatch.setattr(ex, "assemble_events", lambda *a, **k: (0, None))
     res = ex.ExportImportResult()
     out = ex._import_one(
-        res, parser_messages=lambda: [{"role": "user", "content_text": "x"}],
+        res, parser_messages=lambda: [{"role": "user", "content_text": ""}],
         source="claude", source_id="ghost-1", title="Ghost", source_metadata={},
         builder=ex.DefaultEventBuilder(), force=False,
     )
@@ -523,22 +539,54 @@ def test_import_one_new_thread_with_zero_events_discarded(archive_home, monkeypa
         assert s.execute(select(Thread).where(Thread.source_id == "ghost-1")).first() is None
 
 
-def test_import_one_stub_also_fails_counts_skipped(archive_home, monkeypatch) -> None:
-    """If the real assemble raises AND the stub's assemble also raises, the
-    conversation is counted skipped (never crashes the export)."""
+def test_import_one_stub_also_fails_counts_skipped(archive_home) -> None:
+    """If the real import raises AND the stub's own write also raises, the
+    conversation is counted skipped (never crashes the export).
+
+    Both faults are real and independent: a conversation whose ``content_text`` is
+    an object rather than text, in an archive whose truth ``threads/`` directory a
+    file is standing in the way of.
+    """
     init_db()
-
-    def _always_boom(*a, **k):
-        raise RuntimeError("everything is on fire")
-
-    monkeypatch.setattr(ex, "assemble_events", _always_boom)
+    _wreck_truth_threads_dir()
     res = ex.ExportImportResult()
     out = ex._import_one(
-        res, parser_messages=lambda: [{"role": "user", "content_text": "x"}],
+        res, parser_messages=lambda: [{"role": "user", "content_text": {"not": "text"}}],
         source="claude", source_id="doomed-1", title="Doomed", source_metadata={},
         builder=ex.DefaultEventBuilder(), force=False, raw={"k": "v"},
     )
     assert out.skipped == 1 and out.errored == 0
+    assert out.imported == 0 and out.events_created == 0, "nothing could be written"
+
+
+def test_import_one_failed_commit_is_never_counted_imported(archive_home) -> None:
+    """A conversation whose *commit* fails is not reported as imported.
+
+    The data is good and assembly succeeds — only the write fails, on a truth
+    ``threads/`` directory a file is standing in the way of. That is the one
+    ordering the counters can get wrong: everything needed to increment
+    ``imported`` has happened, and only the durable write is left. These totals
+    are the operator's report on what was preserved, so a conversation that
+    never landed must not appear in them.
+    """
+    init_db()
+    _wreck_truth_threads_dir()
+    res = ex.ExportImportResult()
+    out = ex._import_one(
+        res, parser_messages=lambda: [{"role": "user", "content_text": "real text"}],
+        source="claude", source_id="uncommitted-1", title="Uncommitted",
+        source_metadata={}, builder=ex.DefaultEventBuilder(), force=False,
+        raw={"k": "v"},
+    )
+    assert out.imported == 0, "a conversation whose commit failed was reported imported"
+    assert out.events_created == 0
+    # It is accounted for somewhere — errored if the stub landed, skipped if the
+    # same broken truth dir took the stub down too — but never as preserved.
+    assert out.errored + out.skipped == 1
+    with get_session() as s:
+        assert s.execute(
+            select(Thread).where(Thread.source_id == "uncommitted-1")
+        ).first() is None
 
 
 def test_import_export_dispatch(archive_home) -> None:
@@ -672,23 +720,14 @@ def test_import_claude_ai_force_reuses_thread(archive_home) -> None:
     assert unchanged.imported == 0 and unchanged.skipped == 1 and unchanged.errored == 0
 
 
-def test_import_one_failed_conversation_surfaces_stub(archive_home, monkeypatch) -> None:
-    """Real assemble fails but the stub's assemble succeeds: the conversation is
-    counted `errored` and a stub thread preserving the error is created."""
+def test_import_one_failed_conversation_surfaces_stub(archive_home) -> None:
+    """The real conversation fails but the stub's write succeeds: the conversation
+    is counted `errored` and a stub thread preserving the error is created. The
+    failure is a turn whose ``content_text`` is an object rather than text."""
     init_db()
-    real_assemble = ex.assemble_events
-    calls = {"n": 0}
-
-    def _fail_first(session, thread_id, messages, builder, **kw):
-        calls["n"] += 1
-        if calls["n"] == 1:
-            raise RuntimeError("assemble exploded")
-        return real_assemble(session, thread_id, messages, builder, **kw)
-
-    monkeypatch.setattr(ex, "assemble_events", _fail_first)
     res = ex.ExportImportResult()
     out = ex._import_one(
-        res, parser_messages=lambda: [{"role": "user", "content_text": "hi",
+        res, parser_messages=lambda: [{"role": "user", "content_text": {"not": "text"},
                                        "content_blocks": [], "provider_message_id": "r1",
                                        "provider_data": {"provider": "claude"}}],
         source="claude", source_id="stub-1", title="Boom", source_metadata={"provider": "claude"},
@@ -750,15 +789,15 @@ def test_opencode_db_missing_tables_returns_empty(archive_home) -> None:
     assert summary.processed == 0 and summary.imported == 0
 
 
-def test_opencode_db_session_failure_counted(archive_home, monkeypatch) -> None:
-    """A session whose import raises is counted as failed and carried out with an
+def test_opencode_db_session_failure_counted(archive_home) -> None:
+    """A session whose import raises — here a part row holding a JSON array where
+    the format defines an object — is counted as failed and carried out with an
     error line (not silently swallowed)."""
     init_db()
     db = archive_home / "opencode.db"
     _make_oc_db(db, messages=[
-        ("u1", {"role": "user", "time": {"created": 1700000000000}}, [("p0", {"type": "text", "text": "hi"})]),
+        ("u1", {"role": "user", "time": {"created": 1700000000000}}, [("p0", "[1, 2, 3]")]),
     ])
-    monkeypatch.setattr(oc, "import_opencode_from_payload", lambda **k: (_ for _ in ()).throw(RuntimeError("boom")))
     summary = import_opencode_db(db)
     assert summary.failed == 1 and summary.errors
 
@@ -1181,7 +1220,10 @@ def test_cs_db_adopts_unwatermarked_thread_on_reindex(archive_home, tmp_path) ->
         assert len(s.execute(select(Event.id)).scalars().all()) == n1
 
 
-def test_cs_db_frame_failure_counted(archive_home, tmp_path, monkeypatch) -> None:
+def test_cs_db_frame_failure_counted(archive_home, tmp_path) -> None:
+    """A frame whose import raises — here because a file stands where the truth's
+    ``threads/`` directory belongs, so nothing can be written — is counted as
+    failed and carried out with an error line, not swallowed."""
     init_db()
     db = tmp_path / "cs_fail.db"
     conn = _make_cs_db(db)
@@ -1190,8 +1232,7 @@ def test_cs_db_frame_failure_counted(archive_home, tmp_path, monkeypatch) -> Non
     _add_cs_messages(conn, "boom1", [_user_msg("q", "u1"), _assistant_msg("a", "a1")])
     conn.commit()
     conn.close()
-    monkeypatch.setattr(cs, "import_claude_science_frame",
-                        lambda *a, **k: (_ for _ in ()).throw(RuntimeError("frame boom")))
+    _wreck_truth_threads_dir()
     summary = import_claude_science_db(db, "org")
     assert summary.failed == 1 and summary.errors
 

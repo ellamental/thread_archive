@@ -30,10 +30,11 @@ Apply:               .venv/bin/python src/thread_archive/_scripts/backfill_subag
 
 from __future__ import annotations
 
+import argparse
 import json
 import sys
 from pathlib import Path
-from typing import Dict, Iterator
+from typing import Dict, Iterator, Optional
 
 from sqlalchemy import select
 
@@ -84,8 +85,11 @@ def agent_types_on_disk() -> Dict[str, str]:
     return found
 
 
-def main() -> int:
-    apply = "--apply" in sys.argv
+def main(argv: Optional[list[str]] = None) -> int:
+    ap = argparse.ArgumentParser(description=__doc__)
+    ap.add_argument("--apply", action="store_true", help="write (default: preview)")
+    args = ap.parse_args(argv)
+    apply = args.apply
 
     on_disk = agent_types_on_disk()
     print(f"{len(on_disk)} agent ids name their type in a transcript still on disk")

@@ -163,9 +163,13 @@ def test_corrupt_composer_preserved_as_stub_thread(archive_home) -> None:
     assert "not valid json at all" in blob, "raw payload of the corrupt composer was lost"
 
 
-def test_composer_import_blowup_preserved_as_stub(archive_home, monkeypatch) -> None:
+def test_composer_import_blowup_preserved_as_stub(archive_home) -> None:
     """If a composer blows up mid-import, the conversation must not be skipped
-    with only a log line: it must surface a stub thread carrying id + raw + error."""
+    with only a log line: it must surface a stub thread carrying id + raw + error.
+
+    The blow-up here is a bubble whose ``text`` is an object rather than a string —
+    a record the reader has no way to interpret, and the shape a format change
+    leaves behind."""
     init_db()
     db = archive_home / "state.vscdb"
     conn = sqlite3.connect(db)
@@ -177,23 +181,18 @@ def test_composer_import_blowup_preserved_as_stub(archive_home, monkeypatch) -> 
     }
     conn.executemany("INSERT INTO cursorDiskKV VALUES (?, ?)", [
         (f"composerData:{cid}", json.dumps(composer)),
-        (f"bubbleId:{cid}:b1", json.dumps({"type": 1, "text": "hi", "createdAt": 1700000000000})),
+        (f"bubbleId:{cid}:b1", json.dumps(
+            {"type": 1, "text": {"unexpected": "object"}, "createdAt": 1700000000000})),
     ])
     conn.commit()
     conn.close()
-
-    import thread_archive._importers.cursor as cursor_mod
-
-    def _boom(*a, **k):
-        raise RuntimeError("simulated importer failure")
-
-    monkeypatch.setattr(cursor_mod, "import_cursor_from_payload", _boom)
 
     import_cursor_db(db)  # must not raise; must preserve a stub
     threads = _threads()
     assert f"{cid}:import-error" in threads, "blown-up composer was skipped with no stub"
     blob = json.dumps(_events())
-    assert "simulated importer failure" in blob, "the error was not preserved on the stub"
+    assert "has no attribute 'strip'" in blob, "the error was not preserved on the stub"
+    assert "Boom Chat" in blob, "the raw composer was not preserved on the stub"
 
 
 def test_corrupt_referenced_bubble_preserved_not_dropped(archive_home) -> None:

@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 from datetime import datetime, timezone
 
+import pytest
 from sqlalchemy import delete, select
 
 from thread_archive._store import Event, Thread, _base, get_engine, get_session, init_db
@@ -287,22 +288,22 @@ def test_reindex_tolerates_torn_truth_line(archive_home) -> None:
     assert texts == ["hi", "yo"], "the parseable events must all be recovered"
 
 
-def test_failed_reindex_leaves_old_index_intact(archive_home, monkeypatch) -> None:
+def test_failed_reindex_leaves_old_index_intact(archive_home) -> None:
     """Build-and-swap atomicity: a reindex that dies at any point must leave the old
     index answering exactly as before, with no build leftovers on disk."""
     init_db()
     _author_thread_with_events("atomic", ["keep me"])
 
-    def _boom(*args, **kwargs):
-        raise RuntimeError("killed mid-build")
-
-    monkeypatch.setattr(jsonl_log.rebuild, "load_thread_files", _boom)
+    # A real mid-build death: the truth file the loader is about to read cannot
+    # be opened, so the build raises partway through instead of finishing.
+    truth_file = next((archive_home / "truth" / "threads").rglob("*.jsonl"))
+    jsonl_log.reset_handles()
+    truth_file.chmod(0o000)
     try:
-        jsonl_log.reindex()
-    except RuntimeError as e:
-        assert "killed mid-build" in str(e)
-    else:  # pragma: no cover
-        raise AssertionError("reindex should have propagated the build failure")
+        with pytest.raises(OSError):
+            jsonl_log.reindex()
+    finally:
+        truth_file.chmod(0o600)
 
     # The old index still answers, untouched.
     with get_session() as s:
@@ -362,39 +363,40 @@ def test_rebalance_crash_then_twin_merges_without_loss(archive_home, monkeypatch
     """A sweep killed mid-move leaves the manifest already at the new depth; a flat
     twin created by a racing writer is MERGED home by the next sweep — the failure
     that used to clobber a thread's whole history with its tail."""
-    import os as _os
-
     monkeypatch.setenv("THREAD_ARCHIVE_SHARDFLAT_MAX", "4")
     d = jsonl_log.log_dir()
     _seed_flat_threads(d, 6)
     threads_dir = d / jsonl_log.THREADS_SUBDIR
 
-    # Kill the sweep after 2 thread-file moves (the manifest's own os.replace and
-    # any non-threads paths pass through untouched).
-    real_replace = _os.replace
-    moved = {"n": 0}
-
-    def dying_replace(src, dst):
-        if f"{jsonl_log.THREADS_SUBDIR}/" in str(dst).replace("\\", "/"):
-            if moved["n"] >= 2:
-                raise SystemExit("SIGTERM mid-sweep")
-            moved["n"] += 1
-        return real_replace(src, dst)
-
-    monkeypatch.setattr("os.replace", dying_replace)
+    # Stop the sweep partway on a real fault: the shard bucket one of the moves
+    # lands in refuses writes, so os.replace fails there exactly the way a kill
+    # would leave the sweep — some files moved, the rest still flat. The bucket
+    # picked is the first that no earlier move also targets, so every move
+    # before it succeeds and the stopping point is exact.
+    plan = [(p, jsonl_log._thread_file(d, p.stem, 1))
+            for p in threads_dir.rglob("*.jsonl")]
+    earlier: list = []
+    for stop, (_, dest) in enumerate(plan):
+        if stop and dest.parent not in earlier:
+            break
+        earlier.append(dest.parent)
+    else:  # pragma: no cover — six threads never all share one bucket
+        raise AssertionError("every move targets the same bucket")
+    blocked = plan[stop][1].parent
+    blocked.mkdir(parents=True)
+    blocked.chmod(0o500)
     try:
-        jsonl_log._maybe_rebalance(d, 0)
-    except SystemExit:
-        pass
-    else:  # pragma: no cover
-        raise AssertionError("the injected kill should have propagated")
-    monkeypatch.setattr("os.replace", real_replace)
+        with pytest.raises(OSError):
+            jsonl_log._maybe_rebalance(d, 0)
+    finally:
+        blocked.chmod(0o700)
 
     # Manifest-first: the depth was durable BEFORE the moves, so post-crash writers
     # compute sharded paths and cannot start new flat files.
     assert jsonl_log._shard_depth(d) == 1
     sharded = list(threads_dir.rglob("*/*.jsonl"))
-    assert len(sharded) == 2, "exactly the pre-kill moves happened"
+    assert len(sharded) == stop, "exactly the pre-fault moves happened"
+    assert 0 < stop < len(plan), "the sweep stopped partway, not before or after"
 
     # A commit that raced the manifest bump left a flat twin of a MOVED thread.
     victim = int(sharded[0].stem)

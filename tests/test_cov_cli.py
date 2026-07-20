@@ -6,28 +6,37 @@ seeded archive. This file covers the branches a real run cannot reach, two ways:
 * the ``report_*`` functions — each verb's operator report is a pure function of
   the result dict and its exit code, so every warning/sample/failure line is
   driven directly with the shape that produces it, no ``_api`` involved;
-* the verbs whose boundary is outside the archive — launchd (the operator's live
-  session), the watcher's long-running loop, the self-update git clone — which
-  are stubbed at the module attribute the handler resolves.
+* the verbs whose boundary is the operating system — the ``daemon`` LaunchAgent
+  lifecycle and the watcher's long-running loop — which run for real against a
+  redirected ``$HOME``: ``$PATH`` is pinned to a directory holding only the
+  ``launchctl`` stand-in the test wrote, and the loop is stopped by a real
+  ``SIGINT`` once it is observably running.
 """
 
 from __future__ import annotations
 
 import argparse
-import contextlib
 import json
 import os
+import plistlib
+import signal
+import socket
 import sqlite3
 import subprocess
 import sys
+import threading
+import time
+import urllib.error
+import urllib.request
 import zipfile
 from datetime import datetime, timedelta, timezone
-from types import SimpleNamespace
+from pathlib import Path
+from typing import Callable, Optional
 
 import pytest
 
-from thread_archive import _api as api
-from thread_archive import _launchd, _truth, _update, _watcher, _web, cli
+from thread_archive import _launchd, _update, cli
+from thread_archive._launchd import BACKUP_LABEL, MCP_LABEL, WATCHER_LABEL
 from thread_archive.cli import main
 
 from .helpers import (
@@ -42,10 +51,127 @@ from .helpers import (
 # coverage tag: cli
 
 
-@contextlib.contextmanager
-def _fake_lock():
-    """Stand-in for ``shared_ingest_lock`` — a no-op context manager."""
-    yield
+# ── stand-in executables ─────────────────────────────────────────────────────
+
+
+@pytest.fixture
+def stub_bin(tmp_path, monkeypatch) -> Path:
+    """``$PATH``, pinned to a directory that starts out empty.
+
+    A ``launchctl`` the ``daemon`` verbs spawn by name then resolves to the
+    stand-in the test wrote — or to nothing at all — so the real ``_launchd``
+    bodies run over real argv, real exit codes and real stdout parsing while the
+    operator's live agents stay out of reach.
+    """
+    b = tmp_path / "stub-bin"
+    b.mkdir()
+    monkeypatch.setenv("PATH", str(b))
+    return b
+
+
+def _launchctl_stub(
+    stub_bin: Path, results: Optional[dict[str, tuple[int, str, str]]] = None
+) -> Path:
+    """A ``launchctl`` stand-in on PATH, scripted per subcommand
+    (``{subcommand: (returncode, stdout, stderr)}``; anything unlisted exits 0).
+
+    Returns the log it appends one line of arguments to per invocation.
+    """
+    log = stub_bin.parent / "launchctl.log"
+    arms = []
+    for pattern, (rc, out, err) in (results or {}).items():
+        body = []
+        if out:
+            body.append(f'printf "%s\\n" "{out}"')
+        if err:
+            body.append(f'printf "%s\\n" "{err}" >&2')
+        body.append(f"exit {rc}")
+        arms.append(f'  "{pattern}") {"; ".join(body)} ;;')
+    script = "\n".join([
+        "#!/bin/sh",
+        f'echo "$*" >> "{log}"',
+        'case "$1" in',
+        *arms,
+        "  *) exit 0 ;;",
+        "esac",
+    ]) + "\n"
+    exe = stub_bin / "launchctl"
+    exe.write_text(script, encoding="utf-8")
+    exe.chmod(0o755)
+    return log
+
+
+def _calls(log: Path) -> list[list[str]]:
+    """Every invocation the stand-in recorded, as its argument list."""
+    if not log.exists():
+        return []
+    return [ln.split() for ln in log.read_text(encoding="utf-8").splitlines() if ln]
+
+
+def _subcommands(log: Path) -> list[str]:
+    return [c[0] for c in _calls(log)]
+
+
+def _darwin(monkeypatch) -> None:
+    """The one seam this file cannot inject through: ``_launchd``'s macOS gate is
+    a module-level ``sys.platform`` read, and the LaunchAgent lifecycle has to be
+    provable on either kind of CI host."""
+    monkeypatch.setattr(_launchd.sys, "platform", "darwin")
+
+
+def _written_plist(label: str) -> dict:
+    return plistlib.loads(_launchd._plist_path(label).read_bytes())
+
+
+# ── real stores + a real interrupt, for the watch loop ───────────────────────
+
+
+def _seed_claude_code_store(home: Path, project: str, name: str) -> Path:
+    """A real claude-code session under ``$HOME/.claude/projects`` — the store the
+    default watcher set discovers on its own, with no watcher list injected."""
+    d = home / ".claude" / "projects" / project
+    d.mkdir(parents=True, exist_ok=True)
+    f = d / f"{name}.jsonl"
+    write_jsonl(f, [cc_user(name), cc_assistant(name)])
+    return f
+
+
+def _loop_is_running(archive_home) -> Callable[[], bool]:
+    """True once the watch loop has completed a pass: ``watch_pass_last`` only
+    reaches ``health.json`` from inside ``Watcher._run_loop``, so it is proof the
+    process is in the blocking loop and an interrupt will land there."""
+
+    def running() -> bool:
+        try:
+            return "watch_pass_last" in json.loads(
+                (archive_home / "health.json").read_text(encoding="utf-8")
+            )
+        except (OSError, ValueError):
+            return False
+
+    return running
+
+
+def _interrupt_once(ready: Callable[[], bool], *, timeout: float = 30.0) -> threading.Thread:
+    """Send this process a real ``SIGINT`` — the operator's ^C — once ``ready()``
+    holds. Python delivers it to the main thread, so the CLI's own
+    ``KeyboardInterrupt`` handler runs the real shutdown."""
+
+    def wait_then_interrupt() -> None:
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline and not ready():
+            time.sleep(0.02)
+        os.kill(os.getpid(), signal.SIGINT)
+
+    t = threading.Thread(target=wait_then_interrupt, name="watch-interrupt", daemon=True)
+    t.start()
+    return t
+
+
+def _free_port() -> int:
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0))
+        return int(s.getsockname()[1])
 
 
 # ── _parse_hhmm edge cases ────────────────────────────────────────────────────
@@ -116,12 +242,24 @@ def test_self_throttle_really_renices_the_process() -> None:
 
 
 def test_self_throttle_non_darwin(monkeypatch) -> None:
-    """The non-darwin branch skips the io-policy syscall."""
+    """Off macOS the CPU renice still happens and the io-policy syscall is skipped.
+
+    The opt-out has to come off first or the body never runs (the suite sets it —
+    see conftest). ``nice`` is the one thing here that cannot run for real: it is
+    one-way, so a real call would deprioritize the test runner and every later
+    test with it. ``sys.platform`` is the other: both sides of the gate have to be
+    provable from whichever host runs the suite.
+    """
     import os
 
-    monkeypatch.setattr(os, "nice", lambda n: None)
+    monkeypatch.delenv("THREAD_ARCHIVE_NO_THROTTLE")
+    niced = []
+    monkeypatch.setattr(os, "nice", niced.append)
     monkeypatch.setattr(cli.sys, "platform", "linux")
-    cli._self_throttle()  # must not raise; just falls through
+
+    cli._self_throttle()
+
+    assert niced == [10]  # the renice ran; the darwin-only syscall did not
 
 
 # ── _age ──────────────────────────────────────────────────────────────────────
@@ -314,214 +452,237 @@ def test_import_export_imports_a_real_export(archive_home, tmp_path, capsys) -> 
 # ── watch ─────────────────────────────────────────────────────────────────────
 
 
-def _stub_watch_common(monkeypatch):
-    monkeypatch.setattr(api, "open_archive", lambda home: None)
-    monkeypatch.setattr(_truth, "shared_ingest_lock", _fake_lock)
+def test_watch_once_imports_and_maintains(archive_home, tmp_path, monkeypatch, capsys) -> None:
+    """``watch --once`` over a real machine: the default source set finds the
+    seeded claude-code store on its own, imports it, reports the pass, and — because
+    events landed — runs the one-shot upkeep. A second project holding an
+    unreadable "session" rides out as a poll error."""
+    machine = tmp_path / "machine"
+    _seed_claude_code_store(machine, "myproj", "sess")
+    # A directory where a transcript should be: the importer really raises OSError
+    # on it, so the source's per-item error path runs for real.
+    (machine / ".claude" / "projects" / "broken" / "notes.jsonl").mkdir(parents=True)
+    monkeypatch.setenv("HOME", str(machine))
 
-
-def test_watch_once_imports_and_maintains(monkeypatch, capsys) -> None:
-    _stub_watch_common(monkeypatch)
-    maintained = {}
-
-    class FakeWatcher:
-        def __init__(self, **kw):
-            FakeWatcher.kw = kw
-
-        def poll_once(self):
-            return SimpleNamespace(
-                sources_checked=2, items_imported=1, events_created=3,
-                errors=["cursor: poll error: boom"],
-            )
-
-        def maintain(self):
-            maintained["yes"] = True
-            return {}
-
-    monkeypatch.setattr(_watcher, "Watcher", FakeWatcher)
-    rc = main(["watch", "--once", "--home", "/h"])
+    rc = main(["watch", "--once", "--home", str(archive_home)])
     assert rc == 0
-    assert maintained == {"yes": True}  # events_created > 0 triggered upkeep
-    # arg mapping through to the Watcher ctor
-    assert FakeWatcher.kw["interval"] == 5.0 and FakeWatcher.kw["embed"] is True
+
+    events = event_count()
+    assert events > 0  # the session really imported
     out = capsys.readouterr().out
-    assert "watch: checked 2 sources, imported 1 items (3 events)" in out
-    assert "! cursor: poll error: boom" in out
+    assert f"watch: checked 2 sources, imported 1 items ({events} events)" in out
+    assert "  ! claude-code import error for broken:notes:" in out
+    # events_created > 0 → the one-shot ran its upkeep pass, which stamps the
+    # truth manifest watermark.
+    assert (archive_home / "truth" / "manifest.json").exists()
 
 
-def test_watch_once_no_events_skips_maintain(monkeypatch, capsys) -> None:
-    _stub_watch_common(monkeypatch)
-    maintained = {}
+def test_watch_once_no_events_skips_maintain(archive_home, tmp_path, monkeypatch, capsys) -> None:
+    """A machine with no AI-tool stores: the pass is a clean no-op and the upkeep
+    pass is skipped, so no manifest watermark is written."""
+    monkeypatch.setenv("HOME", str(tmp_path / "empty-machine"))
 
-    class FakeWatcher:
-        def __init__(self, **kw):
-            pass
-
-        def poll_once(self):
-            return SimpleNamespace(
-                sources_checked=1, items_imported=0, events_created=0, errors=[]
-            )
-
-        def maintain(self):  # pragma: no cover - must not be called
-            maintained["yes"] = True
-
-    monkeypatch.setattr(_watcher, "Watcher", FakeWatcher)
-    rc = main(["watch", "--once", "--no-embed"])
+    rc = main(["watch", "--once", "--no-embed", "--home", str(archive_home)])
     assert rc == 0
-    assert maintained == {}
-    assert "imported 0 items (0 events)" in capsys.readouterr().out
+    assert "watch: checked 0 sources, imported 0 items (0 events)" in capsys.readouterr().out
+    assert not (archive_home / "truth" / "manifest.json").exists()
 
 
-def test_watch_loop_no_web_returns(monkeypatch) -> None:
-    _stub_watch_common(monkeypatch)
+def test_watch_loop_runs_until_interrupted(archive_home, tmp_path, monkeypatch, capsys) -> None:
+    """The bare loop: it blocks in ``Watcher.run`` until a real ^C, then reports the
+    stop. Nothing was cohosted, so the shutdown has no server to close."""
+    monkeypatch.setenv("HOME", str(tmp_path / "machine"))
+    _seed_claude_code_store(tmp_path / "machine", "myproj", "sess")
 
-    class FakeWatcher:
-        maintenance_interval = 300.0
+    interrupt = _interrupt_once(_loop_is_running(archive_home))
+    rc = main(["watch", "--interval", "0.05", "--home", str(archive_home)])
+    interrupt.join(5)
 
-        def __init__(self, **kw):
-            pass
-
-        def available(self):
-            return [SimpleNamespace(source_name="claude-code")]
-
-        def run(self):
-            return None  # returns immediately instead of blocking
-
-    monkeypatch.setattr(_watcher, "Watcher", FakeWatcher)
-    assert main(["watch"]) == 0
-
-
-def test_watch_web_cohost_keyboard_interrupt(monkeypatch, capsys) -> None:
-    _stub_watch_common(monkeypatch)
-    closed = {}
-
-    class FakeHttpd:
-        def server_close(self):
-            closed["yes"] = True
-
-    served = {}
-
-    def fake_serve(*, host, port):
-        served.update(host=host, port=port)
-        return FakeHttpd()
-
-    monkeypatch.setattr(_web, "serve_in_thread", fake_serve)
-
-    class FakeWatcher:
-        maintenance_interval = 300.0
-
-        def __init__(self, **kw):
-            pass
-
-        def available(self):
-            return [SimpleNamespace(source_name="cc")]
-
-        def run(self):
-            raise KeyboardInterrupt
-
-    monkeypatch.setattr(_watcher, "Watcher", FakeWatcher)
-    rc = main(["watch", "--web", "--web-host", "0.0.0.0", "--web-port", "9999"])
     assert rc == 0
-    assert served == {"host": "0.0.0.0", "port": 9999}
-    assert closed == {"yes": True}  # finally-clause closed the cohosted server
     assert "stopped." in capsys.readouterr().out
+    assert event_count() > 0  # the loop really polled and imported
+
+
+@pytest.mark.integration
+def test_watch_web_cohosts_the_viewer_and_closes_it_on_interrupt(
+    archive_home, tmp_path, monkeypatch, capsys
+) -> None:
+    """``--web`` cohosts the read viewer in the watcher's own process: it answers on
+    the requested bind while the loop runs, and the shutdown's finally-clause closes
+    it — the port is free again once the verb returns."""
+    monkeypatch.setenv("HOME", str(tmp_path / "machine"))
+    port = _free_port()
+    served: dict[str, object] = {}
+    running = _loop_is_running(archive_home)
+
+    def viewer_answered() -> bool:
+        if not running():
+            return False
+        with urllib.request.urlopen(
+            f"http://127.0.0.1:{port}/api/health", timeout=10
+        ) as resp:
+            served["status"] = resp.status
+            served["home"] = json.loads(resp.read())["home"]
+        return True
+
+    interrupt = _interrupt_once(viewer_answered)
+    rc = main(["watch", "--web", "--web-host", "127.0.0.1", "--web-port", str(port),
+               "--interval", "0.05", "--home", str(archive_home)])
+    interrupt.join(5)
+
+    assert rc == 0
+    assert "stopped." in capsys.readouterr().out
+    # The cohosted viewer served this archive on the requested bind…
+    assert served == {"status": 200, "home": str(archive_home)}
+    # …and the finally-clause really closed it: the bind refuses connections now.
+    with socket.socket() as s:
+        s.settimeout(5)
+        assert s.connect_ex(("127.0.0.1", port)) != 0
+
+
+def test_watch_web_refuses_a_non_loopback_bind(archive_home, tmp_path, monkeypatch) -> None:
+    """The cohosted viewer is unauthenticated full read, so a typo'd ``--web-host``
+    must fail loudly before the loop starts rather than exposing the archive."""
+    monkeypatch.setenv("HOME", str(tmp_path / "machine"))
+    monkeypatch.delenv("THREAD_ARCHIVE_WEB_NONLOCAL", raising=False)
+
+    # The refusal lands before any bind, so the port never has to be free.
+    with pytest.raises(ValueError, match="refusing non-loopback bind"):
+        main(["watch", "--web", "--web-host", "0.0.0.0", "--web-port", "8787",
+              "--home", str(archive_home)])
 
 
 # ── daemon: mcp / backup / watcher lifecycle ─────────────────────────────────
+# The verbs run for real against a redirected $HOME (plists land in tmp_path) and
+# a `launchctl` stand-in that is the only executable on $PATH, so the assertions
+# are the agent that would actually be installed and the argv launchctl actually
+# received.
 
 
-def test_daemon_mcp_lifecycle(monkeypatch, capsys) -> None:
-    seen = {}
-    monkeypatch.setattr(
-        _launchd, "install_mcp",
-        lambda home, *, host, port: seen.update(home=home, host=host, port=port)
-        or "/plist/mcp.plist",
-    )
-    rc = main(["daemon", "install", "--mcp", "--http-host", "1.2.3.4",
-               "--http-port", "9", "--home", "/h"])
-    assert rc == 0
-    assert seen == {"home": "/h", "host": "1.2.3.4", "port": 9}
+def test_daemon_mcp_lifecycle(tmp_path, monkeypatch, stub_bin, capsys) -> None:
+    _darwin(monkeypatch)
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    status_out = f"{MCP_LABEL} = {{\\nstate = running\\npid = 4242\\n}}"
+    log = _launchctl_stub(stub_bin, {
+        # bootout nonzero = nothing was loaded → install skips the settle sleep.
+        "bootout": (1, "", ""), "bootstrap": (0, "", ""),
+        "kickstart": (0, "", ""), "print": (0, status_out, ""),
+    })
+    arc = str(tmp_path / "arc")
+
+    assert main(["daemon", "install", "--mcp", "--http-host", "1.2.3.4",
+                 "--http-port", "9", "--home", arc]) == 0
     out = capsys.readouterr().out
     assert "shared MCP server: http://1.2.3.4:9/mcp" in out
+    plist = _written_plist(MCP_LABEL)
+    assert plist["ProgramArguments"][1:] == ["--http", "--host", "1.2.3.4", "--port", "9"]
+    assert plist["EnvironmentVariables"]["THREAD_ARCHIVE_HOME"] == arc
+    assert _calls(log) == [
+        ["bootout", f"gui/{_launchd._uid()}/{MCP_LABEL}"],
+        ["bootstrap", f"gui/{_launchd._uid()}", str(_launchd._plist_path(MCP_LABEL))],
+    ]
 
-    monkeypatch.setattr(_launchd, "uninstall_mcp", lambda: None)
     assert main(["daemon", "uninstall", "--mcp"]) == 0
     assert "uninstalled" in capsys.readouterr().out
+    assert not _launchd._plist_path(MCP_LABEL).exists()
 
-    monkeypatch.setattr(_launchd, "restart_mcp", lambda: None)
     assert main(["daemon", "restart", "--mcp"]) == 0
     assert "restarted" in capsys.readouterr().out
 
-    monkeypatch.setattr(_launchd, "mcp_status", lambda: "mcp: loaded")
     assert main(["daemon", "status", "--mcp"]) == 0
-    assert "mcp: loaded" in capsys.readouterr().out
+    status = capsys.readouterr().out
+    assert MCP_LABEL in status and "state = running" in status and "pid = 4242" in status
+
+    assert _subcommands(log) == ["bootout", "bootstrap", "bootout", "kickstart", "print"]
 
 
-def test_daemon_backup_lifecycle(monkeypatch, capsys) -> None:
-    monkeypatch.setattr(_launchd, "uninstall_backup", lambda: None)
+def test_daemon_backup_lifecycle(tmp_path, monkeypatch, stub_bin, capsys) -> None:
+    _darwin(monkeypatch)
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    log = _launchctl_stub(stub_bin, {"kickstart": (0, "", ""), "print": (1, "", "")})
+
     assert main(["daemon", "uninstall", "--backup"]) == 0
     assert "uninstalled" in capsys.readouterr().out
 
-    monkeypatch.setattr(_launchd, "restart_backup", lambda: None)
     assert main(["daemon", "restart", "--backup"]) == 0
     assert "restarted" in capsys.readouterr().out
 
-    monkeypatch.setattr(_launchd, "backup_status", lambda: "backup: loaded")
+    # launchctl print exits nonzero for an agent that isn't loaded.
     assert main(["daemon", "status", "--backup"]) == 0
-    assert "backup: loaded" in capsys.readouterr().out
+    assert f"{BACKUP_LABEL}: not loaded" in capsys.readouterr().out
+    assert _subcommands(log) == ["bootout", "kickstart", "print"]
 
 
-def test_daemon_backup_install_passes_notify_url(monkeypatch, capsys) -> None:
-    seen = {}
-    monkeypatch.setattr(
-        _launchd, "install_backup",
-        lambda dest, home=None, **kw: seen.update(dest=dest, home=home, **kw)
-        or "/plist/backup.plist",
-    )
-    rc = main(["daemon", "install", "--backup", "--dest", "/vol/bak",
-               "--at", "04:00", "--notify-url", "http://n"])
-    assert rc == 0
-    assert seen["notify_url"] == "http://n" and seen["hour"] == 4 and seen["minute"] == 0
+def test_daemon_backup_install_passes_notify_url(tmp_path, monkeypatch, stub_bin, capsys) -> None:
+    _darwin(monkeypatch)
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    _launchctl_stub(stub_bin, {"bootout": (1, "", ""), "bootstrap": (0, "", "")})
+
+    assert main(["daemon", "install", "--backup", "--dest", "/vol/bak",
+                 "--at", "04:00", "--notify-url", "http://n"]) == 0
     assert "nightly at 04:00" in capsys.readouterr().out
+    plist = _written_plist(BACKUP_LABEL)
+    assert plist["ProgramArguments"][1:] == [
+        "nightly", "/vol/bak", "--notify-url", "http://n"
+    ]
+    assert plist["StartCalendarInterval"] == {"Hour": 4, "Minute": 0}
 
 
-def test_daemon_watcher_install_with_web(monkeypatch, capsys) -> None:
-    seen = {}
-    monkeypatch.setattr(
-        _launchd, "install_watcher",
-        lambda home, *, web, web_port: seen.update(home=home, web=web, web_port=web_port)
-        or "/plist/watcher.plist",
-    )
-    rc = main(["daemon", "install", "--home", "/h"])  # web defaults on
-    assert rc == 0
-    assert seen == {"home": "/h", "web": True, "web_port": 8787}
-    out = capsys.readouterr().out
-    assert "web viewer: http://127.0.0.1:8787" in out
+def test_daemon_watcher_install_with_web(tmp_path, monkeypatch, stub_bin, capsys) -> None:
+    _darwin(monkeypatch)
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    _launchctl_stub(stub_bin, {"bootout": (1, "", ""), "bootstrap": (0, "", "")})
+    arc = str(tmp_path / "arc")
+
+    assert main(["daemon", "install", "--home", arc]) == 0  # web defaults on
+    assert "web viewer: http://127.0.0.1:8787" in capsys.readouterr().out
+    plist = _written_plist(WATCHER_LABEL)
+    assert plist["ProgramArguments"][1:] == ["watch", "--web", "--web-port", "8787"]
+    assert plist["EnvironmentVariables"]["THREAD_ARCHIVE_HOME"] == arc
 
 
-def test_daemon_watcher_install_no_web(monkeypatch, capsys) -> None:
-    seen = {}
-    monkeypatch.setattr(
-        _launchd, "install_watcher",
-        lambda home, *, web, web_port: seen.update(web=web) or "/plist",
-    )
-    rc = main(["daemon", "install", "--no-web"])
-    assert rc == 0
-    assert seen == {"web": False}
+def test_daemon_watcher_install_no_web(tmp_path, monkeypatch, stub_bin, capsys) -> None:
+    _darwin(monkeypatch)
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    _launchctl_stub(stub_bin, {"bootout": (1, "", ""), "bootstrap": (0, "", "")})
+
+    assert main(["daemon", "install", "--no-web"]) == 0
     assert "web viewer" not in capsys.readouterr().out
+    assert _written_plist(WATCHER_LABEL)["ProgramArguments"][1:] == ["watch"]
 
 
-def test_daemon_watcher_uninstall_restart_status(monkeypatch, capsys) -> None:
-    monkeypatch.setattr(_launchd, "uninstall_watcher", lambda: None)
+def test_daemon_install_reports_a_launchctl_failure(tmp_path, monkeypatch, stub_bin) -> None:
+    """A bootstrap launchd refuses is operator guidance carrying launchctl's own
+    stderr, not a traceback."""
+    _darwin(monkeypatch)
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    _launchctl_stub(stub_bin, {
+        "bootout": (1, "", ""), "bootstrap": (5, "", "Bootstrap failed: 5"),
+    })
+
+    with pytest.raises(SystemExit, match="bootstrap failed: Bootstrap failed: 5"):
+        main(["daemon", "install", "--home", str(tmp_path / "arc")])
+
+
+def test_daemon_watcher_uninstall_restart_status(tmp_path, monkeypatch, stub_bin, capsys) -> None:
+    _darwin(monkeypatch)
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    status_out = f"{WATCHER_LABEL} = {{\\nstate = running\\n}}"
+    log = _launchctl_stub(stub_bin, {"kickstart": (0, "", ""), "print": (0, status_out, "")})
+    plist = _launchd._plist_path(WATCHER_LABEL)
+    plist.parent.mkdir(parents=True, exist_ok=True)
+    plist.write_bytes(b"stale")
+
     assert main(["daemon", "uninstall"]) == 0
     assert "uninstalled" in capsys.readouterr().out
+    assert not plist.exists()  # the plist is really gone, not just booted out
 
-    monkeypatch.setattr(_launchd, "restart_watcher", lambda: None)
     assert main(["daemon", "restart"]) == 0
     assert "restarted" in capsys.readouterr().out
 
-    monkeypatch.setattr(_launchd, "watcher_status", lambda: "watcher: loaded")
     assert main(["daemon", "status"]) == 0
-    assert "watcher: loaded" in capsys.readouterr().out
+    assert "state = running" in capsys.readouterr().out
+    assert _subcommands(log) == ["bootout", "kickstart", "print"]
 
 
 # ── reindex error branch ──────────────────────────────────────────────────────
@@ -1109,6 +1270,18 @@ def test_status_self_update_checked_clean(capsys) -> None:
     )
     assert cli.report_status(st) == 0
     assert "update:  up-to-date (v0.9.1) checked" in capsys.readouterr().out
+
+
+def test_status_self_update_available_names_explicit_apply(capsys) -> None:
+    old = "2026-07-10T00:00:00+00:00"
+    st = _status_base(
+        last_self_update={"ok": True, "action": "update", "current": "0.9.0",
+                          "tag": "v0.9.1", "reason": "past soak window", "at": old},
+    )
+    assert cli.report_status(st) == 0
+    out = capsys.readouterr().out
+    assert "update:  v0.9.1 available" in out
+    assert "run `archive self-update` to apply" in out
 
 
 def test_status_self_update_blocked_is_shouted(capsys) -> None:

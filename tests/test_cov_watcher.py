@@ -1,38 +1,40 @@
 """Branch-coverage tests for the watcher daemon cluster.
 
-Three modules, each driven through real code paths with no real filesystem
-watching, no threads (bar one bounded, self-stopping loop run), and no
-subprocesses:
+Three modules, each driven through real code paths over real store layouts and
+real locks, with no subprocesses:
 
-* ``_watcher.sources`` — store discovery + the per-provider watchers. Fed fake
-  store layouts under tmp dirs (or a redirected ``$HOME`` for the ``Path.home()``
+* ``_watcher.sources`` — store discovery + the per-provider watchers. Fed store
+  layouts under tmp dirs (or a redirected ``$HOME`` for the ``Path.home()``
   discoverers), exercising the discover / enable / skip branches.
 * ``_watcher.exthost`` — the steering-recovery pure helpers + the ``_process_log``
-  gates, with the JSONL-lookup and freshness seams stubbed so a single poll runs
-  deterministically.
-* ``_watcher.daemon`` — the poll/maintenance/embed lifecycle, with the ingest
-  lock, the maintenance pass, and the embed cohost stubbed so one loop tick runs
-  and then stops.
+  gates, over a real transcript layout under a redirected ``$HOME``.
+* ``_watcher.daemon`` — the poll/maintenance/embed lifecycle. The ingest and
+  reindex locks are the product's own flocks, really held (a distinct fd is a
+  distinct flock owner, so one process can play both sides), and a tick-bounded
+  run ends through :meth:`Watcher.stop` — the daemon's own shutdown path.
 """
 
 from __future__ import annotations
 
+import fcntl
 import json
 import os
+import threading
+import time
 from contextlib import contextmanager
 from pathlib import Path
+from typing import Callable, Optional
 
 import pytest
 from sqlalchemy import select
+from sqlalchemy import text as sa_text
 
 import thread_archive._ops.health as health
-import thread_archive._retrieval.fts as fts
-import thread_archive._retrieval.vectors as vectors
-import thread_archive._truth as truth
 import thread_archive._watcher.exthost as ex
 import thread_archive._watcher.lazy as lazy
 import thread_archive._watcher.sources as src
 from thread_archive._store import Thread, get_session, init_db
+from thread_archive._truth.locks import _reindex_lock_path
 from thread_archive._watcher.base import SourceDiscovery, SourceWatcher, WatchResult
 from thread_archive._watcher.daemon import Watcher
 from thread_archive._watcher.exthost import ExthostWatcher, parse_exthost_log
@@ -48,6 +50,8 @@ from thread_archive._watcher.sources import (
     discover_cowork_session_dirs,
     opencode_watcher,
 )
+
+from .helpers import import_cc_session
 
 # coverage tag: watch
 
@@ -272,23 +276,30 @@ def test_db_scan_poll_routes_scanner_raise_to_error(tmp_path) -> None:
     assert res.events_created == 0
 
 
+def _force_system(monkeypatch, name: str) -> None:
+    """The one seam this file cannot inject through: the per-OS store default is a
+    live ``platform.system()`` read inside a module function, and every OS's branch
+    has to be provable from whichever host runs the suite."""
+    monkeypatch.setattr(src.platform, "system", lambda: name)
+
+
 def test_cursor_default_db_platform_branches(tmp_path, monkeypatch) -> None:
     home = _home(tmp_path, monkeypatch)
 
-    monkeypatch.setattr(src.platform, "system", lambda: "Linux")
+    _force_system(monkeypatch, "Linux")
     assert src._cursor_default_db() is None  # constructed path doesn't exist
 
-    monkeypatch.setattr(src.platform, "system", lambda: "Windows")
+    _force_system(monkeypatch, "Windows")
     monkeypatch.setenv("APPDATA", "")  # empty APPDATA → give up
     assert src._cursor_default_db() is None
     monkeypatch.setenv("APPDATA", str(tmp_path / "appdata"))  # set but missing file
     assert src._cursor_default_db() is None
 
-    monkeypatch.setattr(src.platform, "system", lambda: "Plan9")  # unknown OS
+    _force_system(monkeypatch, "Plan9")  # unknown OS
     assert src._cursor_default_db() is None
 
     # Darwin, and the file actually present → returns it.
-    monkeypatch.setattr(src.platform, "system", lambda: "Darwin")
+    _force_system(monkeypatch, "Darwin")
     assert src._cursor_default_db() is None  # not created yet
     dbpath = (home / "Library" / "Application Support" / "Cursor" / "User"
               / "globalStorage" / "state.vscdb")
@@ -570,13 +581,19 @@ def test_exthost_recovers_two_lost_messages_sharing_thread(archive_home, tmp_pat
 
 
 class _StubSource(SourceWatcher):
-    """A minimal watcher whose poll yield is configurable per instance."""
+    """A minimal watcher whose poll yield is configurable per instance.
+
+    ``on_poll`` is the loop's own stop button: a source that calls
+    ``Watcher.stop`` when polled ends the run after exactly one tick, through the
+    product's public stop path rather than a faked lock.
+    """
 
     def __init__(self, name: str = "stub", *, available: bool = True, events: int = 0) -> None:
         self._name = name
         self._available = available
         self._events = events
         self.polls = 0
+        self.on_poll: Optional[Callable[[], None]] = None
 
     @property
     def source_name(self) -> str:
@@ -587,7 +604,63 @@ class _StubSource(SourceWatcher):
 
     def poll(self) -> WatchResult:
         self.polls += 1
+        if self.on_poll is not None:
+            self.on_poll()
         return WatchResult(sources_checked=1, events_created=self._events)
+
+
+@contextmanager
+def _reindex_holds_the_lock():
+    """A real exclusive hold on ``<home>/.reindex.lock`` — what ``archive reindex``
+    takes across its build-and-swap. A distinct fd is a distinct flock owner even
+    in one process, so the loop's shared non-blocking acquire genuinely fails
+    against it."""
+    path = _reindex_lock_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd = os.open(path, os.O_RDWR | os.O_CREAT, 0o644)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        yield
+    finally:
+        os.close(fd)
+
+
+@contextmanager
+def _ingest_owner_held():
+    """A real exclusive hold on ``<home>/.ingest-owner.lock`` — the lock a live
+    daemon (or a lazy catch-up pass mid-flight) keeps, so ``acquire_ingest_owner``
+    really comes back empty."""
+    path = lazy._lock_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd = os.open(path, os.O_RDWR | os.O_CREAT, 0o644)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        yield
+    finally:
+        os.close(fd)
+
+
+def _wait_until(predicate, *, timeout: float = 20.0) -> None:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if predicate():
+            return
+        time.sleep(0.01)
+    raise AssertionError("condition never held")
+
+
+@contextmanager
+def _loop_running(w: Watcher):
+    """Run ``_run_loop`` on a thread for as long as the block needs it, then stop
+    it through :meth:`Watcher.stop` and join — the daemon's real shutdown."""
+    thread = threading.Thread(target=w._run_loop, name="watch-loop", daemon=True)
+    thread.start()
+    try:
+        yield
+    finally:
+        w.stop()
+        thread.join(20)
+    assert not thread.is_alive(), "the loop did not stop"
 
 
 def test_poll_once_skips_unavailable_sources(archive_home) -> None:
@@ -598,6 +671,22 @@ def test_poll_once_skips_unavailable_sources(archive_home) -> None:
     assert avail.polls == 1
     assert absent.polls == 0  # is_available() False → skipped before poll
     assert total.events_created == 1
+
+
+def _break_health_recording(monkeypatch) -> None:
+    """The loop's health writes, forced to fail *past* their own guard.
+
+    ``record_health`` already swallows every OSError it can hit (an unwritable
+    home, a lock it cannot open), so the belt-and-braces catch in the loop —
+    which exists so no future recording bug can take the daemon down — has no
+    reachable real trigger. This is the one seam here with nothing behind the
+    front door to inject.
+    """
+
+    def boom(*a, **k):
+        raise RuntimeError("health write failed")
+
+    monkeypatch.setattr(health, "record_health", boom)
 
 
 def test_record_errors_throttles_then_exceptions_are_swallowed(archive_home, monkeypatch, caplog) -> None:
@@ -613,10 +702,7 @@ def test_record_errors_throttles_then_exceptions_are_swallowed(archive_home, mon
     # Recording failures are advisory — swallowed, never raised.
     fresh = Watcher([], embed=False)
 
-    def boom(*a, **k):
-        raise RuntimeError("health write failed")
-
-    monkeypatch.setattr(health, "record_health", boom)
+    _break_health_recording(monkeypatch)
     with caplog.at_level("ERROR", logger="thread_archive._watcher.daemon"):
         fresh._record_errors(["e"])  # must not raise
     assert any("could not record poll errors" in r.getMessage() for r in caplog.records)
@@ -625,10 +711,7 @@ def test_record_errors_throttles_then_exceptions_are_swallowed(archive_home, mon
 def test_record_pass_swallows_recording_failure(archive_home, monkeypatch, caplog) -> None:
     w = Watcher([], embed=False)
 
-    def boom(*a, **k):
-        raise RuntimeError("health write failed")
-
-    monkeypatch.setattr(health, "record_health", boom)
+    _break_health_recording(monkeypatch)
     with caplog.at_level("ERROR", logger="thread_archive._watcher.daemon"):
         w._record_pass()  # advisory — must not raise
     assert any("could not record pass heartbeat" in r.getMessage() for r in caplog.records)
@@ -670,81 +753,85 @@ def test_errored_run_keeps_its_watch_errors(archive_home) -> None:
     assert rec is not None and rec["count_since_start"] == 1
 
 
-def test_maintain_folds_meta_docs_when_present(archive_home, monkeypatch) -> None:
-    init_db()
-    monkeypatch.setattr(fts, "index_thread_meta", lambda: 7)
+def _seed_one_thread(tmp_path) -> None:
+    """A real imported claude-code session — a thread with a title, and events for
+    its search docs to anchor on."""
+    import_cc_session(tmp_path)
+
+
+def test_maintain_folds_meta_docs_when_present(archive_home, tmp_path) -> None:
+    """A freshly imported thread's title hasn't reached the search docs yet, so
+    the upkeep pass syncs it and folds the row count into its report."""
+    _seed_one_thread(tmp_path)
     counts = Watcher([], embed=False).maintain()
-    assert counts.get("thread_meta_docs") == 7
+    assert counts.get("thread_meta_docs", 0) > 0
 
 
-def test_maintain_skips_meta_docs_when_empty(archive_home, monkeypatch) -> None:
-    init_db()
-    monkeypatch.setattr(fts, "index_thread_meta", lambda: 0)
-    counts = Watcher([], embed=False).maintain()
-    assert "thread_meta_docs" not in counts  # falsy meta → not folded
+def test_maintain_skips_meta_docs_when_empty(archive_home, tmp_path) -> None:
+    """The sync is diff-based: a second pass over an unchanged archive writes
+    nothing, and a falsy count is not folded into the report."""
+    _seed_one_thread(tmp_path)
+    w = Watcher([], embed=False)
+    assert w.maintain().get("thread_meta_docs", 0) > 0
+    assert "thread_meta_docs" not in w.maintain()
 
 
-def test_maintain_survives_meta_index_error(archive_home, monkeypatch, caplog) -> None:
-    init_db()
+def test_maintain_survives_meta_index_error(archive_home, tmp_path, caplog) -> None:
+    """A search surface the meta sync can no longer read (here: its shadow table
+    gone) must not take the upkeep pass — or the loop behind it — down."""
+    _seed_one_thread(tmp_path)
+    with get_session() as s:
+        s.execute(sa_text("DROP TABLE events_fts"))
+        s.commit()
 
-    def boom():
-        raise RuntimeError("fts exploded")
-
-    monkeypatch.setattr(fts, "index_thread_meta", boom)
     with caplog.at_level("WARNING", logger="thread_archive._watcher.daemon"):
         counts = Watcher([], embed=False).maintain()  # must not raise
     assert isinstance(counts, dict)
+    assert "thread_meta_docs" not in counts
     assert any("thread-meta index error" in r.getMessage() for r in caplog.records)
 
 
-def test_embed_pending_returns_zero_when_caught_up(archive_home, monkeypatch) -> None:
-    monkeypatch.setattr(vectors, "index_events_local",
-                        lambda max_events=None, newest_first=False: 0)
+def test_embed_pending_returns_zero_when_caught_up(archive_home, tmp_path) -> None:
+    """The cohost reports a clean zero rather than raising when the incremental
+    embedder has nothing to hand back — which is every run without the
+    ``[embeddings]`` extra, and every run that is already caught up."""
+    _seed_one_thread(tmp_path)
     assert Watcher([], embed_batch=64).embed_pending() == 0
 
 
-def test_run_warns_when_owner_lock_unavailable(archive_home, monkeypatch, caplog) -> None:
+def test_run_warns_when_owner_lock_unavailable(archive_home, caplog) -> None:
     """When another process already holds the ingest-owner lock, ``run`` logs and
     proceeds rather than dying (which would feed launchd's restart throttle)."""
-    monkeypatch.setattr(lazy, "acquire_ingest_owner", lambda: None)
     w = Watcher([], embed=False)
     ran = {"n": 0}
     w._run_loop = lambda: ran.__setitem__("n", ran["n"] + 1)
-    with caplog.at_level("WARNING", logger="thread_archive._watcher.daemon"):
+    with _ingest_owner_held(), caplog.at_level("WARNING",
+                                               logger="thread_archive._watcher.daemon"):
         w.run()  # owner_fd is None → the finally must not try to close a fd
     assert ran["n"] == 1
+    assert w._owner_fd is None
     assert any("another process holds the ingest-owner lock" in r.getMessage()
                for r in caplog.records)
 
 
-def test_run_loop_skips_pass_while_reindex_holds_lock(archive_home, monkeypatch, caplog) -> None:
+def test_run_loop_skips_pass_while_reindex_holds_lock(archive_home, caplog) -> None:
+    """A reindex holding the lock exclusive quiesces ingest: every pass is skipped
+    whole, and no source is polled while the rebuild-and-swap runs."""
     w = Watcher([_StubSource("s")], interval=0.01, embed=False)
-
-    @contextmanager
-    def unacquired():
-        w._stop = True  # one tick, then fall out of the while loop
-        yield False
-
-    monkeypatch.setattr(truth, "try_shared_ingest_lock", unacquired)
     with caplog.at_level("INFO", logger="thread_archive._watcher.daemon"):
-        w._run_loop()
+        with _reindex_holds_the_lock(), _loop_running(w):
+            _wait_until(lambda: any("reindex in progress" in r.getMessage()
+                                    for r in caplog.records))
     assert w.watchers[0].polls == 0  # lock not acquired → poll skipped
-    assert any("reindex in progress" in r.getMessage() for r in caplog.records)
 
 
-def test_run_loop_full_tick_runs_maintenance_and_embed(archive_home, monkeypatch) -> None:
-    """One acquired tick: an importing poll marks the loop dirty, the (due)
-    maintenance pass runs, and the embed cohost drains — a filled batch flags a
-    backlog for the next cycle. The tick then stops the loop."""
+def test_run_loop_full_tick_runs_maintenance_and_embed(archive_home) -> None:
+    """One acquired tick over the real ingest lock: an importing poll marks the
+    loop dirty, the (due) maintenance pass runs, and the embed cohost drains — a
+    filled batch flags a backlog for the next cycle. The tick then stops the loop."""
     stub = _StubSource("s", events=1)
     w = Watcher([stub], interval=0.01, maintenance_interval=0.0, embed_interval=0.0,
                 embed=True, embed_batch=1)
-
-    @contextmanager
-    def acquired():
-        yield True
-
-    monkeypatch.setattr(truth, "try_shared_ingest_lock", acquired)
     w._import_state_stamp = lambda: (1, "stamp")
 
     calls = {"maintain": 0, "embed": 0}
@@ -769,18 +856,12 @@ def test_run_loop_full_tick_runs_maintenance_and_embed(archive_home, monkeypatch
     assert w._backlog is True and w._embed_more is True  # filled batch → drain next cycle
 
 
-def test_run_loop_maintenance_due_but_nothing_changed_skips_it(archive_home, monkeypatch) -> None:
+def test_run_loop_maintenance_due_but_nothing_changed_skips_it(archive_home) -> None:
     """Maintenance interval elapsed, but the poll imported nothing (not dirty) and
     no watermark moved (stamp None) → the maintenance pass is skipped."""
     stub = _StubSource("s", events=0)  # nothing imported → stays clean
     w = Watcher([stub], interval=0.01, maintenance_interval=0.0, embed=False)
-
-    @contextmanager
-    def acquired_one_tick():
-        yield True
-        w._stop = True  # post-tick (after poll/maintenance/embed) → loop ends
-
-    monkeypatch.setattr(truth, "try_shared_ingest_lock", acquired_one_tick)
+    stub.on_poll = w.stop  # exactly one tick, through the daemon's own stop path
     calls = {"maintain": 0}
     w.maintain = lambda: calls.__setitem__("maintain", calls["maintain"] + 1) or {}
     w._import_state_stamp = lambda: None  # no watermark → maintenance condition False
@@ -791,18 +872,12 @@ def test_run_loop_maintenance_due_but_nothing_changed_skips_it(archive_home, mon
     assert calls["maintain"] == 0  # due, but nothing changed → skipped
 
 
-def test_run_loop_survives_maintenance_and_embed_errors(archive_home, monkeypatch, caplog) -> None:
+def test_run_loop_survives_maintenance_and_embed_errors(archive_home, caplog) -> None:
     """Maintenance and embed both raise on the tick; each is caught so the loop
     survives (a raise here would exit the process into launchd's restart churn)."""
     stub = _StubSource("s", events=1)
     w = Watcher([stub], interval=0.01, maintenance_interval=0.0, embed_interval=0.0,
                 embed=True, embed_batch=8)
-
-    @contextmanager
-    def acquired():
-        yield True
-
-    monkeypatch.setattr(truth, "try_shared_ingest_lock", acquired)
     w._import_state_stamp = lambda: None  # dirty alone drives maintenance
 
     def bad_maintain():

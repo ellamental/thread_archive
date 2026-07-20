@@ -378,10 +378,10 @@ class Watcher:
                                     self._embed_more = False  # don't hot-loop a persistent failure
                                 last_embed = now
 
-                    # Self-update probe: hourly, OUTSIDE the ingest lock (it
-                    # touches no store — reads config/health, maybe spawns a
-                    # detached `archive self-update`, which does its own gating
-                    # and at most one real check per day). Fail-soft inside.
+                    # Release probe: hourly, OUTSIDE the ingest lock (it touches
+                    # no store — reads config/health, maybe spawns a detached
+                    # check-only update probe, and does at most one real check
+                    # per day). Applying is explicit unless auto_apply is opted in.
                     probe_now = time.monotonic()
                     if (probe_now - last_update_probe) >= 3600.0:
                         last_update_probe = probe_now

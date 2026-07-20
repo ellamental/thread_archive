@@ -240,7 +240,7 @@ def test_apply_rolls_back_when_smoke_fails(repo: Path) -> None:
 
 def test_self_update_records_health(repo: Path, monkeypatch) -> None:
     """The orchestrator stamps health.json (the status line + the spawner's
-    once-per-interval gate) — and --check deliberately doesn't."""
+    once-per-interval gate); a manual check counts as the latest check."""
     from thread_archive._ops.health import read_health
 
     monkeypatch.setattr(_update, "install_repo", lambda: repo)
@@ -248,7 +248,9 @@ def test_self_update_records_health(repo: Path, monkeypatch) -> None:
                         lambda *a, **k: _plan(repo))  # skip the real fetch
     res = _update.self_update(check_only=True)
     assert res["action"] == "up-to-date"
-    assert _update.HEALTH_KEY not in read_health()
+    rec = read_health()[_update.HEALTH_KEY]
+    assert rec["action"] == "up-to-date" and rec["ok"]
+    assert not check_due()
 
     res = _update.self_update()
     rec = read_health()[_update.HEALTH_KEY]
@@ -295,12 +297,18 @@ def test_maybe_spawn_respects_config_and_install(archive_home, monkeypatch, tmp_
     monkeypatch.setattr(_update, "install_repo", lambda: None)
     assert not maybe_spawn_self_update()
 
-    # Enabled, clone, due → spawn (detached invocation of the console script).
+    # Enabled, clone, due → a detached check-only invocation by default.
     monkeypatch.setattr(_update, "install_repo", lambda: tmp_path)
     assert maybe_spawn_self_update()
     assert spawned and spawned[0][1] == "self-update"
+    assert "--check" in spawned[0]
+
+    # Unattended apply exists only behind an explicit opt-in.
+    set_update_config(enabled=True, auto_apply=True)
+    assert maybe_spawn_self_update()
+    assert "--check" not in spawned[1]
 
     # Not due (a check was just stamped) → no second spawn.
     record_health(_update.HEALTH_KEY, {"ok": True, "action": "up-to-date"})
     assert not maybe_spawn_self_update()
-    assert len(spawned) == 1
+    assert len(spawned) == 2

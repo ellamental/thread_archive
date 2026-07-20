@@ -11,11 +11,11 @@ mutated.
 from __future__ import annotations
 
 import json
+import shutil
 import sqlite3
 
 from sqlalchemy import select
 
-import thread_archive._importers.cursor as cursor_mod
 from thread_archive._importers import (
     import_codex_session_incremental,
     import_cursor_db,
@@ -64,6 +64,7 @@ from thread_archive._importers.grok import (
     _harvest_tool_names,
 )
 from thread_archive._store import Event, Thread, get_session, init_db
+from thread_archive._truth.jsonl_log import log_dir, reset_handles
 
 
 def _events() -> list[tuple[str, dict]]:
@@ -691,8 +692,9 @@ def test_cursor_long_composer_name_truncated_on_new_thread(archive_home) -> None
     assert len(title) == 100 and title.endswith("...")
 
 
-def test_cursor_long_name_stub_title_truncated(archive_home, monkeypatch) -> None:
-    """A blown-up composer with a very long name gets a truncated stub-thread title."""
+def test_cursor_long_name_stub_title_truncated(archive_home) -> None:
+    """A blown-up composer with a very long name gets a truncated stub-thread title.
+    The blow-up is a bubble whose ``text`` is an object, not a string."""
     init_db()
     db = archive_home / "state.vscdb"
     cid = "comp_boomlong"
@@ -700,44 +702,41 @@ def test_cursor_long_name_stub_title_truncated(archive_home, monkeypatch) -> Non
                 "fullConversationHeadersOnly": [{"bubbleId": "b1", "type": 1}]}
     _make_cursor_db(db, [
         (f"composerData:{cid}", json.dumps(composer)),
-        (f"bubbleId:{cid}:b1", json.dumps({"type": 1, "text": "hi", "createdAt": 1700000000000})),
+        (f"bubbleId:{cid}:b1", json.dumps(
+            {"type": 1, "text": {"unexpected": "object"}, "createdAt": 1700000000000})),
     ])
 
-    def _boom(*a, **k):
-        raise RuntimeError("kaboom")
-
-    monkeypatch.setattr(cursor_mod, "import_cursor_from_payload", _boom)
     import_cursor_db(db)
     stub = _threads()[f"{cid}:import-error"]
     assert len(stub.title) == 100 and stub.title.endswith("...")
 
 
-def test_cursor_stub_failure_is_swallowed(archive_home, monkeypatch) -> None:
+def test_cursor_stub_failure_is_swallowed(archive_home) -> None:
     """When even the error-stub preservation raises, import_cursor_db must not
     crash — both the corrupt-load path and the blow-up path swallow the inner
-    failure so the whole scan still completes."""
+    failure so the whole scan still completes.
+
+    A file standing where the truth's ``threads/`` directory belongs takes down
+    every write: the good composer's import, and then both stubs that try to
+    record the failure.
+    """
     init_db()
     db = archive_home / "state.vscdb"
     good = {"name": "Good", "lastUpdatedAt": 9999999999999,
             "fullConversationHeadersOnly": [{"bubbleId": "b1", "type": 1}]}
     _make_cursor_db(db, [
         ("composerData:corrupt", "{not json at all"),          # corrupt-load path
-        ("composerData:good", json.dumps(good)),               # parses, but import boomed below
+        ("composerData:good", json.dumps(good)),               # parses, then fails to write
         ("bubbleId:good:b1", json.dumps({"type": 1, "text": "hi", "createdAt": 1700000000000})),
     ])
+    reset_handles()
+    threads_dir = log_dir() / "threads"
+    shutil.rmtree(threads_dir, ignore_errors=True)
+    threads_dir.write_text("not a directory\n", encoding="utf-8")
 
-    def _boom_import(*a, **k):
-        raise RuntimeError("import failed")
-
-    def _boom_session():
-        # The stub writes its stub thread through get_session — a broken store
-        # makes the REAL stub fail after the import already has.
-        raise RuntimeError("stub failed too")
-
-    monkeypatch.setattr(cursor_mod, "import_cursor_from_payload", _boom_import)
-    monkeypatch.setattr(cursor_mod, "get_session", _boom_session)
     scan = import_cursor_db(db)   # must not raise
     assert scan.failed >= 1
+    assert not _threads(), "nothing could be written — no half-made thread survived"
 
 
 def test_cursor_build_messages_edge_shapes() -> None:

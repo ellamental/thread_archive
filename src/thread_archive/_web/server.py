@@ -714,7 +714,7 @@ def serve_in_thread(*, host: str = "127.0.0.1", port: int = 8787) -> ThreadingHT
     threading.Thread(target=httpd.serve_forever, name="archive-web", daemon=True).start()
     # Prewarm the status survey so even the first /api/status a fresh process
     # serves comes from cache instead of paying the multi-second count.
-    threading.Thread(target=_status, name="archive-web-status-warm", daemon=True).start()
+    threading.Thread(target=_prewarm_status, name="archive-web-status-warm", daemon=True).start()
     # Prewarm the stats rollup the same way: build/refresh the token-cost cache in the
     # background so the first /api/stats serves an already-warm table. Only the very
     # first build (or the one after a reindex) is slow; a restart folds just the delta.
@@ -723,6 +723,20 @@ def serve_in_thread(*, host: str = "127.0.0.1", port: int = 8787) -> ThreadingHT
     # every conversation's events, so a cold /api/curation is tens of seconds.
     threading.Thread(target=_prewarm_curation, name="archive-web-curation-warm", daemon=True).start()
     return httpd
+
+
+def _prewarm_status() -> None:
+    """Best-effort background status survey at server start; see _prewarm_stats.
+
+    Every prewarm is fail-soft for the same reason: an archive that can't be
+    opened at start (a half-restored home, a reindex mid-swap) must cost the
+    first real request its survey, not spill an unhandled traceback into the
+    cohosting watcher's log.
+    """
+    try:
+        _status()
+    except Exception:  # noqa: BLE001 — warm-up must never crash the server thread
+        log.debug("status prewarm failed", exc_info=True)
 
 
 def _prewarm_curation() -> None:

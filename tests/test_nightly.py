@@ -9,8 +9,12 @@ the rebuilt archive actually reads and searches.
 from __future__ import annotations
 
 import json
+import os
+import sys
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+import pytest
 
 import thread_archive._ops.health as ops_health
 from thread_archive import _api as ta
@@ -129,11 +133,11 @@ def test_nightly_stage_failure_runs_remaining_stages_and_notifies(
     hb_dir.mkdir()
     monkeypatch.setenv("THREAD_ARCHIVE_HEARTBEAT_DIR", str(hb_dir))
 
-    def boom(*a, **k):
-        raise OSError("disk on fire")
-
-    import thread_archive._ops.nightly as ops_nightly
-    monkeypatch.setattr(ops_nightly, "backup", boom)
+    # A destination the backup genuinely cannot create: its parent is a file,
+    # so the first mkdir raises — the shape of a dest on a gone/renamed volume.
+    blocker = tmp_path / "not-a-directory"
+    blocker.write_text("", encoding="utf-8")
+    dest = blocker / "mirror"
 
     # A real loopback /api/notify records what the push actually sends.
     class _NotifyHandler(BaseHTTPRequestHandler):
@@ -152,7 +156,7 @@ def test_nightly_stage_failure_runs_remaining_stages_and_notifies(
     threading.Thread(target=lambda: notify_srv.serve_forever(poll_interval=0.02),
                      daemon=True).start()
     try:
-        res = ta.nightly(str(tmp_path / "mirror"),
+        res = ta.nightly(str(dest),
                          notify_url=f"http://127.0.0.1:{notify_srv.server_port}/api/notify")
     finally:
         notify_srv.shutdown()
@@ -164,6 +168,7 @@ def test_nightly_stage_failure_runs_remaining_stages_and_notifies(
     # pointed at the never-created mirror), and the drill ran and reported its
     # own failure. Every failed stage is named in the one notification.
     assert res["failed_stages"] == ["backup", "verify", "restore-drill"]
+    assert "NotADirectoryError" in res["backup"]["error"]
     assert "error" not in res["verify"]  # verify ran to completion
     assert sent and "backup, verify, restore-drill" in sent[0]["message"]
     assert sent[0]["title"] == "thread-archive"
@@ -394,7 +399,12 @@ def test_a_passing_verify_clears_the_heartbeat_a_failed_nightly_left(
 def test_stage_error_names_tcc_on_darwin_eperm(monkeypatch):
     """EPERM from a file op is reported with the macOS-TCC hint; EACCES (a
     plain unix permission denial) and non-permission errors stay unadorned —
-    the hint must not fire where the diagnosis doesn't apply."""
+    the hint must not fire where the diagnosis doesn't apply.
+
+    Both arms are pinned on every host, so the platform is supplied: the hint
+    is a property of the machine the stage ran on, which no caller passes and a
+    test cannot be. The hint reaching a real recorded stage error is
+    ``test_nightly_backup_stage_reports_tcc_hint``, over a real EPERM."""
     import errno as errno_mod
 
     from thread_archive._ops.nightly import _stage_error
@@ -409,22 +419,32 @@ def test_stage_error_names_tcc_on_darwin_eperm(monkeypatch):
     assert "TCC" not in _stage_error(eperm)
 
 
-def test_nightly_backup_stage_reports_tcc_hint(archive_home, tmp_path, monkeypatch):
+@pytest.mark.skipif(sys.platform != "darwin",
+                    reason="the TCC hint, and the immutable-flag EPERM that provokes it, are macOS")
+def test_nightly_backup_stage_reports_tcc_hint(archive_home, tmp_path):
     """A backup stage dying on EPERM (the launchd-without-grant shape) carries
     the TCC hint into the stage's recorded error, where notify/health readers
-    see it."""
+    see it.
+
+    The denial is real: a directory carrying the user-immutable flag answers
+    every write inside it with EPERM — the same errno, from the same syscalls,
+    that a TCC-ungranted background job gets on a protected volume."""
     import errno as errno_mod
+    import stat
 
-    _seed(archive_home)
-    monkeypatch.setattr("thread_archive._ops.nightly.sys.platform", "darwin")
-
-    def _eperm_backup(*a, **k):
-        raise PermissionError(errno_mod.EPERM, "Operation not permitted",
-                              str(tmp_path / "dest" / ".generations"))
-
-    monkeypatch.setattr("thread_archive._ops.nightly.backup", _eperm_backup)
     from thread_archive._ops.nightly import nightly
 
-    result = nightly(str(tmp_path / "dest"), drill=False)
+    _seed(archive_home)
+    dest = tmp_path / "dest"
+    dest.mkdir()
+    os.chflags(dest, stat.UF_IMMUTABLE)
+    try:
+        with pytest.raises(PermissionError) as raised:  # the premise, spelled out
+            ta.backup(str(dest))
+        assert raised.value.errno == errno_mod.EPERM
+
+        result = nightly(str(dest), drill=False)
+    finally:
+        os.chflags(dest, 0)  # else even the tmp_path cleanup cannot remove it
     assert "backup" in result["failed_stages"]
     assert "TCC" in result["backup"]["error"]

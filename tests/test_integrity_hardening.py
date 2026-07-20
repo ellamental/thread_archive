@@ -279,24 +279,36 @@ def test_verify_reports_missing_unique_constraint(archive_home, tmp_path):
 
 
 # ── backup order: checkpoint before verify ────────────────────────────────────
-def test_backup_checkpoints_before_verifying(archive_home, tmp_path, monkeypatch):
+def test_backup_checkpoints_before_verifying(archive_home, tmp_path):
+    """State that only the checkpoint materializes must already be there when the
+    pre-backup verify counts — otherwise every backup of a busy archive reports a
+    sick source and silently degrades to an additive mirror."""
+    from datetime import datetime, timedelta, timezone
+
+    from thread_archive._store import Thread, get_session
+
     import_cc_session(tmp_path)
-    calls: list[str] = []
+    # A thread whose metadata moved after the last checkpoint watermark and whose
+    # truth file only the checkpoint's backstop pass writes.
+    with get_session() as s:
+        s.add(Thread(
+            name="checkpoint-backstop",
+            updated_at=datetime.now(timezone.utc) + timedelta(seconds=1),
+        ))
+        s.commit()
 
-    import thread_archive._ops.backup as ops_backup
-    from thread_archive import _truth as truth
+    # Verified as-is, the archive is in drift: the index holds a thread the truth
+    # has no file for.
+    standalone = ta.verify()
+    assert standalone["ok"] is False
+    assert standalone["failed_components"] == ["drift_threads"]
 
-    real_checkpoint, real_verify = truth.checkpoint, ops_backup.verify
-    monkeypatch.setattr(
-        truth, "checkpoint",
-        lambda *a, **k: (calls.append("checkpoint"), real_checkpoint(*a, **k))[1],
-    )
-    monkeypatch.setattr(
-        ops_backup, "verify",
-        lambda *a, **k: (calls.append("verify"), real_verify(*a, **k))[1],
-    )
-    ta.backup(str(tmp_path / "mirror"))
-    assert calls.index("checkpoint") < calls.index("verify"), calls
+    # Through backup, the same verify passes — it can only have run after the
+    # checkpoint wrote that thread's truth file.
+    res = ta.backup(str(tmp_path / "mirror"))
+    assert res["verify_ok"] is True
+    assert res["mirror_complete"] is True
+    assert ta.verify()["ok"] is True
 
 
 # ── health.json concurrency ───────────────────────────────────────────────────

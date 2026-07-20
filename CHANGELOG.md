@@ -2,6 +2,41 @@
 
 ## Unreleased
 
+- `backfill_subagent_type.main(argv=None)` parses its arguments with argparse
+  and takes them as a parameter, matching every other script in `_scripts/`
+  instead of reading `sys.argv` directly.
+- `_ops.source_mirror.mirror_sources` takes `watchers=`, the seam
+  `check_coverage` and `Watcher` already had: a caller that has resolved its
+  provider set sweeps it directly instead of re-resolving the machine's.
+- The drift quarantine's per-generation file cap is read per call from
+  `THREAD_ARCHIVE_DRIFT_MAX_FILES` (`drift_snapshot.max_files()`, 2000 by
+  default), so a store whose active window is larger than the default can be
+  covered whole.
+- Fixed: the web viewer's status prewarm had no failure guard, unlike the stats
+  and curation prewarms beside it — an archive that couldn't be opened at server
+  start spilled an unhandled traceback out of the warm thread into the cohosting
+  watcher's log instead of leaving the cost to the first real request.
+- The `daemon` and `watch` verbs are tested against the operating system rather
+  than around it: the LaunchAgent lifecycle runs the real `_launchd` bodies
+  against a `launchctl` stand-in that is the only executable on `$PATH` (asserting
+  the plist that would be installed and the argv launchctl received), and the
+  watch loop runs for real until a real `SIGINT`, cohosted viewer and all.
+- The MCP server's command line became a plan it then executes:
+  `plan_serve(argv)` reads the transport, the bind, the loopback guard and the
+  warm decision out of `argv`, and `main(argv=None)` applies it. The cohosted
+  lazy ingest moved onto its gate — `IngestThrottle.claim` / `release` /
+  `run_pass` / `maybe_catch_up`, with the kill-switch read through
+  `ingest_enabled()` — so the throttle state is the object's rather than the
+  module's, and a second gate is a second instance. The stdio and
+  streamable-HTTP deployments are now tested as invocations: a real child
+  process, spoken to over the real transport.
+- `_api.embed` passes an `embedder=` through to the indexer, so a caller
+  holding a loaded model — or indexing into a second embedding space — reaches
+  it through the coordination layer instead of around it.
+- Scheduled release checks are non-mutating by default. The watcher runs
+  `archive self-update --check`, records an available tag in status, and leaves
+  checkout/reinstall/restart to an explicit `archive self-update`; operators
+  can deliberately restore unattended apply with `update.auto_apply: true`.
 - The embedding and re-rank models became injectable collaborators.
   `embed.Embedder` and `rerank.Reranker` each own one model and the policy for
   querying it (prefixes and char cap; doc-head cap and batch size), constructed

@@ -188,18 +188,23 @@ def test_shrunk_source_file_rewinds_cursor_and_reimports(archive_home, tmp_path)
         assert len(s.execute(select(Event)).scalars().all()) > n_before
 
 
-def test_backup_deletion_bound_blocks_gutted_source_mirror(archive_home, tmp_path, monkeypatch) -> None:
-    f = tmp_path / "sess.jsonl"
-    _write_cc(f, [USER, ASSISTANT])
-    ta.import_path(f)
+def test_backup_deletion_bound_blocks_gutted_source_mirror(archive_home, tmp_path) -> None:
+    import thread_archive._ops.backup as ops_backup
+
+    # Enough threads that gutting them all exceeds the real deletion bound.
+    n = ops_backup.MIRROR_DELETE_FLOOR + 6
+    for i in range(n):
+        f = tmp_path / f"sess{i}.jsonl"
+        _write_cc(f, [
+            {**USER, "uuid": f"u{i}", "message": {"role": "user", "content": f"gutted {i}"}},
+            {**ASSISTANT, "uuid": f"a{i}"},
+        ])
+        ta.import_path(f)
     dest = tmp_path / "bk"
     res = ta.backup(str(dest))
     assert res["mirror_complete"] is True
+    assert len(list((dest / "threads").rglob("*.jsonl"))) == n
 
-    # Lower the bound so this small fixture can trip it, then gut the source.
-    import thread_archive._ops.backup as ops_backup
-    monkeypatch.setattr(ops_backup, "MIRROR_DELETE_FLOOR", 0)
-    monkeypatch.setattr(ops_backup, "MIRROR_DELETE_MAX_FRACTION", 0.0)
     for p in (archive_home / "truth" / "threads").rglob("*.jsonl"):
         p.unlink()
 

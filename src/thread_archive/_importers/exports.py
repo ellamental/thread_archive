@@ -518,12 +518,17 @@ def _import_one(
                 if is_new_thread:
                     # Row AND staged truth record — no ghost threads/<id>.jsonl on commit.
                     discard_new_thread(s, thread_id)
+                s.commit()
                 result.skipped += 1
             else:
                 set_thread_models_from_events(s, thread_id)
+                s.commit()
+                # Counted only once the commit has landed. A conversation whose
+                # commit fails is errored, never imported: these totals are the
+                # operator's report on what was preserved, so counting ahead of
+                # the write would claim a preservation that did not happen.
                 result.imported += 1
                 result.events_created += n
-            s.commit()
     except Exception as e:  # noqa: BLE001 — one bad conversation must not stop the export
         # Log the full traceback (a one-line warning hid the cause) and preserve a
         # stub thread carrying the raw conversation + error, so a bad conversation is

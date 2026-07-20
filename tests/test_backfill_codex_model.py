@@ -3,10 +3,10 @@ served them, in the store AND in the truth, and the repaired rows are byte-ident
 to what a fresh import now produces — so a later re-import of the same session dedups
 against them instead of doubling the thread.
 
-The pre-fix state is reproduced honestly: the importer's model rule is stubbed out for
-the seeding import, which is exactly what the old importer did (it looked only at
-``session_meta.model``, which Codex no longer writes), so store and truth both land in
-the state the live archive is actually in.
+The pre-fix state is reproduced honestly: a real import, then store and truth both
+rewritten into the shape the old importer left (it looked only at
+``session_meta.model``, which Codex no longer writes) — placeholder payloads carrying
+the dedup_keys that import computed over them, the state the live archive is in.
 """
 
 from __future__ import annotations
@@ -16,11 +16,12 @@ import json
 import pytest
 from sqlalchemy import select
 
-from thread_archive._importers import codex as codex_mod
 from thread_archive._importers import import_codex_session_incremental
 from thread_archive._scripts import backfill_codex_model as mod
 from thread_archive._store import Event, get_session, init_db
 from thread_archive._truth.jsonl_log import _hash_key_check, _shard_depth, _thread_file, log_dir
+
+from .helpers import age_codex_thread_to_placeholder, install_codex_store
 
 SESSION = [
     {"type": "session_meta", "timestamp": "2026-01-01T10:00:00Z",
@@ -72,17 +73,13 @@ def _write(path, lines) -> None:
 
 
 def _seed_prefix_import(archive_home, lines, name, source_id) -> int:
-    """Import as the pre-fix importer did — blind to every model-naming line.
-
-    The stub is scoped to its own MonkeyPatch context, NOT undone on the fixture's:
-    ``archive_home``'s tmp home is itself a monkeypatched env var, so a shared
-    ``undo()`` would unpin the home mid-test and point the run at the real archive.
-    """
+    """Import for real, then age store and truth into the pre-fix importer's shape —
+    blind to every model-naming line, every turn left on the bare placeholder."""
     f = archive_home / name
     _write(f, lines)
-    with pytest.MonkeyPatch.context() as mp:
-        mp.setattr(codex_mod, "codex_line_model", lambda line: None)
-        return import_codex_session_incremental(f, source_id).thread_id
+    tid = import_codex_session_incremental(f, source_id).thread_id
+    age_codex_thread_to_placeholder(tid)
+    return tid
 
 
 def _models(thread_id: int) -> list[tuple[str, str]]:
@@ -203,7 +200,7 @@ def test_thread_naming_no_model_is_left_alone(archive_home) -> None:
     assert {m for _, m in _models(tid)} == {"codex"}, "unrecoverable stays honest, not guessed"
 
 
-def test_rollout_answers_what_the_archive_cannot(archive_home, monkeypatch) -> None:
+def test_rollout_answers_what_the_archive_cannot(archive_home, tmp_path, monkeypatch) -> None:
     """A thread imported before the importer preserved unmodeled lines holds no
     turn_context block at all — its only surviving record of the model is Codex's own
     session file, which the backfill replays through the same importer path."""
@@ -212,9 +209,7 @@ def test_rollout_answers_what_the_archive_cannot(archive_home, monkeypatch) -> N
                 and ln["payload"].get("type") != "thread_settings_applied"]
     tid = _seed_prefix_import(archive_home, stripped, "codex.jsonl", "s1")
 
-    rollout = archive_home / "rollout-s1.jsonl"
-    _write(rollout, SESSION)  # the full file, still on disk
-    monkeypatch.setattr(mod, "rollout_index", lambda: {"s1": rollout})
+    install_codex_store(tmp_path / "home", {"s1": SESSION}, monkeypatch)  # still on disk
 
     totals = mod.run(apply=True)
     assert totals["threads_repaired"] == 1
@@ -227,7 +222,7 @@ def test_rollout_answers_what_the_archive_cannot(archive_home, monkeypatch) -> N
     ]
 
 
-def test_disagreeing_sources_leave_the_turn_alone(archive_home, monkeypatch) -> None:
+def test_disagreeing_sources_leave_the_turn_alone(archive_home, tmp_path, monkeypatch) -> None:
     """Archive and rollout naming different models for one turn is a bug in one of
     them; the repair has no way to pick, so it skips rather than guesses."""
     init_db()
@@ -235,9 +230,7 @@ def test_disagreeing_sources_leave_the_turn_alone(archive_home, monkeypatch) -> 
 
     lying = [dict(ln, payload=dict(ln["payload"], model="gpt-9-imaginary"))
              if ln["type"] == "turn_context" else ln for ln in SESSION]
-    rollout = archive_home / "rollout-s1.jsonl"
-    _write(rollout, lying)
-    monkeypatch.setattr(mod, "rollout_index", lambda: {"s1": rollout})
+    install_codex_store(tmp_path / "home", {"s1": lying}, monkeypatch)
 
     totals = mod.run(apply=True)
     assert totals["conflicts"] == 2

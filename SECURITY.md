@@ -43,14 +43,14 @@ threat model is correspondingly narrow, and these are its load-bearing walls:
 
 ## The self-update mechanism
 
-Installs cloned from git run `archive self-update` daily by default: it
-fast-forwards the clone to the newest release tag once the tag is 48 hours
-old, reinstalls, smoke-checks, and rolls back on failure. Its trust anchor is
-transport security to the git remote you cloned from — the same trust the
-install itself made. There is no signature layer, so repository compromise is
-the supply-chain risk to weigh: a malicious tag would reach unattended
-installs after the soak window. Mitigations: the 48-hour soak is the yank
-window, the updater never crosses a truth-format bump unattended, never
-touches a tree with local changes, and `{"update": {"enabled": false}}` in
-`config.json` turns the mechanism off entirely (updates then happen only when
-you run `archive self-update` yourself).
+Installs cloned from git check release tags daily by default and report an
+eligible update without applying it. `archive self-update` is the explicit
+mutating operation: it fast-forwards the clone to the newest release tag once
+the tag is 48 hours old, reinstalls, smoke-checks, and rolls back on failure.
+Its trust anchor is transport security to the git remote you cloned from — the
+same trust the install itself made. There is no signature layer, so applying a
+malicious tag is the supply-chain risk to weigh. The updater never crosses a
+truth-format bump without an explicit flag and never touches a tree with local
+changes. `{"update": {"enabled": false}}` disables scheduled checks;
+`{"update": {"auto_apply": true}}` deliberately opts back into unattended
+apply.

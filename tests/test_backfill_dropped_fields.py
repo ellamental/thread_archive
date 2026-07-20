@@ -11,8 +11,9 @@ the script restores exactly the non-content fields, never content identity.
 from __future__ import annotations
 
 import json
-import runpy
+import os
 import sqlite3
+import subprocess
 import sys
 from datetime import datetime, timezone
 
@@ -56,6 +57,8 @@ from thread_archive._scripts.backfill_reconcile import _fresh_events as cc_fresh
 from thread_archive._store import Event, ImportState, Thread, get_session, init_db
 from thread_archive._thread_import.event_builder import ThreadEvent, compute_dedup_key
 
+from .helpers import install_cc_shaped_plugin
+
 # ── Claude-Code-shaped harness (lines fixture) ───────────────────────────────
 
 USAGE = {
@@ -74,8 +77,10 @@ CC_LINES = [
 
 
 @pytest.fixture
-def demo_harness():
-    """A registered provider whose harness writes Claude-Code-shaped JSONL.
+def demo_harness(archive_home, monkeypatch):
+    """A registered provider whose harness writes Claude-Code-shaped JSONL,
+    installed the way a plugin author installs one — declared in ``config.json``
+    and discovered at registry build.
 
     The audit derives its Claude-Code-shaped adapters from the registry, so a
     source is re-parsed exactly when a provider declares that parser. Registering
@@ -83,22 +88,10 @@ def demo_harness():
     source with no adapter isn't audited, and nothing reports that it wasn't.
     """
     from thread_archive import _providers
-    from thread_archive.provider import Provider, claude_code_line_stream
-    from thread_archive.provider.parse import CLAUDE_CODE_CONFIG, register_provider_config
 
-    provider = Provider(
-        name="demo-harness", label="Demo",
-        parser_id="claude-code",
-        parser_config=CLAUDE_CODE_CONFIG.derive("demo-harness"),
-        kind="line-stream",
-        importer=claude_code_line_stream("demo-harness"),
-    )
-    builtin = dict(_providers.registry())
-    register_provider_config(provider.parser_config)
-    with pytest.MonkeyPatch.context() as mp:
-        mp.setattr(_providers, "registry",
-                   lambda *a, **kw: {**builtin, provider.name: provider})
-        yield provider
+    install_cc_shaped_plugin(archive_home, monkeypatch, stores={},
+                             watcherless=["demo-harness"])
+    yield _providers.get("demo-harness")
     _providers.reset()
 
 
@@ -773,31 +766,33 @@ def test_adapters_cover_bespoke_sources_and_registry_cc_sources(demo_harness) ->
 
 
 def test_run_default_discovery_counts_unavailable_sources(archive_home, monkeypatch) -> None:
-    """Without scripted items, ``run`` walks the adapters: a source that yields
-    nothing is counted unavailable, and a source outside the filter is never walked."""
-    walked: list[str] = []
+    """Without scripted items, ``run`` walks the adapters it derives from the
+    registry: a source whose store holds a transcript the archive never imported is
+    counted as a thread it can't reach, a source whose store is empty is counted
+    unavailable, and a source outside the filter is never walked at all."""
+    from thread_archive import _providers
 
-    def _yielding():
-        walked.append("yielding")
-        yield _noop_item("yielding", "never-imported")
+    yielding, empty, filtered = (archive_home / n for n in ("yielding", "empty", "filtered"))
+    for root in (yielding, empty, filtered):
+        root.mkdir()
+    (yielding / "never-imported.jsonl").write_text(
+        "\n".join(json.dumps(x) for x in CC_LINES) + "\n", encoding="utf-8")
+    (filtered / "also-never-imported.jsonl").write_text(
+        "\n".join(json.dumps(x) for x in CC_LINES) + "\n", encoding="utf-8")
 
-    def _empty():
-        walked.append("empty")
-        return iter(())
-
-    def _filtered_out():
-        walked.append("filtered-out")
-        return iter(())
-
-    monkeypatch.setattr(bdf, "adapters", lambda: {
-        "yielding": _yielding, "empty": _empty, "filtered-out": _filtered_out,
-    })
-    init_db()
-    res = run(apply=False, sources={"yielding", "empty"})
-    assert walked == ["yielding", "empty"]
-    assert res["sources"]["empty"]["source_unavailable_or_empty"] == 1
-    assert res["sources"]["yielding"]["no_thread"] == 1
-    assert "source_unavailable_or_empty" not in res["sources"]["yielding"]
+    install_cc_shaped_plugin(archive_home, monkeypatch, stores={
+        "yielding": yielding, "empty": empty, "filtered-out": filtered})
+    try:
+        init_db()
+        res = run(apply=False, sources={"yielding", "empty"})
+        assert res["sources"]["empty"]["source_unavailable_or_empty"] == 1
+        assert res["sources"]["yielding"]["no_thread"] == 1
+        assert "source_unavailable_or_empty" not in res["sources"]["yielding"]
+        # the filtered source was never walked — it has a transcript on disk and
+        # would have reported one too, had the filter let the adapter run
+        assert "filtered-out" not in res["sources"]
+    finally:
+        _providers.reset()
 
 
 def test_iter_cc_like_items_selects_only_its_own_source(archive_home, monkeypatch) -> None:
@@ -805,15 +800,6 @@ def test_iter_cc_like_items_selects_only_its_own_source(archive_home, monkeypatc
     and keeps the ones belonging to the source it was asked about — lazily,
     re-parsing the file only when ``fresh()`` is called."""
     from thread_archive import _providers
-    from thread_archive.provider import Provider, RglobWatcher, claude_code_line_stream
-
-    def _provider(name, root):
-        return Provider(
-            name=name, label=name, parser_id="claude-code", kind="line-stream",
-            importer=claude_code_line_stream(name),
-            watcher=lambda: RglobWatcher(
-                root, claude_code_line_stream(name), lambda p: p.stem, name=name),
-        )
 
     text = "\n".join(json.dumps(x) for x in CC_LINES) + "\n"
     roots = {}
@@ -822,14 +808,15 @@ def test_iter_cc_like_items_selects_only_its_own_source(archive_home, monkeypatc
         root.mkdir()
         (root / f"sid-{name[-1]}.jsonl").write_text(text, encoding="utf-8")
         roots[name] = root
-    monkeypatch.setattr(_providers, "sources_using_parser",
-                        lambda *a, **kw: [_provider(n, r) for n, r in roots.items()])
-
-    items = list(iter_cc_like_items("store-b"))
-    assert [(i.source, i.source_id) for i in items] == [("store-b", "sid-b")]
-    assert items[0].meta is None
-    types = {e.event_type for e in items[0].fresh()}
-    assert "user_message_sent" in types and "api_request_completed" in types
+    install_cc_shaped_plugin(archive_home, monkeypatch, stores=roots)
+    try:
+        items = list(iter_cc_like_items("store-b"))
+        assert [(i.source, i.source_id) for i in items] == [("store-b", "sid-b")]
+        assert items[0].meta is None
+        types = {e.event_type for e in items[0].fresh()}
+        assert "user_message_sent" in types and "api_request_completed" in types
+    finally:
+        _providers.reset()
 
 
 # ── fresh event assembly ─────────────────────────────────────────────────────
@@ -1306,16 +1293,19 @@ def test_claude_science_annotations_and_frame_stats_restored(archive_home) -> No
     assert again["totals"].get("meta_keys_missing", 0) == 0
 
 
-def test_module_is_runnable_as_a_script(archive_home, monkeypatch, capsys) -> None:
-    """``python -m`` is how an operator runs this — the module's own entrypoint
-    dispatches to ``main`` with the process argv. Restricted to a source whose
-    store is absent on this machine, so the sweep is a dry no-op."""
+def test_module_is_runnable_as_a_script(archive_home) -> None:
+    """``python -m`` is how an operator runs this — a real child process, parsing
+    its own argv and dispatching to ``main``. Restricted to one source, pointed at
+    an empty ``$HOME`` so its store is absent and the sweep is a dry no-op."""
     init_db()
-    monkeypatch.setattr(sys, "argv", ["backfill_dropped_fields", "--source", "codex"])
-    # Run it the way the interpreter would — off a cold import, not the copy this
-    # module already holds (runpy warns about executing an already-imported module).
-    monkeypatch.delitem(sys.modules, bdf.__name__)
-    runpy.run_module(bdf.__name__, run_name="__main__")
-    out = capsys.readouterr().out
-    assert "[DRY-RUN] backfill-dropped-fields" in out
-    assert "threads examined:    0" in out
+    empty_home = archive_home / "_no-tools-home"
+    empty_home.mkdir()
+    proc = subprocess.run(
+        [sys.executable, "-m", bdf.__name__, "--source", "codex"],
+        capture_output=True, text=True,
+        env={**os.environ, "HOME": str(empty_home),
+             "THREAD_ARCHIVE_HOME": str(archive_home)},
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert "[DRY-RUN] backfill-dropped-fields" in proc.stdout
+    assert "threads examined:    0" in proc.stdout

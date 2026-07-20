@@ -68,30 +68,59 @@ def test_daemon_run_holds_owner_lock_for_its_lifetime(archive_home) -> None:
         assert owned
 
 
-def test_mcp_maybe_catch_up_throttles_and_respects_env(archive_home, monkeypatch) -> None:
-    from thread_archive import _watcher
-    from thread_archive._mcp import server
+def _await_idle(throttle, what: str) -> None:
+    """Block until the throttle's in-flight pass has finished."""
+    deadline = time.monotonic() + 30.0
+    while time.monotonic() < deadline:
+        if throttle.running.acquire(blocking=False):
+            throttle.running.release()
+            return
+        time.sleep(0.01)
+    raise AssertionError(f"the background pass never finished: {what}")
 
-    calls = []
 
-    def fake_catch_up(*a, **k):
-        calls.append(1)
-        return WatchResult()
+def test_mcp_throttle_drives_a_real_catch_up_pass(archive_home, tmp_path, monkeypatch) -> None:
+    """The MCP server's ingest gate end to end: with a transcript sitting in a
+    store the archive has never read, one kick imports it — and the kill-switch
+    stops that happening at all."""
+    import json
 
-    monkeypatch.setattr(_watcher, "catch_up_once", fake_catch_up)
-    monkeypatch.setattr(server.INGEST, "last", 0.0)
+    from thread_archive import _api as ta
+    from thread_archive._mcp.server import IngestThrottle
 
+    # A machine whose only AI-tool store is one claude-code session.
+    fake_home = tmp_path / "machine"
+    sess = fake_home / ".claude" / "projects" / "proj"
+    sess.mkdir(parents=True)
+    (sess / "s1.jsonl").write_text("\n".join(json.dumps(ln) for ln in (
+        {"type": "user", "uuid": "u1", "timestamp": "2026-01-01T10:00:00Z",
+         "cwd": "/proj", "message": {"role": "user", "content": "lazy ingest please"}},
+        {"type": "assistant", "uuid": "a1", "timestamp": "2026-01-01T10:00:05Z",
+         "message": {"role": "assistant", "model": "claude-opus-4",
+                     "content": [{"type": "text", "text": "done"}]}},
+    )) + "\n", encoding="utf-8")
+    monkeypatch.setenv("HOME", str(fake_home))
+
+    throttle = IngestThrottle()
     monkeypatch.setenv("THREAD_ARCHIVE_MCP_INGEST", "0")
-    server._maybe_catch_up()
-    assert not calls
+    throttle.maybe_catch_up()
+    assert throttle.last == 0.0  # kill-switch: nothing claimed, nothing run
+    assert not ta.search("lazy ingest")
 
     monkeypatch.delenv("THREAD_ARCHIVE_MCP_INGEST")
-    server._maybe_catch_up()
-    deadline = time.monotonic() + 5.0
-    while not calls and time.monotonic() < deadline:
-        time.sleep(0.01)
-    assert len(calls) == 1
-    # Within the throttle window: no second pass.
-    server._maybe_catch_up()
+    throttle.maybe_catch_up()
+    first = throttle.last
+    assert first > 0.0
+    _await_idle(throttle, "the enabled kick")
+    ta.close()  # the pass ran on its own thread; reopen to read what it wrote
+    assert ta.search("lazy ingest")
+
+    # Within the throttle window: no second pass, whatever else arrives.
+    (sess / "s2.jsonl").write_text(json.dumps(
+        {"type": "user", "uuid": "u2", "timestamp": "2026-01-01T11:00:00Z",
+         "cwd": "/proj", "message": {"role": "user", "content": "second session"}},
+    ) + "\n", encoding="utf-8")
+    throttle.maybe_catch_up()
+    assert throttle.last == first
     time.sleep(0.1)
-    assert len(calls) == 1
+    assert not ta.search("second session")

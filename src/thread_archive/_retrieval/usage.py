@@ -20,7 +20,7 @@ not archive data, and no backup/verify path depends on it.
 
 Append-only JSONL, advisory, fail-soft — a ledger write must never break the
 retrieval call it describes. ``THREAD_ARCHIVE_USAGE_LOG=0`` disables it. The
-file self-rotates: at ``MAX_BYTES`` the current file is renamed to
+file self-rotates: at ``max_bytes()`` the current file is renamed to
 ``retrieval-usage.jsonl.1`` (replacing any previous rotation) and a fresh file
 starts — bounded disk, and at observed agent volumes the window still spans
 months.
@@ -40,8 +40,17 @@ logger = logging.getLogger(__name__)
 
 LEDGER_FILE = "retrieval-usage.jsonl"
 
-MAX_BYTES = 32 * 1024 * 1024  # rotate at 32 MB; .1 keeps one prior window
 _MAX_RESULT_IDS = 20  # per-search result ids retained — enough to judge rank quality
+
+
+def max_bytes() -> int:
+    """Size at which the ledger rotates to ``.jsonl.1`` (32 MB by default).
+
+    Read per call from ``THREAD_ARCHIVE_USAGE_MAX_BYTES``, like ``_enabled()``
+    beside it: a constant would answer once at import and ignore any later word
+    on it.
+    """
+    return int(os.environ.get("THREAD_ARCHIVE_USAGE_MAX_BYTES") or 32 * 1024 * 1024)
 
 
 def _enabled() -> bool:
@@ -55,7 +64,7 @@ def _append(record: dict) -> None:
     try:
         path = resolve_paths().home / LEDGER_FILE
         try:
-            if path.stat().st_size >= MAX_BYTES:
+            if path.stat().st_size >= max_bytes():
                 path.replace(path.with_suffix(".jsonl.1"))
         except FileNotFoundError:
             pass

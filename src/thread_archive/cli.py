@@ -959,12 +959,17 @@ def report_status(st: dict) -> int:
         print("ingest:  no pass recorded")
     u = st.get("last_self_update")
     if u:
-        # Only ever printed once a self-update check has run (clone installs
-        # with the mechanism enabled) — the line is how an operator discovers
-        # both the mechanism and why it stopped acting.
+        # Only ever printed once a release check has run. Scheduled checks are
+        # non-mutating by default; the line names an available release so the
+        # operator can choose when to apply it.
         action = u.get("action", "?")
         if action == "updated":
             print(f"update:  {u.get('reason')} {u['at']} ({_age(u['at'])})")
+        elif action == "update":
+            print(
+                f"update:  {u.get('tag')} available — run `archive self-update` "
+                f"to apply; checked {u['at']} ({_age(u['at'])})"
+            )
         elif u.get("ok"):
             print(f"update:  {action} (v{u.get('current')}) checked {u['at']} ({_age(u['at'])})")
         else:
@@ -1182,7 +1187,7 @@ def build_parser() -> argparse.ArgumentParser:
     _add_home_arg(p_self_update)
     p_self_update.add_argument(
         "--check", action="store_true",
-        help="report what a scheduled run would do; change nothing",
+        help="fetch release tags and report availability; do not change the clone",
     )
     p_self_update.add_argument(
         "--allow-format-bump", action="store_true",

@@ -85,7 +85,7 @@ def test_home_switch_does_not_split_the_archive(tmp_path) -> None:
     assert ta.search("different", home=str(home_b))
 
 
-def test_jsonl_write_failure_aborts_the_commit(archive_home, monkeypatch) -> None:
+def test_jsonl_write_failure_aborts_the_commit(archive_home) -> None:
     """If the truth log can't be written, the projection must not commit — so SQLite
     never holds an event the JSONL lacks."""
     init_db()
@@ -93,22 +93,28 @@ def test_jsonl_write_failure_aborts_the_commit(archive_home, monkeypatch) -> Non
         s.add(Thread(id=1, name="t1"))
         s.commit()
 
-    def _boom(*_a, **_k):
-        raise OSError("simulated disk-full while writing truth")
+    # A real unwritable truth: the thread's file has never been created and the
+    # directory it would be created in refuses writes.
+    threads_dir = archive_home / "truth" / jsonl_log.THREADS_SUBDIR
+    threads_dir.mkdir(parents=True, exist_ok=True)
+    assert not any(threads_dir.rglob("*.jsonl"))
+    threads_dir.chmod(0o500)
+    try:
+        with get_session() as s:
+            jsonl_log.write_events(s, [Event(
+                thread_id=1, stream_id="x", event_type="user_message_sent",
+                payload={"content": "must not survive"}, occurred_at=_now(), dedup_key="k1",
+            )])
+            with pytest.raises(OSError):
+                s.commit()  # before_commit drain raises → commit aborts
 
-    monkeypatch.setattr(jsonl_log.drain, "append_line", _boom)
-
-    with get_session() as s:
-        jsonl_log.write_events(s, [Event(
-            thread_id=1, stream_id="x", event_type="user_message_sent",
-            payload={"content": "must not survive"}, occurred_at=_now(), dedup_key="k1",
-        )])
-        with pytest.raises(OSError):
-            s.commit()  # before_commit drain raises → commit aborts
-
-    # The event is in neither store: not committed to SQLite, never written to JSONL.
-    with get_session() as s:
-        assert s.execute(select(Event)).scalars().all() == []
+        # The event is in neither store: not committed to SQLite, never written
+        # to JSONL (the truth dir is still empty).
+        with get_session() as s:
+            assert s.execute(select(Event)).scalars().all() == []
+        assert not any(threads_dir.rglob("*.jsonl"))
+    finally:
+        threads_dir.chmod(0o700)
 
 
 def test_verify_passes_on_a_clean_archive_and_detects_drift(archive_home) -> None:

@@ -336,27 +336,27 @@ def test_backup_generation_falls_back_to_copyfile_without_hardlinks(
     assert list(gen.rglob("*.jsonl"))  # real copied files, not links
 
 
-def test_backup_generation_snapshot_error_never_blocks_mirror(
-    archive_home, tmp_path, monkeypatch
-):
+def test_backup_generation_snapshot_error_never_blocks_mirror(archive_home, tmp_path):
     """A snapshot failure records ``generation_error`` and the mirror still
     completes."""
     import_cc_session(tmp_path)
     dest = tmp_path / "mirror"
     ta.backup(str(dest))
+    ta.backup(str(dest))  # second run: the generations subtree now exists
+    gens = dest / bk._GENERATIONS_SUBDIR
+    assert gens.is_dir()
 
-    real_rename = os.rename
-
-    def _boom_rename(src, dst):
-        if bk._GENERATIONS_SUBDIR in str(dst):
-            raise OSError("publish denied")
-        return real_rename(src, dst)
-
-    monkeypatch.setattr(os, "rename", _boom_rename)
-    res = ta.backup(str(dest))
+    # A real unwritable generations dir (the degraded-destination case): the
+    # snapshot cannot build its tree, but the mirror itself is unaffected.
+    gens.chmod(0o500)
+    try:
+        res = ta.backup(str(dest))
+    finally:
+        gens.chmod(0o700)
     assert res["generation_error"]
     assert res["generation_created"] is None
     assert res["mirror_complete"] is True
+    assert list(gens.iterdir()), "the earlier generation is untouched"
 
 
 def test_backup_reports_missing_dest_files(archive_home, tmp_path, monkeypatch):
@@ -378,22 +378,30 @@ def test_backup_reports_missing_dest_files(archive_home, tmp_path, monkeypatch):
     assert res["mirror_complete"] is False
 
 
-def test_restore_drill_reports_reindex_failure(archive_home, tmp_path, monkeypatch):
+def test_restore_drill_reports_reindex_failure(archive_home, tmp_path):
     """A rebuild that refuses/fails during the drill is the drill's finding —
     reported, not raised."""
+    import json
+
     import_cc_session(tmp_path)
     dest = tmp_path / "mirror"
     ta.backup(str(dest))
 
-    import thread_archive._truth as truth_pkg
+    # Damage the mirror the way a rebuild cannot publish through: a second
+    # thread file claiming the first thread's (unique) name, so the OR REPLACE
+    # load drops the original parent row and orphans its events. The real
+    # relational gate refuses to publish that build.
+    mirrored = next((dest / "threads").rglob("*.jsonl"))
+    meta = next(
+        json.loads(ln) for ln in mirrored.read_text(encoding="utf-8").splitlines()
+        if json.loads(ln)["type"] == "thread"
+    )
+    twin = mirrored.with_name("424242.jsonl")
+    twin.write_text(json.dumps({**meta, "id": 424242}) + "\n", encoding="utf-8")
 
-    def _boom(*a, **k):
-        raise RuntimeError("rebuild refused")
-
-    monkeypatch.setattr(truth_pkg, "reindex", _boom)
     res = ta.restore_drill(str(dest))
     assert res["ok"] is False
-    assert "rebuild refused" in res["error"]
+    assert "refusing to publish" in res["error"]
     # The live archive is reopened and answers normally afterwards.
     assert event_count() > 0
 
@@ -417,20 +425,26 @@ def test_drill_smoke_skips_when_no_content_expected():
     assert out == {"ok": True, "read_ok": False, "search_ok": False}
 
 
-def test_restore_drill_smoke_reports_read_error(archive_home, tmp_path, monkeypatch):
+def test_restore_drill_smoke_reports_read_error(archive_home, tmp_path):
     """A crash in the rebuilt archive's read path is the drill's finding, captured
     as an error rather than propagated."""
     import_cc_session(tmp_path)
-    dest = tmp_path / "mirror"
-    ta.backup(str(dest))
 
-    def _boom(*a, **k):
-        raise RuntimeError("read path broke")
+    # A real unreadable restored archive: the FTS sample comes off the live
+    # archive, but the home the smoke pass reads from has an index that is not a
+    # database at all — exactly what a restore onto damaged bytes would leave.
+    broken = tmp_path / "broken-home"
+    broken.mkdir()
+    (broken / "index.db").write_bytes(b"not a sqlite database at all" * 64)
+    try:
+        res = bk._drill_smoke(str(broken), expect_content=True)
+    finally:
+        ta.open_archive(str(archive_home))
 
-    monkeypatch.setattr(ta, "read_thread", _boom)
-    res = ta.restore_drill(str(dest))
-    assert res["smoke"]["ok"] is False
-    assert "read path broke" in res["smoke"]["error"]
+    assert res["ok"] is False
+    assert res["read_ok"] is False and res["search_ok"] is False
+    assert "DatabaseError" in res["error"]
+    assert event_count() > 0  # the live archive still answers
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -459,18 +473,26 @@ def test_fsync_handle_reopens_uncached_path(tmp_path):
     drain._fsync_handle(p)  # must reopen by fd and fsync without error
 
 
-def test_handle_evicts_lru_beyond_cap(tmp_path, monkeypatch):
-    monkeypatch.setattr(drain, "MAX_OPEN_HANDLES", 1)
+def test_handle_evicts_lru_beyond_cap(tmp_path):
+    """A batch touching more files than the cache holds evicts (and closes) the
+    least-recently-used handles, keeping the open-fd count bounded."""
     drain.reset_handles()
-    p1, p2 = tmp_path / "a.jsonl", tmp_path / "b.jsonl"
-    fh1 = drain._handle(p1)
-    drain.append_line(p1, {"type": "event", "id": 1})
-    fh2 = drain._handle(p2)  # exceeds cap → evicts p1's handle
-    assert str(p1) not in drain._handles
-    assert str(p2) in drain._handles
-    assert fh1.closed  # the evicted handle was closed
-    assert not fh2.closed
-    drain.reset_handles()
+    try:
+        paths = [tmp_path / f"t{i}.jsonl" for i in range(drain.MAX_OPEN_HANDLES + 1)]
+        first, rest = paths[0], paths[1:]
+        fh1 = drain._handle(first)
+        drain.append_line(first, {"type": "event", "id": 1})
+        for p in rest:
+            drain._handle(p)  # the last one pushes past the cap → evicts first
+        assert len(drain._handles) == drain.MAX_OPEN_HANDLES
+        assert str(first) not in drain._handles, "the LRU entry was evicted"
+        assert str(rest[-1]) in drain._handles
+        assert fh1.closed  # the evicted handle was closed
+        assert not drain._handles[str(rest[-1])].closed
+        # Eviction closes but never truncates: the line it flushed is still there.
+        assert first.read_text(encoding="utf-8") == '{"type": "event", "id": 1}\n'
+    finally:
+        drain.reset_handles()
 
 
 def test_intent_committed_none_without_insert_ids():

@@ -52,7 +52,20 @@ def test_snapshot_copies_store_with_manifest_and_source_ids(archive_home, store)
         assert stored.read_bytes() == open(f["path"], "rb").read()
 
 
-def test_snapshot_respects_refresh_window_then_deduplicates(archive_home, store, monkeypatch):
+def _age_generations(source_dir, hours: float):
+    """Rename each generation to a stamp ``hours`` in the past — the snapshot's
+    refresh window is read from the generation names, so this is what an archive
+    whose last snapshot is that old actually looks like on disk."""
+    from datetime import datetime, timedelta, timezone
+
+    when = datetime.now(timezone.utc) - timedelta(hours=hours)
+    for i, gen in enumerate(sorted(p for p in source_dir.iterdir() if p.is_dir())):
+        stamp = (when + timedelta(seconds=i)).strftime(drift_snapshot._STAMP_FMT)
+        gen.rename(source_dir / stamp)
+
+
+def test_snapshot_respects_refresh_window_then_deduplicates(archive_home, store):
+    source_dir = archive_home / "dumps" / "drift" / "demo-source"
     w = _watcher(store)
     first = snapshot_source(w, reason="stale_ingest")
     assert first is not None
@@ -60,23 +73,25 @@ def test_snapshot_respects_refresh_window_then_deduplicates(archive_home, store,
     assert snapshot_source(w, reason="stale_ingest") is None
 
     # window elapsed: only *new or changed* files are copied again
-    monkeypatch.setattr(drift_snapshot, "REFRESH_HOURS", 0.0)
+    _age_generations(source_dir, drift_snapshot.REFRESH_HOURS + 1)
     (store / "c.jsonl").write_text('{"line": 3}\n')
     second = snapshot_source(w, reason="stale_ingest")
-    assert second is not None and second != first
+    assert second is not None
     manifest = json.loads((archive_home / "dumps" / "drift" / "demo-source" /
                            second.rsplit("/", 1)[-1] / "manifest.json").read_text())
     assert [f["path"].rsplit("/", 1)[-1] for f in manifest["files"]] == ["c.jsonl"]
-    # nothing new → no empty generation litter
+    # nothing new → no empty generation litter, even once the window has elapsed again
+    _age_generations(source_dir, drift_snapshot.REFRESH_HOURS + 1)
     assert snapshot_source(w, reason="stale_ingest") is None
     # generations are never auto-deleted: both remain
-    gens = [p for p in (archive_home / "dumps" / "drift" / "demo-source").iterdir()
-            if p.is_dir()]
+    gens = [p for p in source_dir.iterdir() if p.is_dir()]
     assert len(gens) == 2
 
 
 def test_snapshot_bounds_drop_oldest_and_record_it(archive_home, store, monkeypatch):
-    monkeypatch.setattr(drift_snapshot, "MAX_FILES", 1)
+    # The real file cap, turned down through its own knob — the same read the
+    # product makes, so the bound under test is the shipped one.
+    monkeypatch.setenv("THREAD_ARCHIVE_DRIFT_MAX_FILES", "1")
     import os
     import time
 

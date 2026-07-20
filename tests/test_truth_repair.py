@@ -68,12 +68,14 @@ def test_torn_tail_is_repaired_and_cannot_consume_the_next_event(archive_home, t
 
 
 # ── all-or-nothing drain ──────────────────────────────────────────────────────
-def test_drain_failure_rolls_back_every_appended_record(archive_home, monkeypatch) -> None:
+def test_drain_failure_rolls_back_every_appended_record(archive_home) -> None:
     """A mid-drain write failure must leave the truth file exactly as it was — no
     partial batch for a later reindex to resurrect."""
     init_db()
     with get_session() as s:
         s.add(Thread(id=1, name="t1"))
+        s.commit()
+        s.add(Thread(id=2, name="t2"))  # no truth file of its own yet
         s.commit()
         jsonl_log.write_events(s, [Event(
             thread_id=1, stream_id="s0", event_type="user_message_sent",
@@ -84,29 +86,27 @@ def test_drain_failure_rolls_back_every_appended_record(archive_home, monkeypatc
     truth_file = one_thread_file(archive_home)
     baseline = truth_file.read_bytes()
 
-    real_append = jsonl_log.append_line
-    calls = {"n": 0}
-
-    def _fail_second(path, rec):
-        calls["n"] += 1
-        if calls["n"] >= 2:
-            raise OSError("simulated disk-full mid-batch")
-        real_append(path, rec)
-
-    monkeypatch.setattr(jsonl_log.drain, "append_line", _fail_second)
-
-    with get_session() as s:
-        jsonl_log.write_events(s, [
-            Event(thread_id=1, stream_id="s1", event_type="user_message_sent",
-                  payload={"content": "first of failed batch"}, occurred_at=_now(), dedup_key="k1"),
-            Event(thread_id=1, stream_id="s2", event_type="user_message_sent",
-                  payload={"content": "second of failed batch"}, occurred_at=_now(), dedup_key="k2"),
-        ])
-        with pytest.raises(OSError):
-            s.commit()
+    # A real mid-batch write failure: t1's file already exists and appends fine,
+    # but the directory refuses the *creation* of t2's — so the batch's second
+    # record cannot be written after its first one landed.
+    threads_dir = archive_home / "truth" / jsonl_log.THREADS_SUBDIR
+    threads_dir.chmod(0o500)
+    try:
+        with get_session() as s:
+            jsonl_log.write_events(s, [
+                Event(thread_id=1, stream_id="s1", event_type="user_message_sent",
+                      payload={"content": "first of failed batch"}, occurred_at=_now(), dedup_key="k1"),
+                Event(thread_id=2, stream_id="s2", event_type="user_message_sent",
+                      payload={"content": "second of failed batch"}, occurred_at=_now(), dedup_key="k2"),
+            ])
+            with pytest.raises(OSError):
+                s.commit()
+    finally:
+        threads_dir.chmod(0o700)
 
     # Record 1 of the failed batch was truncated away with record 2's failure.
     assert truth_file.read_bytes() == baseline
+    assert [p.name for p in threads_dir.rglob("*.jsonl")] == [truth_file.name]
     with get_session() as s:
         contents = [e.payload["content"] for e in s.execute(select(Event)).scalars()]
     assert contents == ["committed baseline"]

@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import shutil
 import sqlite3
 from datetime import datetime, timezone
@@ -50,8 +51,19 @@ REFRESH_HOURS = 7 * 24.0
 # generation. Comfortably wider than the shortest known provider prune cycle.
 ACTIVE_WINDOW_DAYS = 45.0
 # Per-generation bounds, newest-first, truncation logged.
-MAX_FILES = 2000
 MAX_BYTES = 500 * 1024 * 1024
+
+
+def max_files() -> int:
+    """Files a single generation may copy (2000 by default).
+
+    Read per call from ``THREAD_ARCHIVE_DRIFT_MAX_FILES``: a constant would
+    answer once at import and ignore any later word on it. The cap exists so one
+    pass over a huge store can't run away; a store whose active window really
+    holds more files than this needs the cap raised, or the quarantine covers
+    only its newest slice.
+    """
+    return int(os.environ.get("THREAD_ARCHIVE_DRIFT_MAX_FILES") or 2000)
 
 _STAMP_FMT = "%Y%m%dT%H%M%SZ"
 _SQLITE_MAGIC = b"SQLite format 3\x00"
@@ -153,8 +165,9 @@ def snapshot_source(
     candidates.sort(reverse=True)  # newest first: closest to the prune horizon
     kept: list[tuple[float, Path, int, int]] = []
     total = 0
+    file_cap = max_files()
     for cand in candidates:
-        if len(kept) >= MAX_FILES or total + cand[2] > MAX_BYTES:
+        if len(kept) >= file_cap or total + cand[2] > MAX_BYTES:
             continue
         kept.append(cand)
         total += cand[2]

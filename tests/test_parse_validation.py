@@ -13,7 +13,6 @@ from __future__ import annotations
 import json
 import logging
 
-from thread_archive._importers import _events
 from thread_archive._importers._events import log_parse_validation
 from thread_archive._importers._validation_ledger import (
     LEDGER_FILE,
@@ -140,34 +139,48 @@ _ASSISTANT_LINE = {
 }
 
 
-def test_incremental_import_drives_validation(tmp_path, monkeypatch):
-    """A real incremental claude-code import reaches ``validate_messages`` with the
-    parsed slice and ``batch_safe=True`` — proving the seam is live, not just the
-    helper in isolation."""
+def test_incremental_import_drives_validation(archive_home, caplog):
+    """A real incremental claude-code import reaches the validator with the parsed
+    slice and the partial-slice contract — proving the seam is live, not just the
+    helper in isolation.
+
+    The session carries three findings' worth of material: a block type the parser
+    has gone blind to (``TypeValidator``, batch-safe), a line with no timestamp
+    (``ContentValidator``) and no thinking anywhere (``ThinkingBlockValidator``) —
+    the last two aggregate/whole-conversation checks. Only the batch-safe one may
+    surface, or the incremental path is judging a growing session as if it were
+    finished.
+    """
     from thread_archive._importers import import_session_incremental
     from thread_archive._store import init_db
 
     init_db()
-    calls: list[dict] = []
-    real = _events.validate_messages
+    lines = [
+        _USER_LINE,
+        # a block type the parser has never declared → batch-safe drift
+        {"type": "assistant", "uuid": "a1", "parentUuid": "u1",
+         "timestamp": "2026-01-01T10:00:05Z", "sessionId": "s1",
+         "message": {"role": "assistant", "model": "claude-opus-4",
+                     "content": [{"type": "wobble", "text": "???"}]}},
+        # no timestamp: a ContentValidator finding, and the turn-less thread is a
+        # ThinkingBlockValidator one — both deferred on a slice
+        {"type": "user", "uuid": "u2", "sessionId": "s1",
+         "message": {"role": "user", "content": "no clock"}},
+    ]
+    path = archive_home / "s1.jsonl"
+    path.write_text("\n".join(json.dumps(ln) for ln in lines) + "\n", encoding="utf-8")
 
-    def spy(messages, conversation_id, provider, *, batch_safe=False):
-        calls.append({"n": len(messages), "provider": provider, "batch_safe": batch_safe})
-        return real(messages, conversation_id, provider, batch_safe=batch_safe)
-
-    monkeypatch.setattr(_events, "validate_messages", spy)
-
-    path = tmp_path / "s1.jsonl"
-    path.write_text(
-        "\n".join(json.dumps(ln) for ln in (_USER_LINE, _ASSISTANT_LINE)) + "\n",
-        encoding="utf-8",
-    )
-    result = import_session_incremental(path, "s1")
+    with caplog.at_level(logging.WARNING, logger=_EVENTS_LOGGER):
+        result = import_session_incremental(path, "s1")
 
     assert result.events_created > 0  # the import really ran
-    assert calls, "validate_messages was never reached by the import path"
-    assert all(c["provider"] == "claude-code" and c["batch_safe"] is True for c in calls)
-    assert any(c["n"] > 0 for c in calls)
+    found = _validation_logs(caplog)
+    assert any("Unknown content block type 'wobble'" in m for m in found), \
+        "the validator was never reached by the import path"
+    assert all("claude-code" in m for m in found), "the source provider was not carried in"
+    # the partial-slice contract: the aggregate checks stayed out of it
+    assert not any("lacks created_at" in m for m in found)
+    assert not any("thinking blocks" in m for m in found)
 
 
 # ── the durable surface: findings land on the validation-drift ledger ──────────

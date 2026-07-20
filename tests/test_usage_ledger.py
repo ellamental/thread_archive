@@ -77,7 +77,7 @@ def test_usage_log_disabled_by_env(archive_home, monkeypatch) -> None:
 
 
 def test_usage_log_rotates_at_cap(archive_home, monkeypatch) -> None:
-    monkeypatch.setattr(usage, "MAX_BYTES", 200)
+    monkeypatch.setenv("THREAD_ARCHIVE_USAGE_MAX_BYTES", "200")
     for i in range(20):
         usage.record_read(i)
     rotated = archive_home / "retrieval-usage.jsonl.1"
@@ -89,12 +89,16 @@ def test_usage_log_rotates_at_cap(archive_home, monkeypatch) -> None:
     assert all(r["kind"] == "read" for r in live + old)
 
 
-def test_usage_write_failure_is_fail_soft(archive_home, monkeypatch) -> None:
-    def _boom(*a, **k):
-        raise OSError("disk gone")
+def test_usage_write_failure_is_fail_soft(archive_home) -> None:
+    # A real unwritable ledger path: the name the appender opens is a directory,
+    # so the append raises for real (IsADirectoryError) inside the product.
+    blocked = archive_home / usage.LEDGER_FILE
+    blocked.mkdir()
 
-    monkeypatch.setattr("builtins.open", _boom)
     usage.record_search("q", params={}, hits=[], widened=False)  # must not raise
+    usage.record_read(1)  # nor the second time
+
+    assert blocked.is_dir() and not any(blocked.iterdir()), "nothing was written"
 
 
 def test_mcp_tools_feed_the_ledger(archive_home) -> None:

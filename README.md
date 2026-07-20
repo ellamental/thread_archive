@@ -187,8 +187,8 @@ archive status            # archive health / counts / last verify + backup + dri
 archive daemon <action>   # macOS: install/uninstall/restart/status a LaunchAgent — the always-on
                           #   watcher (default), --mcp the shared server, --backup the nightly
                           #   pipeline (`daemon install --backup --dest <path> [--at HH:MM]`), or
-archive self-update       # fast-forward this clone to the newest released tag (the watcher
-                          #   runs this daily on its own; --check reports without changing anything)
+archive self-update       # explicitly fast-forward this clone to the newest eligible release tag
+                          #   (the watcher checks daily; --check also reports without applying)
 ```
 
 The CLI is private operational tooling (see Stability below) — the process
@@ -377,15 +377,15 @@ wins; ids that were never imported are skipped, not fatal.
   annotations instead of spending result slots (`group='none'` for every hit).
 - **Rebuilds losslessly** — `rm index.db && archive reindex` reconstructs the entire
   index from the JSONL truth; a `cp`/`rsync` of the truth dir *is* the backup.
-- **Updates itself** — provider formats drift, and a parser fix only matters if it
-  reaches the machines that need it. The watcher checks the release tags daily and
-  fast-forwards the clone to the newest tag once it has soaked for 48 hours: fetch →
-  checkout → reinstall → smoke check → daemon restart, rolling back if the new
-  install doesn't stand up. It never touches a tree with local changes, and never
-  crosses a truth-format bump unattended (that needs a human:
-  `archive self-update --allow-format-bump`). Off switch and knobs in `config.json`:
-  `{"update": {"enabled": false, "min_age_hours": 48, "remote": "origin",
-  "check_interval_hours": 24}}`. Wheel installs (no clone) are untouched.
+- **Checks for releases** — provider formats drift, and a parser fix only matters if it
+  reaches the machines that need it. The watcher fetches release tags daily and reports
+  when the newest tag has soaked for 48 hours; applying it is the explicit
+  `archive self-update` operation: checkout → reinstall → smoke check → daemon restart,
+  rolling back if the new install doesn't stand up. It never touches a tree with local
+  changes, and never crosses a truth-format bump without
+  `--allow-format-bump`. Scheduled checks can be disabled with
+  `{"update": {"enabled": false}}`; operators who deliberately want unattended apply
+  can set `{"update": {"auto_apply": true}}`. Wheel installs are untouched.
 - **Redacts without deleting history** — `archive redact` crypto-shreds content
   (truth lines, index rows and free pages, search docs, vectors, citation quotes,
   derived titles) into an encrypted bundle on the append-only redaction log, keyed

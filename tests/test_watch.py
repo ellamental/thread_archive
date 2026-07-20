@@ -271,35 +271,50 @@ def test_watcher_available_filters_missing_sources(archive_home, tmp_path) -> No
     assert "cursor" not in available
 
 
-def test_watch_once_holds_shared_ingest_lock(archive_home, monkeypatch, capsys):
-    """``archive watch --once`` holds the shared ingest lock like every other
-    truth writer, so a concurrent exclusive reindex can't interleave."""
+def test_watch_once_holds_shared_ingest_lock(archive_home, tmp_path, monkeypatch, capsys):
+    """``archive watch --once`` holds the shared ingest lock like every other truth
+    writer, so a concurrent exclusive reindex can't interleave — and it takes it
+    *blocking*: a one-shot has no later pass to retry on, so it waits the rebuild
+    out rather than skipping.
+
+    Driven against a real exclusive hold on the lock file (a distinct fd is a
+    distinct flock owner, even in one process): the verb must park until it is
+    released, then complete and import.
+    """
     import fcntl
     import os
+    import threading
 
     from thread_archive import cli
     from thread_archive._truth.jsonl_log import _reindex_lock_path
-    from thread_archive._watcher.base import WatchResult
 
-    seen = {}
+    machine = tmp_path / "machine"
+    _write_cc(machine / ".claude" / "projects", "myproj", "sess", [USER, ASSISTANT])
+    monkeypatch.setenv("HOME", str(machine))
 
-    def fake_poll(self):
-        # A shared holder must block an exclusive probe (distinct fd = distinct
-        # flock owner, even in-process).
-        fd = os.open(_reindex_lock_path(), os.O_RDWR | os.O_CREAT)
-        try:
-            try:
-                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                seen["locked"] = False
-            except OSError:
-                seen["locked"] = True
-        finally:
-            os.close(fd)
-        return WatchResult()
+    finished = threading.Event()
+    rc = {}
 
-    monkeypatch.setattr(Watcher, "poll_once", fake_poll)
-    assert cli.main(["watch", "--once"]) == 0
-    assert seen["locked"] is True
+    def run_verb():
+        rc["code"] = cli.main(["watch", "--once"])
+        finished.set()
+
+    lock = os.open(_reindex_lock_path(), os.O_RDWR | os.O_CREAT, 0o644)
+    fcntl.flock(lock, fcntl.LOCK_EX)
+    verb = threading.Thread(target=run_verb, name="watch-once", daemon=True)
+    verb.start()
+    try:
+        # Parked on the lock: an unlocked pass would have finished long ago.
+        assert not finished.wait(1.0)
+        assert _event_count() == 0  # nothing landed while the "reindex" held it
+    finally:
+        os.close(lock)  # release → the pass proceeds
+
+    assert finished.wait(30), "the one-shot never completed after the lock cleared"
+    verb.join(5)
+    assert rc["code"] == 0
+    assert _event_count() > 0  # and it really imported once it had the lock
+    assert "watch: checked 1 sources, imported 1 items" in capsys.readouterr().out
 
 
 def test_failed_items_inside_a_db_scan_surface_too(archive_home, tmp_path, monkeypatch) -> None:

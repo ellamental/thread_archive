@@ -63,9 +63,8 @@ def _meta(tid: int) -> dict:
         return s.get(Thread, tid).source_metadata or {}
 
 
-def _run_main(monkeypatch, *argv: str) -> int:
-    monkeypatch.setattr("sys.argv", ["backfill_subagent_type.py", *argv])
-    return mod.main()
+def _run_main(*argv: str) -> int:
+    return mod.main(list(argv))
 
 
 # ── the disk scan ────────────────────────────────────────────────────────────
@@ -152,12 +151,12 @@ def test_unreadable_transcript_is_skipped(claude_home) -> None:
 
 # ── the store pass ───────────────────────────────────────────────────────────
 
-def test_preview_reports_the_plan_without_writing(claude_home, monkeypatch, capsys) -> None:
+def test_preview_reports_the_plan_without_writing(claude_home, capsys) -> None:
     init_db()
     _transcript(claude_home, [_assistant("ag-1", "Explore")])
     tid = _seed_thread("sub-1", {"is_subagent": True, "agent_id": "ag-1"})
 
-    assert _run_main(monkeypatch) == 0
+    assert _run_main() == 0
     out = capsys.readouterr().out
     assert "1 agent ids name their type" in out
     assert "1 to stamp" in out
@@ -166,13 +165,13 @@ def test_preview_reports_the_plan_without_writing(claude_home, monkeypatch, caps
     assert "agent_type" not in _meta(tid), "preview must not write"
 
 
-def test_apply_stamps_store_and_truth_and_is_idempotent(claude_home, monkeypatch, capsys) -> None:
+def test_apply_stamps_store_and_truth_and_is_idempotent(claude_home, capsys) -> None:
     init_db()
     _transcript(claude_home, [_assistant("ag-1", "Explore")])
     tid = _seed_thread("sub-1", {"is_subagent": True, "agent_id": "ag-1",
                                  "parent_thread_id": 99})
 
-    assert _run_main(monkeypatch, "--apply") == 0
+    assert _run_main("--apply") == 0
     assert "stamped agent_type on 1 threads" in capsys.readouterr().out
 
     # Only the one key is added; everything the thread already carried survives.
@@ -186,26 +185,26 @@ def test_apply_stamps_store_and_truth_and_is_idempotent(claude_home, monkeypatch
     assert threads and threads[-1]["source_metadata"]["agent_type"] == "Explore"
 
     # Re-run: the thread is already stamped, so nothing is planned.
-    assert _run_main(monkeypatch, "--apply") == 0
+    assert _run_main("--apply") == 0
     out = capsys.readouterr().out
     assert "1 already stamped" in out
     assert "0 to stamp" in out
     assert "nothing to do" in out
 
 
-def test_hand_corrected_value_survives_a_rerun(claude_home, monkeypatch) -> None:
+def test_hand_corrected_value_survives_a_rerun(claude_home) -> None:
     """A thread that already names a type is left alone even when disk disagrees."""
     init_db()
     _transcript(claude_home, [_assistant("ag-1", "Explore")])
     tid = _seed_thread("sub-1", {"is_subagent": True, "agent_id": "ag-1",
                                  "agent_type": "hand-corrected"})
 
-    assert _run_main(monkeypatch, "--apply") == 0
+    assert _run_main("--apply") == 0
     assert _meta(tid)["agent_type"] == "hand-corrected"
 
 
 def test_rotated_away_transcript_is_unrecoverable_not_guessed(
-    claude_home, monkeypatch, capsys
+    claude_home, capsys
 ) -> None:
     init_db()
     _transcript(claude_home, [_assistant("ag-1", "Explore")])
@@ -213,7 +212,7 @@ def test_rotated_away_transcript_is_unrecoverable_not_guessed(
     # a subagent thread that never recorded an agent_id at all is equally unrecoverable
     idless = _seed_thread("sub-idless", {"is_subagent": True})
 
-    assert _run_main(monkeypatch, "--apply") == 0
+    assert _run_main("--apply") == 0
     out = capsys.readouterr().out
     assert "2 unrecoverable" in out
     assert "agent_type" not in _meta(gone)
@@ -221,7 +220,7 @@ def test_rotated_away_transcript_is_unrecoverable_not_guessed(
 
 
 def test_non_subagent_and_foreign_source_threads_are_never_touched(
-    claude_home, monkeypatch, capsys
+    claude_home, capsys
 ) -> None:
     init_db()
     _transcript(claude_home, [_assistant("ag-1", "Explore")])
@@ -231,7 +230,7 @@ def test_non_subagent_and_foreign_source_threads_are_never_touched(
     other = _seed_thread("cursor-sub", {"is_subagent": True, "agent_id": "ag-1"},
                          source="cursor")
 
-    assert _run_main(monkeypatch, "--apply") == 0
+    assert _run_main("--apply") == 0
     out = capsys.readouterr().out
     assert "0 to stamp" in out
     assert "0 unrecoverable" in out
@@ -240,14 +239,14 @@ def test_non_subagent_and_foreign_source_threads_are_never_touched(
     assert "agent_type" not in _meta(other)
 
 
-def test_preview_list_is_capped_at_ten(claude_home, monkeypatch, capsys) -> None:
+def test_preview_list_is_capped_at_ten(claude_home, capsys) -> None:
     init_db()
     for i in range(12):
         _transcript(claude_home, [_assistant(f"ag-{i}", "Explore")],
                     session=f"sess-{i}", name=f"agent-{i}.jsonl")
         _seed_thread(f"sub-{i}", {"is_subagent": True, "agent_id": f"ag-{i}"})
 
-    assert _run_main(monkeypatch) == 0
+    assert _run_main() == 0
     out = capsys.readouterr().out
     assert "12 to stamp" in out
     assert out.count("agent_type='Explore'") == 10
