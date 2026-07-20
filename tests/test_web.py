@@ -348,6 +348,7 @@ def test_threads_order_by_activity_not_metadata_writes(archive_home):
     _, _, payload = _get("/api/threads", types="conversation,system")
     ids = [t["id"] for t in payload["threads"]]
     assert ids[0] == sub_id  # newest events (2026-01-02) first
+    pytest.importorskip("thread_librarian")
     from thread_librarian.write import set_thread_summary
 
     set_thread_summary(ids[1], summary="curated much later than its last event")
@@ -397,6 +398,7 @@ def test_status_survey_is_cached(archive_home, monkeypatch):
 
 
 def test_curation_endpoint(archive_home):
+    pytest.importorskip("thread_librarian")  # the stats collector lives in the plugin
     _seed(archive_home)
     status, _, payload = _get("/api/curation")
     assert status == 200
@@ -415,6 +417,7 @@ def test_curation_counts_content_free_threads_outside_the_queues(archive_home):
     # A thread with events but no message can never be curated, so it is not
     # backlog — but it must still be counted somewhere, or an ingest fault that
     # produces them is invisible.
+    pytest.importorskip("thread_librarian")  # the stats collector lives in the plugin
     _seed(archive_home)
     from datetime import datetime, timedelta, timezone
 
@@ -527,6 +530,7 @@ def _seed_topics(archive_home):
     """Seed a conversation plus a small curated graph around it: three linked
     topics (a community), one citation of the conversation's user message.
     Returns ``(topic_a, topic_b, topic_c, conversation_id, cited_event_id)``."""
+    pytest.importorskip("thread_librarian")
     from thread_librarian import add_topic_evidence, create_topic, link_threads
 
     _seed(archive_home)
@@ -621,6 +625,7 @@ def test_topic_detail_bad_id_is_404(archive_home):
 
 
 def test_archived_topic_hidden_from_list_but_readable(archive_home):
+    pytest.importorskip("thread_librarian")
     from thread_librarian import archive_topic
 
     a, b, c, _, _ = _seed_topics(archive_home)
@@ -636,6 +641,7 @@ def _tree_ids(node):
 
 
 def test_topic_tree_from_part_of_and_contains(archive_home):
+    pytest.importorskip("thread_librarian")
     from thread_librarian import create_topic, link_threads
 
     a, b, c, conv_id, _ = _seed_topics(archive_home)
@@ -659,6 +665,7 @@ def test_topic_tree_from_part_of_and_contains(archive_home):
 
 
 def test_topic_tree_cycle_is_cut(archive_home):
+    pytest.importorskip("thread_librarian")
     from thread_librarian import link_threads
 
     a, b, _, _, _ = _seed_topics(archive_home)
@@ -672,6 +679,7 @@ def test_topic_tree_cycle_is_cut(archive_home):
 
 
 def test_topic_tree_multi_parent_child_appears_under_each(archive_home):
+    pytest.importorskip("thread_librarian")
     from thread_librarian import create_topic, link_threads
 
     a, b, c, _, _ = _seed_topics(archive_home)
