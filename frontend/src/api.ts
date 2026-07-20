@@ -8,6 +8,9 @@ export interface Status {
   fts_indexed: number
   vectors_indexed: number
   home: string
+  // Whether the optional curation package (thread-librarian) is installed —
+  // gates the viewer's curation page and its nav entry.
+  curation_available: boolean
 }
 
 export interface ThreadListItem {
@@ -426,6 +429,13 @@ export interface CurationRun {
   model: string | null
 }
 
+// The /api/curation payload when the optional curation package is absent —
+// there is nothing curating, so there is nothing to report.
+export interface CurationUnavailable {
+  available: false
+  error?: string
+}
+
 export interface Curation {
   generated_at: string
   days: number
@@ -481,7 +491,7 @@ export const api = {
   topicTree: () => getJSON<TopicTreeResponse>('/api/topics/tree'),
   topic: (id: string) => getJSON<TopicDetail>(`/api/topic/${id}`),
   stats: () => getJSON<Stats>('/api/stats'),
-  curation: () => getJSON<Curation>('/api/curation'),
+  curation: () => getJSON<Curation | CurationUnavailable>('/api/curation'),
   // Model ids can contain '/' (router models), so the name is a percent-encoded
   // path tail, not a query param — the server decodes it back.
   modelStats: (model: string) =>

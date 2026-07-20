@@ -7,6 +7,7 @@ exercise it directly (no sockets) against a seeded throwaway archive.
 
 from __future__ import annotations
 
+import importlib.util
 import json
 
 import pytest
@@ -106,6 +107,26 @@ def test_status_endpoint(archive_home):
     assert status == 200 and ctype == "application/json"
     assert payload["threads"] == 1 and payload["events"] > 0
     assert payload["fts_indexed"] > 0
+    # The viewer gates its curation page on this: it reports the optional
+    # thread-librarian package's drains, so the nav entry must not appear on a
+    # machine that has no curation installed.
+    assert payload["curation_available"] is (
+        importlib.util.find_spec("thread_librarian") is not None
+    )
+
+
+def test_status_reports_curation_unavailable_without_the_package(archive_home, monkeypatch):
+    _seed(archive_home)
+    import thread_archive._web.server as srv
+
+    real = importlib.util.find_spec
+    monkeypatch.setattr(
+        importlib.util, "find_spec",
+        lambda name, *a, **k: None if name == "thread_librarian" else real(name, *a, **k),
+    )
+    srv._survey_cache.clear()
+    _, _, payload = _get("/api/status")
+    assert payload["curation_available"] is False
 
 
 def test_health_endpoint(archive_home):

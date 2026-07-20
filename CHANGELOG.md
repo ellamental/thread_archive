@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- Onboarding-trust fixes from the pre-release product review (2026-07-20). Setup no longer connects an agent to the
+  wrong archive: MCP detection reads `claude mcp get`'s scope/approval status and the entry's `THREAD_ARCHIVE_HOME`
+  instead of accepting any server with a matching name, and both `claude mcp add` and the printed config block pin the
+  home when it isn't the default. `_agent_covers_home` compares the launchd plist's home against the *literal* default
+  rather than the process env — `open_archive` pins the selected home into `$THREAD_ARCHIVE_HOME`, which made a custom
+  home's status claim the default home's watcher, backup, and curation schedules. The watcher offer now discloses that
+  installing it enables daily self-update from release tags, and names the config opt-out. The viewer hides its curation
+  page and nav entry when the optional curation package isn't installed (`/api/status` reports `curation_available`),
+  and the page itself says so instead of erroring. Install docs install the `dev` extra before invoking pytest (it does
+  not ship in the base install), and the provider counts/lists in README and claude-install.md match the registry.
 - Public-release hardening sweep (2026-07-20). The `fix-import` repair spawn drops `bypassPermissions` for a scoped
   surface: `acceptEdits` bounded to the scaffold cwd, a Bash allowlist of the protocol's commands (the venv's bin dir
   now leads the spawn's PATH so bare names resolve), no injected MCP servers; docs state the posture honestly.

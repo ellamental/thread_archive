@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
-import { api, type Curation, type CurationDrain, type CurationRun } from '../api'
+import { api, type Curation, type CurationDrain, type CurationRun, type CurationUnavailable } from '../api'
 import { Tile, fmtInt, fmtTokens } from './StatsView'
 
 // The curation page: what the librarian and gardener drains have done. The two
@@ -195,7 +195,7 @@ function RunTable({ rows }: { rows: CurationRun[] }) {
 }
 
 export function CurationView() {
-  const [data, setData] = useState<Curation | null>(null)
+  const [data, setData] = useState<Curation | CurationUnavailable | null>(null)
   const [err, setErr] = useState<string | null>(null)
 
   useEffect(() => {
@@ -204,6 +204,15 @@ export function CurationView() {
 
   if (err) return <div className="empty">curation stats unavailable: {err}</div>
   if (!data) return <div className="empty">reading the curation queues… (the backlog gate walks every conversation)</div>
+  if ('available' in data) {
+    return (
+      <div className="empty">
+        curation is not installed — it ships as the optional thread-librarian
+        package, which links conversations to topics and writes search-first
+        summaries. This archive works fully without it.
+      </div>
+    )
+  }
 
   const { drains, graph, coverage, uncuratable, activity, runs } = data
   const runTotal = runs.by_day.reduce((a, r) => a + r.librarian + r.gardener, 0)

@@ -27,6 +27,10 @@ export function Sidebar() {
   // Search filters ride with the widget (they render on every page), initialized
   // from the URL so a shared/back-navigated /search address shows its own filters.
   const [showFilters, setShowFilters] = useState(false)
+  // The curation page reports the optional thread-librarian package's drains;
+  // without that package there is nothing behind the link, so it stays hidden
+  // until the status survey says otherwise. Fail-soft: no status, no link.
+  const [curationAvailable, setCurationAvailable] = useState(false)
   const [sources, setSources] = useState<SourceCount[]>([])
   const [source, setSource] = useState(params.get('source') ?? '')
   const [since, setSince] = useState(params.get('since') ?? '')
@@ -35,6 +39,7 @@ export function Sidebar() {
 
   useEffect(() => {
     api.sources().then(setSources).catch(() => {})
+    api.status().then((s) => setCurationAvailable(s.curation_available === true)).catch(() => {})
   }, [])
 
   useEffect(() => {
@@ -152,9 +157,11 @@ export function Sidebar() {
         <Link className={'rail-link' + (pathname === '/stats' ? ' active' : '')} to="/stats">
           stats
         </Link>
-        <Link className={'rail-link' + (pathname === '/curation' ? ' active' : '')} to="/curation">
-          curation
-        </Link>
+        {curationAvailable && (
+          <Link className={'rail-link' + (pathname === '/curation' ? ' active' : '')} to="/curation">
+            curation
+          </Link>
+        )}
       </nav>
       <div className="rail-head">
         <span>Recent</span>

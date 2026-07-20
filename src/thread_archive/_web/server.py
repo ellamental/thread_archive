@@ -330,7 +330,16 @@ def _survey(name: str, compute, ttl: float) -> dict:
 
 
 def _status() -> dict:
-    return _survey("status", api.status, _STATUS_TTL)
+    # curation_available gates the viewer's curation surface: the page reports
+    # the optional thread_librarian package's drains, so without that package
+    # there is nothing to navigate to. Copied, not mutated — the survey dict is
+    # a shared cache entry.
+    import importlib.util
+
+    return {
+        **_survey("status", api.status, _STATUS_TTL),
+        "curation_available": importlib.util.find_spec("thread_librarian") is not None,
+    }
 
 
 def _curation() -> dict:

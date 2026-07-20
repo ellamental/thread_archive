@@ -45,11 +45,12 @@ def console_script(name: str) -> str:
 
 
 def _home_env(home: Optional[str]) -> Optional[dict]:
-    """The env block a server entry needs to serve ``home`` — ``None`` when the
-    target is the default home (an env-less entry already resolves there; the
-    process's own ``$THREAD_ARCHIVE_HOME`` is not consulted, ``open_archive``
-    pins the selected home into it)."""
-    target = resolve_paths(home).home if home else default_home()
+    """The env block a server entry needs to serve ``home`` (arg, else this
+    process's ``$THREAD_ARCHIVE_HOME``, else the default) — ``None`` when the
+    target is the default home, where an env-less entry already resolves. Any
+    other home must be pinned into the entry: the client launches the server
+    with its own environment, not this setup run's."""
+    target = resolve_paths(home).home
     if target == default_home():
         return None
     return {ENV_HOME: str(target)}
@@ -100,7 +101,7 @@ def claude_server_report(
     text = proc.stdout or ""
     if re.search(r"pending approval", text, re.IGNORECASE):
         return False, "the existing entry is still pending approval in claude"
-    target = resolve_paths(home).home if home else default_home()
+    target = resolve_paths(home).home
     m = re.search(rf"{ENV_HOME}=(\S+)", text)
     entry_home = Path(m.group(1)).expanduser() if m else default_home()
     if entry_home != target:
@@ -108,16 +109,6 @@ def claude_server_report(
             f"the existing entry serves {entry_home}, not this archive ({target})"
         )
     return True, None
-
-
-def claude_has_server(
-    cli: str, server: str = SEARCH_SERVER, home: Optional[str] = None
-) -> Optional[bool]:
-    """Whether the claude CLI already has a usable entry for ``home``;
-    ``None`` is never returned anymore but kept in the signature's spirit —
-    an unprobeable CLI reads as unwired."""
-    wired, _ = claude_server_report(cli, home=home, server=server)
-    return wired
 
 
 def wire_claude(cli: str, home: Optional[str] = None) -> list[str]:

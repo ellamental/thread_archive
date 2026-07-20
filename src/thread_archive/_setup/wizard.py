@@ -359,6 +359,9 @@ def _offer_watcher(
         return "already-running"
     _say("Keep it fresh? A background watcher (launchd) tails these stores so new")
     _say("conversations land within seconds, and serves the web viewer at http://127.0.0.1:8787.")
+    _say("It also keeps itself current: about once a day it applies the newest release")
+    _say('tag from the repository this clone came from (self-update; opt out anytime')
+    _say('with {"update": {"enabled": false}} in config.json).')
     answer = ask(
         "  [Enter] install watcher · s = skip (catch-up runs whenever the archive is used)  > ",
         default="", interactive=interactive,
@@ -488,30 +491,34 @@ def _offer_mcp(
     if cli is None:
         _say("Connect your agents: no supported client CLI found (looked for: claude).")
         _say("  MCP config for any client:")
-        _say(_indent(clients.mcp_config_block()))
+        _say(_indent(clients.mcp_config_block(args.home)))
         return "printed"
-    if clients.claude_has_server(cli):
-        _say("Connect your agents: claude already has the archive's MCP server.")
+    wired, problem = clients.claude_server_report(cli, home=args.home)
+    if wired:
+        _say("Connect your agents: claude already has the archive's MCP server"
+             " for this archive.")
         return "already-wired"
     _say("Connect your agents? Found: claude (Claude Code).")
+    if problem:
+        _say(f"  Note: {problem}; wiring adds a user-scope entry for this archive.")
     answer = ask(
         "  [Enter] wire MCP (search/read, user scope) · p = print config only · s = skip  > ",
         default="", interactive=interactive,
     )
     if answer == "p":
-        _say(_indent(clients.mcp_config_block()))
+        _say(_indent(clients.mcp_config_block(args.home)))
         return "printed"
     if answer in ("s", "n", "no"):
         _say("  Skipped — `thread_archive setup` to revisit, or wire any client with:")
-        _say(_indent(clients.mcp_config_block()))
+        _say(_indent(clients.mcp_config_block(args.home)))
         return "skipped"
-    errors = clients.wire_claude(cli)
+    errors = clients.wire_claude(cli, home=args.home)
     if errors:
         _say("  Wiring hit trouble:")
         for err in errors:
             _say(f"    ! {err}")
         _say("  Manual config for any MCP client:")
-        _say(_indent(clients.mcp_config_block()))
+        _say(_indent(clients.mcp_config_block(args.home)))
         return "failed"
     _say("  Wired: thread-archive (search/read), user scope — every Claude Code")
     _say("  session can now search this archive.")

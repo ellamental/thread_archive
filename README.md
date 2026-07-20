@@ -119,6 +119,7 @@ operator CLI and the pre-built web viewer (no node).
 python3 -m venv .venv
 .venv/bin/pip install -e .                 # lexical core (+ Leiden community detection)
 .venv/bin/pip install -e '.[embeddings]'   # optional: local semantic search (pulls torch — sized for a dev machine)
+.venv/bin/pip install -e '.[dev]'          # test/lint toolchain — pytest lives here, not in the base install
 .venv/bin/pytest tests/ -q                 # confirm green (add `-m package` for the wheel/sdist release lane)
 
 # wire the read MCP server into this clone's .mcp.json (absolute venv path)
@@ -343,8 +344,8 @@ wins; ids that were never imported are skipped, not fatal.
 
 ## What it does
 
-- **Ingests 8 agent harnesses** into one event model — Claude Code, Codex, Grok,
-  Antigravity, Cowork (transcript line-streams) and Cursor, OpenCode, Claude
+- **Ingests 9 agent harnesses** into one event model — Claude Code, Codex, Grok,
+  Antigravity, Cowork, cloth (transcript line-streams) and Cursor, OpenCode, Claude
   Science (SQLite scanners). Web chats (claude.ai, ChatGPT, xAI) are the one manual
   path: drop a downloaded account export into `<home>/dumps/` (picked up on the next
   ingest pass) or run `archive import-export <path>` — a redrop merges, importing only

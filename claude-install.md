@@ -41,6 +41,7 @@ The base install already includes Leiden community detection (`leidenalg` + `igr
 
 ```bash
 .venv/bin/archive --version
+.venv/bin/pip install -e '.[dev]'   # pytest ships in the dev extra, not the base install
 .venv/bin/pytest tests/ -q          # must be green before you go further
 ```
 
@@ -89,7 +90,7 @@ An empty archive has nothing to search. Two ways to get conversations in:
   MCP triggers the initial import on its own.)
 - **Import an export or transcript** the human points you at:
   ```bash
-  .venv/bin/archive import <path> --provider <claude-code|codex|grok|antigravity|cursor|opencode>
+  .venv/bin/archive import <path> --provider <name>   # `archive providers` lists them: claude-code, codex, grok, antigravity, cloth, cowork, claude-science, cursor, opencode, …
   ```
 
 Then confirm it landed:

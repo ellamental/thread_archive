@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import builtins
 import contextlib
+import json
 import plistlib
 import subprocess
 import time
@@ -383,7 +384,58 @@ def test_claude_cli_uses_which(monkeypatch) -> None:
     assert clients.claude_cli() is None
 
 
-def test_claude_has_server_true_and_false(monkeypatch) -> None:
+def test_claude_server_report_wired_and_absent(monkeypatch) -> None:
+    monkeypatch.delenv(clients.ENV_HOME, raising=False)  # target = the default home
+    calls = []
+
+    def fake_run(argv, **kw):
+        calls.append(argv)
+        return subprocess.CompletedProcess(
+            argv, 0, "thread-archive:\n  Scope: User\n  Status: ✓ Connected\n", ""
+        )
+
+    monkeypatch.setattr(clients.subprocess, "run", fake_run)
+    assert clients.claude_server_report("/bin/claude") == (True, None)
+    assert calls[0] == ["/bin/claude", "mcp", "get", "thread-archive"]
+
+    monkeypatch.setattr(clients.subprocess, "run",
+                        lambda argv, **kw: subprocess.CompletedProcess(argv, 1, "", ""))
+    assert clients.claude_server_report("/bin/claude") == (False, None)
+
+
+def test_claude_server_report_pending_approval_is_not_wired(monkeypatch) -> None:
+    out = ("thread-archive:\n  Scope: Project config (shared via .mcp.json)\n"
+           "  Status: ⏸ Pending approval (run `claude` to approve)\n")
+    monkeypatch.setattr(clients.subprocess, "run",
+                        lambda argv, **kw: subprocess.CompletedProcess(argv, 0, out, ""))
+    wired, problem = clients.claude_server_report("/bin/claude")
+    assert wired is False
+    assert "pending approval" in problem
+
+
+def test_claude_server_report_home_mismatch(tmp_path, monkeypatch) -> None:
+    monkeypatch.delenv(clients.ENV_HOME, raising=False)  # target = the default home
+    out = (f"thread-archive:\n  Scope: User\n  Environment:\n"
+           f"    THREAD_ARCHIVE_HOME={tmp_path}/other\n")
+    monkeypatch.setattr(clients.subprocess, "run",
+                        lambda argv, **kw: subprocess.CompletedProcess(argv, 0, out, ""))
+    # Entry pinned to another home does not cover the default home…
+    wired, problem = clients.claude_server_report("/bin/claude")
+    assert wired is False and "serves" in problem
+    # …but does cover that home when it is the one being set up.
+    assert clients.claude_server_report(
+        "/bin/claude", home=f"{tmp_path}/other") == (True, None)
+    # An env-less entry serves the default home, not a custom one.
+    plain = "thread-archive:\n  Scope: User\n"
+    monkeypatch.setattr(clients.subprocess, "run",
+                        lambda argv, **kw: subprocess.CompletedProcess(argv, 0, plain, ""))
+    wired, problem = clients.claude_server_report("/bin/claude", home=f"{tmp_path}/mine")
+    assert wired is False and "serves" in problem
+    assert clients.claude_server_report("/bin/claude") == (True, None)
+
+
+def test_wire_claude_and_config_block_carry_custom_home(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(clients, "console_script", lambda n: f"/env/bin/{n}")
     calls = []
 
     def fake_run(argv, **kw):
@@ -391,26 +443,32 @@ def test_claude_has_server_true_and_false(monkeypatch) -> None:
         return subprocess.CompletedProcess(argv, 0, "", "")
 
     monkeypatch.setattr(clients.subprocess, "run", fake_run)
-    assert clients.claude_has_server("/bin/claude") is True
-    assert calls[0] == ["/bin/claude", "mcp", "get", "thread-archive"]
+    home = str(tmp_path / "mine")
+    assert clients.wire_claude("/bin/claude", home=home) == []
+    assert "--env" in calls[0]
+    assert f"THREAD_ARCHIVE_HOME={home}" in calls[0]
+    entry = json.loads(clients.mcp_config_block(home))["mcpServers"]["thread-archive"]
+    assert entry["env"] == {"THREAD_ARCHIVE_HOME": home}
+    # The default home needs no env pin.
+    monkeypatch.delenv(clients.ENV_HOME, raising=False)
+    calls.clear()
+    assert clients.wire_claude("/bin/claude") == []
+    assert "--env" not in calls[0]
+    assert "env" not in json.loads(clients.mcp_config_block())["mcpServers"]["thread-archive"]
 
-    monkeypatch.setattr(clients.subprocess, "run",
-                        lambda argv, **kw: subprocess.CompletedProcess(argv, 1, "", ""))
-    assert clients.claude_has_server("/bin/claude") is False
 
-
-def test_claude_has_server_probe_failure_is_unknown(monkeypatch) -> None:
+def test_claude_server_report_probe_failure_reads_unwired(monkeypatch) -> None:
     def raise_os(argv, **kw):
         raise OSError("no such file")
 
     monkeypatch.setattr(clients.subprocess, "run", raise_os)
-    assert clients.claude_has_server("/bin/claude") is None
+    assert clients.claude_server_report("/bin/claude") == (False, None)
 
     def raise_timeout(argv, **kw):
         raise subprocess.TimeoutExpired(argv, clients._SUBPROCESS_TIMEOUT)
 
     monkeypatch.setattr(clients.subprocess, "run", raise_timeout)
-    assert clients.claude_has_server("/bin/claude") is None
+    assert clients.claude_server_report("/bin/claude") == (False, None)
 
 
 def test_wire_claude_success_adds_read_server(monkeypatch) -> None:
@@ -663,16 +721,16 @@ def test_offer_mcp_no_client_prints_config(archive_home, monkeypatch, capsys) ->
 
 def test_offer_mcp_already_wired(archive_home, monkeypatch, capsys) -> None:
     monkeypatch.setattr(clients, "claude_cli", lambda: "/bin/claude")
-    monkeypatch.setattr(clients, "claude_has_server", lambda cli: True)
+    monkeypatch.setattr(clients, "claude_server_report", lambda cli, home=None: (True, None))
     assert wizard._offer_mcp(_args("setup"), interactive=False) == "already-wired"
     assert "already has the archive's MCP server" in capsys.readouterr().out
 
 
 def test_offer_mcp_print_only_answer(archive_home, monkeypatch, capsys) -> None:
     monkeypatch.setattr(clients, "claude_cli", lambda: "/bin/claude")
-    monkeypatch.setattr(clients, "claude_has_server", lambda cli: False)
+    monkeypatch.setattr(clients, "claude_server_report", lambda cli, home=None: (False, None))
     monkeypatch.setattr(clients, "wire_claude",
-                        lambda cli: pytest.fail("print-only must not wire"))
+                        lambda cli, home=None: pytest.fail("print-only must not wire"))
     assert wizard._offer_mcp(
         _args("setup"), interactive=True,
         ask=lambda prompt, *, default, interactive: "p",
@@ -682,7 +740,7 @@ def test_offer_mcp_print_only_answer(archive_home, monkeypatch, capsys) -> None:
 
 def test_offer_mcp_skip_answer(archive_home, monkeypatch, capsys) -> None:
     monkeypatch.setattr(clients, "claude_cli", lambda: "/bin/claude")
-    monkeypatch.setattr(clients, "claude_has_server", lambda cli: False)
+    monkeypatch.setattr(clients, "claude_server_report", lambda cli, home=None: (False, None))
     assert wizard._offer_mcp(
         _args("setup"), interactive=True,
         ask=lambda prompt, *, default, interactive: "s",
@@ -692,10 +750,10 @@ def test_offer_mcp_skip_answer(archive_home, monkeypatch, capsys) -> None:
 
 def test_offer_mcp_wires_successfully(archive_home, monkeypatch, capsys) -> None:
     monkeypatch.setattr(clients, "claude_cli", lambda: "/bin/claude")
-    monkeypatch.setattr(clients, "claude_has_server", lambda cli: False)
+    monkeypatch.setattr(clients, "claude_server_report", lambda cli, home=None: (False, None))
     wired = {}
 
-    def fake_wire(cli):
+    def fake_wire(cli, home=None):
         wired["cli"] = cli
         return []
 
@@ -707,8 +765,8 @@ def test_offer_mcp_wires_successfully(archive_home, monkeypatch, capsys) -> None
 
 def test_offer_mcp_wiring_failure(archive_home, monkeypatch, capsys) -> None:
     monkeypatch.setattr(clients, "claude_cli", lambda: "/bin/claude")
-    monkeypatch.setattr(clients, "claude_has_server", lambda cli: False)
-    monkeypatch.setattr(clients, "wire_claude", lambda cli: ["thread-archive: nope"])
+    monkeypatch.setattr(clients, "claude_server_report", lambda cli, home=None: (False, None))
+    monkeypatch.setattr(clients, "wire_claude", lambda cli, home=None: ["thread-archive: nope"])
     assert wizard._offer_mcp(_args("setup", "--yes"), interactive=False) == "failed"
     out = capsys.readouterr().out
     assert "Wiring hit trouble" in out
@@ -761,7 +819,10 @@ def test_watcher_running_unreadable_plist_assumes_default(tmp_path, monkeypatch)
     _force_darwin(monkeypatch)
     _fake_launchctl(monkeypatch, 0)
     monkeypatch.setenv("HOME", str(tmp_path))  # no plist under this home
+    monkeypatch.delenv("THREAD_ARCHIVE_HOME", raising=False)
     assert wizard.watcher_running() is True  # loaded, plist unreadable → default wiring
+    # …and default wiring never covers a non-default home.
+    assert wizard.watcher_running(str(tmp_path / "custom")) is False
 
 
 def test_backup_running_non_darwin(monkeypatch) -> None:
@@ -781,13 +842,21 @@ def test_backup_running_no_home_env_reads_as_default(tmp_path, monkeypatch) -> N
     _force_darwin(monkeypatch)
     _fake_launchctl(monkeypatch, 0)
     _install_plist(monkeypatch, tmp_path, BACKUP_LABEL, None)
+    monkeypatch.delenv("THREAD_ARCHIVE_HOME", raising=False)
     assert wizard.backup_running() is True
+    # The process env is not evidence of the agent's home: even with
+    # $THREAD_ARCHIVE_HOME pinned to a custom home (open_archive does this),
+    # the env-less agent still reads as covering only the default home.
+    custom = tmp_path / "custom"
+    monkeypatch.setenv("THREAD_ARCHIVE_HOME", str(custom))
+    assert wizard.backup_running(str(custom)) is False
 
 
 def test_backup_running_unreadable_plist_assumes_default(tmp_path, monkeypatch) -> None:
     _force_darwin(monkeypatch)
     _fake_launchctl(monkeypatch, 0)
     monkeypatch.setenv("HOME", str(tmp_path))  # no plist under this home
+    monkeypatch.delenv("THREAD_ARCHIVE_HOME", raising=False)
     assert wizard.backup_running() is True
 
 
