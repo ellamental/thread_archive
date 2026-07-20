@@ -8,7 +8,7 @@ regression class without carrying anyone's data. The bar is deliberately low:
 against a conversation that is right there — the archive telling its operator
 that part of their own history didn't happen.
 
-The four mechanisms:
+The mechanisms:
 
 - **rare bigram under a frequency flood** — a two-word query whose first token
   is high-frequency must not have its exact-match threads drowned by newer
@@ -22,6 +22,17 @@ The four mechanisms:
 - **one thread cannot monopolize a grouped result pool** — repeated copies of
   one matching prompt must not fill the event-level candidate window before
   deduplication and hide every other matching conversation.
+- **literal identifiers survive split-token floods** — prose containing the
+  tokenizer-equivalent words must not keep an exact underscore identifier out
+  of the pool before the literal-match pass can run.
+- **a copied query is not an answered query** — a lexically strong but explicitly
+  unanswered head must not suppress the cross-encoder that can recognize the
+  differently worded answer below it.
+- **assistant widening is not blocked by one stray token** — a partial user/meta
+  hit must not prevent the MCP default scope from reaching an exact answer in
+  assistant text.
+- **long-document reranking sees the relevant occurrence** — an early incidental
+  query term must not make the cross-encoder miss a later answering passage.
 """
 
 from __future__ import annotations
@@ -66,6 +77,19 @@ def _repeated_user_lines(name: str, day: int, text: str, count: int) -> list[dic
         }
         for i in range(count)
     ]
+
+
+class _MarkerScorer:
+    """Scripted cross-encoder: the document carrying ``marker`` is the answer."""
+
+    def __init__(self, marker: str) -> None:
+        self.marker = marker.lower()
+        self.pools: list[list[list[str]]] = []
+
+    def predict(self, pairs, batch_size, show_progress_bar):
+        pairs = list(pairs)
+        self.pools.append(pairs)
+        return [1.0 if self.marker in doc.lower() else 0.0 for _, doc in pairs]
 
 
 def test_rare_bigram_survives_frequency_flood(tmp_path) -> None:
@@ -133,6 +157,142 @@ def test_duplicate_prompt_flood_cannot_monopolize_grouped_result_pool(tmp_path) 
         f"thread (top-{RECALL_LIMIT} threads: {placed_threads})"
     )
     assert placed_threads.index(answer) < 2
+
+
+@pytest.mark.xfail(
+    reason="split-token MATCH fills the pool before the literal identifier pass",
+    strict=True,
+)
+def test_literal_identifier_survives_split_token_frequency_flood(tmp_path) -> None:
+    # FTS tokenizes an underscore identifier into the same phrase as split prose.
+    # The exact-literal LIKE pass is therefore the only arm that can distinguish
+    # the old implementation record from a large set of newer prose mentions.
+    query = "frobnicate_widget"
+    answer = _import(tmp_path, "identifier-answer", _session_lines(
+        "identifier-answer", 1,
+        "frobnicate_widget owns the retry lock and generation counter",
+        "the literal identifier names the implementation that fixed the race",
+    ))
+    for i in range(30):
+        text = f"frobnicate widget inventory batch {i}"
+        _import(
+            tmp_path,
+            f"identifier-flood-{i}",
+            _repeated_user_lines(f"identifier-flood-{i}", 2, text, 10),
+        )
+
+    assert api.search(
+        query, thread_id=answer, content_types=["user"], rerank=False,
+    )
+    hits = api.search(
+        query, limit=RECALL_LIMIT, content_types=["user"], rerank=False,
+    )
+    placed_threads = [h["thread_id"] for h in hits]
+    assert answer in placed_threads, (
+        f"literal identifier thread {answer} was buried by split-token prose "
+        f"(top-{RECALL_LIMIT} threads: {placed_threads})"
+    )
+    assert placed_threads.index(answer) < 3
+
+
+@pytest.mark.xfail(
+    reason="a strong copied query suppresses the answer-disambiguating reranker",
+    strict=True,
+)
+def test_answer_below_copied_query_still_reaches_reranker(
+    tmp_path, monkeypatch,
+) -> None:
+    from thread_archive._retrieval import rerank, search
+
+    query = "watcher disappearing root cause"
+    answer = _import(tmp_path, "causal-answer", _session_lines(
+        "causal-answer", 1,
+        "the watcher stopped after launchd dropped its KeepAlive lease",
+        "the lost KeepAlive lease was the causal failure",
+    ))
+    copied = _import(tmp_path, "copied-query", _session_lines(
+        "copied-query", 2,
+        "watcher disappearing root cause — copied question; no answer recorded",
+        "investigation not started",
+    ))
+
+    monkeypatch.delenv("THREAD_ARCHIVE_RERANK", raising=False)
+    scorer = _MarkerScorer("KeepAlive lease")
+    scripted = rerank.Reranker(model=scorer)
+    hits = search(
+        query, limit=RECALL_LIMIT, content_types=["user"], reranker=scripted,
+    )
+
+    assert scorer.pools, "the strong copied query incorrectly suppressed reranking"
+    assert hits[0]["thread_id"] == answer
+    assert hits[0]["thread_id"] != copied
+
+
+@pytest.mark.xfail(
+    reason="one literal token blocks the MCP default-scope assistant widening",
+    strict=True,
+)
+def test_partial_default_scope_hit_does_not_hide_assistant_answer(tmp_path) -> None:
+    from thread_archive._mcp.server import thread_search
+
+    query = "capture restart gate"
+    answer = _import(tmp_path, "assistant-answer", _session_lines(
+        "assistant-answer", 1,
+        "please investigate why the recent audio went missing",
+        "the capture restart gate caused the recent audio to disappear",
+    ))
+    _import(tmp_path, "partial-user-hit", _session_lines(
+        "partial-user-hit", 2,
+        "capture inventory checklist",
+        "no restart diagnosis was performed",
+    ))
+
+    # Control: the answer is searchable when assistant text is requested.
+    assert str(answer) in thread_search(query, content_type="text", rerank=False)
+    rendered = thread_search(query, rerank=False)
+    assert str(answer) in rendered, (
+        "one partial default-scope hit prevented widening to the exact assistant answer"
+    )
+
+
+@pytest.mark.xfail(
+    reason="reranking centers a long document on its first incidental term",
+    strict=True,
+)
+def test_long_document_rerank_window_uses_answering_occurrence(
+    tmp_path, monkeypatch,
+) -> None:
+    from thread_archive._retrieval import rerank, search
+
+    query = "watcher restart failure explanation"
+    answer_text = (
+        "watcher mentioned incidentally. "
+        + ("unrelated preface material. " * 300)
+        + "restart failure explanation: the generation barrier rejected stale state"
+    )
+    answer = _import(tmp_path, "long-answer", _session_lines(
+        "long-answer", 1, answer_text, "the later passage contains the conclusion",
+    ))
+    copied = _import(tmp_path, "short-copy", _session_lines(
+        "short-copy", 2,
+        "watcher restart failure explanation — copied question with no conclusion",
+        "no analysis recorded",
+    ))
+
+    monkeypatch.delenv("THREAD_ARCHIVE_RERANK", raising=False)
+    scorer = _MarkerScorer("generation barrier")
+    scripted = rerank.Reranker(model=scorer)
+    hits = search(
+        query, limit=RECALL_LIMIT, content_types=["user"], rerank=True,
+        reranker=scripted,
+    )
+
+    assert scorer.pools
+    assert any(
+        "generation barrier" in doc.lower() for _, doc in scorer.pools[0]
+    ), "the reranker window stopped at an early incidental term"
+    assert hits[0]["thread_id"] == answer
+    assert hits[0]["thread_id"] != copied
 
 
 def test_tool_call_events_are_searchable(tmp_path) -> None:
