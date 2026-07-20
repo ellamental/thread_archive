@@ -261,3 +261,134 @@ def test_main_stdio_warms_when_env_opts_in(monkeypatch) -> None:
     monkeypatch.setenv("THREAD_ARCHIVE_MCP_WARM", "1")
     _drive_main(monkeypatch, ["archive-mcp"])
     assert any(t.name == "archive-warm-models" for t in _RecordingThread.instances)
+
+
+def test_mcp_search_resolves_thread_and_topic_refs(archive_home) -> None:
+    """thread_id / topic_id accept any ref shape and resolve up front; a ref
+    matching nothing says so instead of silently returning zero hits."""
+    f = archive_home / "sess.jsonl"
+    _write_cc(f, [USER, ASSISTANT])
+    ta.import_path(f)
+
+    tid = ta.search("hello")[0]["thread_id"]
+    out = thread_search("hello", thread_id=tid)
+    assert "hello mcp" in out
+    # legacy-shaped ref that matches nothing → explicit not-found, not empty results
+    missing = thread_search("hello", thread_id="999999999")
+    assert "thread 999999999 not found" in missing
+    # topic_id resolves through the same ref machinery
+    resolved = thread_search("hello", topic_id=tid)
+    assert "not found" not in resolved
+    missing_topic = thread_search("hello", topic_id="999999999")
+    assert "topic 999999999 not found" in missing_topic
+
+
+def test_maybe_catch_up_skips_when_a_pass_is_in_flight(monkeypatch) -> None:
+    """One in-flight catch-up per process: while the lock is held, another call
+    returns without recording an attempt."""
+    monkeypatch.delenv("THREAD_ARCHIVE_MCP_INGEST", raising=False)
+    monkeypatch.setattr(server.INGEST, "last", 0.0)
+    assert server.INGEST.running.acquire(blocking=False)
+    try:
+        server._maybe_catch_up()
+        assert server.INGEST.last == 0.0  # bailed before marking the attempt
+    finally:
+        server.INGEST.running.release()
+
+
+class _InlineThread:
+    """threading.Thread stand-in that runs the target synchronously on start()."""
+
+    def __init__(self, target=None, name=None, daemon=None):
+        self.target = target
+
+    def start(self):
+        self.target()
+
+
+def test_maybe_catch_up_swallows_ingest_failure_and_releases(monkeypatch) -> None:
+    """A failing catch-up pass is advisory: it must not raise into the tool call
+    and must release the in-flight lock for the next attempt."""
+    import thread_archive._watcher as watcher
+
+    monkeypatch.delenv("THREAD_ARCHIVE_MCP_INGEST", raising=False)
+    monkeypatch.setattr(server.INGEST, "last", 0.0)
+    monkeypatch.setattr(server.threading, "Thread", _InlineThread)
+
+    def boom():
+        raise RuntimeError("ingest broke")
+
+    monkeypatch.setattr(watcher, "catch_up_once", boom)
+    server._maybe_catch_up()  # must not raise
+    assert server.INGEST.last > 0.0
+    # the lock was released in the finally — the next pass can acquire it
+    assert server.INGEST.running.acquire(blocking=False)
+    server.INGEST.running.release()
+
+
+def test_default_scope_weakness_needs_query_terms() -> None:
+    """A termless query (empty / punctuation-only) can never be judged weak —
+    there is nothing to look for in the top hit."""
+    assert server._default_scope_is_weak([], "") is False
+    assert server._default_scope_is_weak([], "  ") is False
+
+
+def test_degradation_notice_accepts_naive_timestamp(archive_home) -> None:
+    """A verdict whose 'at' has no timezone is read as UTC, and an unknown
+    reason still renders with the generic phrase."""
+    from datetime import datetime, timezone
+
+    now_naive = datetime.now(timezone.utc).replace(tzinfo=None).isoformat()
+    (archive_home / "health.json").write_text(json.dumps({"coverage_last": {
+        "at": now_naive,
+        "degraded": {
+            "grok": {"reason": "capture_skips", "since": "2026-07-01T00:00:00Z"},
+            "mystery": {"reason": "novel_failure"},
+        },
+    }}))
+    notice = server._degradation_notices()
+    assert "grok import is degraded (content is being consumed without importing" in notice
+    assert "since 2026-07-01" in notice
+    # unknown reason → generic phrase, and no dangling "since" for a missing date
+    assert "mystery import is degraded (import degraded)" in notice
+
+
+def test_degradation_notice_fails_soft_on_unparseable_record(archive_home) -> None:
+    """A verdict whose timestamp won't parse yields no notice — retrieval must
+    work identically when health.json is malformed."""
+    (archive_home / "health.json").write_text(json.dumps({"coverage_last": {
+        "at": None,
+        "degraded": {"grok": {"reason": "went_dark"}},
+    }}))
+    assert server._degradation_notices() == ""
+
+
+def test_server_module_is_runnable_as_a_script(monkeypatch) -> None:
+    """``python -m thread_archive._mcp.server`` dispatches to main() — the
+    documented per-client stdio invocation."""
+    import runpy
+
+    from mcp.server.fastmcp import FastMCP
+
+    calls: list[tuple] = []
+    monkeypatch.setattr(sys, "argv", ["archive-mcp"])
+    monkeypatch.setenv("THREAD_ARCHIVE_MCP_INGEST", "0")
+    monkeypatch.setattr(FastMCP, "run", lambda self, *a, **kw: calls.append(a))
+    # Run off a cold import, the way the interpreter would (runpy warns about
+    # executing an already-imported module).
+    monkeypatch.delitem(sys.modules, "thread_archive._mcp.server")
+    runpy.run_module("thread_archive._mcp.server", run_name="__main__")
+    assert calls == [()]  # stdio default: run() with no transport arg
+
+
+def test_maybe_catch_up_throttles_repeat_attempts(monkeypatch) -> None:
+    """A recent attempt suppresses the next one — at most one catch-up kick per
+    interval per process."""
+    import time as _time
+
+    monkeypatch.delenv("THREAD_ARCHIVE_MCP_INGEST", raising=False)
+    monkeypatch.setattr(server.INGEST, "last", _time.monotonic())
+    started: list[object] = []
+    monkeypatch.setattr(server.threading, "Thread", lambda **kw: started.append(kw))
+    server._maybe_catch_up()
+    assert started == []  # throttled: no pass kicked

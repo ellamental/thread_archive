@@ -265,3 +265,53 @@ def test_refresh_resets_when_log_shrinks(archive_home):
         c.execute(text("UPDATE thread_metrics SET input_tokens = 999999"))
 
     assert ta.stats()["overview"]["input_tokens"] == 100  # rebuilt from the real events
+
+
+def test_median_of_empty_is_none():
+    from thread_archive._store._metrics import _median
+
+    assert _median([]) is None
+    assert _median([3]) == 3.0  # odd → middle value
+    assert _median([1, 3]) == 2.0  # even → mean of the middle pair
+
+
+def test_model_stats_tolerates_blank_timestamps(archive_home):
+    """A thread with a blank inserted_at (and a compaction event with a blank
+    occurred_at — legacy/repair artifacts) still gets a session row — it just
+    contributes to no month bucket instead of crashing the drill-down."""
+    ta.open_archive(str(archive_home))
+    from thread_archive._store import get_engine
+    from thread_archive._store._metrics import collect_model_stats
+
+    tid = "01STATSNULL000000000000001"
+    with get_engine().begin() as c:
+        c.execute(
+            text(
+                "INSERT INTO threads (id, name, thread_type, source, archived, inserted_at) "
+                "VALUES (:id, 'null-times', 'conversation', 'demo-harness', 0, '')"
+            ),
+            {"id": tid},
+        )
+        c.execute(
+            text(
+                "INSERT INTO events (thread_id, stream_id, event_type, payload, occurred_at) "
+                "VALUES (:tid, 's0', 'api_request_completed', :p, '')"
+            ),
+            {"tid": tid, "p": json.dumps({"model": "mz", "input_tokens": 10,
+                                          "output_tokens": 1, "thinking_tokens": 0})},
+        )
+        c.execute(
+            text(
+                "INSERT INTO events (thread_id, stream_id, event_type, payload, occurred_at) "
+                "VALUES (:tid, 'c0', 'context_summary', '{}', '')"
+            ),
+            {"tid": tid},
+        )
+
+    d = collect_model_stats("mz")
+    assert d is not None
+    assert d["overview"]["conversations"] == 1
+    assert d["overview"]["first_at"] is None  # no timestamps anywhere
+    assert d["by_month"] == []  # month-less session and compaction bucket nowhere
+    assert d["overview"]["compactions"] == 1  # still counted per-thread
+    assert d["top_sessions"][0]["at"] is None

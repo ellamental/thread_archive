@@ -356,3 +356,92 @@ def test_reindex_cli_runs_in_isolated_home(tmp_path, monkeypatch, capsys) -> Non
     finally:
         jsonl_log.reset_handles()
         _base.close_engine()
+
+
+def test_providers_cli_renders_patch_traits(monkeypatch, capsys) -> None:
+    """`archive providers` labels providers carrying a fix-import patch: active
+    (pinned or not) and retired — the operator's view of the patch lifecycle."""
+    from thread_archive import _config as config
+
+    cfg = {"providers": {
+        "claude-code": {"enabled": True, "patch": {"pinned": True}},
+        "cursor": {"enabled": True, "patch": {}},
+        "codex": {"patch": {"retired": True}},
+        "grok": {"enabled": False, "patch": {}},  # inactive, not retired → no trait
+    }}
+    monkeypatch.setattr(config, "load_config", lambda home=None: cfg)
+    rc = main(["providers"])
+    assert rc == 0
+    out = capsys.readouterr().out
+    lines = {ln.split()[0]: ln for ln in out.splitlines() if ln.strip()}
+    assert "patched (pinned)" in lines["claude-code"]
+    assert "patched" in lines["cursor"] and "(pinned)" not in lines["cursor"]
+    assert "patch retired" in lines["codex"]
+    assert "patch" not in lines["grok"]  # disabled + unretired patch entry says nothing
+
+
+def test_fix_import_activate_dispatches_and_prints_reimport(monkeypatch, capsys) -> None:
+    from thread_archive import _repair
+
+    seen = {}
+    summary = {"reimport": {"watermarks_reset": 2, "poll_events": 5, "snapshot_events": 1}}
+    monkeypatch.setattr(
+        _repair, "activate",
+        lambda provider, home, reimport: seen.update(
+            provider=provider, home=home, reimport=reimport) or summary,
+    )
+    rc = main(["fix-import", "claude-code", "--activate", "--home", "/h"])
+    assert rc == 0
+    assert seen == {"provider": "claude-code", "home": "/h", "reimport": True}
+    out = capsys.readouterr().out
+    assert "re-import: 2 watermark(s) reset, 5 event(s) from the live store, 1 from quarantine snapshots" in out
+    assert "patch active" in out
+
+
+def test_fix_import_scaffold_only_dispatches(monkeypatch, capsys) -> None:
+    from thread_archive import _repair
+
+    monkeypatch.setattr(_repair, "scaffold", lambda provider, home: f"scaffold at /plugins/{provider}")
+    rc = main(["fix-import", "cursor", "--scaffold-only", "--home", "/h"])
+    assert rc == 0
+    assert "scaffold at /plugins/cursor" in capsys.readouterr().out
+
+
+def test_coverage_cli_renders_degraded_and_quarantined(monkeypatch, capsys) -> None:
+    """`archive coverage` prints one remedy line per degraded source and names
+    any quarantined raw-store snapshots."""
+    from thread_archive import _api as api
+
+    result = {
+        "ok": True, "failed": [], "warnings": [],
+        "sources": {}, "disabled": {}, "unwatched": {},
+        "skips": {"total": 0, "recent": 0, "recent_lines": 0, "days": 7.0},
+        "drift": {"total": 0, "recent": 0, "recent_findings": 0, "days": 7.0},
+        "degraded": {
+            "grok": {"reason": "went_dark", "since": "2026-07-10T00:00:00Z"},
+            "chatgpt": {"reason": "capture_skips", "since": None},
+        },
+        "drift_snapshots": {"cursor": "gen-3"},
+    }
+    monkeypatch.setattr(api, "check_coverage", lambda **kw: result)
+    rc = main(["coverage", "--home", "/h"])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "degraded: grok (went_dark since 2026-07-10) — remedy: archive fix-import grok" in out
+    assert "degraded: chatgpt (capture_skips) — remedy: archive fix-import chatgpt" in out
+    assert "quarantined: cursor raw store snapshot → gen-3" in out
+    assert "OK" in out
+
+
+def test_module_is_runnable_as_a_script(monkeypatch, capsys) -> None:
+    """``python -m thread_archive.cli`` dispatches to main() and exits with its
+    return code — no args prints help and exits 0."""
+    import runpy
+    import sys
+
+    monkeypatch.setattr(sys, "argv", ["archive"])
+    monkeypatch.delitem(sys.modules, "thread_archive.cli")
+    with pytest.raises(SystemExit) as exc:
+        runpy.run_module("thread_archive.cli", run_name="__main__")
+    assert exc.value.code == 0
+    assert "archive" in capsys.readouterr().out  # the help text

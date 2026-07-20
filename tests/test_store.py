@@ -252,3 +252,63 @@ def test_import_state_watermark_unique(tmp_path) -> None:
         ).scalar_one()
         assert row.last_line_count == 10
     eng.dispose()
+
+
+def test_add_missing_columns_skips_absent_tables(tmp_path) -> None:
+    # The backfill only ALTERs tables that exist: on a virgin engine (no tables
+    # yet — init_db hasn't run) the pass is a silent no-op, never a CREATE.
+    from sqlalchemy import text
+
+    from thread_archive._store import schema as schema_mod
+
+    eng = build_engine(_dsn(tmp_path))
+    schema_mod._add_missing_columns(eng)  # must not raise or create anything
+    with eng.begin() as conn:
+        tables = {r[0] for r in conn.execute(text("SELECT name FROM sqlite_master WHERE type='table'"))}
+    assert not tables & set(schema_mod._ADDED_COLUMNS)
+    eng.dispose()
+
+
+def test_init_db_raises_when_create_race_never_resolves(tmp_path, monkeypatch) -> None:
+    # The "already exists" retry is bounded: a create_all that keeps failing the
+    # same way (a wedged store, not a transient racer) propagates after the last
+    # attempt instead of looping forever.
+    import pytest
+    from sqlalchemy.exc import OperationalError
+
+    from thread_archive._store import schema as schema_mod
+
+    eng = build_engine(_dsn(tmp_path))
+    calls = {"n": 0}
+
+    def always_races(bind, **kw):
+        calls["n"] += 1
+        raise OperationalError("CREATE TABLE threads", {}, Exception("table threads already exists"))
+
+    monkeypatch.setattr(schema_mod.Base.metadata, "create_all", always_races)
+    with pytest.raises(OperationalError):
+        init_db(eng)
+    assert calls["n"] == 3  # all attempts burned before raising
+    eng.dispose()
+
+
+def test_init_db_propagates_non_race_create_error(tmp_path, monkeypatch) -> None:
+    # Only the "already exists" race is absorbed — any other OperationalError is
+    # a real fault and raises on the first attempt, no retry.
+    import pytest
+    from sqlalchemy.exc import OperationalError
+
+    from thread_archive._store import schema as schema_mod
+
+    eng = build_engine(_dsn(tmp_path))
+    calls = {"n": 0}
+
+    def real_fault(bind, **kw):
+        calls["n"] += 1
+        raise OperationalError("CREATE TABLE threads", {}, Exception("disk I/O error"))
+
+    monkeypatch.setattr(schema_mod.Base.metadata, "create_all", real_fault)
+    with pytest.raises(OperationalError):
+        init_db(eng)
+    assert calls["n"] == 1
+    eng.dispose()
