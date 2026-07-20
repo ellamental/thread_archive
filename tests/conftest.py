@@ -74,19 +74,6 @@ def _isolate_archive(tmp_path, monkeypatch):
     # that would background-import the machine's REAL AI-tool stores and repoint
     # the engine mid-suite. Off; test_lazy_ingest.py exercises it with stubs.
     monkeypatch.setenv("THREAD_ARCHIVE_MCP_INGEST", "0")
-    # Same discipline for the nightly's capture-coverage stage: it enumerates
-    # the machine's REAL AI-tool stores (enabled_watchers + discover), which a
-    # test must never do. Green no-op here; test_capture_coverage.py exercises
-    # the real check with stub watchers, and test_nightly.py re-patches its own
-    # stub to assert the stage wiring.
-    from thread_archive._ops import nightly as _nightly
-
-    monkeypatch.setattr(_nightly, "check_coverage", lambda **kw: {"ok": True})
-    # And for the nightly's source-mirror stage, which sweeps those same real
-    # stores' files into the home. Green no-op here; test_source_mirror.py
-    # exercises the real sweep with stub watchers, and test_nightly.py
-    # re-patches its own stub to assert the stage wiring.
-    monkeypatch.setattr(_nightly, "mirror_sources", lambda **kw: {"ok": True})
     # Model-free suite: no real torch model may load, regardless of installed extras.
     # The product's own off switches, so the pin runs through the same code an
     # operator's `--lexical-only` does (read per call — set here, honored from here on).

@@ -63,8 +63,9 @@ def test_nightly_green_run_records_everything(archive_home, tmp_path, monkeypatc
 
 
 def test_nightly_coverage_stage_is_wired(archive_home, tmp_path, monkeypatch):
-    # conftest no-ops the coverage stage (it enumerates real stores); re-patch a
-    # failing stub to assert the stage runs, fails the night, and records.
+    # A failing stub over the coverage stage: on a sandboxed machine the real
+    # check has no source to fail on, so a red one has to be injected to assert
+    # the stage runs, fails the night, and records.
     import thread_archive._ops.nightly as ops_nightly
 
     _seed(archive_home)
@@ -79,8 +80,8 @@ def test_nightly_coverage_stage_is_wired(archive_home, tmp_path, monkeypatch):
 
 
 def test_nightly_source_mirror_stage_is_wired(archive_home, tmp_path, monkeypatch):
-    # conftest no-ops the source-mirror stage (it sweeps real stores); re-patch
-    # a failing stub to assert the stage runs, fails the night, and records.
+    # A failing stub over the source-mirror stage, for the same reason as the
+    # coverage one above: assert the stage runs, fails the night, and records.
     import thread_archive._ops.nightly as ops_nightly
 
     _seed(archive_home)

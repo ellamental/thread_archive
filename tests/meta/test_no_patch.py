@@ -36,7 +36,6 @@ TESTS_ROOT = Path(__file__).resolve().parent.parent
 # Known patch calls, by path relative to the test root.
 # This mapping can only shrink, never grow.
 BASELINE: dict[str, int] = {
-    "conftest.py": 2,
     "test_backfill_export_annotations.py": 2,
     "test_cli_smoke.py": 3,
     "test_cov_cli.py": 4,

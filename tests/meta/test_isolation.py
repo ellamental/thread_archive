@@ -6,21 +6,25 @@ installed entrypoints), ``~/.config``. The suite gets a throwaway ``$HOME`` and 
 whole product resolves into it.
 
 The redirect is set in ``conftest.py`` at **import** time rather than in a fixture,
-and that timing is the load-bearing part. Modules across this monorepo bake their
-store location into a module-level constant — ``JOBS_DIR``, ``LOG_DIR``,
-``LAUNCH_AGENTS`` — which is evaluated once, when the module is first imported. A
+and that timing is the load-bearing part. Modules across this monorepo bake machine
+locations into module-level constants — a store dir, a plist dir, an installed
+entrypoint's symlink — each evaluated once, when the module is first imported. A
 fixture runs long after that, so it can redirect a call-time ``Path.home()`` and
 still leave every baked constant aimed at the real machine. conftest is imported
 before the test modules that import the product, so a ``$HOME`` set there is the
 one those constants bake against.
 
-Three checks, in the order the isolation can fail:
+Four checks, in the order the isolation can fail:
 
 - ``$HOME`` itself points somewhere throwaway.
 - No environment variable aims back at the real machine's state.
-- No module this product ships holds a path into it. This one imports every
-  module under ``src/`` and reads the constants back, so it catches a store path
-  frozen at import — the leak a ``Path.home()`` check cannot see.
+- No module this product ships holds a path into the real machine. This imports
+  every module under ``src/`` and reads the constants back, so it catches a state
+  path frozen at import — the leak a ``Path.home()`` check cannot see.
+- No module freezes a machine-state path *at all*, even one resolving into the
+  sandbox. Once the redirect lands early enough, a constant baked against the
+  throwaway home is invisible to the check above while being frozen just the
+  same — and it names production again the moment it is imported outside a test.
 
 If this fails, the suite is one ``mkdir`` away from writing to production.
 """
@@ -55,6 +59,15 @@ REAL_STATE_DIRS = (
     REAL_HOME / ".local" / "bin",
     REAL_HOME / ".config",
 )
+
+# The same directories as home-relative tails: ``(".thread",)``,
+# ``("Library", "LaunchAgents")``, ``(".local", "bin")``, ``(".config",)``. The
+# frozen-path check matches these rather than a particular home, because inside an
+# isolated suite every one of them resolves *under the sandbox* — so a frozen
+# constant looks nothing like the real machine while being frozen just the same.
+# Derived from the tuple above rather than restated, so widening the list of live
+# state dirs widens both checks at once and neither can fall behind the other.
+REAL_STATE_TAILS = tuple(d.relative_to(REAL_HOME).parts for d in REAL_STATE_DIRS)
 
 
 def _product_root() -> Path:
@@ -95,22 +108,32 @@ def _hits_real_state(value: object) -> Path | None:
     return None
 
 
-def _frozen_store_paths(value: object) -> Path | None:
-    """The ``~/.thread`` path this value freezes, if it freezes one.
+def _frozen_state_path(value: object) -> Path | None:
+    """The machine-state path this value freezes, if it freezes one.
 
-    Matched on the path component rather than against a particular home, so it
-    holds whichever home is in force — the operator's or a test's sandbox.
+    Matched on the home-relative tail — ``.thread``, ``Library/LaunchAgents``,
+    ``.local/bin``, ``.config`` — rather than against a particular home, so it
+    holds whichever home is in force: the operator's or a test's sandbox.
+
+    The tail must appear as consecutive components, which is what keeps
+    ``/usr/local/bin`` (a system path, and no business of this ratchet) from
+    reading as ``~/.local/bin``.
     """
     if isinstance(value, (list, tuple, set, frozenset)):
-        return next((h for v in value if (h := _frozen_store_paths(v))), None)
+        return next((h for v in value if (h := _frozen_state_path(v))), None)
     if isinstance(value, dict):
-        return next((h for v in value.values() if (h := _frozen_store_paths(v))), None)
+        return next((h for v in value.values() if (h := _frozen_state_path(v))), None)
     if isinstance(value, str):
         if not value.startswith("/"):
             return None
         value = Path(value)
-    if isinstance(value, Path) and ".thread" in value.parts:
-        return value
+    if not isinstance(value, Path):
+        return None
+    parts = value.parts
+    for tail in REAL_STATE_TAILS:
+        span = len(tail)
+        if any(parts[i : i + span] == tail for i in range(len(parts) - span + 1)):
+            return value
     return None
 
 
@@ -196,18 +219,25 @@ def test_no_shipped_module_holds_a_real_machine_path() -> None:
     )
 
 
-def test_no_shipped_module_freezes_a_store_path() -> None:
-    """No module-level constant holds a path under ``~/.thread``.
+def test_no_shipped_module_freezes_a_machine_state_path() -> None:
+    """No module-level constant holds a path into any of the live state dirs.
 
-    The store location is *configuration* — an env override, a test's sandbox, a
-    consumer pointing somewhere else — and a constant answers the question once, at
-    import, then ignores every later word on the subject. Resolve it in a function
-    instead (``jobs_dir()``, ``monitor_dir()``, ``cron_dir()``).
+    Every one of these locations is *configuration* — an env override, a test's
+    sandbox, a consumer pointing somewhere else — and a constant answers the
+    question once, at import, then ignores every later word on the subject.
+    Resolve it in a function instead (``jobs_dir()``, ``launch_agents_dir()``,
+    ``bin_symlink()``).
 
     A frozen *derived* path is worse than a frozen root: move the root and the
     derived paths all still point at the old one, so every caller has to know the
     full list and move each by hand — and whichever it forgets goes on quietly
     reading the real store while the test believes it is sandboxed.
+
+    This is deliberately wider than the real-machine check above, and catches what
+    that one structurally cannot. A suite whose ``$HOME`` redirect lands early
+    enough freezes these constants against the *sandbox*, so they no longer name
+    the operator's machine and the real-path check passes — while an installer
+    holding one still writes to production in every context that is not a test.
     """
     frozen: dict[str, Path] = {}
     for name in _shipped_modules():
@@ -218,12 +248,12 @@ def test_no_shipped_module_freezes_a_store_path() -> None:
         for attr, value in vars(module).items():
             if attr.startswith("__"):
                 continue
-            if hit := _frozen_store_paths(value):
+            if hit := _frozen_state_path(value):
                 frozen[f"{name}.{attr}"] = hit
 
     assert not frozen, (
-        f"these module-level constants freeze a path under ~/.thread: "
-        f"{ {k: str(v) for k, v in frozen.items()} }. Resolve the store in a function "
-        f"so an env override, a test sandbox, or a consumer can actually move it — a "
-        f"constant is an answer given once at import and never revisited."
+        f"these module-level constants freeze a machine-state path: "
+        f"{ {k: str(v) for k, v in frozen.items()} }. Resolve the location in a "
+        f"function so an env override, a test sandbox, or a consumer can actually "
+        f"move it — a constant is an answer given once at import and never revisited."
     )
