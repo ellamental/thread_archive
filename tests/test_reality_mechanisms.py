@@ -33,6 +33,16 @@ The mechanisms:
   assistant text.
 - **long-document reranking sees the relevant occurrence** — an early incidental
   query term must not make the cross-encoder miss a later answering passage.
+- **primary evidence outranks generated synthesis** — a short stored summary must
+  yield to a comparably matching user record instead of winning on density.
+- **substrings are not query terms** — a partial lexical fallback must not turn
+  ``author`` into a strong two-term match for ``auth failure``.
+- **the reranker head includes the rescuable boundary** — a target immediately
+  beyond the fixed cross-encoder pool must not be permanently unreachable.
+- **semantic scopes rank inside the scope** — a lower-similarity in-provider hit
+  must survive a flood of nearer vectors from excluded providers.
+- **reindex preserves placement** — rebuilding derived state must retain the
+  ranked thread order, not merely leave every record findable somewhere.
 """
 
 from __future__ import annotations
@@ -90,6 +100,20 @@ class _MarkerScorer:
         pairs = list(pairs)
         self.pools.append(pairs)
         return [1.0 if self.marker in doc.lower() else 0.0 for _, doc in pairs]
+
+
+class _FixedQueryEmbedder:
+    """Model-free semantic query arm over vectors seeded directly by a test."""
+
+    def __init__(self, vector: list[float]) -> None:
+        self.vector = vector
+
+    def embed_query(self, text: str) -> list[float]:
+        return self.vector
+
+
+def _vector(x: float, y: float = 0.0) -> list[float]:
+    return [x, y] + [0.0] * 766
 
 
 def test_rare_bigram_survives_frequency_flood(tmp_path) -> None:
@@ -293,6 +317,192 @@ def test_long_document_rerank_window_uses_answering_occurrence(
     ), "the reranker window stopped at an early incidental term"
     assert hits[0]["thread_id"] == answer
     assert hits[0]["thread_id"] != copied
+
+
+def test_primary_user_evidence_outranks_generated_summary(tmp_path) -> None:
+    from sqlalchemy import update
+
+    from thread_archive._retrieval import index_thread_meta
+    from thread_archive._store import Thread, use_session
+
+    query = "quartz scheduler rollback"
+    answer = _import(tmp_path, "primary-evidence", _session_lines(
+        "primary-evidence", 1,
+        "quartz scheduler rollback: restore the last durable lease before replay",
+        "the operator recorded the rollback procedure",
+    ))
+    summary_only = _import(tmp_path, "summary-distractor", _session_lines(
+        "summary-distractor", 2,
+        "unrelated maintenance notes",
+        "nothing here discusses the scheduler incident",
+    ))
+    with use_session() as s:
+        s.execute(update(Thread).where(Thread.id == summary_only).values(
+            summary="quartz scheduler rollback",
+        ))
+        s.commit()
+    index_thread_meta()
+
+    hits = api.search(
+        query, limit=RECALL_LIMIT, content_types=["user", "summary"], rerank=False,
+    )
+    assert {answer, summary_only} <= {h["thread_id"] for h in hits}
+    assert hits[0]["thread_id"] == answer
+    assert hits[0]["content_type"] == "user"
+
+
+@pytest.mark.xfail(
+    reason="four-character ranking terms match as substrings inside longer words",
+    strict=True,
+)
+def test_substring_collision_does_not_outrank_real_query_term(tmp_path) -> None:
+    query = "auth failure"
+    answer = _import(tmp_path, "auth-answer", _session_lines(
+        "auth-answer", 1,
+        "auth failed after the refresh token expired",
+        "rotating the token restored login",
+    ))
+    collision = _import(tmp_path, "author-collision", _session_lines(
+        "author-collision", 2,
+        "the author reported a failure in the manuscript review",
+        "the editor requested another draft",
+    ))
+
+    hits = api.search(
+        query, limit=RECALL_LIMIT, content_types=["user"], rerank=False,
+    )
+    assert {answer, collision} <= {h["thread_id"] for h in hits}
+    assert hits[0]["thread_id"] == answer, (
+        "the ranker counted 'auth' inside 'author' and promoted the collision"
+    )
+
+
+@pytest.mark.xfail(
+    reason="the fixed 24-document reranker head cannot rescue position 25",
+    strict=True,
+)
+def test_relevant_hit_just_beyond_rerank_pool_can_be_rescued(
+    tmp_path, monkeypatch,
+) -> None:
+    from thread_archive._retrieval import rank, rerank, search
+
+    query = "orbital cache repair"
+    answer_text = (
+        query + " " + ("background diagnostic material " * 80)
+        + "generation semaphore is the verified resolution"
+    )
+    answer = _import(tmp_path, "rerank-boundary-answer", _session_lines(
+        "rerank-boundary-answer", 1, answer_text, "the semaphore fix was applied",
+    ))
+    for i in range(rank.RERANK_POOL):
+        _import(tmp_path, f"rerank-head-{i}", _session_lines(
+            f"rerank-head-{i}", 2,
+            f"{query} checklist candidate {i}; no resolution recorded",
+            "investigation pending",
+        ))
+
+    monkeypatch.delenv("THREAD_ARCHIVE_RERANK", raising=False)
+    scorer = _MarkerScorer("generation semaphore")
+    scripted = rerank.Reranker(model=scorer)
+    hits = search(
+        query, limit=rank.RERANK_POOL + 1, content_types=["user"], rerank=True,
+        reranker=scripted,
+    )
+
+    assert answer in {h["thread_id"] for h in hits}
+    assert scorer.pools
+    assert any(
+        "generation semaphore" in doc.lower() for _, doc in scorer.pools[0]
+    ), "the answer landed immediately beyond the fixed reranker head"
+    assert hits[0]["thread_id"] == answer
+
+
+def test_semantic_source_scope_ranks_inside_allowed_provider(
+    tmp_path, monkeypatch,
+) -> None:
+    from sqlalchemy import select, update
+
+    from thread_archive._retrieval import search, vectors
+    from thread_archive._store import EventFts, Thread, use_session
+
+    answer = _import(tmp_path, "semantic-scope-answer", _session_lines(
+        "semantic-scope-answer", 1,
+        "the stale projection was rebuilt from its canonical basis",
+        "the recovery completed",
+    ))
+    noise = _import(
+        tmp_path,
+        "semantic-scope-noise",
+        _repeated_user_lines(
+            "semantic-scope-noise", 2, "generic neighboring concept", 120,
+        ),
+    )
+    with use_session() as s:
+        s.execute(update(Thread).where(Thread.id == answer).values(source="cursor"))
+        s.execute(update(Thread).where(Thread.id == noise).values(source="claude-code"))
+        answer_event = s.execute(
+            select(EventFts.event_id).where(
+                EventFts.thread_id == answer, EventFts.content_type == "user",
+            )
+        ).scalar_one()
+        noise_events = list(s.execute(
+            select(EventFts.event_id).where(
+                EventFts.thread_id == noise, EventFts.content_type == "user",
+            )
+        ).scalars())
+        s.commit()
+
+    vectors.ensure_index()
+    vectors.index_vectors([
+        *((event_id, "user", _vector(1.0)) for event_id in noise_events),
+        (answer_event, "user", _vector(0.8, 0.6)),
+    ])
+    monkeypatch.delenv("THREAD_ARCHIVE_EMBED", raising=False)
+    hits = search(
+        "phase-space recovery", limit=RECALL_LIMIT, content_types=["user"],
+        source=["cursor"], rerank=False,
+        embedder=_FixedQueryEmbedder(_vector(1.0)),
+    )
+
+    assert hits and hits[0]["thread_id"] == answer
+    assert all(h["thread_id"] != noise for h in hits)
+
+
+def test_reindex_preserves_ranked_thread_placement(tmp_path) -> None:
+    query = "cobalt ledger recovery"
+    focused = _import(tmp_path, "placement-focused", _session_lines(
+        "placement-focused", 1,
+        "cobalt ledger recovery: replay the durable checkpoint",
+        "checkpoint replay completed",
+    ))
+    _import(tmp_path, "placement-reversed", _session_lines(
+        "placement-reversed", 2,
+        "recovery notes for the ledger in the cobalt service",
+        "notes only",
+    ))
+    _import(tmp_path, "placement-long", _session_lines(
+        "placement-long", 3,
+        query + " " + ("diagnostic dump " * 100),
+        "raw diagnostic material",
+    ))
+    _import(tmp_path, "placement-scattered", _session_lines(
+        "placement-scattered", 4,
+        "cobalt service " + ("unrelated material " * 30) + "ledger recovery",
+        "an inconclusive investigation",
+    ))
+
+    before = api.search(
+        query, limit=RECALL_LIMIT, content_types=["user"], rerank=False,
+    )
+    before_threads = [h["thread_id"] for h in before]
+    assert before_threads and before_threads[0] == focused
+
+    rebuilt = api.reindex()
+    assert rebuilt.get("ok", True) is not False
+    after = api.search(
+        query, limit=RECALL_LIMIT, content_types=["user"], rerank=False,
+    )
+    assert [h["thread_id"] for h in after] == before_threads
 
 
 def test_tool_call_events_are_searchable(tmp_path) -> None:
