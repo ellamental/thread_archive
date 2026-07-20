@@ -1,7 +1,7 @@
 """The knowledge materializer's fold, tested directly at ``apply_event``.
 
-test_kg_write.py proves the fold end-to-end through the curatorial write layer;
-these tests pin :func:`thread_archive._knowledge.materialize.apply_event` itself —
+thread-librarian's test_kg_write.py proves the fold end-to-end through the
+curatorial write layer; these tests pin :func:`thread_archive._knowledge.materialize.apply_event` itself —
 the exact function both the live write and the reindex replay call — against a tmp
 store, using transient event objects shaped like replayed log rows:
 
@@ -129,3 +129,64 @@ def test_unknown_event_type_is_skipped_not_fatal(archive_home, caplog) -> None:
             apply_event(s, _ev("topic.exploded", {"anything": 1}))
             s.commit()
     assert any("unknown event_type" in r.message for r in caplog.records)
+
+
+def test_topic_lifecycle_events_project_metadata(archive_home) -> None:
+    a, _, _ = _seed_topics()
+    with get_session() as s:
+        # created is audit-only: the write path made the thread; nothing to fold.
+        apply_event(s, _ev("topic.created", {"title": "Topic 0"}, entity_id=a))
+        # renamed folds title/description; an empty payload folds to nothing.
+        apply_event(s, _ev("topic.renamed", {"title": "Renamed", "description": "d"}, entity_id=a))
+        apply_event(s, _ev("topic.renamed", {}, entity_id=a))
+        # updated filters to the allowed metadata fields.
+        apply_event(s, _ev("topic.updated", {"fields": {"topic_kind": "concept", "bogus": "x"}},
+                           entity_id=a))
+        apply_event(s, _ev("topic.updated", {"fields": {"bogus": "x"}}, entity_id=a))
+        apply_event(s, _ev("topic.archived", {}, entity_id=a))
+        s.commit()
+
+    with get_session() as s:
+        row = s.get(Thread, a)
+        assert row.title == "Renamed" and row.description == "d"
+        assert row.topic_kind == "concept"
+        assert not hasattr(row, "bogus")
+        assert bool(row.archived) is True
+
+
+def test_merge_repoints_and_collapses_collisions(archive_home) -> None:
+    a, b, c = _seed_topics()
+    with get_session() as s:
+        # a-c exists on BOTH sides of the merge: repointing b's edge collides
+        # and collapses instead of violating the unique key.
+        apply_event(s, _ev("link.created", {"source_thread_id": a, "target_thread_id": c}))
+        apply_event(s, _ev("link.created", {"source_thread_id": b, "target_thread_id": c}))
+        apply_event(s, _ev("evidence.added", {"topic_id": a, "event_id": 7,
+                                              "thread_id": c, "quote": "q"}))
+        apply_event(s, _ev("evidence.added", {"topic_id": b, "event_id": 7,
+                                              "thread_id": c, "quote": "q"}))
+        apply_event(s, _ev("evidence.added", {"topic_id": b, "event_id": 8,
+                                              "thread_id": c, "quote": "q2"}))
+        # A merge onto itself folds to nothing.
+        apply_event(s, _ev("topic.merged", {"from_id": b, "into_id": b}))
+        apply_event(s, _ev("topic.merged", {"from_id": b, "into_id": a}))
+        s.commit()
+
+    with get_session() as s:
+        links = s.execute(select(ThreadLink)).scalars().all()
+        assert len(links) == 1  # b-c collapsed into the existing a-c
+        assert {links[0].source_thread_id, links[0].target_thread_id} == {a, c}
+        evid = s.execute(select(TopicMessage)).scalars().all()
+        # event 7 collided (kept once, on a); event 8 repointed onto a.
+        assert sorted((r.topic_id, r.event_id) for r in evid) == [(a, 7), (a, 8)]
+        assert bool(s.get(Thread, b).archived) is True
+
+
+def test_link_deleted_removes_the_edge(archive_home) -> None:
+    a, b, _ = _seed_topics()
+    with get_session() as s:
+        apply_event(s, _ev("link.created", {"source_thread_id": a, "target_thread_id": b}))
+        apply_event(s, _ev("link.deleted", {"source_thread_id": a, "target_thread_id": b}))
+        s.commit()
+    with get_session() as s:
+        assert s.execute(select(ThreadLink)).scalars().all() == []

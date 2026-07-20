@@ -436,9 +436,7 @@ def test_run_reports_success_when_agent_activates(archive_home, spawned):
 
 
 def test_run_without_claude_leaves_scaffold_and_fails(archive_home, spawned, monkeypatch):
-    from thread_archive import _curation
-
-    monkeypatch.setattr(_curation, "resolve_claude", lambda: None)
+    monkeypatch.setattr(_repair, "resolve_claude", lambda: None)
     assert _repair.run("codex") == 1
     assert not spawned  # no CLI → no spawn
     assert plugin_dir("codex").exists()  # scaffold still ready for by-hand work

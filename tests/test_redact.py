@@ -183,7 +183,7 @@ def test_whole_thread_redaction(tmp_path, archive_home):
 
 def test_citation_quotes_scrubbed_and_restored(tmp_path, archive_home):
     _, eid, tid = _import_secret_session(tmp_path)
-    from thread_archive._knowledge import add_topic_evidence, create_topic
+    from thread_librarian import add_topic_evidence, create_topic
 
     topic = create_topic("Secrets", "test topic")["topic_id"]
     add_topic_evidence(topic, eid, tid, f"my api key is {SECRET}")

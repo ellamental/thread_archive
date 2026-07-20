@@ -67,7 +67,7 @@ ls -l "$REPO/.venv/bin/archive-mcp"
 
 `.mcp.json` is git-ignored (it's machine-specific). The curation surface — the
 `/librarian` skill, its enforcement hook, and the librarian write MCP server —
-is the **archive-librarian plugin** (`plugins/librarian/`), installed in step 6.
+is the **thread-librarian** package (its own repo), installed in step 6.
 
 Also write the thread-family manifest — the discovery record other thread
 products glob for (harmless if none are installed):
@@ -114,7 +114,7 @@ rebuilds it losslessly from the JSONL truth.
 in this directory**, then confirm the server connected (the `thread-archive` tools —
 `thread_search` / `thread_read` — should be available).
 
-## 6. Curate the archive (the archive-librarian plugin)
+## 6. Curate the archive (the thread-librarian plugin)
 
 The archive is searchable now, but unorganized: the topic graph is empty and threads
 have no stored summary until the librarian runs. Per conversation it writes a few
@@ -124,8 +124,9 @@ brings the `/librarian` skill, its one-thread-at-a-time enforcement hook, and th
 librarian write MCP server:
 
 ```bash
-claude plugin marketplace add "$REPO"
-claude plugin install archive-librarian@thread-archive
+# from a thread-librarian clone (sibling of this repo)
+claude plugin marketplace add /path/to/thread-librarian
+claude plugin install archive-librarian@thread-librarian
 ```
 
 **Decision point #2 — ask the human** whether they want curation at all, and if so how
@@ -145,5 +146,5 @@ installed + run, partially run, or skipped). If curation was deferred, tell them
 plugin install above is the way to start it. Also point them at
 `.venv/bin/thread_archive setup` for the always-on upgrades this flow doesn't cover:
 the watcher LaunchAgent and the nightly backup pipeline. (Scheduled self-curation —
-the hourly librarian + daily gardener drains — is `archive daemon install --librarian`
+the hourly librarian + daily gardener drains — is `thread-librarian daemon install --librarian`
 / `--gardener`; it runs headless from the package and doesn't need the plugin.)

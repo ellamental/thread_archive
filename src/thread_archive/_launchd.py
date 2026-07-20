@@ -8,7 +8,7 @@ thread-archive``, and it is what ``host/Makefile install-agent`` delegates to
 for the operator flow (which adds the thread-family manifest on top; the
 manifest writer stays in ``host/``, repo-only by design).
 
-Five agents live here:
+Three agents live here:
 
 * the **watcher** (``com.thread-archive.watcher``) — the always-on live-ingest
   process, which also cohosts the read-only web viewer;
@@ -23,14 +23,10 @@ Five agents live here:
   an already-mounted volume; network shares that drop their mount between runs
   (and the TCC grant a background job needs to touch them) are an outer
   operator layer's concern (a wrapper script), not this builder's.
-* the **librarian** (``com.thread-archive.librarian``) and the **gardener**
-  (``com.thread-archive.gardener``) — the scheduled curation drains
-  (``archive curate librarian|gardener``, see :mod:`._curation`): the
-  librarian hourly on a ``StartInterval``, the gardener daily on a
-  ``StartCalendarInterval`` — both cadences configurable in ``config.json``
-  (``curation.librarian.interval_minutes`` / ``curation.gardener.at``),
-  applied at install. Both are cheap when there's no work (the gate is
-  one SQLite count), so the schedule can stay dense.
+
+The curation drains (``com.thread-archive.librarian`` / ``.gardener``) are the
+thread-librarian plugin's agents, managed by its own ``thread-librarian
+daemon`` command.
 
 macOS only, deliberately (launchd is the product's process manager). Each
 plist mirrors what its agent needs and nothing else: run at login in the Aqua
@@ -51,8 +47,6 @@ from typing import Optional
 WATCHER_LABEL = "com.thread-archive.watcher"
 MCP_LABEL = "com.thread-archive.mcp"
 BACKUP_LABEL = "com.thread-archive.backup"
-LIBRARIAN_LABEL = "com.thread-archive.librarian"
-GARDENER_LABEL = "com.thread-archive.gardener"
 
 # Open-file ceiling for the agents that touch the truth tree. launchd hands a
 # process a soft limit of 256 descriptors, which the truth log's own append-handle
@@ -67,14 +61,6 @@ AGENT_MAX_FILES = 4096
 # working day; launchd runs it on wake if the box was asleep at the mark.
 BACKUP_DEFAULT_HOUR = 4
 BACKUP_DEFAULT_MINUTE = 0
-
-# The librarian drain fires hourly — fresh conversations get curated promptly,
-# and a drained queue costs one SQLite count per fire.
-LIBRARIAN_INTERVAL_S = 3600
-# The gardener fires daily, offset from the 04:00 backup so the two scheduled
-# jobs don't contend.
-GARDENER_DEFAULT_HOUR = 5
-GARDENER_DEFAULT_MINUTE = 0
 
 # The shared MCP server's default loopback bind. Adjacent to the watcher's web
 # viewer (8787); every client's MCP config points here.
@@ -227,77 +213,6 @@ def backup_plist(
         "WorkingDirectory": str(Path.home()),
         "StandardOutPath": str(log_dir / "backup-stdout.log"),
         "StandardErrorPath": str(log_dir / "backup-stderr.log"),
-        "EnvironmentVariables": env,
-    }
-
-
-def librarian_plist(
-    entry: Path,
-    log_dir: Path,
-    *,
-    home: Optional[str] = None,
-    interval: int = LIBRARIAN_INTERVAL_S,
-) -> dict:
-    """The librarian-drain LaunchAgent as a plist dict (pure — no filesystem,
-    no launchctl).
-
-    Runs ``archive curate librarian`` on a ``StartInterval`` — each fire gates
-    on work left before spawning anything, so an idle hour costs one SQLite
-    count.
-    """
-    env = {
-        # The entry's own bin dir first so `archive` resolves its interpreter.
-        # The spawned `claude` CLI is resolved by the curate command itself
-        # (PATH, then ~/.local/bin).
-        "PATH": f"{entry.parent}:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin",
-    }
-    if home:
-        env["THREAD_ARCHIVE_HOME"] = home
-    return {
-        "Label": LIBRARIAN_LABEL,
-        "ProgramArguments": [str(entry), "curate", "librarian"],
-        # A scheduled one-shot: fire on the interval, don't keep it resident.
-        "StartInterval": int(interval),
-        "RunAtLoad": False,
-        "LimitLoadToSessionType": "Aqua",
-        # Unattended curation is never latency-sensitive: let it run nice.
-        "ProcessType": "Background",
-        "WorkingDirectory": str(Path.home()),
-        "StandardOutPath": str(log_dir / "librarian-stdout.log"),
-        "StandardErrorPath": str(log_dir / "librarian-stderr.log"),
-        "EnvironmentVariables": env,
-    }
-
-
-def gardener_plist(
-    entry: Path,
-    log_dir: Path,
-    *,
-    home: Optional[str] = None,
-    hour: int = GARDENER_DEFAULT_HOUR,
-    minute: int = GARDENER_DEFAULT_MINUTE,
-) -> dict:
-    """The gardener-drain LaunchAgent as a plist dict (pure — no filesystem,
-    no launchctl).
-
-    Runs ``archive curate gardener`` on a daily ``StartCalendarInterval`` —
-    like the backup, launchd runs a missed fire on the next wake.
-    """
-    env = {
-        "PATH": f"{entry.parent}:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin",
-    }
-    if home:
-        env["THREAD_ARCHIVE_HOME"] = home
-    return {
-        "Label": GARDENER_LABEL,
-        "ProgramArguments": [str(entry), "curate", "gardener"],
-        "StartCalendarInterval": {"Hour": int(hour), "Minute": int(minute)},
-        "RunAtLoad": False,
-        "LimitLoadToSessionType": "Aqua",
-        "ProcessType": "Background",
-        "WorkingDirectory": str(Path.home()),
-        "StandardOutPath": str(log_dir / "gardener-stdout.log"),
-        "StandardErrorPath": str(log_dir / "gardener-stderr.log"),
         "EnvironmentVariables": env,
     }
 
@@ -464,84 +379,6 @@ def restart_backup() -> None:
 
 def backup_status() -> str:
     return _agent_status(BACKUP_LABEL)
-
-
-def resolved_librarian_interval(home: Optional[str] = None) -> int:
-    """The librarian cadence an install applies, seconds: ``config.json``'s
-    ``curation.librarian.interval_minutes`` when set (and valid), else hourly."""
-    from ._curation import librarian_interval
-
-    return librarian_interval(home) or LIBRARIAN_INTERVAL_S
-
-
-def resolved_gardener_schedule(home: Optional[str] = None) -> tuple[int, int]:
-    """The gardener fire time an install applies, ``(hour, minute)``:
-    ``config.json``'s ``curation.gardener.at`` when set (and valid), else the
-    default (offset from the backup's mark)."""
-    from ._curation import gardener_at
-
-    return gardener_at(home) or (GARDENER_DEFAULT_HOUR, GARDENER_DEFAULT_MINUTE)
-
-
-def install_librarian(
-    home: Optional[str] = None, *, interval: Optional[int] = None
-) -> Path:
-    """Write the librarian-drain plist and (re)load the agent. Returns the
-    plist path. ``interval`` (seconds) defaults from config — see
-    :func:`resolved_librarian_interval`; changing the config means
-    reinstalling (the cadence lives in the plist)."""
-    entry = _entry_path("archive")
-    from ._config import resolve_paths
-
-    if interval is None:
-        interval = resolved_librarian_interval(home)
-    log_dir = resolve_paths(home).home / "logs"
-    return _install_agent(
-        LIBRARIAN_LABEL,
-        librarian_plist(entry, log_dir, home=home, interval=interval),
-        home,
-    )
-
-
-def uninstall_librarian() -> None:
-    _uninstall_agent(LIBRARIAN_LABEL)
-
-
-def librarian_status() -> str:
-    return _agent_status(LIBRARIAN_LABEL)
-
-
-def install_gardener(
-    home: Optional[str] = None,
-    *,
-    hour: Optional[int] = None,
-    minute: Optional[int] = None,
-) -> Path:
-    """Write the gardener-drain plist and (re)load the agent. Returns the
-    plist path. ``hour``/``minute`` default from config — see
-    :func:`resolved_gardener_schedule`; changing the config means
-    reinstalling (the cadence lives in the plist)."""
-    entry = _entry_path("archive")
-    from ._config import resolve_paths
-
-    if hour is None or minute is None:
-        cfg_hour, cfg_minute = resolved_gardener_schedule(home)
-        hour = cfg_hour if hour is None else hour
-        minute = cfg_minute if minute is None else minute
-    log_dir = resolve_paths(home).home / "logs"
-    return _install_agent(
-        GARDENER_LABEL,
-        gardener_plist(entry, log_dir, home=home, hour=hour, minute=minute),
-        home,
-    )
-
-
-def uninstall_gardener() -> None:
-    _uninstall_agent(GARDENER_LABEL)
-
-
-def gardener_status() -> str:
-    return _agent_status(GARDENER_LABEL)
 
 
 def backup_agent_dest() -> Optional[str]:

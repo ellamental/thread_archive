@@ -16,13 +16,14 @@ import pytest
 
 from thread_archive import _api as ta
 from thread_archive._knowledge import (
-    add_topic_evidence,
-    create_topic,
-    link_threads,
     topic_get,
     topic_members,
     topic_thread_ids,
 )
+
+pytest.importorskip("thread_librarian")  # seeds the curated data plane
+from thread_librarian import add_topic_evidence, create_topic, link_threads  # noqa: E402
+
 from thread_archive._retrieval import index_events, read_thread, search
 from thread_archive._store import Event, Thread, get_session
 
@@ -155,7 +156,7 @@ def test_search_topic_scope_empty_or_bogus_matches_nothing(archive_home) -> None
 
 # ── librarian MCP tool wiring ─────────────────────────────────────────────────
 def test_librarian_topic_get_and_members_tools(archive_home) -> None:
-    from thread_archive._mcp import librarian as L
+    from thread_librarian import mcp_server as L
 
     topic, _, conv_a, _, _, ev_a, _ = _seed_topic_with_evidence()
 

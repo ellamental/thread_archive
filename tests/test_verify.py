@@ -276,7 +276,7 @@ def test_shallow_verify_scans_kg_log(archive_home, tmp_path) -> None:
     """A damaged curation-log line fails the daily verify, not just the weekly
     deep pass — kg_events.jsonl is the curation history's only truth."""
     import_cc_session(tmp_path)
-    from thread_archive._knowledge.write import create_topic
+    from thread_librarian.write import create_topic
 
     create_topic("Auth", "authentication concerns")
     v = ta.verify()
@@ -293,7 +293,7 @@ def test_shallow_verify_scans_kg_log(archive_home, tmp_path) -> None:
 
 def test_shallow_verify_fails_on_kg_drift(archive_home, tmp_path) -> None:
     import_cc_session(tmp_path)
-    from thread_archive._knowledge.write import create_topic
+    from thread_librarian.write import create_topic
 
     create_topic("Auth")
     # Empty the log: the table holds a kg event the truth lacks — the forbidden
@@ -307,7 +307,7 @@ def test_shallow_verify_fails_on_kg_drift(archive_home, tmp_path) -> None:
 
 def test_deep_verify_flags_kg_content_mismatch(archive_home, tmp_path) -> None:
     import_cc_session(tmp_path)
-    from thread_archive._knowledge.write import create_topic
+    from thread_librarian.write import create_topic
 
     create_topic("Auth", "authentication concerns")
     assert ta.verify(deep=True)["deep"]["kg"]["content_mismatch"] == 0

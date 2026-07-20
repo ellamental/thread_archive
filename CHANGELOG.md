@@ -2,6 +2,48 @@
 
 ## Unreleased
 
+- **The curation layer moved out: thread-librarian is its own package.** The
+  gardener's queues (`garden`), the write surface (`write`), the librarian
+  MCP server, the curation drains (`_curation`, prompts included), the
+  librarian/gardener LaunchAgent installers, and the archive-librarian Claude
+  plugin (with the repo's plugin marketplace) all live in the sibling
+  `thread-librarian` repo now. The archive keeps the knowledge layer's
+  **data plane** — the `KgEvent` truth log and its fold
+  (`_knowledge.materialize`), the projections, and the SQL topic reads search
+  depends on (`_knowledge.read`, which also owns the hierarchy vocabulary) —
+  **and the corpus-graph analytics** (`_knowledge.graph`, `_community`:
+  PageRank, Leiden communities, bridges, peers), which are a pure projection
+  over archive tables and stay wired over every thread; the plugin curates
+  against them and re-exports the read surface for its tools.
+  `api.curation_stats` delegates to the plugin and reports unavailable
+  without it. The `archive curate` verb, the `daemon --librarian/--gardener`
+  flags, and the setup wizard's scheduling step are gone (the wizard now
+  points at the plugin); `_repair` grew its own `resolve_claude`. Decision
+  informed by measurement — see the thread-librarian changelog: no librarian
+  output measurably feeds search ranking, while the organically-used surface
+  is the MCP toolset that moved intact.
+
+- **The knowledge graph projects over the corpus, not just the topic layer.**
+  Since the Neo4j-era migration the analytics graph (PageRank, Leiden
+  communities, bridges, peers) had quietly narrowed to curated topics and
+  topic↔topic links only — conversations were never nodes, links touching a
+  conversation were dropped, and the 30k+ evidence citations carried no graph
+  weight, so "communities" measured the librarian's own link-drawing habits
+  fed back to itself. The projection now admits every thread the curation
+  touches: evidence pairs become topic↔thread edges (weight `1 + ln(citations)`),
+  links with conversation endpoints are kept, and all algorithms run over the
+  full graph (~14.5k nodes / ~40k edges on the live store). Gardener semantics
+  are deliberately preserved — `degree`/`link_count`, singletons, and
+  unconnected-topic queues still count curated topic↔topic links only — and the
+  topic-facing surfaces (communities, peers, bridges) emit topics while corpus
+  nodes shape the numbers; `communities` now also reports the clustered-thread
+  count per cluster, and `knowledge_status` breaks nodes into topics/threads.
+  Betweenness switched to seeded pivot sampling and hop-count distance (it had
+  been passing strength as a networkx *distance*, reading strong links as far
+  apart) and is memoized per projection. The stale `community_members_for`
+  docstring claim of a retrieval caller is gone — retrieval deliberately does
+  not rank with the graph (see `_retrieval/subjects.py`).
+
 - **The log-mined eval survives the ULID migration, and the proof story grew
   teeth.** The `--from-log` miner resolved read refs by integer comparison
   against `threads.id`; ULID primary keys made that intersection empty, so the

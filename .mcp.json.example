@@ -1,5 +1,5 @@
 {
-  "_comment": "Template. Copy to .mcp.json and replace ABSOLUTE_REPO_PATH with this clone's absolute path (the install step does this for you). This is the read-only retrieval server (thread_search / thread_read). The curation write surface is the archive-librarian plugin (plugins/librarian/) — installing it brings its own server wiring.",
+  "_comment": "Template. Copy to .mcp.json and replace ABSOLUTE_REPO_PATH with this clone's absolute path (the install step does this for you). This is the read-only retrieval server (thread_search / thread_read). The curation write surface is the thread-librarian package (its own repo) — installing its plugin brings its own server wiring.",
   "mcpServers": {
     "thread-archive": {
       "command": "ABSOLUTE_REPO_PATH/.venv/bin/archive-mcp",

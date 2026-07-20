@@ -55,7 +55,6 @@ CLI_VERBS = {
     "redact",
     "unredact",
     "daemon",
-    "curate",
     "fix-import",
     "self-update",
 }

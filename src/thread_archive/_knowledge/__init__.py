@@ -1,25 +1,27 @@
-"""Optional knowledge layer: the event-sourced topic graph over ``thread_links``.
+"""The knowledge layer: the corpus graph and the data plane under it.
 
-Two halves over a pure-graph spine (networkx, no Neo4j, no graph server):
+The archive owns the knowledge graph's **data** and its **analytics**:
 
-* **read / analytics** (:mod:`.graph`) — the in-process topic graph: PageRank,
-  communities (Leiden via the base ``leidenalg`` + ``python-igraph``, networkx
-  Louvain as a fail-soft fallback), bridges, peers.
-* **gardener diagnostics** (:mod:`.garden`) — structural-health queues over the
-  live graph: singletons, uncited topics, hierarchy gaps, near-duplicate titles.
-* **write / curation** (:mod:`.write`, :mod:`.materialize`) — the librarian's hands:
-  create topics, link threads, cite evidence, store thread summaries. Every graph
-  mutation is an append-only ``KgEvent`` folded into the projection, so the
-  operation history survives; summaries are thread metadata carried by the thread's
-  own truth record instead.
+* **data plane** — every graph mutation is an append-only ``KgEvent`` in the
+  truth log, folded by :mod:`.materialize` into the ``thread_links`` /
+  ``topic_messages`` projections; :mod:`.read` serves the SQL-only topic reads
+  the core needs (search's ``topic_id`` scope, the subjects lens, topic pages'
+  link/citation lists) and owns the hierarchy vocabulary.
+* **graph analytics** (:mod:`.graph`, :mod:`._community`) — the in-process
+  corpus graph over the store: nodes are the curated topics plus every thread
+  the curation touches (evidence citations, link endpoints); PageRank,
+  communities (Leiden via ``leidenalg`` + ``python-igraph``, networkx Louvain
+  as a fail-soft fallback), bridges, peers. Pure projection over archive
+  tables — no curation code involved.
 
-The graph is empty (all queries return empty) until topics + links exist — the core
-archive works without this layer.
+What *writes* this data — the librarian/gardener curation agents, their MCP
+write surface, and the drains — is the separate ``thread-librarian`` package
+(its own repo), which builds on these modules. The graph is empty (all queries
+return empty) until topics + links exist; the core archive works uncurated.
 """
 
 from __future__ import annotations
 
-from .garden import garden_queue, garden_status
 from .graph import (
     community_members_for,
     get_bridge_topics,
@@ -34,26 +36,9 @@ from .graph import (
 )
 from .materialize import apply_event
 from .read import topic_get, topic_members, topic_thread_ids, topic_tree
-from .write import (
-    add_topic_evidence,
-    archive_topic,
-    archive_topic_evidence,
-    create_topic,
-    link_threads,
-    merge_topics,
-    rename_topic,
-    review_queue,
-    set_thread_summary,
-    thread_user_messages,
-    topic_search,
-    unlink_threads,
-)
 
 __all__ = [
-    # gardener diagnostics
-    "garden_status",
-    "garden_queue",
-    # read / analytics
+    # graph analytics
     "get_communities",
     "get_topic_graph_metadata",
     "get_topic_graph_meta",
@@ -64,22 +49,8 @@ __all__ = [
     "get_unconnected_topics",
     "get_status",
     "reset_cache",
-    # write / curation
+    # data plane
     "apply_event",
-    "create_topic",
-    "rename_topic",
-    "archive_topic",
-    "merge_topics",
-    "link_threads",
-    "unlink_threads",
-    "add_topic_evidence",
-    "archive_topic_evidence",
-    "set_thread_summary",
-    # curation-read
-    "review_queue",
-    "topic_search",
-    "thread_user_messages",
-    # graph-read
     "topic_get",
     "topic_members",
     "topic_thread_ids",

@@ -270,10 +270,12 @@ class ImportState(Base):
     )
 
 
-# ── Knowledge layer ──────────────────────────────────────────────────────────
-# Topics are threads (``thread_type='topic'``). ThreadLink is the topic→topic
-# edge set the networkx graph projects over; TopicMessage is message→topic
-# evidence. Both are now **projections of the curatorial event log** (``KgEvent`` /
+# ── Knowledge layer (data plane) ─────────────────────────────────────────────
+# Topics are threads (``thread_type='topic'``). ThreadLink is the curated edge
+# set and TopicMessage the message→topic evidence; the in-process corpus graph
+# (:mod:`thread_archive._knowledge.graph`) projects over both (links as edges,
+# evidence as topic↔thread edges). Both are **projections of the curatorial
+# event log** (``KgEvent`` /
 # ``kg_events.jsonl``): a librarian write appends an event and folds it into these
 # tables (see :mod:`thread_archive._knowledge.materialize`). A legacy snapshot of the
 # tables may still exist as a reindex seed, which the event replay reconciles on top.

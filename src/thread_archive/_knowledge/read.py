@@ -1,6 +1,7 @@
 """The knowledge-graph read API — getting curated topics *back out*.
 
-The write layer (:mod:`.write`) accumulates topics, links, and citations; this module
+The write layer (thread-librarian's ``write`` module) accumulates topics, links,
+and citations; this module
 is the library surface that reads them back: one topic with everything attached
 (:func:`topic_get`), its citations with quotes (:func:`topic_members`), and the set of
 conversation threads a topic covers (:func:`topic_thread_ids`) — the resolver behind
@@ -20,6 +21,12 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from .._store import Thread, ThreadLink, TopicMessage, use_session
+
+# The hierarchy vocabulary: the two link types the topic tree is built from.
+# Data-plane constants — the gardener's structural queues (thread-librarian)
+# share them from here.
+HIERARCHY_UP = "part-of"
+HIERARCHY_DOWN = "contains"
 
 
 def _require_topic(session: Session, topic_id: str) -> Thread:
@@ -170,8 +177,6 @@ def topic_tree(*, session: Optional[Session] = None) -> dict:
     Returns ``{"roots": [...], "topics_in_hierarchy": N, "topics_total": M}``;
     each node is ``{"id", "title", "topic_kind", "children": [...]}``. Shared
     by the web viewer's tree endpoint and ``thread_read('topics')``."""
-    from .garden import HIERARCHY_DOWN, HIERARCHY_UP
-
     with use_session(session) as s:
         live = {
             r.id: {"id": r.id, "title": r.title or r.name, "topic_kind": r.topic_kind}

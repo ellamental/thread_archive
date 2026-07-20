@@ -50,6 +50,18 @@ DEFAULT_EFFORT = "xhigh"
 # A parser fix iterates (diagnose, fixture, implement, test, activate) — twice
 # the curation budget.
 TIMEOUT_S = 3600
+
+
+def resolve_claude() -> Optional[str]:
+    """Locate the claude CLI: PATH first, then the standard ~/.local/bin install."""
+    import shutil
+    from pathlib import Path
+
+    found = shutil.which("claude")
+    if found:
+        return found
+    fallback = Path.home() / ".local" / "bin" / "claude"
+    return str(fallback) if fallback.is_file() else None
 PROMPT_FILE = "fix_import.md"
 
 
@@ -95,9 +107,7 @@ def run(
     Returns 0 when activation happened (the config entry is enabled when the
     spawn exits), 1 otherwise — unlike a scheduled drain, the invoking user is
     present, and "the fix didn't land" is an exit code they act on. ``claude``
-    is injectable for tests, as in curation."""
-    from .._curation import resolve_claude
-
+    is injectable for tests."""
     target = scaffold(provider_name, home)
 
     cli = claude or resolve_claude()

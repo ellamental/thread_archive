@@ -76,7 +76,7 @@ it is.
 
 **Fixes itself where it broke.** A provider's transcript format drifts on the provider's schedule, not a maintainer's. Archive makes that drift loud and locally repairable: drift ledgers and a nightly coverage check catch the degradation, the raw source files are quarantined before the provider prunes them, the in-session search notice names the remedy, and `archive fix-import <provider>` scaffolds an override patch and spawns a headless Claude Code agent to write the fix on the machine that has the samples — gated by tests it cannot weaken, then re-imported so nothing consumed during the gap is lost. The supported provider's worst case is *preserved but partially modeled until fixed* — and the fix doesn't wait on a release.
 
-**A memory an agent can organize.** The optional **archive-librarian plugin** ([plugins/librarian/](https://github.com/ellamental/thread_archive/tree/main/plugins/librarian)) adds the curation surface: `/librarian` and `/gardener` skills and a write MCP server that let an AI agent curate the archive — creating topics, pinning key quotes, linking related threads into a knowledge graph, and tending that graph's hierarchy. Prefer it hands-off? `archive daemon install --librarian` / `--gardener` schedules headless curation drains (they run from the package — no plugin needed). Every curation act is event-sourced, so you can always see who connected what, and why. The core archive reads and renders the graph either way; without a curator it simply stays empty.
+**A memory an agent can organize.** The optional **thread-librarian** package (its own repo) adds the curation surface: `/librarian` and `/gardener` skills, a write MCP server, and scheduled headless curation drains that let an AI agent curate the archive — creating topics, pinning key quotes, linking related threads into a knowledge graph, and tending that graph's hierarchy. Every curation act is event-sourced into this archive's truth log, so you can always see who connected what, and why. The core archive owns the data plane *and* the graph analytics over it (PageRank, Leiden communities, bridges — a pure projection over its own tables); without a curator the graph simply stays empty.
 
 **No server. No cloud. No subscription to lose your history to.** A background watcher keeps it current; everything runs locally.
 
@@ -98,7 +98,7 @@ there is no registry; a release is an annotated tag on the repo you can pin
 (see [docs/releasing.md](https://github.com/ellamental/thread_archive/blob/main/docs/releasing.md)).
 The product is the repo itself: the Python package, both MCP servers, the
 `.mcp.json` template that wires in the read server, and the optional
-archive-librarian plugin under `plugins/` — and the venv lives in the clone
+and the venv lives in the clone
 once it's built. Clone it, open it in Claude Code, and let the agent install
 its own memory:
 
@@ -109,8 +109,8 @@ claude     # then: "install this, following claude-install.md"
 
 [claude-install.md](https://github.com/ellamental/thread_archive/blob/main/claude-install.md)
 walks the agent through the whole thing — venv, tests green, MCP wiring,
-first import, and (if you want curation) the archive-librarian plugin plus an
-initial librarian pass over the backlog — stopping to ask you exactly twice:
+first import, and (if you want curation) a pointer at the thread-librarian
+plugin — stopping to ask you exactly twice:
 whether to add local semantic search (heavy: pulls torch), and whether/how
 much to curate now. macOS only; Python ≥ 3.14. The end state is a populated,
 searchable archive served over MCP, plus the `archive` operator CLI and the
@@ -133,17 +133,17 @@ sed "s|ABSOLUTE_REPO_PATH|$(pwd)|g" .mcp.json.example > .mcp.json
 ```
 
 Restart Claude Code in the repo so it loads `.mcp.json` (the search/read MCP server).
-Want curation too? Install the **archive-librarian plugin** — the repo is its own
+Want curation too? Install the **thread-librarian** package — its repo is its own
 plugin marketplace:
 
 ```bash
-claude plugin marketplace add "$(pwd)"
-claude plugin install archive-librarian@thread-archive
+claude plugin marketplace add /path/to/thread-librarian
+claude plugin install archive-librarian@thread-librarian
 ```
 
 Then `/librarian` works the queue until it's empty (topic citations + a stored
 summary per thread), or pass a per-run cap (`/librarian 25`) and re-run across
-sessions for a large backlog. See [plugins/librarian/](https://github.com/ellamental/thread_archive/tree/main/plugins/librarian)
+sessions for a large backlog. See the thread-librarian repo
 for what the plugin contains.
 
 **Always-on — the setup wizard.** Either path leaves a working archive that
@@ -162,8 +162,9 @@ Non-interactive (agents, scripts): `thread_archive --yes` accepts every
 default — without `--yes`, a non-TTY run only prints guidance and never
 ingests. (Scheduled self-curation — an hourly librarian and a daily gardener,
 each a headless `claude` spawn that gates on work left and skips cheaply when
-the queues are empty — is `archive daemon install --librarian` / `--gardener`;
-`archive curate librarian|gardener` runs one drain by hand.)
+the queues are empty — is thread-librarian's `thread-librarian daemon install
+--librarian` / `--gardener`; `thread-librarian curate librarian|gardener` runs
+one drain by hand.)
 
 Skipped the watcher? Still covered: `archive-mcp` cohosts **lazy catch-up
 ingest** — a background pass at startup and (throttled) around tool calls
@@ -203,8 +204,6 @@ archive status            # archive health / counts / last verify + backup + dri
 archive daemon <action>   # macOS: install/uninstall/restart/status a LaunchAgent — the always-on
                           #   watcher (default), --mcp the shared server, --backup the nightly
                           #   pipeline (`daemon install --backup --dest <path> [--at HH:MM]`), or
-                          #   --librarian / --gardener the scheduled curation drains
-archive curate <kind>     # run one curation drain now (librarian | gardener); headless `claude`
 archive self-update       # fast-forward this clone to the newest released tag (the watcher
                           #   runs this daily on its own; --check reports without changing anything)
 ```
@@ -229,14 +228,13 @@ src/thread_archive/
   _retrieval/       # FTS5 + vector search, read reconstruction
   _knowledge/       # topic graph: event-sourced curation + Leiden analytics
   _watcher/         # local-source watcher (self-feeding ingest)
-  _mcp/             # library-native MCP servers (read + librarian)
+  _mcp/             # the library-native read MCP server
   _web/             # read-only viewer: stdlib server + built bundle (cohosted by `watch --web`)
   _launchd.py       # `archive daemon`: generates + loads the watcher / MCP / nightly-backup LaunchAgents (macOS)
   _thread_import/   # vendored provider parsers (a clean, dependency-free island)
   _providers/       # the provider registry: built-in descriptors + plugin discovery
   provider/         # PUBLIC: the plugin API a third-party provider is written against
 frontend/           # the viewer's React+Vite source (dev-only; builds into _web/static/)
-plugins/librarian/  # the archive-librarian Claude Code plugin: /librarian + /gardener skills, gate hook, write-MCP wiring
 host/               # operator layer: Makefile over `archive daemon`, family-manifest writer
 scripts/            # operator tools (coverage gate, retrieval eval)
 tests/install/      # isolated Docker install test + fixtures
@@ -261,7 +259,7 @@ The public API is exactly three things:
   follow the private tree's churn, so these names keep working.
 
 Everything else is private support machinery and may change without notice:
-the `thread_archive` and `archive` CLIs, the librarian MCP server, the web
+the `thread_archive` and `archive` CLIs, the web
 viewer, and every other Python module. More surface gets exposed
 deliberately as it matures. `tests/test_public_api.py` ratchets the boundary.
 
@@ -414,7 +412,7 @@ wins; ids that were never imported are skipped, not fatal.
   found" against a high-confidence memory is the one failure class the suite
   guards hardest.
 - **Curatable** — an event-sourced topic graph with Leiden communities (see below),
-  driven on demand by the archive-librarian plugin's `/librarian` skill, which also stores each conversation's
+  driven on demand by thread-librarian's `/librarian` skill, which also stores each conversation's
   search-first summary: a few dense sentences indexed into the default search scope
   and embedded for the semantic arm, plus a structured `indexed_summary`
   (event-anchored markdown) for long threads, served by
@@ -426,12 +424,12 @@ Two servers, split read from write. **`thread-archive`** (`archive-mcp`) serves 
 read-only tools — `thread_search` / `thread_read` — and cohosts lazy catch-up
 ingest in its own process (throttled, cross-process-safe via the ingest-owner
 lock; `THREAD_ARCHIVE_MCP_INGEST=0` disables it). **`thread-archive-librarian`**
-(`archive-librarian-mcp`) is the curatorial *write* surface — topic/link/citation
-writes and stored-summary writes (`thread_set_summary`) + the reads the librarian
+(`archive-librarian-mcp`, shipped by thread-librarian) is the curatorial *write*
+surface — topic/link/citation writes and stored-summary writes (`thread_set_summary`) + the reads the librarian
 needs (`review_queue`, `topic_search`, `thread_user_messages`). Keeping them
 separate means a read-only client never gets curation power — the setup wizard
 and `.mcp.json.example` wire only the read server; the librarian server ships
-with the archive-librarian plugin (or wire it by hand the same way). Client
+with the thread-librarian package (or wire it by hand the same way). Client
 config for the read server:
 
 ```json
@@ -468,7 +466,7 @@ transaction. The log is the source of truth for curation; `thread_links` / `topi
 are rebuildable from it — `reindex` replays the log (idempotent upsert + tombstone) to
 reconstruct them, so an unlink/merge/archive is recorded history, never silent loss.
 
-The librarian skill (`plugins/librarian/skills/librarian/`) drives the write MCP over
+The librarian skill (thread-librarian's `plugins/librarian/skills/librarian/`) drives the write MCP over
 `review_queue` — event-bearing conversations still missing either half of its
 per-thread output, held back while a thread is still ingesting. Per thread it writes
 **~3+ topic citations** and a **stored summary** (`thread_set_summary`): a short,

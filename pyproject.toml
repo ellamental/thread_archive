@@ -34,7 +34,7 @@ dependencies = [
     "sqlalchemy>=2.0",
     "numpy>=1.26",
     "networkx>=3.2",
-    "scipy>=1.11",  # networkx pagerank backend (the topic graph)
+    "scipy>=1.11",  # networkx pagerank backend (the corpus graph)
     "leidenalg>=0.10",  # Leiden community detection (well-connected communities)
     "python-igraph>=0.11",  # leidenalg's graph backend
     "mcp>=1.0",
@@ -65,7 +65,6 @@ thread-archive = "thread_archive._setup:main"
 # The operator seam (launchd/cron/scripts) + the two MCP servers.
 archive = "thread_archive.cli:main"
 archive-mcp = "thread_archive._mcp.server:main"
-archive-librarian-mcp = "thread_archive._mcp.librarian:main"
 
 # Provider plugins publish under this group; archive reads it at registry load.
 # Declared here so the name is documented in the project that consumes it —
@@ -87,18 +86,16 @@ packages = ["src/thread_archive"]
 artifacts = ["src/thread_archive/_web/static/**/*"]
 
 [tool.hatch.build.targets.sdist]
-# Ship the package sources, tests, docs, the frontend sources that build the
-# committed _web/static bundle, and the archive-librarian plugin (the tests
-# exercise its gate hook, so the sdist must carry it). Everything else (host/,
-# ci.toml, dev scripts, node_modules — hatchling only reads the ROOT
-# .gitignore, so nested ignore files like frontend/.gitignore do NOT keep
-# node_modules out) stays local.
+# Ship the package sources, tests, docs, and the frontend sources that build
+# the committed _web/static bundle. Everything else (host/, ci.toml, dev
+# scripts, node_modules — hatchling only reads the ROOT .gitignore, so nested
+# ignore files like frontend/.gitignore do NOT keep node_modules out) stays
+# local.
 only-include = [
     "src",
     "tests",
     "docs",
     "frontend",
-    "plugins",
     "scripts",
     "CHANGELOG.md",
     "claude-install.md",

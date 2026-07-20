@@ -15,7 +15,7 @@ The public API is exactly two things:
 
 **Everything else is private support machinery for those two products** and
 may change without notice: the ``archive`` CLI (the process seam launchd,
-cron, and operators use), the librarian MCP server, the web viewer, and every
+cron, and operators use), the web viewer, and every
 underscore-prefixed module — :mod:`._api`, the coordination layer, included.
 There is no public Python API. More surface gets exposed deliberately as it
 matures, not by accident of being installed or importable.

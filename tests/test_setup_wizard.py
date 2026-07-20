@@ -144,56 +144,20 @@ def _args(*argv: str):
     return wizard.build_parser().parse_args(list(argv))
 
 
-def test_curation_offer_never_schedules_without_being_asked(
-    archive_home, monkeypatch, capsys
-) -> None:
-    """No terminal and no explicit flag → no scheduled drains, and no launchctl.
-
-    The drains spend a Claude Code instance per fire, so a non-interactive run
-    must not opt anyone into recurring usage by silence — and the suite must
-    never reach a real install.
-    """
+def test_curation_offer_points_at_the_plugin(archive_home, monkeypatch, capsys) -> None:
+    """The core schedules nothing: curation is the thread-librarian plugin's,
+    and the step only says so (no launchctl, no config writes)."""
     monkeypatch.setattr(wizard, "curation_running", lambda home=None: False)
-    monkeypatch.setattr(sys, "platform", "darwin")
-    installs: list[str] = []
-    monkeypatch.setattr(
-        _launchd, "install_librarian",
-        lambda *a, **k: installs.append("librarian"),
-    )
-    monkeypatch.setattr(
-        _launchd, "install_gardener", lambda *a, **k: installs.append("gardener")
-    )
-
     out = wizard._offer_curation(_args("setup", "--yes"), interactive=False)
-    assert out == {"status": "skipped"}
-    assert installs == []
-    assert "costs usage" in capsys.readouterr().out
+    assert out == {"status": "plugin"}
+    assert "thread-librarian" in capsys.readouterr().out
 
 
-def test_curation_offer_defaults_to_leaving_history_alone(
-    archive_home, monkeypatch, capsys
-) -> None:
-    # Asked for outright, it schedules — curating forward from now, with the
-    # sessions already on disk left untouched until a rate says otherwise.
-    monkeypatch.setattr(wizard, "curation_running", lambda home=None: False)
-    monkeypatch.setattr(sys, "platform", "darwin")
-    monkeypatch.setattr(_launchd, "install_librarian", lambda *a, **k: None)
-    monkeypatch.setattr(_launchd, "install_gardener", lambda *a, **k: None)
-
-    out = wizard._offer_curation(_args("setup", "--yes", "--curation"), interactive=False)
-    assert out["status"] == "launchd" and out["catchup_per_run"] == 0
-
-    from thread_archive import _curation
-
-    assert _curation.librarian_horizon() is not None  # curating forward from now
-    assert _curation.librarian_catchup() == 0  # history untouched
-
-    # An explicit rate is what reaches history, at the pace given.
-    wizard._offer_curation(
-        _args("setup", "--yes", "--curation", "--catchup-per-run", "5"),
-        interactive=False,
-    )
-    assert _curation.librarian_catchup() == 5
+def test_curation_offer_reports_already_scheduled(archive_home, monkeypatch, capsys) -> None:
+    monkeypatch.setattr(wizard, "curation_running", lambda home=None: True)
+    out = wizard._offer_curation(_args("setup", "--yes"), interactive=False)
+    assert out == {"status": "already-installed"}
+    assert "already scheduled" in capsys.readouterr().out
 
 
 def test_non_tty_without_yes_does_no_work(archive_home, capsys) -> None:

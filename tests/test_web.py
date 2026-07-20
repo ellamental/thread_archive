@@ -348,7 +348,7 @@ def test_threads_order_by_activity_not_metadata_writes(archive_home):
     _, _, payload = _get("/api/threads", types="conversation,system")
     ids = [t["id"] for t in payload["threads"]]
     assert ids[0] == sub_id  # newest events (2026-01-02) first
-    from thread_archive._knowledge.write import set_thread_summary
+    from thread_librarian.write import set_thread_summary
 
     set_thread_summary(ids[1], summary="curated much later than its last event")
     _, _, payload = _get("/api/threads", types="conversation,system")
@@ -527,7 +527,7 @@ def _seed_topics(archive_home):
     """Seed a conversation plus a small curated graph around it: three linked
     topics (a community), one citation of the conversation's user message.
     Returns ``(topic_a, topic_b, topic_c, conversation_id, cited_event_id)``."""
-    from thread_archive._knowledge import add_topic_evidence, create_topic, link_threads
+    from thread_librarian import add_topic_evidence, create_topic, link_threads
 
     _seed(archive_home)
     _, _, search = _get("/api/search", q="hello")
@@ -559,10 +559,11 @@ def test_topics_endpoint(archive_home):
     status, ctype, payload = _get("/api/topics")
     assert status == 200 and ctype == "application/json"
     assert {t["id"] for t in payload["topics"]} == {a, b, c}
-    assert payload["graph"]["available"] is True and payload["graph"]["nodes"] == 3
+    assert payload["graph"]["available"] is True and payload["graph"]["nodes"] == 4
+    assert payload["graph"]["topics"] == 3 and payload["graph"]["threads"] == 1
     by_id = {t["id"]: t for t in payload["topics"]}
-    # a carries the citation and both topic links; its topic↔conversation link
-    # is not a graph edge, so link_count counts only the two topic peers.
+    # a carries the citation and both topic links; the cited conversation is a
+    # graph node, but link_count counts only the two curated topic peers.
     assert by_id[a]["evidence_count"] == 1 and by_id[a]["link_count"] == 2
     assert by_id[b]["evidence_count"] == 0 and by_id[b]["link_count"] == 1
     assert by_id[a]["topic_kind"] == "concept"
@@ -620,7 +621,7 @@ def test_topic_detail_bad_id_is_404(archive_home):
 
 
 def test_archived_topic_hidden_from_list_but_readable(archive_home):
-    from thread_archive._knowledge import archive_topic
+    from thread_librarian import archive_topic
 
     a, b, c, _, _ = _seed_topics(archive_home)
     archive_topic(c)
@@ -635,7 +636,7 @@ def _tree_ids(node):
 
 
 def test_topic_tree_from_part_of_and_contains(archive_home):
-    from thread_archive._knowledge import create_topic, link_threads
+    from thread_librarian import create_topic, link_threads
 
     a, b, c, conv_id, _ = _seed_topics(archive_home)
     d = create_topic("Centrality Measures")["topic_id"]
@@ -658,7 +659,7 @@ def test_topic_tree_from_part_of_and_contains(archive_home):
 
 
 def test_topic_tree_cycle_is_cut(archive_home):
-    from thread_archive._knowledge import link_threads
+    from thread_librarian import link_threads
 
     a, b, _, _, _ = _seed_topics(archive_home)
     # a mutual part-of pair: neither is a root, but the forest must not hang or
@@ -671,7 +672,7 @@ def test_topic_tree_cycle_is_cut(archive_home):
 
 
 def test_topic_tree_multi_parent_child_appears_under_each(archive_home):
-    from thread_archive._knowledge import create_topic, link_threads
+    from thread_librarian import create_topic, link_threads
 
     a, b, c, _, _ = _seed_topics(archive_home)
     d = create_topic("Shared Child")["topic_id"]

@@ -12,8 +12,14 @@ from __future__ import annotations
 import json
 from datetime import datetime, timezone
 
+import pytest
+
 from thread_archive import _api as ta
-from thread_archive._knowledge import create_topic, link_threads, topic_tree
+from thread_archive._knowledge import topic_tree
+
+pytest.importorskip("thread_librarian")  # seeds the curated data plane
+from thread_librarian import create_topic, link_threads  # noqa: E402
+
 from thread_archive._retrieval import format_results, index_events, read_thread, search
 from thread_archive._store import Event, Thread, get_session, init_db
 

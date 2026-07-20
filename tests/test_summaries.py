@@ -19,13 +19,16 @@ import pytest
 from sqlalchemy import text as sa_text
 
 from thread_archive import _api as ta
-from thread_archive._knowledge import (
+
+pytest.importorskip("thread_librarian")  # the write surface under test lives in the plugin
+from thread_librarian import (  # noqa: E402
     add_topic_evidence,
     create_topic,
     review_queue,
     set_thread_summary,
 )
-from thread_archive._knowledge.write import INDEXED_SUMMARY_MAX_CHARS, SUMMARY_MAX_CHARS
+from thread_librarian.write import INDEXED_SUMMARY_MAX_CHARS, SUMMARY_MAX_CHARS  # noqa: E402
+
 from thread_archive._store import Event, Thread, get_session
 
 from .helpers import import_cc_session, one_thread_file

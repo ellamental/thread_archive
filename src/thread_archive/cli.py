@@ -5,8 +5,8 @@ is the retrieval MCP tools plus the truth format (see the package docstring);
 this CLI is the process seam launchd, cron, and operators use to run the
 private machinery — ingest (``import``, ``import-export``, ``watch``,
 ``embed``), the backup kit (``backup``, ``verify``, ``restore-drill``,
-``restore``, ``reindex``, ``repair``, ``status``, ``nightly``, ``coverage``), the
-curation drains (``curate``), and the LaunchAgent lifecycle (``daemon``). Verbs may change without
+``restore``, ``reindex``, ``repair``, ``status``, ``nightly``, ``coverage``),
+and the LaunchAgent lifecycle (``daemon``). Verbs may change without
 external notice, but they are *wired into* the LaunchAgent plists, lab's cron
 script, the /ci skill, and the monitor's heartbeat contract — renaming one
 means updating those in the same change (``tests/test_public_api.py`` pins the
@@ -253,67 +253,6 @@ def cmd_daemon(args: argparse.Namespace) -> int:
             print(_launchd.mcp_status())
         return 0
 
-    if args.librarian or args.gardener:
-        # The scheduled curation drains (`archive curate …` on a launchd
-        # cadence): the librarian hourly, the gardener daily. One-shots — a
-        # "restart" has nothing resident to kick; run the drain directly.
-        kind = "librarian" if args.librarian else "gardener"
-        label = _launchd.LIBRARIAN_LABEL if args.librarian else _launchd.GARDENER_LABEL
-        if args.action == "install":
-            # Cadence: an explicit --at wins; otherwise config.json's
-            # curation.<kind> entry, else the defaults (hourly / daily 05:00).
-            if args.librarian:
-                interval = _launchd.resolved_librarian_interval(args.home)
-                # Scheduling is the install point: from here on, conversations are
-                # curated as they happen. What was already on disk is history, and
-                # is only touched if asked for — an archive of years of sessions
-                # would otherwise open with a queue that bills an unattended Opus
-                # run every hour until it drains.
-                from datetime import datetime, timezone
-
-                from . import _curation as _cur
-
-                policy = _cur.set_curation_policy(
-                    args.home,
-                    horizon=None if args.catch_up else datetime.now(timezone.utc),
-                    clear_horizon=args.catch_up,
-                    catchup_per_run=args.catchup_per_run,
-                )
-                plist = _launchd.install_librarian(args.home, interval=interval)
-                print(f"installed {label} ({plist})")
-                print(f"the librarian drains the review queue every "
-                      f"{interval // 60} min (links + summaries);")
-                rate = policy.get("catchup_per_run") or 0
-                if not policy.get("horizon"):
-                    print("curating the whole archive, history included.")
-                elif rate:
-                    print(f"curating from now on, plus up to {rate} older "
-                          f"thread(s) per run.")
-                else:
-                    print("curating from now on; the sessions already on disk are "
-                          "left alone (--catch-up, or set "
-                          "curation.librarian.catchup_per_run, to work through them).")
-            else:
-                hour, minute = (
-                    _parse_hhmm(args.at) if args.at
-                    else _launchd.resolved_gardener_schedule(args.home)
-                )
-                plist = _launchd.install_gardener(args.home, hour=hour, minute=minute)
-                print(f"installed {label} ({plist})")
-                print(f"the gardener tends the topic graph daily at {hour:02d}:{minute:02d};")
-            print(f"each fire skips cheaply when there is no work. logs: <home>/logs/{kind}-*.log")
-        elif args.action == "uninstall":
-            uninstall = _launchd.uninstall_librarian if args.librarian else _launchd.uninstall_gardener
-            uninstall()
-            print(f"uninstalled {label}")
-        elif args.action == "restart":
-            print(f"{label} is a scheduled one-shot — nothing resident to restart.")
-            print(f"run a drain now with `archive curate {kind}`.")
-        else:  # status
-            status = _launchd.librarian_status if args.librarian else _launchd.gardener_status
-            print(status())
-        return 0
-
     if args.backup:
         # The scheduled backup pipeline (backup → verify → restore drill) as
         # a launchd agent — the productized form of what host/ wires by hand.
@@ -361,21 +300,6 @@ def cmd_daemon(args: argparse.Namespace) -> int:
     else:  # status
         print(_launchd.watcher_status())
     return 0
-
-
-def cmd_curate(args: argparse.Namespace) -> int:
-    import logging
-
-    from . import _curation
-
-    # The drain narrates through logging (it normally runs under launchd, where
-    # stdout IS the log file); wire it to the console for by-hand runs too.
-    logging.basicConfig(
-        level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s"
-    )
-    return _curation.run(
-        args.kind, args.home, batch=args.batch, timeout=args.timeout
-    )
 
 
 def cmd_fix_import(args: argparse.Namespace) -> int:
@@ -1353,32 +1277,6 @@ def build_parser() -> argparse.ArgumentParser:
     p_unredact.add_argument("key_id", help="the redaction's key id (see `archive redact --list`)")
     p_unredact.set_defaults(func=cmd_unredact)
 
-    p_curate = sub.add_parser(
-        "curate",
-        help="run one curation drain now: librarian (link + summarize new "
-             "conversations) or gardener (tend the topic graph). Gates on work "
-             "left, then spawns a headless `claude` against the archive's own "
-             "MCP servers — the scheduled form is `archive daemon install "
-             "--librarian/--gardener`",
-    )
-    _add_home_arg(p_curate)
-    p_curate.add_argument(
-        "kind", choices=["librarian", "gardener"],
-        help="librarian: per-thread citations + summaries; gardener: merge "
-             "dupes, connect singletons, grow the hierarchy",
-    )
-    p_curate.add_argument(
-        "--batch", type=int, default=None, metavar="N",
-        help="per-run cap (default: librarian 25 threads, gardener 30 write actions)",
-    )
-    from ._curation import TIMEOUT_S
-    p_curate.add_argument(
-        "--timeout", type=int, default=TIMEOUT_S, metavar="SECONDS",
-        help=f"hard wall-clock stop for the drain (default {TIMEOUT_S}; hitting "
-             "it is normal — the next fire continues)",
-    )
-    p_curate.set_defaults(func=cmd_curate)
-
     p_fix = sub.add_parser(
         "fix-import",
         help="repair a drifted provider import on this machine: scaffold an "
@@ -1427,8 +1325,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="manage the archive LaunchAgents (macOS): the watcher (the upgrade "
              "from lazy MCP-cohosted ingest to always-fresh), or with --mcp the "
              "shared MCP server (one HTTP server for all clients), --backup the "
-             "scheduled nightly backup pipeline, --librarian / --gardener "
-             "the scheduled curation drains",
+             "scheduled nightly backup pipeline",
     )
     _add_home_arg(p_daemon)
     p_daemon.add_argument(
@@ -1452,37 +1349,13 @@ def build_parser() -> argparse.ArgumentParser:
         help="--backup install only: backup destination dir",
     )
     p_daemon.add_argument(
-        "--librarian", action="store_true",
-        help="target the hourly librarian-drain agent (com.thread-archive.librarian): "
-             "scheduled `archive curate librarian`",
-    )
-    p_daemon.add_argument(
-        "--gardener", action="store_true",
-        help="target the daily gardener-drain agent (com.thread-archive.gardener): "
-             "scheduled `archive curate gardener`",
-    )
-    p_daemon.add_argument(
         "--at", default=None, metavar="HH:MM",
-        help="--backup/--gardener install only: daily fire time, local "
-             "(default: backup 04:00; gardener config.json curation.gardener.at, "
-             "else 05:00)",
+        help="--backup install only: daily fire time, local (default 04:00)",
     )
     p_daemon.add_argument(
         "--notify-url", default=None, metavar="URL",
         help="--backup install only: POST {title, message} on any stage failure "
              "(lab's /api/notify shape)",
-    )
-    p_daemon.add_argument(
-        "--catch-up", action="store_true",
-        help="--librarian install only: curate the sessions already on disk too. "
-             "Off by default — a first install curates what happens from now on, so "
-             "an existing history doesn't become a five-figure queue billed hourly",
-    )
-    p_daemon.add_argument(
-        "--catchup-per-run", type=int, default=None, metavar="N",
-        help="--librarian install only: how many historical threads may ride along "
-             "in each run, behind that run's live work (default 0 — none). Sets "
-             "config.json curation.librarian.catchup_per_run",
     )
     p_daemon.add_argument(
         "--no-web", dest="web", action="store_false",

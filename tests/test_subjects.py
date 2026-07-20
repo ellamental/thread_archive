@@ -12,13 +12,15 @@ from __future__ import annotations
 
 import json
 
+import pytest
 from sqlalchemy import select
 
-from thread_archive import _knowledge as knowledge
 from thread_archive._importers import import_session_incremental
 from thread_archive._retrieval import format_results, search
 from thread_archive._retrieval import subjects as _subjects
 from thread_archive._store import Event, get_session, init_db
+
+knowledge = pytest.importorskip("thread_librarian")  # seeds the curated data plane
 
 
 def _chat(archive_home, name: str, user_text: str, day: int) -> tuple[int, int]:

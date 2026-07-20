@@ -468,7 +468,8 @@ def redact_restore_key(key_id: str, key_b64: str, *, home: Optional[str] = None)
 
 
 def knowledge_status(*, home: Optional[str] = None) -> dict:
-    """Topic-graph status: node/community/component counts (empty until topics exist)."""
+    """Knowledge-graph status: node (topic + corpus thread) / community / component
+    counts (empty until curation exists)."""
     open_archive(home)
     from ._knowledge import get_status
 
@@ -480,10 +481,15 @@ def curation_stats(*, home: Optional[str] = None, days: int = 30) -> dict:
     page: each drain's remaining backlog (the same gate the daemon fires on),
     cadence and liveness, per-day curation output, topic-graph health, and the
     drains' own archived runs with their request/token cost. ``days`` bounds the
-    time series. Read-only; see :mod:`._curation.stats` for what each figure
-    means and which figures are deliberately absent."""
+    time series. Read-only. The figures come from the thread-librarian plugin
+    (:mod:`thread_librarian.curate.stats`); without it installed this returns
+    ``{"available": False}`` — there is nothing curating, so there is nothing
+    to report."""
     open_archive(home)
-    from ._curation.stats import collect_curation_stats
+    try:
+        from thread_librarian.curate.stats import collect_curation_stats
+    except ImportError:
+        return {"available": False, "error": "thread-librarian is not installed"}
 
     return collect_curation_stats(days=days, home=home)
 
