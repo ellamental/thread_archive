@@ -1,15 +1,17 @@
 """Ranking + cross-encoder re-rank: the weighted lexical scorer and the gated
 in-process cross-encoder head re-order.
 
-The lexical ranker is tested directly (pure Python). The cross-encoder is tested
-with its scoring monkeypatched — the torch model path itself runs only when the
-[embeddings] extra is installed (never in the unit suite), but the reorder logic,
-gating, and fail-soft contract are all pure.
+The lexical ranker is tested directly (pure Python). The cross-encoder runs as a
+real :class:`~.rerank.Reranker` built around a scripted scorer and handed to the
+pipeline through its ``reranker`` argument — the product's own gating, scoring
+and reordering execute; only the torch weights are stood in for.
 """
 
 from __future__ import annotations
 
 from datetime import datetime, timedelta
+
+import pytest
 
 from thread_archive._retrieval import embed, rank, rerank, warm_models
 
@@ -149,26 +151,54 @@ def test_rank_recency_is_mild_tiebreaker() -> None:
 
 
 # ── cross-encoder reorder (model-free) ───────────────────────────────────────
+class _ScriptedScorer:
+    """A stand-in for a loaded CrossEncoder: records each (query, doc) pool it is
+    handed, and returns scripted scores (a flat 0.0 by default, which leaves the
+    caller's order intact)."""
+
+    def __init__(self, scores=None) -> None:
+        self.scores = scores
+        self.pools: list[list] = []
+
+    def predict(self, pairs, batch_size, show_progress_bar):
+        self.pools.append(list(pairs))
+        return self.scores if self.scores is not None else [0.0] * len(pairs)
+
+
+def _unloadable() -> object:
+    raise RuntimeError("no weights on disk")
+
+
+def _live_reranker(monkeypatch, scores=None):
+    """A real Reranker over a scripted cross-encoder — the product's own scoring
+    and reordering run. Clears the suite's model-free pin, which stands every
+    reranker down by design."""
+    monkeypatch.delenv("THREAD_ARCHIVE_RERANK", raising=False)
+    scorer = _ScriptedScorer(scores)
+    return rerank.Reranker(model=scorer), scorer
+
+
 def test_rerank_reorders_by_scores(monkeypatch) -> None:
-    # Stub the model scores: item B most relevant, then C, then A.
-    monkeypatch.setattr(rerank, "rerank_scores", lambda q, docs: [0.1, 0.9, 0.5])
-    items = ["A", "B", "C"]
-    out = rerank.rerank("q", items, get_text=lambda x: x)
-    assert out == ["B", "C", "A"]
+    # Scripted model scores: item B most relevant, then C, then A.
+    r, scorer = _live_reranker(monkeypatch, scores=[0.1, 0.9, 0.5])
+    assert r.rerank("q", ["A", "B", "C"], get_text=lambda x: x) == ["B", "C", "A"]
+    assert scorer.pools[0] == [["q", "A"], ["q", "B"], ["q", "C"]]
 
 
 def test_rerank_fail_soft_returns_none(monkeypatch) -> None:
     # Reranker unavailable / errored → None, so the caller keeps its own order.
-    monkeypatch.setattr(rerank, "rerank_scores", lambda q, docs: None)
-    assert rerank.rerank("q", ["A", "B"], get_text=lambda x: x) is None
+    monkeypatch.delenv("THREAD_ARCHIVE_RERANK", raising=False)
+    broken = rerank.Reranker(load=_unloadable)
+    assert broken.rerank("q", ["A", "B"], get_text=lambda x: x) is None
     # empty input is None too
-    assert rerank.rerank("q", [], get_text=lambda x: x) is None
+    assert broken.rerank("q", [], get_text=lambda x: x) is None
 
 
 def test_rerank_scores_none_without_model(monkeypatch) -> None:
     # No query / no docs short-circuits before any model load.
-    assert rerank.rerank_scores("", ["a"]) is None
-    assert rerank.rerank_scores("q", []) is None
+    r = rerank.Reranker(load=lambda: pytest.fail("model load attempted"))
+    assert r.rerank_scores("", ["a"]) is None
+    assert r.rerank_scores("q", []) is None
 
 
 # ── the full gate through search() (model-free, real store) ──────────────────
@@ -191,29 +221,16 @@ def _seed_one_thread(archive_home, user_text: str) -> None:
     import_session_incremental(f, "proj:s")
 
 
-def _arm_recording_reranker(monkeypatch) -> list:
-    """Make the reranker 'available' with a scoring stub that records its calls."""
-    calls: list[int] = []
-
-    def fake_scores(query, docs):
-        calls.append(len(docs))
-        return [0.0] * len(docs)
-
-    monkeypatch.setattr(rerank, "is_available", lambda: True)
-    monkeypatch.setattr(rerank, "rerank_scores", fake_scores)
-    return calls
-
-
 def test_search_skips_rerank_on_strong_lexical_head(archive_home, monkeypatch) -> None:
     # Every query term lands literally in the seeded doc → the ranked head is
     # strong → the cross-encoder must not be consulted, and the hit must carry
     # the lexical verdict (_did_rerank False), not the by-meaning one.
     from thread_archive._retrieval import search
 
-    calls = _arm_recording_reranker(monkeypatch)
+    reranker, scorer = _live_reranker(monkeypatch)
     _seed_one_thread(archive_home, "the launchd supervisor restarted the watcher daemon")
-    hits = search("watcher daemon restarted")
-    assert hits and calls == []
+    hits = search("watcher daemon restarted", reranker=reranker)
+    assert hits and scorer.pools == []
     assert hits[0]["_did_rerank"] is False
 
 
@@ -222,11 +239,13 @@ def test_search_reranks_on_weak_lexical_head(archive_home, monkeypatch) -> None:
     # weak — the vocab-mismatch shape the cross-encoder exists for — so it runs.
     from thread_archive._retrieval import search
 
-    calls = _arm_recording_reranker(monkeypatch)
+    reranker, scorer = _live_reranker(monkeypatch)
     _seed_one_thread(archive_home, "the watcher process stopped overnight")
-    hits = search("watcher vanishing mysteriously")
-    assert hits and calls, "weak head should have gone through the cross-encoder"
+    hits = search("watcher vanishing mysteriously", reranker=reranker)
+    assert hits and scorer.pools, "weak head should have gone through the cross-encoder"
     assert hits[0]["_did_rerank"] is True
+    # The pipeline scores the query against a window of each candidate's text.
+    assert all(pair[0] == "watcher vanishing mysteriously" for pair in scorer.pools[0])
 
 
 def test_search_rerank_true_overrides_the_strong_head_skip(archive_home, monkeypatch) -> None:
@@ -234,57 +253,90 @@ def test_search_rerank_true_overrides_the_strong_head_skip(archive_home, monkeyp
     # AND the strong-head skip (warm_models depends on this to prime the model).
     from thread_archive._retrieval import search
 
-    calls = _arm_recording_reranker(monkeypatch)
+    reranker, scorer = _live_reranker(monkeypatch)
     _seed_one_thread(archive_home, "the launchd supervisor restarted the watcher daemon")
-    hits = search("watcher daemon restarted", rerank=True)
-    assert hits and calls
+    hits = search("watcher daemon restarted", rerank=True, reranker=reranker)
+    assert hits and scorer.pools
     assert hits[0]["_did_rerank"] is True
 
 
+def test_search_stands_the_reranker_down_when_it_is_unavailable(archive_home, monkeypatch) -> None:
+    # The gate consults the reranker it was given: an unavailable one sits out even
+    # on the weak head that would otherwise trip it, and search still returns hits.
+    from thread_archive._retrieval import search
+
+    monkeypatch.delenv("THREAD_ARCHIVE_RERANK", raising=False)
+    scorer = _ScriptedScorer()
+    down = rerank.Reranker(model=scorer)
+    monkeypatch.setenv("THREAD_ARCHIVE_RERANK", "off")  # the operator switch
+    _seed_one_thread(archive_home, "the watcher process stopped overnight")
+    hits = search("watcher vanishing mysteriously", reranker=down)
+    assert hits and scorer.pools == []
+    assert hits[0]["_did_rerank"] is False
+
+
 # ── warm() preload contract (model-free) ─────────────────────────────────────
-class _RecordingSlot(rerank.ModelSlot):
-    """A slot that counts get() calls — swapped in whole (SLOT is the public
-    seam) to prove the heavy loader is never consulted."""
-
-    def __init__(self) -> None:
-        super().__init__()
-        self.gets = 0
-
-    def get(self, construct, on_error):
-        self.gets += 1
-        return object()
-
-
-def test_warm_skips_the_loader_when_unavailable(monkeypatch) -> None:
-    # Extra absent → warm() reports False and never touches the (heavy) model loader.
-    for mod in (rerank, embed):
-        slot = _RecordingSlot()
-        monkeypatch.setattr(mod, "is_available", lambda: False)
-        monkeypatch.setattr(mod, "SLOT", slot)
-        assert mod.warm() is False
-        assert slot.gets == 0
+def test_warm_skips_the_loader_when_switched_off(monkeypatch) -> None:
+    # Models switched off → warm() reports False and never touches the heavy loader.
+    for cls in (rerank.Reranker, embed.Embedder):
+        model = cls(load=lambda: pytest.fail("heavy model loader was consulted"))
+        assert model.warm() is False
 
 
 def test_warm_reports_the_load_outcome(monkeypatch) -> None:
-    # Available + a model loads → True; available + load fails (None) → False (degrade lazily).
-    for mod in (rerank, embed):
-        monkeypatch.setattr(mod, "is_available", lambda: True)
-        monkeypatch.setattr(mod.SLOT, "model", object())     # already loaded
-        assert mod.warm() is True
-        monkeypatch.setattr(mod.SLOT, "model", None)
-        monkeypatch.setattr(mod.SLOT, "load_failed", True)   # cached failure
-        assert mod.warm() is False
+    # A model that loads → True; a load that fails → False (the arm degrades lazily).
+    monkeypatch.delenv("THREAD_ARCHIVE_RERANK", raising=False)
+    monkeypatch.delenv("THREAD_ARCHIVE_EMBED", raising=False)
+    for cls in (rerank.Reranker, embed.Embedder):
+        assert cls(model=object()).warm() is True  # already loaded
+        broken = cls(load=_unloadable)
+        assert broken.warm() is False
+        assert broken.warm() is False  # the cached failure holds
 
 
 def test_warm_models_never_raises(monkeypatch) -> None:
-    # A stage that blows up must not propagate — warming is best-effort startup work. Every
-    # stage is stubbed to raise (and the dummy search stubbed out) so the suite stays model-free.
-    from thread_archive import _api as api
+    # A stage that blows up must not propagate — warming is best-effort startup work.
+    class _ExplodingModel:
+        """A model whose availability probe itself fails — the shape a broken torch
+        install takes at startup."""
 
-    def _raise(*a, **k):
-        raise RuntimeError("torch exploded")
+        def is_available(self):
+            raise RuntimeError("torch exploded")
 
-    monkeypatch.setattr(embed, "warm", _raise)
-    monkeypatch.setattr(rerank, "warm", _raise)
-    monkeypatch.setattr(api, "search", _raise)
-    warm_models()  # returns None, swallows every stage failure
+        def warm(self):
+            raise RuntimeError("torch exploded")
+
+    warm_models(embedder=_ExplodingModel(), reranker=_ExplodingModel())
+
+
+def test_warm_models_primes_both_stages(archive_home) -> None:
+    # The startup path: each model is preloaded once, then the throwaway search runs
+    # the pipeline end to end to fill the caches the first real query reuses.
+    class _RecordingModel:
+        """A model that counts preloads."""
+
+        def __init__(self) -> None:
+            self.warms = 0
+
+        def is_available(self) -> bool:
+            return True
+
+        def warm(self) -> bool:
+            self.warms += 1
+            return True
+
+    _seed_one_thread(archive_home, "the launchd supervisor restarted the watcher daemon")
+    embedder, reranker = _RecordingModel(), _RecordingModel()
+    warm_models(embedder=embedder, reranker=reranker)
+    assert embedder.warms == 1
+    assert reranker.warms == 1
+
+
+def test_warm_models_defaults_to_the_process_models(archive_home) -> None:
+    # The startup call the MCP server actually makes, with no arguments: it primes
+    # the process models, which the model-free pin leaves stood down (so nothing
+    # heavy loads), and completes without raising.
+    _seed_one_thread(archive_home, "the launchd supervisor restarted the watcher daemon")
+    assert warm_models() is None
+    assert embed.is_available() is False
+    assert rerank.is_available() is False

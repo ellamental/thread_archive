@@ -9,16 +9,11 @@ import { SearchView } from '../components/SearchView'
 import type { SearchHit } from '../api'
 import { mswError, mswJson, mswPending, recordRequests } from './msw'
 
-// Stub pages that echo where they were opened, so click tests can assert the
-// deep-link (?e=<event_id>, /topic/:id) and not just that navigation happened.
+// Stub page that echoes where it was opened, so click tests can assert the
+// deep-link (?e=<event_id>) and not just that navigation happened.
 function ThreadStub() {
   const loc = useLocation()
   return <div>THREAD PAGE {loc.pathname + loc.search}</div>
-}
-
-function TopicStub() {
-  const loc = useLocation()
-  return <div>TOPIC PAGE {loc.pathname}</div>
 }
 
 function renderAt(url: string) {
@@ -27,7 +22,6 @@ function renderAt(url: string) {
       <Routes>
         <Route path="/search" element={<SearchView />} />
         <Route path="/archive/:id" element={<ThreadStub />} />
-        <Route path="/topic/:id" element={<TopicStub />} />
       </Routes>
     </MemoryRouter>,
   )
@@ -183,8 +177,7 @@ describe('SearchView', () => {
     expect(screen.getByText('0/3')).toHaveClass('sem')
   })
 
-  it('lists the subjects the results cluster under, linking into the topic pages', async () => {
-    const user = userEvent.setup()
+  it('lists the subjects the results cluster under', async () => {
     mswJson('/api/search', {
       query: 'x',
       subjects: [
@@ -196,8 +189,7 @@ describe('SearchView', () => {
     renderAt('/search?q=x')
     expect(await screen.findByText('subjects:')).toBeInTheDocument()
     expect(screen.getByText('PageRank (1)')).toBeInTheDocument()
-    await user.click(screen.getByText('Graph Theory (2)'))
-    expect(screen.getByText('TOPIC PAGE /topic/7')).toBeInTheDocument()
+    expect(screen.getByText('Graph Theory (2)')).toBeInTheDocument()
   })
 
   it('sends URL-carried filters with the search (until made day-inclusive)', async () => {

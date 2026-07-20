@@ -20,7 +20,6 @@ performs no work — discovery and guidance only, never a surprise ingest.
 from __future__ import annotations
 
 import argparse
-import importlib.util
 import logging
 import sys
 import time
@@ -31,6 +30,7 @@ from typing import Optional
 
 from .. import __version__
 from .._config import load_config, resolve_paths, save_config
+from .machine import Machine
 
 
 def source_label(name: str) -> str:
@@ -107,24 +107,31 @@ def _interactive(args: argparse.Namespace) -> bool:
     return not args.yes and sys.stdin.isatty() and sys.stdout.isatty()
 
 
-def _ask(prompt: str, *, default: str, interactive: bool) -> str:
-    """One line of input, lowercased; Enter (or any non-TTY path) → default."""
+def _ask(
+    prompt: str, *, default: str, interactive: bool, read: Callable[[str], str] = input
+) -> str:
+    """One line of input, lowercased; Enter (or any non-TTY path) → default.
+
+    ``read`` is where answers come from — the terminal by default, another
+    reader when the flow is driven from somewhere else."""
     if not interactive:
         return default
     try:
-        raw = input(prompt).strip().lower()
+        raw = read(prompt).strip().lower()
     except EOFError:
         return default
     return raw or default
 
 
-def _ask_path(prompt: str, *, interactive: bool) -> str:
+def _ask_path(
+    prompt: str, *, interactive: bool, read: Callable[[str], str] = input
+) -> str:
     """A path prompt. Unlike :func:`_ask` it preserves case (a filesystem path
     is case-sensitive); empty string on skip / EOF / non-TTY."""
     if not interactive:
         return ""
     try:
-        return input(prompt).strip()
+        return read(prompt).strip()
     except EOFError:
         return ""
 
@@ -138,21 +145,20 @@ def run_setup(
     *,
     interactive: Optional[bool] = None,
     ask: Callable[..., str] = _ask,
-    offer_watcher: Optional[Callable] = None,
-    offer_backup: Optional[Callable] = None,
-    offer_curation: Optional[Callable] = None,
-    offer_mcp: Optional[Callable] = None,
+    machine: Optional[Machine] = None,
 ) -> int:
     """Discover → consent → import → watcher → backup → curation → MCP wiring.
     Returns exit code.
 
     The flow's collaborators are keyword parameters: ``interactive`` overrides
-    the TTY auto-detect, ``ask`` is the prompt, and the ``offer_*`` steps
-    default to this module's own (None → the real step) — so tests script a
-    run without faking wizard internals.
+    the TTY auto-detect, ``ask`` is the prompt, ``watchers`` are the sources to
+    discover, and ``machine`` (see :mod:`.machine`) is the host whose scheduled
+    agents setup reads and installs — so a run can be scripted end to end
+    without the flow reaching for this process's own terminal and launchd.
     """
     from .._watcher import provider_watchers
 
+    machine = machine if machine is not None else Machine()
     interactive = _interactive(args) if interactive is None else interactive
     if not interactive and not args.yes:
         # No TTY and no --yes: never ingest as a side effect of being glanced at.
@@ -249,19 +255,19 @@ def run_setup(
 
     # 4. The always-on watcher.
     cfg["setup"] = cfg.get("setup", {})
-    cfg["setup"]["watcher"] = (offer_watcher or _offer_watcher)(args, interactive)
+    cfg["setup"]["watcher"] = _offer_watcher(args, interactive, machine, ask=ask)
     _say()
 
     # 5. The scheduled nightly backup.
-    cfg["setup"]["backup"] = (offer_backup or _offer_backup)(args, interactive)
+    cfg["setup"]["backup"] = _offer_backup(args, interactive, machine)
     _say()
 
     # 6. The scheduled curation drains.
-    cfg["setup"]["curation"] = (offer_curation or _offer_curation)(args, interactive)
+    cfg["setup"]["curation"] = _offer_curation(args, interactive, machine)
     _say()
 
     # 7. MCP wiring.
-    cfg["setup"]["clients"] = {"claude": (offer_mcp or _offer_mcp)(args, interactive)}
+    cfg["setup"]["clients"] = {"claude": _offer_mcp(args, interactive, ask=ask)}
     _say()
 
     # 8. Done.
@@ -272,7 +278,7 @@ def run_setup(
     if cfg["setup"]["watcher"] in ("launchd", "already-running"):
         _say("  web viewer:       http://127.0.0.1:8787")
     _say(f"  account exports:  drop ZIPs into {paths.dumps_dir}")
-    if not embeddings_installed():
+    if not machine.embeddings_installed():
         _say("  semantic search:  not installed — `.venv/bin/pip install -e '.[embeddings]'` from the clone adds it (large: torch)")
     return 0
 
@@ -340,21 +346,23 @@ def _import_selected_locked(args: argparse.Namespace, selected: list, log_path) 
 
 
 def _offer_watcher(
-    args: argparse.Namespace, interactive: bool, ask: Callable[..., str] = _ask
+    args: argparse.Namespace,
+    interactive: bool,
+    machine: Machine,
+    *,
+    ask: Callable[..., str] = _ask,
 ) -> str:
     """Offer the always-fresh upgrade. Returns the recorded outcome."""
     if args.skip_watcher:
         _say("Watcher skipped (--skip-watcher).")
         return "skipped"
-    if sys.platform != "darwin":
+    if not machine.macos:
         _say("Keep it fresh: the always-on watcher ships for macOS only right now.")
         _say("  Without it, catch-up ingest still runs automatically whenever the archive's")
         _say("  MCP tools are used — searches stay close to current.")
         return "unavailable"
 
-    from .. import _launchd
-
-    if watcher_running(args.home):
+    if machine.watcher_running(args.home):
         _say("Keep it fresh: the always-on watcher is already installed and running.")
         return "already-running"
     _say("Keep it fresh? A background watcher (launchd) tails these stores so new")
@@ -370,7 +378,7 @@ def _offer_watcher(
         _say("  Skipped — lazy catch-up covers freshness; `thread_archive setup` to revisit.")
         return "skipped"
     try:
-        _launchd.install_watcher(args.home)
+        machine.install_watcher(args.home)
     except SystemExit as e:
         _say(f"  Could not install the watcher: {e}")
         _say("  Lazy catch-up still covers freshness; `archive daemon install` to retry.")
@@ -400,14 +408,7 @@ def _conversation_count(home: Optional[str]) -> int:
         return 0
 
 
-def curation_package_present() -> bool:
-    """Whether the optional curation package is importable in this env — the
-    gate on every setup surface that would otherwise recommend a command the
-    machine doesn't have."""
-    return importlib.util.find_spec("thread_librarian") is not None
-
-
-def _offer_curation(args: argparse.Namespace, interactive: bool) -> dict:
+def _offer_curation(args: argparse.Namespace, interactive: bool, machine: Machine) -> dict:
     """Report curation state — the drains are not the core's to schedule.
 
     The drains, their MCP write surface, and the Claude Code skills belong to
@@ -416,10 +417,10 @@ def _offer_curation(args: argparse.Namespace, interactive: bool) -> dict:
     policy prompts living there. When that package isn't on the machine, setup
     stays quiet: there is nothing installable to point at.
     """
-    if curation_running(args.home):
+    if machine.curation_running(args.home):
         _say("Curation: the librarian and gardener drains are already scheduled.")
         return {"status": "already-installed"}
-    if not curation_package_present():
+    if not machine.curation_installed():
         return {"status": "unavailable"}
     _say("Curation — an agent that links conversations to topics and writes each a")
     _say("search-first summary — is installed but not scheduled:")
@@ -428,26 +429,24 @@ def _offer_curation(args: argparse.Namespace, interactive: bool) -> dict:
     return {"status": "plugin"}
 
 
-def _offer_backup(args: argparse.Namespace, interactive: bool) -> dict:
+def _offer_backup(args: argparse.Namespace, interactive: bool, machine: Machine) -> dict:
     """Offer to schedule the nightly backup pipeline (backup → verify →
     restore drill). Returns the recorded outcome: ``{"status": ...}`` plus a
     ``dest`` when one is known."""
     if args.skip_backup:
         _say("Nightly backup skipped (--skip-backup).")
         return {"status": "skipped"}
-    if sys.platform != "darwin":
+    if not machine.macos:
         _say("Backups: scheduled nightly backup ships for macOS only right now.")
         _say("  Back up by hand anytime with `archive backup <dest>` (a copy of truth/ IS")
         _say("  the backup), or point your own scheduler at `archive nightly <dest>`.")
         return {"status": "unavailable"}
 
-    from .. import _launchd
-
     # An already-loaded backup agent is left untouched — this is what keeps the
     # wizard from clobbering an operator-installed pipeline (e.g. the host/ layer's
     # NAS backup with its own remount + notify wiring) on a re-run.
-    if backup_running(args.home):
-        dest = _launchd.backup_agent_dest()
+    if machine.backup_running(args.home):
+        dest = machine.backup_dest()
         _say("Backups: a nightly backup job is already installed"
              + (f" → {dest}." if dest else "."))
         return {"status": "already-installed", **({"dest": dest} if dest else {})}
@@ -467,7 +466,7 @@ def _offer_backup(args: argparse.Namespace, interactive: bool) -> dict:
     if not dest_path.is_absolute():
         dest_path = dest_path.resolve()
     try:
-        _launchd.install_backup(str(dest_path), args.home)
+        machine.install_backup(str(dest_path), args.home)
     except SystemExit as e:
         _say(f"  Could not schedule backup: {e}")
         _say("  Back up by hand with `archive backup <dest>`, or "
@@ -479,7 +478,7 @@ def _offer_backup(args: argparse.Namespace, interactive: bool) -> dict:
 
 
 def _offer_mcp(
-    args: argparse.Namespace, interactive: bool, ask: Callable[..., str] = _ask
+    args: argparse.Namespace, interactive: bool, *, ask: Callable[..., str] = _ask
 ) -> str:
     """Offer to wire detected MCP clients. Returns the recorded outcome."""
     from . import clients
@@ -529,79 +528,14 @@ def _indent(block: str, by: str = "    ") -> str:
     return "\n".join(by + line for line in block.splitlines())
 
 
-def embeddings_installed() -> bool:
-    from importlib.util import find_spec
-
-    try:
-        return find_spec("sentence_transformers") is not None
-    except (ImportError, ValueError):  # pragma: no cover — importlib edge
-        return False
-
-
-def _agent_covers_home(label: str, home: Optional[str]) -> bool:
-    """Whether the launchd agent ``label`` is loaded AND covers *this* home —
-    the agents are per-user, so a loaded agent pointed at a different
-    ``THREAD_ARCHIVE_HOME`` (plist env) must not read as covering the home
-    being asked about. An agent whose plist sets no home env — the ``host/``
-    install shape — is read as the default wiring, so the wizard treats an
-    operator-installed agent as already covering the default home and leaves
-    it alone."""
-    if sys.platform != "darwin":
-        return False
-    import plistlib
-
-    from .. import _launchd
-
-    try:
-        proc = _launchd._launchctl("print", f"gui/{_launchd._uid()}/{label}")
-        if proc.returncode != 0:
-            return False
-    except OSError:  # pragma: no cover — launchctl missing
-        return False
-    try:
-        plist = plistlib.loads(_launchd._plist_path(label).read_bytes())
-        agent_home = plist.get("EnvironmentVariables", {}).get("THREAD_ARCHIVE_HOME")
-    except (OSError, plistlib.InvalidFileException):
-        agent_home = None  # loaded, plist unreadable — assume the default wiring
-    # An agent with no plist home env runs against the *default* home — launchd
-    # gives it no shell env, and this process's $THREAD_ARCHIVE_HOME is not
-    # evidence (open_archive pins the currently-selected home there, so reading
-    # it would make every agent appear to cover whatever home is being asked
-    # about). Compare literal paths, not env-mediated resolution.
-    from .._config import default_home
-
-    agent_path = Path(agent_home).expanduser() if agent_home else default_home()
-    return agent_path == resolve_paths(home).home
-
-
-def watcher_running(home: Optional[str] = None) -> bool:
-    from .. import _launchd
-
-    return _agent_covers_home(_launchd.WATCHER_LABEL, home)
-
-
-def backup_running(home: Optional[str] = None) -> bool:
-    from .. import _launchd
-
-    return _agent_covers_home(_launchd.BACKUP_LABEL, home)
-
-
-def curation_running(home: Optional[str] = None) -> bool:
-    """Both curation drains scheduled for this home — the optional curation
-    package's agents; archive only reads their labels for status. A
-    half-installed pair reads as not running."""
-    return _agent_covers_home("com.thread-archive.librarian", home) and _agent_covers_home(
-        "com.thread-archive.gardener", home
-    )
-
-
 # ── status ───────────────────────────────────────────────────────────────────
 
 
-def print_status(args: argparse.Namespace) -> int:
+def print_status(args: argparse.Namespace, *, machine: Optional[Machine] = None) -> int:
     from .. import _api as api
     from ..cli import _age
 
+    machine = machine if machine is not None else Machine()
     st = api.status(home=args.home)
     cfg = load_config(args.home)
 
@@ -614,8 +548,8 @@ def print_status(args: argparse.Namespace) -> int:
     convs = st["threads"] - topics
     topics_part = f" · {topics:,} topics" if topics else ""
     _say(f"  archive:  {convs:,} conversations{topics_part} · {st['events']:,} events · {st['fts_indexed']:,} indexed")
-    if sys.platform == "darwin":
-        _say(f"  watcher:  {'running' if watcher_running(args.home) else 'not running — `thread_archive setup` offers it'}")
+    if machine.macos:
+        _say(f"  watcher:  {'running' if machine.watcher_running(args.home) else 'not running — `thread_archive setup` offers it'}")
     disabled = sorted(
         name for name, entry in cfg.get("sources", {}).items()
         if isinstance(entry, dict) and entry.get("enabled") is False
@@ -636,19 +570,17 @@ def print_status(args: argparse.Namespace) -> int:
         _say(f"  nightly:  FAILED ({stages}) {_age(n['at'])} → {n.get('dest')} — `archive status` has detail")
     elif n:
         _say(f"  nightly:  ok {_age(n['at'])} → {n.get('dest')}")
-    if sys.platform == "darwin":
-        if backup_running(args.home):
-            from .. import _launchd
-
-            dest = _launchd.backup_agent_dest()
+    if machine.macos:
+        if machine.backup_running(args.home):
+            dest = machine.backup_dest()
             _say("  schedule: nightly backup + verify + restore-drill installed"
                  + (f" → {dest}" if dest else ""))
         else:
             _say("  schedule: no nightly backup — `thread_archive setup` offers it "
                  "(or `archive daemon install --backup --dest <path>`)")
-        if curation_running(args.home):
+        if machine.curation_running(args.home):
             _say("  curation: librarian (hourly) + gardener (daily) scheduled")
-        elif curation_package_present():
+        elif machine.curation_installed():
             _say("  curation: not scheduled — `thread-librarian daemon install "
                  "--librarian` / `--gardener` schedules it")
     _say()

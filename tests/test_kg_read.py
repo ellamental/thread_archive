@@ -19,6 +19,7 @@ from thread_archive._knowledge import (
     topic_get,
     topic_members,
     topic_thread_ids,
+    topic_tree,
 )
 
 pytest.importorskip("thread_librarian")  # seeds the curated data plane
@@ -171,3 +172,70 @@ def test_librarian_topic_get_and_members_tools(archive_home) -> None:
 
     assert L.topic_get(99_999_999).startswith("Error:")
     assert L.topic_members(99_999_999).startswith("Error:")
+
+
+# ── the derived hierarchy (topic_tree) ────────────────────────────────────────
+def _tree_ids(node: dict) -> set:
+    return {node["id"], *(i for c in node["children"] for i in _tree_ids(c))}
+
+
+def test_topic_tree_from_part_of_and_contains(archive_home) -> None:
+    """Both hierarchy spellings build the same forest; conversation edges and
+    hierarchy edges to conversations never enter the tree."""
+    ta.open_archive()
+    conv, _ = _seed_conversation("sess-t", "hello tree")
+    a = create_topic("Graph Theory")["topic_id"]
+    b = create_topic("Leiden Communities")["topic_id"]
+    c = create_topic("PageRank")["topic_id"]
+    d = create_topic("Centrality Measures")["topic_id"]
+    link_threads(b, a, "part-of")
+    link_threads(a, c, "contains")
+    link_threads(d, c, "part-of")
+    link_threads(conv, a, "part-of")  # a conversation may not enter the tree
+
+    tree = topic_tree()
+    [root] = tree["roots"]
+    assert root["id"] == a and _tree_ids(root) == {a, b, c, d}
+    by_title = {n["title"]: n for n in root["children"]}
+    assert set(by_title) == {"Leiden Communities", "PageRank"}
+    assert [n["id"] for n in by_title["PageRank"]["children"]] == [d]
+    assert tree["topics_in_hierarchy"] == 4 and tree["topics_total"] == 4
+
+
+def test_topic_tree_cycle_is_cut(archive_home) -> None:
+    """A mutual part-of pair: neither is a root, but the build must not hang or
+    recurse forever — the pair simply contributes no root."""
+    ta.open_archive()
+    a = create_topic("A")["topic_id"]
+    b = create_topic("B")["topic_id"]
+    link_threads(a, b, "part-of")
+    link_threads(b, a, "part-of")
+    tree = topic_tree()
+    assert all(a not in _tree_ids(r) for r in tree["roots"])
+
+
+def test_topic_tree_multi_parent_child_appears_under_each(archive_home) -> None:
+    ta.open_archive()
+    a = create_topic("A")["topic_id"]
+    b = create_topic("B")["topic_id"]
+    c = create_topic("C")["topic_id"]
+    d = create_topic("Shared Child")["topic_id"]
+    link_threads(d, a, "part-of")
+    link_threads(d, b, "part-of")
+    link_threads(c, a, "part-of")  # give a more weight so root order is deterministic
+    tree = topic_tree()
+    roots = {r["id"]: r for r in tree["roots"]}
+    assert set(roots) == {a, b}
+    assert d in _tree_ids(roots[a]) and d in _tree_ids(roots[b])
+    # heavier subtree lists first
+    assert tree["roots"][0]["id"] == a
+
+
+def test_topic_tree_empty_without_hierarchy_links(archive_home) -> None:
+    ta.open_archive()
+    a = create_topic("A")["topic_id"]
+    b = create_topic("B")["topic_id"]
+    link_threads(a, b, "related")  # not a hierarchy spelling
+    tree = topic_tree()
+    assert tree["roots"] == [] and tree["topics_in_hierarchy"] == 0
+    assert tree["topics_total"] == 2

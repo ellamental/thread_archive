@@ -942,60 +942,11 @@ def _topic_read_message(thread: Thread, *, session: Optional[Session] = None) ->
     return "\n".join(lines)
 
 
-# The reserved thread_read ref that renders the topic hierarchy instead of a
-# transcript — the knowledge graph's table of contents, and the read surface's
-# only query-less entry point into it.
+# The reserved thread_read ref that used to render the topic hierarchy. The
+# tree is the librarian's read surface now (its MCP ``topic_tree`` tool); the
+# ref is kept only so a pasted 'topics' points there instead of resolving as a
+# thread lookup that confusingly finds nothing.
 TOPIC_TREE_REF = "topics"
-
-
-def _topic_tree_page(budget: int, *, session: Optional[Session] = None) -> str:
-    """Render the curated topic hierarchy as an indented forest, biggest subtree
-    first (see :func:`thread_archive._knowledge.topic_tree`). Size-budgeted like
-    a transcript read: rendering stops cleanly at ``budget`` chars with a note,
-    since a large curated graph can far exceed one read."""
-    from .._knowledge import topic_tree
-
-    tree = topic_tree(session=session)
-    outside = tree["topics_total"] - tree["topics_in_hierarchy"]
-    lines = [
-        "# Topic tree",
-        f"{tree['topics_in_hierarchy']} of {tree['topics_total']} live topics are in "
-        f"the hierarchy ({outside} unparented — list them: "
-        f"thread_search('', types='topic')).",
-        "Open a topic's page: thread_read(topic_id) · scope a search to one: "
-        "thread_search(query, topic_id=…)",
-        "",
-    ]
-    if not tree["roots"]:
-        lines.append("No hierarchy yet — no part-of/contains links between live topics.")
-        return "\n".join(lines)
-
-    used = sum(len(ln) + 1 for ln in lines)
-    truncated = False
-
-    def emit(node: dict, depth: int) -> bool:
-        """Append one node (and recurse); False once the budget is exhausted."""
-        nonlocal used, truncated
-        kind = f" · {node['topic_kind']}" if node.get("topic_kind") else ""
-        line = f"{'  ' * depth}- {node['title'] or '(untitled)'} [topic {node['id']}]{kind}"
-        if used + len(line) + 1 > budget:
-            truncated = True
-            return False
-        lines.append(line)
-        used += len(line) + 1
-        for child in node["children"]:
-            if not emit(child, depth + 1):
-                return False
-        return True
-
-    for root in tree["roots"]:
-        if not emit(root, 0):
-            break
-
-    if truncated:
-        lines += ["", f"… truncated at ~{budget} chars — raise max_chars, or open a "
-                      "subtree's root topic with thread_read(topic_id)."]
-    return "\n".join(lines)
 
 
 # Feature flag for the stored-summary read kinds (summary='short'/'indexed').
@@ -1228,9 +1179,7 @@ def read_thread(
 
     ``thread_id`` is either the archive's thread id or a provider **session
     id** (the uuid/source_id a tool knows the conversation by) — see
-    :func:`resolve_thread_ref`. The reserved ref ``'topics'`` renders the curated
-    topic hierarchy instead (:func:`_topic_tree_page`), budgeted by ``max_chars``.
-    ``mode`` picks the view: ``user`` (default) = only
+    :func:`resolve_thread_ref`. ``mode`` picks the view: ``user`` (default) = only
     the user turns; ``chat`` = user + assistant visible text (thinking + tool calls
     stripped); ``full`` = the whole transcript including tool calls; ``last`` = only
     the thread's final assistant text (the closing answer — the cheapest "how did
@@ -1254,8 +1203,9 @@ def read_thread(
     message string if absent.
     """
     if isinstance(thread_id, str) and thread_id.strip().lower() == TOPIC_TREE_REF:
-        budget = max_chars if max_chars and max_chars > 0 else DEFAULT_READ_CHAR_BUDGET
-        return _topic_tree_page(budget, session=session)
+        return ("The topic tree is the librarian's read surface: use the "
+                "thread-archive-librarian MCP's topic_tree tool. A topic *id* still "
+                "reads here as the topic's page.")
 
     summary_kind = _resolve_summary_kind(summary)
     if summary_kind == "?":

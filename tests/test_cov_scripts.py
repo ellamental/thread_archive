@@ -579,14 +579,15 @@ def test_reconcile_run_skips_unmapped_source(archive_home, monkeypatch) -> None:
     assert totals.get("threads", 0) == 0
 
 
-def test_reconcile_run_counts_plan_errors(archive_home, monkeypatch) -> None:
-    tid, f = _import_cc(archive_home)
-    pairs = iter([("claude-code", f, "proj:s1")])
+def test_reconcile_run_counts_plan_errors(archive_home, tmp_path) -> None:
+    """A transcript that cannot be read is one counted plan error, not a crash
+    that abandons the rest of the run. Driven with a real unreadable path (a
+    directory where the discovery expects a session file)."""
+    tid, _f = _import_cc(archive_home)
+    unreadable = tmp_path / "not-a-session"
+    unreadable.mkdir()
+    pairs = iter([("claude-code", unreadable, "proj:s1")])
 
-    def _boom(path):
-        raise RuntimeError("cannot read")
-
-    monkeypatch.setattr(rec, "read_session_lines", _boom)
     totals = rec.run(pairs=pairs, apply=False)
     assert totals["plan_errors"] == 1
     assert totals["threads"] == 1
@@ -706,14 +707,12 @@ def test_recover_run_respects_limit(archive_home, monkeypatch) -> None:
     assert totals["threads_mapped"] == 1
 
 
-def test_recover_run_counts_read_errors(archive_home, monkeypatch) -> None:
-    tid, f = _import_cc(archive_home)
-    pairs = iter([("claude-code", f, "proj:s1")])
+def test_recover_run_counts_read_errors(archive_home, tmp_path) -> None:
+    tid, _f = _import_cc(archive_home)
+    unreadable = tmp_path / "not-a-session"
+    unreadable.mkdir()
+    pairs = iter([("claude-code", unreadable, "proj:s1")])
 
-    def _boom(path):
-        raise RuntimeError("unreadable")
-
-    monkeypatch.setattr(rec2, "read_session_lines", _boom)
     totals = rec2.run(pairs=pairs, apply=False)
     assert totals["read_errors"] == 1
 
@@ -741,14 +740,12 @@ def test_recover_run_nothing_to_recover_is_noop(archive_home, monkeypatch) -> No
     assert totals["events_recovered"] == 0
 
 
-def test_recover_main_prints_error_counts(archive_home, monkeypatch, capsys) -> None:
-    tid, f = _import_cc(archive_home)
-    pairs = iter([("claude-code", f, "proj:s1")])
+def test_recover_main_prints_error_counts(archive_home, tmp_path, capsys) -> None:
+    tid, _f = _import_cc(archive_home)
+    unreadable = tmp_path / "not-a-session"
+    unreadable.mkdir()
+    pairs = iter([("claude-code", unreadable, "proj:s1")])
 
-    def _boom(path):
-        raise RuntimeError("unreadable")
-
-    monkeypatch.setattr(rec2, "read_session_lines", _boom)
     rec2.main([], pairs=pairs)
     out = capsys.readouterr().out
     assert "read errors" in out

@@ -1,16 +1,26 @@
-"""Branch-coverage tests for the ``archive`` CLI dispatch (:mod:`thread_archive.cli`).
+"""Branch-coverage tests for the ``archive`` CLI (:mod:`thread_archive.cli`).
 
-Companion to ``test_cli_smoke.py``: that file covers the happy-path arg mapping of
-a handful of verbs; this one drives the still-uncovered verb handlers and their
-error / output-formatting branches. Everything heavy (``_api`` calls, the watcher,
-launchd, the ingest lock) is stubbed with ``monkeypatch.setattr`` on the module
-attribute the handler actually resolves, so no test does real work.
+Companion to ``test_cli_smoke.py``, which drives the verbs end-to-end over a
+seeded archive. This file covers the branches a real run cannot reach, two ways:
+
+* the ``report_*`` functions — each verb's operator report is a pure function of
+  the result dict and its exit code, so every warning/sample/failure line is
+  driven directly with the shape that produces it, no ``_api`` involved;
+* the verbs whose boundary is outside the archive — launchd (the operator's live
+  session), the watcher's long-running loop, the self-update git clone — which
+  are stubbed at the module attribute the handler resolves.
 """
 
 from __future__ import annotations
 
 import argparse
 import contextlib
+import json
+import os
+import sqlite3
+import subprocess
+import sys
+import zipfile
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
@@ -18,8 +28,16 @@ import pytest
 
 from thread_archive import _api as api
 from thread_archive import _launchd, _truth, _update, _watcher, _web, cli
-from thread_archive._importers import exports
 from thread_archive.cli import main
+
+from .helpers import (
+    cc_assistant,
+    cc_user,
+    event_count,
+    import_cc_session,
+    one_thread_file,
+    write_jsonl,
+)
 
 # coverage tag: cli
 
@@ -66,15 +84,35 @@ def test_parse_hhmm_minute_out_of_range_raises() -> None:
 # ── _self_throttle ────────────────────────────────────────────────────────────
 
 
-def test_self_throttle_runs(monkeypatch) -> None:
-    """Drives the real throttle path (nice + on darwin the io-policy syscall);
-    nice is stubbed so we don't renice the test runner."""
-    import os
+def test_self_throttle_really_renices_the_process() -> None:
+    """``nice()`` is one-way, so this runs in a child: the real throttle (CPU
+    nice + on macOS the io-policy syscall) lands on a process we can throw away,
+    and the env opt-out really skips it."""
+    probe = (
+        "import os, sys;"
+        "from thread_archive.cli import _self_throttle;"
+        "_self_throttle();"
+        "print(os.nice(0))"
+    )
 
-    calls = []
-    monkeypatch.setattr(os, "nice", lambda n: calls.append(n))
-    cli._self_throttle()  # exercises the darwin (or non-darwin) body for real
-    assert calls == [10]
+    def run(**env):
+        return subprocess.run(
+            [sys.executable, "-c", probe],
+            capture_output=True, text=True, env={**os.environ, **env},
+        )
+
+    # Relative to this process's own niceness, not a fixed number: nice is
+    # inherited, so the launcher sets the floor — thread-ci runs its suites at
+    # nice 10, and 19 is the kernel's ceiling.
+    base = os.nice(0)
+
+    throttled = run(THREAD_ARCHIVE_NO_THROTTLE="")
+    assert throttled.returncode == 0, throttled.stderr
+    assert int(throttled.stdout.strip()) == min(base + 10, 19)
+
+    opted_out = run(THREAD_ARCHIVE_NO_THROTTLE="1")
+    assert opted_out.returncode == 0, opted_out.stderr
+    assert int(opted_out.stdout.strip()) == base
 
 
 def test_self_throttle_non_darwin(monkeypatch) -> None:
@@ -106,33 +144,55 @@ def test_age_naive_and_ranges() -> None:
 # ── import ────────────────────────────────────────────────────────────────────
 
 
-def test_import_line_stream_summary(monkeypatch, capsys) -> None:
-    seen = {}
+def test_import_line_stream_summary(archive_home, tmp_path, capsys) -> None:
+    """A line-stream provider's summary names the thread it landed in and the
+    events it created — read back off the real import, not a stub's numbers."""
+    session = tmp_path / "session.jsonl"
+    write_jsonl(session, [cc_user("cli"), cc_assistant("cli")])
 
-    def fake_import(path, *, home=None, provider=None):
-        seen.update(path=path, home=home, provider=provider)
-        return SimpleNamespace(thread_id=5, events_created=3, is_new_thread=True)
-
-    monkeypatch.setattr(api, "import_path", fake_import)
-    rc = main(["import", "/some/session.jsonl", "--home", "/h"])
+    rc = main(["import", str(session), "--home", str(archive_home)])
     assert rc == 0
-    assert seen == {"path": "/some/session.jsonl", "home": "/h", "provider": "claude-code"}
     out = capsys.readouterr().out
-    assert "imported /some/session.jsonl (claude-code): thread=5 events=3 new=True" in out
+    assert f"imported {session} (claude-code): thread=" in out
+    assert "new=True" in out
+    events = int(out.split("events=")[1].split()[0])
+    assert events == event_count() > 0
+
+    # a second import of the same file is the same thread, no longer new
+    assert main(["import", str(session), "--home", str(archive_home)]) == 0
+    assert "new=False" in capsys.readouterr().out
 
 
-def test_import_db_scanner_summary(monkeypatch, capsys) -> None:
+def _cursor_store(path) -> None:
+    """A minimal cursor ``state.vscdb``: one composer, one user + one agent bubble."""
+    conn = sqlite3.connect(path)
+    conn.execute("CREATE TABLE cursorDiskKV (key TEXT PRIMARY KEY, value TEXT)")
+    conn.executemany("INSERT INTO cursorDiskKV VALUES (?, ?)", [
+        ("composerData:comp1", json.dumps({
+            "name": "Cursor Chat", "lastUpdatedAt": 1700000000000,
+            "fullConversationHeadersOnly": [{"bubbleId": "b1", "type": 1},
+                                            {"bubbleId": "b2", "type": 2}]})),
+        ("bubbleId:comp1:b1", json.dumps(
+            {"type": 1, "text": "hello cursor", "createdAt": 1700000000000})),
+        ("bubbleId:comp1:b2", json.dumps(
+            {"type": 2, "text": "hi from cursor", "createdAt": 1700000001000})),
+    ])
+    conn.commit()
+    conn.close()
+
+
+def test_import_db_scanner_summary(archive_home, tmp_path, capsys) -> None:
     """The cursor/opencode DB scanners return a result whose ``vars()`` is the
     printed summary (many sessions per file)."""
-    monkeypatch.setattr(
-        api, "import_path",
-        lambda path, **kw: SimpleNamespace(sessions_scanned=2, events_created=10),
-    )
-    rc = main(["import", "/store.db", "--provider", "cursor", "--home", "/h"])
+    db = tmp_path / "state.vscdb"
+    _cursor_store(db)
+
+    rc = main(["import", str(db), "--provider", "cursor", "--home", str(archive_home)])
     assert rc == 0
     out = capsys.readouterr().out
-    assert "imported /store.db (cursor):" in out
-    assert "sessions_scanned=2" in out and "events_created=10" in out
+    assert f"imported {db} (cursor):" in out
+    assert "processed=1 imported=1" in out
+    assert f"events_created={event_count()}" in out and event_count() > 0
 
 
 def test_import_unknown_provider_direct_call() -> None:
@@ -204,26 +264,51 @@ def test_providers_marks_disabled_and_followers_off(archive_home, capsys) -> Non
 # ── import-export ─────────────────────────────────────────────────────────────
 
 
-def test_import_export_dispatches(monkeypatch, capsys) -> None:
-    opened = {}
-    checkpointed = {}
-    monkeypatch.setattr(api, "open_archive", lambda home: opened.update(home=home))
-    monkeypatch.setattr(api, "checkpoint", lambda *, home=None: checkpointed.update(home=home))
-    monkeypatch.setattr(_truth, "shared_ingest_lock", _fake_lock)
+def test_import_export_imports_a_real_export(archive_home, tmp_path, capsys) -> None:
+    """`archive import-export` unpacks a real claude.ai export ZIP into the
+    archive, and --force reaches the importer: a second pass skips what is
+    already there unless it is told to reimport."""
+    conv = {
+        "uuid": "conv-1", "name": "Exported", "created_at": "2026-01-01T10:00:00Z",
+        "updated_at": "2026-01-01T10:00:10Z",
+        "chat_messages": [
+            {"uuid": "m1", "sender": "human", "text": "hello export",
+             "created_at": "2026-01-01T10:00:00Z"},
+            {"uuid": "m2", "sender": "assistant", "text": "hi from the export",
+             "created_at": "2026-01-01T10:00:05Z"},
+        ],
+    }
+    def write_export(path, conversation) -> None:
+        with zipfile.ZipFile(path, "w") as zf:
+            zf.writestr("conversations.json", json.dumps([conversation]))
+            zf.writestr("users.json", json.dumps([{"uuid": "user-1"}]))
 
-    seen = {}
+    export = tmp_path / "claude-export.zip"
+    write_export(export, conv)
 
-    def fake_export(path, *, force=False):
-        seen.update(path=path, force=force)
-        return SimpleNamespace(processed=4, imported=3, skipped=1, events_created=42)
-
-    monkeypatch.setattr(exports, "import_export", fake_export)
-    rc = main(["import-export", "/export.zip", "--force", "--home", "/h"])
+    rc = main(["import-export", str(export), "--home", str(archive_home)])
     assert rc == 0
-    assert opened == {"home": "/h"} and checkpointed == {"home": "/h"}
-    assert seen == {"path": "/export.zip", "force": True}
     out = capsys.readouterr().out
-    assert "imported export /export.zip: processed=4 imported=3 skipped=1 events=42" in out
+    assert f"imported export {export}: processed=1 imported=1 skipped=0 events=" in out
+    assert event_count() > 0
+    # checkpointed: the imported thread's metadata really reached the truth log
+    assert any("Exported" in f.read_text(encoding="utf-8")
+               for f in (archive_home / "truth" / "threads").rglob("*.jsonl"))
+
+    # a later export of the same conversation, one turn longer
+    grown = {**conv, "chat_messages": [*conv["chat_messages"],
+             {"uuid": "m3", "sender": "human", "text": "one more turn",
+              "created_at": "2026-01-01T10:01:00Z"}]}
+    write_export(export, grown)
+
+    assert main(["import-export", str(export), "--home", str(archive_home)]) == 0
+    assert "processed=1 imported=0 skipped=1 events=0" in capsys.readouterr().out
+
+    before = event_count()
+    assert main(["import-export", str(export), "--force",
+                 "--home", str(archive_home)]) == 0
+    assert "processed=1 imported=1 skipped=0" in capsys.readouterr().out
+    assert event_count() > before  # --force really re-read the export
 
 
 # ── watch ─────────────────────────────────────────────────────────────────────
@@ -442,36 +527,50 @@ def test_daemon_watcher_uninstall_restart_status(monkeypatch, capsys) -> None:
 # ── reindex error branch ──────────────────────────────────────────────────────
 
 
-def test_reindex_refused_returns_1(tmp_path, monkeypatch, capsys) -> None:
+def _gut_the_truth(archive_home) -> None:
+    """Empty the archive's one thread file — a truth that lost committed records
+    the index still holds, the state the publication guard exists for."""
+    from thread_archive._truth import jsonl_log
+
+    one_thread_file(archive_home).write_text("", encoding="utf-8")
+    jsonl_log.reset_handles()
+
+
+def test_reindex_refuses_a_lossy_rebuild(archive_home, tmp_path, monkeypatch, capsys) -> None:
+    """A rebuild that would lose committed records is refused and the old index
+    kept — the operator gets guidance on stderr, not a stack trace."""
     monkeypatch.setenv("THREAD_ARCHIVE_NO_THROTTLE", "1")
+    import_cc_session(tmp_path)
+    before = event_count()
+    _gut_the_truth(archive_home)
 
-    def boom(**kw):
-        raise RuntimeError("no disk room")
-
-    monkeypatch.setattr(api, "reindex", boom)
-    rc = main(["reindex", "--home", str(tmp_path / "arc")])
+    rc = main(["reindex", "--home", str(archive_home)])
     assert rc == 1
-    assert "reindex refused: no disk room" in capsys.readouterr().err
+    assert "reindex refused:" in capsys.readouterr().err
+    assert event_count() == before  # the old index is intact
 
 
-def test_reindex_success_prints_counts(tmp_path, monkeypatch, capsys) -> None:
+def test_reindex_salvage_publishes_the_lossy_rebuild(
+    archive_home, tmp_path, monkeypatch, capsys
+) -> None:
+    """--salvage reaches api.reindex: the same rebuild the default refuses is
+    published, and the counts it printed are the ones it wrote."""
     monkeypatch.setenv("THREAD_ARCHIVE_NO_THROTTLE", "1")
-    seen = {}
-    monkeypatch.setattr(
-        api, "reindex",
-        lambda **kw: seen.update(kw) or {"threads": 2, "events": 9},
-    )
-    rc = main(["reindex", "--vectors", "--salvage", "--home", str(tmp_path / "arc")])
+    import_cc_session(tmp_path)
+    _gut_the_truth(archive_home)
+
+    rc = main(["reindex", "--vectors", "--salvage", "--home", str(archive_home)])
     assert rc == 0
-    assert seen["vectors"] is True and seen["salvage"] is True
     out = capsys.readouterr().out
-    assert "threads" in out and "events" in out and "done" in out
+    assert "vectors=True" in out and "done" in out
+    assert "events" in out and "threads" in out
+    assert event_count() == 0  # the lossy rebuild really replaced the index
 
 
 # ── backup: full warning surface ──────────────────────────────────────────────
 
 
-def test_backup_all_warnings_returns_1(monkeypatch, capsys) -> None:
+def test_backup_all_warnings_returns_1(capsys) -> None:
     res = {
         "truth_dir": "t", "dest": "d", "files_copied": 3, "bytes_copied": 5 * 1024 * 1024,
         "verify_ok": False, "deletions_skipped": 2, "shrinks_skipped": 1,
@@ -480,8 +579,7 @@ def test_backup_all_warnings_returns_1(monkeypatch, capsys) -> None:
         "generations_pruned": 1, "generation_error": "snap failed",
         "rehomed_twins_deleted": 4,
     }
-    monkeypatch.setattr(api, "backup", lambda dest, **kw: res)
-    rc = main(["backup", "/dest"])
+    rc = cli.report_backup(res)
     assert rc == 1
     out = capsys.readouterr().out
     assert "generation:" in out
@@ -500,29 +598,25 @@ def _backup_clean_base() -> dict:
     }
 
 
-def test_backup_bundle_error_fails_the_run(monkeypatch, capsys) -> None:
+def test_backup_bundle_error_fails_the_run(capsys) -> None:
     # A stale .recovery/ restores yesterday's keyring — a failed run, not a footnote.
     res = {**_backup_clean_base(), "bundle_error": "smb down"}
-    monkeypatch.setattr(api, "backup", lambda dest, **kw: res)
-    rc = main(["backup", "/dest"])
-    assert rc == 1
+    assert cli.report_backup(res) == 1
     assert "recovery bundle sync failed (smb down)" in capsys.readouterr().out
 
 
-def test_backup_bundle_keyring_included(monkeypatch, capsys) -> None:
+def test_backup_bundle_keyring_included(capsys) -> None:
     res = {**_backup_clean_base(), "bundle_files": 3, "bundle_copied": 2,
            "bundle_deleted": 1, "keyring_in_bundle": True}
-    monkeypatch.setattr(api, "backup", lambda dest, **kw: res)
-    assert main(["backup", "/dest"]) == 0
+    assert cli.report_backup(res) == 0
     out = capsys.readouterr().out
     assert "recovery bundle: 3 file(s) (2 copied, 1 removed; keyring included)" in out
 
 
-def test_backup_bundle_keyring_opted_out(monkeypatch, capsys) -> None:
+def test_backup_bundle_keyring_opted_out(capsys) -> None:
     res = {**_backup_clean_base(), "bundle_files": 2, "bundle_copied": 0,
            "bundle_deleted": 0, "keyring_in_bundle": False, "keyring_opted_out": True}
-    monkeypatch.setattr(api, "backup", lambda dest, **kw: res)
-    assert main(["backup", "/dest"]) == 0
+    assert cli.report_backup(res) == 0
     assert "keyring EXCLUDED — config opt-out" in capsys.readouterr().out
 
 
@@ -571,9 +665,10 @@ def _verify_rich_failure() -> dict:
     }
 
 
-def test_verify_rich_failure_all_branches(monkeypatch, capsys) -> None:
-    monkeypatch.setattr(api, "verify", lambda **kw: _verify_rich_failure())
-    rc = main(["verify", "--deep", "--hashes", "--backup", "/mirror"])
+def test_verify_rich_failure_all_branches(capsys) -> None:
+    rc = cli.report_verify(
+        _verify_rich_failure(), deep=True, hashes=True, backup="/mirror"
+    )
     assert rc == 1
     out = capsys.readouterr().out
     assert "torn tails=1 interior=1" in out
@@ -592,7 +687,7 @@ def test_verify_rich_failure_all_branches(monkeypatch, capsys) -> None:
     assert "full result appended to /home/verify-failures.jsonl" in out
 
 
-def test_verify_backup_scan_and_shrink(monkeypatch, capsys) -> None:
+def test_verify_backup_scan_and_shrink(capsys) -> None:
     res = {
         "ok": True,
         "truth": {"threads": 1, "events": 2, "events_effective": 2,
@@ -609,8 +704,7 @@ def test_verify_backup_scan_and_shrink(monkeypatch, capsys) -> None:
                        "mismatch_sample": [9]},
         },
     }
-    monkeypatch.setattr(api, "verify", lambda **kw: res)
-    rc = main(["verify", "--backup", "/mirror"])
+    rc = cli.report_verify(res, backup="/mirror")
     assert rc == 0
     out = capsys.readouterr().out
     assert "backup[/mirror]: threads=1" in out and "coverage=0.9876" in out
@@ -620,7 +714,7 @@ def test_verify_backup_scan_and_shrink(monkeypatch, capsys) -> None:
     assert "OK" in out
 
 
-def test_verify_backup_hashes_clean(monkeypatch, capsys) -> None:
+def test_verify_backup_hashes_clean(capsys) -> None:
     """Backup mirror with hashes present but no mismatch — the clean-hash branch."""
     res = {
         "ok": True,
@@ -637,8 +731,7 @@ def test_verify_backup_hashes_clean(monkeypatch, capsys) -> None:
                        "mismatch_sample": []},
         },
     }
-    monkeypatch.setattr(api, "verify", lambda **kw: res)
-    assert main(["verify", "--backup", "/mirror"]) == 0
+    assert cli.report_verify(res, backup="/mirror") == 0
     out = capsys.readouterr().out
     assert "backup hashes: checked=2 mismatched=0" in out
     assert "mismatch sample" not in out  # clean → no sample line
@@ -647,15 +740,14 @@ def test_verify_backup_hashes_clean(monkeypatch, capsys) -> None:
 # ── restore-drill: report + failure branches ─────────────────────────────────
 
 
-def test_restore_drill_full_report_skipped_smoke(monkeypatch, capsys) -> None:
+def test_restore_drill_full_report_skipped_smoke(capsys) -> None:
     res = {
         "ok": True, "seconds": 2.5, "coverage": 0.9999,
         "mirror": {"threads": 4, "events_effective": 40, "parse_errors": 0},
         "rebuilt": {"threads": 4, "events": 40, "fts": 40},
         "smoke": {"skipped": "no models installed"},
     }
-    monkeypatch.setattr(api, "restore_drill", lambda dest, **kw: res)
-    rc = main(["restore-drill", "/mirror"])
+    rc = cli.report_restore_drill(res)
     assert rc == 0
     out = capsys.readouterr().out
     assert "mirror: threads=4 effective=40" in out
@@ -664,7 +756,7 @@ def test_restore_drill_full_report_skipped_smoke(monkeypatch, capsys) -> None:
     assert "OK (2.5s)" in out
 
 
-def test_restore_drill_failure_with_smoke(monkeypatch, capsys) -> None:
+def test_restore_drill_failure_with_smoke(capsys) -> None:
     res = {
         "ok": False, "seconds": 1.0, "error": "rebuild aborted",
         "mirror": {"threads": 1, "events_effective": 1, "parse_errors": 3},
@@ -672,8 +764,7 @@ def test_restore_drill_failure_with_smoke(monkeypatch, capsys) -> None:
         "smoke": {"read_ok": True, "search_ok": False, "token": "hello", "error": "no hit"},
         "drill_home": "/tmp/drill-abc",
     }
-    monkeypatch.setattr(api, "restore_drill", lambda dest, **kw: res)
-    rc = main(["restore-drill", "/mirror", "--keep-home"])
+    rc = cli.report_restore_drill(res)
     assert rc == 1
     out = capsys.readouterr().out
     assert "FAILED: rebuild aborted" in out
@@ -683,21 +774,19 @@ def test_restore_drill_failure_with_smoke(monkeypatch, capsys) -> None:
     assert "RESTORE DRILL FAILED (1.0s)" in out
 
 
-def test_restore_drill_bundle_absent(monkeypatch, capsys) -> None:
+def test_restore_drill_bundle_absent(capsys) -> None:
     res = {"ok": True, "seconds": 1.0, "bundle": {"present": False}}
-    monkeypatch.setattr(api, "restore_drill", lambda dest, **kw: res)
-    assert main(["restore-drill", "/mirror"]) == 0
+    assert cli.report_restore_drill(res) == 0
     assert "bundle: ABSENT" in capsys.readouterr().out
 
 
-def test_restore_drill_bundle_present_unreadable_keyring(monkeypatch, capsys) -> None:
+def test_restore_drill_bundle_present_unreadable_keyring(capsys) -> None:
     res = {
         "ok": True, "seconds": 1.0,
         "bundle": {"present": True, "config": True, "keyring_keys": None,
                    "retained_exports": 2, "keyring_unreadable": True},
     }
-    monkeypatch.setattr(api, "restore_drill", lambda dest, **kw: res)
-    assert main(["restore-drill", "/mirror"]) == 0
+    assert cli.report_restore_drill(res) == 0
     out = capsys.readouterr().out
     assert "bundle: config=yes keyring keys=none retained exports=2 (keyring UNREADABLE)" in out
 
@@ -708,7 +797,7 @@ def test_restore_drill_bundle_present_unreadable_keyring(monkeypatch, capsys) ->
 # branches a happy restore can't produce.
 
 
-def test_restore_skipped_smoke_and_damaged_home(monkeypatch, capsys) -> None:
+def test_restore_skipped_smoke_and_damaged_home(capsys) -> None:
     res = {
         "ok": True, "seconds": 2.0,
         "mirror": {"threads": 1, "events_effective": 1, "parse_errors": 0},
@@ -716,8 +805,7 @@ def test_restore_skipped_smoke_and_damaged_home(monkeypatch, capsys) -> None:
         "smoke": {"skipped": "no models installed"},
         "damaged_home": "/h/x.damaged-2026-07-15T00-00-00",
     }
-    monkeypatch.setattr(api, "restore", lambda dest, to, **kw: res)
-    rc = main(["restore", "/mirror", "--to", "/h/x", "--replace"])
+    rc = cli.report_restore(res, to="/h/x")
     assert rc == 0
     out = capsys.readouterr().out
     assert "mirror: threads=1" in out
@@ -727,28 +815,25 @@ def test_restore_skipped_smoke_and_damaged_home(monkeypatch, capsys) -> None:
     assert "OK — restored to /h/x (2.0s)" in out
 
 
-def test_restore_failed_no_mirror_no_smoke_error(monkeypatch, capsys) -> None:
+def test_restore_failed_no_mirror_no_smoke_error(capsys) -> None:
     """A failed restore with neither mirror nor rebuilt scanned, no smoke, and an
     error — the pure failure surface, from a named generation."""
     res = {"ok": False, "seconds": 1.0, "error": "rebuild aborted"}
-    monkeypatch.setattr(api, "restore", lambda dest, to, **kw: res)
-    rc = main(["restore", "/mirror", "--to", "/h/x", "--generation", "2026-07-14T00-00-00"])
+    rc = cli.report_restore(res, to="/h/x")
     assert rc == 1
     out = capsys.readouterr().out
-    assert "generation 2026-07-14T00-00-00" in out  # the generation-qualified src line
     assert "mirror:" not in out and "rebuilt:" not in out
     assert "FAILED: rebuild aborted" in out
     assert "RESTORE FAILED (1.0s)" in out
 
 
-def test_restore_bundle_installed_with_error(monkeypatch, capsys) -> None:
+def test_restore_bundle_installed_with_error(capsys) -> None:
     res = {
         "ok": True, "seconds": 1.0,
         "bundle": {"config": True, "keyring": True, "retained_exports": 2,
                    "error": "keyring locked"},
     }
-    monkeypatch.setattr(api, "restore", lambda dest, to, **kw: res)
-    assert main(["restore", "/mirror", "--to", "/h/x"]) == 0
+    assert cli.report_restore(res, to="/h/x") == 0
     out = capsys.readouterr().out
     assert "bundle: installed config, keyring, 2 retained export(s) (ERROR: keyring locked)" in out
 
@@ -756,7 +841,7 @@ def test_restore_bundle_installed_with_error(monkeypatch, capsys) -> None:
 # ── nightly: full report, drill error ─────────────────────────────────────────
 
 
-def test_nightly_verify_failed_drill_ok(monkeypatch, capsys) -> None:
+def test_nightly_verify_failed_drill_ok(capsys) -> None:
     res = {
         "backup": {"files_copied": 1, "bytes_copied": 2 * 1024 * 1024},
         "escalations": {"deep": True, "hashes": True},
@@ -767,8 +852,7 @@ def test_nightly_verify_failed_drill_ok(monkeypatch, capsys) -> None:
         "notify_error": "connection refused",
         "ok": False, "failed_stages": ["verify"],
     }
-    monkeypatch.setattr(api, "nightly", lambda dest, **kw: res)
-    rc = main(["nightly", "/dest"])
+    rc = cli.report_nightly(res)
     assert rc == 1
     out = capsys.readouterr().out
     assert "backup: 1 files (2.0 MB copied)" in out
@@ -779,7 +863,7 @@ def test_nightly_verify_failed_drill_ok(monkeypatch, capsys) -> None:
     assert "NIGHTLY FAILED: verify" in out
 
 
-def test_nightly_backup_error_and_drill_error(monkeypatch, capsys) -> None:
+def test_nightly_backup_error_and_drill_error(capsys) -> None:
     res = {
         "backup": {"error": "dest not mounted"},
         "escalations": {"deep": False, "hashes": False},
@@ -787,8 +871,7 @@ def test_nightly_backup_error_and_drill_error(monkeypatch, capsys) -> None:
         "drill": {"error": "throwaway home failed"},
         "ok": False, "failed_stages": ["backup", "drill"],
     }
-    monkeypatch.setattr(api, "nightly", lambda dest, **kw: res)
-    rc = main(["nightly", "/dest"])
+    rc = cli.report_nightly(res)
     assert rc == 1
     out = capsys.readouterr().out
     assert "backup: ERROR dest not mounted" in out
@@ -797,7 +880,7 @@ def test_nightly_backup_error_and_drill_error(monkeypatch, capsys) -> None:
     assert "NIGHTLY FAILED: backup, drill" in out
 
 
-def test_nightly_verify_failed_no_log(monkeypatch, capsys) -> None:
+def test_nightly_verify_failed_no_log(capsys) -> None:
     """Verify failed but no failure_log recorded — skips the log-pointer line."""
     res = {
         "backup": {"files_copied": 1, "bytes_copied": 0},
@@ -806,22 +889,20 @@ def test_nightly_verify_failed_no_log(monkeypatch, capsys) -> None:
                    "drift": {"events": 0}, "truth": {"parse_errors": 0}},
         "ok": False, "failed_stages": ["verify"],
     }
-    monkeypatch.setattr(api, "nightly", lambda dest, **kw: res)
-    assert main(["nightly", "/dest"]) == 1
+    assert cli.report_nightly(res) == 1
     out = capsys.readouterr().out
     assert "verify [shallow]: FAILED (fts_orphans)" in out
     assert "full result appended" not in out
 
 
-def test_nightly_verify_error_branch(monkeypatch, capsys) -> None:
+def test_nightly_verify_error_branch(capsys) -> None:
     res = {
         "backup": {"files_copied": 0, "bytes_copied": 0},
         "escalations": {"deep": False, "hashes": True},
         "verify": {"error": "index locked"},
         "ok": False, "failed_stages": ["verify"],
     }
-    monkeypatch.setattr(api, "nightly", lambda dest, **kw: res)
-    rc = main(["nightly", "/dest"])
+    rc = cli.report_nightly(res)
     assert rc == 1
     out = capsys.readouterr().out
     assert "verify [hashes]: ERROR index locked" in out
@@ -830,17 +911,14 @@ def test_nightly_verify_error_branch(monkeypatch, capsys) -> None:
 # ── repair: applied (non-dry-run) branches ───────────────────────────────────
 
 
-def test_repair_applied_with_samples(monkeypatch, capsys) -> None:
+def test_repair_applied_with_samples(capsys) -> None:
     res = {
         "dry_run": False, "fragments_quarantined": 3, "files_damaged": 2,
         "damaged_sample": ["truth/threads/x.jsonl:9"], "quarantine_file": "/home/quarantine.jsonl",
         "events_restored_from_index": 4, "kg_events_restored": 1, "thread_records_restored": 2,
     }
-    seen = {}
-    monkeypatch.setattr(api, "repair", lambda **kw: seen.update(kw) or res)
-    rc = main(["repair", "--home", "/h"])
+    rc = cli.report_repair(res)
     assert rc == 0
-    assert seen == {"home": "/h", "dry_run": False}
     out = capsys.readouterr().out
     assert "quarantined 3 unparseable line(s) across 2 file(s)" in out
     assert "sample: ['truth/threads/x.jsonl:9']" in out
@@ -853,14 +931,10 @@ def test_repair_applied_with_samples(monkeypatch, capsys) -> None:
 # ── redact: false branches (no key_id / no scrubbed) + whole-thread list ──────
 
 
-def test_redact_minimal_no_key(monkeypatch, capsys) -> None:
+def test_redact_report_minimal_no_key(capsys) -> None:
     """A redact result without a key_id / scrubbed counts / notes exercises the
     skip branches of the summary block."""
-    monkeypatch.setattr(
-        api, "redact",
-        lambda thread_id, event_ids, **kw: {"events_redacted": 1, "thread_id": 2},
-    )
-    rc = main(["redact", "2"])
+    rc = cli.report_redact({"events_redacted": 1, "thread_id": 2})
     assert rc == 0
     out = capsys.readouterr().out
     assert "redacted 1 event(s) in thread 2" in out
@@ -868,43 +942,58 @@ def test_redact_minimal_no_key(monkeypatch, capsys) -> None:
     assert "reverse with" not in out
 
 
-def test_redact_list_whole_thread_no_reason(monkeypatch, capsys) -> None:
-    row = {"key_id": "k9", "thread_id": 3, "event_ids": [], "status": "redacted",
-           "key": "held", "redacted_at": "2026-07-15T00:00:00Z"}
-    monkeypatch.setattr(api, "redactions", lambda **kw: [row])
-    rc = main(["redact", "--list"])
+def test_redact_report_names_scrubbed_quotes_and_the_reversal(capsys) -> None:
+    """Curation quotes carrying the redacted content are scrubbed too, and the
+    summary names both that and the key the redaction reverses under."""
+    rc = cli.report_redact({
+        "events_redacted": 2, "thread_id": 7, "key_id": "k1",
+        "topic_quotes_scrubbed": 1, "kg_quotes_scrubbed": 0,
+        "notes": ["provider store keeps its plaintext"],
+    })
     assert rc == 0
     out = capsys.readouterr().out
-    assert "k9  thread 3  whole thread" in out
-    assert "reason:" not in out
+    assert "redacted 2 event(s) in thread 7 under key k1" in out
+    assert "scrubbed 1 topic quote(s), 0 kg quote(s)" in out
+    assert "note: provider store keeps its plaintext" in out
+    assert "unredact k1" in out
 
 
-def test_redact_restore_key_dispatches(monkeypatch, capsys) -> None:
-    seen = {}
-    monkeypatch.setattr(
-        api, "redact_restore_key",
-        lambda kid, key, **kw: seen.update(kid=kid, key=key, **kw),
-    )
-    rc = main(["redact", "--restore-key", "k1", "b64==", "--home", "/h"])
+def test_redact_restore_key_puts_the_key_back(archive_home, tmp_path, capsys) -> None:
+    """--restore-key reaches api.redact_restore_key: an escrowed key really
+    returns to the keyring, and the ledger says the redaction is reversible again."""
+    tid = import_cc_session(tmp_path, "escrow").thread_id
+    assert main(["redact", str(tid), "--home", str(archive_home)]) == 0
+    key_id = capsys.readouterr().out.split("under key ")[1].split()[0]
+
+    assert main(["redact", "--show-key", key_id, "--home", str(archive_home)]) == 0
+    key_b64 = capsys.readouterr().out.splitlines()[0]
+    assert main(["redact", "--forget", key_id, "--yes", "--home", str(archive_home)]) == 0
+    capsys.readouterr()
+
+    rc = main(["redact", "--restore-key", key_id, key_b64, "--home", str(archive_home)])
     assert rc == 0
-    assert seen == {"kid": "k1", "key": "b64==", "home": "/h"}
-    assert "key k1 restored to the keyring" in capsys.readouterr().out
+    assert f"key {key_id} restored to the keyring" in capsys.readouterr().out
+    assert main(["redact", "--list", "--home", str(archive_home)]) == 0
+    assert "key present" in capsys.readouterr().out
 
 
 # ── unredact: notes branch ────────────────────────────────────────────────────
 
 
-def test_unredact_prints_notes(monkeypatch, capsys) -> None:
-    monkeypatch.setattr(
-        api, "unredact",
-        lambda kid, **kw: {"events_restored": 2, "thread_id": 7,
-                           "notes": ["provider store keeps its plaintext"]},
-    )
-    rc = main(["unredact", "k1"])
+def test_unredact_prints_notes(archive_home, tmp_path, capsys) -> None:
+    """`archive unredact` restores the events and echoes the notes the operation
+    really produced — the caveats an operator must read after a restore."""
+    tid = import_cc_session(tmp_path, "notes").thread_id
+    assert main(["redact", str(tid), "--home", str(archive_home)]) == 0
+    redacted = capsys.readouterr().out
+    key_id = redacted.split("under key ")[1].split()[0]
+    n_events = int(redacted.split("redacted ")[1].split()[0])
+
+    rc = main(["unredact", key_id, "--home", str(archive_home)])
     assert rc == 0
     out = capsys.readouterr().out
-    assert "restored 2 event(s) in thread 7" in out
-    assert "note: provider store keeps its plaintext" in out
+    assert f"restored {n_events} event(s) in thread {tid}" in out
+    assert "note: " in out
 
 
 # ── status: fully-populated ok + failed variants ─────────────────────────────
@@ -919,7 +1008,7 @@ def _status_base(**over) -> dict:
     return base
 
 
-def test_status_all_ok(monkeypatch, capsys) -> None:
+def test_status_all_ok(capsys) -> None:
     old = "2026-07-10T00:00:00+00:00"
     st = _status_base(
         last_verify={"ok": True, "at": old},
@@ -931,9 +1020,7 @@ def test_status_all_ok(monkeypatch, capsys) -> None:
         last_watch_errors={"at": old, "count_since_start": 4,
                            "errors": ["e1", "e2", "e3", "e4"]},
     )
-    monkeypatch.setattr(api, "status", lambda **kw: st)
-    rc = main(["status", "--home", "/h"])
-    assert rc == 0
+    assert cli.report_status(st) == 0
     out = capsys.readouterr().out
     assert "verify:  ok" in out
     assert "backup:  ok → /vol/bak" in out
@@ -947,7 +1034,7 @@ def test_status_all_ok(monkeypatch, capsys) -> None:
     assert "e3" in out and "e4" not in out
 
 
-def test_status_green_coverage_still_shows_warnings(monkeypatch, capsys) -> None:
+def test_status_green_coverage_still_shows_warnings(capsys) -> None:
     # A stale export is a capture hole in the making; a green coverage check must
     # not swallow the warning that says so.
     old = "2026-07-10T00:00:00+00:00"
@@ -955,15 +1042,13 @@ def test_status_green_coverage_still_shows_warnings(monkeypatch, capsys) -> None
         last_coverage={"ok": True, "sources_checked": 6, "at": old,
                        "warnings": ["chatgpt-export: last export 127d ago"]},
     )
-    monkeypatch.setattr(api, "status", lambda **kw: st)
-    rc = main(["status", "--home", "/h"])
-    assert rc == 0
+    assert cli.report_status(st) == 0
     out = capsys.readouterr().out
     assert "coverage: ok (6 sources, 1 warning(s))" in out
     assert "chatgpt-export: last export 127d ago" in out
 
 
-def test_status_all_failed(monkeypatch, capsys) -> None:
+def test_status_all_failed(capsys) -> None:
     old = "2026-07-10T00:00:00+00:00"
     st = _status_base(
         last_verify={"ok": False, "failed": ["drift"], "at": old},
@@ -974,9 +1059,7 @@ def test_status_all_failed(monkeypatch, capsys) -> None:
         last_coverage={"ok": False, "at": old, "failed": ["m1", "m2", "m3", "m4"]},
         last_watch_pass={"at": old, "sources": {}},
     )
-    monkeypatch.setattr(api, "status", lambda **kw: st)
-    rc = main(["status"])
-    assert rc == 0
+    assert cli.report_status(st) == 0
     out = capsys.readouterr().out
     assert "verify:  FAILED (drift)" in out
     assert "backup:  FAILED → /vol/bak" in out
@@ -988,59 +1071,54 @@ def test_status_all_failed(monkeypatch, capsys) -> None:
     assert "no pass recorded" not in out
 
 
-def test_status_source_mirror_ok(monkeypatch, capsys) -> None:
+def test_status_source_mirror_ok(capsys) -> None:
     old = "2026-07-10T00:00:00+00:00"
     st = _status_base(
         last_source_mirror={"ok": True, "copied": 12, "files": 340, "at": old},
     )
-    monkeypatch.setattr(api, "status", lambda **kw: st)
-    assert main(["status"]) == 0
+    assert cli.report_status(st) == 0
     out = capsys.readouterr().out
     assert "source mirror: ok (12 copied / 340 files)" in out
 
 
-def test_status_source_mirror_failed_counts_errors(monkeypatch, capsys) -> None:
+def test_status_source_mirror_failed_counts_errors(capsys) -> None:
     old = "2026-07-10T00:00:00+00:00"
     st = _status_base(
         last_source_mirror={"ok": False, "copied": 0, "files": 5, "errors": 2, "at": old},
     )
-    monkeypatch.setattr(api, "status", lambda **kw: st)
-    assert main(["status"]) == 0
+    assert cli.report_status(st) == 0
     out = capsys.readouterr().out
     assert "source mirror: FAILED (0 copied / 5 files, 2 error(s))" in out
 
 
-def test_status_self_update_applied(monkeypatch, capsys) -> None:
+def test_status_self_update_applied(capsys) -> None:
     old = "2026-07-10T00:00:00+00:00"
     st = _status_base(
         last_self_update={"ok": True, "action": "updated", "current": "0.9.0",
                           "reason": "updated 0.9.0 → 0.9.1", "at": old},
     )
-    monkeypatch.setattr(api, "status", lambda **kw: st)
-    assert main(["status"]) == 0
+    assert cli.report_status(st) == 0
     assert "update:  updated 0.9.0 → 0.9.1" in capsys.readouterr().out
 
 
-def test_status_self_update_checked_clean(monkeypatch, capsys) -> None:
+def test_status_self_update_checked_clean(capsys) -> None:
     old = "2026-07-10T00:00:00+00:00"
     st = _status_base(
         last_self_update={"ok": True, "action": "up-to-date", "current": "0.9.1",
                           "reason": "newest tag is installed", "at": old},
     )
-    monkeypatch.setattr(api, "status", lambda **kw: st)
-    assert main(["status"]) == 0
+    assert cli.report_status(st) == 0
     assert "update:  up-to-date (v0.9.1) checked" in capsys.readouterr().out
 
 
-def test_status_self_update_blocked_is_shouted(monkeypatch, capsys) -> None:
+def test_status_self_update_blocked_is_shouted(capsys) -> None:
     """A stopped update mechanism is the reason the line exists — it reads loud."""
     old = "2026-07-10T00:00:00+00:00"
     st = _status_base(
         last_self_update={"ok": False, "action": "blocked", "current": "0.9.0",
                           "reason": "truth format 4 > this install reads 3", "at": old},
     )
-    monkeypatch.setattr(api, "status", lambda **kw: st)
-    assert main(["status"]) == 0
+    assert cli.report_status(st) == 0
     out = capsys.readouterr().out
     assert "update:  BLOCKED: truth format 4 > this install reads 3" in out
 
@@ -1048,7 +1126,7 @@ def test_status_self_update_blocked_is_shouted(monkeypatch, capsys) -> None:
 # ── coverage: source states, disabled/unwatched, skips, failure ──────────────
 
 
-def test_coverage_full_surface_failed(monkeypatch, capsys) -> None:
+def test_coverage_full_surface_failed(capsys) -> None:
     result = {
         "ok": False,
         "failed": ["cursor stale > 48h"],
@@ -1068,8 +1146,7 @@ def test_coverage_full_surface_failed(monkeypatch, capsys) -> None:
         "skips": {"total": 7, "recent": 2, "recent_lines": 3, "days": 7.0},
         "drift": {"total": 0, "recent": 0, "recent_findings": 0, "days": 7.0},
     }
-    monkeypatch.setattr(api, "check_coverage", lambda **kw: result)
-    rc = main(["coverage"])
+    rc = cli.report_coverage(result)
     assert rc == 1
     out = capsys.readouterr().out
     assert "claude-code" in out and "ok" in out
@@ -1081,6 +1158,42 @@ def test_coverage_full_surface_failed(monkeypatch, capsys) -> None:
     assert "warning: opencode newest event is 30h old" in out
     assert "FAILED:" in out
     assert "cursor stale > 48h" in out
+
+
+def test_coverage_report_names_validation_drift(capsys) -> None:
+    """The validation-drift ledger volume is a durable operator surface for parser
+    format drift, not just a daemon log line."""
+    result = {
+        "ok": True, "failed": [], "warnings": [],
+        "sources": {}, "disabled": {}, "unwatched": {},
+        "skips": {"total": 0, "recent": 0, "recent_lines": 0, "days": 7.0},
+        "drift": {"total": 3, "recent": 2, "recent_findings": 5, "days": 7.0},
+    }
+    assert cli.report_coverage(result) == 0
+    out = capsys.readouterr().out
+    assert "validation drift: 3 ledger records, 2 in last 7d (5 findings)" in out
+    assert "validation-drift.jsonl" in out
+
+
+def test_coverage_report_names_degraded_and_quarantined(capsys) -> None:
+    """One remedy line per degraded source, and any quarantined raw-store snapshots."""
+    result = {
+        "ok": True, "failed": [], "warnings": [],
+        "sources": {}, "disabled": {}, "unwatched": {},
+        "skips": {"total": 0, "recent": 0, "recent_lines": 0, "days": 7.0},
+        "drift": {"total": 0, "recent": 0, "recent_findings": 0, "days": 7.0},
+        "degraded": {
+            "grok": {"reason": "went_dark", "since": "2026-07-10T00:00:00Z"},
+            "chatgpt": {"reason": "capture_skips", "since": None},
+        },
+        "drift_snapshots": {"cursor": "gen-3"},
+    }
+    assert cli.report_coverage(result) == 0
+    out = capsys.readouterr().out
+    assert "degraded: grok (went_dark since 2026-07-10) — remedy: archive fix-import grok" in out
+    assert "degraded: chatgpt (capture_skips) — remedy: archive fix-import chatgpt" in out
+    assert "quarantined: cursor raw store snapshot → gen-3" in out
+    assert "OK" in out
 
 
 # ── self-update: the four outcomes, flag mapping, exit code ──────────────────
@@ -1101,54 +1214,43 @@ def test_self_update_applied(monkeypatch, capsys) -> None:
     assert "self-update: updated 0.9.0 → v0.9.1" in capsys.readouterr().out
 
 
-def test_self_update_check_reports_available(monkeypatch, capsys) -> None:
+def test_self_update_check_reports_available(capsys) -> None:
     """``--check`` plans only, so its output has to name the verb that applies it."""
-    seen = {}
-
-    def fake_update(*, home=None, check_only=False, allow_format_bump=False):
-        seen.update(check_only=check_only)
-        return {"ok": True, "action": "update", "current": "0.9.0", "tag": "v0.9.1",
-                "reason": "tag is 30h old"}
-
-    monkeypatch.setattr(_update, "self_update", fake_update)
-    rc = main(["self-update", "--check"])
+    rc = cli.report_self_update(
+        {"ok": True, "action": "update", "current": "0.9.0", "tag": "v0.9.1",
+         "reason": "tag is 30h old"},
+    )
     assert rc == 0
-    assert seen == {"check_only": True}
     out = capsys.readouterr().out
     assert "self-update: v0.9.1 available (tag is 30h old)" in out
     assert "run `archive self-update` to apply" in out
 
 
-def test_self_update_up_to_date_lists_skipped(monkeypatch, capsys) -> None:
-    monkeypatch.setattr(
-        _update, "self_update",
-        lambda **kw: {"ok": True, "action": "up-to-date", "current": "0.9.1",
-                      "reason": "newest tag is installed",
-                      "skipped": ["v0.9.2: only 2h old", "v0.9.3: format bump"]},
+def test_self_update_up_to_date_lists_skipped(capsys) -> None:
+    rc = cli.report_self_update(
+        {"ok": True, "action": "up-to-date", "current": "0.9.1",
+         "reason": "newest tag is installed",
+         "skipped": ["v0.9.2: only 2h old", "v0.9.3: format bump"]},
     )
-    rc = main(["self-update"])
     assert rc == 0
     out = capsys.readouterr().out
     assert "self-update: up to date (v0.9.1) — newest tag is installed" in out
     assert "· v0.9.2: only 2h old" in out and "· v0.9.3: format bump" in out
 
 
-def test_self_update_blocked_returns_1(monkeypatch, capsys) -> None:
-    monkeypatch.setattr(
-        _update, "self_update",
-        lambda **kw: {"ok": False, "action": "blocked", "current": "0.9.0",
-                      "reason": "truth format 4 > this install reads 3"},
+def test_self_update_blocked_returns_1(capsys) -> None:
+    rc = cli.report_self_update(
+        {"ok": False, "action": "blocked", "current": "0.9.0",
+         "reason": "truth format 4 > this install reads 3"},
     )
-    rc = main(["self-update"])
     assert rc == 1
     assert "self-update: BLOCKED: truth format 4 > this install reads 3" in capsys.readouterr().out
 
 
-def test_self_update_actionless_result_returns_1(monkeypatch, capsys) -> None:
+def test_self_update_actionless_result_returns_1(capsys) -> None:
     """A result with no action at all still prints and still fails — the operator
     must not read silence as success."""
-    monkeypatch.setattr(_update, "self_update", lambda **kw: {"ok": False})
-    rc = main(["self-update"])
+    rc = cli.report_self_update({"ok": False})
     assert rc == 1
     assert "self-update: ?: None" in capsys.readouterr().out
 
@@ -1163,25 +1265,30 @@ def _mirror_provider(**over) -> dict:
     return p
 
 
-def test_mirror_ok_minimal_rows(monkeypatch, capsys) -> None:
-    seen = {}
+def test_mirror_cli_sweeps_the_real_sources(archive_home, capsys) -> None:
+    """`archive mirror` runs the real raw-store sweep into <home>/source-mirror.
+    Nothing is on disk to mirror in a throwaway home, so the run is green and
+    the root it names is the one it created."""
+    rc = main(["mirror", "--home", str(archive_home)])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert f"OK → {archive_home / 'source-mirror'}" in out
+
+
+def test_mirror_ok_minimal_rows(capsys) -> None:
     result = {
         "ok": True, "root": "/h/source-mirror", "duration_s": 1.5,
         "providers": {"claude-code": _mirror_provider()},
         "unsupported": [],
     }
-    monkeypatch.setattr(
-        api, "mirror_sources", lambda **kw: seen.update(kw) or result
-    )
-    rc = main(["mirror", "--home", "/h"])
+    rc = cli.report_mirror(result)
     assert rc == 0
-    assert seen == {"home": "/h"}
     out = capsys.readouterr().out
     assert "claude-code      ok       files=10 copied=2 unchanged=8 bytes=1000→400" in out
     assert "OK → /h/source-mirror (1.5s)" in out
 
 
-def test_mirror_failed_provider_reports_extras_and_errors(monkeypatch, capsys) -> None:
+def test_mirror_failed_provider_reports_extras_and_errors(capsys) -> None:
     result = {
         "ok": False, "root": "/h/source-mirror", "duration_s": 4.0,
         "providers": {
@@ -1192,8 +1299,7 @@ def test_mirror_failed_provider_reports_extras_and_errors(monkeypatch, capsys) -
         },
         "unsupported": ["demo-harness"],
     }
-    monkeypatch.setattr(api, "mirror_sources", lambda **kw: result)
-    rc = main(["mirror"])
+    rc = cli.report_mirror(result)
     assert rc == 1
     out = capsys.readouterr().out
     assert "generations=3" in out and "capped=7" in out

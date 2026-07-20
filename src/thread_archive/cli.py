@@ -327,13 +327,16 @@ def cmd_fix_import(args: argparse.Namespace) -> int:
                 )
             print("patch active")
             return 0
-        if args.scaffold_only:
-            print(_repair.scaffold(args.provider, args.home))
-            return 0
+        target = _repair.scaffold(args.provider, args.home)
     except (_repair.ActivationError, ValueError) as e:
         print(e)
         return 1
-    return _repair.run(args.provider, args.home, timeout=args.timeout)
+    print(target)
+    print(
+        f"read {target}/PROTOCOL.md, write the fix, then "
+        f"`archive fix-import {args.provider} --activate`"
+    )
+    return 0
 
 
 def cmd_reindex(args: argparse.Namespace) -> int:
@@ -368,10 +371,14 @@ def cmd_embed(args: argparse.Namespace) -> int:
 def cmd_backup(args: argparse.Namespace) -> int:
     from . import _api as api
 
-    res = api.backup(
+    return report_backup(api.backup(
         args.dest, home=args.home,
         allow_shrink=args.allow_shrink, verify_first=args.verify,
-    )
+    ))
+
+
+def report_backup(res: dict) -> int:
+    """Print the operator report for an ``_api.backup`` result; return its exit code."""
     mb = res["bytes_copied"] / (1024 * 1024)
     print(f"backed up {res['truth_dir']} → {res['dest']}: {res['files_copied']} files ({mb:.1f} MB copied)")
     if res.get("bundle_error"):
@@ -441,7 +448,19 @@ def cmd_backup(args: argparse.Namespace) -> int:
 def cmd_verify(args: argparse.Namespace) -> int:
     from . import _api as api
 
-    res = api.verify(home=args.home, deep=args.deep, hashes=args.hashes, backup=args.backup)
+    return report_verify(
+        api.verify(home=args.home, deep=args.deep, hashes=args.hashes, backup=args.backup),
+        deep=args.deep, hashes=args.hashes, backup=args.backup,
+    )
+
+
+def report_verify(
+    res: dict, *, deep: bool = False, hashes: bool = False, backup: str | None = None
+) -> int:
+    """Print the operator report for an ``_api.verify`` result; return its exit code.
+
+    The three flags say which tiers were asked for, and so which of the result's
+    optional sections the report walks."""
     t = res["truth"]
     print(
         f"truth: threads={t['threads']} events={t['events']} "
@@ -471,7 +490,7 @@ def cmd_verify(args: argparse.Namespace) -> int:
             f"fts:   shadow={fts['shadow_rows']} fts5={fts['fts5_rows']} "
             f"orphans={fts['orphan_rows']} — `archive reindex` rebuilds the search surface"
         )
-    if args.deep:
+    if deep:
         dp = res["deep"]
         print(
             f"deep:  index_only={dp['events_index_only']} "
@@ -509,7 +528,7 @@ def cmd_verify(args: argparse.Namespace) -> int:
             print(f"       index-only sample: {dp['index_only_sample']}")
         if dp["events_key_mismatch"]:
             print(f"       key-mismatch sample: {dp['key_mismatch_sample']}")
-    if args.hashes:
+    if hashes:
         h = res["hashes"]
         for side in ("truth", "index"):
             hs = h[side]
@@ -530,7 +549,7 @@ def cmd_verify(args: argparse.Namespace) -> int:
                 f"truth {d['truth_mismatched']:+d} index {d['index_mismatched']:+d} "
                 f"cross {d['cross_mismatched']:+d}"
             )
-    if args.backup:
+    if backup:
         b = res["backup"]
         if "error" in b:
             print(f"backup[{b['dest']}]: {b['error']}")
@@ -569,7 +588,13 @@ def cmd_restore_drill(args: argparse.Namespace) -> int:
     from . import _api as api
 
     print(f"restore drill: rebuilding an index from {args.dest} in a throwaway home...", flush=True)
-    res = api.restore_drill(args.dest, home=args.home, keep_home=args.keep_home)
+    return report_restore_drill(
+        api.restore_drill(args.dest, home=args.home, keep_home=args.keep_home)
+    )
+
+
+def report_restore_drill(res: dict) -> int:
+    """Print the operator report for an ``_api.restore_drill`` result; return its exit code."""
     if "error" in res:
         print(f"FAILED: {res['error']}")
     if "mirror" in res:
@@ -627,10 +652,17 @@ def cmd_restore(args: argparse.Namespace) -> int:
         return 2
     src = f"{args.dest} (generation {args.generation})" if args.generation else args.dest
     print(f"restore: rebuilding {args.to} from {src}...", flush=True)
-    res = api.restore(
+    return report_restore(api.restore(
         args.dest, args.to, generation=args.generation,
         replace=args.replace, allow_parse_errors=args.allow_parse_errors,
-    )
+    ), to=args.to)
+
+
+def report_restore(res: dict, *, to: str) -> int:
+    """Print the operator report for an ``_api.restore`` result; return its exit code.
+
+    ``to`` is the home that was restored into — the result describes the rebuild,
+    not where it landed."""
     if "mirror" in res:
         m = res["mirror"]
         print(
@@ -667,7 +699,7 @@ def cmd_restore(args: argparse.Namespace) -> int:
         print(f"previous home set aside (preserved): {res['damaged_home']}")
     if res.get("error"):
         print(f"FAILED: {res['error']}")
-    print(f"{'OK — restored to ' + str(args.to) if res.get('ok') else 'RESTORE FAILED'} "
+    print(f"{'OK — restored to ' + str(to) if res.get('ok') else 'RESTORE FAILED'} "
           f"({res.get('seconds', '?')}s)")
     return 0 if res.get("ok") else 1
 
@@ -676,10 +708,14 @@ def cmd_nightly(args: argparse.Namespace) -> int:
     from . import _api as api
 
     print(f"nightly pipeline: backup → verify → restore drill ({args.dest})", flush=True)
-    res = api.nightly(
+    return report_nightly(api.nightly(
         args.dest, home=args.home, notify_url=args.notify_url,
         allow_shrink=args.allow_shrink, drill=args.drill,
-    )
+    ))
+
+
+def report_nightly(res: dict) -> int:
+    """Print the operator report for an ``_api.nightly`` result; return its exit code."""
     b = res["backup"]
     if "error" in b:
         print(f"backup: ERROR {b['error']}")
@@ -716,7 +752,11 @@ def cmd_nightly(args: argparse.Namespace) -> int:
 def cmd_repair(args: argparse.Namespace) -> int:
     from . import _api as api
 
-    res = api.repair(home=args.home, dry_run=args.dry_run)
+    return report_repair(api.repair(home=args.home, dry_run=args.dry_run))
+
+
+def report_repair(res: dict) -> int:
+    """Print the operator report for an ``_api.repair`` result; return its exit code."""
     verb = "would quarantine" if res["dry_run"] else "quarantined"
     print(
         f"{verb} {res['fragments_quarantined']} unparseable line(s) "
@@ -743,18 +783,7 @@ def cmd_redact(args: argparse.Namespace) -> int:
     from . import _api as api
 
     if args.list_:
-        rows = api.redactions(home=args.home)
-        if not rows:
-            print("no redactions")
-            return 0
-        for r in rows:
-            scope = f"{len(r['event_ids'])} event(s)" if r["event_ids"] else "whole thread"
-            reason = f"  reason: {r['reason']}" if r.get("reason") else ""
-            print(
-                f"{r['key_id']}  thread {r['thread_id']}  {scope}  "
-                f"{r['status']}, key {r['key']}  {r.get('redacted_at', '?')}{reason}"
-            )
-        return 0
+        return report_redactions(api.redactions(home=args.home))
     if args.show_key:
         print(api.redact_show_key(args.show_key, home=args.home))
         print(
@@ -785,7 +814,13 @@ def cmd_redact(args: argparse.Namespace) -> int:
     event_ids = [int(e) for e in args.events.split(",")] if args.events else None
     # args.thread is a ref — ULID id, legacy integer alias, or provider session
     # id — passed through raw; the API layer resolves it.
-    res = api.redact(args.thread, event_ids, reason=args.reason, home=args.home)
+    return report_redact(
+        api.redact(args.thread, event_ids, reason=args.reason, home=args.home)
+    )
+
+
+def report_redact(res: dict) -> int:
+    """Print the operator report for an ``_api.redact`` result; return its exit code."""
     print(
         f"redacted {res['events_redacted']} event(s) in thread {res['thread_id']}"
         + (f" under key {res['key_id']}" if res.get("key_id") else "")
@@ -800,6 +835,21 @@ def cmd_redact(args: argparse.Namespace) -> int:
     if res.get("key_id"):
         print(f"reverse with `archive unredact {res['key_id']}`; "
               f"escrow with `archive redact --show-key {res['key_id']}`")
+    return 0
+
+
+def report_redactions(rows: list[dict]) -> int:
+    """Print the redaction ledger (``archive redact --list``); return its exit code."""
+    if not rows:
+        print("no redactions")
+        return 0
+    for r in rows:
+        scope = f"{len(r['event_ids'])} event(s)" if r["event_ids"] else "whole thread"
+        reason = f"  reason: {r['reason']}" if r.get("reason") else ""
+        print(
+            f"{r['key_id']}  thread {r['thread_id']}  {scope}  "
+            f"{r['status']}, key {r['key']}  {r.get('redacted_at', '?')}{reason}"
+        )
     return 0
 
 
@@ -829,7 +879,11 @@ def _age(iso: str) -> str:
 def cmd_status(args: argparse.Namespace) -> int:
     from . import _api as api
 
-    st = api.status(home=args.home)
+    return report_status(api.status(home=args.home))
+
+
+def report_status(st: dict) -> int:
+    """Print the operator report for an ``_api.status`` result; return its exit code."""
     print(f"home:    {st['home']}")
     print(f"truth:   {st['truth_dir']}")
     print(f"index:   {st['index_path']}")
@@ -929,10 +983,14 @@ def cmd_status(args: argparse.Namespace) -> int:
 def cmd_self_update(args: argparse.Namespace) -> int:
     from . import _update
 
-    res = _update.self_update(
+    return report_self_update(_update.self_update(
         home=args.home, check_only=args.check,
         allow_format_bump=args.allow_format_bump,
-    )
+    ))
+
+
+def report_self_update(res: dict) -> int:
+    """Print the operator report for an ``_update.self_update`` result; return its exit code."""
     action = res.get("action")
     if action == "updated":
         print(f"self-update: {res['reason']}")
@@ -951,7 +1009,11 @@ def cmd_self_update(args: argparse.Namespace) -> int:
 def cmd_coverage(args: argparse.Namespace) -> int:
     from . import _api as api
 
-    r = api.check_coverage(home=args.home)
+    return report_coverage(api.check_coverage(home=args.home))
+
+
+def report_coverage(r: dict) -> int:
+    """Print the operator report for an ``_api.check_coverage`` result; return its exit code."""
     for name, s in sorted(r["sources"].items()):
         state = s.get("failed") or s.get("warning") or "ok"
         print(
@@ -997,7 +1059,11 @@ def cmd_coverage(args: argparse.Namespace) -> int:
 def cmd_mirror(args: argparse.Namespace) -> int:
     from . import _api as api
 
-    r = api.mirror_sources(home=args.home)
+    return report_mirror(api.mirror_sources(home=args.home))
+
+
+def report_mirror(r: dict) -> int:
+    """Print the operator report for an ``_api.mirror_sources`` result; return its exit code."""
     for name, p in sorted(r["providers"].items()):
         extras = ""
         if p.get("generations"):
@@ -1280,10 +1346,11 @@ def build_parser() -> argparse.ArgumentParser:
     p_fix = sub.add_parser(
         "fix-import",
         help="repair a drifted provider import on this machine: scaffold an "
-             "override patch under <home>/plugins/, spawn a headless `claude` "
-             "to write the parse fix, then gate it through tests, activation, "
-             "and a ledger-driven re-import. Patches retire on the next "
-             "self-update unless pinned",
+             "override patch under <home>/plugins/ (module, tests, samples, "
+             "evidence, protocol) for you or your own agent to write the parse "
+             "fix in, then gate it through tests, activation, and a "
+             "ledger-driven re-import with --activate. Patches retire on the "
+             "next self-update unless pinned",
     )
     _add_home_arg(p_fix)
     p_fix.add_argument(
@@ -1294,11 +1361,6 @@ def build_parser() -> argparse.ArgumentParser:
         help="the deterministic gate: load the patch, run its test suite, and "
              "only on green enable the override and re-import what the broken "
              "parser consumed",
-    )
-    p_fix.add_argument(
-        "--scaffold-only", action="store_true",
-        help="generate/refresh the scaffold and stop — fix by hand or with "
-             "your own agent, then --activate",
     )
     p_fix.add_argument(
         "--no-reimport", action="store_true",
@@ -1312,11 +1374,6 @@ def build_parser() -> argparse.ArgumentParser:
     pin_group.add_argument(
         "--unpin", action="store_true",
         help="return the patch to the default retire-on-update lifecycle",
-    )
-    from ._repair import TIMEOUT_S as REPAIR_TIMEOUT_S
-    p_fix.add_argument(
-        "--timeout", type=int, default=REPAIR_TIMEOUT_S, metavar="SECONDS",
-        help=f"hard wall-clock stop for the repair agent (default {REPAIR_TIMEOUT_S})",
     )
     p_fix.set_defaults(func=cmd_fix_import)
 

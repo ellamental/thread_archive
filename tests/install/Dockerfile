@@ -11,7 +11,7 @@
 # corpus (or an obfuscated real one mounted at /work/fixtures).
 FROM python:3.14-slim
 
-# build-essential covers any source build of the Leiden C extensions (igraph/leidenalg
+# build-essential covers any source build of a C-extension dependency (they
 # normally resolve to manylinux wheels, but this keeps the build robust on any arch).
 RUN apt-get update \
     && apt-get install -y --no-install-recommends build-essential \

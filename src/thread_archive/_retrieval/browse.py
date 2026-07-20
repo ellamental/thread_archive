@@ -30,8 +30,8 @@ from sqlalchemy.orm import Session
 from .._store import Event, Thread, use_session
 from ._types import EventHit
 
-# Hidden from a default browse (mirrors the web recent list): topics have their
-# own pages — thread_read(topic_id) and the tree at thread_read('topics') — and
+# Hidden from a default browse (mirrors the web recent list): topics are the
+# librarian's curated artifacts (thread_read(topic_id) keeps rendering one) and
 # 'system' threads (Task-tool subagent runs) are machinery, not sessions anyone
 # revisits by recency. Both stay reachable through an explicit ``types``.
 DEFAULT_HIDDEN_TYPES = ("topic", "system")

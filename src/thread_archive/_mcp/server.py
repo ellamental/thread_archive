@@ -226,13 +226,11 @@ def thread_search(
     An **empty query is a browse** — no keywords needed: one row per thread,
     newest activity first, honoring the structural filters. "What happened
     yesterday" is ``query='', since='1d'``; "recent cursor sessions" is
-    ``query='', source='cursor'``; "list my topics" is ``query='',
-    types='topic'``; ``sort='oldest'`` flips to the earliest threads. Each row
-    carries the thread id (open it: ``thread_read``) and its newest event id
-    (open at the tail: ``around_event``). A browse hides topic and system
-    threads unless ``types``/``agents`` says otherwise; ranking options
-    (content_type, context, rerank) don't apply. The curated topic *hierarchy*
-    is a read, not a search: ``thread_read('topics')``.
+    ``query='', source='cursor'``; ``sort='oldest'`` flips to the earliest
+    threads. Each row carries the thread id (open it: ``thread_read``) and its
+    newest event id (open at the tail: ``around_event``). A browse hides topic
+    and system threads unless ``types``/``agents`` says otherwise; ranking
+    options (content_type, context, rerank) don't apply.
 
     By default USER messages, thread titles, and stored thread summaries are
     searched — the strongest signals of what a thread was about. When that scope
@@ -242,17 +240,11 @@ def thread_search(
     ``content_type='all'`` to search everything, or a specific ``content_type``
     (text/thinking/tool/tool_result/...) to target one.
 
-    The header's ``subjects:`` line names the curated topics the results cluster
-    under, each with its ``[topic <id>]`` — pass the id to ``thread_read`` for the
-    topic's curated page (description, links, cited quotes), or to ``topic_id``
-    here to scope a follow-up search to that subject's conversations.
-
     Query grammar: natural language, "quoted phrases", boolean AND/OR/NOT,
     pipe-OR (a|b), and code identifiers (get_session, a.b.c). Filter by
-    ``thread_id``, ``topic_id`` (scope to a curated topic's member conversations —
-    the threads cited under it or linked to it in the knowledge graph) — both
-    accept a ULID thread id, a legacy integer alias, or a provider session id,
-    the same ref shapes ``thread_read`` takes —
+    ``thread_id`` or ``topic_id`` (a curated topic's member conversations) —
+    both accept a ULID thread id, a legacy integer alias, or a provider session
+    id, the same ref shapes ``thread_read`` takes —
     ``content_type`` (default user+title+summary; 'all' searches
     everything),
     ``exclude_content_type`` (comma-separated types to drop), ``tool_name``,
@@ -421,13 +413,10 @@ def thread_read(
     Any of the three can be passed straight through without looking the ULID up
     first.
 
-    A **topic id** (from a search header's ``subjects:`` line, or a topic link)
-    reads as the topic's curated page instead of a transcript: description, links
-    into the topic graph, and the cited quotes — each anchored ``[event:N]`` so it
-    opens in a focused read via ``around_event``. The reserved ref **'topics'**
-    reads the whole curated **topic tree** — the knowledge graph's table of
-    contents, an indented forest of every parented topic (budgeted by
-    ``max_chars``; unparented topics list via ``thread_search('', types='topic')``).
+    A **topic id** (from a topic link in an old conversation) reads as the
+    topic's curated page instead of a transcript — a compatibility render of
+    existing knowledge-graph records; the curated graph itself is the
+    thread-archive-librarian MCP's surface.
 
     ``mode`` picks the view: 'user' (default) = only the USER messages — the real
     signal of what a thread was about and what was wanted, far cheaper than the

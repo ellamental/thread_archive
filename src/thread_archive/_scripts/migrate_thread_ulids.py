@@ -233,12 +233,12 @@ class Migrator:
         return n
 
 
-def main() -> int:
+def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--home", default=os.environ.get(
         "THREAD_ARCHIVE_HOME", str(Path.home() / ".thread" / "archive")))
     ap.add_argument("--dry-run", action="store_true")
-    args = ap.parse_args()
+    args = ap.parse_args(argv)
 
     home = Path(args.home)
     truth = home / "truth"

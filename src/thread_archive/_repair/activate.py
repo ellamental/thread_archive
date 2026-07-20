@@ -1,12 +1,12 @@
 """Patch activation and pinning: the deterministic gate a fix passes through.
 
-The repair agent (or the human fixing by hand) cannot enable a patch by
-asserting it works — activation re-derives everything: load the module, check
-it resolves to an override of the right provider, run the scaffold's test
+Nobody enables a patch by asserting it works — not the user, not an agent they
+handed the scaffold to. Activation re-derives everything: load the module,
+check it resolves to an override of the right provider, run the scaffold's test
 suite in a subprocess, and only on green flip ``enabled: true`` in config.json
-and run the ledger-driven re-import. A red suite refuses, whatever the agent
-claimed. This is what makes the fix loop trustworthy with a thin model in it:
-the model's exit bar is enforced by code it cannot edit.
+and run the ledger-driven re-import. A red suite refuses, whatever the fix
+claimed about itself. This is what makes the loop trustworthy with a thin model
+in it: the exit bar is enforced by code the model cannot edit.
 
 Pinning is the user's "I always want mine" flag: a pinned patch survives
 self-update retirement (see :mod:`.retire`) until unpinned.

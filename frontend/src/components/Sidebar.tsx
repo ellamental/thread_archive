@@ -15,7 +15,6 @@ export function Sidebar() {
   const { id } = useParams()
   const { pathname } = useLocation()
   const [params] = useSearchParams()
-  const onTopics = pathname === '/topics' || pathname.startsWith('/topic/')
   // Rail items carry canonical ULID ids, so only a ULID address highlights one;
   // a not-yet-resolved ref (legacy integer, session uuid) highlights nothing.
   const activeId = id ?? null
@@ -148,9 +147,6 @@ export function Sidebar() {
         )}
       </div>
       <nav className="rail-nav">
-        <Link className={'rail-link' + (onTopics ? ' active' : '')} to="/topics">
-          topics
-        </Link>
         <Link className={'rail-link' + (pathname === '/threads' ? ' active' : '')} to="/threads">
           all threads
         </Link>

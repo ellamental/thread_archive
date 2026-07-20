@@ -79,85 +79,6 @@ export interface SearchResponse {
   subjects?: SearchSubject[]
 }
 
-export interface TopicListItem {
-  id: string
-  title: string | null
-  topic_kind: string | null
-  description: string | null
-  evidence_count: number
-  link_count: number
-  community: number | null
-  pagerank: number
-  updated_at: string | null
-}
-
-export interface TopicGraphStatus {
-  available: boolean
-  nodes?: number
-  communities?: number
-  components?: number
-  community_engine?: string
-}
-
-export interface TopicsResponse {
-  topics: TopicListItem[]
-  graph: TopicGraphStatus
-}
-
-export interface TopicTreeNode {
-  id: string
-  title: string | null
-  topic_kind: string | null
-  children: TopicTreeNode[]
-}
-
-export interface TopicTreeResponse {
-  roots: TopicTreeNode[]
-  topics_in_hierarchy: number
-  topics_total: number
-}
-
-export interface TopicLink {
-  direction: 'out' | 'in'
-  other_id: string
-  other_title: string | null
-  other_type: string // 'topic' | 'conversation'
-  link_type: string
-  strength: number
-  evidence: string | null
-}
-
-export interface TopicEvidence {
-  event_id: number
-  thread_id: string
-  thread_title: string | null
-  quote: string
-  created_at: string | null
-}
-
-export interface TopicPeer {
-  thread_id: string
-  title: string | null
-  pagerank: number
-}
-
-export interface TopicDetail {
-  id: string
-  title: string | null
-  topic_kind: string | null
-  description: string | null
-  summary: string | null
-  archived: boolean
-  created_at: string | null
-  updated_at: string | null
-  // null when the graph has no live node for this topic (archived, or unlinked
-  // before the projection saw it)
-  graph: { pagerank: number; community: number | null; degree: number } | null
-  links: TopicLink[]
-  evidence: TopicEvidence[]
-  peers: TopicPeer[]
-}
-
 // Binary content on a block (a pasted screenshot, a tool-result image, a
 // document). `url` serves the bytes from the archive's blob store
 // (/api/blob/<hash><ext>); a pointer-only ref (bytes never in the archive)
@@ -487,9 +408,6 @@ export const api = {
     getJSON<{ thread_id: string; url: string }>(
       '/api/archive-link?id=' + encodeURIComponent(id),
     ),
-  topics: () => getJSON<TopicsResponse>('/api/topics'),
-  topicTree: () => getJSON<TopicTreeResponse>('/api/topics/tree'),
-  topic: (id: string) => getJSON<TopicDetail>(`/api/topic/${id}`),
   stats: () => getJSON<Stats>('/api/stats'),
   curation: () => getJSON<Curation | CurationUnavailable>('/api/curation'),
   // Model ids can contain '/' (router models), so the name is a percent-encoded

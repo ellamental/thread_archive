@@ -1,10 +1,10 @@
-"""Query-less browse + the topic tree read.
+"""Query-less browse + the topic-tree data plane.
 
 An empty ``search()`` query lists threads (one row per thread, by last
-activity) instead of matching events; ``read_thread('topics')`` renders the
-curated topic hierarchy. These pin the browse row shape, the structural
-filters (since/source/types/limit/sort), the hidden-by-default types, the
-renderers, and the tree's indentation/budget behavior.
+activity) instead of matching events. These pin the browse row shape, the
+structural filters (since/source/types/limit/sort), the hidden-by-default
+types, the renderers, and the derived ``topic_tree()`` forest (whose rendered
+page is the librarian MCP's ``topic_tree`` tool).
 """
 
 from __future__ import annotations
@@ -117,7 +117,6 @@ def test_browse_render_and_linkable(archive_home) -> None:
     rows = search("")
     text = format_results(rows, "")
     assert "browse (no query)" in text
-    assert "thread_read('topics')" in text
     for r in rows:
         assert f"[{r['thread_id']}/{r['event_id']}]" in text
 
@@ -142,22 +141,10 @@ def test_topic_tree_read(archive_home) -> None:
     assert tree["topics_in_hierarchy"] == 3
     assert [r["id"] for r in tree["roots"]] == [root]
     assert {c["id"] for c in tree["roots"][0]["children"]} == {child, grandchild}
+    assert lone not in {c["id"] for c in tree["roots"][0]["children"]}
 
-    page = read_thread("topics")
-    assert "# Topic tree" in page
-    assert f"- Infrastructure [topic {root}]" in page
-    assert f"  - Search [topic {child}]" in page
-    assert "3 of 4 live topics" in page
-    assert f"[topic {lone}]" not in page  # unparented topics list via browse, not the tree
-
-    # ref is case/space-insensitive and beats uuid resolution
-    assert "# Topic tree" in read_thread(" Topics ")
-
-    # a tiny budget truncates cleanly with a pointer, not mid-line garbage
-    tiny = read_thread("topics", max_chars=len("# Topic tree") + 220)
-    assert "truncated" in tiny
-
-
-def test_topic_tree_empty(archive_home) -> None:
-    init_db()
-    assert "No hierarchy yet" in read_thread("topics")
+    # The reserved 'topics' ref is a pointer, not a page — the rendered tree is
+    # the librarian MCP's topic_tree tool. Case/space-insensitive, and it beats
+    # uuid resolution.
+    assert "topic_tree" in read_thread("topics")
+    assert "topic_tree" in read_thread(" Topics ")

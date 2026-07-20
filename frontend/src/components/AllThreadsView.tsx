@@ -106,7 +106,7 @@ export function AllThreadsView() {
             <Link
               className="hit"
               key={t.id}
-              to={(t.thread_type === 'topic' ? '/topic/' : '/archive/') + t.id}
+              to={'/archive/' + t.id}
             >
               <div className="snip">
                 <strong>{t.title || 'thread ' + t.id}</strong>

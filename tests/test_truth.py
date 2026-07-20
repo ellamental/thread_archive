@@ -364,7 +364,7 @@ def test_rebalance_crash_then_twin_merges_without_loss(archive_home, monkeypatch
     that used to clobber a thread's whole history with its tail."""
     import os as _os
 
-    monkeypatch.setattr(jsonl_log.layout, "FLAT_MAX", 4)
+    monkeypatch.setenv("THREAD_ARCHIVE_SHARDFLAT_MAX", "4")
     d = jsonl_log.log_dir()
     _seed_flat_threads(d, 6)
     threads_dir = d / jsonl_log.THREADS_SUBDIR
@@ -444,7 +444,7 @@ def test_rebalance_lock_loser_skips_and_checkpoint_keeps_depth(archive_home, mon
     import fcntl as _fcntl
     import os as _os
 
-    monkeypatch.setattr(jsonl_log.layout, "FLAT_MAX", 4)
+    monkeypatch.setenv("THREAD_ARCHIVE_SHARDFLAT_MAX", "4")
     init_db()
     d = jsonl_log.log_dir()
     _seed_flat_threads(d, 6)

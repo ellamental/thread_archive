@@ -96,7 +96,7 @@ def _rrf_merge(result_lists: list[list[EventHit]], limit: int, k: int = 60) -> l
 
 
 def _semantic_hits(query, *, thread_id, content_types, exclude_content_types, since, until, over,
-                   source, thread_ids=None, agents="exclude"):
+                   source, thread_ids=None, agents="exclude", embedder=None):
     """The vector arm — None when the extra is absent, nothing's indexed, or embed fails."""
     try:
         from . import vectors
@@ -106,7 +106,7 @@ def _semantic_hits(query, *, thread_id, content_types, exclude_content_types, si
         return vectors.search(
             query, thread_id=thread_id, content_types=content_types,
             exclude_content_types=exclude_content_types, limit=over, since=since, until=until,
-            source=source, thread_ids=thread_ids, agents=agents,
+            source=source, thread_ids=thread_ids, agents=agents, embedder=embedder,
         )
     except Exception:  # noqa: BLE001 — vector arm must never break lexical search
         logger.exception("semantic arm failed; search continues lexical-only")
@@ -118,7 +118,7 @@ def _semantic_hits(query, *, thread_id, content_types, exclude_content_types, si
 _WARM_QUERY = "warm up the retrieval vector index and reranker"
 
 
-def warm_models() -> None:
+def warm_models(embedder=None, reranker=None) -> None:
     """Prime the whole retrieval pipeline on the caller's thread so the FIRST real search
     doesn't pay startup costs *inside* the request. Those costs — cold-loading the embedding
     + cross-encoder models (tens of seconds), loading the vector matrix off disk, and the
@@ -128,15 +128,22 @@ def warm_models() -> None:
 
     Two steps: load the models explicitly (works even with an empty store), then run one
     throwaway conceptual search to fill the process-global caches the first real query
-    reuses (the vector matrix, the reranker's warmed inference path). Fail-soft throughout:
-    a missing ``[embeddings]`` extra, a load failure, or an unavailable store just leaves
-    search to cold-load lazily, exactly as before."""
-    from . import embed as _embed
-    from . import rerank as _rerank
+    reuses (the vector matrix, the reranker's warmed inference path). ``embedder`` and
+    ``reranker`` are the models to prime (default: the process ones). Fail-soft
+    throughout: a missing ``[embeddings]`` extra, a load failure, or an unavailable store
+    just leaves search to cold-load lazily, exactly as before."""
+    if embedder is None:
+        from . import embed as _embed
 
-    for stage in (_embed.warm, _rerank.warm):
+        embedder = _embed.default()
+    if reranker is None:
+        from . import rerank as _rerank
+
+        reranker = _rerank.default()
+
+    for stage in (embedder, reranker):
         try:
-            stage()
+            stage.warm()
         except Exception:  # noqa: BLE001 — warming is best-effort; never raise into a caller
             logger.debug("warm_models: a model stage failed to preload", exc_info=True)
 
@@ -156,16 +163,14 @@ def warm_models() -> None:
         logger.debug("warm_models: dummy warm search skipped", exc_info=True)
 
 
-def _do_rerank(query: str, terms: list[str], force: Optional[bool]) -> bool:
+def _do_rerank(query: str, terms: list[str], force: Optional[bool], reranker) -> bool:
     """The query-shape half of the re-rank gate. ``force`` (the ``rerank=`` arg)
     overrides it; otherwise gate to conceptual multi-term queries *and* an
     available reranker (the ``[embeddings]`` extra). The result-side half —
     standing down on a strong lexical head — runs after ranking in ``search``."""
-    from . import rerank as _rerank
-
     if force is not None:
-        return force and _rerank.is_available()
-    return _rank.should_rerank(query, terms) and _rerank.is_available()
+        return force and reranker.is_available()
+    return _rank.should_rerank(query, terms) and reranker.is_available()
 
 
 def search(
@@ -189,6 +194,8 @@ def search(
     context_lines: int = 2,
     context_events: Optional[str] = None,
     rerank: Optional[bool] = None,
+    embedder=None,
+    reranker=None,
     session: Optional[Session] = None,
 ) -> list[EventHit]:
     """Search over conversation events through the production pipeline: lexical FTS5
@@ -197,7 +204,9 @@ def search(
     title enriched. ``since``/``until`` accept ISO timestamps or a relative ``<N>d``
     window; ``source`` restricts to threads of the named provider(s); ``topic_id``
     restricts to a topic's member conversations (threads cited under the topic or
-    linked to it); ``rerank`` forces the cross-encoder stage on/off (else auto-gated:
+    linked to it); ``embedder`` and ``reranker`` are the models the semantic arm and
+    the head re-rank run on (default: the process ones); ``rerank`` forces the
+    cross-encoder stage on/off (else auto-gated:
     conceptual multi-term shape AND a ranked head that isn't already a strong
     literal match).
 
@@ -349,6 +358,7 @@ def search(
         query, thread_id=thread_id, content_types=content_types,
         exclude_content_types=exclude_content_types, since=since_r, until=until_r,
         over=over, source=source, thread_ids=thread_ids, agents=agents_eff,
+        embedder=embedder,
     )
 
     # Fuse the arms into a wide pool (keeps _rrf agreement + _semantic provenance),
@@ -373,7 +383,11 @@ def search(
         # backfill from ranked candidates past `limit`, and sorting the pool costs
         # microseconds either way; otherwise rank just what the cut needs, with a
         # wider head when a cross-encoder re-rank may re-order it.
-        do_rerank = _do_rerank(query, terms, rerank)
+        if reranker is None:
+            from . import rerank as _rerank_mod
+
+            reranker = _rerank_mod.default()
+        do_rerank = _do_rerank(query, terms, rerank, reranker)
         if grouping:
             rank_to = len(fused)
         else:
@@ -396,7 +410,7 @@ def search(
             head, tail = ranked[:_rank.RERANK_POOL], ranked[_rank.RERANK_POOL:]
             # Score the match-centred window, not the doc head — a long hit whose
             # relevant text sits mid-message would otherwise be scored on its intro.
-            reordered = _rerank.rerank(
+            reordered = reranker.rerank(
                 query, head,
                 get_text=lambda r: _rank.match_window(
                     r.get("full_content") or r.get("snippet") or "",

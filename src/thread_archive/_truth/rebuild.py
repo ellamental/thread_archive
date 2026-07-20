@@ -874,11 +874,15 @@ def reindex(*, vectors: bool = False, salvage: bool = False) -> dict:
 
     counts["parse_errors"] = len(parse_errors)
 
-    # The topic graph caches a projection per engine; drop it so the next read
-    # rebuilds over the freshly-loaded thread_links.
-    from .._knowledge import reset_cache as _reset_kg
-
-    _reset_kg()
+    # The librarian's topic graph caches a projection per engine; drop it so a
+    # cohosted analytics read rebuilds over the freshly-loaded thread_links.
+    # Fail-soft: the graph stack is the optional thread-librarian package's.
+    try:
+        from thread_librarian.graph import reset_cache as _reset_kg
+    except ImportError:
+        pass
+    else:
+        _reset_kg()
 
     logger.info("jsonl_log reindex: %s", counts)
     return counts

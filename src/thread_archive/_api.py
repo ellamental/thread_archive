@@ -101,8 +101,8 @@ def search(
     """Federated search over conversation events (lexical FTS5 + optional semantic
     vectors → RRF fusion → weighted rank → optional cross-encoder re-rank).
     Returns enriched event-hit dicts. ``source`` restricts to threads of the named
-    provider(s); ``topic_id`` restricts to a topic's member conversations (threads
-    cited under the topic or linked to it, from the knowledge graph);
+    provider(s); ``topic_id`` restricts to a curated topic's member conversations
+    (a compatibility scope over existing KG records);
     ``agents`` controls agent-run threads (``thread_type='system'``): 'exclude'
     (default) / 'include' / 'only'; ``types`` restricts to the named
     ``thread_type`` values. An **empty query** is a browse — one row per thread by
@@ -163,8 +163,7 @@ def read_thread(
     """Reconstruct a conversation thread as a readable transcript.
 
     ``thread_id`` is the archive's thread id or a provider **session id**
-    (the uuid/source_id a tool knows the conversation by); the reserved ref
-    ``'topics'`` renders the curated topic hierarchy instead. ``mode`` picks the view —
+    (the uuid/source_id a tool knows the conversation by). ``mode`` picks the view —
     ``user`` (default), ``chat``, ``full``, ``last`` (final assistant text only), or
     ``ends`` (first + last ``context_turns`` turns) —
     and the read is turn-paginated +
@@ -467,15 +466,6 @@ def redact_restore_key(key_id: str, key_b64: str, *, home: Optional[str] = None)
     return restore_key(key_id, key_b64)
 
 
-def knowledge_status(*, home: Optional[str] = None) -> dict:
-    """Knowledge-graph status: node (topic + corpus thread) / community / component
-    counts (empty until curation exists)."""
-    open_archive(home)
-    from ._knowledge import get_status
-
-    return get_status()
-
-
 def curation_stats(*, home: Optional[str] = None, days: int = 30) -> dict:
     """What the curation drains have done, for the viewer's curation
     page: each drain's remaining backlog (the same gate the daemon fires on),
@@ -492,27 +482,3 @@ def curation_stats(*, home: Optional[str] = None, days: int = 30) -> dict:
         return {"available": False, "error": "thread-librarian is not installed"}
 
     return collect_curation_stats(days=days, home=home)
-
-
-def bridge_topics(*, home: Optional[str] = None, limit: int = 20) -> list[dict]:
-    """Highest-betweenness topics — the structural bridges between communities."""
-    open_archive(home)
-    from ._knowledge import get_bridge_topics
-
-    return get_bridge_topics(limit=limit)
-
-
-def topic_peers(thread_id: int | str, *, home: Optional[str] = None, limit: int = 5) -> list[dict]:
-    """Topics in the same community as ``thread_id``, highest-pagerank first.
-
-    ``thread_id`` is any thread ref (ULID, legacy integer, session id)."""
-    open_archive(home)
-    from ._knowledge import get_community_peers
-    from ._retrieval.read import resolve_thread_ref
-    from ._store import get_session
-
-    with get_session() as s:
-        resolved = resolve_thread_ref(s, thread_id)
-    if resolved is None:
-        return []
-    return get_community_peers(resolved, limit=limit)

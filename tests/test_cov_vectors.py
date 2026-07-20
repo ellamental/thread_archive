@@ -2,32 +2,30 @@
 search-fusion (:mod:`thread_archive._retrieval.vectors`), the in-process embed
 provider (:mod:`~.embed`), and the cross-encoder re-rank (:mod:`~.rerank`).
 
-The suite is pinned model-free by conftest (embed/rerank ``is_available`` forced
-False so nothing cold-loads torch). Tests that need the machinery opt back in
-per-test with a FAKE model — injecting a fake ``sentence_transformers`` /
-``torch`` into ``sys.modules``, or placing a scripted model in the module's
-public ``SLOT`` — so no real weights load.
+The suite is pinned model-free by conftest (``$THREAD_ARCHIVE_EMBED`` /
+``$THREAD_ARCHIVE_RERANK`` set to ``off``), so nothing here can cold-load torch.
+Tests that need the machinery build their own :class:`~.embed.Embedder` /
+:class:`~.rerank.Reranker` around a scripted model, or hand one to the
+``embedder`` / ``reranker`` argument of the call under test — real product code
+over a stand-in model, never real weights.
 """
 
 from __future__ import annotations
 
 import os
 import sys
-import types
 from types import SimpleNamespace
 
 import numpy as np
+import pytest
 from sqlalchemy import text as sa_text
 
 from thread_archive._retrieval import embed, rerank, vectors
+from thread_archive._retrieval.model_slot import ModelSlot
 from thread_archive._store import get_session, init_db
+from thread_archive._store._base import use_engine
 
 from .helpers import import_cc_session
-
-# The real availability gates, captured at import (before conftest's autouse
-# fixture swaps them for lambdas) so the real is_available() logic can be exercised.
-_REAL_EMBED_IS_AVAILABLE = embed.is_available
-_REAL_RERANK_IS_AVAILABLE = rerank.is_available
 
 
 def _unit(*nonzero) -> np.ndarray:
@@ -37,73 +35,161 @@ def _unit(*nonzero) -> np.ndarray:
     return v
 
 
+def _models_on(monkeypatch) -> None:
+    """Clear conftest's model-free pin, for a test that drives the real model
+    machinery over a scripted stand-in (never real weights)."""
+    monkeypatch.delenv("THREAD_ARCHIVE_EMBED", raising=False)
+    monkeypatch.delenv("THREAD_ARCHIVE_RERANK", raising=False)
+
+
+def _boom() -> object:
+    raise RuntimeError("no weights on disk")
+
+
+class _ScriptedModel:
+    """A stand-in for a loaded SentenceTransformer: records what it was asked to
+    encode, and returns fixed-width vectors."""
+
+    def __init__(self, width: int = 4, dtype=np.float64) -> None:
+        self.width, self.dtype, self.seen = width, dtype, []
+
+    def encode(self, prefixed, normalize_embeddings, convert_to_numpy):
+        # The contract embed relies on: un-normalized (the store normalizes on
+        # write) and numpy out (it casts to float32 lists).
+        assert normalize_embeddings is False
+        assert convert_to_numpy is True
+        self.seen.append(list(prefixed))
+        return np.ones((len(prefixed), self.width), dtype=self.dtype)
+
+
+class _ScriptedScorer:
+    """A stand-in for a loaded CrossEncoder: records the (query, doc) pairs it was
+    handed, and returns scripted scores."""
+
+    def __init__(self, scores) -> None:
+        self.scores, self.calls = list(scores), []
+
+    def predict(self, pairs, batch_size, show_progress_bar):
+        assert show_progress_bar is False
+        self.calls.append((list(pairs), batch_size))
+        return np.asarray(self.scores[:len(pairs)])
+
+
+class _FixedEmbedder:
+    """An embedder that answers every query with one fixed vector — the front-door
+    stand-in for the torch model, so the real KNN/hydration path runs on real
+    vectors without loading weights."""
+
+    def __init__(self, vec) -> None:
+        self.vec = list(vec)
+        self.queries: list[str] = []
+
+    def is_available(self) -> bool:
+        return True
+
+    def space_key(self) -> str:
+        return "local:test"
+
+    def embed_query(self, text):
+        self.queries.append(text)
+        return list(self.vec)
+
+    def embed_documents(self, texts):
+        return [list(self.vec) for _ in texts]
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 # embed.py
 # ══════════════════════════════════════════════════════════════════════════════
-def test_embed_model_name_and_space_key() -> None:
-    assert embed.model_name() == embed._MODEL_NAME
-    assert embed.space_key() == "local:" + embed._MODEL_NAME
+def test_embed_model_name_and_space_key_follow_the_env(monkeypatch) -> None:
+    assert embed.model_name() == embed.DEFAULT_MODEL
+    assert embed.space_key() == "local:" + embed.DEFAULT_MODEL
+    # Read per call, not frozen at import — an operator who sets the model gets it.
+    monkeypatch.setenv("THREAD_ARCHIVE_EMBED_MODEL", "acme/tiny")
+    assert embed.model_name() == "acme/tiny"
+    assert embed.space_key() == "local:acme/tiny"
+    assert embed.Embedder().space_key() == "local:acme/tiny"
+    # …while an embedder built around a named model keeps its own space.
+    assert embed.Embedder("other/model").space_key() == "local:other/model"
 
 
-def test_embed_device_env_override(monkeypatch) -> None:
+def test_revision_pin_is_per_model_and_env_overridable(monkeypatch) -> None:
+    assert embed.revision_for(embed.DEFAULT_MODEL) == embed.PINNED_REVISIONS[embed.DEFAULT_MODEL]
+    assert embed.revision_for("acme/unpinned") is None  # a custom model floats…
+    monkeypatch.setenv("THREAD_ARCHIVE_EMBED_REVISION", "deadbeef")
+    assert embed.revision_for("acme/unpinned") == "deadbeef"  # …unless pinned explicitly
+    assert embed.revision_for(embed.DEFAULT_MODEL) == "deadbeef"
+
+
+def test_models_enabled_reads_its_switch_per_call(monkeypatch) -> None:
+    monkeypatch.delenv("THREAD_ARCHIVE_EMBED", raising=False)
+    assert embed.models_enabled() is True
+    for off in ("off", "0", "false", "no", "OFF", "  off  "):
+        monkeypatch.setenv("THREAD_ARCHIVE_EMBED", off)
+        assert embed.models_enabled() is False, off
+    monkeypatch.setenv("THREAD_ARCHIVE_EMBED", "on")
+    assert embed.models_enabled() is True
+    # The re-rank stage reads its own switch, with the same spellings.
+    monkeypatch.setenv("THREAD_ARCHIVE_RERANK", "off")
+    assert embed.models_enabled("THREAD_ARCHIVE_RERANK") is False
+
+
+def test_the_model_free_pin_stands_both_arms_down() -> None:
+    """conftest's pin is what keeps the whole suite off real torch weights — if it
+    ever stops biting, every search-path test starts cold-loading models. Every
+    module-level entry point must honor it, not just the availability probe: these
+    are the calls that would otherwise reach a real loader."""
+    assert embed.is_available() is False
+    assert rerank.is_available() is False
+    assert embed.warm() is False
+    assert rerank.warm() is False
+    assert embed.embed_query("anything") is None
+    assert embed.embed_documents(["doc"]) is None
+    assert rerank.rerank_scores("anything", ["a doc"]) is None
+    assert rerank.rerank("anything", ["a doc"], get_text=lambda x: x) is None
+
+
+def test_importable_probes_without_importing() -> None:
+    assert embed.importable("thread_archive") is True
+    assert embed.importable("no_such_package_xyz") is False
+    # A missing parent makes find_spec raise rather than answer.
+    assert embed.importable("no_such_package_xyz.child") is False
+    assert "no_such_package_xyz" not in sys.modules  # probed, never imported
+
+
+# ── device selection ──────────────────────────────────────────────────────────
+def test_select_device_prefers_override_then_accelerator() -> None:
+    assert embed.select_device("cuda:1", True, True) == "cuda:1"
+    assert embed.select_device(None, True, True) == "mps"
+    assert embed.select_device(None, False, True) == "cuda"
+    assert embed.select_device(None, False, False) == "cpu"
+
+
+def test_torch_accelerator_probe_answers_on_any_box() -> None:
+    """The one part that touches torch: it must answer a plain (mps, cuda) pair
+    whether or not the [embeddings] extra is installed, never raise."""
+    mps, cuda = embed.torch_accelerators()
+    assert isinstance(mps, bool) and isinstance(cuda, bool)
+
+
+def test_embed_device_override_else_the_real_probe(monkeypatch) -> None:
     monkeypatch.setenv("THREAD_ARCHIVE_EMBED_DEVICE", "cuda:1")
     assert embed._device() == "cuda:1"
+    monkeypatch.delenv("THREAD_ARCHIVE_EMBED_DEVICE")
+    assert embed._device() == embed.select_device(None, *embed.torch_accelerators())
 
 
-def test_embed_device_probes_torch_accelerators(monkeypatch) -> None:
-    monkeypatch.delenv("THREAD_ARCHIVE_EMBED_DEVICE", raising=False)
-    fake_torch = types.ModuleType("torch")
-    fake_torch.backends = SimpleNamespace(mps=SimpleNamespace(is_available=lambda: True))
-    fake_torch.cuda = SimpleNamespace(is_available=lambda: False)
-    monkeypatch.setitem(sys.modules, "torch", fake_torch)
-    assert embed._device() == "mps"
-    fake_torch.backends.mps.is_available = lambda: False
-    fake_torch.cuda.is_available = lambda: True
-    assert embed._device() == "cuda"
-    fake_torch.cuda.is_available = lambda: False
-    assert embed._device() == "cpu"
+def test_rerank_device_precedence_then_the_real_probe(monkeypatch) -> None:
+    monkeypatch.setenv("THREAD_ARCHIVE_RERANK_DEVICE", "cuda:0")
+    monkeypatch.setenv("THREAD_ARCHIVE_EMBED_DEVICE", "cpu")
+    assert rerank._device() == "cuda:0"  # its own var wins
+    monkeypatch.delenv("THREAD_ARCHIVE_RERANK_DEVICE")
+    assert rerank._device() == "cpu"  # falls back to the shared embed device
+    monkeypatch.delenv("THREAD_ARCHIVE_EMBED_DEVICE")
+    assert rerank._device() == embed.select_device(None, *embed.torch_accelerators())
 
 
-def test_embed_device_falls_back_to_cpu_without_torch(monkeypatch) -> None:
-    monkeypatch.delenv("THREAD_ARCHIVE_EMBED_DEVICE", raising=False)
-    monkeypatch.setitem(sys.modules, "torch", None)  # `import torch` -> ImportError
-    assert embed._device() == "cpu"
-
-
-def test_embed_is_available_true_when_extra_present(monkeypatch) -> None:
-    import importlib.util as ilu
-
-    monkeypatch.setattr(embed, "is_available", _REAL_EMBED_IS_AVAILABLE)
-    monkeypatch.setattr(ilu, "find_spec", lambda name: object())  # extra present
-    monkeypatch.setattr(embed.SLOT, "load_failed", False)
-    assert embed.is_available() is True
-
-
-def test_embed_is_available_false_when_load_failed(monkeypatch) -> None:
-    monkeypatch.setattr(embed, "is_available", _REAL_EMBED_IS_AVAILABLE)
-    monkeypatch.setattr(embed.SLOT, "load_failed", True)
-    assert embed.is_available() is False
-
-
-def test_embed_is_available_false_without_spec(monkeypatch) -> None:
-    import importlib.util as ilu
-
-    monkeypatch.setattr(embed, "is_available", _REAL_EMBED_IS_AVAILABLE)
-    monkeypatch.setattr(ilu, "find_spec", lambda name: None)
-    assert embed.is_available() is False
-
-
-def test_embed_is_available_false_on_import_error(monkeypatch) -> None:
-    import importlib.util as ilu
-
-    def boom(name):
-        raise ImportError("nope")
-
-    monkeypatch.setattr(embed, "is_available", _REAL_EMBED_IS_AVAILABLE)
-    monkeypatch.setattr(ilu, "find_spec", boom)
-    assert embed.is_available() is False
-
-
+# ── hub cache / offline pinning ───────────────────────────────────────────────
 def test_hub_cache_dir_precedence(monkeypatch, tmp_path) -> None:
     monkeypatch.setenv("HUGGINGFACE_HUB_CACHE", str(tmp_path / "hubA"))
     assert embed._hub_cache_dir() == str(tmp_path / "hubA")
@@ -114,11 +200,10 @@ def test_hub_cache_dir_precedence(monkeypatch, tmp_path) -> None:
     assert embed._hub_cache_dir().endswith("/.cache/huggingface/hub")
 
 
-def _seed_hub_cache(tmp_path) -> None:
-    """A real, non-empty HF snapshots tree for embed's default model under
-    ``tmp_path/hub`` — point HUGGINGFACE_HUB_CACHE there and ``_model_cached()``
-    reads True off disk, no faking."""
-    folder = "models--" + embed._MODEL_NAME.replace("/", "--")
+def _seed_hub_cache(tmp_path, name: str | None = None) -> None:
+    """A real, non-empty HF snapshots tree under ``tmp_path/hub`` — point
+    HUGGINGFACE_HUB_CACHE there and ``_model_cached()`` reads True off disk."""
+    folder = "models--" + (name or embed.DEFAULT_MODEL).replace("/", "--")
     snaps = tmp_path / "hub" / folder / "snapshots" / "rev1"
     snaps.mkdir(parents=True)
     (snaps / "config.json").write_text("{}")
@@ -126,28 +211,33 @@ def _seed_hub_cache(tmp_path) -> None:
 
 def test_model_cached_true_and_false(monkeypatch, tmp_path) -> None:
     monkeypatch.setenv("HUGGINGFACE_HUB_CACHE", str(tmp_path / "hub"))
-    assert embed._model_cached() is False  # empty cache
+    assert embed._model_cached(embed.DEFAULT_MODEL) is False  # empty cache
     _seed_hub_cache(tmp_path)
-    assert embed._model_cached() is True
+    assert embed._model_cached(embed.DEFAULT_MODEL) is True
+    # …and it's per model: a different one isn't cached just because this one is.
+    assert embed._model_cached("acme/other") is False
 
 
-def test_model_cached_swallows_oserror(monkeypatch, tmp_path) -> None:
-    cache = tmp_path / "hub"
-    folder = "models--" + embed._MODEL_NAME.replace("/", "--")
-    (cache / folder / "snapshots").mkdir(parents=True)
-    monkeypatch.setenv("HUGGINGFACE_HUB_CACHE", str(cache))
-
-    def boom(_p):
-        raise OSError("scandir blew up")
-
-    monkeypatch.setattr(embed.os, "scandir", boom)
-    assert embed._model_cached() is False
+def test_model_cached_survives_an_unreadable_cache(monkeypatch, tmp_path) -> None:
+    """A hub cache the process can't read degrades to "not cached" rather than
+    taking the load down with an OSError."""
+    _seed_hub_cache(tmp_path)
+    snaps = tmp_path / "hub" / ("models--" + embed.DEFAULT_MODEL.replace("/", "--")) / "snapshots"
+    monkeypatch.setenv("HUGGINGFACE_HUB_CACHE", str(tmp_path / "hub"))
+    assert embed._model_cached(embed.DEFAULT_MODEL) is True  # readable: cached
+    snaps.chmod(0o000)
+    try:
+        if os.access(snaps, os.R_OK):  # running as root — permissions don't bite
+            pytest.skip("cannot make a directory unreadable as this user")
+        assert embed._model_cached(embed.DEFAULT_MODEL) is False
+    finally:
+        snaps.chmod(0o755)
 
 
 def test_pin_offline_noop_when_online_forced(monkeypatch) -> None:
     monkeypatch.setenv("THREAD_ARCHIVE_EMBED_ONLINE", "1")
     monkeypatch.delenv("HF_HUB_OFFLINE", raising=False)
-    embed._pin_offline_if_cached()
+    embed._pin_offline_if_cached(embed.DEFAULT_MODEL)
     assert "HF_HUB_OFFLINE" not in os.environ
 
 
@@ -155,360 +245,376 @@ def test_pin_offline_noop_when_not_cached(monkeypatch, tmp_path) -> None:
     monkeypatch.delenv("THREAD_ARCHIVE_EMBED_ONLINE", raising=False)
     monkeypatch.setenv("HUGGINGFACE_HUB_CACHE", str(tmp_path / "hub"))  # empty
     monkeypatch.delenv("HF_HUB_OFFLINE", raising=False)
-    embed._pin_offline_if_cached()
+    embed._pin_offline_if_cached(embed.DEFAULT_MODEL)
     assert "HF_HUB_OFFLINE" not in os.environ
 
 
-def test_pin_offline_sets_env_and_flips_hub_constant(monkeypatch, tmp_path) -> None:
+def test_pin_offline_sets_the_env_when_cached(monkeypatch, tmp_path) -> None:
     monkeypatch.delenv("THREAD_ARCHIVE_EMBED_ONLINE", raising=False)
     monkeypatch.setenv("HUGGINGFACE_HUB_CACHE", str(tmp_path / "hub"))
     _seed_hub_cache(tmp_path)
     monkeypatch.delenv("HF_HUB_OFFLINE", raising=False)
     monkeypatch.delenv("TRANSFORMERS_OFFLINE", raising=False)
-    fake_const = types.ModuleType("huggingface_hub.constants")
-    fake_const.HF_HUB_OFFLINE = False
-    monkeypatch.setitem(sys.modules, "huggingface_hub.constants", fake_const)
-    embed._pin_offline_if_cached()
+    embed._pin_offline_if_cached(embed.DEFAULT_MODEL)
     assert os.environ["HF_HUB_OFFLINE"] == "1"
     assert os.environ["TRANSFORMERS_OFFLINE"] == "1"
-    assert fake_const.HF_HUB_OFFLINE is True
+
+
+def test_pin_offline_flips_the_live_hub_constant(monkeypatch, tmp_path) -> None:
+    """huggingface_hub freezes HF_HUB_OFFLINE into a module constant at import, so
+    setting the env isn't enough once it's loaded — the live constant must flip too.
+    Driven against the real module, so a renamed constant can't pass."""
+    constants = pytest.importorskip("huggingface_hub.constants")
+    monkeypatch.delenv("THREAD_ARCHIVE_EMBED_ONLINE", raising=False)
+    monkeypatch.setenv("HUGGINGFACE_HUB_CACHE", str(tmp_path / "hub"))
+    _seed_hub_cache(tmp_path)
+    monkeypatch.delenv("HF_HUB_OFFLINE", raising=False)
+    before = constants.HF_HUB_OFFLINE
+    constants.HF_HUB_OFFLINE = False
+    try:
+        embed._pin_offline_if_cached(embed.DEFAULT_MODEL)
+        assert constants.HF_HUB_OFFLINE is True
+    finally:
+        constants.HF_HUB_OFFLINE = before
 
 
 def test_pin_offline_without_hub_constants_loaded(monkeypatch, tmp_path) -> None:
     monkeypatch.delenv("THREAD_ARCHIVE_EMBED_ONLINE", raising=False)
     monkeypatch.setenv("HUGGINGFACE_HUB_CACHE", str(tmp_path / "hub"))
-    _seed_hub_cache(tmp_path)
-    monkeypatch.delitem(sys.modules, "huggingface_hub.constants", raising=False)
+    _seed_hub_cache(tmp_path, "acme/never-imported")
     monkeypatch.delenv("HF_HUB_OFFLINE", raising=False)
-    embed._pin_offline_if_cached()
+    embed._pin_offline_if_cached("acme/never-imported")
     assert os.environ.get("HF_HUB_OFFLINE") == "1"
 
 
-def test_embed_load_constructs_and_caches(monkeypatch) -> None:
+# ── the lazy slot ─────────────────────────────────────────────────────────────
+def test_model_slot_constructs_once_and_caches() -> None:
+    made: list[int] = []
+
+    def construct() -> object:
+        made.append(1)
+        return "MODEL"
+
+    slot = ModelSlot(construct)
+    assert slot.get() == "MODEL"
+    assert slot.get() == "MODEL"
+    assert made == [1]  # one construction, not one per call
+
+
+def test_model_slot_caches_the_failure_and_reports_it_once() -> None:
+    seen: list[Exception] = []
+    attempts: list[int] = []
+
+    def construct() -> object:
+        attempts.append(1)
+        raise RuntimeError("no weights on disk")
+
+    slot = ModelSlot(construct, seen.append)
+    assert slot.get() is None
+    assert slot.load_failed is True
+    assert slot.get() is None  # the cached failure short-circuits
+    assert attempts == [1]  # one attempt, not one per query
+    assert [str(e) for e in seen] == ["no weights on disk"]
+
+
+def test_model_slot_uses_a_lent_model_without_constructing() -> None:
+    slot = ModelSlot(lambda: pytest.fail("must not construct"), model="LENT")
+    assert slot.get() == "LENT"
+    assert slot.load_failed is False
+
+
+def test_build_model_pins_the_revision_and_trusts_remote_code(monkeypatch) -> None:
+    monkeypatch.setenv("THREAD_ARCHIVE_EMBED_DEVICE", "cpu")
     made = []
 
-    class FakeST:
+    class RecordingST:
         def __init__(self, name, revision=None, trust_remote_code=False, device=None):
             made.append((name, revision, trust_remote_code, device))
 
         def get_sentence_embedding_dimension(self):
             return 768
 
-    fake_mod = types.ModuleType("sentence_transformers")
-    fake_mod.SentenceTransformer = FakeST
-    monkeypatch.setitem(sys.modules, "sentence_transformers", fake_mod)
+    model = embed.build_model(RecordingST, embed.DEFAULT_MODEL)
+    assert isinstance(model, RecordingST)
+    # trust_remote_code runs repo-hosted loader code, so the default model must load
+    # at its pinned snapshot — a floating revision executes whatever upstream pushes.
+    assert embed.PINNED_REVISIONS[embed.DEFAULT_MODEL]
+    assert made == [(
+        embed.DEFAULT_MODEL, embed.PINNED_REVISIONS[embed.DEFAULT_MODEL], True, "cpu",
+    )]
+
+
+def test_build_model_reads_either_dimension_accessor(monkeypatch) -> None:
+    """The dimension is a log detail, and sentence-transformers renamed its accessor:
+    a model carrying either name — or neither — must still load."""
     monkeypatch.setenv("THREAD_ARCHIVE_EMBED_DEVICE", "cpu")
-    monkeypatch.setattr(embed.SLOT, "model", None)
-    monkeypatch.setattr(embed.SLOT, "load_failed", False)
 
-    m = embed._load()
-    assert m is not None
-    # The default model must load its pinned snapshot (trust_remote_code means
-    # a floating revision executes whatever upstream pushes).
-    assert embed._MODEL_REVISION is not None
-    assert made == [(embed._MODEL_NAME, embed._MODEL_REVISION, True, "cpu")]
-    assert embed._load() is m  # cached — no second construction
-    assert len(made) == 1
+    class NewerST:
+        def __init__(self, name, **kw):
+            pass
 
+        def get_embedding_dimension(self):
+            return 768
 
-def test_embed_load_failure_is_cached(monkeypatch) -> None:
-    class BadST:
-        def __init__(self, *a, **k):
-            raise RuntimeError("no weights on disk")
+    class OlderST:
+        def __init__(self, name, **kw):
+            pass
 
-    fake_mod = types.ModuleType("sentence_transformers")
-    fake_mod.SentenceTransformer = BadST
-    monkeypatch.setitem(sys.modules, "sentence_transformers", fake_mod)
-    monkeypatch.setenv("THREAD_ARCHIVE_EMBED_DEVICE", "cpu")
-    monkeypatch.setattr(embed.SLOT, "model", None)
-    monkeypatch.setattr(embed.SLOT, "load_failed", False)
+        def get_sentence_embedding_dimension(self):
+            return 768
 
-    assert embed._load() is None
-    assert embed.SLOT.load_failed is True
-    assert embed._load() is None  # cached failure short-circuits
+    class DimlessST:
+        def __init__(self, name, **kw):
+            pass
+
+    for cls in (NewerST, OlderST, DimlessST):
+        assert isinstance(embed.build_model(cls, "acme/model"), cls)
 
 
-def test_embed_load_returns_cached_model(monkeypatch) -> None:
-    sentinel = object()
-    monkeypatch.setattr(embed.SLOT, "model", sentinel)
-    assert embed._load() is sentinel
+# ── the embedder ──────────────────────────────────────────────────────────────
+def test_embedder_availability_sequence(monkeypatch) -> None:
+    _models_on(monkeypatch)
+    # A lent model is available outright — it needs neither the extra nor a load.
+    lent = embed.Embedder(model=_ScriptedModel())
+    assert lent.is_available() is True
+    # A load failure is remembered, so the arm degrades after exactly one attempt.
+    broken = embed.Embedder(load=_boom)
+    assert broken.is_available() is True  # nothing tried yet
+    assert broken.embed_query("hi") is None  # the attempt fails…
+    assert broken.is_available() is False  # …and is cached
+    # The off switch stands every embedder down, loaded model or not.
+    monkeypatch.setenv("THREAD_ARCHIVE_EMBED", "off")
+    assert lent.is_available() is False
+    assert broken.is_available() is False
 
 
-def test_embed_load_returns_none_when_previously_failed(monkeypatch) -> None:
-    monkeypatch.setattr(embed.SLOT, "model", None)
-    monkeypatch.setattr(embed.SLOT, "load_failed", True)
-    assert embed._load() is None
+def test_off_switch_stops_the_embedder_before_any_load(monkeypatch) -> None:
+    """The model-free pin / --lexical-only contract: no load may even be attempted."""
+    monkeypatch.setenv("THREAD_ARCHIVE_EMBED", "off")
+    e = embed.Embedder(load=lambda: pytest.fail("model load attempted"))
+    assert e.is_available() is False
+    assert e.warm() is False
+    assert e.embed_query("anything at all") is None
+    assert e.embed_documents(["doc"]) is None
 
 
-def test_encode_returns_none_when_unavailable() -> None:
-    # conftest forces is_available False -> the encode seam sits out.
-    assert embed._encode(["search_query: hi"]) is None
+def test_embedder_degrades_after_one_failed_load(monkeypatch) -> None:
+    _models_on(monkeypatch)
+    attempts: list[int] = []
+
+    def construct() -> object:
+        attempts.append(1)
+        raise RuntimeError("no weights on disk")
+
+    e = embed.Embedder(load=construct)
+    assert e.embed_query("hi") is None
+    assert e.embed_documents(["doc"]) is None
+    assert attempts == [1]  # one load attempt, then the cached failure
 
 
-def test_encode_returns_none_when_model_is_none(monkeypatch) -> None:
-    monkeypatch.setattr(embed, "is_available", lambda: True)
-    monkeypatch.setattr(embed.SLOT, "model", None)
-    monkeypatch.setattr(embed.SLOT, "load_failed", True)
-    assert embed._encode(["x"]) is None
+def test_embed_query_prefixes_caps_and_short_circuits(monkeypatch) -> None:
+    _models_on(monkeypatch)
+    model = _ScriptedModel(width=2)
+    e = embed.Embedder(model=model)
+    assert e.embed_query("  hello  ") == [1.0, 1.0]
+    assert model.seen[0][0].startswith("search_query: ")
+    long = "z" * (embed.EMBEDDING_CHAR_CAP + 50)
+    e.embed_query(long)
+    assert len(model.seen[1][0]) == len("search_query: ") + embed.EMBEDDING_CHAR_CAP
+    assert e.embed_query("   ") is None
+    assert e.embed_query("") is None
+    assert len(model.seen) == 2  # a blank query never reaches the model
 
 
-def test_encode_success_returns_float_lists(monkeypatch) -> None:
-    class FakeModel:
-        def encode(self, prefixed, normalize_embeddings, convert_to_numpy):
-            assert normalize_embeddings is False
-            assert convert_to_numpy is True
-            return np.ones((len(prefixed), 4), dtype=np.float64)
+def test_embed_documents_prefixes_caps_and_empties(monkeypatch) -> None:
+    _models_on(monkeypatch)
+    model = _ScriptedModel(width=1)
+    e = embed.Embedder(model=model)
+    long = "z" * (embed.EMBEDDING_CHAR_CAP + 50)
+    assert e.embed_documents([long, "b"]) == [[1.0], [1.0]]
+    assert model.seen[0][0].startswith("search_document: ")
+    assert len(model.seen[0][0]) == len("search_document: ") + embed.EMBEDDING_CHAR_CAP
+    assert model.seen[0][1] == "search_document: b"
+    assert e.embed_documents([]) is None
+    assert len(model.seen) == 1  # an empty batch never reaches the model
 
-    monkeypatch.setattr(embed, "is_available", lambda: True)
-    monkeypatch.setattr(embed.SLOT, "model", FakeModel())
-    out = embed._encode(["a", "b"])
-    assert out == [[1.0, 1.0, 1.0, 1.0], [1.0, 1.0, 1.0, 1.0]]
+
+def test_encode_casts_to_float32_lists(monkeypatch) -> None:
+    _models_on(monkeypatch)
+    e = embed.Embedder(model=_ScriptedModel(width=4, dtype=np.float64))
+    out = e.embed_documents(["a", "b"])
+    assert out == [[1.0] * 4, [1.0] * 4]
+    assert all(isinstance(x, float) for row in out for x in row)
 
 
-def test_encode_swallows_model_error(monkeypatch) -> None:
+def test_encode_swallows_a_model_error(monkeypatch) -> None:
+    _models_on(monkeypatch)
+
     class Boom:
         def encode(self, *a, **k):
             raise RuntimeError("cuda oom")
 
-    monkeypatch.setattr(embed, "is_available", lambda: True)
-    monkeypatch.setattr(embed.SLOT, "model", Boom())
-    assert embed._encode(["x"]) is None
+    e = embed.Embedder(model=Boom())
+    assert e.embed_query("x") is None
+    assert e.embed_documents(["x"]) is None
 
 
-def test_embed_query_prefixes_and_short_circuits(monkeypatch) -> None:
-    captured = {}
-
-    class FakeModel:
-        def encode(self, prefixed, normalize_embeddings, convert_to_numpy):
-            captured["p"] = prefixed
-            return np.asarray([[0.5, 0.5]], dtype=np.float32)
-
-    monkeypatch.setattr(embed, "is_available", lambda: True)
-    monkeypatch.setattr(embed.SLOT, "model", FakeModel())
-    assert embed.embed_query("  hello  ") == [0.5, 0.5]
-    assert captured["p"][0].startswith("search_query: ")
-    assert embed.embed_query("   ") is None
-    assert embed.embed_query("") is None
+def test_warm_reports_the_load_outcome(monkeypatch) -> None:
+    _models_on(monkeypatch)
+    assert embed.Embedder(model=_ScriptedModel()).warm() is True
+    assert embed.Embedder(load=_boom).warm() is False
+    assert rerank.Reranker(model=_ScriptedScorer([1.0])).warm() is True
+    assert rerank.Reranker(load=_boom).warm() is False
 
 
-def test_embed_query_none_when_encode_none() -> None:
-    # conftest pins is_available False → the encode seam sits out → None.
-    assert embed.embed_query("hello") is None
-
-
-def test_embed_documents_prefixes_caps_and_empties(monkeypatch) -> None:
-    captured = {}
-
-    class FakeModel:
-        def encode(self, prefixed, normalize_embeddings, convert_to_numpy):
-            captured["p"] = prefixed
-            return np.ones((len(prefixed), 1), dtype=np.float32)
-
-    monkeypatch.setattr(embed, "is_available", lambda: True)
-    monkeypatch.setattr(embed.SLOT, "model", FakeModel())
-    long = "z" * (embed.EMBEDDING_CHAR_CAP + 50)
-    out = embed.embed_documents([long, "b"])
-    assert len(out) == 2
-    assert captured["p"][0].startswith("search_document: ")
-    assert len(captured["p"][0]) == len("search_document: ") + embed.EMBEDDING_CHAR_CAP
-    assert embed.embed_documents([]) is None
+def test_default_embedder_and_reranker_are_process_wide(monkeypatch) -> None:
+    assert embed.default() is embed.default()
+    assert rerank.default() is rerank.default()
+    _models_on(monkeypatch)
+    # The module-level functions are the default instance's, not a second one.
+    assert embed.is_available() is embed.default().is_available()
+    assert rerank.is_available() is rerank.default().is_available()
 
 
 # ══════════════════════════════════════════════════════════════════════════════
 # rerank.py
 # ══════════════════════════════════════════════════════════════════════════════
-def test_rerank_model_name() -> None:
-    assert rerank.model_name() == rerank._MODEL_NAME
+def test_rerank_model_name_follows_the_env(monkeypatch) -> None:
+    assert rerank.model_name() == rerank.DEFAULT_MODEL
+    monkeypatch.setenv("THREAD_ARCHIVE_RERANK_MODEL", "acme/ce")
+    assert rerank.model_name() == "acme/ce"
+    assert rerank.Reranker().name == "acme/ce"
+    assert rerank.Reranker("other/ce").name == "other/ce"
 
 
-def test_rerank_device_env_precedence(monkeypatch) -> None:
-    monkeypatch.setenv("THREAD_ARCHIVE_RERANK_DEVICE", "cuda:0")
-    assert rerank._device() == "cuda:0"
-    monkeypatch.delenv("THREAD_ARCHIVE_RERANK_DEVICE")
-    monkeypatch.setenv("THREAD_ARCHIVE_EMBED_DEVICE", "cpu")  # shared embed device
-    assert rerank._device() == "cpu"
+def test_rerank_dtype_is_fp16_on_an_accelerator_fp32_on_cpu() -> None:
+    """fp16 doubles accelerator throughput at an ordering indistinguishable from
+    fp32; CPU stays fp32, where fp16 is emulated and slower. Asserted against the
+    real torch dtype, so a renamed attribute can't pass."""
+    torch = pytest.importorskip("torch")
+    assert rerank.dtype_kwargs("cpu") == {}
+    assert rerank.dtype_kwargs("mps") == {"torch_dtype": torch.float16}
+    assert rerank.dtype_kwargs("cuda:0") == {"torch_dtype": torch.float16}
 
 
-def test_rerank_device_probes_torch(monkeypatch) -> None:
-    monkeypatch.delenv("THREAD_ARCHIVE_RERANK_DEVICE", raising=False)
-    monkeypatch.delenv("THREAD_ARCHIVE_EMBED_DEVICE", raising=False)
-    fake_torch = types.ModuleType("torch")
-    fake_torch.backends = SimpleNamespace(mps=SimpleNamespace(is_available=lambda: False))
-    fake_torch.cuda = SimpleNamespace(is_available=lambda: True)
-    monkeypatch.setitem(sys.modules, "torch", fake_torch)
-    assert rerank._device() == "cuda"
-    fake_torch.cuda.is_available = lambda: False
-    assert rerank._device() == "cpu"
-    fake_torch.backends.mps.is_available = lambda: True
-    assert rerank._device() == "mps"
-
-
-def test_rerank_device_falls_back_to_cpu_without_torch(monkeypatch) -> None:
-    monkeypatch.delenv("THREAD_ARCHIVE_RERANK_DEVICE", raising=False)
-    monkeypatch.delenv("THREAD_ARCHIVE_EMBED_DEVICE", raising=False)
-    monkeypatch.setitem(sys.modules, "torch", None)
-    assert rerank._device() == "cpu"
-
-
-def test_rerank_is_available_variants(monkeypatch) -> None:
-    import importlib.util as ilu
-
-    monkeypatch.setattr(rerank, "is_available", _REAL_RERANK_IS_AVAILABLE)
-    monkeypatch.setattr(ilu, "find_spec", lambda n: object())  # extra present
-    monkeypatch.setattr(rerank.SLOT, "load_failed", False)
-    assert rerank.is_available() is True
-    monkeypatch.setattr(rerank.SLOT, "load_failed", True)
-    assert rerank.is_available() is False
-    monkeypatch.setattr(rerank.SLOT, "load_failed", False)
-    monkeypatch.setattr(ilu, "find_spec", lambda n: None)
-    assert rerank.is_available() is False
-
-
-def test_rerank_is_available_import_error(monkeypatch) -> None:
-    import importlib.util as ilu
-
-    def boom(n):
-        raise ImportError()
-
-    monkeypatch.setattr(rerank, "is_available", _REAL_RERANK_IS_AVAILABLE)
-    monkeypatch.setattr(ilu, "find_spec", boom)
-    assert rerank.is_available() is False
-
-
-def test_rerank_load_cpu_no_fp16(monkeypatch) -> None:
+def test_rerank_build_model_passes_device_and_dtype(monkeypatch) -> None:
     made = []
 
-    class FakeCE:
+    class RecordingCE:
         def __init__(self, name, device=None, model_kwargs=None):
             made.append((name, device, model_kwargs))
 
-    fake_mod = types.ModuleType("sentence_transformers")
-    fake_mod.CrossEncoder = FakeCE
-    monkeypatch.setitem(sys.modules, "sentence_transformers", fake_mod)
     monkeypatch.setenv("THREAD_ARCHIVE_RERANK_DEVICE", "cpu")
-    monkeypatch.setattr(rerank.SLOT, "model", None)
-    monkeypatch.setattr(rerank.SLOT, "load_failed", False)
-
-    m = rerank._load()
-    assert m is not None
-    assert made == [(rerank._MODEL_NAME, "cpu", {})]
-    assert rerank._load() is m  # cached
+    assert isinstance(rerank.build_model(RecordingCE, "acme/ce"), RecordingCE)
+    assert made == [("acme/ce", "cpu", {})]
 
 
-def test_rerank_load_accelerator_uses_fp16(monkeypatch) -> None:
-    made = []
-
-    class FakeCE:
-        def __init__(self, name, device=None, model_kwargs=None):
-            made.append((name, device, model_kwargs))
-
-    fake_mod = types.ModuleType("sentence_transformers")
-    fake_mod.CrossEncoder = FakeCE
-    fake_torch = types.ModuleType("torch")
-    fake_torch.float16 = "fp16-sentinel"
-    monkeypatch.setitem(sys.modules, "sentence_transformers", fake_mod)
-    monkeypatch.setitem(sys.modules, "torch", fake_torch)
-    monkeypatch.setenv("THREAD_ARCHIVE_RERANK_DEVICE", "mps")
-    monkeypatch.setattr(rerank.SLOT, "model", None)
-    monkeypatch.setattr(rerank.SLOT, "load_failed", False)
-
-    assert rerank._load() is not None
-    name, device, kwargs = made[0]
-    assert device == "mps"
-    assert kwargs == {"torch_dtype": "fp16-sentinel"}
+def test_reranker_availability_sequence(monkeypatch) -> None:
+    _models_on(monkeypatch)
+    lent = rerank.Reranker(model=_ScriptedScorer([0.5]))
+    assert lent.is_available() is True
+    broken = rerank.Reranker(load=_boom)
+    assert broken.is_available() is True
+    assert broken.rerank_scores("q", ["a"]) is None  # the load fails…
+    assert broken.is_available() is False  # …and is cached
+    monkeypatch.setenv("THREAD_ARCHIVE_RERANK", "off")
+    assert lent.is_available() is False
 
 
-def test_rerank_load_returns_cached_and_failed(monkeypatch) -> None:
-    sentinel = object()
-    monkeypatch.setattr(rerank.SLOT, "model", sentinel)
-    assert rerank._load() is sentinel
-    monkeypatch.setattr(rerank.SLOT, "model", None)
-    monkeypatch.setattr(rerank.SLOT, "load_failed", True)
-    assert rerank._load() is None
+def test_off_switch_stops_the_reranker_before_any_load(monkeypatch) -> None:
+    monkeypatch.setenv("THREAD_ARCHIVE_RERANK", "off")
+    r = rerank.Reranker(load=lambda: pytest.fail("model load attempted"))
+    assert r.is_available() is False
+    assert r.warm() is False
 
 
-def test_rerank_load_failure_is_cached(monkeypatch) -> None:
-    class BadCE:
-        def __init__(self, *a, **k):
-            raise RuntimeError("no weights")
-
-    fake_mod = types.ModuleType("sentence_transformers")
-    fake_mod.CrossEncoder = BadCE
-    monkeypatch.setitem(sys.modules, "sentence_transformers", fake_mod)
-    monkeypatch.setenv("THREAD_ARCHIVE_RERANK_DEVICE", "cpu")
-    monkeypatch.setattr(rerank.SLOT, "model", None)
-    monkeypatch.setattr(rerank.SLOT, "load_failed", False)
-
-    assert rerank._load() is None
-    assert rerank.SLOT.load_failed is True
-    assert rerank._load() is None
-
-
-def test_rerank_scores_success_and_pairs(monkeypatch) -> None:
-    class FakeModel:
-        def predict(self, pairs, batch_size, show_progress_bar):
-            assert batch_size == rerank._PREDICT_BATCH_SIZE
-            assert show_progress_bar is False
-            self.pairs = pairs
-            return np.asarray([0.2, 0.8])
-
-    fm = FakeModel()
-    monkeypatch.setattr(rerank.SLOT, "model", fm)
-    out = rerank.rerank_scores("q", ["doc a", "doc b"])
+def test_rerank_scores_pairs_batches_and_floats(monkeypatch) -> None:
+    _models_on(monkeypatch)
+    scorer = _ScriptedScorer([0.2, 0.8])
+    out = rerank.Reranker(model=scorer).rerank_scores("q", ["doc a", "doc b"])
     assert out == [0.2, 0.8]
     assert all(isinstance(s, float) for s in out)
-    assert fm.pairs[0] == ["q", "doc a"]
+    pairs, batch_size = scorer.calls[0]
+    assert pairs[0] == ["q", "doc a"]
+    assert batch_size == rerank._PREDICT_BATCH_SIZE
 
 
 def test_rerank_scores_caps_docs_and_handles_none_text(monkeypatch) -> None:
-    captured = {}
-
-    class FakeModel:
-        def predict(self, pairs, batch_size, show_progress_bar):
-            captured["pairs"] = pairs
-            return [1.0, 2.0]
-
-    monkeypatch.setattr(rerank.SLOT, "model", FakeModel())
+    _models_on(monkeypatch)
+    scorer = _ScriptedScorer([1.0, 2.0])
     long = "y" * (rerank.RERANK_DOC_CHARS + 100)
-    rerank.rerank_scores("q", [long, None])
-    assert len(captured["pairs"][0][1]) == rerank.RERANK_DOC_CHARS
-    assert captured["pairs"][1][1] == ""  # None doc -> ""
+    rerank.Reranker(model=scorer).rerank_scores("q", [long, None])
+    pairs, _ = scorer.calls[0]
+    assert len(pairs[0][1]) == rerank.RERANK_DOC_CHARS
+    assert pairs[1][1] == ""  # a None doc scores as empty, it doesn't blow up
 
 
 def test_rerank_scores_none_paths(monkeypatch) -> None:
-    assert rerank.rerank_scores("", ["a"]) is None  # empty query
-    assert rerank.rerank_scores("q", []) is None  # empty docs
-    monkeypatch.setattr(rerank.SLOT, "model", None)
-    monkeypatch.setattr(rerank.SLOT, "load_failed", True)
-    assert rerank.rerank_scores("q", ["a"]) is None  # model unavailable
+    _models_on(monkeypatch)
+    scorer = _ScriptedScorer([1.0])
+    r = rerank.Reranker(model=scorer)
+    assert r.rerank_scores("", ["a"]) is None  # empty query
+    assert r.rerank_scores("q", []) is None  # empty docs
+    assert scorer.calls == []  # neither reaches the model
+    assert rerank.Reranker(load=_boom).rerank_scores("q", ["a"]) is None  # no model
 
 
-def test_rerank_scores_swallows_predict_error(monkeypatch) -> None:
+def test_rerank_scores_swallows_a_predict_error(monkeypatch) -> None:
+    _models_on(monkeypatch)
+
     class Boom:
         def predict(self, *a, **k):
             raise RuntimeError("boom")
 
-    monkeypatch.setattr(rerank.SLOT, "model", Boom())
-    assert rerank.rerank_scores("q", ["a"]) is None
+    assert rerank.Reranker(model=Boom()).rerank_scores("q", ["a"]) is None
 
 
-def test_rerank_reorders_and_fail_soft(monkeypatch) -> None:
-    monkeypatch.setattr(rerank, "rerank_scores", lambda q, docs: [0.1, 0.9, 0.5])
-    assert rerank.rerank("q", ["A", "B", "C"], get_text=lambda x: x) == ["B", "C", "A"]
-    monkeypatch.setattr(rerank, "rerank_scores", lambda q, docs: None)
-    assert rerank.rerank("q", ["A"], get_text=lambda x: x) is None
-    assert rerank.rerank("q", [], get_text=lambda x: x) is None
+def test_rerank_reorders_and_fails_soft(monkeypatch) -> None:
+    _models_on(monkeypatch)
+    r = rerank.Reranker(model=_ScriptedScorer([0.1, 0.9, 0.5]))
+    assert r.rerank("q", ["A", "B", "C"], get_text=lambda x: x) == ["B", "C", "A"]
+    assert r.rerank("q", [], get_text=lambda x: x) is None
+    # An unloadable model means "keep the caller's order", not an exception.
+    assert rerank.Reranker(load=_boom).rerank("q", ["A"], get_text=lambda x: x) is None
 
 
 # ══════════════════════════════════════════════════════════════════════════════
 # vectors.py — guards, store, KNN, sidecar, search
 # ══════════════════════════════════════════════════════════════════════════════
-def test_is_available_false_on_engine_error(monkeypatch) -> None:
-    def boom():
+class _OtherDialectEngine:
+    """A store on a dialect the vector arm doesn't serve. Stated rather than dialled:
+    no non-SQLite driver is installed here, and the guards read only the dialect."""
+
+    dialect = SimpleNamespace(name="postgresql")
+
+
+class _BrokenEngine:
+    """A store whose engine is unusable — the guards must degrade, not propagate."""
+
+    @property
+    def dialect(self):
         raise RuntimeError("engine down")
 
-    monkeypatch.setattr(vectors, "get_engine", boom)
-    assert vectors.is_available() is False
+
+def test_is_available_false_on_engine_error() -> None:
+    with use_engine(_BrokenEngine()):
+        assert vectors.is_available() is False
+
+
+def test_unavailable_guards_short_circuit(archive_home, tmp_path) -> None:
+    """On a non-SQLite store every entry point degrades rather than emitting
+    SQLite-only SQL at it."""
+    truth = tmp_path / "truth"
+    truth.mkdir()
+    with use_engine(_OtherDialectEngine()):
+        assert vectors.is_available() is False
+        assert vectors.ensure_index() is False
+        assert vectors.index_vectors([(1, "user", _unit((0, 1.0)))]) == 0
+        assert vectors.index_events_local() == 0
+        assert vectors.save_vectors_sidecar(truth) == 0
+        assert vectors.load_vectors_sidecar(truth) == 0
+        assert vectors.search("hi") is None
+        assert vectors.get_status() == {"available": False}
 
 
 def test_normalize_zero_vector_returns_as_is() -> None:
@@ -538,19 +644,6 @@ def test_in_clause_positive_and_negative() -> None:
     assert q == {"xct0": "tool"}
 
 
-def test_unavailable_guards_short_circuit(archive_home, tmp_path, monkeypatch) -> None:
-    truth = tmp_path / "truth"
-    truth.mkdir()
-    monkeypatch.setattr(vectors, "is_available", lambda: False)
-    assert vectors.ensure_index() is False
-    assert vectors.index_vectors([(1, "user", _unit((0, 1.0)))]) == 0
-    assert vectors.index_events_local() == 0
-    assert vectors.save_vectors_sidecar(truth) == 0
-    assert vectors.load_vectors_sidecar(truth) == 0
-    assert vectors.search("hi") is None
-    assert vectors.get_status() == {"available": False}
-
-
 def test_index_vectors_skips_wrong_dim(archive_home) -> None:
     init_db()
     vectors.ensure_index()
@@ -572,18 +665,22 @@ def test_write_doc_vectors_skips_wrong_dim(archive_home) -> None:
 
 def test_index_events_local_noop_when_embed_unavailable(archive_home) -> None:
     import_cc_session(archive_home)
-    # conftest keeps embed.is_available False → vector store is SQLite but the
-    # embed backend sits out → 0 docs embedded.
+    # conftest's model-free pin leaves the process embedder unavailable → the vector
+    # store is SQLite but the embed backend sits out → 0 docs embedded.
     assert vectors.index_events_local() == 0
 
 
-def test_index_events_local_stops_when_embed_returns_none(archive_home, monkeypatch) -> None:
+def test_index_events_local_stops_when_embed_returns_none(archive_home) -> None:
     import_cc_session(archive_home)
-    monkeypatch.setattr(embed, "is_available", lambda: True)
-    monkeypatch.setattr(embed, "embed_documents", lambda docs: None)
+
+    class _FailingEmbedder(_FixedEmbedder):
+        def embed_documents(self, texts):
+            return None
+
     # batch_size=1 forces a flush on the first pending doc; the None embed return
     # stops the pass mid-loop with nothing written.
-    assert vectors.index_events_local(batch_size=1) == 0
+    assert vectors.index_events_local(
+        batch_size=1, embedder=_FailingEmbedder(_unit((0, 1.0)))) == 0
     assert vectors.get_status()["indexed"] == 0
 
 
@@ -677,6 +774,19 @@ def test_save_and_load_sidecar_roundtrip(archive_home, tmp_path) -> None:
     assert vectors.get_status()["indexed"] == 2
 
 
+def test_save_sidecar_defaults_to_the_process_embedding_space(archive_home, tmp_path) -> None:
+    """Without an explicit key the sidecar is tagged with the process embedder's
+    space, so a model change invalidates it on the next load."""
+    init_db()
+    vectors.ensure_index()
+    vectors.index_vectors([(1, "user", _unit((0, 1.0)))])
+    truth = tmp_path / "truth"
+    truth.mkdir()
+    assert vectors.save_vectors_sidecar(truth) == 1
+    assert vectors.load_vectors_sidecar(truth) == 1  # same space → restored
+    assert vectors.load_vectors_sidecar(truth, space_key="local:other") == 0
+
+
 def test_save_sidecar_ignores_and_sweeps_stray_builds(archive_home, tmp_path) -> None:
     """Concurrent/dead savers' build files must not break a save: each saver
     builds under its own pid-unique name, a stale stray (a crashed build —
@@ -706,23 +816,20 @@ def test_save_sidecar_ignores_and_sweeps_stray_builds(archive_home, tmp_path) ->
     assert vectors.load_vectors_sidecar(truth, space_key="local:test") == 1
 
 
-def test_failed_save_cleans_its_build_file(archive_home, tmp_path, monkeypatch) -> None:
+def test_failed_save_cleans_its_build_file(archive_home, tmp_path) -> None:
+    """A publish that can't complete must not leave its build file behind for the
+    stale sweep to age out. Driven by a real failing rename: the destination name
+    is occupied by a directory, so os.replace raises for real."""
     init_db()
     vectors.ensure_index()
     vectors.index_vectors([(1, "user", _unit((0, 1.0)))])
     truth = tmp_path / "truth"
     truth.mkdir()
+    (truth / "vectors.sqlite").mkdir()  # publishing over a directory cannot work
 
-    def boom(src, dst):
-        raise OSError("no publish")
-
-    monkeypatch.setattr(os, "replace", boom)
-    try:
+    with pytest.raises(OSError):
         vectors.save_vectors_sidecar(truth, space_key="local:test")
-        raise AssertionError("save should have propagated the publish failure")
-    except OSError:
-        pass
-    assert list(truth.glob("vectors.sqlite*")) == []
+    assert list(truth.glob("vectors.sqlite.tmp*")) == []
 
 
 def test_load_sidecar_missing_file(archive_home, tmp_path) -> None:
@@ -776,7 +883,7 @@ def test_load_sidecar_prechunk_restores_as_chunk_zero(archive_home, tmp_path) ->
     assert tuple(row) == (9, "user", 0)
 
 
-# ── search: the full embed→KNN→hydrate path (query embed faked) ───────────────
+# ── search: the full embed→KNN→hydrate path (query embedder injected) ─────────
 def _index_user_and_text(qvec) -> None:
     """Index one vector per embeddable events_fts row using ``qvec``."""
     with get_session() as s:
@@ -787,79 +894,69 @@ def _index_user_and_text(qvec) -> None:
     vectors.index_vectors([(int(eid), ct, qvec) for eid, ct in rows])
 
 
-def test_search_unscoped_hydrates_hits(archive_home, monkeypatch) -> None:
+def _seeded(archive_home):
+    """A store whose embeddable rows all carry one vector, plus the embedder that
+    answers queries with the same vector — so KNN scores an exact match."""
     import_cc_session(archive_home)
     q = _unit((0, 1.0))
-    monkeypatch.setattr(embed, "embed_query", lambda text: q.tolist())
     _index_user_and_text(q)
-    hits = vectors.search("hello")
+    return _FixedEmbedder(q.tolist())
+
+
+def test_search_unscoped_hydrates_hits(archive_home) -> None:
+    emb = _seeded(archive_home)
+    hits = vectors.search("hello", embedder=emb)
     assert hits is not None and len(hits) >= 1
     assert all("_semantic" in h for h in hits)
     assert hits[0]["_semantic"] == 1.0  # identical vector → cosine 1
+    assert emb.queries == ["hello"]  # the caller's embedder did the embedding
 
 
-def test_search_scoped_by_thread(archive_home, monkeypatch) -> None:
-    import_cc_session(archive_home)
-    q = _unit((0, 1.0))
-    monkeypatch.setattr(embed, "embed_query", lambda text: q.tolist())
-    _index_user_and_text(q)
+def test_search_scoped_by_thread(archive_home) -> None:
+    emb = _seeded(archive_home)
     with get_session() as s:
         tid = s.execute(sa_text("SELECT id FROM threads LIMIT 1")).scalar()
-    hits = vectors.search("hello", thread_id=tid)
+    hits = vectors.search("hello", thread_id=tid, embedder=emb)
     assert hits and all(h["thread_id"] == tid for h in hits)
 
 
-def test_search_scoped_thread_without_events_is_empty(archive_home, monkeypatch) -> None:
-    import_cc_session(archive_home)
-    q = _unit((0, 1.0))
-    monkeypatch.setattr(embed, "embed_query", lambda text: q.tolist())
-    _index_user_and_text(q)
-    assert vectors.search("hello", thread_id=999_999) == []
+def test_search_scoped_thread_without_events_is_empty(archive_home) -> None:
+    emb = _seeded(archive_home)
+    assert vectors.search("hello", thread_id=999_999, embedder=emb) == []
 
 
-def test_search_source_and_time_window(archive_home, monkeypatch) -> None:
-    import_cc_session(archive_home)
-    q = _unit((0, 1.0))
-    monkeypatch.setattr(embed, "embed_query", lambda text: q.tolist())
-    _index_user_and_text(q)
+def test_search_source_and_time_window(archive_home) -> None:
+    emb = _seeded(archive_home)
     with get_session() as s:
         src = s.execute(sa_text("SELECT source FROM threads LIMIT 1")).scalar()
     hits = vectors.search(
-        "hello", source=[src],
+        "hello", source=[src], embedder=emb,
         since="2020-01-01T00:00:00Z", until="2030-01-01T00:00:00Z",
     )
     assert hits and len(hits) >= 1
     # An unknown source scopes to no events → empty (not None).
-    assert vectors.search("hello", source=["no-such-source"]) == []
+    assert vectors.search("hello", source=["no-such-source"], embedder=emb) == []
 
 
-def test_search_partial_exclude_drops_type_in_hydration(archive_home, monkeypatch) -> None:
-    import_cc_session(archive_home)
-    q = _unit((0, 1.0))
-    monkeypatch.setattr(embed, "embed_query", lambda text: q.tolist())
-    _index_user_and_text(q)
-    hits = vectors.search("hello", exclude_content_types=["text"])
+def test_search_partial_exclude_drops_type_in_hydration(archive_home) -> None:
+    emb = _seeded(archive_home)
+    hits = vectors.search("hello", exclude_content_types=["text"], embedder=emb)
     assert hits is not None
     assert all(h["content_type"] != "text" for h in hits)
 
 
-def test_search_exclude_all_embedded_returns_none(archive_home, monkeypatch) -> None:
-    import_cc_session(archive_home)
-    q = _unit((0, 1.0))
-    monkeypatch.setattr(embed, "embed_query", lambda text: q.tolist())
-    _index_user_and_text(q)
+def test_search_exclude_all_embedded_returns_none(archive_home) -> None:
+    emb = _seeded(archive_home)
     assert vectors.search(
-        "hi", exclude_content_types=["user", "text", "title", "summary"]
+        "hi", exclude_content_types=["user", "text", "title", "summary"], embedder=emb
     ) is None
+    assert emb.queries == []  # sat out before embedding
 
 
-def test_search_empty_scope_when_no_candidates(archive_home, monkeypatch) -> None:
-    import_cc_session(archive_home)
-    q = _unit((0, 1.0))
-    monkeypatch.setattr(embed, "embed_query", lambda text: q.tolist())
-    _index_user_and_text(q)  # only user/text vectors exist
+def test_search_empty_scope_when_no_candidates(archive_home) -> None:
+    emb = _seeded(archive_home)  # only user/text vectors exist
     # Scope to 'title' (no vectors) → KNN finds nothing → [].
-    assert vectors.search("hello", content_types=["title"]) == []
+    assert vectors.search("hello", content_types=["title"], embedder=emb) == []
 
 
 def test_search_none_on_empty_query(archive_home) -> None:
@@ -869,43 +966,44 @@ def test_search_none_on_empty_query(archive_home) -> None:
     assert vectors.search("   ") is None
 
 
-def test_search_none_when_nothing_indexed(archive_home, monkeypatch) -> None:
+def test_search_falls_back_to_the_process_embedder(archive_home) -> None:
+    """Without an explicit embedder the arm uses the process one — which the
+    model-free pin has stood down, so the search degrades instead of loading."""
+    _seeded(archive_home)  # a pool exists, so the arm gets as far as embedding
+    assert embed.is_available() is False
+    assert vectors.search("hello") is None
+
+
+def test_search_none_when_nothing_indexed(archive_home) -> None:
     init_db()
     vectors.ensure_index()
-    # Guard the assertion: even if reached, embed must not be consulted here.
-    monkeypatch.setattr(
-        embed, "embed_query",
-        lambda text: (_ for _ in ()).throw(AssertionError("should not embed")),
-    )
-    assert vectors.search("anything") is None
+    emb = _FixedEmbedder(_unit((0, 1.0)).tolist())
+    assert vectors.search("anything", embedder=emb) is None
+    assert emb.queries == []  # nothing indexed → never embeds the query
 
 
-def test_search_none_when_query_embed_returns_none(archive_home, monkeypatch) -> None:
-    import_cc_session(archive_home)
-    q = _unit((0, 1.0))
-    _index_user_and_text(q)
-    monkeypatch.setattr(embed, "embed_query", lambda text: None)
-    assert vectors.search("hello") is None
+def test_search_none_when_query_embed_returns_none(archive_home) -> None:
+    emb = _seeded(archive_home)
+
+    class _NoQueryVector(_FixedEmbedder):
+        def embed_query(self, text):
+            return None
+
+    assert vectors.search("hello", embedder=_NoQueryVector(emb.vec)) is None
 
 
-def test_search_none_when_query_embed_raises(archive_home, monkeypatch) -> None:
-    import_cc_session(archive_home)
-    q = _unit((0, 1.0))
-    _index_user_and_text(q)
+def test_search_none_when_query_embed_raises(archive_home) -> None:
+    emb = _seeded(archive_home)
 
-    def boom(text):
-        raise RuntimeError("embed exploded")
+    class _ExplodingEmbedder(_FixedEmbedder):
+        def embed_query(self, text):
+            raise RuntimeError("embed exploded")
 
-    monkeypatch.setattr(embed, "embed_query", boom)
-    assert vectors.search("hello") is None
+    assert vectors.search("hello", embedder=_ExplodingEmbedder(emb.vec)) is None
 
 
-# ── the successful in-process embed drain (embed backend faked) ───────────────
-def test_search_hydration_skips_row_without_candidate_sim(archive_home, monkeypatch) -> None:
-    import_cc_session(archive_home)
-    q = _unit((0, 1.0))
-    monkeypatch.setattr(embed, "embed_query", lambda text: q.tolist())
-    _index_user_and_text(q)
+def test_search_hydration_skips_row_without_candidate_sim(archive_home) -> None:
+    emb = _seeded(archive_home)
     # Inject an extra events_fts row for the user event under a content_type that
     # was never embedded (no vector → never a KNN candidate). Hydration selects by
     # event_id, not content_type, so the row surfaces but has no candidate
@@ -924,25 +1022,24 @@ def test_search_hydration_skips_row_without_candidate_sim(archive_home, monkeypa
         ), {"event_id": uid, "thread_id": tid, "event_type": "thread_meta",
             "content": "injected meta row", "content_type": "summary", "tool_name": None})
         s.commit()
-    hits = vectors.search("hello")
+    hits = vectors.search("hello", embedder=emb)
     assert hits is not None
     assert all(h["content_type"] != "summary" for h in hits)  # injected row skipped
 
 
-def test_index_events_local_full_drain(archive_home, monkeypatch) -> None:
+# ── the in-process embed drain (embedder injected) ────────────────────────────
+def test_index_events_local_full_drain(archive_home) -> None:
     import_cc_session(archive_home)  # 1 user + 1 assistant-text = 2 embeddable docs
-    monkeypatch.setattr(embed, "is_available", lambda: True)
-    monkeypatch.setattr(embed, "embed_documents", lambda docs: [_unit((0, 1.0)) for _ in docs])
-    assert vectors.index_events_local() == 2  # single end-of-loop flush drains both
+    emb = _FixedEmbedder(_unit((0, 1.0)).tolist())
+    assert vectors.index_events_local(embedder=emb) == 2  # one end-of-loop flush drains both
     assert vectors.get_status()["indexed"] == 2
-    assert vectors.index_events_local() == 0  # caught up → final flush no-op
+    assert vectors.index_events_local(embedder=emb) == 0  # caught up → final flush no-op
 
 
-def test_index_events_local_capped_newest_first(archive_home, monkeypatch) -> None:
+def test_index_events_local_capped_newest_first(archive_home) -> None:
     import_cc_session(archive_home)
-    monkeypatch.setattr(embed, "is_available", lambda: True)
-    monkeypatch.setattr(embed, "embed_documents", lambda docs: [_unit((0, 1.0)) for _ in docs])
-    assert vectors.index_events_local(max_events=1, newest_first=True) == 1
+    emb = _FixedEmbedder(_unit((0, 1.0)).tolist())
+    assert vectors.index_events_local(max_events=1, newest_first=True, embedder=emb) == 1
     assert vectors.get_status()["indexed"] == 1
 
 
@@ -974,16 +1071,3 @@ def test_load_matrix_returns_cached_on_hit(archive_home) -> None:
     first = vectors._load_matrix(("user",))
     second = vectors._load_matrix(("user",))  # unchanged token → cache hit
     assert second[0] is first[0]  # same cached ndarray object returned
-
-
-def test_embed_and_rerank_warm(monkeypatch) -> None:
-    for mod in (embed, rerank):
-        monkeypatch.setattr(mod, "is_available", lambda: False)
-        assert mod.warm() is False  # unavailable → loader untouched
-    for mod in (embed, rerank):
-        monkeypatch.setattr(mod, "is_available", lambda: True)
-        monkeypatch.setattr(mod.SLOT, "model", object())     # already loaded
-        assert mod.warm() is True
-        monkeypatch.setattr(mod.SLOT, "model", None)
-        monkeypatch.setattr(mod.SLOT, "load_failed", True)   # cached failure
-        assert mod.warm() is False

@@ -37,11 +37,16 @@ def _require_topic(session: Session, topic_id: str) -> Thread:
 
 def topic_get(topic_id: str, *, session: Optional[Session] = None) -> dict:
     """One topic with everything attached: metadata, links (both directions),
-    citation count, member threads, graph metadata, and community peers.
+    citation count, and member threads. Graph metadata and community peers are
+    filled in when the ``thread-librarian`` package (the analytics owner) is
+    installed; without it ``graph`` is None and ``peers`` is empty.
 
     Raises ``ValueError`` when the id isn't a topic (conversations have
     ``thread_read``)."""
-    from .graph import get_community_peers, get_topic_graph_meta
+    try:
+        from thread_librarian.graph import get_community_peers, get_topic_graph_meta
+    except ImportError:
+        get_community_peers = get_topic_graph_meta = None  # type: ignore[assignment]
 
     with use_session(session) as s:
         t = _require_topic(s, topic_id)
@@ -98,8 +103,8 @@ def topic_get(topic_id: str, *, session: Optional[Session] = None) -> dict:
             "member_threads": member_threads,
         }
     detail["links"] = links
-    detail["graph"] = get_topic_graph_meta(topic_id)
-    detail["peers"] = get_community_peers(topic_id, limit=8)
+    detail["graph"] = get_topic_graph_meta(topic_id) if get_topic_graph_meta else None
+    detail["peers"] = get_community_peers(topic_id, limit=8) if get_community_peers else []
     return detail
 
 

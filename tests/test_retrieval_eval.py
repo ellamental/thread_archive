@@ -171,67 +171,74 @@ def test_behavior_reads_without_search_are_ignored():
 
 # ── evaluate: multi-gold, session-skip scoring ───────────────────────────────
 
-def _fake_hits(*thread_ids):
-    return [{"thread_id": t} for t in thread_ids]
+def _ranker(*thread_ids):
+    """A search function that returns this ranking for any query — the harness scores
+    whatever ranker it is handed, so a scripted one exercises the scoring loop."""
+    def search(query, **kw):
+        return [{"thread_id": t} for t in thread_ids]
+    return search
 
 
-def test_evaluate_rank_is_first_gold_hit(monkeypatch):
-    monkeypatch.setattr(retrieval_eval.api, "search",
-                        lambda q, **kw: _fake_hits(9, 5, 3))
+def test_evaluate_rank_is_first_gold_hit():
     report = retrieval_eval.evaluate(
         [{"query": "q", "gold": [3, 5], "sessions": []}],
-        limit=20, rerank=False, content_type=None, exclude_content_types=None)
+        limit=20, rerank=False, content_type=None, exclude_content_types=None,
+        search=_ranker(9, 5, 3))
     assert report["mrr"] == 0.5  # first gold (5) at rank 2
     assert report["recall"][1] == 0.0
     assert report["recall"][5] == 1.0
 
 
-def test_evaluate_skips_originating_session_hits(monkeypatch):
+def test_evaluate_skips_originating_session_hits():
     # The session that issued the query quotes it verbatim and would
     # otherwise outrank the real gold.
-    monkeypatch.setattr(retrieval_eval.api, "search",
-                        lambda q, **kw: _fake_hits(42, 5))
     report = retrieval_eval.evaluate(
         [{"query": "q", "gold": [5], "sessions": [42]}],
-        limit=20, rerank=False, content_type=None, exclude_content_types=None)
+        limit=20, rerank=False, content_type=None, exclude_content_types=None,
+        search=_ranker(42, 5))
     assert report["mrr"] == 1.0
 
 
-def test_evaluate_miss_scores_zero(monkeypatch):
-    monkeypatch.setattr(retrieval_eval.api, "search",
-                        lambda q, **kw: _fake_hits(1, 2, 3))
+def test_evaluate_miss_scores_zero():
     report = retrieval_eval.evaluate(
         [{"query": "q", "gold": [99], "sessions": []}],
-        limit=20, rerank=False, content_type=None, exclude_content_types=None)
+        limit=20, rerank=False, content_type=None, exclude_content_types=None,
+        search=_ranker(1, 2, 3))
     assert report["mrr"] == 0.0
     assert all(v == 0.0 for v in report["recall"].values())
 
 
-def test_evaluate_respects_limit_after_skips(monkeypatch):
+def test_evaluate_respects_limit_after_skips():
     # Gold sits just past the limit once the session hit is skipped: no credit.
-    monkeypatch.setattr(retrieval_eval.api, "search",
-                        lambda q, **kw: _fake_hits(42, 1, 2, 99))
     report = retrieval_eval.evaluate(
         [{"query": "q", "gold": [99], "sessions": [42]}],
-        limit=2, rerank=False, content_type=None, exclude_content_types=None)
+        limit=2, rerank=False, content_type=None, exclude_content_types=None,
+        search=_ranker(42, 1, 2, 99))
     assert report["mrr"] == 0.0
 
 
-def test_evaluate_passes_scope_exclusions_through(monkeypatch):
+def test_evaluate_passes_scope_exclusions_through():
     seen = {}
 
-    def spy(q, **kw):
+    def recording_search(query, **kw):
         seen.update(kw)
         return []
 
-    monkeypatch.setattr(retrieval_eval.api, "search", spy)
     retrieval_eval.evaluate(
         [{"query": "q", "gold": [1], "sessions": []}],
         limit=5, rerank=False, content_type=None,
-        exclude_content_types=retrieval_eval.EXCLUDE_META)
+        exclude_content_types=retrieval_eval.EXCLUDE_META, search=recording_search)
     assert seen["exclude_content_types"] == retrieval_eval.EXCLUDE_META
 
     retrieval_eval.evaluate(
         [{"query": "q", "gold": [1], "sessions": []}],
-        limit=5, rerank=False, content_type=None, exclude_content_types=None)
+        limit=5, rerank=False, content_type=None, exclude_content_types=None,
+        search=recording_search)
     assert seen["exclude_content_types"] is None
+
+
+def test_evaluate_defaults_to_the_archives_own_search():
+    """No ``search`` given means the harness measures the shipped pipeline."""
+    report = retrieval_eval.evaluate(
+        [], limit=5, rerank=False, content_type=None, exclude_content_types=None)
+    assert report["n"] == 0

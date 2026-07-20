@@ -4,6 +4,7 @@ repos, with the mutating steps (pip, smoke, restarts) stubbed."""
 
 from __future__ import annotations
 
+import json
 import subprocess
 import time
 from pathlib import Path
@@ -272,27 +273,34 @@ def test_check_due_reads_health_stamp(monkeypatch) -> None:
     assert not check_due()
 
 
-def test_maybe_spawn_respects_config_and_install(monkeypatch, tmp_path) -> None:
+def test_maybe_spawn_respects_config_and_install(archive_home, monkeypatch, tmp_path) -> None:
+    from thread_archive._ops.health import clear_health, record_health
+
     spawned: list[list[str]] = []
     monkeypatch.setattr(_update.subprocess, "Popen",
                         lambda cmd, **kw: spawned.append(cmd))
 
+    def set_update_config(**cfg) -> None:
+        """The operator's switch: ``update`` in the home's own config.json."""
+        (archive_home / "config.json").write_text(
+            json.dumps({"update": cfg}), encoding="utf-8")
+
     # Disabled → no spawn, whatever else holds.
-    monkeypatch.setattr(_update, "update_config", lambda home=None: {"enabled": False})
+    set_update_config(enabled=False)
+    clear_health(_update.HEALTH_KEY)  # due, so only the switch can be stopping it
     assert not maybe_spawn_self_update()
 
     # Enabled but not a clone install → no spawn.
-    monkeypatch.setattr(_update, "update_config", lambda home=None: {})
+    set_update_config(enabled=True)
     monkeypatch.setattr(_update, "install_repo", lambda: None)
     assert not maybe_spawn_self_update()
 
     # Enabled, clone, due → spawn (detached invocation of the console script).
     monkeypatch.setattr(_update, "install_repo", lambda: tmp_path)
-    monkeypatch.setattr(_update, "check_due", lambda home=None: True)
     assert maybe_spawn_self_update()
     assert spawned and spawned[0][1] == "self-update"
 
-    # Not due → no second spawn.
-    monkeypatch.setattr(_update, "check_due", lambda home=None: False)
+    # Not due (a check was just stamped) → no second spawn.
+    record_health(_update.HEALTH_KEY, {"ok": True, "action": "up-to-date"})
     assert not maybe_spawn_self_update()
     assert len(spawned) == 1

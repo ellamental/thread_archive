@@ -118,7 +118,7 @@ describe('AllThreadsView', () => {
     expect(seen.some((u) => u.startsWith('/api/threads'))).toBe(false)
   })
 
-  it('routes topic rows to the topic page and the rest to the reader', async () => {
+  it('routes every row to the reader', async () => {
     mswJson('/api/thread-types', { types: TYPES })
     stubThreads([
       thread({ id: '5', title: 'a session' }),
@@ -127,7 +127,7 @@ describe('AllThreadsView', () => {
     renderThreads()
     const session = await screen.findByText('a session')
     expect(session.closest('a')).toHaveAttribute('href', '/archive/5')
-    expect(screen.getByText('a topic').closest('a')).toHaveAttribute('href', '/topic/9')
+    expect(screen.getByText('a topic').closest('a')).toHaveAttribute('href', '/archive/9')
   })
 
   it('sends the title filter as q', async () => {

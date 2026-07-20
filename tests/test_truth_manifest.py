@@ -23,7 +23,7 @@ def test_manifest_corruption_infers_shard_depth_from_layout(
     import_cc_session(tmp_path, "b")
     d = archive_home / "truth"
 
-    monkeypatch.setattr(jsonl_log.layout, "FLAT_MAX", 1)  # force a rebalance at 2 threads
+    monkeypatch.setenv("THREAD_ARCHIVE_SHARDFLAT_MAX", "1")  # force a rebalance at 2 threads
     jsonl_log.checkpoint(snapshots=False)
     assert jsonl_log._shard_depth(d) >= 1
     depth = jsonl_log._shard_depth(d)

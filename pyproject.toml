@@ -27,16 +27,14 @@ classifiers = [
 ]
 
 # One storage/runtime path: JSONL + SQLite. No server backends behind extras.
-# (Non-Negotiable #1.) numpy/networkx are for the optional vector + knowledge
-# layers but are light enough to keep in the base; embeddings (torch) is the
-# only genuinely heavy, genuinely optional piece.
+# (Non-Negotiable #1.) numpy is for the optional vector layer but light enough
+# to keep in the base; embeddings (torch) is the only genuinely heavy,
+# genuinely optional piece. The graph stack (networkx/scipy/leidenalg/igraph)
+# is thread-librarian's — the archive keeps only the knowledge layer's data
+# plane and needs no graph library for it.
 dependencies = [
     "sqlalchemy>=2.0",
     "numpy>=1.26",
-    "networkx>=3.2",
-    "scipy>=1.11",  # networkx pagerank backend (the corpus graph)
-    "leidenalg>=0.10",  # Leiden community detection (well-connected communities)
-    "python-igraph>=0.11",  # leidenalg's graph backend
     "mcp>=1.0",
     "cryptography>=42",  # AES-GCM for redaction's recovery bundles (_ops/redact.py)
 ]
@@ -131,7 +129,7 @@ ignore = ["E501"]
 # list; never grow it.
 [tool.mypy]
 files = ["src/thread_archive"]
-ignore_missing_imports = true  # leidenalg / igraph / mcp ship no stubs
+ignore_missing_imports = true  # mcp (and the optional thread_librarian) ship no stubs
 
 [[tool.mypy.overrides]]
 module = [

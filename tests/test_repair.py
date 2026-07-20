@@ -1,10 +1,11 @@
 """``archive fix-import``: the scaffold, the activation gate, pinning,
-retirement, the ledger-driven re-import, and the repair-agent spawn.
+retirement, and the ledger-driven re-import.
 
-The design under test: the scaffold decides where everything lands (a thin
-model only fills in parse logic), activation is deterministic (tests green →
-enabled → re-import; nothing the agent claims matters), and patches are
-temporary by default (retired by the next core release) unless pinned.
+The design under test: the scaffold decides where everything lands (whoever
+writes the fix only fills in parse logic), activation is deterministic (tests
+green → enabled → re-import; nothing anyone claims about the fix matters), and
+patches are temporary by default (retired by the next core release) unless
+pinned.
 """
 
 from __future__ import annotations
@@ -365,102 +366,16 @@ def test_reimport_skips_snapshot_copies_whose_originals_live(archive_home, tmp_p
     assert summary["snapshot_replayed"] == 0  # the live poll owns it
 
 
-# ── the spawn ────────────────────────────────────────────────────────────────
+# ── the protocol ─────────────────────────────────────────────────────────────
 
 
-class _FakeProc:
-    def __init__(self, argv, on_wait=None, **kwargs):
-        self.argv = argv
-        self.kwargs = kwargs
-        self.pid = 4242
-        self.returncode = 0
-        self._on_wait = on_wait
-
-    def wait(self, timeout=None):
-        if self._on_wait:
-            self._on_wait()
-        return 0
-
-
-class _SpawnRecorder:
-    """Captures every Popen the repair driver makes; ``on_wait`` simulates what
-    the agent did before exiting (e.g. activating the patch)."""
-
-    def __init__(self) -> None:
-        self.calls: list[_FakeProc] = []
-        self.on_wait = None
-
-    def __call__(self, argv, **kwargs):
-        proc = _FakeProc(argv, on_wait=self.on_wait, **kwargs)
-        self.calls.append(proc)
-        return proc
-
-    def __len__(self) -> int:
-        return len(self.calls)
-
-
-@pytest.fixture()
-def spawned(monkeypatch):
-    recorder = _SpawnRecorder()
-    monkeypatch.setattr(_repair.subprocess, "Popen", recorder)
-    return recorder
-
-
-def test_run_spawns_bounded_headless_claude(archive_home, spawned):
-    rc = _repair.run("codex", claude="/fake/claude")
-    assert rc == 1  # nothing activated the patch
-    (proc,) = spawned.calls
-    assert proc.argv[0] == "/fake/claude"
-    assert "--print" in proc.argv
-    # Scoped, not bypassed: edits auto-approve only inside the scaffold cwd,
-    # and the shell surface is exactly the protocol's commands.
-    assert proc.argv[proc.argv.index("--permission-mode") + 1] == "acceptEdits"
-    allowed = proc.argv[proc.argv.index("--allowedTools") + 1]
-    assert set(allowed.split(",")) == {
-        "Bash(python:*)", "Bash(python3:*)", "Bash(pytest:*)", "Bash(archive:*)",
-    }
-    # The venv's bin dir leads PATH so the allowlist's bare names resolve here.
-    import os
-    import sys
-    from pathlib import Path as _Path
-
-    spawn_path = proc.kwargs["env"]["PATH"]
-    assert spawn_path.split(os.pathsep)[0] == str(_Path(sys.executable).parent)
-    assert proc.argv[proc.argv.index("--model") + 1] == "opus"
-    assert proc.argv[proc.argv.index("--effort") + 1] == "xhigh"
-    assert "--strict-mcp-config" in proc.argv
-    mcp_path = proc.argv[proc.argv.index("--mcp-config") + 1]
-    assert json.loads(open(mcp_path).read()) == {"mcpServers": {}}  # no servers leak in
-    prompt = proc.argv[-1]
-    assert "codex" in prompt and "fix-import codex --activate" in prompt
-    assert "obfuscated" in prompt  # the fixture-privacy rule rides every run
-    assert proc.kwargs["cwd"] == str(plugin_dir("codex"))
-    assert proc.kwargs["start_new_session"] is True
-
-
-def test_run_reports_success_when_agent_activates(archive_home, spawned):
-    def _activate_behind_the_scenes():
-        cfg = load_config()
-        cfg["providers"]["codex"]["enabled"] = True
-        save_config(cfg)
-
-    spawned.on_wait = _activate_behind_the_scenes
-    assert _repair.run("codex", claude="/fake/claude") == 0
-
-
-def test_run_without_claude_leaves_scaffold_and_fails(archive_home, spawned, monkeypatch):
-    monkeypatch.setattr(_repair, "resolve_claude", lambda: None)
-    assert _repair.run("codex") == 1
-    assert not spawned  # no CLI → no spawn
-    assert plugin_dir("codex").exists()  # scaffold still ready for by-hand work
-
-
-def test_repair_settings_config_and_fallbacks(archive_home):
-    assert _repair.repair_settings() == ("opus", "xhigh")
-    save_config({"repair": {"model": "sonnet", "effort": None}})
-    assert _repair.repair_settings() == ("sonnet", "")  # explicit null omits the flag
-    save_config({"repair": {"model": 7, "effort": ["x"]}})
-    assert _repair.repair_settings() == ("opus", "xhigh")  # bad types fall back
+def test_scaffold_carries_the_repair_protocol(archive_home):
+    """The fix happens in the scaffold, so its instructions ship in it —
+    readable by the user or handed to whatever agent they point at it."""
+    target = scaffold("codex")
+    protocol = (target / "PROTOCOL.md").read_text()
+    assert "obfuscated" in protocol  # the fixture-privacy rule rides every scaffold
+    assert "archive fix-import codex --activate" in protocol
 
 
 # ── CLI dispatch ─────────────────────────────────────────────────────────────
@@ -471,10 +386,11 @@ def test_fix_import_cli_dispatches(monkeypatch, capsys):
 
     seen = {}
     monkeypatch.setattr(
-        _repair, "run", lambda p, h, timeout: seen.update(p=p, h=h, t=timeout) or 0
+        _repair, "scaffold", lambda p, h: seen.update(p=p, h=h) or plugin_dir(p, h)
     )
-    assert cli.main(["fix-import", "codex", "--home", "/h", "--timeout", "60"]) == 0
-    assert seen == {"p": "codex", "h": "/h", "t": 60}
+    assert cli.main(["fix-import", "codex", "--home", "/h"]) == 0
+    assert seen == {"p": "codex", "h": "/h"}
+    assert "PROTOCOL.md" in capsys.readouterr().out  # points at the next step
 
     monkeypatch.setattr(
         _repair, "activate",

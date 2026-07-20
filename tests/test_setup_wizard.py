@@ -2,26 +2,36 @@
 discover pass, consent → import wiring, and the non-TTY safety stance (no
 terminal + no --yes must never ingest as a side effect).
 
-Fakes stand in for provider watchers throughout — the suite must never scan
-or import this machine's real AI-tool stores — and the watcher/MCP offers are
-exercised through their skip paths or monkeypatches, never real launchctl
-installs or `claude mcp add` runs.
+Fakes stand in for provider watchers throughout — the suite must never scan or
+import this machine's real AI-tool stores — and the flow is handed a
+:class:`FakeMachine` through its ``machine`` seam, so no step can install a
+LaunchAgent or run `claude mcp add` on this box. ``$PATH`` is pinned per test
+(autouse) to an empty directory as a second wall: a client CLI the flow looks
+for by name cannot resolve to the operator's real one.
 """
 
 from __future__ import annotations
 
 import json
-import sys
 import time
+from typing import Optional
 
 import pytest
 
 from thread_archive import _config as config
-from thread_archive import _launchd
 from thread_archive._setup import clients, wizard
 from thread_archive._watcher import enabled_watchers, provider_watchers
 from thread_archive._watcher.base import SourceDiscovery, SourceWatcher, WatchResult
 from thread_archive._watcher.sources import ClaudeCodeWatcher, cursor_watcher, grok_watcher
+
+
+@pytest.fixture(autouse=True)
+def _no_real_client_cli(tmp_path, monkeypatch) -> None:
+    """``$PATH``, pinned to an empty directory: the MCP-wiring step finds no
+    client CLI to run rather than this machine's real one."""
+    empty = tmp_path / "empty-bin"
+    empty.mkdir()
+    monkeypatch.setenv("PATH", str(empty))
 
 # ── config.json ──────────────────────────────────────────────────────────────
 
@@ -115,6 +125,50 @@ def test_db_watcher_discover_size_no_count(tmp_path) -> None:
 # ── the wizard ───────────────────────────────────────────────────────────────
 
 
+class FakeMachine:
+    """The host the wizard is run against: what is already scheduled on it,
+    what this install has, and a record of everything setup asked it to
+    install. Hand-written stand-in for
+    :class:`~thread_archive._setup.machine.Machine`, passed through the flow's
+    ``machine`` parameter."""
+
+    def __init__(
+        self, *, macos: bool = True, watcher: bool = False, backup: bool = False,
+        curation: bool = False, backup_dest: Optional[str] = None,
+        curation_installed: bool = False, embeddings: bool = True,
+    ):
+        self.macos = macos
+        self._watcher, self._backup, self._curation = watcher, backup, curation
+        self._backup_dest = backup_dest
+        self._curation_installed = curation_installed
+        self._embeddings = embeddings
+        self.installed: list[tuple] = []
+
+    def watcher_running(self, home=None) -> bool:
+        return self._watcher
+
+    def backup_running(self, home=None) -> bool:
+        return self._backup
+
+    def backup_dest(self) -> Optional[str]:
+        return self._backup_dest
+
+    def curation_running(self, home=None) -> bool:
+        return self._curation
+
+    def curation_installed(self) -> bool:
+        return self._curation_installed
+
+    def embeddings_installed(self) -> bool:
+        return self._embeddings
+
+    def install_watcher(self, home=None) -> None:
+        self.installed.append(("watcher", home))
+
+    def install_backup(self, dest, home=None) -> None:
+        self.installed.append(("backup", dest, home))
+
+
 class FakeWatcher(SourceWatcher):
     def __init__(self, name: str, *, available: bool = True, items: int = 3, events: int = 5):
         self._name, self._available = name, available
@@ -144,30 +198,27 @@ def _args(*argv: str):
     return wizard.build_parser().parse_args(list(argv))
 
 
-def test_curation_offer_points_at_the_installed_package(archive_home, monkeypatch, capsys) -> None:
+def test_curation_offer_points_at_the_installed_package(archive_home, capsys) -> None:
     """The core schedules nothing: when the curation package is importable but
     its drains aren't scheduled, the step points at its installer and does no
     work itself (no launchctl, no config writes)."""
-    monkeypatch.setattr(wizard, "curation_running", lambda home=None: False)
-    monkeypatch.setattr(wizard, "curation_package_present", lambda: True)
-    out = wizard._offer_curation(_args("setup", "--yes"), interactive=False)
+    machine = FakeMachine(curation_installed=True)
+    out = wizard._offer_curation(_args("setup", "--yes"), False, machine)
     assert out == {"status": "plugin"}
     assert "thread-librarian daemon install" in capsys.readouterr().out
+    assert machine.installed == []
 
 
-def test_curation_offer_is_silent_without_the_package(archive_home, monkeypatch, capsys) -> None:
+def test_curation_offer_is_silent_without_the_package(archive_home, capsys) -> None:
     """No curation package on the machine → nothing installable to recommend,
     so the step says nothing at all."""
-    monkeypatch.setattr(wizard, "curation_running", lambda home=None: False)
-    monkeypatch.setattr(wizard, "curation_package_present", lambda: False)
-    out = wizard._offer_curation(_args("setup", "--yes"), interactive=False)
+    out = wizard._offer_curation(_args("setup", "--yes"), False, FakeMachine())
     assert out == {"status": "unavailable"}
     assert capsys.readouterr().out == ""
 
 
-def test_curation_offer_reports_already_scheduled(archive_home, monkeypatch, capsys) -> None:
-    monkeypatch.setattr(wizard, "curation_running", lambda home=None: True)
-    out = wizard._offer_curation(_args("setup", "--yes"), interactive=False)
+def test_curation_offer_reports_already_scheduled(archive_home, capsys) -> None:
+    out = wizard._offer_curation(_args("setup", "--yes"), False, FakeMachine(curation=True))
     assert out == {"status": "already-installed"}
     assert "already scheduled" in capsys.readouterr().out
 
@@ -243,11 +294,10 @@ def test_skip_import_keeps_sources_enabled(archive_home, capsys) -> None:
     assert "claude-code" not in cfg.get("sources", {})  # skipping import ≠ disabling
 
 
-def test_bare_rerun_lands_on_status(archive_home, monkeypatch, capsys) -> None:
-    monkeypatch.setattr(wizard, "watcher_running", lambda home=None: False)
-    monkeypatch.setattr(wizard, "backup_running", lambda home=None: False)
+def test_bare_rerun_lands_on_status(archive_home, capsys) -> None:
     wizard.run_setup(
-        _args("setup", "--yes", "--skip-import", "--skip-watcher", "--skip-backup", "--skip-mcp"), watchers=[]
+        _args("setup", "--yes", "--skip-import", "--skip-watcher", "--skip-backup", "--skip-mcp"),
+        watchers=[], machine=FakeMachine(),
     )
     capsys.readouterr()
     assert wizard.main([]) == 0
@@ -256,91 +306,82 @@ def test_bare_rerun_lands_on_status(archive_home, monkeypatch, capsys) -> None:
     assert "thread_archive setup" in out  # the re-entry hint
 
 
-def test_status_command(archive_home, monkeypatch, capsys) -> None:
-    monkeypatch.setattr(wizard, "watcher_running", lambda home=None: False)
-    monkeypatch.setattr(wizard, "backup_running", lambda home=None: False)
+def test_status_command(archive_home, capsys) -> None:
+    # A macOS host with nothing scheduled on it: the empty archive's counts plus
+    # the promoted call to action for each missing agent.
+    assert wizard.print_status(_args("status"), machine=FakeMachine()) == 0
+    out = capsys.readouterr().out
+    assert "0 conversations" in out and "all enabled" in out
+    assert "watcher:  not running" in out
+    assert "no nightly backup" in out  # the promoted CTA, not buried in passing
+
+
+def test_status_command_dispatches_from_main(archive_home, capsys) -> None:
+    # `thread_archive status` on this host, whatever kind it is: the flow builds
+    # its own Machine and the status view renders.
     assert wizard.main(["status"]) == 0
     out = capsys.readouterr().out
     assert "0 conversations" in out and "all enabled" in out
-    if sys.platform == "darwin":
-        assert "no nightly backup" in out  # the promoted CTA, not buried in passing
 
 
 # ── the nightly-backup offer ──────────────────────────────────────────────────
 #
-# Never a real launchctl install: install_backup is monkeypatched to record its
-# args, and _backup_running / sys.platform are forced so the flow is exercised on
-# any host (the offer is macOS-only in production).
-
-
-def _force_darwin(monkeypatch) -> None:
-    monkeypatch.setattr(wizard.sys, "platform", "darwin")
+# Never a real launchctl install: the offer is given a FakeMachine, which records
+# what setup asked it to install and answers the macOS gate, so the flow is
+# exercised on any host (the offer is macOS-only in production).
 
 
 def test_offer_backup_skipped_flag(archive_home) -> None:
-    out = wizard._offer_backup(_args("setup", "--skip-backup"), interactive=False)
+    machine = FakeMachine()
+    out = wizard._offer_backup(_args("setup", "--skip-backup"), False, machine)
     assert out == {"status": "skipped"}
+    assert machine.installed == []
 
 
-def test_offer_backup_installs_from_dest_flag(archive_home, monkeypatch, capsys) -> None:
-    _force_darwin(monkeypatch)
-    monkeypatch.setattr(wizard, "backup_running", lambda home=None: False)
-    recorded = {}
-    monkeypatch.setattr(
-        _launchd, "install_backup",
-        lambda dest, home=None, **kw: recorded.update(dest=dest, home=home),
-    )
+def test_offer_backup_installs_from_dest_flag(archive_home, capsys) -> None:
+    machine = FakeMachine()
     out = wizard._offer_backup(
-        _args("setup", "--yes", "--backup-dest", "/Volumes/Backup/arc"), interactive=False
+        _args("setup", "--yes", "--backup-dest", "/Volumes/Backup/arc"), False, machine
     )
     assert out == {"status": "launchd", "dest": "/Volumes/Backup/arc"}
-    assert recorded["dest"] == "/Volumes/Backup/arc"
+    assert machine.installed == [("backup", "/Volumes/Backup/arc", None)]
     assert "Scheduled" in capsys.readouterr().out
 
 
-def test_offer_backup_already_installed_is_left_alone(archive_home, monkeypatch, capsys) -> None:
+def test_offer_backup_already_installed_is_left_alone(archive_home, capsys) -> None:
     # The guard that stops a wizard re-run from clobbering an operator-installed
     # pipeline (e.g. the host/ NAS backup): a loaded agent → no install call.
-    _force_darwin(monkeypatch)
-    monkeypatch.setattr(wizard, "backup_running", lambda home=None: True)
-    monkeypatch.setattr(_launchd, "backup_agent_dest", lambda: "/Volumes/NAS/arc")
-    called = []
-    monkeypatch.setattr(
-        _launchd, "install_backup", lambda *a, **k: called.append(a)
-    )
-    out = wizard._offer_backup(_args("setup", "--yes"), interactive=False)
+    machine = FakeMachine(backup=True, backup_dest="/Volumes/NAS/arc")
+    out = wizard._offer_backup(_args("setup", "--yes"), False, machine)
     assert out == {"status": "already-installed", "dest": "/Volumes/NAS/arc"}
-    assert not called  # never re-installed over the existing agent
+    assert machine.installed == []  # never re-installed over the existing agent
     assert "already installed" in capsys.readouterr().out
 
 
-def test_offer_backup_yes_without_dest_skips(archive_home, monkeypatch) -> None:
+def test_offer_backup_yes_without_dest_skips(archive_home) -> None:
     # --yes has no destination to invent: it must skip, never install to a guess.
-    _force_darwin(monkeypatch)
-    monkeypatch.setattr(wizard, "backup_running", lambda home=None: False)
-    monkeypatch.setattr(
-        _launchd, "install_backup",
-        lambda *a, **k: pytest.fail("must not install without a dest"),
-    )
-    out = wizard._offer_backup(_args("setup", "--yes"), interactive=False)
+    machine = FakeMachine()
+    out = wizard._offer_backup(_args("setup", "--yes"), False, machine)
     assert out == {"status": "skipped"}
+    assert machine.installed == []
 
 
-def test_offer_backup_non_darwin_is_unavailable(archive_home, monkeypatch) -> None:
-    monkeypatch.setattr(wizard.sys, "platform", "linux")
-    out = wizard._offer_backup(_args("setup"), interactive=False)
+def test_offer_backup_non_darwin_is_unavailable(archive_home) -> None:
+    out = wizard._offer_backup(_args("setup"), False, FakeMachine(macos=False))
     assert out == {"status": "unavailable"}
 
 
-def test_setup_records_backup_outcome(archive_home, monkeypatch, capsys) -> None:
+def test_setup_records_backup_outcome(archive_home, capsys) -> None:
     # End to end through run_setup: the offer's verdict lands in config under
-    # setup.backup, the sibling of setup.watcher.
+    # setup.backup, the sibling of setup.watcher. Nothing to schedule to (no
+    # --backup-dest, nothing to prompt with) → the offer skips.
+    machine = FakeMachine()
     rc = wizard.run_setup(
         _args("setup", "--yes", "--skip-import", "--skip-watcher", "--skip-mcp"),
-        watchers=[],
-        offer_backup=lambda args, interactive: {"status": "skipped"},
+        watchers=[], machine=machine,
     )
     assert rc == 0
+    assert machine.installed == []
     cfg = json.loads((archive_home / "config.json").read_text())
     assert cfg["setup"]["backup"] == {"status": "skipped"}
 
@@ -357,10 +398,12 @@ def test_mcp_config_block_names_read_server_only() -> None:
     assert servers["thread-archive"]["command"].endswith("archive-mcp")
 
 
-def test_setup_prints_config_when_no_client_found(archive_home, monkeypatch, capsys) -> None:
-    monkeypatch.setattr(clients, "claude_cli", lambda: None)
+def test_setup_prints_config_when_no_client_found(archive_home, capsys) -> None:
+    # PATH holds no client CLI, so the MCP step has nothing to wire and must
+    # still leave the operator a config block they can paste anywhere.
     rc = wizard.run_setup(
-        _args("setup", "--yes", "--skip-import", "--skip-watcher", "--skip-backup"), watchers=[]
+        _args("setup", "--yes", "--skip-import", "--skip-watcher", "--skip-backup"),
+        watchers=[], machine=FakeMachine(),
     )
     assert rc == 0
     out = capsys.readouterr().out

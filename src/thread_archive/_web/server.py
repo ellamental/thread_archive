@@ -20,7 +20,7 @@ import time
 from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Optional
+from typing import TYPE_CHECKING, Optional
 from urllib.parse import parse_qs, unquote, urlparse
 
 from .. import _api as api
@@ -247,11 +247,14 @@ def _resolve_dup_threads(hits: "list[EventHit]") -> None:
 
 
 def _subjects_payload(hits: "list[EventHit]") -> list[dict]:
-    """The relevant-subjects lens over a result set (see
-    :mod:`.._retrieval.subjects`), JSON-shaped: the curated topics these hits
-    cluster under, each with how many result conversations it links. Empty when
-    the lens is disabled or the topic graph has nothing for these hits."""
-    from .._retrieval import subjects as _subjects
+    """The relevant-subjects lens over a result set, JSON-shaped: the curated
+    topics these hits cluster under, each with how many result conversations it
+    links. The lens belongs to the optional ``thread-librarian`` package; empty
+    when it isn't installed, is disabled, or has nothing for these hits."""
+    try:
+        from thread_librarian import subjects as _subjects
+    except ImportError:
+        return []
 
     if not hits or not _subjects.enabled():
         return []
@@ -367,7 +370,7 @@ def _list_sources() -> list[dict]:
 
 
 # Thread types the recent list hides when no explicit ``types`` filter is given:
-# topics have their own pages, and 'system' threads (Task-tool subagent runs —
+# topics are curated artifacts (the librarian's surface), and 'system' threads (Task-tool subagent runs —
 # see the claude-code importer) are machinery, not sessions someone opens by
 # recency. Both stay reachable through /api/threads?types=….
 _DEFAULT_HIDDEN_TYPES = ("topic", "system")
@@ -443,142 +446,6 @@ def _list_thread_types() -> list[dict]:
             .order_by(func.count().desc(), Thread.thread_type)
         ).all()
     return [{"thread_type": r[0], "threads": r[1]} for r in rows if r[0]]
-
-
-def _list_topics(*, limit: int, q: Optional[str]) -> dict:
-    """Live topics with their graph metadata, highest-pagerank first.
-
-    The whole live set is loaded before ranking — topics are curated, so the
-    population is inherently small, and ranking by pagerank *then* truncating is
-    what makes the limit meaningful (an updated_at-truncated fetch would drop
-    central topics). ``q`` filters on title/name substring."""
-    from sqlalchemy import func, select
-
-    from .._knowledge import get_status, get_topic_graph_metadata
-    from .._store import Thread, TopicMessage, get_session
-
-    api.open_archive()
-    stmt = (
-        select(Thread.id, Thread.title, Thread.name, Thread.topic_kind,
-               Thread.description, Thread.updated_at)
-        .where(Thread.thread_type == "topic")
-        .where(Thread.archived.is_(False))
-    )
-    if q:
-        like = f"%{q}%"
-        stmt = stmt.where(Thread.title.ilike(like) | Thread.name.ilike(like))
-    with get_session() as s:
-        rows = s.execute(stmt).all()
-        evidence_counts: dict[str, int] = dict(
-            s.execute(
-                select(TopicMessage.topic_id, func.count())
-                .where(TopicMessage.archived_at.is_(None))
-                .group_by(TopicMessage.topic_id)
-            ).tuples().all()
-        )
-    meta = get_topic_graph_metadata([r.id for r in rows])
-    topics = [
-        {
-            "id": r.id,
-            "title": r.title or r.name,
-            "topic_kind": r.topic_kind,
-            "description": r.description,
-            "evidence_count": evidence_counts.get(r.id, 0),
-            "link_count": (meta.get(r.id) or {}).get("link_count", 0),
-            "community": (meta.get(r.id) or {}).get("community"),
-            "pagerank": (meta.get(r.id) or {}).get("pagerank", 0.0),
-            "updated_at": r.updated_at.isoformat() if r.updated_at else None,
-        }
-        for r in rows
-    ]
-    topics.sort(key=lambda t: (-t["pagerank"], t["id"]))
-    return {"topics": topics[:limit], "graph": get_status()}
-
-
-
-
-def _topic_tree() -> dict:
-    """The derived topic hierarchy (see :func:`thread_archive._knowledge.topic_tree`)."""
-    from .._knowledge import topic_tree
-
-    api.open_archive()
-    return topic_tree()
-
-
-def _topic_detail(topic_id: str, *, evidence_limit: int) -> Optional[dict]:
-    """One topic with its links, citations, and community peers — the reader's
-    whole page in one response. ``None`` when the id isn't a topic (conversations
-    have their own reader). Archived topics still render (a merged-away topic
-    stays referenced from kg history); they just carry no graph metadata."""
-    from sqlalchemy import select
-
-    from .._knowledge import get_community_peers, get_topic_graph_meta
-    from .._store import Thread, ThreadLink, TopicMessage, get_session
-
-    api.open_archive()
-    with get_session() as s:
-        t = s.get(Thread, topic_id)
-        if t is None or t.thread_type != "topic":
-            return None
-        links: list[dict] = []
-        other = Thread.__table__.alias("other")
-        for direction, own_col, other_col in (
-            ("out", ThreadLink.source_thread_id, ThreadLink.target_thread_id),
-            ("in", ThreadLink.target_thread_id, ThreadLink.source_thread_id),
-        ):
-            rows = s.execute(
-                select(ThreadLink.link_type, ThreadLink.strength, ThreadLink.evidence,
-                       other.c.id, other.c.title, other.c.name, other.c.thread_type)
-                .join(other, other.c.id == other_col)
-                .where(own_col == topic_id)
-                .order_by(ThreadLink.strength.desc(), other.c.id)
-            ).all()
-            links.extend(
-                {
-                    "direction": direction,
-                    "other_id": r.id,
-                    "other_title": r.title or r.name,
-                    "other_type": r.thread_type,
-                    "link_type": r.link_type,
-                    "strength": r.strength,
-                    "evidence": r.evidence,
-                }
-                for r in rows
-            )
-        cited = Thread.__table__.alias("cited")
-        evidence = [
-            {
-                "event_id": r.event_id,
-                "thread_id": r.thread_id,
-                "thread_title": r.title or r.name,
-                "quote": r.quote,
-                "created_at": r.created_at,
-            }
-            for r in s.execute(
-                select(TopicMessage.event_id, TopicMessage.thread_id, TopicMessage.quote,
-                       TopicMessage.created_at, cited.c.title, cited.c.name)
-                .join(cited, cited.c.id == TopicMessage.thread_id)
-                .where(TopicMessage.topic_id == topic_id)
-                .where(TopicMessage.archived_at.is_(None))
-                .order_by(TopicMessage.event_id)
-                .limit(evidence_limit)
-            ).all()
-        ]
-        detail: dict[str, Any] = {
-            "id": t.id,
-            "title": t.title or t.name,
-            "topic_kind": t.topic_kind,
-            "description": t.description,
-            "summary": t.summary,
-            "archived": bool(t.archived),
-            "created_at": t.inserted_at,
-            "updated_at": t.updated_at,
-        }
-    detail["graph"] = get_topic_graph_meta(topic_id)
-    detail["links"] = links
-    detail["evidence"] = evidence
-    detail["peers"] = get_community_peers(topic_id, limit=8)
-    return detail
 
 
 def resolve_archive_link(link_id: str, source: Optional[str] = None) -> Optional[str]:
@@ -768,25 +635,6 @@ def route(method: str, path: str, params: dict) -> Response:
 
     if path == "/api/thread-types":
         return _ok({"types": _list_thread_types()})
-
-    if path == "/api/topics/tree":
-        return _ok(_topic_tree())
-
-    if path == "/api/topics":
-        return _ok(_list_topics(limit=_int(params, "limit", 200), q=_first(params, "q")))
-
-    if path.startswith("/api/topic/"):
-        # Same ref shapes as /api/thread/ — a topic is a thread row, so its ULID
-        # and legacy integer alias resolve the same way.
-        ref = unquote(path.rsplit("/", 1)[-1])
-        tid = resolve_archive_link(ref)
-        detail = (
-            _topic_detail(tid, evidence_limit=_int(params, "evidence_limit", 200))
-            if tid is not None else None
-        )
-        if detail is None:
-            return 404, "application/json", json.dumps({"error": f"no topic with id {ref}"}).encode(), {}
-        return _ok(detail)
 
     # unmatched API path — don't fall through to the SPA shell
     if path.startswith("/api/"):

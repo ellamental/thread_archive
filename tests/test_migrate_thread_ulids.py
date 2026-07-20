@@ -13,8 +13,8 @@ torn truth lines, threads the index never knew, and sharded output depth.
 from __future__ import annotations
 
 import json
-import runpy
 import sqlite3
+import subprocess
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -155,9 +155,8 @@ def make_legacy_home(home: Path, *, with_unindexed: bool = True, with_kg: bool =
         ])
 
 
-def _run_main(home: Path, monkeypatch, *extra: str) -> int:
-    monkeypatch.setattr(sys, "argv", ["migrate_thread_ulids", "--home", str(home), *extra])
-    return main()
+def _run_main(home: Path, *extra: str) -> int:
+    return main(["--home", str(home), *extra])
 
 
 def _load_mapping(home: Path) -> dict[str, str]:
@@ -216,7 +215,7 @@ def test_dry_run_builds_but_never_swaps(archive_home, monkeypatch, capsys) -> No
     truth = archive_home / "truth"
     before = (truth / "threads" / "1.jsonl").read_text()
 
-    assert _run_main(archive_home, monkeypatch, "--dry-run") == 0
+    assert _run_main(archive_home, "--dry-run") == 0
     out = capsys.readouterr()
     assert "dry run" in out.out
     assert "minted" not in out.out          # every truth thread was indexed
@@ -240,7 +239,7 @@ def migrated(archive_home, monkeypatch, capsys):
     junk = archive_home / "truth" / "threads.new" / "leftover.jsonl"
     junk.parent.mkdir(parents=True)
     junk.write_text("{}\n")
-    assert _run_main(archive_home, monkeypatch) == 0
+    assert _run_main(archive_home) == 0
     return archive_home, _load_mapping(archive_home), capsys.readouterr()
 
 
@@ -344,31 +343,33 @@ def test_migration_then_reindex_leaves_search_working(migrated) -> None:
 def test_second_run_refuses_already_migrated(migrated, monkeypatch, capsys) -> None:
     home, _, _ = migrated
     tree_before = sorted(p.relative_to(home) for p in home.rglob("*"))
-    assert _run_main(home, monkeypatch) == 0
+    assert _run_main(home) == 0
     assert "already at truth format v2" in capsys.readouterr().out
     assert sorted(p.relative_to(home) for p in home.rglob("*")) == tree_before
 
 
-def test_module_entrypoint_runs_main(archive_home, monkeypatch, capsys) -> None:
+def test_module_entrypoint_runs_main(archive_home) -> None:
+    """``python -m thread_archive._scripts.migrate_thread_ulids`` is the way an
+    operator runs this — a real child process, parsing its own argv and exiting
+    with main()'s return code."""
     (archive_home / "truth").mkdir(parents=True)
     (archive_home / "truth" / "manifest.json").write_text(json.dumps({"version": 2}))
-    monkeypatch.setattr(sys, "argv", ["migrate_thread_ulids", "--home", str(archive_home)])
-    # drop the imported module so runpy executes a fresh copy without warning
-    monkeypatch.delitem(sys.modules, "thread_archive._scripts.migrate_thread_ulids")
-    with pytest.raises(SystemExit) as exc:
-        runpy.run_module("thread_archive._scripts.migrate_thread_ulids", run_name="__main__")
-    assert exc.value.code == 0
-    assert "already at truth format v2" in capsys.readouterr().out
+    proc = subprocess.run(
+        [sys.executable, "-m", "thread_archive._scripts.migrate_thread_ulids",
+         "--home", str(archive_home)],
+        capture_output=True, text=True,
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert "already at truth format v2" in proc.stdout
 
 
 def test_migration_shards_when_over_flat_max(archive_home, monkeypatch) -> None:
     import hashlib
 
-    from thread_archive._truth import layout
 
     make_legacy_home(archive_home, with_unindexed=False, with_kg=False)
-    monkeypatch.setattr(layout, "FLAT_MAX", 1)  # force a sharded (depth-1) layout
-    assert _run_main(archive_home, monkeypatch) == 0
+    monkeypatch.setenv("THREAD_ARCHIVE_SHARDFLAT_MAX", "1")  # force a sharded (depth-1) layout
+    assert _run_main(archive_home) == 0
     mapping = _load_mapping(archive_home)
     manifest = json.loads((archive_home / "truth" / "manifest.json").read_text())
     assert manifest["shard_depth"] == 1

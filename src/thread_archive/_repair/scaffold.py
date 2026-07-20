@@ -1,27 +1,28 @@
 """The fix-import scaffold: everything around the fix, pre-generated.
 
-"Lands in the right places" is a property of the scaffold, not the model. The
-scaffold decides where every artifact goes — the override module, its tests,
-the fixtures dir, the patch descriptor, the config.json registration — so the
-repair agent's entire job is parse logic inside one pre-wired file, exercised
-by tests it did not write and cannot relocate. A thin model that fills in the
-blank correctly produces a correct patch; a thin model that fills it in badly
-produces a red test run, which activation refuses.
+"Lands in the right places" is a property of the scaffold, not of whoever
+writes the fix. The scaffold decides where every artifact goes — the override
+module, its tests, the fixtures dir, the patch descriptor, the config.json
+registration — so the whole remaining job is parse logic inside one pre-wired
+file, exercised by tests the fixer did not write and cannot relocate. Filling
+that blank in correctly produces a correct patch; filling it in badly produces
+a red test run, which activation refuses.
 
 Layout under ``<home>/plugins/<provider>/``::
 
     patch_<provider>.py   the override module (generated once, never clobbered)
     test_patch.py         the verification harness (generated once)
     conftest.py           enables thread_archive.provider.testing
-    fixtures/             agent-derived minimal fixtures (empty at scaffold)
+    fixtures/             minimal fixtures derived from samples (empty at scaffold)
     samples/              real drifted source files, collected from the ledgers
     evidence.md           what broke, per the ledgers/coverage (refreshed)
     quirks.md             per-provider format knowledge (refreshed from package)
+    PROTOCOL.md           how to work the fix (refreshed from package)
     patch.json            the patch descriptor (mirrors config.json's entry)
 
 The fix module and tests are generated only when absent — re-running
-``archive fix-import`` refreshes evidence, samples, and quirks around an
-in-progress fix without discarding it. Everything the scaffold writes stays
+``archive fix-import`` refreshes evidence, samples, quirks, and the protocol
+around an in-progress fix without discarding it. Everything the scaffold writes stays
 outside the archive's git clone: the self-updater's clean-tree requirement is
 untouched by any number of patches.
 """
@@ -434,6 +435,25 @@ def _write_evidence(provider, target_dir: Path, home: Optional[str], samples: di
     (target_dir / "evidence.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
+PROTOCOL_FILE = "protocol.md"
+
+
+def _write_protocol(provider_name: str, target_dir: Path) -> None:
+    """Drop the repair protocol into the scaffold: the fix happens here, so the
+    instructions for working it live here too — readable by the user or handed
+    to whatever agent they point at the directory."""
+    from importlib import resources
+
+    base = (resources.files(__package__) / PROTOCOL_FILE).read_text(encoding="utf-8")
+    (target_dir / "PROTOCOL.md").write_text(
+        f"{base.rstrip()}\n\n## This scaffold\n\n"
+        f"- provider: `{provider_name}`\n"
+        f"- exit bar: `python -m pytest . -q` green, then "
+        f"`archive fix-import {provider_name} --activate` succeeding\n",
+        encoding="utf-8",
+    )
+
+
 def _write_quirks(provider, target_dir: Path) -> None:
     from importlib import resources
 
@@ -455,7 +475,7 @@ def _write_quirks(provider, target_dir: Path) -> None:
 def scaffold(provider_name: str, home: Optional[str] = None) -> Path:
     """Generate (or refresh) the patch scaffold for ``provider_name``; returns
     the plugin directory. Fix-in-progress files are never clobbered — only
-    evidence, samples, and quirks refresh. Registers the patch in config.json
+    evidence, samples, quirks, and the protocol refresh. Registers the patch in config.json
     ``providers`` (disabled; activation is the deterministic enable gate)."""
     from .._api import open_archive
     from .._providers import get as get_provider
@@ -491,6 +511,7 @@ def scaffold(provider_name: str, home: Optional[str] = None) -> Path:
     samples = _collect_samples(provider, target / "samples", home)
     _write_evidence(provider, target, home, samples)
     _write_quirks(provider, target)
+    _write_protocol(provider_name, target)
 
     now = datetime.now(timezone.utc).isoformat()
     cfg = load_config(home)

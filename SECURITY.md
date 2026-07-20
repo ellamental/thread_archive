@@ -27,14 +27,14 @@ threat model is correspondingly narrow, and these are its load-bearing walls:
   came from models, tools, and web content. An agent consuming
   `thread_search` output should treat it like any other retrieved document:
   data, not instructions. The archive never executes archived content itself.
-- **`archive fix-import` spawns a coding agent on your machine.** The spawn is
-  permission-scoped, not sandboxed: file edits auto-approve only inside the
-  patch scaffold, its shell allowlist is the repair protocol's commands
-  (`python`/`pytest`/`archive`), and no MCP servers are injected — but running
-  the scaffold's tests is still running code, and the samples it reads are
-  transcript data. A patch can only go live through the deterministic
-  activation gate (its test suite passing in a fresh subprocess). Don't run
-  `fix-import` if you don't want an agent executing in that scope.
+- **`archive fix-import` collects your transcripts into a scaffold.** It copies
+  real drifted source files into `<home>/plugins/<provider>/samples/` so the
+  fix can be diagnosed against them — private conversation content, sitting in
+  a directory you will likely point an agent at. Archive itself runs no agent
+  and executes nothing from those samples; `--activate` runs the scaffold's own
+  test suite in a fresh subprocess, which is the only path a patch has to going
+  live. If you hand the scaffold to an agent, the samples are untrusted input
+  to it, and its blast radius is whatever scope you grant it.
 - **Redaction is crypto-shredding.** `archive redact` re-encrypts content
   under a fresh per-redaction AES-256-GCM key in `<home>/keyring.json`;
   destroy the key (or escrow it off-machine) for erasure. The provider's own

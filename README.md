@@ -40,7 +40,11 @@ numbers here mean the stack reliably re-finds what real searches actually
 delivered; they cannot certify there was nothing better to find. Semantic fusion is the layer that pays — +10 points of recall@10
 over the lexical core at no latency cost. The cross-encoder adds about two
 more for 5× the latency, which is why the pipeline auto-gates it to
-conceptual queries instead of running it everywhere. Curated thread summaries move
+conceptual queries instead of running it everywhere. Both model arms have an
+off switch — `THREAD_ARCHIVE_EMBED=off` and `THREAD_ARCHIVE_RERANK=off` pin a
+process to the lexical core without uninstalling the extra, for a box that
+wants search cheap and free of the cold-start model load (`retrieval_eval.py
+--lexical-only` measures that configuration). Curated thread summaries move
 these numbers by less than a point — whatever their value for browsing and
 curation, ranked search does not measurably ride on them. (An earlier
 title-as-query eval said otherwise on every count; its queries were LLM
@@ -60,23 +64,20 @@ real moves. And `scripts/retrieval_judge.py` runs a sample of the mined
 queries through the production stack and has a headless `claude` grade every
 top-10 thread, yielding graded precision, a calibration of the click labels
 themselves, and explicit credit for relevant results the click protocol can
-only score as misses. The knowledge graph gets its own usage meter:
-`scripts/topic_eval.py` measures **subject uptake** — the graph's delivery
-path into work is the relevant-subjects lens on every search result, so the
-metric is how often a topic read follows a search — split by searcher
-(working sessions vs. curation machinery), alongside a curation-ergonomics
-check of the curator's dedup topic search. A lens nobody pivots through
-is a terrarium, however well curated; uptake is the number that says which
-it is.
+only score as misses. The knowledge graph gets its own usage meter in
+[thread-librarian](../librarian) (`scripts/topic_eval.py` there): **subject
+uptake** — how often a topic read follows a search. A lens nobody pivots
+through is a terrarium, however well curated; uptake is the number that says
+which it is.
 
 **Built like a database, not a folder of exports.**
 - Plain JSONL files are the source of truth — human-readable, greppable, yours. The search index is disposable and rebuilds from them at any time.
 - Crash-safe writes with intent journaling, fsync discipline, and automatic recovery. Your history survives power loss, killed processes, and corrupted indexes.
 - Built-in backup, integrity verification, and restore drills: recovers from corruption or an errant delete, and the nightly pipeline checks that the backup actually restores. The archive is ordinary files on disk — whatever backs up the rest of your data covers it the same way.
 
-**Fixes itself where it broke.** A provider's transcript format drifts on the provider's schedule, not a maintainer's. Archive makes that drift loud and locally repairable: drift ledgers and a nightly coverage check catch the degradation, the raw source files are quarantined before the provider prunes them, the in-session search notice names the remedy, and `archive fix-import <provider>` scaffolds an override patch and spawns a permission-scoped headless Claude Code agent to write the fix on the machine that has the samples — the patch goes live only when its scaffolded test suite passes in a fresh subprocess, then re-import recovers everything consumed during the gap. The supported provider's worst case is *preserved but partially modeled until fixed* — and the fix doesn't wait on a release.
+**Fixes itself where it broke.** A provider's transcript format drifts on the provider's schedule, not a maintainer's. Archive makes that drift loud and locally repairable: drift ledgers and a nightly coverage check catch the degradation, the raw source files are quarantined before the provider prunes them, the in-session search notice names the remedy, and `archive fix-import <provider>` scaffolds an override patch — module, tests, evidence, real samples, and the repair protocol — so the fix gets written on the machine that has the samples, by you or by an agent you hand the scaffold to. The patch goes live only when its scaffolded test suite passes in a fresh subprocess, then re-import recovers everything consumed during the gap. The supported provider's worst case is *preserved but partially modeled until fixed* — and the fix doesn't wait on a release.
 
-**A memory an agent can organize.** The archive carries an event-sourced topic graph a curating agent can build over it — creating topics, pinning key quotes, linking related threads, tending the hierarchy. Every curation act lands in the archive's truth log, so you can always see who connected what, and why. The archive owns the data plane *and* the graph analytics over it (PageRank, Leiden communities, bridges — a pure projection over its own tables); without a curator the graph simply stays empty, and nothing else depends on it.
+**A memory an agent can organize.** The archive carries the *data plane* of an event-sourced topic graph a curating agent can build over it — creating topics, pinning key quotes, linking related threads, tending the hierarchy. Every curation act lands in the archive's truth log, so you can always see who connected what, and why. The curation agents, the graph analytics (PageRank, Leiden communities, bridges), and the topic surfaces live in the separate [thread-librarian](../librarian) package; without it the graph simply stays empty, and nothing else depends on it.
 
 **No server. No cloud. No subscription to lose your history to.** A background watcher keeps it current; everything runs locally.
 
@@ -208,7 +209,7 @@ src/thread_archive/
   _ops/             # backup kit: backup/mirror + restore drill, verify tiers, nightly, health records
   _importers/       # incremental import orchestration
   _retrieval/       # FTS5 + vector search, read reconstruction
-  _knowledge/       # topic graph: event-sourced curation + Leiden analytics
+  _knowledge/       # knowledge-layer data plane: KgEvent fold + SQL topic reads
   _watcher/         # local-source watcher (self-feeding ingest)
   _mcp/             # the library-native read MCP server
   _web/             # read-only viewer: stdlib server + built bundle (cohosted by `watch --web`)
@@ -270,16 +271,14 @@ answer is a support tier plus a repair loop, not a promise nobody can keep:
   recover everything the provider has since pruned.
 - **The user's own agent writes the fix.** `archive fix-import <provider>`
   scaffolds an override patch under `<home>/plugins/` (module, tests, collected
-  samples, drift evidence, per-provider quirk notes) and spawns a headless
-  `claude` whose only job is the parse logic. The spawn is permission-scoped,
-  not permission-bypassing: edits auto-approve only inside the scaffold, its
-  shell allowlist is the repair protocol's commands, and no MCP servers are
-  injected — the samples are transcript data, which an agent should always
-  treat as untrusted input (see [SECURITY.md](SECURITY.md)). Activation is deterministic —
-  the scaffold's tests must pass in a fresh subprocess (including a dedup
-  re-import guard) before the override is enabled and the ledger-driven
-  re-import recovers the gap. No Claude Code on the box? `--scaffold-only`
-  lays out the same scaffold for any agent or human.
+  samples, drift evidence, per-provider quirk notes, and a `PROTOCOL.md`
+  written to be handed to an agent), leaving one job open: the parse logic.
+  Archive runs no agent itself — you work the scaffold, or point yours at it
+  under whatever scope you choose, remembering that the samples are transcript
+  data an agent should treat as untrusted input (see [SECURITY.md](SECURITY.md)).
+  Activation is deterministic — the scaffold's tests must pass in a fresh
+  subprocess (including a dedup re-import guard) before the override is enabled
+  and the ledger-driven re-import recovers the gap.
 - **Patches are temporary by default.** The next self-update retires them (a
   core release is the proper fix's vehicle; if drift persists, the notice
   re-fires and the fix re-runs against the new core). `archive fix-import
@@ -402,7 +401,7 @@ wins; ids that were never imported are skipped, not fatal.
   pinned as a permanent regression test on a synthetic corpus: a false "not
   found" against a high-confidence memory is the one failure class the suite
   guards hardest.
-- **Curatable** — an event-sourced topic graph with Leiden communities (see below),
+- **Curatable** — an event-sourced topic graph (see below),
   built by a curating agent, which also stores each conversation's
   search-first summary: a few dense sentences indexed into the default search scope
   and embedded for the semantic arm, plus a structured `indexed_summary`
@@ -434,16 +433,19 @@ and read, never mutate. Client config:
 There are exactly two kinds of thread: imported **conversations** and curated **topics**
 (`thread_type='topic'`). A topic is modeled as a thread on purpose — so the graph's edges
 (`thread_links`) and message→topic citations (`topic_messages`) reference one id space.
-Reads/analytics live in the knowledge layer (`_knowledge/`) — PageRank,
-communities (**Leiden**, the algorithm Neo4j GDS ran, with a networkx-Louvain fail-soft
-fallback), bridges, peers.
+The archive keeps the **data plane** only: the event log, its fold, and the SQL topic
+reads (`_knowledge/`). The analytics over it — PageRank, Leiden communities, bridges,
+peers, the relevant-subjects search lens, the topic pages and hierarchy — are
+[thread-librarian](../librarian)'s, and the archive's base install carries no graph
+libraries.
 
-The graph is consumable from the public read surface: search
-headers name the subjects a result set clusters under with their `[topic <id>]`s,
-`thread_read` on a topic id renders the topic's curated page (description, links, cited
-quotes — each quote anchored to open via `around_event`), `thread_read('topics')` renders
-the whole curated hierarchy as an indented forest, and `thread_search(topic_id=…)`
-scopes a search to the topic's member conversations.
+Existing records stay readable as a compatibility surface: `thread_read` on a topic id
+renders the topic's curated page (description, links, cited quotes — each quote anchored
+to open via `around_event`) and `thread_search(topic_id=…)` scopes a search to the
+topic's member conversations. With thread-librarian installed alongside, search headers
+also name the subjects a result set clusters under, and topic pages regain their graph
+metadata; the browseable topic surfaces (tree, communities, garden queues) are the
+librarian MCP's tools.
 
 Curation is **event-sourced**. Every graph write (`create_topic`, `link_threads`,
 `add_topic_evidence`, `merge_topics`, …) appends a `KgEvent` to an

@@ -59,6 +59,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import random
 import re
 import sys
@@ -319,7 +320,12 @@ def query_shape(q: str) -> str:
 
 
 def evaluate(cases: list[dict], *, limit: int, rerank, content_type,
-             exclude_content_types: list[str] | None) -> dict:
+             exclude_content_types: list[str] | None, search=None) -> dict:
+    """Score ``cases`` against a search function — MRR, recall@k, per-shape MRR and
+    latency. ``search`` is the ranker under evaluation (default: the archive's own),
+    so a candidate ranking can be measured against the same cases as the incumbent."""
+    if search is None:
+        search = api.search
     per_shape: dict[str, list[float]] = {}
     reciprocal_ranks: list[float] = []
     hits_at: dict[int, int] = {k: 0 for k in RECALL_KS}
@@ -329,7 +335,7 @@ def evaluate(cases: list[dict], *, limit: int, rerank, content_type,
         gold = set(case["gold"])
         skip = set(case.get("sessions", []))
         t0 = time.monotonic()
-        hits = api.search(
+        hits = search(
             case["query"],
             limit=limit + len(skip),
             content_types=[content_type] if content_type else None,
@@ -435,11 +441,10 @@ def main() -> None:
     args = ap.parse_args()
 
     if args.lexical_only:
-        from thread_archive._retrieval import embed
-        from thread_archive._retrieval import rerank as rerank_mod
-
-        embed.is_available = lambda: False  # type: ignore[method-assign]
-        rerank_mod.is_available = lambda: False  # type: ignore[method-assign]
+        # The product's own switch: both model arms report unavailable for the rest
+        # of this process, so the measured pipeline is the one a lexical-only box runs.
+        os.environ["THREAD_ARCHIVE_EMBED"] = "off"
+        os.environ["THREAD_ARCHIVE_RERANK"] = "off"
 
     api.open_archive()
 

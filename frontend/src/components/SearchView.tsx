@@ -91,9 +91,9 @@ export function SearchView() {
         <div className="subjects">
           <span className="subjects-label">subjects:</span>
           {subjects.map((s) => (
-            <Link className="chip" key={s.topic_id} to={'/topic/' + s.topic_id}>
+            <span className="chip" key={s.topic_id}>
               {s.title} ({s.chats})
-            </Link>
+            </span>
           ))}
         </div>
       )}

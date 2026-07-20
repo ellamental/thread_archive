@@ -14,7 +14,8 @@ so no test may depend on them existing).
 from __future__ import annotations
 
 import json
-from datetime import datetime
+from datetime import datetime, timezone
+from pathlib import Path
 
 import pytest
 from sqlalchemy import select, update
@@ -288,13 +289,13 @@ def _grok_plan_row(event_id: int) -> dict:
     }
 
 
-def _write_grok_plan(tmp_path, monkeypatch, patches: list[dict]):
+def _write_grok_plan(tmp_path, patches: list[dict]):
+    """Write a synthetic plan and hand back ``(module, plan path)``."""
     from thread_archive._scripts import repair_grok_tool_names as mod
 
     plan = tmp_path / "plan.json"
     plan.write_text(json.dumps({"pg": [], "sa": patches}))
-    monkeypatch.setattr(mod, "PLAN_PATH", plan)
-    return mod
+    return mod, plan
 
 
 def _seed_grok_events(patches: list[dict]) -> None:
@@ -317,36 +318,46 @@ def _seed_grok_events(patches: list[dict]) -> None:
 
 
 @pytest.fixture
-def grok_plan_seeded(archive_home, tmp_path, monkeypatch):
+def grok_plan_seeded(archive_home, tmp_path):
     """Seed a store holding exactly the events a synthetic repair plan targets,
-    with the plan's asserted old values."""
+    with the plan's asserted old values. Yields ``(module, plan path, patches)``."""
     patches = [_grok_plan_row(eid) for eid in (8225001, 8225002, 8225003)]
-    mod = _write_grok_plan(tmp_path, monkeypatch, patches)
+    mod, plan = _write_grok_plan(tmp_path, patches)
     _seed_grok_events(patches)
-    return mod, patches
+    return mod, plan, patches
 
 
-def test_grok_repair_preview_only_writes_nothing(grok_plan_seeded, monkeypatch, tmp_path, capsys) -> None:
-    mod, patches = grok_plan_seeded
-    monkeypatch.setattr(mod, "BACKUP_PATH", tmp_path / "backup.json")
-    monkeypatch.setattr("sys.argv", ["repair_grok_tool_names.py"])
+def test_grok_backup_path_is_stamped_when_it_is_written() -> None:
+    """The undo dump's name comes from the moment of the write, not from whenever
+    the module happened to be imported — two runs must not collide on one file."""
+    from thread_archive._scripts import repair_grok_tool_names as mod
 
-    assert mod.main() == 0
+    plan = Path("/plans/repair_grok_tool_names_plan_20260704.json")
+    first = mod.backup_path_for(plan, now=datetime(2026, 7, 4, 1, 2, 3, tzinfo=timezone.utc))
+    second = mod.backup_path_for(plan, now=datetime(2026, 7, 4, 4, 5, 6, tzinfo=timezone.utc))
+    assert first.parent == plan.parent  # the dump lands beside the plan it read
+    assert first.name == "repair_grok_tool_names_backup_20260704T010203Z.json"
+    assert second.name == "repair_grok_tool_names_backup_20260704T040506Z.json"
+
+
+def test_grok_repair_preview_only_writes_nothing(grok_plan_seeded, tmp_path, capsys) -> None:
+    mod, plan, patches = grok_plan_seeded
+
+    assert mod.main(["--plan", str(plan)]) == 0
     assert "preview only" in capsys.readouterr().out
-    assert not (tmp_path / "backup.json").exists()
+    assert not list(tmp_path.glob("repair_grok_tool_names_backup_*.json"))
     with get_session() as s:
         for p in patches:
             ev = s.get(Event, p["event_id"])
             assert mod.canonical_json(ev.payload) == p["old_payload"]
 
 
-def test_grok_repair_apply_backs_up_then_patches(grok_plan_seeded, monkeypatch, tmp_path) -> None:
-    mod, patches = grok_plan_seeded
-    backup = tmp_path / "backup.json"
-    monkeypatch.setattr(mod, "BACKUP_PATH", backup)
-    monkeypatch.setattr("sys.argv", ["repair_grok_tool_names.py", "--apply"])
+def test_grok_repair_apply_backs_up_then_patches(grok_plan_seeded, tmp_path) -> None:
+    mod, plan, patches = grok_plan_seeded
 
-    assert mod.main() == 0
+    # No --backup: the run resolves its own dump path, beside the plan, at write time.
+    assert mod.main(["--apply", "--plan", str(plan)]) == 0
+    (backup,) = tmp_path.glob("repair_grok_tool_names_backup_*.json")
     # backup captured the pre-repair rows
     backed_up = {r["id"] for r in json.loads(backup.read_text())}
     assert backed_up == {p["event_id"] for p in patches}
@@ -367,16 +378,15 @@ def test_grok_repair_apply_backs_up_then_patches(grok_plan_seeded, monkeypatch, 
     assert {ln["id"] for ln in lines if ln.get("type") == "event"} >= patched_ids
 
 
-def test_grok_repair_aborts_on_missing_event(archive_home, tmp_path, monkeypatch, capsys) -> None:
-    mod = _write_grok_plan(tmp_path, monkeypatch, [_grok_plan_row(8225001)])
+def test_grok_repair_aborts_on_missing_event(archive_home, tmp_path, capsys) -> None:
+    mod, plan = _write_grok_plan(tmp_path, [_grok_plan_row(8225001)])
 
     init_db()  # empty store: first planned event is absent
-    monkeypatch.setattr("sys.argv", ["repair_grok_tool_names.py", "--apply"])
-    assert mod.main() == 1
+    assert mod.main(["--apply", "--plan", str(plan)]) == 1
     assert "ABORT" in capsys.readouterr().out
 
 
-def test_grok_repair_retypes_and_rekeys(archive_home, tmp_path, monkeypatch, capsys) -> None:
+def test_grok_repair_retypes_and_rekeys(archive_home, tmp_path, capsys) -> None:
     """A plan row may move the event to a different type and name the dedup_key that
     type change implies; both land, and the preview line names the retype."""
     patch = _grok_plan_row(8225010)
@@ -385,12 +395,12 @@ def test_grok_repair_retypes_and_rekeys(archive_home, tmp_path, monkeypatch, cap
     # a pure retype: the timestamp and payload the plan asserts are the ones it keeps
     patch["new_occurred_at"] = patch["old_occurred_at"]
     patch["new_payload"] = patch["old_payload"]
-    mod = _write_grok_plan(tmp_path, monkeypatch, [patch])
+    mod, plan = _write_grok_plan(tmp_path, [patch])
     _seed_grok_events([patch])
-    monkeypatch.setattr(mod, "BACKUP_PATH", tmp_path / "backup.json")
-    monkeypatch.setattr("sys.argv", ["repair_grok_tool_names.py", "--apply"])
 
-    assert mod.main() == 0
+    assert mod.main(
+        ["--apply", "--plan", str(plan), "--backup", str(tmp_path / "backup.json")]
+    ) == 0
     out = capsys.readouterr().out
     assert "type tool_execution_completed -> tool_execution_error" in out
     with get_session() as s:
@@ -399,18 +409,18 @@ def test_grok_repair_retypes_and_rekeys(archive_home, tmp_path, monkeypatch, cap
         assert ev.dedup_key == patch["new_dedup_key"]
 
 
-def test_grok_repair_aborts_on_event_type_mismatch(grok_plan_seeded, monkeypatch, tmp_path, capsys) -> None:
+def test_grok_repair_aborts_on_event_type_mismatch(grok_plan_seeded, tmp_path, capsys) -> None:
     """The plan asserts the type it expects to find as well as the payload — a row
     that has moved type since the plan was cut is not the row it describes."""
-    mod, patches = grok_plan_seeded
-    monkeypatch.setattr(mod, "BACKUP_PATH", tmp_path / "backup.json")
+    mod, plan, patches = grok_plan_seeded
     with get_session() as s:
         s.execute(update(Event).where(Event.id == patches[0]["event_id"]).values(
             event_type="text_complete"))
         s.commit()
 
-    monkeypatch.setattr("sys.argv", ["repair_grok_tool_names.py", "--apply"])
-    assert mod.main() == 1
+    assert mod.main(
+        ["--apply", "--plan", str(plan), "--backup", str(tmp_path / "backup.json")]
+    ) == 1
     assert "!= plan" in capsys.readouterr().out
     assert not (tmp_path / "backup.json").exists()
     with get_session() as s:
@@ -418,16 +428,16 @@ def test_grok_repair_aborts_on_event_type_mismatch(grok_plan_seeded, monkeypatch
             assert mod.canonical_json(s.get(Event, p["event_id"]).payload) == p["old_payload"]
 
 
-def test_grok_repair_aborts_on_payload_mismatch(grok_plan_seeded, monkeypatch, tmp_path, capsys) -> None:
-    mod, patches = grok_plan_seeded
-    monkeypatch.setattr(mod, "BACKUP_PATH", tmp_path / "backup.json")
+def test_grok_repair_aborts_on_payload_mismatch(grok_plan_seeded, tmp_path, capsys) -> None:
+    mod, plan, patches = grok_plan_seeded
     with get_session() as s:
         ev = s.get(Event, patches[0]["event_id"])
         ev.payload = {"tampered": True}
         s.commit()
 
-    monkeypatch.setattr("sys.argv", ["repair_grok_tool_names.py", "--apply"])
-    assert mod.main() == 1
+    assert mod.main(
+        ["--apply", "--plan", str(plan), "--backup", str(tmp_path / "backup.json")]
+    ) == 1
     assert "no longer matches plan" in capsys.readouterr().out
     # nothing was written: the other events still hold their old payloads
     with get_session() as s:

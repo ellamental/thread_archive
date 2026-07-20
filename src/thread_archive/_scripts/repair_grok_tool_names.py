@@ -28,10 +28,12 @@ Apply:               .venv/bin/python src/thread_archive/_scripts/repair_grok_to
 
 from __future__ import annotations
 
+import argparse
 import json
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Optional
 
 from sqlalchemy import delete
 
@@ -45,7 +47,14 @@ from thread_archive._truth.jsonl_log import append_event_row
 # never ship in the wheel — tests/meta/test_package_tree.py ratchets this).
 DUMPS_DIR = Path(__file__).resolve().parents[3] / "host" / "repair-dumps"
 PLAN_PATH = DUMPS_DIR / "repair_grok_tool_names_plan_20260704.json"
-BACKUP_PATH = DUMPS_DIR / f"repair_grok_tool_names_backup_{datetime.now(timezone.utc):%Y%m%dT%H%M%SZ}.json"
+
+
+def backup_path_for(plan_path: Path, *, now: Optional[datetime] = None) -> Path:
+    """Where a run dumps the rows it is about to change: beside the plan it read,
+    stamped at the moment the dump is written so consecutive runs never overwrite
+    each other's undo file."""
+    stamp = now or datetime.now(timezone.utc)
+    return plan_path.parent / f"repair_grok_tool_names_backup_{stamp:%Y%m%dT%H%M%SZ}.json"
 
 
 def canonical_json(payload) -> str:
@@ -53,10 +62,16 @@ def canonical_json(payload) -> str:
     return json.dumps(obj, sort_keys=True, separators=(",", ":"))
 
 
-def main() -> int:
-    apply = "--apply" in sys.argv
-    patches = json.loads(PLAN_PATH.read_text())["sa"]
-    print(f"{len(patches)} standalone patches loaded from {PLAN_PATH.name}")
+def run(
+    *,
+    apply: bool = False,
+    plan_path: Optional[Path] = None,
+    backup_path: Optional[Path] = None,
+) -> int:
+    """Apply (or preview) the plan's standalone half. Returns the process exit code."""
+    plan_path = plan_path or PLAN_PATH
+    patches = json.loads(plan_path.read_text())["sa"]
+    print(f"{len(patches)} standalone patches loaded from {plan_path.name}")
 
     open_archive(None)
     with use_session() as session:
@@ -88,12 +103,13 @@ def main() -> int:
             print("\npreview only — rerun with --apply to write")
             return 0
 
-        BACKUP_PATH.write_text(json.dumps(
+        backup = backup_path or backup_path_for(plan_path)
+        backup.write_text(json.dumps(
             [{"id": ev.id, "thread_id": ev.thread_id, "event_type": ev.event_type,
               "occurred_at": str(ev.occurred_at), "payload": ev.payload,
               "dedup_key": ev.dedup_key}
              for ev in events.values()], indent=1, default=str))
-        print(f"\nbackup written: {BACKUP_PATH}")
+        print(f"\nbackup written: {backup}")
 
         for p in patches:
             ev = events[p["event_id"]]
@@ -112,6 +128,19 @@ def main() -> int:
         session.commit()
         print(f"applied {len(patches)} standalone event repairs; re-indexed {indexed} FTS rows")
     return 0
+
+
+def main(argv: Optional[list[str]] = None) -> int:
+    ap = argparse.ArgumentParser(description=__doc__)
+    ap.add_argument("--apply", action="store_true", help="write (default: preview only)")
+    ap.add_argument("--plan", type=Path, default=PLAN_PATH, help="patch plan JSON")
+    ap.add_argument(
+        "--backup", type=Path, default=None,
+        help="undo dump for the rows about to change "
+             "(default: beside the plan, stamped when it is written)",
+    )
+    args = ap.parse_args(argv)
+    return run(apply=args.apply, plan_path=args.plan, backup_path=args.backup)
 
 
 if __name__ == "__main__":

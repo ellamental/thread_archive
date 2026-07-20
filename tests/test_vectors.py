@@ -2,12 +2,15 @@
 
 Tested with *synthetic* vectors so no embedding model is needed — the model-driven
 embed path runs only when the [embeddings] extra is installed (covered by the
-backfill embed, not the unit suite).
+backfill embed, not the unit suite). Where a test needs the embed backend alive it
+passes its own embedder through the ``embedder`` argument, so the real indexing and
+query paths run over a stand-in model rather than real weights.
 """
 
 from __future__ import annotations
 
 import numpy as np
+import pytest
 
 from thread_archive._retrieval import _rrf_merge, vectors
 from thread_archive._store import init_db
@@ -18,6 +21,46 @@ def _unit(*nonzero) -> np.ndarray:
     for i, val in nonzero:
         v[i] = val
     return v
+
+
+def _seed_thread(archive_home, user_text: str) -> None:
+    """One real imported session, so the lexical arm has something to return."""
+    import json
+
+    from thread_archive._importers import import_session_incremental
+
+    f = archive_home / "seed.jsonl"
+    lines = [
+        {"type": "user", "uuid": "u1", "timestamp": "2026-01-01T10:00:00Z",
+         "sessionId": "s", "message": {"role": "user", "content": user_text}},
+        {"type": "assistant", "uuid": "a1", "timestamp": "2026-01-01T10:00:05Z",
+         "message": {"role": "assistant", "model": "claude-opus-4",
+                     "content": [{"type": "text", "text": "ok."}]}},
+    ]
+    f.write_text("\n".join(json.dumps(ln) for ln in lines) + "\n", encoding="utf-8")
+    import_session_incremental(f, "proj:s")
+
+
+class _FixedEmbedder:
+    """An embedder that answers everything with one fixed vector, and records the
+    queries it was given — the front-door stand-in for the torch model."""
+
+    def __init__(self, vec=None) -> None:
+        self.vec = list((vec if vec is not None else _unit((0, 1.0))))
+        self.queries: list[str] = []
+
+    def is_available(self) -> bool:
+        return True
+
+    def space_key(self) -> str:
+        return "local:test"
+
+    def embed_query(self, text):
+        self.queries.append(text)
+        return list(self.vec)
+
+    def embed_documents(self, texts):
+        return [list(self.vec) for _ in texts]
 
 
 def test_vector_store_upsert_and_knn(archive_home) -> None:
@@ -75,16 +118,14 @@ def test_knn_pack_mmap_lifecycle(archive_home) -> None:
     assert [eid for eid, _, _ in res][0] == 1  # sees the upserted vector
 
 
-def test_index_events_local_incremental_cap_and_order(archive_home, monkeypatch) -> None:
+def test_index_events_local_incremental_cap_and_order(archive_home) -> None:
     """The cohost's embed pass: incremental (anti-join), bounded by ``max_events``,
-    newest-first. Stubs the embed backend so no model is needed."""
+    newest-first. Runs on a stand-in embedder so no model is needed."""
     import json
 
     from thread_archive import _api as ta
-    from thread_archive._retrieval import embed as E
 
-    monkeypatch.setattr(E, "is_available", lambda: True)
-    monkeypatch.setattr(E, "embed_documents", lambda docs: [_unit((0, 1.0)) for _ in docs])
+    emb = _FixedEmbedder()
 
     f = archive_home / "sess.jsonl"
     lines = []
@@ -97,12 +138,13 @@ def test_index_events_local_incremental_cap_and_order(archive_home, monkeypatch)
     f.write_text("\n".join(json.dumps(ln) for ln in lines) + "\n", encoding="utf-8")
     ta.import_path(f)
 
-    assert vectors.get_status()["indexed"] == 0                             # nothing embedded yet
-    assert vectors.index_events_local(max_events=2, newest_first=True) == 2  # capped pass
+    assert vectors.get_status()["indexed"] == 0             # nothing embedded yet
+    assert vectors.index_events_local(
+        max_events=2, newest_first=True, embedder=emb) == 2  # capped pass
     assert vectors.get_status()["indexed"] == 2
-    assert vectors.index_events_local(max_events=2) == 2                    # incremental: next gap
-    assert vectors.index_events_local() == 2                                # drains the rest
-    assert vectors.index_events_local() == 0                                # caught up → no-op
+    assert vectors.index_events_local(max_events=2, embedder=emb) == 2  # incremental: next gap
+    assert vectors.index_events_local(embedder=emb) == 2                # drains the rest
+    assert vectors.index_events_local(embedder=emb) == 0                # caught up → no-op
 
 
 def test_knn_max_pools_chunks_per_document(archive_home) -> None:
@@ -117,17 +159,15 @@ def test_knn_max_pools_chunks_per_document(archive_home) -> None:
     assert [(eid, round(sim, 2)) for eid, _, sim in res] == [(1, 1.0), (2, 0.99)]
 
 
-def test_index_events_local_chunks_long_docs_and_tops_up(archive_home, monkeypatch) -> None:
+def test_index_events_local_chunks_long_docs_and_tops_up(archive_home) -> None:
     """A doc longer than the chunk size gets one vector per chunk; a doc embedded
     under the old truncate-at-cap scheme (chunk 0 only) shows up as pending and is
     topped up in place."""
     import json
 
     from thread_archive import _api as ta
-    from thread_archive._retrieval import embed as E
 
-    monkeypatch.setattr(E, "is_available", lambda: True)
-    monkeypatch.setattr(E, "embed_documents", lambda docs: [_unit((0, 1.0)) for _ in docs])
+    emb = _FixedEmbedder()
 
     long_text = "x" * (vectors.CHUNK_CHARS * 2 + 100)  # → 3 chunks
     f = archive_home / "sess.jsonl"
@@ -140,9 +180,9 @@ def test_index_events_local_chunks_long_docs_and_tops_up(archive_home, monkeypat
     f.write_text("\n".join(json.dumps(ln) for ln in lines) + "\n", encoding="utf-8")
     ta.import_path(f)
 
-    assert vectors.index_events_local() == 2          # two docs…
-    assert vectors.get_status()["indexed"] == 1 + 3   # …four vectors (1 + 3 chunks)
-    assert vectors.index_events_local() == 0          # caught up → no-op
+    assert vectors.index_events_local(embedder=emb) == 2  # two docs…
+    assert vectors.get_status()["indexed"] == 1 + 3       # …four vectors (1 + 3 chunks)
+    assert vectors.index_events_local(embedder=emb) == 0  # caught up → no-op
 
     # Simulate the pre-chunking state: the long doc has only its chunk-0 vector.
     from sqlalchemy import text as sa_text
@@ -152,7 +192,7 @@ def test_index_events_local_chunks_long_docs_and_tops_up(archive_home, monkeypat
         s.execute(sa_text("DELETE FROM event_vectors WHERE chunk > 0"))
         s.commit()
     vectors._bump_version()
-    assert vectors.index_events_local() == 1          # the long doc is pending again
+    assert vectors.index_events_local(embedder=emb) == 1  # the long doc is pending again
     assert vectors.get_status()["indexed"] == 4
 
 
@@ -222,25 +262,60 @@ def test_exclude_all_embedded_types_sits_semantic_out(archive_home) -> None:
     assert vectors.search("anything", exclude_content_types=["user", "text", "title", "summary"]) is None
 
 
-def test_semantic_arm_sits_out_for_toolname_count_oldest(archive_home, monkeypatch) -> None:
+def test_semantic_arm_sits_out_for_toolname_count_oldest(archive_home) -> None:
     """tool_name-scoped searches must not fuse semantic hits (tool docs aren't
     embedded, so every one would violate the filter); count and oldest are
     structural shapes the vector arm can only pollute."""
     from thread_archive import _retrieval as retrieval
 
     init_db()
-    # Record at the vector arm's own boundary (vectors.search, public): a scoped
-    # search must never reach it; an unscoped one does. None keeps fusion lexical.
-    calls: list = []
-    monkeypatch.setattr(vectors, "is_available", lambda: True)
-    monkeypatch.setattr(vectors, "search",
-                        lambda *a, **k: (calls.append(1), None)[1])
-    retrieval.search("some query", tool_name="Bash")
-    retrieval.search("some query", output="count")
-    retrieval.search("some query", sort="oldest")
-    assert calls == []
-    retrieval.search("some query")
-    assert calls == [1]
+    vectors.ensure_index()
+    vectors.index_vectors([(1, "user", _unit((0, 1.0)))])  # a pool for the arm to search
+    # Observe at the embedder — the vector arm's first act is to embed the query, so
+    # a query that never reaches it proves the arm sat out.
+    emb = _FixedEmbedder()
+    retrieval.search("some query", tool_name="Bash", embedder=emb)
+    retrieval.search("some query", output="count", embedder=emb)
+    retrieval.search("some query", sort="oldest", embedder=emb)
+    assert emb.queries == []
+    retrieval.search("some query", embedder=emb)
+    assert emb.queries == ["some query"]
+
+
+def test_semantic_arm_sits_out_on_a_store_it_cannot_serve(archive_home) -> None:
+    """The vector store is SQLite-only. On another dialect the arm reports itself
+    unavailable and search continues lexically rather than erroring."""
+    from types import SimpleNamespace
+
+    from thread_archive import _retrieval as retrieval
+    from thread_archive._store._base import use_engine
+
+    init_db()
+    _seed_thread(archive_home, "the watcher daemon restarted overnight")
+
+    class _OtherDialectEngine:
+        dialect = SimpleNamespace(name="postgresql")
+
+    with use_engine(_OtherDialectEngine()):
+        assert vectors.is_available() is False
+    # The lexical arm still answers (on the real store).
+    assert retrieval.search("watcher daemon") is not None
+
+
+def test_a_broken_semantic_arm_never_breaks_lexical_search(archive_home) -> None:
+    """The vector arm is fail-soft by contract: an embedder whose vectors don't fit
+    the indexed space blows up inside the KNN, and search must still return the
+    lexical hits rather than propagate."""
+    from thread_archive import _retrieval as retrieval
+
+    init_db()
+    vectors.ensure_index()
+    _seed_thread(archive_home, "the watcher daemon restarted overnight")
+    vectors.index_vectors([(1, "user", _unit((0, 1.0)))])
+
+    wrong_width = _FixedEmbedder([1.0, 0.0, 0.0])  # not the store's 768 dims
+    hits = retrieval.search("watcher daemon", embedder=wrong_width)
+    assert hits and wrong_width.queries == ["watcher daemon"]
 
 
 def test_vectors_search_sits_out_when_unindexed(archive_home) -> None:
@@ -268,20 +343,18 @@ def test_rrf_merge_fuses_and_carries_semantic() -> None:
     assert all("_rrf" in h for h in merged)
 
 
-def test_encode_honors_availability_stub(monkeypatch):
-    """embed's documented degrade contract — is_available() False means the
-    vector arm sits out — must hold at the encode seam itself: query embedding
-    reaches _encode directly (vectors.search), and a stubbed-off availability
-    (conftest's model-free pin, --lexical-only) must never cold-load a model."""
+def test_encode_honors_the_off_switch(monkeypatch):
+    """embed's documented degrade contract — is_available() False means the vector
+    arm sits out — must hold at the encode seam itself: query embedding reaches
+    _encode directly (vectors.search), and a switched-off arm (conftest's model-free
+    pin, --lexical-only) must never cold-load a model."""
     from thread_archive._retrieval import embed
 
-    class _NoLoadSlot(embed.ModelSlot):
-        """A slot that treats any load attempt as a test failure."""
-
-        def get(self, construct, on_error):
-            raise AssertionError("model load attempted")
-
-    monkeypatch.setattr(embed, "is_available", lambda: False)
-    monkeypatch.setattr(embed, "SLOT", _NoLoadSlot())
+    monkeypatch.setenv("THREAD_ARCHIVE_EMBED", "off")
+    e = embed.Embedder(load=lambda: pytest.fail("model load attempted"))
+    assert e.is_available() is False
+    assert e.embed_query("anything at all") is None
+    assert e.embed_documents(["doc"]) is None
+    # …and the process embedder the vector arm actually reaches for is stood down too.
+    assert embed.is_available() is False
     assert embed.embed_query("anything at all") is None
-    assert embed.embed_documents(["doc"]) is None

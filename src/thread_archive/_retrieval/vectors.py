@@ -285,6 +285,7 @@ def index_events_local(
     rebuild: bool = False,
     max_events: int | None = None,
     newest_first: bool = False,
+    embedder=None,
 ) -> int:
     """Compute event vectors in-process from the FTS shadow (user/text/title/summary
     pools), one vector per :data:`CHUNK_CHARS` chunk (long docs get several).
@@ -296,15 +297,18 @@ def index_events_local(
     a single call embeds — the live cohost bounds each pass so a backlog drains
     over cycles without stalling ingest; ``newest_first`` drains the freshest gap
     first, which is what keeps recent-thread *semantic* recall current (the lexical
-    arm already covers fresh threads). Returns docs embedded. No-op (0) when the
-    store isn't SQLite or the embed backend is absent.
+    arm already covers fresh threads). ``embedder`` is the model the vectors are
+    computed with (default: the process embedder) — pass one to index into a
+    different embedding space than the process default queries. Returns docs
+    embedded. No-op (0) when the store isn't SQLite or the embedder is unavailable.
     """
     if not is_available():
         return 0
-    from .embed import embed_documents
-    from .embed import is_available as embed_available
+    if embedder is None:
+        from .embed import default as _default_embedder
 
-    if not embed_available():
+        embedder = _default_embedder()
+    if not embedder.is_available():
         logger.info("vectors.index_events_local: embed backend unavailable — skipping")
         return 0
     ensure_index()
@@ -344,7 +348,7 @@ def index_events_local(
         if not batch:
             return True
         texts = [t for _, _, chunks in batch for t in chunks]
-        vecs = embed_documents(texts)
+        vecs = embedder.embed_documents(texts)
         if not vecs:
             logger.warning("vectors.index_events_local: embed returned None — stopping at %d", total)
             return False
@@ -608,11 +612,16 @@ def search(
     source: Optional[list[str]] = None,
     thread_ids: Optional[list[str]] = None,
     agents: str = "exclude",
+    embedder=None,
 ) -> Optional[list[EventHit]]:
     """Embedded semantic search: embed the query, brute-force cosine KNN, hydrate.
 
     Returns None when this isn't SQLite, the scope has no embedded pool, nothing's
     indexed, or the embed fails — so search degrades to the lexical arm.
+
+    ``embedder`` is the model the query is embedded with (default: the process
+    embedder). It must be the one that indexed the vectors — they're only
+    comparable within a single embedding space (see ``space_key``).
 
     ``agents`` mirrors the lexical arm: 'exclude' (default) drops agent-run threads
     (``thread_type='system'``), 'include' keeps them, 'only' keeps nothing else.
@@ -639,8 +648,11 @@ def search(
         return None
 
     try:
-        from .embed import embed_query
-        qvec = embed_query(query)
+        if embedder is None:
+            from .embed import default as _default_embedder
+
+            embedder = _default_embedder()
+        qvec = embedder.embed_query(query)
     except Exception as e:  # noqa: BLE001
         logger.debug("vectors: query embed failed: %s", e)
         return None

@@ -2,6 +2,91 @@
 
 ## Unreleased
 
+- The embedding and re-rank models became injectable collaborators.
+  `embed.Embedder` and `rerank.Reranker` each own one model and the policy for
+  querying it (prefixes and char cap; doc-head cap and batch size), constructed
+  around a model that is already loaded (`model=`) or a loader of the caller's
+  own (`load=`) — the module-level functions now delegate to a process default
+  (`embed.default()` / `rerank.default()`) instead of reaching into a shared
+  mutable `SLOT`, which is gone. `vectors.search`, `vectors.index_events_local`,
+  `_retrieval.search` and `warm_models` take `embedder=` / `reranker=`
+  arguments, so a host that already holds a SentenceTransformer lends it rather
+  than paying for a second copy, and a re-embed can index into a second
+  embedding space while the default keeps serving queries.
+- Both model arms have an operator off switch: `THREAD_ARCHIVE_EMBED=off` and
+  `THREAD_ARCHIVE_RERANK=off` (also `0`/`false`/`no`) report the arm
+  unavailable, pinning a process to lexical search without uninstalling the
+  `[embeddings]` extra. `retrieval_eval.py --lexical-only` sets them instead of
+  reassigning `is_available` on the modules at runtime.
+- The configured model names and revision pin are read per call rather than
+  frozen at import, so `THREAD_ARCHIVE_EMBED_MODEL` /
+  `THREAD_ARCHIVE_RERANK_MODEL` / `THREAD_ARCHIVE_EMBED_REVISION` are honored
+  whenever they are set. Revision pins are per model (`embed.PINNED_REVISIONS`).
+- Fixed: a model exposing only sentence-transformers' newer
+  `get_embedding_dimension` accessor crashed the embedding load — the fallback
+  to `get_sentence_embedding_dimension` was evaluated eagerly. The dimension is
+  a log detail, so a model carrying neither accessor now loads too.
+- `retrieval_eval.evaluate` takes the ranker under test as `search=`, so a
+  candidate ranking can be scored against the same cases as the incumbent.
+
+- `repair_grok_tool_names` stamps its undo dump when it writes it. The backup
+  path was a module constant built from `datetime.now()` at *import*, so a
+  long-lived process (or a second run in the same interpreter) wrote every
+  dump under the first run's timestamp. It is now `backup_path_for(plan)`,
+  resolved at write time and landing beside the plan it read, and the script
+  took the `_scripts` house shape: `run(*, apply, plan_path, backup_path)` plus
+  a `main(argv)` argparse adapter, in place of scanning `sys.argv` for
+  `--apply` and reading two module globals. `migrate_thread_ulids.main` takes
+  `argv` for the same reason.
+
+- Each CLI verb's operator report is its own function. `cmd_backup` /
+  `cmd_verify` / `cmd_restore_drill` / `cmd_restore` / `cmd_nightly` /
+  `cmd_repair` / `cmd_redact` / `cmd_status` / `cmd_coverage` / `cmd_mirror` /
+  `cmd_self_update` now call the `_api` layer and hand the result to a matching
+  `report_*(res) -> int`, which prints the report and returns the exit code.
+  The verbs' output and exit codes are unchanged; the split separates running
+  an operation from rendering its result, so every warning, sample, and failure
+  line can be driven from the result shape that produces it.
+
+- The setup flow takes the host as a collaborator. `_setup/machine.py`'s
+  `Machine` holds every question setup asks the machine (is this macOS, is the
+  watcher / nightly backup / curation pair already scheduled for this home,
+  does this install have the curation and embeddings packages) and both changes
+  it makes to it (install the watcher, install the nightly backup);
+  `run_setup` and `print_status` take one through a `machine=` parameter and
+  default to the real host. The module-level `watcher_running` /
+  `backup_running` / `curation_running` / `curation_package_present` /
+  `embeddings_installed` probes moved onto it, and `run_setup`'s four
+  `offer_*` override parameters are gone — one seam replaces them. `_ask` /
+  `_ask_path` take the prompt reader (`read=`, default `input`), and `run_setup`
+  now threads its `ask` down into the watcher and MCP steps, so a scripted run
+  answers those prompts too instead of silently taking their defaults.
+
+- Finished the librarian split through the read surface. The graph analytics
+  (`_knowledge/graph.py`, `_knowledge/_community.py`), the relevant-subjects
+  search lens (`_retrieval/subjects.py`), and the corpus embedding graph
+  (`_retrieval/embed_graph.py` + `scripts/graph_eval.py`) moved to
+  thread-librarian, taking networkx/scipy/leidenalg/python-igraph out of the
+  base dependencies. The archive keeps the knowledge layer's data plane
+  (KgEvent truth + fold, projections, SQL topic reads) as an unadvertised
+  compatibility surface: `thread_read(topic_id)` still renders a topic's page
+  (graph metadata and peers appear only when thread-librarian is installed,
+  via fail-soft seams) and `thread_search(topic_id=…)` still scopes.
+  `thread_read('topics')` now points at the librarian MCP's new `topic_tree`
+  tool instead of rendering the tree; the MCP docstrings stopped advertising
+  the topic features; the web viewer dropped its topic pages
+  (`/api/topics`, `/api/topics/tree`, `/api/topic/<id>`, the TopicsView /
+  TopicView routes) and `api.knowledge_status` / `bridge_topics` /
+  `topic_peers` moved behind librarian's own `get_status` /
+  `get_bridge_topics` / `get_community_peers`. Rationale: 8,189 topics
+  existed but a 1,411-read usage window showed one topic-tree read and no
+  distinct topic reads — uptake, not curation volume, is what distinguishes a
+  useful lens from a terrarium.
+- `fix-import` no longer spawns an agent. `archive fix-import <provider>` scaffolds and stops: the scaffold now carries
+  the repair protocol as `PROTOCOL.md` beside the evidence, samples, and quirks, and the fix is written by the user or
+  by whatever agent they point at the directory. Dropped with the spawn: `--scaffold-only` (scaffolding is the default
+  action now), `--timeout`, and the `repair.model` / `repair.effort` config keys. Activation is unchanged and remains
+  the only path a patch has to going live.
 - Onboarding-trust fixes from the pre-release product review (2026-07-20). Setup no longer connects an agent to the
   wrong archive: MCP detection reads `claude mcp get`'s scope/approval status and the entry's `THREAD_ARCHIVE_HOME`
   instead of accepting any server with a matching name, and both `claude mcp add` and the printed config block pin the

@@ -307,12 +307,14 @@ from thread_archive.provider import builtin
 PROVIDER = replace(builtin("codex"), parser_config=...)
 ```
 
-`archive fix-import <provider>` automates the repair case end to end: it
+`archive fix-import <provider>` sets the repair case up and gates it: it
 scaffolds exactly this shape under `<home>/plugins/<provider>/` (module, tests,
-drift evidence, collected samples), spawns a headless `claude` to fill in the
-parse logic, and gates the result through `--activate` — the scaffold's test
-suite green in a fresh subprocess, then the override enabled in `config.json`,
-then a ledger-driven re-import of everything the broken parser consumed.
+drift evidence, collected samples, and `PROTOCOL.md` — how to work the fix,
+written to be handed to an agent), leaving the parse logic to you or whatever
+agent you point at the directory. `--activate` is the gate — the scaffold's
+test suite green in a fresh subprocess, then the override enabled in
+`config.json`, then a ledger-driven re-import of everything the broken parser
+consumed.
 
 Patches carry a `patch` block in their `config.json` entry
 (`built_against`, `pinned`, lifecycle stamps). They are **temporary by

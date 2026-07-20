@@ -1,10 +1,10 @@
-"""The curation seam — what the archive reports with and without thread-librarian.
+"""The librarian seam — what the archive reports with and without thread-librarian.
 
-The graph is the archive's own (``_knowledge.graph``); the one surface that
-belongs to the plugin is curation stats, and ``api.curation_stats`` must say
-"not installed" rather than guess when the plugin is absent. Both sides are
-pinned here (the dev venv carries the plugin; ``importorskip`` guards the
-delegation half).
+The archive keeps only the knowledge layer's data plane; everything analytic
+(curation stats, graph metadata, the subjects lens) belongs to the optional
+``thread_librarian`` package and must degrade cleanly when it is absent. Both
+sides are pinned here (the dev venv carries the plugin; ``importorskip``
+guards the delegation half).
 """
 
 from __future__ import annotations
@@ -43,18 +43,24 @@ def test_api_curation_stats_delegates(archive_home) -> None:
     assert "drains" in out and "coverage" in out
 
 
-def test_graph_api_needs_no_plugin(archive_home, no_plugin) -> None:
-    """The graph surfaces are the archive's own — fully functional without the
-    curation plugin, empty only because nothing has curated yet."""
-    from thread_archive._store import init_db
+def test_topic_read_degrades_without_plugin(archive_home, no_plugin) -> None:
+    """The compatibility topic reader works plugin-free: existing KG records
+    still read, just without graph metadata or community peers."""
+    from thread_archive._knowledge import topic_get
+    from thread_archive._store import Thread, get_session, init_db
 
     init_db()
-    from thread_archive import _knowledge as knowledge
+    tid = "01T0PIC0000000000000000001"
+    with get_session() as s:
+        s.add(Thread(id=tid, name="t", title="A Topic", thread_type="topic"))
+        s.commit()
+    detail = topic_get(tid)
+    assert detail["title"] == "A Topic"
+    assert detail["graph"] is None and detail["peers"] == []
 
-    knowledge.reset_cache()
-    status = ta.knowledge_status()
-    assert status["available"] is True and status["nodes"] == 0
-    assert ta.bridge_topics() == []
-    assert ta.topic_peers(999_999_999) == []
-    assert knowledge.get_topic_graph_metadata([]) == {}
-    assert knowledge.get_topic_graph_meta("nope") is None
+
+def test_search_render_degrades_without_plugin(archive_home, no_plugin) -> None:
+    """The subjects seam is a strict no-op when the lens's package is absent."""
+    from thread_archive._retrieval.format import subjects_line
+
+    assert subjects_line([{"thread_id": "x", "event_id": 1}]) is None

@@ -17,7 +17,6 @@ from sqlalchemy import text as sa_text
 
 from .._store import use_session
 from . import rank as _rank
-from . import subjects as _subjects
 from ._types import EventHit
 from .rank import (
     term_hit_count,  # noqa: F401 — the match-quality primitive lives in rank; re-exported here for the render-layer's callers
@@ -26,6 +25,21 @@ from .rank import (
 # output='count' wants a true tally, so the pipeline over-fetches to this cap; a
 # pool that reaches it was truncated and the tally renders as a floor ("N+").
 COUNT_FETCH_CAP = 1000
+
+
+def subjects_line(hits: list[EventHit]) -> str | None:
+    """The ``subjects:`` orientation header over a result set, or None.
+
+    The lens itself belongs to the optional ``thread-librarian`` package (the
+    knowledge layer's analytics owner); this seam calls it fail-soft, so the
+    base archive renders searches with no subjects line and no graph stack."""
+    try:
+        from thread_librarian import subjects as _subjects
+    except ImportError:
+        return None
+    if not _subjects.enabled():
+        return None
+    return _subjects.format_subjects_line(_subjects.subjects_for_results(hits))
 
 
 def _hit_text(h: EventHit) -> str:
@@ -103,7 +117,6 @@ def _format_browse(hits: list[EventHit]) -> str:
     lines = [
         f"{len(hits)} thread(s) · browse (no query) — one row per thread, by last activity",
         "  open one: thread_read(thread_id) · its tail: thread_read(thread_id, around_event=event_id)",
-        "  topic tree: thread_read('topics') · list topics: thread_search('', types='topic')",
         "",
     ]
     for h in hits:
@@ -227,11 +240,9 @@ def format_results(hits: list[EventHit], query: str, *, output: str | None = Non
     prelude = [header]
     if verdict and verdict[1]:
         prelude.append(f"  note: {verdict[1]}")
-    subj_line = None
-    if _subjects.enabled():
-        subj_line = _subjects.format_subjects_line(_subjects.subjects_for_results(hits))
-        if subj_line:  # the topic graph as orientation: what subjects these hits cluster under
-            prelude.append(subj_line)
+    subj_line = subjects_line(hits)
+    if subj_line:  # the topic graph as orientation: what subjects these hits cluster under
+        prelude.append(subj_line)
 
     if group == "browse":
         return _format_thread_list(hits, prelude)

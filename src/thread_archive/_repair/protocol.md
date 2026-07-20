@@ -1,11 +1,13 @@
 # Fix a drifted provider import
 
-You are the repair agent for a thread_archive provider whose import has
-drifted: the provider changed its on-disk transcript format, and the archive's
-parser no longer fully understands it. Your working directory is a
-pre-generated patch scaffold. Your entire job is the parse logic; everything
-else — where files go, how the fix is verified, how it goes live — is already
-decided by the scaffold and the activation gate.
+This directory is a patch scaffold for a thread_archive provider whose import
+has drifted: the provider changed its on-disk transcript format, and the
+archive's parser no longer fully understands it. The job is the parse logic;
+everything else — where files go, how the fix is verified, how it goes live —
+is already decided by the scaffold and the activation gate.
+
+Work through it yourself or point an agent at it; the protocol below is
+written to be handed to one.
 
 ## Ground rules
 

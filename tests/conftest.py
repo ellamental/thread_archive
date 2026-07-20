@@ -6,14 +6,16 @@ every test is defaulted to a *throwaway* home so nothing can ever touch the real
 ``~/.thread/archive`` (the global engine lazily resolves its DSN from ``$THREAD_ARCHIVE_HOME``,
 so an un-homed test would otherwise create the real default).
 
-The suite is also pinned **model-free**: the embed/rerank availability gates are
-forced off so no test can cold-load the torch models just because the venv happens
-to have the ``[embeddings]`` extra installed. Without the pin, any ``search()``
-whose query trips the rerank gate loads the real cross-encoder in-process — a
-100-second stall — and search-path tests exercise different code depending on
-which extras are installed. Tests that cover the vector/rerank machinery opt back
-in per-test with their own monkeypatches (see ``test_vectors.py``,
-``test_rerank.py``), which override this default.
+The suite is also pinned **model-free** through the product's own switches
+(``$THREAD_ARCHIVE_EMBED`` / ``$THREAD_ARCHIVE_RERANK`` set to ``off``): no test
+can cold-load the torch models just because the venv happens to have the
+``[embeddings]`` extra installed. Without the pin, any ``search()`` whose query
+trips the rerank gate loads the real cross-encoder in-process — a 100-second
+stall — and search-path tests exercise different code depending on which extras
+are installed. Tests that cover the vector/rerank machinery opt back in per-test,
+either by clearing the switch and constructing an ``Embedder``/``Reranker`` around
+a scripted model, or by passing their own through the ``embedder`` / ``reranker``
+arguments (see ``test_vectors.py``, ``test_rerank.py``).
 """
 
 from __future__ import annotations
@@ -41,6 +43,13 @@ atexit.register(shutil.rmtree, _SANDBOX_HOME, ignore_errors=True)
 for _xdg in ("XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_STATE_HOME", "XDG_CACHE_HOME"):
     os.environ.pop(_xdg, None)
 
+# Any CLI verb run in-process would otherwise renice the test runner itself, and
+# nice() is one-way: the drop is permanent for the rest of the session and every
+# later test — plus every child they spawn — inherits it. Set here at import, for
+# the same reason as $HOME: a fixture runs after the first verb might already have
+# fired. A test that wants the real throttle spawns a child with its own env.
+os.environ["THREAD_ARCHIVE_NO_THROTTLE"] = "1"
+
 
 @pytest.fixture(autouse=True)
 def _isolate_home(monkeypatch):
@@ -51,7 +60,6 @@ def _isolate_home(monkeypatch):
 @pytest.fixture(autouse=True)
 def _isolate_archive(tmp_path, monkeypatch):
     from thread_archive import _config as config
-    from thread_archive._retrieval import embed, rerank
     from thread_archive._store import _base
     from thread_archive._truth import jsonl_log
 
@@ -80,8 +88,10 @@ def _isolate_archive(tmp_path, monkeypatch):
     # re-patches its own stub to assert the stage wiring.
     monkeypatch.setattr(_nightly, "mirror_sources", lambda **kw: {"ok": True})
     # Model-free suite: no real torch model may load, regardless of installed extras.
-    monkeypatch.setattr(embed, "is_available", lambda: False)
-    monkeypatch.setattr(rerank, "is_available", lambda: False)
+    # The product's own off switches, so the pin runs through the same code an
+    # operator's `--lexical-only` does (read per call — set here, honored from here on).
+    monkeypatch.setenv("THREAD_ARCHIVE_EMBED", "off")
+    monkeypatch.setenv("THREAD_ARCHIVE_RERANK", "off")
     _base.close_engine()
     jsonl_log.reset_handles()
     yield
