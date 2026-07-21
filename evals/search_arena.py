@@ -57,8 +57,8 @@ def _load_module(path: Path, name: str):
 
 
 def _lab():
-    """The experiment bench (``scripts/search_lab.py``) — discover() and the contract."""
-    return _load_module(ROOT / "scripts" / "search_lab.py", "search_lab")
+    """The experiment bench (``evals/search_lab.py``) — discover() and the contract."""
+    return _load_module(Path(__file__).resolve().parent / "search_lab.py", "search_lab")
 
 
 # The claude CLI's model alias for the latest Opus — same choice, for the same
@@ -239,8 +239,8 @@ def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--experiment", required=True,
                     help="challenger name(s) from experiments/, comma-separated")
-    ap.add_argument("--experiments", type=Path, default=ROOT / "experiments",
-                    help="experiments directory (default: experiments/)")
+    ap.add_argument("--experiments", type=Path, default=Path(__file__).resolve().parent / "experiments",
+                    help="experiments directory (default: evals/experiments/)")
     ap.add_argument("--sample", type=int, default=20,
                     help="queries per duel (each costs ≤ one claude call)")
     ap.add_argument("--k", type=int, default=8, help="threads shown per list")

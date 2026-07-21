@@ -36,7 +36,7 @@ from pathlib import Path
 from typing import Callable
 
 ROOT = Path(__file__).resolve().parent.parent
-EXPERIMENTS_DIR = ROOT / "experiments"
+EXPERIMENTS_DIR = Path(__file__).resolve().parent / "experiments"
 
 
 @dataclass
