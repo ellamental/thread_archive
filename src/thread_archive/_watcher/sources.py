@@ -417,13 +417,26 @@ def _opencode_default_db() -> Optional[Path]:
 # ── Cowork (nested local-agent-mode sessions) ───────────────────────────────
 
 
+def _cowork_base() -> Optional[Path]:
+    """The Claude desktop app's ``local-agent-mode-sessions`` root for this OS
+    (Electron stores it under the platform's per-user app-data dir), or ``None``
+    where the app has no known location."""
+    home = Path.home()
+    system = platform.system()
+    if system == "Darwin":
+        return home / "Library" / "Application Support" / "Claude" / "local-agent-mode-sessions"
+    if system == "Linux":
+        return home / ".config" / "Claude" / "local-agent-mode-sessions"
+    return None
+
+
 def discover_cowork_session_dirs() -> list[Path]:
-    """Org-scoped dirs under ``~/Library/Application Support/Claude/
-    local-agent-mode-sessions/<user>/<org>/`` (one level above the ``local_<id>/``
-    session folders), so the caller derives ``user_uuid`` from ``parent.name`` and
-    ``org_uuid`` from ``dir.name``."""
-    base = Path.home() / "Library" / "Application Support" / "Claude" / "local-agent-mode-sessions"
-    if not base.is_dir():
+    """Org-scoped dirs under the Claude app's ``local-agent-mode-sessions/
+    <user>/<org>/`` root (one level above the ``local_<id>/`` session folders), so
+    the caller derives ``user_uuid`` from ``parent.name`` and ``org_uuid`` from
+    ``dir.name``."""
+    base = _cowork_base()
+    if base is None or not base.is_dir():
         return []
     dirs: list[Path] = []
     for user_dir in base.iterdir():

@@ -359,16 +359,16 @@ def _default_restart() -> None:
     and ``kickstart -k`` on one would *run it now*, off schedule. Fail-soft per
     agent — a restart hiccup must not be mistaken for a failed update (the
     code on disk is already correct)."""
-    if sys.platform != "darwin":
-        return
-    from . import _launchd
+    from . import _service
 
-    for label in (_launchd.WATCHER_LABEL, _launchd.MCP_LABEL):
+    if not _service.can_schedule():
+        return
+    for agent in ("watcher", "mcp"):
         try:
-            if _launchd._plist_path(label).exists():
-                _launchd._restart_agent(label)
+            if _service.agent_installed(agent):
+                _service.restart_agent(agent)
         except Exception as e:  # noqa: BLE001 — per-agent, advisory
-            logger.warning("self-update: could not restart %s: %s", label, e)
+            logger.warning("self-update: could not restart %s agent: %s", agent, e)
 
 
 def _default_retire(home: Optional[str], tag: str) -> None:
@@ -547,11 +547,11 @@ def maybe_spawn_self_update(home: Optional[str] = None) -> bool:
         if not check_due(home):
             return False
         from ._config import resolve_paths
-        from ._launchd import _entry_path
+        from ._service import entry_path
 
         log_dir = resolve_paths(home).home / "logs"
         log_dir.mkdir(parents=True, exist_ok=True)
-        cmd = [str(_entry_path("archive")), "self-update"]
+        cmd = [str(entry_path("archive")), "self-update"]
         auto_apply = auto_apply_enabled(home)
         if not auto_apply:
             cmd.append("--check")

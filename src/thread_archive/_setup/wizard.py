@@ -271,7 +271,7 @@ def run_setup(
     save_config(cfg, args.home)
     _say("Done. Ask your agent: \"what have we discussed about …?\"")
     _say("  status anytime:   thread_archive")
-    if cfg["setup"]["watcher"] in ("launchd", "already-running"):
+    if cfg["setup"]["watcher"] in ("launchd", "systemd", "scheduled", "already-running"):
         _say("  web viewer:       http://127.0.0.1:8787")
     _say(f"  account exports:  drop ZIPs into {paths.dumps_dir}")
     if not machine.embeddings_installed():
@@ -352,8 +352,9 @@ def _offer_watcher(
     if args.skip_watcher:
         _say("Watcher skipped (--skip-watcher).")
         return "skipped"
-    if not machine.macos:
-        _say("Keep it fresh: the always-on watcher ships for macOS only right now.")
+    if not machine.can_schedule:
+        _say("Keep it fresh: the always-on watcher needs a supported service manager")
+        _say("  (launchd on macOS, systemd on Linux) — none detected on this host.")
         _say("  Without it, setup can explicitly enable catch-up ingest in the archive's")
         _say("  MCP client entry — searches stay close to current when those tools are used.")
         return "unavailable"
@@ -361,7 +362,7 @@ def _offer_watcher(
     if machine.watcher_running(args.home):
         _say("Keep it fresh: the always-on watcher is already installed and running.")
         return "already-running"
-    _say("Keep it fresh? A background watcher (launchd) tails these stores so new")
+    _say("Keep it fresh? A background watcher tails these stores so new")
     _say("conversations land within seconds, and serves the web viewer at http://127.0.0.1:8787.")
     _say("It also checks release tags about once a day and reports when an update is")
     _say("available. Applying it is explicit: `archive self-update`.")
@@ -378,8 +379,8 @@ def _offer_watcher(
         _say(f"  Could not install the watcher: {e}")
         _say("  Opted-in MCP catch-up still covers freshness; `archive daemon install` to retry.")
         return "failed"
-    _say("  Installed — always-on, restarts on crash, web viewer at http://127.0.0.1:8787.")
-    return "launchd"
+    _say("  Installed — always-on, restarts on failure, web viewer at http://127.0.0.1:8787.")
+    return machine.service_kind or "scheduled"
 
 
 def _conversation_count(home: Optional[str]) -> int:
@@ -410,8 +411,9 @@ def _offer_backup(args: argparse.Namespace, interactive: bool, machine: Machine)
     if args.skip_backup:
         _say("Nightly backup skipped (--skip-backup).")
         return {"status": "skipped"}
-    if not machine.macos:
-        _say("Backups: scheduled nightly backup ships for macOS only right now.")
+    if not machine.can_schedule:
+        _say("Backups: a scheduled nightly backup needs a supported service manager")
+        _say("  (launchd on macOS, systemd on Linux) — none detected on this host.")
         _say("  Back up by hand anytime with `archive backup <dest>` (a copy of truth/ IS")
         _say("  the backup), or point your own scheduler at `archive nightly <dest>`.")
         return {"status": "unavailable"}
@@ -425,7 +427,7 @@ def _offer_backup(args: argparse.Namespace, interactive: bool, machine: Machine)
              + (f" → {dest}." if dest else "."))
         return {"status": "already-installed", **({"dest": dest} if dest else {})}
 
-    _say("Schedule backups? A nightly job (launchd) mirrors the archive to a directory,")
+    _say("Schedule backups? A nightly job mirrors the archive to a directory,")
     _say("verifies it, and runs a restore drill.")
     dest = args.backup_dest or _ask_path(
         "  Where should nightly backups go? A directory of your choice,\n"
@@ -448,7 +450,7 @@ def _offer_backup(args: argparse.Namespace, interactive: bool, machine: Machine)
         return {"status": "failed"}
     _say(f"  Scheduled — nightly at 04:00 → {dest_path}: backup, verify, restore drill.")
     _say("  `thread_archive` shows the last run's result.")
-    return {"status": "launchd", "dest": str(dest_path)}
+    return {"status": machine.service_kind or "scheduled", "dest": str(dest_path)}
 
 
 def _offer_mcp(
@@ -522,7 +524,7 @@ def print_status(args: argparse.Namespace, *, machine: Optional[Machine] = None)
     convs = st["threads"] - topics
     topics_part = f" · {topics:,} topics" if topics else ""
     _say(f"  archive:  {convs:,} conversations{topics_part} · {st['events']:,} events · {st['fts_indexed']:,} indexed")
-    if machine.macos:
+    if machine.can_schedule:
         _say(f"  watcher:  {'running' if machine.watcher_running(args.home) else 'not running — `thread_archive setup` offers it'}")
     disabled = sorted(
         name for name, entry in cfg.get("sources", {}).items()
@@ -544,7 +546,7 @@ def print_status(args: argparse.Namespace, *, machine: Optional[Machine] = None)
         _say(f"  nightly:  FAILED ({stages}) {_age(n['at'])} → {n.get('dest')} — `archive status` has detail")
     elif n:
         _say(f"  nightly:  ok {_age(n['at'])} → {n.get('dest')}")
-    if machine.macos:
+    if machine.can_schedule:
         if machine.backup_running(args.home):
             dest = machine.backup_dest()
             _say("  schedule: nightly backup + verify + restore-drill installed"

@@ -154,10 +154,12 @@ class FakeMachine:
     ``machine`` parameter."""
 
     def __init__(
-        self, *, macos: bool = True, watcher: bool = False, backup: bool = False,
+        self, *, can_schedule: bool = True, service_kind: str = "launchd",
+        watcher: bool = False, backup: bool = False,
         backup_dest: Optional[str] = None, embeddings: bool = True,
     ):
-        self.macos = macos
+        self.can_schedule = can_schedule
+        self.service_kind = service_kind if can_schedule else None
         self._watcher, self._backup = watcher, backup
         self._backup_dest = backup_dest
         self._embeddings = embeddings
@@ -354,8 +356,8 @@ def test_offer_backup_yes_without_dest_skips(archive_home) -> None:
     assert machine.installed == []
 
 
-def test_offer_backup_non_darwin_is_unavailable(archive_home) -> None:
-    out = wizard._offer_backup(_args("setup"), False, FakeMachine(macos=False))
+def test_offer_backup_no_service_manager_is_unavailable(archive_home) -> None:
+    out = wizard._offer_backup(_args("setup"), False, FakeMachine(can_schedule=False))
     assert out == {"status": "unavailable"}
 
 

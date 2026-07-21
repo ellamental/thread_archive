@@ -121,6 +121,7 @@ testpaths = ["tests"]
 addopts = "-q --strict-markers -m 'not package and not beir and not quality_models'"
 markers = [
     "integration: opens real sockets or spawns real subprocesses; deselect (-m 'not integration') for a fully hermetic run, e.g. in a no-network sandbox",
+    "systemd: installs real systemd --user units and drives `systemctl --user`; gated behind THREAD_ARCHIVE_SYSTEMD_IT=1 (set in the CI `systemd` job) so it never runs — or clobbers a real setup — unless explicitly requested. Needs a live user systemd (a Linux box/VM, not the slim container).",
     "package: builds the wheel/sdist and installs into a throwaway venv; slow, selected explicitly with -m package",
     "beir: runs the BEIR retrieval-calibration harness (network download + torch + a full ingest); tens of minutes, selected explicitly with -m beir",
     "quality_models: the synthetic search-quality corpus under the real embedding + rerank models (fused pipeline); minutes of model loads, selected explicitly with -m quality_models",

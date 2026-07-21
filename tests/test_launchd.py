@@ -1,4 +1,4 @@
-"""The package-generated watcher LaunchAgent plist (``_launchd``).
+"""The package-generated LaunchAgent plists (``_service.launchd``).
 
 Pure-dict tests only — nothing here touches launchctl or the real
 ``~/Library/LaunchAgents``; the install/uninstall/restart wrappers are thin
@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from thread_archive._launchd import (
+from thread_archive._service.launchd import (
     BACKUP_LABEL,
     WATCHER_LABEL,
     backup_plist,

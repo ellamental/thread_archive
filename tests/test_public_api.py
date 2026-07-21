@@ -36,7 +36,8 @@ PUBLIC_MODULES = {"cli", "provider"}
 # in the same change, not a compatibility promise to anyone external.
 # Retrieval verbs (search/read/web) are deliberately absent and must stay
 # absent: the public MCP tools are the one retrieval surface, and the watcher
-# cohosts the viewer.
+# cohosts the viewer. `eval` is a measurement verb, not a retrieval one — it
+# scores search quality read-only and returns no results to the caller.
 CLI_VERBS = {
     "import",
     "import-export",
@@ -46,6 +47,7 @@ CLI_VERBS = {
     "reindex",
     "migrate",
     "status",
+    "eval",
     "backup",
     "verify",
     "restore-drill",

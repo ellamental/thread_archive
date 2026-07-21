@@ -2,6 +2,33 @@
 
 ## Unreleased
 
+- 2026-07-21: `archive eval` — a read-only search-quality self-checkup an operator
+  can run over their own archive ("does recall hold on my data"). Three protocols,
+  no external labels and nothing leaves the machine: `--titles` (default; each
+  thread's own title as the query — works day one), `--from-log` (real
+  thread_search→thread_read pairs mined from the tool-use trail — meaningful once
+  search has been used), and `--behavior` (zero-label click/reformulate/abandon
+  rates). Output is framed as a health check, not a proof — the title proxy has
+  vocabulary overlap built in and the click labels are incumbent-shaped, so both
+  read as findability/collapse alarms rather than precision scores. The scoring
+  core moves into the package (`_eval.py`) so the shipped command and the `evals/`
+  dev bench score off one code path; the bench's deeper tiers (LLM judges,
+  experiment arena, BEIR) stay dev-only.
+
+- 2026-07-21: Linux (Ubuntu) service support. The launchd-only daemon layer
+  becomes a modular service-backend registry (`_service/`): a platform-neutral
+  `AgentSpec` (`_service/spec.py`) that each backend renders — launchd on macOS
+  (`_service/launchd.py`, refactored from the old `_launchd.py`, plists
+  unchanged), systemd `--user` on Linux (`_service/systemd.py`: `.service` units
+  + a backup `.timer`, `StandardOutput=append:` logs, linger). Backends
+  `register()` behind a `ServiceBackend` protocol and a resolver picks the one
+  that fits the host; `cli`/`_setup.machine`/`_update` go through the front, never
+  a concrete backend. `Machine.macos` → `Machine.can_schedule` (+ `service_kind`).
+  Provider store paths gain Linux branches (cowork sessions, VS Code exthost
+  logs). A real-systemd integration lane runs in CI (`.github/workflows/ci.yml`
+  `systemd` job); the render + `systemctl`-stub tests run everywhere. Adding a
+  platform (Windows) is now a drop-in backend. See `claude-install-ubuntu.md`.
+
 - 2026-07-21: The archive no longer knows thread-librarian exists. The relevant-subjects
   search lens moves in-tree (`_retrieval/subjects.py` — it was always a pure projection
   over the archive's own `topic_messages`/`threads`), so search headers and the viewer

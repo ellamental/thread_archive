@@ -9,6 +9,14 @@ workbench, and the ladder below is the order to climb it.
 Each script's docstring is its own full manual (protocols, biases, caveats);
 this README is the map.
 
+The scoring core these scripts share — the case protocols (title sampling, log
+mining) and the MRR/recall loop — lives in the package at
+`thread_archive._eval`, so the shipped `archive eval` command (the operator's
+read-only self-checkup over their own archive) and this dev bench score off one
+code path. The bench is the *rest* of the ladder: the CI gate, the experiment
+runner, and the LLM-judged tiers that answer "should we change ranking," none
+of which ship.
+
 ## The quality ladder
 
 Fastest tier first — climb until the evidence matches the stakes. (The

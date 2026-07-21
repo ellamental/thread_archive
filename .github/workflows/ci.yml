@@ -64,6 +64,44 @@ jobs:
       - name: Coverage floors
         run: python scripts/coverage_gate.py coverage.json
 
+  # The Linux service backend, exercised against a REAL user systemd — the one
+  # thing the unit suite can't prove (the ubuntu-latest runner is a full VM with
+  # systemd as PID1, but the runner user has no user manager until we enable
+  # linger). Keeps the systemd port from silently rotting: a refactor that breaks
+  # `_service/systemd.py` fails here, not just a manual VM run. The unit-level
+  # render + stub tests already run in the `python` job on every platform.
+  systemd:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      - name: Install
+        run: pip install -e ".[dev]"
+
+      # Bring up the runner user's systemd instance (+ its runtime dir / bus),
+      # which `systemctl --user` needs and a fresh non-login runner lacks.
+      - name: Bring up the user service manager
+        run: |
+          sudo loginctl enable-linger "$USER"
+          for _ in $(seq 1 30); do
+            [ -S "/run/user/$(id -u)/bus" ] && break
+            sleep 1
+          done
+          XDG_RUNTIME_DIR=/run/user/$(id -u) systemctl --user is-system-running || true
+
+      - name: Real systemd lifecycle
+        env:
+          THREAD_ARCHIVE_SYSTEMD_IT: "1"
+        run: |
+          export XDG_RUNTIME_DIR=/run/user/$(id -u)
+          pytest -m systemd -p no:cacheprovider tests/test_systemd_integration.py
+
   # The web viewer's gates: types, committed-build freshness, and component
   # behavior with coverage floors.
   frontend:

@@ -31,11 +31,10 @@ from typing import Optional
 
 import pytest
 
-from thread_archive import _launchd
-from thread_archive._launchd import BACKUP_LABEL, MCP_LABEL, WATCHER_LABEL
 from thread_archive._ops.health import record_health
+from thread_archive._service import launchd as _launchd
+from thread_archive._service.launchd import BACKUP_LABEL, MCP_LABEL, WATCHER_LABEL
 from thread_archive._setup import clients, wizard
-from thread_archive._setup import machine as machine_mod
 from thread_archive._setup.machine import Machine
 from thread_archive._watcher.base import SourceDiscovery, SourceWatcher, WatchResult
 from thread_archive._watcher.lazy import acquire_ingest_owner
@@ -140,12 +139,6 @@ def _darwin(monkeypatch, module=_launchd) -> None:
     _force_platform(monkeypatch, module, "darwin")
 
 
-class _MacMachine(Machine):
-    """The real host probes with the macOS gate answered yes, so the
-    agent-covers-this-home logic is exercised on any kind of host."""
-
-    macos = True
-
 
 # ── fakes ────────────────────────────────────────────────────────────────────
 
@@ -159,11 +152,13 @@ class FakeMachine:
     """
 
     def __init__(
-        self, *, macos: bool = True, watcher: bool = False, backup: bool = False,
+        self, *, can_schedule: bool = True, service_kind: str = "launchd",
+        watcher: bool = False, backup: bool = False,
         backup_dest: Optional[str] = None, embeddings: bool = True,
         install_fails: Optional[str] = None,
     ):
-        self.macos = macos
+        self.can_schedule = can_schedule
+        self.service_kind = service_kind if can_schedule else None
         self._watcher, self._backup = watcher, backup
         self._backup_dest = backup_dest
         self._embeddings = embeddings
@@ -713,9 +708,9 @@ def test_offer_watcher_skip_flag(archive_home, capsys) -> None:
     assert machine.installed == []
 
 
-def test_offer_watcher_non_darwin_unavailable(archive_home) -> None:
+def test_offer_watcher_no_service_manager_unavailable(archive_home) -> None:
     assert wizard._offer_watcher(
-        _args("setup"), False, FakeMachine(macos=False)
+        _args("setup"), False, FakeMachine(can_schedule=False)
     ) == "unavailable"
 
 
@@ -847,63 +842,70 @@ def _install_plist(monkeypatch, tmp_path, label, home):
     )
 
 
-def test_watcher_running_non_darwin(monkeypatch) -> None:
-    _force_platform(monkeypatch, machine_mod, "linux")
+def test_watcher_running_no_service_manager(monkeypatch) -> None:
+    # A platform with no supported service manager → nothing is scheduled.
+    _force_platform(monkeypatch, _launchd, "sunos5")
     assert Machine().watcher_running() is False
 
 
-def test_watcher_running_not_loaded(stub_bin) -> None:
+def test_watcher_running_not_loaded(stub_bin, monkeypatch) -> None:
+    _darwin(monkeypatch)
     _launchctl_stub(stub_bin, {"print": (1, "", "")})
-    assert _MacMachine().watcher_running() is False
+    assert Machine().watcher_running() is False
 
 
 def test_watcher_running_matches_this_home(tmp_path, monkeypatch, stub_bin) -> None:
+    _darwin(monkeypatch)
     _launchctl_stub(stub_bin, {"print": (0, "", "")})
     agent_home = str(tmp_path / "agent")
     _install_plist(monkeypatch, tmp_path, WATCHER_LABEL, agent_home)
-    assert _MacMachine().watcher_running(agent_home) is True
-    assert _MacMachine().watcher_running(str(tmp_path / "elsewhere")) is False
+    assert Machine().watcher_running(agent_home) is True
+    assert Machine().watcher_running(str(tmp_path / "elsewhere")) is False
 
 
 def test_watcher_running_unreadable_plist_assumes_default(tmp_path, monkeypatch, stub_bin) -> None:
+    _darwin(monkeypatch)
     _launchctl_stub(stub_bin, {"print": (0, "", "")})
     monkeypatch.setenv("HOME", str(tmp_path))  # no plist under this home
     monkeypatch.delenv("THREAD_ARCHIVE_HOME", raising=False)
-    assert _MacMachine().watcher_running() is True  # loaded, plist unreadable → default
+    assert Machine().watcher_running() is True  # loaded, plist unreadable → default
     # …and default wiring never covers a non-default home.
-    assert _MacMachine().watcher_running(str(tmp_path / "custom")) is False
+    assert Machine().watcher_running(str(tmp_path / "custom")) is False
 
 
-def test_backup_running_non_darwin(monkeypatch) -> None:
-    _force_platform(monkeypatch, machine_mod, "linux")
+def test_backup_running_no_service_manager(monkeypatch) -> None:
+    _force_platform(monkeypatch, _launchd, "sunos5")
     assert Machine().backup_running() is False
 
 
-def test_backup_running_not_loaded(stub_bin) -> None:
+def test_backup_running_not_loaded(stub_bin, monkeypatch) -> None:
+    _darwin(monkeypatch)
     _launchctl_stub(stub_bin, {"print": (1, "", "")})
-    assert _MacMachine().backup_running() is False
+    assert Machine().backup_running() is False
 
 
 def test_backup_running_no_home_env_reads_as_default(tmp_path, monkeypatch, stub_bin) -> None:
+    _darwin(monkeypatch)
     # The host/ install shape: a plist with no home env is read as the default
     # wiring, so it counts as covering the default home.
     _launchctl_stub(stub_bin, {"print": (0, "", "")})
     _install_plist(monkeypatch, tmp_path, BACKUP_LABEL, None)
     monkeypatch.delenv("THREAD_ARCHIVE_HOME", raising=False)
-    assert _MacMachine().backup_running() is True
+    assert Machine().backup_running() is True
     # The process env is not evidence of the agent's home: even with
     # $THREAD_ARCHIVE_HOME pinned to a custom home (open_archive does this),
     # the env-less agent still reads as covering only the default home.
     custom = tmp_path / "custom"
     monkeypatch.setenv("THREAD_ARCHIVE_HOME", str(custom))
-    assert _MacMachine().backup_running(str(custom)) is False
+    assert Machine().backup_running(str(custom)) is False
 
 
 def test_backup_running_unreadable_plist_assumes_default(tmp_path, monkeypatch, stub_bin) -> None:
+    _darwin(monkeypatch)
     _launchctl_stub(stub_bin, {"print": (0, "", "")})
     monkeypatch.setenv("HOME", str(tmp_path))  # no plist under this home
     monkeypatch.delenv("THREAD_ARCHIVE_HOME", raising=False)
-    assert _MacMachine().backup_running() is True
+    assert Machine().backup_running() is True
 
 
 def test_machine_reads_this_installs_optional_packages() -> None:
@@ -924,7 +926,7 @@ def test_machine_installs_the_real_agents(tmp_path, monkeypatch, stub_bin) -> No
     log = _launchctl_stub(stub_bin, {"bootout": (1, "", ""), "bootstrap": (0, "", "")})
     arc = str(tmp_path / "arc")
 
-    m = _MacMachine()
+    m = Machine()
     m.install_watcher(arc)
     m.install_backup("/Volumes/B/arc", arc)
 

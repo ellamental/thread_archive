@@ -39,7 +39,7 @@ def test_all_subcommands_present() -> None:
     sub = next(a for a in parser._actions if hasattr(a, "choices") and a.choices)
     assert set(sub.choices) == {
         "import", "import-export", "providers", "watch", "reindex", "migrate", "embed",
-        "status", "backup", "verify", "repair", "restore-drill", "restore",
+        "status", "eval", "backup", "verify", "repair", "restore-drill", "restore",
         "nightly", "coverage", "mirror", "redact", "unredact", "daemon",
         "fix-import", "self-update",
     }
@@ -81,6 +81,16 @@ def test_embed_cli_runs_for_real_model_free(seeded, capsys) -> None:
     assert main(["embed", "--home", str(seeded)]) == 0
     out = capsys.readouterr().out
     assert "rebuild=False" in out and "embedded 0" in out
+
+
+def test_eval_behavior_cli_runs_over_a_real_home(seeded, capsys) -> None:
+    """The `eval` verb opens the real archive and reports; --behavior needs no model
+    arms, so it drives cmd_eval end-to-end (open, thread count, trail read) fast.
+    A seeded home has no thread_search trail, so the no-searches branch is exercised."""
+    assert main(["eval", "--behavior", "--home", str(seeded)]) == 0
+    out = capsys.readouterr().out
+    assert "Search health" in out
+    assert "No searches recorded" in out
 
 
 def test_backup_cli_mirrors_the_real_truth(seeded, tmp_path, capsys) -> None:
@@ -276,11 +286,11 @@ def test_repair_cli_dry_run_then_applies(seeded, capsys) -> None:
 
 
 def test_daemon_backup_install_dispatches(monkeypatch, capsys) -> None:
-    from thread_archive import _launchd
+    from thread_archive import _service
 
     seen = {}
     monkeypatch.setattr(
-        _launchd, "install_backup",
+        _service, "install_backup",
         lambda dest, home=None, **kw: seen.update(dest=dest, home=home, **kw)
         or "/plist/com.thread-archive.backup.plist",
     )

@@ -33,6 +33,7 @@ from __future__ import annotations
 import glob
 import json
 import logging
+import platform
 import re
 from collections import defaultdict
 from datetime import datetime
@@ -68,9 +69,23 @@ GRACE_SECONDS = 300
 _BARE_COMMAND = re.compile(r"^/[\w:-]+\s*$")
 
 
+def _vscode_user_dir() -> Optional[Path]:
+    """VS Code's per-user data dir for this OS (its logs live under it), or
+    ``None`` where the layout is unknown."""
+    home = Path.home()
+    system = platform.system()
+    if system == "Darwin":
+        return home / "Library" / "Application Support"
+    if system == "Linux":
+        return home / ".config"
+    return None
+
+
 def _log_globs() -> list[str]:
     """Glob patterns for the Claude Code exthost logs under VS Code (+ Insiders)."""
-    base = Path.home() / "Library" / "Application Support"
+    base = _vscode_user_dir()
+    if base is None:
+        return []
     leaf = ("logs", "*", "window*", "exthost", "Anthropic.claude-code", "Claude VSCode.log")
     return [str(base.joinpath(app, *leaf)) for app in ("Code - Insiders", "Code")]
 

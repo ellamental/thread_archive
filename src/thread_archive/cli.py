@@ -2,12 +2,13 @@
 
 **Private operational tooling, not public API.** The package's public surface
 is the retrieval MCP tools plus the truth format (see the package docstring);
-this CLI is the process seam launchd, cron, and operators use to run the
-private machinery — ingest (``import``, ``import-export``, ``watch``,
+this CLI is the process seam the service manager, cron, and operators use to run
+the private machinery — ingest (``import``, ``import-export``, ``watch``,
 ``embed``), the backup kit (``backup``, ``verify``, ``restore-drill``,
 ``restore``, ``reindex``, ``migrate``, ``repair``, ``status``, ``nightly``, ``coverage``),
-and the LaunchAgent lifecycle (``daemon``). Verbs may change without
-external notice, but they are *wired into* the LaunchAgent plists, lab's cron
+the search-quality self-checkup (``eval`` — read-only, scores retrieval on the
+operator's own data), and the service-agent lifecycle (``daemon``). Verbs may change without
+external notice, but they are *wired into* the service manifests, lab's cron
 script, the /ci skill, and the monitor's heartbeat contract — renaming one
 means updating those in the same change (``tests/test_public_api.py`` pins the
 set so the change is deliberate).
@@ -236,20 +237,20 @@ def cmd_watch(args: argparse.Namespace) -> int:
 
 
 def cmd_daemon(args: argparse.Namespace) -> int:
-    from . import _launchd
+    from . import _service
 
     if args.mcp:
         # The shared MCP server: one always-on streamable-HTTP server all clients
         # connect to (point each client's MCP config at the URL below), instead of
         # a per-client stdio subprocess each loading its own retrieval model.
         if args.action == "install":
-            plist = _launchd.install_mcp(
+            path = _service.install_mcp(
                 args.home,
                 host=args.http_host,
                 port=args.http_port,
                 ingest=args.mcp_ingest,
             )
-            print(f"installed {_launchd.MCP_LABEL} ({plist})")
+            print(f"installed {_service.label('mcp')} ({path})")
             print(f"shared MCP server: http://{args.http_host}:{args.http_port}/mcp")
             print(
                 "catch-up ingest: "
@@ -258,19 +259,19 @@ def cmd_daemon(args: argparse.Namespace) -> int:
             print("point every client's MCP config at that URL "
                   '(type "http") instead of the archive-mcp stdio command.')
         elif args.action == "uninstall":
-            _launchd.uninstall_mcp()
-            print(f"uninstalled {_launchd.MCP_LABEL}")
+            _service.uninstall_mcp()
+            print(f"uninstalled {_service.label('mcp')}")
         elif args.action == "restart":
-            _launchd.restart_mcp()
-            print(f"restarted {_launchd.MCP_LABEL}")
+            _service.restart_mcp()
+            print(f"restarted {_service.label('mcp')}")
         else:  # status
-            print(_launchd.mcp_status())
+            print(_service.mcp_status())
         return 0
 
     if args.backup:
-        # The scheduled backup pipeline (backup → verify → restore drill) as
-        # a launchd agent — the productized form of what host/ wires by hand.
-        # install needs --dest (a directory launchd can reach unattended).
+        # The scheduled backup pipeline (backup → verify → restore drill) as a
+        # scheduled service — the productized form of what host/ wires by hand.
+        # install needs --dest (a directory the scheduler can reach unattended).
         if args.action == "install":
             if not args.dest:
                 print(
@@ -279,40 +280,40 @@ def cmd_daemon(args: argparse.Namespace) -> int:
                 )
                 return 2
             hour, minute = _parse_hhmm(args.at or "04:00")
-            plist = _launchd.install_backup(
+            path = _service.install_backup(
                 args.dest, args.home, hour=hour, minute=minute,
                 notify_url=args.notify_url,
             )
-            print(f"installed {_launchd.BACKUP_LABEL} ({plist})")
+            print(f"installed {_service.label('backup')} ({path})")
             print(
                 f"nightly at {hour:02d}:{minute:02d} → {args.dest}: "
                 "backup, verify, restore drill."
             )
         elif args.action == "uninstall":
-            _launchd.uninstall_backup()
-            print(f"uninstalled {_launchd.BACKUP_LABEL}")
+            _service.uninstall_backup()
+            print(f"uninstalled {_service.label('backup')}")
         elif args.action == "restart":
-            _launchd.restart_backup()
-            print(f"restarted {_launchd.BACKUP_LABEL}")
+            _service.restart_backup()
+            print(f"restarted {_service.label('backup')}")
         else:  # status
-            print(_launchd.backup_status())
+            print(_service.backup_status())
         return 0
 
     if args.action == "install":
-        plist = _launchd.install_watcher(args.home, web=args.web, web_port=args.web_port)
-        print(f"installed {_launchd.WATCHER_LABEL} ({plist})")
-        print("the watcher is always-on (RunAtLoad); `archive daemon status` to check,")
+        path = _service.install_watcher(args.home, web=args.web, web_port=args.web_port)
+        print(f"installed {_service.label('watcher')} ({path})")
+        print("the watcher is always-on (starts at login); `archive daemon status` to check,")
         print("`archive daemon restart` to apply a code edit.")
         if args.web:
             print(f"web viewer: http://127.0.0.1:{args.web_port}")
     elif args.action == "uninstall":
-        _launchd.uninstall_watcher()
-        print(f"uninstalled {_launchd.WATCHER_LABEL}")
+        _service.uninstall_watcher()
+        print(f"uninstalled {_service.label('watcher')}")
     elif args.action == "restart":
-        _launchd.restart_watcher()
-        print(f"restarted {_launchd.WATCHER_LABEL}")
+        _service.restart_watcher()
+        print(f"restarted {_service.label('watcher')}")
     else:  # status
-        print(_launchd.watcher_status())
+        print(_service.watcher_status())
     return 0
 
 
@@ -1128,6 +1129,138 @@ def report_mirror(r: dict) -> int:
     return 0 if r["ok"] else 1
 
 
+def cmd_eval(args: argparse.Namespace) -> int:
+    """Measure search quality on this archive — a read-only self-checkup.
+
+    Scores the search stack as installed (a lexical-only box measures lexical;
+    a box with the [embeddings] extra measures the fused pipeline) against
+    cases built from the operator's own data. Three protocols, no external
+    labels and nothing leaves the machine: `titles` (each thread's own title as
+    the query — works on day one), `from-log` (real thread_search→thread_read
+    pairs mined from the tool-use trail — meaningful once search has been used),
+    and `behavior` (zero-label click/reformulate/abandon rates). The deeper
+    tiers of the quality ladder (LLM judges, experiment arena, BEIR) stay in the
+    dev bench under evals/ — they answer "should we change ranking," not "does
+    search work on my data."
+    """
+    from . import _api as api
+    from . import _eval
+    from ._store import use_session
+
+    api.open_archive(home=args.home)
+
+    with use_session() as s:
+        from sqlalchemy import text as sa_text
+
+        threads = s.execute(sa_text(
+            "SELECT count(*) FROM threads WHERE NOT exclude_from_search "
+            "AND thread_type = 'conversation'"
+        )).scalar_one()
+
+    report: dict = {"threads": threads}
+
+    if args.behavior:
+        with use_session() as s:
+            report["protocol"] = "behavior"
+            report["behavior"] = _eval.behavior_report(_eval._trail_events(s))
+        return report_eval(report, as_json=args.json)
+
+    if args.from_log is not None:
+        report["protocol"] = "from-log"
+        cases = _eval.mine_log_cases(args.from_log, args.seed)
+        exclude = None
+    else:
+        report["protocol"] = "titles"
+        cases = _eval.sample_title_cases(args.titles, args.seed)
+        exclude = _eval.EXCLUDE_META
+
+    if cases:
+        report["scores"] = _eval.evaluate(
+            cases, limit=args.limit, rerank=None, content_type=None,
+            exclude_content_types=exclude,
+        )
+    else:
+        report["scores"] = {"n": 0}
+    return report_eval(report, as_json=args.json)
+
+
+def report_eval(report: dict, *, as_json: bool = False) -> int:
+    """Print the search-health report for a ``cmd_eval`` result; return its exit code."""
+    if as_json:
+        import json
+
+        print(json.dumps(report, indent=2))
+        return 0
+
+    protocol = report["protocol"]
+    threads = report.get("threads")
+    header = "Search health — measured on your own archive"
+    if threads is not None:
+        header += f" ({threads:,} conversation threads)"
+    print(header)
+    print()
+
+    if protocol == "behavior":
+        b = report["behavior"]
+        if not b["n_searches"]:
+            print("No searches recorded in the tool-use trail yet.")
+            print("Behavioral signals appear once agents have run thread_search "
+                  "against this archive.")
+            return 0
+        print(f"Behavior — {b['n_searches']} searches across {b['n_sessions']} sessions")
+        print(f"  click:       {b['click_rate']:.0%}   (search led to opening a result)")
+        print(f"  reformulate: {b['reformulation_rate']:.0%}   (no open; searched again)")
+        print(f"  abandon:     {b['abandonment_rate']:.0%}   (no open; session ended)")
+        print(f"  reads/click: {b['reads_per_click']:.1f}")
+        print()
+        print("  Proxies, not verdicts: a click isn't proof of a good answer, and an")
+        print("  abandon isn't always a failure (the snippet may have sufficed). The")
+        print("  value is the trend over time, not any single rate.")
+        return 0
+
+    r = report["scores"]
+    if not r["n"]:
+        if protocol == "from-log":
+            print("No search→open pairs in the tool-use trail yet.")
+            print("This protocol scores against your own past searches, so it becomes")
+            print("meaningful after thread_search has been used across a few sessions.")
+            print("Run `archive eval` (title recall) to check search in the meantime.")
+        else:
+            print("No titled conversation threads with enough content to score yet.")
+            print("Import some conversations first (`archive import` / `archive watch`).")
+        return 0
+
+    recall = r["recall"]
+    if protocol == "from-log":
+        print("Protocol: your searches — real thread_search→thread_read pairs from the trail")
+    else:
+        print("Protocol: title recall — each thread's own title used as the query")
+    print(f"  cases: {r['n']}   MRR: {r['mrr']:.2f}   "
+          + "   ".join(f"R@{k}: {recall[k]:.2f}" for k in _eval_recall_ks(recall)))
+    print(f"  latency p50: {r['latency_p50_ms']:.0f} ms")
+    if r.get("per_shape"):
+        print()
+        for shape, st in r["per_shape"].items():
+            print(f"  {shape:>15}: n={st['n']:<4} MRR={st['mrr']:.2f}")
+    print()
+    if protocol == "from-log":
+        print("  What this means: for each past search, does the thread you opened rank")
+        print("  in the top k now? These labels are shaped by what search already")
+        print("  surfaced — a strong score confirms recall held; a collapse is the real")
+        print("  signal that something broke.")
+    else:
+        print("  What this means: R@10 is the share of threads whose own content ranks")
+        print("  in the top 10 when you search their title. Titles share vocabulary with")
+        print("  their thread, so read this as \"are my threads findable at all\" — a")
+        print("  health check, not a precision score.")
+    return 0
+
+
+def _eval_recall_ks(recall: dict) -> list:
+    """Recall cutoffs in ascending order (dict keys survive a JSON round-trip as str)."""
+    return sorted(recall, key=lambda k: int(k))
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="archive",
@@ -1248,6 +1381,32 @@ def build_parser() -> argparse.ArgumentParser:
     p_status = sub.add_parser("status", help="archive health / paths / counts")
     _add_home_arg(p_status)
     p_status.set_defaults(func=cmd_status)
+
+    p_eval = sub.add_parser(
+        "eval",
+        help="measure search quality on your own archive (read-only self-checkup)",
+    )
+    _add_home_arg(p_eval)
+    eval_proto = p_eval.add_mutually_exclusive_group()
+    eval_proto.add_argument(
+        "--titles", type=int, metavar="N", default=200,
+        help="title-recall proxy: sample N titled threads, query each by its own "
+             "title, score whether its content ranks (the default; works day one)",
+    )
+    eval_proto.add_argument(
+        "--from-log", type=int, metavar="N", default=None,
+        help="score against your own usage: up to N real thread_search→thread_read "
+             "pairs mined from the tool-use trail (needs accumulated search history)",
+    )
+    eval_proto.add_argument(
+        "--behavior", action="store_true",
+        help="no ranking run: report click / reformulate / abandon rates per search",
+    )
+    p_eval.add_argument("--limit", type=int, default=20,
+                        help="results considered per query (recall ceiling)")
+    p_eval.add_argument("--seed", type=int, default=7, help="case sampling seed")
+    p_eval.add_argument("--json", action="store_true", help="emit the report as JSON")
+    p_eval.set_defaults(func=cmd_eval)
 
     p_backup = sub.add_parser("backup", help="mirror the JSONL truth dir to a backup destination")
     _add_home_arg(p_backup)
@@ -1432,27 +1591,26 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_daemon = sub.add_parser(
         "daemon",
-        help="manage the archive LaunchAgents (macOS): the watcher (the upgrade "
-             "from lazy MCP-cohosted ingest to always-fresh), or with --mcp the "
-             "shared MCP server (one HTTP server for all clients), --backup the "
-             "scheduled nightly backup pipeline",
+        help="manage the archive service agents (launchd on macOS, systemd on "
+             "Linux): the watcher (the upgrade from lazy MCP-cohosted ingest to "
+             "always-fresh), or with --mcp the shared MCP server (one HTTP server "
+             "for all clients), --backup the scheduled nightly backup pipeline",
     )
     _add_home_arg(p_daemon)
     p_daemon.add_argument(
         "action", choices=["install", "uninstall", "restart", "status"],
-        help="install writes the plist (pointing at this environment's console "
-             "script) and (re)loads the agent; restart applies a code edit to the "
-             "running agent",
+        help="install writes the service manifest (pointing at this environment's "
+             "console script) and (re)loads the agent; restart applies a code edit "
+             "to the running agent",
     )
     p_daemon.add_argument(
         "--mcp", action="store_true",
-        help="target the shared MCP server agent (com.thread-archive.mcp) instead "
-             "of the watcher",
+        help="target the shared MCP server agent instead of the watcher",
     )
     p_daemon.add_argument(
         "--backup", action="store_true",
-        help="target the nightly-backup agent (com.thread-archive.backup): the "
-             "scheduled backup → verify → restore-drill pipeline (`archive nightly`)",
+        help="target the nightly-backup agent: the scheduled backup → verify → "
+             "restore-drill pipeline (`archive nightly`)",
     )
     p_daemon.add_argument(
         "--dest", default=None, metavar="PATH",
@@ -1474,7 +1632,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_daemon.add_argument(
         "--web-port", type=int, default=8787, help="cohosted viewer port (default 8787)"
     )
-    from ._launchd import MCP_DEFAULT_HOST, MCP_DEFAULT_PORT
+    from ._service import MCP_DEFAULT_HOST, MCP_DEFAULT_PORT
     p_daemon.add_argument(
         "--http-host", default=MCP_DEFAULT_HOST,
         help="--mcp only: shared MCP server bind host (default 127.0.0.1)",

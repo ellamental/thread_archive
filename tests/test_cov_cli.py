@@ -35,8 +35,9 @@ from typing import Callable, Optional
 
 import pytest
 
-from thread_archive import _launchd, _update, cli
-from thread_archive._launchd import BACKUP_LABEL, MCP_LABEL, WATCHER_LABEL
+from thread_archive import _update, cli
+from thread_archive._service import launchd as _launchd
+from thread_archive._service.launchd import BACKUP_LABEL, MCP_LABEL, WATCHER_LABEL
 from thread_archive.cli import main
 
 from .helpers import (
@@ -1311,6 +1312,87 @@ def test_status_self_update_blocked_is_shouted(capsys) -> None:
     assert cli.report_status(st) == 0
     out = capsys.readouterr().out
     assert "update:  BLOCKED: truth format 4 > this install reads 3" in out
+
+
+# ── eval: the search-health self-checkup report ──────────────────────────────
+
+
+def _eval_scores(n=40):
+    return {"n": n, "mrr": 0.42,
+            "recall": {1: 0.30, 5: 0.55, 10: 0.62, 20: 0.70},
+            "per_shape": {"natural": {"n": n - 1, "mrr": 0.40},
+                          "code": {"n": 1, "mrr": 0.50}},
+            "latency_p50_ms": 1200.0}
+
+
+def test_report_eval_titles_frames_as_findability_not_precision(capsys) -> None:
+    rc = cli.report_eval({"threads": 5960, "protocol": "titles",
+                          "scores": _eval_scores()})
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "5,960 conversation threads" in out
+    assert "title recall" in out
+    assert "R@10: 0.62" in out
+    assert "findable at all" in out          # the honest framing, not "proof"
+    assert "natural" in out and "code" in out  # per-shape breakdown
+
+
+def test_report_eval_from_log_frames_as_collapse_alarm(capsys) -> None:
+    rc = cli.report_eval({"threads": 10, "protocol": "from-log",
+                          "scores": _eval_scores(15)})
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "your searches" in out
+    assert "collapse is the real" in out
+
+
+def test_report_eval_recall_keys_survive_json_roundtrip(capsys) -> None:
+    """--json serializes recall keys to strings; the text path must still order them."""
+    scores = _eval_scores()
+    scores["recall"] = {str(k): v for k, v in scores["recall"].items()}
+    rc = cli.report_eval({"threads": 1, "protocol": "titles", "scores": scores})
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "R@1: 0.30   R@5: 0.55   R@10: 0.62   R@20: 0.70" in out
+
+
+def test_report_eval_titles_empty_points_at_import(capsys) -> None:
+    rc = cli.report_eval({"threads": 0, "protocol": "titles", "scores": {"n": 0}})
+    assert rc == 0
+    assert "Import some conversations" in capsys.readouterr().out
+
+
+def test_report_eval_from_log_empty_explains_the_trail_dependency(capsys) -> None:
+    rc = cli.report_eval({"threads": 5, "protocol": "from-log", "scores": {"n": 0}})
+    assert rc == 0
+    assert "past searches" in capsys.readouterr().out
+
+
+def test_report_eval_behavior_reports_rates(capsys) -> None:
+    b = {"n_searches": 100, "n_sessions": 20, "clicked": 17, "reformulated": 71,
+         "abandoned": 12, "click_rate": 0.17, "reformulation_rate": 0.71,
+         "abandonment_rate": 0.12, "reads_per_click": 1.9}
+    rc = cli.report_eval({"threads": 5960, "protocol": "behavior", "behavior": b})
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "click:       17%" in out
+    assert "Proxies, not verdicts" in out
+
+
+def test_report_eval_behavior_empty_is_explained(capsys) -> None:
+    b = {"n_searches": 0, "n_sessions": 0, "clicked": 0, "reformulated": 0,
+         "abandoned": 0, "click_rate": 0.0, "reformulation_rate": 0.0,
+         "abandonment_rate": 0.0, "reads_per_click": 0.0}
+    rc = cli.report_eval({"threads": 5960, "protocol": "behavior", "behavior": b})
+    assert rc == 0
+    assert "No searches recorded" in capsys.readouterr().out
+
+
+def test_report_eval_json_emits_the_raw_report(capsys) -> None:
+    report = {"threads": 3, "protocol": "titles", "scores": _eval_scores()}
+    rc = cli.report_eval(report, as_json=True)
+    assert rc == 0
+    assert json.loads(capsys.readouterr().out)["protocol"] == "titles"
 
 
 # ── coverage: source states, disabled/unwatched, skips, failure ──────────────
