@@ -1283,13 +1283,29 @@ def read_thread(
             return "context_turns must be zero or greater."
         offset = max(0, focus_turn - context_turns)
 
-    # after_event → offset: resume from the turn AFTER the last turn at/with that id.
+    # after_event → offset: resume from the turn AFTER the one that renders that
+    # event. Match the rendered event id first — once _slot_queued_events relocates a
+    # backfilled event (tail-end id, mid-thread slot), a numeric id compare resumes by
+    # id order rather than display order and skips (or overshoots past) real turns.
     if around_event is None and after_event is not None:
-        last_before = -1
+        resume_turn = None
         for i, turn in enumerate(turns):
-            if any((st["id"] or 0) <= after_event for st in turn):
-                last_before = i
-        offset = last_before + 1
+            if any(after_event in st.get("event_ids", [st["id"]]) for st in turn):
+                resume_turn = i
+        if resume_turn is not None:
+            offset = resume_turn + 1
+        else:
+            # after_event is hidden — indexed but not rendered in any turn (lifecycle
+            # noise, text deduped against an earlier turn). Approximate its slot by the
+            # last turn whose rendered events sit at/before it, and resume after that.
+            last_before = -1
+            for i, turn in enumerate(turns):
+                if any(
+                    (eid or 0) <= after_event
+                    for st in turn for eid in st.get("event_ids", [st["id"]])
+                ):
+                    last_before = i
+            offset = last_before + 1
 
     total = len(turns)
     if offset < 0:
@@ -1602,9 +1618,15 @@ def read_thread_structured(
             select(Event).where(Event.thread_id == resolved).order_by(Event.id)
         ).scalars().all()
     event_count = len(events)
-    started_at = events[0].occurred_at if events else None
-    ended_at = events[-1].occurred_at if events else None
-    events = _absorb_stream_deltas(_slot_queued_events(events))
+    # started_at/ended_at are the first/last event's occurred_at in *display* order, so
+    # they must be read after _slot_queued_events relocates backfilled events — a
+    # steering message with a tail-end id but an early timestamp would otherwise report
+    # itself as the thread's end. (Slotting preserves the count, so event_count above,
+    # which must reflect the full pre-absorb log, is unaffected.)
+    slotted = _slot_queued_events(events)
+    started_at = slotted[0].occurred_at if slotted else None
+    ended_at = slotted[-1].occurred_at if slotted else None
+    events = _absorb_stream_deltas(slotted)
     rendered_text = _rendered_text(events)
     render = _render_for(thread)
 
