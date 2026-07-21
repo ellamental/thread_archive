@@ -33,6 +33,6 @@ from __future__ import annotations
 # the truth format + the provider plugin API only; everything else is free to
 # change without notice.
 # Don't bump past 0.0.x as part of release mechanics.
-__version__ = "0.0.5"
+__version__ = "0.0.6"
 
 __all__ = ["__version__"]
