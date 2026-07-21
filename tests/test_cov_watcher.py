@@ -32,6 +32,7 @@ from sqlalchemy import text as sa_text
 import thread_archive._ops.health as health
 import thread_archive._watcher.exthost as ex
 import thread_archive._watcher.lazy as lazy
+import thread_archive._watcher.paths as wpaths
 import thread_archive._watcher.sources as src
 from thread_archive._store import Thread, get_session, init_db
 from thread_archive._truth.locks import _reindex_lock_path
@@ -278,9 +279,35 @@ def test_db_scan_poll_routes_scanner_raise_to_error(tmp_path) -> None:
 
 def _force_system(monkeypatch, name: str) -> None:
     """The one seam this file cannot inject through: the per-OS store default is a
-    live ``platform.system()`` read inside a module function, and every OS's branch
-    has to be provable from whichever host runs the suite."""
-    monkeypatch.setattr(src.platform, "system", lambda: name)
+    live ``platform.system()`` read inside ``app_data_dir``, and every OS's branch
+    has to be provable from whichever host runs the suite. Patches the shared
+    ``platform`` singleton, so every reader (cursor, cowork, exthost) sees it."""
+    monkeypatch.setattr(wpaths.platform, "system", lambda: name)
+
+
+def test_app_data_dir_platform_branches(tmp_path, monkeypatch) -> None:
+    home = _home(tmp_path, monkeypatch)
+
+    _force_system(monkeypatch, "Darwin")
+    assert wpaths.app_data_dir() == home / "Library" / "Application Support"
+
+    _force_system(monkeypatch, "Linux")
+    monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
+    assert wpaths.app_data_dir() == home / ".config"
+    # An absolute XDG_CONFIG_HOME outranks $HOME; a relative one is ignored (per spec).
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
+    assert wpaths.app_data_dir() == tmp_path / "xdg"
+    monkeypatch.setenv("XDG_CONFIG_HOME", "relative/nope")
+    assert wpaths.app_data_dir() == home / ".config"
+
+    _force_system(monkeypatch, "Windows")
+    monkeypatch.delenv("APPDATA", raising=False)
+    assert wpaths.app_data_dir() is None
+    monkeypatch.setenv("APPDATA", str(tmp_path / "appdata"))
+    assert wpaths.app_data_dir() == tmp_path / "appdata"
+
+    _force_system(monkeypatch, "Plan9")  # unknown OS → no known root
+    assert wpaths.app_data_dir() is None
 
 
 def test_cursor_default_db_platform_branches(tmp_path, monkeypatch) -> None:

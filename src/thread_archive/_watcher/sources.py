@@ -21,7 +21,6 @@ neither belongs in a serverless conversation archive.
 from __future__ import annotations
 
 import logging
-import platform
 from pathlib import Path
 from typing import Callable, Iterator, Optional
 
@@ -36,6 +35,7 @@ from .._importers import (
     import_session_incremental,
 )
 from .base import SourceDiscovery, SourceWatcher, WatchResult, fingerprint_poll
+from .paths import app_data_dir
 
 logger = logging.getLogger(__name__)
 
@@ -391,21 +391,10 @@ def opencode_watcher(db_path: Optional[Path] = None) -> DbScanWatcher:
 
 
 def _cursor_default_db() -> Optional[Path]:
-    system = platform.system()
-    home = Path.home()
-    if system == "Darwin":
-        path = home / "Library" / "Application Support" / "Cursor" / "User" / "globalStorage" / "state.vscdb"
-    elif system == "Linux":
-        path = home / ".config" / "Cursor" / "User" / "globalStorage" / "state.vscdb"
-    elif system == "Windows":
-        import os
-
-        appdata = os.environ.get("APPDATA", "")
-        if not appdata:
-            return None
-        path = Path(appdata) / "Cursor" / "User" / "globalStorage" / "state.vscdb"
-    else:
+    base = app_data_dir()
+    if base is None:
         return None
+    path = base / "Cursor" / "User" / "globalStorage" / "state.vscdb"
     return path if path.exists() else None
 
 
@@ -418,16 +407,11 @@ def _opencode_default_db() -> Optional[Path]:
 
 
 def _cowork_base() -> Optional[Path]:
-    """The Claude desktop app's ``local-agent-mode-sessions`` root for this OS
-    (Electron stores it under the platform's per-user app-data dir), or ``None``
-    where the app has no known location."""
-    home = Path.home()
-    system = platform.system()
-    if system == "Darwin":
-        return home / "Library" / "Application Support" / "Claude" / "local-agent-mode-sessions"
-    if system == "Linux":
-        return home / ".config" / "Claude" / "local-agent-mode-sessions"
-    return None
+    """The Claude desktop app's ``local-agent-mode-sessions`` root (Electron keeps
+    it under the platform's per-user app-data dir), or ``None`` where that OS has
+    no known location."""
+    base = app_data_dir()
+    return base / "Claude" / "local-agent-mode-sessions" if base is not None else None
 
 
 def discover_cowork_session_dirs() -> list[Path]:

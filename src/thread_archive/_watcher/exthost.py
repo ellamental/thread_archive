@@ -33,7 +33,6 @@ from __future__ import annotations
 import glob
 import json
 import logging
-import platform
 import re
 from collections import defaultdict
 from datetime import datetime
@@ -47,6 +46,7 @@ from .._importers._events import import_lines
 from .._importers._state import get_thread_by_source
 from .._store import get_session
 from .base import SourceWatcher, WatchResult
+from .paths import app_data_dir
 
 logger = logging.getLogger(__name__)
 
@@ -70,15 +70,10 @@ _BARE_COMMAND = re.compile(r"^/[\w:-]+\s*$")
 
 
 def _vscode_user_dir() -> Optional[Path]:
-    """VS Code's per-user data dir for this OS (its logs live under it), or
-    ``None`` where the layout is unknown."""
-    home = Path.home()
-    system = platform.system()
-    if system == "Darwin":
-        return home / "Library" / "Application Support"
-    if system == "Linux":
-        return home / ".config"
-    return None
+    """VS Code's per-user data dir (its logs live under it), or ``None`` where the
+    layout is unknown. VS Code, like other Electron apps, keeps this under the
+    platform's app-data root."""
+    return app_data_dir()
 
 
 def _log_globs() -> list[str]:

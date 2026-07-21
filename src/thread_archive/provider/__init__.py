@@ -58,6 +58,17 @@ Orthogonally, a provider may set ``export`` to accept downloaded account
 exports dropped into ``<home>/dumps/``. A source can have both — the Grok CLI
 watcher and xAI account exports are one provider.
 
+## Resolving a per-OS store location
+
+A watcher points at where its harness keeps transcripts. A CLI harness uses a
+home-relative path (``~/.codex``) that ports across OSes for free; a desktop or
+Electron one (Cursor, the Claude app) sits under a different per-user root on
+each OS. Resolve that root with :func:`app_data_dir` rather than branching on the
+platform inside your own watcher — it is the one place the macOS/Linux/Windows
+mapping lives, so a provider that uses it gains a new OS the day archive learns
+it, and a wrong guess on an unknown OS leaves the source dormant rather than
+crashing ingest.
+
 ## Knowledge about a provider belongs to the provider
 
 Everything archive needs to know about a source is declared on its descriptor,
@@ -131,6 +142,7 @@ from .._watcher.sources import (
     RglobWatcher,
     stat_discovery,
 )
+from .._watcher.paths import app_data_dir
 from .parse import ProviderConfig
 
 ImporterKind = Literal["line-stream", "db-scan", "none"]
@@ -351,6 +363,7 @@ __all__ = [
     "RglobWatcher",
     "DbScanWatcher",
     "stat_discovery",
+    "app_data_dir",
     # Importer construction
     "line_stream_importer",
     "claude_code_line_stream",
