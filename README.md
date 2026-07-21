@@ -51,8 +51,11 @@ conversation a node). Within a ranked pool, threads whose community carries
 more of the pool's top mass get a small boost; on this protocol it lifts
 recall at every depth past 1 (R@5 0.327→0.341, R@10 0.414→0.433, R@20
 0.492→0.508) with MRR flat, and `scripts/graph_eval.py` re-measures it.
-On by default; `THREAD_ARCHIVE_COHERENCE=off` disables, a float retunes
-gamma. Two graph signals were measured and rejected on the same protocol —
+It orders the head only when the cross-encoder stands down: the two are
+alternative head orderers, and stacking coherence under the rerank measures
+as a loss end-to-end (it reshuffles which candidates reach the rerank
+window). On by default; `THREAD_ARCHIVE_COHERENCE=off` disables, a float
+retunes gamma. Two graph signals were measured and rejected on the same protocol —
 kept out of the default stack, opt-in for experimentation: PageRank authority
 from the *curated* topic graph (`THREAD_ARCHIVE_GRAPH_RANK=<weight>`)
 degrades ranking monotonically with weight, because query-independent

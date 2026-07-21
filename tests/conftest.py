@@ -80,6 +80,12 @@ def _isolate_archive(tmp_path, monkeypatch):
     # operator's `--lexical-only` does (read per call — set here, honored from here on).
     monkeypatch.setenv("THREAD_ARCHIVE_EMBED", "off")
     monkeypatch.setenv("THREAD_ARCHIVE_RERANK", "off")
+    # Coherence re-rank off suite-wide: its background graph-refresh thread
+    # holds a pooled sqlite connection past the test that spawned it, and the
+    # late GC fails an unrelated victim test. Its logic has dedicated
+    # deterministic coverage (test_embed_graph.py builds inline and injects
+    # gamma explicitly; tests that need the env set their own).
+    monkeypatch.setenv("THREAD_ARCHIVE_COHERENCE", "off")
     _base.close_engine()
     jsonl_log.reset_handles()
     yield
@@ -107,9 +113,4 @@ def archive_home(tmp_path, monkeypatch):
     home = tmp_path / "arc"
     home.mkdir(parents=True, exist_ok=True)
     monkeypatch.setenv(config.ENV_HOME, str(home))
-    # Coherence re-rank off for fixture stores: its background graph refresh
-    # thread would race test teardown (leaked connections fail the suite), and
-    # its logic has dedicated deterministic coverage (test_embed_graph.py,
-    # which builds inline and injects gamma explicitly).
-    monkeypatch.setenv("THREAD_ARCHIVE_COHERENCE", "off")
     return home

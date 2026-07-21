@@ -25,10 +25,15 @@
   graph deps (networkx/leidenalg/python-igraph) returned to the base install.
   Within a ranked pool, threads whose community carries more of the pool's
   top mass get a bounded boost — measured on the log-mined protocol: recall
-  up at every depth past 1 (R@10 0.414→0.433), MRR flat. The search path
-  never builds the graph inline: the warm pass builds it, staleness refreshes
-  in a background single-flight thread, and until a build lands the boost
-  no-ops. `THREAD_ARCHIVE_COHERENCE=off` disables; a float retunes gamma.
+  up at every depth past 1 (R@10 0.414→0.433), MRR flat. Coherence applies
+  only when the cross-encoder stands down — the two are alternative head
+  orderers, and an end-to-end A/B showed stacking coherence under the rerank
+  loses what each wins alone (it reshuffles which candidates reach the
+  rerank window); with the full stack active the A/B reads neutral, the lift
+  lives in the no-rerank regime. The search path never builds the graph
+  inline: the warm pass builds it, staleness refreshes in a background
+  single-flight thread, and until a build lands the boost no-ops.
+  `THREAD_ARCHIVE_COHERENCE=off` disables; a float retunes gamma.
 - Documentation accuracy pass: the public API is stated as three things
   everywhere (retrieval MCP tools, truth format, provider plugin API);
   thread-librarian links point at its actual repository; "no server" claims
