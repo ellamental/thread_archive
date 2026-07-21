@@ -392,10 +392,16 @@ def rank_search_results(
     fusion_weight: float = _SEARCH_FUSION_WEIGHT,
     content_type_weights: dict[str, float] | None = None,
     now: datetime | None = None,
+    thread_prior: dict[str, float] | None = None,
 ) -> list[EventHit]:
     """Re-rank ``results`` by term density, phrase proximity, recency, content-type,
     and cross-backend fusion (``_rrf``). The production scorer — see the module
-    docstring for the weight evidence. Returns the top ``limit``."""
+    docstring for the weight evidence. Returns the top ``limit``.
+
+    ``thread_prior`` maps thread_id → a bounded boost addend (the graph-authority
+    prior, :mod:`.graph_prior`): a hit's score is multiplied by ``1 + addend``.
+    Absent threads boost by nothing — the prior refines the order, it never
+    penalizes."""
     now = now or datetime.now(timezone.utc).replace(tzinfo=None)  # naive-UTC, matching occurred_at
     ct_weights = content_type_weights if content_type_weights is not None else _CONTENT_TYPE_WEIGHT
     term_patterns = {t: re.compile(r"\b" + re.escape(t) + r"\b") for t in terms if len(t) < 4}
@@ -426,8 +432,9 @@ def rank_search_results(
         recency = recency_score(result.get("occurred_at", ""), now)
         ct_weight = ct_weights.get(result.get("content_type") or "", 1.0)
         rrf = result.get("_rrf", 0.0) or 0.0
+        prior = 1.0 + thread_prior.get(result.get("thread_id") or "", 0.0) if thread_prior else 1.0
         return (density * density_weight + phrase_bonus * phrase_weight
-                + recency * recency_weight + rrf * fusion_weight) * ct_weight
+                + recency * recency_weight + rrf * fusion_weight) * ct_weight * prior
 
     ranked = sorted(enumerate(results), key=lambda x: (-combined_score(x[1]), x[0]))
     return [r for _, r in ranked[:limit]]

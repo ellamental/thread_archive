@@ -20,6 +20,10 @@ export default defineConfig({
     },
   },
   test: {
+    // Browser specs have their own Playwright runner. Keeping Vitest scoped to
+    // component tests prevents either framework from collecting the other's
+    // `test()` calls.
+    include: ['src/**/*.{test,spec}.{ts,tsx}'],
     environment: 'jsdom',
     setupFiles: './src/test/setup.ts',
     coverage: {

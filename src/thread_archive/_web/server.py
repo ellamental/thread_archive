@@ -37,6 +37,19 @@ log = logging.getLogger(__name__)
 # network and needs the explicit env opt-in checked in serve_in_thread.
 _LOOPBACK_HOSTS = frozenset({"127.0.0.1", "::1", "localhost"})
 _NONLOCAL_OPTIN = "THREAD_ARCHIVE_WEB_NONLOCAL"
+_SECURITY_HEADERS = {
+    # Transcript text is untrusted. Keep every automatic subresource on this
+    # loopback origin even if a renderer regression emits an external URL.
+    "Content-Security-Policy": (
+        "default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; "
+        "img-src 'self'; font-src 'self'; connect-src 'self'; media-src 'self'; "
+        "object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'none'"
+    ),
+    "Referrer-Policy": "no-referrer",
+    "X-Content-Type-Options": "nosniff",
+    "X-Frame-Options": "DENY",
+    "Permissions-Policy": "camera=(), microphone=(), geolocation=()",
+}
 
 
 def _host_allowed(host: Optional[str]) -> bool:
@@ -661,6 +674,10 @@ def route(method: str, path: str, params: dict) -> Response:
 # the HTTP adapter (the only networked part)
 # ---------------------------------------------------------------------------
 class _Handler(BaseHTTPRequestHandler):
+    def _send_security_headers(self) -> None:
+        for key, value in _SECURITY_HEADERS.items():
+            self.send_header(key, value)
+
     def do_GET(self):  # noqa: N802 — stdlib dispatch name
         # DNS-rebinding defense (see _host_allowed). The deliberate non-loopback
         # opt-in also disables the check: an exposed server is reached by a
@@ -670,6 +687,7 @@ class _Handler(BaseHTTPRequestHandler):
             self.send_response(403)
             self.send_header("Content-Type", "text/plain; charset=utf-8")
             self.send_header("Content-Length", str(len(body)))
+            self._send_security_headers()
             self.end_headers()
             self.wfile.write(body)
             return
@@ -685,6 +703,7 @@ class _Handler(BaseHTTPRequestHandler):
         self.send_response(status)
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(body)))
+        self._send_security_headers()
         for key, value in headers.items():
             self.send_header(key, value)
         self.end_headers()

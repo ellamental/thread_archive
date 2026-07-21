@@ -5,11 +5,12 @@ Exposes ``thread_search`` + ``thread_read`` as MCP tools that call the
 no route layer. The server is library-native: it dispatches straight to the API
 functions in-process.
 
-The *tools* are read-only, but the server process also cohosts lazy catch-up
-ingest (see :class:`IngestThrottle` and :mod:`.._watcher.lazy`): a throttled
-background pass at startup and around tool calls keeps the archive current
-with no daemon installed, and degrades to a no-op flock probe when the
-always-on watcher owns ingest. ``THREAD_ARCHIVE_MCP_INGEST=0`` disables it.
+The tools and, by default, the server process are read-only. An operator may
+explicitly set ``THREAD_ARCHIVE_MCP_INGEST=1`` to cohost lazy catch-up ingest
+(see :class:`IngestThrottle` and :mod:`.._watcher.lazy`): a throttled background
+pass at startup and around tool calls keeps the archive current with no daemon
+installed, and degrades to a no-op flock probe when the always-on watcher owns
+ingest. Setup-generated stdio client entries carry that explicit opt-in.
 
 The archive home comes from ``$THREAD_ARCHIVE_HOME`` (set by the MCP client
 config), else ``~/.thread/archive``. Run per-client over stdio (the default)::
@@ -39,6 +40,7 @@ from typing import Literal, Optional
 from mcp.server.fastmcp import FastMCP
 
 from .. import _api as api
+from .._config import ENV_MCP_INGEST
 from .._retrieval import format_results, warm_models
 from .._retrieval import usage as _usage
 from .._retrieval._types import EventHit
@@ -49,21 +51,24 @@ logger = logging.getLogger(__name__)
 mcp = FastMCP("thread-archive")
 
 # ── lazy catch-up ingest ──────────────────────────────────────────────────────
-# The zero-daemon freshness path: the server runs a background catch-up pass at
-# startup and (throttled) around tool calls, so a bare `claude mcp add …
-# archive-mcp` searches a current archive without any LaunchAgent installed.
+# The opted-in zero-daemon freshness path: the server runs a background catch-up
+# pass at startup and (throttled) around tool calls when its client config sets
+# THREAD_ARCHIVE_MCP_INGEST=1.
 # Cross-process safety lives in the pass itself (see _watcher.lazy): the
 # ingest-owner flock makes every pass a no-op probe while the always-on watcher
-# daemon — or another server's pass — owns ingest. THREAD_ARCHIVE_MCP_INGEST=0
-# turns the whole behaviour off.
+# daemon — or another server's pass — owns ingest. The behavior is off unless
+# THREAD_ARCHIVE_MCP_INGEST explicitly opts in.
 _INGEST_MIN_INTERVAL = 300.0  # seconds between catch-up attempts in this process
 
 
 def ingest_enabled() -> bool:
-    """Whether the cohosted catch-up ingest may run — ``THREAD_ARCHIVE_MCP_INGEST``
-    is its kill-switch. Read per call, so a value set after import is honored."""
-    return os.environ.get("THREAD_ARCHIVE_MCP_INGEST", "1").strip().lower() not in (
-        "0", "false", "no", "off",
+    """Whether cohosted catch-up ingest has been explicitly enabled.
+
+    Read per call so a value set after import is honored. Missing, malformed,
+    and negative values are all read-only; only an affirmative value opts in.
+    """
+    return os.environ.get(ENV_MCP_INGEST, "").strip().lower() in (
+        "1", "true", "yes", "on",
     )
 
 

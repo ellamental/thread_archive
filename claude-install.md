@@ -35,7 +35,10 @@ once** (the decision point): lexical-only, or also embeddings?
 .venv/bin/pip install -e '.[embeddings]'   # only if they want vectors
 ```
 
-The base install already includes Leiden community detection (`leidenalg` + `igraph`).
+The base install includes the corpus-graph ranking stack (`leidenalg` +
+`python-igraph` + `networkx` — the coherence search signal needs no
+curation); the curated-topic analytics live in the separate thread-librarian
+package.
 
 ## 2. Verify the install
 
@@ -85,9 +88,10 @@ An empty archive has nothing to search. Two ways to get conversations in:
   ```bash
   .venv/bin/archive watch --once     # one pass; or `archive daemon install` (macOS) for always-on
   ```
-  (Even without either, `archive-mcp` cohosts a lazy catch-up ingest pass at
-  startup and around tool calls — the first `thread_search` after wiring the
-  MCP triggers the initial import on its own.)
+  (`.mcp.json.example` explicitly sets `THREAD_ARCHIVE_MCP_INGEST=1`, so even
+  without either, that configured `archive-mcp` cohosts a lazy catch-up pass at
+  startup and around tool calls. A bare invocation without the setting is
+  read-only.)
 - **Import an export or transcript** the human points you at:
   ```bash
   .venv/bin/archive import <path> --provider <name>   # `archive providers` lists them: claude-code, codex, grok, antigravity, cloth, cowork, claude-science, cursor, opencode, …

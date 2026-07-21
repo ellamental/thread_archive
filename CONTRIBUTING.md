@@ -31,9 +31,11 @@ proven external provider into the built-ins are welcome too.
 - **Docs describe the present.** No change-history in docstrings or comments
   — that story belongs in `CHANGELOG.md` (add a line under `## Unreleased`).
 - **Frontend changes** rebuild the committed bundle: `cd frontend && npm run
-  build`, and the regenerated `_web/static/` assets land in the same PR. If
-  dependencies changed, also regenerate the bundled license notices:
-  `python scripts/gen_third_party_notices.py .`
+  build`, run `npm test` and `npm run e2e`, and the regenerated `_web/static/`
+  assets land in the same PR. If dependencies changed, also regenerate the
+  bundled license notices: `python scripts/gen_third_party_notices.py .` A
+  first checkout needs `npm install && npx playwright install chromium` in
+  `frontend/` before those checks.
 
 macOS is the supported platform; CI's ubuntu runners prove the Python core
 imports and passes off-mac, nothing more. Python ≥ 3.14.

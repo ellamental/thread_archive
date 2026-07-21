@@ -18,6 +18,23 @@ describe('block rendering', () => {
     expect(screen.getByText('bold').tagName).toBe('STRONG')
   })
 
+  it('blocks remote markdown images but permits archived same-origin blobs', () => {
+    const { container } = render(
+      <Message
+        message={msg([{
+          type: 'text',
+          text: '![tracker](https://tracker.example/pixel?id=secret) ![saved](/api/blob/abc123.png)',
+        }])}
+      />,
+    )
+    expect(screen.getByRole('note')).toHaveTextContent('image blocked · tracker')
+    expect(container.querySelector('img[src^="https://"]')).toBeNull()
+    expect(container.querySelector('img[src="/api/blob/abc123.png"]')).toHaveAttribute(
+      'loading',
+      'lazy',
+    )
+  })
+
   it('folds thinking into a labelled details element', () => {
     render(<Message message={msg([{ type: 'thinking', text: 'internal reasoning' }])} />)
     expect(screen.getByText('thinking')).toBeInTheDocument()

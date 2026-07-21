@@ -3,7 +3,9 @@
 ``search`` runs the production pipeline: federate two arms — FTS5 **lexical** + an
 optional in-process **vector** (semantic) search — fuse them by reciprocal-rank
 fusion (``_rrf`` normalized to [0,1]), dedup, score with the weighted lexical
-**ranker** (density / phrase / recency / content-type / fusion — :mod:`.rank`),
+**ranker** (density / phrase / recency / content-type / fusion — :mod:`.rank`,
+boosted by the fail-soft graph-authority prior when thread-librarian's corpus
+graph is installed — :mod:`.graph_prior`),
 then optionally re-order the head with an in-process **cross-encoder** (:mod:`.rerank`)
 — gated twice: to conceptual multi-term query shapes (``should_rerank``), and away
 again when the ranked head is already a strong literal match (``head_is_strong``) —
@@ -22,6 +24,8 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from .._store import Event, Thread, use_session
+from . import embed_graph as _embed_graph
+from . import graph_prior as _graph_prior
 from . import rank as _rank
 from ._classify import resolve_relative_date
 from ._context import extract_context_lines, get_context_events, parse_context_events_spec
@@ -113,6 +117,38 @@ def _semantic_hits(query, *, thread_id, content_types, exclude_content_types, si
         return None
 
 
+def _apply_coherence(ranked: list[EventHit], gamma: float | None = None) -> list[EventHit]:
+    """Community-coherence re-rank at thread granularity (fail-soft).
+
+    Reorders the ranked hit list so threads follow :func:`embed_graph.coherence_order`
+    — the eval-proven boost for threads whose corpus-graph community carries more
+    of the pool's top mass. Hits within a thread keep their relative order. A
+    no-op when coherence is off, the graph isn't built yet (the background
+    refresh will have it soon), or anything fails. ``gamma`` overrides the env
+    knob (tests inject)."""
+    if gamma is None:
+        gamma = _embed_graph.coherence_gamma()
+    if gamma <= 0.0 or len(ranked) < 3:
+        return ranked
+    try:
+        graph = _embed_graph.get()
+        if graph is None:
+            return ranked
+        pool: list[str] = []
+        seen: set[str] = set()
+        for r in ranked:
+            t = r.get("thread_id")
+            if t and t not in seen:
+                seen.add(t)
+                pool.append(t)
+        order = _embed_graph.coherence_order(pool, graph.community, gamma)
+        pos = {t: i for i, t in enumerate(order)}
+        return sorted(ranked, key=lambda r: pos.get(r.get("thread_id") or "", len(order)))
+    except Exception:  # noqa: BLE001 — a ranking refinement must never break search
+        logger.exception("coherence re-rank failed; search continues without it")
+        return ranked
+
+
 # A throwaway conceptual query for the warm pass (run with rerank=True so the
 # cross-encoder head is exercised regardless of the gates).
 _WARM_QUERY = "warm up the retrieval vector index and reranker"
@@ -153,6 +189,16 @@ def warm_models(embedder=None, reranker=None) -> None:
     # so the matrix this primes is keyed the same as the real queries reuse (the matrix
     # cache is keyed by content-type scope; a mismatched scope would prime a matrix the
     # real query never touches).
+    # Build the corpus graph inline while we're already off the request path —
+    # the coherence re-rank serves from this cache and never builds during a
+    # search (a stale graph refreshes in the background; the FIRST build is
+    # the warm pass's job).
+    if _embed_graph.coherence_gamma() > 0.0:
+        try:
+            _embed_graph.get(block=True)
+        except Exception:  # noqa: BLE001 — warming is best-effort
+            logger.debug("warm_models: corpus graph build skipped", exc_info=True)
+
     try:
         from .. import _api as api
 
@@ -392,7 +438,18 @@ def search(
             rank_to = len(fused)
         else:
             rank_to = max(limit, _rank.RERANK_POOL) if do_rerank else limit
-        ranked = _rank.rank_search_results(fused, terms, rank_to)
+        # Graph-authority prior (fail-soft, boost-only): threads the curated
+        # layer keeps citing get a bounded score multiplier. {} without
+        # thread-librarian, without curation, or with THREAD_ARCHIVE_GRAPH_RANK=off.
+        prior = _graph_prior.thread_graph_prior(
+            list({r.get("thread_id") for r in fused if r.get("thread_id")})
+        )
+        ranked = _rank.rank_search_results(fused, terms, rank_to, thread_prior=prior or None)
+        # Community-coherence re-rank from the corpus-native embedding graph
+        # (default on — measured recall lift at every depth; see embed_graph).
+        # Runs below the cross-encoder: it moves candidate ordering, the
+        # cross-encoder then re-scores the head it's given.
+        ranked = _apply_coherence(ranked)
         # Result-side half of the gate: when the ranked head is already a strong
         # literal match, the lexical order is trustworthy and the cross-encoder
         # stands down — it exists for the vocab-mismatch case, and re-ranking a

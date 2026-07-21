@@ -26,7 +26,7 @@ import sys
 from pathlib import Path
 from typing import Optional
 
-from .._config import ENV_HOME, default_home, resolve_paths
+from .._config import ENV_HOME, ENV_MCP_INGEST, default_home, resolve_paths
 
 SEARCH_SERVER = "thread-archive"
 
@@ -44,25 +44,25 @@ def console_script(name: str) -> str:
     return found if found else name
 
 
-def _home_env(home: Optional[str]) -> Optional[dict]:
-    """The env block a server entry needs to serve ``home`` (arg, else this
-    process's ``$THREAD_ARCHIVE_HOME``, else the default) — ``None`` when the
-    target is the default home, where an env-less entry already resolves. Any
-    other home must be pinned into the entry: the client launches the server
-    with its own environment, not this setup run's."""
+def _home_env(home: Optional[str]) -> dict:
+    """The explicit environment for a setup-generated stdio server.
+
+    Setup's consent/source-selection flow opts this entry into zero-daemon
+    catch-up. A custom archive home is pinned too; the default needs no home
+    override, but still carries the ingest opt-in rather than relying on a
+    hidden process default.
+    """
     target = resolve_paths(home).home
-    if target == default_home():
-        return None
-    return {ENV_HOME: str(target)}
+    env = {ENV_MCP_INGEST: "1"}
+    if target != default_home():
+        env[ENV_HOME] = str(target)
+    return env
 
 
 def mcp_config_block(home: Optional[str] = None) -> str:
     """The ``mcpServers`` JSON any MCP client accepts, absolute commands.
-    Carries ``THREAD_ARCHIVE_HOME`` when ``home`` is not the default."""
-    entry: dict = {"command": console_script("archive-mcp")}
-    env = _home_env(home)
-    if env:
-        entry["env"] = env
+    Catch-up ingest is explicit; a custom home is carried when needed."""
+    entry: dict = {"command": console_script("archive-mcp"), "env": _home_env(home)}
     return json.dumps({"mcpServers": {SEARCH_SERVER: entry}}, indent=2)
 
 
@@ -121,7 +121,7 @@ def wire_claude(cli: str, home: Optional[str] = None) -> list[str]:
     env = _home_env(home)
     for server, script in ((SEARCH_SERVER, "archive-mcp"),):
         argv = [cli, "mcp", "add", "--scope", "user", server]
-        for key, value in (env or {}).items():
+        for key, value in env.items():
             argv += ["--env", f"{key}={value}"]
         argv += ["--", console_script(script)]
         try:

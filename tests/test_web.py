@@ -779,7 +779,13 @@ def test_serve_in_thread_cohosts(archive_home):
             f"http://127.0.0.1:{port}/api/status", timeout=5
         ) as response:
             body = response.read()
+            headers = response.headers
         assert json.loads(body)["threads"] == 1
+        csp = headers["Content-Security-Policy"]
+        assert "img-src 'self'" in csp and "object-src 'none'" in csp
+        assert headers["Referrer-Policy"] == "no-referrer"
+        assert headers["X-Content-Type-Options"] == "nosniff"
+        assert headers["X-Frame-Options"] == "DENY"
     finally:
         httpd.shutdown()
         httpd.server_close()

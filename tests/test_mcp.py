@@ -381,7 +381,7 @@ def test_mcp_search_resolves_thread_and_topic_refs(archive_home) -> None:
 def test_throttle_skips_when_a_pass_is_in_flight(monkeypatch) -> None:
     """One in-flight catch-up per process: while the slot is taken, another
     claim is refused without recording an attempt."""
-    monkeypatch.delenv("THREAD_ARCHIVE_MCP_INGEST", raising=False)
+    monkeypatch.setenv("THREAD_ARCHIVE_MCP_INGEST", "1")
     throttle = IngestThrottle()
     assert throttle.running.acquire(blocking=False)  # a pass is under way
     assert not throttle.claim()
@@ -398,14 +398,18 @@ def test_throttle_skips_when_a_pass_is_in_flight(monkeypatch) -> None:
     assert throttle.last == marked
 
 
-def test_throttle_refuses_while_the_kill_switch_is_set(monkeypatch) -> None:
-    """``THREAD_ARCHIVE_MCP_INGEST=0`` stops the pass before anything is
-    claimed or recorded — read per call, so it applies whenever it is set."""
+def test_throttle_requires_an_explicit_ingest_opt_in(monkeypatch) -> None:
+    """Absent, negative, and malformed values are read-only; affirmative values
+    opt in, read per call so a client-supplied environment is honored."""
     throttle = IngestThrottle()
-    monkeypatch.setenv("THREAD_ARCHIVE_MCP_INGEST", "0")
-    throttle.maybe_catch_up()
-    assert throttle.last == 0.0
-    monkeypatch.delenv("THREAD_ARCHIVE_MCP_INGEST")
+    for value in (None, "0", "false", "unexpected"):
+        if value is None:
+            monkeypatch.delenv("THREAD_ARCHIVE_MCP_INGEST", raising=False)
+        else:
+            monkeypatch.setenv("THREAD_ARCHIVE_MCP_INGEST", value)
+        throttle.maybe_catch_up()
+        assert throttle.last == 0.0
+    monkeypatch.setenv("THREAD_ARCHIVE_MCP_INGEST", "1")
     assert throttle.claim()
 
 
@@ -417,7 +421,7 @@ def test_pass_swallows_ingest_failure_and_releases(archive_home, monkeypatch) ->
     blocker = archive_home / "not-a-directory"
     blocker.write_text("", encoding="utf-8")
     monkeypatch.setenv("THREAD_ARCHIVE_HOME", str(blocker / "home"))
-    monkeypatch.delenv("THREAD_ARCHIVE_MCP_INGEST", raising=False)
+    monkeypatch.setenv("THREAD_ARCHIVE_MCP_INGEST", "1")
 
     throttle = IngestThrottle()
     assert throttle.claim()
@@ -433,7 +437,7 @@ def test_maybe_catch_up_runs_the_pass_off_the_caller_thread(archive_home, monkey
     (the always-on watcher's flock), that pass is a no-op probe."""
     from thread_archive._watcher import try_ingest_owner_lock
 
-    monkeypatch.delenv("THREAD_ARCHIVE_MCP_INGEST", raising=False)
+    monkeypatch.setenv("THREAD_ARCHIVE_MCP_INGEST", "1")
     throttle = IngestThrottle()
     with try_ingest_owner_lock() as owned:  # stand in for the watcher daemon
         assert owned
@@ -491,7 +495,7 @@ def test_maybe_catch_up_throttles_repeat_attempts(archive_home, monkeypatch) -> 
     interval per process."""
     from thread_archive._watcher import try_ingest_owner_lock
 
-    monkeypatch.delenv("THREAD_ARCHIVE_MCP_INGEST", raising=False)
+    monkeypatch.setenv("THREAD_ARCHIVE_MCP_INGEST", "1")
     throttle = IngestThrottle()
     with try_ingest_owner_lock() as owned:
         assert owned

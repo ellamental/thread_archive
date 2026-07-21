@@ -288,11 +288,15 @@ def test_mcp_plist_shape() -> None:
     ]
     assert p["KeepAlive"] is True  # every client depends on it: restart on any exit
     assert p["EnvironmentVariables"]["THREAD_ARCHIVE_HOME"] == "/data/arc"
+    assert p["EnvironmentVariables"]["THREAD_ARCHIVE_MCP_INGEST"] == "0"
     assert p["StandardOutPath"] == str(log_dir / "mcp-stdout.log")
     # Default host/port and no home leave the env var unset.
     d = _launchd.mcp_plist(entry, log_dir)
     assert "THREAD_ARCHIVE_HOME" not in d["EnvironmentVariables"]
+    assert d["EnvironmentVariables"]["THREAD_ARCHIVE_MCP_INGEST"] == "0"
     assert d["ProgramArguments"][2:] == ["--host", "127.0.0.1", "--port", "8788"]
+    opted_in = _launchd.mcp_plist(entry, log_dir, ingest=True)
+    assert opted_in["EnvironmentVariables"]["THREAD_ARCHIVE_MCP_INGEST"] == "1"
 
 
 def test_truth_touching_agents_raise_the_open_file_limit() -> None:
@@ -554,13 +558,19 @@ def test_wire_claude_and_config_block_carry_custom_home(tmp_path, monkeypatch, s
     assert f"THREAD_ARCHIVE_HOME={home}" in argv
     assert argv[-1].endswith("archive-mcp")  # this env's console script, by path
     entry = json.loads(clients.mcp_config_block(home))["mcpServers"]["thread-archive"]
-    assert entry["env"] == {"THREAD_ARCHIVE_HOME": home}
-    # The default home needs no env pin.
+    assert entry["env"] == {
+        "THREAD_ARCHIVE_MCP_INGEST": "1",
+        "THREAD_ARCHIVE_HOME": home,
+    }
+    # The default home needs no home pin, but catch-up remains an explicit opt-in.
     monkeypatch.delenv(clients.ENV_HOME, raising=False)
     log.unlink()
     assert clients.wire_claude(cli) == []
-    assert "--env" not in _calls(log)[0]
-    assert "env" not in json.loads(clients.mcp_config_block())["mcpServers"]["thread-archive"]
+    assert "--env" in _calls(log)[0]
+    assert "THREAD_ARCHIVE_MCP_INGEST=1" in _calls(log)[0]
+    assert json.loads(clients.mcp_config_block())["mcpServers"]["thread-archive"]["env"] == {
+        "THREAD_ARCHIVE_MCP_INGEST": "1",
+    }
 
 
 def test_claude_server_report_probe_failure_reads_unwired(tmp_path, monkeypatch) -> None:
@@ -739,7 +749,7 @@ def test_offer_watcher_skip_answer(archive_home, capsys) -> None:
         ask=lambda prompt, *, default, interactive: "s",
     ) == "skipped"
     assert machine.installed == []  # must not install on skip
-    assert "lazy catch-up covers freshness" in capsys.readouterr().out
+    assert "MCP catch-up covers freshness" in capsys.readouterr().out
 
 
 def test_offer_watcher_install_failure(archive_home, capsys) -> None:

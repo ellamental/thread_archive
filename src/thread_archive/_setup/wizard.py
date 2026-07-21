@@ -358,8 +358,8 @@ def _offer_watcher(
         return "skipped"
     if not machine.macos:
         _say("Keep it fresh: the always-on watcher ships for macOS only right now.")
-        _say("  Without it, catch-up ingest still runs automatically whenever the archive's")
-        _say("  MCP tools are used — searches stay close to current.")
+        _say("  Without it, setup can explicitly enable catch-up ingest in the archive's")
+        _say("  MCP client entry — searches stay close to current when those tools are used.")
         return "unavailable"
 
     if machine.watcher_running(args.home):
@@ -370,17 +370,17 @@ def _offer_watcher(
     _say("It also checks release tags about once a day and reports when an update is")
     _say("available. Applying it is explicit: `archive self-update`.")
     answer = ask(
-        "  [Enter] install watcher · s = skip (catch-up runs whenever the archive is used)  > ",
+        "  [Enter] install watcher · s = skip (MCP wiring can enable catch-up)  > ",
         default="", interactive=interactive,
     )
     if answer in ("s", "n", "no"):
-        _say("  Skipped — lazy catch-up covers freshness; `thread_archive setup` to revisit.")
+        _say("  Skipped — opted-in MCP catch-up covers freshness; `thread_archive setup` to revisit.")
         return "skipped"
     try:
         machine.install_watcher(args.home)
     except SystemExit as e:
         _say(f"  Could not install the watcher: {e}")
-        _say("  Lazy catch-up still covers freshness; `archive daemon install` to retry.")
+        _say("  Opted-in MCP catch-up still covers freshness; `archive daemon install` to retry.")
         return "failed"
     _say("  Installed — always-on, restarts on crash, web viewer at http://127.0.0.1:8787.")
     return "launchd"

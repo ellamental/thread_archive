@@ -2,6 +2,43 @@
 
 ## Unreleased
 
+- The ranker carries a graph-authority prior (normalized PageRank from
+  thread-librarian's curated corpus graph as a bounded, boost-only score
+  multiplier), built to test whether curation authority improves retrieval.
+  It ships off: on the log-mined click protocol it degrades MRR and recall@1
+  monotonically with weight (0.250 → 0.240 MRR from off to 0.5), so
+  `THREAD_ARCHIVE_GRAPH_RANK=<weight>` is an experimentation opt-in, not a
+  default. Fail-soft without the librarian or without curation.
+
+- Search ranking gains the corpus-native coherence signal, on by default:
+  the embedding graph (thread centroids from the shared vector pack → cosine
+  kNN → Leiden; zero curation input) came back from thread-librarian into
+  `_retrieval/embed_graph.py` along with the shared community spine
+  (`_retrieval/community.py`) and its eval (`scripts/graph_eval.py`), and the
+  graph deps (networkx/leidenalg/python-igraph) returned to the base install.
+  Within a ranked pool, threads whose community carries more of the pool's
+  top mass get a bounded boost — measured on the log-mined protocol: recall
+  up at every depth past 1 (R@10 0.414→0.433), MRR flat. The search path
+  never builds the graph inline: the warm pass builds it, staleness refreshes
+  in a background single-flight thread, and until a build lands the boost
+  no-ops. `THREAD_ARCHIVE_COHERENCE=off` disables; a float retunes gamma.
+- Documentation accuracy pass: the public API is stated as three things
+  everywhere (retrieval MCP tools, truth format, provider plugin API);
+  thread-librarian links point at its actual repository; "no server" claims
+  now say "no hosted backend" — the MCP server, viewer, and daemons are local
+  processes.
+- The web viewer has a Playwright browser gate over its production bundle:
+  every route must mount without page or console errors, and browser-level
+  interaction tests cover search-to-message deep links, thinking controls, and
+  model-stat navigation. Network fixtures stay synthetic and cannot read the
+  operator's archive.
+- Privacy-bearing configuration fails closed: an unreadable, corrupt, or
+  malformed existing `config.json` disables all source ingestion instead of
+  restoring default-on sources. A bare MCP process is fully read-only and
+  catch-up ingestion requires `THREAD_ARCHIVE_MCP_INGEST=1`; setup-generated
+  stdio entries carry the opt-in while the shared MCP LaunchAgent pins it off.
+  The viewer blocks remote Markdown images and sends CSP, referrer, MIME-sniff,
+  framing, and browser-permission response headers.
 - The backup mirror's delete-sync now recognizes *renamed* twins alongside
   re-homed ones: a stale legacy-integer-named thread file at the destination
   whose id the ULID migration's durable `ulid-mapping.json` maps to a ULID

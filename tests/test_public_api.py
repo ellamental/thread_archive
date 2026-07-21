@@ -1,10 +1,11 @@
 """Ratchet the public API boundary.
 
-The public API is exactly two things: the retrieval MCP tools
-(``thread_search`` / ``thread_read``, served by ``archive-mcp``) and the
-on-disk truth format (docs/format.md). Everything else — the ``archive`` CLI,
-the librarian MCP server, the ``_api`` coordination layer, every
-underscore-prefixed module — is private support machinery. These tests make
+The public API is exactly three things: the retrieval MCP tools
+(``thread_search`` / ``thread_read``, served by ``archive-mcp``), the
+on-disk truth format (docs/format.md), and the provider plugin API
+(``thread_archive.provider``, docs/providers.md). Everything else — the
+``archive`` CLI, the ``_api`` coordination layer, every underscore-prefixed
+module — is private support machinery. These tests make
 widening the surface a deliberate act (edit the pinned sets here) instead of
 a naming accident.
 """

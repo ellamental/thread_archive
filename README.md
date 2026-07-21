@@ -5,7 +5,7 @@
 [![Platform](https://img.shields.io/badge/platform-macOS-black)](https://github.com/ellamental/thread_archive)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 
-**Thread Archive is a local-first memory system for the AI agents that work on your machine — built by Claude Code, for Claude Code.** It ingests every session your agent harnesses record into one append-only archive you own, on your Mac. Claude Code is the supported, first-class source; the other harnesses it reads — Codex, Cursor, OpenCode, Grok, and friends — are best-effort and community-maintainable (see *When an import drifts*). Web chats (claude.ai, ChatGPT, xAI) import too, from account exports you download by hand; the live, self-feeding path is the agent tooling.
+**Thread Archive is a local-first memory system for the AI agents that work on your machine — built by Claude Code, for Claude Code.** It ingests every session your agent harnesses record into one durable archive you own, on your Mac. Claude Code is the supported, first-class source; the other harnesses it reads — Codex, Cursor, OpenCode, Grok, and friends — are best-effort and community-maintainable (see *When an import drifts*). Web chats (claude.ai, ChatGPT, xAI) import too, from account exports you download by hand; the live, self-feeding path is the agent tooling.
 
 **Day one is the demo.** The history already exists — your Claude Code sessions are sitting in `~/.claude` right now, as JSONL nothing can search and the harness eventually rotates away. Point archive at them, and minutes later ask, mid-conversation:
 
@@ -44,7 +44,19 @@ conceptual queries instead of running it everywhere. Both model arms have an
 off switch — `THREAD_ARCHIVE_EMBED=off` and `THREAD_ARCHIVE_RERANK=off` pin a
 process to the lexical core without uninstalling the extra, for a box that
 wants search cheap and free of the cold-start model load (`retrieval_eval.py
---lexical-only` measures that configuration). Curated thread summaries move
+--lexical-only` measures that configuration). One more signal made the cut:
+a **community-coherence re-rank** from the corpus-native embedding graph
+(thread centroids → cosine kNN → Leiden — zero curation input, every embedded
+conversation a node). Within a ranked pool, threads whose community carries
+more of the pool's top mass get a small boost; on this protocol it lifts
+recall at every depth past 1 (R@5 0.327→0.341, R@10 0.414→0.433, R@20
+0.492→0.508) with MRR flat, and `scripts/graph_eval.py` re-measures it.
+On by default; `THREAD_ARCHIVE_COHERENCE=off` disables, a float retunes
+gamma. Two graph signals were measured and rejected on the same protocol —
+kept out of the default stack, opt-in for experimentation: PageRank authority
+from the *curated* topic graph (`THREAD_ARCHIVE_GRAPH_RANK=<weight>`)
+degrades ranking monotonically with weight, because query-independent
+authority floats hub threads over the specific thread a query names. Curated thread summaries move
 these numbers by less than a point — whatever their value for browsing and
 curation, ranked search does not measurably ride on them. (An earlier
 title-as-query eval said otherwise on every count; its queries were LLM
@@ -65,7 +77,7 @@ queries through the production stack and has a headless `claude` grade every
 top-10 thread, yielding graded precision, a calibration of the click labels
 themselves, and explicit credit for relevant results the click protocol can
 only score as misses. The knowledge graph gets its own usage meter in
-[thread-librarian](../librarian) (`scripts/topic_eval.py` there): **subject
+[thread-librarian](https://github.com/ellamental/thread_archive_librarian) (`scripts/topic_eval.py` there): **subject
 uptake** — how often a topic read follows a search. A lens nobody pivots
 through is a terrarium, however well curated; uptake is the number that says
 which it is.
@@ -77,9 +89,9 @@ which it is.
 
 **Fixes itself where it broke.** A provider's transcript format drifts on the provider's schedule, not a maintainer's. Archive makes that drift loud and locally repairable: drift ledgers and a nightly coverage check catch the degradation, the raw source files are quarantined before the provider prunes them, the in-session search notice names the remedy, and `archive fix-import <provider>` scaffolds an override patch — module, tests, evidence, real samples, and the repair protocol — so the fix gets written on the machine that has the samples, by you or by an agent you hand the scaffold to. The patch goes live only when its scaffolded test suite passes in a fresh subprocess, then re-import recovers everything consumed during the gap. The supported provider's worst case is *preserved but partially modeled until fixed* — and the fix doesn't wait on a release.
 
-**A memory an agent can organize.** The archive carries the *data plane* of an event-sourced topic graph a curating agent can build over it — creating topics, pinning key quotes, linking related threads, tending the hierarchy. Every curation act lands in the archive's truth log, so you can always see who connected what, and why. The curation agents, the graph analytics (PageRank, Leiden communities, bridges), and the topic surfaces live in the separate [thread-librarian](../librarian) package; without it the graph simply stays empty, and nothing else depends on it.
+**A memory an agent can organize.** The archive carries the *data plane* of an event-sourced topic graph a curating agent can build over it — creating topics, pinning key quotes, linking related threads, tending the hierarchy. Every curation act lands in the archive's truth log, so you can always see who connected what, and why. The curation agents, the graph analytics (PageRank, Leiden communities, bridges), and the topic surfaces live in the separate [thread-librarian](https://github.com/ellamental/thread_archive_librarian) package; without it the graph simply stays empty, and nothing else depends on it.
 
-**No server. No cloud. No subscription to lose your history to.** A background watcher keeps it current; everything runs locally.
+**No hosted backend. No cloud. No subscription to lose your history to.** A background watcher keeps it current; every process — the MCP server, the web viewer, the daemons — runs locally, on your machine.
 
 **Dev tooling for one well-provisioned Mac.** macOS is the supported platform — the daemons are LaunchAgents, the file locks are Unix — and the archive is single-user, single-machine. It assumes workstation-class headroom, too: optional semantic search keeps a multi-GB torch model resident, a normal cost on the machine this is for.
 
@@ -88,9 +100,10 @@ which it is.
 Serverless-native, single-user, single-machine: it watches this Mac's
 agent-harness stores and imports provider transcripts into one event model.
 
-It is a standalone package — no server, no cloud service, no host application
-it depends on. The supported interfaces are the MCP tools and the documented
-on-disk format (see Stability) — there is no public Python API.
+It is a standalone package — no hosted backend, no cloud service, no host
+application it depends on. The supported interfaces are the MCP tools, the
+documented on-disk format, and the provider plugin API (see Stability) — there
+is no other public Python API.
 
 ## Install
 
@@ -118,7 +131,7 @@ operator CLI and the pre-built web viewer (no node).
 
 ```bash
 python3 -m venv .venv
-.venv/bin/pip install -e .                 # lexical core (+ Leiden community detection)
+.venv/bin/pip install -e .                 # lexical core + the corpus-graph ranking stack (Leiden)
 .venv/bin/pip install -e '.[embeddings]'   # optional: local semantic search (pulls torch — sized for a dev machine)
 .venv/bin/pip install -e '.[dev]'          # test/lint toolchain — pytest lives here, not in the base install
 .venv/bin/pytest tests/ -q                 # confirm green (add `-m package` for the wheel/sdist release lane)
@@ -149,14 +162,16 @@ Non-interactive (agents, scripts): `thread_archive --yes` accepts every
 default — without `--yes`, a non-TTY run only prints guidance and never
 ingests.
 
-Skipped the watcher? Still covered: `archive-mcp` cohosts **lazy catch-up
-ingest** — a background pass at startup and (throttled) around tool calls
-imports whatever landed in your local AI-tool stores since the last pass. On
-a fresh archive give the first pass a minute to chew before expecting search
-hits; the watcher install (`thread_archive setup`, or `archive daemon
-install`) is the always-fresh upgrade. With the daemon installed, the MCP
-servers' lazy passes degrade to no-op lock probes — exactly one process
-ingests at a time, however many Claude Code sessions are open.
+Skipped the watcher? Still covered: setup-generated MCP entries explicitly set
+`THREAD_ARCHIVE_MCP_INGEST=1`, opting `archive-mcp` into **lazy catch-up
+ingest**. A background pass at startup and (throttled) around tool calls imports
+whatever landed in your local AI-tool stores since the last pass. A bare
+`archive-mcp` invocation without that setting is fully read-only. On a fresh
+archive give the first pass a minute to chew before expecting search hits; the
+watcher install (`thread_archive setup`, or `archive daemon install`) is the
+always-fresh upgrade. With the daemon installed, opted-in MCP passes degrade to
+no-op lock probes — exactly one process ingests at a time, however many clients
+are open.
 
 ## CLI
 
@@ -360,9 +375,9 @@ wins; ids that were never imported are skipped, not fatal.
   `archive providers` lists what is registered; see [docs/providers.md](docs/providers.md).
 - **Self-feeds** — the watcher tails local stores and ingests incrementally; events land
   in the JSONL truth *before* their commit (no checkpoint in the hot loop). Zero-daemon
-  by default (`archive-mcp` cohosts lazy catch-up ingest), with a one-command macOS
-  LaunchAgent upgrade (`archive daemon install`) for always-fresh — no external service
-  either way.
+  freshness comes from the setup-generated MCP catch-up opt-in; a one-command macOS
+  LaunchAgent upgrade (`archive daemon install`) makes it always-fresh. Neither mode
+  needs an external service.
 - **Declares itself** — the installer writes a small discovery manifest
   `<home>/product.json` (`host/write-manifest.py`; `make install-agent` runs
   it): name, version, data paths, and the viewer URL when the watcher serves
@@ -410,23 +425,30 @@ wins; ids that were never imported are skipped, not fatal.
 
 ## MCP
 
-One server, read-only. **`thread-archive`** (`archive-mcp`) serves
-`thread_search` / `thread_read` and cohosts lazy catch-up
-ingest in its own process (throttled, cross-process-safe via the ingest-owner
-lock; `THREAD_ARCHIVE_MCP_INGEST=0` disables it). Curation writes deliberately
-have no MCP surface in this package — a client wired to the archive can search
-and read, never mutate. Client config:
+One server, two explicit process modes. **`thread-archive`** (`archive-mcp`)
+serves the read-only `thread_search` / `thread_read` tools. The process is also
+read-only by default. Setting `THREAD_ARCHIVE_MCP_INGEST=1` opts it into local
+lazy catch-up ingest, throttled and cross-process-safe via the ingest-owner
+lock. Curation writes deliberately have no MCP surface in this package. Client
+config with catch-up enabled:
 
 ```json
 {
   "mcpServers": {
     "thread-archive": {
       "command": "archive-mcp",
-      "env": { "THREAD_ARCHIVE_HOME": "~/.thread/archive" }
+      "env": {
+        "THREAD_ARCHIVE_HOME": "~/.thread/archive",
+        "THREAD_ARCHIVE_MCP_INGEST": "1"
+      }
     }
   }
 }
 ```
+
+The shared HTTP LaunchAgent is read-only by default too. Install it with
+`archive daemon install --mcp --mcp-ingest` only when it should own catch-up;
+leave the flag off when the watcher already owns ingestion.
 
 ## Knowledge layer (the topic graph)
 
@@ -436,8 +458,10 @@ There are exactly two kinds of thread: imported **conversations** and curated **
 The archive keeps the **data plane** only: the event log, its fold, and the SQL topic
 reads (`_knowledge/`). The analytics over it — PageRank, Leiden communities, bridges,
 peers, the relevant-subjects search lens, the topic pages and hierarchy — are
-[thread-librarian](../librarian)'s, and the archive's base install carries no graph
-libraries.
+[thread-librarian](https://github.com/ellamental/thread_archive_librarian)'s. The archive's base install carries the shared
+community spine (Leiden) and its own corpus-native embedding graph — the
+ranking signal that needs no curation — while the curated-graph analytics and
+their scipy/pagerank stack are the librarian's.
 
 Existing records stay readable as a compatibility surface: `thread_read` on a topic id
 renders the topic's curated page (description, links, cited quotes — each quote anchored
@@ -554,6 +578,5 @@ dependencies change).
 ## Origin
 
 thread-archive is the standalone member of a larger personal project ("thread"), built to
-stand on its own — serverless, self-contained, no backend or external services. It's
-young, though: expect the occasional rough edge or stray reference to its parent
-project.
+stand on its own — self-contained, no hosted backend or external services. It's
+young, though: expect the occasional rough edge.

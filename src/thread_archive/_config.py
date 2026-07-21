@@ -20,9 +20,10 @@ Truth and index paths can be overridden individually (e.g. for tests).
 
 ``config.json`` is the durable form of the choices a user makes in the
 ``thread_archive`` setup flow — which sources to ingest, what setup decided —
-and every ingest path (the watcher daemon, lazy MCP catch-up, ``archive
-watch``) consults it via :func:`source_enabled`. A missing or unreadable file
-means "all defaults": every source enabled, exactly the pre-config behavior.
+and every ingest path (the watcher daemon, opted-in MCP catch-up, ``archive
+watch``) consults it via :func:`source_enabled`. A missing file means "all
+defaults": every source enabled, exactly the pre-config behavior. An existing
+file that cannot be trusted disables every source until it is repaired.
 """
 
 from __future__ import annotations
@@ -38,6 +39,7 @@ logger = logging.getLogger(__name__)
 ENV_HOME = "THREAD_ARCHIVE_HOME"
 ENV_TRUTH = "THREAD_ARCHIVE_TRUTH_DIR"
 ENV_INDEX = "THREAD_ARCHIVE_INDEX"
+ENV_MCP_INGEST = "THREAD_ARCHIVE_MCP_INGEST"
 
 # Resolved per call, never frozen into a constant: the store location is
 # configuration (THREAD_ARCHIVE_HOME, a test's sandbox), and a constant captures
@@ -107,40 +109,67 @@ def resolve_paths(
 CONFIG_FILE = "config.json"
 
 
+class ArchiveConfig(dict):
+    """A parsed config plus whether its privacy-bearing source policy is valid.
+
+    This remains a ``dict`` so every existing config consumer and JSON writer
+    sees the ordinary persisted shape. ``valid`` is process state, never a key
+    that can accidentally be written back into ``config.json``.
+    """
+
+    def __init__(self, *args, valid: bool = True, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self.valid = valid
+
+
 def config_path(home: str | os.PathLike[str] | None = None) -> Path:
     return resolve_paths(home).home / CONFIG_FILE
 
 
-def load_config(home: str | os.PathLike[str] | None = None) -> dict:
-    """The parsed config, or ``{}`` when absent/unreadable (all defaults).
+def load_config(home: str | os.PathLike[str] | None = None) -> ArchiveConfig:
+    """Load config without ever turning corruption into renewed ingestion.
 
-    Fail-soft on purpose: a corrupt config file must degrade to default
-    behavior (ingest everything), never take an ingest path down. But only a
-    *missing* file is silent — a file that exists and won't parse flips every
-    source opt-out (possibly a privacy choice) back to enabled, so it logs at
-    error on every load until someone fixes or removes it.
+    A missing file is the normal pre-setup state and carries default-on source
+    behavior. An existing file that is unreadable, invalid JSON, not an object,
+    or has a malformed ``sources`` policy returns an invalid config. Reads and
+    diagnostics may continue, but :func:`source_enabled` fails closed for every
+    source until the operator repairs or deliberately removes the file.
     """
     path = config_path(home)
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
     except FileNotFoundError:
-        return {}
+        return ArchiveConfig()
     except (OSError, json.JSONDecodeError):
         logger.error(
-            "config: %s exists but could not be read/parsed — ALL defaults apply "
-            "(every source enabled, opt-outs ignored)",
+            "config: %s exists but could not be read/parsed — ingestion disabled "
+            "until the file is repaired or removed",
             path,
             exc_info=True,
         )
-        return {}
+        return ArchiveConfig(valid=False)
     if not isinstance(data, dict):
         logger.error(
-            "config: %s does not hold a JSON object — ALL defaults apply "
-            "(every source enabled, opt-outs ignored)",
+            "config: %s does not hold a JSON object — ingestion disabled until "
+            "the file is repaired or removed",
             path,
         )
-        return {}
-    return data
+        return ArchiveConfig(valid=False)
+
+    sources = data.get("sources", {})
+    sources_valid = isinstance(sources, dict) and all(
+        isinstance(entry, dict)
+        and ("enabled" not in entry or isinstance(entry["enabled"], bool))
+        for entry in sources.values()
+    )
+    if not sources_valid:
+        logger.error(
+            "config: %s has a malformed sources policy — ingestion disabled until "
+            "the file is repaired or removed",
+            path,
+        )
+        return ArchiveConfig(valid=False)
+    return ArchiveConfig(data)
 
 
 def save_config(cfg: dict, home: str | os.PathLike[str] | None = None) -> Path:
@@ -159,8 +188,19 @@ def save_config(cfg: dict, home: str | os.PathLike[str] | None = None) -> Path:
 
 
 def source_enabled(cfg: dict, source_name: str) -> bool:
-    """Whether a source watcher may ingest. Unlisted sources default to enabled."""
-    entry = cfg.get("sources", {}).get(source_name, {})
+    """Whether a source watcher may ingest.
+
+    Unlisted sources in a valid or absent config default to enabled. Any config
+    object marked invalid by :func:`load_config`, or any malformed source policy
+    supplied directly, fails closed.
+    """
+    if not getattr(cfg, "valid", True):
+        return False
+    sources = cfg.get("sources", {})
+    if not isinstance(sources, dict):
+        return False
+    entry = sources.get(source_name, {})
     if not isinstance(entry, dict):
-        return True
-    return bool(entry.get("enabled", True))
+        return False
+    enabled = entry.get("enabled", True)
+    return enabled if isinstance(enabled, bool) else False

@@ -152,6 +152,14 @@ h1.title { font-size: 19px; margin: 0 0 4px; }
 .msg:has(+ .msg.cont) { border-bottom-left-radius: 0; border-bottom-right-radius: 0; }
 
 /* markdown */
+.md-image-blocked {
+  display: inline-block;
+  padding: 0.1rem 0.4rem;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--muted);
+  font-size: 0.85em;
+}
 .md > :first-child { margin-top: 0; }
 .md > :last-child { margin-bottom: 0; }
 .md p { margin: 0 0 10px; white-space: pre-wrap; }

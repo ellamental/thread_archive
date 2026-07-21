@@ -121,3 +121,12 @@ name = "package"
 argv = ["{repo}/.venv/bin/pytest", "-q", "--tb=short", "-p", "no:cacheprovider",
         "-m", "package", "--no-cov", "tests/test_package_artifact.py"]
 timeout = 1200
+
+# Real-browser smoke and interaction coverage over the production frontend
+# bundle. API calls are mocked at Chromium's network boundary, so the lane is
+# deterministic and never reads the operator's live archive.
+[[suite]]
+name = "frontend-e2e"
+argv = ["npm", "run", "e2e"]
+cwd = "frontend"
+timeout = 600

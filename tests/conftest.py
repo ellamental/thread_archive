@@ -107,4 +107,9 @@ def archive_home(tmp_path, monkeypatch):
     home = tmp_path / "arc"
     home.mkdir(parents=True, exist_ok=True)
     monkeypatch.setenv(config.ENV_HOME, str(home))
+    # Coherence re-rank off for fixture stores: its background graph refresh
+    # thread would race test teardown (leaked connections fail the suite), and
+    # its logic has dedicated deterministic coverage (test_embed_graph.py,
+    # which builds inline and injects gamma explicitly).
+    monkeypatch.setenv("THREAD_ARCHIVE_COHERENCE", "off")
     return home

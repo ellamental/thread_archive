@@ -36,23 +36,38 @@ def _no_real_client_cli(tmp_path, monkeypatch) -> None:
 # ── config.json ──────────────────────────────────────────────────────────────
 
 
-def test_load_config_absent_and_corrupt_mean_defaults(archive_home, caplog) -> None:
+def test_load_config_absent_defaults_but_corruption_fails_closed(archive_home, caplog) -> None:
     # Absent is the normal pre-setup state: silent defaults.
     with caplog.at_level("ERROR", logger="thread_archive._config"):
-        assert config.load_config() == {}
+        cfg = config.load_config()
+        assert cfg == {} and cfg.valid
     assert not caplog.records
-    # A corrupt file silently re-enabling every opted-out source would be a
-    # privacy hazard — it must degrade to defaults BUT log at error.
+    # A corrupt file must never silently re-enable an opted-out source.
     config.config_path().write_text("{not json")
     with caplog.at_level("ERROR", logger="thread_archive._config"):
-        assert config.load_config() == {}
-    assert any("ALL defaults" in r.message for r in caplog.records)
+        cfg = config.load_config()
+        assert cfg == {} and not cfg.valid
+        assert not config.source_enabled(cfg, "cursor")
+    assert any("ingestion disabled" in r.message for r in caplog.records)
     caplog.clear()
-    # A non-dict document also degrades to defaults rather than exploding.
+    # A non-dict document also disables ingest rather than exploding.
     config.config_path().write_text('["list"]')
     with caplog.at_level("ERROR", logger="thread_archive._config"):
-        assert config.load_config() == {}
-    assert any("ALL defaults" in r.message for r in caplog.records)
+        cfg = config.load_config()
+        assert cfg == {} and not cfg.valid
+        assert not config.source_enabled(cfg, "claude-code")
+    assert any("ingestion disabled" in r.message for r in caplog.records)
+
+
+def test_malformed_source_policy_fails_closed(archive_home, caplog) -> None:
+    for sources in (["cursor"], {"cursor": "nope"}, {"cursor": {"enabled": "no"}}):
+        config.config_path().write_text(json.dumps({"sources": sources}))
+        with caplog.at_level("ERROR", logger="thread_archive._config"):
+            cfg = config.load_config()
+        assert not cfg.valid
+        assert not config.source_enabled(cfg, "cursor")
+        assert not config.source_enabled(cfg, "claude-code")
+    assert any("malformed sources policy" in r.message for r in caplog.records)
 
 
 def test_save_config_roundtrip(archive_home) -> None:
@@ -67,8 +82,10 @@ def test_source_enabled_defaults_true() -> None:
     assert config.source_enabled({}, "cursor")
     assert config.source_enabled({"sources": {"cursor": {}}}, "cursor")
     assert not config.source_enabled({"sources": {"cursor": {"enabled": False}}}, "cursor")
-    # Malformed entries degrade to enabled, never to a crash.
-    assert config.source_enabled({"sources": {"cursor": "nope"}}, "cursor")
+    # Malformed privacy policy fails closed, never to a crash.
+    assert not config.source_enabled({"sources": {"cursor": "nope"}}, "cursor")
+    assert not config.source_enabled({"sources": []}, "cursor")
+    assert not config.source_enabled({"sources": {"cursor": {"enabled": "no"}}}, "cursor")
 
 
 def test_enabled_watchers_respects_config(archive_home) -> None:
@@ -78,6 +95,10 @@ def test_enabled_watchers_respects_config(archive_home) -> None:
     filtered = {w.source_name for w in enabled_watchers()}
     assert "cursor" not in filtered and "cc-exthost" not in filtered
     assert "claude-code" in filtered
+
+    # Existing-but-corrupt config is a hard privacy stop for every ingest path.
+    config.config_path().write_text("{not json")
+    assert enabled_watchers() == []
 
 
 def test_provider_watchers_excludes_mechanisms() -> None:
@@ -396,6 +417,7 @@ def test_mcp_config_block_names_read_server_only() -> None:
     servers = block["mcpServers"]
     assert set(servers) == {"thread-archive"}
     assert servers["thread-archive"]["command"].endswith("archive-mcp")
+    assert servers["thread-archive"]["env"]["THREAD_ARCHIVE_MCP_INGEST"] == "1"
 
 
 def test_setup_prints_config_when_no_client_found(archive_home, capsys) -> None:

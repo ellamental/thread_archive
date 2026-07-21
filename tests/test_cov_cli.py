@@ -570,13 +570,15 @@ def test_daemon_mcp_lifecycle(tmp_path, monkeypatch, stub_bin, capsys) -> None:
     })
     arc = str(tmp_path / "arc")
 
-    assert main(["daemon", "install", "--mcp", "--http-host", "1.2.3.4",
+    assert main(["daemon", "install", "--mcp", "--mcp-ingest", "--http-host", "1.2.3.4",
                  "--http-port", "9", "--home", arc]) == 0
     out = capsys.readouterr().out
     assert "shared MCP server: http://1.2.3.4:9/mcp" in out
+    assert "catch-up ingest: enabled" in out
     plist = _written_plist(MCP_LABEL)
     assert plist["ProgramArguments"][1:] == ["--http", "--host", "1.2.3.4", "--port", "9"]
     assert plist["EnvironmentVariables"]["THREAD_ARCHIVE_HOME"] == arc
+    assert plist["EnvironmentVariables"]["THREAD_ARCHIVE_MCP_INGEST"] == "1"
     assert _calls(log) == [
         ["bootout", f"gui/{_launchd._uid()}/{MCP_LABEL}"],
         ["bootstrap", f"gui/{_launchd._uid()}", str(_launchd._plist_path(MCP_LABEL))],

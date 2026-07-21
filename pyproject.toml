@@ -29,12 +29,17 @@ classifiers = [
 # One storage/runtime path: JSONL + SQLite. No server backends behind extras.
 # (Non-Negotiable #1.) numpy is for the optional vector layer but light enough
 # to keep in the base; embeddings (torch) is the only genuinely heavy,
-# genuinely optional piece. The graph stack (networkx/scipy/leidenalg/igraph)
-# is thread-librarian's — the archive keeps only the knowledge layer's data
-# plane and needs no graph library for it.
+# genuinely optional piece. networkx + the Leiden engine serve the archive's
+# own corpus-native embedding graph (_retrieval/embed_graph.py — the coherence
+# ranking signal) and the shared community spine (_retrieval/community.py)
+# thread-librarian's curated graph also imports; the curated-graph analytics
+# themselves (and scipy, for pagerank) are thread-librarian's.
 dependencies = [
     "sqlalchemy>=2.0",
     "numpy>=1.26",
+    "networkx>=3.2",  # kNN graph container + the seeded Louvain fallback
+    "leidenalg>=0.10",  # Leiden community detection (well-connected communities)
+    "python-igraph>=0.11",  # leidenalg's graph backend
     "mcp>=1.0",
     "cryptography>=42",  # AES-GCM for redaction's recovery bundles (_ops/redact.py)
 ]
@@ -107,11 +112,15 @@ exclude = [
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 # The default run is every lane except `package` (wheel/sdist build + clean-venv
-# install — minutes, not seconds; run it with `-m package` or via its ci.toml row).
-addopts = "-q --strict-markers -m 'not package'"
+# install) and `beir` (downloads a public IR benchmark, ingests thousands of
+# docs, loads torch — tens of minutes) — both minutes-to-tens-of-minutes, not
+# seconds. Run them with `-m package` / `-m beir`; `package` has a ci.toml row,
+# `beir` is invoke-by-hand only (no CI row) — external calibration, not a gate.
+addopts = "-q --strict-markers -m 'not package and not beir'"
 markers = [
     "integration: opens real sockets or spawns real subprocesses; deselect (-m 'not integration') for a fully hermetic run, e.g. in a no-network sandbox",
     "package: builds the wheel/sdist and installs into a throwaway venv; slow, selected explicitly with -m package",
+    "beir: runs the BEIR retrieval-calibration harness (network download + torch + a full ingest); tens of minutes, selected explicitly with -m beir",
 ]
 filterwarnings = [
     "error::ResourceWarning",

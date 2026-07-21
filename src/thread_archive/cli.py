@@ -238,9 +238,18 @@ def cmd_daemon(args: argparse.Namespace) -> int:
         # connect to (point each client's MCP config at the URL below), instead of
         # a per-client stdio subprocess each loading its own retrieval model.
         if args.action == "install":
-            plist = _launchd.install_mcp(args.home, host=args.http_host, port=args.http_port)
+            plist = _launchd.install_mcp(
+                args.home,
+                host=args.http_host,
+                port=args.http_port,
+                ingest=args.mcp_ingest,
+            )
             print(f"installed {_launchd.MCP_LABEL} ({plist})")
             print(f"shared MCP server: http://{args.http_host}:{args.http_port}/mcp")
+            print(
+                "catch-up ingest: "
+                + ("enabled (explicit --mcp-ingest opt-in)" if args.mcp_ingest else "disabled")
+            )
             print("point every client's MCP config at that URL "
                   '(type "http") instead of the archive-mcp stdio command.')
         elif args.action == "uninstall":
@@ -1439,6 +1448,11 @@ def build_parser() -> argparse.ArgumentParser:
     p_daemon.add_argument(
         "--http-port", type=int, default=MCP_DEFAULT_PORT,
         help="--mcp only: shared MCP server bind port (default 8788)",
+    )
+    p_daemon.add_argument(
+        "--mcp-ingest", action="store_true",
+        help="--mcp install only: explicitly let the shared MCP process run local "
+             "catch-up ingest (off by default; unnecessary when the watcher runs)",
     )
     p_daemon.set_defaults(func=cmd_daemon)
 

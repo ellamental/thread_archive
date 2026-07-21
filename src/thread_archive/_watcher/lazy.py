@@ -1,9 +1,10 @@
 """Lazy catch-up ingest: a one-shot, cross-process-safe watch pass.
 
-This is the zero-daemon freshness path: ``archive-mcp`` runs a pass in a
-background thread at startup and (throttled) around tool calls, so a bare
-``claude mcp add … archive-mcp`` keeps the archive current without any
-LaunchAgent. The always-on watcher remains the always-fresh upgrade.
+This is the explicitly opted-in zero-daemon freshness path:
+``THREAD_ARCHIVE_MCP_INGEST=1 archive-mcp`` runs a pass in a background thread
+at startup and (throttled) around tool calls. Setup-generated stdio client
+entries carry that opt-in. A bare server stays read-only, and the always-on
+watcher remains the always-fresh upgrade.
 
 Exactly one process ingests at a time. The pass runs only while holding a
 non-blocking exclusive flock on ``<home>/.ingest-owner.lock``; the watcher

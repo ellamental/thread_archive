@@ -10,18 +10,28 @@ release (see the update model below for how fast a fix reaches installs).
 
 ## Trust model
 
-thread-archive is single-user, single-machine, local-only. There is no server
-component, no account, no telemetry, and nothing listens beyond loopback. The
+thread-archive is single-user, single-machine, and local-only. There is no
+hosted service, account, or telemetry, and nothing listens beyond loopback. The
 threat model is correspondingly narrow, and these are its load-bearing walls:
 
 - **The web viewer is unauthenticated full read of the archive.** It binds
   `127.0.0.1` only, rejects non-loopback `Host` headers (DNS-rebinding
   defense), and refuses a non-loopback bind unless
   `THREAD_ARCHIVE_WEB_NONLOCAL=1` is set deliberately. If you tunnel or proxy
-  it, you are the authentication layer.
-- **The MCP surface is read-only.** The one server this package ships
-  (`thread_search` / `thread_read`) cannot mutate the archive — a client wired
-  to it can search and read, never write.
+  it, you are the authentication layer. Every response carries a restrictive
+  content-security policy; Markdown in archived messages may automatically
+  load only same-origin blobs already stored by the archive.
+- **The MCP tools are read-only, and the process defaults to read-only.** The
+  one server this package ships exposes only `thread_search` / `thread_read`.
+  `THREAD_ARCHIVE_MCP_INGEST=1` is a separate, explicit process-level opt-in to
+  local catch-up ingestion; setup-generated stdio entries set it when the
+  always-on watcher is skipped. The shared MCP LaunchAgent pins it off unless
+  installed with `archive daemon install --mcp --mcp-ingest`; leave it off when
+  the watcher owns ingestion.
+- **Source privacy policy fails closed.** An absent `config.json` is the normal
+  pre-setup default, but an existing file that cannot be read, parsed, or
+  structurally trusted disables all source ingestion until it is repaired or
+  deliberately removed. Corruption cannot silently reverse an opt-out.
 - **Archive content is untrusted input to whatever reads it.** Search results
   and thread reads return conversation text verbatim — text that originally
   came from models, tools, and web content. An agent consuming

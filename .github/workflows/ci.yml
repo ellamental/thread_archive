@@ -92,6 +92,12 @@ jobs:
       - name: Test
         run: npx vitest run --coverage
 
+      - name: Install browser
+        run: npx playwright install --with-deps chromium
+
+      - name: Browser tests
+        run: npx playwright test
+
   # The release lane: build the wheel + sdist, prove their contents, install the
   # wheel into a clean venv, and run the real CLI lifecycle from it. Slow enough
   # to be deselected from the default pytest run (pyproject addopts), so it's its

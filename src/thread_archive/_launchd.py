@@ -44,6 +44,8 @@ import time
 from pathlib import Path
 from typing import Optional
 
+from ._config import ENV_MCP_INGEST
+
 WATCHER_LABEL = "com.thread-archive.watcher"
 MCP_LABEL = "com.thread-archive.mcp"
 BACKUP_LABEL = "com.thread-archive.backup"
@@ -140,11 +142,15 @@ def mcp_plist(
     home: Optional[str] = None,
     host: str = MCP_DEFAULT_HOST,
     port: int = MCP_DEFAULT_PORT,
+    ingest: bool = False,
 ) -> dict:
     """The shared-MCP-server LaunchAgent as a plist dict (pure — no filesystem,
     no launchctl). ``entry`` is the ``archive-mcp`` console script."""
     env = {
         "PATH": f"{entry.parent}:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin",
+        # The shared server is a retrieval service. The separately installed
+        # watcher owns ingestion; a bare MCP process never mutates by surprise.
+        ENV_MCP_INGEST: "1" if ingest else "0",
     }
     if home:
         env["THREAD_ARCHIVE_HOME"] = home
@@ -321,6 +327,7 @@ def install_mcp(
     *,
     host: str = MCP_DEFAULT_HOST,
     port: int = MCP_DEFAULT_PORT,
+    ingest: bool = False,
 ) -> Path:
     """Write the shared-MCP-server plist and (re)load the agent. Returns the
     plist path."""
@@ -329,7 +336,9 @@ def install_mcp(
 
     log_dir = resolve_paths(home).home / "logs"
     return _install_agent(
-        MCP_LABEL, mcp_plist(entry, log_dir, home=home, host=host, port=port), home
+        MCP_LABEL,
+        mcp_plist(entry, log_dir, home=home, host=host, port=port, ingest=ingest),
+        home,
     )
 
 

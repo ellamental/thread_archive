@@ -93,6 +93,8 @@ re-embeds everything.
 
 Claude Science (the AI Workbench app) can run the **same stdio `archive-mcp`** — no HTTP,
 no extra daemon — but it spawns connectors in a **sandbox**, so two things must be true.
+The bare process is read-only; add `THREAD_ARCHIVE_MCP_INGEST=1` to the connector only
+when it should also scan the source stores granted to that sandbox.
 
 What *doesn't* work: a **Remote** (URL) connector. Claude Science's `safeFetch` is an SSRF
 guard — it rejects every loopback/private host (`127.0.0.0/8`, `10/8`, `192.168/16`, …, and

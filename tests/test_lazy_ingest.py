@@ -107,7 +107,7 @@ def test_mcp_throttle_drives_a_real_catch_up_pass(archive_home, tmp_path, monkey
     assert throttle.last == 0.0  # kill-switch: nothing claimed, nothing run
     assert not ta.search("lazy ingest")
 
-    monkeypatch.delenv("THREAD_ARCHIVE_MCP_INGEST")
+    monkeypatch.setenv("THREAD_ARCHIVE_MCP_INGEST", "1")
     throttle.maybe_catch_up()
     first = throttle.last
     assert first > 0.0
