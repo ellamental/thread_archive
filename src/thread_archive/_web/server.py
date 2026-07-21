@@ -262,12 +262,8 @@ def _resolve_dup_threads(hits: "list[EventHit]") -> None:
 def _subjects_payload(hits: "list[EventHit]") -> list[dict]:
     """The relevant-subjects lens over a result set, JSON-shaped: the curated
     topics these hits cluster under, each with how many result conversations it
-    links. The lens belongs to the optional ``thread-librarian`` package; empty
-    when it isn't installed, is disabled, or has nothing for these hits."""
-    try:
-        from thread_librarian import subjects as _subjects
-    except ImportError:
-        return []
+    links. Empty when the lens is disabled or has nothing for these hits."""
+    from .._retrieval import subjects as _subjects
 
     if not hits or not _subjects.enabled():
         return []
@@ -277,19 +273,15 @@ def _subjects_payload(hits: "list[EventHit]") -> list[dict]:
     ]
 
 
-# The two whole-archive surveys (/api/status, /api/curation) behind a small TTL
-# cache. Both count across every row — seconds on a large archive — while the
-# status bar asks on every page load, so requests serve the cached survey and a
-# stale one refreshes in the background; only the first request a process ever
-# sees pays the full cost (and serve_in_thread prewarms, so in the cohosted
-# watcher not even that). Keyed by (survey, home): one process normally serves
-# one archive, but tests point the engine at a fresh home per test and must not
-# read a stale survey of the previous one.
+# The whole-archive status survey (/api/status) behind a small TTL cache. It
+# counts across every row — seconds on a large archive — while the status bar
+# asks on every page load, so requests serve the cached survey and a stale one
+# refreshes in the background; only the first request a process ever sees pays
+# the full cost (and serve_in_thread prewarms, so in the cohosted watcher not
+# even that). Keyed by (survey, home): one process normally serves one archive,
+# but tests point the engine at a fresh home per test and must not read a stale
+# survey of the previous one.
 _STATUS_TTL = 60.0
-# Curation's pass is the heavier of the two — its backlog gate walks every
-# conversation's events — and its numbers move on a drain's cadence, not a
-# page's, so it holds longer.
-_CURATION_TTL = 300.0
 _survey_lock = threading.Lock()
 _survey_cache: dict[tuple[str, str], tuple[float, dict]] = {}
 _survey_refreshing: set[tuple[str, str]] = set()
@@ -346,20 +338,7 @@ def _survey(name: str, compute, ttl: float) -> dict:
 
 
 def _status() -> dict:
-    # curation_available gates the viewer's curation surface: the page reports
-    # the optional thread_librarian package's drains, so without that package
-    # there is nothing to navigate to. Copied, not mutated — the survey dict is
-    # a shared cache entry.
-    import importlib.util
-
-    return {
-        **_survey("status", api.status, _STATUS_TTL),
-        "curation_available": importlib.util.find_spec("thread_librarian") is not None,
-    }
-
-
-def _curation() -> dict:
-    return _survey("curation", api.curation_stats, _CURATION_TTL)
+    return _survey("status", api.status, _STATUS_TTL)
 
 
 def _list_sources() -> list[dict]:
@@ -383,7 +362,7 @@ def _list_sources() -> list[dict]:
 
 
 # Thread types the recent list hides when no explicit ``types`` filter is given:
-# topics are curated artifacts (the librarian's surface), and 'system' threads (Task-tool subagent runs —
+# topics are curated artifacts, and 'system' threads (Task-tool subagent runs —
 # see the claude-code importer) are machinery, not sessions someone opens by
 # recency. Both stay reachable through /api/threads?types=….
 _DEFAULT_HIDDEN_TYPES = ("topic", "system")
@@ -393,8 +372,8 @@ def _list_threads(*, limit: int, q: Optional[str], types: Optional[list[str]] = 
     """Recent threads by last *activity* — the newest event's ``occurred_at``,
     falling back to the row's ``updated_at`` for event-less threads. The raw
     ``updated_at`` column can't mean "recently active" here: it is the truth
-    checkpoint's dirty-flag, bumped by any metadata write (a librarian summary
-    would re-surface a years-old thread) and untouched by event ingest. With
+    checkpoint's dirty-flag, bumped by any metadata write (a stored-summary
+    write would re-surface a years-old thread) and untouched by event ingest. With
     ``types`` given, exactly those ``thread_type`` values are listed; without
     it, topics and system threads (subagent runs) are hidden — the sidebar's
     default. Archived threads never list; ``q`` filters on title/name
@@ -511,12 +490,6 @@ def route(method: str, path: str, params: dict) -> Response:
 
     if path == "/api/sources":
         return _ok({"sources": _list_sources()})
-
-    if path == "/api/curation":
-        # What the two curation drains have done: queue depth, per-day output,
-        # graph health, and the drains' own run cost. Behind the survey cache —
-        # the librarian's backlog gate walks every conversation's events.
-        return _ok(_curation())
 
     if path == "/api/stats":
         # Token/cost analytics. Backed by an incrementally-maintained rollup
@@ -763,9 +736,6 @@ def serve_in_thread(*, host: str = "127.0.0.1", port: int = 8787) -> ThreadingHT
     # background so the first /api/stats serves an already-warm table. Only the very
     # first build (or the one after a reindex) is slow; a restart folds just the delta.
     httpd.start_prewarm(_prewarm_stats, name="archive-web-stats-warm")
-    # And the curation survey, the heaviest of the three: its backlog gate walks
-    # every conversation's events, so a cold /api/curation is tens of seconds.
-    httpd.start_prewarm(_prewarm_curation, name="archive-web-curation-warm")
     return httpd
 
 
@@ -781,14 +751,6 @@ def _prewarm_status() -> None:
         _status()
     except Exception:  # noqa: BLE001 — warm-up must never crash the server thread
         log.debug("status prewarm failed", exc_info=True)
-
-
-def _prewarm_curation() -> None:
-    """Best-effort background curation survey at server start; see _prewarm_stats."""
-    try:
-        _curation()
-    except Exception:  # noqa: BLE001 — warm-up must never crash the server thread
-        log.debug("curation prewarm failed", exc_info=True)
 
 
 def _prewarm_stats() -> None:

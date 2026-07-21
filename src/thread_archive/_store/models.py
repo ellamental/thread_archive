@@ -272,11 +272,9 @@ class ImportState(Base):
 
 # ── Knowledge layer (data plane) ─────────────────────────────────────────────
 # Topics are threads (``thread_type='topic'``). ThreadLink is the curated edge
-# set and TopicMessage the message→topic evidence; the librarian's in-process
-# corpus graph (:mod:`thread_librarian.graph`) projects over both (links as
-# edges, evidence as topic↔thread edges). Both are **projections of the curatorial
-# event log** (``KgEvent`` /
-# ``kg_events.jsonl``): a librarian write appends an event and folds it into these
+# set and TopicMessage the message→topic evidence. Both are **projections of the
+# curatorial event log** (``KgEvent`` / ``kg_events.jsonl``): a curation write
+# appends an event and folds it into these
 # tables (see :mod:`thread_archive._knowledge.materialize`). A legacy snapshot of the
 # tables may still exist as a reindex seed, which the event replay reconciles on top.
 
@@ -441,9 +439,9 @@ class KgEvent(Base):
         Index("idx_kg_events_occurred", "occurred_at"),
         Index("idx_kg_events_actor_thread", "actor_thread_id"),
         Index("idx_kg_events_correlation", "correlation_id", postgresql_where=text("(correlation_id IS NOT NULL)")),
-        # Persistent id high-water across DELETE — see the Thread note. The librarian
-        # mints kg-event ids on insert; without this, a reindex that empties the table
-        # would let the next curation write restart ids from 1 and collide with a
+        # Persistent id high-water across DELETE — see the Thread note. Curation
+        # writes mint kg-event ids on insert; without this, a reindex that empties the
+        # table would let the next write restart ids from 1 and collide with a
         # historical id.
         {"sqlite_autoincrement": True},
     )

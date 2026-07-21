@@ -502,21 +502,3 @@ def redact_restore_key(key_id: str, key_b64: str, *, home: Optional[str] = None)
     from ._ops.redact import restore_key
 
     return restore_key(key_id, key_b64)
-
-
-def curation_stats(*, home: Optional[str] = None, days: int = 30) -> dict:
-    """What the curation drains have done, for the viewer's curation
-    page: each drain's remaining backlog (the same gate the daemon fires on),
-    cadence and liveness, per-day curation output, topic-graph health, and the
-    drains' own archived runs with their request/token cost. ``days`` bounds the
-    time series. Read-only. The figures come from the optional
-    :mod:`thread_librarian` package; without it installed this returns
-    ``{"available": False}`` — there is nothing curating, so there is nothing
-    to report."""
-    open_archive(home)
-    try:
-        from thread_librarian.curate.stats import collect_curation_stats
-    except ImportError:
-        return {"available": False, "error": "thread-librarian is not installed"}
-
-    return collect_curation_stats(days=days, home=home)

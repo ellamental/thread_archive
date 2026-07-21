@@ -21,8 +21,8 @@ off (symmetric across all arms; both sit above candidate selection, which is
 what these arms move). Reports MRR + recall@k per variant, plus pool-miss
 diagnostics for the expansion arm. Read-only; run against the live archive:
 
-    .venv/bin/python scripts/graph_eval.py
-    .venv/bin/python scripts/graph_eval.py --cases 150 --json
+    .venv/bin/python evals/graph_eval.py
+    .venv/bin/python evals/graph_eval.py --cases 150 --json
 """
 
 from __future__ import annotations

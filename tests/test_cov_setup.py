@@ -160,14 +160,12 @@ class FakeMachine:
 
     def __init__(
         self, *, macos: bool = True, watcher: bool = False, backup: bool = False,
-        curation: bool = False, backup_dest: Optional[str] = None,
-        curation_installed: bool = False, embeddings: bool = True,
+        backup_dest: Optional[str] = None, embeddings: bool = True,
         install_fails: Optional[str] = None,
     ):
         self.macos = macos
-        self._watcher, self._backup, self._curation = watcher, backup, curation
+        self._watcher, self._backup = watcher, backup
         self._backup_dest = backup_dest
-        self._curation_installed = curation_installed
         self._embeddings = embeddings
         self._install_fails = install_fails
         self.installed: list[tuple] = []
@@ -180,12 +178,6 @@ class FakeMachine:
 
     def backup_dest(self) -> Optional[str]:
         return self._backup_dest
-
-    def curation_running(self, home=None) -> bool:
-        return self._curation
-
-    def curation_installed(self) -> bool:
-        return self._curation_installed
 
     def embeddings_installed(self) -> bool:
         return self._embeddings
@@ -589,7 +581,7 @@ def test_claude_server_report_probe_failure_reads_unwired(tmp_path, monkeypatch)
 def test_wire_claude_success_adds_read_server(stub_bin) -> None:
     log = _claude_stub(stub_bin)
     assert clients.wire_claude(str(stub_bin / "claude")) == []
-    # Read server only — the librarian write server is the plugin's to wire.
+    # Read server only — any write surface is its own product's to wire.
     calls = _calls(log)
     assert len(calls) == 1
     assert calls[0][:5] == ["mcp", "add", "--scope", "user", "thread-archive"]
@@ -914,28 +906,10 @@ def test_backup_running_unreadable_plist_assumes_default(tmp_path, monkeypatch, 
     assert _MacMachine().backup_running() is True
 
 
-def test_curation_running_needs_both_drains(tmp_path, monkeypatch, stub_bin) -> None:
-    # A half-installed pair reads as not running.
-    _launchctl_stub(stub_bin, {"print": (0, "", "")})
-    monkeypatch.setenv("HOME", str(tmp_path))
-    agents = tmp_path / "Library" / "LaunchAgents"
-    agents.mkdir(parents=True, exist_ok=True)
-    arc = str(tmp_path / "arc")
-    for label in (machine_mod.LIBRARIAN_LABEL, machine_mod.GARDENER_LABEL):
-        assert _MacMachine().curation_running(arc) is False
-        (agents / f"{label}.plist").write_bytes(plistlib.dumps(
-            {"Label": label, "EnvironmentVariables": {"THREAD_ARCHIVE_HOME": arc}}
-        ))
-    assert _MacMachine().curation_running(arc) is True
-
-
 def test_machine_reads_this_installs_optional_packages() -> None:
-    # Both are importability questions about this environment, answered against
-    # whatever it actually has — the gate on recommending a command or a search
-    # mode the machine doesn't carry.
-    assert Machine().curation_installed() is (
-        importlib.util.find_spec("thread_librarian") is not None
-    )
+    # An importability question about this environment, answered against
+    # whatever it actually has — the gate on recommending a search mode the
+    # machine doesn't carry.
     assert Machine().embeddings_installed() is (
         importlib.util.find_spec("sentence_transformers") is not None
     )
@@ -1011,18 +985,6 @@ def test_print_status_red_nightly_and_topic_split(archive_home, tmp_path, capsys
     assert "2 conversations · 3 topics" in out
     assert "backup:   ok" in out
     assert "nightly:  FAILED (backup, restore-drill)" in out
-
-
-def test_print_status_curation_lines(archive_home, capsys) -> None:
-    assert wizard.print_status(
-        _args("status"), machine=FakeMachine(curation=True)
-    ) == 0
-    assert "curation: librarian (hourly) + gardener (daily) scheduled" in capsys.readouterr().out
-
-    assert wizard.print_status(
-        _args("status"), machine=FakeMachine(curation_installed=True)
-    ) == 0
-    assert "curation: not scheduled" in capsys.readouterr().out
 
 
 # ── _setup_completed ──────────────────────────────────────────────────────────

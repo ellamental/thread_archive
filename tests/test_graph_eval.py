@@ -10,7 +10,7 @@ import sys
 from pathlib import Path
 
 _SPEC = importlib.util.spec_from_file_location(
-    "graph_eval", Path(__file__).resolve().parent.parent / "scripts" / "graph_eval.py")
+    "graph_eval", Path(__file__).resolve().parent.parent / "evals" / "graph_eval.py")
 graph_eval = importlib.util.module_from_spec(_SPEC)
 sys.modules["graph_eval"] = graph_eval
 _SPEC.loader.exec_module(graph_eval)

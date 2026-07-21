@@ -317,7 +317,7 @@ def _retrieval_trend_alert() -> Optional[str]:
                     f"retrieval quality is sliding: median MRR over the last "
                     f"{len(recent)} gate runs is {recent_med:.3f}, down from a "
                     f"{baseline_med:.3f} baseline — below the gate's collapse "
-                    f"floors' radar; see {ledger} and scripts/retrieval_eval.py"
+                    f"floors' radar; see {ledger} and evals/retrieval_eval.py"
                 )
         return None
     except Exception:  # noqa: BLE001

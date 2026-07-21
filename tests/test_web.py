@@ -7,7 +7,6 @@ exercise it directly (no sockets) against a seeded throwaway archive.
 
 from __future__ import annotations
 
-import importlib.util
 import json
 
 import pytest
@@ -123,26 +122,6 @@ def test_status_endpoint(archive_home):
     assert status == 200 and ctype == "application/json"
     assert payload["threads"] == 1 and payload["events"] > 0
     assert payload["fts_indexed"] > 0
-    # The viewer gates its curation page on this: it reports the optional
-    # thread-librarian package's drains, so the nav entry must not appear on a
-    # machine that has no curation installed.
-    assert payload["curation_available"] is (
-        importlib.util.find_spec("thread_librarian") is not None
-    )
-
-
-def test_status_reports_curation_unavailable_without_the_package(archive_home, monkeypatch):
-    _seed(archive_home)
-    import thread_archive._web.server as srv
-
-    real = importlib.util.find_spec
-    monkeypatch.setattr(
-        importlib.util, "find_spec",
-        lambda name, *a, **k: None if name == "thread_librarian" else real(name, *a, **k),
-    )
-    srv._survey_cache.clear()
-    _, _, payload = _get("/api/status")
-    assert payload["curation_available"] is False
 
 
 def test_health_endpoint(archive_home):
@@ -385,8 +364,7 @@ def test_threads_order_by_activity_not_metadata_writes(archive_home):
     _, _, payload = _get("/api/threads", types="conversation,system")
     ids = [t["id"] for t in payload["threads"]]
     assert ids[0] == sub_id  # newest events (2026-01-02) first
-    pytest.importorskip("thread_librarian")
-    from thread_librarian.write import set_thread_summary
+    from .kg_seed import set_thread_summary
 
     set_thread_summary(ids[1], summary="curated much later than its last event")
     _, _, payload = _get("/api/threads", types="conversation,system")
@@ -430,67 +408,6 @@ def test_status_survey_is_cached(archive_home):
 
     web_server._survey_cache.clear()
     assert _get("/api/status")[2]["threads"] == 2  # a cold survey does see it
-
-
-def test_curation_endpoint(archive_home):
-    pytest.importorskip("thread_librarian")  # the stats collector lives in the plugin
-    _seed(archive_home)
-    status, _, payload = _get("/api/curation")
-    assert status == 200
-    assert set(payload["drains"]) == {"librarian", "gardener"}
-    assert payload["coverage"]["conversations"] >= 1
-    # The window is dense: every day is present, so a drain's quiet stretch shows
-    # as a run of zeros rather than vanishing from the series.
-    assert len(payload["activity"]) == payload["days"]
-    assert len(payload["runs"]["by_day"]) == payload["days"]
-    # The seeded thread ingested just now, so review_queue's quiet window still
-    # holds it back — a live session's curation would be premature.
-    assert payload["drains"]["librarian"]["backlog"] == 0
-
-
-def test_curation_counts_content_free_threads_outside_the_queues(archive_home):
-    # A thread with events but no message can never be curated, so it is not
-    # backlog — but it must still be counted somewhere, or an ingest fault that
-    # produces them is invisible.
-    pytest.importorskip("thread_librarian")  # the stats collector lives in the plugin
-    _seed(archive_home)
-    from datetime import datetime, timedelta, timezone
-
-    from thread_archive._store import Event, Thread, get_session
-
-    stamp = (datetime.now(timezone.utc) - timedelta(hours=2)).replace(tzinfo=None)
-    with get_session() as s:
-        t = Thread(name="shell-1", title="Claude Code Session",
-                   thread_type="conversation", source="claude-code")
-        s.add(t)
-        s.flush()
-        e = Event(thread_id=t.id, stream_id="s", event_type="file_snapshot",
-                  payload={"files": []}, occurred_at=stamp)
-        e.recorded_at = stamp
-        s.add(e)
-        s.commit()
-
-    _, _, payload = _get("/api/curation")
-    assert payload["uncuratable"]["threads"] == 1
-    assert payload["uncuratable"]["sample"][0]["event_types"] == "file_snapshot"
-    assert payload["drains"]["librarian"]["backlog"] == 0
-
-
-def test_curation_survey_is_cached(archive_home):
-    # Same TTL cache as /api/status; curation's pass is the heavier of the two
-    # (its backlog gate walks every conversation's events), so it holds longer.
-    pytest.importorskip("thread_librarian")  # the stats collector lives in the plugin
-    from thread_archive._web import server as web_server
-
-    _seed(archive_home)
-    first = _get("/api/curation")
-    assert first[2]["coverage"]["conversations"] == 1
-
-    _seed_demo_harness(archive_home)  # a second real conversation, mid-TTL
-    assert _get("/api/curation") == first  # served from cache, not re-surveyed
-
-    web_server._survey_cache.clear()
-    assert _get("/api/curation")[2]["coverage"]["conversations"] == 2
 
 
 def test_survey_cold_fill_is_shared(archive_home):
@@ -562,8 +479,7 @@ def _seed_topics(archive_home):
     """Seed a conversation plus a small curated graph around it: three linked
     topics (a community), one citation of the conversation's user message.
     Returns ``(topic_a, topic_b, topic_c, conversation_id, cited_event_id)``."""
-    pytest.importorskip("thread_librarian")
-    from thread_librarian import add_topic_evidence, create_topic, link_threads
+    from .kg_seed import add_topic_evidence, create_topic, link_threads
 
     _seed(archive_home)
     _, _, search = _get("/api/search", q="hello")

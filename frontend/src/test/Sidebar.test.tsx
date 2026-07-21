@@ -17,7 +17,7 @@ function PageStub() {
 function renderAt(url: string) {
   mswJson('/api/threads', { threads: [] })
   mswJson('/api/sources', { sources: [{ source: 'demo-harness', threads: 3 }, { source: 'codex', threads: 1 }] })
-  mswJson('/api/status', { threads: 0, events: 0, topics: 0, fts_indexed: 0, vectors_indexed: 0, home: '/tmp/a', curation_available: false })
+  mswJson('/api/status', { threads: 0, events: 0, topics: 0, fts_indexed: 0, vectors_indexed: 0, home: '/tmp/a' })
   return render(
     <MemoryRouter initialEntries={[url]}>
       <Sidebar />

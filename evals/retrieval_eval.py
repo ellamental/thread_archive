@@ -47,12 +47,12 @@ per query-shape (so a lexical regression can't hide behind semantic wins).
 (the time-based holdout); ``--trend-out`` appends any run's report as one
 JSONL row, turning point measurements into a time series (the CI gate row
 writes ~/.thread/archive/retrieval-trend.jsonl; LLM-judged relevance grades
-from scripts/retrieval_judge.py land beside it).
+from evals/retrieval_judge.py land beside it).
 
 Read-only. Run against the live archive:
 
-    .venv/bin/python scripts/retrieval_eval.py --auto-titles 200
-    .venv/bin/python scripts/retrieval_eval.py --from-log 500
+    .venv/bin/python evals/retrieval_eval.py --auto-titles 200
+    .venv/bin/python evals/retrieval_eval.py --from-log 500
 """
 
 from __future__ import annotations
@@ -307,7 +307,7 @@ def load_case_file(path: Path) -> list[dict]:
         row = json.loads(line)
         case = {"query": row["query"], "gold": list(row["gold"]),
                 "sessions": list(row.get("sessions", []))}
-        # Agent-mined cases (scripts/retrieval_mine_gold.py) carry the corpus
+        # Agent-mined cases (evals/retrieval_mine_gold.py) carry the corpus
         # snapshot date the golds were mined under; the scoring search honors
         # it so post-mining threads can't perturb the case's ranking.
         if row.get("until"):

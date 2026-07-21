@@ -22,14 +22,11 @@ import pytest
 from sqlalchemy import text
 
 from thread_archive import _api as ta
-
-pytest.importorskip("thread_librarian")  # seeds the curated data plane
-from thread_librarian.write import add_topic_evidence, create_topic  # noqa: E402
-
 from thread_archive._store import get_session
 from thread_archive._truth import jsonl_log, rebuild_truth_from_store
 
 from .helpers import event_count, import_cc_session, one_thread_file
+from .kg_seed import add_topic_evidence, create_topic
 
 
 # ── fail-closed publication ───────────────────────────────────────────────────

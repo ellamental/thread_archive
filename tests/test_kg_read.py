@@ -1,15 +1,14 @@
 """The knowledge-graph read surface: getting curated topics back OUT.
 
 ``_knowledge.read`` is the library layer (topic_get / topic_members /
-topic_thread_ids); on top of it sit the librarian MCP tools of the same names, the
-real topic render in ``thread_read``, and search's ``topic_id`` scope. These tests
-pin all four: the detail/citation shapes, the JSON tool contract, the rendered topic
-page, and that a topic-scoped search only surfaces the topic's member conversations.
+topic_thread_ids); on top of it sit the real topic render in ``thread_read`` and
+search's ``topic_id`` scope. These tests pin all three: the detail/citation
+shapes, the rendered topic page, and that a topic-scoped search only surfaces
+the topic's member conversations.
 """
 
 from __future__ import annotations
 
-import json
 from datetime import datetime, timezone
 
 import pytest
@@ -21,12 +20,10 @@ from thread_archive._knowledge import (
     topic_thread_ids,
     topic_tree,
 )
-
-pytest.importorskip("thread_librarian")  # seeds the curated data plane
-from thread_librarian import add_topic_evidence, create_topic, link_threads  # noqa: E402
-
 from thread_archive._retrieval import index_events, read_thread, search
 from thread_archive._store import Event, Thread, get_session
+
+from .kg_seed import add_topic_evidence, create_topic, link_threads
 
 NOW = datetime(2026, 1, 1, 12, 0, 0, tzinfo=timezone.utc)
 
@@ -153,25 +150,6 @@ def test_search_topic_scope_empty_or_bogus_matches_nothing(archive_home) -> None
     empty = create_topic("Empty")["topic_id"]
     assert search("fusion", topic_id=empty) == []
     assert search("fusion", topic_id=99_999_999) == []
-
-
-# ── librarian MCP tool wiring ─────────────────────────────────────────────────
-def test_librarian_topic_get_and_members_tools(archive_home) -> None:
-    from thread_librarian import mcp_server as L
-
-    topic, _, conv_a, _, _, ev_a, _ = _seed_topic_with_evidence()
-
-    d = json.loads(L.topic_get(topic))
-    assert d["id"] == topic and d["citation_count"] == 2
-
-    members = json.loads(L.topic_members(topic))
-    assert members[0] == {
-        "event_id": ev_a, "thread_id": conv_a,
-        "thread_title": "sess-a", "quote": "rrf fusion is the merge step",
-    }
-
-    assert L.topic_get(99_999_999).startswith("Error:")
-    assert L.topic_members(99_999_999).startswith("Error:")
 
 
 # ── the derived hierarchy (topic_tree) ────────────────────────────────────────

@@ -1,66 +1,25 @@
-"""Stored summaries — the librarian's summary write path and the merged queue.
+"""Stored summaries — thread metadata the archive stores, indexes, and rebuilds.
 
-``set_thread_summary`` is the one non-graph curation write: thread metadata (like the
-title), durable via the thread's re-staged truth record rather than a ``KgEvent``, and
-immediately synced into the thread-meta search docs. These tests prove the write lands
-in all three stores (column, truth record, FTS doc), that it overwrites rather than
-stacks, that the validation refuses garbage, that ``review_queue`` treats the summary
-as half the per-thread commit (cited-but-unsummarized threads stay queued; a
-still-ingesting thread is held back), and that a summary survives ``rm index.db &&
-reindex`` — the durability the no-kg-event design leans on.
+A summary write is thread metadata (like the title), durable via the thread's
+re-staged truth record rather than a ``KgEvent``, and immediately synced into
+the thread-meta search docs. These tests prove a write lands in all three
+stores (column, truth record, FTS doc), that it overwrites rather than stacks,
+and that a summary survives ``rm index.db && reindex`` — the durability the
+no-kg-event design leans on. The production writer is external; the seeding
+here (:mod:`tests.kg_seed`) leaves the same three-store shape behind.
 """
 
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
 
-import pytest
 from sqlalchemy import text as sa_text
 
 from thread_archive import _api as ta
-
-pytest.importorskip("thread_librarian")  # the write surface under test lives in the plugin
-from thread_librarian import (  # noqa: E402
-    add_topic_evidence,
-    create_topic,
-    review_queue,
-    set_thread_summary,
-)
-from thread_librarian.write import INDEXED_SUMMARY_MAX_CHARS, SUMMARY_MAX_CHARS  # noqa: E402
-
-from thread_archive._store import Event, Thread, get_session
+from thread_archive._store import Thread, get_session
 
 from .helpers import import_cc_session, one_thread_file
-
-NOW = datetime(2026, 1, 1, 12, 0, 0, tzinfo=timezone.utc)
-LONG_AGO = datetime(2026, 1, 1, 12, 0, 0)  # naive UTC, matching recorded_at's form
-
-
-def _seed(source_id: str = "sess-1", *, quiet: bool = True) -> tuple[int, int]:
-    """A conversation thread with one user event; returns (thread_id, event_id).
-    ``quiet=True`` backdates the event's ``recorded_at`` so the thread clears the
-    queue's quiet window; ``quiet=False`` leaves the server default (now) — a
-    still-ingesting thread."""
-    ta.open_archive()
-    with get_session() as s:
-        t = Thread(
-            name=f"claude-code:{source_id}", title=source_id, thread_type="conversation",
-            source="claude-code", source_id=source_id,
-        )
-        s.add(t)
-        s.flush()
-        e = Event(
-            thread_id=t.id, stream_id=source_id, event_type="user_message_sent",
-            payload={"content": "hello"}, occurred_at=NOW,
-        )
-        if quiet:
-            e.recorded_at = LONG_AGO
-        s.add(e)
-        s.flush()
-        ids = (t.id, e.id)
-        s.commit()
-    return ids
+from .kg_seed import set_thread_summary
 
 
 def _summary_docs(tid: int) -> list[str]:
@@ -73,7 +32,7 @@ def _summary_docs(tid: int) -> list[str]:
 
 # ── the write ─────────────────────────────────────────────────────────────────
 def test_set_summary_lands_in_column_truth_and_search_doc(archive_home, tmp_path):
-    """One call, three stores: the thread row, the thread's truth record
+    """One write, three stores: the thread row, the thread's truth record
     (latest-wins — the durability), and the thread-meta FTS doc."""
     import_cc_session(tmp_path)
     with get_session() as s:
@@ -115,23 +74,6 @@ def test_set_summary_overwrites_and_sets_fields_independently(archive_home, tmp_
     assert _summary_docs(tid) == ["second version"]
 
 
-def test_set_summary_validation(archive_home):
-    tid, _ = _seed()
-    with pytest.raises(ValueError, match="nothing to set"):
-        set_thread_summary(tid)
-    with pytest.raises(ValueError, match="nothing to set"):
-        set_thread_summary(tid, "   ")
-    with pytest.raises(ValueError, match="no thread"):
-        set_thread_summary(99_999_999, "s")
-    topic = create_topic("A Topic")["topic_id"]
-    with pytest.raises(ValueError, match="is a topic"):
-        set_thread_summary(topic, "s")
-    with pytest.raises(ValueError, match="max"):
-        set_thread_summary(tid, "x" * (SUMMARY_MAX_CHARS + 1))
-    with pytest.raises(ValueError, match="max"):
-        set_thread_summary(tid, indexed_summary="x" * (INDEXED_SUMMARY_MAX_CHARS + 1))
-
-
 def test_summary_survives_reindex(archive_home, tmp_path):
     """The no-kg-event design's load-bearing guarantee: the thread truth record
     restores the summary on a from-scratch rebuild, and rebuild_fts regenerates
@@ -148,57 +90,3 @@ def test_summary_survives_reindex(archive_home, tmp_path):
         assert t.summary == "survives the rebuild"
         assert t.indexed_summary.startswith("## all of it")
     assert _summary_docs(tid) == ["survives the rebuild"]
-
-
-# ── the merged queue: done = cited AND summarized ─────────────────────────────
-def test_review_queue_requires_both_citation_and_summary(archive_home):
-    tid, eid = _seed("rq-both")
-    assert [r["id"] for r in review_queue()] == [tid]
-
-    # summary alone doesn't finish the thread…
-    set_thread_summary(tid, "summarized but never cited")
-    assert [r["id"] for r in review_queue()] == [tid]
-
-    # …the citation completes the pair and the thread leaves
-    topic = create_topic("T")["topic_id"]
-    add_topic_evidence(topic, eid, tid, "q")
-    assert review_queue() == []
-
-
-def test_cited_but_unsummarized_threads_requeue(archive_home):
-    """The backlog case this redefinition exists for: threads the librarian cited
-    under the citations-only contract re-enter the queue until summarized."""
-    tid, eid = _seed("rq-legacy")
-    topic = create_topic("T2")["topic_id"]
-    add_topic_evidence(topic, eid, tid, "q")
-    assert [r["id"] for r in review_queue()] == [tid]  # cited, yet still queued
-
-    set_thread_summary(tid, "now summarized")
-    assert review_queue() == []
-
-
-def test_review_queue_holds_back_still_ingesting_threads(archive_home):
-    quiet, _ = _seed("rq-quiet", quiet=True)
-    fresh, _ = _seed("rq-fresh", quiet=False)  # recorded_at = now → inside the window
-
-    assert [r["id"] for r in review_queue()] == [quiet]
-    # the window is the only thing holding the fresh one back
-    assert {r["id"] for r in review_queue(quiet_minutes=0)} == {quiet, fresh}
-
-
-def test_review_queue_exclusions_still_hold(archive_home):
-    tid, _ = _seed("rq-mine")
-    # own session excluded
-    assert review_queue(exclude_source_id="rq-mine") == []
-    # archived threads are nobody's backlog
-    with get_session() as s:
-        s.get(Thread, tid).archived = True
-        s.commit()
-    assert review_queue() == []
-    # topics and event-less stubs never appear
-    create_topic("Not A Conversation")
-    with get_session() as s:
-        s.add(Thread(name="claude-code:stub", thread_type="conversation",
-                     source="claude-code", source_id="stub"))
-        s.commit()
-    assert review_queue() == []

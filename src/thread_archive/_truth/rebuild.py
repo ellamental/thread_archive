@@ -346,7 +346,7 @@ def _replay_kg_events(
     whatever legacy snapshot seed was already loaded. The materializer is upsert +
     tombstone, so a delta that re-touches a seeded row (or deletes one) reconciles
     cleanly and the replay is idempotent and order-stable. A no-op when the log is
-    absent — a pre-librarian (or purely lexical) archive simply has no curation to fold.
+    absent — an uncurated (or purely lexical) archive simply has no curation to fold.
     Runs through an ORM ``Session`` so the fold can use the materializer, but it never
     *stages* truth (only :func:`append_kg_event` does), so the before-commit drain is a
     no-op here and the rebuild can't re-write the log it is reading."""
@@ -875,16 +875,6 @@ def reindex(*, vectors: bool = False, salvage: bool = False) -> dict:
             Path(f"{index_path}{suffix}").unlink(missing_ok=True)
 
     counts["parse_errors"] = len(parse_errors)
-
-    # The librarian's topic graph caches a projection per engine; drop it so a
-    # cohosted analytics read rebuilds over the freshly-loaded thread_links.
-    # Fail-soft: the graph stack is the optional thread-librarian package's.
-    try:
-        from thread_librarian.graph import reset_cache as _reset_kg
-    except ImportError:
-        pass
-    else:
-        _reset_kg()
 
     logger.info("jsonl_log reindex: %s", counts)
     return counts

@@ -2,7 +2,7 @@
 
 Answers the question the in-house harness can't: *are the retrieval components
 embarrassing* against a public IR benchmark with human relevance judgments? Runs
-``scripts/beir_eval.py`` (download a BEIR dataset → ingest the corpus into a
+``evals/beir_eval.py`` (download a BEIR dataset → ingest the corpus into a
 throwaway archive → score the real ``api.search`` pipeline with nDCG@10 /
 Recall@k / MRR@10) and asserts floors that only a genuine collapse trips.
 
@@ -34,7 +34,7 @@ import pytest
 pytestmark = pytest.mark.beir
 
 REPO = Path(__file__).resolve().parent.parent
-EVAL = REPO / "scripts" / "beir_eval.py"
+EVAL = REPO / "evals" / "beir_eval.py"
 # Persistent, HOME-independent cache (gitignored): the download AND the built
 # archive/embeddings survive across runs, so a re-run of this lane — and the
 # full-stack test reusing the lexical test's ingest — skips the expensive rebuild.

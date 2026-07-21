@@ -1,6 +1,6 @@
 """The search lab stays runnable: params seam, experiment contract, leaderboard.
 
-Guards the experiment bench (``scripts/search_lab.py`` + ``experiments/``) in
+Guards the experiment bench (``evals/search_lab.py`` + ``evals/experiments/``) in
 the fast tier: the ``SearchParams`` seam actually reaches the production
 pipeline, the default params reproduce the shipped ranking bit-for-bit, every
 checked-in experiment satisfies the contract, and a full lexical lab run
@@ -20,7 +20,7 @@ from thread_archive._retrieval import rank as _rank
 
 from .quality_corpus import build_corpus, run_cases, top_threads
 
-EXPERIMENTS_DIR = Path(__file__).resolve().parent.parent / "experiments"
+EXPERIMENTS_DIR = Path(__file__).resolve().parent.parent / "evals" / "experiments"
 
 
 def _lab():
@@ -31,7 +31,7 @@ def _lab():
     if mod is None:
         spec = importlib.util.spec_from_file_location(
             "search_lab",
-            Path(__file__).resolve().parent.parent / "scripts" / "search_lab.py")
+            Path(__file__).resolve().parent.parent / "evals" / "search_lab.py")
         mod = importlib.util.module_from_spec(spec)
         sys.modules["search_lab"] = mod
         spec.loader.exec_module(mod)

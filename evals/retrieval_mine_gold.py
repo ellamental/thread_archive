@@ -36,8 +36,8 @@ Costs real tokens (one multi-turn opus agent per query — minutes each;
 the archive. Case files quote real usage — keep them out of the repo; they
 live beside the trend ledgers in ``~/.thread/archive/``.
 
-    .venv/bin/python scripts/retrieval_mine_gold.py --sample 5
-    .venv/bin/python scripts/retrieval_eval.py --cases ~/.thread/archive/judged-cases.jsonl
+    .venv/bin/python evals/retrieval_mine_gold.py --sample 5
+    .venv/bin/python evals/retrieval_eval.py --cases ~/.thread/archive/judged-cases.jsonl
 """
 
 from __future__ import annotations

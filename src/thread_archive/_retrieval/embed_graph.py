@@ -3,9 +3,9 @@
 Every embedded thread gets a centroid (the normalized mean of its document
 vectors from the shared vector pack), centroids get a cosine-kNN graph, and
 Leiden partitions it (:func:`.community.detect_communities`, the seeded shared
-spine). No curation input, no gardener, no topics: the graph exists the moment
+spine). No curation input, no topics: the graph exists the moment
 the corpus is embedded, and it covers every conversation — this is the
-corpus-wide structure the curated topic graph (thread-librarian's) cannot see.
+corpus-wide structure the curated topic graph cannot see.
 
 **The coherence re-rank is the production consumer.** Within a ranked search
 pool, threads whose community carries more of the pool's top mass get a small
@@ -15,7 +15,7 @@ R@5 0.327→0.341, R@10 0.414→0.433, R@20 0.492→0.508 across gammas
 0.002–0.01 — with MRR flat: it consolidates the mid-list around the query's
 community, it does not move the top hit. The same signal computed from the
 *curated* graph loses on the identical cases, which is why the curated graph
-stays out of ranking. ``scripts/graph_eval.py`` is the measurement harness.
+stays out of ranking. ``evals/graph_eval.py`` is the measurement harness.
 
 ``THREAD_ARCHIVE_COHERENCE`` tunes it per process: unset/``on`` uses the
 default gamma, ``off``/``0`` disables, a float overrides gamma.

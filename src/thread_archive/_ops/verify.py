@@ -790,7 +790,7 @@ def _verify_deep(watermark: int) -> dict:
 
     The knowledge layer gets the same treatment as events: the kg log and table
     are id-diffed below a kg watermark captured before any file is read (so a
-    live librarian write can't false-alarm), and ids on both sides are
+    live curation write can't false-alarm), and ids on both sides are
     content-compared (``kg.content_mismatch``) — the log is small enough to
     fingerprint whole, and it is the curation history's only truth.
     """
@@ -811,7 +811,7 @@ def _verify_deep(watermark: int) -> dict:
     threads_dir = d / THREADS_SUBDIR
 
     # The kg watermark, captured before any file is read: the kg id-diff below
-    # is otherwise unbounded, and a librarian write landing mid-scan (its truth
+    # is otherwise unbounded, and a curation write landing mid-scan (its truth
     # line is durable before its commit, but this pass may read the file first)
     # would false-alarm ``kg_index_only`` against a perfectly healthy archive.
     with get_session() as s0:
@@ -899,7 +899,7 @@ def _verify_deep(watermark: int) -> dict:
                     break
 
         # Knowledge layer: the kg truth log vs its table, by id — both sides
-        # bounded by the kg watermark captured up front, so a live librarian
+        # bounded by the kg watermark captured up front, so a live curation
         # write can't false-alarm — plus content parity for ids on both sides
         # (the kg analogue of the events cross-store check; the log is small
         # enough to compare whole).

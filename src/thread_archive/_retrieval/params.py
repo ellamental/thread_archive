@@ -6,7 +6,7 @@ values, so ``search(query)`` and ``search(query, params=SearchParams())`` are
 the same ranking. A candidate configuration is just another instance —
 ``SearchParams(recency_weight=0.0)`` — passed through ``search(params=...)``
 and scored against the incumbent on identical cases by the search lab
-(``scripts/search_lab.py``, ``experiments/``) and the quality-corpus harness
+(``evals/search_lab.py``, ``evals/experiments/``) and the quality-corpus harness
 (``tests/quality_corpus.run_cases(params=...)``).
 
 The shipped values, with their evidence:

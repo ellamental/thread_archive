@@ -15,7 +15,6 @@ it('renders the real application shell and landing route', async () => {
     fts_indexed: 0,
     vectors_indexed: 0,
     home: '/tmp/archive',
-    curation_available: false,
   })
 
   render(

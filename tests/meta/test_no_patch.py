@@ -51,7 +51,6 @@ BASELINE: dict[str, int] = {
     "test_store.py": 3,
     "test_truth_manifest.py": 1,
     "test_watch.py": 4,
-    "test_web.py": 1,
 }
 
 _MONKEYPATCH_MUTATORS = frozenset({"setattr", "delattr", "setitem", "delitem"})

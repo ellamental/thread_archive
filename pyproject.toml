@@ -31,9 +31,8 @@ classifiers = [
 # to keep in the base; embeddings (torch) is the only genuinely heavy,
 # genuinely optional piece. networkx + the Leiden engine serve the archive's
 # own corpus-native embedding graph (_retrieval/embed_graph.py — the coherence
-# ranking signal) and the shared community spine (_retrieval/community.py)
-# thread-librarian's curated graph also imports; the curated-graph analytics
-# themselves (and scipy, for pagerank) are thread-librarian's.
+# ranking signal) and the shared community spine (_retrieval/community.py);
+# analytics over the *curated* graph are an external curator's, not carried here.
 dependencies = [
     "sqlalchemy>=2.0",
     "numpy>=1.26",
@@ -100,6 +99,7 @@ only-include = [
     "docs",
     "frontend",
     "scripts",
+    "evals",
     "CHANGELOG.md",
     "claude-install.md",
     ".mcp.json.example",
@@ -151,5 +151,5 @@ ignore = ["E501"]
 # including import parsers, operational scripts, and durability code.
 [tool.mypy]
 files = ["src/thread_archive"]
-ignore_missing_imports = true  # mcp (and the optional thread_librarian) ship no stubs
+ignore_missing_imports = true  # mcp ships no stubs
 check_untyped_defs = true  # unannotated bodies still execute in production; inspect them too

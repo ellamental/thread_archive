@@ -155,13 +155,11 @@ class FakeMachine:
 
     def __init__(
         self, *, macos: bool = True, watcher: bool = False, backup: bool = False,
-        curation: bool = False, backup_dest: Optional[str] = None,
-        curation_installed: bool = False, embeddings: bool = True,
+        backup_dest: Optional[str] = None, embeddings: bool = True,
     ):
         self.macos = macos
-        self._watcher, self._backup, self._curation = watcher, backup, curation
+        self._watcher, self._backup = watcher, backup
         self._backup_dest = backup_dest
-        self._curation_installed = curation_installed
         self._embeddings = embeddings
         self.installed: list[tuple] = []
 
@@ -173,12 +171,6 @@ class FakeMachine:
 
     def backup_dest(self) -> Optional[str]:
         return self._backup_dest
-
-    def curation_running(self, home=None) -> bool:
-        return self._curation
-
-    def curation_installed(self) -> bool:
-        return self._curation_installed
 
     def embeddings_installed(self) -> bool:
         return self._embeddings
@@ -217,31 +209,6 @@ class FakeWatcher(SourceWatcher):
 
 def _args(*argv: str):
     return wizard.build_parser().parse_args(list(argv))
-
-
-def test_curation_offer_points_at_the_installed_package(archive_home, capsys) -> None:
-    """The core schedules nothing: when the curation package is importable but
-    its drains aren't scheduled, the step points at its installer and does no
-    work itself (no launchctl, no config writes)."""
-    machine = FakeMachine(curation_installed=True)
-    out = wizard._offer_curation(_args("setup", "--yes"), False, machine)
-    assert out == {"status": "plugin"}
-    assert "thread-librarian daemon install" in capsys.readouterr().out
-    assert machine.installed == []
-
-
-def test_curation_offer_is_silent_without_the_package(archive_home, capsys) -> None:
-    """No curation package on the machine → nothing installable to recommend,
-    so the step says nothing at all."""
-    out = wizard._offer_curation(_args("setup", "--yes"), False, FakeMachine())
-    assert out == {"status": "unavailable"}
-    assert capsys.readouterr().out == ""
-
-
-def test_curation_offer_reports_already_scheduled(archive_home, capsys) -> None:
-    out = wizard._offer_curation(_args("setup", "--yes"), False, FakeMachine(curation=True))
-    assert out == {"status": "already-installed"}
-    assert "already scheduled" in capsys.readouterr().out
 
 
 def test_non_tty_without_yes_does_no_work(archive_home, capsys) -> None:

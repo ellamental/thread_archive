@@ -8,9 +8,6 @@ export interface Status {
   fts_indexed: number
   vectors_indexed: number
   home: string
-  // Whether the optional curation package (thread-librarian) is installed —
-  // gates the viewer's curation page and its nav entry.
-  curation_available: boolean
 }
 
 export interface ThreadListItem {
@@ -283,101 +280,6 @@ export interface ModelStats {
   top_sessions: ModelStatsSession[]
 }
 
-// ── curation: what the librarian and gardener drains have done ──────────────
-
-export interface CurationDrain {
-  // null = the backlog gate query failed. The daemon fails open and launches
-  // anyway, so this must not render as "drained".
-  backlog: number | null
-  batch: number
-  model: string
-  effort: string | null
-  cadence: { kind: 'interval'; interval_s: number } | { kind: 'daily'; at: string }
-  // When the drain last fired — launched or skipped. null = never fired here.
-  heartbeat_at: string | null
-  heartbeat_age_s: number | null
-  // Librarian only: what it curates. A horizon means conversations from that
-  // point on; everything older is `history`, reached at `catchup_per_run` a run
-  // (0 = never). No horizon means the whole archive is fair game.
-  policy?: {
-    horizon: string | null
-    catchup_per_run: number
-    forward: number | null
-    history: number | null
-  }
-}
-
-export interface CurationGraph {
-  topics: number
-  in_hierarchy: number
-  singletons: number
-  uncited: number
-  unparented: number
-  dupe_pairs: number
-  hierarchy_pct: number | null
-}
-
-export interface CurationCoverage {
-  conversations: number
-  summarized: number
-  cited: number
-  topics_live: number
-  topics_archived: number
-  citations: number
-  links: number
-}
-
-// Conversation threads carrying events but no message — an ingest condition, not
-// backlog: no drain can ever clear them, so they're counted here instead of
-// silently sitting outside every queue.
-export interface CurationUncuratable {
-  threads: number
-  sample: { id: string; title: string | null; source: string | null; event_types: string | null }[]
-}
-
-export interface CurationDay {
-  day: string
-  citations: number
-  links: number
-  topics: number
-}
-
-export interface CurationRunDay {
-  day: string
-  librarian: number
-  gardener: number
-  requests: number
-  output_tokens: number
-}
-
-export interface CurationRun {
-  id: string
-  kind: 'librarian' | 'gardener' | 'unknown'
-  title: string | null
-  started_at: string | null
-  requests: number
-  output_tokens: number
-  model: string | null
-}
-
-// The /api/curation payload when the optional curation package is absent —
-// there is nothing curating, so there is nothing to report.
-export interface CurationUnavailable {
-  available: false
-  error?: string
-}
-
-export interface Curation {
-  generated_at: string
-  days: number
-  drains: { librarian: CurationDrain; gardener: CurationDrain }
-  graph: CurationGraph
-  coverage: CurationCoverage
-  uncuratable: CurationUncuratable
-  activity: CurationDay[]
-  runs: { by_day: CurationRunDay[]; recent: CurationRun[] }
-}
-
 async function getJSON<T>(url: string): Promise<T> {
   const r = await fetch(url)
   if (!r.ok) throw new Error(`${r.status}: ${await r.text()}`)
@@ -419,7 +321,6 @@ export const api = {
       '/api/archive-link?id=' + encodeURIComponent(id),
     ),
   stats: () => getJSON<Stats>('/api/stats'),
-  curation: () => getJSON<Curation | CurationUnavailable>('/api/curation'),
   // Model ids can contain '/' (router models), so the name is a percent-encoded
   // path tail, not a query param — the server decodes it back.
   modelStats: (model: string) =>

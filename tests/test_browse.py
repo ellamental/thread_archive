@@ -3,8 +3,7 @@
 An empty ``search()`` query lists threads (one row per thread, by last
 activity) instead of matching events. These pin the browse row shape, the
 structural filters (since/source/types/limit/sort), the hidden-by-default
-types, the renderers, and the derived ``topic_tree()`` forest (whose rendered
-page is the librarian MCP's ``topic_tree`` tool).
+types, the renderers, and the derived ``topic_tree()`` forest.
 """
 
 from __future__ import annotations
@@ -12,17 +11,12 @@ from __future__ import annotations
 import json
 from datetime import datetime, timezone
 
-import pytest
-
 from thread_archive import _api as ta
 from thread_archive._knowledge import topic_tree
-
-pytest.importorskip("thread_librarian")  # seeds the curated data plane
-from thread_librarian import create_topic, link_threads  # noqa: E402
-
 from thread_archive._retrieval import format_results, index_events, read_thread, search
 from thread_archive._store import Event, Thread, get_session, init_db
 
+from .kg_seed import create_topic, link_threads
 from .test_search import _cc_turn, _write_cc
 
 
@@ -143,8 +137,7 @@ def test_topic_tree_read(archive_home) -> None:
     assert {c["id"] for c in tree["roots"][0]["children"]} == {child, grandchild}
     assert lone not in {c["id"] for c in tree["roots"][0]["children"]}
 
-    # The reserved 'topics' ref is a pointer, not a page — the rendered tree is
-    # the librarian MCP's topic_tree tool. Case/space-insensitive, and it beats
-    # uuid resolution.
-    assert "topic_tree" in read_thread("topics")
-    assert "topic_tree" in read_thread(" Topics ")
+    # The reserved 'topics' ref is a pointer, not a page — the tree is a
+    # curation surface. Case/space-insensitive, and it beats uuid resolution.
+    assert "topic tree" in read_thread("topics")
+    assert "topic tree" in read_thread(" Topics ")

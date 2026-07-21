@@ -447,9 +447,9 @@ def thread_read(
     first.
 
     A **topic id** (from a topic link in an old conversation) reads as the
-    topic's curated page instead of a transcript — a compatibility render of
-    existing knowledge-graph records; the curated graph itself is the
-    thread-archive-librarian MCP's surface.
+    topic's curated page instead of a transcript — a render of existing
+    knowledge-graph records; writing the curated graph is an external
+    curator's job, not this server's.
 
     ``mode`` picks the view: 'user' (default) = only the USER messages — the real
     signal of what a thread was about and what was wanted, far cheaper than the

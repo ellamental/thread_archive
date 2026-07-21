@@ -1,6 +1,6 @@
 """Unit coverage for the retrieval eval harness's pure logic.
 
-The harness (``scripts/retrieval_eval.py``) runs against the live archive in
+The harness (``evals/retrieval_eval.py``) runs against the live archive in
 the CI retrieval-gate rows; what needs test coverage is the logic that turns
 raw data into scores — the log-miner's tool-name classifier and search->read
 pairing rules, and the multi-gold / session-skip scoring loop. The DB-touching
@@ -16,7 +16,7 @@ from pathlib import Path
 
 _SPEC = importlib.util.spec_from_file_location(
     "retrieval_eval",
-    Path(__file__).resolve().parent.parent / "scripts" / "retrieval_eval.py",
+    Path(__file__).resolve().parent.parent / "evals" / "retrieval_eval.py",
 )
 retrieval_eval = importlib.util.module_from_spec(_SPEC)
 sys.modules["retrieval_eval"] = retrieval_eval

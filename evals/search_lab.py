@@ -1,9 +1,9 @@
 """search_lab — score N retrieval configurations against the shipped one.
 
 The experiment bench of the quality ladder (README.md, "Measuring search
-quality"): every module in ``experiments/`` is one configuration of the search
+quality"): every module in ``evals/experiments/`` is one configuration of the search
 stack — a :class:`thread_archive._retrieval.SearchParams` value or a full
-``SEARCH`` callable (contract in ``experiments/README.md``). This runner builds
+``SEARCH`` callable (contract in ``evals/experiments/README.md``). This runner builds
 the checked-in synthetic corpus (``tests/quality_corpus.py``) in a throwaway
 archive home, scores the baseline and every configuration on the identical
 cases with the same MRR/recall loop as the CI retrieval gate, and prints a
@@ -13,9 +13,9 @@ Fast by default (lexical stack, seconds); ``--models`` embeds the corpus and
 runs the fused pipeline (real torch models — minutes on a cold cache), which is
 the mode where fusion/rerank experiments actually move.
 
-    .venv/bin/python scripts/search_lab.py
-    .venv/bin/python scripts/search_lab.py --models
-    .venv/bin/python scripts/search_lab.py --only no_recency,pool_order --json out.json
+    .venv/bin/python evals/search_lab.py
+    .venv/bin/python evals/search_lab.py --models
+    .venv/bin/python evals/search_lab.py --only no_recency,pool_order --json out.json
 
 The corpus is synthetic and lexically easy: a delta here is a direction, not a
 shipping verdict — promote winners by re-measuring on the live tiers
@@ -147,9 +147,9 @@ def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     ap.add_argument("--models", action="store_true",
                     help="run the fused pipeline: embed the corpus and enable the model arms (minutes)")
-    ap.add_argument("--only", help="comma-separated experiment names (default: all in experiments/)")
+    ap.add_argument("--only", help="comma-separated experiment names (default: all in evals/experiments/)")
     ap.add_argument("--experiments", type=Path, default=EXPERIMENTS_DIR,
-                    help="experiments directory (default: experiments/)")
+                    help="experiments directory (default: evals/experiments/)")
     ap.add_argument("--limit", type=int, default=10, help="result depth per query (default 10)")
     ap.add_argument("--json", type=Path, help="also write the full report as JSON")
     args = ap.parse_args(argv)

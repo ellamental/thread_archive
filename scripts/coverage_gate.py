@@ -48,29 +48,6 @@ FLOORS = {
 
 EXEMPT_PACKAGES = {"__init__", "_config"}
 
-# The optional thread-librarian package (its own repo) seeds the curated-data-
-# plane tests through its write surface; without it installed those tests
-# importorskip and real coverage of archive's own read paths sits measurably
-# lower. Nothing may *require* librarian — public CI and fork PRs run without
-# it — so the affected packages carry a second, librarian-free floor, each set
-# the same small margin under its measured level for that environment. The
-# gate runs in the suite's venv, so importability here mirrors the run.
-NO_LIBRARIAN_FLOORS = {
-    "_ops": 88.0,
-    "_retrieval": 92.0,
-    "_truth": 89.0,
-    "_web": 85.0,
-    "TOTAL": 93.0,
-}
-
-try:
-    import thread_librarian  # noqa: F401
-
-    WITH_LIBRARIAN = True
-except ImportError:
-    WITH_LIBRARIAN = False
-    FLOORS = {**FLOORS, **NO_LIBRARIAN_FLOORS}
-
 
 def _package(path: str) -> str | None:
     rel = path.replace("\\", "/")

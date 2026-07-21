@@ -2,6 +2,29 @@
 
 ## Unreleased
 
+- 2026-07-21: The archive no longer knows thread-librarian exists. The relevant-subjects
+  search lens moves in-tree (`_retrieval/subjects.py` — it was always a pure projection
+  over the archive's own `topic_messages`/`threads`), so search headers and the viewer
+  keep naming subjects with zero external imports. Deleted: the graph-authority rank
+  prior (`graph_prior.py`, `THREAD_ARCHIVE_GRAPH_RANK` — eval-negative, off by default),
+  `topic_get`'s graph/peers enrichment (slots remain, always `None`/`[]`),
+  `curation_stats` + `/api/curation` + the viewer's curation page and nav,
+  `curation_available` from `/api/status`, the wizard/status curation lines and
+  `Machine.curation_running`/`curation_installed`, and reindex's librarian cache reset.
+  Tests seed curated data through the archive's own truth primitives
+  (`tests/kg_seed.py`) instead of librarian's write surface; the coverage gate drops
+  its dual with/without-librarian floors. Librarian keeps working *on top of* the
+  archive (its own MCP, daemons, plugin) — the dependency now points one way only.
+
+- The search lab gets a home: every search-quality harness
+  (`retrieval_eval.py`, `retrieval_judge.py`, `retrieval_mine_gold.py`,
+  `search_lab.py`, `search_arena.py`, `graph_eval.py`, `beir_eval.py`) and
+  the `experiments/` directory moved from `scripts/` and the repo root into
+  `evals/`, with `evals/README.md` as the lab manual (ladder, instruments,
+  the change-ranking workflow). `scripts/` is repo tooling again (coverage
+  gate, frontend-build check, license notices); the CI retrieval-gate row,
+  tests, and docs point at the new paths. No behavior change.
+
 - Agent-mined gold labels: `scripts/retrieval_mine_gold.py` spawns one
   headless `claude` agent per sampled real query; the agent reads the
   originating session for intent, sweeps the corpus with its own searches

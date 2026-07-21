@@ -6,7 +6,7 @@ and ``retrieval_judge.py`` grades the shipped pipeline pointwise, this harness
 answers the promotion question directly — *given real queries, does a judge
 prefer the challenger's ranking to the incumbent's?* It samples real mined
 queries, runs each through the baseline and through a challenger from
-``experiments/`` (contract in ``experiments/README.md``), and shows the two
+``evals/experiments/`` (contract in ``evals/experiments/README.md``), and shows the two
 result lists — side order randomized per query, labels blind — to a headless
 ``claude`` that picks a winner or calls it a tie.
 
@@ -20,8 +20,8 @@ Costs real tokens (≤ one ``claude -p`` call per query per challenger;
 archive. ``--out`` dumps per-query verdicts — judged output quotes real usage;
 keep dumps out of the repo.
 
-    .venv/bin/python scripts/search_arena.py --experiment heavy_recency
-    .venv/bin/python scripts/search_arena.py --experiment no_phrase,flat_content_types \\
+    .venv/bin/python evals/search_arena.py --experiment heavy_recency
+    .venv/bin/python evals/search_arena.py --experiment no_phrase,flat_content_types \\
         --sample 30 --mined-after 2026-07-01
 
 A challenger that wins here has real-usage evidence behind it — the strongest
@@ -238,7 +238,7 @@ def _print_report(rep: dict) -> None:
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--experiment", required=True,
-                    help="challenger name(s) from experiments/, comma-separated")
+                    help="challenger name(s) from evals/experiments/, comma-separated")
     ap.add_argument("--experiments", type=Path, default=Path(__file__).resolve().parent / "experiments",
                     help="experiments directory (default: evals/experiments/)")
     ap.add_argument("--sample", type=int, default=20,
@@ -267,7 +267,7 @@ def main(argv=None) -> int:
 
     from thread_archive import _api as api
 
-    retrieval_eval = _load_module(ROOT / "scripts" / "retrieval_eval.py", "retrieval_eval")
+    retrieval_eval = _load_module(Path(__file__).resolve().parent / "retrieval_eval.py", "retrieval_eval")
     api.open_archive()
     cases = retrieval_eval.mine_log_cases(10**6, args.seed, args.mined_after)
     if not cases:

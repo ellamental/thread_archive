@@ -29,13 +29,13 @@ run after reuses it. ``--rebuild`` discards a cached build; ``--fresh`` opts out
 of caching entirely (throwaway home, deleted on exit).
 
     # fast lexical baseline (the always-on floor); ingests the corpus once, then cached:
-    .venv/bin/python scripts/beir_eval.py --dataset scifact
-    .venv/bin/python scripts/beir_eval.py --dataset nfcorpus
+    .venv/bin/python evals/beir_eval.py --dataset scifact
+    .venv/bin/python evals/beir_eval.py --dataset nfcorpus
 
     # add the semantic arm; add the cross-encoder head re-rank (slow: loads torch).
     # the embed pass is cached, so the second of these reuses the first's vectors:
-    .venv/bin/python scripts/beir_eval.py --dataset scifact --vectors
-    .venv/bin/python scripts/beir_eval.py --dataset scifact --vectors --rerank on
+    .venv/bin/python evals/beir_eval.py --dataset scifact --vectors
+    .venv/bin/python evals/beir_eval.py --dataset scifact --vectors --rerank on
 
 nfcorpus (3.6k docs) and scifact (5.2k docs) are the standard small smoke sets.
 Larger sets work but the per-doc import and (with ``--vectors``) the embed pass

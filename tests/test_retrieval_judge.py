@@ -15,7 +15,7 @@ from pathlib import Path
 
 _SPEC = importlib.util.spec_from_file_location(
     "retrieval_judge",
-    Path(__file__).resolve().parent.parent / "scripts" / "retrieval_judge.py",
+    Path(__file__).resolve().parent.parent / "evals" / "retrieval_judge.py",
 )
 retrieval_judge = importlib.util.module_from_spec(_SPEC)
 sys.modules["retrieval_judge"] = retrieval_judge

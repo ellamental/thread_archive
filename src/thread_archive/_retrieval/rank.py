@@ -37,7 +37,7 @@ from .params import SearchParams
 
 # Per-content-type relevance multiplier — user messages are the most intentional,
 # tool/thinking the noisiest. A title is aboutness itself, so it ranks with user
-# text. A stored summary is *derived* — a keyword-dense librarian digest whose
+# text. A stored summary is *derived* — a keyword-dense curated digest whose
 # short length already wins the density term, so an at-parity multiplier lets
 # summaries crowd verbatim evidence out of the top ranks and puts generated prose
 # above the record it summarizes. The discount keeps summaries findable (they are
@@ -381,17 +381,11 @@ def rank_search_results(
     *,
     params: Optional[SearchParams] = None,
     now: datetime | None = None,
-    thread_prior: dict[str, float] | None = None,
 ) -> list[EventHit]:
     """Re-rank ``results`` by term density, phrase proximity, recency, content-type,
     and cross-backend fusion (``_rrf``). The production scorer; every weight comes
     from ``params`` (default: the shipped configuration, :data:`.params.DEFAULT` —
-    see that module for the evidence). Returns the top ``limit``.
-
-    ``thread_prior`` maps thread_id → a bounded boost addend (the graph-authority
-    prior, :mod:`.graph_prior`): a hit's score is multiplied by ``1 + addend``.
-    Absent threads boost by nothing — the prior refines the order, it never
-    penalizes."""
+    see that module for the evidence). Returns the top ``limit``."""
     p = params or _DEFAULT_PARAMS
     now = now or datetime.now(timezone.utc).replace(tzinfo=None)  # naive-UTC, matching occurred_at
     ct_weights = p.content_type_weights if p.content_type_weights is not None else _CONTENT_TYPE_WEIGHT
@@ -424,9 +418,8 @@ def rank_search_results(
                                 half_life_hours=p.recency_half_life_hours)
         ct_weight = ct_weights.get(result.get("content_type") or "", 1.0)
         rrf = result.get("_rrf", 0.0) or 0.0
-        prior = 1.0 + thread_prior.get(result.get("thread_id") or "", 0.0) if thread_prior else 1.0
         return (density * p.density_weight + phrase_bonus * p.phrase_weight
-                + recency * p.recency_weight + rrf * p.fusion_weight) * ct_weight * prior
+                + recency * p.recency_weight + rrf * p.fusion_weight) * ct_weight
 
     ranked = sorted(enumerate(results), key=lambda x: (-combined_score(x[1]), x[0]))
     return [r for _, r in ranked[:limit]]

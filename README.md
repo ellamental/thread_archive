@@ -21,7 +21,7 @@ Your agent calls `thread_search`, the right conversation comes back, and `thread
 **Measured against real usage, not a synthetic benchmark.** Every
 `thread_search` an agent runs is itself archived, along with the `thread_read`
 that followed — so the archive holds a click-labeled query log of its own use.
-The eval harness (`scripts/retrieval_eval.py --from-log`) mines those
+The eval harness (`evals/retrieval_eval.py --from-log`) mines those
 search→read pairs: each query is one an agent actually ran, and the thread the
 agent opened next is the answer that must rank. On a 17k-thread / 3.7M-event
 archive, 561 mined cases:
@@ -50,16 +50,16 @@ a **community-coherence re-rank** from the corpus-native embedding graph
 conversation a node). Within a ranked pool, threads whose community carries
 more of the pool's top mass get a small boost; on this protocol it lifts
 recall at every depth past 1 (R@5 0.327→0.341, R@10 0.414→0.433, R@20
-0.492→0.508) with MRR flat, and `scripts/graph_eval.py` re-measures it.
+0.492→0.508) with MRR flat, and `evals/graph_eval.py` re-measures it.
 It orders the head only when the cross-encoder stands down: the two are
 alternative head orderers, and stacking coherence under the rerank measures
 as a loss end-to-end (it reshuffles which candidates reach the rerank
 window). On by default; `THREAD_ARCHIVE_COHERENCE=off` disables, a float
-retunes gamma. Two graph signals were measured and rejected on the same protocol —
-kept out of the default stack, opt-in for experimentation: PageRank authority
-from the *curated* topic graph (`THREAD_ARCHIVE_GRAPH_RANK=<weight>`)
-degrades ranking monotonically with weight, because query-independent
-authority floats hub threads over the specific thread a query names. Curated thread summaries move
+retunes gamma. Two graph signals were measured, rejected on the same
+protocol, and are not in the stack: PageRank authority from the *curated*
+topic graph degrades ranking monotonically with weight, because
+query-independent authority floats hub threads over the specific thread a
+query names. Curated thread summaries move
 these numbers by less than a point — whatever their value for browsing and
 curation, ranked search does not measurably ride on them. (An earlier
 title-as-query eval said otherwise on every count; its queries were LLM
@@ -75,26 +75,24 @@ a launch-day screenshot, and `--mined-after` holds out only the cases mined
 after a ranking change shipped. `--behavior` reports zero-label usage
 signals — for every search the trail shows whether the agent opened a
 result, searched again, or walked away — rates that move only when something
-real moves. And `scripts/retrieval_judge.py` runs a sample of the mined
+real moves. And `evals/retrieval_judge.py` runs a sample of the mined
 queries through the production stack and has a headless `claude` grade every
 top-10 thread, yielding graded precision, a calibration of the click labels
 themselves, and explicit credit for relevant results the click protocol can
 only score as misses. The judge grades only what production returned, from
-snippets; `scripts/retrieval_mine_gold.py` goes the rest of the way — one
+snippets; `evals/retrieval_mine_gold.py` goes the rest of the way — one
 headless `claude` *agent* per sampled query reads the originating session
 for intent, sweeps the corpus with its own reformulated searches (bounded to
 the corpus as of the original search's date), reads candidates, and writes a
 corpus-grounded gold case. The output is an eval `--cases` file whose
 per-case date bound the scoring search honors, so the one-time mining spend
 buys recall-capable, deterministic labels every later eval run scores
-against for free. The knowledge graph gets its own usage meter in
-[thread-librarian](https://github.com/ellamental/thread_archive_librarian) (`scripts/topic_eval.py` there): **subject
-uptake** — how often a topic read follows a search. A lens nobody pivots
-through is a terrarium, however well curated; uptake is the number that says
-which it is.
+against for free.
 
 The instruments stack into a **quality ladder**, fastest tier first — change
-a ranking weight and climb until the evidence matches the stakes:
+a ranking weight and climb until the evidence matches the stakes. Everything
+operator-run lives together in `evals/` — the search lab; `evals/README.md`
+is the working manual:
 
 | tier | what runs | corpus | cost | when |
 |---|---|---|---|---|
@@ -114,9 +112,9 @@ That seam has a front door: **the search lab**. Every tunable of the pipeline
 (ranking weights, decay constants, pool sizes) lives in one object,
 `thread_archive._retrieval.SearchParams`, accepted by `search(params=...)` —
 the shipped defaults ARE the production configuration. Each module in
-`experiments/` is one candidate configuration (a `SearchParams` value, or a
+`evals/experiments/` is one candidate configuration (a `SearchParams` value, or a
 full `SEARCH` callable for changes params can't express — the contract is in
-`experiments/README.md`), and `scripts/search_lab.py` scores the baseline plus
+`evals/experiments/README.md`), and `evals/search_lab.py` scores the baseline plus
 every experiment on identical corpus cases and prints a leaderboard with
 deltas: seconds for the lexical stack, `--models` for the fused pipeline. The
 corpus carries adversarial structure (a TF-spam paste bm25 loves, a recency
@@ -126,7 +124,7 @@ A winner here is a direction, not a verdict; promote it by re-measuring on
 tiers 2–3 before changing the defaults in `_retrieval/params.py`.
 
 The promotion step has its own instrument: **the arena**
-(`scripts/search_arena.py`). It duels a challenger from `experiments/` against
+(`evals/search_arena.py`). It duels a challenger from `evals/experiments/` against
 the shipped configuration on real mined queries — both rankings for each
 query go to a headless `claude` judge, side order randomized, labels blind —
 and reports challenger wins/losses/ties with an exact sign test. Identical
@@ -142,7 +140,7 @@ it" — the bar to clear before touching the defaults.
 
 **Fixes itself where it broke.** A provider's transcript format drifts on the provider's schedule, not a maintainer's. Archive makes that drift loud and locally repairable: drift ledgers and a nightly coverage check catch the degradation, the raw source files are quarantined before the provider prunes them, the in-session search notice names the remedy, and `archive fix-import <provider>` scaffolds an override patch — module, tests, evidence, real samples, and the repair protocol — so the fix gets written on the machine that has the samples, by you or by an agent you hand the scaffold to. The patch goes live only when its scaffolded test suite passes in a fresh subprocess, then re-import recovers everything consumed during the gap. The supported provider's worst case is *preserved but partially modeled until fixed* — and the fix doesn't wait on a release.
 
-**A memory an agent can organize.** The archive carries the *data plane* of an event-sourced topic graph a curating agent can build over it — creating topics, pinning key quotes, linking related threads, tending the hierarchy. Every curation act lands in the archive's truth log, so you can always see who connected what, and why. The curation agents, the graph analytics (PageRank, Leiden communities, bridges), and the topic surfaces live in the separate [thread-librarian](https://github.com/ellamental/thread_archive_librarian) package; without it the graph simply stays empty, and nothing else depends on it.
+**A memory an agent can organize.** The archive carries the *data plane* of an event-sourced topic graph a curating agent can build over it — creating topics, pinning key quotes, linking related threads, tending the hierarchy. Every curation act lands in the archive's truth log, so you can always see who connected what, and why. The curating agent itself is external — anything that writes `KgEvent`s through the truth log; without one the graph simply stays empty, and nothing else depends on it.
 
 **No hosted backend. No cloud. No subscription to lose your history to.** A background watcher keeps it current; every process — the MCP server, the web viewer, the daemons — runs locally, on your machine.
 
@@ -288,7 +286,8 @@ src/thread_archive/
   provider/         # PUBLIC: the plugin API a third-party provider is written against
 frontend/           # the viewer's React+Vite source (dev-only; builds into _web/static/)
 host/               # operator layer: Makefile over `archive daemon`, family-manifest writer
-scripts/            # operator tools (coverage gate, retrieval eval)
+scripts/            # repo tooling (coverage gate, frontend-build check, license notices)
+evals/              # the search lab: quality harnesses + experiments/ (see evals/README.md)
 tests/install/      # isolated Docker install test + fixtures
 ```
 
@@ -509,21 +508,18 @@ leave the flag off when the watcher already owns ingestion.
 There are exactly two kinds of thread: imported **conversations** and curated **topics**
 (`thread_type='topic'`). A topic is modeled as a thread on purpose — so the graph's edges
 (`thread_links`) and message→topic citations (`topic_messages`) reference one id space.
-The archive keeps the **data plane** only: the event log, its fold, and the SQL topic
-reads (`_knowledge/`). The analytics over it — PageRank, Leiden communities, bridges,
-peers, the relevant-subjects search lens, the topic pages and hierarchy — are
-[thread-librarian](https://github.com/ellamental/thread_archive_librarian)'s. The archive's base install carries the shared
-community spine (Leiden) and its own corpus-native embedding graph — the
-ranking signal that needs no curation — while the curated-graph analytics and
-their scipy/pagerank stack are the librarian's.
+The archive keeps the **data plane** and its reads: the event log, its fold, the SQL
+topic reads (`_knowledge/`), and the relevant-subjects search lens (a pure projection
+over topic citations). Graph analytics over the curated graph — PageRank, communities,
+bridges, peers — are an external curator's business; the archive's base install carries
+the shared community spine (Leiden) and its own corpus-native embedding graph, the
+ranking signal that needs no curation.
 
-Existing records stay readable as a compatibility surface: `thread_read` on a topic id
+Curated records read everywhere they matter: `thread_read` on a topic id
 renders the topic's curated page (description, links, cited quotes — each quote anchored
-to open via `around_event`) and `thread_search(topic_id=…)` scopes a search to the
-topic's member conversations. With thread-librarian installed alongside, search headers
-also name the subjects a result set clusters under, and topic pages regain their graph
-metadata; the browseable topic surfaces (tree, communities, garden queues) are the
-librarian MCP's tools.
+to open via `around_event`), `thread_search(topic_id=…)` scopes a search to the
+topic's member conversations, and whenever curated topics exist, search headers
+name the subjects a result set clusters under.
 
 Curation is **event-sourced**. Every graph write (`create_topic`, `link_threads`,
 `add_topic_evidence`, `merge_topics`, …) appends a `KgEvent` to an

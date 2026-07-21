@@ -28,15 +28,11 @@ COUNT_FETCH_CAP = 1000
 
 
 def subjects_line(hits: list[EventHit]) -> str | None:
-    """The ``subjects:`` orientation header over a result set, or None.
+    """The ``subjects:`` orientation header over a result set, or None — the
+    :mod:`.subjects` lens over the curated data plane; an uncurated archive
+    renders searches with no subjects line."""
+    from . import subjects as _subjects
 
-    The lens itself belongs to the optional ``thread-librarian`` package (the
-    knowledge layer's analytics owner); this seam calls it fail-soft, so the
-    base archive renders searches with no subjects line and no graph stack."""
-    try:
-        from thread_librarian import subjects as _subjects
-    except ImportError:
-        return None
     if not _subjects.enabled():
         return None
     return _subjects.format_subjects_line(_subjects.subjects_for_results(hits))

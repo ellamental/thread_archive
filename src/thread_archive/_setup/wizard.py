@@ -147,7 +147,7 @@ def run_setup(
     ask: Callable[..., str] = _ask,
     machine: Optional[Machine] = None,
 ) -> int:
-    """Discover → consent → import → watcher → backup → curation → MCP wiring.
+    """Discover → consent → import → watcher → backup → MCP wiring.
     Returns exit code.
 
     The flow's collaborators are keyword parameters: ``interactive`` overrides
@@ -262,15 +262,11 @@ def run_setup(
     cfg["setup"]["backup"] = _offer_backup(args, interactive, machine)
     _say()
 
-    # 6. The scheduled curation drains.
-    cfg["setup"]["curation"] = _offer_curation(args, interactive, machine)
-    _say()
-
-    # 7. MCP wiring.
+    # 6. MCP wiring.
     cfg["setup"]["clients"] = {"claude": _offer_mcp(args, interactive, ask=ask)}
     _say()
 
-    # 8. Done.
+    # 7. Done.
     cfg["setup"]["completed_at"] = datetime.now().astimezone().isoformat(timespec="seconds")
     save_config(cfg, args.home)
     _say("Done. Ask your agent: \"what have we discussed about …?\"")
@@ -405,27 +401,6 @@ def _conversation_count(home: Optional[str]) -> int:
             ).scalar_one() or 0)
     except Exception:  # noqa: BLE001 — a count is not worth failing setup over
         return 0
-
-
-def _offer_curation(args: argparse.Namespace, interactive: bool, machine: Machine) -> dict:
-    """Report curation state — the drains are not the core's to schedule.
-
-    The drains, their MCP write surface, and the Claude Code skills belong to
-    an optional companion package (``thread_librarian``); its own
-    ``thread-librarian daemon install`` schedules them, with the catch-up
-    policy prompts living there. When that package isn't on the machine, setup
-    stays quiet: there is nothing installable to point at.
-    """
-    if machine.curation_running(args.home):
-        _say("Curation: the librarian and gardener drains are already scheduled.")
-        return {"status": "already-installed"}
-    if not machine.curation_installed():
-        return {"status": "unavailable"}
-    _say("Curation — an agent that links conversations to topics and writes each a")
-    _say("search-first summary — is installed but not scheduled:")
-    _say("  thread-librarian daemon install --librarian   # hourly drain")
-    _say("  thread-librarian daemon install --gardener    # daily drain")
-    return {"status": "plugin"}
 
 
 def _offer_backup(args: argparse.Namespace, interactive: bool, machine: Machine) -> dict:
@@ -577,11 +552,6 @@ def print_status(args: argparse.Namespace, *, machine: Optional[Machine] = None)
         else:
             _say("  schedule: no nightly backup — `thread_archive setup` offers it "
                  "(or `archive daemon install --backup --dest <path>`)")
-        if machine.curation_running(args.home):
-            _say("  curation: librarian (hourly) + gardener (daily) scheduled")
-        elif machine.curation_installed():
-            _say("  curation: not scheduled — `thread-librarian daemon install "
-                 "--librarian` / `--gardener` schedules it")
     _say()
     _say("  search/read: the archive-mcp tools · web viewer: http://127.0.0.1:8787 (with the watcher)")
     _say("  re-run setup: thread_archive setup · operator CLI: archive --help")

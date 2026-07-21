@@ -9,14 +9,11 @@ The archive owns the knowledge graph's **data**, nothing more:
   citations, the thread set behind search's ``topic_id`` scope, the part-of
   hierarchy) and owns the hierarchy vocabulary.
 
-This is a compatibility surface: existing KG records keep reading and keep
-surviving reindex, but the archive neither writes nor analyzes them. What
-*writes and analyzes* this data — the librarian/gardener curation agents,
-their MCP surface, and the corpus-graph analytics (PageRank, Leiden
-communities, bridges, peers, the subjects lens) — is the separate
-``thread-librarian`` package, which builds on these modules. The graph is
-empty (all queries return empty) until topics + links exist; the core archive
-works uncurated.
+The archive neither writes nor analyzes these records: whatever external
+curator exists writes through the truth log (appending ``KgEvent`` rows the
+same way :mod:`.materialize` folds them), and any graph analytics live with
+that curator. The graph is empty (all queries return empty) until topics +
+links exist; the core archive works uncurated.
 """
 
 from __future__ import annotations

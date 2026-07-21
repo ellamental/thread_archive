@@ -1,10 +1,9 @@
 """The host the setup flow runs against — what it can ask it, what it changes.
 
 Setup is the one part of the archive that acts on the machine *outside* the
-archive home: it asks whether the always-on watcher, the nightly backup and the
-curation drains are already scheduled for this home, whether this install has
-the optional curation and embedding packages, and — with consent — it schedules
-the LaunchAgents.
+archive home: it asks whether the always-on watcher and the nightly backup are
+already scheduled for this home, whether this install has the optional
+embeddings extra, and — with consent — it schedules the LaunchAgents.
 
 Every one of those goes through a :class:`Machine`, which the flow is handed
 (:func:`..wizard.run_setup`, :func:`..wizard.print_status`) rather than reaching
@@ -27,11 +26,6 @@ from pathlib import Path
 from typing import Optional
 
 from .._config import default_home, resolve_paths
-
-# The optional curation package's drains. archive only ever reads their state —
-# scheduling them is that package's own daemon command.
-LIBRARIAN_LABEL = "com.thread-archive.librarian"
-GARDENER_LABEL = "com.thread-archive.gardener"
 
 
 class Machine:
@@ -64,20 +58,7 @@ class Machine:
 
         return _launchd.backup_agent_dest()
 
-    def curation_running(self, home: Optional[str] = None) -> bool:
-        """Both curation drains scheduled for this home. A half-installed pair
-        reads as not running."""
-        return self._agent_covers_home(LIBRARIAN_LABEL, home) and self._agent_covers_home(
-            GARDENER_LABEL, home
-        )
-
     # ── what this install has ────────────────────────────────────────────────
-
-    def curation_installed(self) -> bool:
-        """Whether the optional curation package is importable in this env — the
-        gate on every setup surface that would otherwise recommend a command the
-        machine doesn't have."""
-        return importlib.util.find_spec("thread_librarian") is not None
 
     def embeddings_installed(self) -> bool:
         """Whether semantic search is installed (the heavy ``[embeddings]``

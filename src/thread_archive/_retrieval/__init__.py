@@ -3,9 +3,7 @@
 ``search`` runs the production pipeline: federate two arms — FTS5 **lexical** + an
 optional in-process **vector** (semantic) search — fuse them by reciprocal-rank
 fusion (``_rrf`` normalized to [0,1]), dedup, score with the weighted lexical
-**ranker** (density / phrase / recency / content-type / fusion — :mod:`.rank`,
-boosted by the fail-soft graph-authority prior when thread-librarian's corpus
-graph is installed — :mod:`.graph_prior`),
+**ranker** (density / phrase / recency / content-type / fusion — :mod:`.rank`),
 then optionally re-order the head with an in-process **cross-encoder** (:mod:`.rerank`)
 — gated twice: to conceptual multi-term query shapes (``should_rerank``), and away
 again when the ranked head is already a strong literal match (``head_is_strong``) —
@@ -25,7 +23,6 @@ from sqlalchemy.orm import Session
 
 from .._store import Event, Thread, use_session
 from . import embed_graph as _embed_graph
-from . import graph_prior as _graph_prior
 from . import rank as _rank
 from ._classify import resolve_relative_date
 from ._context import extract_context_lines, get_context_events, parse_context_events_spec
@@ -445,13 +442,7 @@ def search(
             rank_to = len(fused)
         else:
             rank_to = max(limit, p.rerank_pool) if do_rerank else limit
-        # Graph-authority prior (fail-soft, boost-only): threads the curated
-        # layer keeps citing get a bounded score multiplier. {} without
-        # thread-librarian, without curation, or with THREAD_ARCHIVE_GRAPH_RANK=off.
-        prior = _graph_prior.thread_graph_prior(
-            list({r.get("thread_id") for r in fused if r.get("thread_id")})
-        )
-        ranked = _rank.rank_search_results(fused, terms, rank_to, params=p, thread_prior=prior or None)
+        ranked = _rank.rank_search_results(fused, terms, rank_to, params=p)
         # Result-side half of the gate: when the ranked head is already a strong
         # literal match, the lexical order is trustworthy and the cross-encoder
         # stands down — it exists for the vocab-mismatch case, and re-ranking a

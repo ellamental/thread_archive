@@ -125,7 +125,6 @@ export async function mockApi(page: Page): Promise<string[]> {
         fts_indexed: 3,
         vectors_indexed: 3,
         home: '/tmp/browser-archive',
-        curation_available: true,
       })
     }
     if (path === '/api/sources') return json(route, { sources: [{ source: 'claude-code', threads: 1 }] })
@@ -185,7 +184,6 @@ export async function mockApi(page: Page): Promise<string[]> {
     }
     if (path === '/api/stats') return json(route, stats)
     if (path === `/api/stats/model/${MODEL}`) return json(route, modelStats)
-    if (path === '/api/curation') return json(route, { available: false })
 
     unhandled.push(`${route.request().method()} ${path}`)
     return json(route, { error: 'unhandled browser-test API request' }, 501)

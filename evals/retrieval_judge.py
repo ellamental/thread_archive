@@ -22,8 +22,8 @@ stdout; ``--trend-out`` appends one JSONL summary row (the judged twin of the
 eval's trend ledger); ``--out`` dumps per-thread judgments. Judged output
 quotes real usage — keep dumps out of the repo.
 
-    .venv/bin/python scripts/retrieval_judge.py --sample 20
-    .venv/bin/python scripts/retrieval_judge.py --sample 20 --mined-after 2026-07-01 \
+    .venv/bin/python evals/retrieval_judge.py --sample 20
+    .venv/bin/python evals/retrieval_judge.py --sample 20 --mined-after 2026-07-01 \
         --trend-out ~/.thread/archive/retrieval-judge.jsonl
 """
 

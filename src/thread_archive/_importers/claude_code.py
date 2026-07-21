@@ -71,7 +71,7 @@ def _is_archive_operational(all_lines: list[dict]) -> bool:
     ``thread_type='system'`` threads with ``exclude_from_search`` set: captured,
     but never surfaced by search (a drain's transcript is full of quoted search
     hits, so it would match nearly any query about its own subjects) and never
-    themselves librarian work — otherwise every drain's own transcript re-enters
+    themselves curation work — otherwise every drain's own transcript re-enters
     the review queue and future drains summarize past ones, forever."""
     for line in all_lines:
         cwd = line.get("cwd")

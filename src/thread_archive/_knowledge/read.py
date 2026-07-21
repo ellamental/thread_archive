@@ -5,8 +5,8 @@ and citations; this module
 is the library surface that reads them back: one topic with everything attached
 (:func:`topic_get`), its citations with quotes (:func:`topic_members`), and the set of
 conversation threads a topic covers (:func:`topic_thread_ids`) — the resolver behind
-search's ``topic_id`` scope. Shared by the librarian MCP tools and the retrieval
-layer so every surface renders the same graph.
+search's ``topic_id`` scope. Shared by the retrieval layer and any external
+curation tools so every surface renders the same graph.
 
 Archived citations and links are tombstones (``archived_at`` set) and are excluded
 everywhere here; an archived *topic* still reads (a merged-away topic stays referenced
@@ -23,7 +23,7 @@ from sqlalchemy.orm import Session
 from .._store import Thread, ThreadLink, TopicMessage, use_session
 
 # The hierarchy vocabulary: the two link types the topic tree is built from.
-# Data-plane constants — the gardener's structural queues share them from here.
+# Data-plane constants — external curation tools share them from here.
 HIERARCHY_UP = "part-of"
 HIERARCHY_DOWN = "contains"
 
@@ -37,17 +37,12 @@ def _require_topic(session: Session, topic_id: str) -> Thread:
 
 def topic_get(topic_id: str, *, session: Optional[Session] = None) -> dict:
     """One topic with everything attached: metadata, links (both directions),
-    citation count, and member threads. Graph metadata and community peers are
-    filled in when the ``thread-librarian`` package (the analytics owner) is
-    installed; without it ``graph`` is None and ``peers`` is empty.
+    citation count, and member threads. ``graph`` and ``peers`` are analytics
+    slots the data plane itself never fills — an external curation layer may
+    enrich the dict after calling; here they are always ``None`` / ``[]``.
 
     Raises ``ValueError`` when the id isn't a topic (conversations have
     ``thread_read``)."""
-    try:
-        from thread_librarian.graph import get_community_peers, get_topic_graph_meta
-    except ImportError:
-        get_community_peers = get_topic_graph_meta = None  # type: ignore[assignment]
-
     with use_session(session) as s:
         t = _require_topic(s, topic_id)
         links: list[dict] = []
@@ -103,8 +98,8 @@ def topic_get(topic_id: str, *, session: Optional[Session] = None) -> dict:
             "member_threads": member_threads,
         }
     detail["links"] = links
-    detail["graph"] = get_topic_graph_meta(topic_id) if get_topic_graph_meta else None
-    detail["peers"] = get_community_peers(topic_id, limit=8) if get_community_peers else []
+    detail["graph"] = None
+    detail["peers"] = []
     return detail
 
 

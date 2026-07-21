@@ -112,7 +112,7 @@ argv = ["{repo}/.venv/bin/python", "{repo}/scripts/coverage_gate.py", "{repo}/co
 # the ledger is for reading drift long before collapse.
 [[suite]]
 name = "retrieval-gate"
-argv = ["{repo}/.venv/bin/python", "{repo}/scripts/retrieval_eval.py",
+argv = ["{repo}/.venv/bin/python", "{repo}/evals/retrieval_eval.py",
         "--from-log", "75", "--rerank", "off",
         "--require-semantic", "--require-rerank",
         "--min-mrr", "0.14", "--min-recall10", "0.20",

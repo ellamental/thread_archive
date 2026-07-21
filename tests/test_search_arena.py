@@ -1,6 +1,6 @@
 """The arena stays runnable: blind side-mapping, tie short-circuit, duel scoring.
 
-Guards the pairwise judge harness (``scripts/search_arena.py``) in the fast
+Guards the pairwise judge harness (``evals/search_arena.py``) in the fast
 tier with a fake judge — no ``claude`` CLI, no tokens. The real thing it must
 get right is attribution: verdicts on blinded, side-randomized lists must map
 back to the correct configuration, identical rankings must never spend a judge
@@ -17,7 +17,7 @@ from thread_archive._retrieval import SearchParams
 
 from .quality_corpus import build_corpus
 
-SCRIPTS = Path(__file__).resolve().parent.parent / "scripts"
+EVALS = Path(__file__).resolve().parent.parent / "evals"
 
 
 def _arena():
@@ -26,7 +26,7 @@ def _arena():
 
     mod = sys.modules.get("search_arena")
     if mod is None:
-        spec = importlib.util.spec_from_file_location("search_arena", SCRIPTS / "search_arena.py")
+        spec = importlib.util.spec_from_file_location("search_arena", EVALS / "search_arena.py")
         mod = importlib.util.module_from_spec(spec)
         sys.modules["search_arena"] = mod
         spec.loader.exec_module(mod)

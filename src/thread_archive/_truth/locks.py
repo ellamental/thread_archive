@@ -146,7 +146,7 @@ def shared_ingest_lock() -> Generator[None, None, None]:
     """Hold the reindex lock *shared*, blocking — for one-shot writers.
 
     The watcher uses the non-blocking :func:`try_shared_ingest_lock` (it can just
-    skip a pass); a one-shot writer — a CLI import, a librarian mutation — has no
+    skip a pass); a one-shot writer — a CLI import, a curation mutation — has no
     later pass to retry on, so it waits out an in-flight reindex instead. Every
     cross-process writer must hold this (or the try- variant) around its truth
     append **and** the SQLite commit: an unlocked write can append truth after the

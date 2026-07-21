@@ -20,7 +20,6 @@ export const ROUTES: SmokeRoute[] = [
     path: `/stats/model/${MODEL}`,
     landmark: (page) => page.getByRole('heading', { name: MODEL }),
   },
-  { path: '/curation', landmark: (page) => page.getByText(/curation is not installed/) },
   {
     path: `/archive/${THREAD_ID}`,
     landmark: (page) => page.getByRole('heading', { name: 'Browser Test Thread' }),

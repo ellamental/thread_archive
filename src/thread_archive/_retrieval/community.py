@@ -5,9 +5,9 @@ well-connected communities (Louvain can leave a community internally
 disconnected) and converges to a better partition. We run it locally via
 ``leidenalg`` + ``python-igraph`` (base dependencies), with no graph server.
 
-This is the one community engine in the thread family: the archive's own
-corpus-native embedding graph (:mod:`.embed_graph`) partitions with it, and
-the thread-librarian plugin's curated topic graph imports it from here.
+This is the archive's community engine: the corpus-native embedding graph
+(:mod:`.embed_graph`) partitions with it. It is import-safe for external
+analytics layers to reuse.
 
 :func:`detect_communities` falls back to networkx's Louvain (free with the
 base ``networkx`` dependency) if those C extensions ever fail to import, so a

@@ -879,8 +879,8 @@ def _accumulate_turns(remaining, limit, max_chars, *, strip_tools, strip_thinkin
 
 
 # Rendering caps for a topic read: quotes are the payload so they render whole-ish,
-# but a huge topic must not blow the MCP output budget — the footer points at the
-# per-citation surface (librarian topic_members) for the full set.
+# but a huge topic must not blow the MCP output budget — the footer says how many
+# more citations exist beyond the page.
 _TOPIC_READ_MAX_CITATIONS = 100
 _TOPIC_READ_QUOTE_CHARS = 500
 
@@ -926,8 +926,7 @@ def _topic_read_message(thread: Thread, *, session: Optional[Session] = None) ->
                     quote = quote[:_TOPIC_READ_QUOTE_CHARS] + "…"
                 lines.append(f"- [event:{c['event_id']}] {quote}")
         if detail["citation_count"] > len(members):
-            lines += ["", f"(showing {len(members)} of {detail['citation_count']} "
-                          f"citations — the librarian MCP's topic_members lists them all)"]
+            lines += ["", f"(showing {len(members)} of {detail['citation_count']} citations)"]
     else:
         lines += ["", "No live citations yet."]
 
@@ -942,10 +941,10 @@ def _topic_read_message(thread: Thread, *, session: Optional[Session] = None) ->
     return "\n".join(lines)
 
 
-# The reserved thread_read ref that used to render the topic hierarchy. The
-# tree is the librarian's read surface now (its MCP ``topic_tree`` tool); the
-# ref is kept only so a pasted 'topics' points there instead of resolving as a
-# thread lookup that confusingly finds nothing.
+# The reserved thread_read ref for the topic hierarchy. The tree itself is a
+# curation surface, not a thread; the ref is kept only so a pasted 'topics'
+# gets a pointed answer instead of resolving as a thread lookup that
+# confusingly finds nothing.
 TOPIC_TREE_REF = "topics"
 
 
@@ -981,9 +980,8 @@ def _resolve_summary_kind(summary: bool | str) -> Optional[str]:
 def _stored_summary(thread: Thread, kind: str) -> str:
     """The thread's stored summary: ``short`` (``Thread.summary``, a few sentences)
     or ``indexed`` (``Thread.indexed_summary``, structured markdown with event
-    anchors). Written by the ``/librarian`` skill via the librarian MCP's
-    ``thread_set_summary``, so not every thread has them; absence names whichever
-    alternative exists rather than returning empty."""
+    anchors). Written by an external curator, so not every thread has them;
+    absence names whichever alternative exists rather than returning empty."""
     text = thread.summary if kind == "short" else thread.indexed_summary
     other_kind = "indexed" if kind == "short" else "short"
     other_text = thread.indexed_summary if kind == "short" else thread.summary
@@ -1203,9 +1201,8 @@ def read_thread(
     message string if absent.
     """
     if isinstance(thread_id, str) and thread_id.strip().lower() == TOPIC_TREE_REF:
-        return ("The topic tree is the librarian's read surface: use the "
-                "thread-archive-librarian MCP's topic_tree tool. A topic *id* still "
-                "reads here as the topic's page.")
+        return ("The topic tree is a curation surface, not a thread. A topic "
+                "*id* still reads here as the topic's page.")
 
     summary_kind = _resolve_summary_kind(summary)
     if summary_kind == "?":

@@ -166,8 +166,7 @@ def test_redact_scrubs_topic_message_snapshot(archive_home, tmp_path):
     """When a topic_messages.jsonl snapshot exists, its quote line is rewritten
     too (the citation-snapshot rewrite path)."""
     _, eid, tid, _ = _import_secret_session(tmp_path)
-    pytest.importorskip("thread_librarian")
-    from thread_librarian import add_topic_evidence, create_topic
+    from .kg_seed import add_topic_evidence, create_topic
 
     topic = create_topic("Secrets", "t")["topic_id"]
     add_topic_evidence(topic, eid, tid, f"my api key is {SECRET}")
@@ -591,8 +590,7 @@ def test_scan_truth_counts_bounds_ids_above_watermark(archive_home, tmp_path):
     """A verify racing live ingest bounds its scan by watermark: truth lines above
     it (threads, events, kg) are excluded from the counts."""
     import_cc_session(tmp_path)
-    pytest.importorskip("thread_librarian")
-    from thread_librarian.write import create_topic
+    from .kg_seed import create_topic
 
     create_topic("Auth", "authentication concerns")
     base = scan_truth_counts()
@@ -737,8 +735,7 @@ def test_repair_restores_missing_kg_event_from_index(archive_home, tmp_path):
     """A kg-event the index holds but the truth log lost is re-emitted from the
     index (the kg half of the containment restore)."""
     import_cc_session(tmp_path)
-    pytest.importorskip("thread_librarian")
-    from thread_librarian.write import create_topic
+    from .kg_seed import create_topic
 
     create_topic("Auth", "authentication concerns")
     kg_path = archive_home / "truth" / jsonl_log.KG_EVENTS_FILE
@@ -762,10 +759,9 @@ def test_repair_quarantine_appends_to_existing_ledger(archive_home, tmp_path):
     rather than treating it as new."""
     import_cc_session(tmp_path, name="one")
     import_cc_session(tmp_path, name="two")
-    pytest.importorskip("thread_librarian")
-    from thread_librarian.write import create_topic
-
     from thread_archive._truth.repair import FRAGMENTS_FILE, QUARANTINE_SUBDIR
+
+    from .kg_seed import create_topic
 
     create_topic("Auth", "authentication concerns")  # a healthy kg log to scan
     files = sorted((archive_home / "truth" / "threads").rglob("*.jsonl"))
@@ -819,8 +815,7 @@ def test_deep_verify_tolerates_unparseable_kg_payload(archive_home, tmp_path):
     """A kg row whose payload isn't valid JSON is treated as content, not a crash,
     in the deep kg content comparison."""
     import_cc_session(tmp_path)
-    pytest.importorskip("thread_librarian")
-    from thread_librarian.write import create_topic
+    from .kg_seed import create_topic
 
     create_topic("Auth", "authentication concerns")
     with get_session() as s:
@@ -922,8 +917,7 @@ def test_rebuild_truth_scans_kg_log_and_stray_and_empty_thread(archive_home, tmp
     empty (event-less) thread file, and folds the kg log into its unknown-field
     scan — all without a spurious refusal on a store that holds the truth's units."""
     import_cc_session(tmp_path)
-    pytest.importorskip("thread_librarian")
-    from thread_librarian.write import create_topic
+    from .kg_seed import create_topic
 
     create_topic("Auth", "authentication concerns")  # writes kg_events.jsonl
     d = archive_home / "truth"
