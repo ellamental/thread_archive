@@ -571,7 +571,7 @@ def enabled_watchers(home=None) -> list[SourceWatcher]:
 
     The single choke point where operator source opt-outs (see
     :func:`.._config.source_enabled`) reach every ingest path — the daemon, the
-    opted-in MCP catch-up, ``archive watch`` — all of which construct their
+    opted-in MCP catch-up, ``thread_archive watch`` — all of which construct their
     watcher set here. A provider that ``follows`` another is disabled with it: a recovery
     pass over a store the operator opted out of has nothing legitimate to read.
     No config file means the full default set.

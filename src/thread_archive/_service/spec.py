@@ -111,7 +111,7 @@ def entry_path(name: str = "archive") -> Path:
     if found:
         return Path(found)
     raise SystemExit(
-        f"archive daemon: cannot find the `{name}` console script next to "
+        f"thread_archive daemon: cannot find the `{name}` console script next to "
         f"{sys.executable} or on PATH — is the package installed in this environment?"
     )
 
@@ -191,7 +191,7 @@ def backup_spec(
     minute: int = BACKUP_DEFAULT_MINUTE,
     notify_url: Optional[str] = None,
 ) -> AgentSpec:
-    """The nightly backup pipeline: ``archive nightly <dest>`` on a daily
+    """The nightly backup pipeline: ``thread_archive nightly <dest>`` on a daily
     schedule — mirror the JSONL truth to ``dest`` → integrity verify → restore
     drill, as one scheduled command. ``dest`` must be a path the scheduler can
     reach unattended at the fire time."""

@@ -6,7 +6,7 @@ cd /app
 
 echo "=== environment ==="
 python --version
-archive --version
+thread_archive --version
 echo
 
 echo "=== full unit suite (isolated container) ==="

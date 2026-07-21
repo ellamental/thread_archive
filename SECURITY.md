@@ -26,7 +26,7 @@ threat model is correspondingly narrow, and these are its load-bearing walls:
   `THREAD_ARCHIVE_MCP_INGEST=1` is a separate, explicit process-level opt-in to
   local catch-up ingestion; setup-generated stdio entries set it when the
   always-on watcher is skipped. The shared MCP LaunchAgent pins it off unless
-  installed with `archive daemon install --mcp --mcp-ingest`; leave it off when
+  installed with `thread_archive daemon install --mcp --mcp-ingest`; leave it off when
   the watcher owns ingestion.
 - **Source privacy policy fails closed.** An absent `config.json` is the normal
   pre-setup default, but an existing file that cannot be read, parsed, or
@@ -37,7 +37,7 @@ threat model is correspondingly narrow, and these are its load-bearing walls:
   came from models, tools, and web content. An agent consuming
   `thread_search` output should treat it like any other retrieved document:
   data, not instructions. The archive never executes archived content itself.
-- **`archive fix-import` collects your transcripts into a scaffold.** It copies
+- **`thread_archive fix-import` collects your transcripts into a scaffold.** It copies
   real drifted source files into `<home>/plugins/<provider>/samples/` so the
   fix can be diagnosed against them — private conversation content, sitting in
   a directory you will likely point an agent at. Archive itself runs no agent
@@ -45,7 +45,7 @@ threat model is correspondingly narrow, and these are its load-bearing walls:
   test suite in a fresh subprocess, which is the only path a patch has to going
   live. If you hand the scaffold to an agent, the samples are untrusted input
   to it, and its blast radius is whatever scope you grant it.
-- **Redaction is crypto-shredding.** `archive redact` re-encrypts content
+- **Redaction is crypto-shredding.** `thread_archive redact` re-encrypts content
   under a fresh per-redaction AES-256-GCM key in `<home>/keyring.json`;
   destroy the key (or escrow it off-machine) for erasure. The provider's own
   store keeps its original copy — redaction covers the archive, not the
@@ -54,7 +54,7 @@ threat model is correspondingly narrow, and these are its load-bearing walls:
 ## The self-update mechanism
 
 Installs cloned from git check release tags daily by default and report an
-eligible update without applying it. `archive self-update` is the explicit
+eligible update without applying it. `thread_archive self-update` is the explicit
 mutating operation: it fast-forwards the clone to the newest release tag once
 the tag is 48 hours old, reinstalls, smoke-checks, and rolls back on failure.
 Its trust anchor is transport security to the git remote you cloned from — the

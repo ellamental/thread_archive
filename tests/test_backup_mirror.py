@@ -1,4 +1,4 @@
-"""``archive backup`` mirror semantics + the restore drill.
+"""``thread_archive backup`` mirror semantics + the restore drill.
 
 The backup is a true mirror with guardrails:
 
@@ -18,7 +18,7 @@ The backup is a true mirror with guardrails:
 * each run preserves the destination's pre-run state as a hardlink generation
   under ``.generations/`` (one per UTC day, pruned by retention, exempt from
   delete-sync);
-* ``archive restore-drill`` rebuilds a full index from the mirror in a
+* ``thread_archive restore-drill`` rebuilds a full index from the mirror in a
   throwaway home, compares it to the mirror's own scan, and leaves the live
   archive untouched.
 """

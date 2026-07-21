@@ -1,4 +1,4 @@
-"""The CLI surface is real: `archive --help` works, every verb is wired, and the
+"""The CLI surface is real: `thread_archive --help` works, every verb is wired, and the
 verbs that touch the archive are driven end-to-end over a real seeded home —
 argv in, real work, and the effect the flag asked for read back off disk.
 
@@ -38,7 +38,7 @@ def test_all_subcommands_present() -> None:
     # (test_public_api.py owns the boundary ratchet; this is the wiring smoke.)
     sub = next(a for a in parser._actions if hasattr(a, "choices") and a.choices)
     assert set(sub.choices) == {
-        "import", "import-export", "providers", "watch", "reindex", "migrate", "embed",
+        "setup", "import", "import-export", "providers", "watch", "reindex", "migrate", "embed",
         "status", "eval", "backup", "verify", "repair", "restore-drill", "restore",
         "nightly", "coverage", "mirror", "redact", "unredact", "daemon",
         "fix-import", "self-update",
@@ -63,7 +63,7 @@ def seeded(archive_home, tmp_path):
 
 
 def test_embed_cli_dispatches(seeded, monkeypatch, capsys) -> None:
-    """`archive embed` wires to api.embed. The suite runs model-free (conftest),
+    """`thread_archive embed` wires to api.embed. The suite runs model-free (conftest),
     so a real run embeds nothing and the cap can only be read at the api seam —
     the one verb whose effect is invisible without the [embeddings] extra."""
     seen = {}
@@ -281,7 +281,7 @@ def test_repair_cli_dry_run_then_applies(seeded, capsys) -> None:
     assert main(["repair", "--home", str(seeded)]) == 0
     out = capsys.readouterr().out
     assert "quarantined 1 unparseable line(s)" in out
-    assert "run `archive verify`" in out
+    assert "run `thread_archive verify`" in out
     assert tf.read_text(encoding="utf-8") != damaged
 
 
@@ -383,7 +383,7 @@ def test_status_runs_on_empty_home(tmp_path, capsys: pytest.CaptureFixture[str])
 
 
 def test_coverage_cli_checks_the_real_sources(seeded, capsys) -> None:
-    """`archive coverage` reconciles the home's configured sources against the
+    """`thread_archive coverage` reconciles the home's configured sources against the
     archive: a fresh home with nothing captured yet is green and lists no gaps."""
     rc = main(["coverage", "--home", str(seeded)])
     assert rc == 0
@@ -393,7 +393,7 @@ def test_coverage_cli_checks_the_real_sources(seeded, capsys) -> None:
 
 
 def test_reindex_cli_runs_in_isolated_home(tmp_path, monkeypatch, capsys) -> None:
-    """`archive reindex` wires to the truth-log reindex. Always pass --home so a
+    """`thread_archive reindex` wires to the truth-log reindex. Always pass --home so a
     CLI test never touches the real ~/.thread/archive."""
     from thread_archive import _config as config
     from thread_archive._store import _base
@@ -421,9 +421,9 @@ def test_migrate_cli_is_a_noop_on_current_truth(seeded, capsys) -> None:
 
 
 def test_providers_cli_renders_patch_traits(archive_home, capsys) -> None:
-    """`archive providers` labels providers carrying a fix-import patch: active
+    """`thread_archive providers` labels providers carrying a fix-import patch: active
     (pinned or not) and retired — the operator's view of the patch lifecycle.
-    Read from the home's own config.json, the file `archive fix-import` writes."""
+    Read from the home's own config.json, the file `thread_archive fix-import` writes."""
     (archive_home / "config.json").write_text(json.dumps({"providers": {
         "claude-code": {"enabled": True, "patch": {"pinned": True}},
         "cursor": {"enabled": True, "patch": {}},
@@ -459,7 +459,7 @@ def test_fix_import_activate_dispatches_and_prints_reimport(monkeypatch, capsys)
 
 
 def test_fix_import_scaffolds_and_names_the_next_step(archive_home, capsys) -> None:
-    """`archive fix-import <provider>` really writes the patch scaffold into the
+    """`thread_archive fix-import <provider>` really writes the patch scaffold into the
     home and points at the protocol the operator (or their agent) reads next."""
     rc = main(["fix-import", "cursor", "--home", str(archive_home)])
     assert rc == 0
@@ -467,7 +467,7 @@ def test_fix_import_scaffolds_and_names_the_next_step(archive_home, capsys) -> N
     target = archive_home / "plugins" / "cursor"
     assert str(target) in out
     assert (target / "PROTOCOL.md").is_file()
-    assert "archive fix-import cursor --activate" in out
+    assert "thread_archive fix-import cursor --activate" in out
 
 
 def test_fix_import_rejects_an_unknown_provider(archive_home, capsys) -> None:

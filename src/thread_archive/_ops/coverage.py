@@ -42,7 +42,7 @@ coverage is their reconciliation:
 
 Runs nightly as a pipeline stage (recording ``coverage_last``; an out-of-band
 green run retires a red nightly stage, see :mod:`.health`) and on demand via
-``archive coverage``.
+``thread_archive coverage``.
 """
 
 from __future__ import annotations
@@ -77,7 +77,7 @@ MIN_HISTORY_FOR_DARK = 5
 # operator's chosen tempo, not a broken loop for the product to close.
 EXPORT_STALE_DAYS = 45.0
 # Sustained-drift thresholds for the per-source degradation verdict (the one
-# that names ``archive fix-import`` as the remedy, reaches agents in-session
+# that names ``thread_archive fix-import`` as the remedy, reaches agents in-session
 # via the MCP search notice, and triggers a preservation snapshot). Stricter
 # than the coverage *warning*, which fires on a single ledger record: one
 # benign record deserves an operator glance, not a repair prompt in every
@@ -182,7 +182,7 @@ def check_coverage(
     """Reconcile every enabled source's store against the archive (see module
     docstring for the checks). Returns the full report; records a compact
     ``coverage_last`` in health.json — including the per-source ``degraded``
-    verdicts the MCP search notice and ``archive fix-import`` key on. A
+    verdicts the MCP search notice and ``thread_archive fix-import`` key on. A
     degraded source's raw store is snapshotted into the drift quarantine
     (:mod:`.._watcher.drift_snapshot`) unless ``snapshot`` is false.
     ``watchers`` overrides the enabled set (tests inject stubs);
@@ -338,7 +338,7 @@ def check_coverage(
     # import needs fixing" map. A coverage FAIL is degradation outright; below
     # that, sustained ledger volume for one source is (thresholds above). One
     # reason per source, strongest first — the verdict names the remedy, and
-    # the remedy (`archive fix-import <source>`) is the same either way.
+    # the remedy (`thread_archive fix-import <source>`) is the same either way.
     # ``since`` is the best available drift-onset timestamp for that reason.
     degraded: dict[str, dict] = {}
     for name, entry in sources.items():

@@ -25,7 +25,7 @@ from pathlib import Path
 # package (top-level dir/module under src/thread_archive/) -> minimum percent
 FLOORS = {
     "_api": 90.0,  # thin dispatch layer over the private machinery
-    "_eval": 95.0,  # search-quality scoring core behind `archive eval` + the evals/ bench
+    "_eval": 95.0,  # search-quality scoring core behind `thread_archive eval` + the evals/ bench
     "_importers": 92.0,
     "_knowledge": 90.0,
     "_mcp": 92.0,
@@ -47,7 +47,10 @@ FLOORS = {
     "TOTAL": 94.0,
 }
 
-EXEMPT_PACKAGES = {"__init__", "_config"}
+# `__init__` re-export shims, `_config` (path/env resolution only), and
+# `__main__` (the `python -m thread_archive` shim: one delegating import to
+# cli.main, with the uncoverable `if __name__` guard body).
+EXEMPT_PACKAGES = {"__init__", "_config", "__main__"}
 
 
 def _package(path: str) -> str | None:

@@ -43,7 +43,7 @@ for every other source.
 
 ## Three importer shapes
 
-``kind`` tells archive how ``archive import --provider <name>`` reaches the
+``kind`` tells archive how ``thread_archive import --provider <name>`` reaches the
 importer, and nothing else — a provider's watcher can do whatever it likes.
 
 - ``"line-stream"`` — one JSONL file per session. ``importer(path, source_id)``.
@@ -136,13 +136,13 @@ from .._watcher.base import (
     WatchResult,
     fingerprint_poll,
 )
+from .._watcher.paths import app_data_dir
 from .._watcher.sources import (
     DbScanWatcher,
     FileSessionWatcher,
     RglobWatcher,
     stat_discovery,
 )
-from .._watcher.paths import app_data_dir
 from .parse import ProviderConfig
 
 ImporterKind = Literal["line-stream", "db-scan", "none"]
@@ -231,7 +231,7 @@ class Provider:
     """One preservable source of conversations.
 
     ``name`` is the identity threads are stored under (``Thread.source``) and the
-    key for config opt-out, ``archive import --provider``, and search filters. It
+    key for config opt-out, ``thread_archive import --provider``, and search filters. It
     is permanent: changing it orphans every thread already imported under the old
     one. Lowercase, hyphenated.
     """

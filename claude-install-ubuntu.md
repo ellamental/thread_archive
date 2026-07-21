@@ -5,7 +5,7 @@ on an **Ubuntu** machine. The human cloned the repo and asked you to install it.
 Follow these steps in order. Run the commands; don't just describe them. Stop and
 ask the human only at the one marked decision point.
 
-The end state: the `archive` CLI works, the read MCP server is wired into this
+The end state: the `thread_archive` CLI works, the read MCP server is wired into this
 project's `.mcp.json`, the archive is populated, and (optionally) an always-on
 watcher is scheduled via **systemd**.
 
@@ -60,7 +60,7 @@ The base install includes the corpus-graph ranking stack (`leidenalg` +
 ## 2. Verify the install
 
 ```bash
-.venv/bin/archive --version
+.venv/bin/thread_archive --version
 .venv/bin/pip install -e '.[dev]'   # pytest ships in the dev extra, not the base install
 .venv/bin/pytest tests/ -q          # must be green before you go further
 ```
@@ -89,20 +89,20 @@ An empty archive has nothing to search. Two ways to get conversations in:
   On Ubuntu these live under `~/.claude`, `~/.codex`, `~/.config/Cursor`,
   `~/.config/Code`, `~/.local/share/opencode`, etc. — archive finds them per-OS.
   ```bash
-  .venv/bin/archive watch --once     # one pass; or `archive daemon install` for always-on (step 6)
+  .venv/bin/thread_archive watch --once     # one pass; or `thread_archive daemon install` for always-on (step 6)
   ```
 - **Import an export or transcript** the human points you at:
   ```bash
-  .venv/bin/archive import <path> --provider <name>   # `archive providers` lists them
+  .venv/bin/thread_archive import <path> --provider <name>   # `thread_archive providers` lists them
   ```
 
 Then confirm it landed:
 
 ```bash
-.venv/bin/archive status            # threads / events / indexed counts
+.venv/bin/thread_archive status            # threads / events / indexed counts
 ```
 
-The SQLite index is built during import; `archive reindex` rebuilds it losslessly
+The SQLite index is built during import; `thread_archive reindex` rebuilds it losslessly
 from the JSONL truth if it ever looks wrong.
 
 ## 5. Restart Claude Code to load the new config
@@ -113,15 +113,15 @@ session in this directory**, then confirm the `thread-archive` tools
 
 ## 6. Always-on: the systemd watcher (+ optional nightly backup)
 
-`archive watch --once` is a single pass. For the live, self-feeding archive,
+`thread_archive watch --once` is a single pass. For the live, self-feeding archive,
 schedule the watcher as a **systemd user service** — the productized always-fresh
 upgrade. The `thread_archive` setup wizard offers this too; either path works:
 
 ```bash
 .venv/bin/thread_archive setup           # wizard: offers the watcher + nightly backup
 # — or the daemon directly —
-.venv/bin/archive daemon install         # installs & starts thread-archive-watcher.service
-.venv/bin/archive daemon status          # ActiveState/SubState/PID, or "not loaded"
+.venv/bin/thread_archive daemon install         # installs & starts thread-archive-watcher.service
+.venv/bin/thread_archive daemon status          # ActiveState/SubState/PID, or "not loaded"
 ```
 
 Install enables **linger** (`loginctl enable-linger`) so the watcher keeps running
@@ -142,15 +142,15 @@ tail -F ~/.thread/archive/logs/watcher-stdout.log ~/.thread/archive/logs/watcher
 Optional nightly backup (mirror → verify → restore drill) on a systemd timer:
 
 ```bash
-.venv/bin/archive daemon install --backup --dest /path/to/backups
+.venv/bin/thread_archive daemon install --backup --dest /path/to/backups
 systemctl --user list-timers thread-archive-backup.timer
 ```
 
-Apply a code edit later with `archive daemon restart`; remove everything with
-`archive daemon uninstall` (and `--backup` for the timer).
+Apply a code edit later with `thread_archive daemon restart`; remove everything with
+`thread_archive daemon uninstall` (and `--backup` for the timer).
 
 ## Done
 
 Report to the human: install verified (tests green), `.mcp.json` written, archive
-populated (give the `archive status` counts), and — if you did step 6 — the
+populated (give the `thread_archive status` counts), and — if you did step 6 — the
 watcher active under `systemctl --user`.

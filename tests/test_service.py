@@ -27,7 +27,7 @@ from thread_archive._service.spec import (
     watcher_spec,
 )
 
-ENTRY = Path("/opt/venv/bin/archive")
+ENTRY = Path("/opt/venv/bin/thread_archive")
 LOG_DIR = Path("/data/arc/logs")
 AGENTS = ("watcher", "mcp", "backup")
 

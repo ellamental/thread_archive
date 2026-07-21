@@ -50,7 +50,7 @@ myharness = "myharness_archive:PROVIDER"
 
 ```console
 $ /path/to/archive/.venv/bin/pip install -e .
-$ /path/to/archive/.venv/bin/archive providers
+$ /path/to/archive/.venv/bin/thread_archive providers
 myharness  on   My Harness  (line-stream)
 ```
 
@@ -74,7 +74,7 @@ provider must not stop the others from capturing.
 
 ## The three importer shapes
 
-`kind` says how `archive import --provider <name>` reaches your importer.
+`kind` says how `thread_archive import --provider <name>` reaches your importer.
 
 | `kind` | store shape | importer signature |
 |---|---|---|
@@ -151,7 +151,7 @@ can't import — a false claim quarantines someone else's export.
 
 `name` is what threads are stored under. It is permanent: changing it orphans
 every thread already imported under the old one. Lowercase, hyphenated, and
-distinct from anything already in `archive providers`.
+distinct from anything already in `thread_archive providers`.
 
 `source_id` matters just as much. It must be **stable across polls** — it keys
 both the thread and its watermark, so an id that shifts creates a duplicate
@@ -307,7 +307,7 @@ from thread_archive.provider import builtin
 PROVIDER = replace(builtin("codex"), parser_config=...)
 ```
 
-`archive fix-import <provider>` sets the repair case up and gates it: it
+`thread_archive fix-import <provider>` sets the repair case up and gates it: it
 scaffolds exactly this shape under `<home>/plugins/<provider>/` (module, tests,
 drift evidence, collected samples, and `PROTOCOL.md` — how to work the fix,
 written to be handed to an agent), leaving the parse logic to you or whatever

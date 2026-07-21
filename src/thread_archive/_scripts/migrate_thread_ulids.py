@@ -15,13 +15,13 @@ Safety model — nothing is destroyed until the operator says so:
 2. The swap moves the old tree + overlays to ``<home>/pre-ulid-backup/`` and
    renames the new ones into place, then writes a v2 manifest (the content-hash
    baseline is dropped — every line changed).
-3. ``archive migrate`` rebuilds the SQLite index and verifies it after this
+3. ``thread_archive migrate`` rebuilds the SQLite index and verifies it after this
    truth swap; rollback evidence remains in ``pre-ulid-backup``.
 
 The migration holds the archive's exclusive reindex lock, so live writers wait
 without racing the rewrite. Run the complete operator command with::
 
-    archive migrate [--home PATH] [--dry-run]
+    thread_archive migrate [--home PATH] [--dry-run]
 
 ``--dry-run`` builds the new tree and reports counts without swapping.
 """
@@ -345,7 +345,7 @@ def _migrate_locked(home: Path, *, dry_run: bool = False) -> dict:
 
     update_manifest(truth, _mut)
     print(f"swap done; old truth in {backup}")
-    print("next: archive reindex && archive verify")
+    print("next: thread_archive reindex && thread_archive verify")
     return {"changed": True, "version": TRUTH_FORMAT_VERSION, "threads": nt, "events": ne}
 
 

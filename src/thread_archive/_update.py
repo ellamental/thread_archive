@@ -23,19 +23,19 @@ history:
   that bumps ``TRUTH_FORMAT_VERSION`` makes rollback a hard stop the moment
   the new code touches the store. The tag's declared format version is read
   out of the tag itself (``git grep``); if it is newer than ours — or cannot
-  be determined — the update requires a human (``archive self-update
+  be determined — the update requires a human (``thread_archive self-update
   --allow-format-bump``).
 - **Verify, then roll back.** After checkout + reinstall, the new code must
-  pass a smoke check (``archive status`` under the new install). On failure
+  pass a smoke check (``thread_archive status`` under the new install). On failure
   the previous commit is checked out and reinstalled — the archive keeps
   running the code that worked.
 
 Release discovery is the watcher's job: its poll loop probes
 :func:`maybe_spawn_self_update` hourly, which spawns a detached
-``archive self-update --check`` at most once per
+``thread_archive self-update --check`` at most once per
 ``update.check_interval_hours`` (default 24, stamped in ``health.json``).
 Checks fetch release tags and report availability without changing the clone.
-Applying an update is an explicit ``archive self-update`` operation unless the
+Applying an update is an explicit ``thread_archive self-update`` operation unless the
 operator deliberately opts back into unattended apply. Config rides
 ``config.json``::
 
@@ -111,7 +111,7 @@ def auto_apply_enabled(home: Optional[str] = None) -> bool:
     """Whether scheduled release checks may mutate the installed clone.
 
     False by default: finding an update and applying it are separate trust
-    decisions. The explicit ``archive self-update`` command is unaffected.
+    decisions. The explicit ``thread_archive self-update`` command is unaffected.
     """
     return bool(update_config(home).get("auto_apply", False))
 
@@ -269,7 +269,7 @@ def plan_update(
             return UpdatePlan(
                 "blocked",
                 f"{tag} declares truth-format version {fmt} > local {local_fmt} — "
-                "a one-way door; run `archive self-update --allow-format-bump` deliberately",
+                "a one-way door; run `thread_archive self-update --allow-format-bump` deliberately",
                 version, tag=tag, skipped=skipped, current_format=local_fmt,
                 target_format=fmt,
             )
@@ -307,11 +307,11 @@ def _default_reinstall(repo: Path) -> None:
 
 def _default_smoke(home: Optional[str]) -> None:
     """The new install must stand up and read the archive: the console script
-    exists, the package imports, the store opens. `archive status` is exactly
+    exists, the package imports, the store opens. `thread_archive status` is exactly
     that, end to end, in a fresh process running the new code."""
     import os
 
-    bin_ = Path(sys.executable).with_name("archive")
+    bin_ = Path(sys.executable).with_name("thread_archive")
     env = dict(os.environ)
     if home:
         env["THREAD_ARCHIVE_HOME"] = str(home)
@@ -321,7 +321,7 @@ def _default_smoke(home: Optional[str]) -> None:
     )
     if r.returncode != 0:
         raise RuntimeError(
-            f"`archive status` under the new install failed: {r.stderr.strip()[-500:]}"
+            f"`thread_archive status` under the new install failed: {r.stderr.strip()[-500:]}"
         )
 
 
@@ -336,7 +336,7 @@ def _default_migrate(home: Optional[str]) -> None:
     """Run migration, rebuild, and verification in fresh target-code processes."""
     import os
 
-    bin_ = Path(sys.executable).with_name("archive")
+    bin_ = Path(sys.executable).with_name("thread_archive")
     env = dict(os.environ)
     commands = [[str(bin_), "migrate"]]
     if home:
@@ -372,7 +372,7 @@ def _default_restart() -> None:
 
 
 def _default_retire(home: Optional[str], tag: str) -> None:
-    """Disable unpinned ``archive fix-import`` override patches built against a
+    """Disable unpinned ``thread_archive fix-import`` override patches built against a
     core older than ``tag`` — patches are temporary bridges to the next release
     by default, and pinned ones opt out (see :mod:`._repair.retire`)."""
     from ._repair import retire_patches
@@ -485,7 +485,7 @@ def self_update(
     retire: Optional[Callable[[Optional[str], str], None]] = None,
 ) -> dict:
     """One full check-and-maybe-apply, recorded in ``health.json`` (the record
-    is both the ``archive status`` line and the once-per-interval stamp the
+    is both the ``thread_archive status`` line and the once-per-interval stamp the
     watcher's spawner gates on). ``check_only`` plans and reports without
     changing the installed checkout. A manual check counts as the latest check,
     so the watcher does not immediately repeat the same network work."""
@@ -534,7 +534,7 @@ def check_due(home: Optional[str] = None) -> bool:
 
 def maybe_spawn_self_update(home: Optional[str] = None) -> bool:
     """The watcher's hourly probe: when enabled, installed from a clone, and
-    due, spawn a **detached** ``archive self-update --check`` with its output
+    due, spawn a **detached** ``thread_archive self-update --check`` with its output
     appended to ``<home>/logs/self-update.log``. ``update.auto_apply=true``
     deliberately removes ``--check`` and restores guarded unattended apply.
     Returns whether a spawn happened.
@@ -551,7 +551,7 @@ def maybe_spawn_self_update(home: Optional[str] = None) -> bool:
 
         log_dir = resolve_paths(home).home / "logs"
         log_dir.mkdir(parents=True, exist_ok=True)
-        cmd = [str(entry_path("archive")), "self-update"]
+        cmd = [str(entry_path("thread_archive")), "self-update"]
         auto_apply = auto_apply_enabled(home)
         if not auto_apply:
             cmd.append("--check")

@@ -4,7 +4,7 @@ The pure pieces — event pairing, the MRR/recall loop against a fake ranker, th
 behavioral rollup — are pinned in ``test_retrieval_eval.py`` (which loads the
 dev bench that re-exports this module). This file covers the DB-backed case
 *builders* that need a real store: the title-recall sampler and the trail miner
-behind ``archive eval``.
+behind ``thread_archive eval``.
 """
 
 from __future__ import annotations

@@ -1,20 +1,21 @@
-"""First contact and the human status view — the ``thread_archive`` command.
+"""First contact and the human status view — the flow behind ``thread_archive setup``.
 
-The consumer front door: install the package, run ``thread_archive``, and the
-product explains itself — it discovers the machine's conversation stores and
+The consumer front door: install the package, run ``thread_archive setup``, and
+the product explains itself — it discovers the machine's conversation stores and
 shows what it found *before* touching anything, states exactly where copies
 will live (local only), imports with consent and narration, then offers the
 always-on watcher, a scheduled nightly backup, and MCP wiring. Every step can
 be skipped, and decisions persist in ``<home>/config.json`` (see
 :mod:`.._config`) where every ingest path respects them.
 
-``archive`` remains the operator seam (backup / verify / nightly / daemon);
-this command owns setup and status only — retrieval stays with the MCP tools
-and the web viewer.
+Setup is one verb of the unified ``thread_archive`` CLI (:mod:`..cli`); the
+operator verbs (backup / verify / nightly / daemon) are its siblings, and
+retrieval stays with the MCP tools and the web viewer.
 
-Non-interactive use: ``thread_archive --yes`` accepts every default without
-prompting (how an agent drives it). Without ``--yes``, a non-TTY invocation
-performs no work — discovery and guidance only, never a surprise ingest.
+Non-interactive use: ``thread_archive setup --yes`` accepts every default
+without prompting (how an agent drives it). Without ``--yes``, a non-TTY
+invocation performs no work — discovery and guidance only, never a surprise
+ingest.
 """
 
 from __future__ import annotations
@@ -163,7 +164,7 @@ def run_setup(
     if not interactive and not args.yes:
         # No TTY and no --yes: never ingest as a side effect of being glanced at.
         _say("thread_archive: no terminal to ask questions in.")
-        _say("  run `thread_archive` interactively, or `thread_archive --yes` to accept")
+        _say("  run `thread_archive setup` interactively, or `thread_archive setup --yes` to accept")
         _say("  every default (discover + import all sources, install the watcher,")
         _say("  wire detected MCP clients). Nothing was imported.")
         return 0
@@ -270,7 +271,7 @@ def run_setup(
     cfg["setup"]["completed_at"] = datetime.now().astimezone().isoformat(timespec="seconds")
     save_config(cfg, args.home)
     _say("Done. Ask your agent: \"what have we discussed about …?\"")
-    _say("  status anytime:   thread_archive")
+    _say("  status anytime:   thread_archive status")
     if cfg["setup"]["watcher"] in ("launchd", "systemd", "scheduled", "already-running"):
         _say("  web viewer:       http://127.0.0.1:8787")
     _say(f"  account exports:  drop ZIPs into {paths.dumps_dir}")
@@ -365,7 +366,7 @@ def _offer_watcher(
     _say("Keep it fresh? A background watcher tails these stores so new")
     _say("conversations land within seconds, and serves the web viewer at http://127.0.0.1:8787.")
     _say("It also checks release tags about once a day and reports when an update is")
-    _say("available. Applying it is explicit: `archive self-update`.")
+    _say("available. Applying it is explicit: `thread_archive self-update`.")
     answer = ask(
         "  [Enter] install watcher · s = skip (MCP wiring can enable catch-up)  > ",
         default="", interactive=interactive,
@@ -377,7 +378,7 @@ def _offer_watcher(
         machine.install_watcher(args.home)
     except SystemExit as e:
         _say(f"  Could not install the watcher: {e}")
-        _say("  Opted-in MCP catch-up still covers freshness; `archive daemon install` to retry.")
+        _say("  Opted-in MCP catch-up still covers freshness; `thread_archive daemon install` to retry.")
         return "failed"
     _say("  Installed — always-on, restarts on failure, web viewer at http://127.0.0.1:8787.")
     return machine.service_kind or "scheduled"
@@ -414,8 +415,8 @@ def _offer_backup(args: argparse.Namespace, interactive: bool, machine: Machine)
     if not machine.can_schedule:
         _say("Backups: a scheduled nightly backup needs a supported service manager")
         _say("  (launchd on macOS, systemd on Linux) — none detected on this host.")
-        _say("  Back up by hand anytime with `archive backup <dest>` (a copy of truth/ IS")
-        _say("  the backup), or point your own scheduler at `archive nightly <dest>`.")
+        _say("  Back up by hand anytime with `thread_archive backup <dest>` (a copy of truth/ IS")
+        _say("  the backup), or point your own scheduler at `thread_archive nightly <dest>`.")
         return {"status": "unavailable"}
 
     # An already-loaded backup agent is left untouched — this is what keeps the
@@ -435,7 +436,7 @@ def _offer_backup(args: argparse.Namespace, interactive: bool, machine: Machine)
         interactive=interactive,
     )
     if not dest:
-        _say("  Skipped — back up anytime with `archive backup <dest>`; "
+        _say("  Skipped — back up anytime with `thread_archive backup <dest>`; "
              "`thread_archive setup` to revisit.")
         return {"status": "skipped"}
     dest_path = Path(dest).expanduser()
@@ -445,11 +446,11 @@ def _offer_backup(args: argparse.Namespace, interactive: bool, machine: Machine)
         machine.install_backup(str(dest_path), args.home)
     except SystemExit as e:
         _say(f"  Could not schedule backup: {e}")
-        _say("  Back up by hand with `archive backup <dest>`, or "
-             "`archive daemon install --backup --dest <path>` to retry.")
+        _say("  Back up by hand with `thread_archive backup <dest>`, or "
+             "`thread_archive daemon install --backup --dest <path>` to retry.")
         return {"status": "failed"}
     _say(f"  Scheduled — nightly at 04:00 → {dest_path}: backup, verify, restore drill.")
-    _say("  `thread_archive` shows the last run's result.")
+    _say("  `thread_archive status` shows the last run's result.")
     return {"status": machine.service_kind or "scheduled", "dest": str(dest_path)}
 
 
@@ -515,7 +516,7 @@ def print_status(args: argparse.Namespace, *, machine: Optional[Machine] = None)
     st = api.status(home=args.home)
     cfg = load_config(args.home)
 
-    _say("thread_archive — archive status")
+    _say("thread_archive — status")
     _say()
     _say(f"  home:     {st['home']}")
     # Topic threads are curation artifacts, not conversations — counting them as
@@ -543,7 +544,7 @@ def print_status(args: argparse.Namespace, *, machine: Optional[Machine] = None)
     n = st.get("last_nightly")
     if n and not n.get("ok"):
         stages = ", ".join(n.get("failed_stages") or []) or "see logs/backup-stdout.log"
-        _say(f"  nightly:  FAILED ({stages}) {_age(n['at'])} → {n.get('dest')} — `archive status` has detail")
+        _say(f"  nightly:  FAILED ({stages}) {_age(n['at'])} → {n.get('dest')} — `thread_archive status` has detail")
     elif n:
         _say(f"  nightly:  ok {_age(n['at'])} → {n.get('dest')}")
     if machine.can_schedule:
@@ -553,10 +554,10 @@ def print_status(args: argparse.Namespace, *, machine: Optional[Machine] = None)
                  + (f" → {dest}" if dest else ""))
         else:
             _say("  schedule: no nightly backup — `thread_archive setup` offers it "
-                 "(or `archive daemon install --backup --dest <path>`)")
+                 "(or `thread_archive daemon install --backup --dest <path>`)")
     _say()
     _say("  search/read: the archive-mcp tools · web viewer: http://127.0.0.1:8787 (with the watcher)")
-    _say("  re-run setup: thread_archive setup · operator CLI: archive --help")
+    _say("  re-run setup: thread_archive setup · operator CLI: thread_archive --help")
     return 0
 
 
@@ -583,10 +584,10 @@ def _setup_completed(args: argparse.Namespace) -> bool:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        prog="thread_archive",
-        description="Set up and check the local AI-conversation archive. "
-                    "Bare `thread_archive` runs first-time setup, then becomes the status view.",
-        epilog="Operator verbs (backup, verify, reindex, …) live on the `archive` command.",
+        prog="thread_archive setup",
+        description="Set up and check the local AI-conversation archive — the flow "
+                    "behind `thread_archive setup` (first-run setup, then the status view).",
+        epilog="Operator verbs (backup, verify, reindex, …) are `thread_archive` subcommands.",
     )
     parser.add_argument("command", nargs="?", choices=["setup", "status"], default=None,
                         help="force setup or status (default: setup on first run, status after)")

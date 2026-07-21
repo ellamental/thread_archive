@@ -1,4 +1,4 @@
-"""``archive fix-import``: the scaffold, the activation gate, pinning,
+"""``thread_archive fix-import``: the scaffold, the activation gate, pinning,
 retirement, and the ledger-driven re-import.
 
 The design under test: the scaffold decides where everything lands (whoever
@@ -558,7 +558,7 @@ def test_scaffold_carries_the_repair_protocol(archive_home):
     target = scaffold("codex")
     protocol = (target / "PROTOCOL.md").read_text()
     assert "obfuscated" in protocol  # the fixture-privacy rule rides every scaffold
-    assert "archive fix-import codex --activate" in protocol
+    assert "thread_archive fix-import codex --activate" in protocol
 
 
 # ── CLI dispatch ─────────────────────────────────────────────────────────────

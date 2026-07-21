@@ -5,7 +5,7 @@ The human cloned the repo and asked you to install it. Follow these steps in ord
 Run the commands; don't just describe them. Stop and ask the human only at the one
 marked decision point.
 
-The end state: the `archive` CLI works, the read MCP server is wired into this project's
+The end state: the `thread_archive` CLI works, the read MCP server is wired into this project's
 `.mcp.json`, and the conversation archive is populated.
 
 ---
@@ -42,7 +42,7 @@ curation).
 ## 2. Verify the install
 
 ```bash
-.venv/bin/archive --version
+.venv/bin/thread_archive --version
 .venv/bin/pip install -e '.[dev]'   # pytest ships in the dev extra, not the base install
 .venv/bin/pytest tests/ -q          # must be green before you go further
 ```
@@ -85,7 +85,7 @@ An empty archive has nothing to search. Two ways to get conversations in:
 
 - **Watch local AI-tool stores** (Claude Code, Cursor, Codex, … on this machine):
   ```bash
-  .venv/bin/archive watch --once     # one pass; or `archive daemon install` (macOS) for always-on
+  .venv/bin/thread_archive watch --once     # one pass; or `thread_archive daemon install` (macOS) for always-on
   ```
   (`.mcp.json.example` explicitly sets `THREAD_ARCHIVE_MCP_INGEST=1`, so even
   without either, that configured `archive-mcp` cohosts a lazy catch-up pass at
@@ -93,19 +93,19 @@ An empty archive has nothing to search. Two ways to get conversations in:
   read-only.)
 - **Import an export or transcript** the human points you at:
   ```bash
-  .venv/bin/archive import <path> --provider <name>   # `archive providers` lists them: claude-code, codex, grok, antigravity, cloth, cowork, claude-science, cursor, opencode, …
+  .venv/bin/thread_archive import <path> --provider <name>   # `thread_archive providers` lists them: claude-code, codex, grok, antigravity, cloth, cowork, claude-science, cursor, opencode, …
   ```
 
 Then confirm it landed:
 
 ```bash
-.venv/bin/archive status            # threads / events / indexed counts
+.venv/bin/thread_archive status            # threads / events / indexed counts
 ```
 
 (Search lives in the MCP tools, not the CLI — once Claude Code is restarted
 with the config below, `thread_search` is the smoke test for retrieval.)
 
-The SQLite index is built during import; if it ever looks wrong, `archive reindex`
+The SQLite index is built during import; if it ever looks wrong, `thread_archive reindex`
 rebuilds it losslessly from the JSONL truth.
 
 ## 5. Restart Claude Code to load the new config
@@ -117,6 +117,6 @@ in this directory**, then confirm the server connected (the `thread-archive` too
 ## Done
 
 Report to the human: install verified (tests green), `.mcp.json` written, and the
-archive populated (give the `archive status` counts). Also point them at
+archive populated (give the `thread_archive status` counts). Also point them at
 `.venv/bin/thread_archive setup` for the always-on upgrades this flow doesn't cover:
 the watcher LaunchAgent and the nightly backup pipeline.

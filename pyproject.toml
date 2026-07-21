@@ -59,13 +59,14 @@ Repository = "https://github.com/ellamental/thread_archive"
 Changelog = "https://github.com/ellamental/thread_archive/blob/main/CHANGELOG.md"
 
 [project.scripts]
-# The human front door: first-run setup wizard, then the status view. Both
-# spellings so `pip install thread-archive` and docs that say thread_archive
-# land on the same command.
-thread_archive = "thread_archive._setup:main"
-thread-archive = "thread_archive._setup:main"
-# The operator seam (launchd/cron/scripts) + the two MCP servers.
-archive = "thread_archive.cli:main"
+# The single front door — setup wizard AND every operator verb, one namespaced
+# command. `thread_archive setup` runs first-run discovery/import/wiring; the
+# other verbs (watch, status, backup, verify, nightly, daemon, …) are the
+# operator seam that launchd/cron/scripts drive. Both spellings so
+# `pip install thread-archive` and docs that say thread_archive land together.
+thread_archive = "thread_archive.cli:main"
+thread-archive = "thread_archive.cli:main"
+# The MCP server keeps its own console script — it's what MCP clients point at.
 archive-mcp = "thread_archive._mcp.server:main"
 
 # Provider plugins publish under this group; archive reads it at registry load.

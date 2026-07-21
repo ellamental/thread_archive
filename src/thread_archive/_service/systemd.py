@@ -234,7 +234,7 @@ def _install(spec: AgentSpec) -> Path:
         (d / fname).write_text(text, encoding="utf-8")
     if not _enable_linger():
         print(
-            "archive daemon: could not enable linger — the agent stops at logout "
+            "thread_archive daemon: could not enable linger — the agent stops at logout "
             f"until you run `sudo loginctl enable-linger {os.environ.get('USER', '$USER')}`.",
             file=sys.stderr,
         )
@@ -244,7 +244,7 @@ def _install(spec: AgentSpec) -> Path:
     result = _systemctl("restart", primary)
     if result.returncode != 0:
         raise SystemExit(
-            f"archive daemon: systemctl restart {primary} failed: {result.stderr.strip()}"
+            f"thread_archive daemon: systemctl restart {primary} failed: {result.stderr.strip()}"
         )
     return d / primary
 
@@ -262,7 +262,7 @@ def _restart(agent: str) -> None:
     result = _systemctl("restart", primary)
     if result.returncode != 0:
         raise SystemExit(
-            f"archive daemon: systemctl restart {primary} failed: {result.stderr.strip()}"
+            f"thread_archive daemon: systemctl restart {primary} failed: {result.stderr.strip()}"
         )
 
 

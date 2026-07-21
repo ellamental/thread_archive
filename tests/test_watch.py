@@ -272,7 +272,7 @@ def test_watcher_available_filters_missing_sources(archive_home, tmp_path) -> No
 
 
 def test_watch_once_holds_shared_ingest_lock(archive_home, tmp_path, monkeypatch, capsys):
-    """``archive watch --once`` holds the shared ingest lock like every other truth
+    """``thread_archive watch --once`` holds the shared ingest lock like every other truth
     writer, so a concurrent exclusive reindex can't interleave — and it takes it
     *blocking*: a one-shot has no later pass to retry on, so it waits the rebuild
     out rather than skipping.
@@ -341,7 +341,7 @@ def test_failed_items_inside_a_db_scan_surface_too(archive_home, tmp_path, monke
 
 
 def test_poll_errors_surface_in_health(archive_home) -> None:
-    """A failing source must be visible to `archive status` (health.json), not
+    """A failing source must be visible to `thread_archive status` (health.json), not
     only to whoever reads the daemon's stderr log — a provider format change
     could otherwise stall one source's ingest for weeks while status stays green."""
     from thread_archive import _api as ta

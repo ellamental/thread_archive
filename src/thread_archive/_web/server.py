@@ -5,7 +5,7 @@ The whole read surface the UI needs already exists as the plain Python library
 skin over it — no ranking/fusion logic is duplicated here. :func:`route` is a pure
 ``(method, path, params) -> (status, content_type, body, headers)`` function so
 tests drive it without opening a socket. :func:`serve_in_thread` runs it in a
-background daemon thread so the always-on ``archive watch --web`` process can
+background daemon thread so the always-on ``thread_archive watch --web`` process can
 cohost the viewer (one process, one engine) — that's how the read surface gets a
 persistent URL with no extra daemon or standalone web verb.
 """
@@ -712,7 +712,7 @@ class _ArchiveHTTPServer(ThreadingHTTPServer):
 def serve_in_thread(*, host: str = "127.0.0.1", port: int = 8787) -> ThreadingHTTPServer:
     """Start the viewer on a background daemon thread and return the server.
 
-    For ``archive watch --web``: the always-on watcher process cohosts the read
+    For ``thread_archive watch --web``: the always-on watcher process cohosts the read
     surface so there's a persistent URL without a second daemon. Assumes the caller
     already opened the archive (the watcher does). The thread is a daemon, so it dies
     with the process; for a clean stop the caller calls ``shutdown()`` then

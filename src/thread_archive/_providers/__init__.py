@@ -2,7 +2,7 @@
 
 Built-in providers and plugin-supplied ones land in the same registry and are
 indistinguishable downstream. Everything that used to enumerate providers by
-hand now asks here: the watcher set, ``archive import --provider``, setup's
+hand now asks here: the watcher set, ``thread_archive import --provider``, setup's
 source list, export-drop classification, capture coverage.
 
 Loading a provider has one side effect beyond registration: its

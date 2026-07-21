@@ -5,7 +5,7 @@ signal that tells a dead scheduled job apart from a healthy one. Deliberately
 OUTSIDE the truth dir: this is install-local operational state, so the truth
 mirror doesn't carry it and the backup can't dirty the tree it is mirroring. A
 reference snapshot rides the backup's ``.recovery`` bundle so the history
-survives the loss of the home, but ``archive restore`` never installs it — a
+survives the loss of the home, but ``thread_archive restore`` never installs it — a
 restored home must not claim the source install's health history.
 
 The verdict half (:func:`pipeline_verdict` / :func:`stamp_heartbeat`) turns those
@@ -68,7 +68,7 @@ def clear_health(key: str) -> None:
     counterpart to :func:`record_health`, under the same exclusive flock. A
     failure-only record (``watch_errors_last``) can otherwise only ever go red:
     it is written when a fault occurs and nothing retires it, so a stale fault —
-    or one from a previous daemon run — keeps painting ``archive status`` red
+    or one from a previous daemon run — keeps painting ``thread_archive status`` red
     long after the source recovered. A no-op (no write) when the key is absent,
     so the green path costs a lock and a read, not a rewrite. Advisory: a failed
     clear logs and never breaks the caller."""

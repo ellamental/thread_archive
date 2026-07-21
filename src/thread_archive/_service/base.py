@@ -79,16 +79,16 @@ class NullBackend:
         return agent
 
     def render(self, spec: AgentSpec) -> object:
-        raise SystemExit("archive daemon: no service manager on this platform")
+        raise SystemExit("thread_archive daemon: no service manager on this platform")
 
     def install(self, spec: AgentSpec) -> Path:
-        raise SystemExit("archive daemon: no service manager on this platform")
+        raise SystemExit("thread_archive daemon: no service manager on this platform")
 
     def uninstall(self, agent: str) -> None:
-        raise SystemExit("archive daemon: no service manager on this platform")
+        raise SystemExit("thread_archive daemon: no service manager on this platform")
 
     def restart(self, agent: str) -> None:
-        raise SystemExit("archive daemon: no service manager on this platform")
+        raise SystemExit("thread_archive daemon: no service manager on this platform")
 
     def status(self, agent: str) -> str:
         return f"{agent}: no service manager on this platform"

@@ -5,11 +5,11 @@ into the clone's venv — see the README's Install section). There is no
 package registry. A release is therefore a *pointer*, not an upload:
 compress the changelog, bump the version, one release commit, an annotated
 tag pushed to GitHub. The tag is what a consumer can pin and what
-`archive status` / bug reports can be correlated against.
+`thread_archive status` / bug reports can be correlated against.
 
 **Pushing the tag publishes it.** Installed watchers check release tags daily
 and report a tag once it has cleared the 48-hour soak window; applying it is an
-explicit `archive self-update` operation. Operators may deliberately opt back
+explicit `thread_archive self-update` operation. Operators may deliberately opt back
 into unattended apply with `update.auto_apply`, so the preflight below remains
 the release gate rather than a formality. This machine's clone runs ahead of
 consumers, so a bad release should hurt here first.
@@ -90,7 +90,7 @@ long-lived venv:
 ```bash
 python3 -m venv /tmp/ta-verify
 /tmp/ta-verify/bin/pip install "git+https://github.com/ellamental/thread_archive.git@vX.Y.Z"
-/tmp/ta-verify/bin/archive --help
+/tmp/ta-verify/bin/thread_archive --help
 ```
 
 ## 6. Roll the local deployment
@@ -100,7 +100,7 @@ on the release commit *is* the deployment — with two follow-throughs:
 
 - If dependencies or entry points changed, re-run `.venv/bin/pip install -e .`
   (editable installs pick up code automatically, not metadata).
-- Restart whatever loaded the old code: `archive daemon restart` for the
+- Restart whatever loaded the old code: `thread_archive daemon restart` for the
   watcher/backup agents; MCP clients pick up the new server on their next
   session.
 

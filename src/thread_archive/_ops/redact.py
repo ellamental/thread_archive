@@ -23,7 +23,7 @@ The plaintext is not destroyed. It is AES-256-GCM-encrypted into a *recovery
 bundle* on the redaction record (``truth/redactions.jsonl``, append-only), keyed
 by a fresh per-redaction key held in ``<home>/keyring.json`` — deliberately
 OUTSIDE the truth directory, so the truth mirror and its dated generations hold
-ciphertext only. The keyring itself rides ``archive backup``'s *head-only*
+ciphertext only. The keyring itself rides ``thread_archive backup``'s *head-only*
 ``.recovery`` bundle by default (losing the live home must not crypto-erase
 every active redaction); because that bundle is never snapshotted into
 generations, a
@@ -45,7 +45,7 @@ plaintext is touched, so every later failure point is recoverable; truth
 rewrites and index updates then run under the exclusive reindex lock (writers
 are quiescent — the same discipline as repair). A crash mid-way leaves either
 intact plaintext (re-run the redact; the orphaned record's bundle is dead
-weight, not damage) or a consistent redacted state; ``archive reindex`` always
+weight, not damage) or a consistent redacted state; ``thread_archive reindex`` always
 converges the index to the truth. The store updates here commit through plain
 sessions with nothing staged, so the truth drain never fires inside the lock.
 
@@ -492,7 +492,7 @@ def _redact_locked(thread_id: str, event_ids: list[int] | None, reason: str | No
         _rewrite_tm_quotes(d / TOPIC_MESSAGES_FILE, {i: QUOTE_PLACEHOLDER for i in tm_quotes})
 
     # Index catch-up (plain session, nothing staged — the drain stays silent).
-    # A crash before this commit is converged by the next `archive reindex`.
+    # A crash before this commit is converged by the next `thread_archive reindex`.
     with get_session() as s:
         # Without secure_delete the old row images survive in index.db's free
         # pages — recoverable plaintext in a file this operation claims to scrub.
@@ -558,7 +558,7 @@ def _redact_locked(thread_id: str, event_ids: list[int] | None, reason: str | No
     notes = [
         source_note,
         "existing backups (and their .generations) still hold the plaintext until re-mirrored/pruned",
-        "the next `archive backup` may need --allow-shrink (the rewrite shrank truth files)",
+        "the next `thread_archive backup` may need --allow-shrink (the rewrite shrank truth files)",
     ]
     if meta_scrub:
         notes.append(f"thread meta scrubbed (derived from the content): {', '.join(sorted(meta_scrub))}")
@@ -604,7 +604,7 @@ def _unredact_locked(key_id: str) -> dict:
     if entry is None:
         raise ValueError(
             f"key {key_id} is not in the keyring (escrowed or forgotten) — "
-            "restore it with `archive redact --restore-key` first"
+            "restore it with `thread_archive redact --restore-key` first"
         )
     bundle = _decrypt_bundle(base64.b64decode(entry["key"]), key_id, rec)
 

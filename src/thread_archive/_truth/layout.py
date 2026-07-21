@@ -246,7 +246,7 @@ def require_current_format(d: Path | None = None) -> None:
         raise TruthMigrationRequired(
             f"truth directory {d} uses format version {declared}, but this writer "
             f"emits version {TRUTH_FORMAT_VERSION}. Reads remain available; run "
-            "`archive migrate` before writing."
+            "`thread_archive migrate` before writing."
         )
 
 
@@ -428,7 +428,7 @@ def _iter_jsonl(
 
     A torn line (a crash mid-append) must not kill :func:`reindex` — the recovery
     primitive has to recover everything parseable, with the same tolerance
-    ``archive verify`` (:func:`scan_truth_counts`) already has. Every skipped line
+    ``thread_archive verify`` (:func:`scan_truth_counts`) already has. Every skipped line
     is logged, and recorded on ``errors`` as ``(path, lineno)`` when given, so
     reindex can report the count instead of silently dropping. Pass ``log=False``
     for a second pass over lines ``scan_truth_counts`` already logged/classified on

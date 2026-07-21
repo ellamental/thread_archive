@@ -1,4 +1,4 @@
-"""The read-only local viewer, cohosted by the watcher (``archive watch --web``).
+"""The read-only local viewer, cohosted by the watcher (``thread_archive watch --web``).
 
 Datasette-shaped: a tiny stdlib HTTP server bound to localhost, serving a single
 self-contained page (search + reader) plus a few JSON endpoints that call

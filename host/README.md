@@ -1,11 +1,11 @@
 # host/ — the live-ingest LaunchAgent (operator flow)
 
-`archive watch`, packaged as a macOS LaunchAgent. This is what makes the archive
+`thread_archive watch`, packaged as a macOS LaunchAgent. This is what makes the archive
 **self-feeding**: it polls the local AI-tool stores and imports new conversation
 content the moment it lands — no external service feeds the archive, and nothing
 has to be migrated in after the fact.
 
-The LaunchAgent itself is installed by the package — `archive daemon install`
+The LaunchAgent itself is installed by the package — `thread_archive daemon install`
 (`src/thread_archive/_launchd.py` generates and loads the plist; no template
 here). This directory is the **operator layer on top**: the Makefile wraps the
 daemon verb and additionally writes the thread-family manifest
@@ -16,7 +16,7 @@ ingest route, this one runs entirely local: it calls the importer directly
 (`thread_archive._importers`) and writes straight to the JSONL truth + SQLite index.
 No backend, no peer mesh, no health server — just change-detect → import.
 
-The plist runs `archive watch --web`, so this always-on process also **cohosts the
+The plist runs `thread_archive watch --web`, so this always-on process also **cohosts the
 read viewer** (http://127.0.0.1:8787) in the same process — giving the viewer and
 the archive-link endpoint a persistent URL without a second daemon. The web reader
 runs concurrently with the watcher's writes; WAL makes that safe (`_store/_base.py`).
@@ -42,7 +42,7 @@ no-op. Thread identity is `(source, source_id)` and re-reads are idempotent on
 each event's `dedup_key`, so re-importing an already-seen file adds nothing.
 
 An installed provider plugin adds its own row to this set and rides the same
-loop — `archive providers` lists what is actually registered on this machine.
+loop — `thread_archive providers` lists what is actually registered on this machine.
 
 **Steering recovery (`cc-exthost`).** Mid-turn steering messages typed into the
 Claude Code VS Code extension *while the model is streaming* reach the model but are
@@ -86,7 +86,7 @@ the `[embeddings]` extra, and a failure is logged, never fatal. `--no-embed` dis
 it. One process keeps both index arms current — no second daemon.
 
 For a one-shot catch-up (e.g. after a long gap or a fresh `[embeddings]` install),
-`archive embed` fills the whole vector gap immediately; `archive embed --rebuild`
+`thread_archive embed` fills the whole vector gap immediately; `thread_archive embed --rebuild`
 re-embeds everything.
 
 ## Using the archive MCP from Claude Science (a *Local command* connector + grants)
@@ -125,17 +125,17 @@ Science connector + grants, needing no code here.
 
 ```bash
 cd host
-make install-agent     # `archive daemon install` + write the family manifest
+make install-agent     # `thread_archive daemon install` + write the family manifest
 make logs              # tail
 make status            # is it loaded? pid?
 make restart           # after a code edit
 make uninstall-agent
 ```
 
-(For a standalone install, `archive daemon install` alone is the whole
+(For a standalone install, `thread_archive daemon install` alone is the whole
 install — the Makefile's only addition is the family manifest.)
 
-Requires the `archive` console script in the repo venv (`pip install -e .` at the
+Requires the `thread_archive` console script in the repo venv (`pip install -e .` at the
 repo root). Logs go to `~/.thread/archive/logs/`. The agent writes to the default
 archive home (`~/.thread/archive`); set `THREAD_ARCHIVE_HOME` in the plist's
 `EnvironmentVariables` to point it elsewhere.

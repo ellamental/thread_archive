@@ -12,7 +12,7 @@ manifest is machine state — written by ``make install-agent`` / ``make
 manifest``, never hand-edited, never checked in.
 
 The ``console`` / ``health`` surfaces point at the cohosted viewer the watcher
-agent serves on :8787 (``archive watch`` — the process ``install-agent``
+agent serves on :8787 (``thread_archive watch`` — the process ``install-agent``
 installs), so this writer declares them. A box running only ad-hoc imports (no
 agent) can pass ``--no-web`` to omit them.
 

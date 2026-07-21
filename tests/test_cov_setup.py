@@ -293,7 +293,7 @@ def test_truth_touching_agents_raise_the_open_file_limit() -> None:
     clear that cache with room to spare for the db, locks and logs."""
     from thread_archive._truth.drain import MAX_OPEN_HANDLES
 
-    entry, log_dir = Path("/env/bin/archive"), Path("/arc/logs")
+    entry, log_dir = Path("/env/bin/thread_archive"), Path("/arc/logs")
     plists = [
         _launchd.watcher_plist(entry, log_dir),
         _launchd.mcp_plist(Path("/env/bin/archive-mcp"), log_dir),
@@ -320,7 +320,7 @@ def test_install_watcher_writes_plist_and_loads(tmp_path, monkeypatch, stub_bin)
     assert plist_path.exists()
     written = plistlib.loads(plist_path.read_bytes())
     assert written["Label"] == WATCHER_LABEL
-    assert written["ProgramArguments"][0].endswith("/archive")  # this env's console script
+    assert written["ProgramArguments"][0].endswith("/thread_archive")  # this env's console script
     assert written["ProgramArguments"][1] == "watch"
     assert "--web" in written["ProgramArguments"]
     assert written["EnvironmentVariables"]["THREAD_ARCHIVE_HOME"] == arc
@@ -443,7 +443,7 @@ def _write_backup_plist(tmp_path, monkeypatch, args: list[str]) -> None:
 def test_backup_agent_dest_reads_nightly_arg(tmp_path, monkeypatch) -> None:
     _darwin(monkeypatch)
     _write_backup_plist(tmp_path, monkeypatch,
-                        ["/env/bin/archive", "nightly", "/Volumes/B/arc"])
+                        ["/env/bin/thread_archive", "nightly", "/Volumes/B/arc"])
     assert _launchd.backup_agent_dest() == "/Volumes/B/arc"
 
 

@@ -50,7 +50,7 @@ written to be handed to one.
 5. **Iterate until green:** `python -m pytest . -q`. The suite must pass with
    your fixtures importing events, no validation findings, and no dedup
    duplication on re-import.
-6. **Activate:** run `archive fix-import <provider> --activate`. This re-runs
+6. **Activate:** run `thread_archive fix-import <provider> --activate`. This re-runs
    the suite in a fresh subprocess, enables the override in config.json, and
    re-imports everything the broken parser consumed (ledgered files, plus
    quarantine snapshots whose originals were pruned). If activation refuses,

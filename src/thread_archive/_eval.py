@@ -1,6 +1,6 @@
 """Search-quality measurement over the live archive — the scoring core.
 
-This is the reusable engine behind two callers: the ``archive eval`` CLI
+This is the reusable engine behind two callers: the ``thread_archive eval`` CLI
 command (the shipped, user-facing checkup — "is search working on *my* data")
 and the dev bench under ``evals/`` (the full quality ladder — the CI gate, the
 experiment runner, the LLM judges). Both build eval *cases* under one of a few

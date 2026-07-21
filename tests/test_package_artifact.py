@@ -1,6 +1,6 @@
 """The distributable artifact, not the checkout: build the wheel + sdist, prove
 their contents, then install the wheel into a clean venv and run the real
-``archive`` CLI lifecycle from it.
+``thread_archive`` CLI lifecycle from it.
 
 This is the release lane (``-m package`` — deselected from the default run, see
 pyproject). The rest of the suite runs against the editable checkout, which
@@ -96,11 +96,13 @@ def test_wheel_declares_all_entry_points(dist) -> None:
     zf = zipfile.ZipFile(wheel)
     (ep_name,) = [n for n in zf.namelist() if n.endswith(".dist-info/entry_points.txt")]
     ep = zf.read(ep_name).decode()
-    assert "archive = thread_archive.cli:main" in ep
+    # One namespaced front door — every verb (incl. `setup`) under thread_archive,
+    # both spellings. No bare, generic `archive` script squatting a user's PATH.
+    assert "thread_archive = thread_archive.cli:main" in ep
+    assert "thread-archive = thread_archive.cli:main" in ep
+    assert "\narchive = " not in ep, f"a bare `archive` console script leaked:\n{ep}"
+    # The MCP server keeps its own script — what MCP clients point at.
     assert "archive-mcp = " in ep
-    # The human front door, both spellings.
-    assert "thread_archive = thread_archive._setup:main" in ep
-    assert "thread-archive = thread_archive._setup:main" in ep
 
 
 def test_sdist_ships_sources_and_tests_but_no_node_modules(dist) -> None:
@@ -133,17 +135,17 @@ def test_installed_cli_lifecycle_import_reindex_verify(installed, tmp_path) -> N
     session_file.write_text(
         "\n".join(json.dumps(x) for x in SESSION) + "\n", encoding="utf-8")
 
-    r = _run(installed, ["archive", "import", str(session_file)], home)
+    r = _run(installed, ["thread_archive","import", str(session_file)], home)
     assert r.returncode == 0, r.stderr
 
-    r = _run(installed, ["archive", "status"], home)
+    r = _run(installed, ["thread_archive","status"], home)
     assert r.returncode == 0, r.stderr
     assert "threads: 1" in r.stdout
 
-    r = _run(installed, ["archive", "reindex"], home)
+    r = _run(installed, ["thread_archive","reindex"], home)
     assert r.returncode == 0, r.stderr
 
-    r = _run(installed, ["archive", "verify"], home)
+    r = _run(installed, ["thread_archive","verify"], home)
     assert r.returncode == 0, f"verify red on a fresh install:\n{r.stdout}\n{r.stderr}"
 
 
@@ -227,7 +229,7 @@ def test_installed_mcp_search_and_read_over_imported_data(installed, tmp_path) -
     session_file = home / "sess.jsonl"
     session_file.write_text(
         "\n".join(json.dumps(x) for x in SESSION) + "\n", encoding="utf-8")
-    r = _run(installed, ["archive", "import", str(session_file)], home)
+    r = _run(installed, ["thread_archive","import", str(session_file)], home)
     assert r.returncode == 0, r.stderr
 
     responses = _mcp_session(installed, home, [

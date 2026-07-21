@@ -1,4 +1,4 @@
-"""``archive verify`` — every facet of the truth↔index integrity check.
+"""``thread_archive verify`` — every facet of the truth↔index integrity check.
 
 * shallow: parse-scan + count parity (per-thread files *and* the kg log),
   ``PRAGMA quick_check`` on the index, and FTS shadow↔FTS5 parity;

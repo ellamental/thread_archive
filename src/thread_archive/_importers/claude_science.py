@@ -436,7 +436,7 @@ def import_claude_science_db(db_path, org_uuid: str) -> DbScanResult:
             except Exception as e:  # noqa: BLE001 — one bad frame must not stop the scan
                 # Counted out to the watcher, not just logged — see the same guard in
                 # opencode: a silently-skipped frame reads as "nothing new" and leaves
-                # `archive status` green while a conversation is missing.
+                # `thread_archive status` green while a conversation is missing.
                 logger.exception(
                     "import_claude_science_db: frame %s failed; skipping", frame_id[:8]
                 )

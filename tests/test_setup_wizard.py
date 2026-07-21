@@ -292,7 +292,7 @@ def test_bare_rerun_lands_on_status(archive_home, capsys) -> None:
     capsys.readouterr()
     assert wizard.main([]) == 0
     out = capsys.readouterr().out
-    assert "archive status" in out
+    assert "thread_archive — status" in out  # the status header, not the setup flow
     assert "thread_archive setup" in out  # the re-entry hint
 
 

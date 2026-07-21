@@ -95,7 +95,7 @@ class Watcher:
         """Surface poll errors into ``<home>/health.json`` (``watch_errors_last``),
         throttled to once a minute so a persistently broken source doesn't churn
         the file every poll. Log lines alone leave a failing source invisible to
-        ``archive status`` and anything watching health — a provider format
+        ``thread_archive status`` and anything watching health — a provider format
         change could stall one source's ingest for weeks while everything looks
         green. The record's age is the recency signal; ``count_since_start``
         distinguishes a one-off from a streak. Fail-soft: recording is advisory
@@ -132,7 +132,7 @@ class Watcher:
         """Surface ingest liveness into ``health.json`` (``watch_pass_last``),
         throttled like :meth:`_record_errors`. Errors already get recorded, but
         errors alone leave silence ambiguous: a healthy quiet loop and a wedged
-        (or dead) one look identical to ``archive status``. This record's age
+        (or dead) one look identical to ``thread_archive status``. This record's age
         disambiguates, and its per-source cumulative counters (checked / items /
         events / lines / parse_errors / errors since process start) are the yield
         accounting a capture audit reads — a source whose ``lines`` climb while
@@ -140,7 +140,7 @@ class Watcher:
         never take the poll loop down."""
         # Clear-on-green: watch_errors_last is a failure-only record — nothing
         # retires it, so a prior run's error (it persists across restarts) keeps
-        # painting `archive status` red under a heartbeat that says the daemon
+        # painting `thread_archive status` red under a heartbeat that says the daemon
         # restarted clean hours ago. Once this run has logged a poll with no
         # errors, drop any stale record — at most once per run, and never while
         # this run has actually errored (then the record is current, not stale).
@@ -267,7 +267,7 @@ class Watcher:
         — or a source watermark moved — since the last maintenance pass.
 
         Each pass runs under the *shared* reindex lock (see
-        :func:`.._truth.try_shared_ingest_lock`): while ``archive reindex`` holds it
+        :func:`.._truth.try_shared_ingest_lock`): while ``thread_archive reindex`` holds it
         exclusive for its build-and-swap, the pass is skipped entirely — poll,
         maintenance, and embed all write to the truth and/or the index, and a write
         landing mid-rebuild would silently miss the swapped-in index. Sources replay

@@ -5,7 +5,7 @@ version that wrote it — so the *first sighting* of a new version string is the
 earliest drift warning available: it fires before any field has drifted, and
 when one later does, it names the release that grew it. Each first sighting
 appends one advisory record to the validation-drift ledger (the same trail
-``archive coverage`` and the nightly's escalation read) and is remembered here
+``thread_archive coverage`` and the nightly's escalation read) and is remembered here
 so it never fires twice.
 
 State is ``{provider: {version: first_seen_iso}}``. Advisory and fail-soft

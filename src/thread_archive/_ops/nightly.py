@@ -207,7 +207,7 @@ def nightly(
         result["notify_error"] = _notify(
             notify_url,
             f"nightly backup pipeline FAILED at: {', '.join(failed)} — "
-            "see `archive status`, health.json, and ~/.thread/archive/logs/backup-*.log",
+            "see `thread_archive status`, health.json, and ~/.thread/archive/logs/backup-*.log",
         )
     # Drift is warn-never-red in coverage (one benign record must not fail the
     # night), but the ledgers exist to be READ — records written in the last
@@ -250,7 +250,7 @@ def _drift_alert() -> Optional[str]:
         return (
             "format drift active: " + " and ".join(parts) + " in the last 24h "
             "— a parser no longer fully understands a source's format; "
-            "see `archive coverage` and the ledgers in ~/.thread/archive/"
+            "see `thread_archive coverage` and the ledgers in ~/.thread/archive/"
         )
     except Exception:  # noqa: BLE001
         return None

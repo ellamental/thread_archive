@@ -58,7 +58,7 @@ def db_scanners(home=None) -> dict:
 
 
 def providers(home=None) -> list[str]:
-    """Every provider name ``archive import --provider`` can dispatch on."""
+    """Every provider name ``thread_archive import --provider`` can dispatch on."""
     return sorted({**line_stream_importers(home), **db_scanners(home)})
 
 

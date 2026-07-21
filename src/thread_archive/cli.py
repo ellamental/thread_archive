@@ -15,7 +15,7 @@ set so the change is deliberate).
 
 Retrieval deliberately has no CLI verbs: search and read are the public MCP
 tools, and the web viewer is cohosted by the always-on watcher
-(``archive watch --web``). One retrieval surface, not three.
+(``thread_archive watch --web``). One retrieval surface, not three.
 """
 
 from __future__ import annotations
@@ -41,9 +41,9 @@ def _parse_hhmm(s: str) -> tuple[int, int]:
         hh, mm = s.split(":")
         h, m = int(hh), int(mm)
     except (ValueError, AttributeError):
-        raise SystemExit(f"archive daemon: --at must be HH:MM (got {s!r})")
+        raise SystemExit(f"thread_archive daemon: --at must be HH:MM (got {s!r})")
     if not (0 <= h < 24 and 0 <= m < 60):
-        raise SystemExit(f"archive daemon: --at must be HH:MM (got {s!r})")
+        raise SystemExit(f"thread_archive daemon: --at must be HH:MM (got {s!r})")
     return h, m
 
 
@@ -84,7 +84,7 @@ def cmd_import(args: argparse.Namespace) -> int:
     if provider not in line_streams and provider not in scanners:
         known = ", ".join(sorted({**line_streams, **scanners}))
         raise SystemExit(
-            f"archive import: unknown provider '{provider}' (known: {known})"
+            f"thread_archive import: unknown provider '{provider}' (known: {known})"
         )
 
     result = api.import_path(args.path, home=args.home, provider=provider)  # checkpoints internally
@@ -275,7 +275,7 @@ def cmd_daemon(args: argparse.Namespace) -> int:
         if args.action == "install":
             if not args.dest:
                 print(
-                    "archive daemon install --backup needs --dest <path>",
+                    "thread_archive daemon install --backup needs --dest <path>",
                     file=sys.stderr,
                 )
                 return 2
@@ -302,8 +302,8 @@ def cmd_daemon(args: argparse.Namespace) -> int:
     if args.action == "install":
         path = _service.install_watcher(args.home, web=args.web, web_port=args.web_port)
         print(f"installed {_service.label('watcher')} ({path})")
-        print("the watcher is always-on (starts at login); `archive daemon status` to check,")
-        print("`archive daemon restart` to apply a code edit.")
+        print("the watcher is always-on (starts at login); `thread_archive daemon status` to check,")
+        print("`thread_archive daemon restart` to apply a code edit.")
         if args.web:
             print(f"web viewer: http://127.0.0.1:{args.web_port}")
     elif args.action == "uninstall":
@@ -349,7 +349,7 @@ def cmd_fix_import(args: argparse.Namespace) -> int:
     print(target)
     print(
         f"read {target}/PROTOCOL.md, write the fix, then "
-        f"`archive fix-import {args.provider} --activate`"
+        f"`thread_archive fix-import {args.provider} --activate`"
     )
     return 0
 
@@ -442,7 +442,7 @@ def report_backup(res: dict) -> int:
     if not res["verify_ok"]:
         print(
             "WARNING: pre-backup verify FAILED — the source truth has integrity "
-            "problems; mirror ran additively (no deletions). Run `archive verify`."
+            "problems; mirror ran additively (no deletions). Run `thread_archive verify`."
         )
     if res.get("rehomed_twins_deleted"):
         print(
@@ -510,7 +510,7 @@ def report_verify(
     if t["parse_errors"]:
         print(
             f"       torn tails={t['parse_errors_torn_tail']} "
-            f"interior={t['parse_errors_interior']} — `archive repair` quarantines "
+            f"interior={t['parse_errors_interior']} — `thread_archive repair` quarantines "
             "these and restores any committed content they shadow"
         )
         print(f"       parse error sample: {t['parse_error_sample']}")
@@ -527,7 +527,7 @@ def report_verify(
     if fts["shadow_rows"] != fts["fts5_rows"] or fts["orphan_rows"]:
         print(
             f"fts:   shadow={fts['shadow_rows']} fts5={fts['fts5_rows']} "
-            f"orphans={fts['orphan_rows']} — `archive reindex` rebuilds the search surface"
+            f"orphans={fts['orphan_rows']} — `thread_archive reindex` rebuilds the search surface"
         )
     if deep:
         dp = res["deep"]
@@ -812,9 +812,9 @@ def report_repair(res: dict) -> int:
         f"{res['thread_records_restored']} thread record(s)"
     )
     if not res["dry_run"] and res["fragments_quarantined"]:
-        print("note: the repaired files shrank — the next `archive backup` may need --allow-shrink")
+        print("note: the repaired files shrank — the next `thread_archive backup` may need --allow-shrink")
     if not res["dry_run"]:
-        print("run `archive verify` to confirm the archive is clean")
+        print("run `thread_archive verify` to confirm the archive is clean")
     return 0
 
 
@@ -826,7 +826,7 @@ def cmd_redact(args: argparse.Namespace) -> int:
     if args.show_key:
         print(api.redact_show_key(args.show_key, home=args.home))
         print(
-            "escrow this somewhere off this machine, then `archive redact "
+            "escrow this somewhere off this machine, then `thread_archive redact "
             f"--forget {args.show_key} --yes` removes it from the keyring",
             file=sys.stderr,
         )
@@ -844,10 +844,10 @@ def cmd_redact(args: argparse.Namespace) -> int:
     if args.restore_key:
         kid, key_b64 = args.restore_key
         api.redact_restore_key(kid, key_b64, home=args.home)
-        print(f"key {kid} restored to the keyring — `archive unredact {kid}` will now work")
+        print(f"key {kid} restored to the keyring — `thread_archive unredact {kid}` will now work")
         return 0
     if args.thread is None:
-        print("usage: archive redact <thread_id> [--events IDS] [--reason ...] "
+        print("usage: thread_archive redact <thread_id> [--events IDS] [--reason ...] "
               "(or --list / --show-key / --forget / --restore-key)")
         return 2
     event_ids = [int(e) for e in args.events.split(",")] if args.events else None
@@ -872,13 +872,13 @@ def report_redact(res: dict) -> int:
     for note in res.get("notes", []):
         print(f"note: {note}")
     if res.get("key_id"):
-        print(f"reverse with `archive unredact {res['key_id']}`; "
-              f"escrow with `archive redact --show-key {res['key_id']}`")
+        print(f"reverse with `thread_archive unredact {res['key_id']}`; "
+              f"escrow with `thread_archive redact --show-key {res['key_id']}`")
     return 0
 
 
 def report_redactions(rows: list[dict]) -> int:
-    """Print the redaction ledger (``archive redact --list``); return its exit code."""
+    """Print the redaction ledger (``thread_archive redact --list``); return its exit code."""
     if not rows:
         print("no redactions")
         return 0
@@ -1006,7 +1006,7 @@ def report_status(st: dict) -> int:
             print(f"update:  {u.get('reason')} {u['at']} ({_age(u['at'])})")
         elif action == "update":
             print(
-                f"update:  {u.get('tag')} available — run `archive self-update` "
+                f"update:  {u.get('tag')} available — run `thread_archive self-update` "
                 f"to apply; checked {u['at']} ({_age(u['at'])})"
             )
         elif u.get("ok"):
@@ -1040,7 +1040,7 @@ def report_self_update(res: dict) -> int:
         print(f"self-update: {res['reason']}")
     elif action == "update":  # --check found one
         print(f"self-update: {res['tag']} available ({res['reason']}) — "
-              "run `archive self-update` to apply")
+              "run `thread_archive self-update` to apply")
     elif action == "up-to-date":
         print(f"self-update: up to date (v{res['current']}) — {res['reason']}")
     else:
@@ -1085,7 +1085,7 @@ def report_coverage(r: dict) -> int:
         since = f" since {str(v.get('since'))[:10]}" if v.get("since") else ""
         print(
             f"degraded: {name} ({v.get('reason')}{since}) — "
-            f"remedy: archive fix-import {name}"
+            f"remedy: thread_archive fix-import {name}"
         )
     for name, gen in sorted((r.get("drift_snapshots") or {}).items()):
         print(f"quarantined: {name} raw store snapshot → {gen}")
@@ -1224,10 +1224,10 @@ def report_eval(report: dict, *, as_json: bool = False) -> int:
             print("No search→open pairs in the tool-use trail yet.")
             print("This protocol scores against your own past searches, so it becomes")
             print("meaningful after thread_search has been used across a few sessions.")
-            print("Run `archive eval` (title recall) to check search in the meantime.")
+            print("Run `thread_archive eval` (title recall) to check search in the meantime.")
         else:
             print("No titled conversation threads with enough content to score yet.")
-            print("Import some conversations first (`archive import` / `archive watch`).")
+            print("Import some conversations first (`thread_archive import` / `thread_archive watch`).")
         return 0
 
     recall = r["recall"]
@@ -1261,15 +1261,40 @@ def _eval_recall_ks(recall: dict) -> list:
     return sorted(recall, key=lambda k: int(k))
 
 
+def cmd_setup(args: argparse.Namespace) -> int:
+    """The `thread_archive setup` front door — delegate to the wizard flow."""
+    from ._setup.wizard import run_setup
+
+    return run_setup(args)
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        prog="archive",
+        prog="thread_archive",
         description="Serverless-native local archive for AI conversations (JSONL truth + SQLite index).",
         epilog="Retrieval has no CLI verbs by design: search/read are the archive-mcp "
-               "tools, and the web viewer is cohosted by `archive watch --web`.",
+               "tools, and the web viewer is cohosted by `thread_archive watch --web`.",
     )
     parser.add_argument("--version", action="version", version=f"thread-archive {__version__}")
     sub = parser.add_subparsers(dest="command", metavar="<command>")
+
+    # The human front door: first-run discovery → consent → import → watcher /
+    # backup / MCP wiring. Delegates to the wizard (_setup.wizard.run_setup).
+    p_setup = sub.add_parser(
+        "setup",
+        help="first-run setup: discover local AI-tool stores, import with consent, "
+             "then offer the watcher, nightly backup, and MCP wiring",
+    )
+    _add_home_arg(p_setup)
+    p_setup.add_argument("-y", "--yes", action="store_true",
+                         help="accept every default; never prompt (agent/script mode)")
+    p_setup.add_argument("--skip-import", action="store_true", help="don't import now")
+    p_setup.add_argument("--skip-watcher", action="store_true", help="don't offer the watcher")
+    p_setup.add_argument("--skip-backup", action="store_true", help="don't offer nightly backup")
+    p_setup.add_argument("--backup-dest", default=None, metavar="PATH",
+                         help="schedule nightly backups to PATH without prompting")
+    p_setup.add_argument("--skip-mcp", action="store_true", help="don't offer MCP wiring")
+    p_setup.set_defaults(func=cmd_setup)
 
     p_import = sub.add_parser("import", help="import a transcript or provider store")
     _add_home_arg(p_import)
@@ -1280,7 +1305,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_import.add_argument(
         "--provider",
         default=None,
-        help="source provider (default: claude-code; `archive providers` lists them)",
+        help="source provider (default: claude-code; `thread_archive providers` lists them)",
     )
     p_import.set_defaults(func=cmd_import)
 
@@ -1543,7 +1568,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_redact.add_argument(
         "--restore-key", nargs=2, metavar=("KEY_ID", "KEY_B64"),
-        help="put an escrowed key back so `archive unredact` can use it",
+        help="put an escrowed key back so `thread_archive unredact` can use it",
     )
     p_redact.add_argument("--yes", action="store_true", help="confirm --forget")
     p_redact.set_defaults(func=cmd_redact)
@@ -1552,7 +1577,7 @@ def build_parser() -> argparse.ArgumentParser:
         "unredact", help="restore redacted events from their encrypted bundle"
     )
     _add_home_arg(p_unredact)
-    p_unredact.add_argument("key_id", help="the redaction's key id (see `archive redact --list`)")
+    p_unredact.add_argument("key_id", help="the redaction's key id (see `thread_archive redact --list`)")
     p_unredact.set_defaults(func=cmd_unredact)
 
     p_fix = sub.add_parser(
@@ -1566,7 +1591,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _add_home_arg(p_fix)
     p_fix.add_argument(
-        "provider", help="the drifted provider (`archive providers` lists them)"
+        "provider", help="the drifted provider (`thread_archive providers` lists them)"
     )
     p_fix.add_argument(
         "--activate", action="store_true",
@@ -1610,7 +1635,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_daemon.add_argument(
         "--backup", action="store_true",
         help="target the nightly-backup agent: the scheduled backup → verify → "
-             "restore-drill pipeline (`archive nightly`)",
+             "restore-drill pipeline (`thread_archive nightly`)",
     )
     p_daemon.add_argument(
         "--dest", default=None, metavar="PATH",

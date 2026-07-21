@@ -362,7 +362,7 @@ def test_maybe_spawn_respects_config_and_install(archive_home, monkeypatch, tmp_
 
 # ── the default executors ────────────────────────────────────────────────
 # What apply_update runs when nobody injects stubs: the real pip, the real
-# installed `archive` binary, real throwaway homes. No patching — each test
+# installed `thread_archive` binary, real throwaway homes. No patching — each test
 # drives the executor end to end and reads the outcome it promises.
 
 
@@ -378,8 +378,8 @@ def test_default_reinstall_translates_a_pip_failure(tmp_path: Path) -> None:
 @pytest.mark.integration
 def test_default_smoke_passes_on_a_real_home_and_fails_on_a_broken_one(
         tmp_path: Path) -> None:
-    """The smoke check is `archive status` in a fresh process under the venv's
-    real `archive` entry point: green against a working home, a RuntimeError
+    """The smoke check is `thread_archive status` in a fresh process under the venv's
+    real `thread_archive` entry point: green against a working home, a RuntimeError
     carrying the CLI's stderr when the home can't hold an archive."""
     home = tmp_path / "home"
     home.mkdir()
@@ -387,7 +387,7 @@ def test_default_smoke_passes_on_a_real_home_and_fails_on_a_broken_one(
 
     broken = tmp_path / "not-a-dir"
     broken.write_text("a file where the home should be", encoding="utf-8")
-    with pytest.raises(RuntimeError, match="`archive status` under the new install"):
+    with pytest.raises(RuntimeError, match="`thread_archive status` under the new install"):
         _update._default_smoke(str(broken))
 
 
@@ -403,7 +403,7 @@ def test_default_migrate_runs_the_real_cli_and_translates_failure(
     # same CLI the executor drives — its maintain pass writes the manifest.
     f = tmp_path / "sess.jsonl"
     write_jsonl(f, [cc_user("m"), cc_assistant("m")])
-    bin_ = Path(sys.executable).with_name("archive")
+    bin_ = Path(sys.executable).with_name("thread_archive")
     r = subprocess.run(
         [str(bin_), "import", str(f)], capture_output=True, text=True,
         env={**os.environ, "THREAD_ARCHIVE_HOME": str(archive_home)},

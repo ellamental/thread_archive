@@ -67,9 +67,8 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
 from thread_archive import _api as api  # noqa: E402
-from thread_archive._store import use_session  # noqa: E402
 
-# The scoring engine lives in the package so the shipped `archive eval` command
+# The scoring engine lives in the package so the shipped `thread_archive eval` command
 # and this dev bench score off one code path. Re-exported at module scope
 # because the sibling harnesses (retrieval_mine_gold, retrieval_judge,
 # search_arena, graph_eval) and tests/test_retrieval_eval.py load this file by
@@ -77,6 +76,7 @@ from thread_archive._store import use_session  # noqa: E402
 from thread_archive._eval import (  # noqa: E402,F401
     EXCLUDE_META,
     RECALL_KS,
+    _trail_events,  # noqa: E402,F401
     behavior_report,
     classify_tool,
     evaluate,
@@ -87,9 +87,7 @@ from thread_archive._eval import (  # noqa: E402,F401
     resolve_read_refs,
     sample_title_cases,
 )
-from thread_archive._eval import _trail_events  # noqa: E402,F401
-
-
+from thread_archive._store import use_session  # noqa: E402
 
 # The rerank liveness pair: a query, its answer, and a decoy no working
 # cross-encoder confuses with it. Deliberately trivial — the probe asserts the

@@ -11,7 +11,7 @@ this README is the map.
 
 The scoring core these scripts share — the case protocols (title sampling, log
 mining) and the MRR/recall loop — lives in the package at
-`thread_archive._eval`, so the shipped `archive eval` command (the operator's
+`thread_archive._eval`, so the shipped `thread_archive eval` command (the operator's
 read-only self-checkup over their own archive) and this dev bench score off one
 code path. The bench is the *rest* of the ladder: the CI gate, the experiment
 runner, and the LLM-judged tiers that answer "should we change ranking," none

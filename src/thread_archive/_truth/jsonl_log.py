@@ -2,7 +2,7 @@
 
 The storage model is **JSONL-as-truth + SQLite-as-rebuildable-index**: the JSONL
 directory on disk is the only authoritative store, and ``index.db`` is a pure
-projection of it — ``rm index.db && archive reindex`` reconstructs the whole index
+projection of it — ``rm index.db && thread_archive reindex`` reconstructs the whole index
 from the JSONL, and ``cp``/``rsync`` of the directory *is* the backup. Nothing
 durable lives only in SQLite.
 
