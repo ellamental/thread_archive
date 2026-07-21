@@ -1,0 +1,242 @@
+[
+ {
+  "description": "hello cowork golden",
+  "name": "cowork:user:org:cw-sess",
+  "source": "cowork",
+  "source_id": "user:org:cw-sess",
+  "source_metadata": {
+   "cwd": "/proj",
+   "project_dir": "user:org"
+  },
+  "title": "Golden Cowork Task",
+  "type": "thread"
+ },
+ {
+  "api_call": null,
+  "dedup_key": "cw-u1:user_message_sent::5f59087e81461e99",
+  "event_type": "user_message_sent",
+  "occurred_at": "2026-01-01T10:00:00+00:00",
+  "payload": {
+   "annotations": {
+    "unmodeled": {
+     "line": {
+      "_audit_timestamp": "2026-01-01T10:00:00Z"
+     }
+    }
+   },
+   "content": "hello cowork golden",
+   "provider_data": {
+    "provider_message_id": "cw-u1"
+   }
+  },
+  "stream": "s0",
+  "type": "event"
+ },
+ {
+  "api_call": null,
+  "dedup_key": "c=4eecaea120b97478:context_summary::4eecaea120b97478",
+  "event_type": "context_summary",
+  "occurred_at": "2026-01-01T10:00:00+00:00",
+  "payload": {
+   "content": "[unrecognized line: cowork_replay]",
+   "provider_data": {
+    "line": {
+     "_audit_timestamp": null,
+     "type": "cowork_replay"
+    },
+    "line_type": "cowork_replay"
+   },
+   "system_type": "unknown_line",
+   "timestamp_inferred": true,
+   "timestamp_source": "inferred_prev_turn"
+  },
+  "stream": "s0",
+  "type": "event"
+ },
+ {
+  "api_call": "c0",
+  "dedup_key": "cw-a1:api_request_started::a3c6dafbc20bf17a",
+  "event_type": "api_request_started",
+  "occurred_at": "2026-01-01T10:00:05+00:00",
+  "payload": {
+   "model": "claude-opus-4",
+   "provider_data": {
+    "provider_message_id": "cw-a1"
+   }
+  },
+  "stream": "s0",
+  "type": "event"
+ },
+ {
+  "api_call": "c0",
+  "dedup_key": "cw-a1:text_complete:blk=0:205fbf6d8db88653",
+  "event_type": "text_complete",
+  "occurred_at": "2026-01-01T10:00:05+00:00",
+  "payload": {
+   "block_index": 0,
+   "text": "checking the file"
+  },
+  "stream": "s0",
+  "type": "event"
+ },
+ {
+  "api_call": "c0",
+  "dedup_key": "cw-a1:tool_use_complete:tool=cw-tu1:0c78a2a209a7584c",
+  "event_type": "tool_use_complete",
+  "occurred_at": "2026-01-01T10:00:05+00:00",
+  "payload": {
+   "block_index": 1,
+   "input": {
+    "file_path": "/x"
+   },
+   "tool_call_id": "cw-tu1",
+   "tool_name": "Read"
+  },
+  "stream": "s0",
+  "type": "event"
+ },
+ {
+  "api_call": "c0",
+  "dedup_key": "cw-a1:api_request_completed::bb577dc18247285a",
+  "event_type": "api_request_completed",
+  "occurred_at": "2026-01-01T10:00:05+00:00",
+  "payload": {
+   "annotations": {
+    "unmodeled": {
+     "line": {
+      "_audit_timestamp": "2026-01-01T10:00:05Z"
+     }
+    }
+   },
+   "content_blocks": [
+    {
+     "text": "checking the file",
+     "type": "text"
+    },
+    {
+     "id": "cw-tu1",
+     "input": {
+      "file_path": "/x"
+     },
+     "name": "Read",
+     "type": "tool_use"
+    }
+   ],
+   "input_tokens": 0,
+   "model": "claude-opus-4",
+   "output_tokens": 0,
+   "stop_reason": null,
+   "thinking_tokens": 0
+  },
+  "stream": "s0",
+  "type": "event"
+ },
+ {
+  "api_call": "c0",
+  "dedup_key": "cw-a1:stream_completed::44136fa355b3678a",
+  "event_type": "stream_completed",
+  "occurred_at": "2026-01-01T10:00:05+00:00",
+  "payload": {},
+  "stream": "s0",
+  "type": "event"
+ },
+ {
+  "api_call": null,
+  "dedup_key": "cw-u2:tool_execution_completed:tool=cw-tu1:90e6d2083b23ce9f",
+  "event_type": "tool_execution_completed",
+  "occurred_at": "2026-01-01T10:00:06+00:00",
+  "payload": {
+   "annotations": {
+    "unmodeled": {
+     "line": {
+      "_audit_timestamp": "2026-01-01T10:00:06Z"
+     }
+    }
+   },
+   "is_error": false,
+   "output": "contents of x",
+   "tool_call_id": "cw-tu1",
+   "tool_name": "unknown"
+  },
+  "stream": "s1",
+  "type": "event"
+ },
+ {
+  "api_call": "c1",
+  "dedup_key": "cw-a2:api_request_started::a3c6dafbc20bf17a",
+  "event_type": "api_request_started",
+  "occurred_at": "2026-01-01T10:00:08+00:00",
+  "payload": {
+   "model": "claude-opus-4",
+   "provider_data": {
+    "provider_message_id": "cw-a2"
+   }
+  },
+  "stream": "s1",
+  "type": "event"
+ },
+ {
+  "api_call": "c1",
+  "dedup_key": "cw-a2:text_complete:blk=0:1df1ed628556179e",
+  "event_type": "text_complete",
+  "occurred_at": "2026-01-01T10:00:08+00:00",
+  "payload": {
+   "block_index": 0,
+   "text": "done \u2014 hi from cowork"
+  },
+  "stream": "s1",
+  "type": "event"
+ },
+ {
+  "api_call": "c1",
+  "dedup_key": "cw-a2:api_request_completed::8c74a790119c85aa",
+  "event_type": "api_request_completed",
+  "occurred_at": "2026-01-01T10:00:08+00:00",
+  "payload": {
+   "annotations": {
+    "unmodeled": {
+     "line": {
+      "_audit_timestamp": "2026-01-01T10:00:08Z"
+     }
+    }
+   },
+   "content_blocks": [
+    {
+     "text": "done \u2014 hi from cowork",
+     "type": "text"
+    }
+   ],
+   "input_tokens": 0,
+   "model": "claude-opus-4",
+   "output_tokens": 0,
+   "stop_reason": null,
+   "thinking_tokens": 0
+  },
+  "stream": "s1",
+  "type": "event"
+ },
+ {
+  "api_call": "c1",
+  "dedup_key": "cw-a2:stream_completed::44136fa355b3678a",
+  "event_type": "stream_completed",
+  "occurred_at": "2026-01-01T10:00:08+00:00",
+  "payload": {},
+  "stream": "s1",
+  "type": "event"
+ },
+ {
+  "description": "hello cowork golden",
+  "name": "cowork:user:org:cw-sess",
+  "source": "cowork",
+  "source_id": "user:org:cw-sess",
+  "source_metadata": {
+   "cwd": "/proj",
+   "models": [
+    "claude-opus-4"
+   ],
+   "project_dir": "user:org"
+  },
+  "title": "Golden Cowork Task",
+  "type": "thread"
+ }
+]

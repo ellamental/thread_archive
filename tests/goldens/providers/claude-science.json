@@ -1,0 +1,332 @@
+[
+ {
+  "description": null,
+  "name": "claude-science:org-gold:root-gold",
+  "source": "claude-science",
+  "source_id": "org-gold:root-gold",
+  "source_metadata": {
+   "agent_name": "OPERON",
+   "app": "claude-science",
+   "conversation_type": "agent",
+   "frame_id": "root-gold",
+   "model": "claude-opus-4-8",
+   "org_uuid": "org-gold",
+   "project_id": "proj_real"
+  },
+  "title": "Golden Science Chat",
+  "type": "thread"
+ },
+ {
+  "api_call": null,
+  "dedup_key": "sci-u1:user_message_sent::2e8d77102dfd727e",
+  "event_type": "user_message_sent",
+  "occurred_at": "2026-01-01T10:00:00+00:00",
+  "payload": {
+   "content": "hello science golden",
+   "provider_data": {
+    "provider_message_id": "sci-u1"
+   }
+  },
+  "stream": "s0",
+  "type": "event"
+ },
+ {
+  "api_call": "c0",
+  "dedup_key": "sci-a1:api_request_started::0fee370ef7376fd1",
+  "event_type": "api_request_started",
+  "occurred_at": "2026-01-01T10:00:01+00:00",
+  "payload": {
+   "model": "claude-opus-4-8",
+   "provider_data": {
+    "provider_message_id": "sci-a1"
+   }
+  },
+  "stream": "s0",
+  "type": "event"
+ },
+ {
+  "api_call": "c0",
+  "dedup_key": "sci-a1:thinking_complete:blk=0:7c0316af7af3c9d2",
+  "event_type": "thinking_complete",
+  "occurred_at": "2026-01-01T10:00:01+00:00",
+  "payload": {
+   "block_index": 0,
+   "text": "considering the assay"
+  },
+  "stream": "s0",
+  "type": "event"
+ },
+ {
+  "api_call": "c0",
+  "dedup_key": "sci-a1:text_complete:blk=1:dee5086a386e8606",
+  "event_type": "text_complete",
+  "occurred_at": "2026-01-01T10:00:01+00:00",
+  "payload": {
+   "block_index": 1,
+   "text": "running the query"
+  },
+  "stream": "s0",
+  "type": "event"
+ },
+ {
+  "api_call": "c0",
+  "dedup_key": "sci-a1:tool_use_complete:tool=sci-tu1:74aae2e4a4256cd2",
+  "event_type": "tool_use_complete",
+  "occurred_at": "2026-01-01T10:00:01+00:00",
+  "payload": {
+   "block_index": 2,
+   "input": {
+    "query": "golden assay"
+   },
+   "tool_call_id": "sci-tu1",
+   "tool_name": "search_literature"
+  },
+  "stream": "s0",
+  "type": "event"
+ },
+ {
+  "api_call": "c0",
+  "dedup_key": "sci-a1:api_request_completed::a8d5174b2bca9b74",
+  "event_type": "api_request_completed",
+  "occurred_at": "2026-01-01T10:00:01+00:00",
+  "payload": {
+   "content_blocks": [
+    {
+     "thinking": "considering the assay",
+     "type": "thinking"
+    },
+    {
+     "text": "running the query",
+     "type": "text"
+    },
+    {
+     "id": "sci-tu1",
+     "input": {
+      "query": "golden assay"
+     },
+     "name": "search_literature",
+     "type": "tool_use"
+    }
+   ],
+   "input_tokens": 0,
+   "model": "claude-opus-4-8",
+   "output_tokens": 0,
+   "stop_reason": null,
+   "thinking_tokens": 0
+  },
+  "stream": "s0",
+  "type": "event"
+ },
+ {
+  "api_call": "c0",
+  "dedup_key": "sci-a1:stream_completed::44136fa355b3678a",
+  "event_type": "stream_completed",
+  "occurred_at": "2026-01-01T10:00:01+00:00",
+  "payload": {},
+  "stream": "s0",
+  "type": "event"
+ },
+ {
+  "api_call": null,
+  "dedup_key": "sci-u2:tool_execution_completed:tool=sci-tu1:a9d2e5425f98adf5",
+  "event_type": "tool_execution_completed",
+  "occurred_at": "2026-01-01T10:00:02+00:00",
+  "payload": {
+   "is_error": false,
+   "output": "one paper found",
+   "tool_call_id": "sci-tu1",
+   "tool_name": "unknown"
+  },
+  "stream": "s1",
+  "type": "event"
+ },
+ {
+  "api_call": "c1",
+  "dedup_key": "sci-a2:api_request_started::0fee370ef7376fd1",
+  "event_type": "api_request_started",
+  "occurred_at": "2026-01-01T10:00:03+00:00",
+  "payload": {
+   "model": "claude-opus-4-8",
+   "provider_data": {
+    "provider_message_id": "sci-a2"
+   }
+  },
+  "stream": "s1",
+  "type": "event"
+ },
+ {
+  "api_call": "c1",
+  "dedup_key": "sci-a2:text_complete:blk=0:726933626e077598",
+  "event_type": "text_complete",
+  "occurred_at": "2026-01-01T10:00:03+00:00",
+  "payload": {
+   "block_index": 0,
+   "text": "done \u2014 hi from science"
+  },
+  "stream": "s1",
+  "type": "event"
+ },
+ {
+  "api_call": "c1",
+  "dedup_key": "sci-a2:api_request_completed::61071f478de99ec1",
+  "event_type": "api_request_completed",
+  "occurred_at": "2026-01-01T10:00:03+00:00",
+  "payload": {
+   "content_blocks": [
+    {
+     "text": "done \u2014 hi from science",
+     "type": "text"
+    }
+   ],
+   "input_tokens": 0,
+   "model": "claude-opus-4-8",
+   "output_tokens": 0,
+   "stop_reason": null,
+   "thinking_tokens": 0
+  },
+  "stream": "s1",
+  "type": "event"
+ },
+ {
+  "api_call": "c1",
+  "dedup_key": "sci-a2:stream_completed::44136fa355b3678a",
+  "event_type": "stream_completed",
+  "occurred_at": "2026-01-01T10:00:03+00:00",
+  "payload": {},
+  "stream": "s1",
+  "type": "event"
+ },
+ {
+  "description": null,
+  "name": "claude-science:org-gold:root-gold",
+  "source": "claude-science",
+  "source_id": "org-gold:root-gold",
+  "source_metadata": {
+   "agent_name": "OPERON",
+   "app": "claude-science",
+   "conversation_type": "agent",
+   "frame_id": "root-gold",
+   "model": "claude-opus-4-8",
+   "models": [
+    "claude-opus-4-8"
+   ],
+   "org_uuid": "org-gold",
+   "project_id": "proj_real"
+  },
+  "title": "Golden Science Chat",
+  "type": "thread"
+ },
+ {
+  "description": null,
+  "name": "claude-science:org-gold:child-gold",
+  "source": "claude-science",
+  "source_id": "org-gold:child-gold",
+  "source_metadata": {
+   "agent_name": "REVIEWER",
+   "app": "claude-science",
+   "conversation_type": "agent",
+   "frame_id": "child-gold",
+   "is_subagent": true,
+   "model": "claude-opus-4-8",
+   "org_uuid": "org-gold",
+   "parent_frame_id": "root-gold",
+   "project_id": "proj_real",
+   "root_frame_id": "root-gold"
+  },
+  "title": "\ud83e\udd16 Review the assay",
+  "type": "thread"
+ },
+ {
+  "api_call": null,
+  "dedup_key": "sci-cu1:user_message_sent::30b61e9b396fb921",
+  "event_type": "user_message_sent",
+  "occurred_at": "2026-01-01T10:01:40+00:00",
+  "payload": {
+   "content": "review this assay",
+   "provider_data": {
+    "provider_message_id": "sci-cu1"
+   }
+  },
+  "stream": "s2",
+  "type": "event"
+ },
+ {
+  "api_call": "c2",
+  "dedup_key": "sci-ca1:api_request_started::0fee370ef7376fd1",
+  "event_type": "api_request_started",
+  "occurred_at": "2026-01-01T10:01:41+00:00",
+  "payload": {
+   "model": "claude-opus-4-8",
+   "provider_data": {
+    "provider_message_id": "sci-ca1"
+   }
+  },
+  "stream": "s2",
+  "type": "event"
+ },
+ {
+  "api_call": "c2",
+  "dedup_key": "sci-ca1:text_complete:blk=0:52733c49c8ba6d05",
+  "event_type": "text_complete",
+  "occurred_at": "2026-01-01T10:01:41+00:00",
+  "payload": {
+   "block_index": 0,
+   "text": "assay looks sound"
+  },
+  "stream": "s2",
+  "type": "event"
+ },
+ {
+  "api_call": "c2",
+  "dedup_key": "sci-ca1:api_request_completed::9485e00ba3360502",
+  "event_type": "api_request_completed",
+  "occurred_at": "2026-01-01T10:01:41+00:00",
+  "payload": {
+   "content_blocks": [
+    {
+     "text": "assay looks sound",
+     "type": "text"
+    }
+   ],
+   "input_tokens": 0,
+   "model": "claude-opus-4-8",
+   "output_tokens": 0,
+   "stop_reason": null,
+   "thinking_tokens": 0
+  },
+  "stream": "s2",
+  "type": "event"
+ },
+ {
+  "api_call": "c2",
+  "dedup_key": "sci-ca1:stream_completed::44136fa355b3678a",
+  "event_type": "stream_completed",
+  "occurred_at": "2026-01-01T10:01:41+00:00",
+  "payload": {},
+  "stream": "s2",
+  "type": "event"
+ },
+ {
+  "description": null,
+  "name": "claude-science:org-gold:child-gold",
+  "source": "claude-science",
+  "source_id": "org-gold:child-gold",
+  "source_metadata": {
+   "agent_name": "REVIEWER",
+   "app": "claude-science",
+   "conversation_type": "agent",
+   "frame_id": "child-gold",
+   "is_subagent": true,
+   "model": "claude-opus-4-8",
+   "models": [
+    "claude-opus-4-8"
+   ],
+   "org_uuid": "org-gold",
+   "parent_frame_id": "root-gold",
+   "project_id": "proj_real",
+   "root_frame_id": "root-gold"
+  },
+  "title": "\ud83e\udd16 Review the assay",
+  "type": "thread"
+ }
+]

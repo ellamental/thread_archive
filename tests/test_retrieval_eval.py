@@ -242,3 +242,64 @@ def test_evaluate_defaults_to_the_archives_own_search():
     report = retrieval_eval.evaluate(
         [], limit=5, rerank=False, content_type=None, exclude_content_types=None)
     assert report["n"] == 0
+
+
+# ── rerank_probe (the --require-rerank liveness check) ───────────────────────
+#
+# Driven through a real Reranker with the scorer injected at its constructor
+# seam, so the probe exercises the product's own availability gating and
+# fail-soft scoring — only the torch weights are stood in for.
+
+class _ScriptedScorer:
+    def __init__(self, scores):
+        self.scores = scores
+
+    def predict(self, pairs, batch_size, show_progress_bar):
+        return self.scores
+
+
+def _reranker(monkeypatch, scores):
+    from thread_archive._retrieval import rerank
+
+    monkeypatch.delenv("THREAD_ARCHIVE_RERANK", raising=False)
+    return rerank.Reranker(model=_ScriptedScorer(scores))
+
+
+def test_rerank_probe_passes_a_discriminating_model(monkeypatch):
+    assert retrieval_eval.rerank_probe(_reranker(monkeypatch, [0.9, 0.1])) is None
+
+
+def test_rerank_probe_breaches_when_arm_is_switched_off(monkeypatch):
+    from thread_archive._retrieval import rerank
+
+    monkeypatch.setenv("THREAD_ARCHIVE_RERANK", "off")
+    breach = retrieval_eval.rerank_probe(rerank.Reranker(model=_ScriptedScorer([0.9, 0.1])))
+    assert breach is not None and "unavailable" in breach
+
+
+def test_rerank_probe_breaches_when_the_model_cannot_load(monkeypatch):
+    from thread_archive._retrieval import rerank
+
+    monkeypatch.delenv("THREAD_ARCHIVE_RERANK", raising=False)
+
+    def unloadable():
+        raise RuntimeError("no weights on disk")
+
+    breach = retrieval_eval.rerank_probe(rerank.Reranker(load=unloadable))
+    assert breach is not None and "degraded" in breach
+
+
+def test_rerank_probe_breaches_on_a_scrambled_model(monkeypatch):
+    # Loaded, scoring, but ranks the decoy above the answer: the probe must
+    # treat "alive but wrong" as dead — that is the silent production failure.
+    breach = retrieval_eval.rerank_probe(_reranker(monkeypatch, [0.1, 0.9]))
+    assert breach is not None and "discriminate" in breach
+
+
+def test_rerank_probe_breaches_on_malformed_scores(monkeypatch):
+    breach = retrieval_eval.rerank_probe(_reranker(monkeypatch, [0.9]))
+    assert breach is not None and "malformed" in breach
+
+    breach = retrieval_eval.rerank_probe(
+        _reranker(monkeypatch, [float("nan"), 0.1]))
+    assert breach is not None and "malformed" in breach

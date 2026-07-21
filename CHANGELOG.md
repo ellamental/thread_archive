@@ -2,6 +2,83 @@
 
 ## Unreleased
 
+- The web viewer's thread header now shows the Task-tool subagents a thread
+  spawned: an "N agent sessions" line with a color-coded chip per model and its
+  run count (e.g. `claude-haiku-4-5 ×3`, `claude-opus-4-7 ×2`), tinted to match
+  the model colors elsewhere on the header. `read_thread_structured` gained an
+  `agent_sessions` field that reverses the soft parent link (a subagent's
+  `source_metadata.parent_session_id` + `project_dir`, plus any
+  continuation-absorbed sessions via `import_state`) and tallies the runs by
+  model. Threads that spawned no agents render nothing new.
+
+- Search quality grew its fast tiers: a checked-in synthetic corpus with known
+  relevance structure (`tests/quality_corpus.py`) now backs a tier-0 relevance
+  eval that runs in every pytest pass (`tests/test_search_quality.py` — MRR /
+  recall floors plus named ranking invariants: density, phrase contiguity,
+  recency tie-break, decoy resistance, and an A/B seam that scores any
+  candidate ranker on identical cases), and an opt-in `-m quality_models` lane
+  runs the same corpus under the real embedding + rerank models. The README
+  maps the full quality ladder — tier 0/1 synthetic, the CI retrieval gate and
+  by-hand harnesses on the live archive, BEIR calibration — so a ranking
+  change climbs evidence tiers instead of going straight to production
+  metrics.
+
+- The Docker install lane joined the CI manifest: an `install` row in ci.toml
+  runs tests/install/run_install_test.sh on every archive commit, replacing
+  the operator-run-plus-staleness-nag arrangement — the from-nothing install
+  proof is invalidated by tree changes, not wall-clock, so it now re-proves
+  exactly when it can break. The script acquires its own docker daemon
+  (colima, started headlessly when nothing is reachable; Docker Desktop no
+  longer required), and the nightly pipeline's `_install_test_alert` watcher
+  and the `install_test_last` health stamp are gone — a red CI row is the
+  failure signal now.
+
+- Closed the audit's top test-suite gaps (the real reranker was never
+  exercised by any automated lane; two importers sat outside the golden and
+  install harnesses; two ledgers were written but never read). The CI
+  retrieval-gate row now passes `--require-rerank`: a liveness probe that
+  loads the real cross-encoder and scores one trivial answer/decoy pair, so a
+  torch or model regression that silently kills reranking in production can no
+  longer leave every row green (the metric run itself still skips per-query
+  rerank). claude-science and cowork joined the provider golden suite, and the
+  Docker install lane's synthetic corpus grew chatgpt/claude.ai export,
+  claude-science, and cowork sessions — every packaged provider now proves
+  searchable end-to-end from a clean container (the corpus's two claude-code
+  sessions also stopped sharing a first message, which continuation detection
+  rightly merged into one thread). The nightly pipeline gained two advisory
+  watchers, warn-and-notify like the drift alert: one reads the
+  retrieval-trend ledger (alerts when the gate stops writing it, or when the
+  recent MRR median slides well under baseline — erosion the collapse floors
+  can't see), and one ages the `install_test_last` health stamp that
+  run_install_test.sh now records on a passing Docker run.
+
+- The public plugin harness (`thread_archive.provider.testing`) is now
+  dogfooded and directly tested: the internal provider goldens run through the
+  shipped `assert_golden`/`write_jsonl`/`init_archive` instead of a private
+  copy of the same machinery, and a dedicated suite exercises the documented
+  conftest wiring end to end (isolated `archive_home`, UPDATE_GOLDENS
+  write-and-skip, missing-golden and divergence refusals). Self-update's
+  default executors — the real pip reinstall, `archive status` smoke,
+  `archive migrate`, launchd restart, and patch retirement — gained their
+  first tests, run patch-free against the venv's real binaries and throwaway
+  homes. Repair coverage now includes a real activation of a scaffolded patch
+  (the generated test suite refuses a fixtureless scaffold, then goes green
+  with a fixture in place) plus ledger-noise, torn-manifest, and per-copy
+  importer-failure recovery paths. Coverage floors ratcheted to match:
+  provider 48→76, _update 70→80, _repair 82→90.
+
+- Fixed a flaky CI hang: the watch-loop CLI tests block their main thread in
+  the real `archive watch` verb and rely on a helper thread to deliver the
+  interrupting SIGINT — but a readiness predicate that raised (the `--web`
+  test's viewer probe hitting a not-yet-listening socket) killed that thread
+  before it fired, leaving the worker blocked in the poll loop until the CI
+  row's wall-clock ceiling. The helper now treats a raising predicate as
+  "not ready, retry" and sends the SIGINT unconditionally from a `finally`.
+  The suite also gains pytest-timeout (300s per test; the package lane
+  overrides higher), so any future hang becomes a named failure with a stack
+  instead of an opaque row timeout — which also stops truncated coverage
+  reports from tripping phantom coverage-gate breaches.
+
 - Truth-format boundaries now fail closed in both directions: v2 writers refuse
   to mutate a v1 directory, including the mixed integer/ULID state an interrupted
   upgrade could leave. `archive migrate` preserves and normalizes mixed trees,

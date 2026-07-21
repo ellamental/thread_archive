@@ -1,9 +1,13 @@
 """Generate a synthetic-but-realistic provider corpus for the install test.
 
 Writes one or more sessions for every supported provider, in each importer's real
-on-disk shape (claude-code / codex / grok / antigravity JSONL, cursor / opencode
-SQLite). Each session embeds a distinctive search marker so the end-to-end check can
-assert the data made it all the way through import → reindex → search.
+on-disk shape: claude-code / codex / grok / antigravity JSONL, cursor / opencode
+SQLite, chatgpt / claude.ai account-export directories, a claude-science
+``operon-cli.db``, and a cowork ``audit.jsonl`` + metadata sidecar. Each session
+embeds a distinctive search marker so the end-to-end check can assert the data made
+it all the way through import → reindex → search. (The ``cloth`` provider is
+plugin-registered on the operator's box, not part of the packaged distribution, so
+the install corpus deliberately has no session for it.)
 
 This corpus is **synthetic and safe to commit**. To exercise the install against your
 *actual* conversations, run ``obfuscate_fixtures.py`` to produce an obfuscated corpus
@@ -29,6 +33,10 @@ MARKERS = {
     "antigravity": "zenithantigravitydelta",
     "cursor": "cometcursorecho",
     "opencode": "auroraopencodefox",
+    "chatgpt": "solsticechatgptgolf",
+    "claude": "meridianclaudehotel",
+    "claude-science": "vortexscienceindia",
+    "cowork": "harborcoworkjuliet",
 }
 
 
@@ -43,10 +51,14 @@ def _claude_code(out: Path) -> list[dict]:
     for n in (1, 2):
         sid = f"sess{n}"
         marker = MARKERS["claude-code"]
+        # Distinct first messages: an identical replayed prefix is exactly the
+        # old-style compaction shape, and continuation detection would (rightly)
+        # merge the two sessions into one thread.
         lines = [
             {"type": "user", "uuid": f"u{n}a", "timestamp": "2026-02-01T10:00:00Z",
              "sessionId": sid, "cwd": "/proj",
-             "message": {"role": "user", "content": f"refactor the auth module {marker} please"}},
+             "message": {"role": "user",
+                         "content": f"refactor the auth module {marker} please, part {n}"}},
             {"type": "assistant", "uuid": f"a{n}a", "timestamp": "2026-02-01T10:00:05Z",
              "sessionId": sid, "message": {"role": "assistant", "model": "claude-opus-4-8",
              "content": [{"type": "text", "text": "Done — split the session handling out."}]}},
@@ -156,12 +168,121 @@ def _opencode(out: Path) -> list[dict]:
     return [{"provider": "opencode", "path": str(p), "source_id": None}]
 
 
+def _chatgpt_export(out: Path) -> list[dict]:
+    """A ChatGPT account-export directory: root ``conversations.json`` plus the
+    ``user.json`` sibling that classifies the bundle without a parse."""
+    marker = MARKERS["chatgpt"]
+    d = out / "chatgpt-export"
+    d.mkdir(parents=True, exist_ok=True)
+    conv = [{
+        "id": "gpt-conv-1", "title": "ChatGPT export chat",
+        "create_time": 1767261600.0, "update_time": 1767261660.0,
+        "current_node": "a1",
+        "mapping": {
+            "root": {"id": "root", "parent": None, "children": ["n1"], "message": None},
+            "n1": {"id": "n1", "parent": "root", "children": ["a1"], "message": {
+                "id": "n1", "author": {"role": "user"}, "create_time": 1767261600.0,
+                "content": {"content_type": "text",
+                            "parts": [f"summarize the {marker} findings"]},
+                "status": "finished_successfully", "metadata": {}}},
+            "a1": {"id": "a1", "parent": "n1", "children": [], "message": {
+                "id": "a1", "author": {"role": "assistant"}, "create_time": 1767261605.0,
+                "content": {"content_type": "text", "parts": ["Three findings, all benign."]},
+                "status": "finished_successfully", "metadata": {"model_slug": "gpt-4o"}}},
+        },
+    }]
+    (d / "conversations.json").write_text(json.dumps(conv), encoding="utf-8")
+    (d / "user.json").write_text(json.dumps({"id": "user-1"}), encoding="utf-8")
+    return [{"provider": "chatgpt", "kind": "export", "path": str(d)}]
+
+
+def _claude_web_export(out: Path) -> list[dict]:
+    """A claude.ai account-export directory: ``conversations.json`` plus the
+    ``users.json`` sibling that classifies it as a claude bundle."""
+    marker = MARKERS["claude"]
+    d = out / "claude-export"
+    d.mkdir(parents=True, exist_ok=True)
+    conv = [{
+        "uuid": "claude-web-1", "name": "claude.ai export chat",
+        "created_at": "2026-02-04T10:00:00Z", "updated_at": "2026-02-04T10:01:00Z",
+        "chat_messages": [
+            {"uuid": "m1", "sender": "human", "text": f"compare the {marker} options",
+             "content": [{"type": "text", "text": f"compare the {marker} options"}],
+             "created_at": "2026-02-04T10:00:00Z"},
+            {"uuid": "m2", "sender": "assistant", "text": "Option two is cheaper and simpler.",
+             "content": [{"type": "text", "text": "Option two is cheaper and simpler."}],
+             "created_at": "2026-02-04T10:00:10Z"},
+        ],
+    }]
+    (d / "conversations.json").write_text(json.dumps(conv), encoding="utf-8")
+    (d / "users.json").write_text(json.dumps([{"uuid": "user-1"}]), encoding="utf-8")
+    return [{"provider": "claude", "kind": "export", "path": str(d)}]
+
+
+def _claude_science(out: Path) -> list[dict]:
+    """A per-org ``operon-cli.db`` with one root conversation frame."""
+    marker = MARKERS["claude-science"]
+    p = out / "claude-science" / "operon-cli.db"
+    p.parent.mkdir(parents=True, exist_ok=True)
+    if p.exists():
+        p.unlink()
+    conn = sqlite3.connect(p)
+    conn.execute(
+        "CREATE TABLE frames ("
+        "id TEXT PRIMARY KEY, parent_frame_id TEXT, root_frame_id TEXT, agent_name TEXT,"
+        "status TEXT, conversation_type TEXT, name TEXT, task_summary TEXT, model TEXT,"
+        "project_id TEXT, created_at INTEGER, updated_at INTEGER)")
+    conn.execute(
+        "CREATE TABLE frame_messages ("
+        "frame_id TEXT, idx INTEGER, msg_json TEXT, PRIMARY KEY(frame_id, idx))")
+    conn.execute(
+        "INSERT INTO frames (id, agent_name, status, conversation_type, name, model, "
+        "project_id, created_at) VALUES (?,?,?,?,?,?,?,?)",
+        ("frame1", "OPERON", "completed", "agent", "Science install chat",
+         "claude-opus-4-8", "proj1", 1767261600000))
+    messages = [
+        {"role": "user", "_uuid": "su1",
+         "content": [{"type": "text", "text": f"design the {marker} assay"}]},
+        {"role": "assistant", "_uuid": "sa1",
+         "content": [{"type": "text", "text": "Assay designed with two controls."}]},
+    ]
+    conn.executemany(
+        "INSERT INTO frame_messages (frame_id, idx, msg_json) VALUES (?,?,?)",
+        [("frame1", i, json.dumps(m)) for i, m in enumerate(messages)])
+    conn.commit()
+    conn.close()
+    return [{"provider": "claude-science", "kind": "science-db", "path": str(p),
+             "org": "org-install"}]
+
+
+def _cowork(out: Path) -> list[dict]:
+    """A cowork session dir: CC-shaped ``audit.jsonl`` plus the metadata sidecar
+    the watcher hands the importer for the title."""
+    marker = MARKERS["cowork"]
+    d = out / "cowork" / "sess1"
+    d.mkdir(parents=True, exist_ok=True)
+    audit = d / "audit.jsonl"
+    _write_jsonl(audit, [
+        {"type": "user", "uuid": "cwu1", "_audit_timestamp": "2026-02-05T09:00:00Z",
+         "sessionId": "cw1", "cwd": "/proj",
+         "message": {"role": "user", "content": f"plan the {marker} rollout"}},
+        {"type": "assistant", "uuid": "cwa1", "_audit_timestamp": "2026-02-05T09:00:05Z",
+         "message": {"role": "assistant", "model": "claude-opus-4",
+                     "content": [{"type": "text", "text": "Rollout planned in three phases."}]}},
+    ])
+    meta = out / "cowork" / "sess1.json"
+    meta.write_text(json.dumps({"title": "Cowork install session"}), encoding="utf-8")
+    return [{"provider": "cowork", "kind": "cowork", "path": str(audit),
+             "source_id": "user:org:cw-install", "metadata": str(meta)}]
+
+
 def generate(out_dir) -> dict:
     """Write the full synthetic corpus under ``out_dir``; return an import manifest."""
     out = Path(out_dir)
     out.mkdir(parents=True, exist_ok=True)
     imports: list[dict] = []
-    for builder in (_claude_code, _codex, _grok, _antigravity, _cursor, _opencode):
+    for builder in (_claude_code, _codex, _grok, _antigravity, _cursor, _opencode,
+                    _chatgpt_export, _claude_web_export, _claude_science, _cowork):
         imports.extend(builder(out))
     manifest = {"imports": imports, "markers": MARKERS}
     (out / "manifest.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")

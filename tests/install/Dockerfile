@@ -12,21 +12,32 @@
 FROM python:3.14-slim
 
 # build-essential covers any source build of a C-extension dependency (they
-# normally resolve to manylinux wheels, but this keeps the build robust on any arch).
+# normally resolve to manylinux wheels, but this keeps the build robust on any
+# arch). git is product runtime, not a build tool: the clone is the install and
+# self-update drives git directly, so the suite legitimately exercises it.
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends build-essential \
-    && rm -rf /var/lib/apt/lists/*
+    && apt-get install -y --no-install-recommends build-essential git \
+    && rm -rf /var/lib/apt/lists/* \
+    && useradd -m tester
 
 WORKDIR /app
-COPY . /app
+COPY --chown=tester:tester . /app
 
+# The test tools come from the wheel's own [dev] extra — a hand-pinned list
+# here drifts from pyproject the moment the suite grows a plugin dependency
+# (pytest's --strict-markers then kills collection inside the container while
+# the host suite stays green).
 RUN python -m venv /opt/venv \
     && /opt/venv/bin/pip install --upgrade pip build \
     && /opt/venv/bin/python -m build --wheel --outdir /tmp/dist /app \
-    && /opt/venv/bin/pip install "$(ls /tmp/dist/*.whl)" \
-    && /opt/venv/bin/pip install pytest pytest-cov ruff
+    && /opt/venv/bin/pip install "$(ls /tmp/dist/*.whl)[dev]"
 
-ENV PATH="/opt/venv/bin:$PATH" \
-    THREAD_ARCHIVE_HOME=/root/.thread/archive
+# The suite runs unprivileged: root's CAP_DAC_OVERRIDE ignores permission
+# bits, so the chmod-based failure-injection tests (read-only dirs, unreadable
+# files) can never fire as root.
+USER tester
+ENV HOME=/home/tester \
+    PATH="/opt/venv/bin:$PATH" \
+    THREAD_ARCHIVE_HOME=/home/tester/.thread/archive
 
 CMD ["bash", "tests/install/run_in_container.sh"]

@@ -20,21 +20,25 @@ api_call_id) become ordinals, wall-clock fields (id, recorded_at) are dropped,
 and any fixture tmp-path leaking into payloads is scrubbed to a placeholder.
 These goldens lock OUR normalization; drift in the providers' upstream formats
 still needs real captures (tests/install/obfuscate_fixtures.py).
+
+The comparison machinery is the PUBLIC plugin harness
+(:mod:`thread_archive.provider.testing`) — the same ``assert_golden`` /
+``write_jsonl`` an external provider plugin runs against its own importer. These
+tests are its dogfood: every internal golden exercises the shipped harness, so
+a harness regression fails here before any plugin author hits it.
 """
 
 from __future__ import annotations
 
 import json
-import os
 import sqlite3
 from pathlib import Path
 
-import pytest
-
-from thread_archive._config import resolve_paths
 from thread_archive._importers import (
     import_antigravity_session_incremental,
+    import_claude_science_db,
     import_codex_session_incremental,
+    import_cowork_session_incremental,
     import_cursor_db,
     import_grok_session_incremental,
     import_opencode_db,
@@ -44,16 +48,9 @@ from thread_archive._importers.exports import (
     import_chatgpt_export,
     import_claude_ai_export,
 )
-from thread_archive._store import init_db
+from thread_archive.provider.testing import assert_golden, init_archive, write_jsonl
 
 GOLDEN_DIR = Path(__file__).parent / "goldens" / "providers"
-
-
-def _write_jsonl(path: Path, lines: list, torn_tail: str | None = None) -> None:
-    text = "\n".join(json.dumps(ln) for ln in lines) + "\n"
-    if torn_tail is not None:
-        text += torn_tail  # no trailing newline: a write cut off mid-line
-    path.write_text(text, encoding="utf-8")
 
 
 # ── fixtures: each provider's interesting shapes ─────────────────────────────
@@ -179,6 +176,90 @@ CLAUDE_WEB = [{
 }]
 
 
+# Cowork audit.jsonl: CC-shaped lines under `_audit_timestamp`, with the two
+# cowork-specific shapes — the `isReplay` SDK echo (must not become a second
+# user turn) and the sidecar metadata title — plus a tool round-trip so the
+# whole CC-path normalization is locked for this source too.
+COWORK = [
+    {"type": "user", "uuid": "cw-u1", "_audit_timestamp": "2026-01-01T10:00:00Z",
+     "sessionId": "cw-s1", "cwd": "/proj",
+     "message": {"role": "user", "content": "hello cowork golden"}},
+    {"type": "user", "uuid": "cw-u1", "isReplay": True,
+     "timestamp": "2026-01-01T10:00:01Z",
+     "message": {"role": "user", "content": "hello cowork golden"}},
+    {"type": "assistant", "uuid": "cw-a1", "parentUuid": "cw-u1",
+     "_audit_timestamp": "2026-01-01T10:00:05Z",
+     "message": {"role": "assistant", "model": "claude-opus-4", "content": [
+         {"type": "text", "text": "checking the file"},
+         {"type": "tool_use", "id": "cw-tu1", "name": "Read",
+          "input": {"file_path": "/x"}}]}},
+    {"type": "user", "uuid": "cw-u2", "parentUuid": "cw-a1",
+     "_audit_timestamp": "2026-01-01T10:00:06Z",
+     "message": {"role": "user", "content": [
+         {"type": "tool_result", "tool_use_id": "cw-tu1", "content": "contents of x"}]}},
+    {"type": "assistant", "uuid": "cw-a2", "parentUuid": "cw-u2",
+     "_audit_timestamp": "2026-01-01T10:00:08Z",
+     "message": {"role": "assistant", "model": "claude-opus-4",
+                 "content": [{"type": "text", "text": "done — hi from cowork"}]}},
+]
+
+COWORK_META = {"title": "Golden Cowork Task"}
+
+
+def _make_claude_science_db(path: Path) -> None:
+    """An operon-cli.db with the store's interesting shapes: a root conversation
+    whose transcript carries the full Anthropic block set (text / thinking /
+    tool_use / tool_result — messages are already Claude-shaped), and a child
+    frame (a spawned subagent) that must import as a hidden 🤖 system thread."""
+    conn = sqlite3.connect(path)
+    conn.execute(
+        "CREATE TABLE frames ("
+        "id TEXT PRIMARY KEY, parent_frame_id TEXT, root_frame_id TEXT, agent_name TEXT,"
+        "status TEXT, conversation_type TEXT, name TEXT, task_summary TEXT, model TEXT,"
+        "project_id TEXT, created_at INTEGER, updated_at INTEGER)")
+    conn.execute(
+        "CREATE TABLE frame_messages ("
+        "frame_id TEXT, idx INTEGER, msg_json TEXT, PRIMARY KEY(frame_id, idx))")
+    conn.execute(
+        "INSERT INTO frames (id, agent_name, status, conversation_type, name, model, "
+        "project_id, created_at) VALUES (?,?,?,?,?,?,?,?)",
+        ("root-gold", "OPERON", "completed", "agent", "Golden Science Chat",
+         "claude-opus-4-8", "proj_real", 1767261600000))
+    root_messages = [
+        {"role": "user", "_uuid": "sci-u1",
+         "content": [{"type": "text", "text": "hello science golden"}]},
+        {"role": "assistant", "_uuid": "sci-a1", "content": [
+            {"type": "thinking", "thinking": "considering the assay"},
+            {"type": "text", "text": "running the query"},
+            {"type": "tool_use", "id": "sci-tu1", "name": "search_literature",
+             "input": {"query": "golden assay"}}]},
+        {"role": "user", "_uuid": "sci-u2", "content": [
+            {"type": "tool_result", "tool_use_id": "sci-tu1", "content": "one paper found"}]},
+        {"role": "assistant", "_uuid": "sci-a2",
+         "content": [{"type": "text", "text": "done — hi from science"}]},
+    ]
+    conn.executemany(
+        "INSERT INTO frame_messages (frame_id, idx, msg_json) VALUES (?,?,?)",
+        [("root-gold", i, json.dumps(m)) for i, m in enumerate(root_messages)])
+    conn.execute(
+        "INSERT INTO frames (id, parent_frame_id, root_frame_id, agent_name, status, "
+        "conversation_type, task_summary, model, project_id, created_at) "
+        "VALUES (?,?,?,?,?,?,?,?,?,?)",
+        ("child-gold", "root-gold", "root-gold", "REVIEWER", "completed", "agent",
+         "Review the assay", "claude-opus-4-8", "proj_real", 1767261700000))
+    child_messages = [
+        {"role": "user", "_uuid": "sci-cu1",
+         "content": [{"type": "text", "text": "review this assay"}]},
+        {"role": "assistant", "_uuid": "sci-ca1",
+         "content": [{"type": "text", "text": "assay looks sound"}]},
+    ]
+    conn.executemany(
+        "INSERT INTO frame_messages (frame_id, idx, msg_json) VALUES (?,?,?)",
+        [("child-gold", i, json.dumps(m)) for i, m in enumerate(child_messages)])
+    conn.commit()
+    conn.close()
+
+
 def _make_cursor_db(path: Path) -> None:
     conn = sqlite3.connect(path)
     conn.execute("CREATE TABLE cursorDiskKV (key TEXT PRIMARY KEY, value TEXT)")
@@ -239,133 +320,94 @@ def _make_opencode_db(path: Path) -> None:
     conn.close()
 
 
-# ── normalization ────────────────────────────────────────────────────────────
-
-THREAD_KEYS = ("name", "title", "source", "source_id", "source_metadata", "description")
-
-
-def _scrub(value, tmp: str):
-    if isinstance(value, str):
-        return value.replace(tmp, "<fixtures>")
-    if isinstance(value, list):
-        return [_scrub(v, tmp) for v in value]
-    if isinstance(value, dict):
-        return {k: _scrub(v, tmp) for k, v in value.items()}
-    return value
-
-
-def _normalized_truth(tmp: str) -> list[dict]:
-    """Every truth record in thread-file order, volatile fields normalized."""
-    threads_dir = resolve_paths(None).truth_dir / "threads"
-    streams: dict[str, str] = {}
-    calls: dict[str, str] = {}
-    out: list[dict] = []
-    # ULID stems sort lexicographically in mint order (time-prefixed).
-    for f in sorted(threads_dir.rglob("*.jsonl"), key=lambda p: p.stem):
-        for raw in f.read_text(encoding="utf-8").splitlines():
-            rec = json.loads(raw)
-            if rec["type"] == "thread":
-                row = {"type": "thread", **{k: rec.get(k) for k in THREAD_KEYS}}
-            elif rec["type"] == "event":
-                sid, cid = rec.get("stream_id"), rec.get("api_call_id")
-                row = {
-                    "type": "event",
-                    "event_type": rec["event_type"],
-                    "occurred_at": rec.get("occurred_at"),
-                    "stream": streams.setdefault(sid, f"s{len(streams)}") if sid else None,
-                    "api_call": calls.setdefault(cid, f"c{len(calls)}") if cid else None,
-                    "dedup_key": rec.get("dedup_key"),
-                    "payload": rec.get("payload"),
-                }
-            else:
-                row = rec
-            out.append(_scrub(row, tmp))
-    return out
-
-
-def _check_golden(name: str, tmp: str) -> None:
-    got = _normalized_truth(tmp)
-    golden_file = GOLDEN_DIR / f"{name}.json"
-    if os.environ.get("UPDATE_GOLDENS"):
-        golden_file.parent.mkdir(parents=True, exist_ok=True)
-        golden_file.write_text(json.dumps(got, indent=1, sort_keys=True) + "\n", encoding="utf-8")
-        pytest.skip(f"golden regenerated: {golden_file.name} — review the diff")
-    assert golden_file.exists(), (
-        f"no golden for {name}; generate with UPDATE_GOLDENS=1 and review it")
-    want = json.loads(golden_file.read_text(encoding="utf-8"))
-    assert got == want, (
-        f"{name}: normalized output diverged from the reviewed golden. If the importer "
-        f"change is deliberate: UPDATE_GOLDENS=1 pytest {__file__} and review the diff.")
-
-
 # ── one test per provider ────────────────────────────────────────────────────
 
 def test_claude_code_golden(archive_home) -> None:
-    init_db()
+    init_archive()
     f = archive_home / "sess.jsonl"
     # torn tail: a crash mid-write must not derail the import of complete lines
-    _write_jsonl(f, CLAUDE_CODE, torn_tail='{"type": "assistant", "uuid": "a3", "mess')
+    write_jsonl(f, CLAUDE_CODE, torn_tail='{"type": "assistant", "uuid": "a3", "mess')
     import_session_incremental(f, "proj:s1")
-    _check_golden("claude-code", str(archive_home))
+    assert_golden("claude-code", archive_home, GOLDEN_DIR)
 
 
 def test_codex_golden(archive_home) -> None:
-    init_db()
+    init_archive()
     f = archive_home / "codex.jsonl"
-    _write_jsonl(f, CODEX)
+    write_jsonl(f, CODEX)
     import_codex_session_incremental(f, "codex-sess")
-    _check_golden("codex", str(archive_home))
+    assert_golden("codex", archive_home, GOLDEN_DIR)
 
 
 def test_grok_golden(archive_home) -> None:
-    init_db()
+    init_archive()
     session_dir = archive_home / "grok-sess"
     session_dir.mkdir()
-    _write_jsonl(session_dir / "chat_history.jsonl", GROK)
+    write_jsonl(session_dir / "chat_history.jsonl", GROK)
     (session_dir / "summary.json").write_text(json.dumps(GROK_SUMMARY), encoding="utf-8")
     import_grok_session_incremental(session_dir / "chat_history.jsonl", "grok-sess")
-    _check_golden("grok", str(archive_home))
+    assert_golden("grok", archive_home, GOLDEN_DIR)
 
 
 def test_antigravity_golden(archive_home) -> None:
-    init_db()
+    init_archive()
     f = archive_home / "transcript.jsonl"
-    _write_jsonl(f, ANTIGRAVITY)
+    write_jsonl(f, ANTIGRAVITY)
     import_antigravity_session_incremental(f, "ag-conv")
-    _check_golden("antigravity", str(archive_home))
+    assert_golden("antigravity", archive_home, GOLDEN_DIR)
 
 
 def test_cursor_golden(archive_home) -> None:
-    init_db()
+    init_archive()
     db = archive_home / "state.vscdb"
     _make_cursor_db(db)
     import_cursor_db(db)
-    _check_golden("cursor", str(archive_home))
+    assert_golden("cursor", archive_home, GOLDEN_DIR)
 
 
 def test_opencode_golden(archive_home) -> None:
-    init_db()
+    init_archive()
     db = archive_home / "opencode.db"
     _make_opencode_db(db)
     import_opencode_db(db)
-    _check_golden("opencode", str(archive_home))
+    assert_golden("opencode", archive_home, GOLDEN_DIR)
+
+
+def test_claude_science_golden(archive_home) -> None:
+    init_archive()
+    db = archive_home / "operon-cli.db"
+    _make_claude_science_db(db)
+    import_claude_science_db(db, "org-gold")
+    assert_golden("claude-science", archive_home, GOLDEN_DIR)
+
+
+def test_cowork_golden(archive_home) -> None:
+    init_archive()
+    session_dir = archive_home / "cw_sess"
+    session_dir.mkdir()
+    audit = session_dir / "audit.jsonl"
+    write_jsonl(audit, COWORK)
+    meta = archive_home / "cw_sess.json"
+    meta.write_text(json.dumps(COWORK_META), encoding="utf-8")
+    import_cowork_session_incremental(audit, "user:org:cw-sess", meta)
+    assert_golden("cowork", archive_home, GOLDEN_DIR)
 
 
 def test_chatgpt_web_export_golden(archive_home) -> None:
-    init_db()
+    init_archive()
     export_dir = archive_home / "chatgpt-export"
     export_dir.mkdir()
     (export_dir / "conversations.json").write_text(json.dumps(CHATGPT_EXPORT), encoding="utf-8")
     (export_dir / "user.json").write_text(json.dumps({"id": "u1"}), encoding="utf-8")
     import_chatgpt_export(export_dir)
-    _check_golden("chatgpt-web", str(archive_home))
+    assert_golden("chatgpt-web", archive_home, GOLDEN_DIR)
 
 
 def test_claude_web_export_golden(archive_home) -> None:
-    init_db()
+    init_archive()
     export_dir = archive_home / "claude-web-export"
     export_dir.mkdir()
     (export_dir / "conversations.json").write_text(json.dumps(CLAUDE_WEB), encoding="utf-8")
     (export_dir / "users.json").write_text(json.dumps([{"uuid": "user-1"}]), encoding="utf-8")
     import_claude_ai_export(export_dir)
-    _check_golden("claude-web", str(archive_home))
+    assert_golden("claude-web", archive_home, GOLDEN_DIR)

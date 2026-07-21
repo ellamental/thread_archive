@@ -358,3 +358,93 @@ def test_maybe_spawn_respects_config_and_install(archive_home, monkeypatch, tmp_
     record_health(_update.HEALTH_KEY, {"ok": True, "action": "up-to-date"})
     assert not maybe_spawn_self_update()
     assert len(spawned) == 2
+
+
+# ── the default executors ────────────────────────────────────────────────
+# What apply_update runs when nobody injects stubs: the real pip, the real
+# installed `archive` binary, real throwaway homes. No patching — each test
+# drives the executor end to end and reads the outcome it promises.
+
+
+@pytest.mark.integration
+def test_default_reinstall_translates_a_pip_failure(tmp_path: Path) -> None:
+    """A directory that isn't an installable project makes the real pip fail;
+    the executor must surface that as the RuntimeError apply_update rolls back
+    on — never a silent zero."""
+    with pytest.raises(RuntimeError, match="pip install failed"):
+        _update._default_reinstall(tmp_path)
+
+
+@pytest.mark.integration
+def test_default_smoke_passes_on_a_real_home_and_fails_on_a_broken_one(
+        tmp_path: Path) -> None:
+    """The smoke check is `archive status` in a fresh process under the venv's
+    real `archive` entry point: green against a working home, a RuntimeError
+    carrying the CLI's stderr when the home can't hold an archive."""
+    home = tmp_path / "home"
+    home.mkdir()
+    _update._default_smoke(str(home))  # a virgin home must stand up
+
+    broken = tmp_path / "not-a-dir"
+    broken.write_text("a file where the home should be", encoding="utf-8")
+    with pytest.raises(RuntimeError, match="`archive status` under the new install"):
+        _update._default_smoke(str(broken))
+
+
+@pytest.mark.integration
+def test_default_migrate_runs_the_real_cli_and_translates_failure(
+        archive_home, tmp_path: Path, monkeypatch) -> None:
+    import os
+    import sys
+
+    from .helpers import cc_assistant, cc_user, write_jsonl
+
+    # A home with real truth migrates clean. The seed import runs through the
+    # same CLI the executor drives — its maintain pass writes the manifest.
+    f = tmp_path / "sess.jsonl"
+    write_jsonl(f, [cc_user("m"), cc_assistant("m")])
+    bin_ = Path(sys.executable).with_name("archive")
+    r = subprocess.run(
+        [str(bin_), "import", str(f)], capture_output=True, text=True,
+        env={**os.environ, "THREAD_ARCHIVE_HOME": str(archive_home)},
+    )
+    assert r.returncode == 0, r.stderr
+    _update._default_migrate(str(archive_home))
+
+    # An empty home has no manifest to migrate: the CLI's refusal must come
+    # back as the RuntimeError that stops the update (no --home flag either —
+    # the executor resolves through the environment when none is given).
+    empty = tmp_path / "empty-home"
+    empty.mkdir()
+    monkeypatch.setenv("THREAD_ARCHIVE_HOME", str(empty))
+    with pytest.raises(RuntimeError, match="failed:"):
+        _update._default_migrate(None)
+
+
+def test_default_home_format_version_reads_the_manifest(archive_home) -> None:
+    from thread_archive._store import init_db
+    from thread_archive._truth.layout import TRUTH_FORMAT_VERSION
+
+    init_db()
+    assert _update._default_home_format_version(str(archive_home)) == TRUTH_FORMAT_VERSION
+
+
+def test_default_retire_runs_real_retirement(archive_home) -> None:
+    """Delegates to the real retire_patches over the home's config: seed one
+    stale unpinned patch and watch the executor disable it."""
+    from thread_archive._config import load_config, save_config
+
+    cfg = load_config()
+    cfg.setdefault("providers", {})["codex"] = {
+        "module": "patch_codex:PROVIDER", "path": "/plugins/codex",
+        "enabled": True, "patch": {"built_against": "0.0.1", "pinned": False},
+    }
+    save_config(cfg)
+    _update._default_retire(None, "v9.9.9")
+    assert load_config()["providers"]["codex"]["enabled"] is False
+
+
+def test_default_restart_is_quiet_with_no_agents_installed() -> None:
+    """In the sandboxed test $HOME no launchd plists exist, so the restart is
+    a no-op — and per its contract it must never raise regardless."""
+    _update._default_restart()

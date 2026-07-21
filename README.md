@@ -85,6 +85,22 @@ uptake** — how often a topic read follows a search. A lens nobody pivots
 through is a terrarium, however well curated; uptake is the number that says
 which it is.
 
+The instruments stack into a **quality ladder**, fastest tier first — change
+a ranking weight and climb until the evidence matches the stakes:
+
+| tier | what runs | corpus | cost | when |
+|---|---|---|---|---|
+| 0 | `tests/test_search_quality.py` (in every pytest run) | checked-in synthetic corpus (`tests/quality_corpus.py`), lexical stack | seconds | every change |
+| 1 | `pytest -m quality_models` | same corpus, real embedding + rerank models | minutes | touching the model arms |
+| 2 | CI `retrieval-gate` row (`retrieval_eval.py --from-log`) | live archive, mined click labels | ~minutes | every commit, via thread-ci |
+| 3 | `retrieval_eval.py` by hand, `graph_eval.py`, `retrieval_judge.py`, `--behavior` | live archive | minutes–hours | evaluating a deliberate ranking change |
+| 4 | `pytest -m beir` | external BEIR benchmark | tens of minutes | calibrating against published baselines |
+
+Tier 0 is the laboratory bench: known relevance structure, deterministic,
+and `run_cases(search=...)` scores any candidate ranker against the incumbent
+on identical cases — the A/B seam the higher tiers then validate on real
+usage.
+
 **Built like a database, not a folder of exports.**
 - Plain JSONL files are the source of truth — human-readable, greppable, yours. The search index is disposable and rebuilds from them at any time.
 - Crash-safe writes with intent journaling, fsync discipline, and automatic recovery. Your history survives power loss, killed processes, and corrupted indexes.

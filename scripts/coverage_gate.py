@@ -31,18 +31,18 @@ FLOORS = {
     "_mcp": 92.0,
     "_ops": 90.0,  # the durability kit
     "_providers": 90.0,
-    "_repair": 82.0,
+    "_repair": 90.0,
     "_retrieval": 94.0,
     "_scripts": 97.0,
     "_setup": 94.0,
     "_store": 95.0,
     "_thread_import": 92.0,  # vendored provider parsers, exercised end-to-end by the parser + golden suites
     "_truth": 93.0,
-    "_update": 70.0,
+    "_update": 80.0,
     "_watcher": 94.0,
     "_web": 92.0,
     "cli": 98.0,  # full verb→api dispatch coverage; heavy verbs stubbed at the api seam
-    "provider": 48.0,  # public plugin API + optional pytest harness
+    "provider": 76.0,  # public plugin API + the pytest harness (dogfooded by the golden suite)
     "TOTAL": 94.0,
 }
 

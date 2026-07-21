@@ -21,7 +21,10 @@ from pathlib import Path
 
 import pytest
 
-pytestmark = pytest.mark.package
+# The larger timeout outranks the suite-wide 300s hang cap: the session-scoped
+# wheel build + clean-venv install is charged to whichever test runs first and
+# can be minutes on a loaded box.
+pytestmark = [pytest.mark.package, pytest.mark.timeout(900)]
 
 REPO = Path(__file__).resolve().parent.parent
 

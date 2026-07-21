@@ -142,6 +142,41 @@ describe('ThreadView', () => {
     expect(screen.getByText(/→/)).toBeInTheDocument()
   })
 
+  it('shows the agent-sessions line with a per-model count when a thread spawned subagents', async () => {
+    mswJson('/api/thread/:id', thread([asst('hi', 'opus')], {
+      agent_sessions: {
+        count: 5,
+        by_model: [
+          { model: 'claude-haiku-4-5', count: 3 },
+          { model: 'claude-opus-4-7', count: 2 },
+        ],
+      },
+    }))
+    renderAt(`/archive/${TID}`)
+    await screen.findByText('hi')
+    expect(screen.getByText('5 agent sessions')).toBeInTheDocument()
+    // each agent model is chipped with its run count
+    expect(screen.getByText('claude-haiku-4-5').closest('.model-tag')).toHaveTextContent('×3')
+    expect(screen.getByText('claude-opus-4-7').closest('.model-tag')).toHaveTextContent('×2')
+  })
+
+  it('singularizes a lone agent session and omits the ×1 count', async () => {
+    mswJson('/api/thread/:id', thread([asst('hi', 'opus')], {
+      agent_sessions: { count: 1, by_model: [{ model: 'claude-haiku-4-5', count: 1 }] },
+    }))
+    renderAt(`/archive/${TID}`)
+    await screen.findByText('hi')
+    expect(screen.getByText('1 agent session')).toBeInTheDocument()
+    expect(screen.getByText('claude-haiku-4-5').closest('.model-tag')).not.toHaveTextContent('×')
+  })
+
+  it('shows no agent-sessions line when a thread spawned none', async () => {
+    mswJson('/api/thread/:id', thread([asst('hi', 'opus')], { agent_sessions: null }))
+    renderAt(`/archive/${TID}`)
+    await screen.findByText('hi')
+    expect(screen.queryByText(/agent session/)).not.toBeInTheDocument()
+  })
+
   it('copies a per-message permalink built on the message’s first event', async () => {
     const writeText = vi.fn().mockResolvedValue(undefined)
     Object.defineProperty(navigator, 'clipboard', { value: { writeText }, configurable: true })

@@ -59,6 +59,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import random
 import re
@@ -375,6 +376,38 @@ def evaluate(cases: list[dict], *, limit: int, rerank, content_type,
     }
 
 
+# The rerank liveness pair: a query, its answer, and a decoy no working
+# cross-encoder confuses with it. Deliberately trivial — the probe asserts the
+# model loads and discriminates at all, not that it ranks well (BEIR measures
+# that). Failing this pair means the rerank arm is dead or scrambled.
+PROBE_QUERY = "what is the largest animal on earth"
+PROBE_ANSWER = "The blue whale is the largest animal known to have ever existed."
+PROBE_DECOY = "Set the compiler's optimization flags before an incremental build."
+
+
+def rerank_probe(reranker) -> str | None:
+    """Prove the cross-encoder arm is alive: load the real model and score one
+    trivial pair. Returns a breach message, or None when the arm works.
+
+    ``is_available()`` alone can't carry this check — it is deliberately cheap
+    (never loads the model), so a corrupt model file or a broken torch install
+    still reports available and only degrades at call time, exactly the silent
+    production failure this probe exists to catch."""
+    if not reranker.is_available():
+        return ("rerank arm unavailable (switched off, [embeddings] extra "
+                "absent, or a prior load failed)")
+    scores = reranker.rerank_scores(PROBE_QUERY, [PROBE_ANSWER, PROBE_DECOY])
+    if scores is None:
+        return "rerank arm degraded at scoring time (model failed to load or predict)"
+    if len(scores) != 2 or not all(math.isfinite(s) for s in scores):
+        return f"rerank arm returned malformed scores: {scores!r}"
+    if scores[0] <= scores[1]:
+        return (f"rerank arm cannot discriminate the liveness pair "
+                f"(answer {scores[0]:.3f} <= decoy {scores[1]:.3f}) — "
+                f"model {reranker.name!r} is loaded but scrambled")
+    return None
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     proto = ap.add_mutually_exclusive_group(required=True)
@@ -427,6 +460,13 @@ def main() -> None:
                     "this, a dead embeddings model silently degrades the "
                     "'fused' pipeline under test to lexical-only and the "
                     "metrics measure the wrong stack")
+    ap.add_argument("--require-rerank", action="store_true",
+                    help="exit 1 unless the real cross-encoder loads and "
+                    "discriminates a trivial pair — the rerank analog of "
+                    "--require-semantic. Costs one model load; the metric run "
+                    "itself may still skip per-query rerank (--rerank off), "
+                    "so the gate proves the arm is alive without paying "
+                    "per-query inference")
     ap.add_argument("--json", action="store_true", help="emit the report as JSON")
     ap.add_argument("--dump-cases", type=Path, metavar="FILE", default=None,
                     help="also write the evaluated cases as JSONL (real usage "
@@ -439,6 +479,10 @@ def main() -> None:
     gate.add_argument("--min-recall10", type=float, default=None)
     gate.add_argument("--min-recall20", type=float, default=None)
     args = ap.parse_args()
+
+    if args.lexical_only and args.require_rerank:
+        ap.error("--require-rerank contradicts --lexical-only "
+                 "(which switches the rerank arm off for this process)")
 
     if args.lexical_only:
         # The product's own switch: both model arms report unavailable for the rest
@@ -482,6 +526,13 @@ def main() -> None:
         if not embed.is_available():
             print("RETRIEVAL GATE BREACH: semantic arm unavailable "
                   "(embeddings model failed to load?)", file=sys.stderr)
+            raise SystemExit(1)
+    if args.require_rerank:
+        from thread_archive._retrieval import rerank as rerank_mod
+
+        breach = rerank_probe(rerank_mod.default())
+        if breach:
+            print(f"RETRIEVAL GATE BREACH: {breach}", file=sys.stderr)
             raise SystemExit(1)
     if args.auto_titles is not None:
         cases = sample_title_cases(args.auto_titles, args.seed)

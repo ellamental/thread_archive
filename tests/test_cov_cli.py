@@ -155,13 +155,28 @@ def _loop_is_running(archive_home) -> Callable[[], bool]:
 def _interrupt_once(ready: Callable[[], bool], *, timeout: float = 30.0) -> threading.Thread:
     """Send this process a real ``SIGINT`` — the operator's ^C — once ``ready()``
     holds. Python delivers it to the main thread, so the CLI's own
-    ``KeyboardInterrupt`` handler runs the real shutdown."""
+    ``KeyboardInterrupt`` handler runs the real shutdown.
+
+    The SIGINT is unconditional: it fires when ``ready()`` holds, when the
+    deadline lapses, and — via the ``finally`` — even if ``ready()`` raises.
+    The caller's main thread is *blocked* in the verb under test; a poll thread
+    that dies without shooting leaves it blocked forever (a raising predicate,
+    e.g. a probe hitting a not-yet-listening socket, once hung whole CI sweeps).
+    A predicate that raises therefore counts as "not ready yet" and is retried
+    until the deadline."""
 
     def wait_then_interrupt() -> None:
         deadline = time.monotonic() + timeout
-        while time.monotonic() < deadline and not ready():
-            time.sleep(0.02)
-        os.kill(os.getpid(), signal.SIGINT)
+        try:
+            while time.monotonic() < deadline:
+                try:
+                    if ready():
+                        break
+                except Exception:  # noqa: BLE001 — not-ready, retry until deadline
+                    pass
+                time.sleep(0.02)
+        finally:
+            os.kill(os.getpid(), signal.SIGINT)
 
     t = threading.Thread(target=wait_then_interrupt, name="watch-interrupt", daemon=True)
     t.start()

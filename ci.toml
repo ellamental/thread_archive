@@ -86,7 +86,12 @@ argv = ["{repo}/.venv/bin/python", "{repo}/scripts/coverage_gate.py", "{repo}/co
 # lives. Two checks, each aimed directly at its failure mode:
 # --require-semantic asserts the embeddings arm is alive (a dead model
 # silently degrades fused search to lexical — a ~0.05 MRR shift a metric
-# floor detects worst, a direct check catches with zero queries), and a small
+# floor detects worst, a direct check catches with zero queries),
+# --require-rerank does the same for the cross-encoder arm (one real model
+# load + one trivial scored pair, so a torch/model regression that kills
+# reranking in production can't leave every row green; the metric run still
+# skips per-query rerank via --rerank off, so the cost is the load, not
+# 75 inferences), and a small
 # seeded sample of real queries mined from the archive's own tool-use trail
 # (--from-log: each query is one an agent actually ran; the thread it opened
 # next must rank) guards against collapse. Click labels are incumbent-shaped
@@ -108,10 +113,11 @@ argv = ["{repo}/.venv/bin/python", "{repo}/scripts/coverage_gate.py", "{repo}/co
 [[suite]]
 name = "retrieval-gate"
 argv = ["{repo}/.venv/bin/python", "{repo}/scripts/retrieval_eval.py",
-        "--from-log", "75", "--rerank", "off", "--require-semantic",
+        "--from-log", "75", "--rerank", "off",
+        "--require-semantic", "--require-rerank",
         "--min-mrr", "0.14", "--min-recall10", "0.20",
         "--trend-out", "~/.thread/archive/retrieval-trend.jsonl"]
-timeout = 600
+timeout = 900
 
 # The release lane: build the wheel + sdist, prove their contents, install the
 # wheel into a clean venv, and run the real CLI lifecycle from it. Deselected
@@ -130,3 +136,16 @@ name = "frontend-e2e"
 argv = ["npm", "run", "e2e"]
 cwd = "frontend"
 timeout = 600
+
+# The from-nothing install proof (tests/install/): clean-container pip install,
+# the full unit suite in isolation, then import-every-provider → reindex →
+# search e2e. It lives here — commit-triggered — because the proof is
+# invalidated by tree changes, not by wall-clock; this repo's own post-commit
+# hook scopes it to exactly the commits that can break it. The script finds a
+# docker daemon itself (starting colima headlessly when none is up), so the row
+# needs no Docker Desktop. Slowest row in the manifest, so it runs last; the
+# timeout covers a cold colima VM plus an uncached image build.
+[[suite]]
+name = "install"
+argv = ["{repo}/tests/install/run_install_test.sh"]
+timeout = 2700

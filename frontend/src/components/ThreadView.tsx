@@ -93,7 +93,12 @@ export function ThreadView() {
   if (!data) return <div className="wrap"><div className="empty">loading thread {threadId}…</div></div>
 
   const models = threadModels(data)
-  const hues = assignHues(models)
+  const agents = data.agent_sessions ?? null
+  // Assign hues over the thread's own models first (they keep their header order),
+  // then any model only the subagents used — so a model shared by both reads the
+  // same color on the header line and the agents line.
+  const agentModels = agents?.by_model.map((b) => b.model) ?? []
+  const hues = assignHues([...models, ...agentModels.filter((m) => !models.includes(m))])
   const span = fmtSpan(data.started_at, data.ended_at)
 
   return (
@@ -124,6 +129,25 @@ export function ThreadView() {
           </span>
         )}
       </div>
+      {/* Agent sessions: the Task-tool subagents this thread spawned (their own
+          transcripts, not shown inline here), and which model each ran on. */}
+      {agents && agents.count > 0 && (
+        <div className="submeta agent-sessions">
+          <span>
+            {agents.count} agent {agents.count === 1 ? 'session' : 'sessions'}
+          </span>
+          {agents.by_model.length > 0 && (
+            <span className="model-tags">
+              {agents.by_model.map(({ model, count }) => (
+                <span className="model-tag" key={model} style={hueStyle(hues[model])}>
+                  {model}
+                  {count > 1 && <span className="agent-count"> ×{count}</span>}
+                </span>
+              ))}
+            </span>
+          )}
+        </div>
+      )}
       <div className="toggles">
         <label>
           <input type="checkbox" checked={thinking} onChange={(e) => setThinking(e.target.checked)} /> thinking

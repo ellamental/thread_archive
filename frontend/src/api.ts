@@ -140,6 +140,15 @@ export interface Message {
   meta?: MessageMeta
 }
 
+// The Task-tool subagent runs a thread spawned, tallied by model — null when it
+// spawned none. `count` is the number of agent runs; `by_model` counts each run
+// under its primary model, most-used first (its counts sum to `count`, minus any
+// run whose model wasn't recorded).
+export interface AgentSessions {
+  count: number
+  by_model: { model: string; count: number }[]
+}
+
 export interface StructuredThread {
   thread_id: string
   title: string | null
@@ -150,6 +159,7 @@ export interface StructuredThread {
   started_at?: string | null
   ended_at?: string | null
   event_count?: number
+  agent_sessions?: AgentSessions | null
   messages: Message[]
 }
 

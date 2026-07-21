@@ -28,10 +28,10 @@ from collections.abc import Sequence
 from datetime import datetime
 from typing import Container, Optional
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from .._store import Event, Thread, use_session
+from .._store import Event, ImportState, Thread, use_session
 from .._truth.blobs import materialize
 from .._truth.layout import is_redacted_payload
 from ..provider import DEFAULT_VIEW, RenderPolicy
@@ -1579,6 +1579,71 @@ def _structured_event(
     return ("assistant", {"type": "unknown", "event_type": et, "text": _unknown_payload_text(p)})
 
 
+# Placeholder model values that aren't a real model — skipped when tallying an
+# agent session's model (mirrors _NON_MODEL_VALUES / the importer's NON_MODEL_VALUES).
+_NON_AGENT_MODELS = frozenset({"", "unknown", "<synthetic>"})
+
+
+def _agent_sessions_for(s: Session, thread: Thread) -> Optional[dict]:
+    """The Task-tool subagent runs this thread spawned, tallied by model.
+
+    A subagent transcript imports as its own ``thread_type='system'`` thread (never
+    merged into its parent), soft-linked back only by ``source_metadata`` —
+    ``parent_session_id`` (the spawning session's uuid) plus ``project_dir``. This
+    reverses that link: gather every provider session id that resolves to this
+    thread (its own ``source_id`` plus any continuation-absorbed sessions recorded
+    in ``import_state``), then find the subagent threads whose parent is one of them.
+
+    Returns ``{count, by_model}`` — ``by_model`` a ``[{model, count}]`` list of how
+    many agent runs used each model (each run counted under its first/primary model),
+    most-used first — or ``None`` when the thread spawned no agents. Only Claude Code
+    records the parent link, so other providers always return ``None``."""
+    if thread.source != "claude-code" or not thread.source_id:
+        return None
+    # Every session id that folds into this thread: its own, plus any others whose
+    # import watermark points here (continuation merges absorb sibling sessions).
+    parent_source_ids = {thread.source_id}
+    for sid in s.execute(
+        select(ImportState.source_id).where(
+            ImportState.source == thread.source, ImportState.thread_id == thread.id
+        )
+    ).scalars():
+        if sid:
+            parent_source_ids.add(sid)
+    # The subagent stores the bare parent session uuid (the tail of the source_id),
+    # not the full {project}:{uuid} form — match on that.
+    parent_uuids = {sid.rsplit(":", 1)[-1] for sid in parent_source_ids}
+    parent_dir = func.json_extract(Thread.source_metadata, "$.project_dir")
+    parent_sid = func.json_extract(Thread.source_metadata, "$.parent_session_id")
+    rows = s.execute(
+        select(Thread.source_metadata)
+        .where(Thread.source == thread.source)
+        .where(func.json_extract(Thread.source_metadata, "$.is_subagent") == 1)
+        .where(parent_sid.in_(parent_uuids))
+    ).scalars().all()
+    # project_dir is derived from the parent's source_id, so a matching subagent must
+    # share it — guards the (unlikely) case of a session-uuid collision across projects.
+    parent_dirs = {sid.rsplit(":", 1)[0] for sid in parent_source_ids if ":" in sid}
+    counts: dict[str, int] = {}
+    total = 0
+    for md in rows:
+        meta = md if isinstance(md, dict) else json.loads(md or "{}")
+        if parent_dirs and meta.get("project_dir") not in parent_dirs:
+            continue
+        total += 1
+        models = meta.get("models") or ([meta["model"]] if meta.get("model") else [])
+        model = next((m for m in models if m not in _NON_AGENT_MODELS), None)
+        if model:
+            counts[model] = counts.get(model, 0) + 1
+    if total == 0:
+        return None
+    by_model = [
+        {"model": m, "count": c}
+        for m, c in sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))
+    ]
+    return {"count": total, "by_model": by_model}
+
+
 def read_thread_structured(
     thread_id: int | str,
     *,
@@ -1591,7 +1656,9 @@ def read_thread_structured(
     ``thread_id`` accepts a thread id (or legacy integer id) or a provider session id, same as
     :func:`read_thread` (see :func:`resolve_thread_ref`). Returns
     ``{thread_id, title, source, source_id, started_at, ended_at, event_count,
-    messages}`` — the provenance fields feed the viewer's reader header
+    agent_sessions, messages}`` — the provenance fields feed the viewer's reader header
+    (``agent_sessions`` is the Task-tool subagent runs this thread spawned, tallied by
+    model — see :func:`_agent_sessions_for` — or None when it spawned none)
     (``started_at``/``ended_at`` are the first/last event's occurred_at;
     ``event_count`` is the whole event log's size, machinery included, so it can
     exceed what any toggle combination renders). ``messages`` is a list of
@@ -1617,6 +1684,7 @@ def read_thread_structured(
         events = s.execute(
             select(Event).where(Event.thread_id == resolved).order_by(Event.id)
         ).scalars().all()
+        agent_sessions = _agent_sessions_for(s, thread)
     event_count = len(events)
     # started_at/ended_at are the first/last event's occurred_at in *display* order, so
     # they must be read after _slot_queued_events relocates backfilled events — a
@@ -1689,6 +1757,7 @@ def read_thread_structured(
         "started_at": started_at.isoformat() if started_at else None,
         "ended_at": ended_at.isoformat() if ended_at else None,
         "event_count": event_count,
+        "agent_sessions": agent_sessions,
         "messages": messages,
     }
 
@@ -1697,5 +1766,6 @@ def _structured_not_found(thread_id: int | str) -> dict:
     """The empty structured read — same shape as a hit, so consumers never branch."""
     return {
         "thread_id": thread_id, "title": None, "source": None, "source_id": None,
-        "started_at": None, "ended_at": None, "event_count": 0, "messages": [],
+        "started_at": None, "ended_at": None, "event_count": 0,
+        "agent_sessions": None, "messages": [],
     }

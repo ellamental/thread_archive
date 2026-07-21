@@ -342,6 +342,10 @@ h1.topic-title { font-size: 19px; margin: 0 0 6px; }
 .msg.has-model .role { color: hsl(var(--mc-h) 52% 42%); }
 /* The per-model chips in the info drawer, tinted like the header (override plain .chip). */
 .chip.model-chip { color: hsl(var(--mc-h) 60% 40%); background: hsl(var(--mc-h) 62% 50% / .13); }
+/* Header line for the subagents a thread spawned: a count + one model chip each. */
+.agent-sessions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 10px; margin-top: -12px; }
+.agent-sessions .model-tags { margin-left: 0; }
+.agent-count { opacity: .7; font-variant-numeric: tabular-nums; }
 
 @media (prefers-color-scheme: dark) {
   /* Lighten every hue against the near-black panel so dark hues stay legible. */

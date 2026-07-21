@@ -50,7 +50,7 @@ dependencies = [
 # model. torch is declared rather than left to arrive under sentence-transformers:
 # embed.py and rerank.py import it directly to pick the device and the fp16 dtype.
 embeddings = ["sentence-transformers>=3.0", "einops>=0.7", "torch>=2.0"]
-dev = ["pytest>=8.0", "pytest-cov>=5.0", "pytest-xdist>=3.6", "ruff>=0.6", "mypy>=1.11", "build>=1.2"]
+dev = ["pytest>=8.0", "pytest-cov>=5.0", "pytest-xdist>=3.6", "pytest-timeout>=2.3", "ruff>=0.6", "mypy>=1.11", "build>=1.2"]
 # What a provider plugin needs to test itself against the archive: the golden
 # harness and isolated-home fixture in thread_archive.provider.testing.
 testing = ["pytest>=8.0"]
@@ -112,20 +112,31 @@ exclude = [
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 # The default run is every lane except `package` (wheel/sdist build + clean-venv
-# install) and `beir` (downloads a public IR benchmark, ingests thousands of
-# docs, loads torch — tens of minutes) — both minutes-to-tens-of-minutes, not
-# seconds. Run them with `-m package` / `-m beir`; `package` has a ci.toml row,
-# `beir` is invoke-by-hand only (no CI row) — external calibration, not a gate.
-addopts = "-q --strict-markers -m 'not package and not beir'"
+# install), `beir` (downloads a public IR benchmark, ingests thousands of docs,
+# loads torch — tens of minutes), and `quality_models` (the synthetic quality
+# corpus under the real model arms — minutes of torch loads) — all
+# minutes-to-tens-of-minutes, not seconds. Run them with `-m package` /
+# `-m beir` / `-m quality_models`; `package` has a ci.toml row, the other two
+# are invoke-by-hand lanes (no CI row) — calibration, not gates.
+addopts = "-q --strict-markers -m 'not package and not beir and not quality_models'"
 markers = [
     "integration: opens real sockets or spawns real subprocesses; deselect (-m 'not integration') for a fully hermetic run, e.g. in a no-network sandbox",
     "package: builds the wheel/sdist and installs into a throwaway venv; slow, selected explicitly with -m package",
     "beir: runs the BEIR retrieval-calibration harness (network download + torch + a full ingest); tens of minutes, selected explicitly with -m beir",
+    "quality_models: the synthetic search-quality corpus under the real embedding + rerank models (fused pipeline); minutes of model loads, selected explicitly with -m quality_models",
 ]
 filterwarnings = [
     "error::ResourceWarning",
     "error::pytest.PytestUnraisableExceptionWarning",
 ]
+# Hang insurance (pytest-timeout): a test that blocks forever must become a
+# named failure, not eat a CI row's whole wall-clock budget and die as an
+# opaque timeout with no traceback. 300s is far above any legitimate test —
+# including the suite's polling deadlines (≤30s) under thread-ci's background
+# priority — so only a true hang trips it. The `package` lane's tests carry
+# their own larger per-module override (a clean-venv wheel install charged to
+# the first test can be minutes on a loaded box).
+timeout = 300
 
 # The family lint bar (same shape as the thread monorepo products): pycodestyle +
 # pyflakes + import sort, long lines tolerated. Gated by the ruff row in ci.toml.

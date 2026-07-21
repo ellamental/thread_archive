@@ -46,11 +46,32 @@ def run(fixtures_dir: str | None, home: str | None, keep: bool) -> int:
     print(f"archive home: {arc_home}\n")
     ta.open_archive(arc_home)
 
-    # 1. import every provider session
+    # 1. import every provider session. `path` entries go through the public
+    # import_path dispatch; the providers with no (path, source_id) form —
+    # account exports, the per-org science DB, cowork's audit+metadata pair —
+    # go through the same importer their real ingest path (the CLI's
+    # import-export verb / the watcher) calls.
+    from thread_archive._importers import (
+        import_claude_science_db,
+        import_cowork_session_incremental,
+    )
+    from thread_archive._importers.exports import import_export
+
     imported = 0
     for imp in manifest["imports"]:
-        res = ta.import_path(imp["path"], home=arc_home, provider=imp["provider"],
-                             source_id=imp.get("source_id"))
+        kind = imp.get("kind", "path")
+        if kind == "path":
+            res = ta.import_path(imp["path"], home=arc_home, provider=imp["provider"],
+                                 source_id=imp.get("source_id"))
+        elif kind == "export":
+            res = import_export(imp["path"])
+        elif kind == "science-db":
+            res = import_claude_science_db(imp["path"], imp["org"])
+        elif kind == "cowork":
+            res = import_cowork_session_incremental(
+                imp["path"], imp["source_id"], imp.get("metadata"))
+        else:
+            _fail(f"unknown import kind {kind!r} in manifest")
         print(f"  imported {imp['provider']:12} {Path(imp['path']).name}  -> {res}")
         imported += 1
     if imported == 0:

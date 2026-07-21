@@ -165,6 +165,39 @@ def test_scaffold_collects_ledgered_samples_first(archive_home, tmp_path):
         assert (target / "samples" / name).exists()
 
 
+def test_scaffold_survives_a_broken_watcher(archive_home, tmp_path):
+    """A watcher that blows up IS the evidence (possibly the drift itself):
+    sample collection notes it and the scaffold still lands, because the repair
+    flow exists precisely for providers in a broken state."""
+    from thread_archive._providers import reset
+
+    pkg = tmp_path / "plugin-src"
+    pkg.mkdir()
+    (pkg / "codex_broken_watcher.py").write_text(
+        "from dataclasses import replace\n"
+        "from thread_archive.provider import builtin\n"
+        "def _boom():\n"
+        "    raise RuntimeError('store walk exploded')\n"
+        "PROVIDER = replace(builtin('codex'), watcher=_boom)\n"
+    )
+    save_config({"providers": {"codex": {
+        "module": "codex_broken_watcher:PROVIDER", "path": str(pkg)}}})
+    reset()
+    try:
+        target = scaffold("codex")
+    finally:
+        reset()
+    assert not (target / "samples" / "manifest.json").exists()
+    assert "watcher failed to enumerate" in (target / "evidence.md").read_text()
+
+
+def test_scaffold_evidence_lists_drift_snapshot_generations(archive_home):
+    gen = archive_home / "dumps" / "drift" / "codex" / "20260101T000000Z"
+    gen.mkdir(parents=True)
+    target = scaffold("codex")
+    assert str(gen) in (target / "evidence.md").read_text()
+
+
 # ── activation ───────────────────────────────────────────────────────────────
 
 
@@ -235,6 +268,47 @@ def test_activate_reloads_iterated_module(archive_home):
         _repair.activate("codex", run_tests=lambda d: _Green())
 
 
+def test_activate_refuses_a_malformed_module_reference(archive_home):
+    scaffold("codex")
+    cfg = load_config()
+    cfg["providers"]["codex"]["module"] = "no-colon-here"
+    save_config(cfg)
+    with pytest.raises(ActivationError, match="malformed module reference"):
+        _repair.activate("codex", run_tests=lambda d: _Green())
+
+
+CODEX_FIXTURE = [
+    {"type": "session_meta", "payload": {"id": "fix", "cwd": "/p", "model": "gpt-5"}},
+    {"type": "event_msg", "timestamp": "2026-01-01T10:00:00Z",
+     "payload": {"type": "user_message", "message": "hello fix", "turn_id": "t1"}},
+    {"type": "event_msg", "timestamp": "2026-01-01T10:00:05Z",
+     "payload": {"type": "agent_message", "message": "hi from the fix"}},
+]
+
+
+@pytest.mark.integration
+def test_activation_runs_the_scaffolds_real_suite_end_to_end(archive_home):
+    """No injected runner: activation shells out to real pytest over the
+    generated ``test_patch.py``. A bare scaffold is *refused* — the generated
+    suite demands fixtures, so an agent can't activate an empty patch — and
+    with an obfuscated fixture in place the same flow goes green and enables
+    the override."""
+    from thread_archive._providers import reset
+
+    target = scaffold("codex")
+    with pytest.raises(ActivationError, match="red"):
+        _repair.activate("codex", reimport=False)
+
+    (target / "fixtures" / "session.jsonl").write_text(
+        "\n".join(json.dumps(ln) for ln in CODEX_FIXTURE) + "\n", encoding="utf-8")
+    try:
+        summary = _repair.activate("codex", reimport=False)
+    finally:
+        reset()
+    assert summary["activated"] is True
+    assert load_config()["providers"]["codex"]["enabled"] is True
+
+
 # ── pinning + retirement ─────────────────────────────────────────────────────
 
 
@@ -289,6 +363,23 @@ def test_retire_leaves_unparseable_versions_alone(archive_home):
     assert retire_patches(target="v0.0.5") == []
     assert load_config()["providers"]["codex"]["enabled"] is True
     assert retire_patches(target="garbage") == []
+
+
+def test_retire_skips_non_dict_and_already_disabled_entries(archive_home):
+    cfg = load_config()
+    cfg["providers"] = {"weird": "just-a-string"}
+    save_config(cfg)
+    _seed_patch("codex", built="0.0.1", enabled=False)
+    assert retire_patches(target="v9.9.9") == []  # nothing active to retire
+    assert load_config()["providers"]["codex"]["enabled"] is False
+
+
+def test_patch_ledger_write_failure_is_advisory(archive_home):
+    """The ledger records history; it must never take the repair verb down."""
+    from thread_archive._repair.ledger import record_patch_event
+
+    (archive_home / PATCH_LOG).mkdir()  # append opens now raise IsADirectoryError
+    record_patch_event("scaffolded", "codex")  # must not raise
 
 
 # ── re-import ────────────────────────────────────────────────────────────────
@@ -364,6 +455,98 @@ def test_reimport_skips_snapshot_copies_whose_originals_live(archive_home, tmp_p
     }))
     summary = _repair.reimport_source("claude-code")
     assert summary["snapshot_replayed"] == 0  # the live poll owns it
+
+
+def test_reimport_unknown_provider_raises(archive_home):
+    with pytest.raises(ValueError, match="unknown provider"):
+        _repair.reimport_source("not-a-provider")
+
+
+def test_reimport_tolerates_ledger_noise(archive_home):
+    """The skip ledger is an append-only crash-tolerant log: blank lines, torn
+    JSON, other providers' records, naive timestamps, and records with no
+    source_id all coexist with the one usable record."""
+    from thread_archive import _api as ta
+
+    ta.open_archive()
+    now = datetime.now(timezone.utc)
+    (archive_home / "capture-skips.jsonl").write_text("\n".join([
+        "",
+        '{"torn": ',
+        json.dumps({"at": now.isoformat(), "source": "grok", "source_id": "other",
+                    "reason": "r"}),
+        json.dumps({"at": now.replace(tzinfo=None).isoformat(), "source": "claude-code",
+                    "source_id": "proj:naive", "reason": "r"}),  # naive → read as UTC
+        json.dumps({"at": now.isoformat(), "source": "claude-code", "reason": "r"}),
+        json.dumps({"at": "not-a-date", "source": "claude-code", "source_id": "x",
+                    "reason": "r"}),
+    ]) + "\n", encoding="utf-8")
+    summary = _repair.reimport_source("claude-code")
+    assert summary["source_ids"] == 1  # only the well-formed claude-code record
+
+
+def test_reimport_snapshot_replay_survives_bad_generations(archive_home):
+    """A torn manifest or a vanished stored copy must not stop replay of the
+    generations that are intact."""
+    from thread_archive import _api as ta
+
+    ta.open_archive()
+    base = archive_home / "dumps" / "drift" / "claude-code"
+    bad = base / "20260101T000000Z"
+    bad.mkdir(parents=True)
+    (bad / "manifest.json").write_text('{"torn": ', encoding="utf-8")
+    gone = base / "20260102T000000Z"
+    gone.mkdir()
+    (gone / "manifest.json").write_text(json.dumps({
+        "files": [{"path": "/nowhere/orig.jsonl", "stored": "vanished.jsonl",
+                   "source_id": "proj:v"},
+                  {"stored": "no-source-id.jsonl"}],
+    }), encoding="utf-8")
+    good = base / "20260103T000000Z"
+    good.mkdir()
+    write_jsonl(good / "snap.jsonl", [cc_user("ok"), cc_assistant("ok")])
+    (good / "manifest.json").write_text(json.dumps({
+        "files": [{"path": str(archive_home / "gone" / "snap.jsonl"),
+                   "stored": "snap.jsonl", "source_id": "proj:ok"}],
+    }), encoding="utf-8")
+    summary = _repair.reimport_source("claude-code")
+    assert summary["snapshot_replayed"] == 1
+    assert summary["snapshot_errors"] == []
+
+
+def test_reimport_collects_importer_failures_per_copy(archive_home, tmp_path):
+    """One unreadable stored copy is an error entry, not the end of recovery.
+    The failing importer comes in through the sanctioned plugin path — a
+    config-declared override, the same seam a real fix-import patch uses."""
+    from thread_archive import _api as ta
+    from thread_archive._providers import reset
+
+    pkg = tmp_path / "plugin-src"
+    pkg.mkdir()
+    (pkg / "cc_broken_importer.py").write_text(
+        "from dataclasses import replace\n"
+        "from thread_archive.provider import builtin\n"
+        "def _boom(path, source_id):\n"
+        "    raise RuntimeError('stored copy unreadable')\n"
+        "PROVIDER = replace(builtin('claude-code'), importer=_boom, watcher=None)\n"
+    )
+    save_config({"providers": {"claude-code": {
+        "module": "cc_broken_importer:PROVIDER", "path": str(pkg)}}})
+    reset()
+    try:
+        ta.open_archive()
+        gen = archive_home / "dumps" / "drift" / "claude-code" / "20260101T000000Z"
+        gen.mkdir(parents=True)
+        write_jsonl(gen / "snap.jsonl", [cc_user("x")])
+        (gen / "manifest.json").write_text(json.dumps({
+            "files": [{"path": str(archive_home / "gone.jsonl"), "stored": "snap.jsonl",
+                       "source_id": "proj:x"}],
+        }), encoding="utf-8")
+        summary = _repair.reimport_source("claude-code")
+    finally:
+        reset()
+    assert summary["snapshot_replayed"] == 0
+    assert summary["snapshot_errors"] == ["proj:x: stored copy unreadable"]
 
 
 # ── the protocol ─────────────────────────────────────────────────────────────
