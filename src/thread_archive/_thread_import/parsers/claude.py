@@ -194,9 +194,11 @@ class ClaudeParser(ProviderParser):
             List of NormalizedMessage dictionaries with content_blocks
         """
         # Handle both formats: raw conversations list or bundled export
+        memories: Dict[str, Any]
         if isinstance(data, dict):
             conversations = data.get("conversations", [])
-            memories = data.get("memories", {})
+            raw_memories: object = data.get("memories", {})
+            memories = cast(Dict[str, Any], raw_memories) if isinstance(raw_memories, dict) else {}
             projects = data.get("projects", [])
             users = data.get("users", [])
         else:

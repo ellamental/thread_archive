@@ -86,25 +86,25 @@ def extract_special_block(
     # Handle tool role messages -> tool_result block
     if role == "tool":
         tool_name = raw_msg.get("author_name") or "unknown"
-        block = ProviderParser.create_tool_result_block(
+        result_block = ProviderParser.create_tool_result_block(
             tool_name,
             content,
             seq,
             provider_message_id=msg_id,
         )
-        return [block], seq + 1
+        return [result_block], seq + 1
 
     # Handle thinking/reasoning content
     if content_type in THINKING_CONTENT_TYPES:
         text = extract_text_from_content(content)
         if text:
-            block = ProviderParser.create_thinking_block(
+            thinking_block = ProviderParser.create_thinking_block(
                 text,
                 seq,
                 thinking_type=content_type,
                 provider_message_id=msg_id,
             )
-            return [block], seq + 1
+            return [thinking_block], seq + 1
 
     # Handle system context content
     if content_type in CONTEXT_CONTENT_TYPES:
@@ -124,13 +124,13 @@ def extract_special_block(
     recipient = raw_msg.get("recipient")
     if recipient and recipient != "all" and role == "assistant":
         text = extract_text_from_content(content)
-        block = ProviderParser.create_tool_use_block(
+        tool_block = ProviderParser.create_tool_use_block(
             recipient,
             {"code": text} if text else {},
             seq,
             provider_message_id=msg_id,
         )
-        return [block], seq + 1
+        return [tool_block], seq + 1
 
     return None
 
@@ -226,6 +226,7 @@ def content_type_annotations(content: Any, content_type: str) -> Dict[str, Any]:
     Attached as block annotations, never folded into content fields."""
     if not isinstance(content, dict):
         return {}
+    keys: tuple[str, ...]
     if content_type == "code":
         keys = ("language", "response_format_name")
     elif content_type in TETHER_CONTENT_TYPES:

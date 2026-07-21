@@ -96,7 +96,9 @@ def plan_thread(
     # Keys already present in the thread (normalized to the current un-prefixed
     # format) mapped to their row ids, so a recomputed collision can name its twin.
     key_owner: dict[str, int] = {
-        _norm_key(e.dedup_key, thread_id): e.id for e in events if e.dedup_key
+        key: e.id
+        for e in events
+        if e.dedup_key and (key := _norm_key(e.dedup_key, thread_id)) is not None
     }
     cited: set[int] = set(
         session.execute(
@@ -135,7 +137,10 @@ def plan_thread(
         for cand in keyed_by_type.get(e.event_type, []):
             if cand.id in claimed or cand.occurred_at != e.occurred_at:
                 continue
-            parts = _norm_key(cand.dedup_key, thread_id).rsplit(":", 2)
+            normalized_key = _norm_key(cand.dedup_key, thread_id)
+            if normalized_key is None:
+                continue
+            parts = normalized_key.rsplit(":", 2)
             if len(parts) == 3 and parts[1] == block and parts[2] == want_hash:
                 matches.append(cand)
         return matches[0] if len(matches) == 1 else None
@@ -157,7 +162,11 @@ def plan_thread(
                         stats["collapse_skipped_both_cited"] += 1
                         continue
                     if e.id in cited or (twin.id not in cited and e.id < twin.id):
-                        collapses.append((e.id, twin.id, _norm_key(twin.dedup_key, thread_id)))
+                        twin_key = _norm_key(twin.dedup_key, thread_id)
+                        if twin_key is None:
+                            stats["no_anchor"] += 1
+                            continue
+                        collapses.append((e.id, twin.id, twin_key))
                     else:
                         collapses.append((twin.id, e.id, ""))
                     claimed.add(twin.id)
@@ -206,7 +215,7 @@ def plan_thread(
     return backfills, collapses, warnings, stats
 
 
-def _threads_with_null_keys(session, limit: Optional[int]) -> list[int]:
+def _threads_with_null_keys(session, limit: Optional[int]) -> list[str]:
     """Import-derived threads (present in import_state) that have NULL-key events.
 
     Scoped to import-derived threads on purpose: dedup_key exists for *import*

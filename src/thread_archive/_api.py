@@ -265,6 +265,22 @@ def reindex(*, home: Optional[str] = None, vectors: bool = False, salvage: bool 
     return _reindex(vectors=vectors, salvage=salvage)
 
 
+def migrate(*, home: Optional[str] = None, dry_run: bool = False) -> dict:
+    """Migrate older truth to the current format, then rebuild and verify it."""
+    from ._config import resolve_paths
+    from ._scripts.migrate_thread_ulids import migrate as _migrate
+
+    result = _migrate(resolve_paths(home).home, dry_run=dry_run)
+    if result.get("changed") and not dry_run:
+        result["reindex"] = reindex(home=home)
+        result["verify"] = verify(home=home)
+        if not result["verify"].get("ok"):
+            raise RuntimeError(
+                "truth migration completed, but post-migration verification failed"
+            )
+    return result
+
+
 def embed(
     *,
     home: Optional[str] = None,

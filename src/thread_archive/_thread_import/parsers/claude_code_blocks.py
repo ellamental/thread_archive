@@ -278,11 +278,12 @@ def dedup_compaction_replays(
             # A `/model` switch has empty content_text and shares its timestamp with the
             # command line beside it — so include the switch target in the key, else the
             # marker-bearing turn collides with an empty one and is wrongly deduped away.
-            model_change = next(
+            raw_model_change = next(
                 (b.get("to_model") for b in msg.get("content_blocks", [])
                  if isinstance(b, dict) and b.get("type") == "model_change"),
                 None,
             )
+            model_change = raw_model_change if isinstance(raw_model_change, str) else None
             key = (role, content_text, str(created_at) if created_at else None, model_change)
             if key in seen:
                 continue

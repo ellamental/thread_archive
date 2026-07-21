@@ -136,26 +136,9 @@ line-length = 120
 select = ["E", "F", "I", "W"]
 ignore = ["E501"]
 
-# The type gate (the mypy row in ci.toml). Default mypy strictness over the
-# living code; the overrides below are a RATCHET, not a policy — each listed
-# module predates the gate and is excluded until someone types it. Shrink the
-# list; never grow it.
+# The type gate (the mypy row in ci.toml). It covers the complete package,
+# including import parsers, operational scripts, and durability code.
 [tool.mypy]
 files = ["src/thread_archive"]
 ignore_missing_imports = true  # mcp (and the optional thread_librarian) ship no stubs
 check_untyped_defs = true  # unannotated bodies still execute in production; inspect them too
-
-[[tool.mypy.overrides]]
-module = [
-    "thread_archive._thread_import.*",  # vendored parser island — typing it is its own project
-    "thread_archive._scripts.*",        # one-shot operator/migration scripts
-    # Delicate durability code; type deliberately, not mechanically. These four
-    # carry the code that lived in _truth.jsonl_log before its split; the
-    # jsonl_log facade and _truth.locks are typed.
-    "thread_archive._truth.layout",
-    "thread_archive._truth.drain",
-    "thread_archive._truth.maintenance",
-    "thread_archive._truth.rebuild",
-    "thread_archive._ops.verify",       # same
-]
-ignore_errors = true

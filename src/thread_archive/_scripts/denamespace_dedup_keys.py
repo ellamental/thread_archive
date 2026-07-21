@@ -33,7 +33,7 @@ logger = logging.getLogger(__name__)
 _PREFIXED = Event.dedup_key.like(func.cast(Event.thread_id, Text).concat(":%"))
 
 
-def _prefixed_thread_ids(session, limit: Optional[int]) -> list[int]:
+def _prefixed_thread_ids(session, limit: Optional[int]) -> list[str]:
     """Threads holding at least one ``{thread_id}:``-prefixed dedup_key."""
     q = select(Event.thread_id).where(Event.dedup_key.is_not(None), _PREFIXED).group_by(Event.thread_id)
     if limit is not None:

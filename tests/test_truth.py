@@ -344,7 +344,11 @@ def _seed_flat_threads(d, n_threads: int, events_per: int = 3) -> None:
                     "type": "event", "id": tid * 100 + i, "thread_id": tid,
                     "payload": {"n": i},
                 }) + "\n")
-    jsonl_log._write_manifest(d, {"version": 1, "shard_depth": 0, "last_checkpoint_at": None})
+    jsonl_log._write_manifest(d, {
+        "version": jsonl_log.TRUTH_FORMAT_VERSION,
+        "shard_depth": 0,
+        "last_checkpoint_at": None,
+    })
 
 
 def _event_ids(path) -> set[int]:
@@ -426,7 +430,11 @@ def test_rebalance_straggler_sweep_at_steady_depth(archive_home) -> None:
     d = jsonl_log.log_dir()
     threads_dir = d / jsonl_log.THREADS_SUBDIR
     threads_dir.mkdir(parents=True, exist_ok=True)
-    jsonl_log._write_manifest(d, {"version": 1, "shard_depth": 1, "last_checkpoint_at": None})
+    jsonl_log._write_manifest(d, {
+        "version": jsonl_log.TRUTH_FORMAT_VERSION,
+        "shard_depth": 1,
+        "last_checkpoint_at": None,
+    })
 
     home = jsonl_log._thread_file(d, 7, 1)
     home.parent.mkdir(parents=True, exist_ok=True)
@@ -451,7 +459,11 @@ def test_rebalance_lock_loser_skips_and_checkpoint_keeps_depth(archive_home, mon
     d = jsonl_log.log_dir()
     _seed_flat_threads(d, 6)
     # The "winner" already migrated the manifest to depth 1.
-    jsonl_log._write_manifest(d, {"version": 1, "shard_depth": 1, "last_checkpoint_at": None})
+    jsonl_log._write_manifest(d, {
+        "version": jsonl_log.TRUTH_FORMAT_VERSION,
+        "shard_depth": 1,
+        "last_checkpoint_at": None,
+    })
 
     fd = _os.open(jsonl_log._rebalance_lock_path(), _os.O_RDWR | _os.O_CREAT, 0o644)
     try:

@@ -395,17 +395,17 @@ class ProviderParser(ABC):
     @staticmethod
     def extract_text_from_blocks(blocks: List[ContentBlock]) -> str:
         """Extract primary display text from content blocks."""
-        text_parts = []
+        text_parts: List[str] = []
         for block in blocks:
             block_type = block.get("type", "")
             if block_type == "text":
                 text = block.get("text", "")
-                if text:
+                if isinstance(text, str) and text:
                     text_parts.append(text)
             elif block_type == "system_context":
                 # Include system context in display text
                 text = block.get("text", "")
-                if text:
+                if isinstance(text, str) and text:
                     text_parts.append(text)
         return "\n\n".join(text_parts).strip()
 

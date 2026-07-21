@@ -5,7 +5,7 @@ is the retrieval MCP tools plus the truth format (see the package docstring);
 this CLI is the process seam launchd, cron, and operators use to run the
 private machinery — ingest (``import``, ``import-export``, ``watch``,
 ``embed``), the backup kit (``backup``, ``verify``, ``restore-drill``,
-``restore``, ``reindex``, ``repair``, ``status``, ``nightly``, ``coverage``),
+``restore``, ``reindex``, ``migrate``, ``repair``, ``status``, ``nightly``, ``coverage``),
 and the LaunchAgent lifecycle (``daemon``). Verbs may change without
 external notice, but they are *wired into* the LaunchAgent plists, lab's cron
 script, the /ci skill, and the monitor's heartbeat contract — renaming one
@@ -364,6 +364,25 @@ def cmd_reindex(args: argparse.Namespace) -> int:
     for name, n in counts.items():
         print(f"  {name:16} {n:>9}")
     print("done")
+    return 0
+
+
+def cmd_migrate(args: argparse.Namespace) -> int:
+    from . import _api as api
+
+    _self_throttle()
+    try:
+        result = api.migrate(home=args.home, dry_run=args.dry_run)
+    except (OSError, RuntimeError, ValueError) as e:
+        print(f"migration failed: {e}", file=sys.stderr)
+        return 1
+    if result.get("changed"):
+        print(
+            f"migration complete: truth format v{result['version']}, "
+            f"threads={result['threads']} events={result['events']}"
+        )
+    elif result.get("dry_run"):
+        print("migration dry run complete; truth was not changed")
     return 0
 
 
@@ -1169,6 +1188,16 @@ def build_parser() -> argparse.ArgumentParser:
              "index holds (the default refuses and keeps the old index)",
     )
     p_reindex.set_defaults(func=cmd_reindex)
+
+    p_migrate = sub.add_parser(
+        "migrate", help="migrate older truth to the current format, reindex, and verify"
+    )
+    _add_home_arg(p_migrate)
+    p_migrate.add_argument(
+        "--dry-run", action="store_true",
+        help="build and inspect migrated truth without swapping or rebuilding the index",
+    )
+    p_migrate.set_defaults(func=cmd_migrate)
 
     p_embed = sub.add_parser("embed", help="embed user/text events missing a vector (incremental catch-up)")
     _add_home_arg(p_embed)

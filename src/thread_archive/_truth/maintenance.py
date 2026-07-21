@@ -30,6 +30,7 @@ from .layout import (
     _row_dict,
     _thread_file,
     log_dir,
+    require_current_format,
     update_manifest,
 )
 from .locks import (
@@ -49,7 +50,7 @@ def _write_snapshot(d: Path, name: str, model: type) -> int:
     tmp = path.with_suffix(".jsonl.tmp")
     with get_session() as s, open(tmp, "w", encoding="utf-8") as fh:
         n = 0
-        for obj in s.execute(select(model)).scalars():
+        for obj in s.execute(select(model)).scalars():  # type: object
             fh.write(json.dumps(_row_dict(obj), default=_json_default, ensure_ascii=False))
             fh.write("\n")
             n += 1
@@ -108,6 +109,7 @@ def checkpoint(*, snapshots: bool = True) -> dict:
 
 def _checkpoint_locked(*, snapshots: bool = True) -> dict:
     d = log_dir()
+    require_current_format(d)
     (d / THREADS_SUBDIR).mkdir(parents=True, exist_ok=True)
     m = _read_manifest(d)
     counts: dict = (

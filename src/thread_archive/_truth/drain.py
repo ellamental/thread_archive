@@ -34,6 +34,7 @@ from .layout import (
     _shard_depth,
     _thread_file,
     log_dir,
+    require_current_format,
 )
 from .locks import _truth_write_lock
 
@@ -424,8 +425,8 @@ def append_kg_event(session: Session, kg_event: object) -> None:
     ``recorded_at`` are populated), stages it here, and the row is appended to the
     single ``kg_events.jsonl`` file before the COMMIT it belongs to — keeping the
     JSONL ⊇ SQLite invariant for curation. ``thread_id`` is irrelevant for the
-    cross-thread log (it routes to one file, not a per-thread file), so pass 0."""
-    _stage(session, "kg_event", 0, _row_dict(kg_event))
+    cross-thread log (it routes to one file, not a per-thread file), so pass ``"0"``."""
+    _stage(session, "kg_event", "0", _row_dict(kg_event))
 
 
 def write_events(session: Session, events: list[Event]) -> list[Event]:
@@ -480,6 +481,7 @@ def _drain_before_commit(session: Session) -> None:
     if not pending:
         return
     d = log_dir()
+    require_current_format(d)
     with _truth_write_lock():
         # Depth read under the lock, so a rebalance that bumped it between our
         # staging and this drain can't leave us appending at a stale layout.
@@ -616,4 +618,3 @@ def _undo_drain(session: Session) -> None:
                     )
     except OSError:  # pragma: no cover — lock unavailable; leave the safe direction
         logger.exception("truth: post-rollback drain compensation skipped")
-

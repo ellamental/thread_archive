@@ -395,6 +395,7 @@ class DefaultEventBuilder:
             for b in content_blocks
         )
 
+        payload: dict[str, Any]
         if has_images:
             # Extract images in the format the live path uses (UserMessagePayload.images)
             payload = {
@@ -679,9 +680,10 @@ class DefaultEventBuilder:
                 occurred_at=occurred_at,
             )]
         elif block_type == "queue_operation":
+            operation_data = first_block.get("data", {})
             return [ThreadEvent(
                 event_type="queue_operation",
-                payload=first_block.get("data", {}),
+                payload=operation_data if isinstance(operation_data, dict) else {},
                 stream_id=stream_id,
                 occurred_at=occurred_at,
             )]

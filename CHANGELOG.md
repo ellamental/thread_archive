@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- Truth-format boundaries now fail closed in both directions: v2 writers refuse
+  to mutate a v1 directory, including the mixed integer/ULID state an interrupted
+  upgrade could leave. `archive migrate` preserves and normalizes mixed trees,
+  then reindexes and verifies them; an explicitly allowed self-update format bump
+  runs that pipeline before restarting long-lived agents and never rolls older
+  code back onto truth after migration has begun.
+
 - The ranker carries a graph-authority prior (normalized PageRank from
   thread-librarian's curated corpus graph as a bounded, boost-only score
   multiplier), built to test whether curation authority improves retrieval.

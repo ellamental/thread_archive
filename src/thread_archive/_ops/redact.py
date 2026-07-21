@@ -86,6 +86,7 @@ from .._truth.jsonl_log import (
     log_dir,
     reset_handles,
 )
+from .._truth.layout import require_current_format
 
 logger = logging.getLogger(__name__)
 
@@ -378,6 +379,7 @@ def redact_events(thread_id: str, event_ids: list[int] | None = None, *, reason:
     Runs under the exclusive reindex lock — writers are quiescent, same
     discipline as repair. Returns counts plus the new ``key_id`` and the
     operator notes (source-store plaintext, backup generations, title/summary)."""
+    require_current_format()
     with _hold_reindex_lock():
         # Resolve any crashed drain first (its rollback trims a partial batch this
         # scan would otherwise read as content).
@@ -580,6 +582,7 @@ def _redact_locked(thread_id: str, event_ids: list[int] | None, reason: str | No
 def unredact(key_id: str) -> dict:
     """Restore a redaction's content from its encrypted bundle. Requires the key
     to be present in the keyring (``--restore-key`` first if it was escrowed)."""
+    require_current_format()
     with _hold_reindex_lock():
         with _truth_write_lock():
             pass

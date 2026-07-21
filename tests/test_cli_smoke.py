@@ -38,7 +38,7 @@ def test_all_subcommands_present() -> None:
     # (test_public_api.py owns the boundary ratchet; this is the wiring smoke.)
     sub = next(a for a in parser._actions if hasattr(a, "choices") and a.choices)
     assert set(sub.choices) == {
-        "import", "import-export", "providers", "watch", "reindex", "embed",
+        "import", "import-export", "providers", "watch", "reindex", "migrate", "embed",
         "status", "backup", "verify", "repair", "restore-drill", "restore",
         "nightly", "coverage", "mirror", "redact", "unredact", "daemon",
         "fix-import", "self-update",
@@ -402,6 +402,12 @@ def test_reindex_cli_runs_in_isolated_home(tmp_path, monkeypatch, capsys) -> Non
     finally:
         jsonl_log.reset_handles()
         _base.close_engine()
+
+
+def test_migrate_cli_is_a_noop_on_current_truth(seeded, capsys) -> None:
+    rc = main(["migrate", "--home", str(seeded)])
+    assert rc == 0
+    assert "already at truth format v2" in capsys.readouterr().out
 
 
 def test_providers_cli_renders_patch_traits(archive_home, capsys) -> None:

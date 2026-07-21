@@ -72,6 +72,7 @@ DEFAULT_REMOTE = "origin"
 _GIT_TIMEOUT = 300
 _PIP_TIMEOUT = 900
 _SMOKE_TIMEOUT = 300
+_MIGRATE_TIMEOUT = 1800
 
 _TAG_RE = re.compile(r"^v(\d+)\.(\d+)\.(\d+)$")
 _FORMAT_RE = re.compile(r"TRUTH_FORMAT_VERSION\s*=\s*(\d+)")
@@ -88,6 +89,8 @@ class UpdatePlan:
     current: str
     tag: Optional[str] = None
     skipped: list[str] = field(default_factory=list)  # tags passed over, annotated
+    current_format: Optional[int] = None
+    target_format: Optional[int] = None
 
 
 # ── config ───────────────────────────────────────────────────────────────────
@@ -255,18 +258,21 @@ def plan_update(
                 + (f" ({age_h:.1f}h old)" if age_h is not None else " (age unreadable)")
             )
             continue
-        if not allow_format_bump:
-            fmt = _tag_format_version(repo, tag)
-            if fmt is None or fmt > local_fmt:
-                what = ("declares truth-format version "
-                        f"{fmt} > local {local_fmt}" if fmt is not None
-                        else "does not declare a readable truth-format version")
-                return UpdatePlan(
-                    "blocked",
-                    f"{tag} {what} — a one-way door; run "
-                    "`archive self-update --allow-format-bump` deliberately",
-                    version, tag=tag, skipped=skipped,
-                )
+        fmt = _tag_format_version(repo, tag)
+        if fmt is None:
+            return UpdatePlan(
+                "blocked",
+                f"{tag} does not declare a readable truth-format version",
+                version, tag=tag, skipped=skipped, current_format=local_fmt,
+            )
+        if not allow_format_bump and fmt > local_fmt:
+            return UpdatePlan(
+                "blocked",
+                f"{tag} declares truth-format version {fmt} > local {local_fmt} — "
+                "a one-way door; run `archive self-update --allow-format-bump` deliberately",
+                version, tag=tag, skipped=skipped, current_format=local_fmt,
+                target_format=fmt,
+            )
         r = _git(repo, "merge-base", "--is-ancestor", "HEAD", tag)
         if r.returncode != 0:
             return UpdatePlan(
@@ -275,8 +281,10 @@ def plan_update(
                 f"ancestor of {tag})",
                 version, tag=tag, skipped=skipped,
             )
-        return UpdatePlan("update", f"{tag} is released and past the soak window",
-                          version, tag=tag, skipped=skipped)
+        return UpdatePlan(
+            "update", f"{tag} is released and past the soak window", version,
+            tag=tag, skipped=skipped, current_format=local_fmt, target_format=fmt,
+        )
 
     return UpdatePlan(
         "up-to-date",
@@ -317,6 +325,33 @@ def _default_smoke(home: Optional[str]) -> None:
         )
 
 
+def _default_home_format_version(home: Optional[str]) -> int:
+    from ._config import resolve_paths
+    from ._truth.layout import _read_manifest
+
+    return int(_read_manifest(resolve_paths(home).truth_dir).get("version", 1))
+
+
+def _default_migrate(home: Optional[str]) -> None:
+    """Run migration, rebuild, and verification in fresh target-code processes."""
+    import os
+
+    bin_ = Path(sys.executable).with_name("archive")
+    env = dict(os.environ)
+    commands = [[str(bin_), "migrate"]]
+    if home:
+        env["THREAD_ARCHIVE_HOME"] = str(home)
+        for command in commands:
+            command.extend(["--home", str(home)])
+    for command in commands:
+        r = subprocess.run(
+            command, capture_output=True, text=True, timeout=_MIGRATE_TIMEOUT, env=env,
+        )
+        if r.returncode != 0:
+            detail = (r.stderr or r.stdout).strip()[-500:]
+            raise RuntimeError(f"{' '.join(command[:3])} failed: {detail}")
+
+
 def _default_restart() -> None:
     """Kick the installed *long-running* agents (watcher, MCP server) so they
     pick up the new code. The scheduled jobs — the backup, and the plugin's
@@ -354,10 +389,15 @@ def apply_update(
     smoke: Optional[Callable[[Optional[str]], None]] = None,
     restart: Optional[Callable[[], None]] = None,
     retire: Optional[Callable[[Optional[str], str], None]] = None,
+    migrate: Optional[Callable[[Optional[str]], None]] = None,
+    home_format_version: Optional[Callable[[Optional[str]], int]] = None,
 ) -> dict:
-    """Execute an ``update`` plan: checkout → reinstall → smoke → retire →
-    restart, with rollback to the pre-update commit if the new install doesn't
-    stand up. ``retire`` disables unpinned fix-import override patches built
+    """Execute an update, migrating truth before target-format writers restart.
+
+    Install/smoke failures still roll back. Once migration begins, the target
+    checkout is retained on failure: the truth may already have crossed the
+    one-way format boundary and rolling its reader back would be unsafe.
+    ``retire`` disables unpinned fix-import override patches built
     against the older core (see :mod:`._repair.retire`) — after smoke so it
     only ever runs on a proven install, before restart so the reloading agents
     come back without stale overrides. Returns the result dict that also lands
@@ -367,6 +407,14 @@ def apply_update(
     smoke = _default_smoke if smoke is None else smoke
     restart = _default_restart if restart is None else restart
     retire = _default_retire if retire is None else retire
+    migrate = _default_migrate if migrate is None else migrate
+    home_format_version = (
+        _default_home_format_version if home_format_version is None else home_format_version
+    )
+    needs_migration = (
+        plan.target_format is not None
+        and home_format_version(home) < plan.target_format
+    )
 
     prev = _git(repo, "rev-parse", "HEAD").stdout.strip()
     r = _git(repo, "checkout", "--quiet", plan.tag)
@@ -394,6 +442,21 @@ def apply_update(
         return {"ok": False, "action": "rolled-back" if rolled_back else "failed",
                 "current": plan.current, "tag": plan.tag, "reason": reason}
 
+    if needs_migration:
+        try:
+            migrate(home)
+            smoke(home)
+        except Exception as e:  # noqa: BLE001 — never roll old code onto migrated truth
+            reason = str(e)
+            logger.error(
+                "self-update: truth migration for %s failed; retaining target code: %s",
+                plan.tag, reason,
+            )
+            return {
+                "ok": False, "action": "migration-failed", "current": plan.current,
+                "tag": plan.tag, "reason": reason, "rolled_back": False,
+            }
+
     try:
         retire(home, plan.tag)
     except Exception as e:  # noqa: BLE001 — advisory; a good update must not roll back on this
@@ -402,8 +465,10 @@ def apply_update(
         restart()
     except Exception as e:  # noqa: BLE001 — advisory; the update itself succeeded
         logger.warning("self-update: agent restart after %s: %s", plan.tag, e)
-    return {"ok": True, "action": "updated", "current": plan.current, "tag": plan.tag,
-            "reason": f"updated {plan.current} → {plan.tag}"}
+    return {
+        "ok": True, "action": "updated", "current": plan.current, "tag": plan.tag,
+        "reason": f"updated {plan.current} → {plan.tag}", "migrated": needs_migration,
+    }
 
 
 # ── orchestration ────────────────────────────────────────────────────────────

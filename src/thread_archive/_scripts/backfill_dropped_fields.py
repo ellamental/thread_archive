@@ -80,12 +80,15 @@ import uuid as _uuid
 from collections import defaultdict
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from functools import partial
 from pathlib import Path
-from typing import Any, Callable, Iterable, Iterator, Optional
+from typing import Any, Callable, Iterable, Iterator, Optional, cast
 
 from sqlalchemy import select
 
 from thread_archive._thread_import import DefaultEventBuilder
+from thread_archive._thread_import.event_builder import ThreadEvent
+from thread_archive._thread_import.parsers.base import NormalizedMessage
 from thread_archive._thread_import.parsers.claude_code import ClaudeCodeParser
 
 from .._importers._events import _to_event
@@ -168,21 +171,25 @@ class WorkItem:
     """One re-parseable source conversation: its identity plus lazy builders."""
     source: str
     source_id: str
-    fresh: Callable[[], list]                      # () -> list[ThreadEvent]
+    fresh: Callable[[], list[ThreadEvent]]
     meta: Optional[Callable[[], Optional[dict]]]   # () -> thread source_metadata
 
 
 # ── fresh event assembly (mirrors assemble_events' stream/timestamp logic) ───
 
-def _events_from_messages(messages: list[dict], base_prev_ts: Optional[datetime] = None) -> list:
+def _events_from_messages(
+    messages: Iterable[NormalizedMessage | dict[str, Any]],
+    base_prev_ts: Optional[datetime] = None,
+) -> list[ThreadEvent]:
     """Build ThreadEvents from NormalizedMessages with the same role→stream and
     monotonic-timestamp rules as ``assemble_events`` (stream ids are fresh UUIDs —
     matching never reads them; inserts borrow stored ids instead)."""
     builder = DefaultEventBuilder()
-    out: list = []
+    out: list[ThreadEvent] = []
     prev = base_prev_ts
     current_stream: Optional[str] = None
-    for msg in messages:
+    for raw_message in messages:
+        msg = cast(NormalizedMessage, raw_message)
         role = msg.get("role", "")
         if role == "user":
             current_stream = str(_uuid.uuid4())
@@ -205,6 +212,23 @@ def _events_from_messages(messages: list[dict], base_prev_ts: Optional[datetime]
 
 # ── per-source adapters (discovery + fresh build + thread metadata) ──────────
 
+def _cc_item_fresh(path: Path, source_name: str) -> list[ThreadEvent]:
+    return _cc_fresh_events(source_name, read_session_lines(path))
+
+
+def _codex_item_meta(path: Path) -> Optional[dict]:
+    return _codex_source_metadata(_codex_session_meta(read_session_lines(path)))
+
+
+def _grok_item_meta(path: Path, source_id: str) -> Optional[dict]:
+    return _grok_source_metadata(_grok_session_meta(path.parent), source_id)
+
+
+def _antigravity_item_fresh(path: Path, source_id: str) -> list[ThreadEvent]:
+    lines = read_session_lines(path)
+    return _events_from_messages(_build_antigravity_messages(lines, lines, source_id))
+
+
 def iter_cc_like_items(source_name: str) -> Iterator[WorkItem]:
     """One Claude-Code-shaped source's transcripts, via backfill_reconcile's discovery."""
     for name, path, source_id in _cc_iter_pairs():
@@ -212,7 +236,7 @@ def iter_cc_like_items(source_name: str) -> Iterator[WorkItem]:
             continue
         yield WorkItem(
             name, source_id,
-            fresh=lambda p=path, n=name: _cc_fresh_events(n, read_session_lines(p)),
+            fresh=partial(_cc_item_fresh, path, name),
             meta=None,
         )
 
@@ -232,9 +256,7 @@ def iter_codex_items(sessions_dir: Optional[Path] = None) -> Iterator[WorkItem]:
             )
         yield WorkItem(
             "codex", source_id, fresh=fresh,
-            meta=lambda p=path: _codex_source_metadata(
-                _codex_session_meta(read_session_lines(p))
-            ),
+            meta=partial(_codex_item_meta, path),
         )
 
 
@@ -254,9 +276,7 @@ def iter_grok_items(sessions_dir: Optional[Path] = None) -> Iterator[WorkItem]:
             return _events_from_messages(messages, base_prev_ts=base)
         yield WorkItem(
             "grok", source_id, fresh=fresh,
-            meta=lambda p=path, sid=source_id: _grok_source_metadata(
-                _grok_session_meta(p.parent), sid
-            ),
+            meta=partial(_grok_item_meta, path, source_id),
         )
 
 
@@ -267,11 +287,7 @@ def iter_antigravity_items(brain_dir: Optional[Path] = None) -> Iterator[WorkIte
     for path, source_id in w.iter_files():
         yield WorkItem(
             "antigravity", source_id,
-            fresh=lambda p=path, sid=source_id: _events_from_messages(
-                _build_antigravity_messages(
-                    read_session_lines(p), read_session_lines(p), sid
-                )
-            ),
+            fresh=partial(_antigravity_item_fresh, path, source_id),
             meta=None,
         )
 
@@ -431,10 +447,8 @@ def iter_claude_science_items(base: Optional[Path] = None) -> Iterator[WorkItem]
                     continue
                 yield WorkItem(
                     "claude-science", f"{org_uuid}:{frame['id']}",
-                    fresh=lambda o=org_uuid, fr=frame, rows=message_rows: (
-                        _science_fresh(fr, rows)
-                    ),
-                    meta=lambda o=org_uuid, fr=frame: _frame_metadata(o, fr),
+                    fresh=partial(_science_fresh, frame, message_rows),
+                    meta=partial(_frame_metadata, org_uuid, frame),
                 )
         finally:
             conn.close()
@@ -467,7 +481,12 @@ def _science_fresh(frame: dict, message_rows: list) -> list:
         "sessions": [{"session_id": "backfill", "project": "backfill", "lines": lines}],
     })
     for message in messages:
-        ann = annotations_by_uuid.get(message.get("provider_message_id"))
+        provider_message_id = message.get("provider_message_id")
+        ann = (
+            annotations_by_uuid.get(provider_message_id)
+            if isinstance(provider_message_id, str)
+            else None
+        )
         if not ann:
             continue
         provider_data = message.get("provider_data")
@@ -508,7 +527,7 @@ def adapters() -> dict[str, Callable[[], Iterator[WorkItem]]]:
 
     found: dict[str, Callable[[], Iterator[WorkItem]]] = {}
     for provider in sources_using_parser("claude-code"):
-        found[provider.name] = lambda n=provider.name: iter_cc_like_items(n)
+        found[provider.name] = partial(iter_cc_like_items, provider.name)
     found.update(_BESPOKE_ADAPTERS)
     return found
 
@@ -686,12 +705,12 @@ def plan_thread(session, thread_id: str, source: str, fresh: list) -> ThreadPlan
         ]
         if len(candidates) == 1:
             e = candidates[0]
-            patch, reason = _salvage_patch(e, f)
-            if patch is not None:
+            salvage_patch, reason = _salvage_patch(e, f)
+            if salvage_patch is not None:
                 used.add(e.id)
                 record_linkage(f, e)
                 stats[f"salvage:{reason}"] += 1
-                patches.append((e.id, patch))
+                patches.append((e.id, salvage_patch))
             elif reason == "already":
                 used.add(e.id)
                 record_linkage(f, e)

@@ -28,8 +28,9 @@ lexicographic id order is chronological order and ids are globally unique
 carries it as `legacy_id`, a permanent alias resolvable everywhere a thread
 ref is accepted. Shard buckets are derived from the sha256 of the id string
 (byte *i* names the level-*i* bucket directory), not from the id's numeric
-value. Version-1 archives are migrated by
-`thread_archive._scripts.migrate_thread_ulids`.
+value. Version-1 archives are migrated with `archive migrate`; it rewrites the
+truth under the reindex lock, rebuilds `index.db`, and verifies the result
+before returning success.
 
 - The version bumps only for a change an existing reader would *misinterpret*:
   record shapes, file layout, sharding semantics. Adding an optional field to a
@@ -39,8 +40,11 @@ value. Version-1 archives are migrated by
   never lossily rewrites newer truth).
 - A reader that finds a version **newer** than it supports must refuse the
   archive rather than guess (`thread_archive` raises `TruthFormatError`).
-- A missing or corrupt manifest is read as version 1 with the shard depth
-  inferred from the directory layout.
+- A writer that finds a version **older** than it emits must refuse to mutate
+  the archive until it has been migrated. Reads and `archive reindex` remain
+  available for diagnosis and recovery.
+- A missing or corrupt manifest infers v1 from integer-named thread files and
+  otherwise uses the current version; shard depth is inferred from the layout.
 
 ## Encoding
 
@@ -74,7 +78,7 @@ exclusive flock so concurrent writers each own their keys:
 
 | key                  | meaning                                                       |
 | -------------------- | ------------------------------------------------------------- |
-| `version`            | truth format version (this spec) — currently `1`              |
+| `version`            | truth format version (this spec) — currently `2`              |
 | `shard_depth`        | `0` flat, `1` or `2` levels of hex buckets under `threads/`   |
 | `last_checkpoint_at` | ISO timestamp of the last checkpoint, or `null`               |
 | `hashes_baseline`    | owned by `verify --hashes` (mismatch baseline); may be absent |

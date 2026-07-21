@@ -17,6 +17,7 @@ import logging
 import os
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any, cast
 
 from sqlalchemy import DateTime
 
@@ -113,7 +114,11 @@ ULID_MAPPING_FILE = "ulid-mapping.json"
 
 
 class TruthFormatError(RuntimeError):
-    """The truth directory declares a format version newer than this code reads."""
+    """The truth directory cannot be safely interpreted or mutated by this code."""
+
+
+class TruthMigrationRequired(TruthFormatError):
+    """A writer met an older truth format that must be migrated first."""
 
 
 def _manifest_path(d: Path) -> Path:
@@ -169,6 +174,22 @@ def _infer_shard_depth(d: Path) -> int:
     return depth
 
 
+def _infer_format_version(d: Path) -> int:
+    """Infer v1 when any per-thread filename still carries an integer id.
+
+    Missing/corrupt manifests are already a recovery path.  Treating an old
+    integer tree as current here would let the v2 writer add ULID records while
+    continuing to advertise v1 — exactly the cross-version corruption the
+    manifest is meant to prevent.  A mixed tree is therefore v1 until the
+    migration has normalized the whole directory.
+    """
+    threads = d / THREADS_SUBDIR
+    try:
+        return 1 if any(p.stem.isdigit() for p in threads.rglob("*.jsonl")) else TRUTH_FORMAT_VERSION
+    except OSError:
+        return TRUTH_FORMAT_VERSION
+
+
 def _read_manifest(d: Path) -> dict:
     global _manifest_cache
     p = _manifest_path(d)
@@ -183,7 +204,10 @@ def _read_manifest(d: Path) -> dict:
             # shard depth on a sharded archive — infer it from the layout below.
             logger.error("truth: manifest.json unreadable — inferring shard depth")
         else:
-            declared = m.get("version", TRUTH_FORMAT_VERSION)
+            declared = m.get("version")
+            if not isinstance(declared, int) or declared < 1:
+                declared = _infer_format_version(d)
+                m["version"] = declared
             if isinstance(declared, int) and declared > TRUTH_FORMAT_VERSION:
                 # A newer layout may have changed sharding or record semantics;
                 # reading it with old assumptions risks writing flat twins or
@@ -201,7 +225,29 @@ def _read_manifest(d: Path) -> dict:
         logger.warning(
             "truth: no readable manifest; inferred shard_depth=%d from layout", depth
         )
-    return {"version": TRUTH_FORMAT_VERSION, "shard_depth": depth, "last_checkpoint_at": None}
+    return {
+        "version": _infer_format_version(d),
+        "shard_depth": depth,
+        "last_checkpoint_at": None,
+    }
+
+
+def require_current_format(d: Path | None = None) -> None:
+    """Fail before a current-format writer mutates older truth.
+
+    Older truth remains readable so migration and reindex can recover it.  It
+    must not be appended to, snapshotted, repaired, or rewritten with newer
+    record/layout semantics while its manifest still promises an old reader
+    that the directory is old-format.
+    """
+    d = log_dir() if d is None else d
+    declared = int(_read_manifest(d).get("version", 1))
+    if declared < TRUTH_FORMAT_VERSION:
+        raise TruthMigrationRequired(
+            f"truth directory {d} uses format version {declared}, but this writer "
+            f"emits version {TRUTH_FORMAT_VERSION}. Reads remain available; run "
+            "`archive migrate` before writing."
+        )
 
 
 def _write_manifest(d: Path, m: dict) -> None:
@@ -323,7 +369,7 @@ def _coerce(model: type, row: dict) -> dict:
     An unparseable value is logged and replaced: NULL where the column allows it,
     the Unix epoch where it doesn't (a recognizable sentinel that satisfies NOT
     NULL and sorts the salvaged record to the far past rather than dropping it)."""
-    columns = model.__table__.columns
+    columns = cast(Any, model).__table__.columns
     valid = {c.key for c in columns}
     row = {k: v for k, v in row.items() if k in valid}
     for key in _datetime_cols(model):

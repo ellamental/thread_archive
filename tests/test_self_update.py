@@ -238,6 +238,52 @@ def test_apply_rolls_back_when_smoke_fails(repo: Path) -> None:
     assert _git(repo, "rev-parse", "HEAD").strip() == prev
 
 
+def test_apply_format_bump_migrates_and_resmokes_before_restart(repo: Path) -> None:
+    _write_format(repo, 2)
+    _commit(repo, "v0.1.0 format bump")
+    _tag(repo, "v0.1.0")
+    _git(repo, "checkout", "-q", "v0.0.4")
+    calls: list[str] = []
+    plan = _plan(repo, allow_format_bump=True)
+    assert plan.target_format == 2
+
+    res = apply_update(
+        repo, plan,
+        reinstall=lambda r: calls.append("reinstall"),
+        smoke=lambda h: calls.append("smoke"),
+        migrate=lambda h: calls.append("migrate"),
+        home_format_version=lambda h: 1,
+        retire=lambda h, t: calls.append("retire"),
+        restart=lambda: calls.append("restart"),
+    )
+
+    assert res["ok"] and res["migrated"]
+    assert calls == ["reinstall", "smoke", "migrate", "smoke", "retire", "restart"]
+
+
+def test_apply_does_not_roll_back_after_migration_starts(repo: Path) -> None:
+    _write_format(repo, 2)
+    _commit(repo, "v0.1.0 format bump")
+    _tag(repo, "v0.1.0")
+    _git(repo, "checkout", "-q", "v0.0.4")
+
+    def fail_migration(_home) -> None:
+        raise RuntimeError("migration stopped after swap")
+
+    plan = _plan(repo, allow_format_bump=True)
+    res = apply_update(
+        repo, plan, reinstall=lambda r: None, smoke=lambda h: None,
+        migrate=fail_migration, home_format_version=lambda h: 1,
+        retire=lambda h, t: pytest.fail("must not retire after migration failure"),
+        restart=lambda: pytest.fail("must not restart after migration failure"),
+    )
+
+    assert not res["ok"] and res["action"] == "migration-failed"
+    assert not res["rolled_back"]
+    assert _git(repo, "rev-parse", "HEAD").strip() == \
+        _git(repo, "rev-parse", "v0.1.0^{commit}").strip()
+
+
 def test_self_update_records_health(repo: Path, monkeypatch) -> None:
     """The orchestrator stamps health.json (the status line + the spawner's
     once-per-interval gate); a manual check counts as the latest check."""

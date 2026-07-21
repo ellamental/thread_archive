@@ -108,7 +108,8 @@ def main(argv: Optional[list[str]] = None) -> int:
             if meta.get("agent_type"):
                 already += 1
                 continue
-            agent_type = on_disk.get(meta.get("agent_id"))
+            agent_id = meta.get("agent_id")
+            agent_type = on_disk.get(agent_id) if isinstance(agent_id, str) else None
             if agent_type is None:
                 unrecoverable += 1
                 continue

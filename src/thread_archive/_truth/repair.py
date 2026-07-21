@@ -64,6 +64,7 @@ from .jsonl_log import (
     log_dir,
     reset_handles,
 )
+from .layout import require_current_format
 
 logger = logging.getLogger(__name__)
 
@@ -143,6 +144,8 @@ def repair_truth(*, dry_run: bool = False) -> dict:
     thread records restored from the index.
     """
     d = log_dir()
+    if not dry_run:
+        require_current_format(d)
     with _hold_reindex_lock():
         # Resolve any crashed drain first — its rollback removes a partial batch
         # (torn tail included) that this scan would otherwise quarantine as damage.

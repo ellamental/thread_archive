@@ -185,6 +185,7 @@ archive import <path>     # import a transcript / provider store
 archive providers         # list registered providers (built-in + installed plugins)
 archive watch             # watch local AI-tool stores and import incrementally
 archive reindex           # rebuild index.db from the JSONL truth directory
+archive migrate           # migrate older truth, then reindex and verify
 archive verify            # integrity check: truth parses + matches the index
 archive repair            # quarantine damaged truth lines; restore committed content from the index
 archive backup <dest>     # mirror the truth dir (hardlink generations under <dest>/.generations) +

@@ -72,6 +72,10 @@ def test_drain_failure_rolls_back_every_appended_record(archive_home) -> None:
     """A mid-drain write failure must leave the truth file exactly as it was — no
     partial batch for a later reindex to resurrect."""
     init_db()
+    jsonl_log._write_manifest(
+        archive_home / "truth",
+        {"version": jsonl_log.TRUTH_FORMAT_VERSION, "shard_depth": 0},
+    )
     with get_session() as s:
         s.add(Thread(id=1, name="t1"))
         s.commit()

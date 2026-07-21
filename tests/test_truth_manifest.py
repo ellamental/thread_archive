@@ -16,6 +16,23 @@ from thread_archive._truth import jsonl_log
 from .helpers import import_cc_session
 
 
+def test_v2_writer_refuses_v1_truth_before_mutating_it(archive_home, tmp_path) -> None:
+    import json
+
+    import pytest
+
+    d = archive_home / "truth"
+    jsonl_log._write_manifest(
+        d, {"version": 1, "shard_depth": 0, "last_checkpoint_at": None}
+    )
+
+    with pytest.raises(jsonl_log.TruthMigrationRequired, match="archive migrate"):
+        import_cc_session(tmp_path)
+
+    assert not list((d / "threads").rglob("*.jsonl"))
+    assert json.loads((d / "manifest.json").read_text())["version"] == 1
+
+
 def test_manifest_corruption_infers_shard_depth_from_layout(
     archive_home, tmp_path, monkeypatch
 ) -> None:

@@ -22,8 +22,8 @@ name = "ruff"
 argv = ["{repo}/.venv/bin/ruff", "check", "."]
 
 # The Python type gate (config in pyproject [tool.mypy]) — the same bar the
-# frontend already has via tsc. The per-module ignore_errors overrides in
-# pyproject are a ratchet: modules that predate the gate, excluded until typed.
+# frontend already has via tsc. The complete package is checked, including
+# import parsers, operator scripts, and truth-store durability code.
 [[suite]]
 name = "mypy"
 argv = ["{repo}/.venv/bin/mypy"]

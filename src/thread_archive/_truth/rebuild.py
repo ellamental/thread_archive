@@ -12,6 +12,7 @@ import os
 import shutil
 import sqlite3
 from pathlib import Path
+from typing import Any, cast
 
 from sqlalchemy import insert, select
 
@@ -44,6 +45,7 @@ from .layout import (
     _shard_depth,
     _thread_file,
     log_dir,
+    require_current_format,
     update_manifest,
 )
 from .locks import _hold_reindex_lock, _truth_write_lock
@@ -358,7 +360,7 @@ def _replay_kg_events(
         return 0
     coerced = [_coerce(KgEvent, r) for r in rows]
     with engine.begin() as conn:
-        conn.execute(insert(KgEvent.__table__).prefix_with("OR REPLACE"), coerced)
+        conn.execute(insert(cast(Any, KgEvent.__table__)).prefix_with("OR REPLACE"), coerced)
     with ArchiveSession(engine) as s:
         for r in coerced:
             apply_event(s, KgEvent(**r))
@@ -1084,6 +1086,7 @@ def rebuild_truth_from_store(*, force: bool = False) -> dict:
     shrink or drop — e.g. a duplicate-collapse repair, or an in-place payload
     repair that didn't recompute its keys); it never skips the lock."""
     d = log_dir()
+    require_current_format(d)
     (d / THREADS_SUBDIR).mkdir(parents=True, exist_ok=True)
 
     with _hold_reindex_lock():
@@ -1128,7 +1131,7 @@ def _rebuild_truth_from_store_locked(d: Path) -> dict:
         threads = s.execute(select(Thread).order_by(Thread.id)).scalars().all()
         depth = _depth_for(len(threads))
         nt = ne = 0
-        emitted: set[int] = set()
+        emitted: set[str] = set()
         for t in threads:  # outer list is materialized, so the inner event stream is the only cursor
             ev_rows = (_row_dict(ev) for ev in s.execute(
                 select(Event).where(Event.thread_id == t.id).order_by(Event.id)

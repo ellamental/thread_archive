@@ -85,6 +85,7 @@ from .layout import (
     THREADS_SUBDIR,
     TRUTH_FORMAT_VERSION,
     TruthFormatError,
+    TruthMigrationRequired,
     _classify_parse_errors,
     _coerce,
     _datetime_cols,
@@ -106,6 +107,7 @@ from .layout import (
     _write_manifest,
     is_redacted_payload,
     log_dir,
+    require_current_format,
     update_manifest,
 )
 from .locks import (

@@ -91,7 +91,7 @@ class TypeValidator(BaseValidator):
                 # other kind means the provider grew a new line type — the
                 # actual format-drift signal, named specifically.
                 if block_type == "unknown_line":
-                    line_type = block.get("line_type") or "unknown"
+                    line_type = str(block.get("line_type") or "unknown")
                     if line_type not in self.config.expected_unmodeled_line_types:
                         unmodeled_line_types.add(line_type)
 

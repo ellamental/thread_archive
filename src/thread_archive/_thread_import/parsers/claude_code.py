@@ -68,7 +68,7 @@ Tool Results in User Messages
 """
 
 import json
-from typing import Any, Dict, List, Optional, Tuple, cast
+from typing import Any, Dict, List, Optional, Tuple, TypedDict, cast
 
 from . import claude_code_blocks as _blocks
 from .base import (
@@ -97,6 +97,12 @@ _ASSISTANT_LINE_ANNOTATIONS: Tuple[Tuple[str, str], ...] = (
     ("gitBranch", "git_branch"),
     ("version", "version"),
 )
+
+
+class _ParseError(TypedDict):
+    line_number: int
+    raw_text: str
+    error: str
 
 _USER_LINE_ANNOTATIONS: Tuple[Tuple[str, str], ...] = (
     ("toolDenialKind", "tool_denial_kind"),
@@ -200,7 +206,7 @@ class ClaudeCodeParser(ProviderParser):
         JSON parse errors are stored as parse_error blocks rather than dropped.
         """
         lines = []
-        parse_errors = []
+        parse_errors: List[_ParseError] = []
 
         for line_num, line in enumerate(jsonl.strip().split("\n"), start=1):
             line = line.strip()
@@ -428,9 +434,11 @@ class ClaudeCodeParser(ProviderParser):
         # the first block.
         structured_result = line.get("toolUseResult")
         if structured_result is not None:
-            for block in content_blocks:
-                if isinstance(block, dict) and block.get("type") == "tool_result":
-                    block["annotations"] = {"structured_result": structured_result}
+            for content_block in content_blocks:
+                if isinstance(content_block, dict) and content_block.get("type") == "tool_result":
+                    cast(Dict[str, Any], content_block)["annotations"] = {
+                        "structured_result": structured_result
+                    }
                     break
 
         annotations = _line_annotations(line, _USER_LINE_ANNOTATIONS)

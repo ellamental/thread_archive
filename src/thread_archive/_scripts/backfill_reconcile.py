@@ -184,7 +184,7 @@ def plan_thread(session, thread_id: str, source: str, lines: list[dict]) -> Thre
         content_index[_content_anchor(e.event_type, e.payload or {}, e.occurred_at)].append(e)
 
     used: set[int] = set()
-    planned_keys: set[str] = set(by_key)
+    planned_keys: set[str] = {key for key in by_key if key is not None}
     for f in fresh:
         if f.dedup_key and f.dedup_key in by_key:
             used.add(by_key[f.dedup_key].id)

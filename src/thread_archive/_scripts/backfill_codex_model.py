@@ -274,7 +274,7 @@ def patch_truth(thread_id: str, patched: dict[int, dict]) -> int:
     return written
 
 
-def _codex_threads(session, limit: Optional[int]) -> list[tuple[int, Optional[str]]]:
+def _codex_threads(session, limit: Optional[int]) -> list[tuple[str, Optional[str]]]:
     """Every codex thread as ``(id, source_id)``, oldest first. Which of them still hold
     placeholder turns is decided by :func:`plan_thread` reading the payloads — not by a
     JSON-path predicate in SQL, which the store's dialect needn't support."""

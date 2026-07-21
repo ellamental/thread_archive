@@ -348,6 +348,13 @@ def test_second_run_refuses_already_migrated(migrated, monkeypatch, capsys) -> N
     assert sorted(p.relative_to(home) for p in home.rglob("*")) == tree_before
 
 
+def test_migration_refuses_newer_truth(archive_home) -> None:
+    (archive_home / "truth").mkdir(parents=True)
+    (archive_home / "truth" / "manifest.json").write_text(json.dumps({"version": 3}))
+    with pytest.raises(RuntimeError, match="cannot migrate truth format v3"):
+        _run_main(archive_home)
+
+
 def test_module_entrypoint_runs_main(archive_home) -> None:
     """``python -m thread_archive._scripts.migrate_thread_ulids`` is the way an
     operator runs this — a real child process, parsing its own argv and exiting
@@ -377,3 +384,30 @@ def test_migration_shards_when_over_flat_max(archive_home, monkeypatch) -> None:
         ulid = mapping[legacy]
         bucket = hashlib.sha256(ulid.encode()).hexdigest()[:2]
         assert (archive_home / "truth" / "threads" / bucket / f"{ulid}.jsonl").exists()
+
+
+def test_migration_repairs_mixed_v1_and_ulid_truth(archive_home) -> None:
+    """The historical bug could append a v2 thread under a v1 manifest.
+
+    Recovery must migrate the integer files without discarding the already-ULID
+    truth-only file that the failed SQLite commit left behind.
+    """
+    make_legacy_home(archive_home, with_unindexed=False, with_kg=False)
+    existing = "01ARZ3NDEKTSV4RRFFQ69G5FAV"
+    _jl(archive_home / "truth" / "threads" / f"{existing}.jsonl", [
+        {"type": "thread", "id": existing, "name": "mixed survivor",
+         "thread_type": "conversation"},
+        _ev(901, existing, "survives migration", "2026-01-04T10:00:00+00:00"),
+    ])
+
+    assert _run_main(archive_home) == 0
+    assert (archive_home / "truth" / "threads" / f"{existing}.jsonl").exists()
+    records = [
+        json.loads(line)
+        for line in (archive_home / "truth" / "threads" / f"{existing}.jsonl")
+        .read_text().splitlines()
+    ]
+    assert records[0]["id"] == existing
+    assert records[1]["thread_id"] == existing
+    assert existing not in _load_mapping(archive_home).values()
+    assert (archive_home / "pre-ulid-backup" / "threads" / f"{existing}.jsonl").exists()

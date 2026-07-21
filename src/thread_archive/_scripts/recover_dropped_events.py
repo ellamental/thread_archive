@@ -37,7 +37,7 @@ import argparse
 import logging
 import uuid as _uuid
 from pathlib import Path
-from typing import Iterable, Optional
+from typing import Any, Iterable, Optional
 
 from sqlalchemy import select
 
@@ -89,7 +89,8 @@ def plan_thread(session, thread_id: str, lines: list[dict]) -> list[Event]:
     out: list[Event] = []
     prev = None
     for msg in messages:
-        pmid = msg.get("provider_message_id") or msg.get("uuid") or ""
+        raw_pmid = msg.get("provider_message_id") or msg.get("uuid") or ""
+        pmid = raw_pmid if isinstance(raw_pmid, str) else str(raw_pmid)
         stream_id, api_call_id = anchor.get(pmid, (str(_uuid.uuid4()), None))
         events = builder.build_events(msg, stream_id, api_call_id, prev_occurred_at=prev)
         if events:
@@ -115,7 +116,7 @@ def run(
     already-imported threads. Returns a summary dict. ``pairs`` overrides the
     on-disk transcript discovery (default: _iter_pairs()) — the discovery
     boundary as a parameter, so tests feed scripted stores."""
-    totals = {
+    totals: dict[str, Any] = {
         "files_seen": 0,
         "threads_mapped": 0,
         "threads_recovered": 0,

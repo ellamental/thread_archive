@@ -15,13 +15,13 @@ Safety model — nothing is destroyed until the operator says so:
 2. The swap moves the old tree + overlays to ``<home>/pre-ulid-backup/`` and
    renames the new ones into place, then writes a v2 manifest (the content-hash
    baseline is dropped — every line changed).
-3. The SQLite index is deleted and rebuilt with ``archive reindex``; rollback is
-   moving the backup back and restoring the saved v1 manifest.
+3. ``archive migrate`` rebuilds the SQLite index and verifies it after this
+   truth swap; rollback evidence remains in ``pre-ulid-backup``.
 
-Run with the watcher stopped: ``launchctl bootout gui/$UID/com.thread-archive.watcher``
-first (thread-monitor must also be told, or use the ops pause mechanism), then::
+The migration holds the archive's exclusive reindex lock, so live writers wait
+without racing the rewrite. Run the complete operator command with::
 
-    .venv/bin/python -m thread_archive._scripts.migrate_thread_ulids [--home PATH] [--dry-run]
+    archive migrate [--home PATH] [--dry-run]
 
 ``--dry-run`` builds the new tree and reports counts without swapping.
 """
@@ -37,15 +37,18 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
-from .._store.ulid import mint_ulid
+from .._config import ENV_HOME
+from .._store.ulid import mint_ulid, normalize_ulid
 from .._truth.layout import (
     THREADS_SUBDIR,
     TRUTH_FORMAT_VERSION,
     ULID_MAPPING_FILE,
+    TruthFormatError,
     _depth_for,
     _thread_relpath,
     update_manifest,
 )
+from .._truth.locks import _hold_reindex_lock, _truth_write_lock
 
 # Overlay files whose records carry thread-id fields, with the fields to map.
 _OVERLAYS: dict[str, tuple[str, ...]] = {
@@ -75,19 +78,30 @@ def _parse_ts_ms(value: object) -> int | None:
     return int(dt.timestamp() * 1000)
 
 
+def _legacy_int(value: object) -> int | None:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int) or (isinstance(value, str) and value.isdigit()):
+        return int(value)
+    return None
+
+
 def build_mapping(index_db: Path) -> dict[int, str]:
     """legacy integer id → freshly minted ULID, timestamped at thread start."""
     conn = sqlite3.connect(f"file:{index_db}?mode=ro", uri=True)
     try:
         starts: dict[int, int | None] = {}
         for tid, inserted in conn.execute("SELECT id, inserted_at FROM threads"):
-            starts[int(tid)] = _parse_ts_ms(inserted)
+            legacy = _legacy_int(tid)
+            if legacy is not None:
+                starts[legacy] = _parse_ts_ms(inserted)
         for tid, first in conn.execute(
             "SELECT thread_id, MIN(occurred_at) FROM events GROUP BY thread_id"
         ):
+            legacy = _legacy_int(tid)
             ms = _parse_ts_ms(first)
-            if ms is not None:
-                starts[int(tid)] = ms
+            if legacy is not None and ms is not None:
+                starts[legacy] = ms
     finally:
         conn.close()
     mapping: dict[int, str] = {}
@@ -102,10 +116,13 @@ def build_mapping(index_db: Path) -> dict[int, str]:
 
 
 class Migrator:
-    def __init__(self, home: Path, mapping: dict[int, str]):
+    def __init__(
+        self, home: Path, mapping: dict[int, str], *, reserved: set[str] | None = None
+    ):
         self.home = home
         self.truth = home / "truth"
         self.mapping = mapping
+        self.reserved = set(mapping.values()) | (reserved or set())
         self.minted_unindexed = 0  # ids seen only in truth, never in the index
 
     def map_id(self, value: object) -> object:
@@ -114,12 +131,16 @@ class Migrator:
             return None
         if isinstance(value, bool):
             return value
-        if isinstance(value, int) or (isinstance(value, str) and value.isdigit()):
-            tid = int(value)
+        tid = _legacy_int(value)
+        if tid is not None:
             if tid not in self.mapping:
                 # Truth knows a thread the index doesn't (e.g. discarded before
                 # commit but its file survived a crash). Mint so no ref dangles.
-                self.mapping[tid] = mint_ulid()
+                ulid = mint_ulid()
+                while ulid in self.reserved:  # pragma: no cover — 80-bit collision
+                    ulid = mint_ulid()
+                self.mapping[tid] = ulid
+                self.reserved.add(ulid)
                 self.minted_unindexed += 1
             return self.mapping[tid]
         return value
@@ -129,12 +150,13 @@ class Migrator:
         n_threads = n_events = 0
         old_threads = self.truth / THREADS_SUBDIR
         for path in sorted(old_threads.rglob("*.jsonl")):
-            try:
-                legacy = int(path.stem)
-            except ValueError:
+            legacy = _legacy_int(path.stem)
+            existing_ulid = normalize_ulid(path.stem)
+            if legacy is None and existing_ulid is None:
                 print(f"  ! skipping stray file {path}", file=sys.stderr)
                 continue
-            ulid = self.map_id(legacy)
+            ulid = self.map_id(legacy) if legacy is not None else existing_ulid
+            assert isinstance(ulid, str)
             out_lines: list[str] = []
             saw_thread_record = False
             with open(path, encoding="utf-8") as fh:
@@ -148,20 +170,25 @@ class Migrator:
                         continue  # torn line; repair's job, don't carry it
                     kind = rec.get("type", "event")
                     if kind == "thread":
-                        rec["id"] = self.map_id(rec.get("id", legacy))
-                        rec["legacy_id"] = legacy
+                        rec["id"] = ulid
+                        if legacy is not None:
+                            rec["legacy_id"] = legacy
                         meta = rec.get("source_metadata")
                         if isinstance(meta, dict) and meta.get("branched_from") is not None:
                             meta["branched_from"] = self.map_id(meta["branched_from"])
                         saw_thread_record = True
                     else:
-                        rec["thread_id"] = self.map_id(rec.get("thread_id", legacy))
+                        rec["thread_id"] = self.map_id(rec.get("thread_id", ulid))
                         n_events += 1
                     out_lines.append(json.dumps(rec, ensure_ascii=False))
             if not saw_thread_record:
-                # Synthesize metadata so the legacy alias survives reindex.
-                stub = {"type": "thread", "id": ulid, "legacy_id": legacy,
-                        "name": f"thread:{legacy}"}
+                # Synthesize metadata so the thread survives reindex. Legacy
+                # aliases are carried only for integer-named v1 files.
+                stub: dict[str, object] = {
+                    "type": "thread", "id": ulid, "name": f"thread:{path.stem}"
+                }
+                if legacy is not None:
+                    stub["legacy_id"] = legacy
                 out_lines.insert(0, json.dumps(stub, ensure_ascii=False))
             rel = _thread_relpath(str(ulid), depth).relative_to(THREADS_SUBDIR)
             dest = new_threads / rel
@@ -234,27 +261,47 @@ class Migrator:
         return n
 
 
-def main(argv: list[str] | None = None) -> int:
-    ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    ap.add_argument("--home", default=os.environ.get(
-        "THREAD_ARCHIVE_HOME", str(Path.home() / ".thread" / "archive")))
-    ap.add_argument("--dry-run", action="store_true")
-    args = ap.parse_args(argv)
+def _existing_ulids(truth: Path) -> set[str]:
+    threads = truth / THREADS_SUBDIR
+    if not threads.exists():
+        return set()
+    return {
+        normalized
+        for path in threads.rglob("*.jsonl")
+        if (normalized := normalize_ulid(path.stem)) is not None
+    }
 
-    home = Path(args.home)
+
+def _migrate_locked(home: Path, *, dry_run: bool = False) -> dict:
     truth = home / "truth"
     manifest = json.loads((truth / "manifest.json").read_text())
-    if int(manifest.get("version", 1)) >= 2:
+    declared = int(manifest.get("version", 1))
+    if declared == TRUTH_FORMAT_VERSION:
         print("already at truth format v2 — nothing to do")
-        return 0
+        return {"changed": False, "version": declared}
+    if declared != 1:
+        raise TruthFormatError(
+            f"cannot migrate truth format v{declared} with a v{TRUTH_FORMAT_VERSION} writer"
+        )
+    backup = home / "pre-ulid-backup"
+    if not dry_run and backup.exists():
+        raise RuntimeError(
+            f"migration backup already exists at {backup}; preserve or move it before retrying"
+        )
     index_db = home / "index.db"
 
     print("building id mapping from the index …")
     mapping = build_mapping(index_db)
     print(f"  {len(mapping)} threads mapped")
 
-    m = Migrator(home, mapping)
-    depth = _depth_for(len(mapping))
+    existing_ulids = _existing_ulids(truth)
+    m = Migrator(home, mapping, reserved=existing_ulids)
+    thread_ids = {
+        path.stem
+        for path in (truth / THREADS_SUBDIR).rglob("*.jsonl")
+        if _legacy_int(path.stem) is not None or normalize_ulid(path.stem) is not None
+    }
+    depth = _depth_for(len(thread_ids))
     new_threads = truth / "threads.new"
     if new_threads.exists():
         shutil.rmtree(new_threads)
@@ -276,12 +323,11 @@ def main(argv: list[str] | None = None) -> int:
     (home / ULID_MAPPING_FILE).write_text(json.dumps(
         {str(k): v for k, v in sorted(m.mapping.items())}, indent=0))
 
-    if args.dry_run:
+    if dry_run:
         print("dry run: leaving truth/threads.new and *.jsonl.new in place; no swap")
-        return 0
+        return {"changed": False, "dry_run": True, "threads": nt, "events": ne}
 
     print("swapping …")
-    backup = home / "pre-ulid-backup"
     backup.mkdir(exist_ok=True)
     (backup / "manifest.v1.json").write_text(json.dumps(manifest, indent=2))
     os.replace(truth / THREADS_SUBDIR, backup / THREADS_SUBDIR)
@@ -300,6 +346,37 @@ def main(argv: list[str] | None = None) -> int:
     update_manifest(truth, _mut)
     print(f"swap done; old truth in {backup}")
     print("next: archive reindex && archive verify")
+    return {"changed": True, "version": TRUTH_FORMAT_VERSION, "threads": nt, "events": ne}
+
+
+def migrate(home: Path, *, dry_run: bool = False) -> dict:
+    """Migrate one home under the same exclusive lock used by reindex.
+
+    Existing ULID files are copied through unchanged, so this also repairs the
+    mixed v1/ULID tree produced by a newer writer that ran before the format
+    guard existed.
+    """
+    home = home.expanduser()
+    previous_home = os.environ.get(ENV_HOME)
+    os.environ[ENV_HOME] = str(home)
+    try:
+        with _hold_reindex_lock(), _truth_write_lock():
+            return _migrate_locked(home, dry_run=dry_run)
+    finally:
+        if previous_home is None:
+            os.environ.pop(ENV_HOME, None)
+        else:
+            os.environ[ENV_HOME] = previous_home
+
+
+def main(argv: list[str] | None = None) -> int:
+    ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    ap.add_argument("--home", default=os.environ.get(
+        ENV_HOME, str(Path.home() / ".thread" / "archive")))
+    ap.add_argument("--dry-run", action="store_true")
+    args = ap.parse_args(argv)
+
+    migrate(Path(args.home), dry_run=args.dry_run)
     return 0
 
 

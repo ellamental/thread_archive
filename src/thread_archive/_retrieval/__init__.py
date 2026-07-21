@@ -445,11 +445,6 @@ def search(
             list({r.get("thread_id") for r in fused if r.get("thread_id")})
         )
         ranked = _rank.rank_search_results(fused, terms, rank_to, thread_prior=prior or None)
-        # Community-coherence re-rank from the corpus-native embedding graph
-        # (default on — measured recall lift at every depth; see embed_graph).
-        # Runs below the cross-encoder: it moves candidate ordering, the
-        # cross-encoder then re-scores the head it's given.
-        ranked = _apply_coherence(ranked)
         # Result-side half of the gate: when the ranked head is already a strong
         # literal match, the lexical order is trustworthy and the cross-encoder
         # stands down — it exists for the vocab-mismatch case, and re-ranking a
@@ -476,6 +471,14 @@ def search(
             )
             if reordered is not None:
                 ranked, did_rerank = reordered + tail, True
+        # Community-coherence re-rank from the corpus-native embedding graph
+        # (default on — measured recall lift at every depth on the log-mined
+        # protocol; see embed_graph). Only when the cross-encoder stood down:
+        # the two are alternative head-orderers, and running coherence under
+        # the re-rank reshuffles which candidates reach its scoring window —
+        # measured end-to-end, that stack loses the recall the arm alone buys.
+        if not did_rerank:
+            ranked = _apply_coherence(ranked)
 
     if not is_count:
         # Every row-shaped output collapses same-anchor twins (a thread-meta

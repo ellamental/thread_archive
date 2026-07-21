@@ -75,6 +75,7 @@ import re
 import uuid as _uuid
 from collections import defaultdict
 from datetime import datetime, timezone
+from functools import partial
 from pathlib import Path
 from typing import Any, Callable, Iterator, Optional
 
@@ -143,7 +144,7 @@ def _iter_conversations(path: Path) -> Iterator[tuple[str, str, Callable[[], lis
     kind = classify_export(path)
     if kind == "claude":
         bundle = _load_claude_export(path)
-        parser = ClaudeParser()
+        claude_parser = ClaudeParser()
         convs = [c for c in bundle["conversations"] if c.get("chat_messages")]
         convs.sort(key=lambda c: c.get("updated_at") or c.get("created_at") or "", reverse=True)
         for conv in convs:
@@ -154,15 +155,15 @@ def _iter_conversations(path: Path) -> Iterator[tuple[str, str, Callable[[], lis
                 "projects": bundle["projects"],
                 "users": bundle["users"],
             }
-            yield "claude", source_id, (lambda s=single: parser.parse_export(s))
+            yield "claude", source_id, partial(claude_parser.parse_export, single)
     elif kind == "chatgpt":
         conversations = _load_chatgpt_export(path)
-        parser = ChatGPTParser()
+        chatgpt_parser = ChatGPTParser()
         convs = [c for c in conversations if isinstance(c, dict) and c.get("mapping")]
         convs.sort(key=_chatgpt_sort_ts, reverse=True)
         for conv in convs:
             source_id = conv.get("id") or conv.get("conversation_id") or ""
-            yield "chatgpt", source_id, (lambda c=conv: parser.parse_export([c]))
+            yield "chatgpt", source_id, partial(chatgpt_parser.parse_export, [conv])
     else:
         raise ValueError(f"not a claude.ai/ChatGPT export bundle (classified {kind!r}): {path}")
 

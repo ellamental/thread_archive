@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 from .._config import resolve_paths
 from .health import read_health, record_health, stamp_heartbeat
@@ -134,7 +134,7 @@ def verify(
 
     with get_session() as s:
         watermark = s.execute(select(func.max(Event.id))).scalar() or 0
-        thread_watermark = s.execute(select(func.max(Thread.id))).scalar() or 0
+        thread_watermark = s.execute(select(func.max(Thread.id))).scalar()
         kg_watermark = s.execute(select(func.max(KgEvent.id))).scalar() or 0
     truth = scan_truth_counts(
         event_id_max=watermark or None, thread_id_max=thread_watermark or None,
@@ -177,6 +177,8 @@ def verify(
     from .._store import get_engine
 
     index_file = get_engine().url.database
+    if index_file is None:
+        raise RuntimeError("archive index engine has no database path")
     qconn = sqlite3.connect(index_file, timeout=5.0)
     try:
         # Some page-level damage comes back as result rows, some as a raised
@@ -259,7 +261,7 @@ def verify(
         failed.append("fts_missing")
     if not schema["ok"]:
         failed.append("schema")
-    result = {
+    result: dict[str, Any] = {
         "ok": not failed,
         "schema": schema,
         "truth": truth,
