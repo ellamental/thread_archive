@@ -23,4 +23,13 @@ else
 fi
 echo
 
+# The realistic first run: discover each provider's store in its real default
+# location (~/.claude/projects, ~/.codex/sessions, the Linux ~/.config app-data
+# dir for Cursor/Cowork) and ingest it through the installed CLI with no hand-fed
+# paths — the clean-container Linux half of the cross-OS first-run proof (macOS is
+# the `package` pytest lane). Always synthetic: it lays out its own fake $HOME.
+echo "=== realistic first-run install check (watch --once discovery -> reindex -> search) ==="
+python tests/install/first_run.py
+echo
+
 echo "ALL INSTALL TESTS PASSED"

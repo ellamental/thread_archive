@@ -1,4 +1,4 @@
-"""Branch-coverage tests for the ``archive`` CLI (:mod:`thread_archive.cli`).
+"""Branch-coverage tests for the ``thread_archive`` CLI (:mod:`thread_archive.cli`).
 
 Companion to ``test_cli_smoke.py``, which drives the verbs end-to-end over a
 seeded archive. This file covers the branches a real run cannot reach, two ways:
@@ -356,6 +356,16 @@ def test_import_unknown_provider_direct_call() -> None:
     with pytest.raises(SystemExit) as exc:
         cli.cmd_import(ns)
     assert "unknown provider 'bogus-provider'" in str(exc.value)
+
+
+def test_setup_verb_dispatches_to_wizard(tmp_path, capsys) -> None:
+    """`thread_archive setup` routes cli.cmd_setup → wizard.run_setup. Under
+    capsys stdout is not a TTY, so the no-``--yes`` run takes the guidance-only
+    branch: no host scan, no home scaffolded, exit 0 — enough to cover the
+    dispatch seam the packaged front door depends on."""
+    rc = cli.main(["setup", "--home", str(tmp_path / "arc")])
+    assert rc == 0
+    assert "thread_archive setup" in capsys.readouterr().out
 
 
 # ── providers ─────────────────────────────────────────────────────────────────

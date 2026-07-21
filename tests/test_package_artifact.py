@@ -247,6 +247,25 @@ def test_installed_mcp_search_and_read_over_imported_data(installed, tmp_path) -
     assert "packaged lifecycle probe" in read["content"][0]["text"]
 
 
+# ── the realistic first run: discovery-driven ingest from real store locations ──
+# The lifecycle test above hand-feeds a session path to `import`. This proves the
+# path a new user's first run actually takes: a fake $HOME with every harness's
+# store in its REAL default location (~/.claude/projects, ~/.codex/sessions, the
+# OS-correct app-data dir for Cursor/Cowork), discovered and ingested by the
+# installed `thread_archive watch --once` with no hand-fed paths, then reindexed
+# and searched back. Runs against the clean wheel-only venv, so it doubles as the
+# cross-OS install proof this `package` lane runs on both macOS (thread-ci) and
+# Linux (GitHub Actions). The logic lives in tests/install/first_run.py, shared
+# with the clean-container Docker install lane.
+
+def test_installed_first_run_discovers_realistic_stores_and_searches(installed, tmp_path) -> None:
+    sys.path.insert(0, str(REPO / "tests" / "install"))
+    import first_run
+
+    # keep=True: pytest owns tmp_path's cleanup, so first_run must not rmtree it.
+    first_run.run(bin_dir=installed, home=tmp_path, keep=True)
+
+
 def test_installed_package_is_private_and_asset_complete(installed, tmp_path) -> None:
     code = (
         "import sys\n"

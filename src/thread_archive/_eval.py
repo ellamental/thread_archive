@@ -55,6 +55,7 @@ import random
 import re
 import time
 from pathlib import Path
+from typing import Any
 
 from sqlalchemy import text as sa_text
 
@@ -93,6 +94,7 @@ def sample_title_cases(n: int, seed: int) -> list[dict]:
             "AND (SELECT count(*) FROM events_fts f WHERE f.thread_id = t.id "
             "     AND f.content_type = 'user') >= 3"
         )).all()
+    rows = list(rows)  # .all() types as an immutable Sequence; shuffle needs a MutableSequence
     random.Random(seed).shuffle(rows)
     return [{"query": title, "gold": [tid], "sessions": []} for tid, title in rows[:n]]
 
@@ -132,7 +134,9 @@ def pair_log_events(events: list[tuple[object, str, object]]) -> list[dict]:
     cases: list[dict] = []
     for sess, evs in per_session.items():
         seen_reads: set[object] = set()
-        current: tuple[str, set[int]] | None = None
+        # gold ids are opaque and heterogeneous — legacy int ids in unit cases,
+        # ULID strings in production — homogeneous within a single case.
+        current: tuple[Any, set[Any]] | None = None
 
         def flush() -> None:
             if current and current[1]:

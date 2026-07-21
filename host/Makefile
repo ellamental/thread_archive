@@ -17,7 +17,7 @@
 
 LABEL     := com.thread-archive.watcher
 REPO      := $(abspath $(CURDIR)/..)
-ENTRY     := $(REPO)/.venv/bin/archive
+ENTRY     := $(REPO)/.venv/bin/thread_archive
 # Logs live next to the data (the archive home), not in the repo.
 LOG_DIR   := $(HOME)/.thread/archive/logs
 

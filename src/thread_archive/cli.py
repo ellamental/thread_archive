@@ -64,7 +64,7 @@ def _self_throttle() -> None:
     except OSError:  # pragma: no cover — nice() can be restricted
         pass
     if sys.platform == "darwin":
-        try:
+        try:  # pragma: no cover — darwin best-effort; the subprocess throttle test proves it, and it can't run in-process without renicing the test runner
             import ctypes
 
             libc = ctypes.CDLL("libc.dylib", use_errno=True)

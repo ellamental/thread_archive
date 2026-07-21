@@ -337,6 +337,11 @@ def test_cursor_default_db_platform_branches(tmp_path, monkeypatch) -> None:
 
 def test_discover_cowork_session_dirs(tmp_path, monkeypatch) -> None:
     home = _home(tmp_path, monkeypatch)
+    # Prove the Darwin branch on any host: fixtures live at the macOS app-data
+    # path, so the live platform.system() read inside app_data_dir must see Darwin
+    # (as the cursor/app-data tests above do), else a Linux host resolves ~/.config
+    # and discovers nothing.
+    _force_system(monkeypatch, "Darwin")
     # Base absent → empty.
     assert discover_cowork_session_dirs() == []
 
@@ -354,6 +359,9 @@ def test_discover_cowork_session_dirs(tmp_path, monkeypatch) -> None:
 
 def test_cowork_watcher_end_to_end(tmp_path, monkeypatch) -> None:
     home = _home(tmp_path, monkeypatch)
+    # Fixtures at the macOS app-data path → force the Darwin branch so the watcher
+    # discovers them on a Linux host too (see test_discover_cowork_session_dirs).
+    _force_system(monkeypatch, "Darwin")
     org_dir = (home / "Library" / "Application Support" / "Claude"
                / "local-agent-mode-sessions" / "user1" / "orgA")
     org_dir.mkdir(parents=True)

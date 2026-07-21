@@ -1610,7 +1610,6 @@ def _agent_sessions_for(s: Session, thread: Thread) -> Optional[dict]:
     # The subagent stores the bare parent session uuid (the tail of the source_id),
     # not the full {project}:{uuid} form — match on that.
     parent_uuids = {sid.rsplit(":", 1)[-1] for sid in parent_source_ids}
-    parent_dir = func.json_extract(Thread.source_metadata, "$.project_dir")
     parent_sid = func.json_extract(Thread.source_metadata, "$.parent_session_id")
     rows = s.execute(
         select(Thread.source_metadata)

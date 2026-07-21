@@ -69,6 +69,28 @@ def _seed_trail(session_name: str, pairs: list[tuple[str, str | None]]) -> str:
     return sid
 
 
+def test_eval_verb_titles_and_from_log_through_the_cli(archive_home, capsys) -> None:
+    """cmd_eval's two ranking protocols end-to-end through the CLI: --titles
+    samples titled threads and scores them (the default); --from-log mines the
+    trail's search→read pairs. Both open the real archive and evaluate with the
+    model-free lexical stack — the dispatch the shipped `thread_archive eval` runs."""
+    from thread_archive import cli
+
+    init_db()
+    tid = _seed_titled_thread("how does token auth work in this system")
+    _seed_trail("agent-x", [("token auth question", tid)])
+
+    assert cli.main(["eval", "--titles", "5", "--json"]) == 0
+    titles = json.loads(capsys.readouterr().out)
+    assert titles["protocol"] == "titles"
+    assert titles["scores"]["n"] >= 1  # the titled thread became a scored case
+
+    assert cli.main(["eval", "--from-log", "5", "--json"]) == 0
+    from_log = json.loads(capsys.readouterr().out)
+    assert from_log["protocol"] == "from-log"
+    assert from_log["scores"]["n"] >= 1  # the trail's search→read pair became a case
+
+
 def test_sample_title_cases_uses_the_title_as_query(archive_home) -> None:
     init_db()
     tid = _seed_titled_thread("how does token auth work in this system")

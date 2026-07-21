@@ -1125,9 +1125,16 @@ COWORK_LINES = [
 ]
 
 
-def _make_cowork_session(fake_home, session="local_sess1"):
-    d = (fake_home / "Library" / "Application Support" / "Claude"
-         / "local-agent-mode-sessions" / "user1" / "org1" / session)
+def _make_cowork_session(session="local_sess1"):
+    # Place the session where the product's own resolver looks on THIS host, so
+    # discovery finds it on macOS (~/Library/Application Support) and Linux
+    # (~/.config) alike — driving the real path instead of patching platform.
+    # HOME is already pointed at the fake machine by the caller.
+    from thread_archive._watcher.paths import app_data_dir
+
+    base = app_data_dir()
+    assert base is not None, "app_data_dir() has no root on this platform"
+    d = base / "Claude" / "local-agent-mode-sessions" / "user1" / "org1" / session
     d.mkdir(parents=True)
     audit = d / "audit.jsonl"
     audit.write_text("\n".join(json.dumps(x) for x in COWORK_LINES) + "\n",
@@ -1149,7 +1156,7 @@ def test_cowork_session_stats_and_token_placeholder_restored(
     fake_home = tmp_path / "cowork-home"
     fake_home.mkdir()
     monkeypatch.setenv("HOME", str(fake_home))
-    audit = _make_cowork_session(fake_home)
+    audit = _make_cowork_session()
     tid = import_cowork_session_incremental(audit, "user1:org1:sess1", None).thread_id
 
     eid, payload, _ = _event(tid, "api_request_completed")

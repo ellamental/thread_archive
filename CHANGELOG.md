@@ -2,6 +2,32 @@
 
 ## Unreleased
 
+- 2026-07-21: One namespaced CLI — the bare, generic `archive` console script is
+  gone. `thread_archive` is now the single front door: the setup wizard became the
+  `thread_archive setup` verb alongside every operator verb (watch, status, nightly,
+  daemon, …), and `python -m thread_archive` runs the same. `archive-mcp` keeps its
+  own console script — what MCP clients point at. The scheduled agents and the
+  self-updater invoke `thread_archive` rather than `archive`, so an existing install's
+  launchd/systemd agents must be reinstalled (`thread_archive daemon install`, plus
+  `--backup`/`--mcp`) to repoint at the renamed script.
+
+- 2026-07-21: Realistic first-run install test (`tests/install/first_run.py`) — proves the
+  path a new user's first run actually takes, which the importer-level `e2e_check.py`
+  (hand-fed paths) never exercised: a fake `$HOME` with every harness's store in its **real
+  default location** (`~/.claude/projects`, `~/.codex/sessions`, the OS-correct app-data dir
+  for Cursor/Cowork, …), discovered and ingested through the installed `thread_archive watch
+  --once` with no hand-fed paths (`import-export` for the two hand-dropped account exports),
+  then reindexed and searched back per provider. It is the cross-OS lane the packaged
+  distribution otherwise lacked: the `package` pytest lane runs it against a clean wheel-only
+  venv on **macOS** (thread-ci) and **Linux** (GitHub Actions), and the Docker `install` lane
+  runs it inside a clean Linux container — so discovery is proven under both
+  `~/Library/Application Support` (macOS) and `~/.config` (Linux). `make_fixtures.py` now
+  defines each provider's payload once and places it in two layouts (flat for `e2e_check`,
+  real-store for `first_run`), so the two proofs can't drift. Fixed three cowork
+  discovery unit tests that assumed a macOS host (fixtures at `~/Library/Application
+  Support`, no OS guard) and so failed in the Linux container — they now force the Darwin
+  branch like the sibling cursor tests, unblocking the container's unit suite on Linux.
+
 - 2026-07-21: `archive eval` — a read-only search-quality self-checkup an operator
   can run over their own archive ("does recall hold on my data"). Three protocols,
   no external labels and nothing leaves the machine: `--titles` (default; each

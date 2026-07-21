@@ -287,7 +287,8 @@ frontend/           # the viewer's React+Vite source (dev-only; builds into _web
 host/               # operator layer: Makefile over `thread_archive daemon`, family-manifest writer
 scripts/            # repo tooling (coverage gate, frontend-build check, license notices)
 evals/              # the search lab: quality harnesses + experiments/ (see evals/README.md)
-tests/install/      # isolated Docker install test + fixtures
+tests/install/      # from-nothing install proofs: clean-container Docker + realistic
+                      #   discovery-driven first run (~/.claude-style stores, macOS + Linux)
 ```
 
 ## Stability
