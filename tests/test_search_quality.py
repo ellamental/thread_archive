@@ -47,11 +47,13 @@ def test_every_gold_reachable_at_limit(corpus) -> None:
 
 
 def test_focused_thread_beats_passing_mentions(corpus) -> None:
-    """A thread about authentication outranks both a long dump and an
-    unrelated thread that each mention the term once (density + decoys)."""
+    """A thread about authentication outranks a long dump and an unrelated
+    thread that each mention the term once, AND a paste that spams the term
+    dozens of times (bm25's favourite — per-length density normalization is
+    what keeps it down)."""
     ranked = top_threads("authentication")
     assert ranked[0] == corpus["auth"]
-    for decoy in ("dump", "css-decoy"):
+    for decoy in ("dump", "css-decoy", "auth-spam"):
         if corpus[decoy] in ranked:
             assert ranked.index(corpus[decoy]) > 0
 
@@ -74,6 +76,14 @@ def test_recency_breaks_a_density_tie(corpus) -> None:
     ranked = top_threads("ingest pipeline metrics")
     assert corpus["recency-new"] in ranked and corpus["recency-old"] in ranked
     assert ranked.index(corpus["recency-new"]) < ranked.index(corpus["recency-old"])
+
+
+def test_recency_outranks_a_lexically_stronger_twin(corpus) -> None:
+    """The old twin repeats the query terms (bm25 prefers it); the recency
+    tiebreaker still resolves the pair toward the thread from this week."""
+    ranked = top_threads("metrics review")
+    assert ranked[0] == corpus["recency-new"]
+    assert corpus["recency-old"] in ranked
 
 
 def test_identifier_query_hits_its_thread_first(corpus) -> None:

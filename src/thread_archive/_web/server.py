@@ -742,7 +742,9 @@ def serve_in_thread(*, host: str = "127.0.0.1", port: int = 8787) -> ThreadingHT
     For ``archive watch --web``: the always-on watcher process cohosts the read
     surface so there's a persistent URL without a second daemon. Assumes the caller
     already opened the archive (the watcher does). The thread is a daemon, so it dies
-    with the process; the caller may ``server_close()`` on shutdown for a clean stop.
+    with the process; for a clean stop the caller calls ``shutdown()`` then
+    ``server_close()`` — in that order, since a bare close doesn't wake the
+    serve_forever poller on Linux and the port keeps accepting meanwhile.
 
     Refuses a non-loopback ``host`` unless ``THREAD_ARCHIVE_WEB_NONLOCAL=1``: the
     viewer is unauthenticated full read of the archive, so exposing it beyond the

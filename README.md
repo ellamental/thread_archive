@@ -79,7 +79,15 @@ real moves. And `scripts/retrieval_judge.py` runs a sample of the mined
 queries through the production stack and has a headless `claude` grade every
 top-10 thread, yielding graded precision, a calibration of the click labels
 themselves, and explicit credit for relevant results the click protocol can
-only score as misses. The knowledge graph gets its own usage meter in
+only score as misses. The judge grades only what production returned, from
+snippets; `scripts/retrieval_mine_gold.py` goes the rest of the way — one
+headless `claude` *agent* per sampled query reads the originating session
+for intent, sweeps the corpus with its own reformulated searches (bounded to
+the corpus as of the original search's date), reads candidates, and writes a
+corpus-grounded gold case. The output is an eval `--cases` file whose
+per-case date bound the scoring search honors, so the one-time mining spend
+buys recall-capable, deterministic labels every later eval run scores
+against for free. The knowledge graph gets its own usage meter in
 [thread-librarian](https://github.com/ellamental/thread_archive_librarian) (`scripts/topic_eval.py` there): **subject
 uptake** — how often a topic read follows a search. A lens nobody pivots
 through is a terrarium, however well curated; uptake is the number that says
@@ -93,13 +101,39 @@ a ranking weight and climb until the evidence matches the stakes:
 | 0 | `tests/test_search_quality.py` (in every pytest run) | checked-in synthetic corpus (`tests/quality_corpus.py`), lexical stack | seconds | every change |
 | 1 | `pytest -m quality_models` | same corpus, real embedding + rerank models | minutes | touching the model arms |
 | 2 | CI `retrieval-gate` row (`retrieval_eval.py --from-log`) | live archive, mined click labels | ~minutes | every commit, via thread-ci |
-| 3 | `retrieval_eval.py` by hand, `graph_eval.py`, `retrieval_judge.py`, `--behavior` | live archive | minutes–hours | evaluating a deliberate ranking change |
+| 3 | `retrieval_eval.py` by hand, `graph_eval.py`, `retrieval_judge.py`, `search_arena.py`, `--behavior` | live archive | minutes–hours | evaluating a deliberate ranking change |
+| 3½ | `retrieval_eval.py --cases` on agent-mined golds (`retrieval_mine_gold.py` to mint them) | live archive, corpus-grounded labels | seconds to score; agent-minutes per mined case | scoring against grounded labels; mining is an occasional cadence |
 | 4 | `pytest -m beir` | external BEIR benchmark | tens of minutes | calibrating against published baselines |
 
 Tier 0 is the laboratory bench: known relevance structure, deterministic,
 and `run_cases(search=...)` scores any candidate ranker against the incumbent
 on identical cases — the A/B seam the higher tiers then validate on real
 usage.
+
+That seam has a front door: **the search lab**. Every tunable of the pipeline
+(ranking weights, decay constants, pool sizes) lives in one object,
+`thread_archive._retrieval.SearchParams`, accepted by `search(params=...)` —
+the shipped defaults ARE the production configuration. Each module in
+`experiments/` is one candidate configuration (a `SearchParams` value, or a
+full `SEARCH` callable for changes params can't express — the contract is in
+`experiments/README.md`), and `scripts/search_lab.py` scores the baseline plus
+every experiment on identical corpus cases and prints a leaderboard with
+deltas: seconds for the lexical stack, `--models` for the fused pipeline. The
+corpus carries adversarial structure (a TF-spam paste bm25 loves, a recency
+pair whose old twin is the lexically stronger match) precisely so
+configurations *separate* — stripping the weighted ranker measurably loses.
+A winner here is a direction, not a verdict; promote it by re-measuring on
+tiers 2–3 before changing the defaults in `_retrieval/params.py`.
+
+The promotion step has its own instrument: **the arena**
+(`scripts/search_arena.py`). It duels a challenger from `experiments/` against
+the shipped configuration on real mined queries — both rankings for each
+query go to a headless `claude` judge, side order randomized, labels blind —
+and reports challenger wins/losses/ties with an exact sign test. Identical
+rankings tie without spending a judge call, so cost scales with how much the
+configurations actually disagree. Where the lab says "this direction looks
+good on the synthetic corpus," the arena says "on real usage, a judge prefers
+it" — the bar to clear before touching the defaults.
 
 **Built like a database, not a folder of exports.**
 - Plain JSONL files are the source of truth — human-readable, greppable, yours. The search index is disposable and rebuilds from them at any time.

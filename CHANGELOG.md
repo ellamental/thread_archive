@@ -2,6 +2,45 @@
 
 ## Unreleased
 
+- Agent-mined gold labels: `scripts/retrieval_mine_gold.py` spawns one
+  headless `claude` agent per sampled real query; the agent reads the
+  originating session for intent, sweeps the corpus with its own searches
+  (date-bounded to the corpus as of the original search via the script's
+  `tool` mode), reads candidates, and emits a corpus-grounded gold case.
+  Cases append to `~/.thread/archive/judged-cases.jsonl` in the eval's
+  `--cases` format with a per-case `until` bound that
+  `retrieval_eval.py --cases` now passes into the scoring search — mined
+  labels are deterministic under corpus growth and cost tokens once, not per
+  eval run. `tests/test_retrieval_mine_gold.py` covers verdict parsing, gold
+  validation (date bound, session exclusion, ref resolution), the prompt's
+  baked-in bound, re-run dedupe, and the `until` flow through `evaluate`.
+
+- New promotion instrument for retrieval experiments: `scripts/search_arena.py`
+  duels a challenger configuration from `experiments/` against the shipped one
+  on real mined queries — both rankings go to a headless `claude` judge, side
+  order randomized per query, labels blind — and reports challenger
+  wins/losses/ties with an exact two-sided sign test. Identical rankings
+  short-circuit to a tie without a judge call, so token cost scales with how
+  much the configurations disagree. `tests/test_search_arena.py` guards the
+  blind side-attribution, the tie short-circuit, and duel scoring with a fake
+  judge in the fast tier.
+
+- The search stack is now configurable end to end, and the quality bench can
+  race configurations. Every pipeline tunable — ranking weights, recency decay,
+  density normalization, RRF k, pool sizes, coherence gamma — moved into one
+  frozen `SearchParams` dataclass (`_retrieval/params.py`, defaults = shipped
+  values with their evidence), threaded through `search(params=...)` and
+  `api.search`. `experiments/` holds named configurations-as-code (a
+  `SearchParams` value or a full `SEARCH` callable; contract in its README),
+  and `scripts/search_lab.py` builds the synthetic quality corpus in a
+  throwaway home, scores baseline + every experiment on identical cases, and
+  prints an MRR/recall leaderboard with deltas — seconds lexically, `--models`
+  for the fused pipeline. The corpus gained adversarial structure so
+  configurations separate (a TF-spam paste bm25 favors, a recency pair whose
+  old twin is the lexically stronger match), with matching tier-0 invariants;
+  `tests/test_search_lab.py` keeps the params seam production-identical at
+  defaults and every experiment contract-conformant.
+
 - The web viewer's thread header now shows the Task-tool subagents a thread
   spawned: an "N agent sessions" line with a color-coded chip per model and its
   run count (e.g. `claude-haiku-4-5 ×3`, `claude-opus-4-7 ×2`), tinted to match
@@ -31,7 +70,15 @@
   (colima, started headlessly when nothing is reachable; Docker Desktop no
   longer required), and the nightly pipeline's `_install_test_alert` watcher
   and the `install_test_last` health stamp are gone — a red CI row is the
-  failure signal now.
+  failure signal now. The lane's first run in this shape caught real rot and
+  one real bug: the image's hand-pinned test-tool list had drifted from the
+  dev extra (it now installs the wheel's own `[dev]`, so the two can't
+  diverge), the container needed git (product runtime: the clone is the
+  install, self-update drives git) and an unprivileged user (root's
+  DAC-override made every chmod-based failure-injection test a no-op), and
+  `archive watch --web` shutdown called `server_close()` without
+  `shutdown()` — on Linux a bare close doesn't wake the serve_forever
+  poller, so the viewer port kept accepting connections after stop.
 
 - Closed the audit's top test-suite gaps (the real reranker was never
   exercised by any automated lane; two importers sat outside the golden and

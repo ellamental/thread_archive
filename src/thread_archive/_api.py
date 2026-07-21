@@ -107,6 +107,7 @@ def search(
     context_lines: int = 2,
     context_events: Optional[str] = None,
     rerank: Optional[bool] = None,
+    params=None,
 ) -> "list[EventHit]":
     """Federated search over conversation events (lexical FTS5 + optional semantic
     vectors → RRF fusion → weighted rank → optional cross-encoder re-rank).
@@ -122,7 +123,9 @@ def search(
     returns the pool chronologically; ``output`` ('count'/'linkable') and
     ``context_lines`` / ``context_events`` shape what each hit carries; ``rerank``
     forces the cross-encoder stage (else auto-gated to conceptual queries when the
-    ``[embeddings]`` extra is present). The ranked shape returns one row per
+    ``[embeddings]`` extra is present); ``params`` is a
+    :class:`thread_archive._retrieval.SearchParams` retrieval configuration
+    (default: the shipped weights — the search-lab experiment seam). The ranked shape returns one row per
     thread, repeats folded into ``_thread_more`` / ``_dup_thread_ids``
     annotations; ``group='none'`` returns every hit as its own row, and
     ``group='dup'`` folds only cross-thread duplicate content, keeping each
@@ -152,6 +155,7 @@ def search(
         context_lines=context_lines,
         context_events=context_events,
         rerank=rerank,
+        params=params,
     )
 
 

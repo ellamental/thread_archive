@@ -17,10 +17,11 @@ The production ranker. The federation produces a pool; this turns it into an ord
      lexical order is already trustworthy and the re-rank stands down (see
      :func:`thread_archive._retrieval.search`).
 
-The weights are the production values, with their rationale: recency 1.0 (the
-corpus skews to OLD threads, so a strong recency boost buries what users actually
-read), fusion 50.0 (the MRR optimum for the fused lexical+vector ranking),
-content-type from ``_CONTENT_TYPE_WEIGHT`` (user > text > tool_result …).
+The weights come from :class:`.params.SearchParams` (see that module for the
+production values and their evidence); content-type from
+``_CONTENT_TYPE_WEIGHT`` (user > text > tool_result …). An alternative
+configuration is another ``SearchParams`` instance passed down from
+``search(params=...)`` — the seam the search lab experiments ride.
 """
 
 from __future__ import annotations
@@ -28,8 +29,11 @@ from __future__ import annotations
 import math
 import re
 from datetime import datetime, timezone
+from typing import Optional
 
 from ._types import EventHit
+from .params import DEFAULT as _DEFAULT_PARAMS
+from .params import SearchParams
 
 # Per-content-type relevance multiplier — user messages are the most intentional,
 # tool/thinking the noisiest. A title is aboutness itself, so it ranks with user
@@ -50,22 +54,10 @@ _CONTENT_TYPE_WEIGHT = {
     "continuation_summary": 0.1,
 }
 
-# Cross-backend RRF fusion weight — the MRR optimum once the vector arm joined the
-# federation (the fusion-sweep: 50.0 Pareto-dominates 0.0 on R@1/10/20 and MRR;
-# swept on the title-proxy eval — re-sweep on the log protocol before treating
-# the exact value as optimal for real queries).
-# Lexical scoring is ~0 for a semantic-only hit, so without this term a
-# vocab-mismatch hit the vector arm surfaced would sink regardless of its rank.
-_SEARCH_FUSION_WEIGHT = 50.0
-
-# Recency weight 1.0 — the corpus skews to OLD threads, so a strong recency boost
-# buries what users actually read; 1.0 keeps a mild recent tiebreaker.
-_SEARCH_RECENCY_WEIGHT = 1.0
-
-# Cross-encoder re-rank pool — how many ranked candidates to feed the reranker
-# before cutting to ``limit``. Wide enough to cover recall@20, small enough to keep
-# the in-process re-rank stage quick.
-RERANK_POOL = 24
+# Cross-encoder re-rank pool at the shipped configuration — how many ranked
+# candidates feed the reranker before cutting to ``limit`` (rationale in
+# params.py). SearchParams.rerank_pool is the per-call override.
+RERANK_POOL = _DEFAULT_PARAMS.rerank_pool
 
 # Function words carry no relevance signal, so they're dropped from the *ranking*
 # term set (density, phrase, the K/N match-quality verdict) — otherwise "how did we
@@ -80,9 +72,10 @@ _STOPWORDS = frozenset(
 )
 
 
-def recency_score(occurred_at, now: datetime | None = None) -> int:
-    """0–20 exponential-decay recency score (half-life ~3 days). Datetime or ISO
-    string in, int out."""
+def recency_score(occurred_at, now: datetime | None = None,
+                  half_life_hours: float = _DEFAULT_PARAMS.recency_half_life_hours) -> int:
+    """0–20 exponential-decay recency score (half-life ~3 days by default).
+    Datetime or ISO string in, int out."""
     dt = _parse_naive_dt(occurred_at)
     if dt is None:
         return 0
@@ -92,7 +85,7 @@ def recency_score(occurred_at, now: datetime | None = None) -> int:
         # skew every event's age by the local UTC offset.
         now = datetime.now(timezone.utc).replace(tzinfo=None)
     age_hours = max(0, (now - dt).total_seconds() / 3600)
-    return max(1, int(20 * math.exp(-age_hours / 72)))
+    return max(1, int(20 * math.exp(-age_hours / half_life_hours)))
 
 
 def _parse_naive_dt(val) -> datetime | None:
@@ -386,24 +379,22 @@ def rank_search_results(
     terms: list[str],
     limit: int,
     *,
-    recency_weight: float = _SEARCH_RECENCY_WEIGHT,
-    density_weight: float = 100.0,
-    phrase_weight: float = 50.0,
-    fusion_weight: float = _SEARCH_FUSION_WEIGHT,
-    content_type_weights: dict[str, float] | None = None,
+    params: Optional[SearchParams] = None,
     now: datetime | None = None,
     thread_prior: dict[str, float] | None = None,
 ) -> list[EventHit]:
     """Re-rank ``results`` by term density, phrase proximity, recency, content-type,
-    and cross-backend fusion (``_rrf``). The production scorer — see the module
-    docstring for the weight evidence. Returns the top ``limit``.
+    and cross-backend fusion (``_rrf``). The production scorer; every weight comes
+    from ``params`` (default: the shipped configuration, :data:`.params.DEFAULT` —
+    see that module for the evidence). Returns the top ``limit``.
 
     ``thread_prior`` maps thread_id → a bounded boost addend (the graph-authority
     prior, :mod:`.graph_prior`): a hit's score is multiplied by ``1 + addend``.
     Absent threads boost by nothing — the prior refines the order, it never
     penalizes."""
+    p = params or _DEFAULT_PARAMS
     now = now or datetime.now(timezone.utc).replace(tzinfo=None)  # naive-UTC, matching occurred_at
-    ct_weights = content_type_weights if content_type_weights is not None else _CONTENT_TYPE_WEIGHT
+    ct_weights = p.content_type_weights if p.content_type_weights is not None else _CONTENT_TYPE_WEIGHT
     term_patterns = {t: re.compile(r"\b" + re.escape(t) + r"\b") for t in terms if len(t) < 4}
 
     def combined_score(result: EventHit) -> float:
@@ -413,7 +404,7 @@ def rank_search_results(
             1 for t in terms
             if (len(t) >= 4 and t in content) or (len(t) < 4 and bool(term_patterns[t].search(content)))
         )
-        density = term_count / max(1, content_len / 500)
+        density = term_count / max(1, content_len / p.density_norm_chars)
 
         phrase_bonus = 0.0
         if len(terms) >= 2:
@@ -429,12 +420,13 @@ def rank_search_results(
                     elif span < 300:
                         phrase_bonus = 1.0
 
-        recency = recency_score(result.get("occurred_at", ""), now)
+        recency = recency_score(result.get("occurred_at", ""), now,
+                                half_life_hours=p.recency_half_life_hours)
         ct_weight = ct_weights.get(result.get("content_type") or "", 1.0)
         rrf = result.get("_rrf", 0.0) or 0.0
         prior = 1.0 + thread_prior.get(result.get("thread_id") or "", 0.0) if thread_prior else 1.0
-        return (density * density_weight + phrase_bonus * phrase_weight
-                + recency * recency_weight + rrf * fusion_weight) * ct_weight * prior
+        return (density * p.density_weight + phrase_bonus * p.phrase_weight
+                + recency * p.recency_weight + rrf * p.fusion_weight) * ct_weight * prior
 
     ranked = sorted(enumerate(results), key=lambda x: (-combined_score(x[1]), x[0]))
     return [r for _, r in ranked[:limit]]

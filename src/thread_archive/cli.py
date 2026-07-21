@@ -226,6 +226,11 @@ def cmd_watch(args: argparse.Namespace) -> int:
         print("\nstopped.", flush=True)
     finally:
         if httpd is not None:
+            # shutdown() must precede server_close(): closing the socket alone
+            # doesn't wake the serve_forever poller on Linux, which keeps the
+            # kernel-side socket alive — and accepting — for the rest of the
+            # poll window.
+            httpd.shutdown()
             httpd.server_close()
     return 0
 

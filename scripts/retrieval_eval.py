@@ -305,8 +305,14 @@ def load_case_file(path: Path) -> list[dict]:
         if not line.strip():
             continue
         row = json.loads(line)
-        cases.append({"query": row["query"], "gold": list(row["gold"]),
-                      "sessions": list(row.get("sessions", []))})
+        case = {"query": row["query"], "gold": list(row["gold"]),
+                "sessions": list(row.get("sessions", []))}
+        # Agent-mined cases (scripts/retrieval_mine_gold.py) carry the corpus
+        # snapshot date the golds were mined under; the scoring search honors
+        # it so post-mining threads can't perturb the case's ranking.
+        if row.get("until"):
+            case["until"] = row["until"]
+        cases.append(case)
     return cases
 
 
@@ -335,6 +341,10 @@ def evaluate(cases: list[dict], *, limit: int, rerank, content_type,
     for case in cases:
         gold = set(case["gold"])
         skip = set(case.get("sessions", []))
+        # A case mined under a corpus snapshot (see load_case_file) is scored
+        # under it too; the kwarg is omitted otherwise so experiment SEARCH
+        # callables that predate it stay compatible.
+        extra = {"until": case["until"]} if case.get("until") else {}
         t0 = time.monotonic()
         hits = search(
             case["query"],
@@ -342,6 +352,7 @@ def evaluate(cases: list[dict], *, limit: int, rerank, content_type,
             content_types=[content_type] if content_type else None,
             exclude_content_types=exclude_content_types,
             rerank=rerank,
+            **extra,
         )
         latencies.append(time.monotonic() - t0)
 

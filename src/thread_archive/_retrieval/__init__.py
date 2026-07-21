@@ -33,6 +33,8 @@ from ._types import EventHit
 from .browse import browse_threads
 from .format import COUNT_FETCH_CAP, format_results
 from .fts import ensure_fts, fts_status, index_events, index_thread_meta, rebuild_fts, search_events
+from .params import DEFAULT as _DEFAULT_PARAMS
+from .params import SearchParams
 from .read import read_thread, read_thread_structured, resolve_thread_ref
 
 logger = logging.getLogger(__name__)
@@ -240,6 +242,7 @@ def search(
     context_lines: int = 2,
     context_events: Optional[str] = None,
     rerank: Optional[bool] = None,
+    params: Optional[SearchParams] = None,
     embedder=None,
     reranker=None,
     session: Optional[Session] = None,
@@ -254,7 +257,10 @@ def search(
     the head re-rank run on (default: the process ones); ``rerank`` forces the
     cross-encoder stage on/off (else auto-gated:
     conceptual multi-term shape AND a ranked head that isn't already a strong
-    literal match).
+    literal match). ``params`` is the retrieval configuration
+    (:class:`.params.SearchParams` — every ranking weight and pool size;
+    default: the shipped values), the seam the search lab scores candidate
+    configurations through.
 
     An **empty query** is a browse (see :mod:`.browse`): one row per thread by
     last activity, honoring ``since``/``until``/``source``/``types``/``topic_id``
@@ -310,6 +316,7 @@ def search(
     ``(thread_id, event_id)`` anchor (a thread-meta title/summary doc and the
     first event it anchors to) collapse to the better-placed row in every
     row-shaped output, grouped or not."""
+    p = params or _DEFAULT_PARAMS
     since_r = resolve_relative_date(since) if since else None
     until_r = resolve_relative_date(until) if until else None
 
@@ -380,7 +387,7 @@ def search(
     # boundary: for a high-frequency term over a ~1M-doc index, a relevant-but-old
     # hit past bm25's top-N is unreachable no matter how the ranker weighs it. The
     # pool is cheap (one indexed FTS scan + one matvec); ranking 200 is microseconds.
-    over = max(limit, COUNT_FETCH_CAP) if is_count else max(limit * 5, 200)
+    over = max(limit, COUNT_FETCH_CAP) if is_count else max(limit * 5, p.pool_floor)
 
     terms = _rank.search_terms(query)
 
@@ -409,7 +416,7 @@ def search(
 
     # Fuse the arms into a wide pool (keeps _rrf agreement + _semantic provenance),
     # then dedup byte-identical hits before ranking.
-    fused = _rrf_merge([lexical, semantic], over) if semantic else lexical
+    fused = _rrf_merge([lexical, semantic], over, k=p.rrf_k) if semantic else lexical
     fused = _rank.dedup_results(fused)
 
     did_rerank = False
@@ -437,14 +444,14 @@ def search(
         if grouping:
             rank_to = len(fused)
         else:
-            rank_to = max(limit, _rank.RERANK_POOL) if do_rerank else limit
+            rank_to = max(limit, p.rerank_pool) if do_rerank else limit
         # Graph-authority prior (fail-soft, boost-only): threads the curated
         # layer keeps citing get a bounded score multiplier. {} without
         # thread-librarian, without curation, or with THREAD_ARCHIVE_GRAPH_RANK=off.
         prior = _graph_prior.thread_graph_prior(
             list({r.get("thread_id") for r in fused if r.get("thread_id")})
         )
-        ranked = _rank.rank_search_results(fused, terms, rank_to, thread_prior=prior or None)
+        ranked = _rank.rank_search_results(fused, terms, rank_to, params=p, thread_prior=prior or None)
         # Result-side half of the gate: when the ranked head is already a strong
         # literal match, the lexical order is trustworthy and the cross-encoder
         # stands down — it exists for the vocab-mismatch case, and re-ranking a
@@ -459,7 +466,7 @@ def search(
         if do_rerank:
             from . import rerank as _rerank
 
-            head, tail = ranked[:_rank.RERANK_POOL], ranked[_rank.RERANK_POOL:]
+            head, tail = ranked[:p.rerank_pool], ranked[p.rerank_pool:]
             # Score the match-centred window, not the doc head — a long hit whose
             # relevant text sits mid-message would otherwise be scored on its intro.
             reordered = reranker.rerank(
@@ -478,7 +485,7 @@ def search(
         # the re-rank reshuffles which candidates reach its scoring window —
         # measured end-to-end, that stack loses the recall the arm alone buys.
         if not did_rerank:
-            ranked = _apply_coherence(ranked)
+            ranked = _apply_coherence(ranked, p.coherence_gamma)
 
     if not is_count:
         # Every row-shaped output collapses same-anchor twins (a thread-meta
@@ -533,6 +540,7 @@ def search(
 
 
 __all__ = [
+    "SearchParams",
     "search",
     "read_thread",
     "read_thread_structured",

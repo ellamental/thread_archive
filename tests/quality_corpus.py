@@ -2,8 +2,9 @@
 
 A small, fully deterministic corpus of claude-code-shaped threads with known
 relevance structure: focused threads, decoys that share vocabulary with them,
-a low-density log dump, a contiguous-phrase thread vs a scattered one, a
-recency pair, and code identifiers. ``CASES`` maps queries to the thread(s)
+a low-density log dump, a term-frequency spam paste (bm25's favourite; density
+normalization's job), a contiguous-phrase thread vs a scattered one, a recency
+pair whose old twin is the lexically stronger match, and code identifiers. ``CASES`` maps queries to the thread(s)
 that should win. Both are checked in — no real usage data, so unlike the
 mined case files this corpus belongs in the repo.
 
@@ -67,6 +68,15 @@ THREADS: dict[str, list[tuple[str, str]]] = {
          _NOISE * 3 + "authentication check passed once here " + _NOISE * 2
          + "postgres briefly slow " + _NOISE * 3),
     ],
+    # TF-spam decoy: "authentication" repeated dozens of times in a mid-length
+    # paste. Raw bm25 rewards the term frequency; per-length density is what
+    # keeps the focused auth thread on top — so this thread is what separates
+    # the weighted ranker from pool order on the leaderboard.
+    "auth-spam": [
+        ("anything odd in this gateway access log? "
+         + " ".join(f"req-{i} authentication ok latency nominal cache hit" for i in range(24)),
+         "Nothing anomalous; the gateway is healthy."),
+    ],
     "db-pool": [
         ("what database does get_session use",
          "get_session hands out connections from the postgres connection pool; the pool caps at ten."),
@@ -116,9 +126,12 @@ THREADS: dict[str, list[tuple[str, str]]] = {
         ("weekly metrics review for the ingest pipeline",
          "Ingest pipeline metrics this week: throughput steady, lag flat."),
     ],
+    # The old twin is the lexically STRONGER match (its terms repeat, so bm25
+    # prefers it); only the recency tiebreaker resolves the pair toward the
+    # thread from this week.
     "recency-old": [
-        ("january metrics review for the ingest pipeline",
-         "Ingest pipeline metrics in january: throughput steady, lag flat."),
+        ("january metrics review notes, second metrics review pass for the ingest pipeline",
+         "January metrics review complete: throughput steady, lag flat."),
     ],
 }
 
@@ -139,9 +152,11 @@ CASES: list[tuple[str, list[str]]] = [
     ("backup restore drill", ["backup"]),
     ("flaky test timeout", ["ci-flaky"]),
     ('"graceful shutdown handler"', ["phrase"]),
+    ("graceful shutdown handler", ["phrase"]),           # unquoted: the phrase bonus decides
     ("save_vectors_sidecar", ["identifier"]),
     ("migration | alembic", ["db-migrate"]),
     ("ingest pipeline metrics", ["recency-new", "recency-old"]),
+    ("metrics review", ["recency-new"]),                 # the recency tiebreaker decides
     ("database", ["db-pool", "db-migrate"]),
 ]
 
@@ -200,19 +215,30 @@ def load_eval_harness():
     return mod
 
 
-def run_cases(name_to_id: dict[str, str], *, search=None, limit: int = 10,
-              rerank=None, cases=None) -> dict:
+def run_cases(name_to_id: dict[str, str], *, search=None, params=None,
+              limit: int = 10, rerank=None, cases=None) -> dict:
     """Score a search callable against the case set. Default: the production
     pipeline as configured by the current process (the model arms honor the
     ``THREAD_ARCHIVE_EMBED`` / ``_RERANK`` switches, so the model-free suite
     measures the lexical stack and the ``quality_models`` tier the fused one).
+    ``params`` scores the production pipeline under an alternative
+    :class:`~thread_archive._retrieval.SearchParams` configuration; ``search``
+    swaps in an arbitrary candidate ranker (mutually exclusive with it).
     """
+    if search is not None and params is not None:
+        raise ValueError("pass search= or params=, not both")
+    if search is None:
+        if params is not None:
+            def search(query, **kw):
+                return _production_search(query, params=params, **kw)
+        else:
+            search = _production_search
     harness = load_eval_harness()
     resolved = [{"query": q, "gold": [name_to_id[g] for g in golds], "sessions": []}
                 for q, golds in (cases or CASES)]
     return harness.evaluate(
         resolved, limit=limit, rerank=rerank, content_type=None,
-        exclude_content_types=None, search=search or _production_search)
+        exclude_content_types=None, search=search)
 
 
 def top_threads(query: str, *, limit: int = 10, **kw) -> list[str]:
