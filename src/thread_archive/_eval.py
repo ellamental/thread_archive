@@ -4,9 +4,9 @@ This is the reusable engine behind two callers: the ``thread_archive eval`` CLI
 command (the shipped, user-facing checkup — "is search working on *my* data")
 and the dev bench under ``evals/`` (the full quality ladder — the CI gate, the
 experiment runner, the LLM judges). Both build eval *cases* under one of a few
-protocols and score a search function against them with the same MRR / recall@k
-loop, so the number the CI gate defends and the number a user sees on their own
-archive come off the same code path.
+protocols and score a search function against them with the same MRR / success@k
+/ recall@k / nDCG@k loop, so the number the CI gate defends and the number a
+user sees on their own archive come off the same code path.
 
 Case protocols:
 
@@ -52,13 +52,14 @@ golds can't be scored against a corpus that has changed under them.
 result, reformulate, or abandon? Zero-label behavioral proxies, not judgments;
 their value is the trend.
 
-The scorer, :func:`evaluate`, reports MRR and recall@1/5/10/20 (binary, over the
-grade-2 ``gold`` set) plus nDCG@1/5/10/20 (graded, over the ``grades`` pool —
-so a ranking is rewarded for ordering grade-2 above grade-1 above grade-0, not
-just for surfacing one right answer; a case with no pool falls back to binary
-relevance so the metric stays defined for the title and log protocols). Reports
-overall and per query-shape. Read-only against the archive; the caller opens it
-(``_api.open_archive``) first.
+The scorer, :func:`evaluate`, reports MRR, success@1/5/10/20 (did any grade-2
+``gold`` thread rank by k?), true recall@1/5/10/20 (what fraction of every
+case's grade-2 gold set ranked by k?), and nDCG@1/5/10/20 (graded, over the
+``grades`` pool — so a ranking is rewarded for ordering grade-2 above grade-1
+above grade-0, not just for surfacing one right answer; a case with no pool
+falls back to binary relevance so the metric stays defined for the title and
+log protocols). Reports overall and per query-shape. Read-only against the
+archive; the caller opens it (``_api.open_archive``) first.
 """
 
 from __future__ import annotations
@@ -372,12 +373,14 @@ def ndcg_at_k(ranked_rels: list[float], pool_rels: list[float], k: int) -> float
 
 def evaluate(cases: list[dict], *, limit: int, rerank, content_type,
              exclude_content_types: list[str] | None, search=None) -> dict:
-    """Score ``cases`` against a search function — MRR, recall@k, nDCG@k, per-shape
-    MRR and latency. ``search`` is the ranker under evaluation (default: the archive's
-    own), so a candidate ranking can be measured against the same cases as the
-    incumbent. MRR/recall are binary over the grade-2 ``gold`` set; nDCG is graded
-    over the case's ``grades`` pool (a case without one falls back to binary
-    relevance — its ``gold`` as grade 1 — so nDCG stays defined for every protocol).
+    """Score ``cases`` against a search function — MRR, success@k, recall@k,
+    nDCG@k, per-shape MRR, and latency. ``search`` is the ranker under evaluation
+    (default: the archive's own), so a candidate ranking can be measured against
+    the same cases as the incumbent. MRR and success use the first grade-2 hit;
+    recall averages the fraction of each case's complete grade-2 ``gold`` set
+    retrieved by k; nDCG is graded over the case's ``grades`` pool (a case without
+    one falls back to binary relevance — its ``gold`` as grade 1 — so nDCG stays
+    defined for every protocol).
 
     Determinism is the caller's job, not a per-case date bound: agent-mined cases
     are scored over the frozen snapshot they were mined against (the caller binds
@@ -387,7 +390,8 @@ def evaluate(cases: list[dict], *, limit: int, rerank, content_type,
         search = api.search
     per_shape: dict[str, list[float]] = {}
     reciprocal_ranks: list[float] = []
-    hits_at: dict[int, int] = {k: 0 for k in RECALL_KS}
+    successes_at: dict[int, int] = {k: 0 for k in RECALL_KS}
+    recall_at: dict[int, float] = {k: 0.0 for k in RECALL_KS}
     ndcg_at: dict[int, float] = {k: 0.0 for k in RECALL_KS}
     latencies: list[float] = []
 
@@ -409,6 +413,7 @@ def evaluate(cases: list[dict], *, limit: int, rerank, content_type,
         latencies.append(time.monotonic() - t0)
 
         rank = 0  # 0 = not found within limit
+        gold_positions: dict[object, int] = {}
         pos = 0
         ranked_rels: list[float] = []  # relevance of each returned doc, in rank order
         for h in hits:
@@ -421,19 +426,24 @@ def evaluate(cases: list[dict], *, limit: int, rerank, content_type,
             ranked_rels.append(float(grades.get(tid, 0)))
             if rank == 0 and tid in gold:
                 rank = pos
+            if tid in gold and tid not in gold_positions:
+                gold_positions[tid] = pos
         rr = 1.0 / rank if rank else 0.0
         reciprocal_ranks.append(rr)
         per_shape.setdefault(query_shape(case["query"]), []).append(rr)
         for k in RECALL_KS:
-            if rank and rank <= k:
-                hits_at[k] += 1
+            found = sum(position <= k for position in gold_positions.values())
+            if found:
+                successes_at[k] += 1
+            recall_at[k] += found / len(gold) if gold else 0.0
             ndcg_at[k] += ndcg_at_k(ranked_rels, pool_rels, k)
 
     n = len(cases)
     return {
         "n": n,
         "mrr": sum(reciprocal_ranks) / n if n else 0.0,
-        "recall": {k: hits_at[k] / n if n else 0.0 for k in RECALL_KS},
+        "success": {k: successes_at[k] / n if n else 0.0 for k in RECALL_KS},
+        "recall": {k: recall_at[k] / n if n else 0.0 for k in RECALL_KS},
         "ndcg": {k: ndcg_at[k] / n if n else 0.0 for k in RECALL_KS},
         "per_shape": {
             shape: {"n": len(rrs), "mrr": sum(rrs) / len(rrs)}

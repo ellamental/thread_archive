@@ -5,7 +5,7 @@ is the retrieval MCP tools plus the truth format (see the package docstring);
 this CLI is the process seam the service manager, cron, and operators use to run
 the private machinery — ingest (``import``, ``import-export``, ``watch``,
 ``embed``), the backup kit (``backup``, ``verify``, ``restore-drill``,
-``restore``, ``reindex``, ``snapshot``, ``migrate``, ``repair``, ``status``, ``nightly``, ``coverage``),
+``restore``, ``reindex``, ``snapshot``, ``migrate``, ``repair``, ``status``, ``nightly``, ``coverage``, ``patterns``),
 the search-quality self-checkup (``eval`` — read-only, scores retrieval on the
 operator's own data), and the service-agent lifecycle (``daemon``). Verbs may change without
 external notice, but they are *wired into* the service manifests, lab's cron
@@ -950,6 +950,40 @@ def cmd_status(args: argparse.Namespace) -> int:
     return report_status(api.status(home=args.home))
 
 
+def cmd_patterns(args: argparse.Namespace) -> int:
+    """Mine behavioral sequences and publish the report consumed by /patterns."""
+    from . import _api as api
+
+    _self_throttle()
+    thread_types = tuple(dict.fromkeys(t.strip() for t in args.types.split(",") if t.strip()))
+    try:
+        report = api.mine_patterns(
+            home=args.home,
+            thread_types=thread_types,
+            min_support=args.min_support,
+            max_length=args.max_length,
+            max_gap=args.max_gap,
+            max_patterns=args.max_patterns,
+        )
+    except ValueError as exc:
+        raise SystemExit(f"thread_archive patterns: {exc}") from exc
+    if args.json:
+        import json
+
+        print(json.dumps(report, indent=2, ensure_ascii=False))
+    else:
+        corpus = report["corpus"]
+        print(
+            f"patterns: mined {corpus['sequence_events']} behavioral events across "
+            f"{corpus['threads']} threads"
+        )
+        print(
+            f"patterns: published {len(report['patterns'])} patterns through event "
+            f"{report['through_event_id']} → {report['report_path']}"
+        )
+    return 0
+
+
 def report_status(st: dict) -> int:
     """Print the operator report for an ``_api.status`` result; return its exit code."""
     print(f"home:    {st['home']}")
@@ -1259,13 +1293,20 @@ def report_eval(report: dict, *, as_json: bool = False) -> int:
             print("Import some conversations first (`thread_archive import` / `thread_archive watch`).")
         return 0
 
+    success = r["success"]
     recall = r["recall"]
     if protocol == "from-log":
         print("Protocol: your searches — real thread_search→thread_read pairs from the trail")
     else:
         print("Protocol: title recall — each thread's own title used as the query")
     print(f"  cases: {r['n']}   MRR: {r['mrr']:.2f}   "
-          + "   ".join(f"R@{k}: {recall[k]:.2f}" for k in _eval_recall_ks(recall)))
+          + "   ".join(f"S@{k}: {success[k]:.2f}" for k in _eval_metric_ks(success)))
+    print("  recall: "
+          + "   ".join(f"R@{k}: {recall[k]:.2f}" for k in _eval_metric_ks(recall)))
+    if r.get("ndcg"):
+        ndcg = r["ndcg"]
+        print("  nDCG:   "
+              + "   ".join(f"nDCG@{k}: {ndcg[k]:.2f}" for k in _eval_metric_ks(ndcg)))
     print(f"  latency p50: {r['latency_p50_ms']:.0f} ms")
     if r.get("per_shape"):
         print()
@@ -1278,16 +1319,16 @@ def report_eval(report: dict, *, as_json: bool = False) -> int:
         print("  surfaced — a strong score confirms recall held; a collapse is the real")
         print("  signal that something broke.")
     else:
-        print("  What this means: R@10 is the share of threads whose own content ranks")
+        print("  What this means: S@10 is the share of threads whose own content ranks")
         print("  in the top 10 when you search their title. Titles share vocabulary with")
         print("  their thread, so read this as \"are my threads findable at all\" — a")
         print("  health check, not a precision score.")
     return 0
 
 
-def _eval_recall_ks(recall: dict) -> list:
-    """Recall cutoffs in ascending order (dict keys survive a JSON round-trip as str)."""
-    return sorted(recall, key=lambda k: int(k))
+def _eval_metric_ks(metric: dict) -> list:
+    """Metric cutoffs in ascending order (dict keys survive JSON as strings)."""
+    return sorted(metric, key=lambda k: int(k))
 
 
 def cmd_setup(args: argparse.Namespace) -> int:
@@ -1457,6 +1498,34 @@ def build_parser() -> argparse.ArgumentParser:
     p_status = sub.add_parser("status", help="archive health / paths / counts")
     _add_home_arg(p_status)
     p_status.set_defaults(func=cmd_status)
+
+    p_patterns = sub.add_parser(
+        "patterns",
+        help="mine recurring behavioral sequences for the web viewer",
+    )
+    _add_home_arg(p_patterns)
+    p_patterns.add_argument(
+        "--types", default="conversation,system",
+        help="comma-separated thread types to mine (default: conversation,system)",
+    )
+    p_patterns.add_argument(
+        "--min-support", type=int, default=10,
+        help="minimum distinct threads containing a pattern (default: 10)",
+    )
+    p_patterns.add_argument(
+        "--max-length", type=int, default=3,
+        help="longest pattern, 2–5 activities (default: 3)",
+    )
+    p_patterns.add_argument(
+        "--max-gap", type=int, default=2,
+        help="events a pattern may skip between activities, 0–8 (default: 2)",
+    )
+    p_patterns.add_argument(
+        "--max-patterns", type=int, default=240,
+        help="maximum patterns persisted across both abstractions (default: 240)",
+    )
+    p_patterns.add_argument("--json", action="store_true", help="print the complete report")
+    p_patterns.set_defaults(func=cmd_patterns)
 
     p_eval = sub.add_parser(
         "eval",

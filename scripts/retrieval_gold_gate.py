@@ -41,17 +41,23 @@ import os
 import sys
 from pathlib import Path
 
-# gold-file basename -> floors (MRR, recall@10), each set a few points under the
-# measured value — a ratchet against regression, not an aspiration. Raise a floor
-# when a shipped change lifts the measured number and holds; the gate prints
-# measured-vs-floor on every run, so the headroom is always visible. Small pools
-# swing on a single case (judged n≈21 → ~0.02 MRR per rank-1→2 flip; a topic pool
-# n≈7 → ~0.07 MRR, ~0.14 recall), so the headroom is roughly one case flip: a
-# lone borderline case must not fire the gate, a systemic drop must.
+# Gold-file basename -> floors for complementary failure modes: MRR protects the
+# first good answer, success@10 protects whether any answer remains reachable,
+# true recall@10 protects coverage of every known grade-2 answer, and nDCG@10
+# protects the ordering of the whole 2/1/0 graded pool. Each floor sits a few
+# points under the measured value — a regression ratchet, not an aspiration.
+# Raise a floor when a shipped change lifts the measured number and holds; the
+# gate prints measured-vs-floor on every run, so the headroom stays visible.
 FLOORS: dict[str, dict[str, float]] = {
-    "judged-cases.jsonl": {"mrr": 0.40, "recall10": 0.80},
-    "topic-cases-suicide.jsonl": {"mrr": 0.58, "recall10": 0.85},
-    "topic-cases-frustration.jsonl": {"mrr": 0.50, "recall10": 0.70},
+    "judged-cases.jsonl": {
+        "mrr": 0.40, "success10": 0.80, "recall10": 0.70, "ndcg10": 0.46,
+    },
+    "topic-cases-suicide.jsonl": {
+        "mrr": 0.58, "success10": 0.85, "recall10": 0.78, "ndcg10": 0.58,
+    },
+    "topic-cases-frustration.jsonl": {
+        "mrr": 0.50, "success10": 0.70, "recall10": 0.50, "ndcg10": 0.45,
+    },
 }
 
 DEFAULT_SNAP = Path.home() / ".thread" / "archive-snap"
@@ -87,16 +93,25 @@ def _first_row(path: Path) -> dict | None:
 
 def check_floors(name: str, report: dict, floor: dict[str, float]) -> list[str]:
     """Breach messages for a scored report against its floors (empty = holds).
-    MRR and recall@10 are the two interpretable regression signals; a floor may
-    set either or both."""
+    A floor may set any subset, though every calibrated production file uses all
+    four complementary signals."""
     breaches = []
     mrr = report["mrr"]
     if mrr < floor["mrr"]:
         breaches.append(f"{name}: MRR {mrr:.3f} < floor {floor['mrr']}")
+    if "success10" in floor:
+        s10 = report["success"][10]
+        if s10 < floor["success10"]:
+            breaches.append(
+                f"{name}: success@10 {s10:.3f} < floor {floor['success10']}")
     if "recall10" in floor:
         r10 = report["recall"][10]
         if r10 < floor["recall10"]:
             breaches.append(f"{name}: recall@10 {r10:.3f} < floor {floor['recall10']}")
+    if "ndcg10" in floor:
+        n10 = report["ndcg"][10]
+        if n10 < floor["ndcg10"]:
+            breaches.append(f"{name}: nDCG@10 {n10:.3f} < floor {floor['ndcg10']}")
     return breaches
 
 
@@ -151,17 +166,22 @@ def main() -> int:
 
         cases = _load(path)
         report = _score(cases)
-        mrr, r10 = report["mrr"], report["recall"][10]
+        mrr = report["mrr"]
+        s10 = report["success"][10]
+        r10 = report["recall"][10]
+        n10 = report["ndcg"][10]
         floor = FLOORS.get(name)
         if floor is None:
-            print(f"  {name:34s} MRR {mrr:.3f}  R@10 {r10:.3f}  "
+            print(f"  {name:34s} MRR {mrr:.3f}  S@10 {s10:.3f}  "
+                  f"R@10 {r10:.3f}  nDCG@10 {n10:.3f}  "
                   f"ungated (no floor — add one to gate)")
             continue
         fb = check_floors(name, report, floor)
         status = "BELOW FLOOR" if fb else "ok"
-        r10_floor = floor.get("recall10")
         print(f"  {name:34s} MRR {mrr:.3f} (floor {floor['mrr']})  "
-              f"R@10 {r10:.3f} (floor {r10_floor if r10_floor is not None else '-'})  {status}")
+              f"S@10 {s10:.3f} (floor {floor.get('success10', '-')})  "
+              f"R@10 {r10:.3f} (floor {floor.get('recall10', '-')})  "
+              f"nDCG@10 {n10:.3f} (floor {floor.get('ndcg10', '-')})  {status}")
         breaches += fb
         scored += 1
 

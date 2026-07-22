@@ -100,9 +100,10 @@ timeout = 600
 
 # Retrieval-quality regression floors: score the snapshot-bound gold case files
 # — the measurement of record for search quality (evals/README.md) — and fail if
-# one drops below its calibrated floor. Unlike the arm-probe row above this DOES
-# run a metric, but only as a one-way ratchet (floors live in the script, calibrated
-# under measured), never a displayed per-commit quality number — the distinction
+# one drops below its calibrated MRR / success@10 / true recall@10 / nDCG@10
+# floors. Unlike the arm-probe row above this DOES run metrics, but only as a
+# one-way ratchet (floors live in the script, calibrated under measured), never
+# a displayed per-commit quality number — the distinction
 # that kept click-label MRR off the probe row holds here too. Scores over the
 # frozen snapshot the golds are bound to (~/.thread/archive-snap); when that
 # snapshot is absent, or a gold has gone stale mid-re-mine, the affected file is

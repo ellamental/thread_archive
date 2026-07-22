@@ -26,11 +26,14 @@ def test_expansion_excludes_pool_and_ranks_by_score() -> None:
     assert graph_eval.expansion_candidates(pool, community, members, scores, cap=2) == ["y", "z"]
 
 
-def test_score_case_counts_recall_window() -> None:
-    hits = {k: 0 for k in graph_eval.RECALL_KS}
+def test_score_case_counts_success_and_gold_coverage() -> None:
+    successes = {k: 0 for k in graph_eval.RECALL_KS}
+    recall = {k: 0.0 for k in graph_eval.RECALL_KS}
     rr: list = []
-    rank = graph_eval.score_case(["x", "gold", "y"], {"gold"}, hits, rr)
+    rank = graph_eval.score_case(
+        ["x", "gold", "y"], {"gold", "other"}, successes, recall, rr)
     assert rank == 2 and rr == [0.5]
-    assert hits[1] == 0 and hits[5] == 1 and hits[20] == 1
-    rank = graph_eval.score_case(["x"], {"gold"}, hits, rr)
+    assert successes[1] == 0 and successes[5] == 1 and successes[20] == 1
+    assert recall[1] == 0.0 and recall[5] == 0.5 and recall[20] == 0.5
+    rank = graph_eval.score_case(["x"], {"gold"}, successes, recall, rr)
     assert rank == 0 and rr[-1] == 0.0

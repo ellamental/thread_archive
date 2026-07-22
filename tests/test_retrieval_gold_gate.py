@@ -52,30 +52,36 @@ def test_every_floor_names_a_gold_shaped_file() -> None:
     # it would gate a file the gate never sees. Keep floors keyed to real gold
     # basenames.
     markers = gate._NON_GOLD_MARKERS
-    for name in gate.FLOORS:
+    for name, floor in gate.FLOORS.items():
         assert name.endswith(".jsonl") and "cases" in name
         assert not any(marker in name for marker in markers), name
+        assert set(floor) == {"mrr", "success10", "recall10", "ndcg10"}
 
 
-def test_check_floors_flags_mrr_and_recall() -> None:
-    floor = {"mrr": 0.40, "recall10": 0.80}
-    ok = {"mrr": 0.45, "recall": {10: 0.90}}
+def test_check_floors_flags_each_quality_signal() -> None:
+    floor = {"mrr": 0.40, "success10": 0.80,
+             "recall10": 0.70, "ndcg10": 0.50}
+    ok = {"mrr": 0.45, "success": {10: 0.90},
+          "recall": {10: 0.75}, "ndcg": {10: 0.55}}
     assert gate.check_floors("f", ok, floor) == []
 
-    low_mrr = {"mrr": 0.30, "recall": {10: 0.90}}
+    low_mrr = {**ok, "mrr": 0.30}
     assert gate.check_floors("f", low_mrr, floor) == [
         "f: MRR 0.300 < floor 0.4"
     ]
 
-    low_both = {"mrr": 0.30, "recall": {10: 0.50}}
-    breaches = gate.check_floors("f", low_both, floor)
-    assert len(breaches) == 2
+    low_all = {"mrr": 0.30, "success": {10: 0.60},
+               "recall": {10: 0.40}, "ndcg": {10: 0.30}}
+    breaches = gate.check_floors("f", low_all, floor)
+    assert len(breaches) == 4
+    assert any("success@10" in b for b in breaches)
     assert any("recall@10" in b for b in breaches)
+    assert any("nDCG@10" in b for b in breaches)
 
 
-def test_check_floors_recall_optional() -> None:
-    # A floor may set MRR only; recall must not be required when unspecified.
-    assert gate.check_floors("f", {"mrr": 0.5, "recall": {10: 0.0}}, {"mrr": 0.4}) == []
+def test_check_floors_other_metrics_optional() -> None:
+    # A floor may set MRR only; the other report metrics are not required then.
+    assert gate.check_floors("f", {"mrr": 0.5}, {"mrr": 0.4}) == []
 
 
 def test_absent_snapshot_skips_green(tmp_path, monkeypatch, capsys) -> None:

@@ -10,7 +10,7 @@ searches in isolation**, because that is what the click protocol can label. It
 is not how agents use the tool. In practice an agent fires several searches —
 often in parallel, reformulating, browsing, then reading around a hit — and
 the session-level question ("did the agent get to the right conversation?")
-succeeds far more often than any one query's recall@10 suggests. The
+succeeds far more often than any one query's success@10 suggests. The
 single-shot numbers are the *tunable* signal, not the product experience.
 
 ## Measured against real usage, not a synthetic benchmark
@@ -22,7 +22,7 @@ those search→read pairs: each query is one an agent actually ran, and the
 thread the agent opened next is the answer that must rank. On a 17k-thread /
 3.7M-event archive, 561 mined cases:
 
-| search stack | MRR | recall@10 | p50 latency |
+| search stack | MRR | success@10 | p50 latency |
 |---|---|---|---|
 | core install (FTS5 lexical) | 0.19 | 0.33 | 0.6 s |
 | + local semantic fusion | 0.25 | 0.43 | 0.6 s |
@@ -34,7 +34,7 @@ nothing better existed — so relevant siblings score as misses, and a stack
 that surfaces what past search never could gets no credit for it. Good
 numbers here mean the stack reliably re-finds what real searches actually
 delivered; they cannot certify there was nothing better to find. Semantic
-fusion is the layer that pays — +10 points of recall@10 over the lexical core
+fusion is the layer that pays — +10 points of success@10 over the lexical core
 at no latency cost. The cross-encoder adds about two more for 5× the latency,
 which is why the pipeline auto-gates it to conceptual queries instead of
 running it everywhere. Both model arms have an off switch —
@@ -46,7 +46,7 @@ cheap and free of the cold-start model load (`retrieval_eval.py
 (thread centroids → cosine kNN → Leiden — zero curation input, every embedded
 conversation a node). Within a ranked pool, threads whose community carries
 more of the pool's top mass get a small boost; on this protocol it lifts
-recall at every depth past 1 (R@5 0.327→0.341, R@10 0.414→0.433, R@20
+success at every depth past 1 (S@5 0.327→0.341, S@10 0.414→0.433, S@20
 0.492→0.508) with MRR flat, and `evals/graph_eval.py` re-measures it. It
 orders the head only when the cross-encoder stands down: the two are
 alternative head orderers, and stacking coherence under the rerank measures
@@ -85,8 +85,11 @@ corpus snapshot with its own reformulated searches, reads candidates, and
 writes a corpus-grounded, graded gold case — and `evals/topic_mine_gold.py`
 mints graded cases from a curated topic dense with confounds. Both write
 snapshot-bound eval `--cases` files, so the one-time mining spend buys
-recall-capable, deterministic labels every later eval run scores against for
-free.
+coverage-capable, deterministic labels every later eval run scores against for
+free. The scorer keeps first-hit success separate from true recall: success@k
+asks whether any grade-2 answer ranks by k, while recall@k measures the fraction
+of every case's known grade-2 set recovered. nDCG@k measures the order of the
+whole graded pool, including partial answers and hard negatives.
 
 ## The quality ladder
 
@@ -101,7 +104,7 @@ is the working manual:
 | 1 | `pytest -m quality_models` | same corpus, real embedding + rerank models | minutes | touching the model arms |
 | 2 | CI `retrieval-gate` (arm-liveness probes) + `retrieval-gold-gate` (gold-file regression floors) | live archive + the golds' frozen snapshot | ~a minute | every commit, via thread-ci |
 | 3 | `retrieval_eval.py` by hand, `graph_eval.py`, `--behavior` | live archive | minutes | evaluating a deliberate ranking change |
-| 3½ | `retrieval_eval.py --cases` on agent-mined golds (`retrieval_mine_gold.py` to mint them) | live archive, corpus-grounded labels | seconds to score; agent-minutes per mined case | scoring against grounded labels; mining is an occasional cadence |
+| 3½ | `retrieval_eval.py --cases` on agent-mined golds (`retrieval_mine_gold.py` to mint them) | frozen snapshot, corpus-grounded labels | seconds to score; agent-minutes per mined case | scoring against grounded labels; mining is an occasional cadence |
 | 4 | `pytest -m beir` | external BEIR benchmark | tens of minutes | calibrating against published baselines |
 
 Tier 0 is the laboratory bench: known relevance structure, deterministic,

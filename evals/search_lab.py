@@ -6,8 +6,8 @@ stack — a :class:`thread_archive._retrieval.SearchParams` value or a full
 ``SEARCH`` callable (contract in ``evals/experiments/README.md``). This runner builds
 the checked-in synthetic corpus (``tests/quality_corpus.py``) in a throwaway
 archive home, scores the baseline and every configuration on the identical
-cases with the same MRR/recall loop as the live-archive harness, and prints a
-leaderboard with deltas against the baseline.
+cases with the same MRR/success/true-recall/nDCG loop as the live-archive
+harness, and prints a leaderboard with deltas against the baseline.
 
 Fast by default (lexical stack, seconds); ``--models`` embeds the corpus and
 runs the fused pipeline (real torch models — minutes on a cold cache), which is
@@ -115,7 +115,9 @@ def run_lab(name_to_id: dict[str, str], experiments: list[Experiment], *,
             "name": name,
             "hypothesis": hypothesis,
             "mrr": rep["mrr"],
+            "success": {str(k): v for k, v in rep["success"].items()},
             "recall": {str(k): v for k, v in rep["recall"].items()},
+            "ndcg": {str(k): v for k, v in rep["ndcg"].items()},
             "per_shape": rep["per_shape"],
             "latency_p50_ms": rep["latency_p50_ms"],
         }
@@ -131,12 +133,14 @@ def run_lab(name_to_id: dict[str, str], experiments: list[Experiment], *,
 def _print_leaderboard(report: dict) -> None:
     rows = report["rows"]
     name_w = max(len(r["name"]) for r in rows) + 2
-    print(f"{'config':<{name_w}} {'MRR':>6} {'ΔMRR':>7} {'R@1':>5} {'R@5':>5} {'R@10':>5} {'p50ms':>7}")
+    print(f"{'config':<{name_w}} {'MRR':>6} {'ΔMRR':>7} "
+          f"{'S@10':>5} {'R@10':>5} {'nDCG10':>7} {'p50ms':>7}")
     for r in rows:
         delta = f"{r['delta_mrr']:+.3f}" if r["name"] != "baseline" else "—"
-        rec = r["recall"]
+        suc, rec, ndcg = r["success"], r["recall"], r["ndcg"]
         print(f"{r['name']:<{name_w}} {r['mrr']:>6.3f} {delta:>7} "
-              f"{rec.get('1', 0.0):>5.2f} {rec.get('5', 0.0):>5.2f} {rec.get('10', 0.0):>5.2f} "
+              f"{suc.get('10', 0.0):>5.2f} {rec.get('10', 0.0):>5.2f} "
+              f"{ndcg.get('10', 0.0):>7.2f} "
               f"{r['latency_p50_ms']:>7.1f}")
     print()
     for r in rows[1:]:

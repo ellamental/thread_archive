@@ -32,8 +32,8 @@ A module (filename = experiment name; `_`-prefixed files are skipped) defines:
 ```
 
 The leaderboard scores every configuration on the identical cases
-(`tests/quality_corpus.CASES`) with the same MRR/recall loop as the
-live-archive harness, baseline first, deltas against it. The corpus is synthetic and
+(`tests/quality_corpus.CASES`) with the same MRR/success/true-recall/nDCG loop
+as the live-archive harness, baseline first, deltas against it. The corpus is synthetic and
 lexically easy — a small delta here is a *direction*, not a shipping verdict;
 promote a winner by re-measuring on the live tiers before changing `params.py`
 defaults.

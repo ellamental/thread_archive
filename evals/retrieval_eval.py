@@ -43,8 +43,9 @@ them out of the repo.
 signals from the whole trail — per search, did the agent click a result,
 reformulate, or abandon? Proxies, not judgments; their value is the trend.
 
-Reports MRR and recall@1/5/10/20 (binary, over each case's gold) and, when a
-case file carries a graded pool, nDCG@1/5/10/20 (graded), overall and per
+Reports MRR, success@1/5/10/20 (whether any gold ranks), true
+recall@1/5/10/20 (the fraction of every case's gold set retrieved), and, when
+a case file carries a graded pool, nDCG@1/5/10/20 (graded), overall and per
 query-shape (so a lexical regression can't hide behind semantic wins).
 ``--mined-after`` restricts the log protocols to trail events after a date
 (the time-based holdout); ``--trend-out`` appends any run's report as one
@@ -194,7 +195,7 @@ def main() -> None:
                     "trend; the CI gate row points it at "
                     "~/.thread/archive/retrieval-trend.jsonl")
     ap.add_argument("--seed", type=int, default=7, help="case sampling seed")
-    ap.add_argument("--limit", type=int, default=20, help="results per query (recall ceiling)")
+    ap.add_argument("--limit", type=int, default=20, help="results per query (metric ceiling)")
     ap.add_argument("--rerank", choices=["auto", "on", "off"], default="auto",
                     help="cross-encoder head re-rank (default: the pipeline's auto-gate)")
     ap.add_argument("--lexical-only", action="store_true",
@@ -236,8 +237,11 @@ def main() -> None:
         "floors are a ratchet calibrated under measured values, not a target)"
     )
     gate.add_argument("--min-mrr", type=float, default=None)
+    gate.add_argument("--min-success10", type=float, default=None)
+    gate.add_argument("--min-success20", type=float, default=None)
     gate.add_argument("--min-recall10", type=float, default=None)
     gate.add_argument("--min-recall20", type=float, default=None)
+    gate.add_argument("--min-ndcg10", type=float, default=None)
     args = ap.parse_args()
 
     if args.lexical_only and args.require_rerank:
@@ -329,6 +333,7 @@ def main() -> None:
         "rerank": args.rerank, "lexical_only": args.lexical_only,
         "mined_after": args.mined_after,
         "n": report["n"], "mrr": report["mrr"],
+        "success": {str(k): v for k, v in report["success"].items()},
         "recall": {str(k): v for k, v in report["recall"].items()},
         "ndcg": {str(k): v for k, v in report["ndcg"].items()},
         "latency_p50_ms": report["latency_p50_ms"],
@@ -338,7 +343,8 @@ def main() -> None:
         print(json.dumps(report, indent=2))
     else:
         print(f"cases: {report['n']}   MRR: {report['mrr']:.3f}   "
-              + "   ".join(f"R@{k}: {v:.3f}" for k, v in report["recall"].items()))
+              + "   ".join(f"S@{k}: {v:.3f}" for k, v in report["success"].items()))
+        print("   ".join(f"R@{k}: {v:.3f}" for k, v in report["recall"].items()))
         print("   ".join(f"nDCG@{k}: {v:.3f}" for k, v in report["ndcg"].items()))
         print(f"latency p50: {report['latency_p50_ms']:.0f} ms")
         for shape, stats in report["per_shape"].items():
@@ -347,10 +353,18 @@ def main() -> None:
     breaches = []
     if args.min_mrr is not None and report["mrr"] < args.min_mrr:
         breaches.append(f"MRR {report['mrr']:.3f} < floor {args.min_mrr}")
+    if args.min_success10 is not None and report["success"][10] < args.min_success10:
+        breaches.append(
+            f"success@10 {report['success'][10]:.3f} < floor {args.min_success10}")
+    if args.min_success20 is not None and report["success"][20] < args.min_success20:
+        breaches.append(
+            f"success@20 {report['success'][20]:.3f} < floor {args.min_success20}")
     if args.min_recall10 is not None and report["recall"][10] < args.min_recall10:
         breaches.append(f"recall@10 {report['recall'][10]:.3f} < floor {args.min_recall10}")
     if args.min_recall20 is not None and report["recall"][20] < args.min_recall20:
         breaches.append(f"recall@20 {report['recall'][20]:.3f} < floor {args.min_recall20}")
+    if args.min_ndcg10 is not None and report["ndcg"][10] < args.min_ndcg10:
+        breaches.append(f"nDCG@10 {report['ndcg'][10]:.3f} < floor {args.min_ndcg10}")
     if breaches:
         for b in breaches:
             print(f"RETRIEVAL GATE BREACH: {b}", file=sys.stderr)

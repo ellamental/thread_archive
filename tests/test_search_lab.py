@@ -106,7 +106,9 @@ def test_lab_run_scores_every_experiment_against_baseline(corpus) -> None:
     assert mrrs == sorted(mrrs, reverse=True)  # leaderboard order
     for r in rows:
         assert 0.0 <= r["mrr"] <= 1.0
+        assert set(r["success"]) >= {"1", "5", "10"}
         assert set(r["recall"]) >= {"1", "5", "10"}
+        assert set(r["ndcg"]) >= {"1", "5", "10"}
     # The bench can distinguish configurations: stripping the whole weighted
     # ranker (pool_order) must not beat the shipped weights on this corpus.
     by_name = {r["name"]: r for r in rows}

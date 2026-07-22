@@ -185,10 +185,26 @@ def test_evaluate_rank_is_first_gold_hit():
     report = retrieval_eval.evaluate(
         [{"query": "q", "gold": [3, 5], "sessions": []}],
         limit=20, rerank=False, content_type=None, exclude_content_types=None,
-        search=_ranker(9, 5, 3))
+        search=_ranker(9, 5, 7))
     assert report["mrr"] == 0.5  # first gold (5) at rank 2
+    assert report["success"][1] == 0.0
+    assert report["success"][5] == 1.0
     assert report["recall"][1] == 0.0
-    assert report["recall"][5] == 1.0
+    assert report["recall"][5] == 0.5  # one of two relevant threads recovered
+
+
+def test_evaluate_true_recall_averages_per_case_gold_coverage():
+    report = retrieval_eval.evaluate(
+        [
+            {"query": "q1", "gold": ["A", "B"], "sessions": []},
+            {"query": "q2", "gold": ["C"], "sessions": []},
+        ],
+        limit=2, rerank=False, content_type=None, exclude_content_types=None,
+        search=_ranker("A", "C"),
+    )
+    # q1 recovers 1/2 and q2 recovers 1/1: macro recall is (0.5 + 1.0) / 2.
+    assert report["recall"][5] == 0.75
+    assert report["success"][5] == 1.0
 
 
 def test_evaluate_skips_originating_session_hits():
@@ -207,6 +223,7 @@ def test_evaluate_miss_scores_zero():
         limit=20, rerank=False, content_type=None, exclude_content_types=None,
         search=_ranker(1, 2, 3))
     assert report["mrr"] == 0.0
+    assert all(v == 0.0 for v in report["success"].values())
     assert all(v == 0.0 for v in report["recall"].values())
 
 
