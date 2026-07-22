@@ -61,17 +61,18 @@ point — whatever their value for browsing and curation, ranked search does
 not measurably ride on them. (An earlier title-as-query eval said otherwise
 on every count; its queries were LLM distillations of the threads they named,
 and it flattered every layer that searched other distillations. It survives
-in the harness as a quick local probe; CI runs a single lean gate — semantic
-arm verified alive directly, plus a small seeded sample of the log-mined
-cases as a collapse alarm.)
+in the harness as a quick local probe; CI runs a single lean gate that
+verifies both model arms are alive directly, with no metric run — per-commit
+click-label numbers wear the shape of a quality score without being one, so
+quality is measured against the snapshot-bound gold files instead.)
 
 ## Beyond the click labels
 
 The same trail powers three more instruments, each aimed at a limit of the
-click labels. Every CI gate run appends its numbers to a trend ledger
-(`~/.thread/archive/retrieval-trend.jsonl`), so quality is a time series, not
-a launch-day screenshot, and `--mined-after` holds out only the cases mined
-after a ranking change shipped. `--behavior` reports zero-label usage
+click labels. Any harness run can append its numbers to a trend ledger
+(`--trend-out` → `~/.thread/archive/retrieval-trend.jsonl`), so deliberate
+measurements accumulate into a time series, and `--mined-after` holds out
+only the cases mined after a ranking change shipped. `--behavior` reports zero-label usage
 signals — for every search the trail shows whether the agent opened a
 result, searched again, or walked away — rates that move only when something
 real moves. And `evals/retrieval_judge.py` runs a sample of the mined
@@ -99,7 +100,7 @@ is the working manual:
 |---|---|---|---|---|
 | 0 | `tests/test_search_quality.py` (in every pytest run) | checked-in synthetic corpus (`tests/quality_corpus.py`), lexical stack | seconds | every change |
 | 1 | `pytest -m quality_models` | same corpus, real embedding + rerank models | minutes | touching the model arms |
-| 2 | CI `retrieval-gate` row (`retrieval_eval.py --from-log`) | live archive, mined click labels | ~minutes | every commit, via thread-ci |
+| 2 | CI `retrieval-gate` row (`retrieval_eval.py --probes-only`) | live archive, model-arm liveness probes only | ~a minute | every commit, via thread-ci |
 | 3 | `retrieval_eval.py` by hand, `graph_eval.py`, `retrieval_judge.py`, `search_arena.py`, `--behavior` | live archive | minutes–hours | evaluating a deliberate ranking change |
 | 3½ | `retrieval_eval.py --cases` on agent-mined golds (`retrieval_mine_gold.py` to mint them) | live archive, corpus-grounded labels | seconds to score; agent-minutes per mined case | scoring against grounded labels; mining is an occasional cadence |
 | 4 | `pytest -m beir` | external BEIR benchmark | tens of minutes | calibrating against published baselines |

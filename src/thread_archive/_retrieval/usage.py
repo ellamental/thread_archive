@@ -1,11 +1,11 @@
 """The retrieval-usage ledger: ``<home>/retrieval-usage.jsonl``.
 
 Retrieval quality has exactly one honest ground truth: what agents actually
-search for and which results they go on to read. The CI retrieval gate's
-auto-titles protocol is a floor ratchet over a proxy task; this ledger captures
-the real task — every ``thread_search`` and ``thread_read`` served by the MCP
-surface — so a future eval (and the knowledge-layer verdict) can be built from
-observed behaviour instead of intuition. A read joins to the searches before it
+search for and which results they go on to read. This ledger captures that
+real task — every ``thread_search`` and ``thread_read`` served by the MCP
+surface — so evals (and the knowledge-layer verdict) can be built from
+observed behaviour instead of intuition: it is the sampling frame of real
+query shapes the gold miner draws from. A read joins to the searches before it
 by thread id.
 
 Records hold query text, filter parameters, result *ids*, and the call's

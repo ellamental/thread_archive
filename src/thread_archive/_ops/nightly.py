@@ -190,7 +190,6 @@ def nightly(
     result["ok"] = not failed
     result["failed_stages"] = failed
     result["drift_alert"] = _drift_alert()
-    result["retrieval_trend_alert"] = _retrieval_trend_alert()
     record_health("nightly_last", {
         "dest": result["dest"],
         "ok": result["ok"],
@@ -216,12 +215,6 @@ def nightly(
     # it lasts; goes quiet on its own the day after the ledger does.
     if result["drift_alert"] and notify_url:
         result["drift_notify_error"] = _notify(notify_url, result["drift_alert"])
-    # Same warn-never-red contract for the trend watcher: the ledger going
-    # quiet or sliding is a thing to read in the morning, not a reason to fail
-    # a night of good backups.
-    if result["retrieval_trend_alert"] and notify_url:
-        result["retrieval_trend_notify_error"] = _notify(
-            notify_url, result["retrieval_trend_alert"])
     return result
 
 
@@ -256,69 +249,3 @@ def _drift_alert() -> Optional[str]:
         return None
 
 
-# The retrieval-trend reader's thresholds. The CI retrieval-gate appends one
-# ledger row per sweep; a ledger that has gone quiet means the gate itself
-# stopped running, and a sustained median slide means quality is eroding in the
-# wide band between the gate's collapse floors and healthy. Both are
-# warn-and-notify, never a failed stage: the ledger is advisory, and the gate's
-# own floors remain the only hard bar.
-_TREND_STALE_DAYS = 7.0
-_TREND_RECENT_ROWS = 7
-_TREND_BASELINE_ROWS = 30
-_TREND_DEGRADE_RATIO = 0.7
-
-
-def _retrieval_trend_alert() -> Optional[str]:
-    """One alert line when the retrieval trend ledger has gone quiet or its
-    recent MRR median slid well under its baseline, else None. An absent ledger
-    is None too — only a ledger that *was* being written can go stale. Fail-soft
-    like :func:`_drift_alert`: an unreadable ledger never breaks the night."""
-    from datetime import datetime, timedelta, timezone
-    from statistics import median
-
-    from .._config import resolve_paths
-
-    try:
-        ledger = resolve_paths().home / "retrieval-trend.jsonl"
-        if not ledger.exists():
-            return None
-        rows = []
-        for line in ledger.read_text(encoding="utf-8").splitlines():
-            try:
-                row = json.loads(line)
-            except ValueError:
-                continue
-            if isinstance(row, dict) and isinstance(row.get("mrr"), (int, float)):
-                rows.append(row)
-        if not rows:
-            return None
-        try:
-            newest = datetime.fromisoformat(rows[-1]["at"])
-            if newest.tzinfo is None:
-                newest = newest.replace(tzinfo=timezone.utc)
-        except (TypeError, KeyError, ValueError):
-            return None
-        age = datetime.now(timezone.utc) - newest
-        if age >= timedelta(days=_TREND_STALE_DAYS):
-            return (
-                f"retrieval trend ledger is stale: last retrieval-gate row is "
-                f"{age.days}d old — the CI gate (and its collapse alarm) is "
-                f"not running; see thread-ci and {ledger}"
-            )
-        recent = [r["mrr"] for r in rows[-_TREND_RECENT_ROWS:]]
-        baseline = [
-            r["mrr"]
-            for r in rows[-(_TREND_RECENT_ROWS + _TREND_BASELINE_ROWS):-_TREND_RECENT_ROWS]
-        ]
-        if len(recent) >= _TREND_RECENT_ROWS and len(baseline) >= _TREND_BASELINE_ROWS // 2:
-            recent_med, baseline_med = median(recent), median(baseline)
-            if recent_med < baseline_med * _TREND_DEGRADE_RATIO:
-                return (
-                    f"retrieval quality is sliding: median MRR over the last "
-                    f"{len(recent)} gate runs is {recent_med:.3f}, down from a "
-                    f"{baseline_med:.3f} baseline — below the gate's collapse "
-                    f"floors' radar; see {ledger} and evals/retrieval_eval.py"
-                )
-        return None
-    except Exception:  # noqa: BLE001
-        return None

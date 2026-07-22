@@ -336,10 +336,12 @@ def _session_context(case: dict) -> str:
         return ""
 
 
-def _agent_call(prompt: str, model: str, tool_cmd: str) -> tuple[dict | None, dict]:
-    """One headless mining agent. Returns (verdict, stats). Bash is allowed
-    only for this script's tool mode; any failure is (None, stats) — a lost
-    case is a smaller error than an unvalidated one."""
+def run_claude(prompt: str, model: str, tool_cmd: str) -> tuple[str | None, dict]:
+    """One headless agent turn-loop. Returns (final message text | None, stats).
+    Bash is allowed only for ``tool_cmd`` (this harness's snapshot-bound corpus
+    access); any failure is (None, stats). The reusable seam both this miner and
+    the topic miner drive — neither interprets the reply here, so the caller
+    parses whatever shape it asked the agent for."""
     stats: dict = {}
     try:
         proc = subprocess.run(
@@ -356,13 +358,23 @@ def _agent_call(prompt: str, model: str, tool_cmd: str) -> tuple[dict | None, di
         stats = {"num_turns": out.get("num_turns"),
                  "cost_usd": out.get("total_cost_usd"),
                  "duration_ms": out.get("duration_ms")}
-        return parse_verdict(out.get("result") or ""), stats
+        return (out.get("result") or ""), stats
     except subprocess.TimeoutExpired:
         stats["error"] = "timeout"
         return None, stats
     except (json.JSONDecodeError, OSError) as e:
         stats["error"] = str(e)[:200]
         return None, stats
+
+
+def _agent_call(prompt: str, model: str, tool_cmd: str) -> tuple[dict | None, dict]:
+    """One headless mining agent. Returns (verdict, stats) — the query-mining
+    verdict parse over :func:`run_claude`'s reply; a lost case is a smaller error
+    than an unvalidated one."""
+    text, stats = run_claude(prompt, model, tool_cmd)
+    if text is None:
+        return None, stats
+    return parse_verdict(text), stats
 
 
 def mine_case(case: dict, model: str, tool_cmd: str,

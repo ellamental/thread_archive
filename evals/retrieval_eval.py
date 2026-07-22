@@ -48,9 +48,12 @@ case file carries a graded pool, nDCG@1/5/10/20 (graded), overall and per
 query-shape (so a lexical regression can't hide behind semantic wins).
 ``--mined-after`` restricts the log protocols to trail events after a date
 (the time-based holdout); ``--trend-out`` appends any run's report as one
-JSONL row, turning point measurements into a time series (the CI gate row
-writes ~/.thread/archive/retrieval-trend.jsonl; LLM-judged relevance grades
-from evals/retrieval_judge.py land beside it).
+JSONL row at ~/.thread/archive/retrieval-trend.jsonl, turning point
+measurements into a time series (LLM-judged relevance grades from
+evals/retrieval_judge.py land beside it). ``--probes-only`` skips the metric
+run entirely and exits after the ``--require-*`` arm-liveness probes — the CI
+gate's mode: the gate asserts the model arms are alive and leaves quality
+measurement to the snapshot-bound gold files.
 
 Read-only. The title / log protocols run against the live archive:
 
@@ -174,6 +177,9 @@ def main() -> None:
                        help="evaluate a JSONL case file: "
                        '{"query", "gold": [thread ids], "sessions": [...], '
                        '"grades": {id: 0|1|2}} — grades enable nDCG')
+    proto.add_argument("--probes-only", action="store_true",
+                       help="no metric run: exit after the --require-* arm "
+                       "probes (the CI gate's mode)")
     proto.add_argument("--behavior", action="store_true",
                        help="no ranking run at all: report zero-label "
                        "behavioral signals from the whole trail — click rate, "
@@ -289,6 +295,12 @@ def main() -> None:
         if breach:
             print(f"RETRIEVAL GATE BREACH: {breach}", file=sys.stderr)
             raise SystemExit(1)
+    if args.probes_only:
+        if not (args.require_semantic or args.require_rerank):
+            ap.error("--probes-only without --require-semantic/--require-rerank "
+                     "checks nothing")
+        print("retrieval arm probes passed")
+        return
     if args.auto_titles is not None:
         cases = sample_title_cases(args.auto_titles, args.seed)
         exclude = None if args.include_meta else EXCLUDE_META

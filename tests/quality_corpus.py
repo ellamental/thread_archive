@@ -12,7 +12,7 @@ mined case files this corpus belongs in the repo.
 home and returns the name→thread_id map; ``run_cases`` scores a search
 callable against the case set with the same ``evaluate`` loop the live-archive
 harness uses (MRR, recall@k), so numbers here read on the same scale as the
-CI retrieval gate. ``search=`` swaps in a candidate ranker — the hook for
+live-archive protocols. ``search=`` swaps in a candidate ranker — the hook for
 measuring a ranking experiment against the incumbent on identical cases.
 
 Tests over this corpus (``test_search_quality.py``, and the opt-in

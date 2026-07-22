@@ -6,7 +6,7 @@ stack — a :class:`thread_archive._retrieval.SearchParams` value or a full
 ``SEARCH`` callable (contract in ``evals/experiments/README.md``). This runner builds
 the checked-in synthetic corpus (``tests/quality_corpus.py``) in a throwaway
 archive home, scores the baseline and every configuration on the identical
-cases with the same MRR/recall loop as the CI retrieval gate, and prints a
+cases with the same MRR/recall loop as the live-archive harness, and prints a
 leaderboard with deltas against the baseline.
 
 Fast by default (lexical stack, seconds); ``--models`` embeds the corpus and

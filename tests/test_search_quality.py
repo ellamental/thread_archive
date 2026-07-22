@@ -8,7 +8,7 @@ floors are a ratchet against the corpus's known relevance structure; the
 invariant tests pin the individual ranking behaviours (density, phrase
 contiguity, recency, decoy resistance) so a floor breach comes with a named
 cause. ``-m quality_models`` runs the same corpus under the real model arms;
-the live-archive tiers (CI retrieval gate, judge, BEIR) measure real usage.
+the live-archive tiers (snapshot-bound golds, judge, BEIR) measure real usage.
 """
 
 from __future__ import annotations
