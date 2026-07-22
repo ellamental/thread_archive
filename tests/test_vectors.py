@@ -104,16 +104,20 @@ def test_knn_pack_mmap_lifecycle(archive_home) -> None:
     assert [eid for eid, _, _ in res] == [1, 2]
     assert mats[0].stat().st_mtime_ns == built
 
-    # a real vector write moves the token → a fresh pack serves the new row
+    # a real vector write moves the token; the refresh rebuilds the pack and the
+    # fresh matrix serves the new row (the request path serves stale until the
+    # single-flight refresh lands — driven directly here).
     vectors.index_vectors([(3, "user", _unit((0, 0.5)))])
+    vectors._refresh_matrix(vectors._matrix_key(("user",)), ("user",))
     res = vectors._knn(a.tolist(), ("user",), cand=10)
     assert [eid for eid, _, _ in res] == [1, 3]
     assert len(list(d.glob("mat-*.npy"))) >= 1
 
     # in-place upsert: count/maxrowid hold, but the metas are dropped so the
-    # next load rebuilds instead of serving the stale matrix
+    # refresh rebuilds instead of serving the stale matrix
     vectors.index_vectors([(1, "user", b)])
     assert list(d.glob("meta-*.json")) == []
+    vectors._refresh_matrix(vectors._matrix_key(("user",)), ("user",))
     res = vectors._knn(b.tolist(), ("user",), cand=10)
     assert [eid for eid, _, _ in res][0] == 1  # sees the upserted vector
 

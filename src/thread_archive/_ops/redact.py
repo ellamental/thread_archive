@@ -367,9 +367,13 @@ def _purge_vectors(s, d: Path, event_ids: list[int]) -> None:
                 con.commit()
         finally:
             con.close()
-    from .._retrieval.vectors import _bump_version
+    from .._retrieval.vectors import _bump_version, reset_matrix_cache
 
-    _bump_version()  # a long-lived process's matrix cache must not serve the dead rows
+    # The matrix cache must not serve the dead rows. This process drops it outright
+    # (a stale matrix would be wrong, not merely dated); other processes see the
+    # store token move and re-probe within the cooldown.
+    _bump_version()
+    reset_matrix_cache()
 
 
 # ── redact ───────────────────────────────────────────────────────────────────
