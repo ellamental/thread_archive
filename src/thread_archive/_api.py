@@ -436,6 +436,32 @@ def patterns(*, home: Optional[str] = None) -> dict:
     return read_patterns()
 
 
+def pattern_matches(
+    pattern_id: str, *, offset: int = 0, limit: int = 50,
+    home: Optional[str] = None,
+) -> Optional[dict]:
+    """Return a newest-first page of matching threads for one mined pattern."""
+    open_archive(home)
+    from ._patterns import read_pattern_matches
+
+    return read_pattern_matches(
+        pattern_id, offset=max(0, int(offset)), limit=max(1, min(int(limit), 100)),
+    )
+
+
+def pattern_catalog(
+    *, query: str = "", lens: str = "all", sort: str = "interestingness",
+    limit: int = 20, home: Optional[str] = None,
+) -> dict:
+    """Return a compact structured catalog of mined patterns for agent exploration."""
+    open_archive(home)
+    from ._patterns import search_patterns
+
+    return search_patterns(
+        query=query, lens=lens, sort=sort, limit=max(1, min(int(limit), 100)),
+    )
+
+
 def repair(*, home: Optional[str] = None, dry_run: bool = False) -> dict:
     """Quarantine unparseable truth lines and restore committed rows the truth
     lacks from the live index — the sanctioned path from a red ``verify`` back to

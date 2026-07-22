@@ -500,10 +500,33 @@ def route(method: str, path: str, params: dict) -> Response:
         limit = int(models) if models and models.isdigit() else None
         return _ok(api.stats(model_limit=limit))
 
-    if path == "/api/patterns":
+    if path == "/api/experiments/patterns/catalog":
+        return _ok(api.pattern_catalog(
+            query=_first(params, "query") or "",
+            lens=_first(params, "lens") or "all",
+            sort=_first(params, "sort") or "interestingness",
+            limit=_int(params, "limit", 20, hi=100),
+        ))
+
+    if path == "/api/experiments/patterns":
         # Mining is an explicit CLI batch; this request only reads its small,
         # persisted report and compares the watermark with the live event log.
         return _ok(api.patterns())
+
+    if path.startswith("/api/experiments/patterns/") and path.endswith("/matches"):
+        pattern_id = unquote(
+            path[len("/api/experiments/patterns/"):-len("/matches")]
+        ).strip("/")
+        if not pattern_id:
+            return _text(400, "missing pattern id")
+        detail = api.pattern_matches(
+            pattern_id,
+            offset=_int(params, "offset", 0, lo=0, hi=10_000_000),
+            limit=_int(params, "limit", 50, lo=1, hi=100),
+        )
+        if detail is None:
+            return 404, "application/json", json.dumps({"error": "pattern not found"}).encode(), {}
+        return _ok(detail)
 
     if path.startswith("/api/stats/model/"):
         # Per-model drill-down. The tail is the model name — taken whole (model ids

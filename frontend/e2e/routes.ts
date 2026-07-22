@@ -16,6 +16,13 @@ export const ROUTES: SmokeRoute[] = [
   },
   { path: '/threads', landmark: (page) => page.getByPlaceholder('filter by title…') },
   { path: '/stats', landmark: (page) => page.getByRole('heading', { name: 'Stats' }) },
+  { path: '/experiments', landmark: (page) => page.getByRole('heading', { name: 'Experiments' }) },
+  { path: '/experiments/patterns', landmark: (page) => page.getByRole('heading', { name: 'Patterns' }) },
+  {
+    path: '/experiments/patterns/browser-pattern',
+    landmark: (page) => page.getByRole('heading', { name: 'Pattern matches' }),
+  },
+  { path: '/patterns', landmark: (page) => page.getByRole('heading', { name: 'Patterns' }) },
   {
     path: `/stats/model/${MODEL}`,
     landmark: (page) => page.getByRole('heading', { name: MODEL }),
