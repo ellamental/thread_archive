@@ -129,7 +129,9 @@ Method:
 1. Reformulate widely. Run many searches around the query — synonyms, code \
 identifiers, structural variants, narrower and broader phrasings. Do not \
 stop at the first plausible hit; the benchmark's value is finding what the \
-original search may have missed.
+original search may have missed. Search DEEP: `search` returns 50 by default — \
+read down the whole band, not just the top few, so the gold isn't capped at \
+today's ranker's top results.
 2. Read the strongest candidates (--mode ends is a cheap first read) to \
 verify they actually contain what the searcher wanted, not just matching \
 vocabulary.
@@ -462,7 +464,11 @@ def main() -> None:
     ts = tsub.add_parser("search")
     ts.add_argument("query")
     ts.add_argument("--skip", default="")
-    ts.add_argument("--limit", type=int, default=10)
+    # Deep by default: mining is recall-bound, so a shallow limit bakes the
+    # incumbent ranker's blind spots into the gold — a relevant thread ranked
+    # past the cap never enters the pool, and the eval can then never credit a
+    # change that surfaces it. Snippets are cheap; reads stay agent-controlled.
+    ts.add_argument("--limit", type=int, default=50)
     ts.add_argument("--rerank", choices=["auto", "on", "off"], default="auto")
     tr = tsub.add_parser("read")
     tr.add_argument("thread_id")
