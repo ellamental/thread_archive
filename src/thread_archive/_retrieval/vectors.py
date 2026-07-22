@@ -5,11 +5,14 @@ in-process brute-force cosine KNN (numpy). No server, no native extension, no HN
 the vectors live in the archive SQLite DB beside the data. Vectors are float32 and
 unit-normalized, so cosine = dot product; a query is a single BLAS matvec (~ms).
 
-The KNN matrix is **mmap'd, not resident**: the full corpus is packed once into
-token-named ``.npy`` files (``<home>/vector-pack/``, derived + disposable) and
+The KNN matrix is **mmap'd, not resident**: the corpus is packed into token-named
+``.npy`` files (``<home>/vector-pack/``, derived + disposable) and
 ``np.load(mmap_mode='r')`` serves every content-type scope from the one pack via
 row masks — RAM cost is page cache the OS can reclaim, not per-process RSS, so
 the ceiling scales with disk instead of memory. Same float32 bits, same scores.
+The pack is a **base + delta**: the large base is mmap'd from disk and the vectors
+written since it was packed ride along as a small in-RAM tail, so a single new
+vector costs a cheap delta read, not a full base rebuild (see :class:`_SplitMatrix`).
 
 Long documents are **chunked**: a doc is embedded as one vector per
 :data:`CHUNK_CHARS`-char slice (up to :data:`MAX_CHUNKS`), keyed
@@ -95,13 +98,13 @@ _write_version = 0
 # Serve the matrix without ever paying a pack rebuild on the request thread. A search
 # returns the cached matrix immediately (stale is fine — the lexical arm covers the
 # newest, not-yet-repacked vectors), probes the store's validity token at most once
-# per cooldown, and does the rebuild — the ~GB blob read + np.vstack + pack write —
-# only in a single-flight background thread. Continuous ingest moves the token every
-# few minutes; the old inline rebuild put that multi-second cost on whichever query
-# raced the new token, and, unguarded, let a burst of concurrent queries all rebuild
-# the same ~GB pack at once. Redaction can't wait out the cooldown, so it calls
-# ``reset_matrix_cache`` for immediate local effect (and scrubs the content at the
-# source) — a stale window only ever costs a ranking slot, never leaked content.
+# per cooldown, and does the refresh — usually just the small delta read, occasionally
+# a full base rebuild — only in a single-flight background thread. Continuous ingest
+# moves the token every few minutes; the old inline rebuild put that multi-second cost
+# on whichever query raced the new token, and, unguarded, let a burst of concurrent
+# queries all rebuild the same ~GB pack at once. Redaction can't wait out the cooldown,
+# so it calls ``reset_matrix_cache`` for immediate local effect (and scrubs the content
+# at the source) — a stale window only ever costs a ranking slot, never leaked content.
 _MATRIX_REFRESH_COOLDOWN_S = 60.0
 _MATRIX_REFRESH_LOCK = threading.Lock()
 _MATRIX_REFRESHING: set = set()
@@ -111,6 +114,52 @@ _matrix_checked_at: dict = {}  # {cache key: monotonic ts of the last staleness 
 # reader elsewhere may still be serving queries off them (its unlinked inode
 # stays valid; the age is grace, not correctness).
 _PACK_STALE_AGE_S = 3600
+
+# The pack is a base + delta: a large on-disk base pack (mmap) plus the vectors
+# written since it was built, held in RAM. Continuous ingest moves the store token
+# every few minutes, but a single new vector no longer invalidates the ~GB base — it
+# lands in the delta, a cheap read. A fresh base (the full scan + np.vstack + write) is
+# packed only when the delta grows past this many rows, so the expensive rebuild
+# happens once per this-many new vectors, not once per new vector.
+_DELTA_MAX_ROWS = 20_000
+
+
+class _SplitMatrix:
+    """The KNN matrix as base (on-disk, mmap'd — reclaimable page cache, shared across
+    processes) + delta (the small in-RAM tail of vectors written since the base was
+    packed). ``m @ q`` runs the matvec over both halves and concatenates; ``m[rows]``
+    gathers across the split; ``m.shape`` reports the combined size. Row order is
+    base-rows then delta-rows — the KNN and the corpus graph both group by document
+    key, never by row position, so the split is invisible to them."""
+
+    __slots__ = ("base", "delta")
+
+    def __init__(self, base, delta) -> None:
+        self.base = base
+        self.delta = delta
+
+    @property
+    def shape(self) -> tuple:
+        return (self.base.shape[0] + self.delta.shape[0], self.base.shape[1])
+
+    def __len__(self) -> int:
+        return self.base.shape[0] + self.delta.shape[0]
+
+    def __matmul__(self, q):
+        # base @ q streams the mmap; delta @ q is a small in-RAM multiply.
+        return np.concatenate([np.asarray(self.base @ q), self.delta @ q])
+
+    def __getitem__(self, idx):
+        idx = np.asarray(idx)
+        b = self.base.shape[0]
+        below = idx < b
+        if below.all():
+            return np.asarray(self.base[idx])
+        out = np.empty((idx.shape[0], self.base.shape[1]), dtype=self.delta.dtype)
+        out[below] = self.base[idx[below]]
+        above = ~below
+        out[above] = self.delta[idx[above] - b]
+        return out
 
 
 def _pack_dir() -> Optional[Path]:
@@ -143,44 +192,146 @@ def _corpus_arrays(s) -> tuple:
     return mat, ids_arr, ct_codes, ct_names
 
 
+def _delta_arrays(s, watermark: int) -> tuple:
+    """Vectors written since the base watermark (rowid > watermark), read live into
+    RAM: (mat, ids, ct_names_list). Small by construction — the delta is folded into a
+    fresh base once it passes :data:`_DELTA_MAX_ROWS` — so this is a cheap tail read,
+    never the ~GB base scan. Ordered by rowid (the KNN groups by doc key, not row
+    position, so order is for determinism, not correctness)."""
+    ids: list[int] = []
+    cts: list[str] = []
+    vecs: list[np.ndarray] = []
+    for r in s.execute(sa_text(
+        "SELECT event_id, content_type, vec FROM event_vectors "
+        "WHERE rowid > :wm ORDER BY rowid"
+    ), {"wm": int(watermark)}):
+        ids.append(int(r[0]))
+        cts.append(str(r[1]))
+        vecs.append(np.frombuffer(r[2], dtype=np.float32))
+    mat = np.vstack(vecs) if vecs else np.empty((0, _DIM), dtype=np.float32)
+    return mat, np.asarray(ids, dtype=np.int64), cts
+
+
+def _sweep_packs(d: Path, keep_tag: str) -> None:
+    """Sweep aged-out pack files of superseded tokens, keeping the freshly written
+    ``keep_tag``. A reader elsewhere may still be mapped onto an unlinked inode, so the
+    age (:data:`_PACK_STALE_AGE_S`) is grace, not correctness."""
+    for stray in d.iterdir():
+        if f"-{keep_tag}." in stray.name:
+            continue
+        try:
+            if time.time() - stray.stat().st_mtime > _PACK_STALE_AGE_S:
+                stray.unlink()
+        except OSError:  # racing another sweeper
+            pass
+
+
+def _mmap_base(d: Path, tag: str) -> tuple:
+    """mmap a base pack's files back in: (mat[mmap], ids, ct_codes, ct_names)."""
+    mat = np.load(d / f"mat-{tag}.npy", mmap_mode="r")
+    ids_arr = np.load(d / f"ids-{tag}.npy")
+    ct_codes = np.load(d / f"cts-{tag}.npy")
+    ct_names = json.loads((d / f"meta-{tag}.json").read_text())["ct_names"]
+    return mat, ids_arr, ct_codes, ct_names
+
+
+def _write_base(s, d: Path, base_token: tuple[int, int]) -> tuple:
+    """Build and persist the full-corpus base pack at ``base_token`` — the ~GB blob
+    read + np.vstack + write — then mmap it back. Files are token-named and published
+    via os.replace, so a reader never mixes arrays from two builds and rival builders
+    of the same token write byte-identical content (deterministic PK order); whichever
+    replace lands last changes nothing."""
+    mat, ids_arr, ct_codes, ct_names = _corpus_arrays(s)
+    tag = f"{base_token[0]}-{base_token[1]}"
+    d.mkdir(parents=True, exist_ok=True)
+    pid = os.getpid()
+    paths = {k: d / f"{k}-{tag}.npy" for k in ("mat", "ids", "cts")}
+    for k, arr in (("mat", mat), ("ids", ids_arr), ("cts", ct_codes)):
+        tmp = d / f"{k}-{tag}.npy.tmp.{pid}"
+        with open(tmp, "wb") as f:  # a handle: np.save must not append '.npy'
+            np.save(f, arr)
+        os.replace(tmp, paths[k])
+    meta_p = d / f"meta-{tag}.json"
+    tmp = d / f"{meta_p.name}.tmp.{pid}"
+    tmp.write_text(json.dumps({"ct_names": ct_names, "rows": len(ids_arr)}))
+    os.replace(tmp, meta_p)
+    _sweep_packs(d, tag)
+    return _mmap_base(d, tag)
+
+
+def _reusable_base(s, d: Path, cur_count: int) -> Optional[tuple[int, int]]:
+    """The freshest on-disk base still usable as a clean prefix of the live store:
+    every base row present (no delete at or below its watermark) and the new-rows delta
+    within :data:`_DELTA_MAX_ROWS`. Returns its ``(base_count, watermark)`` or None to
+    force a fresh base. Freshest = largest watermark = smallest delta. The clean-prefix
+    count check catches deletes below the watermark (redaction, a re-embed); an
+    in-place upsert that changes a base row without moving count or rowid is invalidated
+    at its source (:func:`index_vectors` drops the pack metas)."""
+    tags: list[tuple[int, int]] = []
+    for meta_p in d.glob("meta-*.json"):
+        try:
+            bc_s, bw_s = meta_p.stem[len("meta-"):].split("-")
+            bc, bw = int(bc_s), int(bw_s)
+        except ValueError:  # a temp/foreign name that slipped the glob
+            continue
+        if all((d / f"{k}-{bc}-{bw}.npy").exists() for k in ("mat", "ids", "cts")):
+            tags.append((bw, bc))
+    for bw, bc in sorted(tags, reverse=True):  # largest watermark (smallest delta) first
+        # Count only the tail above the watermark (bounded small for the freshest base),
+        # not the whole base range. below == bc iff no base row was deleted (clean prefix).
+        delta = s.execute(
+            sa_text("SELECT count(*) FROM event_vectors WHERE rowid > :wm"), {"wm": bw}
+        ).scalar() or 0
+        if cur_count - delta == bc and delta <= _DELTA_MAX_ROWS:
+            return (bc, bw)
+    return None
+
+
 def _ensure_pack(s, store_token: tuple[int, int]) -> tuple:
-    """The full-corpus mmap pack for ``store_token`` — build if absent, then
-    return (mat[mmap], ids, ct_codes, ct_names). Files are token-named, so a
-    reader can never mix arrays from two builds, and rival concurrent builders
-    write byte-identical content (deterministic ORDER BY) — whichever
-    ``os.replace`` lands last changes nothing. Falls back to in-RAM arrays for
-    a non-file DSN."""
+    """The full-corpus KNN matrix for ``store_token`` as base(mmap) + in-RAM delta.
+    Reuses an on-disk base that is still a clean prefix of the store and layers the
+    vectors written since as a small delta — so continuous ingest costs a delta read,
+    not an 814MB rebuild — and packs a fresh base only when none is reusable. Falls back
+    to full in-RAM arrays for a non-file DSN. Returns (mat, ids, ct_codes, ct_names);
+    ``mat`` is a bare mmap/ndarray when the delta is empty, else a :class:`_SplitMatrix`.
+
+    Runs entirely in the caller's session ``s`` — the base scan, the delta read, and the
+    token that named them share one DB snapshot, so a concurrent insert can never land a
+    row in both halves (a duplicate) or in neither (a gap)."""
+    cur_count, cur_max_rowid = store_token
     d = _pack_dir()
     if d is None:
-        return _corpus_arrays(s)
-    tag = f"{store_token[0]}-{store_token[1]}"
-    paths = {k: d / f"{k}-{tag}.npy" for k in ("mat", "ids", "cts")}
-    meta_p = d / f"meta-{tag}.json"
-    if not (meta_p.exists() and all(p.exists() for p in paths.values())):
-        mat, ids_arr, ct_codes, ct_names = _corpus_arrays(s)
-        d.mkdir(parents=True, exist_ok=True)
-        pid = os.getpid()
-        for k, arr in (("mat", mat), ("ids", ids_arr), ("cts", ct_codes)):
-            tmp = d / f"{k}-{tag}.npy.tmp.{pid}"
-            with open(tmp, "wb") as f:  # a handle: np.save must not append '.npy'
-                np.save(f, arr)
-            os.replace(tmp, paths[k])
-        tmp = d / f"{meta_p.name}.tmp.{pid}"
-        tmp.write_text(json.dumps({"ct_names": ct_names, "rows": len(ids_arr)}))
-        os.replace(tmp, meta_p)
-        for stray in d.iterdir():  # sweep aged-out packs of superseded tokens
-            if f"-{tag}." in stray.name:
-                continue
-            try:
-                if time.time() - stray.stat().st_mtime > _PACK_STALE_AGE_S:
-                    stray.unlink()
-            except OSError:  # racing another sweeper
-                pass
-    mat = np.load(paths["mat"], mmap_mode="r")
-    ids_arr = np.load(paths["ids"])
-    ct_codes = np.load(paths["cts"])
-    ct_names = json.loads(meta_p.read_text())["ct_names"]
-    return mat, ids_arr, ct_codes, ct_names
+        return _corpus_arrays(s)  # non-file DSN: no disk base, full in-RAM arrays
+    base = _reusable_base(s, d, cur_count)
+    if base is None:
+        base_mat, base_ids, base_codes, base_names = _write_base(s, d, store_token)
+        watermark = cur_max_rowid  # fresh base spans the whole snapshot → empty delta
+    else:
+        bc, bw = base
+        try:
+            base_mat, base_ids, base_codes, base_names = _mmap_base(d, f"{bc}-{bw}")
+        except FileNotFoundError:  # swept between selection and load — pack fresh
+            base_mat, base_ids, base_codes, base_names = _write_base(s, d, store_token)
+            watermark = cur_max_rowid
+        else:
+            watermark = bw
+    delta_mat, delta_ids, delta_cts = _delta_arrays(s, watermark)
+    if delta_mat.shape[0] == 0:
+        return base_mat, base_ids, base_codes, base_names
+    # Unify the content-type coding across base and delta (a delta may carry a type the
+    # base lacked, or vice versa), then stitch the two row spaces into one.
+    names = sorted(set(base_names) | set(delta_cts))
+    uidx = {c: i for i, c in enumerate(names)}
+    if names == base_names:
+        base_codes_u = base_codes
+    else:
+        remap = np.asarray([uidx[n] for n in base_names], dtype=np.int16)
+        base_codes_u = remap[base_codes]
+    delta_codes_u = np.asarray([uidx[c] for c in delta_cts], dtype=np.int16)
+    mat = _SplitMatrix(base_mat, delta_mat)
+    ids_all = np.concatenate([base_ids, delta_ids])
+    ct_codes_all = np.concatenate([base_codes_u, delta_codes_u])
+    return mat, ids_all, ct_codes_all, names
 
 
 def is_available() -> bool:
@@ -254,6 +405,7 @@ def index_vectors(records) -> int:
     if not rows:
         return 0
     with get_session() as s:
+        before = s.execute(sa_text("SELECT count(*) FROM event_vectors")).scalar() or 0
         s.execute(sa_text(
             "INSERT INTO event_vectors (event_id, content_type, chunk, dim, vec) "
             "VALUES (:eid, :ct, :chunk, :dim, :vec) "
@@ -261,13 +413,18 @@ def index_vectors(records) -> int:
             "DO UPDATE SET dim = excluded.dim, vec = excluded.vec"
         ), rows)
         s.commit()
+        after = s.execute(sa_text("SELECT count(*) FROM event_vectors")).scalar() or 0
     _bump_version()
-    # A pure in-place upsert moves neither row count nor max rowid, so the pack
-    # token can't see it — drop the pack metas so the next load rebuilds.
-    d = _pack_dir()
-    if d is not None:
-        for stray in d.glob("meta-*.json"):
-            stray.unlink(missing_ok=True)
+    # An in-place upsert (an existing key re-written) changes a row's content without
+    # moving the store token — a base pack covering that row would be stale yet still
+    # read as a clean prefix, so drop the pack metas to force a fresh base. A pure insert
+    # (every row new) only extends the prefix; the delta picks it up, so the base stays
+    # reusable. ``after - before`` is the count of genuinely-new rows.
+    if len(rows) - (after - before) > 0:
+        d = _pack_dir()
+        if d is not None:
+            for stray in d.glob("meta-*.json"):
+                stray.unlink(missing_ok=True)
     return len(rows)
 
 
@@ -536,15 +693,16 @@ def _matrix_key(cts: tuple[str, ...]) -> tuple:
     return (id(get_engine()), tuple(sorted(cts)))
 
 
-def _build_matrix_entry(cts: tuple[str, ...], token: tuple | None = None) -> tuple:
-    """Build the processed cache entry for ``cts``: mmap the token's pack (rebuilding
-    it from SQLite when absent — the ~GB blob read + np.vstack + pack write) and
-    precompute the scope's row mask and per-doc grouping. A pure builder that touches
-    no shared cache, so it is safe on the request thread (cold start) or a background
-    refresh. Returns ``(token, ids, ctypes, mat, doc_inverse, doc_rep, scope_rows)``."""
+def _build_matrix_entry(cts: tuple[str, ...]) -> tuple:
+    """Build the processed cache entry for ``cts``: assemble the matrix (base mmap +
+    in-RAM delta, packing a fresh base only when none is reusable) and precompute the
+    scope's row mask and per-doc grouping. A pure builder that touches no shared cache,
+    so it is safe on the request thread (cold start) or a background refresh. The token,
+    the base scan, and the delta read share one session snapshot, so the returned entry
+    is self-consistent (no row in both halves, none in neither). Returns
+    ``(token, ids, ctypes, mat, doc_inverse, doc_rep, scope_rows)``."""
     with get_session() as s:
-        if token is None:
-            token = _validity_token(s)
+        token = _validity_token(s)
         mat, ids_all, ct_codes_all, ct_names = _ensure_pack(s, (token[1], token[2]))
     # The scope is a row mask over the one shared pack: sims run over the full
     # matrix (the matvec streams mmap pages) and gather down to these rows.
@@ -587,7 +745,7 @@ def _refresh_matrix(key: tuple, cts: tuple[str, ...]) -> None:
         token = _validity_token(s)
     if cached is not None and cached[0] == token:
         return  # still fresh — nothing to rebuild
-    _store_matrix_entry(key, _build_matrix_entry(cts, token))
+    _store_matrix_entry(key, _build_matrix_entry(cts))
 
 
 def _refresh_matrix_async(key: tuple, cts: tuple[str, ...]) -> None:

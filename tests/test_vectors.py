@@ -122,6 +122,140 @@ def test_knn_pack_mmap_lifecycle(archive_home) -> None:
     assert [eid for eid, _, _ in res][0] == 1  # sees the upserted vector
 
 
+def test_split_matrix_matmul_and_gather() -> None:
+    """_SplitMatrix presents base + delta as one matrix: the matvec concatenates across
+    the split, a row gather spans both halves in the requested order, and shape/len
+    report the combined size — so nothing downstream sees the seam."""
+    base = np.arange(6, dtype=np.float32).reshape(3, 2)      # rows 0,1,2
+    delta = np.arange(6, 10, dtype=np.float32).reshape(2, 2)  # rows 3,4
+    m = vectors._SplitMatrix(base, delta)
+    assert m.shape == (5, 2)
+    assert len(m) == 5
+    q = np.asarray([1.0, 1.0], dtype=np.float32)
+    assert np.array_equal(m @ q, np.concatenate([base @ q, delta @ q]))
+    # gather across the split, order preserved
+    gathered = m[np.asarray([4, 0, 3, 1])]
+    assert np.array_equal(gathered, np.stack([delta[1], base[0], delta[0], base[1]]))
+    # the all-base fast path
+    assert np.array_equal(m[np.asarray([2, 0])], np.stack([base[2], base[0]]))
+
+
+def test_pack_base_reused_delta_layered(archive_home) -> None:
+    """A base pack is reused across token moves: new vectors ride in the in-RAM delta,
+    so no fresh base is written, yet the KNN sees base + delta rows."""
+    init_db()
+    vectors.ensure_index()
+    vectors.reset_matrix_cache()
+    a, b = _unit((0, 1.0)), _unit((1, 1.0))
+    key = vectors._matrix_key(("user",))
+    vectors.index_vectors([(1, "user", a)])
+    vectors._refresh_matrix(key, ("user",))  # builds the base (1 row)
+    d = vectors._pack_dir()
+    base_mats = sorted(p.name for p in d.glob("mat-*.npy"))
+    assert len(base_mats) == 1
+
+    # More vectors move the token; the refresh layers them as a delta, reusing the base.
+    vectors.index_vectors([(2, "user", b), (3, "user", _unit((0, 0.5)))])
+    vectors._refresh_matrix(key, ("user",))
+    assert sorted(p.name for p in d.glob("mat-*.npy")) == base_mats  # no new base written
+    ids = {eid for eid, _, _ in vectors._knn(a.tolist(), ("user",), cand=10)}
+    assert ids == {1, 2, 3}  # base row + delta rows all searchable
+
+
+def test_pack_folds_delta_when_it_grows_past_cap(archive_home) -> None:
+    """Once the delta passes _DELTA_MAX_ROWS, a refresh folds it into a fresh base at the
+    current token instead of layering an unbounded in-RAM tail."""
+    init_db()
+    vectors.ensure_index()
+    vectors.reset_matrix_cache()
+    key = vectors._matrix_key(("user",))
+    vectors.index_vectors([(1, "user", _unit((0, 1.0)))])
+    vectors._refresh_matrix(key, ("user",))  # base at 1 row
+    d = vectors._pack_dir()
+    assert len(list(d.glob("mat-*.npy"))) == 1
+
+    original = vectors._DELTA_MAX_ROWS
+    vectors._DELTA_MAX_ROWS = 1  # a delta of >1 row must now force a fold
+    try:
+        vectors.index_vectors([(2, "user", _unit((1, 1.0))), (3, "user", _unit((0, 0.5)))])
+        vectors._refresh_matrix(key, ("user",))
+    finally:
+        vectors._DELTA_MAX_ROWS = original
+    assert len(list(d.glob("mat-*.npy"))) == 2  # a fresh base was packed (delta 2 > cap 1)
+    ids = {eid for eid, _, _ in vectors._knn(_unit((0, 1.0)).tolist(), ("user",), cand=10)}
+    assert ids == {1, 2, 3}
+
+
+def test_pack_rebuilds_fresh_base_on_dirty_prefix(archive_home) -> None:
+    """A delete at or below the base watermark makes the base a dirty prefix; the next
+    build discards it and packs fresh, so the deleted row is never served from the base."""
+    from sqlalchemy import text as sa_text
+
+    from thread_archive._store import get_session
+
+    init_db()
+    vectors.ensure_index()
+    vectors.reset_matrix_cache()
+    key = vectors._matrix_key(("user",))
+    a, b = _unit((0, 1.0)), _unit((1, 1.0))
+    vectors.index_vectors([(1, "user", a), (2, "user", b)])
+    vectors._refresh_matrix(key, ("user",))  # base at 2 rows
+
+    with get_session() as s:  # delete a base-range row (below the watermark)
+        s.execute(sa_text("DELETE FROM event_vectors WHERE event_id = 1"))
+        s.commit()
+    vectors._bump_version()
+    vectors.reset_matrix_cache()
+    ids = [eid for eid, _, _ in vectors._knn(b.tolist(), ("user",), cand=10)]
+    assert ids == [2]  # the deleted base row is gone, not served from the stale base
+
+
+def test_parallel_search_stays_fast_and_never_rebuilds_on_request_path(archive_home) -> None:
+    """thread_search under concurrency: with the matrix warmed, simultaneous searches all
+    serve from the cached pack — none pays a base rebuild on its request thread (the
+    regression that once serialized queries behind an 814MB rebuild and timed them out).
+    The pack files on disk must be untouched by the burst, and it must finish well within
+    a generous bound."""
+    import json
+    import time as _time
+    from concurrent.futures import ThreadPoolExecutor
+
+    from thread_archive import _api as ta
+
+    init_db()
+    emb = _FixedEmbedder()
+    lines = []
+    for i in range(16):
+        lines.append({"type": "user", "uuid": f"u{i}", "timestamp": f"2026-01-01T10:{i:02d}:00Z",
+                      "cwd": "/p", "message": {"role": "user", "content": f"vector search ranking {i}"}})
+        lines.append({"type": "assistant", "uuid": f"a{i}", "timestamp": f"2026-01-01T10:{i:02d}:30Z",
+                      "message": {"role": "assistant", "model": "claude-opus-4",
+                                  "content": [{"type": "text", "text": f"semantic answer {i}"}]}})
+    f = archive_home / "corpus.jsonl"
+    f.write_text("\n".join(json.dumps(ln) for ln in lines) + "\n", encoding="utf-8")
+    ta.import_path(f)
+    assert vectors.index_events_local(embedder=emb) > 0
+
+    # Warm the matrix (builds the base pack once), then snapshot the pack files.
+    assert vectors.search("vector search ranking", embedder=emb) is not None
+    d = vectors._pack_dir()
+    before = {p.name: p.stat().st_mtime_ns for p in d.glob("*")}
+
+    def _run(_) -> int:
+        return len(vectors.search("vector search ranking", embedder=emb) or [])
+
+    start = _time.perf_counter()
+    with ThreadPoolExecutor(max_workers=5) as pool:
+        counts = list(pool.map(_run, range(5)))
+    elapsed = _time.perf_counter() - start
+
+    assert all(c > 0 for c in counts)      # every concurrent search returned hits
+    assert len(set(counts)) == 1           # …and agreed (deterministic under load)
+    assert elapsed < 10.0                  # no serialized-rebuild stall / deadlock
+    after = {p.name: p.stat().st_mtime_ns for p in d.glob("*")}
+    assert after == before                 # the request path rebuilt nothing
+
+
 def test_index_events_local_incremental_cap_and_order(archive_home) -> None:
     """The cohost's embed pass: incremental (anti-join), bounded by ``max_events``,
     newest-first. Runs on a stand-in embedder so no model is needed."""
