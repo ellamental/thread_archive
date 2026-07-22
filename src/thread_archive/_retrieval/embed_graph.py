@@ -37,6 +37,7 @@ from __future__ import annotations
 import logging
 import os
 import threading
+import time
 from dataclasses import dataclass, field
 from typing import Optional
 
@@ -115,10 +116,16 @@ _CACHE: dict = {}
 # Engines with a background refresh in flight (single-flight guard).
 _REFRESHING: set[int] = set()
 _REFRESH_LOCK = threading.Lock()
+# Probe the validity token (a count scan) and kick a refresh at most this often: the
+# graph is a coarse community prior, so a minute of staleness is immaterial, and
+# without the gate every search during continuous ingest re-probes and rebuilds.
+_REFRESH_COOLDOWN_S = 60.0
+_checked_at: dict = {}  # {engine id: monotonic ts of the last staleness probe}
 
 
 def reset_cache() -> None:
     _CACHE.clear()
+    _checked_at.clear()
 
 
 def coherence_gamma(env: str | None = None) -> float:
@@ -176,18 +183,25 @@ def get(*, block: bool = False) -> Optional[CorpusGraph]:
     """The corpus graph for consumers that must not pay build latency.
 
     Serves the cached graph immediately — stale is acceptable for a community
-    prior — and, when the store has moved past the cached validity token (or
-    nothing is cached yet), kicks a single-flight background rebuild. Returns
-    ``None`` until the first build lands (the coherence boost simply no-ops
-    until then). ``block=True`` builds inline (warm pass, eval, tests)."""
+    prior — and, when nothing is cached or the store has moved past the cached
+    validity token, kicks a single-flight background rebuild. The token probe (a
+    count scan) and the rebuild fire at most once per :data:`_REFRESH_COOLDOWN_S`,
+    so continuous ingest can't make every search re-probe. Returns ``None`` until
+    the first build lands (the coherence boost simply no-ops until then).
+    ``block=True`` builds inline (warm pass, eval, tests)."""
     if block:
         return build()
     from .._store import get_engine
 
     key = id(get_engine())
     cached = _CACHE.get(key)
-    stale = True
-    if cached is not None:
+    if cached is None:
+        _refresh_async(key)  # nothing to serve yet — get the first build going
+        return None
+    now = time.monotonic()
+    if now - _checked_at.get(key, 0.0) >= _REFRESH_COOLDOWN_S:
+        _checked_at[key] = now
+        stale = True
         try:
             from .vectors import _validity_token
 
@@ -195,9 +209,9 @@ def get(*, block: bool = False) -> Optional[CorpusGraph]:
                 stale = cached[0] != _validity_token(s)
         except Exception:  # noqa: BLE001 — a staleness probe must never break search
             stale = False
-    if cached is None or stale:
-        _refresh_async(key)
-    return cached[1] if cached is not None else None
+        if stale:
+            _refresh_async(key)
+    return cached[1]
 
 
 def _refresh_async(key: int) -> None:
@@ -225,7 +239,7 @@ def build(knn: int = KNN, min_sim: float = MIN_SIM) -> Optional[CorpusGraph]:
 
     from .._store import get_engine
     from .community import detect_communities
-    from .vectors import _load_matrix, _validity_token, ensure_index
+    from .vectors import _build_matrix_entry, _validity_token, ensure_index
 
     if not ensure_index():  # creates event_vectors when absent, like _knn does
         return None
@@ -236,7 +250,10 @@ def build(knn: int = KNN, min_sim: float = MIN_SIM) -> Optional[CorpusGraph]:
     if cached is not None and cached[0] == token:
         return cached[1]
 
-    ids, _ct_arr, mat, _doc_inv, _doc_rep, scope_rows = _load_matrix(_CTS)
+    # The authoritative build reads the live matrix directly (the pure builder),
+    # not the search path's serve-stale cache — the graph must reflect the store
+    # it just tokened, and this call is already gated by the graph token cache above.
+    _tok, ids, _ct_arr, mat, _doc_inv, _doc_rep, scope_rows = _build_matrix_entry(_CTS)
     if len(ids) == 0:
         _CACHE[key] = (token, None)  # no vectors: don't re-probe until the store moves
         return None

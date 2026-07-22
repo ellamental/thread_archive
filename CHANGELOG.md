@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+- Semantic search no longer rebuilds the corpus vector pack on the request thread. The KNN matrix cache is
+  keyed on a whole-store validity token, so continuous background embedding invalidated it every few minutes;
+  the next query then read the full ~GB blob table, `np.vstack`'d the matrix, and wrote the pack — inline — and,
+  unguarded, a burst of concurrent queries all rebuilt the same pack at once, blowing past MCP client timeouts.
+  `_load_matrix` now serves the cached matrix immediately (stale is fine — the lexical arm covers the freshest,
+  not-yet-repacked vectors), probes staleness at most once per cooldown, and rebuilds only in a single-flight
+  background thread. Redaction can't wait out the cooldown, so it drops the matrix cache outright
+  (`reset_matrix_cache`) — dead rows are never served, and the content is scrubbed at the source regardless. The
+  corpus-graph refresh (`embed_graph.get`) gets the same cooldown so ingest can't make every search re-probe;
+  its authoritative `build()` reads the live matrix directly. The per-query non-emptiness check in the semantic
+  arm is an O(1) existence probe instead of a full `count(*)` scan.
+
 - The CI `retrieval-gate` row no longer runs a from-log metric sweep: it now runs `retrieval_eval.py
   --probes-only --require-semantic --require-rerank` — model-arm liveness checks only. Click-label MRR is
   incumbent-censored (the gold is what the live ranker surfaced and the agent picked), so a per-commit number

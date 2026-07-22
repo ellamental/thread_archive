@@ -30,6 +30,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import threading
 import time
 from contextlib import contextmanager
 from pathlib import Path
@@ -90,6 +91,21 @@ _META_CONTENT_TYPES = ("title", "summary")
 _MATRIX_CACHE: dict = {}
 _MATRIX_CACHE_MAX = 4
 _write_version = 0
+
+# Serve the matrix without ever paying a pack rebuild on the request thread. A search
+# returns the cached matrix immediately (stale is fine — the lexical arm covers the
+# newest, not-yet-repacked vectors), probes the store's validity token at most once
+# per cooldown, and does the rebuild — the ~GB blob read + np.vstack + pack write —
+# only in a single-flight background thread. Continuous ingest moves the token every
+# few minutes; the old inline rebuild put that multi-second cost on whichever query
+# raced the new token, and, unguarded, let a burst of concurrent queries all rebuild
+# the same ~GB pack at once. Redaction can't wait out the cooldown, so it calls
+# ``reset_matrix_cache`` for immediate local effect (and scrubs the content at the
+# source) — a stale window only ever costs a ranking slot, never leaked content.
+_MATRIX_REFRESH_COOLDOWN_S = 60.0
+_MATRIX_REFRESH_LOCK = threading.Lock()
+_MATRIX_REFRESHING: set = set()
+_matrix_checked_at: dict = {}  # {cache key: monotonic ts of the last staleness probe}
 
 # Pack files for a superseded token are swept once they age out — a mapped-in
 # reader elsewhere may still be serving queries off them (its unlinked inode
@@ -514,16 +530,22 @@ def _validity_token(s) -> tuple:
     return (_write_version, int(row[0]), int(row[1]))
 
 
-def _load_matrix(cts: tuple[str, ...]):
-    eng = get_engine()
-    key = (id(eng), tuple(sorted(cts)))
-    with get_session() as s:
-        token = _validity_token(s)
-        cached = _MATRIX_CACHE.get(key)
-        if cached is not None and cached[0] == token:
-            return cached[1:]
-        mat, ids_all, ct_codes_all, ct_names = _ensure_pack(s, (token[1], token[2]))
+def _matrix_key(cts: tuple[str, ...]) -> tuple:
+    """Cache key for a content-type scope — canonicalized (sorted) so equivalent
+    scopes in different orders share one entry."""
+    return (id(get_engine()), tuple(sorted(cts)))
 
+
+def _build_matrix_entry(cts: tuple[str, ...], token: tuple | None = None) -> tuple:
+    """Build the processed cache entry for ``cts``: mmap the token's pack (rebuilding
+    it from SQLite when absent — the ~GB blob read + np.vstack + pack write) and
+    precompute the scope's row mask and per-doc grouping. A pure builder that touches
+    no shared cache, so it is safe on the request thread (cold start) or a background
+    refresh. Returns ``(token, ids, ctypes, mat, doc_inverse, doc_rep, scope_rows)``."""
+    with get_session() as s:
+        if token is None:
+            token = _validity_token(s)
+        mat, ids_all, ct_codes_all, ct_names = _ensure_pack(s, (token[1], token[2]))
     # The scope is a row mask over the one shared pack: sims run over the full
     # matrix (the matvec streams mmap pages) and gather down to these rows.
     want = np.asarray(
@@ -545,11 +567,76 @@ def _load_matrix(cts: tuple[str, ...]):
     else:
         doc_rep = np.empty(0, dtype=np.int64)
         doc_inverse = np.empty(0, dtype=np.int64)
+    return (token, ids_arr, ct_arr, mat, doc_inverse, doc_rep, scope_rows)
+
+
+def _store_matrix_entry(key: tuple, entry: tuple) -> None:
+    """Cache ``entry`` under ``key``, evicting the oldest scope only when the key is
+    new — a refresh of an existing scope replaces in place, never evicting a rival."""
     if key not in _MATRIX_CACHE:
         while len(_MATRIX_CACHE) >= _MATRIX_CACHE_MAX:
             _MATRIX_CACHE.pop(next(iter(_MATRIX_CACHE)))
-    _MATRIX_CACHE[key] = (token, ids_arr, ct_arr, mat, doc_inverse, doc_rep, scope_rows)
-    return ids_arr, ct_arr, mat, doc_inverse, doc_rep, scope_rows
+    _MATRIX_CACHE[key] = entry
+
+
+def _refresh_matrix(key: tuple, cts: tuple[str, ...]) -> None:
+    """Rebuild ``key``'s entry if the store's validity token has moved. Synchronous —
+    the request path drives the async wrapper; the warm pass and tests call this."""
+    cached = _MATRIX_CACHE.get(key)
+    with get_session() as s:
+        token = _validity_token(s)
+    if cached is not None and cached[0] == token:
+        return  # still fresh — nothing to rebuild
+    _store_matrix_entry(key, _build_matrix_entry(cts, token))
+
+
+def _refresh_matrix_async(key: tuple, cts: tuple[str, ...]) -> None:
+    """Single-flight background refresh: at most one rebuild per key is in flight, so
+    a burst of queries racing a moved token spawns one pack rebuild, not N."""
+    with _MATRIX_REFRESH_LOCK:
+        if key in _MATRIX_REFRESHING:
+            return
+        _MATRIX_REFRESHING.add(key)
+
+    def _run() -> None:
+        try:
+            _refresh_matrix(key, cts)
+        except Exception:  # noqa: BLE001 — a background refresh must never raise
+            logger.exception("vectors: matrix background refresh failed")
+        finally:
+            with _MATRIX_REFRESH_LOCK:
+                _MATRIX_REFRESHING.discard(key)
+
+    threading.Thread(target=_run, name="matrix-refresh", daemon=True).start()
+
+
+def _load_matrix(cts: tuple[str, ...]):
+    """The processed matrix for ``cts``, served without ever paying a pack rebuild on
+    the request thread. A cached entry returns immediately — stale is acceptable, the
+    lexical arm covers the freshest vectors — while staleness is probed at most once
+    per :data:`_MATRIX_REFRESH_COOLDOWN_S` and any rebuild runs in a single-flight
+    background thread. Only a cold cache (the process's first query for this scope,
+    before the warm pass primes it) builds inline."""
+    key = _matrix_key(cts)
+    cached = _MATRIX_CACHE.get(key)
+    if cached is not None:
+        now = time.monotonic()
+        if now - _matrix_checked_at.get(key, 0.0) >= _MATRIX_REFRESH_COOLDOWN_S:
+            _matrix_checked_at[key] = now
+            _refresh_matrix_async(key, tuple(sorted(cts)))
+        return cached[1:]
+    entry = _build_matrix_entry(cts)
+    _store_matrix_entry(key, entry)
+    _matrix_checked_at[key] = time.monotonic()
+    return entry[1:]
+
+
+def reset_matrix_cache() -> None:
+    """Drop the process-local matrix cache so the next search rebuilds from the live
+    store. For where a stale matrix would be *wrong*, not merely dated — redaction
+    (dead rows must not be served) and reindex."""
+    _MATRIX_CACHE.clear()
+    _matrix_checked_at.clear()
 
 
 def _knn(qvec, cts: tuple[str, ...], cand: int, allowed_ids=None) -> list[tuple[int, str, float]]:
@@ -642,9 +729,11 @@ def search(
     if not cts:
         return None
 
+    # Non-emptiness only — an O(1) existence probe, not a full count(*) scan of the
+    # covering index on every query (the actual pool sizing happens in the KNN).
     with get_session() as s:
-        total = s.execute(sa_text("SELECT count(*) FROM event_vectors")).scalar() or 0
-    if not total:
+        has_vectors = s.execute(sa_text("SELECT 1 FROM event_vectors LIMIT 1")).scalar()
+    if not has_vectors:
         return None
 
     try:

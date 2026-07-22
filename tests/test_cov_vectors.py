@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import os
 import sys
+import time
 from types import SimpleNamespace
 
 import numpy as np
@@ -714,18 +715,104 @@ def test_knn_argpartition_when_more_live_than_cand(archive_home) -> None:
     assert res[0][0] == 1  # nearest survives the cut
 
 
-def test_matrix_cache_recomputes_on_token_change(archive_home) -> None:
+def test_matrix_serves_stale_within_cooldown(archive_home) -> None:
+    """A cached matrix is served as-is inside the cooldown: an insert bumps the
+    validity token, but the request thread never pays the rebuild — the lexical arm
+    covers the freshest, not-yet-repacked vectors."""
     init_db()
     vectors.ensure_index()
-    vectors._MATRIX_CACHE.clear()
+    vectors.reset_matrix_cache()
     vectors.index_vectors([(1, "user", _unit((0, 1.0)))])
-    ids1, *_ = vectors._load_matrix(("user",))
+    ids1, *_ = vectors._load_matrix(("user",))  # cold: builds inline
     assert len(ids1) == 1
-    # An insert bumps the validity token; the cached entry for this key is stale
-    # and must be recomputed in place (not evicted, key already present).
     vectors.index_vectors([(2, "user", _unit((1, 1.0)))])
+    ids2, *_ = vectors._load_matrix(("user",))  # inside cooldown → stale served
+    assert len(ids2) == 1
+
+
+def test_matrix_refresh_picks_up_writes(archive_home) -> None:
+    """The single-flight refresh rebuilds from the live store; the rebuilt entry then
+    serves the new vectors. Driven synchronously so the assertion can't race the
+    background thread that runs this same body."""
+    init_db()
+    vectors.ensure_index()
+    vectors.reset_matrix_cache()
+    vectors.index_vectors([(1, "user", _unit((0, 1.0)))])
+    key = vectors._matrix_key(("user",))
+    vectors._load_matrix(("user",))  # cold build → 1-row entry cached
+    vectors.index_vectors([(2, "user", _unit((1, 1.0)))])
+    vectors._refresh_matrix(key, ("user",))
+    ids, *_ = vectors._load_matrix(("user",))
+    assert len(ids) == 2
+
+
+def _wait_for_refresh(key, timeout: float = 10.0) -> None:
+    """Block until the single-flight background matrix refresh for ``key`` clears."""
+    deadline = time.monotonic() + timeout
+    while key in vectors._MATRIX_REFRESHING and time.monotonic() < deadline:
+        time.sleep(0.01)
+
+
+def test_load_matrix_background_refresh_past_cooldown(archive_home) -> None:
+    """Past the cooldown, a search kicks the real single-flight background refresh,
+    which rebuilds from the live store; the next search then serves the new
+    vectors (the request thread never blocks on the rebuild)."""
+    init_db()
+    vectors.ensure_index()
+    vectors.reset_matrix_cache()
+    vectors.index_vectors([(1, "user", _unit((0, 1.0)))])
+    key = vectors._matrix_key(("user",))
+    ids1, *_ = vectors._load_matrix(("user",))  # cold build → 1 row
+    assert len(ids1) == 1
+    vectors.index_vectors([(2, "user", _unit((1, 1.0)))])
+    # Age the last-checked stamp (plain write to test-owned state) so the next load
+    # treats the cooldown as elapsed and schedules the real refresh thread.
+    vectors._matrix_checked_at[key] = 0.0
+    vectors._load_matrix(("user",))  # serves stale, kicks the background refresh
+    _wait_for_refresh(key)
     ids2, *_ = vectors._load_matrix(("user",))
-    assert len(ids2) == 2
+    assert len(ids2) == 2  # the landed refresh now serves both
+
+
+def test_refresh_matrix_async_single_flight_suppresses_duplicate(archive_home) -> None:
+    """A refresh already in flight for a key suppresses another — one rebuild, not N,
+    when a burst of queries races the same moved token. With a rebuild marked in
+    flight, a second async request is a no-op and the stale entry stands; once the
+    marker clears, the async refresh runs and picks up the write."""
+    init_db()
+    vectors.ensure_index()
+    vectors.reset_matrix_cache()
+    vectors.index_vectors([(1, "user", _unit((0, 1.0)))])
+    key = vectors._matrix_key(("user",))
+    vectors._load_matrix(("user",))  # cache holds the 1-row matrix
+    vectors.index_vectors([(2, "user", _unit((1, 1.0)))])
+
+    vectors._MATRIX_REFRESHING.add(key)  # a rebuild is (nominally) already in flight
+    try:
+        vectors._refresh_matrix_async(key, ("user",))  # suppressed — no rebuild
+        ids, *_ = vectors._load_matrix(("user",))
+        assert len(ids) == 1  # still stale: the guard blocked the rebuild
+    finally:
+        vectors._MATRIX_REFRESHING.discard(key)
+
+    vectors._refresh_matrix_async(key, ("user",))  # guard clear → runs for real
+    _wait_for_refresh(key)
+    ids, *_ = vectors._load_matrix(("user",))
+    assert len(ids) == 2
+
+
+def test_reset_matrix_cache_forces_live_rebuild(archive_home) -> None:
+    """``reset_matrix_cache`` drops the cache so the next search rebuilds from the
+    live store — the promptness redaction relies on (never serving dead rows)."""
+    init_db()
+    vectors.ensure_index()
+    vectors.reset_matrix_cache()
+    vectors.index_vectors([(1, "user", _unit((0, 1.0)))])
+    vectors._load_matrix(("user",))  # cache holds the 1-row matrix
+    vectors.index_vectors([(2, "user", _unit((1, 1.0)))])
+    vectors.reset_matrix_cache()
+    ids, *_ = vectors._load_matrix(("user",))  # cold rebuild reflects the live store
+    assert len(ids) == 2
 
 
 def test_get_status_reports_indexed_count(archive_home) -> None:
