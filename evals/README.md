@@ -81,10 +81,22 @@ comparable after the change. The instruments are not interchangeable: **only
 the minted gold files can credit an improvement.** Everything else on the
 bench detects damage.
 
-- **Minted gold case files ARE the baseline.** Enumerate them first —
-  `ls ~/.thread/archive/*cases*.jsonl` — and score **every file present, over
-  its own snapshot, on both sides of the change**; a file minted by a parallel
-  instance an hour ago is part of the baseline too. Two mining families
+**Start here — the one-command read.** `python scripts/retrieval_gold_gate.py`
+discovers every gold file, scores each over its bound snapshot with the
+production ranker (at the canonical `limit=20`), and prints per-file MRR /
+success@10 / recall@10 / nDCG@10. It is the CI regression gate, but the measured
+numbers print on every run — floored files and freshly-mined ungated ones alike —
+so it doubles as the fastest, most consistent read of where the baseline sits
+right now, with no loop or aggregator to hand-roll (and no `limit` skew from
+doing so). Drop to the per-file `retrieval_eval.py --cases` instrument below only
+when you need the fuller metric set (success@1/5/20, recall@20, the natural-vs-code
+per-shape split) or to score a *challenger* configuration on both sides of a change
+— the delta the gate, a single-side floor, does not measure.
+
+- **Minted gold case files ARE the baseline.** The gate enumerates and scores
+  them for the current-state read; for a challenger delta, score **every file
+  present, over its own snapshot, on both sides of the change** (a file minted by
+  a parallel instance an hour ago is part of the baseline too). Two mining families
   produce them, and both yield graded pools (nDCG, via `grades`):
   - *Query-mined* (`retrieval_mine_gold.py`): one `claude` agent per real
     query reads the originating session for intent, sweeps the frozen

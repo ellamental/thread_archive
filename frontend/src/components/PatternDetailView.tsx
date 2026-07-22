@@ -62,7 +62,16 @@ export function PatternDetailView() {
         <span><b>{fmtInt(detail.pattern.occurrences)}</b> occurrences</span>
         <span><b>{detail.pattern.lift.toFixed(2)}×</b> lift</span>
         <span className="badge">{detail.pattern.abstraction === 'shape' ? 'behavioral shape' : 'tool detail'}</span>
+        {detail.pattern.source_concentration && <span className={`badge pattern-concentration ${detail.pattern.source_concentration}`}>{detail.pattern.source_concentration.replace('-', ' ')}</span>}
       </div>
+
+      {detail.pattern.sources && detail.pattern.sources.length > 0 && (
+        <div className="pattern-source-summary">
+          <b>Where it appears</b>
+          <span>{detail.pattern.sources.map((source) => `${source.source} ${Math.round(source.ratio * 100)}%`).join(' · ')}</span>
+          <span>{fmtDate(detail.pattern.first_matched_at)} – {fmtDate(detail.pattern.last_matched_at)}</span>
+        </div>
+      )}
 
       {detail.status === 'not_indexed' ? (
         <div className="pattern-stale">

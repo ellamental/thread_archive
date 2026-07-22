@@ -307,7 +307,16 @@ export interface MinedPattern {
   occurrences: number
   direct_occurrences: number
   lift: number
+  npmi?: number
   interestingness: number
+  source_count?: number
+  dominant_source?: string | null
+  dominant_source_ratio?: number
+  source_concentration?: 'single-source' | 'source-skewed' | 'cross-source'
+  sources?: Array<{ source: string; threads: number; ratio: number }>
+  first_matched_at?: string | null
+  last_matched_at?: string | null
+  active_months?: number
   examples: PatternExample[]
 }
 

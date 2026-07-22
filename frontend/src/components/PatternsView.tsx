@@ -20,6 +20,23 @@ function fmtDate(value: string | undefined): string {
     : date.toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' })
 }
 
+function fmtDay(value: string | undefined | null): string {
+  if (!value) return ''
+  const date = new Date(value)
+  return isNaN(date.getTime()) ? value.slice(0, 10) : date.toLocaleDateString(undefined, { month: 'short', year: 'numeric' })
+}
+
+function provenance(pattern: MinedPattern): string | null {
+  if (!pattern.dominant_source) return null
+  const source = pattern.dominant_source
+  const ratio = Math.round((pattern.dominant_source_ratio ?? 0) * 100)
+  const sourceText = pattern.source_count === 1 ? `${source} only` : `${ratio}% ${source} · ${pattern.source_count} sources`
+  const first = fmtDay(pattern.first_matched_at)
+  const last = fmtDay(pattern.last_matched_at)
+  const dates = first && last ? (first === last ? first : `${first}–${last}`) : ''
+  return [sourceText, dates].filter(Boolean).join(' · ')
+}
+
 function isOlderThanStaleNoticeAge(value: string | undefined): boolean {
   if (!value) return false
   const generatedAt = new Date(value).getTime()
@@ -64,7 +81,13 @@ function PatternCard({ report, pattern }: { report: PatternReport; pattern: Mine
         <span><b>{pattern.lift.toFixed(2)}×</b> lift</span>
         <span><b>{directPct}%</b> adjacent</span>
         <span className="badge">{pattern.abstraction === 'shape' ? 'behavioral shape' : 'tool detail'}</span>
+        {pattern.source_concentration && (
+          <span className={`badge pattern-concentration ${pattern.source_concentration}`}>
+            {pattern.source_concentration.replace('-', ' ')}
+          </span>
+        )}
       </div>
+      {provenance(pattern) && <div className="pattern-provenance">{provenance(pattern)}</div>}
       {pattern.examples.length > 0 && (
         <div className="pattern-examples">
           <span>newest matches</span>
@@ -103,7 +126,9 @@ export function PatternsView() {
     return [...report.patterns]
       .filter((pattern) => lens === 'all' || pattern.abstraction === lens)
       .filter((pattern) =>
-        !needle || pattern.activities.some((id) => activity(report, pattern, id).label.toLocaleLowerCase().includes(needle)),
+        !needle
+        || pattern.activities.some((id) => activity(report, pattern, id).label.toLocaleLowerCase().includes(needle))
+        || pattern.sources?.some((source) => source.source.toLocaleLowerCase().includes(needle)),
       )
       .sort((a, b) => b[sort] - a[sort])
   }, [report, lens, sort, filter])
@@ -165,7 +190,7 @@ export function PatternsView() {
       </div>
 
       <p className="stat-note pattern-explainer">
-        Bounded-gap sequences across distinct threads. Lift compares observed support with independent activity frequencies; “adjacent” means no intervening behavioral event.
+        Paired tool outcomes and bounded-gap sequences across distinct threads. Lift compares observed support with independent activity frequencies; source labels expose provider-specific instrumentation motifs.
       </p>
 
       <div className="pattern-list">
