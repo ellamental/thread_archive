@@ -456,8 +456,21 @@ a.session-link:hover { color: var(--accent); }
 .pattern-step.tool_call { color: #315fa8; background: color-mix(in srgb, #4d83d1 14%, var(--assistant)); }
 .pattern-step.tool_success { color: #287449; background: color-mix(in srgb, #42a66c 14%, var(--assistant)); }
 .pattern-step.tool_error { color: #a13f3f; background: color-mix(in srgb, #d75d5d 14%, var(--assistant)); }
+.pattern-step.tool_recovery, .pattern-step.tool_recovery_changed, .pattern-step.tool_recovery_same {
+  color: #6b4ca0; background: color-mix(in srgb, #8b65c2 14%, var(--assistant));
+}
 .pattern-metrics { display: flex; flex-wrap: wrap; gap: 8px 16px; margin-top: 10px; color: var(--muted); font-size: 11px; }
 .pattern-metrics b { color: var(--ink); font-weight: 600; }
+.pattern-concentration { text-transform: capitalize; }
+.pattern-concentration.single-source { color: #8b5a22; background: color-mix(in srgb, #d99a45 13%, var(--assistant)); }
+.pattern-concentration.source-skewed { color: #6d5b24; background: color-mix(in srgb, #c8aa40 13%, var(--assistant)); }
+.pattern-concentration.cross-source { color: #287449; background: color-mix(in srgb, #42a66c 13%, var(--assistant)); }
+.pattern-provenance { color: var(--muted); font-size: 11px; margin-top: 7px; }
+.pattern-source-summary {
+  display: flex; flex-wrap: wrap; gap: 6px 16px; margin: -10px 0 20px;
+  color: var(--muted); font-size: 12px;
+}
+.pattern-source-summary b { color: var(--ink); }
 .pattern-examples { display: flex; flex-wrap: wrap; gap: 6px 12px; margin-top: 9px; font-size: 11px; }
 .pattern-examples > span { color: var(--muted); text-transform: uppercase; letter-spacing: .05em; }
 .pattern-examples a { color: var(--accent); text-decoration: none; max-width: 280px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

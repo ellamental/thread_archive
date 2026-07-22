@@ -39,7 +39,7 @@ from sqlalchemy import bindparam, text
 from ._config import resolve_paths
 from ._store import get_engine
 
-REPORT_VERSION = 1
+REPORT_VERSION = 2
 DEFAULT_THREAD_TYPES = ("conversation", "system")
 DEFAULT_MIN_SUPPORT = 10
 DEFAULT_MAX_LENGTH = 3
@@ -57,6 +57,7 @@ _IGNORED_EVENT_TYPES = (
     "thinking_delta",
     "progress",
     "file_snapshot",
+    "content_block",
     "tool_execution_started",
     "archived_duplicate",
 )
@@ -82,27 +83,49 @@ class _Trace:
     activities: list[_Activity]
 
 
+@dataclass(frozen=True)
+class _PendingCall:
+    """A call placeholder that will become its paired outcome when one arrives."""
+
+    position: int
+    name: str
+    signature: str | None
+    event_id: int
+
+
 def _display_event(event_type: str) -> str:
     return event_type.replace("_", " ")
 
 
-def _tool_ids(kind: str, name: str | None) -> tuple[str, str]:
+def _tool_ids(kind: str, name: str | None, category: str | None = None) -> tuple[str, str]:
     clean = (name or "unknown").strip()[:200] or "unknown"
-    return f"tool:{kind}", f"tool:{kind}:{clean}"
+    suffix = f":{category}" if category else ""
+    return f"tool:{kind}", f"tool:{kind}:{clean}{suffix}"
 
 
 def _activity_meta(activity_id: str, abstraction: str) -> dict:
     """Turn a compact stable id into viewer-ready vocabulary metadata."""
-    parts = activity_id.split(":", 2)
+    parts = activity_id.split(":")
     if parts[0] == "tool":
         kind = parts[1]
         tool = parts[2] if len(parts) > 2 else None
-        verb = {"call": "call", "success": "success", "error": "error"}.get(kind, kind)
+        category = " ".join(parts[3:]).replace("_", " ") if len(parts) > 3 else None
+        verb = {
+            "call": "call",
+            "success": "success",
+            "error": "error",
+            "recovery_changed": "recovered · changed args",
+            "recovery_same": "recovered · same args",
+            "recovery": "recovered",
+        }.get(kind, kind.replace("_", " "))
+        label = f"{verb} · {tool}" if tool else f"tool {verb}"
+        if category:
+            label += f" · {category}"
         return {
             "id": activity_id,
             "kind": f"tool_{kind}",
-            "detail": tool,
-            "label": f"{verb} · {tool}" if tool else f"tool {verb}",
+            "detail": " · ".join(filter(None, (tool, category))) or None,
+            "label": label,
         }
     label = activity_id.replace(":", " ").replace("-", " ")
     return {"id": activity_id, "kind": parts[0], "detail": None, "label": label}
@@ -121,7 +144,7 @@ _EVENT_QUERY = text(
                 THEN json_extract(e.payload, '$.block_type')
                 WHEN e.event_type = 'ide_context'
                 THEN json_extract(e.payload, '$.context_type') END AS event_detail,
-           e.occurred_at, t.title, t.source, t.thread_type, t.updated_at
+           e.payload, e.occurred_at, t.title, t.source, t.thread_type, t.updated_at
     FROM events e
     JOIN threads t ON t.id = e.thread_id
     WHERE t.archived = 0
@@ -131,6 +154,56 @@ _EVENT_QUERY = text(
     ORDER BY e.thread_id, e.id
     """
 ).bindparams(bindparam("thread_types", expanding=True))
+
+
+def _call_signature(payload: dict) -> str | None:
+    """Return a stable equality fingerprint without retaining potentially sensitive args."""
+    value = payload.get("input", payload.get("arguments", payload.get("tool_input")))
+    if value is None:
+        return None
+    try:
+        canonical = json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    except (TypeError, ValueError):
+        canonical = repr(value)
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def _error_category(payload: dict) -> str:
+    """Coarsen provider-specific failure text into searchable diagnostic classes."""
+    text_value = payload.get("error", payload.get("output", payload.get("content", "")))
+    if not isinstance(text_value, str):
+        try:
+            text_value = json.dumps(text_value, ensure_ascii=False)
+        except (TypeError, ValueError):
+            text_value = str(text_value)
+    value = text_value.casefold()
+    categories = (
+        ("cancelled", ("cancelled", "canceled", "interrupted")),
+        ("rejected", ("doesn't want to proceed", "tool use was rejected", "declined")),
+        ("timeout", ("timed out", "timeout")),
+        ("permission", ("permission denied", "forbidden", "not permitted", "unauthorized")),
+        ("not_found", ("not found", "no such file", "command not found", "exit code 127")),
+        ("validation", ("inputvalidationerror", "invalid argument", "required parameter", "unexpected parameter")),
+        ("precondition", ("has not been read yet", "modified since read", "read it first")),
+        ("schema", ("does not match required schema", "schema validation")),
+        ("unavailable", ("no such tool available", "is not connected", "is not enabled")),
+        ("hook", ("hook error", "pretooluse:")),
+        ("syntax", ("syntax error", "parse error", "unknown option")),
+        ("conflict", ("conflict", "already exists")),
+        ("execution", ("traceback (most recent call last)", "exit code 1", "eisdir:")),
+    )
+    return next((category for category, needles in categories if any(n in value for n in needles)), "other")
+
+
+def _is_genuine_summary(payload: dict) -> bool:
+    """Separate compacted conversation summaries from attachment/system machinery."""
+    if payload.get("system_type") in {"compact_boundary", "compaction", "summary"}:
+        return True
+    if payload.get("summary_type") in {"compaction", "cursor_compaction"}:
+        return True
+    # Importers use a bare context_summary for actual compactions. Every known
+    # attachment or system record has a system_type and must not become behavior.
+    return payload.get("system_type") is None and bool(str(payload.get("content", "")).strip())
 
 
 def _iter_traces(
@@ -150,6 +223,8 @@ def _iter_traces(
         activities: list[_Activity] = []
         call_names: dict[str, str] = {}
         started_calls: set[str] = set()
+        pending_calls: dict[str, _PendingCall] = {}
+        recent_failures: dict[str, tuple[str | None, int]] = {}
         api_content_seen: set[str] = set()
 
         def append(shape: str, detail: str, event_id: int, occurred_at: str) -> None:
@@ -169,15 +244,21 @@ def _iter_traces(
                 activities = []
                 call_names = {}
                 started_calls = set()
+                pending_calls = {}
+                recent_failures = {}
                 api_content_seen = set()
             if tid != current_id:
                 current_id = tid
-                title, source, thread_type = row[8], row[9], str(row[10])
-                updated_at = str(row[11]) if row[11] is not None else None
+                title, source, thread_type = row[9], row[10], str(row[11])
+                updated_at = str(row[12]) if row[12] is not None else None
 
             event_id, api_call_id, event_type = int(row[1]), row[2], str(row[3])
             tool_name, tool_call_id, event_detail = row[4], row[5], row[6]
-            occurred_at = str(row[7])
+            try:
+                payload = json.loads(row[7]) if isinstance(row[7], str) else dict(row[7] or {})
+            except (json.JSONDecodeError, TypeError, ValueError):
+                payload = {}
+            occurred_at = str(row[8])
 
             if event_type in ("tool_use_started", "tool_use_complete"):
                 name = str(tool_name or "unknown")
@@ -185,10 +266,19 @@ def _iter_traces(
                     cid = str(tool_call_id)
                     call_names[cid] = name
                     if event_type == "tool_use_complete" and cid in started_calls:
+                        previous = pending_calls.get(cid)
+                        if previous and previous.signature is None:
+                            pending_calls[cid] = _PendingCall(
+                                previous.position, name, _call_signature(payload), previous.event_id,
+                            )
                         continue  # the started event already represents this call
                     started_calls.add(cid)
                 shape, detail = _tool_ids("call", name)
                 append(shape, detail, event_id, occurred_at)
+                if tool_call_id:
+                    pending_calls[str(tool_call_id)] = _PendingCall(
+                        len(activities) - 1, name, _call_signature(payload), event_id,
+                    )
             elif event_type in ("tool_execution_completed", "tool_execution_error"):
                 # Historical builders wrote the literal placeholder "unknown" on
                 # most result events even though tool_call_id still pairs them to a
@@ -199,9 +289,38 @@ def _iter_traces(
                     if recorded_name and recorded_name != "unknown"
                     else call_names.get(str(tool_call_id), "unknown")
                 )
-                kind = "error" if event_type == "tool_execution_error" else "success"
-                shape, detail = _tool_ids(kind, name)
-                append(shape, detail, event_id, occurred_at)
+                pending = pending_calls.pop(str(tool_call_id), None) if tool_call_id else None
+                signature = pending.signature if pending else None
+                if event_type == "tool_execution_error":
+                    kind = "error"
+                    category = _error_category(payload)
+                else:
+                    category = None
+                    failed = recent_failures.get(name)
+                    # A same-tool success within the miner's default bounded-gap
+                    # window is a recovery. Argument equality is compared by hash;
+                    # raw arguments never enter the derived report.
+                    if failed and (pending.position if pending else len(activities)) - failed[1] <= DEFAULT_MAX_GAP + 1:
+                        if signature is None or failed[0] is None:
+                            kind = "recovery"
+                        elif signature == failed[0]:
+                            kind = "recovery_same"
+                        else:
+                            kind = "recovery_changed"
+                        recent_failures.pop(name, None)
+                    else:
+                        kind = "success"
+                shape, detail = _tool_ids(kind, name, category)
+                if pending is not None:
+                    activities[pending.position] = _Activity(
+                        shape, detail, pending.event_id, occurred_at,
+                    )
+                    position = pending.position
+                else:
+                    append(shape, detail, event_id, occurred_at)
+                    position = len(activities) - 1
+                if event_type == "tool_execution_error":
+                    recent_failures[name] = (signature, position)
             elif event_type in ("text_complete", "thinking_complete"):
                 kind = "assistant:text" if event_type == "text_complete" else "assistant:thinking"
                 append(kind, kind, event_id, occurred_at)
@@ -219,11 +338,15 @@ def _iter_traces(
             elif event_type in ("user_message_sent", "thread_message_sent"):
                 append("user:message", "user:message", event_id, occurred_at)
             elif event_type == "context_summary":
-                append("context:summary", "context:summary", event_id, occurred_at)
+                if _is_genuine_summary(payload):
+                    append("context:summary", "context:summary", event_id, occurred_at)
             elif event_type == "model_change":
                 append("model:change", "model:change", event_id, occurred_at)
             elif event_type == "hook_context":
-                append("context:hook", "context:hook", event_id, occurred_at)
+                hook_name = str(payload.get("hook_name") or payload.get("name") or "unknown")
+                hook_context = str(payload.get("context") or payload.get("content") or "")
+                if not (hook_name == "response-check" and hook_context.strip() == "clean"):
+                    append("context:hook", f"context:hook:{hook_name}", event_id, occurred_at)
             elif event_type == "queue_operation":
                 append("user:queued", "user:queued", event_id, occurred_at)
             elif event_type == "ide_context":
@@ -292,6 +415,25 @@ def _pattern_id(abstraction: str, activities: tuple[str, ...]) -> str:
     return hashlib.sha256(blob.encode("utf-8")).hexdigest()[:16]
 
 
+def _is_diagnostic(pattern: tuple[str, ...]) -> bool:
+    return any(
+        activity.startswith("tool:error") or activity.startswith("tool:recovery")
+        for activity in pattern
+    )
+
+
+def _select_patterns(patterns: list[dict], limit: int) -> list[dict]:
+    """Reserve catalog space for errors/recoveries before filling by score."""
+    if limit <= 0:
+        return []
+    diagnostic = [p for p in patterns if _is_diagnostic(tuple(p["activities"]))]
+    reserve = min(len(diagnostic), max(1, limit // 3))
+    chosen = diagnostic[:reserve]
+    chosen_ids = {p["id"] for p in chosen}
+    chosen.extend(p for p in patterns if p["id"] not in chosen_ids)
+    return chosen[:limit]
+
+
 def mine_patterns(
     *,
     thread_types: tuple[str, ...] = DEFAULT_THREAD_TYPES,
@@ -305,9 +447,9 @@ def mine_patterns(
     ``support`` is the number of distinct threads containing a pattern;
     ``occurrences`` includes repeats within a thread.  ``lift`` compares observed
     thread support with the independent support of the constituent activities.
-    The ranking blends support with normalized positive pointwise mutual
-    information, preventing both ubiquitous boilerplate and one-off curiosities
-    from monopolizing the report.
+    Ranking is lift-forward with logarithmic support. Diagnostic sequences get a
+    modest boost, and catalog quotas keep errors/recoveries from being displaced by
+    high-volume protocol shapes.
     """
     if not thread_types or any(not t.strip() for t in thread_types):
         raise ValueError("at least one non-empty thread type is required")
@@ -369,6 +511,12 @@ def mine_patterns(
         for pattern, supp in support[abstraction].items():
             if supp < min_support or trace_count == 0:
                 continue
+            # Coarse call/success permutations are protocol volume, not behavior.
+            # Concrete tool-success bursts remain available in the detail lens.
+            if abstraction == "shape" and all(
+                activity in {"tool:call", "tool:success"} for activity in pattern
+            ):
+                continue
             observed = supp / trace_count
             expected = math.prod(
                 activity_support[abstraction][activity] / trace_count
@@ -377,7 +525,19 @@ def mine_patterns(
             lift = observed / expected if expected else 0.0
             pmi = math.log2(lift) if lift > 0 else 0.0
             npmi = pmi / -math.log2(observed) if 0 < observed < 1 else 0.0
-            interestingness = supp * max(0.0, npmi) * (1 + 0.15 * (len(pattern) - 2))
+            # NPMI is bounded, so a rare provider envelope whose fields always
+            # co-occur cannot win merely by producing an enormous raw lift.
+            interestingness = math.log1p(supp) * max(0.0, npmi) * (
+                1 + 0.15 * (len(pattern) - 2)
+            )
+            if _is_diagnostic(pattern):
+                interestingness *= 1.75
+            if len(set(pattern)) == 1:
+                interestingness *= 0.45
+            if abstraction == "detail" and all(
+                activity.startswith(("tool:success:", "tool:call:")) for activity in pattern
+            ):
+                interestingness *= 0.35
             patterns_by_abstraction[abstraction].append({
                 "id": _pattern_id(abstraction, pattern),
                 "abstraction": abstraction,
@@ -388,6 +548,7 @@ def mine_patterns(
                 "occurrences": int(occurrences[abstraction][pattern]),
                 "direct_occurrences": int(direct[abstraction][pattern]),
                 "lift": lift,
+                "npmi": npmi,
                 "interestingness": interestingness,
                 "examples": [],
             })
@@ -399,8 +560,8 @@ def mine_patterns(
     shape_limit = max_patterns // 2
     detail_limit = max_patterns - shape_limit
     selected = (
-        patterns_by_abstraction["shape"][:shape_limit]
-        + patterns_by_abstraction["detail"][:detail_limit]
+        _select_patterns(patterns_by_abstraction["shape"], shape_limit)
+        + _select_patterns(patterns_by_abstraction["detail"], detail_limit)
     )
     selected.sort(key=lambda p: (p["interestingness"], p["support"]), reverse=True)
 
@@ -419,7 +580,7 @@ def mine_patterns(
     assert len(activity_ids) <= sum(len(v) for v in vocabulary.values())
 
     generated_at = datetime.now(timezone.utc).isoformat()
-    newest_examples = _write_match_index(
+    newest_examples, diagnostics = _write_match_index(
         paths.pattern_matches_path,
         selected,
         thread_types=tuple(dict.fromkeys(t.strip() for t in thread_types)),
@@ -430,6 +591,7 @@ def mine_patterns(
     )
     for selected_pattern in selected:
         selected_pattern["examples"] = newest_examples.get(selected_pattern["id"], [])
+        selected_pattern.update(diagnostics.get(selected_pattern["id"], {}))
 
     report = {
         "version": REPORT_VERSION,
@@ -473,12 +635,21 @@ It is not part of Archive's stable truth format or public MCP surface.
 ```sh
 thread_archive patterns list --limit 20
 thread_archive patterns list --query Bash --lens detail --sort lift
+thread_archive patterns list --query recovery --lens detail
 thread_archive patterns read PATTERN_ID --offset 0 --limit 50
 ```
 
 All `list` and `read` output is JSON. `read` returns matching threads newest-first;
 each row includes `thread_id`, `event_id`, and the exact `event_ids` sequence. Use
 `thread_read(thread_id, around_event=event_id, mode='full')` to inspect the evidence.
+Catalog rows also report source concentration and their first/latest matching dates,
+making single-provider instrumentation motifs easy to distinguish from cross-source
+behavior.
+
+Tool calls are paired with their results before mining, so successful calls are one
+activity rather than a protocol-level call/result pair. A same-tool success shortly
+after a failure is labeled as a recovery, including whether its normalized arguments
+changed. Error detail activities retain the tool and a coarse failure category.
 
 ## Artifacts
 
@@ -503,7 +674,7 @@ def _write_match_index(
     max_gap: int,
     generated_at: str,
     through_event_id: int,
-) -> dict[str, list[dict]]:
+) -> tuple[dict[str, list[dict]], dict[str, dict]]:
     """Publish one exact match per supporting thread for every visible pattern.
 
     The report stays small enough for the overview endpoint. This disposable SQLite
@@ -590,6 +761,7 @@ def _write_match_index(
         conn.commit()
 
         examples: dict[str, list[dict]] = {}
+        diagnostics: dict[str, dict] = {}
         for pattern in patterns:
             rows = conn.execute(
                 "SELECT thread_id, title, source, event_id, event_ids, matched_at "
@@ -605,11 +777,48 @@ def _write_match_index(
                 }
                 for row in rows
             ]
+            source_rows = conn.execute(
+                "SELECT COALESCE(source, 'unknown'), COUNT(*) FROM matches "
+                "WHERE pattern_id = ? GROUP BY COALESCE(source, 'unknown') "
+                "ORDER BY COUNT(*) DESC, COALESCE(source, 'unknown') LIMIT 8",
+                (pattern["id"],),
+            ).fetchall()
+            total = int(pattern["support"])
+            dominant = int(source_rows[0][1]) if source_rows else 0
+            dominant_ratio = dominant / total if total else 0.0
+            date_row = conn.execute(
+                "SELECT MIN(matched_at), MAX(matched_at), "
+                "COUNT(DISTINCT substr(matched_at, 1, 7)) FROM matches WHERE pattern_id = ?",
+                (pattern["id"],),
+            ).fetchone()
+            source_count = int(conn.execute(
+                "SELECT COUNT(DISTINCT COALESCE(source, 'unknown')) FROM matches WHERE pattern_id = ?",
+                (pattern["id"],),
+            ).fetchone()[0])
+            if source_count <= 1:
+                concentration = "single-source"
+            elif dominant_ratio >= 0.8:
+                concentration = "source-skewed"
+            else:
+                concentration = "cross-source"
+            diagnostics[pattern["id"]] = {
+                "source_count": source_count,
+                "dominant_source": source_rows[0][0] if source_rows else None,
+                "dominant_source_ratio": dominant_ratio,
+                "source_concentration": concentration,
+                "sources": [
+                    {"source": row[0], "threads": int(row[1]), "ratio": int(row[1]) / total}
+                    for row in source_rows
+                ] if total else [],
+                "first_matched_at": date_row[0] if date_row else None,
+                "last_matched_at": date_row[1] if date_row else None,
+                "active_months": int(date_row[2] or 0) if date_row else 0,
+            }
         conn.close()
         conn = None
         tmp.chmod(0o600)
         os.replace(tmp, path)
-        return examples
+        return examples, diagnostics
     finally:
         if conn is not None:
             conn.close()
@@ -784,6 +993,12 @@ def search_patterns(
             "occurrences": pattern["occurrences"],
             "lift": pattern["lift"],
             "interestingness": pattern["interestingness"],
+            "source_count": pattern.get("source_count", 0),
+            "dominant_source": pattern.get("dominant_source"),
+            "dominant_source_ratio": pattern.get("dominant_source_ratio", 0),
+            "source_concentration": pattern.get("source_concentration"),
+            "first_matched_at": pattern.get("first_matched_at"),
+            "last_matched_at": pattern.get("last_matched_at"),
         }
         for pattern, activity_labels in candidates[:limit]
     ]

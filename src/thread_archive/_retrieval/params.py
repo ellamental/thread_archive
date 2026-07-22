@@ -11,11 +11,14 @@ and scored against the incumbent on identical cases by the search lab
 
 The shipped values, with their evidence:
 
-- ``fusion_weight`` 50.0 — the MRR optimum for the fused lexical+vector
-  ranking (the fusion sweep: 50.0 Pareto-dominates 0.0 on S@1/10/20 and MRR;
-  swept on the title-proxy eval). Lexical scoring is ~0 for a semantic-only
-  hit, so without this term a vocab-mismatch hit the vector arm surfaced
-  would sink regardless of its rank.
+- ``fusion_weight`` 100.0 — the cross-backend fusion term (the normalized
+  ``_rrf`` agreement score), weighted to compete with density. Lexical scoring
+  is ~0 for a semantic-only hit, so a vocab-mismatch answer the vector arm
+  surfaces (high ``_rrf``, low density) sinks under any lexically dense confound
+  unless the fusion term reaches density's scale. At 100 the gold files carry
+  more real answers into the top 10 (the measurement of record — see
+  ``docs/search-quality.md``); heavier weights hold that recall but start
+  eroding the head order (success@1), so 100 is the sweet spot.
 - ``recency_weight`` 1.0 — the corpus skews to OLD threads, so a strong
   recency boost buries what users actually read; 1.0 keeps a mild recent
   tiebreaker. The signal itself decays exponentially with
@@ -52,7 +55,7 @@ class SearchParams:
     density_weight: float = 100.0
     phrase_weight: float = 50.0
     recency_weight: float = 1.0
-    fusion_weight: float = 50.0
+    fusion_weight: float = 100.0
     content_type_weights: Optional[Mapping[str, float]] = None
     recency_half_life_hours: float = 72.0
     density_norm_chars: int = 500

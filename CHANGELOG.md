@@ -2,6 +2,25 @@
 
 ## Unreleased
 
+- Retrieval `fusion_weight` raised 50 → 100. The normalized cross-backend `_rrf` agreement term in
+  the weighted ranker was tuned on the discredited title-proxy eval and left the semantic arm
+  underweighted against term density: a vocab-mismatch answer the vector arm surfaces (density ~0,
+  high `_rrf`) sank under any lexically dense confound (`density*100` dwarfing `rrf*50`). Doubling the
+  term lets semantic agreement compete. Measured in production shape (rerank=auto) over the
+  snapshot-bound gold files (snapshot `9519fc4518e13ee7`): aggregate success@10 0.909 → 0.945, true
+  recall@10 0.708 → 0.746, nDCG@10 0.571 → 0.584, MRR 0.608 → 0.619, success@1 flat, no latency cost.
+  Tuned on the query-mined `judged-cases`, confirmed on the held-out topic files (largest held-out
+  lift `topic-cases-needle` S@10 0.900 → 1.000, R@10 +0.083; neutral on frustration/suicide; one
+  noise-level dip on context-compaction R@10 −0.014). The gains land in top-10 reachability, not
+  success@1 — the rank-1 lexical confounds hold, but more real answers reach the window agents scan.
+
+- The `evals/README.md` baseline runbook now leads with `scripts/retrieval_gold_gate.py` as the
+  one-command read of the current gold-file baseline: it discovers every gold file, scores each over
+  its bound snapshot with the production ranker at the canonical `limit=20`, and prints per-file
+  MRR / success@10 / recall@10 / nDCG@10 (the CI gate's measured numbers print on every run, floored
+  and ungated files alike). The per-file `retrieval_eval.py --cases` instrument stays the path for the
+  fuller metric set and for scoring a challenger on both sides of a change.
+
 - A corpus-wide behavioral sequence miner now projects conversation and agent-run events into
   provider-independent and tool-specific alphabets, discovers recurring bounded-gap subsequences,
   ranks them by support plus lift, and indexes one exact occurrence per supporting thread. The
@@ -10,8 +29,12 @@
   pageable JSON exploration for agents without expanding the stable MCP surface. The unlisted
   `/experiments/patterns` viewer filters and sorts the catalog, links every pattern to a
   newest-first matching-thread page, and delays its freshness warning until the report is over 24
-  hours old. Page requests never trigger the expensive corpus pass, and all experiment artifacts
-  stay outside the JSONL truth/backup contract.
+  hours old. Tool calls and results are paired into outcomes, near-term same-tool recoveries retain
+  normalized-argument change signals, and errors retain coarse failure categories; attachment and
+  no-op hook telemetry and provider envelope blocks are excluded. Diagnostic patterns receive reserved catalog space, while
+  source concentration and first/latest occurrence dates distinguish cross-provider behavior from
+  instrumentation artifacts in both JSON and the viewer. Page requests never trigger the expensive
+  corpus pass, and all experiment artifacts stay outside the JSONL truth/backup contract.
 
 - Retrieval evaluation now separates first-hit success@k from true recall@k (the fraction of every case's
   grade-2 gold set recovered) instead of calling success "recall." Reports, the operator CLI, the search lab,

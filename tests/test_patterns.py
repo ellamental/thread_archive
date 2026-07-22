@@ -26,7 +26,7 @@ def _seed(archive_home) -> None:
             ("tool_use_complete", {"tool_name": "Bash", "tool_call_id": "a1", "input": {}}, "r1"),
             ("tool_execution_error", {"tool_call_id": "a1", "error": "bad"}, None),
             ("text_complete", {"text": "retrying"}, "r2"),
-            ("tool_use_complete", {"tool_name": "Bash", "tool_call_id": "a2", "input": {}}, "r2"),
+            ("tool_use_complete", {"tool_name": "Bash", "tool_call_id": "a2", "input": {"command": "fixed"}}, "r2"),
             ("tool_execution_completed", {"tool_name": "unknown", "tool_call_id": "a2", "output": "ok"}, None),
         ],
         "t2": [
@@ -34,7 +34,7 @@ def _seed(archive_home) -> None:
             ("tool_use_complete", {"tool_name": "Bash", "tool_call_id": "b1", "input": {}}, "r3"),
             ("tool_execution_error", {"tool_call_id": "b1", "error": "bad"}, None),
             ("text_complete", {"text": "trying another way"}, "r4"),
-            ("tool_use_complete", {"tool_name": "Bash", "tool_call_id": "b2", "input": {}}, "r4"),
+            ("tool_use_complete", {"tool_name": "Bash", "tool_call_id": "b2", "input": {"command": "fixed"}}, "r4"),
             ("tool_execution_completed", {"tool_call_id": "b2", "output": "ok"}, None),
         ],
         "t3": [
@@ -96,14 +96,17 @@ def test_mines_gapped_shape_and_tool_specific_sequences(archive_home):
     assert "patterns list" in (experiment / "README.md").read_text()
 
     patterns = {(p["abstraction"], tuple(p["activities"])): p for p in report["patterns"]}
-    detailed = patterns[("detail", ("tool:error:Bash", "tool:call:Bash"))]
+    detailed = patterns[("detail", ("tool:error:Bash:other", "tool:recovery_changed:Bash"))]
     assert detailed["support"] == 2
     assert detailed["occurrences"] == 2
     assert detailed["direct_occurrences"] == 0  # assistant text sits between them
     assert detailed["lift"] > 1
     assert detailed["examples"][0]["thread_id"] == "t2"
     assert "matched_at" in detailed["examples"][0]
-    assert patterns[("shape", ("tool:error", "tool:call"))]["support"] == 2
+    assert patterns[("shape", ("tool:error", "tool:recovery_changed"))]["support"] == 2
+    assert detailed["source_concentration"] == "single-source"
+    assert detailed["dominant_source"] == "fixture"
+    assert detailed["first_matched_at"] <= detailed["last_matched_at"]
 
     status, detail = _get(f"/api/experiments/patterns/{detailed['id']}/matches")
     assert status == 200
@@ -123,6 +126,42 @@ def test_mines_gapped_shape_and_tool_specific_sequences(archive_home):
     catalog = json.loads(body)
     assert status == 200 and catalog["returned"] == 1
     assert "Bash" in " ".join(catalog["patterns"][0]["activities"])
+    assert catalog["patterns"][0]["source_concentration"] == "single-source"
+
+
+def test_projection_filters_machinery_and_pairs_tool_outcomes(archive_home):
+    _seed(archive_home)
+    from thread_archive._store import get_engine
+
+    with get_engine().begin() as conn:
+        for event_type, payload in (
+            ("context_summary", {"system_type": "attachment", "attachment_type": "todo_reminder", "content": "todo"}),
+            ("context_summary", {"system_type": "system_context", "content": "[system: stop_hook_summary]"}),
+            ("hook_context", {"hook_name": "response-check", "context": "clean"}),
+            ("context_summary", {"content": "Summary:\nA real compaction"}),
+            ("hook_context", {"hook_name": "briefing", "context": "useful context"}),
+        ):
+            conn.execute(text(
+                "INSERT INTO events (thread_id, stream_id, event_type, payload, occurred_at) "
+                "VALUES ('t3', 's', :event_type, :payload, '2026-07-22T12:00:00Z')"
+            ), {"event_type": event_type, "payload": json.dumps(payload)})
+
+    from thread_archive._patterns import _iter_traces
+
+    trace = next(item for item in _iter_traces(("conversation",)) if item.thread_id == "t3")
+    assert [item.shape for item in trace.activities] == [
+        "user:message", "tool:success", "context:summary", "context:hook",
+    ]
+    assert trace.activities[-1].detail == "context:hook:briefing"
+
+
+def test_error_categories_are_stable_and_coarse():
+    from thread_archive._patterns import _error_category
+
+    assert _error_category({"error": "InputValidationError: required parameter missing"}) == "validation"
+    assert _error_category({"error": "File has not been read yet. Read it first."}) == "precondition"
+    assert _error_category({"error": "Exit code 127: command not found"}) == "not_found"
+    assert _error_category({"error": "Exit code 1\nTraceback (most recent call last)"}) == "execution"
 
 
 def test_pattern_matches_paginate_and_reject_unknown_pattern(archive_home):
