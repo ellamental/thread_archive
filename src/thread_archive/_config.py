@@ -83,7 +83,17 @@ class ArchivePaths:
     @property
     def patterns_path(self) -> Path:
         """Disposable corpus-mining report consumed by the patterns viewer."""
-        return self.home / "patterns.json"
+        return self.home / "experiments" / "patterns" / "report.json"
+
+    @property
+    def pattern_matches_path(self) -> Path:
+        """Disposable, pageable occurrence index for the patterns viewer."""
+        return self.home / "experiments" / "patterns" / "matches.db"
+
+    @property
+    def pattern_experiment_readme_path(self) -> Path:
+        """Agent-facing exploration instructions stored beside pattern artifacts."""
+        return self.home / "experiments" / "patterns" / "README.md"
 
 
 def resolve_paths(
