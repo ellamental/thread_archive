@@ -413,6 +413,29 @@ def model_stats(model: str, *, home: Optional[str] = None) -> Optional[dict]:
     return collect_model_stats(model)
 
 
+def mine_patterns(
+    *, home: Optional[str] = None, thread_types: tuple[str, ...] = ("conversation", "system"),
+    min_support: int = 10, max_length: int = 3, max_gap: int = 2,
+    max_patterns: int = 240,
+) -> dict:
+    """Run the explicit corpus-wide behavioral sequence miner and persist its report."""
+    open_archive(home)
+    from ._patterns import mine_patterns as _mine
+
+    return _mine(
+        thread_types=thread_types, min_support=min_support, max_length=max_length,
+        max_gap=max_gap, max_patterns=max_patterns,
+    )
+
+
+def patterns(*, home: Optional[str] = None) -> dict:
+    """Return the last mined pattern report, annotated with live-index staleness."""
+    open_archive(home)
+    from ._patterns import read_patterns
+
+    return read_patterns()
+
+
 def repair(*, home: Optional[str] = None, dry_run: bool = False) -> dict:
     """Quarantine unparseable truth lines and restore committed rows the truth
     lacks from the live index — the sanctioned path from a red ``verify`` back to

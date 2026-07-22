@@ -1329,7 +1329,9 @@ def test_status_self_update_blocked_is_shouted(capsys) -> None:
 
 def _eval_scores(n=40):
     return {"n": n, "mrr": 0.42,
-            "recall": {1: 0.30, 5: 0.55, 10: 0.62, 20: 0.70},
+            "success": {1: 0.30, 5: 0.55, 10: 0.62, 20: 0.70},
+            "recall": {1: 0.25, 5: 0.45, 10: 0.52, 20: 0.60},
+            "ndcg": {1: 0.20, 5: 0.40, 10: 0.48, 20: 0.55},
             "per_shape": {"natural": {"n": n - 1, "mrr": 0.40},
                           "code": {"n": 1, "mrr": 0.50}},
             "latency_p50_ms": 1200.0}
@@ -1342,7 +1344,9 @@ def test_report_eval_titles_frames_as_findability_not_precision(capsys) -> None:
     out = capsys.readouterr().out
     assert "5,960 conversation threads" in out
     assert "title recall" in out
-    assert "R@10: 0.62" in out
+    assert "S@10: 0.62" in out
+    assert "R@10: 0.52" in out
+    assert "nDCG@10: 0.48" in out
     assert "findable at all" in out          # the honest framing, not "proof"
     assert "natural" in out and "code" in out  # per-shape breakdown
 
@@ -1356,14 +1360,17 @@ def test_report_eval_from_log_frames_as_collapse_alarm(capsys) -> None:
     assert "collapse is the real" in out
 
 
-def test_report_eval_recall_keys_survive_json_roundtrip(capsys) -> None:
-    """--json serializes recall keys to strings; the text path must still order them."""
+def test_report_eval_metric_keys_survive_json_roundtrip(capsys) -> None:
+    """--json stringifies metric keys; the text path must still order them."""
     scores = _eval_scores()
+    scores["success"] = {str(k): v for k, v in scores["success"].items()}
     scores["recall"] = {str(k): v for k, v in scores["recall"].items()}
+    scores["ndcg"] = {str(k): v for k, v in scores["ndcg"].items()}
     rc = cli.report_eval({"threads": 1, "protocol": "titles", "scores": scores})
     assert rc == 0
     out = capsys.readouterr().out
-    assert "R@1: 0.30   R@5: 0.55   R@10: 0.62   R@20: 0.70" in out
+    assert "S@1: 0.30   S@5: 0.55   S@10: 0.62   S@20: 0.70" in out
+    assert "R@1: 0.25   R@5: 0.45   R@10: 0.52   R@20: 0.60" in out
 
 
 def test_report_eval_titles_empty_points_at_import(capsys) -> None:

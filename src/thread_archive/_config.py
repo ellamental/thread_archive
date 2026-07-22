@@ -80,6 +80,11 @@ class ArchivePaths:
         """Drop zone for downloaded account exports (auto-imported by the watcher)."""
         return self.home / "dumps"
 
+    @property
+    def patterns_path(self) -> Path:
+        """Disposable corpus-mining report consumed by the patterns viewer."""
+        return self.home / "patterns.json"
+
 
 def resolve_paths(
     home: str | os.PathLike[str] | None = None,

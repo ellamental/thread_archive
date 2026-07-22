@@ -500,6 +500,11 @@ def route(method: str, path: str, params: dict) -> Response:
         limit = int(models) if models and models.isdigit() else None
         return _ok(api.stats(model_limit=limit))
 
+    if path == "/api/patterns":
+        # Mining is an explicit CLI batch; this request only reads its small,
+        # persisted report and compares the watermark with the live event log.
+        return _ok(api.patterns())
+
     if path.startswith("/api/stats/model/"):
         # Per-model drill-down. The tail is the model name — taken whole (model ids
         # like 'deepseek/deepseek-v4-pro' contain slashes) and percent-decoded (the

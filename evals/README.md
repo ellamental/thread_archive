@@ -10,7 +10,7 @@ Each script's docstring is its own full manual (protocols, biases, caveats);
 this README is the map.
 
 The scoring core these scripts share — the case protocols (title sampling, log
-mining) and the MRR/recall loop — lives in the package at
+mining) and the MRR/success/true-recall/nDCG loop — lives in the package at
 `thread_archive._eval`, so the shipped `thread_archive eval` command (the operator's
 read-only self-checkup over their own archive) and this dev bench score off one
 code path. The bench is the *rest* of the ladder: the CI gate, the experiment
@@ -36,11 +36,14 @@ Fastest tier first — climb until the evidence matches the stakes.
 All run from the repo root with the repo venv, all read-only against the
 archive (BEIR and the lab build throwaway homes and never touch it).
 
-- **`retrieval_eval.py`** — the hub. Scores search with MRR / recall@k under
+- **`retrieval_eval.py`** — the hub. Scores search with MRR / success@k /
+  true recall@k / nDCG@k under
   three case protocols: `--auto-titles` (zero-curation proxy), `--from-log`
   (real search→read pairs mined from the archive's own tool-use trail —
   collapse alarm only), `--cases` (a snapshot-bound case file, e.g. mined
-  golds — the baseline instrument). `--probes-only` skips the metric run for
+  golds — the baseline instrument). Success asks whether any answer ranks;
+  recall measures how much of the complete grade-2 set ranks; nDCG scores the
+  ordering of the whole 2/1/0 pool. `--probes-only` skips the metric run for
   the CI gate's arm-liveness checks. Every other live-archive instrument
   reuses its miner (`mine_log_cases`).
 - **`search_lab.py`** — the experiment bench. Races every configuration in

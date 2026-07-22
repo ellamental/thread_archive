@@ -11,8 +11,8 @@ mined case files this corpus belongs in the repo.
 ``build_corpus`` imports the corpus into the current (test-isolated) archive
 home and returns the name→thread_id map; ``run_cases`` scores a search
 callable against the case set with the same ``evaluate`` loop the live-archive
-harness uses (MRR, recall@k), so numbers here read on the same scale as the
-live-archive protocols. ``search=`` swaps in a candidate ranker — the hook for
+harness uses (MRR, success@k, true recall@k, nDCG@k), so numbers here read on
+the same scale as the live-archive protocols. ``search=`` swaps in a candidate ranker — the hook for
 measuring a ranking experiment against the incumbent on identical cases.
 
 Tests over this corpus (``test_search_quality.py``, and the opt-in
@@ -202,7 +202,7 @@ def build_corpus(archive_home: Path) -> dict[str, str]:
 
 def load_eval_harness():
     """The live harness's scoring module (``evals/retrieval_eval.py``),
-    imported by path — same MRR/recall loop for every tier."""
+    imported by path — same metric loop for every tier."""
     mod = sys.modules.get("retrieval_eval")
     if mod is None:
         spec = importlib.util.spec_from_file_location(

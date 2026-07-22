@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Retrieval evaluation now separates first-hit success@k from true recall@k (the fraction of every case's
+  grade-2 gold set recovered) instead of calling success "recall." Reports, the operator CLI, the search lab,
+  and graph eval expose both; the snapshot gold gate now protects MRR, success@10, true recall@10, and
+  nDCG@10, so losing relevant siblings or degrading the full graded ordering can fail CI even when one answer remains.
+
 - The eval bench sheds the instruments the snapshot-bound gold files supersede. `evals/retrieval_judge.py`
   (pointwise LLM grading of production results — the gold miners now produce graded, corpus-grounded labels
   directly) and `evals/search_arena.py` (blind pairwise LLM duels as the defaults-promotion bar — the promotion
@@ -13,8 +18,8 @@
   ranking changes) — the 11 deterministic mechanism contracts stay (content-type indexing, MCP default-scope
   widening, reindex durability/stability, semantic scope filtering, cross-encoder gate/window/boundary
   plumbing). Ranking *quality* is now measured in exactly one place: the gold case files. First baseline over
-  snapshot `9519fc4518e13ee7`: judged-cases (21) MRR 0.441 / R@5 0.619 / R@10 0.857 / nDCG@10 0.510;
-  topic-cases-suicide (7) MRR 0.683 / R@5 1.000 / nDCG@10 0.641. `beir_eval.py` stays as the external yardstick.
+  snapshot `9519fc4518e13ee7`: judged-cases (21) MRR 0.441 / S@5 0.619 / S@10 0.857 / nDCG@10 0.510;
+  topic-cases-suicide (7) MRR 0.683 / S@5 1.000 / nDCG@10 0.641. `beir_eval.py` stays as the external yardstick.
 
 - Semantic search no longer rebuilds the corpus vector pack on the request thread. The KNN matrix cache is
   keyed on a whole-store validity token, so continuous background embedding invalidated it every few minutes;
@@ -59,8 +64,9 @@
   gold-delta measurement). A stale or absent fixture (snapshot reclaimed, or a gold mid-re-mine) skips that file
   rather than failing, so a maintenance window can't wedge the commit gate red; a freshly minted file rides
   ungated until it gets a floor. Initial floors, a few points under the first baseline over snapshot
-  `9519fc4518e13ee7`: judged-cases MRR 0.40 / R@10 0.80 (measured 0.441 / 0.857), topic-cases-suicide MRR 0.58 /
-  R@10 0.85 (measured 0.683 / 1.000), topic-cases-frustration MRR 0.50 / R@10 0.70 (measured 0.608 / 0.857).
+  `9519fc4518e13ee7`: judged-cases MRR/S@10/R@10/nDCG@10 floors 0.40/0.80/0.70/0.46 (measured
+  0.441/0.857/0.762/0.511); topic-cases-suicide 0.58/0.85/0.78/0.58 (measured 0.683/1.000/0.836/0.642);
+  topic-cases-frustration 0.50/0.70/0.50/0.45 (measured 0.600/0.857/0.562/0.511).
 
 - New `thread_archive snapshot <dest>` verb freezes the corpus into a self-contained, immutable archive home:
   it copies the JSONL truth (drain-consistent, under the truth-write lock) and materializes `index.db` beside it,

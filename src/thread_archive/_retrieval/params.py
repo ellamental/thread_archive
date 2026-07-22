@@ -12,7 +12,7 @@ and scored against the incumbent on identical cases by the search lab
 The shipped values, with their evidence:
 
 - ``fusion_weight`` 50.0 — the MRR optimum for the fused lexical+vector
-  ranking (the fusion sweep: 50.0 Pareto-dominates 0.0 on R@1/10/20 and MRR;
+  ranking (the fusion sweep: 50.0 Pareto-dominates 0.0 on S@1/10/20 and MRR;
   swept on the title-proxy eval). Lexical scoring is ~0 for a semantic-only
   hit, so without this term a vocab-mismatch hit the vector arm surfaced
   would sink regardless of its rank.
@@ -31,8 +31,8 @@ The shipped values, with their evidence:
   reachability dies at the pool boundary: a relevant-but-old hit past bm25's
   top-N is unreachable no matter how the ranker weighs it.
 - ``rerank_pool`` 24 — how many ranked candidates feed the cross-encoder
-  before cutting to ``limit``: wide enough to cover recall@20, small enough
-  to keep the in-process re-rank quick.
+  before cutting to ``limit``: wide enough to cover the top-20 result window,
+  small enough to keep the in-process re-rank quick.
 - ``coherence_gamma`` ``None`` defers to the env knob
   (``$THREAD_ARCHIVE_COHERENCE``); a float forces the community-coherence
   re-rank's strength.

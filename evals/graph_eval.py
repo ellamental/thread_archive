@@ -14,12 +14,13 @@ reads as clicks):
 * **expansion** — append community-mates of the pool's top seeds, ranked by
   query→centroid cosine, after the production results. The recall lever,
   aimed at the pool-miss rate (golds production search never surfaces). Not
-  in production: as slotted here it costs more R@20 than its rescues buy.
+  in production: as slotted here it costs more success@20 than its rescues buy.
 
 Baseline is production search order with coherence *and* the cross-encoder
 off (symmetric across all arms; both sit above candidate selection, which is
-what these arms move). Reports MRR + recall@k per variant, plus pool-miss
-diagnostics for the expansion arm. Read-only; run against the live archive:
+what these arms move). Reports MRR, success@k, and true recall@k per variant,
+plus pool-miss diagnostics for the expansion arm. Read-only; run against the
+live archive:
 
     .venv/bin/python evals/graph_eval.py
     .venv/bin/python evals/graph_eval.py --cases 150 --json
@@ -67,12 +68,19 @@ def expansion_candidates(
     return ranked[:cap]
 
 
-def score_case(order: list[str], gold: set, hits_at: dict, rr: list) -> int:
-    rank = next((r for r, t in enumerate(order[:LIMIT], 1) if t in gold), 0)
+def score_case(order: list[str], gold: set, successes_at: dict,
+               recall_at: dict, rr: list) -> int:
+    positions = {}
+    for r, thread_id in enumerate(order[:LIMIT], 1):
+        if thread_id in gold and thread_id not in positions:
+            positions[thread_id] = r
+    rank = min(positions.values(), default=0)
     rr.append(1.0 / rank if rank else 0.0)
     for k in RECALL_KS:
-        if rank and rank <= k:
-            hits_at[k] += 1
+        found = sum(position <= k for position in positions.values())
+        if found:
+            successes_at[k] += 1
+        recall_at[k] += found / len(gold) if gold else 0.0
     return rank
 
 
@@ -107,7 +115,8 @@ def main() -> int:
                 + [f"coherence:{g}" for g in GAMMAS]
                 + ["expansion"])
     rr: dict[str, list] = {v: [] for v in variants}
-    hits_at: dict[str, dict] = {v: {k: 0 for k in RECALL_KS} for v in variants}
+    successes_at: dict[str, dict] = {v: {k: 0 for k in RECALL_KS} for v in variants}
+    recall_at: dict[str, dict] = {v: {k: 0.0 for k in RECALL_KS} for v in variants}
     pool_misses = 0
     rescued = 0
 
@@ -122,10 +131,12 @@ def main() -> int:
                 seen.add(t)
                 pool.append(t)
 
-        score_case(pool, gold, hits_at["baseline"], rr["baseline"])
+        score_case(pool, gold, successes_at["baseline"], recall_at["baseline"],
+                   rr["baseline"])
         for g in GAMMAS:
             order = embed_graph.coherence_order(pool, graph.community, g)
-            score_case(order, gold, hits_at[f"coherence:{g}"], rr[f"coherence:{g}"])
+            score_case(order, gold, successes_at[f"coherence:{g}"],
+                       recall_at[f"coherence:{g}"], rr[f"coherence:{g}"])
 
         missed = not (gold & set(pool))
         pool_misses += missed
@@ -137,10 +148,11 @@ def main() -> int:
             scores = graph.similarity(qvec, mates)
             expansion = expansion_candidates(pool, graph.community, graph.members, scores)
         order = pool[:LIMIT - min(len(expansion), LIMIT // 2)] if expansion else pool
-        # Expansion candidates ride behind the retained pool prefix — recall
+        # Expansion candidates ride behind the retained pool prefix — coverage
         # added at the tail, precision of the head preserved.
         order = order + [t for t in expansion if t not in set(order)]
-        rank = score_case(order, gold, hits_at["expansion"], rr["expansion"])
+        rank = score_case(order, gold, successes_at["expansion"],
+                          recall_at["expansion"], rr["expansion"])
         if missed and rank:
             rescued += 1
 
@@ -154,7 +166,10 @@ def main() -> int:
                   "communities": len(graph.members)},
         "variants": {
             v: {"mrr": round(sum(rr[v]) / n, 4),
-                **{f"recall@{k}": round(hits_at[v][k] / n, 3) for k in RECALL_KS}}
+                **{f"success@{k}": round(successes_at[v][k] / n, 3)
+                   for k in RECALL_KS},
+                **{f"recall@{k}": round(recall_at[v][k] / n, 3)
+                   for k in RECALL_KS}}
             for v in variants
         },
         "pool_misses": pool_misses,
@@ -163,11 +178,14 @@ def main() -> int:
     if args.as_json:
         print(json.dumps(report, indent=2))
     else:
-        print(f"\n{'variant':<16} {'MRR':>7} " + " ".join(f"R@{k:<4}" for k in RECALL_KS))
+        print(f"\n{'variant':<16} {'MRR':>7} "
+              + " ".join(f"S@{k:<4}" for k in RECALL_KS)
+              + f" {'R@10':>6} {'R@20':>6}")
         for v in variants:
             m = report["variants"][v]
-            recs = " ".join(f"{m[f'recall@{k}']:.3f}" for k in RECALL_KS)
-            print(f"{v:<16} {m['mrr']:>7.4f} {recs}")
+            successes = " ".join(f"{m[f'success@{k}']:.3f}" for k in RECALL_KS)
+            print(f"{v:<16} {m['mrr']:>7.4f} {successes} "
+                  f"{m['recall@10']:>6.3f} {m['recall@20']:>6.3f}")
         print(f"\npool misses (gold absent from top-{POOL}): {pool_misses}/{n}"
               f" — expansion rescued {rescued}")
     return 0

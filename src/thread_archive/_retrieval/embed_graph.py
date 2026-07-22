@@ -10,8 +10,8 @@ corpus-wide structure the curated topic graph cannot see.
 **The coherence re-rank is the production consumer.** Within a ranked search
 pool, threads whose community carries more of the pool's top mass get a small
 additive boost (:func:`coherence_order`). On the log-mined click protocol
-(563 cases, full production pool) it lifts recall at every depth past 1 —
-R@5 0.327→0.341, R@10 0.414→0.433, R@20 0.492→0.508 across gammas
+(563 cases, full production pool) it lifts success at every depth past 1 —
+S@5 0.327→0.341, S@10 0.414→0.433, S@20 0.492→0.508 across gammas
 0.002–0.01 — with MRR flat: it consolidates the mid-list around the query's
 community, it does not move the top hit. The same signal computed from the
 *curated* graph loses on the identical cases, which is why the curated graph
@@ -64,8 +64,8 @@ _BLOCK = 512
 
 # Coherence re-rank defaults: how many pool-head threads vote on community
 # mass, the RRF base constant, and the swept default gamma (middle of the
-# 0.002–0.01 range that lifted recall at every depth on the log-mined eval;
-# 0.005 is the R@10 optimum).
+# 0.002–0.01 range that lifted success at every depth on the log-mined eval;
+# 0.005 is the S@10 optimum).
 TOP_MASS = 10
 RRF_K = 60
 COHERENCE_GAMMA = 0.005

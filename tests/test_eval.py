@@ -1,6 +1,6 @@
 """The search-quality scoring core (:mod:`thread_archive._eval`).
 
-The pure pieces — event pairing, the MRR/recall loop against a fake ranker, the
+The pure pieces — event pairing, the ranking-metric loop against a fake ranker, the
 behavioral rollup — are pinned in ``test_retrieval_eval.py`` (which loads the
 dev bench that re-exports this module). This file covers the DB-backed case
 *builders* that need a real store: the title-recall sampler and the trail miner

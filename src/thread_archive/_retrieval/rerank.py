@@ -12,7 +12,7 @@ vocab-mismatch target has lexical density ~0 so the lexical scorer can't separat
 them either. A cross-encoder scores (query, candidate) *jointly* and pulls the
 target up the mid-list (found@1 0.21→0.285, MRR 0.37→0.45 — measured on the
 title-proxy eval, which flatters every layer; on log-mined real queries the
-pipeline-level lift is ~2 points of recall@10 for 5× the latency, which is why
+pipeline-level lift is ~2 points of success@10 for 5× the latency, which is why
 the auto-gate confines the re-rank to the vocab-mismatch queries it exists for).
 
 A :class:`Reranker` owns one cross-encoder plus the pairing policy. The
