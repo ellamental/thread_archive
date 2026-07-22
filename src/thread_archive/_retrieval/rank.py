@@ -334,10 +334,24 @@ def collapse_same_anchor(results: list[EventHit]) -> list[EventHit]:
     return out
 
 
+# Runs of digits are the volatile token of a near-duplicate flood — the counter,
+# run index, or timestamp that makes each of a fleet of otherwise-identical
+# messages (routine ops, a re-asked question, a pending-todo restatement, a swarm
+# of agents on one templated prompt) byte-distinct. Folding every digit run to one
+# placeholder gives the near-copies a single identity, so the cross-thread fold
+# collapses the flood to one representative instead of letting dozens of them fill
+# the ranked window and push out the distinct thread the query actually wants.
+_VOLATILE_DIGITS = re.compile(r"\d+")
+
+
 def _norm_content(r: EventHit) -> str:
-    """Whitespace-collapsed, lowercased hit content — the cross-thread duplicate
-    identity ``group_by_thread`` and ``fold_duplicate_threads`` fold on."""
-    return " ".join((r.get("full_content") or r.get("snippet") or "").split()).lower()
+    """Whitespace-collapsed, lowercased, digit-folded hit content — the cross-thread
+    near-duplicate identity ``group_by_thread`` and ``fold_duplicate_threads`` fold
+    on. Two hits whose text differs only in its digit runs (a counter, a run index,
+    a timestamp) share one identity, so a flood of near-copies collapses to a single
+    row rather than monopolizing the result window."""
+    text = " ".join((r.get("full_content") or r.get("snippet") or "").split()).lower()
+    return _VOLATILE_DIGITS.sub("#", text)
 
 
 def fold_duplicate_threads(results: list[EventHit]) -> list[EventHit]:
@@ -345,11 +359,11 @@ def fold_duplicate_threads(results: list[EventHit]) -> list[EventHit]:
     thread's own hits intact — the half of :func:`group_by_thread` that removes
     redundancy without also collapsing a thread to a single row.
 
-    A hit whose content is identical (:func:`_norm_content`) to a row already on
-    screen from a **different** thread folds into that row's ``_dup_thread_ids``.
-    Repeats *within* one thread survive: a reader paging a result list wants the
-    thread's several matches laid out, where an agent spending result slots
-    wants the one representative row.
+    A hit whose content is near-identical (:func:`_norm_content` — equal once
+    digit runs are folded) to a row already on screen from a **different** thread
+    folds into that row's ``_dup_thread_ids``. Repeats *within* one thread survive:
+    a reader paging a result list wants the thread's several matches laid out,
+    where an agent spending result slots wants the one representative row.
 
     Ranked order in, ranked order out. A thread whose hit folds here can still
     appear on a later hit of its own that nothing else duplicates."""
@@ -375,11 +389,12 @@ def group_by_thread(results: list[EventHit], *, fold_duplicates: bool = True) ->
 
     - further hits in an already-represented thread fold into its row's
       ``_thread_more`` count (drill in with a ``thread_id``-scoped search);
-    - a hit whose content is identical (:func:`_norm_content`) to a row already
-      on screen from a *different* thread — a forked session, a fleet of
-      spawned agents carrying one prompt — folds into that row's
-      ``_dup_thread_ids`` instead of repeating the content. A thread folded
-      this way can still surface later on a distinct hit of its own.
+    - a hit whose content is near-identical (:func:`_norm_content` — equal once
+      digit runs are folded) to a row already on screen from a *different*
+      thread — a forked session, a fleet of spawned agents carrying one prompt,
+      a flood of routine near-copies differing only by a run index — folds into
+      that row's ``_dup_thread_ids`` instead of repeating the content. A thread
+      folded this way can still surface later on a distinct hit of its own.
 
     ``fold_duplicates=False`` keeps the per-thread collapse but drops that second
     fold, so **every** matched thread keeps a row — what a thread *list* owes its

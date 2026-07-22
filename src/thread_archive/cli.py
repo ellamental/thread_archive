@@ -5,7 +5,7 @@ is the retrieval MCP tools plus the truth format (see the package docstring);
 this CLI is the process seam the service manager, cron, and operators use to run
 the private machinery — ingest (``import``, ``import-export``, ``watch``,
 ``embed``), the backup kit (``backup``, ``verify``, ``restore-drill``,
-``restore``, ``reindex``, ``migrate``, ``repair``, ``status``, ``nightly``, ``coverage``),
+``restore``, ``reindex``, ``snapshot``, ``migrate``, ``repair``, ``status``, ``nightly``, ``coverage``),
 the search-quality self-checkup (``eval`` — read-only, scores retrieval on the
 operator's own data), and the service-agent lifecycle (``daemon``). Verbs may change without
 external notice, but they are *wired into* the service manifests, lab's cron
@@ -371,6 +371,35 @@ def cmd_reindex(args: argparse.Namespace) -> int:
         print(f"  {name:16} {n:>9}")
     print("done")
     return 0
+
+
+def cmd_snapshot(args: argparse.Namespace) -> int:
+    from . import _api as api
+
+    _self_throttle()  # a full copy + rebuild is background work — don't bog the machine
+    print(f"snapshotting {resolve_paths(args.home).home} → {args.dest} (throttled)")
+    try:
+        res = api.snapshot(
+            args.dest, home=args.home, vectors=args.vectors,
+            verify_result=args.verify, force=args.force,
+        )
+    except FileExistsError as e:
+        print(f"snapshot refused: {e}", file=sys.stderr)
+        return 1
+    except (RuntimeError, OSError) as e:
+        print(f"snapshot failed: {e}", file=sys.stderr)
+        return 1
+    m = res["manifest"]
+    c = m["counts"]
+    print(f"  threads {c['threads']:>9}")
+    print(f"  events  {c['events']:>9}")
+    print(f"  vectors {c['vectors']:>9}" + ("" if c["vectors"] else "   (lexical-only)"))
+    if m["verify_ok"] is False:
+        print("  WARNING: the built snapshot failed verification — inspect before relying on it",
+              file=sys.stderr)
+    print(f"done: {res['dest']}")
+    print(f"  point an eval at it with  THREAD_ARCHIVE_HOME={res['dest']}")
+    return 0 if m["verify_ok"] is not False else 1
 
 
 def cmd_migrate(args: argparse.Namespace) -> int:
@@ -1351,6 +1380,28 @@ def build_parser() -> argparse.ArgumentParser:
              "index holds (the default refuses and keeps the old index)",
     )
     p_reindex.set_defaults(func=cmd_reindex)
+
+    p_snapshot = sub.add_parser(
+        "snapshot",
+        help="freeze the corpus into a self-contained, immutable archive home "
+             "(a frozen THREAD_ARCHIVE_HOME for deterministic search/quality tests)",
+    )
+    _add_home_arg(p_snapshot)
+    p_snapshot.add_argument("dest", help="directory to write the frozen snapshot into")
+    p_snapshot.add_argument(
+        "--vectors", action="store_true",
+        help="also embed any events the copied sidecar cache lacks (default: "
+             "restore cached vectors only — the copied truth already carries them)",
+    )
+    p_snapshot.add_argument(
+        "--force", action="store_true",
+        help="snapshot into a non-empty destination that is not already a snapshot",
+    )
+    p_snapshot.add_argument(
+        "--no-verify", dest="verify", action="store_false",
+        help="skip verifying the built snapshot (truth == index)",
+    )
+    p_snapshot.set_defaults(func=cmd_snapshot, verify=True)
 
     p_migrate = sub.add_parser(
         "migrate", help="migrate older truth to the current format, reindex, and verify"

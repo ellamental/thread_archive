@@ -38,7 +38,8 @@ def test_all_subcommands_present() -> None:
     # (test_public_api.py owns the boundary ratchet; this is the wiring smoke.)
     sub = next(a for a in parser._actions if hasattr(a, "choices") and a.choices)
     assert set(sub.choices) == {
-        "setup", "import", "import-export", "providers", "watch", "reindex", "migrate", "embed",
+        "setup", "import", "import-export", "providers", "watch", "reindex", "snapshot",
+        "migrate", "embed",
         "status", "eval", "backup", "verify", "repair", "restore-drill", "restore",
         "nightly", "coverage", "mirror", "redact", "unredact", "daemon",
         "fix-import", "self-update",
@@ -91,6 +92,27 @@ def test_eval_behavior_cli_runs_over_a_real_home(seeded, capsys) -> None:
     out = capsys.readouterr().out
     assert "Search health" in out
     assert "No searches recorded" in out
+
+
+def test_snapshot_cli_builds_a_frozen_home(seeded, tmp_path, capsys) -> None:
+    """The `snapshot` verb copies truth, materializes the index, and reports —
+    the dest is a real, verified home the operator can point an eval at."""
+    dest = tmp_path / "frozen"
+    rc = main(["snapshot", str(dest), "--home", str(seeded)])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "done:" in out and str(dest) in out
+    assert (dest / "truth" / "manifest.json").is_file()
+    assert (dest / "index.db").is_file()
+    assert (dest / "snapshot.json").is_file()
+
+    # A non-empty stranger dir is refused without --force, taken with it.
+    stranger = tmp_path / "stranger"
+    stranger.mkdir()
+    (stranger / "x").write_text("nope")
+    assert main(["snapshot", str(stranger), "--home", str(seeded)]) == 1
+    assert "snapshot refused" in capsys.readouterr().err
+    assert main(["snapshot", str(stranger), "--force", "--home", str(seeded)]) == 0
 
 
 def test_backup_cli_mirrors_the_real_truth(seeded, tmp_path, capsys) -> None:

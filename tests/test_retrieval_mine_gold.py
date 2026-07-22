@@ -2,17 +2,20 @@
 
 The mining agent itself (a headless multi-turn ``claude``) is operator-run
 and costs real tokens; what needs coverage is everything that makes its
-output trustworthy — verdict parsing, gold validation against the date bound
-and the originating session, the prompt's baked-in corpus bound, re-run
-dedupe — plus the eval-side contract: a case's ``until`` must reach the
-search under evaluation.
+output trustworthy — verdict parsing, gold validation against the originating
+session, the prompt's baked-in session skips, re-run dedupe — plus the
+eval-side contract: a case carries the ``snapshot_id`` of the corpus it was
+mined against, and the eval binds to it.
 """
 
 from __future__ import annotations
 
 import importlib.util
+import json
 import sys
 from pathlib import Path
+
+import pytest
 
 _EVALS = Path(__file__).resolve().parent.parent / "evals"
 
@@ -61,28 +64,18 @@ def test_parse_verdict_empty_gold_is_valid():
 
 # ── validate_gold ────────────────────────────────────────────────────────────
 
-def _validators(existing: dict[str, str]):
-    """resolve/first_event_at over a {tid: first_event_iso} fixture."""
-    return (lambda ref: ref if ref in existing else None,
-            lambda tid: existing.get(tid))
-
-
-def test_validate_gold_enforces_date_bound_and_sessions():
-    resolve, first_at = _validators({
-        "old": "2026-06-01T00:00:00", "new": "2026-07-15T00:00:00",
-        "sess": "2026-05-01T00:00:00"})
+def test_validate_gold_drops_unresolvable_session_and_dupes():
+    known = {"a", "b", "sess"}
+    resolve = lambda ref: ref if ref in known else None  # noqa: E731
     gold = mine_gold.validate_gold(
-        ["old", "new", "ghost", "sess", "old"],
-        until="2026-07-01T00:00:00", sessions={"sess"},
-        resolve=resolve, first_event_at=first_at)
-    assert gold == ["old"]  # post-date, unresolvable, session, dupe all dropped
+        ["a", "ghost", "sess", "b", "a"], sessions={"sess"}, resolve=resolve)
+    assert gold == ["a", "b"]  # unresolvable, originating session, dupe all dropped
 
 
 def test_validate_gold_resolves_refs_to_canonical_ids():
     gold = mine_gold.validate_gold(
-        ["42"], until="2026-07-01", sessions=set(),
-        resolve=lambda ref: "T42" if ref == "42" else None,
-        first_event_at=lambda tid: "2026-01-01")
+        ["42"], sessions=set(),
+        resolve=lambda ref: "T42" if ref == "42" else None)
     assert gold == ["T42"]
 
 
@@ -94,10 +87,10 @@ def _case():
             "clicks": ["T7"]}
 
 
-def test_build_prompt_bakes_in_bound_and_skips():
+def test_build_prompt_bakes_in_session_skips_and_no_date_bound():
     p = mine_gold.build_prompt(_case(), "ctx here", "py mine.py tool")
-    assert 'search --until "2026-07-01T12:00:00" --skip "S1"' in p
-    assert 'read --until "2026-07-01T12:00:00"' in p
+    assert 'search --skip "S1"' in p
+    assert "--until" not in p  # the corpus is the snapshot; no per-case date bound
     assert "capture daemon restart loop" in p
     assert "ctx here" in p
     assert "T7" in p
@@ -112,11 +105,11 @@ def test_build_prompt_handles_missing_context_and_clicks():
 
 
 def test_build_prompt_offers_the_session_as_a_read_handle():
-    # The originating session id is handed over as a date-bounded read handle
-    # with the lead-up framing, so the agent can pull more of the pre-search
-    # context itself when the ±3-turn window is too thin.
+    # The originating session id is handed over as a plain read handle with the
+    # lead-up framing, so the agent can pull more of the pre-search context
+    # itself when the ±3-turn window is too thin.
     p = mine_gold.build_prompt(_case(), "ctx here", "py mine.py tool")
-    assert 'read --until "2026-07-01T12:00:00" S1 --mode chat' in p
+    assert "read S1 --mode chat" in p
     assert "lead-up" in p
 
 
@@ -167,17 +160,61 @@ def test_query_sites_excludes_subagent_fleet_sessions(archive_home):
     assert set(sites) == {"a specific lookup"}
 
 
-# ── eval-side contract: until flows from case file to the search call ────────
+def test_cases_for_queries_preserves_order_and_drops_siteless(archive_home):
+    """The vetted-seed path: cases_for_queries attaches each hand-picked query's
+    search site (session/event/at) in the given order, carries its click gold,
+    and silently drops a query that was never searched (no site to anchor on)."""
+    from datetime import datetime, timezone
 
-def test_load_case_file_carries_until(tmp_path):
+    from thread_archive._store import Event, Thread, get_session, init_db
+
+    init_db()
+    with get_session() as s:
+        gold = Thread(name="conv:gold", title="the answer thread",
+                      thread_type="conversation", source="cc", source_id="g")
+        s.add(gold)
+        s.flush()
+        gold_id = gold.id
+        sess = Thread(name="sess:work", thread_type="conversation",
+                      source="cc", source_id="w")
+        s.add(sess)
+        s.flush()
+        sess_id = sess.id
+        clk = iter(range(10, 20))
+        s.add(Event(thread_id=sess_id, stream_id="t",
+                    event_type="tool_use_complete",
+                    payload={"tool_name": "mcp__thread-archive__thread_search",
+                             "input": {"query": "alpha"}},
+                    occurred_at=datetime(2026, 1, 1, 12, next(clk),
+                                         tzinfo=timezone.utc)))
+        s.add(Event(thread_id=sess_id, stream_id="t",
+                    event_type="tool_use_complete",
+                    payload={"tool_name": "mcp__thread-archive__thread_read",
+                             "input": {"thread_id": gold_id}},
+                    occurred_at=datetime(2026, 1, 1, 12, next(clk),
+                                         tzinfo=timezone.utc)))
+        s.commit()
+
+    cases = mine_gold.cases_for_queries(["alpha", "never-searched"])
+
+    assert [c["query"] for c in cases] == ["alpha"]  # order kept, siteless dropped
+    (c,) = cases
+    assert c["clicks"] == [gold_id]
+    assert sess_id in c["sessions"]  # originating session is skipped when scoring
+    assert c["session"] == sess_id and c["event_id"] and c["at"]
+
+
+# ── eval-side contract: snapshot_id binds a case file to its corpus ──────────
+
+def test_load_case_file_carries_snapshot_id(tmp_path):
     f = tmp_path / "cases.jsonl"
     f.write_text(
         '{"query": "q1", "gold": ["A"], "sessions": ["S"], '
-        '"until": "2026-07-01", "protocol": "agent-mined"}\n'
+        '"snapshot_id": "abc123", "protocol": "agent-mined"}\n'
         '{"query": "q2", "gold": ["B"]}\n')
     cases = retrieval_eval.load_case_file(f)
-    assert cases[0]["until"] == "2026-07-01"
-    assert "until" not in cases[1]
+    assert cases[0]["snapshot_id"] == "abc123"
+    assert "snapshot_id" not in cases[1]
 
 
 def test_load_case_file_carries_grades_pool(tmp_path):
@@ -192,17 +229,38 @@ def test_load_case_file_carries_grades_pool(tmp_path):
     assert "grades" not in cases[1]
 
 
-def test_evaluate_passes_until_only_when_present():
+def test_evaluate_never_passes_a_date_bound_to_search():
+    """The snapshot binding replaced the per-case date bound: evaluate scores
+    over the frozen corpus as-is and passes the search no ``until``/``snapshot_id``."""
     seen = []
 
     def fake_search(query, **kw):
-        seen.append(kw.get("until"))
+        seen.append(kw)
         return [{"thread_id": "A"}]
 
-    cases = [{"query": "q1", "gold": ["A"], "until": "2026-07-01"},
+    cases = [{"query": "q1", "gold": ["A"], "snapshot_id": "abc123"},
              {"query": "q2", "gold": ["A"]}]
     report = retrieval_eval.evaluate(
         cases, limit=10, rerank=None, content_type=None,
         exclude_content_types=None, search=fake_search)
-    assert seen == ["2026-07-01", None]
     assert report["mrr"] == 1.0
+    for kw in seen:
+        assert "until" not in kw and "snapshot_id" not in kw
+
+
+def test_require_matching_snapshot_binds_cases_to_the_home(archive_home):
+    """--cases refuses unless the home is a snapshot whose id matches every case."""
+    cases = [{"query": "q", "gold": ["A"], "snapshot_id": "snap-aaa"}]
+
+    # Not a snapshot home at all → refuse.
+    with pytest.raises(SystemExit, match="not a snapshot"):
+        retrieval_eval._require_matching_snapshot(cases, "cases.jsonl")
+
+    # A snapshot home whose id does not match the cases → refuse as stale.
+    (archive_home / "snapshot.json").write_text(json.dumps({"snapshot_id": "snap-bbb"}))
+    with pytest.raises(SystemExit, match="stale"):
+        retrieval_eval._require_matching_snapshot(cases, "cases.jsonl")
+
+    # Matching id → accepted (no raise).
+    (archive_home / "snapshot.json").write_text(json.dumps({"snapshot_id": "snap-aaa"}))
+    retrieval_eval._require_matching_snapshot(cases, "cases.jsonl")

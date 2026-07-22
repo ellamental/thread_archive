@@ -189,16 +189,16 @@ def test_mine_log_cases_excludes_subagent_fleet_sessions(archive_home) -> None:
     assert [c["query"] for c in cases] == ["what did we decide about tokens"]
 
 
-def test_load_case_file_round_trips_and_carries_the_snapshot_bound(tmp_path) -> None:
+def test_load_case_file_round_trips_and_carries_the_snapshot_id(tmp_path) -> None:
     path = tmp_path / "cases.jsonl"
     path.write_text(
         json.dumps({"query": "q1", "gold": ["A", "B"], "sessions": ["S"]}) + "\n"
-        + json.dumps({"query": "q2", "gold": ["C"], "until": "2026-07-01"}) + "\n"
+        + json.dumps({"query": "q2", "gold": ["C"], "snapshot_id": "abc123"}) + "\n"
         + "\n"  # blank line tolerated
     )
 
     cases = _eval.load_case_file(path)
 
     assert cases[0] == {"query": "q1", "gold": ["A", "B"], "sessions": ["S"]}
-    assert cases[1]["until"] == "2026-07-01"
+    assert cases[1]["snapshot_id"] == "abc123"
     assert cases[1]["sessions"] == []

@@ -11,15 +11,18 @@ case file in the eval's ``--cases`` format — so every eval run after the
 one-time mining spend scores against corpus-grounded, intent-aware golds at
 zero token cost.
 
-Determinism by date bound: every agent search and every gold is restricted to
-the corpus as of the moment the original search happened (the trail event's
-timestamp, recorded per case as ``until``). ``retrieval_eval.py --cases``
-passes that bound back into the search under evaluation, so threads created
-after the case was mined can neither become gold nor perturb the ranking —
-the case file scores identically as the archive grows. The bound is also why
-staleness is slow: golds only rot if pre-date threads change, not as new data
-arrives. Mining is a cadence, not a one-shot — new trail queries accumulate;
-re-run to append fresh cases (already-mined queries are skipped).
+Determinism by snapshot binding: mining runs against a frozen corpus snapshot
+(``thread_archive snapshot``), not the live archive. The snapshot is a fixed
+``THREAD_ARCHIVE_HOME`` whose content can't grow underneath the measurement, so
+every agent search and every gold is drawn from the same corpus an eval will
+later score against. Each case records the snapshot's ``snapshot_id`` (a content
+fingerprint of the corpus); ``retrieval_eval.py --cases`` refuses to score cases
+whose id does not match the snapshot it runs over, so a corpus that has changed
+since mining can't be scored against stale golds — the cases invalidate rather
+than silently drift. Mining is a cadence against one snapshot: new trail queries
+accumulate; re-run (pointed at the same snapshot) to append fresh cases
+(already-mined queries are skipped). When the corpus has moved on, take a new
+snapshot and mine afresh — the old cases no longer match.
 
 Two modes in one file:
 
@@ -30,16 +33,17 @@ Two modes in one file:
   mode), validates the verdict, appends cases (each carrying its gold plus the
   full graded candidate pool, so nDCG scores the whole ranking) + a detail sidecar.
 - ``tool search`` / ``tool read``: the agent's corpus access — production
-  search and thread reads with the date bound enforced server-side. (A read
-  of a pre-date thread can still show messages appended after the bound;
-  gold validity only requires the thread to have existed at search time.)
+  search and thread reads over the snapshot the mining run is pointed at.
 
 Costs real tokens (one multi-turn opus agent per query — minutes each;
 ``--sample`` bounds it) and requires the ``claude`` CLI. Read-only against
 the archive. Case files quote real usage — keep them out of the repo; they
 live beside the trend ledgers in ``~/.thread/archive/``.
 
+    thread_archive snapshot ~/.thread/archive-snap
+    export THREAD_ARCHIVE_HOME=~/.thread/archive-snap
     .venv/bin/python evals/retrieval_mine_gold.py --sample 5
+    .venv/bin/python evals/retrieval_mine_gold.py --queries seed.jsonl --sample 5
     .venv/bin/python evals/retrieval_eval.py --cases ~/.thread/archive/judged-cases.jsonl
 """
 
@@ -101,7 +105,7 @@ That window is only a slice of session thread {session}. If it doesn't make the 
 searcher's intent clear, read the session yourself to see the lead-up — what \
 they were working on before they searched — going as far back as you need:
 
-  {tool} read {read_bound} {session} --mode chat [--offset N]
+  {tool} read {session} --mode chat [--offset N]
 
 Read as much or as little of it as your judgment requires. (The session is \
 never itself a gold candidate — it is where the query came from, and it is \
@@ -114,11 +118,11 @@ incomplete (the right thread may never have been surfaced).
 Your job: determine which archived thread(s) the searcher most plausibly \
 wanted — the grounded gold set — by exploring the archive yourself.
 
-Tools (run via Bash; read-only; results are bounded to the corpus as it \
-existed at the search date — always pass the flags exactly as shown):
+Tools (run via Bash; read-only; the corpus is a fixed snapshot — always pass \
+the flags exactly as shown):
 
-  {tool} search {bound} "<query>" [--limit N] [--rerank on|off|auto]
-  {tool} read {read_bound} <thread_id> [--mode ends|chat|user|full|last] \
+  {tool} search {skip} "<query>" [--limit N] [--rerank on|off|auto]
+  {tool} read <thread_id> [--mode ends|chat|user|full|last] \
 [--offset N] [--max-chars N]
 
 Method:
@@ -170,18 +174,16 @@ def parse_verdict(text: str) -> dict | None:
             "confidence": v.get("confidence"), "rationale": v.get("rationale")}
 
 
-def validate_gold(gold: list[str], *, until: str, sessions: set[str],
-                  resolve, first_event_at) -> list[str]:
-    """Golds that hold up: resolvable, not the originating session, and
-    existing at search time. ``resolve(ref) -> canonical tid | None``;
-    ``first_event_at(tid) -> ISO | None``. Order preserved, dupes dropped."""
+def validate_gold(gold: list[str], *, sessions: set[str], resolve) -> list[str]:
+    """Golds that hold up: resolvable to a canonical thread id and not the
+    originating session (which quotes the query verbatim). ``resolve(ref) ->
+    canonical tid | None``. Existence needs no check — the agent searched the
+    snapshot, so any gold it returns is already in the frozen corpus. Order
+    preserved, dupes dropped."""
     out: list[str] = []
     for ref in gold:
         tid = resolve(ref)
         if tid is None or tid in sessions or tid in out:
-            continue
-        first = first_event_at(tid)
-        if first is None or first > until:
             continue
         out.append(tid)
     return out
@@ -189,10 +191,11 @@ def validate_gold(gold: list[str], *, until: str, sessions: set[str],
 
 def build_prompt(case: dict, context: str, tool_cmd: str) -> str:
     """The mining agent's brief. ``case`` carries query/at/clicks/sessions and
-    the originating ``session`` id; the date bound and session skips are baked
-    into the tool invocations shown so the agent cannot search outside the
-    case's corpus snapshot, and the session id is offered as a read handle so
-    the agent can pull more of the pre-search lead-up when the window is thin."""
+    the originating ``session`` id; the session skips are baked into the search
+    invocation shown so the agent never surfaces a session that quotes the query,
+    and the session id is offered as a read handle so the agent can pull more of
+    the pre-search lead-up when the window is thin. The corpus is the snapshot
+    this run is pointed at — no per-case bound."""
     skip = ",".join(case["sessions"]) or "-"
     return _PROMPT.format(
         at=case["at"], query=case["query"],
@@ -200,8 +203,7 @@ def build_prompt(case: dict, context: str, tool_cmd: str) -> str:
         clicks=", ".join(case["clicks"]) or "(none recorded)",
         tool=tool_cmd,
         session=case["session"],
-        bound=f'--until "{case["at"]}" --skip "{skip}"',
-        read_bound=f'--until "{case["at"]}"',
+        skip=f'--skip "{skip}"',
     )
 
 
@@ -219,16 +221,38 @@ def mined_queries(path: Path) -> set[str]:
     return out
 
 
+def read_query_list(path: Path) -> list[str]:
+    """Query strings from a hand-picked list, in file order — one per line,
+    either a JSON object with a ``query`` field (the seed-accepted format) or a
+    bare query string. Blank lines skipped; duplicates dropped, first wins."""
+    out: list[str] = []
+    seen: set[str] = set()
+    for line in path.read_text().splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            row = json.loads(line)
+            q = row["query"] if isinstance(row, dict) else str(row)
+        except (json.JSONDecodeError, KeyError, TypeError):
+            q = line
+        q = q.strip()
+        if q and q not in seen:
+            seen.add(q)
+            out.append(q)
+    return out
+
+
 # ── trail mining ─────────────────────────────────────────────────────────────
 
 def query_sites(s, after: str | None = None) -> dict[str, dict]:
     """query -> its latest search site in the trail: the originating session,
-    the trail event id (the context anchor), and when it happened (the date
-    bound). ``mine_log_cases`` merges occurrences per query; this recovers the
-    where/when that merge drops. Scoped to ``thread_type='conversation'``
-    sessions, matching ``mine_log_cases`` — subagent retrieval fleets are
-    excluded on both sides, so the join in ``sample_cases`` can't reintroduce
-    them."""
+    the trail event id (the context anchor), and when it happened (``at`` — the
+    intent-context timestamp the prompt shows the agent). ``mine_log_cases``
+    merges occurrences per query; this recovers the where/when that merge drops.
+    Scoped to ``thread_type='conversation'`` sessions, matching
+    ``mine_log_cases`` — subagent retrieval fleets are excluded on both sides, so
+    the join in ``sample_cases`` can't reintroduce them."""
     sql = (
         "SELECT e.thread_id, e.id, e.occurred_at, e.payload FROM events e "
         "JOIN threads t ON t.id = e.thread_id "
@@ -247,8 +271,7 @@ def query_sites(s, after: str | None = None) -> dict[str, dict]:
             continue
         q = (p.get("input") or {}).get("query")
         if isinstance(q, str) and q.strip():
-            # Later rows overwrite: the latest occurrence wins, so `until`
-            # covers every click that labeled this query.
+            # Later rows overwrite: the latest occurrence of the query wins.
             sites[q.strip()] = {"session": sess, "event_id": eid, "at": str(at)}
     return sites
 
@@ -269,6 +292,31 @@ def sample_cases(n: int, seed: int, after: str | None,
                        "sessions": c["sessions"], **site})
     random.Random(seed).shuffle(joined)
     return joined[:n]
+
+
+def cases_for_queries(queries: list[str], after: str | None = None) -> list[dict]:
+    """Case dicts for an explicit, hand-picked query list — the vetted-seed
+    path. Same shape :func:`sample_cases` produces (query / clicks / sessions +
+    the trail search site), but in the given order with no random sampling, so
+    a reviewed seed file mines in the sequence it was curated. A query with no
+    conversation-session search site is dropped (nothing to date-bound or anchor
+    the agent on); its click gold and full skip-session set come from
+    ``mine_log_cases`` when present, else fall back to the site's own session."""
+    catalog = {c["query"]: c
+               for c in retrieval_eval.mine_log_cases(10**6, 0, after)}
+    with use_session() as s:
+        sites = query_sites(s, after)
+    out: list[dict] = []
+    for q in queries:
+        site = sites.get(q)
+        if site is None:
+            continue
+        c = catalog.get(q)
+        out.append({"query": q,
+                    "clicks": c["gold"] if c else [],
+                    "sessions": c["sessions"] if c else [site["session"]],
+                    **site})
+    return out
 
 
 # ── the agent seam ───────────────────────────────────────────────────────────
@@ -317,9 +365,11 @@ def _agent_call(prompt: str, model: str, tool_cmd: str) -> tuple[dict | None, di
         return None, stats
 
 
-def mine_case(case: dict, model: str, tool_cmd: str) -> tuple[dict | None, dict]:
+def mine_case(case: dict, model: str, tool_cmd: str,
+              snapshot_id: str) -> tuple[dict | None, dict]:
     """Run one case end-to-end: context, agent, verdict validation. Returns
-    (case_row | None, detail_row)."""
+    (case_row | None, detail_row). ``snapshot_id`` binds the case to the corpus
+    it was mined against."""
     prompt = build_prompt(case, _session_context(case), tool_cmd)
     verdict, stats = _agent_call(prompt, model, tool_cmd)
     detail = {"query": case["query"], "at": case["at"],
@@ -336,15 +386,8 @@ def mine_case(case: dict, model: str, tool_cmd: str) -> tuple[dict | None, dict]
                 memo[ref] = resolve_thread_ref(s, str(ref).strip())
             return memo[ref]
 
-        def first_event_at(tid: str) -> str | None:
-            row = s.execute(sa_text(
-                "SELECT min(occurred_at) FROM events WHERE thread_id = :t"),
-                {"t": tid}).scalar()
-            return str(row) if row is not None else None
-
-        gold = validate_gold(verdict["gold"], until=case["at"],
-                             sessions=set(case["sessions"]),
-                             resolve=resolve, first_event_at=first_event_at)
+        gold = validate_gold(verdict["gold"], sessions=set(case["sessions"]),
+                             resolve=resolve)
     detail.update({"outcome": "ok" if gold else "no-valid-gold",
                    "gold_claimed": verdict["gold"], "gold": gold,
                    "grades": verdict["grades"],
@@ -356,21 +399,20 @@ def mine_case(case: dict, model: str, tool_cmd: str) -> tuple[dict | None, dict]
     # gold: nDCG (retrieval_eval.py --cases) scores the whole ranked pool the
     # agent built, so the paid-for judgment isn't collapsed to one right answer.
     row = {"query": case["query"], "gold": gold, "grades": verdict["grades"],
-           "sessions": sorted(case["sessions"]), "until": case["at"],
+           "sessions": sorted(case["sessions"]), "snapshot_id": snapshot_id,
            "protocol": "agent-mined", "click_gold": case["clicks"],
            "confidence": verdict["confidence"],
            "mined_at": datetime.now(timezone.utc).isoformat(timespec="seconds")}
     return row, detail
 
 
-# ── tool mode: the agent's date-bounded corpus access ────────────────────────
+# ── tool mode: the agent's corpus access (over the snapshot) ─────────────────
 
 def _tool_search(args) -> None:
     api.open_archive()
     skip = {s for s in (args.skip or "").split(",") if s and s != "-"}
     rerank = None if args.rerank == "auto" else (args.rerank == "on")
-    hits = api.search(args.query, until=args.until,
-                      limit=args.limit + len(skip), rerank=rerank)
+    hits = api.search(args.query, limit=args.limit + len(skip), rerank=rerank)
     shown = 0
     for h in hits:
         if h["thread_id"] in skip:
@@ -393,13 +435,6 @@ def _tool_read(args) -> None:
         tid = resolve_thread_ref(s, str(args.thread_id).strip())
         if tid is None:
             raise SystemExit(f"unknown thread: {args.thread_id}")
-        first = s.execute(sa_text(
-            "SELECT min(occurred_at) FROM events WHERE thread_id = :t"),
-            {"t": tid}).scalar()
-    if first is None or str(first) > args.until:
-        raise SystemExit(
-            f"thread {tid} did not exist at the search date ({args.until}) — "
-            "it cannot be gold for this query")
     print(api.read_thread(tid, mode=args.mode, offset=args.offset,
                           max_chars=args.max_chars))
 
@@ -414,13 +449,11 @@ def main() -> None:
     tsub = tool.add_subparsers(dest="tool_cmd", required=True)
     ts = tsub.add_parser("search")
     ts.add_argument("query")
-    ts.add_argument("--until", required=True)
     ts.add_argument("--skip", default="")
     ts.add_argument("--limit", type=int, default=10)
     ts.add_argument("--rerank", choices=["auto", "on", "off"], default="auto")
     tr = tsub.add_parser("read")
     tr.add_argument("thread_id")
-    tr.add_argument("--until", required=True)
     tr.add_argument("--mode", default="ends",
                     choices=["ends", "chat", "user", "full", "last"])
     tr.add_argument("--offset", type=int, default=0)
@@ -428,6 +461,10 @@ def main() -> None:
 
     ap.add_argument("--sample", type=int, default=5,
                     help="queries to mine (each is one multi-turn agent run)")
+    ap.add_argument("--queries", type=Path, default=None, metavar="PATH",
+                    help="mine a hand-picked query list (JSONL rows with a "
+                    "\"query\" field, or bare query lines) in file order — the "
+                    "vetted-seed path, instead of random trail sampling")
     ap.add_argument("--seed", type=int, default=7)
     ap.add_argument("--model", default=DEFAULT_MODEL)
     ap.add_argument("--mined-after", metavar="ISO", default=None,
@@ -447,20 +484,35 @@ def main() -> None:
         raise SystemExit("retrieval_mine_gold needs the `claude` CLI on PATH")
 
     api.open_archive()
+    from thread_archive._ops.snapshot import read_snapshot_id
+
+    snapshot_id = read_snapshot_id()
+    if snapshot_id is None:
+        raise SystemExit(
+            "mining must run against a corpus snapshot, not the live archive: "
+            "`thread_archive snapshot <dir>`, then point THREAD_ARCHIVE_HOME at "
+            "it. Cases carry the snapshot's id so the eval can reject them once "
+            "the corpus has moved on."
+        )
     cases_path = args.cases_out.expanduser()
     detail_path = cases_path.with_name(cases_path.stem + "-detail.jsonl")
-    cases = sample_cases(args.sample, args.seed, args.mined_after,
-                         mined_queries(cases_path))
+    already = mined_queries(cases_path)
+    if args.queries:
+        wanted = read_query_list(args.queries.expanduser())
+        cases = [c for c in cases_for_queries(wanted, args.mined_after)
+                 if c["query"] not in already][:args.sample]
+    else:
+        cases = sample_cases(args.sample, args.seed, args.mined_after, already)
     if not cases:
-        raise SystemExit("no unmined queries to sample")
+        raise SystemExit("no unmined queries to mine")
     print(f"mining {len(cases)} queries with {args.model} agents "
-          f"(jobs={args.jobs}) -> {cases_path}")
+          f"(jobs={args.jobs}) against snapshot {snapshot_id} -> {cases_path}")
 
     tool_cmd = f"{sys.executable} {Path(__file__).resolve()} tool"
     cases_path.parent.mkdir(parents=True, exist_ok=True)
     ok = failed = 0
     with concurrent.futures.ThreadPoolExecutor(max_workers=args.jobs) as ex:
-        futures = {ex.submit(mine_case, c, args.model, tool_cmd): c
+        futures = {ex.submit(mine_case, c, args.model, tool_cmd, snapshot_id): c
                    for c in cases}
         for fut in concurrent.futures.as_completed(futures):
             row, detail = fut.result()

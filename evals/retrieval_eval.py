@@ -52,10 +52,19 @@ JSONL row, turning point measurements into a time series (the CI gate row
 writes ~/.thread/archive/retrieval-trend.jsonl; LLM-judged relevance grades
 from evals/retrieval_judge.py land beside it).
 
-Read-only. Run against the live archive:
+Read-only. The title / log protocols run against the live archive:
 
     .venv/bin/python evals/retrieval_eval.py --auto-titles 200
     .venv/bin/python evals/retrieval_eval.py --from-log 500
+
+The agent-mined ``--cases`` protocol runs against the frozen corpus snapshot the
+cases were mined against — point ``THREAD_ARCHIVE_HOME`` at that snapshot. Each
+case carries the snapshot's content fingerprint (``snapshot_id``); the run
+refuses any case whose id does not match the home, so golds are never scored
+against a corpus that has changed under them (re-mine after a new snapshot):
+
+    export THREAD_ARCHIVE_HOME=~/.thread/archive-snap
+    .venv/bin/python evals/retrieval_eval.py --cases ~/.thread/archive/judged-cases.jsonl
 """
 
 from __future__ import annotations
@@ -123,6 +132,34 @@ def rerank_probe(reranker) -> str | None:
                 f"(answer {scores[0]:.3f} <= decoy {scores[1]:.3f}) — "
                 f"model {reranker.name!r} is loaded but scrambled")
     return None
+
+
+def _require_matching_snapshot(cases: list[dict], cases_path) -> None:
+    """Refuse to score agent-mined cases unless the home is the snapshot they were
+    mined against. Each case carries the corpus's content fingerprint; the run
+    exits rather than scoring golds against a corpus that has moved under them.
+
+    The current home must be a snapshot (``snapshot.json`` with a ``snapshot_id``)
+    and every case's id must match it. A mismatch means the snapshot changed since
+    mining — re-mine against the new one. Cases with no ``snapshot_id`` are
+    pre-binding (old format) and count as a mismatch."""
+    from thread_archive._ops.snapshot import read_snapshot_id
+
+    current = read_snapshot_id()
+    if current is None:
+        raise SystemExit(
+            f"--cases must run against the corpus snapshot the cases were mined "
+            f"against, but THREAD_ARCHIVE_HOME is not a snapshot. Run "
+            f"`thread_archive snapshot <dir>` and point THREAD_ARCHIVE_HOME at it "
+            f"(the same snapshot {cases_path} was mined against)."
+        )
+    stale = sorted({c.get("snapshot_id") for c in cases} - {current})
+    if stale:
+        raise SystemExit(
+            f"{cases_path} was mined against snapshot(s) {stale}, but the current "
+            f"snapshot is {current} — the corpus has changed and these golds are "
+            f"stale. Re-mine against this snapshot with retrieval_mine_gold.py."
+        )
 
 
 def main() -> None:
@@ -261,6 +298,7 @@ def main() -> None:
     else:
         cases = load_case_file(args.cases)
         exclude = None
+        _require_matching_snapshot(cases, args.cases)
     if args.exclude_content_type:
         exclude = args.exclude_content_type
     if not cases:

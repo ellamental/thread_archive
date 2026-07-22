@@ -150,12 +150,15 @@ def _resolve_ref(ref: int | str) -> Optional[str]:
 # Mirrors the archive backend's thread_search default.
 DEFAULT_SEARCH_CONTENT_TYPES = ("user", "title", "summary")
 
-# Where the default scope widens to when it comes up dry: assistant text is where
-# conclusions/decisions live (see thread_read's mode docs), so a query the asking
-# side can't answer gets one automatic retry against it. One retry, only on the
+# Where the default scope widens to when it comes up dry: the whole transcript.
+# Conclusions live in assistant text, but in a corpus that is mostly tool content
+# an answer can exist ONLY in a tool result, a tool's error, or the assistant's
+# own reasoning — a false "not found" against a conversation that is right there.
+# So a query the default scope can't answer gets one automatic retry with the
+# content-type filter cleared (``None`` = every type). One retry, only on the
 # default scope, only when no query term landed — an explicit content_type is a
 # deliberate choice and is never second-guessed.
-WIDENED_SEARCH_CONTENT_TYPES = DEFAULT_SEARCH_CONTENT_TYPES + ("text",)
+WIDENED_SEARCH_CONTENT_TYPES = None
 
 
 def _default_scope_is_weak(hits: "list[EventHit]", query: str) -> bool:
@@ -174,6 +177,24 @@ def _default_scope_is_weak(hits: "list[EventHit]", query: str) -> bool:
     top = top_hit(hits)
     text = top.get("full_content") or top.get("snippet") or ""
     return term_hit_count(text, terms) < strong_match_floor(len(terms))
+
+
+def _has_strong_hit(hits: "list[EventHit]", query: str) -> bool:
+    """True when *any* returned hit is a strong match for the query (≥
+    :func:`strong_match_floor` of its terms land in its content). The widen keeps its
+    result when it surfaces a strong match anywhere, not only at the top: an answer
+    that lives in a low-weight content type — a tool result, the assistant's
+    reasoning — is a real find even when it ranks below a weak-but-high-weight user
+    hit that happens to share a stray query term."""
+    terms = query_terms(query)
+    if not terms:
+        return False
+    floor = strong_match_floor(len(terms))
+    for h in hits:
+        text = h.get("full_content") or h.get("snippet") or ""
+        if term_hit_count(text, terms) >= floor:
+            return True
+    return False
 
 
 # ── degradation notice ────────────────────────────────────────────────────────
@@ -389,16 +410,17 @@ def thread_search(
     hits = _run(content_types)
 
     # One-shot scope widen: a default-scope search whose top hit contains no query
-    # term (or that found nothing) retries once with assistant text included —
-    # conclusions live there, and internalizing the retry saves the agent a
+    # term (or that found nothing) retries once over the whole transcript — the
+    # answer may live only in assistant text, a tool result, a tool's error, or the
+    # assistant's reasoning, and internalizing the retry saves the agent a
     # round-trip the quality note would otherwise ask of it. Ranked/plain output
     # only: structural shapes (browse/startswith/oldest/count/linkable) have no
     # match signal to judge weakness by.
     widened = False
     ranked_shape = bool((query or "").strip()) and startswith is None and sort is None and output is None
     if content_type is None and ranked_shape and _default_scope_is_weak(hits, query):
-        wide_hits = _run(list(WIDENED_SEARCH_CONTENT_TYPES))
-        if wide_hits and not _default_scope_is_weak(wide_hits, query):
+        wide_hits = _run(WIDENED_SEARCH_CONTENT_TYPES)
+        if _has_strong_hit(wide_hits, query):
             hits, widened = wide_hits, True
 
     # Usage ledger (fail-soft, ids only — see _retrieval.usage): the observed
@@ -422,7 +444,7 @@ def thread_search(
     rendered = format_results(hits, query, output=output)
     if widened:
         rendered = ("note: no strong keyword match in the default scope (user/title/summary) — "
-                    "results below include assistant text\n" + rendered)
+                    "results below include assistant text, tool output, and reasoning\n" + rendered)
     return _degradation_notices() + rendered
 
 

@@ -276,6 +276,24 @@ def test_evaluate_passes_scope_exclusions_through():
     assert seen["exclude_content_types"] is None
 
 
+def test_evaluate_scores_over_the_corpus_as_is_no_date_bound():
+    # Determinism is the snapshot's job now, not a per-case bound: evaluate passes
+    # the search no until/snapshot_id, whether or not a case carries an id.
+    calls = []
+
+    def recording_search(query, **kw):
+        calls.append(kw)
+        return []
+
+    cases = [{"query": "q", "gold": [1], "sessions": [], "snapshot_id": "abc123"},
+             {"query": "q2", "gold": [2], "sessions": []}]
+    retrieval_eval.evaluate(
+        cases, limit=5, rerank=False, content_type=None,
+        exclude_content_types=None, search=recording_search)
+    for kw in calls:
+        assert "until" not in kw and "snapshot_id" not in kw
+
+
 def test_evaluate_defaults_to_the_archives_own_search():
     """No ``search`` given means the harness measures the shipped pipeline."""
     report = retrieval_eval.evaluate(

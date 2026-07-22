@@ -41,9 +41,12 @@ so it only becomes meaningful after search has been used for a while.
 ``load_case_file`` reads a JSONL file of ``{"query", "gold": [ids]}`` rows
 (optional ``"grades"``: a ``thread id -> 0|1|2`` relevance pool — the ranked
 candidate pool a graded metric scores against, not just the one best answer;
-optional ``"sessions"``: thread ids to skip while ranking; optional ``"until"``:
-a corpus snapshot date the golds were mined under) — the hook for hand-curated
-or agent-mined query sets.
+optional ``"sessions"``: thread ids to skip while ranking; optional
+``"snapshot_id"``: the content fingerprint of the corpus snapshot the golds were
+mined against) — the hook for hand-curated or agent-mined query sets. The
+``snapshot_id`` is the eval's staleness guard: ``retrieval_eval.py --cases``
+runs over that same snapshot and refuses cases whose id no longer matches, so
+golds can't be scored against a corpus that has changed under them.
 
 ``behavior_report`` runs no ranking at all: per search, did the agent click a
 result, reformulate, or abandon? Zero-label behavioral proxies, not judgments;
@@ -329,11 +332,12 @@ def load_case_file(path: Path) -> list[dict]:
         # int so a stray float grade can't skew the gain.
         if row.get("grades"):
             case["grades"] = {str(t): int(g) for t, g in row["grades"].items()}
-        # Agent-mined cases (evals/retrieval_mine_gold.py) carry the corpus
-        # snapshot date the golds were mined under; the scoring search honors
-        # it so post-mining threads can't perturb the case's ranking.
-        if row.get("until"):
-            case["until"] = row["until"]
+        # Agent-mined cases (evals/retrieval_mine_gold.py) carry the content
+        # fingerprint of the corpus snapshot they were mined against; the caller
+        # (retrieval_eval.py --cases) refuses to score them against a home whose
+        # snapshot_id differs, so a moved corpus invalidates rather than drifts.
+        if row.get("snapshot_id"):
+            case["snapshot_id"] = row["snapshot_id"]
         cases.append(case)
     return cases
 
@@ -373,7 +377,12 @@ def evaluate(cases: list[dict], *, limit: int, rerank, content_type,
     own), so a candidate ranking can be measured against the same cases as the
     incumbent. MRR/recall are binary over the grade-2 ``gold`` set; nDCG is graded
     over the case's ``grades`` pool (a case without one falls back to binary
-    relevance — its ``gold`` as grade 1 — so nDCG stays defined for every protocol)."""
+    relevance — its ``gold`` as grade 1 — so nDCG stays defined for every protocol).
+
+    Determinism is the caller's job, not a per-case date bound: agent-mined cases
+    are scored over the frozen snapshot they were mined against (the caller binds
+    the home by ``snapshot_id``), so the corpus can't move underneath the ranking
+    and the search runs in its native production shape and latency."""
     if search is None:
         search = api.search
     per_shape: dict[str, list[float]] = {}
@@ -389,10 +398,6 @@ def evaluate(cases: list[dict], *, limit: int, rerank, content_type,
         # stands in as binary relevance so nDCG is still defined and comparable.
         grades = case.get("grades") or {t: 1 for t in case["gold"]}
         pool_rels = [float(g) for g in grades.values()]
-        # A case mined under a corpus snapshot (see load_case_file) is scored
-        # under it too; the kwarg is omitted otherwise so experiment SEARCH
-        # callables that predate it stay compatible.
-        extra = {"until": case["until"]} if case.get("until") else {}
         t0 = time.monotonic()
         hits = search(
             case["query"],
@@ -400,7 +405,6 @@ def evaluate(cases: list[dict], *, limit: int, rerank, content_type,
             content_types=[content_type] if content_type else None,
             exclude_content_types=exclude_content_types,
             rerank=rerank,
-            **extra,
         )
         latencies.append(time.monotonic() - t0)
 

@@ -46,6 +46,7 @@ CLI_VERBS = {
     "watch",
     "embed",
     "reindex",
+    "snapshot",
     "migrate",
     "status",
     "eval",

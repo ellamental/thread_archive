@@ -47,8 +47,6 @@ The mechanisms:
 
 from __future__ import annotations
 
-import pytest
-
 from thread_archive import _api as api
 
 from .helpers import write_jsonl
@@ -532,16 +530,20 @@ def test_record_phrase_survives_reindex(tmp_path) -> None:
 # chars, user messages are ~3% of events, CLAUDE.md / system-reminder boilerplate
 # rides hundreds of threads verbatim, and the real mined queries are paraphrased
 # recall where the gold owns a terse verbatim receipt while denser, newer, more
-# numerous threads merely restate the same vocabulary. Each xfail below reproduces
-# a failure that keeps a real gold out of the recall window; each guard pins a
-# property the corpus depends on. The recall bar is the same as above: seen at all.
+# numerous threads merely restate the same vocabulary. Each guard below pins a
+# property that keeps a real gold in the recall window. The recall bar is the same
+# as above: seen at all.
 #
-# The dominant failing shape is a flood of near-duplicate low-value threads (echoes,
-# routine ops, pending todos, re-asks, injected boilerplate) burying the one terse
-# or old authoritative thread — the ranker orders on lexical density and recency,
-# both of which the flood wins. The distinct triggers matter because they are the
-# real scenarios; several would fall to one anti-flood/diversity fix, recency to a
-# different one, and the agent-facing scope gaps to a third.
+# The dominant shape is a flood of near-duplicate low-value threads (echoes,
+# routine ops, pending todos, re-asks, injected boilerplate) that would bury the
+# one terse or old authoritative thread — each near-copy differs only by a run
+# index or counter, so the cross-thread near-duplicate fold (rank._norm_content
+# digit-folds before comparing) collapses the flood to one representative and the
+# distinct thread keeps its row. The distinct triggers matter because they are the
+# real scenarios the one anti-flood fold has to cover. The agent-facing scope gaps
+# below are a separate fix: the MCP default scope widens to the whole transcript
+# when it comes up dry, so an answer living only in tool or thinking content is
+# reachable.
 
 
 def _eval_search(query: str, **kw):
@@ -606,11 +608,10 @@ def _tool_result_turn(name: str, day: int, user_text: str, result_text: str,
     ]
 
 
-# ── ranking failures inside the eval pool (all content minus meta) ───────────
+# ── near-duplicate flood guards inside the eval pool (all content minus meta) ─
+# The near-copies in each flood differ only by a run index, so the cross-thread
+# near-duplicate fold collapses them and the distinct gold keeps its row.
 
-@pytest.mark.xfail(strict=True, reason=(
-    "the terse origin that coined a phrase ranks below wordier downstream threads "
-    "that merely reference it — the mined-gold shape, density beating authority"))
 def test_origin_terse_answer_survives_downstream_reference_flood(tmp_path) -> None:
     # A phrase is coined once, tersely (the grade-2 origin), then reused in many
     # later sessions that restate it at length (the grade-1 references). The origin
@@ -633,9 +634,6 @@ def test_origin_terse_answer_survives_downstream_reference_flood(tmp_path) -> No
         f"(top-{RECALL_LIMIT}: {placed})")
 
 
-@pytest.mark.xfail(strict=True, reason=(
-    "recency orders a flood of routine same-vocabulary mentions above the one old "
-    "session where the operation was the actual incident"))
 def test_recent_routine_mentions_do_not_bury_old_decisive_thread(tmp_path) -> None:
     # Common ops vocabulary recurs in hundreds of routine sessions. The one old
     # session where it named a real incident ranks dead last on recency alone.
@@ -655,10 +653,6 @@ def test_recent_routine_mentions_do_not_bury_old_decisive_thread(tmp_path) -> No
         f"(top-{RECALL_LIMIT}: {placed})")
 
 
-@pytest.mark.xfail(strict=True, reason=(
-    "injected CLAUDE.md / system-reminder text that rides many threads (and is not "
-    "byte-identical, so dup-folding can't collapse it) buries the one thread that "
-    "actually discusses the rule"))
 def test_injected_boilerplate_does_not_bury_the_thread_discussing_it(tmp_path) -> None:
     boiler = "the local environment IS production; edits are live"
     discuss = _import(tmp_path, "discuss", _session_lines(
@@ -676,9 +670,6 @@ def test_injected_boilerplate_does_not_bury_the_thread_discussing_it(tmp_path) -
         f"(top-{RECALL_LIMIT}: {placed})")
 
 
-@pytest.mark.xfail(strict=True, reason=(
-    "a task restated as a pending TodoWrite item across many sessions outranks the "
-    "one session that resolved it"))
 def test_todo_restatement_flood_does_not_bury_the_resolution(tmp_path) -> None:
     query = "implement the epoch guard"
     done = _import(tmp_path, "done", _session_lines(
@@ -697,9 +688,6 @@ def test_todo_restatement_flood_does_not_bury_the_resolution(tmp_path) -> None:
         f"(top-{RECALL_LIMIT}: {placed})")
 
 
-@pytest.mark.xfail(strict=True, reason=(
-    "a question re-asked and left unanswered across many sessions outranks the one "
-    "session that actually answered it"))
 def test_reask_flood_does_not_bury_the_one_answered_session(tmp_path) -> None:
     query = "why is capture flaky"
     fixed = _import(tmp_path, "fixed", _session_lines(
@@ -717,9 +705,6 @@ def test_reask_flood_does_not_bury_the_one_answered_session(tmp_path) -> None:
         f"the answered session {fixed} buried under re-asks (top-{RECALL_LIMIT}: {placed})")
 
 
-@pytest.mark.xfail(strict=True, reason=(
-    "the same identifier names different things in different products; the busiest "
-    "product's routine mentions drown the thread that implemented it"))
 def test_shared_identifier_across_projects_keeps_the_implementing_thread(tmp_path) -> None:
     query = "reindex fail closed"
     impl = _import(tmp_path, "impl", _session_lines(
@@ -738,18 +723,17 @@ def test_shared_identifier_across_projects_keeps_the_implementing_thread(tmp_pat
         f"(top-{RECALL_LIMIT}: {placed})")
 
 
-# ── agent-facing MCP default scope (user/title/summary, widens only to text) ─
+# ── agent-facing MCP default scope (user/title/summary, widens to everything) ─
 #
 # The eval searches the whole pool, but the agent-facing thread_search default is
-# user/title/summary and widens only to assistant text. In a corpus that is 72%
-# tool content and ~4% thinking, an answer that exists ONLY in a tool result, a
-# tool error, or the assistant's own reasoning is a false not-found — the searcher
-# is told nothing when the answer is right there. The controls prove the answer is
-# indexed and reachable once its own content type is named.
+# user/title/summary. In a corpus that is 72% tool content and ~4% thinking, an
+# answer that exists ONLY in a tool result, a tool error, or the assistant's own
+# reasoning would be a false not-found — so when the default scope comes up dry the
+# search widens once to the whole transcript, and a strong match anywhere in it is
+# kept (a low-weight tool/thinking hit is a real find even below a weak user hit).
+# The controls prove the answer is indexed and reachable once its own content type
+# is named; the second assert proves the widen reaches it unaided.
 
-@pytest.mark.xfail(strict=True, reason=(
-    "an answer that exists only in a tool_result is unreachable from the default "
-    "agent scope, which widens to assistant text but never to tool content"))
 def test_mcp_default_scope_reaches_tool_result_answer(tmp_path) -> None:
     from thread_archive._mcp.server import thread_search
 
@@ -763,9 +747,6 @@ def test_mcp_default_scope_reaches_tool_result_answer(tmp_path) -> None:
         "the tool_result answer is unreachable from the MCP default scope")
 
 
-@pytest.mark.xfail(strict=True, reason=(
-    "an answer that exists only in the assistant's thinking is unreachable from the "
-    "default agent scope"))
 def test_mcp_default_scope_reaches_thinking_answer(tmp_path) -> None:
     from thread_archive._mcp.server import thread_search
 
@@ -780,9 +761,6 @@ def test_mcp_default_scope_reaches_thinking_answer(tmp_path) -> None:
         "the reasoning that holds the answer is unreachable from the MCP default scope")
 
 
-@pytest.mark.xfail(strict=True, reason=(
-    "an answer that exists only in a failing tool's error is unreachable from the "
-    "default agent scope"))
 def test_mcp_default_scope_reaches_tool_error_answer(tmp_path) -> None:
     from thread_archive._mcp.server import thread_search
 

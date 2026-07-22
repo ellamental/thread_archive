@@ -693,13 +693,16 @@ def search(
         if source:
             ajoin += " JOIN threads t ON t.id = e.thread_id"
             awhere.append(_in_clause("t.source", source, "src", aparams, negate=False))
+        # Bulk-fetch the in-scope ids in one buffered round-trip, not row-by-row:
+        # a broad time bound puts millions of ids in scope, and fetchone-per-row
+        # through the ORM spends seconds on Python overhead the numpy mask doesn't need.
         with get_session() as s:
-            allowed = [int(r[0]) for r in s.execute(
+            rows = s.execute(
                 sa_text("SELECT e.id " + ajoin + " WHERE " + " AND ".join(awhere)), aparams,
-            )]
-        if not allowed:
+            ).fetchall()
+        if not rows:
             return []
-        allowed_ids = np.asarray(allowed, dtype=np.int64)
+        allowed_ids = np.fromiter((r[0] for r in rows), dtype=np.int64, count=len(rows))
     cand = max(limit * 3, 100)
     candidates = _knn(qvec, tuple(cts), cand, allowed_ids=allowed_ids)
     if not candidates:

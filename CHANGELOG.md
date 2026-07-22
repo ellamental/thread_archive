@@ -2,6 +2,34 @@
 
 ## Unreleased
 
+- New `thread_archive snapshot <dest>` verb freezes the corpus into a self-contained, immutable archive home:
+  it copies the JSONL truth (drain-consistent, under the truth-write lock) and materializes `index.db` beside it,
+  restoring the embeddings from the copied vector sidecar without a re-embed. The result is an ordinary
+  `THREAD_ARCHIVE_HOME` that any tool — the shipped `eval`, the dev bench under `evals/` — resolves via the
+  environment. Because the frozen corpus can't grow underneath a measurement, search over a snapshot is
+  deterministic: a regression gate or experiment run scored against one moves only when the code moves, and a
+  mined gold can't be outranked by a thread that landed after mining (the isolation the `until` date bound was
+  standing in for). `api.snapshot()` exposes the same op; `--vectors` embeds any gap the sidecar lacks, `--force`
+  overwrites a non-empty destination, `--no-verify` skips the truth==index check. Each snapshot carries a
+  `snapshot_id` — a content fingerprint of its corpus (`_ops.snapshot.corpus_fingerprint`) that reproduces on a
+  plain re-snapshot but changes whenever the corpus does.
+- Agent-mined retrieval golds are now bound to a corpus snapshot instead of a per-case `until` date bound.
+  `retrieval_mine_gold.py` requires `THREAD_ARCHIVE_HOME` to be a snapshot, searches/reads that frozen corpus
+  (no more server-side date bound), and stamps each case with the snapshot's `snapshot_id`. `retrieval_eval.py
+  --cases` runs over that same snapshot and refuses any case whose `snapshot_id` doesn't match the home — a
+  corpus that has moved on invalidates its golds loudly rather than scoring them against drifted data. The
+  `evaluate()` `strict`/`until` plumbing and the `--strict` flag are gone (the snapshot subsumes them). Existing
+  mined case files (which carry `until`, not `snapshot_id`) are invalid under the new binding and must be
+  re-mined against a snapshot.
+- Retrieval closes the last nine reality-mechanism goldens (formerly expected failures). The cross-thread
+  duplicate fold is now a *near*-duplicate fold — `rank._norm_content` folds runs of digits to one placeholder
+  before comparing, so a flood of threads differing only by a counter or run index (routine ops, re-asked
+  questions, pending-todo restatements, injected boilerplate carrying a `task N`, a swarm of agents on one
+  templated prompt) collapses to a single representative instead of filling the ranked window and burying the one
+  terse or old authoritative thread the query wants. And the MCP `thread_search` default scope (user/title/summary),
+  when it comes up dry, widens once to the whole transcript rather than to assistant text alone — so an answer that
+  lives only in a tool result, a tool's error, or the assistant's reasoning is reachable; the widen keeps its result
+  when it surfaces a strong match anywhere, so a low-weight tool/thinking hit counts even below a weak user hit.
 - Retrieval closes seven ranking failure shapes (the reality-mechanism goldens, formerly expected failures):
   a duplicate-flood rescan folds byte-identical bursts to one representative per `(thread, content)` from a bounded
   rank window, so the distinct answer a fleet-of-copies buried still reaches the pool (and with it, a literal
