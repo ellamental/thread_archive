@@ -1,7 +1,7 @@
 """search_arena — pairwise LLM-judged duels: challenger configs vs the shipped one.
 
-The judged A/B tier of the quality ladder (README.md, "Measuring search
-quality"): where ``search_lab.py`` races configurations on the synthetic corpus
+The judged A/B tier of the quality ladder (docs/search-quality.md): where
+``search_lab.py`` races configurations on the synthetic corpus
 and ``retrieval_judge.py`` grades the shipped pipeline pointwise, this harness
 answers the promotion question directly — *given real queries, does a judge
 prefer the challenger's ranking to the incumbent's?* It samples real mined

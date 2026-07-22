@@ -262,6 +262,9 @@ CLAUDE_CODE_CONFIG = ProviderConfig(
         "mode",  # permission-mode switches (normal/plan/…)
         "permission-mode",  # newer sibling of "mode": current permission mode
         "file-history-delta",  # file-backup bookkeeping, sibling of file-history-snapshot
+        "started",  # Workflow orchestration journal: a subagent began (keyed by cache hash)
+        "result",  # Workflow orchestration journal: a subagent finished, carrying its result
+        "cloth_meta",  # cloth harness meta line (cloth writes claude-code-format transcripts)
     },
     timestamp_format="iso",
     # Field-level drift ledger: every top-level key observed on real user /
@@ -280,6 +283,7 @@ CLAUDE_CODE_CONFIG = ProviderConfig(
             "entrypoint",
             "gitBranch",
             "imagePasteIds",
+            "interruptedByShutdown",  # the user turn was cut short by a shutdown
             "isCompactSummary",
             "isMeta",
             "isSidechain",

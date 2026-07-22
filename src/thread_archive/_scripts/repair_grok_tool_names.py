@@ -1,26 +1,19 @@
-"""One-off repair for three grok threads (ids 3716011 / 3716012 / 3716013,
-sessions of 2026-06-29) whose live tail-import baked in chunking artifacts: a
-``tool_result`` processed in a later poll than its ``tool_calls`` line lost the
-id->name map and recorded ``tool_name: "unknown"``, and several thinking/text
-blocks were anchored at a stale previous-turn timestamp. The monorepo pg store
-tailed the same sessions on its own schedule and froze *different* artifacts,
-so the ingest-cutover soak's byte-level content check flags these threads as
-divergent on every rotation pass — blocking the week-of-aligned-runs cut bar.
+"""One-off repair for a handful of grok threads whose live tail-import baked in
+chunking artifacts: a ``tool_result`` processed in a later poll than its
+``tool_calls`` line lost the id->name map and recorded ``tool_name: "unknown"``,
+and several thinking/text blocks were anchored at a stale previous-turn timestamp.
 
-The fix aligns both stores to a canonical deterministic parse: this repo's own
+The fix realigns those events to a canonical deterministic parse: this repo's own
 importer run over the *complete* ``chat_history.jsonl`` files (no chunk
-boundaries). This script applies the standalone half of the patch plan (21
-events); its sibling in the monorepo
-(``archive/src/archive/scripts/repair_grok_tool_names.py``) applies the pg
-half. The plan (``repair_grok_tool_names_plan_20260704.json``, untracked in
-``host/repair-dumps/`` — it holds real conversation payloads, so it never
-enters git) carries old + new values; old payloads are asserted before writing and
-the changed rows are dumped to a backup file first. Truth-file history is
-inherent: the corrected event lines append via the normal ``append_event_row``
-seam and reindex is last-wins by id, so the pre-repair lines remain in the
-per-thread JSONL as history. FTS rows for the patched events are re-indexed
-(tool_name is an FTS column); vectors are left alone (embedded text is
-unchanged).
+boundaries). The patch plan (``repair_grok_tool_names_plan_20260704.json``,
+untracked in ``host/repair-dumps/`` — it holds real conversation payloads, so it
+never enters git) carries old + new values; this script applies its ``sa``
+(standalone) entries. Old payloads are asserted before writing and the changed
+rows are dumped to a backup file first. Truth-file history is inherent: the
+corrected event lines append via the normal ``append_event_row`` seam and reindex
+is last-wins by id, so the pre-repair lines remain in the per-thread JSONL as
+history. FTS rows for the patched events are re-indexed (tool_name is an FTS
+column); vectors are left alone (embedded text is unchanged).
 
 Preview (read-only): .venv/bin/python src/thread_archive/_scripts/repair_grok_tool_names.py
 Apply:               .venv/bin/python src/thread_archive/_scripts/repair_grok_tool_names.py --apply

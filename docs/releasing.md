@@ -37,7 +37,7 @@ tags), and branch protection on `main`.
   gate that proves a fresh-clone install actually works (files present,
   console scripts wired), rather than only the long-lived editable install.
 - GitHub CI green on `main` (ruff, mypy, coverage floor, the pytest suite on
-  3.14, frontend checks, and the same package lane).
+  the 3.12 floor and 3.14, frontend checks, and the same package lane).
 - If `frontend/` changed since the last release, the committed
   `_web/static/` bundle must be current: `cd frontend && npm run build`,
   and the regenerated static assets committed with the change that caused

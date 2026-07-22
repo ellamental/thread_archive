@@ -9,7 +9,7 @@
 # from the artifact), runs the full unit suite against the installed package, then the
 # end-to-end install check (import every provider -> reindex -> search) on a synthetic
 # corpus (or an obfuscated real one mounted at /work/fixtures).
-FROM python:3.14-slim
+FROM python:3.12-slim
 
 # build-essential covers any source build of a C-extension dependency (they
 # normally resolve to manylinux wheels, but this keeps the build robust on any

@@ -17,20 +17,21 @@ the Python source and the always-on service (systemd, not launchd).
 ## 0. Preconditions (check, don't assume)
 
 ```bash
-python3 --version               # need >= 3.14
+python3 --version               # need >= 3.12
 git rev-parse --show-toplevel   # confirms you're in the clone; this is REPO_ROOT
 claude --version                # you
 ```
 
-**Python 3.14 is not in Ubuntu's default repos** (24.04 ships 3.12). If `python3`
-is older, install 3.14 first — either the deadsnakes PPA or pyenv:
+Ubuntu 24.04's default `python3` is 3.12, which clears the floor as-is. On an
+older release whose `python3` is < 3.12, install a newer one first — either the
+deadsnakes PPA or pyenv:
 
 ```bash
 # deadsnakes route
 sudo add-apt-repository -y ppa:deadsnakes/ppa
 sudo apt-get update
-sudo apt-get install -y python3.14 python3.14-venv
-# then use python3.14 in place of python3 below
+sudo apt-get install -y python3.12 python3.12-venv
+# then use python3.12 in place of python3 below
 ```
 
 Also install the build basics (a clean install may compile a C-extension wheel):
@@ -43,7 +44,7 @@ sudo apt-get install -y build-essential git
 
 ```bash
 cd "$(git rev-parse --show-toplevel)"
-python3.14 -m venv .venv      # or python3 if it is already >= 3.14
+python3 -m venv .venv         # use python3.12 explicitly if the default is older
 .venv/bin/pip install -e .
 ```
 
@@ -80,6 +81,14 @@ ls -l "$REPO/.venv/bin/archive-mcp"   # sanity-check the command path exists
 ```
 
 `.mcp.json` is git-ignored (it's machine-specific).
+
+**The clone's location is now load-bearing.** This absolute path — and the ones
+in the systemd watcher/backup units (step 6) and in self-update — is baked into
+the machine, not tracked in the repo. A plain `mv` of the clone dead-ends the
+MCP wiring, the daemon, and self-update at once. To relocate it, move the
+directory, then re-run the MCP wiring above and `thread_archive daemon restart`
+(or, cleanest, re-clone at the new path and reinstall). Tell the human this
+before they pick where the clone lives.
 
 ## 4. Populate the archive
 

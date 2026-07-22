@@ -1,7 +1,7 @@
 """Model-tier search-quality eval: the synthetic corpus under the real model arms.
 
-The middle rung of the quality ladder (see README.md's "Measuring search
-quality"): the same checked-in corpus and cases as the tier-0 lexical eval in
+The middle rung of the quality ladder (see docs/search-quality.md): the same
+checked-in corpus and cases as the tier-0 lexical eval in
 ``test_search_quality.py``, but with the embeddings + cross-encoder arms live —
 the fused pipeline a full install runs. Deterministic corpus, real models:
 catches a model-arm change that reshuffles known-relevance cases, offline,

@@ -1,137 +1,23 @@
 # thread-archive
 
 [![CI](https://github.com/ellamental/thread_archive/actions/workflows/ci.yml/badge.svg)](https://github.com/ellamental/thread_archive/actions/workflows/ci.yml)
-[![Python](https://img.shields.io/badge/python-3.14-blue)](https://github.com/ellamental/thread_archive)
-[![Platform](https://img.shields.io/badge/platform-macOS-black)](https://github.com/ellamental/thread_archive)
+[![Python](https://img.shields.io/badge/python-3.12%2B-blue)](https://github.com/ellamental/thread_archive)
+[![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Linux-black)](https://github.com/ellamental/thread_archive)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 
-**Thread Archive is a local-first memory system for the AI agents that work on your machine — built by Claude Code, for Claude Code.** It ingests every session your agent harnesses record into one durable archive you own, on your Mac. Claude Code is the supported, first-class source; the other harnesses it reads — Codex, Cursor, OpenCode, Grok, and friends — are best-effort and community-maintainable (see *When an import drifts*). Web chats (claude.ai, ChatGPT, xAI) import too, from account exports you download by hand; the live, self-feeding path is the agent tooling.
+**Thread Archive is a local-first archive for the AI agents that work on your machine — built by Claude Code, for Claude Code.** Preservation is the product: every session your agent harnesses record lands in one durable, append-only archive you own, on your own disk — kept safe past harness rotation, provider format drift, and index corruption, and served back to your agents over MCP. Claude Code is the supported, first-class source; the other harnesses it reads — Codex, Cursor, OpenCode, Grok, and friends — are best-effort and community-maintainable (see *When an import drifts*). Web chats (claude.ai, ChatGPT, xAI) import too, from account exports you download by hand; the live, self-feeding path is the agent tooling.
 
 **Day one is the demo.** The history already exists — your Claude Code sessions are sitting in `~/.claude` right now, as JSONL nothing can search and the harness eventually rotates away. Point archive at them, and minutes later ask, mid-conversation:
 
 > *"what did we decide about the auth flow in March?"*
 
-Your agent calls `thread_search`, the right conversation comes back, and `thread_read` replays the decision with everything around it. No workflow to adopt, no notes you were supposed to be taking — the memory was being written all along. Archive keeps it, finds it, and measures the finding against its own logged usage rather than a synthetic benchmark (numbers below).
+Your agent calls `thread_search`, the right conversation comes back, and `thread_read` replays the decision with everything around it. No workflow to adopt, no notes you were supposed to be taking — the memory was being written all along.
 
 **Searchable by you — and by your AI.**
-- Full-text and semantic search with reranking, filterable by time, source, tool, and content type.
+- Full-text and semantic search with reranking, filterable by time, source, tool, and content type; an empty query browses recent activity.
 - Exposed over MCP (`thread_search`, `thread_read`), so Claude (or any MCP client) can search and read your entire history mid-conversation.
+- Search is the access layer over the archive, not the archive itself — an agent typically fires several searches, reformulates, and reads around a hit, and the archive underneath guarantees the conversation is *there* to find. Quality is measured against the archive's own logged usage — real queries, real follow-up reads — with a CI gate that alarms on collapse; the numbers, the protocol, and its limits live in [docs/search-quality.md](docs/search-quality.md), and `thread_archive eval` runs the same self-checkup read-only on your own archive.
 - Redaction with encrypted recovery bundles: scrub secrets from the archive without destroying them irrevocably.
-
-**Measured against real usage, not a synthetic benchmark.** Every
-`thread_search` an agent runs is itself archived, along with the `thread_read`
-that followed — so the archive holds a click-labeled query log of its own use.
-The eval harness (`evals/retrieval_eval.py --from-log`) mines those
-search→read pairs: each query is one an agent actually ran, and the thread the
-agent opened next is the answer that must rank. On a 17k-thread / 3.7M-event
-archive, 561 mined cases:
-
-| search stack | MRR | recall@10 | p50 latency |
-|---|---|---|---|
-| core install (FTS5 lexical) | 0.19 | 0.33 | 0.6 s |
-| + local semantic fusion | 0.25 | 0.43 | 0.6 s |
-| + cross-encoder rerank | 0.25 | 0.44 | 3.1 s |
-
-Rows are cumulative, and the labels carry a click's limits: the opened thread
-was the agent's pick from what search surfaced that day — not a verdict that
-nothing better existed — so relevant siblings score as misses, and a stack
-that surfaces what past search never could gets no credit for it. Good
-numbers here mean the stack reliably re-finds what real searches actually
-delivered; they cannot certify there was nothing better to find. Semantic fusion is the layer that pays — +10 points of recall@10
-over the lexical core at no latency cost. The cross-encoder adds about two
-more for 5× the latency, which is why the pipeline auto-gates it to
-conceptual queries instead of running it everywhere. Both model arms have an
-off switch — `THREAD_ARCHIVE_EMBED=off` and `THREAD_ARCHIVE_RERANK=off` pin a
-process to the lexical core without uninstalling the extra, for a box that
-wants search cheap and free of the cold-start model load (`retrieval_eval.py
---lexical-only` measures that configuration). One more signal made the cut:
-a **community-coherence re-rank** from the corpus-native embedding graph
-(thread centroids → cosine kNN → Leiden — zero curation input, every embedded
-conversation a node). Within a ranked pool, threads whose community carries
-more of the pool's top mass get a small boost; on this protocol it lifts
-recall at every depth past 1 (R@5 0.327→0.341, R@10 0.414→0.433, R@20
-0.492→0.508) with MRR flat, and `evals/graph_eval.py` re-measures it.
-It orders the head only when the cross-encoder stands down: the two are
-alternative head orderers, and stacking coherence under the rerank measures
-as a loss end-to-end (it reshuffles which candidates reach the rerank
-window). On by default; `THREAD_ARCHIVE_COHERENCE=off` disables, a float
-retunes gamma. Two graph signals were measured, rejected on the same
-protocol, and are not in the stack: PageRank authority from the *curated*
-topic graph degrades ranking monotonically with weight, because
-query-independent authority floats hub threads over the specific thread a
-query names. Curated thread summaries move
-these numbers by less than a point — whatever their value for browsing and
-curation, ranked search does not measurably ride on them. (An earlier
-title-as-query eval said otherwise on every count; its queries were LLM
-distillations of the threads they named, and it flattered every layer that
-searched other distillations. It survives in the harness as a quick local
-probe; CI runs a single lean gate — semantic arm verified alive directly,
-plus a small seeded sample of the log-mined cases as a collapse alarm.)
-
-The same trail powers three more instruments, each aimed at a limit of the
-click labels. Every CI gate run appends its numbers to a trend ledger
-(`~/.thread/archive/retrieval-trend.jsonl`), so quality is a time series, not
-a launch-day screenshot, and `--mined-after` holds out only the cases mined
-after a ranking change shipped. `--behavior` reports zero-label usage
-signals — for every search the trail shows whether the agent opened a
-result, searched again, or walked away — rates that move only when something
-real moves. And `evals/retrieval_judge.py` runs a sample of the mined
-queries through the production stack and has a headless `claude` grade every
-top-10 thread, yielding graded precision, a calibration of the click labels
-themselves, and explicit credit for relevant results the click protocol can
-only score as misses. The judge grades only what production returned, from
-snippets; `evals/retrieval_mine_gold.py` goes the rest of the way — one
-headless `claude` *agent* per sampled query reads the originating session
-for intent, sweeps the corpus with its own reformulated searches (bounded to
-the corpus as of the original search's date), reads candidates, and writes a
-corpus-grounded gold case. The output is an eval `--cases` file whose
-per-case date bound the scoring search honors, so the one-time mining spend
-buys recall-capable, deterministic labels every later eval run scores
-against for free.
-
-The instruments stack into a **quality ladder**, fastest tier first — change
-a ranking weight and climb until the evidence matches the stakes. Everything
-operator-run lives together in `evals/` — the search lab; `evals/README.md`
-is the working manual:
-
-| tier | what runs | corpus | cost | when |
-|---|---|---|---|---|
-| 0 | `tests/test_search_quality.py` (in every pytest run) | checked-in synthetic corpus (`tests/quality_corpus.py`), lexical stack | seconds | every change |
-| 1 | `pytest -m quality_models` | same corpus, real embedding + rerank models | minutes | touching the model arms |
-| 2 | CI `retrieval-gate` row (`retrieval_eval.py --from-log`) | live archive, mined click labels | ~minutes | every commit, via thread-ci |
-| 3 | `retrieval_eval.py` by hand, `graph_eval.py`, `retrieval_judge.py`, `search_arena.py`, `--behavior` | live archive | minutes–hours | evaluating a deliberate ranking change |
-| 3½ | `retrieval_eval.py --cases` on agent-mined golds (`retrieval_mine_gold.py` to mint them) | live archive, corpus-grounded labels | seconds to score; agent-minutes per mined case | scoring against grounded labels; mining is an occasional cadence |
-| 4 | `pytest -m beir` | external BEIR benchmark | tens of minutes | calibrating against published baselines |
-
-Tier 0 is the laboratory bench: known relevance structure, deterministic,
-and `run_cases(search=...)` scores any candidate ranker against the incumbent
-on identical cases — the A/B seam the higher tiers then validate on real
-usage.
-
-That seam has a front door: **the search lab**. Every tunable of the pipeline
-(ranking weights, decay constants, pool sizes) lives in one object,
-`thread_archive._retrieval.SearchParams`, accepted by `search(params=...)` —
-the shipped defaults ARE the production configuration. Each module in
-`evals/experiments/` is one candidate configuration (a `SearchParams` value, or a
-full `SEARCH` callable for changes params can't express — the contract is in
-`evals/experiments/README.md`), and `evals/search_lab.py` scores the baseline plus
-every experiment on identical corpus cases and prints a leaderboard with
-deltas: seconds for the lexical stack, `--models` for the fused pipeline. The
-corpus carries adversarial structure (a TF-spam paste bm25 loves, a recency
-pair whose old twin is the lexically stronger match) precisely so
-configurations *separate* — stripping the weighted ranker measurably loses.
-A winner here is a direction, not a verdict; promote it by re-measuring on
-tiers 2–3 before changing the defaults in `_retrieval/params.py`.
-
-The promotion step has its own instrument: **the arena**
-(`evals/search_arena.py`). It duels a challenger from `evals/experiments/` against
-the shipped configuration on real mined queries — both rankings for each
-query go to a headless `claude` judge, side order randomized, labels blind —
-and reports challenger wins/losses/ties with an exact sign test. Identical
-rankings tie without spending a judge call, so cost scales with how much the
-configurations actually disagree. Where the lab says "this direction looks
-good on the synthetic corpus," the arena says "on real usage, a judge prefers
-it" — the bar to clear before touching the defaults.
 
 **Built like a database, not a folder of exports.**
 - Plain JSONL files are the source of truth — human-readable, greppable, yours. The search index is disposable and rebuilds from them at any time.
@@ -144,11 +30,11 @@ it" — the bar to clear before touching the defaults.
 
 **No hosted backend. No cloud. No subscription to lose your history to.** A background watcher keeps it current; every process — the MCP server, the web viewer, the daemons — runs locally, on your machine.
 
-**Dev tooling for one well-provisioned Mac.** macOS is the supported platform — the daemons are LaunchAgents, the file locks are Unix — and the archive is single-user, single-machine. It assumes workstation-class headroom, too: optional semantic search keeps a multi-GB torch model resident, a normal cost on the machine this is for.
+**Dev tooling for one well-provisioned workstation.** macOS and Linux are the supported platforms — the always-on daemons are launchd LaunchAgents on macOS and systemd `--user` units on Linux (both lanes CI-tested; macOS has the most mileage) — and the archive is single-user, single-machine. It assumes workstation-class headroom, too: optional semantic search keeps a multi-GB torch model resident, a normal cost on the machine this is for.
 
 ## How it works
 
-Serverless-native, single-user, single-machine: it watches this Mac's
+Serverless-native, single-user, single-machine: it watches this machine's
 agent-harness stores and imports provider transcripts into one event model.
 
 It is a standalone package — no hosted backend, no cloud service, no host
@@ -163,7 +49,11 @@ there is no registry; a release is an annotated tag on the repo you can pin
 (see [docs/releasing.md](https://github.com/ellamental/thread_archive/blob/main/docs/releasing.md)).
 The product is the repo itself: the Python package, the read MCP server, the
 `.mcp.json` template that wires it in, and the pre-built web viewer; the venv
-lives in the clone once it's built. Clone it, open it in Claude Code, and let
+lives in the clone once it's built. That makes the clone's location
+load-bearing — the `.mcp.json` wiring, the watcher/backup service units, and
+self-update all bake this clone's absolute path, so relocating it later means
+re-running the wiring (and `thread_archive daemon restart`), not a plain `mv`.
+Pick where it lives before you start. Clone it, open it in Claude Code, and let
 the agent install its own memory:
 
 ```bash
@@ -174,7 +64,9 @@ claude     # then: "install this, following claude-install.md"
 [claude-install.md](https://github.com/ellamental/thread_archive/blob/main/claude-install.md)
 walks the agent through the whole thing — venv, tests green, MCP wiring,
 first import — stopping to ask you exactly once: whether to add local
-semantic search (heavy: pulls torch). macOS only; Python ≥ 3.14. The end
+semantic search (heavy: pulls torch). On Ubuntu, hand the agent
+[claude-install-ubuntu.md](https://github.com/ellamental/thread_archive/blob/main/claude-install-ubuntu.md)
+instead — same flow, systemd for the always-on pieces. Python ≥ 3.12. The end
 state is a populated, searchable archive served over MCP, plus the `thread_archive`
 operator CLI and the pre-built web viewer (no node).
 
@@ -201,7 +93,7 @@ Restart Claude Code in the repo so it loads `.mcp.json` (the search/read MCP ser
 ingests lazily. `.venv/bin/thread_archive setup` upgrades it to always-on: on first
 run it discovers this machine's conversation stores and shows what it found —
 counts, sizes, date ranges — *before* touching anything, then asks: import
-(all, a selection, or skip), install the always-on watcher (macOS LaunchAgent;
+(all, a selection, or skip), install the always-on watcher (launchd on macOS, systemd on Linux;
 includes the web viewer at :8787), **schedule a nightly backup** (a second
 question — *where should backups go?* — that installs the daily backup →
 verify → restore-drill pipeline to a disk you name), wire the MCP servers into
@@ -236,6 +128,8 @@ thread_archive providers         # list registered providers (built-in + install
 thread_archive watch             # watch local AI-tool stores and import incrementally
 thread_archive reindex           # rebuild index.db from the JSONL truth directory
 thread_archive migrate           # migrate older truth, then reindex and verify
+thread_archive embed             # embed user/text events still missing a vector (incremental catch-up;
+                          #   --rebuild re-embeds everything)
 thread_archive verify            # integrity check: truth parses + matches the index
 thread_archive repair            # quarantine damaged truth lines; restore committed content from the index
 thread_archive backup <dest>     # mirror the truth dir (hardlink generations under <dest>/.generations) +
@@ -246,11 +140,17 @@ thread_archive restore <mirror> --to <home>  # actually restore: staged rebuild 
                           #   (--generation <stamp> picks a retained snapshot; --list-generations shows them)
 thread_archive nightly <dest>    # the scheduled pipeline: backup → verify (age-gated escalation) → restore drill → coverage
 thread_archive coverage          # capture-coverage check: source stores reconciled against the archive
+thread_archive mirror            # mirror raw harness source stores into <home>/source-mirror
+                          #   (verbatim, gzip; nothing ever deleted)
+thread_archive eval              # search-quality self-checkup on your own archive (read-only; --from-log
+                          #   scores real mined queries, --behavior reports usage rates — see
+                          #   docs/search-quality.md)
 thread_archive redact <thread>   # crypto-shred events (--events for a subset): content out of truth, index,
                           #   search, quotes; the original encrypted under a revocable per-redaction key
 thread_archive unredact <key_id> # restore a redaction from its encrypted bundle (key still in the keyring)
 thread_archive status            # archive health / counts / last verify + backup + drill + coverage outcomes
-thread_archive daemon <action>   # macOS: install/uninstall/restart/status a LaunchAgent — the always-on
+thread_archive daemon <action>   # install/uninstall/restart/status a service agent (launchd on macOS,
+                          #   systemd --user on Linux) — the always-on
                           #   watcher (default), --mcp the shared server, --backup the nightly
                           #   pipeline (`daemon install --backup --dest <path> [--at HH:MM]`), or
 thread_archive self-update       # explicitly fast-forward this clone to the newest eligible release tag
@@ -258,7 +158,7 @@ thread_archive self-update       # explicitly fast-forward this clone to the new
 ```
 
 The CLI is private operational tooling (see Stability below) — the process
-seam the LaunchAgents, cron, and operators use. Retrieval deliberately has no
+seam the service agents, cron, and operators use. Retrieval deliberately has no
 CLI verbs: search and read are the public `archive-mcp` tools, and the web
 viewer is cohosted by `thread_archive watch --web`.
 
@@ -279,7 +179,8 @@ src/thread_archive/
   _watcher/         # local-source watcher (self-feeding ingest)
   _mcp/             # the library-native read MCP server
   _web/             # read-only viewer: stdlib server + built bundle (cohosted by `watch --web`)
-  _launchd.py       # `thread_archive daemon`: generates + loads the watcher / MCP / nightly-backup LaunchAgents (macOS)
+  _service/         # `thread_archive daemon`: the watcher / MCP / nightly-backup agents behind a
+                      #   platform registry — launchd (macOS) and systemd --user (Linux) backends
   _thread_import/   # vendored provider parsers (a clean, dependency-free island)
   _providers/       # the provider registry: built-in descriptors + plugin discovery
   provider/         # PUBLIC: the plugin API a third-party provider is written against
@@ -360,7 +261,7 @@ The scope is deliberately narrow. These are design decisions, not gaps waiting
 on a release:
 
 - **More than one machine — and merging archives.** An archive belongs to one
-  Mac. Thread and event ids are locally minted and live *inside* the
+  machine. Thread and event ids are locally minted and live *inside* the
   truth layer: they are the JSONL filenames, they sit in every record, in the
   append-only curatorial log, and in the inline `[e12345]` citations stored
   summaries carry. Two archives grown independently therefore occupy the same
@@ -369,11 +270,11 @@ on a release:
   archive to another machine is supported — carry the directory, or
   `thread_archive restore <mirror> --to <home>`; running two and reconciling them
   later is not.
-- **Anything but macOS.** macOS is the supported platform: the daemons are
-  LaunchAgents, the file locks are Unix. The Python core happens to import and
-  pass its suite on Linux (public CI runs there), but the always-on pieces —
-  watcher, scheduled backup, MCP LaunchAgent — do not exist off macOS, and no
-  other platform is tested end to end or supported.
+- **Anything but macOS and Linux.** The always-on pieces — watcher, scheduled
+  backup, shared MCP server — are launchd LaunchAgents on macOS and systemd
+  `--user` units on Linux, and public CI exercises both (the Linux lane against
+  a real user systemd). macOS has the most mileage. Windows is not supported,
+  and no other platform exists here.
 - **More than one user.** No accounts, no authentication, no per-user scoping.
   The web viewer binds to `127.0.0.1` and assumes whoever reaches it owns
   everything in the archive.
@@ -386,7 +287,7 @@ on a release:
 ## Web viewer
 
 The always-on watcher cohosts a local search + reader UI: `thread_archive watch --web`
-(the shipped LaunchAgent passes it) serves at `http://127.0.0.1:8787` — a stdlib
+(the shipped watcher service passes it) serves at `http://127.0.0.1:8787` — a stdlib
 HTTP server handing out a pre-built React bundle plus a few JSON endpoints, in
 the watcher's *own* process. One process, one SQLite engine — the viewer reads
 concurrently with the watcher's writes, which WAL makes safe (`_store/_base.py`).
@@ -411,8 +312,8 @@ wins; ids that were never imported are skipped, not fatal.
 
 ## What it does
 
-- **Ingests 9 agent harnesses** into one event model — Claude Code, Codex, Grok,
-  Antigravity, Cowork, cloth (transcript line-streams) and Cursor, OpenCode, Claude
+- **Ingests 8 agent harnesses** into one event model — Claude Code, Codex, Grok,
+  Antigravity, Cowork (transcript line-streams) and Cursor, OpenCode, Claude
   Science (SQLite scanners). Web chats (claude.ai, ChatGPT, xAI) are the one manual
   path: drop a downloaded account export into `<home>/dumps/` (picked up on the next
   ingest pass) or run `thread_archive import-export <path>` — a redrop merges, importing only
@@ -428,8 +329,9 @@ wins; ids that were never imported are skipped, not fatal.
   `thread_archive providers` lists what is registered; see [docs/providers.md](docs/providers.md).
 - **Self-feeds** — the watcher tails local stores and ingests incrementally; events land
   in the JSONL truth *before* their commit (no checkpoint in the hot loop). Zero-daemon
-  freshness comes from the setup-generated MCP catch-up opt-in; a one-command macOS
-  LaunchAgent upgrade (`thread_archive daemon install`) makes it always-fresh. Neither mode
+  freshness comes from the setup-generated MCP catch-up opt-in; a one-command
+  service install (`thread_archive daemon install` — launchd on macOS, systemd on
+  Linux) makes it always-fresh. Neither mode
   needs an external service.
 - **Declares itself** — the installer writes a small discovery manifest
   `<home>/product.json` (`host/write-manifest.py`; `make install-agent` runs
@@ -499,7 +401,7 @@ config with catch-up enabled:
 }
 ```
 
-The shared HTTP LaunchAgent is read-only by default too. Install it with
+The shared HTTP server daemon is read-only by default too. Install it with
 `thread_archive daemon install --mcp --mcp-ingest` only when it should own catch-up;
 leave the flag off when the watcher already owns ingestion.
 
@@ -543,78 +445,15 @@ summary content ever needs erasing.
 ## Similar and related projects
 
 Preserving and searching AI conversation history is a crowded space, and a lot
-of the work in it is good. If thread-archive isn't what you want, one of these
-probably is.
-
-**Session search over local agent transcripts** — the nearest neighbors, all
-local-first, all reading the same harness stores:
-
-- [CASS](https://github.com/Dicklesworthstone/coding_agent_session_search) —
-  Rust, the widest provider coverage in the space and the closest retrieval
-  stack to this one: BM25, local ONNX embeddings, rank fusion, and a
-  cross-encoder rerank over an append-only store. Its MCP surface is
-  inter-agent messaging; search is CLI and TUI.
-- [ctx](https://github.com/ctxrs/ctx) — Rust, many harnesses into local SQLite,
-  a read-only MCP server, session replay with windowing, and read-only SQL over
-  the index. Lexical retrieval, tuned for spending few tokens.
-- [deja-vu](https://github.com/vshulcz/deja-vu) — Go single binary; MCP `recall`
-  and `blame` tools, optional semantic search against a local Ollama or LM Studio
-  endpoint, credential redaction at index time. Its
-  [format registry](https://github.com/vshulcz/deja-vu/tree/main/docs/registry)
-  documents each harness's on-disk shape and quirks, and is the best public
-  reference for these formats.
-- [episodic-memory](https://github.com/obra/episodic-memory) — TypeScript;
-  copies transcripts into its own archive so search outlives harness pruning,
-  local embeddings, MCP `search` and `read`. Claude Code and Codex.
-- [synty](https://github.com/superlinked/synty) — Rust; a login-time tracker
-  daemon, append-only JSONL as its corpus, a rebuildable index, late-interaction
-  retrieval, and emergent topic clustering. Architecturally the closest cousin.
-- [agentsview](https://github.com/kenn-io/agentsview) — Go; a local SQLite
-  archive with full-text and optional semantic search, a web dashboard, and
-  token/cost analytics. Operator-facing rather than agent-facing.
-- [Agent Sessions](https://github.com/jazzyalex/agent-sessions) — a polished
-  native macOS browser across many harnesses. Reads in place: a viewer, not a
-  store.
-- Smaller and sharper: [ccrider](https://github.com/neilberkman/ccrider) (TUI
-  plus an MCP search server), [claude-historian](https://github.com/Vvkmnn/claude-historian-mcp)
-  (an MCP server that deliberately keeps no index at all),
-  [threadlens](https://github.com/moinulmoin/threadlens) (a lexical index that
-  is explicitly disposable), and the transcript renderers
-  [claude-code-log](https://github.com/daaain/claude-code-log) and
-  [claude-code-transcripts](https://github.com/simonw/claude-code-transcripts).
-
-**Multi-provider chat archives.** [MyChatArchive](https://github.com/1ch1n/mychatarchive)
-comes at the same premise from the consumer side: ChatGPT, Claude, and Grok
-exports alongside local Claude Code and Cursor sessions, in one SQLite archive
-with full-text search, embeddings, and MCP.
-
-**Agent memory layers** — [mem0](https://github.com/mem0ai/mem0),
-[Zep / Graphiti](https://github.com/getzep/graphiti),
-[Letta](https://github.com/letta-ai/letta),
-[Cognee](https://github.com/topoteretes/cognee),
-[supermemory](https://github.com/supermemoryai/supermemory),
-[Basic Memory](https://github.com/basicmachines-co/basic-memory) — solve an
-adjacent problem: distilling conversation into facts, entities, or a knowledge
-graph small enough to sit in context. They are complements rather than
-alternatives. They optimize for a short, high-signal context; an archive
-optimizes for keeping everything. Most also record conversations that flow
-*through* them, rather than ingesting a harness's own store after the fact.
-
-**Prior art outside AI.** [notmuch](https://notmuchmail.org/) is the
-architectural precedent: immutable mail files that are never modified, all
-mutable state in an index regenerable from them at any time, proven over
-decades and millions of messages. [Piler](https://www.mailpiler.org/) is the
-compliance-archive analogue — immutable storage, tamper verification, retention
-policy.
-
-**How thread-archive differs.** Most tools here treat the harness's own files
-as the record and their index as a cache over it. Archive treats preservation
-as the product: its own append-only truth log, backup with restore drills and
-integrity verification, crypto-shredding redaction that stays reversible, and
-unmodeled provider fields preserved verbatim so a format change costs fidelity
-instead of data. The retrieval stack and topic graph are built to be read by an
-agent mid-conversation rather than browsed by a person. Where these projects
-lead: broader provider coverage, platforms beyond macOS, and more mileage.
+of the work in it is good — session-search neighbors (CASS, ctx, deja-vu,
+episodic-memory, synty, and more), agent memory layers (mem0, Letta, Zep), and
+the prior art outside AI (notmuch). The annotated survey — including where each
+neighbor leads and how thread-archive differs — lives in
+[docs/related.md](docs/related.md). The short version of the difference: most
+tools treat the harness's own files as the record and their index as a cache
+over it; archive treats preservation as the product — its own append-only truth
+log, backup with restore drills, reversible crypto-shredding redaction, and
+unmodeled provider fields preserved verbatim.
 
 ## License
 

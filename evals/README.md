@@ -19,9 +19,8 @@ of which ship.
 
 ## The quality ladder
 
-Fastest tier first — climb until the evidence matches the stakes. (The
-product README's "Measuring search quality" tells the same story with the
-measured numbers.)
+Fastest tier first — climb until the evidence matches the stakes.
+(`docs/search-quality.md` tells the same story with the measured numbers.)
 
 | tier | what runs | corpus | cost | when |
 |---|---|---|---|---|

@@ -13,12 +13,28 @@ The end state: the `thread_archive` CLI works, the read MCP server is wired into
 ## 0. Preconditions (check, don't assume)
 
 ```bash
-python3 --version          # need >= 3.14
+python3 --version          # need >= 3.12
 git rev-parse --show-toplevel   # confirms you're in the clone; this is REPO_ROOT
 claude --version           # you
+xcode-select -p            # C-compiler toolchain (see below)
 ```
 
-If `python3` is older than 3.14, stop and tell the human — nothing below will work.
+If `python3` is older than 3.12, stop and tell the human — nothing below will work.
+
+The base install has C-extension dependencies (`python-igraph`, `leidenalg`,
+`cryptography`). These normally resolve to prebuilt wheels, but if pip has to
+build one from source — no wheel for this Python/arch yet — it needs a C
+compiler. On a fresh Mac that means the **Xcode Command Line Tools**; if
+`xcode-select -p` printed nothing (or the install later dies with a compiler
+error), install them and retry:
+
+```bash
+xcode-select --install
+```
+
+(The `[embeddings]` extra pulls `torch`, whose wheel availability lags new
+Python releases the most — if that step can't find a wheel, it's the same
+class of failure.)
 
 ## 1. Create the venv and install the package
 
@@ -68,6 +84,14 @@ ls -l "$REPO/.venv/bin/archive-mcp"
 
 `.mcp.json` is git-ignored (it's machine-specific).
 
+**The clone's location is now load-bearing.** This absolute path — and the ones
+in the watcher/backup service units (step below) and in self-update — is baked
+into the machine, not tracked in the repo. A plain `mv` of the clone dead-ends
+the MCP wiring, the daemon, and self-update at once. To relocate it, move the
+directory, then re-run the MCP wiring above and `thread_archive daemon restart`
+(or, cleanest, re-clone at the new path and reinstall). Tell the human this
+before they pick where the clone lives.
+
 Also write the thread-family manifest — the discovery record other thread
 products glob for (harmless if none are installed):
 
@@ -85,7 +109,7 @@ An empty archive has nothing to search. Two ways to get conversations in:
 
 - **Watch local AI-tool stores** (Claude Code, Cursor, Codex, … on this machine):
   ```bash
-  .venv/bin/thread_archive watch --once     # one pass; or `thread_archive daemon install` (macOS) for always-on
+  .venv/bin/thread_archive watch --once     # one pass; or `thread_archive daemon install` for always-on
   ```
   (`.mcp.json.example` explicitly sets `THREAD_ARCHIVE_MCP_INGEST=1`, so even
   without either, that configured `archive-mcp` cohosts a lazy catch-up pass at

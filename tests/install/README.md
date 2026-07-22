@@ -60,7 +60,7 @@ layout and does not read the obfuscated corpus.)
 
 | file | role |
 |------|------|
-| `Dockerfile` | clean `python:3.14-slim`; builds the wheel, installs it + `[dev]`, runs `run_in_container.sh` |
+| `Dockerfile` | clean `python:3.12-slim` (the supported floor); builds the wheel, installs it + `[dev]`, runs `run_in_container.sh` |
 | `run_install_test.sh` | host: ensure a daemon (colima if needed), build the image + run (mounts the obfuscated corpus if present) |
 | `run_in_container.sh` | container entrypoint: unit suite + `e2e_check.py` + `first_run.py` |
 | `make_fixtures.py` | the synthetic provider corpus (safe to commit) — content defined once; `generate()` writes the flat layout, `realistic_layout()` writes each store in its real default location |

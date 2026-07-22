@@ -44,6 +44,13 @@ atexit.register(shutil.rmtree, _SANDBOX_HOME, ignore_errors=True)
 for _xdg in ("XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_STATE_HOME", "XDG_CACHE_HOME"):
     os.environ.pop(_xdg, None)
 
+# THREAD_ARCHIVE_HOME is the store-location override the engine resolves *before*
+# $HOME — so on a machine that sets it (the operator's, for the daemons), it wins
+# over the redirect above and a test writes into the live archive. The full-suite
+# env-var ratchet catches it, but a single-file or single-test run skips that meta
+# check, so dropping it here is what actually makes the sandbox home take effect.
+os.environ.pop("THREAD_ARCHIVE_HOME", None)
+
 # Any CLI verb run in-process would otherwise renice the test runner itself, and
 # nice() is one-way: the drop is permanent for the rest of the session and every
 # later test — plus every child they spawn — inherits it. Set here at import, for

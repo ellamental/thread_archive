@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+- Python floor drops from 3.14 to 3.12: nothing in the code needs 3.14, so the install now runs on the Python
+  most machines already ship. Classifiers, the CI matrix (3.12 floor + 3.14), the install-test container, and the
+  four install docs follow.
+- Install docs close three friction gaps: the macOS path checks for the Xcode Command Line Tools the base
+  C-extensions (igraph/leidenalg/cryptography) need on a source build — the Ubuntu and Docker paths already install
+  build-essential; and the README pitch plus both agent install docs now state that the clone's location is
+  load-bearing — `.mcp.json`, the service units, and self-update bake its absolute path, so relocating it means
+  re-running the wiring, not a plain `mv`.
+- Docs repositioned around preservation as the product: search framed as the access layer, eval metrics and
+  methodology move to docs/search-quality.md, the related-projects survey to docs/related.md; the README stops
+  claiming macOS-only (Linux/systemd is real and CI-tested), counts 8 shipped harnesses (cloth is an operator
+  plugin), links the Ubuntu install path, and documents the embed / mirror / eval verbs.
+
 ## 0.0.6 — 2026-07-21
 
 - The `archive` script is gone; `thread_archive` is the one front door (setup + every verb); reinstall agents to repoint.

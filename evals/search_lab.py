@@ -1,7 +1,7 @@
 """search_lab — score N retrieval configurations against the shipped one.
 
-The experiment bench of the quality ladder (README.md, "Measuring search
-quality"): every module in ``evals/experiments/`` is one configuration of the search
+The experiment bench of the quality ladder (docs/search-quality.md): every
+module in ``evals/experiments/`` is one configuration of the search
 stack — a :class:`thread_archive._retrieval.SearchParams` value or a full
 ``SEARCH`` callable (contract in ``evals/experiments/README.md``). This runner builds
 the checked-in synthetic corpus (``tests/quality_corpus.py``) in a throwaway
