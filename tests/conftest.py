@@ -25,6 +25,7 @@ import gc
 import os
 import shutil
 import tempfile
+import time
 from pathlib import Path
 
 import pytest
@@ -68,6 +69,7 @@ def _isolate_home(monkeypatch):
 @pytest.fixture(autouse=True)
 def _isolate_archive(tmp_path, monkeypatch):
     from thread_archive import _config as config
+    from thread_archive._retrieval import embed_graph, vectors
     from thread_archive._store import _base
     from thread_archive._truth import jsonl_log
 
@@ -95,9 +97,23 @@ def _isolate_archive(tmp_path, monkeypatch):
     monkeypatch.setenv("THREAD_ARCHIVE_COHERENCE", "off")
     _base.close_engine()
     jsonl_log.reset_handles()
+    # The retrieval caches key on id(get_engine()); a closed engine's id can be reused
+    # by the next test's engine, so drop them with the engine or a stale matrix/graph
+    # from a prior test's DB gets served (serve-stale skips the token check within the
+    # cooldown).
+    vectors.reset_matrix_cache()
+    embed_graph.reset_cache()
     yield
+    # Let any in-flight single-flight refresh finish before the engine closes: a daemon
+    # refresh thread that outlives its test would touch a torn-down engine and leak a
+    # connection the late GC blames on an unrelated later test.
+    _deadline = time.monotonic() + 5.0
+    while (vectors._MATRIX_REFRESHING or embed_graph._REFRESHING) and time.monotonic() < _deadline:
+        time.sleep(0.01)
     jsonl_log.reset_handles()
     _base.close_engine()
+    vectors.reset_matrix_cache()
+    embed_graph.reset_cache()
     # sqlite3 and subprocess objects can participate in cycles, delaying their
     # ResourceWarning until an unrelated later test. Collect at the isolation
     # boundary so a leaked resource fails the test that created it. Generation 0

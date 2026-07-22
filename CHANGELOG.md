@@ -14,6 +14,19 @@
   its authoritative `build()` reads the live matrix directly. The per-query non-emptiness check in the semantic
   arm is an O(1) existence probe instead of a full `count(*)` scan.
 
+- The vector pack is now a **base + delta** so the (now background) rebuild is cheap too. Previously any token
+  move rebuilt the whole ~GB base pack — the full blob scan, `np.vstack`, and 814MB write — so continuous
+  embedding rewrote it every few minutes. Now a large base pack (mmap, shared across processes) is reused as
+  long as it's a clean prefix of the store, and the vectors written since ride along as a small in-RAM delta
+  read fresh each build; a `_SplitMatrix` presents the two halves as one matrix to the KNN and the corpus graph.
+  A single new vector costs a delta read, not a base rebuild — the full base pack is repacked only when the
+  delta grows past `_DELTA_MAX_ROWS` (folding it in) or a delete below the base watermark makes the prefix dirty.
+  The token read, base scan, and delta read share one DB snapshot, so a concurrent insert can never land a row
+  in both halves or neither. `index_vectors` drops the pack metas only on an actual in-place upsert (an existing
+  key re-written, invisible to the clean-prefix check), not on pure inserts, so ingest keeps the base reusable.
+  A new parallel stress test asserts that N concurrent `thread_search` calls all serve from the warmed pack —
+  none rebuilds on its request thread — and finish well within a bound.
+
 - The CI `retrieval-gate` row no longer runs a from-log metric sweep: it now runs `retrieval_eval.py
   --probes-only --require-semantic --require-rerank` — model-arm liveness checks only. Click-label MRR is
   incumbent-censored (the gold is what the live ranker surfaced and the agent picked), so a per-commit number
