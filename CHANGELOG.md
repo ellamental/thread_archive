@@ -21,21 +21,6 @@
   and ungated files alike). The per-file `retrieval_eval.py --cases` instrument stays the path for the
   fuller metric set and for scoring a challenger on both sides of a change.
 
-- A corpus-wide behavioral sequence miner now projects conversation and agent-run events into
-  provider-independent and tool-specific alphabets, discovers recurring bounded-gap subsequences,
-  ranks them by support plus lift, and indexes one exact occurrence per supporting thread. The
-  explicit background-priority `thread_archive patterns` command publishes disposable artifacts
-  under `<home>/experiments/patterns/`; `patterns list` and `patterns read` provide compact,
-  pageable JSON exploration for agents without expanding the stable MCP surface. The unlisted
-  `/experiments/patterns` viewer filters and sorts the catalog, links every pattern to a
-  newest-first matching-thread page, and delays its freshness warning until the report is over 24
-  hours old. Tool calls and results are paired into outcomes, near-term same-tool recoveries retain
-  normalized-argument change signals, and errors retain coarse failure categories; attachment and
-  no-op hook telemetry and provider envelope blocks are excluded. Diagnostic patterns receive reserved catalog space, while
-  source concentration and first/latest occurrence dates distinguish cross-provider behavior from
-  instrumentation artifacts in both JSON and the viewer. Page requests never trigger the expensive
-  corpus pass, and all experiment artifacts stay outside the JSONL truth/backup contract.
-
 - Retrieval evaluation now separates first-hit success@k from true recall@k (the fraction of every case's
   grade-2 gold set recovered) instead of calling success "recall." Reports, the operator CLI, the search lab,
   and graph eval expose both; the snapshot gold gate now protects MRR, success@10, true recall@10, and

@@ -63,7 +63,6 @@ CLI_VERBS = {
     "daemon",
     "fix-import",
     "self-update",
-    "patterns",
 }
 
 

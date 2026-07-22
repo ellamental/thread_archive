@@ -101,53 +101,6 @@ const modelStats = {
   ],
 }
 
-const patterns = {
-  version: 1,
-  status: 'ready',
-  report_path: '/tmp/browser-archive/experiments/patterns/report.json',
-  generated_at: now,
-  through_event_id: 3,
-  stale: false,
-  stale_events: 0,
-  config: { thread_types: ['conversation'], min_support: 1, max_length: 3, max_gap: 2, max_patterns: 20 },
-  corpus: { threads: 1, events: 3, sequence_events: 3, thread_types: { conversation: 1 } },
-  vocabulary: {
-    shape: {
-      'user:message': { id: 'user:message', kind: 'user', detail: null, label: 'user message' },
-      'assistant:text': { id: 'assistant:text', kind: 'assistant', detail: null, label: 'assistant text' },
-    },
-    detail: {},
-  },
-  patterns: [
-    {
-      id: 'browser-pattern', abstraction: 'shape', activities: ['user:message', 'assistant:text'],
-      length: 2, support: 1, support_ratio: 1, occurrences: 1, direct_occurrences: 1,
-      lift: 1, interestingness: 0,
-      examples: [{ thread_id: THREAD_ID, title: threadListItem.title, source: 'claude-code', event_id: 11, event_ids: [11, 12] }],
-    },
-  ],
-}
-
-const patternMatches = {
-  status: 'ready',
-  generated_at: now,
-  pattern: patterns.patterns[0],
-  vocabulary: patterns.vocabulary.shape,
-  total: 1,
-  offset: 0,
-  limit: 50,
-  has_more: false,
-  matches: [{
-    thread_id: THREAD_ID,
-    title: threadListItem.title,
-    source: 'claude-code',
-    event_id: 11,
-    event_ids: [11, 12],
-    matched_at: now,
-    thread_updated_at: now,
-  }],
-}
-
 async function json(route: Route, body: unknown, status = 200): Promise<void> {
   await route.fulfill({
     status,
@@ -230,8 +183,6 @@ export async function mockApi(page: Page): Promise<string[]> {
       })
     }
     if (path === '/api/stats') return json(route, stats)
-    if (path === '/api/experiments/patterns') return json(route, patterns)
-    if (path === '/api/experiments/patterns/browser-pattern/matches') return json(route, patternMatches)
     if (path === `/api/stats/model/${MODEL}`) return json(route, modelStats)
 
     unhandled.push(`${route.request().method()} ${path}`)

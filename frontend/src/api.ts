@@ -280,89 +280,6 @@ export interface ModelStats {
   top_sessions: ModelStatsSession[]
 }
 
-// ── experimental mined behavioral patterns ─────────────────────────────────
-export interface PatternActivity {
-  id: string
-  kind: string
-  detail: string | null
-  label: string
-}
-
-export interface PatternExample {
-  thread_id: string
-  title: string | null
-  source: string | null
-  event_id: number
-  event_ids: number[]
-  matched_at?: string
-}
-
-export interface MinedPattern {
-  id: string
-  abstraction: 'shape' | 'detail'
-  activities: string[]
-  length: number
-  support: number
-  support_ratio: number
-  occurrences: number
-  direct_occurrences: number
-  lift: number
-  npmi?: number
-  interestingness: number
-  source_count?: number
-  dominant_source?: string | null
-  dominant_source_ratio?: number
-  source_concentration?: 'single-source' | 'source-skewed' | 'cross-source'
-  sources?: Array<{ source: string; threads: number; ratio: number }>
-  first_matched_at?: string | null
-  last_matched_at?: string | null
-  active_months?: number
-  examples: PatternExample[]
-}
-
-export interface PatternReport {
-  version: number
-  status: 'ready' | 'not_run' | 'invalid'
-  report_path: string
-  error?: string
-  generated_at?: string
-  through_event_id?: number
-  stale: boolean
-  stale_events: number
-  config?: {
-    thread_types: string[]
-    min_support: number
-    max_length: number
-    max_gap: number
-    max_patterns: number
-  }
-  corpus?: {
-    threads: number
-    events: number
-    sequence_events: number
-    thread_types: Record<string, number>
-  }
-  vocabulary?: Record<'shape' | 'detail', Record<string, PatternActivity>>
-  patterns: MinedPattern[]
-}
-
-export interface PatternMatch extends PatternExample {
-  matched_at: string
-  thread_updated_at: string | null
-}
-
-export interface PatternMatches {
-  status: 'ready' | 'not_indexed'
-  generated_at?: string
-  pattern: MinedPattern
-  vocabulary: Record<string, PatternActivity>
-  total: number
-  offset: number
-  limit: number
-  has_more?: boolean
-  matches: PatternMatch[]
-}
-
 async function getJSON<T>(url: string): Promise<T> {
   const r = await fetch(url)
   if (!r.ok) throw new Error(`${r.status}: ${await r.text()}`)
@@ -404,13 +321,6 @@ export const api = {
       '/api/archive-link?id=' + encodeURIComponent(id),
     ),
   stats: () => getJSON<Stats>('/api/stats'),
-  patterns: () => getJSON<PatternReport>('/api/experiments/patterns'),
-  patternMatches: (patternId: string, offset = 0, limit = 50) => {
-    const params = new URLSearchParams({ offset: String(offset), limit: String(limit) })
-    return getJSON<PatternMatches>(
-      `/api/experiments/patterns/${encodeURIComponent(patternId)}/matches?${params.toString()}`,
-    )
-  },
   // Model ids can contain '/' (router models), so the name is a percent-encoded
   // path tail, not a query param — the server decodes it back.
   modelStats: (model: string) =>

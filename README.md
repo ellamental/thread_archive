@@ -145,10 +145,6 @@ thread_archive mirror            # mirror raw harness source stores into <home>/
 thread_archive eval              # search-quality self-checkup on your own archive (read-only; --from-log
                           #   scores real mined queries, --behavior reports usage rates — see
                           #   docs/search-quality.md)
-thread_archive patterns          # mine recurring bounded-gap behavioral sequences across conversations
-                          #   and agent runs into the experimental viewer/catalog
-thread_archive patterns list     # agent-oriented JSON catalog (filter with --query/--lens/--sort)
-thread_archive patterns read ID  # newest-first matching threads + exact event anchors as JSON
 thread_archive redact <thread>   # crypto-shred events (--events for a subset): content out of truth, index,
                           #   search, quotes; the original encrypted under a revocable per-redaction key
 thread_archive unredact <key_id> # restore a redaction from its encrypted bundle (key still in the keyring)
@@ -179,7 +175,6 @@ src/thread_archive/
   _ops/             # backup kit: backup/mirror + restore drill, verify tiers, nightly, health records
   _importers/       # incremental import orchestration
   _retrieval/       # FTS5 + vector search, read reconstruction
-  _patterns.py      # experimental sequence miner + disposable report/match index
   _knowledge/       # knowledge-layer data plane: KgEvent fold + SQL topic reads
   _watcher/         # local-source watcher (self-feeding ingest)
   _mcp/             # the library-native read MCP server
@@ -298,16 +293,6 @@ the watcher's *own* process. One process, one SQLite engine — the viewer reads
 concurrently with the watcher's writes, which WAL makes safe (`_store/_base.py`).
 No second daemon, and no standalone `web` verb: the viewer exists where the
 persistent URL is.
-
-The unlisted **Experiments → Patterns** page at `/experiments/patterns` reads the last
-corpus-wide behavioral mining report. Run `thread_archive patterns` to generate or refresh
-it; the page shows provider-independent behavioral shapes and tool-specific sequences, then
-drills into every matching thread newest-first with exact event anchors. Agents explore the
-same data as JSON with `thread_archive patterns list` and `thread_archive patterns read ID`.
-Mining is an explicit background-priority operation rather than work hidden inside a page
-request. Its `report.json`, `matches.db`, and agent README live under
-`<home>/experiments/patterns/`; all are disposable and outside the truth backup and stable MCP
-surface.
 
 **Runtime is node-free**: the bundle is built ahead of time and committed under
 `_web/static/`, so the install never touches node. Node is a *build*-only tool:

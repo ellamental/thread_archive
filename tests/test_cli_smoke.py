@@ -42,7 +42,7 @@ def test_all_subcommands_present() -> None:
         "migrate", "embed",
         "status", "eval", "backup", "verify", "repair", "restore-drill", "restore",
         "nightly", "coverage", "mirror", "redact", "unredact", "daemon",
-        "fix-import", "self-update", "patterns",
+        "fix-import", "self-update",
     }
 
 
