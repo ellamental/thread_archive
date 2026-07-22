@@ -5,7 +5,7 @@ is the retrieval MCP tools plus the truth format (see the package docstring);
 this CLI is the process seam the service manager, cron, and operators use to run
 the private machinery — ingest (``import``, ``import-export``, ``watch``,
 ``embed``), the backup kit (``backup``, ``verify``, ``restore-drill``,
-``restore``, ``reindex``, ``snapshot``, ``migrate``, ``repair``, ``status``, ``nightly``, ``coverage``, ``patterns``),
+``restore``, ``reindex``, ``snapshot``, ``migrate``, ``repair``, ``status``, ``nightly``, ``coverage``),
 the search-quality self-checkup (``eval`` — read-only, scores retrieval on the
 operator's own data), and the service-agent lifecycle (``daemon``). Verbs may change without
 external notice, but they are *wired into* the service manifests, lab's cron
@@ -950,64 +950,6 @@ def cmd_status(args: argparse.Namespace) -> int:
     return report_status(api.status(home=args.home))
 
 
-def cmd_patterns(args: argparse.Namespace) -> int:
-    """Mine or explore the experimental behavioral-pattern catalog."""
-    import json
-
-    from . import _api as api
-
-    if args.action == "list":
-        print(json.dumps(api.pattern_catalog(
-            home=args.home, query=args.query, lens=args.lens,
-            sort=args.sort, limit=args.limit,
-        ), indent=2, ensure_ascii=False))
-        return 0
-    if args.action == "read":
-        if not args.pattern_id:
-            raise SystemExit("thread_archive patterns read: pattern_id is required")
-        detail = api.pattern_matches(
-            args.pattern_id, home=args.home, offset=args.offset, limit=args.limit,
-        )
-        if detail is None:
-            print(json.dumps({
-                "status": "not_found", "pattern_id": args.pattern_id, "matches": [],
-            }, indent=2))
-            return 1
-        if detail.get("status") == "not_indexed":
-            detail["next"] = "Run `thread_archive patterns` to rebuild the match index."
-        elif detail.get("has_more"):
-            detail["next_offset"] = args.offset + len(detail.get("matches", []))
-        print(json.dumps(detail, indent=2, ensure_ascii=False))
-        return 0
-
-    _self_throttle()
-    thread_types = tuple(dict.fromkeys(t.strip() for t in args.types.split(",") if t.strip()))
-    try:
-        report = api.mine_patterns(
-            home=args.home,
-            thread_types=thread_types,
-            min_support=args.min_support,
-            max_length=args.max_length,
-            max_gap=args.max_gap,
-            max_patterns=args.max_patterns,
-        )
-    except ValueError as exc:
-        raise SystemExit(f"thread_archive patterns: {exc}") from exc
-    if args.json:
-        print(json.dumps(report, indent=2, ensure_ascii=False))
-    else:
-        corpus = report["corpus"]
-        print(
-            f"patterns: mined {corpus['sequence_events']} behavioral events across "
-            f"{corpus['threads']} threads"
-        )
-        print(
-            f"patterns: published {len(report['patterns'])} patterns through event "
-            f"{report['through_event_id']} → {report['report_path']}"
-        )
-    return 0
-
-
 def report_status(st: dict) -> int:
     """Print the operator report for an ``_api.status`` result; return its exit code."""
     print(f"home:    {st['home']}")
@@ -1522,54 +1464,6 @@ def build_parser() -> argparse.ArgumentParser:
     p_status = sub.add_parser("status", help="archive health / paths / counts")
     _add_home_arg(p_status)
     p_status.set_defaults(func=cmd_status)
-
-    p_patterns = sub.add_parser(
-        "patterns",
-        help="experimental behavioral-pattern miner and JSON explorer",
-    )
-    _add_home_arg(p_patterns)
-    p_patterns.add_argument(
-        "action", nargs="?", choices=("mine", "list", "read"), default="mine",
-        help="mine (default), list the catalog, or read matching threads",
-    )
-    p_patterns.add_argument(
-        "pattern_id", nargs="?", help="pattern id for the read action",
-    )
-    p_patterns.add_argument(
-        "--types", default="conversation,system",
-        help="comma-separated thread types to mine (default: conversation,system)",
-    )
-    p_patterns.add_argument(
-        "--min-support", type=int, default=10,
-        help="minimum distinct threads containing a pattern (default: 10)",
-    )
-    p_patterns.add_argument(
-        "--max-length", type=int, default=3,
-        help="longest pattern, 2–5 activities (default: 3)",
-    )
-    p_patterns.add_argument(
-        "--max-gap", type=int, default=2,
-        help="events a pattern may skip between activities, 0–8 (default: 2)",
-    )
-    p_patterns.add_argument(
-        "--max-patterns", type=int, default=240,
-        help="maximum patterns persisted across both abstractions (default: 240)",
-    )
-    p_patterns.add_argument("--query", default="", help="list: filter activity/tool labels")
-    p_patterns.add_argument(
-        "--lens", choices=("all", "shape", "detail"), default="all",
-        help="list: all patterns, behavioral shapes, or tool-specific detail",
-    )
-    p_patterns.add_argument(
-        "--sort", choices=("interestingness", "support", "lift"),
-        default="interestingness", help="list: result ordering",
-    )
-    p_patterns.add_argument(
-        "--limit", type=int, default=50, help="list/read: rows returned (maximum 100)",
-    )
-    p_patterns.add_argument("--offset", type=int, default=0, help="read: match-page offset")
-    p_patterns.add_argument("--json", action="store_true", help="print the complete report")
-    p_patterns.set_defaults(func=cmd_patterns)
 
     p_eval = sub.add_parser(
         "eval",

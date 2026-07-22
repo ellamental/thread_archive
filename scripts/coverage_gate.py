@@ -30,7 +30,6 @@ FLOORS = {
     "_knowledge": 90.0,
     "_mcp": 92.0,
     "_ops": 90.0,  # the durability kit
-    "_patterns": 80.0,  # explicit sequence-mining batch + persisted viewer report
     "_providers": 90.0,
     "_repair": 90.0,
     "_retrieval": 94.0,
