@@ -56,14 +56,16 @@
   mined case files (which carry `until`, not `snapshot_id`) are invalid under the new binding and must be
   re-mined against a snapshot.
 - Topic-based gold mining is now a committed script (`evals/topic_mine_gold.py`) instead of an ad-hoc agent
-  process. It mints golds from a curated topic dense with confounds: a survey `claude` agent maps the topic's
-  facets and authors intent-tagged queries (the one facet each intends, plus the look-alike facets a lazy ranker
-  would surface), then one independent labeler agent per query — blind to the survey agent's thread ids —
-  sweeps the frozen snapshot and grades a candidate pool (2=intended, 1=partial, 0=confound). Snapshot-bound like
-  the query miner (requires a snapshot home, stamps each case with `snapshot_id`), resolves a topic by id or
-  unique name, and writes the eval's `--cases` format (`topic-cases-<slug>.jsonl`) plus a facet-map/intent detail
-  sidecar. The reusable headless-agent runner is factored into `retrieval_mine_gold.run_claude`, shared by both
-  miners.
+  process. It mints golds from a curated topic dense with confounds in two agent stages: a survey `claude` agent
+  searches the topic, decides how many *angles* it warrants (its own call — no target count), and authors one
+  query per angle with the intent, the confound subjects, and the candidate threads its searches found; then one
+  labeler agent per angle takes those candidates as a starting pool, verifies and expands them with its own
+  searches to find everything relevant, and grades a comprehensive pool (2=intended, 1=partial, 0=confound). The
+  labeler builds on the survey's findings rather than rediscovering blind — the goal is the most complete gold
+  set, and the labeler isn't the search system under test, so nothing leaks. Snapshot-bound like the query miner
+  (requires a snapshot home, stamps each case with `snapshot_id`), resolves a topic by id or unique name, and
+  writes the eval's `--cases` format (`topic-cases-<slug>.jsonl`) plus a facet-map/intent detail sidecar. The
+  reusable headless-agent runner is factored into `retrieval_mine_gold.run_claude`, shared by both miners.
 - Retrieval closes the last nine reality-mechanism goldens (formerly expected failures). The cross-thread
   duplicate fold is now a *near*-duplicate fold — `rank._norm_content` folds runs of digits to one placeholder
   before comparing, so a flood of threads differing only by a counter or run index (routine ops, re-asked

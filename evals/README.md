@@ -62,12 +62,13 @@ archive (BEIR and the lab build throwaway homes and never touch it).
   against them for free and deterministically, and refuses cases once the
   snapshot's id no longer matches (the corpus moved; re-mine).
 - **`topic_mine_gold.py`** — mints golds from a curated **topic** dense with
-  confounds instead of from real queries. A survey `claude` agent maps the
-  topic's facets and authors queries tagged with the one facet they intend and
-  the look-alike facets a lazy ranker would drag in; one independent labeler
-  agent per query, **blind** to the survey agent's thread ids, sweeps the frozen
-  snapshot and grades a pool (2=intended, 1=partial, 0=confound). Same snapshot
-  binding as the query miner; writes `topic-cases-<slug>.jsonl`.
+  confounds instead of from real queries. A survey `claude` agent searches the
+  topic, decides how many *angles* it warrants (its own call), and authors one
+  query per angle with the intent, the confounds, and the candidate threads it
+  found; then one labeler agent per angle builds on those candidates — verifying
+  and expanding them with its own searches — and grades a comprehensive pool
+  (2=intended, 1=partial, 0=confound). Same snapshot binding as the query miner;
+  writes `topic-cases-<slug>.jsonl`.
 - **`graph_eval.py`** — does the corpus-native embedding graph earn its
   ranking signal? Regression check for the shipped coherence re-rank, and the
   gate any new graph lever must pass.
@@ -93,9 +94,10 @@ bench detects damage.
     query reads the originating session for intent, sweeps the frozen
     snapshot with its own reformulated searches, reads candidates, and writes
     a graded, corpus-grounded case.
-  - *Topic-mined* (`topic_mine_gold.py`): a survey agent maps a curated
-    topic's facets and authors intent-tagged queries; one blind labeler agent
-    per query grades a pool over the snapshot (`topic-cases-<slug>.jsonl`).
+  - *Topic-mined* (`topic_mine_gold.py`): a survey agent searches a curated
+    topic, decides the angles it warrants, and authors one query per angle with
+    the candidates it found; one labeler agent per angle builds on those and
+    grades a pool over the snapshot (`topic-cases-<slug>.jsonl`).
 
   Each case is bound by `snapshot_id` to the corpus snapshot it was mined
   against (`thread_archive snapshot`; point `THREAD_ARCHIVE_HOME` at it), and
