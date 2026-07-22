@@ -61,33 +61,32 @@ point — whatever their value for browsing and curation, ranked search does
 not measurably ride on them. (An earlier title-as-query eval said otherwise
 on every count; its queries were LLM distillations of the threads they named,
 and it flattered every layer that searched other distillations. It survives
-in the harness as a quick local probe; CI runs a single lean gate that
-verifies both model arms are alive directly, with no metric run — per-commit
-click-label numbers wear the shape of a quality score without being one, so
-quality is measured against the snapshot-bound gold files instead.)
+in the harness as a quick local probe; CI runs a lean arm-liveness gate (no
+metric) alongside a gold-file regression floor. The click-label numbers stay off
+the per-commit path — censored by the incumbent ranker, they wear the shape of a
+quality score without being one — but the snapshot-bound gold files, grounded and
+graded, ride CI as a **one-way floor** (`retrieval-gold-gate`) that fails only on
+a drop below a calibrated baseline, never displaying a per-commit quality
+number.)
 
 ## Beyond the click labels
 
-The same trail powers three more instruments, each aimed at a limit of the
+The same trail powers more instruments, each aimed at a limit of the
 click labels. Any harness run can append its numbers to a trend ledger
 (`--trend-out` → `~/.thread/archive/retrieval-trend.jsonl`), so deliberate
 measurements accumulate into a time series, and `--mined-after` holds out
 only the cases mined after a ranking change shipped. `--behavior` reports zero-label usage
 signals — for every search the trail shows whether the agent opened a
 result, searched again, or walked away — rates that move only when something
-real moves. And `evals/retrieval_judge.py` runs a sample of the mined
-queries through the production stack and has a headless `claude` grade every
-top-10 thread, yielding graded precision, a calibration of the click labels
-themselves, and explicit credit for relevant results the click protocol can
-only score as misses. The judge grades only what production returned, from
-snippets; `evals/retrieval_mine_gold.py` goes the rest of the way — one
-headless `claude` *agent* per sampled query reads the originating session
-for intent, sweeps the corpus with its own reformulated searches (bounded to
-the corpus as of the original search's date), reads candidates, and writes a
-corpus-grounded gold case. The output is an eval `--cases` file whose
-per-case date bound the scoring search honors, so the one-time mining spend
-buys recall-capable, deterministic labels every later eval run scores
-against for free.
+real moves. And the gold miners produce the labels clicks can't:
+`evals/retrieval_mine_gold.py` runs one headless `claude` *agent* per
+sampled query — it reads the originating session for intent, sweeps a frozen
+corpus snapshot with its own reformulated searches, reads candidates, and
+writes a corpus-grounded, graded gold case — and `evals/topic_mine_gold.py`
+mints graded cases from a curated topic dense with confounds. Both write
+snapshot-bound eval `--cases` files, so the one-time mining spend buys
+recall-capable, deterministic labels every later eval run scores against for
+free.
 
 ## The quality ladder
 
@@ -100,8 +99,8 @@ is the working manual:
 |---|---|---|---|---|
 | 0 | `tests/test_search_quality.py` (in every pytest run) | checked-in synthetic corpus (`tests/quality_corpus.py`), lexical stack | seconds | every change |
 | 1 | `pytest -m quality_models` | same corpus, real embedding + rerank models | minutes | touching the model arms |
-| 2 | CI `retrieval-gate` row (`retrieval_eval.py --probes-only`) | live archive, model-arm liveness probes only | ~a minute | every commit, via thread-ci |
-| 3 | `retrieval_eval.py` by hand, `graph_eval.py`, `retrieval_judge.py`, `search_arena.py`, `--behavior` | live archive | minutes–hours | evaluating a deliberate ranking change |
+| 2 | CI `retrieval-gate` (arm-liveness probes) + `retrieval-gold-gate` (gold-file regression floors) | live archive + the golds' frozen snapshot | ~a minute | every commit, via thread-ci |
+| 3 | `retrieval_eval.py` by hand, `graph_eval.py`, `--behavior` | live archive | minutes | evaluating a deliberate ranking change |
 | 3½ | `retrieval_eval.py --cases` on agent-mined golds (`retrieval_mine_gold.py` to mint them) | live archive, corpus-grounded labels | seconds to score; agent-minutes per mined case | scoring against grounded labels; mining is an occasional cadence |
 | 4 | `pytest -m beir` | external BEIR benchmark | tens of minutes | calibrating against published baselines |
 
@@ -110,7 +109,7 @@ and `run_cases(search=...)` scores any candidate ranker against the incumbent
 on identical cases — the A/B seam the higher tiers then validate on real
 usage.
 
-## The search lab and the arena
+## The search lab
 
 That seam has a front door: **the search lab**. Every tunable of the pipeline
 (ranking weights, decay constants, pool sizes) lives in one object,
@@ -124,16 +123,12 @@ leaderboard with deltas: seconds for the lexical stack, `--models` for the
 fused pipeline. The corpus carries adversarial structure (a TF-spam paste
 bm25 loves, a recency pair whose old twin is the lexically stronger match)
 precisely so configurations *separate* — stripping the weighted ranker
-measurably loses. A winner here is a direction, not a verdict; promote it by
-re-measuring on tiers 2–3 before changing the defaults in
-`_retrieval/params.py`.
+measurably loses. A winner here is a direction, not a verdict.
 
-The promotion step has its own instrument: **the arena**
-(`evals/search_arena.py`). It duels a challenger from `evals/experiments/`
-against the shipped configuration on real mined queries — both rankings for
-each query go to a headless `claude` judge, side order randomized, labels
-blind — and reports challenger wins/losses/ties with an exact sign test.
-Identical rankings tie without spending a judge call, so cost scales with how
-much the configurations actually disagree. Where the lab says "this direction
-looks good on the synthetic corpus," the arena says "on real usage, a judge
-prefers it" — the bar to clear before touching the defaults.
+The promotion bar is the snapshot-bound gold files: score the challenger and
+the shipped configuration with `retrieval_eval.py --cases` on every minted
+gold file, each over its own corpus snapshot, on both sides of the change —
+tuning against one file and confirming against a held-out one — before
+changing the defaults in `_retrieval/params.py`. Where the lab says "this
+direction looks good on the synthetic corpus," the gold delta says "on
+corpus-grounded labels from real usage, it measures better."

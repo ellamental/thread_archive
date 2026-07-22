@@ -49,8 +49,7 @@ query-shape (so a lexical regression can't hide behind semantic wins).
 ``--mined-after`` restricts the log protocols to trail events after a date
 (the time-based holdout); ``--trend-out`` appends any run's report as one
 JSONL row at ~/.thread/archive/retrieval-trend.jsonl, turning point
-measurements into a time series (LLM-judged relevance grades from
-evals/retrieval_judge.py land beside it). ``--probes-only`` skips the metric
+measurements into a time series. ``--probes-only`` skips the metric
 run entirely and exits after the ``--require-*`` arm-liveness probes — the CI
 gate's mode: the gate asserts the model arms are alive and leaves quality
 measurement to the snapshot-bound gold files.
@@ -85,8 +84,8 @@ from thread_archive import _api as api  # noqa: E402
 
 # The scoring engine lives in the package so the shipped `thread_archive eval` command
 # and this dev bench score off one code path. Re-exported at module scope
-# because the sibling harnesses (retrieval_mine_gold, retrieval_judge,
-# search_arena, graph_eval) and tests/test_retrieval_eval.py load this file by
+# because the sibling harnesses (retrieval_mine_gold, topic_mine_gold,
+# graph_eval) and tests/test_retrieval_eval.py load this file by
 # path and reach these names as attributes on it.
 from thread_archive._eval import (  # noqa: E402,F401
     EXCLUDE_META,

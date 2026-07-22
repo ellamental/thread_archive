@@ -1168,9 +1168,9 @@ def cmd_eval(args: argparse.Namespace) -> int:
     the query — works on day one), `from-log` (real thread_search→thread_read
     pairs mined from the tool-use trail — meaningful once search has been used),
     and `behavior` (zero-label click/reformulate/abandon rates). The deeper
-    tiers of the quality ladder (LLM judges, experiment arena, BEIR) stay in the
-    dev bench under evals/ — they answer "should we change ranking," not "does
-    search work on my data."
+    tiers of the quality ladder (agent-mined gold cases, the experiment lab,
+    BEIR) stay in the dev bench under evals/ — they answer "should we change
+    ranking," not "does search work on my data."
     """
     from . import _api as api
     from . import _eval
