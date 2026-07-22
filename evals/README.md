@@ -14,7 +14,7 @@ mining) and the MRR/recall loop — lives in the package at
 `thread_archive._eval`, so the shipped `thread_archive eval` command (the operator's
 read-only self-checkup over their own archive) and this dev bench score off one
 code path. The bench is the *rest* of the ladder: the CI gate, the experiment
-runner, and the LLM-judged tiers that answer "should we change ranking," none
+runner, and the gold-mining tiers that answer "should we change ranking," none
 of which ship.
 
 ## The quality ladder
@@ -26,8 +26,8 @@ Fastest tier first — climb until the evidence matches the stakes.
 |---|---|---|---|---|
 | 0 | `tests/test_search_quality.py` (in every pytest run) | checked-in synthetic corpus (`tests/quality_corpus.py`), lexical stack | seconds | every change |
 | 1 | `pytest -m quality_models` | same corpus, real embedding + rerank models | minutes | touching the model arms |
-| 2 | CI `retrieval-gate` row (`retrieval_eval.py --probes-only`) | live archive, model-arm liveness probes only | ~a minute | every commit, via thread-ci |
-| 3 | `retrieval_eval.py` by hand, `graph_eval.py`, `retrieval_judge.py`, `search_arena.py`, `--behavior` | live archive | minutes–hours | evaluating a deliberate ranking change |
+| 2 | CI `retrieval-gate` (arm-liveness probes) + `retrieval-gold-gate` (gold-file regression floors) | live archive + the golds' frozen snapshot | ~a minute | every commit, via thread-ci |
+| 3 | `retrieval_eval.py` by hand, `graph_eval.py`, `--behavior` | live archive | minutes | evaluating a deliberate ranking change |
 | 3½ | `retrieval_eval.py --cases` on agent-mined golds (`retrieval_mine_gold.py` to mint them) | a frozen corpus snapshot, corpus-grounded labels | seconds to score; agent-minutes per mined case | scoring against grounded labels; mining is an occasional cadence |
 | 4 | `pytest -m beir` | external BEIR benchmark | tens of minutes | calibrating against published baselines |
 
@@ -47,13 +47,6 @@ archive (BEIR and the lab build throwaway homes and never touch it).
   `experiments/` against the shipped defaults on the synthetic corpus and
   prints a leaderboard. Seconds by default; `--models` for the fused
   pipeline. A win here is a direction, not a verdict.
-- **`search_arena.py`** — the promotion instrument. Duels a challenger from
-  `experiments/` against the shipped configuration on real mined queries,
-  blind, side-randomized, judged by a headless `claude`; sign test on the
-  wins. The bar to clear before changing `_retrieval/params.py` defaults.
-- **`retrieval_judge.py`** — pointwise LLM grading of what production search
-  returns for real queries: graded precision, click-label calibration, and
-  credit for relevant results the click protocol scores as misses.
 - **`retrieval_mine_gold.py`** — spends one `claude` agent per query to mint
   corpus-grounded gold cases (`~/.thread/archive/judged-cases.jsonl`) against a
   frozen corpus snapshot (`thread_archive snapshot`; point `THREAD_ARCHIVE_HOME`
@@ -75,8 +68,8 @@ archive (BEIR and the lab build throwaway homes and never touch it).
 - **`beir_eval.py`** — the external yardstick: the real pipeline over a public
   IR benchmark, next to published BM25/dense baselines. Answers "are the
   components embarrassing?", nothing about archive-domain quality.
-- **`experiments/`** — configurations-as-code for the lab and arena; the
-  contract is in its README.
+- **`experiments/`** — configurations-as-code for the lab; the contract is in
+  its README.
 
 ## Taking a baseline (measure → change → measure)
 
@@ -107,12 +100,12 @@ bench detects damage.
 - **Tier 0** is two shapes, both in every pytest run. The metric floors
   (`search_lab.py` / `tests/test_search_quality.py`) are near-saturated by
   design (MRR ≈ 1.0 on the synthetic corpus) — they can only fall: a
-  breakage detector, not an improvement meter. The mechanism goldens
-  (`tests/test_reality_mechanisms.py`) each reproduce, on a synthetic corpus,
-  the failure shape behind a real incident and pin the property that keeps it
-  fixed (recall a gold the flood would bury, reach an answer that lives only in
-  tool/thinking content) — regression guards, run every pytest pass;
-  `pytest tests/test_reality_mechanisms.py -q` re-checks them in seconds.
+  breakage detector, not an improvement meter. The mechanism contracts
+  (`tests/test_reality_mechanisms.py`) pin deterministic properties of the
+  pipeline's machinery — content types are indexed at all, the MCP default
+  scope widens to tool/thinking content, reindex preserves what was findable,
+  the cross-encoder's gate/window/boundary code paths behave — not ranking
+  preferences; ranking quality belongs to the gold files.
 - **From-log numbers are alarms, not baselines.** The `--from-log` protocol
   mines click labels from the live trail: the gold is whatever thread the
   agent opened, which is a subset of what search surfaced *that day*. The
@@ -127,10 +120,23 @@ bench detects damage.
   not a labeler.
 
 **Claim discipline.** Green tier 0 plus a quiet CI gate license exactly one
-claim: "search didn't break." The claim "search improved" requires a gold-file
-delta scored on both sides of the change, and changing shipped defaults
-additionally requires the arena. Without those runs, report the change as
+claim: "search didn't break." The `retrieval-gold-gate` CI row makes that "didn't
+break" grounded rather than synthetic — it scores the gold files over their
+frozen snapshot on every commit and fails on a drop below a calibrated floor
+(`scripts/retrieval_gold_gate.py`) — but it is a **one-way floor, not a displayed
+score**: it holding means the ranking didn't regress past the baseline, never
+that it improved. The click-label protocols stay off the per-commit path for the
+opposite reason (they are censored by the incumbent, so a per-commit click-MRR
+invites being misread as quality); the gold files can ride CI precisely because
+they are grounded and gated as a floor. The claim "search improved" still
+requires a gold-file delta scored on both sides of the change — every minted
+file, each over its own snapshot. Without those runs, report the change as
 unverified — not as an improvement.
+
+**Hold-out discipline.** A gold file tuned against repeatedly stops being a
+measurement and becomes a training set. Keep at least two independently mined
+files and tune against one while the other stays untouched until the
+confirming run; re-mine on a cadence when a file's snapshot goes stale.
 
 ## Changing ranking, start to finish
 
@@ -139,24 +145,30 @@ unverified — not as an improvement.
 2. `search_lab.py` (and `--models` if the model arms are involved) — does the
    direction hold on the bench?
 3. `retrieval_eval.py --cases` on every minted gold file (each over its own
-   snapshot) — the delta that can actually credit the change — and, for
-   promotion-grade evidence, `search_arena.py --experiment <name>` on real
-   queries.
+   snapshot) — the delta that can actually credit the change. Tune against
+   one file; confirm against the held-out one.
 4. Promote: fold the winner into `_retrieval/params.py` defaults, delete or
    keep the experiment as documentation, and let tier 0/2 ratchet the new
    shape.
 
 ## Cost and hygiene
 
-- `retrieval_judge.py`, `search_arena.py`, and `retrieval_mine_gold.py` spend
-  real tokens (headless `claude` calls; `--sample` bounds them). Everything
-  else is free.
-- Judged/mined output quotes real usage — dumps and ledgers live under
-  `~/.thread/archive/` (`retrieval-trend.jsonl`, `retrieval-judge.jsonl`,
-  `judged-cases.jsonl`), never in the repo. The synthetic corpus is the one
-  exception: no real data, so it's checked in.
+- `retrieval_mine_gold.py` and `topic_mine_gold.py` spend real tokens
+  (headless `claude` calls; `--sample` bounds them). Everything else is free.
+- Mined output quotes real usage — dumps and ledgers live under
+  `~/.thread/archive/` (`retrieval-trend.jsonl`, `judged-cases.jsonl`,
+  `topic-cases-<slug>.jsonl`), never in the repo. The synthetic corpus is the
+  one exception: no real data, so it's checked in.
 - The fast tests guarding these harnesses live in `tests/`
-  (`test_retrieval_eval.py`, `test_search_lab.py`, `test_search_arena.py`,
-  `test_retrieval_judge.py`, `test_retrieval_mine_gold.py`,
-  `test_graph_eval.py`, `test_beir_calibration.py`) and run in every pytest
-  pass — the lab stays runnable even when nobody has tuned search in months.
+  (`test_retrieval_eval.py`, `test_search_lab.py`,
+  `test_retrieval_mine_gold.py`, `test_graph_eval.py`,
+  `test_beir_calibration.py`, `test_retrieval_gold_gate.py`) and run in every
+  pytest pass — the lab stays runnable even when nobody has tuned search in
+  months.
+- The `retrieval-gold-gate` CI row (`scripts/retrieval_gold_gate.py`) scores the
+  gold files over their snapshot on every commit as a regression floor. It runs
+  where the archive and the snapshot live (same as the arm-probe row); on a box
+  without the snapshot, or while a gold file is mid-re-mine, the affected file is
+  skipped, not failed. Its floors are calibrated a few points under measured —
+  raise a floor when a shipped change lifts a number and holds; add a floor entry
+  for a newly minted file (it rides ungated until you do).

@@ -993,10 +993,10 @@ def search(
         " WHERE " + " AND ".join(where)
     )
     with get_session() as s:
-        rows = s.execute(sql, params).mappings().all()
+        hit_rows = s.execute(sql, params).mappings().all()
 
     hydrated: list[tuple[float, EventHit]] = []
-    for r in rows:
+    for r in hit_rows:
         sim = sim_by.get((r["event_id"], r["content_type"]))
         if sim is None:
             continue

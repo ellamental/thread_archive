@@ -1,9 +1,9 @@
 """Agent-mined gold labels — corpus-grounded relevance cases, mined once, scored free.
 
-The click labels (``retrieval_eval.py --from-log``) are incumbent-shaped and
-the shallow judge (``retrieval_judge.py``) grades only what production search
-already returned, from snippets alone. This harness spends real agent work to
-produce labels neither can: for each sampled real query it runs one headless
+The click labels (``retrieval_eval.py --from-log``) are incumbent-shaped:
+they can only credit what production search already surfaced. This harness
+spends real agent work to produce labels clicks can't: for each sampled real
+query it runs one headless
 ``claude`` agent that reads the originating session for intent, sweeps the
 corpus with its own reformulated searches, reads the strongest candidates,
 and decides which thread(s) the searcher actually wanted. The output is a

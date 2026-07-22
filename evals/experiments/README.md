@@ -40,20 +40,11 @@ defaults.
 
 ## Promoting
 
-The promotion instrument is `evals/search_arena.py`: it duels a
-configuration from this directory against the shipped one on **real mined
-queries**, showing both rankings — blind, side order randomized — to a
-headless `claude` judge, and reports wins/losses/ties with a sign test.
-Identical rankings tie for free; judge calls are spent only where the configs
-disagree.
-
-```
-.venv/bin/python evals/search_arena.py --experiment heavy_recency
-.venv/bin/python evals/search_arena.py --experiment no_phrase,flat_content_types --sample 30
-```
-
-A challenger that wins in the arena (and holds up on `evals/retrieval_eval.py
---from-log`) has earned a defaults change.
+The promotion bar is the snapshot-bound gold files: score the challenger and
+the shipped configuration with `evals/retrieval_eval.py --cases` on **every
+minted gold file, each over its own corpus snapshot**, on both sides of the
+change. A challenger that improves the gold-file delta (and doesn't collapse
+`--from-log`, read as an alarm only) has earned a defaults change.
 
 `tests/test_search_lab.py` keeps every module here loadable and
 contract-conformant on every pytest run.

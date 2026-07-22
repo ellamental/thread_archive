@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+- The eval bench sheds the instruments the snapshot-bound gold files supersede. `evals/retrieval_judge.py`
+  (pointwise LLM grading of production results — the gold miners now produce graded, corpus-grounded labels
+  directly) and `evals/search_arena.py` (blind pairwise LLM duels as the defaults-promotion bar — the promotion
+  bar is now a gold-file delta scored on both sides of the change, tuned against one file and confirmed against
+  a held-out one) are deleted, along with their guard tests. `tests/test_reality_mechanisms.py` is pruned from
+  26 tests to 11: the 15 ranking-preference orderings on synthetic flood corpora go (they were minted from a
+  brainstormed edge-case list on the theory that making them pass would improve real search; when the code was
+  changed to pass them, measured recall didn't move, and each hard ordering assertion constrained future
+  ranking changes) — the 11 deterministic mechanism contracts stay (content-type indexing, MCP default-scope
+  widening, reindex durability/stability, semantic scope filtering, cross-encoder gate/window/boundary
+  plumbing). Ranking *quality* is now measured in exactly one place: the gold case files. First baseline over
+  snapshot `9519fc4518e13ee7`: judged-cases (21) MRR 0.441 / R@5 0.619 / R@10 0.857 / nDCG@10 0.510;
+  topic-cases-suicide (7) MRR 0.683 / R@5 1.000 / nDCG@10 0.641. `beir_eval.py` stays as the external yardstick.
+
 - Semantic search no longer rebuilds the corpus vector pack on the request thread. The KNN matrix cache is
   keyed on a whole-store validity token, so continuous background embedding invalidated it every few minutes;
   the next query then read the full ~GB blob table, `np.vstack`'d the matrix, and wrote the pack — inline — and,
@@ -35,6 +49,18 @@
   cadence gone, the nightly's retrieval-trend ledger watcher (staleness + sliding-median alerts) is removed;
   the ledger remains, fed by explicit `--trend-out` runs. `--from-log` stays available as a hand-run collapse
   alarm and as the sampling frame of real query shapes for the gold miner.
+
+- New CI `retrieval-gold-gate` row puts the grounded baseline on the per-commit path — the piece the probes-only
+  `retrieval-gate` row deliberately left out. `scripts/retrieval_gold_gate.py` scores every snapshot-bound gold
+  case file over its frozen snapshot (`~/.thread/archive-snap`) and fails the row on a drop below a calibrated
+  floor. It is a **one-way floor, not a displayed score**: the click-label protocols stay off the per-commit path
+  because they are incumbent-censored, but the gold files — grounded and graded — can ride CI as a regression
+  ratchet, answering only "did search break below the baseline," never "is search good" (that stays a deliberate
+  gold-delta measurement). A stale or absent fixture (snapshot reclaimed, or a gold mid-re-mine) skips that file
+  rather than failing, so a maintenance window can't wedge the commit gate red; a freshly minted file rides
+  ungated until it gets a floor. Initial floors, a few points under the first baseline over snapshot
+  `9519fc4518e13ee7`: judged-cases MRR 0.40 / R@10 0.80 (measured 0.441 / 0.857), topic-cases-suicide MRR 0.58 /
+  R@10 0.85 (measured 0.683 / 1.000), topic-cases-frustration MRR 0.50 / R@10 0.70 (measured 0.608 / 0.857).
 
 - New `thread_archive snapshot <dest>` verb freezes the corpus into a self-contained, immutable archive home:
   it copies the JSONL truth (drain-consistent, under the truth-write lock) and materializes `index.db` beside it,
