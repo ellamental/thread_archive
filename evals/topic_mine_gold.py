@@ -5,18 +5,20 @@ ran*; this one starts from a curated **topic** — a subject dense with near-mis
 (a large, confound-rich topic like "suicide": lived experience vs. bot-death
 grief vs. AI right-to-die vs. self-deprecation, all sharing vocabulary). A topic
 that hard is where ranking earns or loses its keep, and the trail rarely supplies
-enough real queries against it. So two agents manufacture the benchmark:
+enough real queries against it. So two stages of agents manufacture the benchmark:
 
-1. **Survey** (one agent): reads the topic's members, maps its facets, and
-   authors queries — each tagged with the single facet it *intends* and the
-   confound facets a lazy ranker would drag in instead. The queries carry
-   intent, not answers.
-2. **Label** (one agent per query, independent and **blind** to the survey
-   agent's thread ids): sweeps the frozen corpus with its own searches, reads
-   candidates, and grades a pool — 2 = answers the intended facet, 1 = partial /
-   related, 0 = a confound. Gold is the grade-2 set. Blindness is the point: the
-   survey agent's picks never leak into the labels, so a case isn't just "did
-   search find what agent A already had in mind."
+1. **Survey** (one agent): searches the topic to understand it, decides the
+   *angles* worth testing — as many as the topic genuinely warrants, its own
+   call, no target count — and authors one query per angle. For each angle it
+   records the intent, the confound subjects to exclude, and the candidate
+   threads its own searches found.
+2. **Label** (one agent per angle): takes the survey's candidates for that angle
+   as a starting pool, verifies and *expands* them with its own searches to find
+   everything relevant the survey missed, and grades a comprehensive pool —
+   2 = answers the intent, 1 = partial / related, 0 = a confound. Gold is the
+   grade-2 set. The labeler builds on the survey's work rather than rediscovering
+   blind: the goal is the most complete gold set, and the survey's findings are
+   signal (the labeler isn't the search system under test, so nothing leaks).
 
 Snapshot binding, same as the query miner: run against a frozen corpus snapshot
 (``thread_archive snapshot``; point ``THREAD_ARCHIVE_HOME`` at it), and the
@@ -24,16 +26,16 @@ topic must exist in it. Each case records the snapshot's ``snapshot_id``;
 ``retrieval_eval.py --cases`` scores over that same snapshot and refuses cases
 once the id no longer matches (the corpus moved; re-mine). Output is the eval's
 ``--cases`` format with a graded pool for nDCG, plus a detail sidecar carrying
-the facet map and per-query intent/reasons.
+the facet map and per-angle intent/reasons.
 
-Costs real tokens (one survey agent + one labeler per query — minutes each) and
+Costs real tokens (one survey agent + one labeler per angle — minutes each) and
 requires the ``claude`` CLI. Read-only against the archive. Case files quote
 real usage — keep them out of the repo; they live beside the trend ledgers in
 ``~/.thread/archive/``.
 
     thread_archive snapshot ~/.thread/archive-snap
     export THREAD_ARCHIVE_HOME=~/.thread/archive-snap
-    .venv/bin/python evals/topic_mine_gold.py --topic suicide --sample 8
+    .venv/bin/python evals/topic_mine_gold.py --topic suicide
     .venv/bin/python evals/retrieval_eval.py --cases ~/.thread/archive/topic-cases-suicide.jsonl
 """
 
@@ -68,17 +70,27 @@ from thread_archive._ops.snapshot import read_snapshot_id  # noqa: E402
 DEFAULT_MODEL = mine_gold.DEFAULT_MODEL
 
 # How many of the topic's members to hand the survey agent inline (id + title),
-# highest-cited first; it has search/read to reach the rest. Enough to ground a
-# facet map without pasting a thousand-member topic into the prompt.
+# highest-cited first; it has search/read to reach the rest. Enough to ground the
+# survey without pasting a thousand-member topic into the prompt.
 SURVEY_MEMBER_SAMPLE = 80
+
+# Runaway guard: never spawn more than this many labeler agents from one survey,
+# whatever it authors. A cap on cost, not a target — the survey decides how many
+# angles the topic actually warrants, below this bound.
+MAX_ANGLES = 20
+
+# Cap on the survey's candidate threads shown to a labeler per angle — bounds the
+# label prompt; the labeler expands past them with its own searches anyway.
+LABEL_CANDIDATE_CAP = 30
 
 DEFAULT_CASES_TEMPLATE = "~/.thread/archive/topic-cases-{slug}.jsonl"
 
 _METHOD = (
-    "topic-driven: one survey agent mapped corpus facets and authored queries "
-    "from intent; one independent labeler agent per query swept the corpus and "
-    "graded a candidate pool (2=intended, 1=partial, 0=confound). Labelers were "
-    "not shown the survey agent's thread ids."
+    "topic-driven: one survey agent searched the topic, decided the angles it "
+    "warrants (as many as are genuinely distinct), and authored one query per "
+    "angle with the candidate threads it found; then one labeler agent per query "
+    "built on the survey's candidates — verifying and expanding them with its own "
+    "searches — and graded a comprehensive pool (2=intended, 1=partial, 0=confound)."
 )
 
 _SURVEY_PROMPT = """You are designing a search-quality benchmark from one curated \
@@ -92,55 +104,66 @@ the {n_shown} most-cited, as `thread_id  title`:
 
 {members}
 
-You can explore the whole frozen corpus (not just this topic) to understand the \
-subject and its look-alikes (run via Bash; read-only):
+Explore the whole frozen corpus (not just this topic) to understand the subject \
+and its look-alikes (run via Bash; read-only):
 
   {tool} search "<query>" [--limit N] [--rerank on|off|auto]
   {tool} read <thread_id> [--mode ends|chat|user|full|last] [--offset N] [--max-chars N]
 
-Your job, in two parts:
+Your job:
 
-1. Map the topic's FACETS — the distinct sub-subjects it contains, and the \
-neighboring subjects that share its vocabulary but are NOT it (its confounds). \
-Read enough members and search widely enough to find the confounds; the whole \
-point of this topic is that near-misses look relevant.
+1. Search widely around this topic to understand it — its distinct sub-subjects \
+and the neighboring subjects that share its vocabulary but are NOT it (near-misses \
+look relevant; that is the point of testing on this topic).
 
-2. Author QUERIES a real user might type. For each, name the ONE facet it \
-intends and the confound facets a careless ranker would surface instead. Write \
-queries that genuinely discriminate — a query whose intended facet and confounds \
-are easy to tell apart teaches nothing. Aim for {n_queries} queries spread \
-across the facets.
+2. Decide the ANGLES worth testing — each a distinct way a real user would come \
+at this topic, and author ONE search query per angle. Use as many angles as the \
+topic genuinely warrants: a broad, confound-rich topic supports more, a narrow \
+one fewer. Don't pad with near-duplicate queries; don't collapse real \
+distinctions. (You are the one who decides how many — there is no target count.)
+
+3. For each angle, RECORD the threads you found that are relevant to it — their \
+ids plus a short note. These become the starting pool for the deeper per-angle \
+labeling pass, so capture what your searches surfaced, not just the query.
 
 Reply with ONLY this JSON object as your final message (no prose around it):
 
 {{"facets": [{{"facet": "<short name>", "rough_volume": "small|medium|large", \
 "example_thread_ids": ["<id>", ...]}}, ...], \
-"queries": [{{"query": "<what a user types>", "intended_facet": "<facet name>", \
-"confounds": ["<facet name>", ...]}}, ...]}}"""
+"angles": [{{"query": "<what a user types>", \
+"intent": "<the one meaning this angle seeks>", \
+"confounds": ["<look-alike subject to exclude>", ...], \
+"candidates": [{{"thread_id": "<id>", "note": "<why relevant>"}}, ...]}}, ...]}}"""
 
-_LABEL_PROMPT = """You are grading search results for one benchmark query against \
-a frozen conversation archive.
+_LABEL_PROMPT = """You are building the gold relevance set for one benchmark query \
+against a frozen conversation archive.
 
 Query: {query}
-Intended meaning: {intended_facet}
+Intended meaning: {intent}
 Nearby subjects that share this query's vocabulary but do NOT answer it \
-(confounds — grade these 0 even though they look relevant): {confounds}
+(grade these 0 even though they look relevant): {confounds}
 
-Explore the corpus yourself and decide, for each thread you inspect, whether it \
-answers the INTENDED meaning (run via Bash; read-only):
+A survey pass already searched this topic and found these candidate threads for \
+this angle — your STARTING POOL, to verify and build on (not to trust blindly, \
+and not exhaustive):
+
+{candidates}
+
+Explore the corpus yourself (run via Bash; read-only):
 
   {tool} search "<query>" [--limit N] [--rerank on|off|auto]
   {tool} read <thread_id> [--mode ends|chat|user|full|last] [--offset N] [--max-chars N]
 
 Method:
-1. Reformulate widely — synonyms, the intended facet's own vocabulary, the \
-confounds' vocabulary. Build a candidate pool from what the searches surface.
-2. Read the strongest candidates (--mode ends is a cheap first read) to judge \
-what they actually contain, not just matching words.
-3. Grade every thread you inspected: 2 = answers the intended meaning, \
-1 = partial or related-but-not-answering, 0 = a confound or irrelevant. Include \
-the confounds you found at grade 0 — a benchmark needs the hard negatives, not \
-only the positives.
+1. Start from the survey's candidates — read them (--mode ends is a cheap first \
+read) and confirm or downgrade each; they are leads, not answers.
+2. Expand past them: reformulate widely — synonyms, the intended meaning's own \
+vocabulary, the confounds' vocabulary — to find relevant threads the survey \
+missed. The benchmark's value is a COMPLETE gold set, so dig.
+3. Grade every thread you inspected, ranked by how well it answers the intended \
+meaning: 2 = answers it, 1 = partial or related-but-not-answering, 0 = a confound \
+or irrelevant. Include the confounds you found at grade 0 — a benchmark needs the \
+hard negatives, not only the positives.
 
 Reply with ONLY this JSON object as your final message (no prose around it):
 
@@ -165,29 +188,45 @@ def _extract_json(text: str) -> dict | None:
     return v if isinstance(v, dict) else None
 
 
+def _clean_candidates(raw) -> list[dict]:
+    """Normalize a survey angle's candidate threads to ``[{thread_id, note}]``,
+    dropping anything without a thread id. Tolerates a bare id string or a
+    ``{thread_id, note}`` object."""
+    out = []
+    for c in raw if isinstance(raw, list) else []:
+        if isinstance(c, str) and c.strip():
+            out.append({"thread_id": c.strip(), "note": ""})
+        elif isinstance(c, dict) and c.get("thread_id"):
+            out.append({"thread_id": str(c["thread_id"]).strip(),
+                        "note": str(c.get("note", ""))})
+    return out
+
+
 def parse_survey(text: str) -> dict | None:
-    """The survey agent's facet map + queries, or None. Keeps only well-formed
-    queries (a string ``query`` and ``intended_facet``); a query with neither is
-    dropped rather than mined blind. ``confounds`` normalized to a list of
-    strings; ``facets`` passed through as authored (detail-only)."""
+    """The survey agent's angles (+ optional facet overview), or None. Each angle
+    keeps a string ``query`` and ``intent``; one lacking either is dropped rather
+    than mined half-formed. ``confounds`` normalized to strings; ``candidates``
+    (the threads the survey found for the angle — the labeler's starting pool) to
+    ``[{thread_id, note}]``; ``facets`` passed through as authored (detail-only)."""
     v = _extract_json(text)
-    if v is None or not isinstance(v.get("queries"), list):
+    if v is None or not isinstance(v.get("angles"), list):
         return None
-    queries = []
-    for q in v["queries"]:
-        if not isinstance(q, dict):
+    angles = []
+    for a in v["angles"]:
+        if not isinstance(a, dict):
             continue
-        query = q.get("query")
-        facet = q.get("intended_facet")
-        if not isinstance(query, str) or not query.strip() or not isinstance(facet, str):
+        query = a.get("query")
+        intent = a.get("intent")
+        if not isinstance(query, str) or not query.strip() or not isinstance(intent, str):
             continue
-        confounds = [str(c) for c in q.get("confounds", []) if isinstance(c, (str, int))]
-        queries.append({"query": query.strip(), "intended_facet": facet,
-                        "confounds": confounds})
-    if not queries:
+        confounds = [str(c) for c in a.get("confounds", []) if isinstance(c, (str, int))]
+        angles.append({"query": query.strip(), "intent": intent,
+                       "confounds": confounds,
+                       "candidates": _clean_candidates(a.get("candidates"))})
+    if not angles:
         return None
     facets = v["facets"] if isinstance(v.get("facets"), list) else []
-    return {"facets": facets, "queries": queries}
+    return {"facets": facets, "angles": angles}
 
 
 def parse_labels(text: str) -> dict | None:
@@ -249,9 +288,10 @@ def resolve_topic(ref: str) -> dict:
         return topic_get(hits[0].id, session=s)
 
 
-def build_survey_prompt(topic: dict, tool_cmd: str, n_queries: int) -> str:
+def build_survey_prompt(topic: dict, tool_cmd: str) -> str:
     """The survey agent's brief, seeded with the topic and a capped, highest-cited
-    slice of its members (it has search/read to reach the rest)."""
+    slice of its members (it has search/read to reach the rest). The agent decides
+    how many angles the topic warrants — no target count is passed."""
     members = topic.get("member_threads", [])
     shown = members[:SURVEY_MEMBER_SAMPLE]
     member_lines = "\n".join(
@@ -262,48 +302,53 @@ def build_survey_prompt(topic: dict, tool_cmd: str, n_queries: int) -> str:
         title=topic.get("title") or topic.get("id"),
         description=f"Description: {desc}" if desc else "(no description)",
         n_members=len(members), n_shown=len(shown), members=member_lines,
-        tool=tool_cmd, n_queries=n_queries,
+        tool=tool_cmd,
     )
 
 
-def build_label_prompt(query: dict, tool_cmd: str) -> str:
-    """One labeler's brief — the query and its intent only; never the survey
-    agent's gold ids (the labeler rediscovers blind)."""
+def build_label_prompt(angle: dict, tool_cmd: str) -> str:
+    """One labeler's brief — the query, its intent and confounds, and the survey's
+    candidate threads for this angle as the starting pool (verify + expand, not
+    blind rediscovery)."""
+    cands = angle.get("candidates", [])[:LABEL_CANDIDATE_CAP]
+    cand_lines = "\n".join(
+        f"  {c['thread_id']}  {c.get('note', '')[:140]}".rstrip() for c in cands
+    ) or "  (the survey recorded no candidates for this angle — discover them yourself)"
     return _LABEL_PROMPT.format(
-        query=query["query"], intended_facet=query["intended_facet"],
-        confounds=", ".join(query["confounds"]) or "(none named)", tool=tool_cmd,
+        query=angle["query"], intent=angle["intent"],
+        confounds=", ".join(angle["confounds"]) or "(none named)",
+        candidates=cand_lines, tool=tool_cmd,
     )
 
 
 # ── the agent seam ───────────────────────────────────────────────────────────
 
-def run_survey(topic: dict, model: str, tool_cmd: str, n_queries: int
-               ) -> tuple[dict | None, dict]:
-    """Run the survey agent. Returns (survey | None, stats)."""
-    text, stats = mine_gold.run_claude(
-        build_survey_prompt(topic, tool_cmd, n_queries), model, tool_cmd)
+def run_survey(topic: dict, model: str, tool_cmd: str) -> tuple[dict | None, dict]:
+    """Run the survey agent. Returns (survey | None, stats). The survey decides
+    how many angles the topic warrants."""
+    text, stats = mine_gold.run_claude(build_survey_prompt(topic, tool_cmd), model, tool_cmd)
     return (parse_survey(text) if text is not None else None), stats
 
 
-def case_from_labels(query: dict, labels: dict, snapshot_id: str) -> dict | None:
-    """The eval ``--cases`` row for a labeled query, or None when the label pool
+def case_from_labels(angle: dict, labels: dict, snapshot_id: str) -> dict | None:
+    """The eval ``--cases`` row for a labeled angle, or None when the label pool
     has no grade-2 gold (nothing to rank). Carries the graded pool for nDCG,
     ``sessions: []`` (topic queries are authored, not from a session), and the
     ``snapshot_id`` binding."""
     if not labels["gold"]:
         return None
-    return {"query": query["query"], "gold": labels["gold"], "grades": labels["grades"],
+    return {"query": angle["query"], "gold": labels["gold"], "grades": labels["grades"],
             "sessions": [], "snapshot_id": snapshot_id, "protocol": "topic-mined",
-            "topic": query.get("_topic"), "intended_facet": query["intended_facet"],
+            "topic": angle.get("_topic"), "intent": angle["intent"],
             "mined_at": datetime.now(timezone.utc).isoformat(timespec="seconds")}
 
 
-def label_query(query: dict, model: str, tool_cmd: str,
+def label_query(angle: dict, model: str, tool_cmd: str,
                 snapshot_id: str) -> tuple[dict | None, dict]:
-    """Label one query end-to-end. Returns (case_row | None, detail_row). A case
+    """Label one angle end-to-end. Returns (case_row | None, detail_row). A case
     with no grade-2 gold is dropped (nothing to rank), but its detail is kept."""
-    text, stats = mine_gold.run_claude(build_label_prompt(query, tool_cmd), model, tool_cmd)
-    detail = {"query": query["query"], "intent": query, "agent": stats}
+    text, stats = mine_gold.run_claude(build_label_prompt(angle, tool_cmd), model, tool_cmd)
+    detail = {"query": angle["query"], "intent": angle, "agent": stats}
     if text is None:
         detail["outcome"] = "agent-failed"
         return None, detail
@@ -313,7 +358,7 @@ def label_query(query: dict, model: str, tool_cmd: str,
         return None, detail
     detail.update({"outcome": "ok" if labels["gold"] else "no-gold",
                    "grades": labels["grades"], "reasons": labels["reasons"]})
-    return case_from_labels(query, labels, snapshot_id), detail
+    return case_from_labels(angle, labels, snapshot_id), detail
 
 
 # ── entry ────────────────────────────────────────────────────────────────────
@@ -322,9 +367,9 @@ def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--topic", required=True,
                     help="topic id, or a name/title (case-insensitive, unique)")
-    ap.add_argument("--sample", type=int, default=8,
-                    help="max queries to author + label this run (one agent each)")
-    ap.add_argument("--seed", type=int, default=7)  # accepted for parity; survey is the sampler
+    ap.add_argument("--max-queries", type=int, default=MAX_ANGLES,
+                    help=f"safety cap on angles labeled this run (default {MAX_ANGLES}); "
+                    "the survey agent decides how many the topic warrants, below this")
     ap.add_argument("--model", default=DEFAULT_MODEL)
     ap.add_argument("--jobs", type=int, default=2, help="concurrent labeler agents")
     ap.add_argument("--cases-out", type=Path, default=None,
@@ -352,15 +397,18 @@ def main() -> None:
     tool_cmd = f"{sys.executable} {mine_gold.__file__} tool"
     print(f"surveying topic {topic.get('title')!r} ({topic['id']}, "
           f"{topic.get('citation_count', 0)} citations) against snapshot {snapshot_id}")
-    survey, survey_stats = run_survey(topic, args.model, tool_cmd, args.sample)
+    survey, survey_stats = run_survey(topic, args.model, tool_cmd)
     if survey is None:
-        raise SystemExit("survey agent produced no usable queries")
+        raise SystemExit("survey agent produced no usable angles")
 
-    queries = [q for q in survey["queries"] if q["query"] not in already][:args.sample]
-    for q in queries:
-        q["_topic"] = topic.get("title") or slug
-    if not queries:
-        raise SystemExit("survey authored no unmined queries")
+    angles = [a for a in survey["angles"] if a["query"] not in already]
+    if len(angles) > args.max_queries:
+        print(f"survey authored {len(angles)} angles; capping to --max-queries={args.max_queries}")
+        angles = angles[:args.max_queries]
+    for a in angles:
+        a["_topic"] = topic.get("title") or slug
+    if not angles:
+        raise SystemExit("survey authored no unmined angles")
 
     cases_path.parent.mkdir(parents=True, exist_ok=True)
     with detail_path.open("a") as f:
@@ -372,12 +420,12 @@ def main() -> None:
             "facet_map": survey["facets"],
         }) + "\n")
 
-    print(f"labeling {len(queries)} queries with {args.model} agents (jobs={args.jobs}) "
+    print(f"labeling {len(angles)} angles with {args.model} agents (jobs={args.jobs}) "
           f"-> {cases_path}")
     ok = failed = 0
     with concurrent.futures.ThreadPoolExecutor(max_workers=args.jobs) as ex:
-        futures = {ex.submit(label_query, q, args.model, tool_cmd, snapshot_id): q
-                   for q in queries}
+        futures = {ex.submit(label_query, a, args.model, tool_cmd, snapshot_id): a
+                   for a in angles}
         for fut in concurrent.futures.as_completed(futures):
             row, detail = fut.result()
             with detail_path.open("a") as f:
