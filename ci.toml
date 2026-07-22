@@ -79,45 +79,24 @@ timeout = 1800
 name = "coverage-gate"
 argv = ["{repo}/.venv/bin/python", "{repo}/scripts/coverage_gate.py", "{repo}/coverage.json"]
 
-# Retrieval-quality gate: the one regression class no other row can see — a
-# search that returns plausible results while quality quietly craters (the
-# live-capture FTS gap sat through every green nightly). Runs against THIS
-# machine's live archive — read-only, and thread-ci runs where the archive
-# lives. Two checks, each aimed directly at its failure mode:
-# --require-semantic asserts the embeddings arm is alive (a dead model
-# silently degrades fused search to lexical — a ~0.05 MRR shift a metric
-# floor detects worst, a direct check catches with zero queries),
-# --require-rerank does the same for the cross-encoder arm (one real model
-# load + one trivial scored pair, so a torch/model regression that kills
-# reranking in production can't leave every row green; the metric run still
-# skips per-query rerank via --rerank off, so the cost is the load, not
-# 75 inferences), and a small
-# seeded sample of real queries mined from the archive's own tool-use trail
-# (--from-log: each query is one an agent actually ran; the thread it opened
-# next must rank) guards against collapse. Click labels are incumbent-shaped
-# — the gold is what past search surfaced and the agent picked — so this row
-# is a collapse alarm, not an arbiter: losing the ability to rank known-
-# relevant threads means real breakage, but a modest breach under a
-# deliberately reshaped ranker may be divergence from the logged incumbent's
-# shape, not regression. Floors sit far below measured values (MRR 0.283 /
-# recall@10 0.413 at calibration, n=75 seed 7) so only collapse trips them.
-# A breach means investigate, not revert; on a deliberate ranking redesign,
-# judge the change on its merits and recalibrate. Do not ratchet these
-# floors upward: the case pool increasingly comes from the current stack
-# labeling its own results, and chasing the number up compounds that
-# self-preference.
-# --trend-out turns the gate's throwaway numbers into a time series: one JSONL
-# row per sweep in ~/.thread/archive/retrieval-trend.jsonl (real usage data —
-# lives in the archive home, never the repo). The floors stay the only gate;
-# the ledger is for reading drift long before collapse.
+# Retrieval-arms gate: asserts the model arms of the search stack are alive.
+# Runs against THIS machine's live archive — read-only, and thread-ci runs
+# where the archive lives. --require-semantic asserts the embeddings arm
+# loads (a dead model silently degrades fused search to lexical — a direct
+# check catches it with zero queries); --require-rerank does the same for the
+# cross-encoder arm (one real model load + one trivial scored pair, so a
+# torch/model regression that kills reranking in production can't leave every
+# row green). Deliberately NO metric run rides this row: click-label MRR
+# wears the shape of a quality score without being one (the golds are
+# censored by what the incumbent ranker surfaced), and per-commit quality
+# numbers invite exactly that misread. Quality is measured against the
+# snapshot-bound gold case files (evals/README.md → "Taking a baseline"),
+# scored deliberately, not per commit.
 [[suite]]
 name = "retrieval-gate"
 argv = ["{repo}/.venv/bin/python", "{repo}/evals/retrieval_eval.py",
-        "--from-log", "75", "--rerank", "off",
-        "--require-semantic", "--require-rerank",
-        "--min-mrr", "0.14", "--min-recall10", "0.20",
-        "--trend-out", "~/.thread/archive/retrieval-trend.jsonl"]
-timeout = 900
+        "--probes-only", "--require-semantic", "--require-rerank"]
+timeout = 600
 
 # The release lane: build the wheel + sdist, prove their contents, install the
 # wheel into a clean venv, and run the real CLI lifecycle from it. Deselected

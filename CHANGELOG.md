@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- The CI `retrieval-gate` row no longer runs a from-log metric sweep: it now runs `retrieval_eval.py
+  --probes-only --require-semantic --require-rerank` — model-arm liveness checks only. Click-label MRR is
+  incumbent-censored (the gold is what the live ranker surfaced and the agent picked), so a per-commit number
+  wearing the shape of a quality score invited misreading it as one; quality measurement moves to the
+  snapshot-bound gold case files, scored deliberately (`evals/README.md` → "Taking a baseline"). With the
+  cadence gone, the nightly's retrieval-trend ledger watcher (staleness + sliding-median alerts) is removed;
+  the ledger remains, fed by explicit `--trend-out` runs. `--from-log` stays available as a hand-run collapse
+  alarm and as the sampling frame of real query shapes for the gold miner.
+
 - New `thread_archive snapshot <dest>` verb freezes the corpus into a self-contained, immutable archive home:
   it copies the JSONL truth (drain-consistent, under the truth-write lock) and materializes `index.db` beside it,
   restoring the embeddings from the copied vector sidecar without a re-embed. The result is an ordinary
@@ -21,6 +30,15 @@
   `evaluate()` `strict`/`until` plumbing and the `--strict` flag are gone (the snapshot subsumes them). Existing
   mined case files (which carry `until`, not `snapshot_id`) are invalid under the new binding and must be
   re-mined against a snapshot.
+- Topic-based gold mining is now a committed script (`evals/topic_mine_gold.py`) instead of an ad-hoc agent
+  process. It mints golds from a curated topic dense with confounds: a survey `claude` agent maps the topic's
+  facets and authors intent-tagged queries (the one facet each intends, plus the look-alike facets a lazy ranker
+  would surface), then one independent labeler agent per query — blind to the survey agent's thread ids —
+  sweeps the frozen snapshot and grades a candidate pool (2=intended, 1=partial, 0=confound). Snapshot-bound like
+  the query miner (requires a snapshot home, stamps each case with `snapshot_id`), resolves a topic by id or
+  unique name, and writes the eval's `--cases` format (`topic-cases-<slug>.jsonl`) plus a facet-map/intent detail
+  sidecar. The reusable headless-agent runner is factored into `retrieval_mine_gold.run_claude`, shared by both
+  miners.
 - Retrieval closes the last nine reality-mechanism goldens (formerly expected failures). The cross-thread
   duplicate fold is now a *near*-duplicate fold — `rank._norm_content` folds runs of digits to one placeholder
   before comparing, so a flood of threads differing only by a counter or run index (routine ops, re-asked

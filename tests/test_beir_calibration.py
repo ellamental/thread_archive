@@ -10,7 +10,8 @@ This is the ``beir`` lane — deselected from the default run (see pyproject),
 **no ci.toml row**: it downloads a corpus, ingests thousands of docs, and loads
 torch, so it costs tens of minutes and needs the network. It is external
 calibration you invoke when you touch ranking, not a per-commit gate — the
-fast per-commit retrieval guard is the ``retrieval-gate`` row over mined logs.
+fast per-commit ``retrieval-gate`` row only probes that the model arms are
+alive.
 
     .venv/bin/pytest -m beir                                    # both checks
     .venv/bin/pytest tests/test_beir_calibration.py::test_scifact_lexical_finds_golds

@@ -26,7 +26,7 @@ Fastest tier first — climb until the evidence matches the stakes.
 |---|---|---|---|---|
 | 0 | `tests/test_search_quality.py` (in every pytest run) | checked-in synthetic corpus (`tests/quality_corpus.py`), lexical stack | seconds | every change |
 | 1 | `pytest -m quality_models` | same corpus, real embedding + rerank models | minutes | touching the model arms |
-| 2 | CI `retrieval-gate` row (`retrieval_eval.py --from-log`) | live archive, mined click labels | ~minutes | every commit, via thread-ci |
+| 2 | CI `retrieval-gate` row (`retrieval_eval.py --probes-only`) | live archive, model-arm liveness probes only | ~a minute | every commit, via thread-ci |
 | 3 | `retrieval_eval.py` by hand, `graph_eval.py`, `retrieval_judge.py`, `search_arena.py`, `--behavior` | live archive | minutes–hours | evaluating a deliberate ranking change |
 | 3½ | `retrieval_eval.py --cases` on agent-mined golds (`retrieval_mine_gold.py` to mint them) | a frozen corpus snapshot, corpus-grounded labels | seconds to score; agent-minutes per mined case | scoring against grounded labels; mining is an occasional cadence |
 | 4 | `pytest -m beir` | external BEIR benchmark | tens of minutes | calibrating against published baselines |
@@ -38,9 +38,11 @@ archive (BEIR and the lab build throwaway homes and never touch it).
 
 - **`retrieval_eval.py`** — the hub. Scores search with MRR / recall@k under
   three case protocols: `--auto-titles` (zero-curation proxy), `--from-log`
-  (real search→read pairs mined from the archive's own tool-use trail — the
-  CI gate's protocol), `--cases` (a checked case file, e.g. mined golds).
-  Every other live-archive instrument reuses its miner (`mine_log_cases`).
+  (real search→read pairs mined from the archive's own tool-use trail —
+  collapse alarm only), `--cases` (a snapshot-bound case file, e.g. mined
+  golds — the baseline instrument). `--probes-only` skips the metric run for
+  the CI gate's arm-liveness checks. Every other live-archive instrument
+  reuses its miner (`mine_log_cases`).
 - **`search_lab.py`** — the experiment bench. Races every configuration in
   `experiments/` against the shipped defaults on the synthetic corpus and
   prints a leaderboard. Seconds by default; `--models` for the fused
@@ -59,6 +61,13 @@ archive (BEIR and the lab build throwaway homes and never touch it).
   spend, `retrieval_eval.py --cases` — run over that same snapshot — scores
   against them for free and deterministically, and refuses cases once the
   snapshot's id no longer matches (the corpus moved; re-mine).
+- **`topic_mine_gold.py`** — mints golds from a curated **topic** dense with
+  confounds instead of from real queries. A survey `claude` agent maps the
+  topic's facets and authors queries tagged with the one facet they intend and
+  the look-alike facets a lazy ranker would drag in; one independent labeler
+  agent per query, **blind** to the survey agent's thread ids, sweeps the frozen
+  snapshot and grades a pool (2=intended, 1=partial, 0=confound). Same snapshot
+  binding as the query miner; writes `topic-cases-<slug>.jsonl`.
 - **`graph_eval.py`** — does the corpus-native embedding graph earn its
   ranking signal? Regression check for the shipped coherence re-rank, and the
   gate any new graph lever must pass.
@@ -84,9 +93,9 @@ bench detects damage.
     query reads the originating session for intent, sweeps the frozen
     snapshot with its own reformulated searches, reads candidates, and writes
     a graded, corpus-grounded case.
-  - *Topic-mined*: starts from a large curated topic dense with confounds
-    and mints queries plus graded result-sets from multiple angles
-    (`topic-cases-*.jsonl`).
+  - *Topic-mined* (`topic_mine_gold.py`): a survey agent maps a curated
+    topic's facets and authors intent-tagged queries; one blind labeler agent
+    per query grades a pool over the snapshot (`topic-cases-<slug>.jsonl`).
 
   Each case is bound by `snapshot_id` to the corpus snapshot it was mined
   against (`thread_archive snapshot`; point `THREAD_ARCHIVE_HOME` at it), and
@@ -102,17 +111,18 @@ bench detects damage.
   fixed (recall a gold the flood would bury, reach an answer that lives only in
   tool/thinking content) — regression guards, run every pytest pass;
   `pytest tests/test_reality_mechanisms.py -q` re-checks them in seconds.
-- **From-log numbers are alarms, not baselines.** The CI gate's `--from-log`
-  protocol (trend ledger at `~/.thread/archive/retrieval-trend.jsonl`) mines
-  click labels from the live trail: the gold is whatever thread the agent
-  opened, which is a subset of what search surfaced *that day*. The labels
-  are censored by the incumbent ranker — a change that surfaces
+- **From-log numbers are alarms, not baselines.** The `--from-log` protocol
+  mines click labels from the live trail: the gold is whatever thread the
+  agent opened, which is a subset of what search surfaced *that day*. The
+  labels are censored by the incumbent ranker — a change that surfaces
   different-better results scores as a loss, and a high score mostly means
-  "ranks like the ranker that took the clicks." Read the trend for one
-  question only — *did something collapse* — and never cite a from-log delta
-  as evidence a change helped. The trail's lasting value to this bench is as
-  a **sampling frame**: real query shapes to seed the gold miner with, not a
-  labeler.
+  "ranks like the ranker that took the clicks." Nothing runs it on a cadence
+  (the CI gate is arm-probes only, precisely because a per-commit click-MRR
+  invites being read as a quality score); if you run it by hand, read it for
+  one question only — *did something collapse* — and never cite a from-log
+  delta as evidence a change helped. The trail's lasting value to this bench
+  is as a **sampling frame**: real query shapes to seed the gold miner with,
+  not a labeler.
 
 **Claim discipline.** Green tier 0 plus a quiet CI gate license exactly one
 claim: "search didn't break." The claim "search improved" requires a gold-file

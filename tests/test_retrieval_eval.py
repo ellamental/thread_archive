@@ -1,11 +1,10 @@
 """Unit coverage for the retrieval eval harness's pure logic.
 
-The harness (``evals/retrieval_eval.py``) runs against the live archive in
-the CI retrieval-gate rows; what needs test coverage is the logic that turns
-raw data into scores — the log-miner's tool-name classifier and search->read
-pairing rules, and the multi-gold / session-skip scoring loop. The DB-touching
-paths (case sampling, the mining SQL) are exercised by the gate rows
-themselves.
+The harness (``evals/retrieval_eval.py``) runs against the live archive (the
+CI retrieval-gate row runs its ``--probes-only`` mode); what needs test
+coverage is the logic that turns raw data into scores — the log-miner's
+tool-name classifier and search->read pairing rules, and the multi-gold /
+session-skip scoring loop.
 """
 
 from __future__ import annotations
