@@ -11,8 +11,11 @@ themselves.
 from __future__ import annotations
 
 import importlib.util
+import math
 import sys
 from pathlib import Path
+
+import pytest
 
 _SPEC = importlib.util.spec_from_file_location(
     "retrieval_eval",
@@ -215,6 +218,42 @@ def test_evaluate_respects_limit_after_skips():
         limit=2, rerank=False, content_type=None, exclude_content_types=None,
         search=_ranker(42, 1, 2, 99))
     assert report["mrr"] == 0.0
+
+
+# ── nDCG: graded scoring over the candidate pool ─────────────────────────────
+
+def test_ndcg_at_k_perfect_and_reversed():
+    # Ideal order scores 1.0; the pool's own grades are the yardstick.
+    assert retrieval_eval.ndcg_at_k([2, 1, 0], [2, 1, 0], 20) == pytest.approx(1.0)
+    # Only rank-1 counted: a grade-0 doc on top scores nothing at k=1.
+    assert retrieval_eval.ndcg_at_k([0, 2, 1], [2, 1, 0], 1) == 0.0
+    # Empty pool (nothing relevant) is defined as 0.0, not a divide-by-zero.
+    assert retrieval_eval.ndcg_at_k([0, 0], [0, 0], 10) == 0.0
+
+
+def test_evaluate_ndcg_rewards_the_whole_graded_pool():
+    # C(0) A(2) B(1): the gold (A) is at rank 2, but nDCG credits B's grade-1
+    # at rank 3 too — the pool is scored, not just the one right answer.
+    report = retrieval_eval.evaluate(
+        [{"query": "q", "gold": ["A"], "sessions": [],
+          "grades": {"A": 2, "B": 1, "C": 0}}],
+        limit=20, rerank=False, content_type=None, exclude_content_types=None,
+        search=_ranker("C", "A", "B"))
+    # DCG = 3/log2(3) + 1/log2(4); IDCG = 3/log2(2) + 1/log2(3).
+    assert report["ndcg"][20] == pytest.approx(0.6590, abs=1e-4)
+    assert report["ndcg"][1] == 0.0  # grade-0 doc at rank 1
+    assert report["mrr"] == 0.5      # binary MRR unchanged: gold at rank 2
+
+
+def test_evaluate_ndcg_falls_back_to_binary_without_a_pool():
+    # No grades: gold stands in as binary relevance so nDCG stays defined for
+    # the title/log protocols. Gold at rank 2 of a single-relevant pool.
+    report = retrieval_eval.evaluate(
+        [{"query": "q", "gold": [5], "sessions": []}],
+        limit=20, rerank=False, content_type=None, exclude_content_types=None,
+        search=_ranker(9, 5, 3))
+    assert report["ndcg"][20] == pytest.approx(1.0 / math.log2(3), abs=1e-4)
+    assert report["ndcg"][1] == 0.0
 
 
 def test_evaluate_passes_scope_exclusions_through():

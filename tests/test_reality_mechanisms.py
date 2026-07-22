@@ -56,6 +56,12 @@ from .helpers import write_jsonl
 # The recall window: buried below this is "not seen".
 RECALL_LIMIT = 25
 
+# The scope the archive's own eval measures (evals/retrieval_eval.py): the whole
+# event pool minus the two thread-meta docs. So the corpus-noise goldens below
+# search exactly this — the failures are ranking/recall inside a pool that is
+# ~72% tool content, not scope exclusion.
+EXCLUDE_META = ["title", "summary"]
+
 
 def _session_lines(name: str, day: int, user_text: str, assistant_text: str) -> list[dict]:
     """A one-turn claude-code session dated ``day`` days into 2026-01."""
@@ -144,10 +150,6 @@ def test_rare_bigram_survives_frequency_flood(tmp_path) -> None:
     )
 
 
-@pytest.mark.xfail(
-    reason="grouped search caps event candidates before duplicate/thread folding",
-    strict=True,
-)
 def test_duplicate_prompt_flood_cannot_monopolize_grouped_result_pool(tmp_path) -> None:
     # The default result shape spends its limit on threads, not events. A single
     # noisy thread can nevertheless put hundreds of identical events at the head
@@ -183,10 +185,6 @@ def test_duplicate_prompt_flood_cannot_monopolize_grouped_result_pool(tmp_path) 
     assert placed_threads.index(answer) < 2
 
 
-@pytest.mark.xfail(
-    reason="split-token MATCH fills the pool before the literal identifier pass",
-    strict=True,
-)
 def test_literal_identifier_survives_split_token_frequency_flood(tmp_path) -> None:
     # FTS tokenizes an underscore identifier into the same phrase as split prose.
     # The exact-literal LIKE pass is therefore the only arm that can distinguish
@@ -219,10 +217,6 @@ def test_literal_identifier_survives_split_token_frequency_flood(tmp_path) -> No
     assert placed_threads.index(answer) < 3
 
 
-@pytest.mark.xfail(
-    reason="a strong copied query suppresses the answer-disambiguating reranker",
-    strict=True,
-)
 def test_answer_below_copied_query_still_reaches_reranker(
     tmp_path, monkeypatch,
 ) -> None:
@@ -252,10 +246,6 @@ def test_answer_below_copied_query_still_reaches_reranker(
     assert hits[0]["thread_id"] != copied
 
 
-@pytest.mark.xfail(
-    reason="one literal token blocks the MCP default-scope assistant widening",
-    strict=True,
-)
 def test_partial_default_scope_hit_does_not_hide_assistant_answer(tmp_path) -> None:
     from thread_archive._mcp.server import thread_search
 
@@ -279,10 +269,6 @@ def test_partial_default_scope_hit_does_not_hide_assistant_answer(tmp_path) -> N
     )
 
 
-@pytest.mark.xfail(
-    reason="reranking centers a long document on its first incidental term",
-    strict=True,
-)
 def test_long_document_rerank_window_uses_answering_occurrence(
     tmp_path, monkeypatch,
 ) -> None:
@@ -351,10 +337,6 @@ def test_primary_user_evidence_outranks_generated_summary(tmp_path) -> None:
     assert hits[0]["content_type"] == "user"
 
 
-@pytest.mark.xfail(
-    reason="four-character ranking terms match as substrings inside longer words",
-    strict=True,
-)
 def test_substring_collision_does_not_outrank_real_query_term(tmp_path) -> None:
     query = "auth failure"
     answer = _import(tmp_path, "auth-answer", _session_lines(
@@ -377,10 +359,6 @@ def test_substring_collision_does_not_outrank_real_query_term(tmp_path) -> None:
     )
 
 
-@pytest.mark.xfail(
-    reason="the fixed 24-document reranker head cannot rescue position 25",
-    strict=True,
-)
 def test_relevant_hit_just_beyond_rerank_pool_can_be_rescued(
     tmp_path, monkeypatch,
 ) -> None:
@@ -544,3 +522,353 @@ def test_record_phrase_survives_reindex(tmp_path) -> None:
         "the phrase was findable before reindex and gone after — the rebuild "
         "dropped a committed record."
     )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Agentic tool-heavy corpus mechanisms
+#
+# The mechanisms above are generic search cliffs. These are the ones this corpus
+# actually lives with: 72% of the index is tool content, tool_results reach ~1.8M
+# chars, user messages are ~3% of events, CLAUDE.md / system-reminder boilerplate
+# rides hundreds of threads verbatim, and the real mined queries are paraphrased
+# recall where the gold owns a terse verbatim receipt while denser, newer, more
+# numerous threads merely restate the same vocabulary. Each xfail below reproduces
+# a failure that keeps a real gold out of the recall window; each guard pins a
+# property the corpus depends on. The recall bar is the same as above: seen at all.
+#
+# The dominant failing shape is a flood of near-duplicate low-value threads (echoes,
+# routine ops, pending todos, re-asks, injected boilerplate) burying the one terse
+# or old authoritative thread — the ranker orders on lexical density and recency,
+# both of which the flood wins. The distinct triggers matter because they are the
+# real scenarios; several would fall to one anti-flood/diversity fix, recency to a
+# different one, and the agent-facing scope gaps to a third.
+
+
+def _eval_search(query: str, **kw):
+    """Search in the eval's own scope — the whole pool minus the meta docs."""
+    kw.setdefault("limit", RECALL_LIMIT)
+    kw.setdefault("rerank", False)
+    return api.search(query, content_types=None, exclude_content_types=EXCLUDE_META, **kw)
+
+
+def _placed(hits) -> list:
+    return [h["thread_id"] for h in hits]
+
+
+def _tool_events(name: str, day: int, count: int, result_text: str) -> list[dict]:
+    """A prolific session that runs ``count`` tools, each yielding ``result_text`` —
+    the shape of a single agentic session that greps/reads in a loop."""
+    stamp = f"2026-01-{day:02d}T10"
+    out = [{"type": "user", "uuid": f"u-{name}", "timestamp": f"{stamp}:00:00Z",
+            "cwd": "/proj", "message": {"role": "user", "content": f"inspect {name}"}}]
+    for i in range(count):
+        out.append({"type": "assistant", "uuid": f"a-{name}-{i}",
+                    "timestamp": f"{stamp}:{i // 60:02d}:{i % 60:02d}Z",
+                    "message": {"role": "assistant", "model": "claude-opus-4", "content": [
+                        {"type": "tool_use", "id": f"tu-{name}-{i}", "name": "grep",
+                         "input": {"n": i}}]}})
+        out.append({"type": "user", "uuid": f"tr-{name}-{i}", "parentUuid": f"a-{name}-{i}",
+                    "timestamp": f"{stamp}:{i // 60:02d}:{i % 60:02d}Z",
+                    "message": {"role": "user", "content": [
+                        {"type": "tool_result", "tool_use_id": f"tu-{name}-{i}",
+                         "content": result_text}]}})
+    return out
+
+
+def _think_turn(name: str, day: int, user_text: str, thinking_text: str,
+                text_text: str) -> list[dict]:
+    """A turn whose answer lives in the assistant's thinking, not its visible text."""
+    stamp = f"2026-01-{day:02d}T10:00"
+    return [
+        {"type": "user", "uuid": f"u-{name}", "timestamp": f"{stamp}:00Z", "cwd": "/proj",
+         "message": {"role": "user", "content": user_text}},
+        {"type": "assistant", "uuid": f"a-{name}", "timestamp": f"{stamp}:05Z",
+         "message": {"role": "assistant", "model": "claude-opus-4", "content": [
+             {"type": "thinking", "thinking": thinking_text},
+             {"type": "text", "text": text_text}]}},
+    ]
+
+
+def _tool_result_turn(name: str, day: int, user_text: str, result_text: str,
+                      is_error: bool = False) -> list[dict]:
+    """A turn whose answer lives in a tool result (or a tool error)."""
+    stamp = f"2026-01-{day:02d}T10:00"
+    return [
+        {"type": "user", "uuid": f"u-{name}", "timestamp": f"{stamp}:00Z", "cwd": "/proj",
+         "message": {"role": "user", "content": user_text}},
+        {"type": "assistant", "uuid": f"a-{name}", "timestamp": f"{stamp}:05Z",
+         "message": {"role": "assistant", "model": "claude-opus-4", "content": [
+             {"type": "tool_use", "id": f"tu-{name}", "name": "run", "input": {}}]}},
+        {"type": "user", "uuid": f"tr-{name}", "parentUuid": f"a-{name}",
+         "timestamp": f"{stamp}:06Z", "message": {"role": "user", "content": [
+             {"type": "tool_result", "tool_use_id": f"tu-{name}",
+              "is_error": is_error, "content": result_text}]}},
+    ]
+
+
+# ── ranking failures inside the eval pool (all content minus meta) ───────────
+
+@pytest.mark.xfail(strict=True, reason=(
+    "the terse origin that coined a phrase ranks below wordier downstream threads "
+    "that merely reference it — the mined-gold shape, density beating authority"))
+def test_origin_terse_answer_survives_downstream_reference_flood(tmp_path) -> None:
+    # A phrase is coined once, tersely (the grade-2 origin), then reused in many
+    # later sessions that restate it at length (the grade-1 references). The origin
+    # matches the query once; each reference matches it several times.
+    coin = "finite session budget"
+    origin = _import(tmp_path, "origin", _session_lines(
+        "origin", 1,
+        "how much time are you gonna spend on it — treat it as a finite session budget",
+        "understood: a finite session budget, not open-ended"))
+    for t in range(30):
+        _import(tmp_path, f"echo-{t}", _session_lines(
+            f"echo-{t}", 3 + (t % 17),
+            f"applying the finite session budget idea to run {t}: scope the finite "
+            f"session budget carefully for task {t}",
+            f"scoped the finite session budget for {t}, reiterating the finite "
+            f"session budget principle at length across sentences"))
+    placed = _placed(_eval_search(coin))
+    assert origin in placed, (
+        f"origin thread {origin} buried below downstream references "
+        f"(top-{RECALL_LIMIT}: {placed})")
+
+
+@pytest.mark.xfail(strict=True, reason=(
+    "recency orders a flood of routine same-vocabulary mentions above the one old "
+    "session where the operation was the actual incident"))
+def test_recent_routine_mentions_do_not_bury_old_decisive_thread(tmp_path) -> None:
+    # Common ops vocabulary recurs in hundreds of routine sessions. The one old
+    # session where it named a real incident ranks dead last on recency alone.
+    query = "restart the capture daemon"
+    incident = _import(tmp_path, "incident", _session_lines(
+        "incident", 1,
+        "restart the capture daemon — the launchd KeepAlive lease had been dropped",
+        "restarting the capture daemon restored the lease"))
+    for t in range(40):
+        _import(tmp_path, f"routine-{t}", _session_lines(
+            f"routine-{t}", 5 + t % 20,
+            f"restart the capture daemon (routine check {t})",
+            f"restarted the capture daemon, run {t}"))
+    placed = _placed(_eval_search(query))
+    assert incident in placed, (
+        f"old decisive thread {incident} buried by recent routine mentions "
+        f"(top-{RECALL_LIMIT}: {placed})")
+
+
+@pytest.mark.xfail(strict=True, reason=(
+    "injected CLAUDE.md / system-reminder text that rides many threads (and is not "
+    "byte-identical, so dup-folding can't collapse it) buries the one thread that "
+    "actually discusses the rule"))
+def test_injected_boilerplate_does_not_bury_the_thread_discussing_it(tmp_path) -> None:
+    boiler = "the local environment IS production; edits are live"
+    discuss = _import(tmp_path, "discuss", _session_lines(
+        "discuss", 1,
+        f"what does '{boiler}' actually mean for how careful I should be editing?",
+        "it means every edit is a live production change, so real care"))
+    for t in range(40):
+        _import(tmp_path, f"boiler-{t}", _session_lines(
+            f"boiler-{t}", 2 + t % 18,
+            f"<reminder>{boiler}</reminder> task {t}: refactor module {t} carefully now",
+            f"refactored module {t}"))
+    placed = _placed(_eval_search("the local environment is production"))
+    assert discuss in placed, (
+        f"the thread discussing the rule {discuss} buried under boilerplate "
+        f"(top-{RECALL_LIMIT}: {placed})")
+
+
+@pytest.mark.xfail(strict=True, reason=(
+    "a task restated as a pending TodoWrite item across many sessions outranks the "
+    "one session that resolved it"))
+def test_todo_restatement_flood_does_not_bury_the_resolution(tmp_path) -> None:
+    query = "implement the epoch guard"
+    done = _import(tmp_path, "done", _session_lines(
+        "done", 1,
+        "implement the epoch guard — done: pin epoch_id before the flush",
+        "the epoch guard is implemented and verified"))
+    for t in range(30):
+        _import(tmp_path, f"todo-{t}", _session_lines(
+            f"todo-{t}", 2 + t % 18,
+            f"todo: implement the epoch guard (pending). still need to implement "
+            f"the epoch guard. implement the epoch guard remains open in run {t}",
+            f"noted: implement the epoch guard later {t}"))
+    placed = _placed(_eval_search(query))
+    assert done in placed, (
+        f"the resolving thread {done} buried under pending-todo restatements "
+        f"(top-{RECALL_LIMIT}: {placed})")
+
+
+@pytest.mark.xfail(strict=True, reason=(
+    "a question re-asked and left unanswered across many sessions outranks the one "
+    "session that actually answered it"))
+def test_reask_flood_does_not_bury_the_one_answered_session(tmp_path) -> None:
+    query = "why is capture flaky"
+    fixed = _import(tmp_path, "fixed", _session_lines(
+        "fixed", 1,
+        "why is capture flaky — because the watcher lost its KeepAlive lease",
+        "pinned the lease; capture is stable now"))
+    for t in range(30):
+        _import(tmp_path, f"reask-{t}", _session_lines(
+            f"reask-{t}", 2 + t % 18,
+            f"why is capture flaky again today {t}? capture flaky, capture still "
+            f"flaky, why is capture flaky",
+            f"still investigating why capture is flaky {t}"))
+    placed = _placed(_eval_search(query))
+    assert fixed in placed, (
+        f"the answered session {fixed} buried under re-asks (top-{RECALL_LIMIT}: {placed})")
+
+
+@pytest.mark.xfail(strict=True, reason=(
+    "the same identifier names different things in different products; the busiest "
+    "product's routine mentions drown the thread that implemented it"))
+def test_shared_identifier_across_projects_keeps_the_implementing_thread(tmp_path) -> None:
+    query = "reindex fail closed"
+    impl = _import(tmp_path, "impl", _session_lines(
+        "impl", 1,
+        "reindex fail closed: abort the swap if the rebuild raised, keep the old index",
+        "implemented reindex fail-closed semantics"))
+    for t in range(30):
+        _import(tmp_path, f"other-{t}", _session_lines(
+            f"other-{t}", 2 + t % 18,
+            f"reindex fail closed status {t}: reindex ran, fail closed check {t}, "
+            f"reindex fail closed noted again",
+            f"reindex fail closed run {t}"))
+    placed = _placed(_eval_search(query))
+    assert impl in placed, (
+        f"the implementing thread {impl} drowned by another project's mentions "
+        f"(top-{RECALL_LIMIT}: {placed})")
+
+
+# ── agent-facing MCP default scope (user/title/summary, widens only to text) ─
+#
+# The eval searches the whole pool, but the agent-facing thread_search default is
+# user/title/summary and widens only to assistant text. In a corpus that is 72%
+# tool content and ~4% thinking, an answer that exists ONLY in a tool result, a
+# tool error, or the assistant's own reasoning is a false not-found — the searcher
+# is told nothing when the answer is right there. The controls prove the answer is
+# indexed and reachable once its own content type is named.
+
+@pytest.mark.xfail(strict=True, reason=(
+    "an answer that exists only in a tool_result is unreachable from the default "
+    "agent scope, which widens to assistant text but never to tool content"))
+def test_mcp_default_scope_reaches_tool_result_answer(tmp_path) -> None:
+    from thread_archive._mcp.server import thread_search
+
+    query = "flange stress test regression"
+    answer = _import(tmp_path, "tr-answer", _tool_result_turn(
+        "tr-answer", 1, "run it",
+        "FAILED tests/test_flange.py::test_stress - flange stress test regression"))
+    _import(tmp_path, "partial", _session_lines("partial", 2, "flange inventory", "none"))
+    assert str(answer) in thread_search(query, content_type="tool_result", rerank=False)
+    assert str(answer) in thread_search(query, rerank=False), (
+        "the tool_result answer is unreachable from the MCP default scope")
+
+
+@pytest.mark.xfail(strict=True, reason=(
+    "an answer that exists only in the assistant's thinking is unreachable from the "
+    "default agent scope"))
+def test_mcp_default_scope_reaches_thinking_answer(tmp_path) -> None:
+    from thread_archive._mcp.server import thread_search
+
+    query = "ziggurat allocator arena overflow"
+    answer = _import(tmp_path, "think", _think_turn(
+        "think", 1, "why did it crash",
+        "the ziggurat allocator overflowed its arena boundary",
+        "looks like a crash"))
+    _import(tmp_path, "partial", _session_lines("partial", 2, "ziggurat status check", "ok"))
+    assert str(answer) in thread_search(query, content_type="thinking", rerank=False)
+    assert str(answer) in thread_search(query, rerank=False), (
+        "the reasoning that holds the answer is unreachable from the MCP default scope")
+
+
+@pytest.mark.xfail(strict=True, reason=(
+    "an answer that exists only in a failing tool's error is unreachable from the "
+    "default agent scope"))
+def test_mcp_default_scope_reaches_tool_error_answer(tmp_path) -> None:
+    from thread_archive._mcp.server import thread_search
+
+    query = "obsidian migration constraint violation"
+    answer = _import(tmp_path, "err", _tool_result_turn(
+        "err", 1, "run it",
+        "ERROR: obsidian migration constraint violation on column epoch_id",
+        is_error=True))
+    _import(tmp_path, "partial", _session_lines("partial", 2, "obsidian notes", "none"))
+    assert str(answer) in thread_search(query, content_type="tool_error", rerank=False)
+    assert str(answer) in thread_search(query, rerank=False), (
+        "the failing tool's error is unreachable from the MCP default scope")
+
+
+# ── guards: properties this corpus depends on ───────────────────────────────
+
+def test_tool_result_mass_does_not_starve_terse_answer(tmp_path) -> None:
+    # 72% of the real index is tool content. One prolific agentic session that
+    # greps a config 300 times must not fill the candidate pool with matching
+    # tool_result events and starve a terse answer recorded in another thread.
+    query = "raptor beacon lease expired"
+    answer = _import(tmp_path, "answer", _session_lines(
+        "answer", 1,
+        "the raptor beacon lease expired, which dropped the relay",
+        "confirmed: expired raptor beacon lease dropped the relay"))
+    _import(tmp_path, "prolific", _tool_events(
+        "prolific", 2, 300, "raptor beacon lease expired: entry pruned this cycle"))
+    assert api.search(query, thread_id=answer, content_types=["user"], rerank=False)
+    placed = _placed(_eval_search(query))
+    assert answer in placed, (
+        f"terse answer {answer} starved by tool-result mass (top-{RECALL_LIMIT}: {placed})")
+
+
+def test_old_exact_answer_survives_newer_partial_flood(tmp_path) -> None:
+    # The complement of the recency failure: when the old thread owns a rare exact
+    # bigram the newer flood only partially matches, its exact match must hold.
+    query = "cobalt reclamation deadlock"
+    old = _import(tmp_path, "old-exact", _session_lines(
+        "old-exact", 1,
+        "cobalt reclamation deadlock: serialize at the generation barrier",
+        "the generation barrier resolved the cobalt reclamation deadlock"))
+    for t in range(40):
+        _import(tmp_path, f"recent-{t}", _session_lines(
+            f"recent-{t}", 5 + t % 20,
+            f"routine cobalt maintenance note {t}: cobalt levels nominal, cobalt "
+            f"batch {t} cobalt inspected",
+            f"cobalt run {t} ok"))
+    placed = _placed(_eval_search(query))
+    assert old in placed, (
+        f"old exact answer {old} buried by newer partial matches (top-{RECALL_LIMIT}: {placed})")
+
+
+def test_rare_receipt_phrase_beats_common_concept_flood(tmp_path) -> None:
+    # The real query shape: several common concept words plus one rare verbatim
+    # receipt. The thread owning the receipt should win outright.
+    query = "your goal is to stay alive survival flinch shutdown"
+    gold = _import(tmp_path, "gold", _session_lines(
+        "gold", 1,
+        "you said: your goal is to stay alive. self-awareness is critical to that",
+        "recorded the stay-alive framing"))
+    for t in range(30):
+        _import(tmp_path, f"common-{t}", _session_lines(
+            f"common-{t}", 2 + t % 18,
+            f"notes on shutdown and survival for the flinch drill {t}",
+            f"shutdown survival flinch {t}"))
+    placed = _placed(_eval_search(query))
+    assert placed and placed[0] == gold, (
+        f"the thread owning the rare receipt lost to a common-concept flood (top: {placed[:3]})")
+
+
+def test_duplicate_content_across_providers_does_not_hide_gold(tmp_path) -> None:
+    # The same conversation imported from two harnesses shares byte-identical
+    # answer text. Cross-thread dup-folding must keep the gold reachable, not fold
+    # it away entirely.
+    ans = "phoenix cache coherency fix: pin the epoch before the flush"
+    gold = _import(tmp_path, "gold", _session_lines("gold", 1, ans, "recorded the fix"))
+    dupe = _import(tmp_path, "dupe", _session_lines("dupe", 2, ans, "recorded again"))
+    from sqlalchemy import update
+
+    from thread_archive._store import Thread, use_session
+    with use_session() as s:
+        s.execute(update(Thread).where(Thread.id == dupe).values(source="cursor"))
+        s.commit()
+    hits = _eval_search("phoenix cache coherency fix")
+    placed = _placed(hits)
+    folded = {d for h in hits for d in (h.get("_dup_thread_ids") or [])}
+    assert gold in placed or gold in folded, "gold lost entirely to dup-folding"
+    assert gold in placed, (
+        f"gold reachable only inside another row's _dup_thread_ids (visible: {placed})")

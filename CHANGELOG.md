@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- Retrieval closes seven ranking failure shapes (the reality-mechanism goldens, formerly expected failures):
+  a duplicate-flood rescan folds byte-identical bursts to one representative per `(thread, content)` from a bounded
+  rank window, so the distinct answer a fleet-of-copies buried still reaches the pool (and with it, a literal
+  `frobnicate_widget` no longer loses to split-token prose); ranking term-matching is word-aware (`auth` stops
+  scoring inside `author`, `cache` still credits `caches`); the reranker window centres on the densest term cluster
+  and a long doc also offers its head and tail (MaxP), so an answer far from an incidental term is scored; its head
+  reaches at least `limit` deep so a strong-but-sparse hit at the pool boundary is reachable; a verbatim query echo
+  no longer stands the cross-encoder down, though its verdict is kept only when it rescues a lexically-weak
+  (vocab-mismatch) hit rather than reshuffling confident ones; and the MCP default scope widens to assistant text
+  whenever the top hit is below the strong-match bar, not only when no term landed.
 - Python floor drops from 3.14 to 3.12: nothing in the code needs 3.14, so the install now runs on the Python
   most machines already ship. Classifiers, the CI matrix (3.12 floor + 3.14), the install-test container, and the
   four install docs follow.

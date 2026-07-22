@@ -38,14 +38,17 @@ def _seed_titled_thread(title: str, *, user_turns: int = 3) -> str:
     return tid
 
 
-def _seed_trail(session_name: str, pairs: list[tuple[str, str | None]]) -> str:
+def _seed_trail(session_name: str, pairs: list[tuple[str, str | None]],
+                *, thread_type: str = "conversation") -> str:
     """A session thread carrying a tool-use trail of ``(query, read_ref)`` events.
 
     Each pair emits a ``thread_search`` tool_use followed by a ``thread_read``
     (when ``read_ref`` is not None), in order — the shape ``_trail_events`` mines.
+    ``thread_type`` defaults to a top-level conversation; pass ``"system"`` to
+    stand in for a subagent fleet/sweep session (which mining must exclude).
     """
     with get_session() as s:
-        sess = Thread(name=f"sess:{session_name}", thread_type="conversation",
+        sess = Thread(name=f"sess:{session_name}", thread_type=thread_type,
                       source="claude-code", source_id=f"agent:{session_name}")
         s.add(sess)
         s.flush()
@@ -166,6 +169,24 @@ def test_mine_log_cases_after_bound_holds_out_earlier_trail(archive_home) -> Non
 
     assert _eval.mine_log_cases(50, seed=7, after="2026-01-01") != []
     assert _eval.mine_log_cases(50, seed=7, after="2026-06-01") == []
+
+
+def test_mine_log_cases_excludes_subagent_fleet_sessions(archive_home) -> None:
+    """Only top-level conversation sessions are mined. A subagent session (a
+    retrieval fleet / collection sweep, archived as ``system``) searches to
+    collect a whole vein — recall-intent, no single rankable target — so its
+    search->read pairs never become cases, even when the read resolves to a live
+    thread the same way a conversation session's would."""
+    init_db()
+    conv_gold = _seed_titled_thread("a thread a working agent looked up")
+    sweep_gold = _seed_titled_thread("a thread a sweep agent collected")
+    _seed_trail("working-agent", [("what did we decide about tokens", conv_gold)])
+    _seed_trail("sweep-fleet", [("collect every dark line", sweep_gold)],
+                thread_type="system")
+
+    cases = _eval.mine_log_cases(50, seed=7)
+
+    assert [c["query"] for c in cases] == ["what did we decide about tokens"]
 
 
 def test_load_case_file_round_trips_and_carries_the_snapshot_bound(tmp_path) -> None:

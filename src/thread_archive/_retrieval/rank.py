@@ -154,21 +154,33 @@ def should_rerank(query: str, terms: list[str]) -> bool:
     return code_terms * 2 < len(terms)
 
 
+# Common English inflectional suffixes an indexed word may carry past a ranking
+# term's stem — 'caches' for 'cache', 'tokens' for 'token', 'cached' for 'cache'.
+# A ranking term matches its word plus at most one of these, bounded by word
+# edges, so density credits inflected forms (the porter FTS index already
+# retrieved them) without counting an unrelated word that merely *starts* with
+# the term: 'auth' must land on 'auth'/'auths' but never inside 'author'.
+_TERM_SUFFIX = "(?:s|es|ed|d|ing|ion|ions|ly)?"
+
+
+def _term_pattern(term: str) -> re.Pattern:
+    """A word-boundaried matcher for one ranking term. A term ≥4 chars also
+    accepts a trailing inflection (:data:`_TERM_SUFFIX`); shorter terms match the
+    bare word only, so 'go' can't reach 'going'. Both ends are anchored on word
+    boundaries — the substring era let 'auth' score inside 'author'."""
+    core = re.escape(term)
+    body = core + _TERM_SUFFIX if len(term) >= 4 else core
+    return re.compile(r"\b" + body + r"\b")
+
+
 def term_hit_count(content: str, terms: list[str]) -> int:
-    """How many of ``terms`` literally appear in ``content``. Terms ≥4 chars match
-    by substring; shorter terms must hit a word boundary (so 'go' doesn't match
-    'good'). Each term counts at most once."""
+    """How many of ``terms`` appear in ``content`` as words (:func:`_term_pattern` —
+    a ≥4-char term also matches its common inflections, but never inside a longer
+    unrelated word). Each term counts at most once."""
     if not terms or not content:
         return 0
     c = content.lower()
-    n = 0
-    for t in terms:
-        if len(t) >= 4:
-            if t in c:
-                n += 1
-        elif re.search(r"\b" + re.escape(t) + r"\b", c):
-            n += 1
-    return n
+    return sum(1 for t in terms if _term_pattern(t).search(c))
 
 
 def strong_match_floor(n_terms: int) -> int:
@@ -192,20 +204,97 @@ def head_is_strong(hits: list[EventHit], terms: list[str]) -> bool:
     return term_hit_count(text, terms) >= strong_match_floor(len(terms))
 
 
+# Curated aboutness docs: a title/summary the query matches names what the thread
+# *is*, the trustworthy-order case the strong-head stand-down was measured on.
+ABOUTNESS_CONTENT_TYPES = frozenset({"title", "summary"})
+
+
+def head_is_query_echo(hits: list[EventHit], terms: list[str]) -> bool:
+    """Whether the strong ranked head is a *message* that echoes the whole query
+    verbatim as one contiguous phrase — a pasted prompt, a quoted ticket, a
+    restated-but-unanswered question. Such a head is as plausibly the question as
+    the answer, so (unlike a curated title/summary the query matches) it does not
+    by itself make the lexical order trustworthy: the cross-encoder is let run to
+    look for a differently-worded answer below it, but its verdict is trusted only
+    when it actually rescues one (see :func:`thread_archive._retrieval.search`)."""
+    if len(terms) < 2 or not head_is_strong(hits, terms):
+        return False
+    top = hits[0]
+    if (top.get("content_type") or "") in ABOUTNESS_CONTENT_TYPES:
+        return False
+    content = (top.get("full_content") or top.get("snippet") or "").lower()
+    return " ".join(terms) in content
+
+
+def head_earns_standdown(hits: list[EventHit], terms: list[str]) -> bool:
+    """Whether a strong ranked head should stand the cross-encoder down. A strong
+    head (:func:`head_is_strong`) normally means the lexical order is trustworthy,
+    so the re-rank stands down — except a verbatim query echo
+    (:func:`head_is_query_echo`), which earns no such trust."""
+    return head_is_strong(hits, terms) and not head_is_query_echo(hits, terms)
+
+
 def match_window(content: str, terms: list[str], chars: int) -> str:
-    """The ~``chars``-wide slice of ``content`` centred on the earliest term match —
-    what a cross-encoder should score. Feeding it the doc *head* mis-scores any hit
-    whose relevant text sits mid-message; centring keeps the match (plus a third of
-    the window as lead-in) inside the scored span. Head of the doc when nothing
+    """The ~``chars``-wide slice of ``content`` centred on the *densest* term
+    cluster — what a cross-encoder should score. Feeding it the doc *head*
+    mis-scores any hit whose relevant text sits mid-message, and centring on the
+    *earliest* term drifts to a stray incidental mention when the answering
+    passage — where the query terms actually gather — is further down. The window
+    is placed over the passage covering the most distinct query terms (ties →
+    earliest), plus a third of the window as lead-in. Head of the doc when nothing
     matches (conceptual queries may share no literal term with the target)."""
     if not content or len(content) <= chars:
         return content
     low = content.lower()
-    pos = min((p for p in (low.find(t) for t in terms) if p >= 0), default=-1)
-    if pos <= chars // 3:  # no match, or match already inside a head window
+    pos = _densest_cluster_pos(low, terms, chars)
+    if pos <= chars // 3:  # no match, or the cluster is already inside a head window
         return content[:chars]
     start = min(pos - chars // 3, len(content) - chars)
     return content[start:start + chars]
+
+
+def _densest_cluster_pos(low: str, terms: list[str], chars: int) -> int:
+    """The start position of the ``chars``-wide window over ``low`` (already
+    lowercased) covering the most distinct ``terms`` — a two-pointer sweep over
+    every term occurrence. ``-1`` when nothing matches, so the caller falls back
+    to the doc head."""
+    occ = sorted(
+        (m.start(), t) for t in set(terms) for m in _term_pattern(t).finditer(low)
+    )
+    if not occ:
+        return -1
+    best_pos, best_cover = occ[0][0], 0
+    freq: dict[str, int] = {}
+    left = 0
+    for right_pos, right_term in occ:
+        freq[right_term] = freq.get(right_term, 0) + 1
+        while right_pos - occ[left][0] >= chars:
+            lt = occ[left][1]
+            freq[lt] -= 1
+            if not freq[lt]:
+                del freq[lt]
+            left += 1
+        if len(freq) > best_cover:
+            best_cover, best_pos = len(freq), occ[left][0]
+    return best_pos
+
+
+def rerank_windows(content: str, terms: list[str], chars: int) -> list[str]:
+    """The passages a cross-encoder should score for one hit — its relevance is
+    the best of them (MaxP). A doc that fits in ``chars`` is one passage. A longer
+    doc adds its head and tail alongside the match-centred window, so an answering
+    passage that sits far from the query terms — a resolution at the very end, or
+    a doc whose only near-query text is an incidental mention up top — is scored
+    rather than truncated away. Duplicates (a short-enough doc, an already-head
+    window) collapse."""
+    content = content or ""
+    if len(content) <= chars:
+        return [content]
+    out: list[str] = []
+    for w in (match_window(content, terms, chars), content[:chars], content[-chars:]):
+        if w and w not in out:
+            out.append(w)
+    return out
 
 
 def dedup_results(results: list[EventHit]) -> list[EventHit]:
@@ -389,15 +478,13 @@ def rank_search_results(
     p = params or _DEFAULT_PARAMS
     now = now or datetime.now(timezone.utc).replace(tzinfo=None)  # naive-UTC, matching occurred_at
     ct_weights = p.content_type_weights if p.content_type_weights is not None else _CONTENT_TYPE_WEIGHT
-    term_patterns = {t: re.compile(r"\b" + re.escape(t) + r"\b") for t in terms if len(t) < 4}
+    term_patterns = {t: _term_pattern(t) for t in terms}
 
     def combined_score(result: EventHit) -> float:
         content = (result.get("full_content", "") or "").lower()
         content_len = max(len(content), 1)
-        term_count = sum(
-            1 for t in terms
-            if (len(t) >= 4 and t in content) or (len(t) < 4 and bool(term_patterns[t].search(content)))
-        )
+        matches = {t: term_patterns[t].search(content) for t in terms}
+        term_count = sum(1 for m in matches.values() if m)
         density = term_count / max(1, content_len / p.density_norm_chars)
 
         phrase_bonus = 0.0
@@ -406,7 +493,7 @@ def rank_search_results(
             if full_phrase in content:
                 phrase_bonus = 3.0
             else:
-                positions = [content.find(t) for t in terms if content.find(t) >= 0]
+                positions = [m.start() for m in matches.values() if m]
                 if len(positions) == len(terms):
                     span = max(positions) - min(positions)
                     if span < 100:

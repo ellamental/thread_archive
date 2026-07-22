@@ -88,6 +88,19 @@ _TRIGGERS = {
 # per-match bm25()+snippet() sort (seconds), the rank form streams (~0.4s).
 _RANK_EXPR = "rank"
 
+# Duplicate-flood rescan bounds. A burst of byte-identical events — a fleet of
+# agents launched on one prompt, a thread re-emitting a line — can fill the whole
+# bm25 head of a MATCH pass, so the one conversation that recorded the answer
+# never enters the candidate pool: its longer doc ranks *below* every copy, and
+# the content-dedup that collapses the copies runs only after the pool is cut.
+# When the primary MATCH pass comes back saturated and mostly-duplicate, one
+# bounded rescan re-gathers the distinct-content representatives — a streaming
+# top-``_FLOOD_RESCAN_CAP`` window (cheap; snippet is only computed there) folded
+# by ``GROUP BY thread_id, content`` (a global GROUP BY over a broad match would
+# forfeit FTS5's streaming rank-sort — measured ~7× slower). The pool needs
+# fewer than half its rows to be duplicates before the rescan is worth it.
+_FLOOD_RESCAN_CAP = 5000
+
 
 def build_event_hit(
     *,
@@ -492,7 +505,57 @@ def search_events(
             # nothing dropped) — same MATCH, nothing new to add.
             if terms and or_q.lower() != to_match_query(query).lower():
                 run_pass(_Pass("event_search MATCH :orq", {"orq": or_q}))
+
+        # Duplicate-flood rescan: when the primary MATCH pass saturated the pool
+        # and most of it is byte-identical content, the distinct answer may rank
+        # below every copy and have missed the cut. Re-gather the distinct-content
+        # representatives so it is reachable (bounded; see _FLOOD_RESCAN_CAP).
+        match_pass = passes[0] if passes and passes[0].use_match else None
+        if match_pass is not None and not oldest_first and len(hits) >= limit:
+            def _norm(c: str) -> str:
+                return " ".join((c or "").split()).lower()
+            distinct = len({(h["thread_id"], _norm(h.get("full_content") or "")) for h in hits})
+            if distinct * 2 < len(hits):
+                _rescan_distinct(s, match_pass, shared, shared_params, limit, seen, hits)
     return hits
+
+
+def _rescan_distinct(
+    s: Session, match_pass: _Pass, shared: list[str], shared_params: dict,
+    limit: int, seen: set, hits: list[EventHit],
+) -> None:
+    """Fold a duplicate-flooded MATCH pass to one representative per distinct
+    ``(thread_id, content)`` and merge the survivors into ``hits`` — the buried,
+    distinct answer among them. Streams the top ``_FLOOD_RESCAN_CAP`` by rank
+    (snippet computed only there, in the MATCH context a GROUP BY can't provide),
+    then keeps the best-ranked row of each content group. Fail-soft: the flood
+    guard is an enhancement, so any error leaves the already-gathered pool intact."""
+    inner = (
+        "SELECT event_id, thread_id, event_type, content_type, occurred_at, "
+        "snippet(event_search, 0, '', '', ' … ', 12) AS snip, content AS full_content, rank AS rk "
+        "FROM event_search WHERE " + " AND ".join([match_pass.where] + shared) +
+        " ORDER BY rank LIMIT :flood_cap"
+    )
+    sql = sa_text(
+        "SELECT event_id, thread_id, event_type, content_type, occurred_at, snip, full_content "
+        "FROM (" + inner + ") GROUP BY thread_id, full_content ORDER BY MIN(rk) LIMIT :lim"
+    )
+    params = {**shared_params, **match_pass.params, "flood_cap": _FLOOD_RESCAN_CAP}
+    try:
+        rows = s.execute(sql, params).mappings().all()
+    except Exception:  # noqa: BLE001 — the rescan is a best-effort reachability boost
+        logger.debug("duplicate-flood rescan skipped", exc_info=True)
+        return
+    for r in rows:
+        key = (r["event_id"], r["content_type"])
+        if key in seen:
+            continue
+        seen.add(key)
+        hits.append(build_event_hit(
+            event_id=r["event_id"], thread_id=r["thread_id"], event_type=r["event_type"],
+            content_type=r["content_type"], snippet=r["snip"] or "",
+            full_content=r["full_content"] or "", occurred_at=r["occurred_at"],
+        ))
 
 
 def _write_doc(

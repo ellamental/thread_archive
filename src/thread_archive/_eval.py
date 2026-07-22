@@ -24,7 +24,11 @@ holds every ``thread_search`` call agents have made (the query) and the
 ``thread_read`` calls that followed in the same session (the click). Each
 search paired with its subsequent reads is a relevance judgment the searcher
 made at the moment of searching — real query vocabulary, multi-gold, no
-curation. Pairing rules: a read labels the most recent prior search in its
+curation. Only top-level conversation sessions count: subagent retrieval fleets
+and collection sweeps (archived as ``system``) issue recall-intent queries —
+"surface everything in vein X" — which have no single rankable target and whose
+clicks are "read everything," so they're excluded (see :func:`_trail_events`).
+Pairing rules: a read labels the most recent prior search in its
 session; reads of threads the agent had already opened before searching don't
 count; the originating session is skipped during ranking (it quotes the query
 verbatim). A click is the pick from what past search surfaced, not a
@@ -35,7 +39,9 @@ something real broke. Treat it as a collapse alarm. Needs an accumulated trail,
 so it only becomes meaningful after search has been used for a while.
 
 ``load_case_file`` reads a JSONL file of ``{"query", "gold": [ids]}`` rows
-(optional ``"sessions"``: thread ids to skip while ranking; optional ``"until"``:
+(optional ``"grades"``: a ``thread id -> 0|1|2`` relevance pool — the ranked
+candidate pool a graded metric scores against, not just the one best answer;
+optional ``"sessions"``: thread ids to skip while ranking; optional ``"until"``:
 a corpus snapshot date the golds were mined under) — the hook for hand-curated
 or agent-mined query sets.
 
@@ -43,14 +49,19 @@ or agent-mined query sets.
 result, reformulate, or abandon? Zero-label behavioral proxies, not judgments;
 their value is the trend.
 
-The scorer, :func:`evaluate`, reports MRR and recall@1/5/10/20 at thread-level
-relevance, overall and per query-shape. Read-only against the archive; the
-caller opens it (``_api.open_archive``) first.
+The scorer, :func:`evaluate`, reports MRR and recall@1/5/10/20 (binary, over the
+grade-2 ``gold`` set) plus nDCG@1/5/10/20 (graded, over the ``grades`` pool —
+so a ranking is rewarded for ordering grade-2 above grade-1 above grade-0, not
+just for surfacing one right answer; a case with no pool falls back to binary
+relevance so the metric stays defined for the title and log protocols). Reports
+overall and per query-shape. Read-only against the archive; the caller opens it
+(``_api.open_archive``) first.
 """
 
 from __future__ import annotations
 
 import json
+import math
 import random
 import re
 import time
@@ -165,7 +176,8 @@ def behavior_report(events: list[tuple[object, str, object]]) -> dict:
     and the session's trail ends there — the agent gave up or went elsewhere).
     Attribution follows the pairing rules: self-session reads and threads the
     agent had already opened don't count as clicks. Pure — takes the resolved
-    event stream :func:`_trail_events` produces.
+    event stream :func:`_trail_events` produces (conversation sessions only, so
+    programmatic subagent-fleet behavior can't skew the rates).
 
     These are behavioral proxies, not judgments: a click isn't satisfaction
     and an abandonment isn't always failure (the answer may have been in the
@@ -220,20 +232,31 @@ def behavior_report(events: list[tuple[object, str, object]]) -> dict:
 def _trail_events(s, after: str | None = None) -> list[tuple[object, str, object]]:
     """(session, kind, value) events from the tool-use trail, refs resolved.
 
+    Scoped to ``thread_type='conversation'`` sessions — top-level agent/operator
+    work, where a search has a specific target the ranking can be judged against.
+    Subagent sessions (the retrieval fleets and collection sweeps, archived as
+    ``system``) are excluded: their searches are recall-intent ("surface
+    everything in vein X"), which has no single rankable gold, and their clicks
+    are "open everything to collect it" — both poison for a ranking eval and the
+    behavioral proxies alike. This matches the corpus the ``eval`` CLI already
+    counts (``thread_type = 'conversation'``).
+
     ``after`` (ISO date/datetime) keeps only trail events that occurred at or
     after it — the time-based holdout: cases mined strictly after a ranking
     change shipped carry less of the old incumbent's shape.
     """
     sql = (
-        "SELECT thread_id, payload FROM events "
-        "WHERE event_type = 'tool_use_complete' "
-        "AND (payload LIKE '%thread_search%' OR payload LIKE '%thread_read%') "
+        "SELECT e.thread_id, e.payload FROM events e "
+        "JOIN threads t ON t.id = e.thread_id "
+        "WHERE e.event_type = 'tool_use_complete' "
+        "AND (e.payload LIKE '%thread_search%' OR e.payload LIKE '%thread_read%') "
+        "AND t.thread_type = 'conversation' "
     )
     params: dict[str, str] = {}
     if after:
-        sql += "AND occurred_at >= :after "
+        sql += "AND e.occurred_at >= :after "
         params["after"] = after
-    sql += "ORDER BY thread_id, id"
+    sql += "ORDER BY e.thread_id, e.id"
     rows = s.execute(sa_text(sql), params).all()
 
     events: list[tuple[object, str, object]] = []
@@ -262,7 +285,9 @@ def _trail_events(s, after: str | None = None) -> list[tuple[object, str, object
 
 
 def mine_log_cases(n: int, seed: int, after: str | None = None) -> list[dict]:
-    """Real search->read pairs from the archive's own tool-use trail."""
+    """Real search->read pairs from the archive's own tool-use trail (top-level
+    conversation sessions only — subagent fleets excluded, see
+    :func:`_trail_events`)."""
     with use_session() as s:
         cases = pair_log_events(_trail_events(s, after))
 
@@ -298,6 +323,12 @@ def load_case_file(path: Path) -> list[dict]:
         row = json.loads(line)
         case = {"query": row["query"], "gold": list(row["gold"]),
                 "sessions": list(row.get("sessions", []))}
+        # The graded candidate pool (thread id -> 0|1|2), when the case carries
+        # one: nDCG scores the whole pool, not just the grade-2 gold. Keys kept
+        # as strings to match the thread ids search returns; values coerced to
+        # int so a stray float grade can't skew the gain.
+        if row.get("grades"):
+            case["grades"] = {str(t): int(g) for t, g in row["grades"].items()}
         # Agent-mined cases (evals/retrieval_mine_gold.py) carry the corpus
         # snapshot date the golds were mined under; the scoring search honors
         # it so post-mining threads can't perturb the case's ranking.
@@ -317,21 +348,47 @@ def query_shape(q: str) -> str:
     return "natural" if len(q.split()) >= 2 else "single-term"
 
 
+def _dcg(rels: list[float]) -> float:
+    """Discounted cumulative gain with the standard exponential gain
+    ``2**rel - 1`` and a log2 position discount (rank i, 1-based, discounted by
+    ``log2(i + 1)``). A grade-0 doc contributes nothing, so returned
+    non-relevant docs matter only through the positions they push relevant docs
+    down to."""
+    return sum((2.0 ** r - 1.0) / math.log2(i + 2) for i, r in enumerate(rels))
+
+
+def ndcg_at_k(ranked_rels: list[float], pool_rels: list[float], k: int) -> float:
+    """nDCG@k: the ranking's DCG over the ideal DCG (the pool's grades sorted
+    best-first). ``ranked_rels`` is the relevance of the returned docs in rank
+    order; ``pool_rels`` is every graded relevance in the case's candidate pool.
+    0.0 when the pool holds nothing relevant (ideal DCG is 0)."""
+    ideal = _dcg(sorted(pool_rels, reverse=True)[:k])
+    return _dcg(ranked_rels[:k]) / ideal if ideal else 0.0
+
+
 def evaluate(cases: list[dict], *, limit: int, rerank, content_type,
              exclude_content_types: list[str] | None, search=None) -> dict:
-    """Score ``cases`` against a search function — MRR, recall@k, per-shape MRR and
-    latency. ``search`` is the ranker under evaluation (default: the archive's own),
-    so a candidate ranking can be measured against the same cases as the incumbent."""
+    """Score ``cases`` against a search function — MRR, recall@k, nDCG@k, per-shape
+    MRR and latency. ``search`` is the ranker under evaluation (default: the archive's
+    own), so a candidate ranking can be measured against the same cases as the
+    incumbent. MRR/recall are binary over the grade-2 ``gold`` set; nDCG is graded
+    over the case's ``grades`` pool (a case without one falls back to binary
+    relevance — its ``gold`` as grade 1 — so nDCG stays defined for every protocol)."""
     if search is None:
         search = api.search
     per_shape: dict[str, list[float]] = {}
     reciprocal_ranks: list[float] = []
     hits_at: dict[int, int] = {k: 0 for k in RECALL_KS}
+    ndcg_at: dict[int, float] = {k: 0.0 for k in RECALL_KS}
     latencies: list[float] = []
 
     for case in cases:
         gold = set(case["gold"])
         skip = set(case.get("sessions", []))
+        # The graded candidate pool; absent one (title/log protocols), the gold
+        # stands in as binary relevance so nDCG is still defined and comparable.
+        grades = case.get("grades") or {t: 1 for t in case["gold"]}
+        pool_rels = [float(g) for g in grades.values()]
         # A case mined under a corpus snapshot (see load_case_file) is scored
         # under it too; the kwarg is omitted otherwise so experiment SEARCH
         # callables that predate it stay compatible.
@@ -349,27 +406,31 @@ def evaluate(cases: list[dict], *, limit: int, rerank, content_type,
 
         rank = 0  # 0 = not found within limit
         pos = 0
+        ranked_rels: list[float] = []  # relevance of each returned doc, in rank order
         for h in hits:
-            if h["thread_id"] in skip:
+            tid = h["thread_id"]
+            if tid in skip:
                 continue
             pos += 1
             if pos > limit:
                 break
-            if h["thread_id"] in gold:
+            ranked_rels.append(float(grades.get(tid, 0)))
+            if rank == 0 and tid in gold:
                 rank = pos
-                break
         rr = 1.0 / rank if rank else 0.0
         reciprocal_ranks.append(rr)
         per_shape.setdefault(query_shape(case["query"]), []).append(rr)
         for k in RECALL_KS:
             if rank and rank <= k:
                 hits_at[k] += 1
+            ndcg_at[k] += ndcg_at_k(ranked_rels, pool_rels, k)
 
     n = len(cases)
     return {
         "n": n,
         "mrr": sum(reciprocal_ranks) / n if n else 0.0,
         "recall": {k: hits_at[k] / n if n else 0.0 for k in RECALL_KS},
+        "ndcg": {k: ndcg_at[k] / n if n else 0.0 for k in RECALL_KS},
         "per_shape": {
             shape: {"n": len(rrs), "mrr": sum(rrs) / len(rrs)}
             for shape, rrs in sorted(per_shape.items())

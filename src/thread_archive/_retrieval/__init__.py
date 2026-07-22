@@ -443,12 +443,17 @@ def search(
         else:
             rank_to = max(limit, p.rerank_pool) if do_rerank else limit
         ranked = _rank.rank_search_results(fused, terms, rank_to, params=p)
-        # Result-side half of the gate: when the ranked head is already a strong
-        # literal match, the lexical order is trustworthy and the cross-encoder
-        # stands down — it exists for the vocab-mismatch case, and re-ranking a
-        # confident head costs seconds only to degrade it (see head_is_strong).
-        # An explicit rerank=True skips this check along with the shape gate.
-        if do_rerank and rerank is not True and _rank.head_is_strong(ranked, terms):
+        # Result-side half of the gate: when the ranked head is a strong literal
+        # match the lexical order is trustworthy and the cross-encoder stands down
+        # — it exists for the vocab-mismatch case, and re-ranking a confident head
+        # costs seconds only to degrade it (see head_is_strong). The exception is a
+        # message head that merely echoes the query verbatim (a pasted, unanswered
+        # question): it does not earn the stand-down, so the cross-encoder gets to
+        # look for a differently-worded answer below it — but its verdict is trusted
+        # only when it rescues one (echo_head, applied after scoring below). An
+        # explicit rerank=True skips this check along with the shape gate.
+        echo_head = rerank is not True and _rank.head_is_query_echo(ranked, terms)
+        if do_rerank and rerank is not True and _rank.head_earns_standdown(ranked, terms):
             do_rerank = False
         # Cross-encoder head re-rank (gated, fail-soft): scores (query, content)
         # jointly and floats the true target up. None → keep lexical order. Head
@@ -457,18 +462,34 @@ def search(
         if do_rerank:
             from . import rerank as _rerank
 
-            head, tail = ranked[:p.rerank_pool], ranked[p.rerank_pool:]
-            # Score the match-centred window, not the doc head — a long hit whose
-            # relevant text sits mid-message would otherwise be scored on its intro.
+            # The head is at least `limit` deep: a result that will be displayed
+            # must be one the cross-encoder actually scored, so a strong-but-sparse
+            # hit sitting at position `rerank_pool`+1 (a long answering doc the
+            # density scorer buries) is not permanently unreachable at the pool
+            # boundary. Normally limit ≤ rerank_pool, so the head is rerank_pool.
+            head_n = max(p.rerank_pool, limit)
+            head, tail = ranked[:head_n], ranked[head_n:]
+            # Score the match-centred window (plus a long doc's head/tail), not the
+            # doc head alone — a hit whose relevant text sits mid-message, or whose
+            # answer sits far past an incidental query term, would otherwise be
+            # scored on its intro.
             reordered = reranker.rerank(
                 query, head,
-                get_text=lambda r: _rank.match_window(
+                get_text=lambda r: _rank.rerank_windows(
                     r.get("full_content") or r.get("snippet") or "",
                     terms, _rerank.RERANK_DOC_CHARS,
                 ),
             )
             if reordered is not None:
-                ranked, did_rerank = reordered + tail, True
+                # An echo-licensed re-rank (the head was a strong verbatim query
+                # echo, not a weak head) is trusted only when it actually rescues a
+                # vocab-mismatch hit — a new top that is itself a strong lexical
+                # match means the cross-encoder merely reshuffled confident
+                # candidates, the degrade case the stand-down protects against.
+                if echo_head and _rank.head_is_strong(reordered[:1], terms):
+                    pass  # keep the trustworthy lexical order
+                else:
+                    ranked, did_rerank = reordered + tail, True
         # Community-coherence re-rank from the corpus-native embedding graph
         # (default on — measured recall lift at every depth on the log-mined
         # protocol; see embed_graph). Only when the cross-encoder stood down:

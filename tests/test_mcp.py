@@ -112,7 +112,7 @@ def test_mcp_search_widens_to_text_when_default_scope_dry(archive_home) -> None:
     # "hi" appears only in assistant text → default scope is dry → auto-widen
     out = thread_search("hi")
     assert "hi from mcp" in out
-    assert out.startswith("note: no keyword match in the default scope")
+    assert out.startswith("note: no strong keyword match in the default scope")
     # an explicit scope is a deliberate choice — no widen, no note
     narrow = thread_search("hi", content_type="user")
     assert "hi from mcp" not in narrow and "note: no keyword match" not in narrow

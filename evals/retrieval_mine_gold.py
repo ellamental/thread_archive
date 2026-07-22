@@ -23,9 +23,12 @@ re-run to append fresh cases (already-mined queries are skipped).
 
 Two modes in one file:
 
-- default: the orchestrator. Samples mined queries, spawns one ``claude``
-  agent per query (Bash restricted to this script's tool mode), validates the
-  verdict, appends cases + a detail sidecar.
+- default: the orchestrator. Samples mined queries — from top-level
+  conversation sessions only, since subagent retrieval fleets and collection
+  sweeps search to collect a whole vein, which has no single rankable target —
+  spawns one ``claude`` agent per query (Bash restricted to this script's tool
+  mode), validates the verdict, appends cases (each carrying its gold plus the
+  full graded candidate pool, so nDCG scores the whole ranking) + a detail sidecar.
 - ``tool search`` / ``tool read``: the agent's corpus access — production
   search and thread reads with the date bound enforced server-side. (A read
   of a pre-date thread can still show messages appended after the bound;
@@ -88,10 +91,21 @@ archive with:
 
   query: {query}
 
-Context from that session around the moment of the search (what the agent \
-was doing and, after the search, what it did with the results):
+Context from that session around the moment of the search — a ±3-turn window \
+(not the whole session) showing what the agent was doing and, after the search, \
+what it did with the results:
 
 {context}
+
+That window is only a slice of session thread {session}. If it doesn't make the \
+searcher's intent clear, read the session yourself to see the lead-up — what \
+they were working on before they searched — going as far back as you need:
+
+  {tool} read {read_bound} {session} --mode chat [--offset N]
+
+Read as much or as little of it as your judgment requires. (The session is \
+never itself a gold candidate — it is where the query came from, and it is \
+excluded from search results for the same reason.)
 
 Historical hint: after this search the agent opened thread(s) {clicks}. That \
 is one signal of intent — but it may be wrong (opened is not answered) or \
@@ -174,15 +188,18 @@ def validate_gold(gold: list[str], *, until: str, sessions: set[str],
 
 
 def build_prompt(case: dict, context: str, tool_cmd: str) -> str:
-    """The mining agent's brief. ``case`` carries query/at/clicks/sessions;
-    the date bound and session skips are baked into the tool invocations shown
-    so the agent cannot search outside the case's corpus snapshot."""
+    """The mining agent's brief. ``case`` carries query/at/clicks/sessions and
+    the originating ``session`` id; the date bound and session skips are baked
+    into the tool invocations shown so the agent cannot search outside the
+    case's corpus snapshot, and the session id is offered as a read handle so
+    the agent can pull more of the pre-search lead-up when the window is thin."""
     skip = ",".join(case["sessions"]) or "-"
     return _PROMPT.format(
         at=case["at"], query=case["query"],
         context=context.strip() or "(context unavailable)",
         clicks=", ".join(case["clicks"]) or "(none recorded)",
         tool=tool_cmd,
+        session=case["session"],
         bound=f'--until "{case["at"]}" --skip "{skip}"',
         read_bound=f'--until "{case["at"]}"',
     )
@@ -208,16 +225,21 @@ def query_sites(s, after: str | None = None) -> dict[str, dict]:
     """query -> its latest search site in the trail: the originating session,
     the trail event id (the context anchor), and when it happened (the date
     bound). ``mine_log_cases`` merges occurrences per query; this recovers the
-    where/when that merge drops."""
+    where/when that merge drops. Scoped to ``thread_type='conversation'``
+    sessions, matching ``mine_log_cases`` — subagent retrieval fleets are
+    excluded on both sides, so the join in ``sample_cases`` can't reintroduce
+    them."""
     sql = (
-        "SELECT thread_id, id, occurred_at, payload FROM events "
-        "WHERE event_type = 'tool_use_complete' "
-        "AND payload LIKE '%thread_search%' ")
+        "SELECT e.thread_id, e.id, e.occurred_at, e.payload FROM events e "
+        "JOIN threads t ON t.id = e.thread_id "
+        "WHERE e.event_type = 'tool_use_complete' "
+        "AND e.payload LIKE '%thread_search%' "
+        "AND t.thread_type = 'conversation' ")
     params: dict[str, str] = {}
     if after:
-        sql += "AND occurred_at >= :after "
+        sql += "AND e.occurred_at >= :after "
         params["after"] = after
-    sql += "ORDER BY occurred_at, id"
+    sql += "ORDER BY e.occurred_at, e.id"
     sites: dict[str, dict] = {}
     for sess, eid, at, payload in s.execute(sa_text(sql), params).all():
         p = payload if isinstance(payload, dict) else json.loads(payload)
@@ -252,13 +274,16 @@ def sample_cases(n: int, seed: int, after: str | None,
 # ── the agent seam ───────────────────────────────────────────────────────────
 
 def _session_context(case: dict) -> str:
-    """The originating session around the search call — the intent evidence.
-    Best-effort: mining proceeds without it rather than dying on one odd
+    """The originating session around the search call — the opening intent
+    evidence the agent gets for free: a ±3-turn window in chat view, bounded
+    only by ``read_thread``'s own size budget (no fixed cap). It is deliberately
+    just the neighborhood of the search; the prompt hands the agent the session
+    id so it can read the rest of the lead-up itself when this window is too
+    thin. Best-effort: mining proceeds without it rather than dying on one odd
     thread."""
     try:
-        text = api.read_thread(case["session"], around_event=case["event_id"],
+        return api.read_thread(case["session"], around_event=case["event_id"],
                                context_turns=3, mode="chat")
-        return text[:6000]
     except Exception:
         return ""
 
@@ -327,7 +352,10 @@ def mine_case(case: dict, model: str, tool_cmd: str) -> tuple[dict | None, dict]
                    "rationale": verdict["rationale"]})
     if not gold:
         return None, detail
-    row = {"query": case["query"], "gold": gold,
+    # The graded candidate pool travels with the case, not just the grade-2
+    # gold: nDCG (retrieval_eval.py --cases) scores the whole ranked pool the
+    # agent built, so the paid-for judgment isn't collapsed to one right answer.
+    row = {"query": case["query"], "gold": gold, "grades": verdict["grades"],
            "sessions": sorted(case["sessions"]), "until": case["at"],
            "protocol": "agent-mined", "click_gold": case["clicks"],
            "confidence": verdict["confidence"],

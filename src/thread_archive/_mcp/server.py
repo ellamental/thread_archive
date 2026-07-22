@@ -45,6 +45,7 @@ from .._retrieval import format_results, warm_models
 from .._retrieval import usage as _usage
 from .._retrieval._types import EventHit
 from .._retrieval.format import query_terms, term_hit_count, top_hit
+from .._retrieval.rank import strong_match_floor
 
 logger = logging.getLogger(__name__)
 
@@ -159,8 +160,11 @@ WIDENED_SEARCH_CONTENT_TYPES = DEFAULT_SEARCH_CONTENT_TYPES + ("text",)
 
 def _default_scope_is_weak(hits: "list[EventHit]", query: str) -> bool:
     """True when a default-scope result set warrants the one-shot widen to
-    assistant text: no hits at all, or no query term appears in the top hit
-    (nearest-neighbour guesses)."""
+    assistant text: no hits at all, or a top hit that is not a *strong* match for
+    the query (below :func:`strong_match_floor` of its terms). A single stray token
+    landing in a user/title hit must not pass for an answer and block the widen
+    from reaching an exact answer that lives in assistant text — the same
+    trustworthy-match bar the result header calls ``strong``."""
     terms = query_terms(query)
     if not terms:
         return False
@@ -168,7 +172,8 @@ def _default_scope_is_weak(hits: "list[EventHit]", query: str) -> bool:
         return True
     # top_hit, not hits[0] — the nested shape orders rows by thread, not by rank.
     top = top_hit(hits)
-    return term_hit_count(top.get("full_content") or top.get("snippet") or "", terms) == 0
+    text = top.get("full_content") or top.get("snippet") or ""
+    return term_hit_count(text, terms) < strong_match_floor(len(terms))
 
 
 # ── degradation notice ────────────────────────────────────────────────────────
@@ -416,7 +421,7 @@ def thread_search(
 
     rendered = format_results(hits, query, output=output)
     if widened:
-        rendered = ("note: no keyword match in the default scope (user/title/summary) — "
+        rendered = ("note: no strong keyword match in the default scope (user/title/summary) — "
                     "results below include assistant text\n" + rendered)
     return _degradation_notices() + rendered
 

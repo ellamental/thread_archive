@@ -190,14 +190,27 @@ class Reranker:
 
     def rerank(self, query: str, items: list, get_text) -> Optional[list]:
         """Reorder ``items`` by cross-encoder relevance to ``query``. ``get_text(item)``
-        yields the text to score. Returns a new list (best-first), or ``None`` if the
-        reranker is unavailable/errored (caller keeps its order). Pure helper."""
+        yields the text to score — a single string, or several passages of one hit,
+        in which case the hit scores as its best passage (MaxP: a long doc's
+        answering passage counts even when its head doesn't). Returns a new list
+        (best-first), or ``None`` if the reranker is unavailable/errored (caller
+        keeps its order). Stable on ties. Pure helper."""
         if not items:
             return None
-        scores = self.rerank_scores(query, [get_text(it) for it in items])
+        flat: list[str] = []
+        spans: list[list[int]] = []
+        for it in items:
+            texts = get_text(it)
+            if isinstance(texts, str):
+                texts = [texts]
+            spans.append([len(flat) + i for i in range(len(texts))])
+            flat.extend(texts)
+        scores = self.rerank_scores(query, flat)
         if scores is None:
             return None
-        return [it for _, it in sorted(zip(scores, items), key=lambda p: -p[0])]
+        item_score = [max((scores[i] for i in idxs), default=float("-inf")) for idxs in spans]
+        order = sorted(range(len(items)), key=lambda i: -item_score[i])
+        return [items[i] for i in order]
 
 
 # The process reranker: one cross-encoder shared by every caller without its own.

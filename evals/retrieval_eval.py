@@ -33,16 +33,19 @@ deliberately reshaped ranker may be divergence from the incumbent's shape,
 not regression; no number from this protocol certifies improvement.
 
 ``--cases FILE`` evaluates a JSONL file of ``{"query": ..., "gold": [ids]}``
-rows (optional ``"sessions"``: thread ids to skip while ranking) — the hook
-for hand-curated or generated query sets. Mined and curated case files contain
-real usage; keep them out of the repo.
+rows (optional ``"grades"``: a ``thread id -> 0|1|2`` candidate pool nDCG
+scores against — grade the whole pool, not one golden result; optional
+``"sessions"``: thread ids to skip while ranking) — the hook for hand-curated
+or generated query sets. Mined and curated case files contain real usage; keep
+them out of the repo.
 
 ``--behavior`` runs no ranking at all: it reports zero-label behavioral
 signals from the whole trail — per search, did the agent click a result,
 reformulate, or abandon? Proxies, not judgments; their value is the trend.
 
-Reports MRR and recall@1/5/10/20 at thread-level relevance, overall and
-per query-shape (so a lexical regression can't hide behind semantic wins).
+Reports MRR and recall@1/5/10/20 (binary, over each case's gold) and, when a
+case file carries a graded pool, nDCG@1/5/10/20 (graded), overall and per
+query-shape (so a lexical regression can't hide behind semantic wins).
 ``--mined-after`` restricts the log protocols to trail events after a date
 (the time-based holdout); ``--trend-out`` appends any run's report as one
 JSONL row, turning point measurements into a time series (the CI gate row
@@ -82,6 +85,7 @@ from thread_archive._eval import (  # noqa: E402,F401
     evaluate,
     load_case_file,
     mine_log_cases,
+    ndcg_at_k,
     pair_log_events,
     query_shape,
     resolve_read_refs,
@@ -131,7 +135,8 @@ def main() -> None:
                        "archive's own tool-use trail (click protocol)")
     proto.add_argument("--cases", type=Path, metavar="FILE",
                        help="evaluate a JSONL case file: "
-                       '{"query", "gold": [thread ids], "sessions": [...]}')
+                       '{"query", "gold": [thread ids], "sessions": [...], '
+                       '"grades": {id: 0|1|2}} — grades enable nDCG')
     proto.add_argument("--behavior", action="store_true",
                        help="no ranking run at all: report zero-label "
                        "behavioral signals from the whole trail — click rate, "
@@ -276,6 +281,7 @@ def main() -> None:
         "mined_after": args.mined_after,
         "n": report["n"], "mrr": report["mrr"],
         "recall": {str(k): v for k, v in report["recall"].items()},
+        "ndcg": {str(k): v for k, v in report["ndcg"].items()},
         "latency_p50_ms": report["latency_p50_ms"],
     })
 
@@ -284,6 +290,7 @@ def main() -> None:
     else:
         print(f"cases: {report['n']}   MRR: {report['mrr']:.3f}   "
               + "   ".join(f"R@{k}: {v:.3f}" for k, v in report["recall"].items()))
+        print("   ".join(f"nDCG@{k}: {v:.3f}" for k, v in report["ndcg"].items()))
         print(f"latency p50: {report['latency_p50_ms']:.0f} ms")
         for shape, stats in report["per_shape"].items():
             print(f"  {shape:>15}: n={stats['n']:<4} MRR={stats['mrr']:.3f}")

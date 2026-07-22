@@ -111,6 +111,15 @@ def test_build_prompt_handles_missing_context_and_clicks():
     assert '--skip "-"' in p
 
 
+def test_build_prompt_offers_the_session_as_a_read_handle():
+    # The originating session id is handed over as a date-bounded read handle
+    # with the lead-up framing, so the agent can pull more of the pre-search
+    # context itself when the ±3-turn window is too thin.
+    p = mine_gold.build_prompt(_case(), "ctx here", "py mine.py tool")
+    assert 'read --until "2026-07-01T12:00:00" S1 --mode chat' in p
+    assert "lead-up" in p
+
+
 # ── mined_queries (re-run dedupe) ────────────────────────────────────────────
 
 def test_mined_queries_reads_existing_and_skips_junk(tmp_path):
@@ -121,6 +130,41 @@ def test_mined_queries_reads_existing_and_skips_junk(tmp_path):
                  '{"query": "b", "gold": []}\n')
     assert mine_gold.mined_queries(f) == {"a", "b"}
     assert mine_gold.mined_queries(tmp_path / "absent.jsonl") == set()
+
+
+# ── query_sites (conversation-only scope) ────────────────────────────────────
+
+def test_query_sites_excludes_subagent_fleet_sessions(archive_home):
+    """query_sites recovers each query's search site (session/event/date) for
+    mining, and like mine_log_cases it only sees top-level conversation sessions.
+    A subagent fleet/sweep session (archived as ``system``) is skipped, so
+    sample_cases can never join a fleet query back into the sampled set."""
+    from datetime import datetime, timezone
+
+    from thread_archive._store import Event, Thread, get_session, init_db, use_session
+
+    init_db()
+
+    def seed(name: str, query: str, thread_type: str) -> None:
+        with get_session() as s:
+            t = Thread(name=f"sess:{name}", thread_type=thread_type,
+                       source="claude-code", source_id=f"agent:{name}")
+            s.add(t)
+            s.flush()
+            s.add(Event(thread_id=t.id, stream_id="trail",
+                        event_type="tool_use_complete",
+                        payload={"tool_name": "mcp__thread-archive__thread_search",
+                                 "input": {"query": query}},
+                        occurred_at=datetime(2026, 1, 1, 12, 0, tzinfo=timezone.utc)))
+            s.commit()
+
+    seed("working", "a specific lookup", "conversation")
+    seed("fleet", "collect the whole vein", "system")
+
+    with use_session() as s:
+        sites = mine_gold.query_sites(s)
+
+    assert set(sites) == {"a specific lookup"}
 
 
 # ── eval-side contract: until flows from case file to the search call ────────
@@ -134,6 +178,18 @@ def test_load_case_file_carries_until(tmp_path):
     cases = retrieval_eval.load_case_file(f)
     assert cases[0]["until"] == "2026-07-01"
     assert "until" not in cases[1]
+
+
+def test_load_case_file_carries_grades_pool(tmp_path):
+    # The graded candidate pool survives the round-trip: keys stringified,
+    # values coerced to int, and a case without a pool simply omits it.
+    f = tmp_path / "cases.jsonl"
+    f.write_text(
+        '{"query": "q1", "gold": ["A"], "grades": {"A": 2, "B": 1, "C": 0}}\n'
+        '{"query": "q2", "gold": ["B"]}\n')
+    cases = retrieval_eval.load_case_file(f)
+    assert cases[0]["grades"] == {"A": 2, "B": 1, "C": 0}
+    assert "grades" not in cases[1]
 
 
 def test_evaluate_passes_until_only_when_present():
