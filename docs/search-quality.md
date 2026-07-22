@@ -35,10 +35,10 @@ that surfaces what past search never could gets no credit for it. Good
 numbers here mean the stack reliably re-finds what real searches actually
 delivered; they cannot certify there was nothing better to find. Semantic
 fusion is the layer that pays — +10 points of success@10 over the lexical core
-at no latency cost. The cross-encoder adds about two more for 5× the latency,
-which is why the pipeline auto-gates it to conceptual queries instead of
-running it everywhere. Both model arms have an off switch —
-`THREAD_ARCHIVE_EMBED=off` and `THREAD_ARCHIVE_RERANK=off` pin a process to
+at no latency cost. The cross-encoder costs 5× the latency, which is why the
+pipeline auto-gates it to conceptual queries instead of running it everywhere.
+Both model arms have an off switch — `THREAD_ARCHIVE_EMBED=off` and
+`THREAD_ARCHIVE_RERANK=off` pin a process to
 the lexical core without uninstalling the extra, for a box that wants search
 cheap and free of the cold-start model load (`retrieval_eval.py
 --lexical-only` measures that configuration). One more signal made the cut: a
