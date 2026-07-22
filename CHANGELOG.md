@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- Removed the cross-encoder net-lift figure ("~2 points of success@10") from the docs
+  (`_retrieval/rerank.py`, `docs/search-quality.md`) — a log-mined/title-proxy number never
+  re-established on the snapshot-bound gold files that are now the measurement of record, where a
+  rerank on/off ablation shows no reliable net lift (mixed by file: helps one, hurts another, neutral
+  on the rest). The docs now state only the ~5× latency cost and the gating that follows from it; the
+  auto-gate and strong-head stand-down code are unchanged.
+
 - Retrieval `fusion_weight` raised 50 → 100. The normalized cross-backend `_rrf` agreement term in
   the weighted ranker was tuned on the discredited title-proxy eval and left the semantic arm
   underweighted against term density: a vocab-mismatch answer the vector arm surfaces (density ~0,

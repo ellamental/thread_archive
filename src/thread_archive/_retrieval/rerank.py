@@ -9,11 +9,11 @@ the model loads in this process, gated to the ``[embeddings]`` extra (torch).
 Why it exists: the bi-encoder ANN (the vector arm) puts the true target in the
 top-20 often but at rank 1 rarely — semantic look-alikes outrank it, and a
 vocab-mismatch target has lexical density ~0 so the lexical scorer can't separate
-them either. A cross-encoder scores (query, candidate) *jointly* and pulls the
-target up the mid-list (found@1 0.21→0.285, MRR 0.37→0.45 — measured on the
-title-proxy eval, which flatters every layer; on log-mined real queries the
-pipeline-level lift is ~2 points of success@10 for 5× the latency, which is why
-the auto-gate confines the re-rank to the vocab-mismatch queries it exists for).
+them either. A cross-encoder scores (query, candidate) *jointly* to separate the
+true target from its semantic look-alikes — a signal neither the bi-encoder nor
+the lexical scorer computes. It costs ~5× the latency of the arms it re-ranks,
+which is why the auto-gate confines the re-rank to the vocab-mismatch queries it
+exists for.
 
 A :class:`Reranker` owns one cross-encoder plus the pairing policy. The
 module-level functions delegate to the process default (:func:`default`); the
