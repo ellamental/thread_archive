@@ -114,7 +114,9 @@ Your job:
 
 1. Search widely around this topic to understand it — its distinct sub-subjects \
 and the neighboring subjects that share its vocabulary but are NOT it (near-misses \
-look relevant; that is the point of testing on this topic).
+look relevant; that is the point of testing on this topic). Search DEEP too: \
+`search` returns 50 by default — read down the whole band, not just the top few, \
+so you catch the look-alikes today's ranker buries.
 
 2. Decide the ANGLES worth testing — each a distinct way a real user would come \
 at this topic, and author ONE search query per angle. Use as many angles as the \
@@ -159,7 +161,9 @@ Method:
 read) and confirm or downgrade each; they are leads, not answers.
 2. Expand past them: reformulate widely — synonyms, the intended meaning's own \
 vocabulary, the confounds' vocabulary — to find relevant threads the survey \
-missed. The benchmark's value is a COMPLETE gold set, so dig.
+missed. The benchmark's value is a COMPLETE gold set, so dig. `search` returns \
+50 by default — read down the whole band; a thread that answers the intent \
+belongs in the pool even when today's ranker buries it past the top few.
 3. Grade every thread you inspected, ranked by how well it answers the intended \
 meaning: 2 = answers it, 1 = partial or related-but-not-answering, 0 = a confound \
 or irrelevant. Include the confounds you found at grade 0 — a benchmark needs the \
