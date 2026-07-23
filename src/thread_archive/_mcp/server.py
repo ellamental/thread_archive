@@ -673,6 +673,13 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
     # so it never holds up interpreter exit; warm_models is fail-soft (a missing extra / load
     # failure just restores the lazy behaviour).
     if plan.warm:
+        # Defer model construction to this warm: until it lands, a query serves
+        # lexical-only (fast) instead of blocking on the tens-of-seconds cold load
+        # — the arms rejoin automatically once the models are resident. Without
+        # this a query racing the warm waits out the whole load in-request.
+        from .._retrieval.model_slot import set_defer_construction
+
+        set_defer_construction(True)
         threading.Thread(target=warm_models, name="archive-warm-models", daemon=True).start()
     # Startup catch-up: whatever landed in the local stores since the last
     # ingest (by any process) is searchable by the time the first query

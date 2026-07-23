@@ -14,6 +14,16 @@ as a quality score, which the click-label protocols are censored against being
 (see the ``retrieval-gate`` row in ``ci.toml``). A floor answers one question —
 did search break below the grounded baseline — and only that.
 
+The gate's *verdict* stays a floor check, but each run's measured numbers — which
+it already prints — are also appended to a run ledger
+(``<home>/gold-runs.jsonl``, :mod:`thread_archive._ops.gold_runs`): per-file
+MRR/success/recall/nDCG/p50 under the ``SearchParams`` and commit that produced
+them. So the baseline is a recorded timeseries, and the before/after of a
+defaults change (e.g. a re-rank budget cut) is a lookup — ``--history`` — not a
+re-run of the old configuration. The same caveat rides the ledger as the printed
+line: these are click-label re-find scores, a regression signal, never a
+certification that search is *good*.
+
 The gate *reads* the gold files; it does not tune against them, so it does not
 consume the hold-out (``evals/README.md`` → "Hold-out discipline"). That
 discipline governs the human tuning loop — don't validate on the file you tuned
@@ -144,9 +154,51 @@ def _load(path: Path) -> list[dict]:
     return load_case_file(path)
 
 
-def main() -> int:
+def _print_history(limit: int | None) -> int:
+    """Print the recorded gold-run timeseries (newest first) — the baseline as it
+    actually scored over time, per file, under the config that produced it. The
+    read-back half of the ledger: what a defaults change is compared against
+    without re-running the old configuration."""
+    from thread_archive._config import default_home
+    from thread_archive._ops import gold_runs
+
+    home = Path(os.environ.get("THREAD_ARCHIVE_HOME") or default_home())
+    runs = gold_runs.read_runs(home, limit=limit)
+    if not runs:
+        print(f"no recorded gold runs at {home / gold_runs.LEDGER_FILE}")
+        return 0
+    for run in runs:
+        cfg = run.get("config", {}).get("params", {})
+        knobs = f"pool={cfg.get('rerank_pool', '?')} doc={cfg.get('rerank_doc_chars', '?')}"
+        flag = "ok" if run.get("passed") else "BELOW FLOOR"
+        print(f"{run['at'][:19]}  {run.get('commit') or '-':>10}  [{knobs}]  {flag}")
+        for name, m in run.get("files", {}).items():
+            print(f"    {name:34s} MRR {m.get('mrr', 0):.3f}  S@10 {m.get('success10', 0):.3f}  "
+                  f"R@10 {m.get('recall10', 0):.3f}  nDCG@10 {m.get('ndcg10', 0):.3f}  "
+                  f"p50 {m.get('p50_ms', 0):.0f}ms")
+    return 0
+
+
+def main(argv: list[str] | None = None) -> int:
+    import argparse
+
+    ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
+    ap.add_argument("--history", nargs="?", type=int, const=0, default=None, metavar="N",
+                    help="print the recorded gold-run timeseries (newest first; N caps "
+                    "the count) instead of scoring, then exit")
+    # None (a programmatic main() call — tests, importers) means "no CLI args", not
+    # "read sys.argv" (which under pytest is the test runner's argv). The __main__
+    # entry passes the real argv explicitly.
+    args = ap.parse_args(argv if argv is not None else [])
+    if args.history is not None:
+        return _print_history(args.history or None)
+
     snap = Path(os.environ.get("THREAD_ARCHIVE_SNAP", str(DEFAULT_SNAP)))
     gold_dir = Path(os.environ.get("THREAD_ARCHIVE_GOLD_DIR", str(DEFAULT_GOLD_DIR)))
+    # The real archive home, captured before the scoring override below repoints
+    # THREAD_ARCHIVE_HOME at the frozen snapshot — the run ledger lands here, beside
+    # the other home-root ledgers, not inside the snapshot fixture.
+    home = Path(os.environ.get("THREAD_ARCHIVE_HOME") or str(DEFAULT_GOLD_DIR))
 
     manifest = snap / "snapshot.json"
     if not manifest.is_file():
@@ -164,6 +216,7 @@ def main() -> int:
 
     breaches: list[str] = []
     scored = 0
+    measured: dict[str, dict] = {}  # per-file metrics for the run ledger
     for path in files:
         name = path.name
         try:
@@ -183,12 +236,19 @@ def main() -> int:
         r10 = report["recall"][10]
         n10 = report["ndcg"][10]
         floor = FLOORS.get(name)
+        # Record every scored file — gated or not — with its full metric row.
+        fb = check_floors(name, report, floor) if floor else []
+        measured[name] = {
+            "n": report["n"], "mrr": round(mrr, 4), "success10": round(s10, 4),
+            "recall10": round(r10, 4), "ndcg10": round(n10, 4),
+            "p50_ms": round(report["latency_p50_ms"], 1),
+            "status": ("below_floor" if fb else "ok") if floor else "ungated",
+        }
         if floor is None:
             print(f"  {name:34s} MRR {mrr:.3f}  S@10 {s10:.3f}  "
                   f"R@10 {r10:.3f}  nDCG@10 {n10:.3f}  "
                   f"ungated (no floor — add one to gate)")
             continue
-        fb = check_floors(name, report, floor)
         status = "BELOW FLOOR" if fb else "ok"
         print(f"  {name:34s} MRR {mrr:.3f} (floor {floor['mrr']})  "
               f"S@10 {s10:.3f} (floor {floor.get('success10', '-')})  "
@@ -196,6 +256,15 @@ def main() -> int:
               f"nDCG@10 {n10:.3f} (floor {floor.get('ndcg10', '-')})  {status}")
         breaches += fb
         scored += 1
+
+    # Record the run whenever anything was measured (gated or ungated) — the
+    # timeseries wants the ungated files' numbers too, so a floor can be
+    # calibrated from history. Fail-soft: never breaks the gate's verdict.
+    if measured:
+        from thread_archive._ops import gold_runs
+
+        gold_runs.record_run(home, snapshot_id=current, files=measured,
+                             passed=not breaches)
 
     if scored == 0 and not breaches:
         print("gold gate: no fresh calibrated gold files — skipping "
@@ -211,4 +280,4 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    sys.exit(main(sys.argv[1:]))

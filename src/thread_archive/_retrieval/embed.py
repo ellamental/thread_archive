@@ -31,7 +31,7 @@ import sys
 from collections.abc import Callable
 from typing import Any, Optional, Protocol
 
-from .model_slot import ModelSlot
+from .model_slot import ModelSlot, defer_construction
 
 logger = logging.getLogger(__name__)
 
@@ -282,6 +282,11 @@ class Embedder:
         # vectors.search) honors it too, and a lexical-only run can never
         # cold-load a model.
         if not self.is_available():
+            return None
+        # Load policy: when the process defers construction to warm (a server), a
+        # query arriving before the model is resident sits the arm out (lexical
+        # stays fast) rather than blocking on the tens-of-seconds cold load.
+        if defer_construction() and not self.is_loaded():
             return None
         try:
             with self._slot.use() as model:

@@ -12,15 +12,42 @@
   tests, direct callers) means every timing point is a cheap `is None` check, so an
   unmeasured search is never slowed. Still ids and timings only, never content.
 
-- Search latency cut hard: the cross-encoder re-rank was 77–94% of a conceptual
-  query's wall-clock (the rest of the pipeline — FTS, vectors, ranking — runs in
-  under a second), so its two cost knobs are cheaper by default. `rerank_pool`
-  24→12 (candidates scored) and the new `rerank_doc_chars` 1500→768 (per-passage
-  cap) put ~4× fewer tokens through the model, taking a warm re-rank from ~3–6s to
-  ~1–1.5s. The re-rank still runs, gated as before; it just scores a tighter,
-  query-centred window. `evals/experiments/rerank_rich.py` holds the old budget so
-  the search lab can measure whether the cut cost any gold-file quality (the CI gold
-  gate is the standing floor); `rerank_pool8.py` is the next-cut candidate.
+- The retrieval gold gate now **records every run as a timeseries**, not just a
+  pass/fail against fixed floors. Each run appends one row to
+  `<home>/gold-runs.jsonl` (`thread_archive._ops.gold_runs`): per gold file's
+  MRR/success@10/recall@10/nDCG@10 and p50 latency, the active `SearchParams`, the
+  model-arm switches, the snapshot id, and the code commit. So the baseline is a
+  recorded history — "baseline was 0.46 MRR on commit X under pool=24, 0.44 on Y
+  under pool=12" is a lookup (`retrieval_gold_gate.py --history`), and the
+  before/after of a defaults change is on disk under the config that produced it
+  instead of needing the old configuration re-run. The gate's *verdict* stays a
+  floor check (a displayed number is not a quality score — see the gate docstring);
+  the ledger is the same telemetry the gate already prints, kept.
+
+- **Search worst-case latency brought under ~1.5s** (from a 7s p50 / 57s p99 in the
+  usage ledger). Three tail sources fixed:
+  - *Cross-encoder re-rank off by default* (`SearchParams.rerank_auto=False`). It
+    was the pipeline's dominant cost — measured 2–4s on a long conceptual query,
+    with wide variance — for ~no gold-file MRR over the fused
+    lexical+semantic+coherence stack. Auto-re-rank now sits out; `rerank=True` still
+    forces it, and the community-coherence re-rank still orders the head. The
+    quality-rebuild seam is the search lab (`rerank_pool8.py` = a budget-fitting
+    re-rank candidate, `rerank_rich.py` = the old full budget to beat). Its
+    `rerank_pool` (24→12) and the new `rerank_doc_chars` (1500→768) knobs stay, for
+    when a re-rank re-earns its place within budget.
+  - *Code-identifier queries no longer scan the whole corpus.* A `foo_bar` query
+    whose exact-phrase MATCH came up short fell through to a `content LIKE '%…%'`
+    full-table scan (~10s over ~3.9M rows). Now indexed token-MATCH fallbacks (the
+    identifier's tokens, which ride the FTS index) fill the pool first, and the
+    residual substring scan — the within-token catcher MATCH can't do — is bounded
+    to the recent-id window (`_LIKE_SCAN_CAP`). Worst case ~9.8s → ~0.2s (0.6s for a
+    genuinely all-rare-token query).
+  - *Cold-model load no longer lands in a request.* A query arriving before the
+    server's background warm finished used to block on the tens-of-seconds model
+    load (the 56–134s ledger outliers). The server now defers construction to warm
+    (`model_slot.set_defer_construction`): until the models are resident, a query
+    serves lexical-only (fast) and the semantic/re-rank arms rejoin automatically
+    once warm lands.
 
 - `SearchParams` gained `rerank_doc_chars`, the per-passage character cap the
   cross-encoder scores each hit at — first-class so the search lab can race passage

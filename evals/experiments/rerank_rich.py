@@ -1,9 +1,9 @@
-"""The pre-lean cross-encoder budget: pool 24, passage 1500 chars."""
+"""Re-enable the cross-encoder at the old rich budget: pool 24, passage 1500."""
 
 from thread_archive._retrieval import SearchParams
 
-HYPOTHESIS = ("The shipped re-rank budget was cut for latency (pool 24->12, passage "
-              "1500->768). This is the old rich budget: if it recovers gold-file MRR/nDCG "
-              "meaningfully, the cut traded away quality worth paying ~4x the re-rank "
-              "cost for; if it doesn't, the lean default is free speed.")
-PARAMS = SearchParams(rerank_pool=24, rerank_doc_chars=1500)
+HYPOTHESIS = ("The cross-encoder auto-re-rank ships OFF (it was the pipeline's dominant "
+              "latency for ~no gold gain). This turns it back on at the old rich budget: "
+              "the gold-file MRR/nDCG delta over the shipped no-rerank baseline is what "
+              "the re-rank would buy back — the quality-rebuild target to beat within budget.")
+PARAMS = SearchParams(rerank_auto=True, rerank_pool=24, rerank_doc_chars=1500)
