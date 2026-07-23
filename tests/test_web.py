@@ -310,7 +310,7 @@ def test_threads_endpoint(archive_home):
 
 
 def test_threads_first_user_message_preview_is_trimmed_and_capped(archive_home):
-    content = "  " + "x" * 205
+    content = " \n\t" + "x" * 205 + "\r\n"
     f = archive_home / "long-first-message.jsonl"
     user = dict(
         USER,

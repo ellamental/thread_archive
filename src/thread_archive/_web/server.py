@@ -394,7 +394,9 @@ def _list_threads(*, limit: int, q: Optional[str], types: Optional[list[str]] = 
     last_active_at = func.coalesce(
         newest_event_at, Thread.updated_at, type_=DateTime(timezone=True)
     ).label("last_active_at")
-    user_content = func.trim(func.json_extract(Event.payload, "$.content"))
+    user_content = func.trim(
+        func.json_extract(Event.payload, "$.content"), " \t\r\n"
+    )
     first_user_message = (
         select(func.substr(user_content, 1, 200))
         .where(
