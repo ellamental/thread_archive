@@ -113,3 +113,29 @@ def test_lab_run_scores_every_experiment_against_baseline(corpus) -> None:
     # ranker (pool_order) must not beat the shipped weights on this corpus.
     by_name = {r["name"]: r for r in rows}
     assert by_name["pool_order"]["mrr"] <= by_name["baseline"]["mrr"]
+
+
+def test_gold_lab_scores_cases_against_baseline(corpus) -> None:
+    """The gold path races the same experiments over a snapshot-shaped case list
+    (thread-id golds + graded pools) — the leaderboard `--gold` prints per file.
+    Exercised model-free over the synthetic corpus, so it needs no snapshot;
+    the snapshot binding + discovery plumbing is the CLI's, not this loop's."""
+    lab = _lab()
+    experiments = lab.discover(EXPERIMENTS_DIR)
+    cases = [
+        {"query": "authentication", "gold": [corpus["auth"]], "sessions": [],
+         "grades": {corpus["auth"]: 2, corpus["css-decoy"]: 1, corpus["dump"]: 0}},
+        {"query": "postgres connection pool", "gold": [corpus["db-pool"]],
+         "sessions": [], "grades": {corpus["db-pool"]: 2}},
+    ]
+    report = lab.run_gold_lab(cases, experiments, limit=20)
+    rows = report["rows"]
+    assert rows[0]["name"] == "baseline" and rows[0]["delta_mrr"] == 0.0
+    assert {r["name"] for r in rows[1:]} == {e.name for e in experiments}
+    mrrs = [r["mrr"] for r in rows[1:]]
+    assert mrrs == sorted(mrrs, reverse=True)  # leaderboard order
+    for r in rows:
+        assert 0.0 <= r["mrr"] <= 1.0
+        assert set(r["success"]) >= {"1", "5", "10", "20"}
+        assert set(r["recall"]) >= {"1", "5", "10", "20"}
+        assert set(r["ndcg"]) >= {"1", "5", "10", "20"}

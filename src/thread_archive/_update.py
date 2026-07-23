@@ -355,7 +355,7 @@ def _default_migrate(home: Optional[str]) -> None:
 def _default_restart() -> None:
     """Kick the installed *long-running* agents (watcher, MCP server) so they
     pick up the new code. The scheduled jobs — the backup, and the plugin's
-    curation drains — are run-to-completion processes that load fresh code at their next fire,
+    background drains — are run-to-completion processes that load fresh code at their next fire,
     and ``kickstart -k`` on one would *run it now*, off schedule. Fail-soft per
     agent — a restart hiccup must not be mistaken for a failed update (the
     code on disk is already correct)."""

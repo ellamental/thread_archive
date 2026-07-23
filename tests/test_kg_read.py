@@ -1,4 +1,4 @@
-"""The knowledge-graph read surface: getting curated topics back OUT.
+"""The knowledge-graph read surface: getting topics back OUT.
 
 ``_knowledge.read`` is the library layer (topic_get / topic_members /
 topic_thread_ids); on top of it sit the real topic render in ``thread_read`` and
@@ -106,7 +106,7 @@ def test_topic_thread_ids_covers_cited_and_linked(archive_home) -> None:
     assert topic_thread_ids(peer) == []
 
 
-# ── thread_read renders a topic as its curated page ───────────────────────────
+# ── thread_read renders a topic as its page ───────────────────────────
 def test_thread_read_on_a_topic_renders_citations(archive_home) -> None:
     topic, _, conv_a, _, _, ev_a, _ = _seed_topic_with_evidence()
 

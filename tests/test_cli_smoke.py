@@ -32,6 +32,16 @@ def test_help_runs(capsys: pytest.CaptureFixture[str]) -> None:
     assert "archive" in out
 
 
+def test_mine_lists_miners(capsys: pytest.CaptureFixture[str]) -> None:
+    # Bare `mine` is the registry list view — no archive access, no token spend —
+    # so it drives cmd_mine's dispatch into the `_mine` package end to end.
+    assert main(["mine"]) == 0
+    out = capsys.readouterr().out
+    assert "Gold miners" in out
+    for name in ("query", "topic", "rerank", "querygen"):
+        assert name in out
+
+
 def test_all_subcommands_present() -> None:
     parser = build_parser()
     # Reach into the subparsers action to assert the full command surface is wired.
@@ -40,7 +50,7 @@ def test_all_subcommands_present() -> None:
     assert set(sub.choices) == {
         "setup", "import", "import-export", "providers", "watch", "reindex", "snapshot",
         "migrate", "embed",
-        "status", "eval", "backup", "verify", "repair", "restore-drill", "restore",
+        "status", "eval", "mine", "backup", "verify", "repair", "restore-drill", "restore",
         "nightly", "coverage", "mirror", "redact", "unredact", "daemon",
         "fix-import", "self-update",
     }

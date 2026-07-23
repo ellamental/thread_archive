@@ -2,7 +2,7 @@
 
 The claim under test: communities built from the corpus itself
 (:mod:`thread_archive._retrieval.embed_graph` — thread centroids → cosine kNN
-→ Leiden, zero curation input) carry a retrieval signal. Two levers, evaluated
+→ Leiden, no topic-graph input) carry a retrieval signal. Two levers, evaluated
 on the same log-mined cases as ``retrieval_eval.py`` (real queries, subsequent
 reads as clicks):
 

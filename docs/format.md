@@ -23,8 +23,7 @@ It is independent of the package version.
 
 Version 2's shape: thread ids are **ULIDs** — 26-character Crockford base32
 strings whose embedded 48-bit timestamp is the thread's start, so
-lexicographic id order is chronological order and ids are globally unique
-(archives merge without rewriting). A thread that ever had an integer id
+lexicographic id order is chronological order and ids are globally unique. A thread that ever had an integer id
 carries it as `legacy_id`, a permanent alias resolvable everywhere a thread
 ref is accepted. Shard buckets are derived from the sha256 of the id string
 (byte *i* names the level-*i* bucket directory), not from the id's numeric
@@ -63,7 +62,7 @@ truth/
     <hh>/<hh>/<id>.jsonl #   shard_depth 2: sha256(id)[0:2], then sha256(id)[2:4]
   blobs/                 # content-addressed binary content (images, documents)
     <hh>/<sha256><ext>   #   hh = first two hex chars; ext from media type (.png, .pdf, .bin)
-  kg_events.jsonl        # append-only curatorial event log (knowledge layer)
+  kg_events.jsonl        # append-only topic-graph event log
   thread_links.jsonl     # snapshot: topic-graph edges (rebuildable from kg_events)
   topic_messages.jsonl   # snapshot: topic evidence   (rebuildable from kg_events)
   import_state.jsonl     # snapshot: importer cursors/watermarks
@@ -103,7 +102,8 @@ permanent alias), `name` (unique slug), `title`, `thread_type` (`"conversation"`
 `exclude_from_search` (bool), `workspace`, `topic_kind`,
 `epistemological_type`, `inserted_at`, `updated_at`.
 
-**Event record** — `type: "event"` plus: `id` (int, globally unique),
+**Event record** — `type: "event"` plus: `id` (int, unique across the
+archive — locally minted, so ids from two archives collide),
 `thread_id` (ULID string), `stream_id` (turn grouping), `api_call_id`, `event_type` (e.g.
 `user_message_sent`, `thought_generated`, `tool_called`, `tool_returned`),
 `payload` (object; the event's content — shape varies by `event_type`),
@@ -144,12 +144,12 @@ It is bare (never thread-prefixed); uniqueness is enforced per
 
 ## kg_events.jsonl
 
-Append-only curatorial log, `type: "kg_event"` records: `id`, `event_type`
+Append-only topic-graph event log, `type: "kg_event"` records: `id`, `event_type`
 (e.g. `topic.created`, `link.added`, `evidence.added`, tombstones like
 `link.removed`), `entity_type` (`topic` | `link` | `topic_message`),
 `entity_id` (natural key string), `payload` (object), `actor`,
 `actor_thread_id`, `caused_by_event_id`, `correlation_id`, `occurred_at`,
-`recorded_at`. This log is the source of truth for curation; replaying it in
+`recorded_at`. This log is the source of truth for the topic graph; replaying it in
 `id` order rebuilds the two snapshot files below.
 
 ## thread_links.jsonl / topic_messages.jsonl

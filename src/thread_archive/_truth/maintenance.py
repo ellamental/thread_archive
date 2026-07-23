@@ -98,7 +98,7 @@ def checkpoint(*, snapshots: bool = True) -> dict:
     (conversation import only appends events; the overlays are the migration seed plus
     the append-only ``kg_events`` log), so the watcher uses the cheap maintenance form
     on its cadence instead of rewriting tens of MB every few seconds. The full form
-    (overlays included) is for explicit pre-backup / pre-reindex / post-curation use.
+    (overlays included) is for explicit pre-backup / pre-reindex / post-write use.
 
     Self-locking: the truth appends + manifest watermark advance here must never
     race a reindex, so the shared ingest lock is taken *inside* — a caller

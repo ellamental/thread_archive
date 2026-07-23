@@ -1,11 +1,11 @@
-"""Topic-mined gold labels — a curated topic's confounds turned into graded cases.
+"""Topic-mined gold labels — a topic's confounds turned into graded cases.
 
-The query miner (``retrieval_mine_gold.py``) starts from queries agents *really
-ran*; this one starts from a curated **topic** — a subject dense with near-misses
-(a large, confound-rich topic like "suicide": lived experience vs. bot-death
-grief vs. AI right-to-die vs. self-deprecation, all sharing vocabulary). A topic
-that hard is where ranking earns or loses its keep, and the trail rarely supplies
-enough real queries against it. So two stages of agents manufacture the benchmark:
+The query miner starts from queries agents *really ran*; this one starts from a
+**topic** — a subject dense with near-misses (a large, confound-rich topic like
+"suicide": lived experience vs. bot-death grief vs. AI right-to-die vs.
+self-deprecation, all sharing vocabulary). A topic that hard is where ranking
+earns or loses its keep, and the trail rarely supplies enough real queries
+against it. So two stages of agents manufacture the benchmark:
 
 1. **Survey** (one agent): searches the topic to understand it, decides the
    *angles* worth testing — as many as the topic genuinely warrants, its own
@@ -20,70 +20,38 @@ enough real queries against it. So two stages of agents manufacture the benchmar
    blind: the goal is the most complete gold set, and the survey's findings are
    signal (the labeler isn't the search system under test, so nothing leaks).
 
-Snapshot binding, same as the query miner: run against a frozen corpus snapshot
-(``thread_archive snapshot``; point ``THREAD_ARCHIVE_HOME`` at it), and the
-topic must exist in it. Each case records the snapshot's ``snapshot_id``;
-``retrieval_eval.py --cases`` scores over that same snapshot and refuses cases
-once the id no longer matches (the corpus moved; re-mine). Output is the eval's
-``--cases`` format with a graded pool for nDCG, plus a detail sidecar carrying
-the facet map and per-angle intent/reasons.
-
-Costs real tokens (one survey agent + one labeler per angle — minutes each) and
-requires the ``claude`` CLI. Read-only against the archive. Case files quote
-real usage — keep them out of the repo; they live beside the trend ledgers in
-``~/.thread/archive/``.
-
-    thread_archive snapshot ~/.thread/archive-snap
-    export THREAD_ARCHIVE_HOME=~/.thread/archive-snap
-    .venv/bin/python evals/topic_mine_gold.py --topic suicide
-    .venv/bin/python evals/retrieval_eval.py --cases ~/.thread/archive/topic-cases-suicide.jsonl
+This is a **batch** miner: the survey decides how many angles the topic warrants,
+so a run yields an unknown number of cases (bounded by ``--max-queries``, a safety
+cap, not a target). It needs a ``--topic``, so ``thread_archive mine all`` skips it.
 """
 
 from __future__ import annotations
 
 import argparse
 import concurrent.futures
-import importlib.util
 import json
 import re
-import shutil
-import sys
-from datetime import datetime, timezone
 from pathlib import Path
 
-_REPO = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(_REPO / "src"))
-
-# Reuse the query miner's headless-agent runner and its snapshot-bound corpus
-# tools (the agents shell into `retrieval_mine_gold.py tool search|read`), so
-# there is one implementation of "how an agent reaches the frozen corpus".
-_SPEC = importlib.util.spec_from_file_location(
-    "retrieval_mine_gold", Path(__file__).resolve().parent / "retrieval_mine_gold.py")
-mine_gold = importlib.util.module_from_spec(_SPEC)
-sys.modules.setdefault("retrieval_mine_gold", mine_gold)
-_SPEC.loader.exec_module(mine_gold)
-
-from thread_archive import _api as api  # noqa: E402
-from thread_archive._knowledge import topic_get  # noqa: E402
-from thread_archive._ops.snapshot import read_snapshot_id  # noqa: E402
-
-DEFAULT_MODEL = mine_gold.DEFAULT_MODEL
+from .. import _api as api
+from .._knowledge import topic_get
+from . import _framework as fw
+from ._agent import run_claude
+from ._framework import Miner, MineContext, MineResult, now_iso
 
 # How many of the topic's members to hand the survey agent inline (id + title),
-# highest-cited first; it has search/read to reach the rest. Enough to ground the
-# survey without pasting a thousand-member topic into the prompt.
+# highest-cited first; it has search/read to reach the rest.
 SURVEY_MEMBER_SAMPLE = 80
 
 # Runaway guard: never spawn more than this many labeler agents from one survey,
-# whatever it authors. A cap on cost, not a target — the survey decides how many
-# angles the topic actually warrants, below this bound.
+# whatever it authors. A cost cap, not a target.
 MAX_ANGLES = 20
 
 # Cap on the survey's candidate threads shown to a labeler per angle — bounds the
 # label prompt; the labeler expands past them with its own searches anyway.
 LABEL_CANDIDATE_CAP = 30
 
-DEFAULT_CASES_TEMPLATE = "~/.thread/archive/topic-cases-{slug}.jsonl"
+CASES_STEM_TEMPLATE = "topic-cases-{slug}"
 
 _METHOD = (
     "topic-driven: one survey agent searched the topic, decided the angles it "
@@ -93,7 +61,7 @@ _METHOD = (
     "searches — and graded a comprehensive pool (2=intended, 1=partial, 0=confound)."
 )
 
-_SURVEY_PROMPT = """You are designing a search-quality benchmark from one curated \
+_SURVEY_PROMPT = """You are designing a search-quality benchmark from one \
 topic in a conversation archive.
 
 Topic: {title}
@@ -210,8 +178,8 @@ def parse_survey(text: str) -> dict | None:
     """The survey agent's angles (+ optional facet overview), or None. Each angle
     keeps a string ``query`` and ``intent``; one lacking either is dropped rather
     than mined half-formed. ``confounds`` normalized to strings; ``candidates``
-    (the threads the survey found for the angle — the labeler's starting pool) to
-    ``[{thread_id, note}]``; ``facets`` passed through as authored (detail-only)."""
+    (the labeler's starting pool) to ``[{thread_id, note}]``; ``facets`` passed
+    through as authored (detail-only)."""
     v = _extract_json(text)
     if v is None or not isinstance(v.get("angles"), list):
         return None
@@ -268,7 +236,7 @@ def resolve_topic(ref: str) -> dict:
     or ambiguous name raises ``SystemExit`` naming the candidates."""
     from sqlalchemy import select
 
-    from thread_archive._store import Thread, use_session
+    from .._store import Thread, use_session
 
     with use_session() as s:
         t = s.get(Thread, ref)
@@ -279,8 +247,10 @@ def resolve_topic(ref: str) -> dict:
             .where(Thread.thread_type == "topic", Thread.archived.is_(False))
         ).all()
     needle = ref.strip().lower()
+
     def label(r) -> str:
         return (r.title or r.name or "").strip()
+
     exact = [r for r in rows if label(r).lower() == needle]
     hits = exact or [r for r in rows if needle in label(r).lower()]
     if not hits:
@@ -327,31 +297,33 @@ def build_label_prompt(angle: dict, tool_cmd: str) -> str:
 
 # ── the agent seam ───────────────────────────────────────────────────────────
 
-def run_survey(topic: dict, model: str, tool_cmd: str) -> tuple[dict | None, dict]:
-    """Run the survey agent. Returns (survey | None, stats). The survey decides
-    how many angles the topic warrants."""
-    text, stats = mine_gold.run_claude(build_survey_prompt(topic, tool_cmd), model, tool_cmd)
+def run_survey(topic: dict, model: str, tool_cmd: str,
+               run=run_claude) -> tuple[dict | None, dict]:
+    """Run the survey agent. Returns (survey | None, stats). The survey decides how
+    many angles the topic warrants. ``run`` is the agent seam."""
+    text, stats = run(build_survey_prompt(topic, tool_cmd), model, tool_cmd)
     return (parse_survey(text) if text is not None else None), stats
 
 
 def case_from_labels(angle: dict, labels: dict, snapshot_id: str) -> dict | None:
-    """The eval ``--cases`` row for a labeled angle, or None when the label pool
-    has no grade-2 gold (nothing to rank). Carries the graded pool for nDCG,
-    ``sessions: []`` (topic queries are authored, not from a session), and the
-    ``snapshot_id`` binding."""
+    """The eval ``--cases`` row for a labeled angle, or None when the label pool has
+    no grade-2 gold (nothing to rank). Carries the graded pool for nDCG,
+    ``sessions: []`` (authored query, no session to skip), and the ``snapshot_id``
+    binding."""
     if not labels["gold"]:
         return None
     return {"query": angle["query"], "gold": labels["gold"], "grades": labels["grades"],
             "sessions": [], "snapshot_id": snapshot_id, "protocol": "topic-mined",
             "topic": angle.get("_topic"), "intent": angle["intent"],
-            "mined_at": datetime.now(timezone.utc).isoformat(timespec="seconds")}
+            "mined_at": now_iso()}
 
 
-def label_query(angle: dict, model: str, tool_cmd: str,
-                snapshot_id: str) -> tuple[dict | None, dict]:
+def label_query(angle: dict, model: str, tool_cmd: str, snapshot_id: str,
+                run=run_claude) -> tuple[dict | None, dict]:
     """Label one angle end-to-end. Returns (case_row | None, detail_row). A case
-    with no grade-2 gold is dropped (nothing to rank), but its detail is kept."""
-    text, stats = mine_gold.run_claude(build_label_prompt(angle, tool_cmd), model, tool_cmd)
+    with no grade-2 gold is dropped (nothing to rank), but its detail is kept.
+    ``run`` is the agent seam."""
+    text, stats = run(build_label_prompt(angle, tool_cmd), model, tool_cmd)
     detail = {"query": angle["query"], "intent": angle, "agent": stats}
     if text is None:
         detail["outcome"] = "agent-failed"
@@ -365,86 +337,79 @@ def label_query(angle: dict, model: str, tool_cmd: str,
     return case_from_labels(angle, labels, snapshot_id), detail
 
 
-# ── entry ────────────────────────────────────────────────────────────────────
+# ── the miner ────────────────────────────────────────────────────────────────
 
-def main() -> None:
-    ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    ap.add_argument("--topic", required=True,
-                    help="topic id, or a name/title (case-insensitive, unique)")
-    ap.add_argument("--max-queries", type=int, default=MAX_ANGLES,
-                    help=f"safety cap on angles labeled this run (default {MAX_ANGLES}); "
-                    "the survey agent decides how many the topic warrants, below this")
-    ap.add_argument("--model", default=DEFAULT_MODEL)
-    ap.add_argument("--jobs", type=int, default=2, help="concurrent labeler agents")
-    ap.add_argument("--cases-out", type=Path, default=None,
-                    help="case file to append to (default: "
-                    "~/.thread/archive/topic-cases-<slug>.jsonl); detail sidecar lands beside it")
-    args = ap.parse_args()
+class TopicMinedMiner(Miner):
+    name = "topic"
+    summary = "graded cases from a confound-dense topic (survey → per-angle labelers)"
+    measures = "confound ranking"
+    unit = "angle"
+    cost = "1 survey agent + 1 labeler / angle (~min each)"
+    target_kind = "batch"
+    target_help = "the survey decides how many angles; --max-queries caps it"
+    runnable_in_all = False
+    cases_stem = "topic-cases-<slug>"
 
-    if shutil.which("claude") is None:
-        raise SystemExit("topic_mine_gold needs the `claude` CLI on PATH")
+    def add_arguments(self, parser: argparse.ArgumentParser) -> None:
+        parser.add_argument("--topic", required=True,
+                            help="topic id, or a name/title (case-insensitive, unique)")
+        parser.add_argument(
+            "--max-queries", type=int, default=MAX_ANGLES, metavar="N",
+            help=f"safety cap on angles labeled this run (default {MAX_ANGLES}); the "
+            "survey decides how many the topic warrants, below this")
 
-    api.open_archive()
-    snapshot_id = read_snapshot_id()
-    if snapshot_id is None:
-        raise SystemExit(
-            "mining must run against a corpus snapshot, not the live archive: "
-            "`thread_archive snapshot <dir>`, then point THREAD_ARCHIVE_HOME at it."
-        )
-    topic = resolve_topic(args.topic)
-    slug = slugify(topic.get("title") or args.topic)
-    cases_path = (args.cases_out.expanduser() if args.cases_out
-                  else Path(DEFAULT_CASES_TEMPLATE.format(slug=slug)).expanduser())
-    detail_path = cases_path.with_name(cases_path.stem + ".detail.jsonl")
-    already = mine_gold.mined_queries(cases_path)
+    def run(self, ctx: MineContext) -> MineResult:
+        args = ctx.args
+        topic = resolve_topic(args.topic)
+        slug = slugify(topic.get("title") or args.topic)
+        default = fw.default_cases_path(CASES_STEM_TEMPLATE.format(slug=slug))
+        cases_path, detail_path = fw.open_output(args.out, default)
+        already = fw.mined_queries(cases_path)
 
-    tool_cmd = f"{sys.executable} {mine_gold.__file__} tool"
-    print(f"surveying topic {topic.get('title')!r} ({topic['id']}, "
-          f"{topic.get('citation_count', 0)} citations) against snapshot {snapshot_id}")
-    survey, survey_stats = run_survey(topic, args.model, tool_cmd)
-    if survey is None:
-        raise SystemExit("survey agent produced no usable angles")
+        agent = ctx.agent_run or run_claude
+        print(f"surveying topic {topic.get('title')!r} ({topic['id']}, "
+              f"{topic.get('citation_count', 0)} citations) against snapshot {ctx.snapshot_id}")
+        survey, survey_stats = run_survey(topic, ctx.model, ctx.tool_cmd, agent)
+        if survey is None:
+            raise SystemExit("survey agent produced no usable angles")
 
-    angles = [a for a in survey["angles"] if a["query"] not in already]
-    if len(angles) > args.max_queries:
-        print(f"survey authored {len(angles)} angles; capping to --max-queries={args.max_queries}")
-        angles = angles[:args.max_queries]
-    for a in angles:
-        a["_topic"] = topic.get("title") or slug
-    if not angles:
-        raise SystemExit("survey authored no unmined angles")
+        angles = [a for a in survey["angles"] if a["query"] not in already]
+        if len(angles) > args.max_queries:
+            print(f"survey authored {len(angles)} angles; capping to "
+                  f"--max-queries={args.max_queries}")
+            angles = angles[:args.max_queries]
+        for a in angles:
+            a["_topic"] = topic.get("title") or slug
+        if not angles:
+            raise SystemExit("survey authored no unmined angles")
 
-    cases_path.parent.mkdir(parents=True, exist_ok=True)
-    with detail_path.open("a") as f:
-        f.write(json.dumps({
+        writer = fw.CaseWriter(self.name, cases_path, detail_path)
+        writer.write_detail({
             "topic": topic.get("title"), "topic_id": topic["id"],
-            "snapshot_id": snapshot_id,
-            "mined": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            "snapshot_id": ctx.snapshot_id, "mined": now_iso(),
             "method": _METHOD, "survey_agent": survey_stats,
             "facet_map": survey["facets"],
-        }) + "\n")
+        })
 
-    print(f"labeling {len(angles)} angles with {args.model} agents (jobs={args.jobs}) "
-          f"-> {cases_path}")
-    ok = failed = 0
-    with concurrent.futures.ThreadPoolExecutor(max_workers=args.jobs) as ex:
-        futures = {ex.submit(label_query, a, args.model, tool_cmd, snapshot_id): a
-                   for a in angles}
-        for fut in concurrent.futures.as_completed(futures):
-            row, detail = fut.result()
-            with detail_path.open("a") as f:
-                f.write(json.dumps(detail) + "\n")
-            if row is None:
-                failed += 1
-                print(f"  ✗ {detail['query'][:60]!r}: {detail['outcome']}")
-                continue
-            with cases_path.open("a") as f:
-                f.write(json.dumps(row) + "\n")
-            ok += 1
-            print(f"  ✓ {row['query'][:60]!r}: {len(row['gold'])} gold, "
-                  f"{len(row['grades'])} graded")
-    print(f"done: {ok} cases written, {failed} failed (detail: {detail_path})")
+        print(f"labeling {len(angles)} angles with {ctx.model} agents "
+              f"(jobs={ctx.jobs}) -> {cases_path}")
+        ok = failed = 0
+        with concurrent.futures.ThreadPoolExecutor(max_workers=ctx.jobs) as ex:
+            futures = {ex.submit(label_query, a, ctx.model, ctx.tool_cmd,
+                                 ctx.snapshot_id, agent): a for a in angles}
+            for fut in concurrent.futures.as_completed(futures):
+                row, detail = fut.result()
+                writer.write_detail(detail)
+                if row is None:
+                    failed += 1
+                    print(f"  ✗ {detail['query'][:60]!r}: {detail['outcome']}")
+                    continue
+                writer.write_case(row)
+                ok += 1
+                print(f"  ✓ {row['query'][:60]!r}: {len(row['gold'])} gold, "
+                      f"{len(row['grades'])} graded")
+        return MineResult(written=ok, failed=failed, cases_path=cases_path,
+                          detail_path=detail_path)
 
 
-if __name__ == "__main__":
-    main()
+MINER = TopicMinedMiner()

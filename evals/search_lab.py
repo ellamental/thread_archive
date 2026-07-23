@@ -1,26 +1,44 @@
-"""search_lab — score N retrieval configurations against the shipped one.
+"""search_lab — race retrieval configurations against the shipped one on a leaderboard.
 
 The experiment bench of the quality ladder (docs/search-quality.md): every
-module in ``evals/experiments/`` is one configuration of the search
-stack — a :class:`thread_archive._retrieval.SearchParams` value or a full
-``SEARCH`` callable (contract in ``evals/experiments/README.md``). This runner builds
-the checked-in synthetic corpus (``tests/quality_corpus.py``) in a throwaway
-archive home, scores the baseline and every configuration on the identical
-cases with the same MRR/success/true-recall/nDCG loop as the live-archive
-harness, and prints a leaderboard with deltas against the baseline.
+module in ``evals/experiments/`` is one configuration of the search stack — a
+:class:`thread_archive._retrieval.SearchParams` value or a full ``SEARCH``
+callable (contract in ``evals/experiments/README.md``). The runner scores the
+baseline and every configuration on identical cases with the same
+MRR/success/true-recall/nDCG loop as the live-archive harness, and prints a
+leaderboard with deltas against the baseline.
 
-Fast by default (lexical stack, seconds); ``--models`` embeds the corpus and
-runs the fused pipeline (real torch models — minutes on a cold cache), which is
-the mode where fusion/rerank experiments actually move.
+Two corpora, one leaderboard:
 
-    .venv/bin/python evals/search_lab.py
-    .venv/bin/python evals/search_lab.py --models
+- **Synthetic (default).** Builds the checked-in synthetic corpus
+  (``tests/quality_corpus.py``) in a throwaway archive home. Fast (lexical
+  stack, seconds); ``--models`` embeds it and runs the fused pipeline (real
+  torch models — minutes on a cold cache). Lexically easy by design, so a delta
+  here is a *direction*, not a shipping verdict.
+
+- **Gold (``--gold`` / ``--cases FILE``).** Scores over the snapshot-bound gold
+  case files instead (``evals/README.md`` → "Taking a baseline") — graded,
+  corpus-grounded pools scored over the frozen snapshot they were mined against,
+  the fused production pipeline running natively over the snapshot's vector
+  pack. This is the measurement of record: a gold-file delta scored on both
+  sides of a change is the evidence that credits a promotion, where the
+  synthetic bench only points the way. Auto-discovers the gold files at the gold
+  dir (or takes explicit ``--cases``), scores each over its own snapshot, and
+  prints one leaderboard per file.
+
+    .venv/bin/python evals/search_lab.py                       # synthetic, lexical, seconds
+    .venv/bin/python evals/search_lab.py --models              # synthetic, fused pipeline
+    .venv/bin/python evals/search_lab.py --gold                # every gold file over the snapshot
+    .venv/bin/python evals/search_lab.py --cases ~/.thread/archive/judged-cases.jsonl
     .venv/bin/python evals/search_lab.py --only no_recency,pool_order --json out.json
 
-The corpus is synthetic and lexically easy: a delta here is a direction, not a
-shipping verdict — promote winners by re-measuring on the live tiers
-(``retrieval_eval.py --from-log``, the judge) before touching the defaults in
-``_retrieval/params.py``.
+Gold mode needs a snapshot (``thread_archive snapshot <dir>``; default
+``~/.thread/archive-snap``, ``$THREAD_ARCHIVE_SNAP`` to override) and gold files
+mined against it (``thread_archive mine``). It keeps
+coherence off — like the synthetic bench — so the baseline-vs-experiment delta
+stays deterministic; the coherence-on absolute number is the CI gold gate's
+(``scripts/retrieval_gold_gate.py``). A file whose snapshot fingerprint no
+longer matches is skipped (re-mine), never scored against a moved corpus.
 """
 
 from __future__ import annotations
@@ -64,6 +82,13 @@ def _quality():
     return _load_module(ROOT / "tests" / "quality_corpus.py", "quality_corpus")
 
 
+def _gold_gate():
+    """The gold-gate script (``scripts/retrieval_gold_gate.py``), by path — the
+    one definition of what counts as a gold file and where the snapshot and gold
+    dir default, shared so the bench and the CI gate agree on the fixture set."""
+    return _load_module(ROOT / "scripts" / "retrieval_gold_gate.py", "retrieval_gold_gate")
+
+
 def _params_search(params) -> Callable:
     """The production pipeline pinned to one configuration."""
     from thread_archive._retrieval import search as production
@@ -101,16 +126,14 @@ def discover(directory: Path = EXPERIMENTS_DIR) -> list[Experiment]:
     return experiments
 
 
-def run_lab(name_to_id: dict[str, str], experiments: list[Experiment], *,
-            limit: int = 10, rerank=None) -> dict:
-    """Score the baseline and every experiment on the corpus cases. Returns
-    ``{"rows": [...]}`` — baseline first, then experiments in leaderboard
-    (MRR-descending) order, each row carrying the metrics and its MRR delta
-    against the baseline."""
-    quality = _quality()
-
-    def score(name: str, hypothesis: str, search=None) -> dict:
-        rep = quality.run_cases(name_to_id, search=search, limit=limit, rerank=rerank)
+def _score_rows(score_one, experiments: list[Experiment]) -> list[dict]:
+    """Score the baseline and every experiment through ``score_one(search)`` —
+    which returns one ``evaluate``-shaped report per call — and build the
+    leaderboard rows: baseline first, experiments MRR-descending, each carrying
+    its ΔMRR against the baseline. ``score_one(None)`` scores the shipped
+    default; a corpus is whatever ``score_one`` closes over."""
+    def row(name: str, hypothesis: str, search=None) -> dict:
+        rep = score_one(search)
         return {
             "name": name,
             "hypothesis": hypothesis,
@@ -122,12 +145,43 @@ def run_lab(name_to_id: dict[str, str], experiments: list[Experiment], *,
             "latency_p50_ms": rep["latency_p50_ms"],
         }
 
-    baseline = score("baseline", "the shipped configuration (params.py defaults)")
-    rows = [score(e.name, e.hypothesis, e.search) for e in experiments]
+    baseline = row("baseline", "the shipped configuration (params.py defaults)")
+    rows = [row(e.name, e.hypothesis, e.search) for e in experiments]
     rows.sort(key=lambda r: -r["mrr"])
-    for row in [baseline, *rows]:
-        row["delta_mrr"] = row["mrr"] - baseline["mrr"]
-    return {"rows": [baseline, *rows]}
+    for r in [baseline, *rows]:
+        r["delta_mrr"] = r["mrr"] - baseline["mrr"]
+    return [baseline, *rows]
+
+
+def run_lab(name_to_id: dict[str, str], experiments: list[Experiment], *,
+            limit: int = 10, rerank=None) -> dict:
+    """Score the baseline and every experiment on the synthetic corpus. Returns
+    ``{"rows": [...]}`` — baseline first, then experiments in leaderboard
+    (MRR-descending) order, each row carrying the metrics and its ΔMRR against
+    the baseline."""
+    quality = _quality()
+
+    def score_one(search):
+        return quality.run_cases(name_to_id, search=search, limit=limit, rerank=rerank)
+
+    return {"rows": _score_rows(score_one, experiments)}
+
+
+def run_gold_lab(cases: list[dict], experiments: list[Experiment], *,
+                 limit: int = 20, rerank=None) -> dict:
+    """Score the baseline and every experiment over one snapshot-bound gold case
+    file — thread-id golds and graded pools already resolved (``load_case_file``).
+    Same ``{"rows": [...]}`` leaderboard as :func:`run_lab`, but the corpus is the
+    frozen snapshot the cases were mined against: the caller points
+    ``THREAD_ARCHIVE_HOME`` at it and the production pipeline runs natively over
+    its vectors, so a gold-file delta here is promotion-grade evidence."""
+    from thread_archive._eval import evaluate
+
+    def score_one(search):
+        return evaluate(cases, limit=limit, rerank=rerank, content_type=None,
+                        exclude_content_types=None, search=search)
+
+    return {"rows": _score_rows(score_one, experiments)}
 
 
 def _print_leaderboard(report: dict) -> None:
@@ -147,23 +201,29 @@ def _print_leaderboard(report: dict) -> None:
         print(f"  {r['name']}: {r['hypothesis']}")
 
 
-def main(argv=None) -> int:
-    ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
-    ap.add_argument("--models", action="store_true",
-                    help="run the fused pipeline: embed the corpus and enable the model arms (minutes)")
-    ap.add_argument("--only", help="comma-separated experiment names (default: all in evals/experiments/)")
-    ap.add_argument("--experiments", type=Path, default=EXPERIMENTS_DIR,
-                    help="experiments directory (default: evals/experiments/)")
-    ap.add_argument("--limit", type=int, default=10, help="result depth per query (default 10)")
-    ap.add_argument("--json", type=Path, help="also write the full report as JSON")
-    args = ap.parse_args(argv)
+def _select_experiments(args) -> list[Experiment]:
+    """Discover the experiment modules and apply ``--only``. Exits 2 on an
+    unknown name so a typo fails loudly rather than silently scoring fewer arms."""
+    experiments = discover(args.experiments)
+    if args.only:
+        wanted = {n.strip() for n in args.only.split(",") if n.strip()}
+        unknown = wanted - {e.name for e in experiments}
+        if unknown:
+            print(f"error: unknown experiment(s): {', '.join(sorted(unknown))}", file=sys.stderr)
+            raise SystemExit(2)
+        experiments = [e for e in experiments if e.name in wanted]
+    return experiments
+
+
+def _run_synthetic(args) -> int:
+    """The synthetic-corpus bench: build the checked-in corpus in a throwaway
+    home and race every experiment against the baseline on it."""
+    import os
 
     # A throwaway home: the lab must never rank against (or write into) the real
     # archive. Model arms off unless --models — read per call by the product's
     # own switches; coherence stays off either way (its background graph refresh
     # is nondeterministic across runs, and determinism is the lab's whole point).
-    import os
-
     home = tempfile.mkdtemp(prefix="search-lab-")
     from thread_archive import _config
 
@@ -191,16 +251,8 @@ def main(argv=None) -> int:
                       file=sys.stderr)
                 return 2
 
-        experiments = discover(args.experiments)
-        if args.only:
-            wanted = {n.strip() for n in args.only.split(",") if n.strip()}
-            unknown = wanted - {e.name for e in experiments}
-            if unknown:
-                print(f"error: unknown experiment(s): {', '.join(sorted(unknown))}", file=sys.stderr)
-                return 2
-            experiments = [e for e in experiments if e.name in wanted]
-
-        report = run_lab(ids, experiments, limit=args.limit)
+        experiments = _select_experiments(args)
+        report = run_lab(ids, experiments, limit=args.limit if args.limit is not None else 10)
         report["mode"] = "models" if args.models else "lexical"
         _print_leaderboard(report)
         if args.json:
@@ -209,6 +261,122 @@ def main(argv=None) -> int:
         return 0
     finally:
         shutil.rmtree(home, ignore_errors=True)
+
+
+def _run_gold(args) -> int:
+    """The gold bench: race every experiment against the baseline over the
+    snapshot-bound gold case files — the fused production pipeline running
+    natively over the frozen snapshot's vectors, one leaderboard per file."""
+    import os
+
+    from thread_archive import _api as api
+    from thread_archive import _config
+    from thread_archive._eval import load_case_file
+    from thread_archive._ops.snapshot import read_snapshot_id
+
+    gate = _gold_gate()
+    snap = Path(args.snapshot or os.environ.get("THREAD_ARCHIVE_SNAP")
+                or gate.DEFAULT_SNAP).expanduser()
+    if not (snap / "snapshot.json").is_file():
+        print(f"error: no snapshot at {snap} — freeze one with "
+              f"`thread_archive snapshot <dir>` and mine gold cases against it "
+              f"(or pass --snapshot).", file=sys.stderr)
+        return 2
+
+    # Route every arm at the frozen snapshot. Coherence off, exactly as the
+    # synthetic bench: its graph refresh is nondeterministic across runs and the
+    # leaderboard's job is a clean baseline-vs-experiment delta (the coherence-on
+    # absolute number is the CI gold gate's). The model arms stay in their
+    # production shape — the snapshot carries a vector pack, so gold mode measures
+    # the fused stack the synthetic corpus can't.
+    os.environ[_config.ENV_HOME] = str(snap)
+    os.environ["THREAD_ARCHIVE_COHERENCE"] = "off"
+    api.open_archive(str(snap))
+
+    from thread_archive._retrieval import embed
+
+    if not embed.is_available():
+        print("warning: the semantic arm is unavailable — gold mode is scoring the "
+              "lexical stack only, not the fused pipeline (install the [embeddings] "
+              "extra to measure the shipped stack).", file=sys.stderr)
+
+    current = read_snapshot_id(str(snap))
+    if args.cases:
+        files = [p.expanduser() for p in args.cases]
+    else:
+        gold_dir = Path(args.gold_dir or os.environ.get("THREAD_ARCHIVE_GOLD_DIR")
+                        or gate.DEFAULT_GOLD_DIR).expanduser()
+        files = gate.discover_gold_files(gold_dir)
+        if not files:
+            print(f"error: no gold files in {gold_dir} — mine some with "
+                  f"`thread_archive mine` first.", file=sys.stderr)
+            return 2
+
+    experiments = _select_experiments(args)
+    limit = args.limit if args.limit is not None else 20
+
+    file_reports: list[dict] = []
+    for path in files:
+        if not path.is_file():
+            print(f"  {path.name}: not found — skipping", file=sys.stderr)
+            continue
+        cases = load_case_file(path)
+        sids = {c.get("snapshot_id") for c in cases}
+        if sids != {current}:
+            print(f"  {path.name}: SKIP — snapshot {sorted(str(s) for s in sids)} "
+                  f"!= {current} (stale or mid-re-mine; re-mine against this snapshot)",
+                  file=sys.stderr)
+            continue
+        report = run_gold_lab(cases, experiments, limit=limit)
+        print(f"\n=== {path.name}  ({len(cases)} cases · snapshot {current}) ===")
+        _print_leaderboard(report)
+        report.update({"file": path.name, "path": str(path),
+                       "snapshot_id": current, "n": len(cases)})
+        file_reports.append(report)
+
+    if not file_reports:
+        print("error: no gold file matched the current snapshot — nothing scored "
+              "(re-mine against it).", file=sys.stderr)
+        return 2
+
+    if args.json:
+        out = {"mode": "gold", "snapshot_id": current, "snapshot": str(snap),
+               "files": file_reports}
+        args.json.write_text(json.dumps(out, indent=2) + "\n", encoding="utf-8")
+        print(f"\nwrote {args.json}", file=sys.stderr)
+    return 0
+
+
+def main(argv=None) -> int:
+    ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
+    ap.add_argument("--models", action="store_true",
+                    help="synthetic mode: embed the corpus and enable the model arms (minutes)")
+    ap.add_argument("--gold", action="store_true",
+                    help="score over the snapshot-bound gold files instead of the "
+                    "synthetic corpus (the measurement of record)")
+    ap.add_argument("--cases", type=Path, action="append", metavar="FILE",
+                    help="gold mode over specific case file(s) (repeatable; "
+                    "implies --gold and overrides auto-discovery)")
+    ap.add_argument("--snapshot", type=Path, metavar="DIR",
+                    help="gold mode: the corpus snapshot home "
+                    "(default $THREAD_ARCHIVE_SNAP or ~/.thread/archive-snap)")
+    ap.add_argument("--gold-dir", type=Path, metavar="DIR",
+                    help="gold mode: where to auto-discover gold files "
+                    "(default $THREAD_ARCHIVE_GOLD_DIR or ~/.thread/archive)")
+    ap.add_argument("--only", help="comma-separated experiment names (default: all in evals/experiments/)")
+    ap.add_argument("--experiments", type=Path, default=EXPERIMENTS_DIR,
+                    help="experiments directory (default: evals/experiments/)")
+    ap.add_argument("--limit", type=int, default=None,
+                    help="result depth per query (default: 10 synthetic, 20 gold)")
+    ap.add_argument("--json", type=Path, help="also write the full report as JSON")
+    args = ap.parse_args(argv)
+
+    gold = args.gold or bool(args.cases)
+    if args.models and gold:
+        ap.error("--models is a synthetic-corpus mode (it embeds the synthetic "
+                 "corpus); gold mode already scores the fused pipeline over the "
+                 "snapshot's vectors")
+    return _run_gold(args) if gold else _run_synthetic(args)
 
 
 if __name__ == "__main__":

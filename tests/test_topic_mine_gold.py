@@ -10,24 +10,9 @@ and that a labeler's brief carries the survey's candidate threads for its angle
 
 from __future__ import annotations
 
-import importlib.util
-import sys
-from pathlib import Path
-
 import pytest
 
-_EVALS = Path(__file__).resolve().parent.parent / "evals"
-
-
-def _load(name: str):
-    spec = importlib.util.spec_from_file_location(name, _EVALS / f"{name}.py")
-    mod = importlib.util.module_from_spec(spec)
-    sys.modules[name] = mod
-    spec.loader.exec_module(mod)
-    return mod
-
-
-topic_mine = _load("topic_mine_gold")
+from thread_archive._mine import topic_mined as topic_mine
 
 
 # ── parse_survey ─────────────────────────────────────────────────────────────

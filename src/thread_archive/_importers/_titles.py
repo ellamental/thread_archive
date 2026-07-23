@@ -25,7 +25,7 @@ _CC_COMMAND_ARGS_RE = re.compile(r"<command-args>\s*(.*?)\s*</command-args>", re
 
 
 def _cc_command_title(msg: NormalizedMessage) -> Optional[str]:
-    """A slash-command title (e.g. ``/garden``) for a user turn whose raw content
+    """A slash-command title (e.g. ``/review``) for a user turn whose raw content
     is a bare CC command invocation, else None. Keeps the injected skill doc that
     follows the command out of the thread list."""
     provider_data = msg.get("provider_data")
@@ -96,7 +96,7 @@ def _title_from_messages(messages: list[NormalizedMessage]) -> Optional[str]:
             continue
         text_blob = msg.get("content_text", "").strip()
         if not text_blob:
-            # Bare slash-command (e.g. `/garden`): title it with the command, not
+            # Bare slash-command (e.g. `/review`): title it with the command, not
             # the skill doc that gets injected on the next turn.
             cmd_title = _cc_command_title(msg)
             if cmd_title:

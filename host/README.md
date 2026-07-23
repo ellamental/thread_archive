@@ -66,7 +66,7 @@ on a slow cadence (default 300 s), and only when something was imported since th
 last one: it rebalances the shard layout if the archive crossed ~16k threads and
 advances the manifest watermark. It does **not** rewrite the cross-thread overlay
 snapshots (`thread_links.jsonl` / `topic_messages.jsonl`) — conversation ingest
-never changes those (they're projections of the append-only `kg_events` curatorial
+never changes those (they're projections of the append-only `kg_events` event
 log), so there's nothing to rewrite.
 
 ## Vector freshness — the live embed cohost

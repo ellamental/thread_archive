@@ -380,8 +380,8 @@ def test_setup_records_backup_outcome(archive_home, capsys) -> None:
 
 
 def test_mcp_config_block_names_read_server_only() -> None:
-    # The librarian write server is the archive-librarian plugin's to wire —
-    # the core wizard must not hand curation power to every client it touches.
+    # The write server is an external plugin's to wire —
+    # the core wizard must not hand write power to every client it touches.
     block = json.loads(clients.mcp_config_block())
     servers = block["mcpServers"]
     assert set(servers) == {"thread-archive"}

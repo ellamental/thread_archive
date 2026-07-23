@@ -47,7 +47,7 @@ def test_classify_tool_rejects_lookalikes():
         "thread_read",
         "mcp__thread-commands__topic_search",
         "mcp__thread-commands__knowledge_search",
-        "mcp__plugin_archive-librarian_thread-archive-librarian__thread_user_messages",
+        "mcp__plugin_other-plugin_thread-other__thread_user_messages",
         "mcp__thread-commands__thread_recent",
         None,
         "",

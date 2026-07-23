@@ -121,6 +121,6 @@ def test_unwrap_is_scoped_to_the_providers_that_wrap(archive_home) -> None:
 def test_a_source_with_no_registered_provider_renders_as_stored(archive_home) -> None:
     """Threads written by something that isn't a registered provider — a sibling
     product, an older source — have no policy and are rendered verbatim."""
-    tid = _seed([("user_message_sent", {"content": _QUOTING}, 1)], source="gardener")
+    tid = _seed([("user_message_sent", {"content": _QUOTING}, 1)], source="sibling-app")
     out = read_thread(tid, mode="user")
     assert "every line after the closing tag is part of the report" in out

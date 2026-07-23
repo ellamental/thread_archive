@@ -497,7 +497,15 @@ def search(
         # the re-rank reshuffles which candidates reach its scoring window —
         # measured end-to-end, that stack loses the recall the arm alone buys.
         if not did_rerank:
-            ranked = _apply_coherence(ranked, p.coherence_gamma)
+            from . import embed as _embed
+
+            # Coherence is a semantic-arm refinement built from event_vectors; with
+            # the embed arm off (a core install, or THREAD_ARCHIVE_EMBED=off) there
+            # are no vectors to build its graph from, so skip it rather than kick a
+            # build that probes a table that isn't there. The graph primitives stay
+            # embed-agnostic for tests and direct callers; only the search path gates.
+            if _embed.is_available():
+                ranked = _apply_coherence(ranked, p.coherence_gamma)
 
     if not is_count:
         # Every row-shaped output collapses same-anchor twins (a thread-meta

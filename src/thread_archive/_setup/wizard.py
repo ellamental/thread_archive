@@ -519,7 +519,7 @@ def print_status(args: argparse.Namespace, *, machine: Optional[Machine] = None)
     _say("thread_archive — status")
     _say()
     _say(f"  home:     {st['home']}")
-    # Topic threads are curation artifacts, not conversations — counting them as
+    # Topic threads are separate artifacts, not conversations — counting them as
     # conversations overstates what was actually preserved.
     topics = st.get("topics", 0)
     convs = st["threads"] - topics

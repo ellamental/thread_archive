@@ -138,6 +138,6 @@ def test_topic_tree_read(archive_home) -> None:
     assert lone not in {c["id"] for c in tree["roots"][0]["children"]}
 
     # The reserved 'topics' ref is a pointer, not a page — the tree is a
-    # curation surface. Case/space-insensitive, and it beats uuid resolution.
+    # view. Case/space-insensitive, and it beats uuid resolution.
     assert "topic tree" in read_thread("topics")
     assert "topic tree" in read_thread(" Topics ")

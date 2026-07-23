@@ -356,7 +356,7 @@ def test_threads_types_filter_selects_exactly(archive_home):
 
 
 def test_threads_order_by_activity_not_metadata_writes(archive_home):
-    # The list orders by the newest event (last activity). A curation write —
+    # The list orders by the newest event (last activity). A topic-graph write —
     # here a summary — bumps the row's updated_at (the truth checkpoint's
     # dirty-flag) but is not activity and must not re-rank the list.
     _seed(archive_home)
@@ -366,7 +366,7 @@ def test_threads_order_by_activity_not_metadata_writes(archive_home):
     assert ids[0] == sub_id  # newest events (2026-01-02) first
     from .kg_seed import set_thread_summary
 
-    set_thread_summary(ids[1], summary="curated much later than its last event")
+    set_thread_summary(ids[1], summary="written much later than its last event")
     _, _, payload = _get("/api/threads", types="conversation,system")
     assert [t["id"] for t in payload["threads"]] == ids  # unchanged
     # and the row's date is the thread's last event, not the summary write
@@ -476,7 +476,7 @@ def test_read_bad_id_is_404(archive_home):
 
 
 def _seed_topics(archive_home):
-    """Seed a conversation plus a small curated graph around it: three linked
+    """Seed a conversation plus a small topic graph around it: three linked
     topics (a community), one citation of the conversation's user message.
     Returns ``(topic_a, topic_b, topic_c, conversation_id, cited_event_id)``."""
     from .kg_seed import add_topic_evidence, create_topic, link_threads
@@ -496,7 +496,7 @@ def _seed_topics(archive_home):
 
 
 def test_search_subjects_lens(archive_home):
-    # Ranked results name the curated subjects they cluster under, each with its
+    # Ranked results name the topic subjects they cluster under, each with its
     # topic id so the UI can pivot into the topic page — the MCP header's
     # subjects line, JSON-shaped.
     a, _, _, _, _ = _seed_topics(archive_home)

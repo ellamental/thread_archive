@@ -260,7 +260,7 @@ def _resolve_dup_threads(hits: "list[EventHit]") -> None:
 
 
 def _subjects_payload(hits: "list[EventHit]") -> list[dict]:
-    """The relevant-subjects lens over a result set, JSON-shaped: the curated
+    """The relevant-subjects lens over a result set, JSON-shaped: the
     topics these hits cluster under, each with how many result conversations it
     links. Empty when the lens is disabled or has nothing for these hits."""
     from .._retrieval import subjects as _subjects
@@ -362,7 +362,7 @@ def _list_sources() -> list[dict]:
 
 
 # Thread types the recent list hides when no explicit ``types`` filter is given:
-# topics are curated artifacts, and 'system' threads (Task-tool subagent runs —
+# topics are separate artifacts, and 'system' threads (Task-tool subagent runs —
 # see the claude-code importer) are machinery, not sessions someone opens by
 # recency. Both stay reachable through /api/threads?types=….
 _DEFAULT_HIDDEN_TYPES = ("topic", "system")

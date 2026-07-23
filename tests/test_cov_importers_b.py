@@ -68,8 +68,8 @@ def _cc_command_msg(content):
 
 
 def test_cc_command_title_with_args() -> None:
-    msg = _cc_command_msg("<command-name>/garden</command-name><command-args>weeds</command-args>")
-    assert titles._cc_command_title(msg) == "/garden weeds"
+    msg = _cc_command_msg("<command-name>/review</command-name><command-args>changes</command-args>")
+    assert titles._cc_command_title(msg) == "/review changes"
 
 
 def test_cc_command_title_no_args() -> None:

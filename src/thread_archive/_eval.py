@@ -10,7 +10,7 @@ user sees on their own archive come off the same code path.
 
 Case protocols:
 
-``sample_title_cases`` is the zero-curation proxy: sample titled conversation
+``sample_title_cases`` is the zero-label proxy: sample titled conversation
 threads, use each *title* as the query, and score whether the thread's own
 content ranks. Thread-meta docs (title/summary) are excluded from the searched
 scope so the eval never matches the query against itself. Cheap, stable, and
@@ -24,7 +24,7 @@ holds every ``thread_search`` call agents have made (the query) and the
 ``thread_read`` calls that followed in the same session (the click). Each
 search paired with its subsequent reads is a relevance judgment the searcher
 made at the moment of searching — real query vocabulary, multi-gold, no
-curation. Only top-level conversation sessions count: subagent retrieval fleets
+labels. Only top-level conversation sessions count: subagent retrieval fleets
 and collection sweeps (archived as ``system``) issue recall-intent queries —
 "surface everything in vein X" — which have no single rankable target and whose
 clicks are "read everything," so they're excluded (see :func:`_trail_events`).
@@ -43,7 +43,7 @@ so it only becomes meaningful after search has been used for a while.
 candidate pool a graded metric scores against, not just the one best answer;
 optional ``"sessions"``: thread ids to skip while ranking; optional
 ``"snapshot_id"``: the content fingerprint of the corpus snapshot the golds were
-mined against) — the hook for hand-curated or agent-mined query sets. The
+mined against) — the hook for hand-labeled or agent-mined query sets. The
 ``snapshot_id`` is the eval's staleness guard: ``retrieval_eval.py --cases``
 runs over that same snapshot and refuses cases whose id no longer matches, so
 golds can't be scored against a corpus that has changed under them.
@@ -333,7 +333,7 @@ def load_case_file(path: Path) -> list[dict]:
         # int so a stray float grade can't skew the gain.
         if row.get("grades"):
             case["grades"] = {str(t): int(g) for t, g in row["grades"].items()}
-        # Agent-mined cases (evals/retrieval_mine_gold.py) carry the content
+        # Agent-mined cases (the `thread_archive mine` miners) carry the content
         # fingerprint of the corpus snapshot they were mined against; the caller
         # (retrieval_eval.py --cases) refuses to score them against a home whose
         # snapshot_id differs, so a moved corpus invalidates rather than drifts.

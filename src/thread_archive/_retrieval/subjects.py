@@ -1,4 +1,4 @@
-"""Relevant-subjects lens — curated topics as orientation over a result set.
+"""Relevant-subjects lens — topics as orientation over a result set.
 
 Not a ranking input. Given the hits a search already returned, this names the
 subjects they cluster under: "what is this search about", as a pivot surface.
@@ -10,10 +10,10 @@ stopword-like subjects that touch everything. Fail-soft and a strict no-op
 when the subject graph has nothing for these hits, so it can never break
 search.
 
-This is a pure projection over the archive's own curated data plane
-(``topic_messages`` / ``threads``) — whatever external curator writes topics
+This is a pure projection over the archive's own topic-graph data plane
+(``topic_messages`` / ``threads``) — whatever external write layer writes topics
 and citations through the truth log, the lens reads them back the same way.
-An uncurated archive renders searches with no subjects line.
+An archive with no topic graph renders searches with no subjects line.
 """
 
 from __future__ import annotations
@@ -137,7 +137,7 @@ def format_subjects_line(subjects: list[tuple[str, str, int]]) -> Optional[str]:
     """The one-line ``subjects:`` orientation header, or None when there's nothing
     to show. ``(N)`` is how many of the result conversations the subject links.
     Each subject carries its ``[topic <id>]`` so the lens is followable, not just
-    legible: the id opens the curated topic page via ``thread_read(topic_id)`` and
+    legible: the id opens the topic page via ``thread_read(topic_id)`` and
     scopes a drill-in via ``thread_search(topic_id=...)``."""
     if not subjects:
         return None

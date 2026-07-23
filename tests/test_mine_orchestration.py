@@ -1,0 +1,460 @@
+"""Orchestration coverage for the miners — the agent-driving paths, exercised
+through their seams (a fake agent runner, a seeded corpus) so no real ``claude``
+is spawned and no tokens are spent.
+
+Every miner's ``run`` is driven end to end: sample → agent → validate → write a
+case file, with the agent replaced by a canned-reply stub. The corpus tool seam
+(``_corpus``) and the ``run_claude`` subprocess envelope are covered the same
+way — real search over a tiny seeded store, a fake subprocess runner.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import subprocess
+from datetime import datetime, timezone
+
+from thread_archive._mine import (
+    _agent,
+    _cli,
+    _corpus,
+    _framework as fw,
+    query_mined,
+    querygen,
+    rerank_judged,
+    topic_mined,
+)
+from thread_archive._mine._agent import run_claude
+
+
+# ── seeding helpers ──────────────────────────────────────────────────────────
+
+def _seed_searchable(title: str, content: str, *, thread_type: str = "conversation",
+                     source_id: str | None = None) -> str:
+    """A titled thread with one searchable event. Returns its thread id."""
+    from thread_archive._retrieval import index_events
+    from thread_archive._store import Event, Thread, get_session
+
+    with get_session() as s:
+        t = Thread(name=f"conv:{title}:{source_id or title}", title=title,
+                   thread_type=thread_type, source="cc",
+                   source_id=source_id or title)
+        s.add(t)
+        s.flush()
+        e = Event(thread_id=t.id, stream_id=title, event_type="user_message_sent",
+                  payload={"content": content},
+                  occurred_at=datetime(2026, 1, 1, 10, 0, tzinfo=timezone.utc))
+        s.add(e)
+        s.flush()
+        index_events(s, [e])
+        tid = t.id
+        s.commit()
+    return tid
+
+
+def _seed_trail_query(query: str, gold_id: str) -> str:
+    """A conversation session that searched ``query`` then read ``gold_id`` — the
+    search→read pair the query/rerank samplers mine. Returns the session id."""
+    from thread_archive._store import Event, Thread, get_session
+
+    with get_session() as s:
+        sess = Thread(name=f"sess:{query}", thread_type="conversation",
+                      source="cc", source_id=f"sess:{query}")
+        s.add(sess)
+        s.flush()
+        sid = sess.id
+        clk = iter(range(10, 30))
+        s.add(Event(thread_id=sid, stream_id="t", event_type="tool_use_complete",
+                    payload={"tool_name": "mcp__thread-archive__thread_search",
+                             "input": {"query": query}},
+                    occurred_at=datetime(2026, 1, 2, 12, next(clk), tzinfo=timezone.utc)))
+        s.add(Event(thread_id=sid, stream_id="t", event_type="tool_use_complete",
+                    payload={"tool_name": "mcp__thread-archive__thread_read",
+                             "input": {"thread_id": gold_id}},
+                    occurred_at=datetime(2026, 1, 2, 12, next(clk), tzinfo=timezone.utc)))
+        s.commit()
+    return sid
+
+
+def _fake_agent(reply: str):
+    """An agent seam that always returns ``reply`` (and empty stats)."""
+    def run(prompt, model, tool_cmd, **kw):
+        return reply, {"num_turns": 1}
+    return run
+
+
+def _ctx(target=5, agent_run=None, **args):
+    ns = argparse.Namespace(model="opus", jobs=1, seed=7, out=None, target=target,
+                            **args)
+    return fw.MineContext(snapshot_id="snap-1", target=target, model="opus",
+                          jobs=1, tool_cmd="py tool", args=ns, agent_run=agent_run)
+
+
+# ── run_claude envelope (via a fake subprocess runner) ───────────────────────
+
+class _Proc:
+    def __init__(self, returncode, stdout="", stderr=""):
+        self.returncode = returncode
+        self.stdout = stdout
+        self.stderr = stderr
+
+
+def test_run_claude_parses_a_successful_envelope():
+    def runner(cmd, **kw):
+        return _Proc(0, stdout=json.dumps(
+            {"result": "the answer", "num_turns": 4,
+             "total_cost_usd": 0.2, "duration_ms": 900}))
+
+    text, stats = run_claude("p", "opus", "py tool", runner=runner)
+    assert text == "the answer"
+    assert stats["num_turns"] == 4 and stats["cost_usd"] == 0.2
+
+
+def test_run_claude_reports_failure_modes():
+    nonzero = run_claude("p", "opus", "t",
+                         runner=lambda cmd, **kw: _Proc(1, stderr="boom"))
+    assert nonzero == (None, {"error": "boom"})
+
+    def timeout_runner(cmd, **kw):
+        raise subprocess.TimeoutExpired(cmd, 1)
+
+    text, stats = run_claude("p", "opus", "t", runner=timeout_runner)
+    assert text is None and stats["error"] == "timeout"
+
+    bad = run_claude("p", "opus", "t",
+                     runner=lambda cmd, **kw: _Proc(0, stdout="not json"))
+    assert bad[0] is None and "error" in bad[1]
+
+
+def test_default_model_is_opus():
+    assert _agent.DEFAULT_MODEL == "opus"
+
+
+# ── the corpus tool seam (real search/read over a seeded store) ──────────────
+
+def test_corpus_tool_search_and_read(archive_home, capsys):
+    from thread_archive._store import init_db
+
+    init_db()
+    tid = _seed_searchable("the auth thread", "authentication uses rotating tokens")
+
+    _corpus.main(["search", "authentication"])
+    out = capsys.readouterr().out
+    assert tid in out and "auth thread" in out
+
+    _corpus.main(["read", tid])
+    assert "token" in capsys.readouterr().out.lower()
+
+
+def test_corpus_tool_search_skip_and_empty(archive_home, capsys):
+    from thread_archive._store import init_db
+
+    init_db()
+    tid = _seed_searchable("lonely thread", "a very distinctive walrus phrase")
+
+    _corpus.main(["search", "walrus", "--skip", tid])
+    assert "(no results)" in capsys.readouterr().out  # the only hit was skipped
+
+    _corpus.main(["search", "nonexistentterm"])
+    assert "(no results)" in capsys.readouterr().out
+
+
+def test_corpus_tool_read_unknown_thread_errors(archive_home):
+    import pytest
+
+    from thread_archive._store import init_db
+
+    init_db()
+    with pytest.raises(SystemExit, match="unknown thread"):
+        _corpus.main(["read", "nope-not-a-thread"])
+
+
+# ── query miner run() ────────────────────────────────────────────────────────
+
+def test_query_miner_run_writes_a_case(archive_home, tmp_path, capsys):
+    from thread_archive._store import init_db
+
+    init_db()
+    gold = _seed_searchable("capture restart", "the capture daemon restart loop fix")
+    _seed_trail_query("capture daemon restart", gold)
+
+    out = tmp_path / "judged-cases.jsonl"
+    reply = json.dumps({"gold": [gold], "grades": {gold: 2},
+                        "confidence": "high", "rationale": "it answers"})
+    ctx = _ctx(agent_run=_fake_agent(reply), queries=None, mined_after=None)
+    ctx.args.out = out
+    result = query_mined.MINER.run(ctx)
+
+    assert result.written == 1
+    row = json.loads(out.read_text().splitlines()[0])
+    assert row["gold"] == [gold] and row["miner"] == "query"
+    assert row["snapshot_id"] == "snap-1" and row["protocol"] == "agent-mined"
+
+
+def test_query_miner_run_records_agent_failure(archive_home, tmp_path):
+    from thread_archive._store import init_db
+
+    init_db()
+    gold = _seed_searchable("x thread", "some distinctive zebra content here")
+    _seed_trail_query("zebra content", gold)
+
+    out = tmp_path / "judged-cases.jsonl"
+    # Agent returns None (failed) → no case, one failure recorded.
+    ctx = _ctx(agent_run=lambda *a, **k: (None, {"error": "x"}),
+               queries=None, mined_after=None)
+    ctx.args.out = out
+    result = query_mined.MINER.run(ctx)
+    assert result.written == 0 and result.failed == 1
+    assert not out.exists() or out.read_text() == ""
+
+
+# ── rerank miner run() ───────────────────────────────────────────────────────
+
+def test_rerank_miner_run_judges_the_pool(archive_home, tmp_path):
+    from thread_archive._store import init_db
+
+    init_db()
+    gold = _seed_searchable("blue whale facts", "the blue whale is the largest animal")
+    _seed_trail_query("largest animal", gold)
+
+    out = tmp_path / "rerank-cases.jsonl"
+    reply = json.dumps({"grades": {gold: 2}, "none_answer": False,
+                        "rationale": "answers"})
+    ctx = _ctx(agent_run=_fake_agent(reply), pool=10, queries=None, mined_after=None)
+    ctx.args.out = out
+    result = rerank_judged.MINER.run(ctx)
+
+    assert result.written == 1
+    row = json.loads(out.read_text().splitlines()[0])
+    assert row["gold"] == [gold] and row["protocol"] == "rerank-judged"
+
+
+def test_rerank_miner_run_flags_none_of_pool(archive_home, tmp_path):
+    from thread_archive._store import init_db
+
+    init_db()
+    gold = _seed_searchable("unrelated", "a totally different octopus subject")
+    _seed_trail_query("octopus subject", gold)
+
+    out = tmp_path / "rerank-cases.jsonl"
+    reply = json.dumps({"grades": {gold: 0}, "none_answer": True})
+    ctx = _ctx(agent_run=_fake_agent(reply), pool=10, queries=None, mined_after=None)
+    ctx.args.out = out
+    result = rerank_judged.MINER.run(ctx)
+    assert result.written == 0
+    assert any("no answer in the pool" in n for n in result.notes)
+
+
+# ── querygen miner run() ─────────────────────────────────────────────────────
+
+def test_querygen_miner_run_generates_cases(archive_home, tmp_path):
+    from sqlalchemy import text as sa_text
+
+    from thread_archive._store import Thread, get_session, init_db
+
+    init_db()
+    with get_session() as s:
+        t = Thread(name="conv:gen", title="a real conversation to target",
+                   thread_type="conversation", source="cc", source_id="gen")
+        s.add(t)
+        s.flush()
+        tid = t.id
+        for i in range(3):
+            s.execute(sa_text(
+                "INSERT INTO events_fts (event_id, thread_id, event_type, content, "
+                "content_type) VALUES (:e, :t, 'message', :c, 'user')"),
+                {"e": 100 + i, "t": tid, "c": f"turn {i}"})
+        s.commit()
+
+    out = tmp_path / "findability-cases.jsonl"
+    reply = json.dumps({"queries": [
+        {"query": "the exact phrase", "difficulty": "verbatim"},
+        {"query": "a fuzzy memory of it", "difficulty": "vague"}], "note": None})
+    ctx = _ctx(agent_run=_fake_agent(reply))
+    ctx.args.out = out
+    result = querygen.MINER.run(ctx)
+
+    assert result.written == 2
+    rows = [json.loads(l) for l in out.read_text().splitlines()]
+    assert all(r["gold"] == [tid] for r in rows)
+    assert {r["difficulty"] for r in rows} == {"verbatim", "vague"}
+
+
+def test_querygen_miner_run_handles_untargetable_thread(archive_home, tmp_path):
+    from sqlalchemy import text as sa_text
+
+    from thread_archive._store import Thread, get_session, init_db
+
+    init_db()
+    with get_session() as s:
+        t = Thread(name="conv:thin", title="a thin generic conversation",
+                   thread_type="conversation", source="cc", source_id="thin")
+        s.add(t)
+        s.flush()
+        for i in range(3):
+            s.execute(sa_text(
+                "INSERT INTO events_fts (event_id, thread_id, event_type, content, "
+                "content_type) VALUES (:e, :t, 'message', :c, 'user')"),
+                {"e": 200 + i, "t": t.id, "c": f"turn {i}"})
+        s.commit()
+
+    out = tmp_path / "findability-cases.jsonl"
+    ctx = _ctx(agent_run=_fake_agent('{"queries": [], "note": "too generic"}'))
+    ctx.args.out = out
+    result = querygen.MINER.run(ctx)
+    assert result.written == 0 and result.failed == 1
+
+
+# ── topic miner run() (survey → labelers) ────────────────────────────────────
+
+def test_topic_miner_run_surveys_then_labels(archive_home, tmp_path):
+    from thread_archive._store import init_db
+
+    init_db()
+    gold = _seed_searchable("grief for a bot", "mourning a deleted AI companion")
+    # Seed the topic and cite the gold thread to it.
+    from thread_archive._store import Thread, get_session
+
+    with get_session() as s:
+        topic = Thread(name="topic:botgrief", title="bot grief", thread_type="topic",
+                       source="cc", source_id="topic:botgrief")
+        s.add(topic)
+        s.commit()
+
+    survey_reply = json.dumps({"facets": [], "angles": [
+        {"query": "grieving a deleted AI", "intent": "bot-death grief",
+         "confounds": ["human grief"],
+         "candidates": [{"thread_id": gold, "note": "explicit"}]}]})
+    label_reply = json.dumps({"grades": {gold: 2}, "reasons": {gold: "answers"}})
+
+    def agent(prompt, model, tool_cmd, **kw):
+        # The survey brief and the labeler brief carry distinct headers.
+        if "designing a search-quality benchmark" in prompt:
+            return survey_reply, {"num_turns": 1}
+        return label_reply, {"num_turns": 1}
+
+    out = tmp_path / "topic-cases-bot-grief.jsonl"
+    ctx = _ctx(agent_run=agent, topic="bot grief", max_queries=20)
+    ctx.args.out = out
+    result = topic_mined.MINER.run(ctx)
+
+    assert result.written == 1
+    row = json.loads(out.read_text().splitlines()[0])
+    assert row["gold"] == [gold] and row["protocol"] == "topic-mined"
+    assert row["query"] == "grieving a deleted AI"
+
+
+# ── CLI run paths (fake registry + stub snapshot guard) ──────────────────────
+
+class _FakeMiner(fw.Miner):
+    name = "fake"
+    summary = "a test miner"
+    measures = "nothing"
+    unit = "item"
+    cost = "free"
+    target_kind = "per-case"
+    target_help = "items"
+    cases_stem = "fake-cases"
+
+    def __init__(self):
+        self.ran_with = None
+
+    def run(self, ctx):
+        self.ran_with = ctx
+        return fw.MineResult(written=ctx.target, failed=0,
+                             cases_path="/tmp/fake-cases.jsonl",
+                             notes=["a note"])
+
+
+def test_dispatch_runs_a_miner_through_the_seams(capsys):
+    fake = _FakeMiner()
+    rc = _cli.dispatch(["fake", "--target", "3"], registry=[fake],
+                       open_fn=lambda: "snap-xyz")
+    assert rc == 0
+    assert fake.ran_with.target == 3 and fake.ran_with.snapshot_id == "snap-xyz"
+    out = capsys.readouterr().out
+    assert "3 case(s) written" in out and "a note" in out
+
+
+def test_dispatch_all_runs_percase_and_skips_batch(capsys):
+    class _Batch(_FakeMiner):
+        name = "batchy"
+        target_kind = "batch"
+        runnable_in_all = False
+
+    rc = _cli.dispatch(["all", "2"], registry=[_FakeMiner(), _Batch()],
+                       open_fn=lambda: "snap-1")
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "skip batchy" in out
+    assert "mine all done" in out
+
+
+def test_guarded_open_requires_a_snapshot(archive_home):
+    import pytest
+
+    from thread_archive._store import init_db
+
+    init_db()
+    # No snapshot.json in the home → the guard refuses (claude may or may not be
+    # installed; either way the precondition fails).
+    with pytest.raises(SystemExit):
+        _cli._guarded_open()
+
+
+def test_require_snapshot_reads_the_manifest(archive_home):
+    (archive_home / "snapshot.json").write_text(json.dumps({"snapshot_id": "snap-aaa"}))
+    assert fw.require_snapshot() == "snap-aaa"
+
+
+# ── the -m entry point ───────────────────────────────────────────────────────
+
+def test_module_main_routes_tool_and_list(archive_home, capsys):
+    from thread_archive._mine.__main__ import main
+    from thread_archive._store import init_db
+
+    init_db()
+    tid = _seed_searchable("routed thread", "a distinctive kangaroo phrase")
+    assert main(["tool", "search", "kangaroo"]) == 0
+    assert tid in capsys.readouterr().out
+
+    assert main([]) == 0  # no args → the list view
+    assert "Gold miners" in capsys.readouterr().out
+
+
+# ── remaining small branches ─────────────────────────────────────────────────
+
+def test_read_query_list_parses_objects_bare_and_dedupes(tmp_path):
+    f = tmp_path / "seed.jsonl"
+    f.write_text('{"query": "alpha"}\n'
+                 'bravo\n'
+                 '\n'                       # blank skipped
+                 '{"query": "alpha"}\n'     # dup dropped
+                 'not-an-object-but-a-line\n')
+    assert query_mined.read_query_list(f) == ["alpha", "bravo", "not-an-object-but-a-line"]
+
+
+def test_parse_branches_reject_malformed_json():
+    assert rerank_judged.parse_rerank("{bad json", {"A"}) is None
+    assert rerank_judged.parse_rerank('{"grades": []}', {"A"}) is None  # grades not a dict
+    assert querygen.parse_queries("{bad json") is None
+    assert querygen.parse_queries('{"queries": "nope"}') is None  # queries not a list
+    assert topic_mined.parse_labels("{bad json") is None
+
+
+def test_query_miner_run_drops_when_no_valid_gold(archive_home, tmp_path):
+    from thread_archive._store import init_db
+
+    init_db()
+    gold = _seed_searchable("y thread", "a distinctive platypus discussion")
+    _seed_trail_query("platypus discussion", gold)
+
+    out = tmp_path / "judged-cases.jsonl"
+    # Agent parses fine but returns an empty gold set → no valid gold, dropped.
+    reply = json.dumps({"gold": [], "grades": {}, "confidence": "low",
+                        "rationale": "nothing fits"})
+    ctx = _ctx(agent_run=_fake_agent(reply), queries=None, mined_after=None)
+    ctx.args.out = out
+    result = query_mined.MINER.run(ctx)
+    assert result.written == 0 and result.failed == 1

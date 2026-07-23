@@ -31,7 +31,7 @@ from .._store import Event, Thread, use_session
 from ._types import EventHit
 
 # Hidden from a default browse (mirrors the web recent list): topics are
-# curated artifacts (thread_read(topic_id) keeps rendering one) and
+# separate artifacts (thread_read(topic_id) keeps rendering one) and
 # 'system' threads (Task-tool subagent runs) are machinery, not sessions anyone
 # revisits by recency. Both stay reachable through an explicit ``types``.
 DEFAULT_HIDDEN_TYPES = ("topic", "system")

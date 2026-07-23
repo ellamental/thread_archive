@@ -1,21 +1,26 @@
-"""Unit coverage for the gold-mining harness's pure logic.
+"""Unit coverage for the query gold-miner's pure logic.
 
-The mining agent itself (a headless multi-turn ``claude``) is operator-run
-and costs real tokens; what needs coverage is everything that makes its
-output trustworthy — verdict parsing, gold validation against the originating
-session, the prompt's baked-in session skips, re-run dedupe — plus the
-eval-side contract: a case carries the ``snapshot_id`` of the corpus it was
-mined against, and the eval binds to it.
+The mining agent itself (a headless multi-turn ``claude``) is operator-run and
+costs real tokens; what needs coverage is everything that makes its output
+trustworthy — verdict parsing, gold validation against the originating session,
+the prompt's baked-in session skips, re-run dedupe — plus the eval-side contract:
+a case carries the ``snapshot_id`` of the corpus it was mined against, and the
+eval binds to it.
+
+The miner lives in the package (``thread_archive._mine.query_mined``); the eval
+hub it feeds still lives on the bench (``evals/retrieval_eval.py``), loaded by
+path here for the snapshot-binding contract tests.
 """
 
 from __future__ import annotations
 
 import importlib.util
-import json
 import sys
 from pathlib import Path
 
 import pytest
+
+from thread_archive._mine import query_mined as mine_gold
 
 _EVALS = Path(__file__).resolve().parent.parent / "evals"
 
@@ -28,8 +33,7 @@ def _load(name: str):
     return mod
 
 
-mine_gold = _load("retrieval_mine_gold")
-retrieval_eval = sys.modules["retrieval_eval"]  # loaded by the script itself
+retrieval_eval = _load("retrieval_eval")
 
 
 # ── parse_verdict ────────────────────────────────────────────────────────────
@@ -106,8 +110,8 @@ def test_build_prompt_handles_missing_context_and_clicks():
 
 def test_build_prompt_offers_the_session_as_a_read_handle():
     # The originating session id is handed over as a plain read handle with the
-    # lead-up framing, so the agent can pull more of the pre-search context
-    # itself when the ±3-turn window is too thin.
+    # lead-up framing, so the agent can pull more of the pre-search context itself
+    # when the ±3-turn window is too thin.
     p = mine_gold.build_prompt(_case(), "ctx here", "py mine.py tool")
     assert "read S1 --mode chat" in p
     assert "lead-up" in p
@@ -218,8 +222,8 @@ def test_load_case_file_carries_snapshot_id(tmp_path):
 
 
 def test_load_case_file_carries_grades_pool(tmp_path):
-    # The graded candidate pool survives the round-trip: keys stringified,
-    # values coerced to int, and a case without a pool simply omits it.
+    # The graded candidate pool survives the round-trip: keys stringified, values
+    # coerced to int, and a case without a pool simply omits it.
     f = tmp_path / "cases.jsonl"
     f.write_text(
         '{"query": "q1", "gold": ["A"], "grades": {"A": 2, "B": 1, "C": 0}}\n'
@@ -230,8 +234,8 @@ def test_load_case_file_carries_grades_pool(tmp_path):
 
 
 def test_evaluate_never_passes_a_date_bound_to_search():
-    """The snapshot binding replaced the per-case date bound: evaluate scores
-    over the frozen corpus as-is and passes the search no ``until``/``snapshot_id``."""
+    """The snapshot binding replaced the per-case date bound: evaluate scores over
+    the frozen corpus as-is and passes the search no ``until``/``snapshot_id``."""
     seen = []
 
     def fake_search(query, **kw):
@@ -250,6 +254,8 @@ def test_evaluate_never_passes_a_date_bound_to_search():
 
 def test_require_matching_snapshot_binds_cases_to_the_home(archive_home):
     """--cases refuses unless the home is a snapshot whose id matches every case."""
+    import json
+
     cases = [{"query": "q", "gold": ["A"], "snapshot_id": "snap-aaa"}]
 
     # Not a snapshot home at all → refuse.

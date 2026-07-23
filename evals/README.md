@@ -1,13 +1,17 @@
 # evals/ — the search lab
 
-Everything that measures search quality lives here: the harness scripts, the
-experiment configurations, and this manual. Day to day none of it runs by
-hand — tier 0 rides every pytest pass and the CI retrieval gate rides every
-commit. Come here when you're *changing ranking*: this directory is the whole
-workbench, and the ladder below is the order to climb it.
+Everything that *scores* search quality lives here: the harness scripts, the
+experiment configurations, and this manual. The tools that *mint* the graded
+gold cases those scorers run against — the agent miners — moved into the product
+as `thread_archive mine` (package `thread_archive._mine`), so they ship and run
+from an install, not only a dev checkout; `thread_archive mine` alone lists them.
+Day to day none of this runs by hand — tier 0 rides every pytest pass and the CI
+retrieval gate rides every commit. Come here when you're *changing ranking*: this
+directory is the whole scoring workbench, and the ladder below is the order to
+climb it.
 
-Each script's docstring is its own full manual (protocols, biases, caveats);
-this README is the map.
+Each script's docstring — and each miner's module docstring — is its own full
+manual (protocols, biases, caveats); this README is the map.
 
 The scoring core these scripts share — the case protocols (title sampling, log
 mining) and the MRR/success/true-recall/nDCG loop — lives in the package at
@@ -28,8 +32,8 @@ Fastest tier first — climb until the evidence matches the stakes.
 | 1 | `pytest -m quality_models` | same corpus, real embedding + rerank models | minutes | touching the model arms |
 | 2 | CI `retrieval-gate` (arm-liveness probes) + `retrieval-gold-gate` (gold-file regression floors) | live archive + the golds' frozen snapshot | ~a minute | every commit, via thread-ci |
 | 3 | `retrieval_eval.py` by hand, `graph_eval.py`, `--behavior` | live archive | minutes | evaluating a deliberate ranking change |
-| 3½ | `retrieval_eval.py --cases` on agent-mined golds (`retrieval_mine_gold.py` to mint them) | a frozen corpus snapshot, corpus-grounded labels | seconds to score; agent-minutes per mined case | scoring against grounded labels; mining is an occasional cadence |
-| 4 | `pytest -m beir` | external BEIR benchmark | tens of minutes | calibrating against published baselines |
+| 3½ | `retrieval_eval.py --cases` on agent-mined golds (`thread_archive mine <miner>` to mint them) | a frozen corpus snapshot, corpus-grounded labels | seconds to score; agent-minutes per mined case | scoring against grounded labels; mining is an occasional cadence |
+| 4 | `pytest -m beir`; `cdr_eval.py`, `haystack_eval.py --dataset …` by hand | external IR / conversational-memory benchmarks | tens of minutes (built homes cache for re-runs) | calibrating against published baselines |
 
 ## The instruments
 
@@ -38,7 +42,7 @@ archive (BEIR and the lab build throwaway homes and never touch it).
 
 - **`retrieval_eval.py`** — the hub. Scores search with MRR / success@k /
   true recall@k / nDCG@k under
-  three case protocols: `--auto-titles` (zero-curation proxy), `--from-log`
+  three case protocols: `--auto-titles` (zero-label proxy), `--from-log`
   (real search→read pairs mined from the archive's own tool-use trail —
   collapse alarm only), `--cases` (a snapshot-bound case file, e.g. mined
   golds — the baseline instrument). Success asks whether any answer ranks;
@@ -47,30 +51,58 @@ archive (BEIR and the lab build throwaway homes and never touch it).
   the CI gate's arm-liveness checks. Every other live-archive instrument
   reuses its miner (`mine_log_cases`).
 - **`search_lab.py`** — the experiment bench. Races every configuration in
-  `experiments/` against the shipped defaults on the synthetic corpus and
-  prints a leaderboard. Seconds by default; `--models` for the fused
-  pipeline. A win here is a direction, not a verdict.
-- **`retrieval_mine_gold.py`** — spends one `claude` agent per query to mint
-  corpus-grounded gold cases (`~/.thread/archive/judged-cases.jsonl`) against a
-  frozen corpus snapshot (`thread_archive snapshot`; point `THREAD_ARCHIVE_HOME`
-  at it). Each case records the snapshot's `snapshot_id`; after the one-time
-  spend, `retrieval_eval.py --cases` — run over that same snapshot — scores
-  against them for free and deterministically, and refuses cases once the
-  snapshot's id no longer matches (the corpus moved; re-mine).
-- **`topic_mine_gold.py`** — mints golds from a curated **topic** dense with
-  confounds instead of from real queries. A survey `claude` agent searches the
-  topic, decides how many *angles* it warrants (its own call), and authors one
-  query per angle with the intent, the confounds, and the candidate threads it
-  found; then one labeler agent per angle builds on those candidates — verifying
-  and expanding them with its own searches — and grades a comprehensive pool
-  (2=intended, 1=partial, 0=confound). Same snapshot binding as the query miner;
-  writes `topic-cases-<slug>.jsonl`.
+  `experiments/` against the shipped defaults and prints a leaderboard. Two
+  corpora: the synthetic corpus (default; seconds, `--models` for the fused
+  pipeline) where a win is a *direction*, not a verdict; and `--gold` /
+  `--cases`, which races the same configurations over the snapshot-bound gold
+  files (the fused pipeline over the frozen snapshot, one leaderboard per file) —
+  the promotion-grade delta, the same graded pools the gold gate floors.
+- **`thread_archive mine`** — the gold miners (package `thread_archive._mine`),
+  the only tokens-spending tier. Each mints snapshot-bound eval `--cases` files
+  under `~/.thread/archive/`; `thread_archive mine` alone lists them, `thread_archive
+  mine <miner> --help` documents one, and `thread_archive mine all [N]` sweeps the
+  ones a count alone can drive. All bind by `snapshot_id` to the frozen corpus
+  snapshot they run against (`thread_archive snapshot`; point `THREAD_ARCHIVE_HOME`
+  at it), so after the one-time spend `retrieval_eval.py --cases` scores them for
+  free and refuses them once the snapshot's id no longer matches. Four miners,
+  covering complementary failure modes:
+  - **`query`** — one `claude` agent per real trail query reads the originating
+    session for intent, sweeps the snapshot deep and wide with its own
+    reformulated searches, and writes a graded, corpus-grounded case
+    (`judged-cases.jsonl`). Deep enough to credit a thread the incumbent buries —
+    the recall signal a pool-bounded judge can't see. Precision + recall.
+  - **`topic`** — mints golds from a **topic** dense with confounds. A survey
+    agent decides how many *angles* the topic warrants and authors one query
+    each with candidate threads; one labeler agent per angle verifies, expands,
+    and grades a comprehensive pool (2=intended, 1=partial, 0=confound),
+    `topic-cases-<slug>.jsonl`. Confound ranking. Batch (needs `--topic`).
+  - **`rerank`** — the cheap rung: production search returns a deep pool per
+    query, one judge grades it 2/1/0 in a single pass (`rerank-cases.jsonl`).
+    Scores ordering *within what search retrieved* (nDCG is the sharp signal);
+    blind to recall by construction, but the judge's "nothing in the pool
+    answers" verdict surfaces as a measured `none-of-pool` rate. Precision.
+  - **`querygen`** — the mirror of `rerank`: sample a random thread, one agent
+    reads it and authors difficulty-laddered queries (verbatim / paraphrase /
+    vague) to find it; each becomes a findability case whose single gold is that
+    thread (`findability-cases.jsonl`). Recall / findability, corpus-representative.
 - **`graph_eval.py`** — does the corpus-native embedding graph earn its
   ranking signal? Regression check for the shipped coherence re-rank, and the
   gate any new graph lever must pass.
-- **`beir_eval.py`** — the external yardstick: the real pipeline over a public
-  IR benchmark, next to published BM25/dense baselines. Answers "are the
-  components embarrassing?", nothing about archive-domain quality.
+- **`beir_eval.py`** / **`cdr_eval.py`** / **`haystack_eval.py`** — the external
+  yardsticks: the real pipeline over public benchmarks, beside their published
+  baselines. They answer "are the components competitive in general?" — never
+  archive-domain quality (third-party corpora that look nothing like an agent's
+  own session log; read every number against that mismatch). Two shapes:
+  - **shared-corpus** — `beir_eval.py` (BEIR scifact, scientific-claim IR) and
+    `cdr_eval.py` (NVIDIA ChatRAG's CDR, conversational retrieval) retrieve from
+    one corpus, scored by nDCG@10 against BM25 / dense / best-of-N references.
+  - **per-question haystack** — `haystack_eval.py`
+    (`--dataset locomo|longmemeval`): each question carries its own small
+    conversation history, and the task is to pull the evidence turn(s)/session(s)
+    out of *it*. Builds a small archive per corpus — cached by content and reused
+    across runs, so a re-run (or the rerank pass over an already-embedded corpus)
+    skips ingest+embed — scored by recall@k against the datasets' published recall
+    baselines.
 - **`experiments/`** — configurations-as-code for the lab; the contract is in
   its README.
 
@@ -96,16 +128,22 @@ per-shape split) or to score a *challenger* configuration on both sides of a cha
 - **Minted gold case files ARE the baseline.** The gate enumerates and scores
   them for the current-state read; for a challenger delta, score **every file
   present, over its own snapshot, on both sides of the change** (a file minted by
-  a parallel instance an hour ago is part of the baseline too). Two mining families
-  produce them, and both yield graded pools (nDCG, via `grades`):
-  - *Query-mined* (`retrieval_mine_gold.py`): one `claude` agent per real
-    query reads the originating session for intent, sweeps the frozen
-    snapshot with its own reformulated searches, reads candidates, and writes
-    a graded, corpus-grounded case.
-  - *Topic-mined* (`topic_mine_gold.py`): a survey agent searches a curated
-    topic, decides the angles it warrants, and authors one query per angle with
-    the candidates it found; one labeler agent per angle builds on those and
-    grades a pool over the snapshot (`topic-cases-<slug>.jsonl`).
+  a parallel instance an hour ago is part of the baseline too). The `thread_archive
+  mine` miners produce them, each yielding graded pools (nDCG, via `grades`):
+  - `mine query` (`judged-cases.jsonl`): one `claude` agent per real query reads
+    the originating session for intent, sweeps the frozen snapshot with its own
+    reformulated searches, reads candidates, and writes a graded, corpus-grounded
+    case. The recall-capable rung.
+  - `mine topic` (`topic-cases-<slug>.jsonl`): a survey agent searches a topic,
+    decides the angles it warrants, and authors one query per angle with the
+    candidates it found; one labeler agent per angle builds on those and grades a
+    pool over the snapshot. The confound-ranking rung.
+  - `mine rerank` (`rerank-cases.jsonl`): one judge grades a retrieved pool per
+    query in a single pass — cheap, measures ordering within what search
+    retrieved, and reports a `none-of-pool` rate as its recall-failure signal.
+  - `mine querygen` (`findability-cases.jsonl`): generate difficulty-laddered
+    queries for a random thread and test it ranks — corpus-representative
+    findability, the recall counterpart to `rerank`'s precision.
 
   Each case is bound by `snapshot_id` to the corpus snapshot it was mined
   against (`thread_archive snapshot`; point `THREAD_ARCHIVE_HOME` at it), and
@@ -158,25 +196,29 @@ confirming run; re-mine on a cadence when a file's snapshot goes stale.
 1. Write the change as an experiment in `experiments/` (a `SearchParams`
    value, or a `SEARCH` callable) with a falsifiable `HYPOTHESIS`.
 2. `search_lab.py` (and `--models` if the model arms are involved) — does the
-   direction hold on the bench?
-3. `retrieval_eval.py --cases` on every minted gold file (each over its own
-   snapshot) — the delta that can actually credit the change. Tune against
-   one file; confirm against the held-out one.
+   direction hold on the synthetic bench?
+3. `search_lab.py --gold` — race that same experiment against the baseline over
+   every minted gold file (each over its own snapshot), on the graded pools the
+   gold gate floors: the delta that can actually credit the change. Tune against
+   one file; confirm against the held-out one. (`retrieval_eval.py --cases`
+   scores a *single* production config over one file — reach for it to read a
+   shipped config's absolute numbers, not to race a challenger.)
 4. Promote: fold the winner into `_retrieval/params.py` defaults, delete or
    keep the experiment as documentation, and let tier 0/2 ratchet the new
    shape.
 
 ## Cost and hygiene
 
-- `retrieval_mine_gold.py` and `topic_mine_gold.py` spend real tokens
-  (headless `claude` calls; `--sample` bounds them). Everything else is free.
-- Mined output quotes real usage — dumps and ledgers live under
-  `~/.thread/archive/` (`retrieval-trend.jsonl`, `judged-cases.jsonl`,
-  `topic-cases-<slug>.jsonl`), never in the repo. The synthetic corpus is the
-  one exception: no real data, so it's checked in.
+- The `thread_archive mine` miners spend real tokens (headless `claude` calls;
+  each miner's `--target` bounds them). Everything else on the bench is free.
+- Mined output quotes real usage — case files, detail sidecars, and ledgers live
+  under `~/.thread/archive/` (`retrieval-trend.jsonl`, `judged-cases.jsonl`,
+  `topic-cases-<slug>.jsonl`, `rerank-cases.jsonl`, `findability-cases.jsonl`),
+  never in the repo. The synthetic corpus is the one exception: no real data, so
+  it's checked in.
 - The fast tests guarding these harnesses live in `tests/`
-  (`test_retrieval_eval.py`, `test_search_lab.py`,
-  `test_retrieval_mine_gold.py`, `test_graph_eval.py`,
+  (`test_retrieval_eval.py`, `test_search_lab.py`, `test_mine_framework.py`,
+  `test_retrieval_mine_gold.py`, `test_topic_mine_gold.py`, `test_graph_eval.py`,
   `test_beir_calibration.py`, `test_retrieval_gold_gate.py`) and run in every
   pytest pass — the lab stays runnable even when nobody has tuned search in
   months.

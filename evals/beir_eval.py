@@ -2,7 +2,7 @@
 benchmark and compare to published numbers.
 
 The in-house harness (``retrieval_eval.py``) answers *is search over Ella's
-archive good* — mined query logs, curated cases, behavioral signals. This one
+archive good* — mined query logs, labeled cases, behavioral signals. This one
 answers the different, external question: *are the components embarrassing?* It
 loads a standard BEIR dataset (a fixed corpus + queries + human relevance
 judgments), ingests the corpus into a throwaway archive, runs every query

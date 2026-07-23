@@ -886,7 +886,7 @@ _TOPIC_READ_QUOTE_CHARS = 500
 
 
 def _topic_read_message(thread: Thread, *, session: Optional[Session] = None) -> str:
-    """A topic thread read as its curated page: description, links, and the live
+    """A topic thread read as its page: description, links, and the live
     citations with their quotes — each anchored ``[thread N event:M]`` so it opens
     in ``thread_read`` via ``around_event``."""
     from .._knowledge import read as kg_read
@@ -942,7 +942,7 @@ def _topic_read_message(thread: Thread, *, session: Optional[Session] = None) ->
 
 
 # The reserved thread_read ref for the topic hierarchy. The tree itself is a
-# curation surface, not a thread; the ref is kept only so a pasted 'topics'
+# view, not a thread; the ref is kept only so a pasted 'topics'
 # gets a pointed answer instead of resolving as a thread lookup that
 # confusingly finds nothing.
 TOPIC_TREE_REF = "topics"
@@ -980,7 +980,7 @@ def _resolve_summary_kind(summary: bool | str) -> Optional[str]:
 def _stored_summary(thread: Thread, kind: str) -> str:
     """The thread's stored summary: ``short`` (``Thread.summary``, a few sentences)
     or ``indexed`` (``Thread.indexed_summary``, structured markdown with event
-    anchors). Written by an external curator, so not every thread has them;
+    anchors). Written by an external write layer, so not every thread has them;
     absence names whichever alternative exists rather than returning empty."""
     text = thread.summary if kind == "short" else thread.indexed_summary
     other_kind = "indexed" if kind == "short" else "short"
@@ -1201,7 +1201,7 @@ def read_thread(
     message string if absent.
     """
     if isinstance(thread_id, str) and thread_id.strip().lower() == TOPIC_TREE_REF:
-        return ("The topic tree is a curation surface, not a thread. A topic "
+        return ("The topic tree is a view, not a thread. A topic "
                 "*id* still reads here as the topic's page.")
 
     summary_kind = _resolve_summary_kind(summary)

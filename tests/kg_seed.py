@@ -1,12 +1,12 @@
-"""Test-only writers for the curated data plane.
+"""Test-only writers for the topic-graph data plane.
 
-The archive's knowledge layer is read-only in production — an external curator
+The archive's knowledge layer is read-only in production — an external write layer
 writes topics, links, citations, and stored summaries through the truth log.
 These helpers give the suite that writer: each one appends the same truth
 (``KgEvent`` rows via ``append_kg_event``, thread records via ``record_thread``)
 and folds it into the projection (``apply_event``), so seeded data exercises
 the real data plane — reindex replays it, verify parity-checks it, redaction
-scrubs it — exactly like production curation writes.
+scrubs it — exactly like production topic-graph writes.
 """
 
 from __future__ import annotations

@@ -236,17 +236,17 @@ def test_subagent_filed_as_hidden_system_thread(archive_home) -> None:
 
 def test_in_home_session_filed_as_hidden_system_thread(archive_home) -> None:
     """A session whose recorded cwd sits inside the archive home is archive
-    machinery (the curation drains run from ``<home>/curation``): filed like a
+    machinery (scheduled background jobs run from inside ``<home>``): filed like a
     subagent — hidden ``thread_type='system'``, 🤖 title, ``archive_operational``
-    stamped — so a drain's own transcript never becomes librarian work. It is
-    also ``exclude_from_search``: drain transcripts quote search hits wholesale
+    stamped — so a job's own transcript never becomes new work. It is
+    also ``exclude_from_search``: such transcripts quote search hits wholesale
     and would otherwise match nearly any query about their own subjects."""
     init_db()
-    f = archive_home / "curate.jsonl"
-    drain_user = dict(USER, cwd=str(archive_home / "curation"))
+    f = archive_home / "job.jsonl"
+    drain_user = dict(USER, cwd=str(archive_home / "jobs"))
     _write_jsonl(f, [drain_user, ASSISTANT])
 
-    result = import_session_incremental(f, "curate-run-1")
+    result = import_session_incremental(f, "job-run-1")
     assert result.is_new_thread is True
     with get_session() as s:
         t = s.execute(select(Thread).where(Thread.source == "claude-code")).scalar_one()

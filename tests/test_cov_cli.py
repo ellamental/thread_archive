@@ -1132,7 +1132,7 @@ def test_redact_report_minimal_no_key(capsys) -> None:
 
 
 def test_redact_report_names_scrubbed_quotes_and_the_reversal(capsys) -> None:
-    """Curation quotes carrying the redacted content are scrubbed too, and the
+    """Topic citation quotes carrying the redacted content are scrubbed too, and the
     summary names both that and the key the redaction reverses under."""
     rc = cli.report_redact({
         "events_redacted": 2, "thread_id": 7, "key_id": "k1",
