@@ -1,9 +1,8 @@
-# LinuxPatch — claude-code fix-import repair (written, tested, NOT activated)
+# LinuxPatch — claude-code fix-import repair (finished, verified, NOT activated)
 
-Working artifacts of the 2026-07-23 `fix-import claude-code` repair, preserved here
-after the operator asked for a revert before activation. The scaffold at
-`~/.thread/archive/plugins/claude-code/` was restored to its pristine template;
-the live archive was never modified (no `--activate`, `config.json` still
+The completed 2026-07-23 `fix-import claude-code` repair, held here pending operator
+go-ahead. The scaffold at `~/.thread/archive/plugins/claude-code/` remains the pristine
+template and the live archive is unmodified (no `--activate`, `config.json` still
 `enabled: false`).
 
 Full session log — diagnosis, wiring analysis, test results, revert record:
@@ -13,25 +12,31 @@ Full session log — diagnosis, wiring analysis, test results, revert record:
 
 | file | what it is |
 |---|---|
-| `patch_claude_code.py` | the finished patch module — drop into `~/.thread/archive/plugins/claude-code/` to resume |
+| `patch_claude_code.py` | the finished patch module — drop into `~/.thread/archive/plugins/claude-code/` |
 | `session-drift.jsonl` | the obfuscated test fixture — goes to `.../plugins/claude-code/fixtures/` |
 
-## State when work stopped
+## Verification status
 
-Suite was 4/5 green. The one failure (`test_no_validation_drift_on_fixtures`) is a
-scaffold-test issue, not a patch bug: the test counts the *version first-sighting
-advisory* as drift, so any fixture carrying a `version` field fails in a fresh tmp
-archive (upstream-actionable, logged as finding #6 in the session log).
+**5/5 green** — the scaffold's pre-wired suite (`test_patch.py` + `conftest.py`) was run
+against exactly these two files in an isolated copy on 2026-07-23. The fixture already
+has the `version` keys stripped (workaround for finding #6 in the session log: the
+scaffold's drift test counts the version first-sighting advisory as drift, so any
+fixture carrying a `version` field fails in a fresh tmp archive — upstream-actionable).
 
-## To resume the repair
+## To activate
 
 ```bash
 cp LinuxPatch/patch_claude_code.py ~/.thread/archive/plugins/claude-code/
 mkdir -p ~/.thread/archive/plugins/claude-code/fixtures
 cp LinuxPatch/session-drift.jsonl ~/.thread/archive/plugins/claude-code/fixtures/
-# remove the "version" keys from the fixture lines (advisory-finding workaround),
-# then:
 cd ~/.thread/archive/plugins/claude-code
-env -u XDG_CONFIG_DIRS /home/brantgoe/A_Dev/thread_archive/.venv/bin/python -m pytest . -q
+env -u XDG_CONFIG_DIRS /home/brantgoe/A_Dev/thread_archive/.venv/bin/python -m pytest . -q   # expect 5 passed
 env -u XDG_CONFIG_DIRS /home/brantgoe/A_Dev/thread_archive/.venv/bin/thread_archive fix-import claude-code --activate
+# then verify the warnings stop:
+/home/brantgoe/A_Dev/thread_archive/.venv/bin/thread_archive coverage
+cat ~/.thread/archive/patch-log.jsonl
 ```
+
+The patch is unpinned: the next `thread_archive self-update` retires it (the proper fix
+should ship upstream — findings 5 and 6 are reported in `LinuxTesting/`). Pin with
+`fix-import claude-code --pin` if you want to keep it across updates.
