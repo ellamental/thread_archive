@@ -28,6 +28,7 @@ A module (filename = experiment name; `_`-prefixed files are skipped) defines:
 .venv/bin/python evals/search_lab.py                       # gold + synthetic (default)
 .venv/bin/python evals/search_lab.py --gold                # gold bench only
 .venv/bin/python evals/search_lab.py --synthetic --models  # synthetic only, fused pipeline
+.venv/bin/python evals/search_lab.py --only pool_order --sample 0.15  # fast iterate
 .venv/bin/python evals/search_lab.py --only no_recency,pool_order
 .venv/bin/python evals/search_lab.py --json out.json
 ```
@@ -35,7 +36,11 @@ A module (filename = experiment name; `_`-prefixed files are skipped) defines:
 A bare run scores **both benches** (`--gold` / `--synthetic` narrow to one). The
 leaderboard scores every configuration on identical cases with the same
 MRR/success/true-recall/nDCG loop as the live-archive harness, baseline first,
-deltas against it. The gold bench is the snapshot-bound gold files (graded,
+deltas against it. `--sample FRAC` scores a deterministic subset of each gold
+file (the same hash-selected slice every run, nested as `FRAC` grows) — pair it
+with `--only <experiment>` to iterate in a couple of minutes instead of the full
+bench's tens. A subset is a *direction* on grounded data, not the promotion
+delta: read it while tuning, then drop `--sample` for the full-bench confirm. The gold bench is the snapshot-bound gold files (graded,
 corpus-grounded pools over the frozen snapshot), one leaderboard per file — the
 promotion-grade delta; the synthetic bench (`tests/quality_corpus.CASES`,
 lexically easy) lands in seconds and only points a *direction*. Both together:

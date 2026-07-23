@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- `evals/search_lab.py` gained `--sample FRAC`, a fast-iteration subset for the gold
+  bench: it scores a deterministic, hash-selected slice of each gold file (the same
+  cases every run, nested as `FRAC` grows) instead of the whole file. Paired with
+  `--only <experiment>` it turns a tuning loop from the full bench's tens of minutes
+  (baseline + every experiment × all ~124 gold cases, fused + reranked over the
+  snapshot) into a couple. A subset reads a *direction* on grounded data, not the
+  promotion delta — the CLI prints a SAMPLED banner and per-file `n/n_full`, and the
+  full bench (drop `--sample`) stays the promotion bar.
+
 - The shared in-process model (nomic embedder, cross-encoder reranker) is now safe
   under concurrent use. `ModelSlot` grew a `use()` guard that serializes access to
   the one process model, and `embed._encode` / `rerank.rerank_scores` drive their
