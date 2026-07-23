@@ -177,16 +177,16 @@ class Reranker:
         # can never cold-load the cross-encoder.
         if not self.is_available():
             return None
-        model = self._slot.get()
-        if model is None:
-            return None
+        pairs = [[query, (d or "")[:RERANK_DOC_CHARS]] for d in docs]
         try:
-            pairs = [[query, (d or "")[:RERANK_DOC_CHARS]] for d in docs]
-            scores = model.predict(pairs, batch_size=_PREDICT_BATCH_SIZE, show_progress_bar=False)
-            return [float(s) for s in scores]
+            with self._slot.use() as model:
+                if model is None:
+                    return None
+                scores = model.predict(pairs, batch_size=_PREDICT_BATCH_SIZE, show_progress_bar=False)
         except Exception as e:  # noqa: BLE001
             logger.debug("rerank failed (%s) — caller keeps original order", e)
             return None
+        return [float(s) for s in scores]
 
     def rerank(self, query: str, items: list, get_text) -> Optional[list]:
         """Reorder ``items`` by cross-encoder relevance to ``query``. ``get_text(item)``

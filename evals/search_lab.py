@@ -8,37 +8,41 @@ baseline and every configuration on identical cases with the same
 MRR/success/true-recall/nDCG loop as the live-archive harness, and prints a
 leaderboard with deltas against the baseline.
 
-Two corpora, one leaderboard:
+Two benches, run **both by default** (``--gold`` / ``--synthetic`` narrow to one):
 
-- **Synthetic (default).** Builds the checked-in synthetic corpus
-  (``tests/quality_corpus.py``) in a throwaway archive home. Fast (lexical
-  stack, seconds); ``--models`` embeds it and runs the fused pipeline (real
-  torch models — minutes on a cold cache). Lexically easy by design, so a delta
-  here is a *direction*, not a shipping verdict.
+- **Gold.** Scores over the snapshot-bound gold case files (``evals/README.md``
+  → "Taking a baseline") — graded, corpus-grounded pools scored over the frozen
+  snapshot they were mined against, the fused production pipeline running
+  natively over the snapshot's vector pack. This is the measurement of record: a
+  gold-file delta scored on both sides of a change is the evidence that credits a
+  promotion. Auto-discovers the gold files at the gold dir (or takes explicit
+  ``--cases``), scores each over its own snapshot, one leaderboard per file.
 
-- **Gold (``--gold`` / ``--cases FILE``).** Scores over the snapshot-bound gold
-  case files instead (``evals/README.md`` → "Taking a baseline") — graded,
-  corpus-grounded pools scored over the frozen snapshot they were mined against,
-  the fused production pipeline running natively over the snapshot's vector
-  pack. This is the measurement of record: a gold-file delta scored on both
-  sides of a change is the evidence that credits a promotion, where the
-  synthetic bench only points the way. Auto-discovers the gold files at the gold
-  dir (or takes explicit ``--cases``), scores each over its own snapshot, and
-  prints one leaderboard per file.
+- **Synthetic.** Builds the checked-in synthetic corpus
+  (``tests/quality_corpus.py``) in a throwaway archive home — no snapshot, no
+  models, seconds (``--models`` embeds it and runs the fused pipeline). Lexically
+  easy by design, so a delta here is a *direction*, not a verdict: the fast
+  "did I obviously break something" check, not the promotion bar.
 
-    .venv/bin/python evals/search_lab.py                       # synthetic, lexical, seconds
-    .venv/bin/python evals/search_lab.py --models              # synthetic, fused pipeline
-    .venv/bin/python evals/search_lab.py --gold                # every gold file over the snapshot
+Running both is the point — the synthetic leaderboard lands in seconds while the
+gold pass (minutes: real models over the whole snapshot) is still going, so a
+gross regression shows up immediately and the grounded verdict follows.
+
+    .venv/bin/python evals/search_lab.py                       # gold + synthetic (default)
+    .venv/bin/python evals/search_lab.py --gold                # gold bench only
+    .venv/bin/python evals/search_lab.py --synthetic --models  # synthetic only, fused pipeline
     .venv/bin/python evals/search_lab.py --cases ~/.thread/archive/judged-cases.jsonl
     .venv/bin/python evals/search_lab.py --only no_recency,pool_order --json out.json
 
-Gold mode needs a snapshot (``thread_archive snapshot <dir>``; default
+The gold bench needs a snapshot (``thread_archive snapshot <dir>``; default
 ``~/.thread/archive-snap``, ``$THREAD_ARCHIVE_SNAP`` to override) and gold files
-mined against it (``thread_archive mine``). It keeps
-coherence off — like the synthetic bench — so the baseline-vs-experiment delta
-stays deterministic; the coherence-on absolute number is the CI gold gate's
-(``scripts/retrieval_gold_gate.py``). A file whose snapshot fingerprint no
-longer matches is skipped (re-mine), never scored against a moved corpus.
+mined against it (``thread_archive mine``). With neither on hand the default run
+still prints the synthetic leaderboard and notes the gold skip; ``--synthetic``
+asks for that explicitly. Both benches keep coherence off so the
+baseline-vs-experiment delta stays deterministic; the coherence-on absolute
+number is the CI gold gate's (``scripts/retrieval_gold_gate.py``). A gold file
+whose snapshot fingerprint no longer matches is skipped (re-mine), never scored
+against a moved corpus.
 """
 
 from __future__ import annotations
@@ -215,9 +219,11 @@ def _select_experiments(args) -> list[Experiment]:
     return experiments
 
 
-def _run_synthetic(args) -> int:
+def _run_synthetic(args) -> tuple[int, dict | None]:
     """The synthetic-corpus bench: build the checked-in corpus in a throwaway
-    home and race every experiment against the baseline on it."""
+    home and race every experiment against the baseline on it. Returns
+    ``(exit_code, report)`` — the report is None on failure, else the leaderboard
+    dict the caller folds into the combined ``--json`` output."""
     import os
 
     # A throwaway home: the lab must never rank against (or write into) the real
@@ -249,24 +255,26 @@ def _run_synthetic(args) -> int:
             if not res.get("embedded"):
                 print(f"error: no vectors built ({res}); is the [embeddings] extra installed?",
                       file=sys.stderr)
-                return 2
+                return 2, None
 
         experiments = _select_experiments(args)
         report = run_lab(ids, experiments, limit=args.limit if args.limit is not None else 10)
         report["mode"] = "models" if args.models else "lexical"
+        print(f"\n=== synthetic corpus ({report['mode']}) ===")
         _print_leaderboard(report)
-        if args.json:
-            args.json.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
-            print(f"\nwrote {args.json}", file=sys.stderr)
-        return 0
+        return 0, report
     finally:
         shutil.rmtree(home, ignore_errors=True)
 
 
-def _run_gold(args) -> int:
+def _run_gold(args, *, explicit: bool) -> tuple[int, dict | None]:
     """The gold bench: race every experiment against the baseline over the
     snapshot-bound gold case files — the fused production pipeline running
-    natively over the frozen snapshot's vectors, one leaderboard per file."""
+    natively over the frozen snapshot's vectors, one leaderboard per file.
+    Returns ``(exit_code, report)``. A missing snapshot / gold set is a hard
+    error (2) when gold was asked for explicitly (``--gold`` / ``--cases``), but
+    a soft skip (0, None) when gold is only running as half of the default pair —
+    a box without a snapshot still gets its synthetic leaderboard."""
     import os
 
     from thread_archive import _api as api
@@ -274,21 +282,26 @@ def _run_gold(args) -> int:
     from thread_archive._eval import load_case_file
     from thread_archive._ops.snapshot import read_snapshot_id
 
+    miss = 2 if explicit else 0
+
     gate = _gold_gate()
     snap = Path(args.snapshot or os.environ.get("THREAD_ARCHIVE_SNAP")
                 or gate.DEFAULT_SNAP).expanduser()
     if not (snap / "snapshot.json").is_file():
-        print(f"error: no snapshot at {snap} — freeze one with "
+        print(f"gold: no snapshot at {snap} — freeze one with "
               f"`thread_archive snapshot <dir>` and mine gold cases against it "
-              f"(or pass --snapshot).", file=sys.stderr)
-        return 2
+              f"(--snapshot to point elsewhere, --synthetic to skip gold).", file=sys.stderr)
+        return miss, None
 
-    # Route every arm at the frozen snapshot. Coherence off, exactly as the
-    # synthetic bench: its graph refresh is nondeterministic across runs and the
-    # leaderboard's job is a clean baseline-vs-experiment delta (the coherence-on
-    # absolute number is the CI gold gate's). The model arms stay in their
-    # production shape — the snapshot carries a vector pack, so gold mode measures
-    # the fused stack the synthetic corpus can't.
+    # Route every arm at the frozen snapshot. Force the model arms back on — a
+    # synthetic pass earlier in the same process may have switched them off — so
+    # gold always measures the fused production stack over the snapshot's vector
+    # pack (the stack the synthetic corpus can't exercise). Coherence stays off,
+    # exactly as the synthetic bench: its graph refresh is nondeterministic across
+    # runs and the leaderboard's job is a clean baseline-vs-experiment delta (the
+    # coherence-on absolute number is the CI gold gate's).
+    os.environ.pop("THREAD_ARCHIVE_EMBED", None)
+    os.environ.pop("THREAD_ARCHIVE_RERANK", None)
     os.environ[_config.ENV_HOME] = str(snap)
     os.environ["THREAD_ARCHIVE_COHERENCE"] = "off"
     api.open_archive(str(snap))
@@ -296,7 +309,7 @@ def _run_gold(args) -> int:
     from thread_archive._retrieval import embed
 
     if not embed.is_available():
-        print("warning: the semantic arm is unavailable — gold mode is scoring the "
+        print("warning: the semantic arm is unavailable — gold is scoring the "
               "lexical stack only, not the fused pipeline (install the [embeddings] "
               "extra to measure the shipped stack).", file=sys.stderr)
 
@@ -308,9 +321,9 @@ def _run_gold(args) -> int:
                         or gate.DEFAULT_GOLD_DIR).expanduser()
         files = gate.discover_gold_files(gold_dir)
         if not files:
-            print(f"error: no gold files in {gold_dir} — mine some with "
-                  f"`thread_archive mine` first.", file=sys.stderr)
-            return 2
+            print(f"gold: no gold files in {gold_dir} — mine some with "
+                  f"`thread_archive mine` first (--synthetic to skip gold).", file=sys.stderr)
+            return miss, None
 
     experiments = _select_experiments(args)
     limit = args.limit if args.limit is not None else 20
@@ -328,55 +341,75 @@ def _run_gold(args) -> int:
                   file=sys.stderr)
             continue
         report = run_gold_lab(cases, experiments, limit=limit)
-        print(f"\n=== {path.name}  ({len(cases)} cases · snapshot {current}) ===")
+        print(f"\n=== gold: {path.name}  ({len(cases)} cases · snapshot {current}) ===")
         _print_leaderboard(report)
         report.update({"file": path.name, "path": str(path),
                        "snapshot_id": current, "n": len(cases)})
         file_reports.append(report)
 
     if not file_reports:
-        print("error: no gold file matched the current snapshot — nothing scored "
+        print("gold: no gold file matched the current snapshot — nothing scored "
               "(re-mine against it).", file=sys.stderr)
-        return 2
+        return miss, None
 
-    if args.json:
-        out = {"mode": "gold", "snapshot_id": current, "snapshot": str(snap),
+    return 0, {"mode": "gold", "snapshot_id": current, "snapshot": str(snap),
                "files": file_reports}
-        args.json.write_text(json.dumps(out, indent=2) + "\n", encoding="utf-8")
-        print(f"\nwrote {args.json}", file=sys.stderr)
-    return 0
 
 
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
-    ap.add_argument("--models", action="store_true",
-                    help="synthetic mode: embed the corpus and enable the model arms (minutes)")
     ap.add_argument("--gold", action="store_true",
-                    help="score over the snapshot-bound gold files instead of the "
-                    "synthetic corpus (the measurement of record)")
+                    help="run only the gold bench (default runs gold + synthetic)")
+    ap.add_argument("--synthetic", action="store_true",
+                    help="run only the synthetic bench (default runs gold + synthetic)")
+    ap.add_argument("--models", action="store_true",
+                    help="synthetic bench: embed the corpus and enable the model arms (minutes)")
     ap.add_argument("--cases", type=Path, action="append", metavar="FILE",
-                    help="gold mode over specific case file(s) (repeatable; "
-                    "implies --gold and overrides auto-discovery)")
+                    help="gold bench over specific case file(s) (repeatable; "
+                    "overrides auto-discovery)")
     ap.add_argument("--snapshot", type=Path, metavar="DIR",
-                    help="gold mode: the corpus snapshot home "
+                    help="gold bench: the corpus snapshot home "
                     "(default $THREAD_ARCHIVE_SNAP or ~/.thread/archive-snap)")
     ap.add_argument("--gold-dir", type=Path, metavar="DIR",
-                    help="gold mode: where to auto-discover gold files "
+                    help="gold bench: where to auto-discover gold files "
                     "(default $THREAD_ARCHIVE_GOLD_DIR or ~/.thread/archive)")
     ap.add_argument("--only", help="comma-separated experiment names (default: all in evals/experiments/)")
     ap.add_argument("--experiments", type=Path, default=EXPERIMENTS_DIR,
                     help="experiments directory (default: evals/experiments/)")
     ap.add_argument("--limit", type=int, default=None,
-                    help="result depth per query (default: 10 synthetic, 20 gold)")
+                    help="result depth per query (default: 20 gold, 10 synthetic)")
     ap.add_argument("--json", type=Path, help="also write the full report as JSON")
     args = ap.parse_args(argv)
 
-    gold = args.gold or bool(args.cases)
-    if args.models and gold:
-        ap.error("--models is a synthetic-corpus mode (it embeds the synthetic "
-                 "corpus); gold mode already scores the fused pipeline over the "
-                 "snapshot's vectors")
-    return _run_gold(args) if gold else _run_synthetic(args)
+    # Neither flag → run both. Each flag narrows to just that bench.
+    run_gold = args.gold or not args.synthetic
+    run_synth = args.synthetic or not args.gold
+    if args.models and not run_synth:
+        ap.error("--models embeds the synthetic corpus, but --gold runs gold only")
+    if (args.cases or args.snapshot or args.gold_dir) and not run_gold:
+        ap.error("--cases/--snapshot/--gold-dir are gold-bench options, but "
+                 "--synthetic runs synthetic only")
+
+    out: dict = {}
+    codes: list[int] = []
+    # Synthetic first: it is the only bench that writes (into a throwaway home it
+    # then deletes), and gold's api.open_archive repoints the engine off it before
+    # gold reads — so the synthetic corpus can never leak into the snapshot.
+    if run_synth:
+        rc, rep = _run_synthetic(args)
+        codes.append(rc)
+        if rep is not None:
+            out["synthetic"] = rep
+    if run_gold:
+        rc, rep = _run_gold(args, explicit=bool(args.gold or args.cases))
+        codes.append(rc)
+        if rep is not None:
+            out["gold"] = rep
+
+    if args.json and out:
+        args.json.write_text(json.dumps(out, indent=2) + "\n", encoding="utf-8")
+        print(f"\nwrote {args.json}", file=sys.stderr)
+    return max(codes) if codes else 0
 
 
 if __name__ == "__main__":

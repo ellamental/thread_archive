@@ -99,6 +99,32 @@ def tool_cmd() -> str:
     return f"{sys.executable} -m thread_archive._mine tool"
 
 
+# The most agent sessions one ``thread_archive mine`` command launches — a single
+# miner's ``--target`` (or a topic survey's angle count), and the *total* a
+# ``mine all`` sweep spends across its miners. A spend guard so a fat-fingered
+# ``--target 500`` (or a wide sweep) runs bounded instead of running up a bill.
+# "Like 25": generous for a real mining cadence, fatal only to mistakes. How many
+# run *at once* is a separate ceiling — ``_agent.MAX_CONCURRENT_SESSIONS``.
+MAX_SESSIONS_PER_RUN = 25
+
+
+def clamp_sessions(requested: int) -> int:
+    """A per-run agent-session count, clamped to :data:`MAX_SESSIONS_PER_RUN`. A
+    non-positive count (a batch miner that carries no ``--target``) passes through
+    untouched — there is nothing to bound."""
+    return min(requested, MAX_SESSIONS_PER_RUN) if requested > 0 else requested
+
+
+def clamp_jobs(requested: int) -> int:
+    """A concurrent-agent count, clamped to the global session ceiling and floored
+    at one. More workers than ``_agent.MAX_CONCURRENT_SESSIONS`` would only block on
+    the shared semaphore, so cap them where they're requested rather than spawn
+    threads that idle."""
+    from ._agent import MAX_CONCURRENT_SESSIONS
+
+    return max(1, min(requested, MAX_CONCURRENT_SESSIONS))
+
+
 def mined_queries(path: Path) -> set[str]:
     """Queries already in a case file — re-runs append only new ones. Robust to a
     half-written or hand-edited file: junk lines are skipped, not fatal."""
@@ -251,15 +277,17 @@ class Miner:
 def add_common_arguments(parser: argparse.ArgumentParser, miner: Miner) -> None:
     """The arguments every miner accepts. ``--target`` is added only for per-case
     miners (a batch miner's count is not the operator's to set)."""
-    from ._agent import DEFAULT_MODEL
+    from ._agent import DEFAULT_MODEL, MAX_CONCURRENT_SESSIONS
 
     if miner.target_kind == "per-case":
         parser.add_argument(
             "--target", type=int, default=miner.default_target, metavar="N",
-            help=f"how many to mine (unit: {miner.unit}; default {miner.default_target})")
+            help=f"how many to mine (unit: {miner.unit}; default "
+            f"{miner.default_target}; capped at {MAX_SESSIONS_PER_RUN}/run)")
     parser.add_argument("--model", default=DEFAULT_MODEL,
                         help="claude CLI model alias for the mining agents")
-    parser.add_argument("--jobs", type=int, default=2, help="concurrent agents")
+    parser.add_argument("--jobs", type=int, default=2,
+                        help=f"concurrent agents (capped at {MAX_CONCURRENT_SESSIONS})")
     parser.add_argument("--seed", type=int, default=7, help="sampling seed")
     parser.add_argument("--out", type=Path, default=None, metavar="PATH",
                         help="case file to append to (default: under "

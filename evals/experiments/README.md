@@ -25,30 +25,31 @@ A module (filename = experiment name; `_`-prefixed files are skipped) defines:
 ## Running
 
 ```
-.venv/bin/python evals/search_lab.py            # synthetic corpus, lexical stack, seconds
-.venv/bin/python evals/search_lab.py --models   # synthetic corpus, fused pipeline (embeds it; minutes)
-.venv/bin/python evals/search_lab.py --gold      # snapshot-bound gold files, fused pipeline
+.venv/bin/python evals/search_lab.py                       # gold + synthetic (default)
+.venv/bin/python evals/search_lab.py --gold                # gold bench only
+.venv/bin/python evals/search_lab.py --synthetic --models  # synthetic only, fused pipeline
 .venv/bin/python evals/search_lab.py --only no_recency,pool_order
 .venv/bin/python evals/search_lab.py --json out.json
 ```
 
-The leaderboard scores every configuration on identical cases with the same
+A bare run scores **both benches** (`--gold` / `--synthetic` narrow to one). The
+leaderboard scores every configuration on identical cases with the same
 MRR/success/true-recall/nDCG loop as the live-archive harness, baseline first,
-deltas against it. On the synthetic corpus (default; `tests/quality_corpus.CASES`)
-the cases are lexically easy — a small delta is a *direction*, not a shipping
-verdict. `--gold` swaps in the snapshot-bound gold files (graded, corpus-grounded
-pools over the frozen snapshot), one leaderboard per file: the promotion-grade
-delta, where the synthetic bench only points the way.
+deltas against it. The gold bench is the snapshot-bound gold files (graded,
+corpus-grounded pools over the frozen snapshot), one leaderboard per file — the
+promotion-grade delta; the synthetic bench (`tests/quality_corpus.CASES`,
+lexically easy) lands in seconds and only points a *direction*. Both together:
+the fast break-check returns while the grounded verdict is still computing.
 
 ## Promoting
 
-The promotion bar is the snapshot-bound gold files: race the challenger against
-the shipped configuration with `evals/search_lab.py --gold` — it scores both
-sides over **every discovered gold file, each over its own corpus snapshot** — and
-read the ΔMRR (and nDCG@10) per file. A challenger that improves the gold-file
-delta (and doesn't collapse `--from-log`, read as an alarm only) has earned a
-defaults change. Tune against one file and confirm on a held-out one
-(`evals/README.md` → "Hold-out discipline").
+The promotion bar is the snapshot-bound gold files: a bare `evals/search_lab.py`
+run (or `--gold`) races the challenger against the shipped configuration over
+**every discovered gold file, each over its own corpus snapshot** — read the ΔMRR
+(and nDCG@10) per file. A challenger that improves the gold-file delta (and
+doesn't collapse `--from-log`, read as an alarm only) has earned a defaults
+change. Tune against one file and confirm on a held-out one (`evals/README.md` →
+"Hold-out discipline").
 
 `tests/test_search_lab.py` keeps every module here loadable and
 contract-conformant on every pytest run.

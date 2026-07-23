@@ -9,7 +9,8 @@ SentenceTransformer hands it in rather than paying for a second copy.
 from __future__ import annotations
 
 import threading
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from typing import Generic, Optional, TypeVar
 
 M = TypeVar("M")
@@ -41,6 +42,12 @@ class ModelSlot(Generic[M]):
         # Serializes construction so a background warm and a concurrent first
         # query race to a single build, not two heavy loads at once.
         self._lock = threading.Lock()
+        # Serializes *use* of the one shared model. A torch forward pass isn't
+        # reentrant — two threads driving the same model at once corrupt its
+        # internal length-sized buffers (a wrong-shape tensor from the other
+        # call's sequence length). One model per process is the whole point of
+        # the slot, so guarding concurrent use is the slot's job too.
+        self._use_lock = threading.Lock()
 
     def get(self) -> Optional[M]:
         """The cached model, constructing it on first call.
@@ -64,3 +71,18 @@ class ModelSlot(Generic[M]):
                 self.load_failed = True
                 self._on_error(e)
                 return None
+
+    @contextmanager
+    def use(self) -> Iterator[Optional[M]]:
+        """The loaded model, yielded while holding the use-lock so the caller's
+        forward pass can't overlap another thread's on the same shared model.
+        Yields ``None`` when the model is unavailable (and holds no lock then) —
+        the caller degrades exactly as it does for a failed :meth:`get`. Keep only
+        the model call inside the ``with``; do post-processing after it to hold the
+        lock no longer than the forward pass needs."""
+        model = self.get()
+        if model is None:
+            yield None
+            return
+        with self._use_lock:
+            yield model

@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- The shared in-process model (nomic embedder, cross-encoder reranker) is now safe
+  under concurrent use. `ModelSlot` grew a `use()` guard that serializes access to
+  the one process model, and `embed._encode` / `rerank.rerank_scores` drive their
+  forward pass through it. A torch forward pass isn't reentrant: two threads
+  encoding at once corrupted the model's length-sized buffers, surfacing as
+  intermittent `embed: encode failed (size of tensor a (N) must match tensor b (M))`
+  and a silent fall back to a lexical-only pool for that query. It bit anything that
+  fans searches out over a shared embedder — `thread_archive mine rerank --jobs 5`
+  (~9 in 400 query-embeds failed), and any daemon serving concurrent searches.
+
 - Search's community-coherence re-rank now gates on embedding availability at the
   call site: it runs only when the embed arm is live (`embed.is_available()`), so a
   core lexical install — or `THREAD_ARCHIVE_EMBED=off` — skips it instead of kicking a
@@ -20,18 +30,23 @@
   homes). Measured numbers land in `docs/search-quality.md` (External calibration):
   the full stack reaches LoCoMo recall@10 0.756, above DRAGON's 0.662 at every cutoff.
 
-- `evals/search_lab.py` gained a **gold mode** (`--gold` / `--cases FILE`): the experiment
-  bench now races every `experiments/` configuration against the shipped baseline over the
-  snapshot-bound gold files — not only the synthetic corpus — running the fused production
-  pipeline natively over the frozen snapshot's vectors and printing one leaderboard per file.
-  This closes the promotion loop: `search_lab.py --gold` produces the challenger-vs-baseline
-  ΔMRR on the graded pools the gold gate floors, which is what actually credits a ranking
-  change (the synthetic bench only points a direction; `retrieval_eval.py --cases` scores a
-  single production config, not a challenger). Snapshot home defaults to `~/.thread/archive-snap`
-  (`$THREAD_ARCHIVE_SNAP`), gold dir to `~/.thread/archive` (`$THREAD_ARCHIVE_GOLD_DIR`), reusing
-  the gold gate's file-discovery and snapshot-fingerprint skip so a moved corpus is never scored
-  against stale golds. Coherence stays off (as on the synthetic bench) so the delta is
-  deterministic; the synthetic default and its tier-0 tests are unchanged.
+- `evals/search_lab.py` now races the `experiments/` configurations over the **snapshot-bound
+  gold files**, and a bare run scores **both benches** — gold and synthetic — where it used to
+  score only the synthetic corpus. The gold bench runs the fused production pipeline natively
+  over the frozen snapshot's vectors and prints one leaderboard per gold file: the
+  challenger-vs-baseline ΔMRR on the graded pools the gold gate floors, which is what actually
+  credits a ranking change (the synthetic corpus, lexically easy, only points a direction;
+  `retrieval_eval.py --cases` scores a single production config, not a challenger). Running both
+  by default is the point — the synthetic leaderboard lands in seconds while the gold pass
+  (real models over the whole snapshot, minutes) is still going, so a gross regression shows
+  immediately and the grounded verdict follows; `--gold` / `--synthetic` narrow to one. Snapshot
+  home defaults to `~/.thread/archive-snap` (`$THREAD_ARCHIVE_SNAP`), gold dir to `~/.thread/archive`
+  (`$THREAD_ARCHIVE_GOLD_DIR`), reusing the gold gate's file-discovery and snapshot-fingerprint skip
+  so a moved corpus is never scored against stale golds. The synthetic bench runs first (into a
+  throwaway home it deletes) and gold repoints the engine off it before reading, so the synthetic
+  corpus can never leak into the snapshot. Both keep coherence off so the delta stays
+  deterministic. On a box with no snapshot, a bare run still prints the synthetic leaderboard and
+  notes the gold skip; `--synthetic` asks for that explicitly.
 
 - Gold mining is now a first-class product subsystem: `thread_archive mine` (package
   `thread_archive._mine`), replacing the `evals/retrieval_mine_gold.py` and `evals/topic_mine_gold.py`
@@ -48,6 +63,17 @@
   `retrieval-gold-gate` discovery and the baseline sweep pick up the new files automatically (ungated
   until a floor is calibrated). `evals/retrieval_eval.py` (the scorer) and the experiment lab stay on
   the bench.
+
+- `thread_archive mine` now rate-limits its agent fan-out. A process-global semaphore in
+  `_mine/_agent.py` caps concurrency at 5 live `claude` sessions, enforced at the single choke point
+  every miner passes through (`run_claude`), so the ceiling holds regardless of a miner's `--jobs` or
+  how many miners a `mine all` sweep chains. A second cap bounds total spend: any one `mine` command
+  launches at most 25 agent sessions — a single miner's `--target` (and the topic miner's labeler
+  count) clamp to it, and a `mine all` sweep spends 25 *in total*, split as evenly as possible across
+  its runnable miners (a modest per-miner target is honored in full; only a wide sweep is trimmed). So
+  a fat-fingered `--target 500` or `mine all 100` runs bounded instead of running up a bill. `--jobs`
+  clamps to the concurrency ceiling (more workers would only block on the semaphore), and the list
+  view footer states both caps.
 
 - Removed the cross-encoder net-lift figure ("~2 points of success@10") from the docs
   (`_retrieval/rerank.py`, `docs/search-quality.md`) — a log-mined/title-proxy number never

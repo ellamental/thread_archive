@@ -35,6 +35,8 @@ def _miner_parser(miner: fw.Miner) -> argparse.ArgumentParser:
 
 def list_miners_text(registry: list[fw.Miner]) -> str:
     """The list view — one aligned row per miner, then a per-miner detail block."""
+    from ._agent import MAX_CONCURRENT_SESSIONS
+
     name_w = max((len(m.name) for m in registry), default=4)
     meas_w = max((len(m.measures) for m in registry), default=8)
     lines = ["Gold miners — mint snapshot-bound eval cases (thread_archive mine <miner> ...)", ""]
@@ -53,6 +55,9 @@ def list_miners_text(registry: list[fw.Miner]) -> str:
         "  ○ = run it directly (it needs an argument or sizes itself).",
         "  Each run spends real `claude` tokens against a frozen snapshot",
         "  (`thread_archive snapshot <dir>`; point THREAD_ARCHIVE_HOME at it).",
+        f"  At most {MAX_CONCURRENT_SESSIONS} agent sessions run at once; a `mine` "
+        f"command spends at most {fw.MAX_SESSIONS_PER_RUN} in total",
+        "  (a single miner's --target, or the whole `mine all` sweep, shares that).",
         "  `thread_archive mine <miner> --help` for a miner's own options.",
     ]
     return "\n".join(lines)
@@ -71,10 +76,21 @@ def _guarded_open() -> str:
 
 def _execute(miner: fw.Miner, args: argparse.Namespace,
              snapshot_id: str) -> fw.MineResult:
-    """Run one miner against an already-opened, already-verified snapshot."""
+    """Run one miner against an already-opened, already-verified snapshot. The two
+    rate caps land here, the choke point both the single-miner and ``mine all``
+    paths share: ``--jobs`` to the concurrency ceiling, ``--target`` to the
+    per-run session budget."""
+    jobs = fw.clamp_jobs(args.jobs)
+    if jobs != args.jobs:
+        print(f"  (--jobs {args.jobs} -> {jobs}: at most {jobs} concurrent sessions)")
+    requested = getattr(args, "target", 0)
+    target = fw.clamp_sessions(requested)
+    if target != requested:
+        print(f"  (--target {requested} -> {target}: at most "
+              f"{fw.MAX_SESSIONS_PER_RUN} sessions per run)")
     ctx = fw.MineContext(
-        snapshot_id=snapshot_id, target=getattr(args, "target", 0),
-        model=args.model, jobs=args.jobs, tool_cmd=fw.tool_cmd(), args=args)
+        snapshot_id=snapshot_id, target=target,
+        model=args.model, jobs=jobs, tool_cmd=fw.tool_cmd(), args=args)
     return miner.run(ctx)
 
 
@@ -87,24 +103,52 @@ def _print_result(miner: fw.Miner, result: fw.MineResult) -> None:
         print(f"  note: {note}")
 
 
+def _allocate(target: int, n_miners: int, budget: int) -> list[int]:
+    """Per-miner session allocation for a ``mine all`` sweep. Each of ``n_miners``
+    gets the requested ``target``, unless the sweep's total would exceed ``budget``
+    — then the budget is split as evenly as possible, a remainder favoring the
+    earlier miners. So a modest ``target`` is honored in full and only a wide sweep
+    is trimmed, and the total never passes ``budget``."""
+    if n_miners <= 0:
+        return []
+    if target * n_miners <= budget:
+        return [target] * n_miners
+    base, extra = divmod(budget, n_miners)
+    return [min(target, base + (1 if i < extra else 0)) for i in range(n_miners)]
+
+
 def _run_all(registry: list[fw.Miner], argv: list[str], open_fn=_guarded_open) -> int:
     """``mine all [N]`` — every per-case miner that needs only a count, in turn.
     Batch/arg-required miners are named and skipped rather than silently dropped.
-    ``open_fn`` is the precondition/snapshot seam (default :func:`_guarded_open`)."""
+    The whole sweep spends at most :data:`fw.MAX_SESSIONS_PER_RUN` agent sessions
+    *in total*: each miner gets target N, trimmed to an even share of the budget
+    when N across the runnable miners would overspend it. ``open_fn`` is the
+    precondition/snapshot seam (default :func:`_guarded_open`)."""
     ap = argparse.ArgumentParser(prog="thread_archive mine all")
     ap.add_argument("target", nargs="?", type=int, default=5,
-                    help="per-miner target (default 5)")
+                    help="per-miner target (default 5), trimmed to fit the "
+                    f"{fw.MAX_SESSIONS_PER_RUN}-session sweep budget")
     ap.add_argument("--model", default=None, help="override every miner's model")
     ap.add_argument("--jobs", type=int, default=2)
     ap.add_argument("--seed", type=int, default=7)
     top = ap.parse_args(argv)
 
+    jobs = fw.clamp_jobs(top.jobs)
+    if jobs != top.jobs:
+        print(f"note: --jobs {top.jobs} -> {jobs} (at most {jobs} concurrent sessions)")
+
     runnable = [m for m in registry
                 if m.runnable_in_all and m.target_kind == "per-case"]
     skipped = [m for m in registry if m not in runnable]
+    allocation = _allocate(top.target, len(runnable), fw.MAX_SESSIONS_PER_RUN)
 
-    print(f"mine all: {len(runnable)} miner(s) at target={top.target}; "
-          f"{len(skipped)} skipped")
+    if allocation == [top.target] * len(runnable):
+        print(f"mine all: {len(runnable)} miner(s) at target={top.target}; "
+              f"{len(skipped)} skipped")
+    else:
+        print(f"mine all: {len(runnable)} miner(s), {sum(allocation)} sessions "
+              f"total (budget {fw.MAX_SESSIONS_PER_RUN}; target {top.target} -> "
+              f"{'/'.join(map(str, allocation))} per miner); {len(skipped)} skipped")
     for m in skipped:
         why = ("needs an argument (run it directly)" if not m.runnable_in_all
                else f"{m.target_kind} miner")
@@ -112,9 +156,9 @@ def _run_all(registry: list[fw.Miner], argv: list[str], open_fn=_guarded_open) -
 
     snapshot_id = open_fn()
     total_written = total_failed = 0
-    for miner in runnable:
-        print(f"\n── {miner.name} ──")
-        sub_argv = ["--target", str(top.target), "--jobs", str(top.jobs),
+    for miner, alloc in zip(runnable, allocation):
+        print(f"\n── {miner.name} (target {alloc}) ──")
+        sub_argv = ["--target", str(alloc), "--jobs", str(jobs),
                     "--seed", str(top.seed)]
         if top.model:
             sub_argv += ["--model", top.model]

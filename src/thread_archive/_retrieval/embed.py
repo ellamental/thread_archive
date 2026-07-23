@@ -277,16 +277,16 @@ class Embedder:
         # cold-load a model.
         if not self.is_available():
             return None
-        model = self._slot.get()
-        if model is None:
-            return None
         try:
-            # Un-normalized to match the contract — the vector store normalizes on write.
-            vecs = model.encode(prefixed, normalize_embeddings=False, convert_to_numpy=True)
-            return [v.astype("float32").tolist() for v in vecs]
+            with self._slot.use() as model:
+                if model is None:
+                    return None
+                # Un-normalized to match the contract — the vector store normalizes on write.
+                vecs = model.encode(prefixed, normalize_embeddings=False, convert_to_numpy=True)
         except Exception as e:  # noqa: BLE001
             logger.warning("embed: encode failed (%s)", e)
             return None
+        return [v.astype("float32").tolist() for v in vecs]
 
     def embed_query(self, text: str) -> Optional[list[float]]:
         """Embed a search query (nomic ``search_query:`` prefix). None on any failure."""

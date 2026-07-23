@@ -122,6 +122,22 @@ def test_tool_cmd_is_the_module_seam():
     assert fw.tool_cmd().endswith("-m thread_archive._mine tool")
 
 
+def test_clamp_jobs_caps_at_the_concurrency_ceiling():
+    from thread_archive._mine._agent import MAX_CONCURRENT_SESSIONS
+
+    assert fw.clamp_jobs(1) == 1
+    assert fw.clamp_jobs(MAX_CONCURRENT_SESSIONS) == MAX_CONCURRENT_SESSIONS
+    assert fw.clamp_jobs(100) == MAX_CONCURRENT_SESSIONS
+    assert fw.clamp_jobs(0) == 1  # never spawn zero workers
+
+
+def test_clamp_sessions_caps_at_the_per_run_ceiling():
+    assert fw.clamp_sessions(3) == 3
+    assert fw.clamp_sessions(fw.MAX_SESSIONS_PER_RUN) == fw.MAX_SESSIONS_PER_RUN
+    assert fw.clamp_sessions(1000) == fw.MAX_SESSIONS_PER_RUN
+    assert fw.clamp_sessions(0) == 0  # a batch miner carries no target to bound
+
+
 def test_casewriter_stamps_miner_provenance(tmp_path):
     cases = tmp_path / "rerank-cases.jsonl"
     w = fw.CaseWriter("rerank", cases, fw.detail_path_for(cases))
@@ -150,6 +166,19 @@ def test_dispatch_bare_lists(capsys):
 def test_dispatch_unknown_miner_is_a_usage_error(capsys):
     assert _cli.dispatch(["nope"]) == 2
     assert "unknown miner" in capsys.readouterr().err
+
+
+def test_allocate_splits_the_sweep_budget_across_miners():
+    from thread_archive._mine._cli import _allocate
+
+    # Fits under budget: every miner gets its full target.
+    assert _allocate(5, 3, 25) == [5, 5, 5]
+    # Over budget: even split, the remainder favoring the earlier miners.
+    assert _allocate(20, 3, 25) == [9, 8, 8]
+    assert _allocate(100, 2, 25) == [13, 12]
+    # However wide the sweep, the total never passes the budget.
+    assert sum(_allocate(1000, 4, 25)) == 25
+    assert _allocate(5, 0, 25) == []  # nothing runnable
 
 
 # ── rerank judge: parse + prompt ─────────────────────────────────────────────
