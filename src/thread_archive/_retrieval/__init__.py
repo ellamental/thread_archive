@@ -23,7 +23,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from .._store import Event, Thread, use_session
-from . import _probe
+from . import _probe, pool_cache
 from . import embed_graph as _embed_graph
 from . import rank as _rank
 from ._classify import resolve_relative_date
@@ -208,6 +208,100 @@ def warm_models(embedder=None, reranker=None) -> None:
         api.search(_WARM_QUERY, limit=1, content_types=["user", "title", "summary"], rerank=True)
     except Exception:  # noqa: BLE001 — a store that isn't ready just warms the models, not the caches
         logger.debug("warm_models: dummy warm search skipped", exc_info=True)
+
+
+def retrieve_pool(
+    query: str,
+    *,
+    over: int,
+    structural: bool,
+    params: Optional[SearchParams] = None,
+    thread_id: Optional[int | str] = None,
+    thread_ids: Optional[list[str]] = None,
+    content_types: Optional[list[str]] = None,
+    exclude_content_types: Optional[list[str]] = None,
+    since: Optional[str] = None,
+    until: Optional[str] = None,
+    tool_name: Optional[str] = None,
+    source: Optional[list[str]] = None,
+    types: Optional[list[str]] = None,
+    agents: str = "exclude",
+    startswith: Optional[str] = None,
+    oldest_first: bool = False,
+    or_fallback: bool = True,
+    embedder=None,
+    session: Optional[Session] = None,
+) -> list[EventHit]:
+    """The federation half of a search: run the arms, fuse them, dedup — the
+    candidate pool the ranker then orders.
+
+    Split out from :func:`search` because the two halves have different
+    dependencies. This one reads the query, the structural scope, and exactly two
+    ``SearchParams`` fields (``pool_floor``, folded into ``over`` by the caller,
+    and ``rrf_k``); every ranking weight is invisible to it. That makes the pool
+    reusable across configurations, which is what :mod:`.pool_cache` exploits —
+    and this is where an installed cache is consulted. Nothing installed (always,
+    in production) and it is a plain call.
+
+    ``over`` is the pool depth, resolved by the caller. ``structural`` marks the
+    shapes with no lexical MATCH to embed against (prefix scan, chronological
+    sort, count), which sit the vector arm out.
+    """
+    p = params or _DEFAULT_PARAMS
+    probe = _probe.current()
+    cache = pool_cache.current()
+
+    key = None
+    if cache is not None:
+        key = pool_cache.key_for(
+            query, over=over, rrf_k=p.rrf_k, structural=structural,
+            thread_id=thread_id, thread_ids=thread_ids, content_types=content_types,
+            exclude_content_types=exclude_content_types, since=since, until=until,
+            tool_name=tool_name, source=source, types=types, agents=agents,
+            startswith=startswith, oldest_first=oldest_first, or_fallback=or_fallback,
+        )
+        cached = cache.get(key)
+        if cached is not None:
+            if probe is not None:
+                probe.pool_size = len(cached)
+            return cached
+
+    _t0 = perf_counter()
+    lexical = search_events(
+        query, thread_id=thread_id, thread_ids=thread_ids, content_types=content_types,
+        exclude_content_types=exclude_content_types, limit=over,
+        since=since, until=until, tool_name=tool_name, source=source,
+        types=types, agents=agents,
+        startswith=startswith, oldest_first=oldest_first,
+        or_fallback=or_fallback, session=session,
+    )
+    if probe is not None:
+        probe.fts_ms += (perf_counter() - _t0) * 1000.0
+
+    # A tool_name scope also sits the vector arm out: tool docs aren't embedded
+    # (only user/text/title/summary are), so every semantic hit in a tool-scoped
+    # search would be a hit the filter should have excluded. A types scope sits
+    # it out too: vectors carry no thread-type filter, so its hits could leak
+    # threads the filter excludes.
+    _t0 = perf_counter()
+    semantic = None if structural or tool_name or types else _semantic_hits(
+        query, thread_id=thread_id, content_types=content_types,
+        exclude_content_types=exclude_content_types, since=since, until=until,
+        over=over, source=source, thread_ids=thread_ids, agents=agents,
+        embedder=embedder,
+    )
+    if probe is not None:
+        probe.semantic_ms += (perf_counter() - _t0) * 1000.0
+
+    # Fuse the arms into a wide pool (keeps _rrf agreement + _semantic provenance),
+    # then dedup byte-identical hits before ranking.
+    fused = _rrf_merge([lexical, semantic], over, k=p.rrf_k) if semantic else lexical
+    fused = _rank.dedup_results(fused)
+    if probe is not None:
+        probe.pool_size = len(fused)
+    if cache is not None and key is not None:
+        cache.put(key, fused)
+    return fused
 
 
 def _do_rerank(query: str, terms: list[str], force: Optional[bool], reranker,
@@ -406,41 +500,18 @@ def search(
 
     terms = _rank.search_terms(query)
 
-    _t0 = perf_counter()
-    lexical = search_events(
-        query, thread_id=thread_id, thread_ids=thread_ids, content_types=content_types,
-        exclude_content_types=exclude_content_types, limit=over,
-        since=since_r, until=until_r, tool_name=tool_name, source=source,
-        types=types, agents=agents_eff,
+    fused = retrieve_pool(
+        query, over=over, structural=structural, params=p,
+        thread_id=thread_id, thread_ids=thread_ids, content_types=content_types,
+        exclude_content_types=exclude_content_types, since=since_r, until=until_r,
+        tool_name=tool_name, source=source, types=types, agents=agents_eff,
         # Strict matching for count and oldest: the OR tier would inflate a tally
         # with partial matches, and in a chronological sort an older partial match
         # would leapfrog the true first mention.
         startswith=startswith, oldest_first=sort == "oldest",
-        or_fallback=not (is_count or sort == "oldest"), session=session,
+        or_fallback=not (is_count or sort == "oldest"),
+        embedder=embedder, session=session,
     )
-    if probe is not None:
-        probe.fts_ms += (perf_counter() - _t0) * 1000.0
-    # A tool_name scope also sits the vector arm out: tool docs aren't embedded
-    # (only user/text/title/summary are), so every semantic hit in a tool-scoped
-    # search would be a hit the filter should have excluded. A types scope sits
-    # it out too: vectors carry no thread-type filter, so its hits could leak
-    # threads the filter excludes.
-    _t0 = perf_counter()
-    semantic = None if structural or tool_name or types else _semantic_hits(
-        query, thread_id=thread_id, content_types=content_types,
-        exclude_content_types=exclude_content_types, since=since_r, until=until_r,
-        over=over, source=source, thread_ids=thread_ids, agents=agents_eff,
-        embedder=embedder,
-    )
-    if probe is not None:
-        probe.semantic_ms += (perf_counter() - _t0) * 1000.0
-
-    # Fuse the arms into a wide pool (keeps _rrf agreement + _semantic provenance),
-    # then dedup byte-identical hits before ranking.
-    fused = _rrf_merge([lexical, semantic], over, k=p.rrf_k) if semantic else lexical
-    fused = _rank.dedup_results(fused)
-    if probe is not None:
-        probe.pool_size = len(fused)
 
     did_rerank = False
     if is_count:
@@ -591,6 +662,8 @@ def search(
 __all__ = [
     "SearchParams",
     "search",
+    "retrieve_pool",
+    "pool_cache",
     "read_thread",
     "read_thread_structured",
     "resolve_thread_ref",

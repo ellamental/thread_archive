@@ -27,7 +27,6 @@ Resume is by thread: a re-run skips threads already represented in the file.
 
 from __future__ import annotations
 
-import argparse
 import concurrent.futures
 import json
 import random
@@ -37,7 +36,7 @@ from sqlalchemy import text as sa_text
 from .._store import use_session
 from . import _framework as fw
 from ._agent import run_claude
-from ._framework import Miner, MineContext, MineResult, now_iso
+from ._framework import MineContext, Miner, MineResult, now_iso
 
 CASES_STEM = "findability-cases"
 
@@ -95,8 +94,11 @@ def parse_queries(text: str) -> dict | None:
     """The generator's queries, or None if unparseable. Each kept query needs a
     non-empty string ``query`` and a ``difficulty`` in :data:`DIFFICULTIES`; a
     malformed entry is dropped, not guessed. Duplicate query strings collapse
-    (first wins). An empty list is valid (the agent judged the thread untargetable)
-    and yields no cases."""
+    (first wins), and **at most one query per difficulty tier survives** (first
+    wins) — the ladder is one verbatim / one paraphrase / one vague per thread, so
+    a target that yields five queries at one tier can't quietly outweigh the
+    single-case targets when the file is scored. An empty list is valid (the agent
+    judged the thread untargetable) and yields no cases."""
     start, end = text.find("{"), text.rfind("}")
     if start < 0 or end <= start:
         return None
@@ -108,6 +110,7 @@ def parse_queries(text: str) -> dict | None:
         return None
     out: list[dict] = []
     seen: set[str] = set()
+    seen_tiers: set[str] = set()
     for q in v["queries"]:
         if not isinstance(q, dict):
             continue
@@ -115,12 +118,13 @@ def parse_queries(text: str) -> dict | None:
         difficulty = q.get("difficulty")
         if not isinstance(query, str) or not query.strip():
             continue
-        if difficulty not in DIFFICULTIES:
+        if difficulty not in DIFFICULTIES or difficulty in seen_tiers:
             continue
         query = query.strip()
         if query in seen:
             continue
         seen.add(query)
+        seen_tiers.add(difficulty)
         out.append({"query": query, "difficulty": difficulty})
     return {"queries": out, "note": v.get("note")}
 
@@ -184,6 +188,10 @@ def generate_case(thread: dict, model: str, tool_cmd: str, snapshot_id: str,
         detail["outcome"] = "unparseable"
         return [], detail
     rows = cases_from_queries(thread["thread_id"], parsed["queries"], snapshot_id)
+    prov = {"gen_model": stats.get("model") or model,
+            "prompt_sha": fw.prompt_sha(prompt), "miner_commit": fw.miner_commit()}
+    for row in rows:
+        row.update(prov)
     detail.update({"outcome": "ok" if rows else "no-queries",
                    "queries": parsed["queries"], "note": parsed["note"]})
     return rows, detail
@@ -216,12 +224,14 @@ class QueryGenMiner(Miner):
         agent = ctx.agent_run or run_claude
         writer = fw.CaseWriter(self.name, cases_path, detail_path)
         written = empty = 0
+        outcomes: dict[str, int] = {}
         with concurrent.futures.ThreadPoolExecutor(max_workers=ctx.jobs) as ex:
             futures = {ex.submit(generate_case, t, ctx.model, ctx.tool_cmd,
                                  ctx.snapshot_id, agent): t for t in threads}
             for fut in concurrent.futures.as_completed(futures):
                 rows, detail = fut.result()
                 writer.write_detail(detail)
+                outcomes[detail["outcome"]] = outcomes.get(detail["outcome"], 0) + 1
                 if not rows:
                     empty += 1
                     print(f"  ✗ {detail['thread_id']}: {detail['outcome']}")
@@ -231,8 +241,16 @@ class QueryGenMiner(Miner):
                 written += len(rows)
                 tiers = ", ".join(r["difficulty"] for r in rows)
                 print(f"  ✓ {detail['thread_id']}: {len(rows)} queries ({tiers})")
+        notes = []
+        if empty:
+            # A sampled thread search couldn't be made findable — a recall signal
+            # to keep in view, not just a per-thread ✗. Persisted as a rate on the
+            # mining ledger (see _ops.mine_runs) so the drop denominator survives.
+            notes.append(f"{empty}/{len(threads)} thread(s) yielded no fair query "
+                         "(findability drop — generation failed or judged untargetable)")
         return MineResult(written=written, failed=empty, cases_path=cases_path,
-                          detail_path=detail_path)
+                          detail_path=detail_path, notes=notes,
+                          attempted=len(threads), outcomes=outcomes)
 
 
 MINER = QueryGenMiner()

@@ -478,24 +478,41 @@ def cluster_by_thread(
     return out
 
 
-def rank_search_results(
+#: One doc's ranking features, in the order :func:`score_from_features` weights
+#: them: the four weighted signals, then the content-type multiplier applied to
+#: their sum.
+ScoreFeatures = tuple[float, float, float, float, float]
+
+
+def score_features(
     results: list[EventHit],
     terms: list[str],
-    limit: int,
     *,
     params: Optional[SearchParams] = None,
     now: datetime | None = None,
-) -> list[EventHit]:
-    """Re-rank ``results`` by term density, phrase proximity, recency, content-type,
-    and cross-backend fusion (``_rrf``). The production scorer; every weight comes
-    from ``params`` (default: the shipped configuration, :data:`.params.DEFAULT` —
-    see that module for the evidence). Returns the top ``limit``."""
+) -> list[ScoreFeatures]:
+    """Per-doc ``(density, phrase, recency, fusion, ct_weight)`` — the half of
+    scoring that the four ranking *weights* do not touch.
+
+    The split is a measurement seam. Regex term matching over every doc's full
+    text dominates the scorer's cost, and it is identical for every configuration
+    sharing ``density_norm_chars``, ``recency_half_life_hours``,
+    ``content_type_weights``, and ``now`` — which is every configuration a weight
+    sweep visits. Extracted, a candidate configuration reduces to
+    :func:`score_from_features`: arithmetic over rows a harness computed once.
+
+    ``now`` anchors the recency decay and is the one input a caller comparing
+    configurations must pin: left to the clock it drifts between runs, so two
+    otherwise-identical scorings taken far enough apart do not agree exactly.
+    """
     p = params or _DEFAULT_PARAMS
     now = now or datetime.now(timezone.utc).replace(tzinfo=None)  # naive-UTC, matching occurred_at
     ct_weights = p.content_type_weights if p.content_type_weights is not None else _CONTENT_TYPE_WEIGHT
     term_patterns = {t: _term_pattern(t) for t in terms}
+    full_phrase = " ".join(terms)
 
-    def combined_score(result: EventHit) -> float:
+    features: list[ScoreFeatures] = []
+    for result in results:
         content = (result.get("full_content", "") or "").lower()
         content_len = max(len(content), 1)
         matches = {t: term_patterns[t].search(content) for t in terms}
@@ -504,7 +521,6 @@ def rank_search_results(
 
         phrase_bonus = 0.0
         if len(terms) >= 2:
-            full_phrase = " ".join(terms)
             if full_phrase in content:
                 phrase_bonus = 3.0
             else:
@@ -518,10 +534,48 @@ def rank_search_results(
 
         recency = recency_score(result.get("occurred_at", ""), now,
                                 half_life_hours=p.recency_half_life_hours)
-        ct_weight = ct_weights.get(result.get("content_type") or "", 1.0)
-        rrf = result.get("_rrf", 0.0) or 0.0
-        return (density * p.density_weight + phrase_bonus * p.phrase_weight
-                + recency * p.recency_weight + rrf * p.fusion_weight) * ct_weight
+        features.append((
+            density, phrase_bonus, recency,
+            result.get("_rrf", 0.0) or 0.0,
+            ct_weights.get(result.get("content_type") or "", 1.0),
+        ))
+    return features
 
-    ranked = sorted(enumerate(results), key=lambda x: (-combined_score(x[1]), x[0]))
-    return [r for _, r in ranked[:limit]]
+
+def score_from_features(
+    features: list[ScoreFeatures], params: Optional[SearchParams] = None,
+) -> list[float]:
+    """The combined relevance score per doc — a configuration's entire
+    contribution to the ranking, given :func:`score_features` rows.
+
+    Only the *ratios* between the four weights matter: scaling all four by a
+    constant scales every score and leaves the order untouched (the content-type
+    multiplier distributes over the sum), which is why ``density_weight`` reads
+    as the anchor the rest are calibrated against."""
+    p = params or _DEFAULT_PARAMS
+    return [
+        (density * p.density_weight + phrase * p.phrase_weight
+         + recency * p.recency_weight + fusion * p.fusion_weight) * ct_weight
+        for density, phrase, recency, fusion, ct_weight in features
+    ]
+
+
+def rank_search_results(
+    results: list[EventHit],
+    terms: list[str],
+    limit: int,
+    *,
+    params: Optional[SearchParams] = None,
+    now: datetime | None = None,
+) -> list[EventHit]:
+    """Re-rank ``results`` by term density, phrase proximity, recency, content-type,
+    and cross-backend fusion (``_rrf``). The production scorer; every weight comes
+    from ``params`` (default: the shipped configuration, :data:`.params.DEFAULT` —
+    see that module for the evidence). Returns the top ``limit``.
+
+    Ties break on the pool's incoming order, so the ranking inherits the
+    federation's ordering rather than an arbitrary one."""
+    scores = score_from_features(
+        score_features(results, terms, params=params, now=now), params)
+    order = sorted(range(len(results)), key=lambda i: (-scores[i], i))
+    return [results[i] for i in order[:limit]]

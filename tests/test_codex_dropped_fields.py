@@ -76,7 +76,7 @@ def _events_by_type(messages):
 
 def test_token_counts_sum_into_structured_usage() -> None:
     """token_count lines each measure one API request; the assembled turn sums
-    them into the flat trio (+ cache_read_tokens) on api_request_completed."""
+    them into canonical uncached input plus cache reads and output."""
     messages = _build(_turn_lines(effort="xhigh", personality="pragmatic"))
     # task_started/turn_context precede the user message (real codex ordering),
     # so they form a preserved preamble message; the turn's transcript is last.
@@ -85,7 +85,8 @@ def test_token_counts_sum_into_structured_usage() -> None:
     assert any(b["type"] == "text" for b in turn["content_blocks"])
     usage = turn["provider_data"]["usage"]
     assert usage == {
-        "input_tokens": 250,
+        "input_tokens": 90,
+        "input_tokens_includes_cache": False,
         "output_tokens": 50,
         "thinking_tokens": 15,
         "cache_read_tokens": 160,
@@ -95,7 +96,8 @@ def test_token_counts_sum_into_structured_usage() -> None:
     completed = _events_by_type([turn])["api_request_completed"]
     assert len(completed) == 1
     p = completed[0].payload
-    assert p["input_tokens"] == 250
+    assert p["input_tokens"] == 90
+    assert p["input_tokens_includes_cache"] is False
     assert p["output_tokens"] == 50
     assert p["thinking_tokens"] == 15
     assert p["cache_read_tokens"] == 160
@@ -227,7 +229,7 @@ def test_dedup_keys_unchanged_by_new_extras() -> None:
 
     # And the enrichment really was there to strip.
     completed = enriched_events["api_request_completed"]
-    assert any(e.payload["input_tokens"] == 250 for e in completed)
+    assert any(e.payload["input_tokens"] == 90 for e in completed)
     assert all(e.payload["input_tokens"] == 0
                for e in stripped_events["api_request_completed"])
 

@@ -105,13 +105,16 @@ timeout = 600
 # one-way ratchet (floors live in the script, calibrated under measured), never
 # a displayed per-commit quality number — the distinction
 # that kept click-label MRR off the probe row holds here too. Scores over the
-# frozen snapshot the golds are bound to (~/.thread/archive-snap); when that
-# snapshot is absent, or a gold has gone stale mid-re-mine, the affected file is
-# skipped, not failed, so a maintenance window can't wedge the gate red. Runs
-# where the archive and snapshot live, same as the arm-probe row.
+# frozen snapshot the golds are bound to (~/.thread/archive-snap). Runs with
+# --require (fail closed): this lane is supposed to measure, so an absent
+# snapshot or a missing/stale/unreadable calibrated gold file is a FAILURE, not a
+# silent green — a gate that quietly stopped measuring is the failure mode the
+# grounded ratchet exists to prevent. A real maintenance window still passes, but
+# only by declaring itself: THREAD_ARCHIVE_GOLD_GATE_MAINTENANCE=<reason> prints a
+# visible skip. Runs where the archive and snapshot live, same as the arm-probe row.
 [[suite]]
 name = "retrieval-gold-gate"
-argv = ["{repo}/.venv/bin/python", "{repo}/scripts/retrieval_gold_gate.py"]
+argv = ["{repo}/.venv/bin/python", "{repo}/scripts/retrieval_gold_gate.py", "--require"]
 timeout = 600
 
 # The release lane: build the wheel + sdist, prove their contents, install the

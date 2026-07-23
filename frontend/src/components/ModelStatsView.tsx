@@ -39,6 +39,7 @@ function MonthTable({ rows, hue, anyCost }: { rows: ModelStats['by_month']; hue:
             <th>month</th>
             <th className="num">sessions</th>
             <th className="bar-col">tokens</th>
+            <th className="num">cached reads</th>
             <th className="num">avg / session</th>
             <th className="num">requests</th>
             <th className="num">compactions</th>
@@ -54,6 +55,7 @@ function MonthTable({ rows, hue, anyCost }: { rows: ModelStats['by_month']; hue:
                 <Bar frac={r.tokens / maxTok} hue={hue} />
                 <span className="bar-num">{r.tokens ? fmtTokens(r.tokens) : '—'}</span>
               </td>
+              <td className="num">{r.cache_read_tokens ? fmtTokens(r.cache_read_tokens) : '—'}</td>
               <td className="num">{r.avg_tokens ? fmtTokens(r.avg_tokens) : '—'}</td>
               <td className="num">{r.requests ? fmtInt(r.requests) : '—'}</td>
               <td className="num">{r.compactions ? fmtInt(r.compactions) : '—'}</td>
@@ -77,6 +79,7 @@ function SessionTable({ rows, hue }: { rows: ModelStats['top_sessions']; hue: nu
             <th>when</th>
             <th>source</th>
             <th className="bar-col">tokens</th>
+            <th className="num">cached reads</th>
             <th className="num">requests</th>
             <th className="num">compactions</th>
           </tr>
@@ -95,6 +98,7 @@ function SessionTable({ rows, hue }: { rows: ModelStats['top_sessions']; hue: nu
                 <Bar frac={r.tokens / maxTok} hue={hue} />
                 <span className="bar-num">{r.tokens ? fmtTokens(r.tokens) : '—'}</span>
               </td>
+              <td className="num">{r.cache_read_tokens ? fmtTokens(r.cache_read_tokens) : '—'}</td>
               <td className="num">{fmtInt(r.requests)}</td>
               <td className="num">{r.compactions ? fmtInt(r.compactions) : '—'}</td>
             </tr>
@@ -144,7 +148,7 @@ export function ModelStatsView() {
         <Tile
           label="tokens"
           value={fmtTokens(o.tokens)}
-          sub={`${fmtTokens(o.input_tokens)} in · ${fmtTokens(o.output_tokens)} out`}
+          sub={`${fmtTokens(o.input_tokens)} in · ${fmtTokens(o.cache_read_tokens)} cached · ${fmtTokens(o.output_tokens)} out`}
         />
         <Tile
           label="requests"

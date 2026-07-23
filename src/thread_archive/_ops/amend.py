@@ -46,6 +46,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterable
 
+from sqlalchemy import text
+
 from .._store import Event, get_session
 from .._thread_import.event_builder import _DEDUP_CONTENT_KEYS
 from .._truth.jsonl_log import (
@@ -65,6 +67,17 @@ AMENDMENTS_FILE = "amendments.jsonl"
 # dedup_key (imported from the builder so the two sets cannot drift), plus the
 # redaction marker envelope.
 _PROTECTED_KEYS = frozenset(_DEDUP_CONTENT_KEYS) | {"_redacted"}
+_METRIC_KEYS = frozenset(
+    {
+        "input_tokens",
+        "input_tokens_includes_cache",
+        "cache_read_tokens",
+        "cache_read_input_tokens",
+        "output_tokens",
+        "thinking_tokens",
+        "cost",
+    }
+)
 
 
 def _amendments_path(d: Path) -> Path:
@@ -139,6 +152,7 @@ def amend_event_payloads(
     d = log_dir()
     now = datetime.now(timezone.utc).isoformat()
     amended = skipped = 0
+    metrics_dirty = False
     with shared_ingest_lock():
         for thread_id, entries in sorted(by_thread.items()):
             audit: list[dict] = []
@@ -159,6 +173,9 @@ def amend_event_payloads(
                         skipped += 1
                         continue
                     ev.payload = {**old, **effective}
+                    metrics_dirty = metrics_dirty or bool(
+                        set(effective) & _METRIC_KEYS
+                    )
                     append_event_row(s, ev)  # the superseding truth line
                     audit.append({
                         "type": "amendment", "thread_id": thread_id, "event_id": event_id,
@@ -170,6 +187,29 @@ def amend_event_payloads(
                 s.commit()
             if audit:
                 _append_amendment_records(d, audit)
+        if metrics_dirty:
+            # The incremental stats cursor only notices appended event ids; an
+            # amendment changes a row behind that cursor. Drop the disposable
+            # projection and rewind it so the next stats read rebuilds from the
+            # amended event log instead of serving stale token or cost totals.
+            with get_session() as s:
+                s.execute(text("DELETE FROM thread_metrics"))
+                s.execute(text("DELETE FROM request_cache_metrics"))
+                s.execute(
+                    text(
+                        "INSERT OR IGNORE INTO metrics_cursor "
+                        "(id, through_event_id, cache_requests_ready) "
+                        "VALUES (1, 0, 0)"
+                    )
+                )
+                s.execute(
+                    text(
+                        "UPDATE metrics_cursor SET through_event_id = 0, "
+                        "cache_requests_ready = 0 "
+                        "WHERE id = 1"
+                    )
+                )
+                s.commit()
     logger.info(
         "amend: %d event(s) amended across %d thread(s) (%d no-op)",
         amended, len(by_thread), skipped,

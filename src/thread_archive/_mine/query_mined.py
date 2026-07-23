@@ -37,8 +37,8 @@ from .._store import use_session
 from . import _framework as fw
 from ._agent import run_claude
 from ._framework import (  # re-exported for callers/tests that reach them here
-    Miner,
     MineContext,
+    Miner,
     MineResult,
     mined_queries,
     now_iso,

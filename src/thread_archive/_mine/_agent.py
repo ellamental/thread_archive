@@ -45,6 +45,22 @@ MAX_CONCURRENT_SESSIONS = 5
 _session_slots = threading.BoundedSemaphore(MAX_CONCURRENT_SESSIONS)
 
 
+def _resolved_model(envelope: dict) -> str | None:
+    """The concrete model id the ``claude`` CLI actually ran, dug out of the JSON
+    envelope — so a mined case records the resolved model, not the floating
+    :data:`DEFAULT_MODEL` alias that could point somewhere else next week. The CLI
+    reports it as ``model`` on newer versions and only in the ``modelUsage`` map on
+    older ones; ``None`` when neither is present (the caller falls back to the
+    requested alias, which is still better than nothing)."""
+    model = envelope.get("model")
+    if isinstance(model, str) and model:
+        return model
+    usage = envelope.get("modelUsage") or envelope.get("model_usage")
+    if isinstance(usage, dict) and usage:
+        return next(iter(usage))
+    return None
+
+
 def run_claude(prompt: str, model: str, tool_cmd: str, *,
                max_turns: int = AGENT_MAX_TURNS,
                timeout: int = AGENT_TIMEOUT_S,
@@ -76,7 +92,8 @@ def run_claude(prompt: str, model: str, tool_cmd: str, *,
         out = json.loads(proc.stdout)
         stats = {"num_turns": out.get("num_turns"),
                  "cost_usd": out.get("total_cost_usd"),
-                 "duration_ms": out.get("duration_ms")}
+                 "duration_ms": out.get("duration_ms"),
+                 "model": _resolved_model(out)}
         return (out.get("result") or ""), stats
     except subprocess.TimeoutExpired:
         stats["error"] = "timeout"

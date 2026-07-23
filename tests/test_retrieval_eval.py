@@ -261,6 +261,32 @@ def test_evaluate_ndcg_rewards_the_whole_graded_pool():
     assert report["mrr"] == 0.5      # binary MRR unchanged: gold at rank 2
 
 
+def test_evaluate_reports_per_difficulty_strata():
+    # Cases that carry a difficulty are scored apart from the aggregate, so a
+    # weak stratum (vague findability) can't hide inside an easy one (verbatim).
+    report = retrieval_eval.evaluate(
+        [{"query": "verb", "gold": ["A"], "sessions": [], "difficulty": "verbatim"},
+         {"query": "vag-hit", "gold": ["A"], "sessions": [], "difficulty": "vague"},
+         {"query": "vag-miss", "gold": ["Z"], "sessions": [], "difficulty": "vague"}],
+        limit=20, rerank=False, content_type=None, exclude_content_types=None,
+        search=_ranker("A", "B"))
+    pd = report["per_difficulty"]
+    assert set(pd) == {"verbatim", "vague"}  # no bucket for difficulty-less cases
+    assert pd["verbatim"] == {"n": 1, "mrr": 1.0, "success10": 1.0,
+                              "recall10": 1.0, "ndcg10": 1.0}
+    # vague: one hit at rank 1, one total miss → means of 0.5.
+    assert pd["vague"]["n"] == 2
+    assert pd["vague"]["mrr"] == 0.5 and pd["vague"]["success10"] == 0.5
+
+
+def test_evaluate_has_no_strata_without_difficulty_labels():
+    report = retrieval_eval.evaluate(
+        [{"query": "q", "gold": [5], "sessions": []}],
+        limit=20, rerank=False, content_type=None, exclude_content_types=None,
+        search=_ranker(5))
+    assert report["per_difficulty"] == {}
+
+
 def test_evaluate_ndcg_falls_back_to_binary_without_a_pool():
     # No grades: gold stands in as binary relevance so nDCG stays defined for
     # the title/log protocols. Gold at rank 2 of a single-relevant pool.
@@ -376,3 +402,65 @@ def test_rerank_probe_breaches_on_malformed_scores(monkeypatch):
     breach = retrieval_eval.rerank_probe(
         _reranker(monkeypatch, [float("nan"), 0.1]))
     assert breach is not None and "malformed" in breach
+
+
+# --- early stop --------------------------------------------------------------
+
+
+def _cases(n: int) -> list[dict]:
+    return [{"query": f"q{i}", "gold": [i], "sessions": []} for i in range(n)]
+
+
+def test_early_stop_halts_the_run_and_says_why():
+    seen: list[int] = []
+
+    def counting_ranker(query, **kw):
+        seen.append(len(seen))
+        return [{"thread_id": 0}]  # only case 0's gold ever ranks
+
+    report = retrieval_eval.evaluate(
+        _cases(10), limit=20, rerank=False, content_type=None,
+        exclude_content_types=None, search=counting_ranker,
+        early_stop=lambda p: "enough" if p.scored == 3 else None)
+    assert report["aborted"] == "enough"
+    assert report["scored"] == 3
+    assert len(seen) == 3, "no search should run after the abort"
+
+
+def test_an_aborted_report_averages_over_the_full_case_set():
+    # Unscored cases count as zero, so the metrics are lower bounds rather than
+    # averages over a prefix — which would read as ordinary numbers while being
+    # computed on different cases.
+    report = retrieval_eval.evaluate(
+        _cases(10), limit=20, rerank=False, content_type=None,
+        exclude_content_types=None, search=lambda q, **kw: [{"thread_id": 0}],
+        early_stop=lambda p: "stop" if p.scored == 1 else None)
+    assert report["n"] == 10
+    assert report["mrr"] == 0.1  # one perfect case out of ten, not 1.0
+
+
+def test_a_completed_run_reports_no_abort():
+    report = retrieval_eval.evaluate(
+        _cases(3), limit=20, rerank=False, content_type=None,
+        exclude_content_types=None, search=lambda q, **kw: [{"thread_id": 0}],
+        early_stop=lambda p: None)
+    assert report["aborted"] is None
+    assert report["scored"] == 3
+    assert [c["query"] for c in report["per_case"]] == ["q0", "q1", "q2"]
+
+
+def test_progress_bound_is_the_best_still_reachable():
+    from thread_archive._eval import EvalProgress
+
+    p = EvalProgress(n=10, scored=4, sums={"mrr": 1.0}, query="q", case_rr=0.0)
+    assert p.best_possible("mrr") == pytest.approx(0.7)  # 1.0 + 6 perfect, over 10
+    done = EvalProgress(n=10, scored=10, sums={"mrr": 1.0}, query="q", case_rr=0.0)
+    assert done.best_possible("mrr") == pytest.approx(0.1)
+
+
+def test_evaluate_still_reports_latency_when_aborted():
+    report = retrieval_eval.evaluate(
+        _cases(10), limit=20, rerank=False, content_type=None,
+        exclude_content_types=None, search=lambda q, **kw: [{"thread_id": 0}],
+        early_stop=lambda p: "stop" if p.scored == 2 else None)
+    assert report["latency_p50_ms"] >= 0.0

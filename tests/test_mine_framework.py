@@ -228,6 +228,20 @@ def test_parse_queries_keeps_valid_tiers_and_dedupes():
     assert v["note"] == "one tier skipped"
 
 
+def test_parse_queries_keeps_at_most_one_query_per_tier():
+    # The ladder is one query per difficulty tier: a target that returns several
+    # at the same tier keeps only the first, so it can't outweigh single-case
+    # targets when the file is scored.
+    v = querygen.parse_queries(
+        '{"queries": ['
+        '{"query": "first vague", "difficulty": "vague"}, '
+        '{"query": "second vague", "difficulty": "vague"}, '
+        '{"query": "third vague", "difficulty": "vague"}, '
+        '{"query": "the verbatim one", "difficulty": "verbatim"}]}')
+    assert [(q["difficulty"], q["query"]) for q in v["queries"]] == [
+        ("vague", "first vague"), ("verbatim", "the verbatim one")]
+
+
 def test_parse_queries_empty_list_is_valid():
     v = querygen.parse_queries('{"queries": [], "note": "too generic"}')
     assert v["queries"] == []
@@ -236,6 +250,35 @@ def test_parse_queries_empty_list_is_valid():
 def test_parse_queries_rejects_bad_shapes():
     assert querygen.parse_queries("junk") is None
     assert querygen.parse_queries('{"note": "x"}') is None  # no queries key
+
+
+# ── mining provenance (finding 4) ────────────────────────────────────────────
+
+def test_prompt_sha_is_stable_and_prompt_sensitive():
+    # A stamp so a re-mint under a changed prompt is detectable rather than
+    # silently redefining a benchmark beneath an old, filename-keyed floor.
+    a = fw.prompt_sha("grade this pool")
+    assert a == fw.prompt_sha("grade this pool")  # deterministic
+    assert a != fw.prompt_sha("grade this pool differently")  # prompt-sensitive
+    assert len(a) == 12 and all(c in "0123456789abcdef" for c in a)
+
+
+def test_miner_commit_is_a_short_sha_or_none():
+    commit = fw.miner_commit()
+    assert commit is None or (isinstance(commit, str) and commit)
+
+
+def test_resolved_model_prefers_the_concrete_id_over_the_alias():
+    from thread_archive._mine._agent import _resolved_model
+
+    # The CLI reports the resolved id directly on newer versions …
+    assert _resolved_model({"model": "claude-opus-4-8-20260101"}) == \
+        "claude-opus-4-8-20260101"
+    # … and only in the modelUsage map on older ones.
+    assert _resolved_model({"modelUsage": {"claude-opus-4-8": {"cost": 1}}}) == \
+        "claude-opus-4-8"
+    # Neither present → None, and the caller falls back to the requested alias.
+    assert _resolved_model({"num_turns": 3}) is None
 
 
 def test_gen_prompt_hands_over_the_thread_to_read():

@@ -44,9 +44,19 @@ mined against it (``thread_archive mine``). With neither on hand the default run
 still prints the synthetic leaderboard and notes the gold skip; ``--synthetic``
 asks for that explicitly. Both benches keep coherence off so the
 baseline-vs-experiment delta stays deterministic; the coherence-on absolute
-number is the CI gold gate's (``scripts/retrieval_gold_gate.py``). A gold file
+number is the CI gold gate's (``scripts/retrieval_gold_gate.py``, which builds
+the corpus graph inline before scoring so its numbers are a function of the code
+and the snapshot rather than of when a background build landed). A gold file
 whose snapshot fingerprint no longer matches is skipped (re-mine), never scored
 against a moved corpus.
+
+**This bench races named experiments; the gate iterates one knob.** Each
+configuration here is a module under ``evals/experiments/`` and every run scores
+the full pipeline per configuration, pools included. That is the right shape for
+comparing several *designed* alternatives on a leaderboard, and the wrong one for
+"what does this weight do" — for which ``retrieval_gold_gate.py --cache
+--fail-early --set field=value`` re-scores cached pools against the floors that
+actually gate CI (``evals/README.md`` → "Iterating on a ranking knob").
 """
 
 from __future__ import annotations
@@ -169,6 +179,12 @@ def _score_rows(score_one, experiments: list[Experiment]) -> list[dict]:
             "recall": {str(k): v for k, v in rep["recall"].items()},
             "ndcg": {str(k): v for k, v in rep["ndcg"].items()},
             "per_shape": rep["per_shape"],
+            # The per-case reciprocal ranks (query -> rr, difficulty tier when the
+            # case carries one), kept rather than collapsed to the aggregate MRR:
+            # the leaderboard ranks on the mean, but a paired per-case delta — which
+            # arm won which query — is the analysis a promotion actually needs, and
+            # it can only be computed if the per-case scores survive into --json.
+            "per_case": rep.get("per_case", []),
             "latency_p50_ms": rep["latency_p50_ms"],
         }
 

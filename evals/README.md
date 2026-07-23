@@ -128,8 +128,80 @@ so it doubles as the fastest, most consistent read of where the baseline sits
 right now, with no loop or aggregator to hand-roll (and no `limit` skew from
 doing so). Drop to the per-file `retrieval_eval.py --cases` instrument below only
 when you need the fuller metric set (success@1/5/20, recall@20, the natural-vs-code
-per-shape split) or to score a *challenger* configuration on both sides of a change
-— the delta the gate, a single-side floor, does not measure.
+per-shape split).
+
+**Iterating on a ranking knob — the gate is the loop.** The gate also scores a
+*candidate* configuration, which makes it the fastest way to find out whether an
+idea is dead:
+
+```
+python scripts/retrieval_gold_gate.py --cache --fail-early --set fusion_weight=500
+```
+
+- `--set field=value` (repeatable) swaps a `SearchParams` field for the shipped
+  one. The run is flagged `overrides` in the ledger and never writes the per-case
+  baseline, so an experiment can't be mistaken for the baseline moving.
+- `--cache` persists the candidate *pools* between processes. The arms and the
+  fusion don't read ranking weights, so a second run at new weights re-scores
+  pools it already has — measured over the full gold set, 132 s → 19 s, with the
+  scores identical to the digit. The cache keys on the pool-shaping params
+  (`rrf_k`, and `pool_floor` folded into the resolved depth), so sweeping *those*
+  correctly misses rather than silently reading back the first value's pool.
+  Sized for the real corpus: ~140 MB under `~/.thread/archive/gold-pool-cache/`,
+  namespaced by `snapshot_id` and safe to delete.
+- `--fail-early` stops as soon as a floor is provably out of reach — every
+  unscored case counted as perfect still lands under it. Exact: it can only cut
+  short a run that was going to fail. `--max-regressions N` adds the impatient
+  companion, aborting once N cases that used to rank stop ranking at all.
+- `--only <fragment>` narrows to some gold files — the tune/hold-out split, run
+  by hand.
+
+A candidate that survives this still owes the full-bench confirm: drop `--cache`
+and `--fail-early` for the run that credits it, and read it under the hold-out
+discipline below. Fast iteration is for killing bad ideas, not for promoting good
+ones. `search_lab.py` remains the instrument for racing several *named*
+experiments at once with a leaderboard; the gate is the instrument for one knob
+at a time, against the floors that actually gate CI.
+
+**The speed axis — the same knob costs latency.** The dominant quality lever (the
+cross-encoder re-rank) is also the dominant latency, so a quality change is
+usually a latency change; `--latency [REPS]` measures both in one run:
+
+```
+python scripts/retrieval_gold_gate.py --set rerank_auto=true --set rerank_pool=6 --latency 3 --fail-early
+```
+
+- `--latency [REPS]` measures warm latency (default 3 timed reps/query, a warmup
+  discarded) over the same queries the quality pass scores, and prints
+  p50/p95/p99 by stage and by query shape with a delta against the recorded
+  latency baseline. The **pool cache is forced off** here — the FTS scan, the
+  embed, and the matvec are the cost being measured, not skipped — so `--latency`
+  and `--cache` describe different runs (cache the quality pass, never the latency
+  one). Cold model-load is excluded (a warmup pass hides it); this is warm
+  steady-state, the regime a ranking knob moves. The full pass is ~10 min (one
+  cache-off search per query per rep), so it's the *confirm*, not the loop.
+- `--latency-smoke` is the loop: **only** the pathological-query smoke test
+  (below), skipping the full pass — a ~1-minute speed check (mostly one-time model
+  load; the measurement is seconds). This is the interactive-iteration lever, the
+  speed counterpart of `--cache` for quality. The quick loop is
+  `--cache --latency-smoke --set field=value`: cached quality (~20 s) plus the
+  smoke, comfortably inside a warm window.
+- With `--fail-early`, a **latency smoke test** runs first: the `--smoke-queries`
+  (default 8) queries that were *slowest at baseline* — empirically the corpus's
+  pathological cases — against a p95 ceiling (`--budget-ms`, else 1.5× the
+  baseline p95). A change that uniformly slows the pipeline or worsens a heavy
+  path fails here in tens of seconds instead of after the full pass. Impatient and
+  not sound (a change can turn a baseline-fast query into the new slow one), so it
+  is a tuning shortcut, like `--max-regressions` on the quality side.
+- `thread_archive._ops.speed` records a `latency-runs.jsonl` timeseries and a
+  `latency-baseline.json` (the smoke test's cherry-pick source), written on a
+  clean full shipped run exactly as the quality baseline is.
+
+Read a latency delta the way you read a quality one: warm latency is a
+distribution, so the tail (p95/p99) is the number that bites a client timeout, and
+a few-ms move in p50 is noise. Stage attribution tells you *which* knob to reach
+for — if `rerank_ms` is flat and `fts_ms` grew, the pool knobs are the lever, not
+the re-rank budget.
 
 - **Minted gold case files ARE the baseline.** The gate enumerates and scores
   them for the current-state read; for a challenger delta, score **every file
@@ -195,7 +267,16 @@ unverified — not as an improvement.
 **Hold-out discipline.** A gold file tuned against repeatedly stops being a
 measurement and becomes a training set. Keep at least two independently mined
 files and tune against one while the other stays untouched until the
-confirming run; re-mine on a cadence when a file's snapshot goes stale.
+confirming run (`--only` narrows the gate to the tune side); re-mine on a cadence
+when a file's snapshot goes stale.
+
+**Read a delta in cases, not in points.** Scoring is deterministic — same code,
+same snapshot, same numbers to the digit — so a movement is never noise. But on a
+file of `n` cases a single case going from rank 1 to unfound moves any of these
+metrics by at most `1/n`, which is the resolution the file actually has. A `+0.01`
+on the 64-case findability file is two thirds of one case; on a 7-case topic file
+it is a fourteenth of one. Anything under `1/n` is a rank shuffling within cases
+that already worked, not a win — and it will not survive a hold-out.
 
 ## Changing ranking, start to finish
 

@@ -154,3 +154,25 @@ def test_gold_lab_scores_cases_against_baseline(corpus) -> None:
         assert set(r["success"]) >= {"1", "5", "10", "20"}
         assert set(r["recall"]) >= {"1", "5", "10", "20"}
         assert set(r["ndcg"]) >= {"1", "5", "10", "20"}
+
+
+def test_leaderboard_rows_persist_per_case_scores(corpus) -> None:
+    """Each leaderboard row keeps its per-case reciprocal ranks (query -> rr, plus
+    the difficulty tier when a case carries one), not just the aggregate MRR —
+    the raw material for a paired per-case delta, which the aggregate discards."""
+    lab = _lab()
+    experiments = lab.discover(EXPERIMENTS_DIR)
+    cases = [
+        {"query": "authentication", "gold": [corpus["auth"]], "sessions": [],
+         "difficulty": "verbatim"},
+        {"query": "postgres connection pool", "gold": [corpus["db-pool"]],
+         "sessions": []},
+    ]
+    report = lab.run_gold_lab(cases, experiments, limit=20)
+    for r in report["rows"]:
+        pc = r["per_case"]
+        assert {c["query"] for c in pc} == {"authentication", "postgres connection pool"}
+        assert all(0.0 <= c["rr"] <= 1.0 for c in pc)
+    baseline_pc = {c["query"]: c for c in report["rows"][0]["per_case"]}
+    assert baseline_pc["authentication"]["difficulty"] == "verbatim"
+    assert "difficulty" not in baseline_pc["postgres connection pool"]

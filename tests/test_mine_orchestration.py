@@ -286,6 +286,29 @@ def test_rerank_miner_run_flags_none_of_pool(archive_home, tmp_path):
     assert any("no answer in the pool" in n for n in result.notes)
 
 
+def test_rerank_run_tracks_outcomes_and_stamps_provenance(archive_home, tmp_path):
+    # The run carries its denominator (attempted + per-unit outcomes) for the
+    # mining ledger, and every minted case records the model that judged it, the
+    # prompt hash, and the miner commit — provenance so a re-mint is detectable.
+    from thread_archive._store import init_db
+
+    init_db()
+    gold = _seed_searchable("blue whale facts", "the blue whale is the largest animal")
+    _seed_trail_query("largest animal", gold)
+
+    out = tmp_path / "rerank-cases.jsonl"
+    reply = json.dumps({"grades": {gold: 2}, "none_answer": False, "rationale": "ok"})
+    ctx = _ctx(agent_run=_fake_agent(reply), pool=10, queries=None, mined_after=None)
+    ctx.args.out = out
+    result = rerank_judged.MINER.run(ctx)
+
+    assert result.attempted == 1 and result.outcomes == {"ok": 1}
+    row = json.loads(out.read_text().splitlines()[0])
+    assert row["judge_model"] == "opus"  # no resolved id in stats → requested alias
+    assert len(row["prompt_sha"]) == 12
+    assert "miner_commit" in row
+
+
 # ── querygen miner run() ─────────────────────────────────────────────────────
 
 def test_querygen_miner_run_generates_cases(archive_home, tmp_path):
@@ -319,6 +342,10 @@ def test_querygen_miner_run_generates_cases(archive_home, tmp_path):
     rows = [json.loads(l) for l in out.read_text().splitlines()]
     assert all(r["gold"] == [tid] for r in rows)
     assert {r["difficulty"] for r in rows} == {"verbatim", "vague"}
+    # denominator for the ledger, and provenance on every generated case
+    assert result.attempted == 1 and result.outcomes == {"ok": 1}
+    assert all(r["gen_model"] == "opus" and len(r["prompt_sha"]) == 12
+               and "miner_commit" in r for r in rows)
 
 
 def test_querygen_miner_run_handles_untargetable_thread(archive_home, tmp_path):
@@ -452,6 +479,29 @@ def test_dispatch_runs_a_miner_through_the_seams(capsys):
     assert fake.ran_with.target == 3 and fake.ran_with.snapshot_id == "snap-xyz"
     out = capsys.readouterr().out
     assert "3 case(s) written" in out and "a note" in out
+
+
+def test_execute_records_the_run_denominator_to_the_ledger(tmp_path, monkeypatch):
+    # A miner run through the CLI appends one row to the mining ledger carrying the
+    # attempted count and the outcome breakdown — the abstention/drop denominator,
+    # made durable instead of surviving only in the console line. HOME points the
+    # gold dir (where the ledger lands, beside the cases) at a throwaway.
+    from thread_archive._ops import mine_runs
+
+    monkeypatch.setenv("HOME", str(tmp_path))
+    gold_dir = tmp_path / ".thread" / "archive"
+
+    class _Counting(_FakeMiner):
+        def run(self, ctx):
+            return fw.MineResult(written=2, failed=1, attempted=3,
+                                 outcomes={"ok": 2, "none-of-pool": 1})
+
+    rc = _cli.dispatch(["fake"], registry=[_Counting()], open_fn=lambda: "snap-led")
+    assert rc == 0
+    runs = mine_runs.read_runs(gold_dir)
+    assert len(runs) == 1
+    assert runs[0]["miner"] == "fake" and runs[0]["snapshot_id"] == "snap-led"
+    assert runs[0]["attempted"] == 3 and runs[0]["outcomes"]["none-of-pool"] == 1
 
 
 def test_dispatch_all_runs_percase_and_skips_batch(capsys):

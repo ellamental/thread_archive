@@ -27,6 +27,8 @@ in sync.
 from __future__ import annotations
 
 import argparse
+import functools
+import hashlib
 import json
 import shutil
 import sys
@@ -179,6 +181,26 @@ def now_iso() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
+def prompt_sha(prompt: str) -> str:
+    """First 12 hex of the SHA-256 of the exact agent prompt. Stamped on each
+    mined case so a re-mint under a changed prompt is *detectable* rather than
+    silently redefining a benchmark beneath an old floor keyed only by filename —
+    the prompt is half of what produced the judgment, and it changes without the
+    corpus snapshot changing."""
+    return hashlib.sha256(prompt.encode("utf-8")).hexdigest()[:12]
+
+
+@functools.lru_cache(maxsize=1)
+def miner_commit() -> str | None:
+    """The short SHA of the mining code, cached for the process (a run doesn't
+    straddle a commit). ``None`` outside a git checkout — best-effort provenance,
+    never a hard dependency. Shares the one git-commit reader with the gold-run
+    ledger so both ledgers name the code the same way."""
+    from .._ops.gold_runs import git_commit
+
+    return git_commit()
+
+
 @dataclass
 class MineContext:
     """The resolved common config a miner's :meth:`Miner.run` receives. Output
@@ -201,13 +223,22 @@ class MineContext:
 @dataclass
 class MineResult:
     """What a run produced — the summary the CLI prints. ``notes`` carries
-    per-run remarks (e.g. a ``none-of-pool`` rate, an ``--all`` skip reason)."""
+    per-run remarks (e.g. a ``none-of-pool`` rate, an ``--all`` skip reason).
+
+    ``attempted`` (units drawn — queries judged, threads sampled) and ``outcomes``
+    (the per-unit disposition breakdown, e.g. ``{"ok": 8, "none-of-pool": 2}``) are
+    the denominator behind ``written``/``failed``: the CLI persists them to the
+    mining ledger (:mod:`thread_archive._ops.mine_runs`) so an abstention/drop rate
+    is a recorded timeseries, not a number that lived only in the run's console
+    line. A miner that leaves them at their defaults simply records no breakdown."""
 
     written: int = 0
     failed: int = 0
     cases_path: Path | None = None
     detail_path: Path | None = None
     notes: list[str] = field(default_factory=list)
+    attempted: int = 0
+    outcomes: dict[str, int] = field(default_factory=dict)
 
 
 class CaseWriter:

@@ -25,6 +25,7 @@ function modelStats(overrides: Partial<ModelStats> = {}): ModelStats {
       conversations: 42,
       requests: 900,
       input_tokens: 1_900_000,
+      cache_read_tokens: 8_000_000,
       output_tokens: 100_000,
       thinking_tokens: 50_000,
       tokens: 2_000_000,
@@ -42,13 +43,13 @@ function modelStats(overrides: Partial<ModelStats> = {}): ModelStats {
       avg_requests: 21.4,
     },
     by_month: [
-      { month: '2026-02', sessions: 10, requests: 200, input_tokens: 470_000, output_tokens: 30_000, tokens: 500_000, avg_tokens: 50_000, cost: null, compactions: 12 },
+      { month: '2026-02', sessions: 10, requests: 200, input_tokens: 470_000, cache_read_tokens: 2_000_000, output_tokens: 30_000, tokens: 500_000, avg_tokens: 50_000, cost: null, compactions: 12 },
       // A compaction-only month: a long session started earlier kept compacting.
-      { month: '2026-03', sessions: 0, requests: 0, input_tokens: 0, output_tokens: 0, tokens: 0, avg_tokens: null, cost: null, compactions: 3 },
+      { month: '2026-03', sessions: 0, requests: 0, input_tokens: 0, cache_read_tokens: 0, output_tokens: 0, tokens: 0, avg_tokens: null, cost: null, compactions: 3 },
     ],
     top_sessions: [
-      { thread_id: '77', title: 'the big refactor', source: 'claude-code', at: '2026-02-10 09:00:00', tokens: 400_000, requests: 120, compactions: 9 },
-      { thread_id: '78', title: null, source: 'demo-harness', at: null, tokens: 100_000, requests: 30, compactions: 0 },
+      { thread_id: '77', title: 'the big refactor', source: 'claude-code', at: '2026-02-10 09:00:00', tokens: 400_000, cache_read_tokens: 3_000_000, requests: 120, compactions: 9 },
+      { thread_id: '78', title: null, source: 'demo-harness', at: null, tokens: 100_000, cache_read_tokens: 500_000, requests: 30, compactions: 0 },
     ],
     ...overrides,
   }
@@ -79,7 +80,8 @@ describe('ModelStatsView', () => {
     mswJson('/api/stats/model/:model', modelStats())
     renderAt('claude-opus-4-8')
     expect(await screen.findByText('claude-opus-4-8')).toBeInTheDocument()
-    expect(screen.getByText('2M')).toBeInTheDocument() // total tokens tile
+    expect(screen.getAllByText('2M').length).toBeGreaterThan(0) // total token tile + monthly cache
+    expect(screen.getByText(/1.9M in · 8M cached · 100k out/)).toBeInTheDocument()
     expect(screen.getByText('48k avg')).toBeInTheDocument() // per-session average
     expect(screen.getByText('min 1k · median 30k · max 400k')).toBeInTheDocument()
     expect(screen.getByText('63')).toBeInTheDocument() // compactions tile

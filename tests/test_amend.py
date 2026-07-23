@@ -132,6 +132,19 @@ def test_amend_noop_skips_without_truth_append(archive_home) -> None:
     assert load_amendments() == []
 
 
+def test_token_amendment_invalidates_stats_rollup(archive_home) -> None:
+    _, tid = _import(archive_home)
+    from thread_archive import _api as ta
+
+    assert ta.stats()["overview"]["input_tokens"] == 11
+    eid, _payload, _key = _completed_event(tid)
+    amend_event_payloads([(tid, eid, {"input_tokens": 5})], reason="normalize")
+
+    # The event id sits behind the rollup cursor, so this can only observe the
+    # amendment when amend_event_payloads explicitly rewinds the projection.
+    assert ta.stats()["overview"]["input_tokens"] == 5
+
+
 def test_backfill_usage_cost_restores_dropped_fields(archive_home) -> None:
     f, tid = _import(archive_home)
     eid, payload, _key = _completed_event(tid)

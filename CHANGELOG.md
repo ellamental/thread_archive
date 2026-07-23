@@ -2,6 +2,64 @@
 
 ## Unreleased
 
+- The gold gate scores the speed axis too: `--latency [REPS]` measures warm
+  latency over the same queries it scores for quality (pool cache OFF — the arms
+  are the cost being measured) and prints the joint report, so a `--set` tuning
+  decision reads on both axes at once. This is the seam the quality rebuild needs:
+  the cross-encoder re-rank is both the top quality lever and the top latency, so
+  re-enabling it means doing so within a budget. Speed has a fail-fast too: with
+  `--fail-early`, a smoke test runs the queries that were *slowest at baseline*
+  (the corpus's own pathological cases) against a p95 ceiling and bails in tens of
+  seconds before the full pass. `--budget-ms` sets an absolute ceiling; the
+  default is 1.5× the recorded latency baseline. `--latency-smoke` runs only that
+  smoke test — a ~1-minute interactive speed check (the quick loop is
+  `--cache --latency-smoke --set …`), with the full ~10-min pass kept for the
+  confirm. `thread_archive._ops.speed` is
+  the measurement core (warm reps, cache suspended, per-stage from the same probe
+  the usage ledger records), with a `latency-runs.jsonl` timeseries and
+  `latency-baseline.json` beside the quality ones. First measurement: warm search
+  is FTS-dominated now that the re-rank ships off — p50 ~800ms, p95 ~1.5s, with
+  code-identifier queries the slowest shape.
+
+- Ranking-knob tuning moved onto the gold gate, which is now the interactive
+  loop rather than only the CI floor. `scripts/retrieval_gold_gate.py` gained
+  `--set field=value` (score a candidate `SearchParams`), `--cache` (persist the
+  candidate *pools* across processes), `--fail-early` (stop once a floor is
+  provably unreachable — sound, so it is safe on the CI path too),
+  `--max-regressions N` (abort once N cases that used to rank stop ranking), and
+  `--only`. A tuning run is flagged `overrides` in the run ledger and never
+  overwrites the per-case baseline, so an experiment can't be read as the
+  baseline moving. Over the full gold set a re-run at new weights is 132 s → 19 s.
+
+- The caching that makes the above fast lives in the retrieval pipeline, not the
+  eval harness: a search now splits into `retrieve_pool` (the FTS + vector +
+  fusion half, which reads only the query, the structural scope, and the two
+  pool-shaping knobs `rrf_k`/`pool_floor`) and the ranking half (every weight).
+  `_retrieval.pool_cache` is an opt-in, contextvar-installed, fail-soft cache of
+  the pool half, keyed on every pool-affecting input — production never installs
+  one. `rank.score_features`/`score_from_features` split the scorer the same way,
+  so a weight change re-reads one set of feature rows. `_eval.evaluate` grew an
+  `early_stop` hook (and reports `scored`/`aborted`/`per_case`); the gate's
+  `EvalProgress.best_possible` is what makes the fail-early bound exact.
+
+- Fixed a wall-clock race in the gold gate's scores: the community-coherence
+  re-rank reads a corpus graph built on a background thread, which lands partway
+  through a scoring run, so cases before it were ranked without coherence and
+  cases after it with — where the split fell depended on how fast the box was.
+  Two runs of identical code could disagree, and the floors were calibrated under
+  it. The gate now builds the graph inline before scoring any case, making a run
+  a function of the code and the snapshot alone (verified: cached and uncached
+  runs now agree on all seven gold files to the digit).
+
+- Stats now separates cached input reads from token totals across the overview,
+  provider, model, monthly, and heavy-session views. Codex's provider-native
+  inclusive input count is normalized to uncached input before aggregation, so
+  cache hits remain visible without inflating its comparable token total; token
+  and cost amendments also rewind the derived metrics projection immediately.
+  Anthropic's native `cache_read_input_tokens` spelling is normalized too, and
+  Claude Code's repeated content-block rows are counted once by API message id
+  through a request-level incremental projection.
+
 - Retrieval `fusion_weight` raised 100 → 400, recovering the paraphrase recall the
   cross-encoder used to buy — at no latency cost. Term density is unbounded, so a
   short doc carrying a few of a long question's common words outscored the fusion
@@ -14,12 +72,25 @@
   0.859 → 0.922 — past what the cross-encoder reached), suicide 0.905 → 0.929,
   rerank-cases 0.595 → 0.632, context-compaction 0.950 → 1.000, needle 0.739 →
   0.762. Head order tightens rather than flattens (success@1 0.551 → 0.609), the
-  risk the previous calibration had flagged. The findability floor goes back up
-  (MRR 0.54 → 0.62, recall@10 0.83 → 0.88). Past ~500 the vector arm starts
+  risk the previous calibration had flagged. Past ~500 the vector arm starts
   overriding lexical evidence it should defer to; saturating density instead
   (`d/(d+k)`) buys the same paraphrase recall and costs far more elsewhere, so the
   linear term stays. `evals/experiments/fusion_light.py` (the previous 100) and
   `fusion_heavy.py` (800) keep both sides of the optimum measurable.
+
+- The retrieval gold gate now gates **all seven** mined gold files.
+  `topic-cases-needle` and `topic-cases-context-compaction` were scored and printed
+  on every run but carried no floor entry, so they could have regressed to zero
+  without failing CI. Every floor is also recalibrated to the shipped ranking
+  config on an explicit rule: scoring is deterministic — the same code over the same
+  snapshot reproduces the same numbers to the digit — so headroom is a regression
+  tolerance rather than a noise band, and its natural unit is one case. A floor sits
+  `1/n` under its measured value, so a single case may regress and two fail the
+  gate; small files therefore carry the widest absolute gaps (a 7-case topic file
+  tolerates 0.143, the 64-case findability file 0.016). An existing floor is never
+  lowered to accommodate a change. Several had gone stale when the `fusion_weight`
+  change lifted their files at once — suicide's MRR floor moves 0.58 → 0.78 and
+  judged's recall@10 0.70 → 0.85.
 
 - The web viewer now opens as a retrieval workspace instead of an empty reader:
   a real home page searches every provider, exposes source/date facets, and groups

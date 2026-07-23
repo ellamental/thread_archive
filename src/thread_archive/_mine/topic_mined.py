@@ -31,13 +31,11 @@ import argparse
 import concurrent.futures
 import json
 import re
-from pathlib import Path
 
-from .. import _api as api
 from .._knowledge import topic_get
 from . import _framework as fw
 from ._agent import run_claude
-from ._framework import Miner, MineContext, MineResult, now_iso
+from ._framework import MineContext, Miner, MineResult, now_iso
 
 # How many of the topic's members to hand the survey agent inline (id + title),
 # highest-cited first; it has search/read to reach the rest.
