@@ -51,12 +51,14 @@ archive (BEIR and the lab build throwaway homes and never touch it).
   the CI gate's arm-liveness checks. Every other live-archive instrument
   reuses its miner (`mine_log_cases`).
 - **`search_lab.py`** — the experiment bench. Races every configuration in
-  `experiments/` against the shipped defaults and prints a leaderboard. Two
-  corpora: the synthetic corpus (default; seconds, `--models` for the fused
-  pipeline) where a win is a *direction*, not a verdict; and `--gold` /
-  `--cases`, which races the same configurations over the snapshot-bound gold
-  files (the fused pipeline over the frozen snapshot, one leaderboard per file) —
-  the promotion-grade delta, the same graded pools the gold gate floors.
+  `experiments/` against the shipped defaults and prints a leaderboard. A bare
+  run scores **both benches** (`--gold` / `--synthetic` narrow to one): the gold
+  bench over the snapshot-bound gold files (the fused pipeline over the frozen
+  snapshot, one leaderboard per file — the promotion-grade delta, the same graded
+  pools the gold gate floors) and the synthetic bench (`--models` for the fused
+  pipeline) where a win is only a *direction*. The synthetic leaderboard lands in
+  seconds while the gold pass is still running, so a gross regression shows
+  immediately and the grounded verdict follows.
 - **`thread_archive mine`** — the gold miners (package `thread_archive._mine`),
   the only tokens-spending tier. Each mints snapshot-bound eval `--cases` files
   under `~/.thread/archive/`; `thread_archive mine` alone lists them, `thread_archive
@@ -195,17 +197,18 @@ confirming run; re-mine on a cadence when a file's snapshot goes stale.
 
 1. Write the change as an experiment in `experiments/` (a `SearchParams`
    value, or a `SEARCH` callable) with a falsifiable `HYPOTHESIS`.
-2. `search_lab.py` (and `--models` if the model arms are involved) — does the
-   direction hold on the synthetic bench?
-3. `search_lab.py --gold` — race that same experiment against the baseline over
-   every minted gold file (each over its own snapshot), on the graded pools the
-   gold gate floors: the delta that can actually credit the change. Tune against
-   one file; confirm against the held-out one. (`retrieval_eval.py --cases`
-   scores a *single* production config over one file — reach for it to read a
-   shipped config's absolute numbers, not to race a challenger.)
-4. Promote: fold the winner into `_retrieval/params.py` defaults, delete or
-   keep the experiment as documentation, and let tier 0/2 ratchet the new
-   shape.
+2. `search_lab.py` — a bare run scores both benches: the synthetic leaderboard
+   (does the direction hold?) lands in seconds, and the gold pass races that same
+   experiment against the baseline over every minted gold file (each over its own
+   snapshot), on the graded pools the gold gate floors — the delta that can
+   actually credit the change. Tune against one file; confirm against the
+   held-out one. (`--synthetic` / `--gold` narrow to one bench; `retrieval_eval.py
+   --cases` scores a *single* production config over one file — reach for it to
+   read a shipped config's absolute numbers, not to race a challenger.)
+3. Promote once the gold-file delta holds (and `--from-log`, read as an alarm
+   only, hasn't collapsed): fold the winner into `_retrieval/params.py` defaults,
+   delete or keep the experiment as documentation, and let tier 0/2 ratchet the
+   new shape.
 
 ## Cost and hygiene
 

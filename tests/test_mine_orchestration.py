@@ -131,6 +131,46 @@ def test_default_model_is_opus():
     assert _agent.DEFAULT_MODEL == "opus"
 
 
+def test_run_claude_never_exceeds_the_concurrency_ceiling():
+    """The rate cap is an invariant, not a suggestion: however many miners fan out
+    at once, no more than MAX_CONCURRENT_SESSIONS `claude` sessions are live. A
+    reusable barrier sized to the ceiling proves it — exactly that many threads
+    can sit inside the runner at a time, so each wave trips it and drains before
+    the next acquires a slot; peak live count can never pass the ceiling."""
+    import threading
+
+    from thread_archive._mine._agent import MAX_CONCURRENT_SESSIONS
+
+    live = peak = 0
+    accounting = threading.Lock()
+    barrier = threading.Barrier(MAX_CONCURRENT_SESSIONS)
+    broke = threading.Event()
+
+    def runner(cmd, **kw):
+        nonlocal live, peak
+        with accounting:
+            live += 1
+            peak = max(peak, live)
+        try:
+            barrier.wait(timeout=5)  # a full wave has to gather before any leaves
+        except threading.BrokenBarrierError:
+            broke.set()
+        with accounting:
+            live -= 1
+        return _Proc(0, stdout=json.dumps({"result": "ok"}))
+
+    threads = [threading.Thread(
+        target=lambda: run_claude("p", "opus", "t", runner=runner))
+        for _ in range(MAX_CONCURRENT_SESSIONS * 3)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=10)
+
+    assert not broke.is_set()  # every wave gathered exactly the ceiling — no fewer
+    assert peak == MAX_CONCURRENT_SESSIONS  # ...and no more
+
+
 # ── the corpus tool seam (real search/read over a seeded store) ──────────────
 
 def test_corpus_tool_search_and_read(archive_home, capsys):
@@ -345,6 +385,43 @@ def test_topic_miner_run_surveys_then_labels(archive_home, tmp_path):
     assert row["query"] == "grieving a deleted AI"
 
 
+def test_topic_run_caps_labeler_fanout_at_the_ceiling(archive_home, tmp_path, capsys):
+    """A survey that authors far more angles than the per-run ceiling still spawns
+    at most MAX_SESSIONS_PER_RUN labelers, even when --max-queries is set higher."""
+    from thread_archive._store import Thread, get_session, init_db
+
+    init_db()
+    gold = _seed_searchable("target thread", "a distinctive narwhal discussion")
+    with get_session() as s:
+        s.add(Thread(name="topic:big", title="big topic", thread_type="topic",
+                     source="cc", source_id="topic:big"))
+        s.commit()
+
+    n_angles = fw.MAX_SESSIONS_PER_RUN + 8
+    survey_reply = json.dumps({"facets": [], "angles": [
+        {"query": f"angle number {i}", "intent": "x", "confounds": [],
+         "candidates": [{"thread_id": gold, "note": "n"}]}
+        for i in range(n_angles)]})
+    label_reply = json.dumps({"grades": {gold: 2}, "reasons": {gold: "ok"}})
+    calls = {"survey": 0, "label": 0}
+
+    def agent(prompt, model, tool_cmd, **kw):
+        if "designing a search-quality benchmark" in prompt:
+            calls["survey"] += 1
+            return survey_reply, {"num_turns": 1}
+        calls["label"] += 1
+        return label_reply, {"num_turns": 1}
+
+    out = tmp_path / "topic-cases-big-topic.jsonl"
+    ctx = _ctx(agent_run=agent, topic="big topic", max_queries=100)
+    ctx.args.out = out
+    result = topic_mined.MINER.run(ctx)
+
+    assert calls["label"] == fw.MAX_SESSIONS_PER_RUN  # not all n_angles
+    assert result.written == fw.MAX_SESSIONS_PER_RUN
+    assert f"capping to {fw.MAX_SESSIONS_PER_RUN}" in capsys.readouterr().out
+
+
 # ── CLI run paths (fake registry + stub snapshot guard) ──────────────────────
 
 class _FakeMiner(fw.Miner):
@@ -389,6 +466,51 @@ def test_dispatch_all_runs_percase_and_skips_batch(capsys):
     out = capsys.readouterr().out
     assert "skip batchy" in out
     assert "mine all done" in out
+
+
+def test_dispatch_clamps_jobs_and_target(capsys):
+    """A single miner run: an over-target and over-jobs request reach the miner
+    already clamped, each with a printed notice."""
+    from thread_archive._mine._agent import MAX_CONCURRENT_SESSIONS
+
+    fake = _FakeMiner()
+    rc = _cli.dispatch(["fake", "--target", "999", "--jobs", "50"],
+                       registry=[fake], open_fn=lambda: "snap-1")
+    assert rc == 0
+    assert fake.ran_with.target == fw.MAX_SESSIONS_PER_RUN
+    assert fake.ran_with.jobs == MAX_CONCURRENT_SESSIONS
+    out = capsys.readouterr().out
+    assert "concurrent sessions" in out and "per run" in out
+
+
+def test_dispatch_all_shares_one_budget_across_miners(capsys):
+    """The sweep spends at most MAX_SESSIONS_PER_RUN in total, split across its
+    miners — not that many per miner — and clamps jobs to the concurrency ceiling."""
+    from thread_archive._mine._agent import MAX_CONCURRENT_SESSIONS
+
+    miners = [_FakeMiner() for _ in range(3)]
+    for i, m in enumerate(miners):
+        m.name = f"f{i}"
+    rc = _cli.dispatch(["all", "20", "--jobs", "50"], registry=miners,
+                       open_fn=lambda: "snap-1")
+    assert rc == 0
+    targets = [m.ran_with.target for m in miners]
+    assert sum(targets) <= fw.MAX_SESSIONS_PER_RUN  # the whole sweep, not each miner
+    assert targets == [9, 8, 8]  # even split, remainder to the front
+    assert all(m.ran_with.jobs == MAX_CONCURRENT_SESSIONS for m in miners)
+    out = capsys.readouterr().out
+    assert "sessions total" in out and "--jobs 50 ->" in out
+
+
+def test_dispatch_all_honors_target_when_it_fits_the_budget(capsys):
+    """Under budget, every miner gets its full target and the plan reads plainly."""
+    miners = [_FakeMiner() for _ in range(3)]
+    for i, m in enumerate(miners):
+        m.name = f"f{i}"
+    rc = _cli.dispatch(["all", "5"], registry=miners, open_fn=lambda: "snap-1")
+    assert rc == 0
+    assert [m.ran_with.target for m in miners] == [5, 5, 5]
+    assert "at target=5" in capsys.readouterr().out
 
 
 def test_guarded_open_requires_a_snapshot(archive_home):

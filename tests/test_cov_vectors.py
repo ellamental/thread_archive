@@ -12,8 +12,10 @@ over a stand-in model, never real weights.
 
 from __future__ import annotations
 
+import concurrent.futures as cf
 import os
 import sys
+import threading
 import time
 from types import SimpleNamespace
 
@@ -322,6 +324,82 @@ def test_model_slot_uses_a_lent_model_without_constructing() -> None:
     slot = ModelSlot(lambda: pytest.fail("must not construct"), model="LENT")
     assert slot.get() == "LENT"
     assert slot.load_failed is False
+
+
+def test_model_slot_use_yields_the_loaded_model() -> None:
+    with ModelSlot(lambda: "MODEL").use() as model:
+        assert model == "MODEL"
+
+
+def test_model_slot_use_yields_none_when_unavailable() -> None:
+    # A failed construction: use() yields None, takes no use-lock, and a retry is
+    # fine — a degraded model must not deadlock or strand the lock.
+    slot = ModelSlot(_boom)
+    with slot.use() as model:
+        assert model is None
+    with slot.use() as model:
+        assert model is None
+
+
+def test_model_slot_use_serializes_concurrent_callers() -> None:
+    # Two threads must never hold the one shared model at once — the torch forward
+    # race the use-lock exists to prevent. A enters and stays; B must block on the
+    # use-lock until A leaves.
+    slot = ModelSlot(lambda: "MODEL")
+    a_inside = threading.Event()
+    let_a_leave = threading.Event()
+    b_inside = threading.Event()
+
+    def hold_a() -> None:
+        with slot.use() as model:
+            assert model == "MODEL"
+            a_inside.set()
+            let_a_leave.wait(2.0)
+
+    def enter_b() -> None:
+        with slot.use():
+            b_inside.set()
+
+    ta = threading.Thread(target=hold_a)
+    tb = threading.Thread(target=enter_b)
+    ta.start()
+    assert a_inside.wait(2.0)          # A holds the use-lock
+    tb.start()
+    assert not b_inside.wait(0.2)      # B blocked while A holds it (would enter at once if unguarded)
+    let_a_leave.set()                  # release A
+    assert b_inside.wait(2.0)          # now B gets in
+    ta.join(2.0)
+    tb.join(2.0)
+
+
+def test_embedder_serializes_concurrent_encode(monkeypatch) -> None:
+    # The real Embedder._encode path (via embed_query), driven from many threads
+    # over one stand-in model, must never overlap two encodes — the concurrent
+    # forward pass that corrupts a shared torch model's length-sized buffers (the
+    # `size of tensor a must match tensor b` failure seen under `mine --jobs 5`).
+    _models_on(monkeypatch)
+
+    class _OverlapCheckModel:
+        def __init__(self) -> None:
+            self.inside = 0
+            self.max_inside = 0
+            self._lk = threading.Lock()
+
+        def encode(self, prefixed, normalize_embeddings, convert_to_numpy):
+            with self._lk:
+                self.inside += 1
+                self.max_inside = max(self.max_inside, self.inside)
+            time.sleep(0.002)  # widen the window a real forward pass would open
+            with self._lk:
+                self.inside -= 1
+            return np.ones((len(prefixed), 3), dtype=np.float32)
+
+    model = _OverlapCheckModel()
+    embedder = embed.Embedder(load=lambda: model)
+    with cf.ThreadPoolExecutor(max_workers=5) as ex:
+        results = list(ex.map(embedder.embed_query, [f"q{i}" for i in range(40)]))
+    assert all(r is not None for r in results)
+    assert model.max_inside == 1  # serialized — never two encodes at once
 
 
 def test_build_model_pins_the_revision_and_trusts_remote_code(monkeypatch) -> None:

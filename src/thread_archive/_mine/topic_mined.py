@@ -374,10 +374,12 @@ class TopicMinedMiner(Miner):
             raise SystemExit("survey agent produced no usable angles")
 
         angles = [a for a in survey["angles"] if a["query"] not in already]
-        if len(angles) > args.max_queries:
-            print(f"survey authored {len(angles)} angles; capping to "
-                  f"--max-queries={args.max_queries}")
-            angles = angles[:args.max_queries]
+        # Two caps bound the labeler fan-out: the operator's --max-queries and the
+        # framework's global per-run session ceiling. The tighter wins.
+        cap = min(args.max_queries, fw.MAX_SESSIONS_PER_RUN)
+        if len(angles) > cap:
+            print(f"survey authored {len(angles)} angles; capping to {cap}")
+            angles = angles[:cap]
         for a in angles:
             a["_topic"] = topic.get("title") or slug
         if not angles:
