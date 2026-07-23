@@ -58,23 +58,46 @@ failed the generated test in a fresh tmp archive — on macOS and Linux alike �
 which forced fixtures to omit `version` (the workaround baked into
 `LinuxPatch/session-drift.jsonl`).
 
+### Finding #7 (live-discovered) — `pr-link` / `agent-name` line types
+After the watcher restarted onto the finding-#5 fix, the drift ledger kept
+growing by exactly one class of record: `Unmodeled source line type 'pr-link'`
+— a line Claude Code writes when a PR is opened from a session (it fired the
+moment PR #2 was created *in the session doing this work*). A full-ledger
+survey then showed `agent-name` (a subagent's display-name bookkeeping) as the
+only other unmodeled line type. Both are session-state bookkeeping, so both
+were added to `CLAUDE_CODE_CONFIG.expected_unmodeled_line_types` — preserved
+verbatim as hidden records, no longer reported as drift. With these, every
+non-advisory finding class in this machine's ledger is accounted for.
+
+**Verified:** full suite green after the change; post-restart the ledger stopped
+growing under live ingest (see Machine state below).
+
 ### Finding #1 — `claude-install-ubuntu.md`: venv precondition
 The apt preconditions now install `python3-venv` (Ubuntu ships `python3`
 without `ensurepip`, so the doc's `python3 -m venv .venv` failed out of the
 box), and the no-sudo `uv` fallback used during the install test is mentioned,
 including its provisioned-CPython caveat.
 
-## Effect on the LinuxPatch plugin
+## Effect on the LinuxPatch plugin, and machine state
 
 The plugin patch is **superseded** by the finding-#5 source fix: on this
 machine the editable install means every newly started process already runs the
-fixed parser, so activating the plugin is no longer needed. The scaffold at
-`~/.thread/archive/plugins/claude-code/` stays pristine/`enabled: false`; the
-plugin is harmless if ever activated (its reach-ins are idempotent set unions
-that now add nothing). `LinuxPatch/` is kept as the worked example of the
-fix-import repair flow. The watcher daemon must be restarted once
-(`systemctl --user restart thread-archive-watcher`) to pick up the fixed
-parser — it was started before this change.
+fixed parser, so activating the plugin is not needed — and the scaffold was
+**cleaned up** on 2026-07-23: `~/.thread/archive/plugins/claude-code/` removed
+(it held copies of private session samples; originals remain in `~/.claude`)
+and the disabled plugin declaration removed from the archive home's
+`config.json` (file deleted once empty — it existed only for the scaffold
+entry). `LinuxPatch/` in the repo is kept as the worked example of the
+fix-import repair flow.
+
+Machine activation checklist, all done 2026-07-23:
+- watcher restarted onto the fixed parser (`systemctl --user restart
+  thread-archive-watcher`), restarted again after the finding-#7 addition;
+- drift ledger verified flat under live ingest after the restarts;
+- the per-session MCP server picks the fix up automatically on the next
+  session launch (it is spawned from this clone's venv per session);
+- `coverage` may keep reporting `degraded (validation_drift)` until the last
+  pre-fix ledger records age out of its 7-day window — expected, no action.
 
 ## Test evidence
 

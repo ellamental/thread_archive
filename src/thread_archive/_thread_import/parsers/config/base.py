@@ -259,9 +259,11 @@ CLAUDE_CODE_CONFIG = ProviderConfig(
         "last-prompt",  # resume bookkeeping: copy of the latest prompt + leaf uuid
         "ai-title",  # the auto-titler's current title (importer reads it for the thread title)
         "custom-title",  # a user rename (wins over ai-title; importer reads it too)
+        "agent-name",  # a subagent's display name (agentName + sessionId bookkeeping)
         "mode",  # permission-mode switches (normal/plan/…)
         "permission-mode",  # newer sibling of "mode": current permission mode
         "file-history-delta",  # file-backup bookkeeping, sibling of file-history-snapshot
+        "pr-link",  # a PR opened from the session (prNumber/prUrl/prRepository)
         "started",  # Workflow orchestration journal: a subagent began (keyed by cache hash)
         "result",  # Workflow orchestration journal: a subagent finished, carrying its result
         "cloth_meta",  # cloth harness meta line (cloth writes claude-code-format transcripts)
