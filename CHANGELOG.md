@@ -2,6 +2,32 @@
 
 ## Unreleased
 
+- Retrieval `fusion_weight` raised 100 → 400, recovering the paraphrase recall the
+  cross-encoder used to buy — at no latency cost. Term density is unbounded, so a
+  short doc carrying a few of a long question's common words outscored the fusion
+  term's ceiling several times over and sank the vocab-mismatch answers the vector
+  arm had already ranked first: on the findability cases the semantic arm alone
+  scored MRR 0.693 while the final production order scored 0.581, with 12 cases
+  whose gold sat at semantic rank 1 and final rank 2–13. Weighting cross-arm
+  agreement to density's working scale keeps them reachable. Every gold file
+  improves on nDCG@10, six of seven on MRR: findability 0.566 → 0.666 (recall@10
+  0.859 → 0.922 — past what the cross-encoder reached), suicide 0.905 → 0.929,
+  rerank-cases 0.595 → 0.632, context-compaction 0.950 → 1.000, needle 0.739 →
+  0.762. Head order tightens rather than flattens (success@1 0.551 → 0.609), the
+  risk the previous calibration had flagged. The findability floor goes back up
+  (MRR 0.54 → 0.62, recall@10 0.83 → 0.88). Past ~500 the vector arm starts
+  overriding lexical evidence it should defer to; saturating density instead
+  (`d/(d+k)`) buys the same paraphrase recall and costs far more elsewhere, so the
+  linear term stays. `evals/experiments/fusion_light.py` (the previous 100) and
+  `fusion_heavy.py` (800) keep both sides of the optimum measurable.
+
+- The web viewer now opens as a retrieval workspace instead of an empty reader:
+  a real home page searches every provider, exposes source/date facets, and groups
+  recent conversations by day; the same URL-synchronized search surface serves
+  home, results, and the navigation rail. A contextual app header replaces the
+  corpus-index telemetry strip, `/` or Command/Ctrl-K focuses search, and the
+  sidebar's competing recent-title filter is gone.
+
 - The retrieval-usage ledger now records a **per-stage latency breakdown** for
   every MCP search: `fts_ms`, `semantic_ms`, `rerank_ms`, `did_rerank`,
   `pool_size`, and `cold` (present when a model loaded inside the request — the

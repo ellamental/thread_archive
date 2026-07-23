@@ -1,5 +1,5 @@
 import { expect, it } from 'vitest'
-import { render, screen, waitFor } from '@testing-library/react'
+import { render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter } from 'react-router-dom'
 import { App } from '../App'
@@ -27,11 +27,24 @@ it('renders the real application shell and landing route', async () => {
     </MemoryRouter>,
   )
 
-  expect(screen.getByPlaceholderText('search conversations…')).toBeInTheDocument()
-  expect(screen.getByText(/Search above/)).toBeInTheDocument()
-  await waitFor(() => {
-    expect(document.querySelector('.statusbar')).toHaveTextContent('0 threads · 0 events')
-  })
+  expect(screen.getAllByPlaceholderText('search conversations…')).toHaveLength(2)
+  expect(screen.getByRole('heading', { name: 'Find the conversation you remember.' })).toBeInTheDocument()
+  expect(document.querySelector('.appbar')).toHaveTextContent('Archive/Home')
+  expect(document.querySelector('.appbar')).not.toHaveTextContent('events')
+})
+
+it('focuses the primary search surface with the slash shortcut', async () => {
+  const user = userEvent.setup()
+  mswJson('/api/threads', { threads: [] })
+  mswJson('/api/sources', { sources: [] })
+  render(
+    <MemoryRouter initialEntries={['/']}>
+      <App />
+    </MemoryRouter>,
+  )
+
+  await user.keyboard('/')
+  expect(document.querySelector('[data-global-search][data-primary="true"]')).toHaveFocus()
 })
 
 it('opens and closes the responsive navigation drawer', async () => {

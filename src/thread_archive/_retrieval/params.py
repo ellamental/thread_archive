@@ -11,14 +11,21 @@ and scored against the incumbent on identical cases by the search lab
 
 The shipped values, with their evidence:
 
-- ``fusion_weight`` 100.0 — the cross-backend fusion term (the normalized
-  ``_rrf`` agreement score), weighted to compete with density. Lexical scoring
-  is ~0 for a semantic-only hit, so a vocab-mismatch answer the vector arm
-  surfaces (high ``_rrf``, low density) sinks under any lexically dense confound
-  unless the fusion term reaches density's scale. At 100 the gold files carry
-  more real answers into the top 10 (the measurement of record — see
-  ``docs/search-quality.md``); heavier weights hold that recall but start
-  eroding the head order (success@1), so 100 is the sweet spot.
+- ``fusion_weight`` 400.0 — the cross-backend fusion term (the normalized
+  ``_rrf`` agreement score), weighted to compete with density. Density is
+  unbounded (matched terms per ``density_norm_chars``), so a short doc carrying a
+  few of a long question's common words outscores the fusion term's ceiling
+  several times over: a vocab-mismatch answer the vector arm ranks first (high
+  ``_rrf``, low density) sinks under lexically dense confounds. Weighting
+  cross-arm *agreement* to roughly density's working scale is what keeps it
+  reachable — the paraphrase and vague query shapes, where the lexical arm has
+  no purchase, are the ones that move. At 400 every gold file but one improves on
+  all four metrics, head order included (success@1 rises — the ordering is more
+  confident, not flatter); past ~500 the vector arm starts overriding lexical
+  evidence it should defer to and the keyword-shaped files give back recall.
+  Saturating density instead (``d/(d+k)``, bounding it to compete on fusion's
+  scale) buys the same paraphrase recall and costs far more elsewhere: the
+  linear term is load-bearing for the topic files.
 - ``recency_weight`` 1.0 — the corpus skews to OLD threads, so a strong
   recency boost buries what users actually read; 1.0 keeps a mild recent
   tiebreaker. The signal itself decays exponentially with
@@ -72,7 +79,7 @@ class SearchParams:
     density_weight: float = 100.0
     phrase_weight: float = 50.0
     recency_weight: float = 1.0
-    fusion_weight: float = 100.0
+    fusion_weight: float = 400.0
     content_type_weights: Optional[Mapping[str, float]] = None
     recency_half_life_hours: float = 72.0
     density_norm_chars: int = 500

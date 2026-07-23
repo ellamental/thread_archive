@@ -9,7 +9,10 @@ export interface SmokeRoute {
 
 /** One concrete browser case for every route declared by App. */
 export const ROUTES: SmokeRoute[] = [
-  { path: '/', landmark: (page) => page.getByText(/Search above/) },
+  {
+    path: '/',
+    landmark: (page) => page.getByRole('heading', { name: 'Find the conversation you remember.' }),
+  },
   {
     path: '/search?q=needle',
     landmark: (page) => page.getByText('results for “needle”', { exact: false }),
