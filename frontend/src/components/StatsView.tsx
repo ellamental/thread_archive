@@ -69,6 +69,7 @@ function ProviderTable({ rows }: { rows: StatsSource[] }) {
             <th>provider</th>
             <th className="num">sessions</th>
             <th className="bar-col">tokens</th>
+            <th className="num">cached reads</th>
             <th className="num">avg / session</th>
             {anyCost && <th className="num">cost</th>}
             {anyCost && <th className="num">avg / session</th>}
@@ -83,6 +84,7 @@ function ProviderTable({ rows }: { rows: StatsSource[] }) {
                 <Bar frac={r.tokens / maxTok} />
                 <span className="bar-num">{r.tokens ? fmtTokens(r.tokens) : '—'}</span>
               </td>
+              <td className="num">{r.cache_read_tokens ? fmtTokens(r.cache_read_tokens) : '—'}</td>
               <td className="num">{r.avg_tokens ? fmtTokens(r.avg_tokens) : '—'}</td>
               {anyCost && <td className="num">{fmtUsd(r.cost)}</td>}
               {anyCost && <td className="num">{fmtUsd(r.avg_cost, true)}</td>}
@@ -105,6 +107,7 @@ function ModelTable({ rows }: { rows: StatsModel[] }) {
             <th>model</th>
             <th className="bar-col">requests</th>
             <th className="num">tokens</th>
+            <th className="num">cached reads</th>
             <th className="num">conversations</th>
             {anyCost && <th className="num">cost</th>}
           </tr>
@@ -124,6 +127,7 @@ function ModelTable({ rows }: { rows: StatsModel[] }) {
                 <span className="bar-num">{fmtInt(r.requests)}</span>
               </td>
               <td className="num">{r.tokens ? fmtTokens(r.tokens) : '—'}</td>
+              <td className="num">{r.cache_read_tokens ? fmtTokens(r.cache_read_tokens) : '—'}</td>
               <td className="num">{fmtInt(r.conversations)}</td>
               {anyCost && <td className="num">{fmtUsd(r.cost)}</td>}
             </tr>
@@ -160,7 +164,11 @@ export function StatsView() {
 
       <div className="stat-tiles">
         <Tile label="conversations" value={fmtInt(o.conversations)} />
-        <Tile label="tokens" value={fmtTokens(o.tokens)} sub={`${fmtTokens(o.input_tokens)} in · ${fmtTokens(o.output_tokens)} out`} />
+        <Tile
+          label="tokens"
+          value={fmtTokens(o.tokens)}
+          sub={`${fmtTokens(o.input_tokens)} in · ${fmtTokens(o.cache_read_tokens)} cached · ${fmtTokens(o.output_tokens)} out`}
+        />
         <Tile label="known cost" value={fmtUsd(o.cost)} sub={o.cost_conversations ? `over ${fmtInt(o.cost_conversations)} sessions` : 'none recorded'} />
         <Tile label="models" value={fmtInt(o.models)} />
       </div>
@@ -169,6 +177,8 @@ export function StatsView() {
         <h2 className="stat-h">By provider</h2>
         <ProviderTable rows={stats.by_source} />
         <p className="stat-note">
+          Token totals are uncached input plus output; cached reads are shown
+          separately.{' '}
           Cost is only recorded by pay-per-token sources; subscription tools log
           tokens but no dollar figure, so their cost reads “—”.
         </p>

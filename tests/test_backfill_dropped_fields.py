@@ -1031,7 +1031,7 @@ def test_codex_image_only_turn_inserted_and_session_meta_merged(archive_home) ->
         )).scalars().one()
         assert sent.payload["images"][0]["data"] == _PNG_B64
         assert sent.stream_id == want_stream  # borrowed from its own turn
-        assert s.get(Event, comp_id).payload["input_tokens"] == 100
+        assert s.get(Event, comp_id).payload["input_tokens"] == 40
         sm = s.get(Thread, tid).source_metadata
         assert sm["cli_version"] == "1.2.3" and sm["git"]["branch"] == "main"
 

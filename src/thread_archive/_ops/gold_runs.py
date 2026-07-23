@@ -34,6 +34,7 @@ from typing import Any, Optional
 logger = logging.getLogger(__name__)
 
 LEDGER_FILE = "gold-runs.jsonl"
+BASELINE_FILE = "gold-baseline.json"
 
 
 def _enabled() -> bool:
@@ -61,15 +62,17 @@ def git_commit() -> Optional[str]:
         return None
 
 
-def active_config() -> dict[str, Any]:
-    """The retrieval configuration a gate run scores under: the shipped
+def active_config(params: Any = None) -> dict[str, Any]:
+    """The retrieval configuration a gate run scores under: the effective
     ``SearchParams`` fields plus the model-arm / coherence env switches that
     materially move the numbers. This is the "which config produced these scores"
     half of a recorded baseline — the field that turns a metric drift into an
-    explained one."""
+    explained one. ``params`` defaults to the shipped values; a tuning run passes
+    the configuration it actually scored, so the ledger row and its numbers can
+    never describe different rankings."""
     from .._retrieval import SearchParams
 
-    params = asdict(SearchParams())
+    params = asdict(params if params is not None else SearchParams())
     # content_type_weights is a mapping-or-None; asdict keeps it JSON-safe already.
     env = os.environ.get
     config: dict[str, Any] = {"params": params}
@@ -91,13 +94,16 @@ def record_run(
     passed: bool,
     config: Optional[dict[str, Any]] = None,
     commit: Optional[str] = None,
+    overrides: Optional[dict[str, Any]] = None,
 ) -> None:
     """Append one gold-gate run to ``<home>/gold-runs.jsonl``. ``files`` maps each
     scored gold file to its metrics (``mrr``/``success10``/``recall10``/``ndcg10``/
-    ``p50_ms``/``n``/``status``); ``passed`` is whether every floor held. ``home``
-    is passed explicitly — the gate repoints ``THREAD_ARCHIVE_HOME`` at the frozen
-    snapshot to score, so the ledger location can't be read back off the env.
-    Fail-soft: any write error is logged and swallowed."""
+    ``p50_ms``/``n``/``status``); ``passed`` is whether every floor held;
+    ``overrides`` names the ``SearchParams`` fields a tuning run changed, marking
+    the row as an experiment rather than a baseline. ``home`` is passed explicitly
+    — the gate repoints ``THREAD_ARCHIVE_HOME`` at the frozen snapshot to score,
+    so the ledger location can't be read back off the env. Fail-soft: any write
+    error is logged and swallowed."""
     if not _enabled():
         return
     record: dict[str, Any] = {
@@ -109,12 +115,73 @@ def record_run(
         "passed": passed,
         "files": files,
     }
+    if overrides:
+        # A tuning run: the numbers describe a candidate configuration, not the
+        # shipped one. Flagged so reading the timeseries can't mistake an
+        # experiment for a baseline movement.
+        record["overrides"] = overrides
     try:
         path = home / LEDGER_FILE
         with open(path, "a", encoding="utf-8") as fh:
             fh.write(json.dumps(record, separators=(",", ":")) + "\n")
     except OSError:
         logger.warning("could not record gold-gate run", exc_info=True)
+
+
+def write_baseline(
+    home: Path, *, snapshot_id: Optional[str], files: dict[str, dict[str, float]],
+) -> None:
+    """Overwrite ``<home>/gold-baseline.json`` with the shipped configuration's
+    **per-case** reciprocal ranks: ``{gold file: {query: rr}}``.
+
+    The ledger is history and grows; this is a single current reference and does
+    not. Its job is to make a gate run fail fast and explain itself: knowing what
+    each case scored at the baseline lets the gate order cases best-first (so a
+    regression shows in the first few searches instead of the last few) and name
+    the cases that changed instead of only reporting that a mean moved.
+
+    Keyed by query text, not file position — a re-mine that reorders or replaces
+    cases leaves the surviving queries comparable and simply has no baseline for
+    the new ones. Written only by a full, unmodified run: a run under overridden
+    params, a case subset, or an early abort describes a different ranking or a
+    prefix of the cases, and either would poison the reference for every run after.
+    """
+    if not _enabled():
+        return
+    blob = {
+        "at": datetime.now(timezone.utc).isoformat(),
+        "snapshot_id": snapshot_id,
+        "commit": git_commit(),
+        "files": files,
+    }
+    try:
+        path = home / BASELINE_FILE
+        tmp = path.with_suffix(".json.tmp")
+        tmp.write_text(json.dumps(blob, separators=(",", ":")), encoding="utf-8")
+        tmp.replace(path)
+    except OSError:
+        logger.warning("could not write gold baseline", exc_info=True)
+
+
+def read_baseline(
+    home: Path, *, snapshot_id: Optional[str] = None,
+) -> dict[str, dict[str, float]]:
+    """The recorded per-case baseline as ``{gold file: {query: rr}}``, or empty.
+
+    ``snapshot_id`` (when given) must match the one the baseline was written
+    under: per-case scores from a different corpus describe different documents,
+    so a mismatch reads as no baseline rather than as stale guidance. Missing or
+    unreadable reads as empty — the gate then simply runs in file order without
+    the fast-fail ordering, never fails."""
+    path = home / BASELINE_FILE
+    try:
+        blob = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    if snapshot_id is not None and blob.get("snapshot_id") != snapshot_id:
+        return {}
+    files = blob.get("files")
+    return files if isinstance(files, dict) else {}
 
 
 def read_runs(home: Path, *, limit: Optional[int] = None) -> list[dict[str, Any]]:

@@ -202,3 +202,23 @@ def test_load_case_file_round_trips_and_carries_the_snapshot_id(tmp_path) -> Non
     assert cases[0] == {"query": "q1", "gold": ["A", "B"], "sessions": ["S"]}
     assert cases[1]["snapshot_id"] == "abc123"
     assert cases[1]["sessions"] == []
+
+
+def test_load_case_file_carries_difficulty_and_protocol_metadata(tmp_path) -> None:
+    # A querygen findability row's stratifying metadata survives loading, so the
+    # evaluator can score the difficulty tiers apart instead of discarding the
+    # labels; a plain row (no such fields) picks up none of them.
+    path = tmp_path / "findability.jsonl"
+    path.write_text(
+        json.dumps({"query": "q", "gold": ["A"], "grades": {"A": 2},
+                    "snapshot_id": "s1", "difficulty": "vague",
+                    "protocol": "query-gen", "target_thread": "A"}) + "\n"
+        + json.dumps({"query": "plain", "gold": ["B"]}) + "\n"
+    )
+
+    cases = _eval.load_case_file(path)
+
+    assert cases[0]["difficulty"] == "vague"
+    assert cases[0]["protocol"] == "query-gen"
+    assert cases[0]["target_thread"] == "A"
+    assert "difficulty" not in cases[1] and "protocol" not in cases[1]

@@ -31,7 +31,7 @@ from .._store import use_session
 from . import _framework as fw
 from . import query_mined
 from ._agent import run_claude
-from ._framework import Miner, MineContext, MineResult, now_iso, validate_gold
+from ._framework import MineContext, Miner, MineResult, now_iso, validate_gold
 
 CASES_STEM = "rerank-cases"
 
@@ -179,7 +179,9 @@ def judge_case(case: dict, model: str, tool_cmd: str, snapshot_id: str,
         return None, detail
     row = {"query": case["query"], "gold": gold, "grades": verdict["grades"],
            "sessions": sorted(sessions), "snapshot_id": snapshot_id,
-           "protocol": "rerank-judged", "mined_at": now_iso()}
+           "protocol": "rerank-judged", "mined_at": now_iso(),
+           "judge_model": stats.get("model") or model,
+           "prompt_sha": fw.prompt_sha(prompt), "miner_commit": fw.miner_commit()}
     return row, detail
 
 
@@ -225,17 +227,17 @@ class RerankJudgedMiner(Miner):
 
         agent = ctx.agent_run or run_claude
         writer = fw.CaseWriter(self.name, cases_path, detail_path)
-        ok = failed = none_of_pool = 0
+        ok = failed = 0
+        outcomes: dict[str, int] = {}
         with concurrent.futures.ThreadPoolExecutor(max_workers=ctx.jobs) as ex:
             futures = {ex.submit(judge_case, c, ctx.model, ctx.tool_cmd,
                                  ctx.snapshot_id, args.pool, agent): c for c in cases}
             for fut in concurrent.futures.as_completed(futures):
                 row, detail = fut.result()
                 writer.write_detail(detail)
+                outcomes[detail["outcome"]] = outcomes.get(detail["outcome"], 0) + 1
                 if row is None:
                     failed += 1
-                    if detail["outcome"] == "none-of-pool":
-                        none_of_pool += 1
                     print(f"  ✗ {detail['query'][:60]!r}: {detail['outcome']}")
                     continue
                 writer.write_case(row)
@@ -243,11 +245,15 @@ class RerankJudgedMiner(Miner):
                 print(f"  ✓ {row['query'][:60]!r}: {len(row['gold'])} gold "
                       f"of {detail['pool_size']} pooled")
         notes = []
+        none_of_pool = outcomes.get("none-of-pool", 0)
         if none_of_pool:
-            notes.append(f"{none_of_pool} query(s) had no answer in the pool "
-                         "(recall-failure signal — search retrieved only near-misses)")
+            # The one recall signal an in-pool judge has — persisted as a rate on
+            # the mining ledger, not just noted here (see _ops.mine_runs).
+            notes.append(f"{none_of_pool}/{len(cases)} query(s) had no answer in the "
+                         "pool (recall-failure signal — search retrieved only near-misses)")
         return MineResult(written=ok, failed=failed, cases_path=cases_path,
-                          detail_path=detail_path, notes=notes)
+                          detail_path=detail_path, notes=notes,
+                          attempted=len(cases), outcomes=outcomes)
 
 
 MINER = RerankJudgedMiner()

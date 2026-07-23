@@ -1,8 +1,10 @@
 """Incremental token/cost rollup behind the viewer's stats page.
 
 Cost and token counts are recorded inside each ``api_request_completed`` event's
-JSON ``payload`` (``input_tokens`` / ``output_tokens`` / ``thinking_tokens`` /
-``cost`` / ``model``). Surveying them straight from ``events`` means JSON-extracting
+JSON ``payload`` (``input_tokens`` / ``cache_read_tokens`` /
+``cache_read_input_tokens`` / ``output_tokens`` / ``thinking_tokens`` / ``cost`` /
+``model``). Surveying them straight from
+``events`` means JSON-extracting
 across hundreds of thousands of fat payloads on a multi-GB index — seconds per pass,
 far too slow to run per request. :class:`ThreadMetrics` is the standing aggregate,
 and this module keeps it current: :func:`refresh_metrics` folds only the events past
@@ -45,28 +47,100 @@ _FOLD_SQL = text(
     """
     INSERT INTO thread_metrics (
         thread_id, model, requests,
-        input_tokens, output_tokens, thinking_tokens, cost, cost_requests
+        input_tokens, cache_read_tokens, output_tokens, thinking_tokens,
+        cost, cost_requests
     )
     SELECT
         e.thread_id,
         COALESCE(json_extract(e.payload, '$.model'), '') AS model,
         COUNT(*),
-        COALESCE(SUM(CAST(json_extract(e.payload, '$.input_tokens') AS INTEGER)), 0),
+        COALESCE(SUM(
+            CASE
+                WHEN COALESCE(
+                    CAST(json_extract(e.payload, '$.input_tokens_includes_cache') AS INTEGER),
+                    CASE WHEN t.source = 'codex' THEN 1 ELSE 0 END
+                ) = 1
+                THEN MAX(
+                    CAST(json_extract(e.payload, '$.input_tokens') AS INTEGER)
+                    - COALESCE(
+                        CAST(json_extract(e.payload, '$.cache_read_tokens') AS INTEGER),
+                        0
+                    ),
+                    0
+                )
+                ELSE CAST(json_extract(e.payload, '$.input_tokens') AS INTEGER)
+            END
+        ), 0),
+        0,
         COALESCE(SUM(CAST(json_extract(e.payload, '$.output_tokens') AS INTEGER)), 0),
         COALESCE(SUM(CAST(json_extract(e.payload, '$.thinking_tokens') AS INTEGER)), 0),
         COALESCE(SUM(CAST(json_extract(e.payload, '$.cost') AS REAL)), 0),
         SUM(CASE WHEN json_extract(e.payload, '$.cost') IS NOT NULL THEN 1 ELSE 0 END)
     FROM events e
+    JOIN threads t ON t.id = e.thread_id
     WHERE e.event_type = 'api_request_completed'
       AND e.id > :through AND e.id <= :upto
     GROUP BY e.thread_id, model
     ON CONFLICT(thread_id, model) DO UPDATE SET
         requests        = requests        + excluded.requests,
         input_tokens    = input_tokens    + excluded.input_tokens,
+        cache_read_tokens = cache_read_tokens + excluded.cache_read_tokens,
         output_tokens   = output_tokens   + excluded.output_tokens,
         thinking_tokens = thinking_tokens + excluded.thinking_tokens,
         cost            = cost            + excluded.cost,
         cost_requests   = cost_requests   + excluded.cost_requests
+    """
+)
+
+_FOLD_CACHE_REQUESTS_SQL = text(
+    """
+    INSERT INTO request_cache_metrics (
+        thread_id, request_key, model, cache_read_tokens
+    )
+    SELECT
+        e.thread_id,
+        CASE
+            WHEN t.source = 'claude-code'
+            THEN COALESCE(
+                json_extract(e.payload, '$.annotations.message_id'),
+                printf('event:%d', e.id)
+            )
+            ELSE printf('event:%d', e.id)
+        END AS request_key,
+        COALESCE(json_extract(e.payload, '$.model'), '') AS model,
+        MAX(MAX(
+            COALESCE(
+                CAST(json_extract(e.payload, '$.cache_read_tokens') AS INTEGER),
+                0
+            ),
+            COALESCE(
+                CAST(json_extract(e.payload, '$.cache_read_input_tokens') AS INTEGER),
+                0
+            )
+        )) AS cache_read_tokens
+    FROM events e
+    JOIN threads t ON t.id = e.thread_id
+    WHERE e.event_type = 'api_request_completed'
+      AND e.id > :through AND e.id <= :upto
+    GROUP BY e.thread_id, request_key
+    ON CONFLICT(thread_id, request_key) DO UPDATE SET
+        model = excluded.model,
+        cache_read_tokens = MAX(
+            request_cache_metrics.cache_read_tokens,
+            excluded.cache_read_tokens
+        )
+    """
+)
+
+_REFRESH_THREAD_CACHE_SQL = text(
+    """
+    UPDATE thread_metrics
+    SET cache_read_tokens = COALESCE((
+        SELECT SUM(r.cache_read_tokens)
+        FROM request_cache_metrics r
+        WHERE r.thread_id = thread_metrics.thread_id
+          AND r.model = thread_metrics.model
+    ), 0)
     """
 )
 
@@ -83,18 +157,45 @@ def refresh_metrics(engine: Engine | None = None) -> None:
         upto = conn.execute(text("SELECT MAX(id) FROM events")).scalar()
         if upto is None:
             return  # empty archive — nothing to roll up
-        conn.execute(text("INSERT OR IGNORE INTO metrics_cursor (id, through_event_id) VALUES (1, 0)"))
-        through = conn.execute(text("SELECT through_event_id FROM metrics_cursor WHERE id = 1")).scalar() or 0
+        conn.execute(
+            text(
+                "INSERT OR IGNORE INTO metrics_cursor "
+                "(id, through_event_id, cache_requests_ready) VALUES (1, 0, 0)"
+            )
+        )
+        cursor = conn.execute(
+            text(
+                "SELECT through_event_id, cache_requests_ready "
+                "FROM metrics_cursor WHERE id = 1"
+            )
+        ).first()
+        through = int(cursor[0] or 0) if cursor else 0
+        cache_requests_ready = bool(cursor[1]) if cursor else False
+        if not cache_requests_ready:
+            # This request-level projection was added after the standing rollup.
+            # Rewind both projections once so historical aliases and request ids
+            # are folded into the canonical shape.
+            conn.execute(text("DELETE FROM thread_metrics"))
+            conn.execute(text("DELETE FROM request_cache_metrics"))
+            through = 0
         if through > upto:
             # The log shrank below the cursor — a reindex rebuilt it. Reset and rebuild
             # from zero rather than trust sums whose events may no longer exist.
             conn.execute(text("DELETE FROM thread_metrics"))
+            conn.execute(text("DELETE FROM request_cache_metrics"))
             through = 0
         if through >= upto:
             return  # already current
-        conn.execute(_FOLD_SQL, {"through": through, "upto": upto})
+        params = {"through": through, "upto": upto}
+        conn.execute(_FOLD_SQL, params)
+        conn.execute(_FOLD_CACHE_REQUESTS_SQL, params)
+        conn.execute(_REFRESH_THREAD_CACHE_SQL)
         conn.execute(
-            text("UPDATE metrics_cursor SET through_event_id = :upto WHERE id = 1"),
+            text(
+                "UPDATE metrics_cursor "
+                "SET through_event_id = :upto, cache_requests_ready = 1 "
+                "WHERE id = 1"
+            ),
             {"upto": upto},
         )
 
@@ -134,6 +235,7 @@ def collect_stats(*, model_limit: int | None = None) -> dict:
                 """
                 SELECT COALESCE(t.source, '') AS source,
                        SUM(m.input_tokens)  AS in_tok,
+                       SUM(m.cache_read_tokens) AS cache_tok,
                        SUM(m.output_tokens) AS out_tok,
                        SUM(m.cost)          AS cost,
                        COUNT(DISTINCT m.thread_id) AS data_convos,
@@ -147,10 +249,11 @@ def collect_stats(*, model_limit: int | None = None) -> dict:
         ).all():
             metric_by_source[row[0]] = {
                 "input_tokens": int(row[1] or 0),
-                "output_tokens": int(row[2] or 0),
-                "cost": float(row[3] or 0.0),
-                "data_convos": int(row[4] or 0),
-                "cost_convos": int(row[5] or 0),
+                "cache_read_tokens": int(row[2] or 0),
+                "output_tokens": int(row[3] or 0),
+                "cost": float(row[4] or 0.0),
+                "data_convos": int(row[5] or 0),
+                "cost_convos": int(row[6] or 0),
             }
 
         # Every real model, busiest first — `model_limit` caps the list only when a caller
@@ -164,6 +267,7 @@ def collect_stats(*, model_limit: int | None = None) -> dict:
                 SELECT m.model,
                        SUM(m.requests)       AS requests,
                        SUM(m.input_tokens)   AS in_tok,
+                       SUM(m.cache_read_tokens) AS cache_tok,
                        SUM(m.output_tokens)  AS out_tok,
                        SUM(m.cost)           AS cost,
                        SUM(m.cost_requests)  AS cost_requests,
@@ -204,6 +308,7 @@ def collect_stats(*, model_limit: int | None = None) -> dict:
                 "conversations": convos,
                 "with_tokens": data_convos,
                 "input_tokens": m.get("input_tokens", 0),
+                "cache_read_tokens": m.get("cache_read_tokens", 0),
                 "output_tokens": m.get("output_tokens", 0),
                 "tokens": tokens,
                 "avg_tokens": _avg(tokens, data_convos),
@@ -218,10 +323,11 @@ def collect_stats(*, model_limit: int | None = None) -> dict:
             "model": r[0],
             "requests": int(r[1] or 0),
             "input_tokens": int(r[2] or 0),
-            "output_tokens": int(r[3] or 0),
-            "tokens": int(r[2] or 0) + int(r[3] or 0),
-            "cost": float(r[4]) if (r[5] or 0) > 0 else None,
-            "conversations": int(r[6] or 0),
+            "cache_read_tokens": int(r[3] or 0),
+            "output_tokens": int(r[4] or 0),
+            "tokens": int(r[2] or 0) + int(r[4] or 0),
+            "cost": float(r[5]) if (r[6] or 0) > 0 else None,
+            "conversations": int(r[7] or 0),
         }
         for r in model_rows
     ]
@@ -231,6 +337,9 @@ def collect_stats(*, model_limit: int | None = None) -> dict:
         "sources": len([s for s in conv_by_source if conv_by_source[s]]),
         "models": int(model_count),
         "input_tokens": sum(m["input_tokens"] for m in metric_by_source.values()),
+        "cache_read_tokens": sum(
+            m["cache_read_tokens"] for m in metric_by_source.values()
+        ),
         "output_tokens": sum(m["output_tokens"] for m in metric_by_source.values()),
         "tokens": sum(m["input_tokens"] + m["output_tokens"] for m in metric_by_source.values()),
         "cost": sum(m["cost"] for m in metric_by_source.values()),
@@ -283,8 +392,8 @@ def collect_model_stats(model: str) -> dict | None:
                 """
                 SELECT m.thread_id, t.title, COALESCE(t.source, '') AS source,
                        t.inserted_at,
-                       m.requests, m.input_tokens, m.output_tokens, m.thinking_tokens,
-                       m.cost, m.cost_requests
+                       m.requests, m.input_tokens, m.cache_read_tokens,
+                       m.output_tokens, m.thinking_tokens, m.cost, m.cost_requests
                 FROM thread_metrics m
                 JOIN threads t ON t.id = m.thread_id
                 WHERE m.model = :model AND t.thread_type = 'conversation' AND t.archived = 0
@@ -324,6 +433,7 @@ def collect_model_stats(model: str) -> dict | None:
             "month": str(at)[:7] if at else None,
             "requests": int(req or 0),
             "input_tokens": int(itok or 0),
+            "cache_read_tokens": int(ctok or 0),
             "output_tokens": int(otok or 0),
             "tokens": int(itok or 0) + int(otok or 0),
             "thinking_tokens": int(ttok or 0),
@@ -331,7 +441,7 @@ def collect_model_stats(model: str) -> dict | None:
             "cost_requests": int(creq or 0),
             "compactions": compact_by_thread.get(str(tid), 0),
         }
-        for tid, title, source, at, req, itok, otok, ttok, cost, creq in rows
+        for tid, title, source, at, req, itok, ctok, otok, ttok, cost, creq in rows
     ]
 
     per_session_tokens = sorted(sess["tokens"] for sess in sessions)
@@ -345,11 +455,12 @@ def collect_model_stats(model: str) -> dict | None:
             continue
         b = months.setdefault(
             sess["month"],
-            {"sessions": 0, "requests": 0, "input_tokens": 0, "output_tokens": 0, "tokens": 0, "cost": 0.0, "cost_sessions": 0},
+            {"sessions": 0, "requests": 0, "input_tokens": 0, "cache_read_tokens": 0, "output_tokens": 0, "tokens": 0, "cost": 0.0, "cost_sessions": 0},
         )
         b["sessions"] += 1
         b["requests"] += sess["requests"]
         b["input_tokens"] += sess["input_tokens"]
+        b["cache_read_tokens"] += sess["cache_read_tokens"]
         b["output_tokens"] += sess["output_tokens"]
         b["tokens"] += sess["tokens"]
         b["cost"] += sess["cost"]
@@ -360,6 +471,7 @@ def collect_model_stats(model: str) -> dict | None:
             "sessions": b["sessions"],
             "requests": b["requests"],
             "input_tokens": b["input_tokens"],
+            "cache_read_tokens": b["cache_read_tokens"],
             "output_tokens": b["output_tokens"],
             "tokens": b["tokens"],
             "avg_tokens": _avg(b["tokens"], b["sessions"]),
@@ -370,14 +482,20 @@ def collect_model_stats(model: str) -> dict | None:
         # compact in the next, and that activity shouldn't vanish from the series.
         for month, b in sorted(
             (months | {
-                m: {"sessions": 0, "requests": 0, "input_tokens": 0, "output_tokens": 0, "tokens": 0, "cost": 0.0, "cost_sessions": 0}
+                m: {"sessions": 0, "requests": 0, "input_tokens": 0, "cache_read_tokens": 0, "output_tokens": 0, "tokens": 0, "cost": 0.0, "cost_sessions": 0}
                 for m in compact_by_month if m not in months
             }).items()
         )
     ]
 
     top_sessions = [
-        {k: sess[k] for k in ("thread_id", "title", "source", "at", "tokens", "requests", "compactions")}
+        {
+            k: sess[k]
+            for k in (
+                "thread_id", "title", "source", "at", "tokens",
+                "cache_read_tokens", "requests", "compactions",
+            )
+        }
         for sess in sorted(sessions, key=lambda x: -x["tokens"])[:TOP_SESSIONS]
     ]
 
@@ -387,6 +505,9 @@ def collect_model_stats(model: str) -> dict | None:
             "conversations": n_sessions,
             "requests": sum(sess["requests"] for sess in sessions),
             "input_tokens": sum(sess["input_tokens"] for sess in sessions),
+            "cache_read_tokens": sum(
+                sess["cache_read_tokens"] for sess in sessions
+            ),
             "output_tokens": sum(sess["output_tokens"] for sess in sessions),
             "thinking_tokens": sum(sess["thinking_tokens"] for sess in sessions),
             "tokens": sum(sess["tokens"] for sess in sessions),

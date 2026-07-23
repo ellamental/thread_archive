@@ -399,10 +399,8 @@ def _codex_assistant_block(
 
 _CODEX_USAGE_FIELDS = (
     # source key in last_token_usage → canonical usage key
-    ("input_tokens", "input_tokens"),
     ("output_tokens", "output_tokens"),
     ("reasoning_output_tokens", "thinking_tokens"),
-    ("cached_input_tokens", "cache_read_tokens"),
 )
 
 
@@ -412,15 +410,35 @@ def _codex_accumulate_usage(msg: dict[str, Any], payload: dict[str, Any]) -> Non
 
     Each token_count measures the one API request it follows; an assembled
     assistant turn spans every request between two user messages, so the
-    per-request counts are summed — the turn's usage is the total it billed.
-    ``total_tokens`` is derivable and omitted. ``model_context_window`` rides as
-    an annotation (data about the turn, not tokens it consumed)."""
+    per-request counts are summed. Codex follows the OpenAI convention where
+    ``input_tokens`` includes ``cached_input_tokens``. The archive's canonical
+    input count is uncached input (matching Anthropic-shaped sources), with cache
+    reads carried separately, so split the inclusive source value here.
+    ``total_tokens`` is omitted because its provider-native inclusive meaning is
+    derivable from those parts. ``model_context_window`` rides as an annotation
+    (data about the turn, not tokens it consumed)."""
     info = payload.get("info")
     if not isinstance(info, dict):
         return
     last = info.get("last_token_usage")
     if isinstance(last, dict):
         usage = msg["provider_data"].setdefault("usage", {})
+        input_tokens = last.get("input_tokens")
+        cached_input_tokens = last.get("cached_input_tokens")
+        if isinstance(input_tokens, int) and not isinstance(input_tokens, bool):
+            cached = (
+                cached_input_tokens
+                if isinstance(cached_input_tokens, int)
+                and not isinstance(cached_input_tokens, bool)
+                else 0
+            )
+            usage["input_tokens"] = usage.get("input_tokens", 0) + max(
+                input_tokens - cached, 0
+            )
+            usage["cache_read_tokens"] = usage.get("cache_read_tokens", 0) + cached
+            # Explicitly distinguish this canonical value from legacy Codex
+            # events whose provider-native input count still includes cache.
+            usage["input_tokens_includes_cache"] = False
         for src, dst in _CODEX_USAGE_FIELDS:
             value = last.get(src)
             if isinstance(value, int) and not isinstance(value, bool):

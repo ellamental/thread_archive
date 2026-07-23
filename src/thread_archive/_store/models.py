@@ -23,6 +23,7 @@ from datetime import datetime
 
 from sqlalchemy import (
     BigInteger,
+    Boolean,
     DateTime,
     ForeignKey,
     Index,
@@ -346,8 +347,9 @@ class ThreadMetrics(Base):
     viewer's stats page.
 
     Cost and token counts live inside each ``api_request_completed`` event's JSON
-    ``payload`` (``input_tokens`` / ``output_tokens`` / ``thinking_tokens`` / ``cost``
-    / ``model``). Surveying them straight from ``events`` means JSON-extracting across
+    ``payload`` (``input_tokens`` / ``cache_read_tokens`` / ``output_tokens`` /
+    ``thinking_tokens`` / ``cost`` / ``model``). Surveying them straight from
+    ``events`` means JSON-extracting across
     hundreds of thousands of fat payloads (each carries the full response), which is
     far too slow to do per request on a multi-GB index. This table is the standing
     aggregate: one row per (thread_id, model), accumulated **incrementally** from new
@@ -373,12 +375,38 @@ class ThreadMetrics(Base):
     model: Mapped[str] = mapped_column(Text, primary_key=True)
     requests: Mapped[int] = mapped_column(BigInteger, default=0, server_default=text("0"))
     input_tokens: Mapped[int] = mapped_column(BigInteger, default=0, server_default=text("0"))
+    cache_read_tokens: Mapped[int] = mapped_column(BigInteger, default=0, server_default=text("0"))
     output_tokens: Mapped[int] = mapped_column(BigInteger, default=0, server_default=text("0"))
     thinking_tokens: Mapped[int] = mapped_column(BigInteger, default=0, server_default=text("0"))
     cost: Mapped[float] = mapped_column(REAL, default=0.0, server_default=text("0"))
     cost_requests: Mapped[int] = mapped_column(BigInteger, default=0, server_default=text("0"))
 
     __table_args__ = (Index("idx_thread_metrics_model", "model"),)
+
+
+class RequestCacheMetric(Base):
+    """One canonical cached-input count per provider API request.
+
+    Claude Code repeats a response's full usage object on every transcript row
+    for that response. Those rows can arrive in different watcher polls, so the
+    provider request identity must survive between incremental folds. Sources
+    without a stable request id use the event id.
+
+    This is a disposable projection of the event log, like ``thread_metrics``.
+    """
+
+    __tablename__ = "request_cache_metrics"
+
+    thread_id: Mapped[str] = mapped_column(Text, primary_key=True)
+    request_key: Mapped[str] = mapped_column(Text, primary_key=True)
+    model: Mapped[str] = mapped_column(Text, nullable=False, default="", server_default="")
+    cache_read_tokens: Mapped[int] = mapped_column(
+        BigInteger, default=0, server_default=text("0")
+    )
+
+    __table_args__ = (
+        Index("idx_request_cache_metrics_thread_model", "thread_id", "model"),
+    )
 
 
 class MetricsCursor(Base):
@@ -396,6 +424,9 @@ class MetricsCursor(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, default=1)
     through_event_id: Mapped[int] = mapped_column(BigInteger, default=0, server_default=text("0"))
+    cache_requests_ready: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default=text("0")
+    )
 
 
 class KgEvent(Base):

@@ -70,3 +70,58 @@ def test_active_config_captures_params_and_arm_state(archive_home, monkeypatch) 
     # The shipped defaults are captured — the "which config produced these" record.
     assert cfg["params"]["rerank_pool"] == 12 and cfg["params"]["rerank_doc_chars"] == 768
     assert cfg["rerank"] == "off" and cfg["embed"] == "on"
+
+
+# --- the per-case baseline ---------------------------------------------------
+
+
+BASE_CASES = {"findability-cases.jsonl": {"where did we discuss X": 1.0,
+                                          "the thing about Y": 0.0}}
+
+
+def test_baseline_roundtrips(archive_home) -> None:
+    gold_runs.write_baseline(archive_home, snapshot_id="snap1", files=BASE_CASES)
+    assert gold_runs.read_baseline(archive_home, snapshot_id="snap1") == BASE_CASES
+
+
+def test_baseline_from_another_snapshot_is_not_served(archive_home) -> None:
+    # Per-case scores describe specific documents; under a different corpus they
+    # would order the wrong cases first and invent regressions.
+    gold_runs.write_baseline(archive_home, snapshot_id="snap1", files=BASE_CASES)
+    assert gold_runs.read_baseline(archive_home, snapshot_id="snap2") == {}
+
+
+def test_baseline_is_overwritten_not_appended(archive_home) -> None:
+    gold_runs.write_baseline(archive_home, snapshot_id="s", files=BASE_CASES)
+    gold_runs.write_baseline(archive_home, snapshot_id="s", files={"a.jsonl": {"q": 0.5}})
+    assert gold_runs.read_baseline(archive_home, snapshot_id="s") == {"a.jsonl": {"q": 0.5}}
+
+
+def test_missing_baseline_reads_empty(archive_home) -> None:
+    assert gold_runs.read_baseline(archive_home, snapshot_id="s") == {}
+
+
+def test_unreadable_baseline_reads_empty(archive_home) -> None:
+    (archive_home / gold_runs.BASELINE_FILE).write_text("{not json")
+    assert gold_runs.read_baseline(archive_home) == {}
+
+
+def test_a_tuning_run_is_flagged_in_the_ledger(archive_home) -> None:
+    # An experiment's numbers describe a candidate ranking; unflagged they read
+    # as the baseline moving.
+    gold_runs.record_run(archive_home, snapshot_id="s", files=FILES, passed=True,
+                         overrides={"fusion_weight": 500.0})
+    run = gold_runs.read_runs(archive_home)[0]
+    assert run["overrides"] == {"fusion_weight": 500.0}
+
+
+def test_a_plain_run_carries_no_overrides_key(archive_home) -> None:
+    gold_runs.record_run(archive_home, snapshot_id="s", files=FILES, passed=True)
+    assert "overrides" not in gold_runs.read_runs(archive_home)[0]
+
+
+def test_active_config_records_the_params_actually_scored(archive_home) -> None:
+    from thread_archive._retrieval import SearchParams
+
+    cfg = gold_runs.active_config(SearchParams(fusion_weight=500.0))
+    assert cfg["params"]["fusion_weight"] == 500.0

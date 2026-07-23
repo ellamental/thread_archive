@@ -32,7 +32,15 @@ The shipped values, with their evidence:
   ``recency_half_life_hours`` (~3 days) into a 1–20 score.
 - ``density_weight`` 100.0 / ``phrase_weight`` 50.0 — term density
   (matched terms per ``density_norm_chars`` of content) is the primary
-  lexical signal; contiguous/near phrases add a bounded bonus on top.
+  lexical signal; contiguous/near phrases add a bounded bonus on top. Only the
+  ratios between the four weights matter — the score is scale-invariant, so
+  ``density_weight`` is the anchor the others are read against, and
+  ``density_norm_chars`` rescales density itself (a second way to spell the same
+  knob). The gold files do not resolve ``phrase_weight``: zeroing it moves the
+  mean objective by less than one case's worth on the file that drives the
+  difference, and the synthetic corpus's contiguous-vs-scattered pair is decided
+  by density alone either way. It stays for the proximity shape it protects —
+  a remembered exact wording — not on a measured delta.
 - ``content_type_weights`` ``None`` means the production table
   (:data:`thread_archive._retrieval.rank._CONTENT_TYPE_WEIGHT`); a mapping
   replaces it wholesale (``{}`` weighs every content type 1.0).

@@ -21,8 +21,8 @@ def _seed_events(archive_home, rows):
     """Insert conversation threads + ``api_request_completed`` events.
 
     ``rows`` is a list of ``(thread_id, source, model, input_tokens, output_tokens,
-    cost)`` — ``cost=None`` writes a payload with no cost field (a subscription tool),
-    a number writes it (a pay-per-token source).
+    cost[, cache_read_tokens])`` — ``cost=None`` writes a payload with no cost field
+    (a subscription tool), a number writes it (a pay-per-token source).
     """
     ta.open_archive(str(archive_home))
     from thread_archive._store import get_engine
@@ -36,8 +36,11 @@ def _seed_events(archive_home, rows):
                 ),
                 {"id": tid, "name": f"thread-{tid}", "source": source},
             )
-        for j, (tid, _source, model, itok, otok, cost) in enumerate(rows):
+        for j, row in enumerate(rows):
+            tid, _source, model, itok, otok, cost, *extras = row
             payload = {"model": model, "input_tokens": itok, "output_tokens": otok, "thinking_tokens": 0}
+            if extras:
+                payload["cache_read_tokens"] = extras[0]
             if cost is not None:
                 payload["cost"] = cost
             c.execute(
@@ -71,7 +74,7 @@ def test_stats_tokens_and_cost_by_source(archive_home):
             (1, "demo-harness", "deepseek/deepseek-v4-pro", 1000, 100, 0.05),
             (1, "demo-harness", "deepseek/deepseek-v4-pro", 2000, 200, 0.10),
             (2, "demo-harness", "x-ai/grok-4.5", 500, 50, 0.02),
-            (3, "claude-code", "claude-opus-4-8", 3000, 300, None),  # tokens, no cost
+            (3, "claude-code", "claude-opus-4-8", 3000, 300, None, 9000),  # cache, no cost
             (4, "demo-harness", "<synthetic>", 10, 1, None),  # placeholder model
         ],
     )
@@ -94,11 +97,14 @@ def test_stats_tokens_and_cost_by_source(archive_home):
     # A subscription source: tokens present, cost absent (null, not a fabricated 0).
     assert by_source["claude-code"]["cost"] is None
     assert by_source["claude-code"]["tokens"] == 3300
+    assert by_source["claude-code"]["cache_read_tokens"] == 9000
+    assert o["cache_read_tokens"] == 9000
 
     by_model = {r["model"]: r for r in payload["by_model"]}
     assert by_model["deepseek/deepseek-v4-pro"]["requests"] == 2
     assert abs(by_model["deepseek/deepseek-v4-pro"]["cost"] - 0.15) < 1e-9
     assert by_model["claude-opus-4-8"]["cost"] is None
+    assert by_model["claude-opus-4-8"]["cache_read_tokens"] == 9000
     assert "<synthetic>" not in by_model  # placeholder models are dropped from the model list
     # No default cap: even the lowest-volume model (grok, a single request) is listed.
     assert "x-ai/grok-4.5" in by_model
@@ -127,6 +133,73 @@ def test_refresh_is_incremental(archive_home):
     s2 = ta.stats()
     assert s2["overview"]["tokens"] == 330
     assert abs(s2["overview"]["cost"] - 0.03) < 1e-9
+
+
+def test_claude_cache_alias_is_deduplicated_across_incremental_folds(archive_home):
+    ta.open_archive(str(archive_home))
+    from thread_archive._store import get_engine
+
+    tid = "01CLAUDECACHE0000000000001"
+    with get_engine().begin() as c:
+        c.execute(
+            text(
+                "INSERT INTO threads (id, name, thread_type, source, archived) "
+                "VALUES (:id, 'claude-cache', 'conversation', 'claude-code', 0)"
+            ),
+            {"id": tid},
+        )
+
+    def add_response(event_suffix: str, message_id: str, cache: int) -> None:
+        payload = {
+            "model": "claude-opus-4-8",
+            "input_tokens": 1,
+            "output_tokens": 1,
+            # Anthropic's native spelling, repeated on every content-block row.
+            "cache_read_tokens": 0,
+            "cache_read_input_tokens": cache,
+            "annotations": {"message_id": message_id},
+        }
+        with get_engine().begin() as c:
+            c.execute(
+                text(
+                    "INSERT INTO events "
+                    "(thread_id, stream_id, event_type, payload, occurred_at) "
+                    "VALUES (:tid, :sid, 'api_request_completed', :payload, :ts)"
+                ),
+                {
+                    "tid": tid,
+                    "sid": f"stream-{event_suffix}",
+                    "payload": json.dumps(payload),
+                    "ts": f"2026-06-01T10:00:0{event_suffix}Z",
+                },
+            )
+
+    add_response("1", "msg-same-response", 9000)
+    assert ta.stats()["overview"]["cache_read_tokens"] == 9000
+
+    # The duplicate lands after the first stats fold, proving the request key
+    # deduplicates across watcher polls rather than only within one SQL batch.
+    add_response("2", "msg-same-response", 9000)
+    assert ta.stats()["overview"]["cache_read_tokens"] == 9000
+
+    add_response("3", "msg-next-response", 7000)
+    assert ta.stats()["overview"]["cache_read_tokens"] == 16000
+
+
+def test_legacy_codex_input_is_split_from_cached_reads(archive_home):
+    # Legacy Codex events carry provider-native input inclusive of cache and no
+    # semantics marker. The rollup normalizes those without rewriting history.
+    _seed_events(
+        archive_home,
+        [(1, "codex", "gpt-5.6-sol", 100, 10, None, 80)],
+    )
+    payload = ta.stats()
+    codex = next(row for row in payload["by_source"] if row["source"] == "codex")
+    assert codex["input_tokens"] == 20
+    assert codex["cache_read_tokens"] == 80
+    assert codex["output_tokens"] == 10
+    assert codex["tokens"] == 30
+    assert payload["overview"]["tokens"] == 30
 
 
 # Fixed ULID thread ids for the per-model drill-down fixture (index 0 unused).
@@ -159,12 +232,15 @@ def _seed_model_detail(archive_home):
         completions = [
             (STATS_TIDS[1], "mx", 100, 10, 0.01),
             (STATS_TIDS[1], "mx", 200, 20, None),
-            (STATS_TIDS[2], "mx", 1000, 100, None),
+            (STATS_TIDS[2], "mx", 1000, 100, None, 9000),
             (STATS_TIDS[2], "my", 5000, 500, None),  # another model's share of the mixed session
             (STATS_TIDS[3], "my", 70, 7, None),  # a session mx never touched
         ]
-        for j, (tid, model, itok, otok, cost) in enumerate(completions):
+        for j, completion in enumerate(completions):
+            tid, model, itok, otok, cost, *extras = completion
             payload = {"model": model, "input_tokens": itok, "output_tokens": otok, "thinking_tokens": 0}
+            if extras:
+                payload["cache_read_tokens"] = extras[0]
             if cost is not None:
                 payload["cost"] = cost
             c.execute(
@@ -199,6 +275,7 @@ def test_model_stats_detail(archive_home):
     assert o["conversations"] == 2  # threads 1 and 2 — thread 3 never used mx
     assert o["requests"] == 3
     assert o["tokens"] == 100 + 10 + 200 + 20 + 1000 + 100  # mx's share only, not my's
+    assert o["cache_read_tokens"] == 9000
     assert abs(o["cost"] - 0.01) < 1e-9
     assert o["cost_conversations"] == 1
     assert o["compactions"] == 3  # thread 3's compaction is not mx's
@@ -216,6 +293,7 @@ def test_model_stats_detail(archive_home):
     assert list(months) == ["2026-01", "2026-02"]  # sorted
     jan = months["2026-01"]
     assert jan["sessions"] == 2 and jan["tokens"] == 1430 and jan["compactions"] == 2
+    assert jan["cache_read_tokens"] == 9000
     # February has no new mx session, but a January session compacted there — the
     # activity keeps a row rather than vanishing.
     feb = months["2026-02"]
@@ -225,6 +303,7 @@ def test_model_stats_detail(archive_home):
     top = payload["top_sessions"]
     assert [t["thread_id"] for t in top] == [STATS_TIDS[2], STATS_TIDS[1]]  # heaviest mx share first
     assert top[0]["tokens"] == 1100 and top[0]["compactions"] == 2
+    assert top[0]["cache_read_tokens"] == 9000
     assert top[0]["title"] == "session 2" and top[0]["source"] == "claude-code"
 
 

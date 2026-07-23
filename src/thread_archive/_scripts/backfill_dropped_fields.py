@@ -156,13 +156,22 @@ logger = logging.getLogger(__name__)
 # Payload keys never merged: content identity (enforced by check_patch anyway)
 # plus the timestamp-provenance flags, which a full re-parse derives differently
 # than the original chunked import did.
-_NEVER_PATCH = frozenset(_PROTECTED_KEYS) | {"timestamp_inferred", "timestamp_source"}
+_NEVER_PATCH = frozenset(_PROTECTED_KEYS) | {
+    "timestamp_inferred",
+    "timestamp_source",
+    # A legacy Codex row's inclusive input value must remain paired with an
+    # absent marker so the stats compatibility fold can recognize it. Adding
+    # the fixed importer's ``False`` marker without overwriting that nonzero
+    # input value would mislabel and re-inflate the historical row.
+    "input_tokens_includes_cache",
+}
 
 # Usage keys where a stored 0 is the retired importers' "not recorded"
 # placeholder and a fresh nonzero count may replace it.
 _TOKEN_KEYS = frozenset({
     "input_tokens", "output_tokens", "thinking_tokens",
-    "cache_read_tokens", "cache_write_tokens", "uncached_tokens",
+    "cache_read_tokens", "cache_read_input_tokens", "cache_write_tokens",
+    "uncached_tokens",
 })
 
 

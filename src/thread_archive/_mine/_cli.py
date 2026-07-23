@@ -91,7 +91,17 @@ def _execute(miner: fw.Miner, args: argparse.Namespace,
     ctx = fw.MineContext(
         snapshot_id=snapshot_id, target=target,
         model=args.model, jobs=jobs, tool_cmd=fw.tool_cmd(), args=args)
-    return miner.run(ctx)
+    result = miner.run(ctx)
+    # Persist the run's denominator (attempted / written / failed / outcome
+    # breakdown) so the abstention and drop rates are a recorded timeseries, not a
+    # number that lived only in the console line. Fail-soft inside record_run.
+    if result.attempted:
+        from .._ops import mine_runs
+
+        mine_runs.record_run(
+            miner=miner.name, snapshot_id=snapshot_id, attempted=result.attempted,
+            written=result.written, failed=result.failed, outcomes=result.outcomes)
+    return result
 
 
 def _print_result(miner: fw.Miner, result: fw.MineResult) -> None:

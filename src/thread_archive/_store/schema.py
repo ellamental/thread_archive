@@ -39,6 +39,8 @@ logger = logging.getLogger(__name__)
 # baseline shipped; ALTERed in on open when a live index predates them.
 _ADDED_COLUMNS: dict[str, dict[str, str]] = {
     "import_state": {"last_content_hash": "TEXT"},
+    "thread_metrics": {"cache_read_tokens": "INTEGER NOT NULL DEFAULT 0"},
+    "metrics_cursor": {"cache_requests_ready": "BOOLEAN NOT NULL DEFAULT 0"},
     # The external-content FTS index reads occurred_at from the shadow, so the
     # column must exist before ensure_fts can build the current-shape table.
     "events_fts": {"occurred_at": "TEXT"},
@@ -70,6 +72,19 @@ def _add_missing_columns(engine: Engine) -> None:
                         raise
                     continue
                 logger.info("schema: added %s.%s (%s)", table, column, decl)
+                if table in {"thread_metrics", "metrics_cursor"}:
+                    # A new projection column cannot be reconstructed from the
+                    # standing sums. Empty the disposable rollup and rewind its
+                    # cursor so the next stats read folds every source event.
+                    conn.execute(text("DELETE FROM thread_metrics"))
+                    conn.execute(text("DELETE FROM request_cache_metrics"))
+                    conn.execute(
+                        text(
+                            "UPDATE metrics_cursor SET through_event_id = 0, "
+                            "cache_requests_ready = 0 "
+                            "WHERE id = 1"
+                        )
+                    )
 
 
 # Concurrent openers race on a virgin store: ``create_all``'s existence check is

@@ -183,6 +183,50 @@ def test_add_missing_column_backfills_and_is_idempotent(tmp_path) -> None:
     eng.dispose()
 
 
+def test_added_metrics_column_rewinds_derived_projection(tmp_path) -> None:
+    from sqlalchemy import text
+
+    from thread_archive._store import schema as schema_mod
+
+    eng = build_engine(_dsn(tmp_path))
+    init_db(eng)
+    with eng.begin() as conn:
+        conn.execute(
+            text(
+                "INSERT INTO thread_metrics "
+                "(thread_id, model, requests, input_tokens) "
+                "VALUES ('t1', 'm1', 1, 99)"
+            )
+        )
+        conn.execute(
+            text(
+                "INSERT INTO metrics_cursor (id, through_event_id) "
+                "VALUES (1, 123)"
+            )
+        )
+        conn.execute(
+            text("ALTER TABLE thread_metrics DROP COLUMN cache_read_tokens")
+        )
+
+    schema_mod._add_missing_columns(eng)
+    with eng.begin() as conn:
+        have = {
+            row[1]
+            for row in conn.execute(text("PRAGMA table_info(thread_metrics)"))
+        }
+        assert "cache_read_tokens" in have
+        assert conn.execute(text("SELECT COUNT(*) FROM thread_metrics")).scalar() == 0
+        assert (
+            conn.execute(
+                text(
+                    "SELECT through_event_id FROM metrics_cursor WHERE id = 1"
+                )
+            ).scalar()
+            == 0
+        )
+    eng.dispose()
+
+
 def test_add_missing_column_absorbs_duplicate_column_but_not_other_faults(tmp_path) -> None:
     # The ALTER can find the column already there — a racer (the daemon and MCP
     # server open the store concurrently, so another process can win the ADD

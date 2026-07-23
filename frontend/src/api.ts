@@ -183,6 +183,7 @@ export interface StatsOverview {
   sources: number
   models: number
   input_tokens: number
+  cache_read_tokens: number
   output_tokens: number
   tokens: number
   cost: number
@@ -196,6 +197,7 @@ export interface StatsSource {
   conversations: number
   with_tokens: number
   input_tokens: number
+  cache_read_tokens: number
   output_tokens: number
   tokens: number
   avg_tokens: number | null
@@ -210,6 +212,7 @@ export interface StatsModel {
   model: string
   requests: number
   input_tokens: number
+  cache_read_tokens: number
   output_tokens: number
   tokens: number
   cost: number | null
@@ -232,6 +235,7 @@ export interface ModelStatsOverview {
   conversations: number
   requests: number
   input_tokens: number
+  cache_read_tokens: number
   output_tokens: number
   thinking_tokens: number
   tokens: number
@@ -255,6 +259,7 @@ export interface ModelStatsMonth {
   sessions: number
   requests: number
   input_tokens: number
+  cache_read_tokens: number
   output_tokens: number
   tokens: number
   avg_tokens: number | null
@@ -268,6 +273,7 @@ export interface ModelStatsSession {
   source: string
   at: string | null
   tokens: number
+  cache_read_tokens: number
   requests: number
   compactions: number
 }

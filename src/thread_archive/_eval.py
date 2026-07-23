@@ -69,6 +69,7 @@ import math
 import random
 import re
 import time
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -339,6 +340,13 @@ def load_case_file(path: Path) -> list[dict]:
         # snapshot_id differs, so a moved corpus invalidates rather than drifts.
         if row.get("snapshot_id"):
             case["snapshot_id"] = row["snapshot_id"]
+        # Stratifying metadata the miners stamp — carried through scoring so the
+        # evaluator can report a findability file's difficulty tiers apart (an
+        # aggregate hides the vague-recall stratum that matters most) rather than
+        # discarding the labels the miner spent tokens to assign.
+        for key in ("difficulty", "protocol", "target_thread"):
+            if row.get(key) is not None:
+                case[key] = row[key]
         cases.append(case)
     return cases
 
@@ -371,16 +379,58 @@ def ndcg_at_k(ranked_rels: list[float], pool_rels: list[float], k: int) -> float
     return _dcg(ranked_rels[:k]) / ideal if ideal else 0.0
 
 
+@dataclass
+class EvalProgress:
+    """What an :func:`evaluate` run knows partway through — the state an
+    ``early_stop`` predicate decides on.
+
+    ``sums`` holds running totals under the same names the gold gate's floors use
+    (``mrr``, ``success10``, ``recall10``, ``ndcg10``), each a per-case value in
+    [0, 1] summed over the cases scored so far. That shape is what makes a *sound*
+    early exit possible: every remaining case can contribute at most 1.0, so
+    ``(sums[m] + (n - scored)) / n`` is the best final value still reachable, and
+    a predicate comparing it to a floor aborts only runs that could not have
+    passed. ``case_rr`` is the reciprocal rank of the case just scored — 0.0
+    meaning its gold never surfaced — for predicates that watch individual
+    failures rather than the aggregate.
+    """
+
+    n: int
+    scored: int
+    sums: dict[str, float]
+    query: str
+    case_rr: float
+
+    def best_possible(self, metric: str) -> float:
+        """The highest final value ``metric`` can still reach if every unscored
+        case is perfect. Monotonically non-increasing as a run proceeds, so a
+        floor it has already fallen under can never be met."""
+        if not self.n:
+            return 0.0
+        return (self.sums[metric] + (self.n - self.scored)) / self.n
+
+
 def evaluate(cases: list[dict], *, limit: int, rerank, content_type,
-             exclude_content_types: list[str] | None, search=None) -> dict:
+             exclude_content_types: list[str] | None, search=None,
+             early_stop=None) -> dict:
     """Score ``cases`` against a search function — MRR, success@k, recall@k,
-    nDCG@k, per-shape MRR, and latency. ``search`` is the ranker under evaluation
+    nDCG@k, per-shape MRR, per-difficulty-tier metrics (for cases that carry a
+    ``difficulty``), and latency. ``search`` is the ranker under evaluation
     (default: the archive's own), so a candidate ranking can be measured against
     the same cases as the incumbent. MRR and success use the first grade-2 hit;
     recall averages the fraction of each case's complete grade-2 ``gold`` set
     retrieved by k; nDCG is graded over the case's ``grades`` pool (a case without
     one falls back to binary relevance — its ``gold`` as grade 1 — so nDCG stays
     defined for every protocol).
+
+    ``early_stop`` is an optional predicate taking an :class:`EvalProgress` after
+    each case and returning an abort reason (or ``None`` to continue) — the seam
+    that lets a caller stop paying for a run whose verdict is already decided.
+    Every average still divides by the **full** case count, so an aborted report's
+    metrics are lower bounds (the unscored cases counted as zero) rather than
+    averages over a prefix, which would read as ordinary numbers while being
+    scored on different cases. The report carries ``aborted`` (the reason, or
+    ``None``) and ``scored`` so a caller can tell the two apart.
 
     Determinism is the caller's job, not a per-case date bound: agent-mined cases
     are scored over the frozen snapshot they were mined against (the caller binds
@@ -389,11 +439,18 @@ def evaluate(cases: list[dict], *, limit: int, rerank, content_type,
     if search is None:
         search = api.search
     per_shape: dict[str, list[float]] = {}
+    # Per-difficulty-tier accumulators, populated only for cases that carry a
+    # ``difficulty`` (querygen findability). Each tier keeps the same four signals
+    # the gold-gate floors use, so a stratum can be reported — and floored — apart
+    # from the aggregate that would otherwise mask the weakest one.
+    per_difficulty: dict[str, dict[str, float]] = {}
     reciprocal_ranks: list[float] = []
     successes_at: dict[int, int] = {k: 0 for k in RECALL_KS}
     recall_at: dict[int, float] = {k: 0.0 for k in RECALL_KS}
     ndcg_at: dict[int, float] = {k: 0.0 for k in RECALL_KS}
     latencies: list[float] = []
+    per_case: list[dict] = []
+    aborted: str | None = None
 
     for case in cases:
         gold = set(case["gold"])
@@ -437,10 +494,41 @@ def evaluate(cases: list[dict], *, limit: int, rerank, content_type,
                 successes_at[k] += 1
             recall_at[k] += found / len(gold) if gold else 0.0
             ndcg_at[k] += ndcg_at_k(ranked_rels, pool_rels, k)
+        difficulty = case.get("difficulty")
+        if difficulty is not None:
+            bucket = per_difficulty.setdefault(
+                difficulty, {"n": 0, "mrr": 0.0, "success10": 0.0,
+                             "recall10": 0.0, "ndcg10": 0.0})
+            found10 = sum(position <= 10 for position in gold_positions.values())
+            bucket["n"] += 1
+            bucket["mrr"] += rr
+            bucket["success10"] += 1.0 if found10 else 0.0
+            bucket["recall10"] += found10 / len(gold) if gold else 0.0
+            bucket["ndcg10"] += ndcg_at_k(ranked_rels, pool_rels, 10)
+        case_row = {"query": case["query"], "rr": round(rr, 4)}
+        if difficulty is not None:
+            case_row["difficulty"] = difficulty
+        per_case.append(case_row)
+
+        if early_stop is not None:
+            aborted = early_stop(EvalProgress(
+                n=len(cases), scored=len(reciprocal_ranks),
+                sums={
+                    "mrr": sum(reciprocal_ranks),
+                    "success10": float(successes_at[10]),
+                    "recall10": recall_at[10],
+                    "ndcg10": ndcg_at[10],
+                },
+                query=case["query"], case_rr=rr,
+            ))
+            if aborted:
+                break
 
     n = len(cases)
     return {
         "n": n,
+        "scored": len(reciprocal_ranks),
+        "aborted": aborted,
         "mrr": sum(reciprocal_ranks) / n if n else 0.0,
         "success": {k: successes_at[k] / n if n else 0.0 for k in RECALL_KS},
         "recall": {k: recall_at[k] / n if n else 0.0 for k in RECALL_KS},
@@ -449,5 +537,18 @@ def evaluate(cases: list[dict], *, limit: int, rerank, content_type,
             shape: {"n": len(rrs), "mrr": sum(rrs) / len(rrs)}
             for shape, rrs in sorted(per_shape.items())
         },
-        "latency_p50_ms": sorted(latencies)[n // 2] * 1000 if n else 0.0,
+        "per_difficulty": {
+            tier: {
+                "n": b["n"],
+                "mrr": b["mrr"] / b["n"],
+                "success10": b["success10"] / b["n"],
+                "recall10": b["recall10"] / b["n"],
+                "ndcg10": b["ndcg10"] / b["n"],
+            }
+            for tier, b in sorted(per_difficulty.items())
+        },
+        "per_case": per_case,
+        "latency_p50_ms": (
+            sorted(latencies)[len(latencies) // 2] * 1000 if latencies else 0.0
+        ),
     }
