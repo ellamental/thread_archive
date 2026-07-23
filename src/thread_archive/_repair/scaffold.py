@@ -167,16 +167,20 @@ def test_fixtures_import_events(archive_home):
 def test_no_validation_drift_on_fixtures(archive_home):
     """The fixed parser must not still be tripping validators on the shapes it
     claims to fix — a finding here is the drift ledger saying the fix is
-    incomplete."""
+    incomplete. Advisory-only records (the version first-sighting tripwire) are
+    not drift: a fresh test archive logs one for any fixture carrying a
+    ``version`` field, on macOS and Linux alike."""
     init_archive()
     _import_all()
     ledger = archive_home / "validation-drift.jsonl"
     findings = []
     if ledger.exists():
         findings = [
-            json.loads(line)
+            record
             for line in ledger.read_text(encoding="utf-8").splitlines()
             if line.strip()
+            for record in (json.loads(line),)
+            if not all(f.endswith("(advisory)") for f in record.get("findings", []))
         ]
     assert not findings, f"the fixed parser still trips validators: {findings[:3]}"
 '''

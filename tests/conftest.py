@@ -42,7 +42,18 @@ atexit.register(shutil.rmtree, _SANDBOX_HOME, ignore_errors=True)
 # XDG base dirs must follow the redirect: an inherited XDG_CONFIG_HOME (GitHub's
 # runners export one) still names the real ~/.config, and an explicit XDG var
 # outranks $HOME for anything XDG-aware. Dropped, they re-derive from the sandbox.
-for _xdg in ("XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_STATE_HOME", "XDG_CACHE_HOME"):
+# The *_DIRS search paths ride along: a desktop Linux session injects real-home
+# entries into them (KDE puts ~/.config/kdedefaults in XDG_CONFIG_DIRS, flatpak
+# puts ~/.local/share/flatpak/... in XDG_DATA_DIRS), which trips the isolation
+# guard; dropped, they fall back to the spec's system defaults. Unset on macOS.
+for _xdg in (
+    "XDG_CONFIG_HOME",
+    "XDG_DATA_HOME",
+    "XDG_STATE_HOME",
+    "XDG_CACHE_HOME",
+    "XDG_CONFIG_DIRS",
+    "XDG_DATA_DIRS",
+):
     os.environ.pop(_xdg, None)
 
 # THREAD_ARCHIVE_HOME is the store-location override the engine resolves *before*

@@ -279,11 +279,13 @@ CLAUDE_CODE_CONFIG = ProviderConfig(
             # so their one extra key is known here too.
             "agentId",  # subagent provenance: thread-level, see the assistant note
             "attachment",
+            "classifierMetaLines",  # prompt-classifier bookkeeping riding a meta line
             "cwd",
             "entrypoint",
             "gitBranch",
             "imagePasteIds",
             "interruptedByShutdown",  # the user turn was cut short by a shutdown
+            "interruptedMessageId",  # the message a user interruption cut off
             "isCompactSummary",
             "isMeta",
             "isSidechain",
@@ -296,6 +298,13 @@ CLAUDE_CODE_CONFIG = ProviderConfig(
             "promptId",
             "promptSource",
             "sessionId",
+            # sessionKind / session_id (snake_case — distinct from sessionId)
+            # arrived with Claude Code 2.1.x. session_id usually repeats
+            # sessionId, but on a resumed/forked session it carries the ORIGIN
+            # session's id — lineage, so both are annotated (see the parser's
+            # line-annotation mappings), not just ledgered.
+            "sessionKind",
+            "session_id",
             "slug",
             "sourceToolAssistantUUID",
             "sourceToolUseID",
@@ -341,6 +350,8 @@ CLAUDE_CODE_CONFIG = ProviderConfig(
             "parentUuid",
             "requestId",
             "sessionId",
+            "sessionKind",  # same pair as on user lines — see the note there
+            "session_id",
             "slug",
             "supersedesUuids",
             "timestamp",

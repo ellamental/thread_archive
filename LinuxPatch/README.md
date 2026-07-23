@@ -1,9 +1,18 @@
-# LinuxPatch — claude-code fix-import repair (finished, verified, NOT activated)
+# LinuxPatch — claude-code fix-import repair (SUPERSEDED by the upstream fix)
 
-The completed 2026-07-23 `fix-import claude-code` repair, held here pending operator
-go-ahead. The scaffold at `~/.thread/archive/plugins/claude-code/` remains the pristine
-template and the live archive is unmodified (no `--activate`, `config.json` still
-`enabled: false`).
+> **Status 2026-07-23 (later the same day):** the proper fix landed in the source
+> tree on this same PR branch — see
+> [../LinuxTesting/UpstreamFixes7.23.26.md](../LinuxTesting/UpstreamFixes7.23.26.md)
+> (finding #5). With the editable install, every newly started process already runs
+> the fixed parser, so **activating this plugin is no longer needed**. The plugin is
+> harmless if activated anyway (its reach-ins are idempotent unions that now add
+> nothing). This directory is kept as a worked example of the `fix-import` repair
+> flow on Linux.
+
+The completed 2026-07-23 `fix-import claude-code` repair, originally held here pending
+operator go-ahead. The scaffold at `~/.thread/archive/plugins/claude-code/` remains the
+pristine template and the live archive is unmodified (no `--activate`, `config.json`
+still `enabled: false`).
 
 Full session log — diagnosis, wiring analysis, test results, revert record:
 [../LinuxTesting/FixImportClaudeCode7.23.26.md](../LinuxTesting/FixImportClaudeCode7.23.26.md)

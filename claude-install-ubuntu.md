@@ -34,11 +34,18 @@ sudo apt-get install -y python3.12 python3.12-venv
 # then use python3.12 in place of python3 below
 ```
 
-Also install the build basics (a clean install may compile a C-extension wheel):
+Also install the build basics (a clean install may compile a C-extension wheel)
+and the venv module for the Python you'll use — Ubuntu ships `python3` without
+`ensurepip`, so `python3 -m venv` fails out of the box until the matching
+`python3.X-venv` package is present:
 
 ```bash
-sudo apt-get install -y build-essential git
+sudo apt-get install -y build-essential git python3-venv   # python3.X-venv for a versioned python
 ```
+
+No-sudo fallback: [`uv`](https://docs.astral.sh/uv/) works cleanly in place of
+venv+pip (`uv venv` then `uv pip install -e .`) — note it may provision its own
+CPython rather than using the system one.
 
 ## 1. Create the venv and install the package
 

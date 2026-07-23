@@ -96,6 +96,10 @@ _ASSISTANT_LINE_ANNOTATIONS: Tuple[Tuple[str, str], ...] = (
     ("requestId", "request_id"),
     ("gitBranch", "git_branch"),
     ("version", "version"),
+    ("sessionKind", "session_kind"),  # "bg" on background/scheduled sessions
+    # snake_case session_id ≠ camelCase sessionId: on a resumed/forked session
+    # it names the ORIGIN session — lineage worth keeping, hence annotated.
+    ("session_id", "session_id"),
 )
 
 
@@ -112,6 +116,12 @@ _USER_LINE_ANNOTATIONS: Tuple[Tuple[str, str], ...] = (
     ("promptSource", "prompt_source"),
     ("todos", "todos"),
     ("thinkingMetadata", "thinking_metadata"),
+    ("sessionKind", "session_kind"),  # "bg" on background/scheduled sessions
+    # snake_case session_id ≠ camelCase sessionId: on a resumed/forked session
+    # it names the ORIGIN session — lineage worth keeping, hence annotated.
+    ("session_id", "session_id"),
+    ("interruptedMessageId", "interrupted_message_id"),
+    ("classifierMetaLines", "classifier_meta_lines"),
 )
 
 
