@@ -58,7 +58,11 @@ archive (BEIR and the lab build throwaway homes and never touch it).
   pools the gold gate floors) and the synthetic bench (`--models` for the fused
   pipeline) where a win is only a *direction*. The synthetic leaderboard lands in
   seconds while the gold pass is still running, so a gross regression shows
-  immediately and the grounded verdict follows.
+  immediately and the grounded verdict follows. `--sample FRAC` scores a
+  deterministic subset of each gold file (the same hash-selected slice every run)
+  — with `--only <experiment>` it turns the gold pass from tens of minutes into a
+  couple, for fast iteration; it reads a *direction*, not the promotion delta, so
+  drop it for the full-bench confirm before promoting.
 - **`thread_archive mine`** — the gold miners (package `thread_archive._mine`),
   the only tokens-spending tier. Each mints snapshot-bound eval `--cases` files
   under `~/.thread/archive/`; `thread_archive mine` alone lists them, `thread_archive
@@ -201,10 +205,13 @@ confirming run; re-mine on a cadence when a file's snapshot goes stale.
    (does the direction hold?) lands in seconds, and the gold pass races that same
    experiment against the baseline over every minted gold file (each over its own
    snapshot), on the graded pools the gold gate floors — the delta that can
-   actually credit the change. Tune against one file; confirm against the
-   held-out one. (`--synthetic` / `--gold` narrow to one bench; `retrieval_eval.py
-   --cases` scores a *single* production config over one file — reach for it to
-   read a shipped config's absolute numbers, not to race a challenger.)
+   actually credit the change. While iterating, `--only <experiment> --sample
+   0.15` scores a deterministic slice of each file in a couple of minutes — a fast
+   grounded direction; drop `--sample` for the full-bench run that credits the
+   change. Tune against one file; confirm against the held-out one. (`--synthetic`
+   / `--gold` narrow to one bench; `retrieval_eval.py --cases` scores a *single*
+   production config over one file — reach for it to read a shipped config's
+   absolute numbers, not to race a challenger.)
 3. Promote once the gold-file delta holds (and `--from-log`, read as an alarm
    only, hasn't collapsed): fold the winner into `_retrieval/params.py` defaults,
    delete or keep the experiment as documentation, and let tier 0/2 ratchet the

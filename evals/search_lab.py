@@ -17,6 +17,9 @@ Two benches, run **both by default** (``--gold`` / ``--synthetic`` narrow to one
   gold-file delta scored on both sides of a change is the evidence that credits a
   promotion. Auto-discovers the gold files at the gold dir (or takes explicit
   ``--cases``), scores each over its own snapshot, one leaderboard per file.
+  ``--sample FRAC`` scores a deterministic subset of each file (same slice every
+  run, so the delta stays comparable) — a fast direction while iterating, not the
+  promotion delta; drop it to confirm before changing defaults.
 
 - **Synthetic.** Builds the checked-in synthetic corpus
   (``tests/quality_corpus.py``) in a throwaway archive home — no snapshot, no
@@ -32,6 +35,7 @@ gross regression shows up immediately and the grounded verdict follows.
     .venv/bin/python evals/search_lab.py --gold                # gold bench only
     .venv/bin/python evals/search_lab.py --synthetic --models  # synthetic only, fused pipeline
     .venv/bin/python evals/search_lab.py --cases ~/.thread/archive/judged-cases.jsonl
+    .venv/bin/python evals/search_lab.py --only pool_order --sample 0.15   # fast iterate
     .venv/bin/python evals/search_lab.py --only no_recency,pool_order --json out.json
 
 The gold bench needs a snapshot (``thread_archive snapshot <dir>``; default
@@ -48,8 +52,10 @@ against a moved corpus.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import importlib.util
 import json
+import math
 import shutil
 import sys
 import tempfile
@@ -91,6 +97,23 @@ def _gold_gate():
     one definition of what counts as a gold file and where the snapshot and gold
     dir default, shared so the bench and the CI gate agree on the fixture set."""
     return _load_module(ROOT / "scripts" / "retrieval_gold_gate.py", "retrieval_gold_gate")
+
+
+def _subsample(cases: list[dict], frac: float) -> list[dict]:
+    """A deterministic ``frac``-sized slice of ``cases`` (fraction in (0, 1]) for
+    fast iteration — the whole list when ``frac >= 1``, at least one case
+    otherwise. Selection is by a content hash of each case's query, so the subset
+    is stable across runs (the baseline-vs-experiment delta stays comparable run
+    to run) and isn't just the file's head; the hash order also nests the slices,
+    so a larger ``frac`` is a superset of a smaller one — widen it without losing
+    the cases you already read. A subset scores a *direction* on grounded data,
+    not the promotion delta: with fewer, differently-mixed cases the absolute
+    numbers drift from the full bench, so read the delta, then confirm on the full
+    bench (drop ``--sample``) before changing defaults."""
+    if frac >= 1.0:
+        return cases
+    ordered = sorted(cases, key=lambda c: hashlib.sha1(c["query"].encode()).hexdigest())
+    return ordered[: max(1, math.ceil(len(cases) * frac))]
 
 
 def _params_search(params) -> Callable:
@@ -328,6 +351,11 @@ def _run_gold(args, *, explicit: bool) -> tuple[int, dict | None]:
     experiments = _select_experiments(args)
     limit = args.limit if args.limit is not None else 20
 
+    if args.sample is not None:
+        print(f"gold: SAMPLED run (~{args.sample:.0%} of each file) — a fast direction on "
+              f"grounded data, NOT the promotion delta; drop --sample and confirm on the "
+              f"full bench before changing defaults.", file=sys.stderr)
+
     file_reports: list[dict] = []
     for path in files:
         if not path.is_file():
@@ -340,11 +368,14 @@ def _run_gold(args, *, explicit: bool) -> tuple[int, dict | None]:
                   f"!= {current} (stale or mid-re-mine; re-mine against this snapshot)",
                   file=sys.stderr)
             continue
-        report = run_gold_lab(cases, experiments, limit=limit)
-        print(f"\n=== gold: {path.name}  ({len(cases)} cases · snapshot {current}) ===")
+        scored = _subsample(cases, args.sample) if args.sample is not None else cases
+        report = run_gold_lab(scored, experiments, limit=limit)
+        tag = f" · SAMPLED {len(scored)}/{len(cases)}" if args.sample is not None else ""
+        print(f"\n=== gold: {path.name}  ({len(scored)} cases{tag} · snapshot {current}) ===")
         _print_leaderboard(report)
-        report.update({"file": path.name, "path": str(path),
-                       "snapshot_id": current, "n": len(cases)})
+        report.update({"file": path.name, "path": str(path), "snapshot_id": current,
+                       "n": len(scored), "n_full": len(cases),
+                       "sampled": args.sample})
         file_reports.append(report)
 
     if not file_reports:
@@ -373,6 +404,10 @@ def main(argv=None) -> int:
     ap.add_argument("--gold-dir", type=Path, metavar="DIR",
                     help="gold bench: where to auto-discover gold files "
                     "(default $THREAD_ARCHIVE_GOLD_DIR or ~/.thread/archive)")
+    ap.add_argument("--sample", type=float, metavar="FRAC",
+                    help="gold bench: score a deterministic FRAC subset of each file's "
+                    "cases (e.g. 0.15) for fast iteration — a direction on grounded data, "
+                    "not the promotion delta (drop it to confirm before promoting)")
     ap.add_argument("--only", help="comma-separated experiment names (default: all in evals/experiments/)")
     ap.add_argument("--experiments", type=Path, default=EXPERIMENTS_DIR,
                     help="experiments directory (default: evals/experiments/)")
@@ -386,8 +421,10 @@ def main(argv=None) -> int:
     run_synth = args.synthetic or not args.gold
     if args.models and not run_synth:
         ap.error("--models embeds the synthetic corpus, but --gold runs gold only")
-    if (args.cases or args.snapshot or args.gold_dir) and not run_gold:
-        ap.error("--cases/--snapshot/--gold-dir are gold-bench options, but "
+    if args.sample is not None and not 0.0 < args.sample <= 1.0:
+        ap.error("--sample takes a fraction in (0, 1] (e.g. 0.15)")
+    if (args.cases or args.snapshot or args.gold_dir or args.sample is not None) and not run_gold:
+        ap.error("--cases/--snapshot/--gold-dir/--sample are gold-bench options, but "
                  "--synthetic runs synthetic only")
 
     out: dict = {}

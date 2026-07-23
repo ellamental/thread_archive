@@ -58,6 +58,18 @@ FLOORS: dict[str, dict[str, float]] = {
     "topic-cases-frustration.jsonl": {
         "mrr": 0.50, "success10": 0.70, "recall10": 0.50, "ndcg10": 0.45,
     },
+    # querygen findability — one gold/case, so recall10 tracks success10 (recover
+    # the single target = surface it). High by design (the query was authored from
+    # the thread), so read it as a findability floor, not a precision score.
+    "findability-cases.jsonl": {
+        "mrr": 0.72, "success10": 0.85, "recall10": 0.85, "ndcg10": 0.75,
+    },
+    # rerank in-pool judgments — many golds/case (avg ~14), so recall10 is
+    # structurally capped (can't fit ~14 golds in 10 slots) and floored low on
+    # purpose; success10 and nDCG10 are the load-bearing signals here.
+    "rerank-cases.jsonl": {
+        "mrr": 0.52, "success10": 0.78, "recall10": 0.38, "ndcg10": 0.55,
+    },
 }
 
 DEFAULT_SNAP = Path.home() / ".thread" / "archive-snap"

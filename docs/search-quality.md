@@ -159,7 +159,10 @@ or a full `SEARCH` callable for changes params can't express — the contract
 is in `evals/experiments/README.md`), and `evals/search_lab.py` scores the
 baseline plus every experiment on identical corpus cases and prints a
 leaderboard with deltas: seconds for the lexical stack, `--models` for the
-fused pipeline. The corpus carries adversarial structure (a TF-spam paste
+fused pipeline. On the gold bench `--sample FRAC` (paired with `--only
+<experiment>`) scores a deterministic subset of each file — the same slice every
+run — so a tuning loop takes minutes instead of the full bench's tens; a subset
+reads a direction, and the full bench is still the promotion bar. The corpus carries adversarial structure (a TF-spam paste
 bm25 loves, a recency pair whose old twin is the lexically stronger match)
 precisely so configurations *separate* — stripping the weighted ranker
 measurably loses. A winner here is a direction, not a verdict.

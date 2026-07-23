@@ -93,6 +93,21 @@ def test_every_experiment_satisfies_the_contract() -> None:
         assert e.hypothesis and callable(e.search), e.name
 
 
+def test_subsample_is_deterministic_and_sized() -> None:
+    """--sample takes a stable, hash-selected slice: the same subset every call,
+    ceil(frac·n) of them, at least one, the whole list at frac>=1, and nested so a
+    wider frac is a superset (widen without losing the cases you already read)."""
+    lab = _lab()
+    cases = [{"query": f"q{i}", "gold": [f"t{i}"]} for i in range(20)]
+    a = lab._subsample(cases, 0.15)
+    assert [c["query"] for c in a] == [c["query"] for c in lab._subsample(cases, 0.15)]
+    assert len(a) == 3  # ceil(20 * 0.15)
+    assert {c["query"] for c in a} <= {c["query"] for c in cases}  # no invented cases
+    assert {c["query"] for c in a} <= {c["query"] for c in lab._subsample(cases, 0.5)}  # nested
+    assert lab._subsample(cases, 1.0) == cases  # whole list
+    assert len(lab._subsample(cases, 0.001)) == 1  # never empty
+
+
 def test_lab_run_scores_every_experiment_against_baseline(corpus) -> None:
     """A full lexical lab pass: every checked-in configuration runs end to end
     and lands on the leaderboard with metrics and a delta vs the baseline."""
