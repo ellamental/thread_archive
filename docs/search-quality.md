@@ -35,9 +35,12 @@ that surfaces what past search never could gets no credit for it. Good
 numbers here mean the stack reliably re-finds what real searches actually
 delivered; they cannot certify there was nothing better to find. Semantic
 fusion is the layer that pays — +10 points of success@10 over the lexical core
-at no latency cost. The cross-encoder costs 5× the latency, which is why the
-pipeline auto-gates it to conceptual queries instead of running it everywhere.
-Both model arms have an off switch — `THREAD_ARCHIVE_EMBED=off` and
+at no latency cost — and how heavily its cross-arm agreement term is weighted
+against lexical density (`SearchParams.fusion_weight`) is the single biggest
+ranking knob: the paraphrase and vague query shapes live or die on it. The
+cross-encoder costs 5× the latency for a fraction of that, so it does not run
+automatically; `rerank=True` still forces it, and the gold files measure what
+it would buy. Both model arms have an off switch — `THREAD_ARCHIVE_EMBED=off` and
 `THREAD_ARCHIVE_RERANK=off` pin a process to
 the lexical core without uninstalling the extra, for a box that wants search
 cheap and free of the cold-start model load (`retrieval_eval.py
@@ -47,11 +50,11 @@ cheap and free of the cold-start model load (`retrieval_eval.py
 conversation a node). Within a ranked pool, threads whose community carries
 more of the pool's top mass get a small boost; on this protocol it lifts
 success at every depth past 1 (S@5 0.327→0.341, S@10 0.414→0.433, S@20
-0.492→0.508) with MRR flat, and `evals/graph_eval.py` re-measures it. It
-orders the head only when the cross-encoder stands down: the two are
-alternative head orderers, and stacking coherence under the rerank measures
-as a loss end-to-end (it reshuffles which candidates reach the rerank
-window). On by default; `THREAD_ARCHIVE_COHERENCE=off` disables, a float
+0.492→0.508) with MRR flat, and `evals/graph_eval.py` re-measures it. It and
+the cross-encoder are alternative head orderers, so it orders the head only
+when the re-rank stands down (stacking coherence under a forced re-rank
+measures as a loss end-to-end — it reshuffles which candidates reach the
+rerank window). On by default; `THREAD_ARCHIVE_COHERENCE=off` disables, a float
 retunes gamma. Two graph signals were measured, rejected on the same
 protocol, and are not in the stack: PageRank authority from the topic
 graph degrades ranking monotonically with weight, because

@@ -17,6 +17,7 @@ function ThreadStub() {
 }
 
 function renderAt(url: string) {
+  mswJson('/api/sources', { sources: [{ source: 'demo-harness', threads: 3 }] })
   return render(
     <MemoryRouter initialEntries={[url]}>
       <Routes>

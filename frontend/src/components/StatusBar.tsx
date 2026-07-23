@@ -1,65 +1,31 @@
-import { useEffect, useState } from 'react'
-import { api, type Status } from '../api'
+import { Link, useLocation } from 'react-router-dom'
 
-// The status bar only shows archive counts, so a blip — a watcher restart cycles
-// the cohosted server for a second — must not latch a permanent "unavailable"
-// banner. It polls instead of fetching once: a good survey settles into a slow
-// refresh, a failure retries soon and self-heals, and the last good counts stay on
-// screen through a transient failure rather than flipping to red.
-export const REFRESH_MS = 60_000
-export const RETRY_MS = 3_000
+function sectionLabel(pathname: string): string {
+  if (pathname === '/') return 'Home'
+  if (pathname === '/search') return 'Search'
+  if (pathname === '/threads') return 'Browse'
+  if (pathname === '/stats') return 'Stats'
+  if (pathname.startsWith('/stats/model/')) return 'Model stats'
+  if (pathname.startsWith('/archive/')) return 'Conversation'
+  return 'Archive'
+}
 
+// The shell header names where the reader is and keeps search one keystroke
+// away. Corpus/index telemetry belongs on Stats rather than occupying the most
+// prominent line of every page.
 export function StatusBar({
   sidebarOpen = false,
   onOpenSidebar,
+  onSearch,
 }: {
   sidebarOpen?: boolean
   onOpenSidebar?: () => void
+  onSearch?: () => void
 }) {
-  const [st, setSt] = useState<Status | null>(null)
-  const [err, setErr] = useState<string | null>(null)
-
-  useEffect(() => {
-    let live = true
-    let timer: ReturnType<typeof setTimeout> | undefined
-    const tick = async () => {
-      try {
-        const s = await api.status()
-        if (!live) return
-        setSt(s)
-        setErr(null)
-        timer = setTimeout(tick, REFRESH_MS)
-      } catch (e) {
-        if (!live) return
-        setErr(e instanceof Error ? e.message : String(e))
-        timer = setTimeout(tick, RETRY_MS)
-      }
-    }
-    tick()
-    return () => {
-      live = false
-      if (timer) clearTimeout(timer)
-    }
-  }, [])
-
-  let contents
-  // A prior good survey wins over a later failure: counts stay put through a blip.
-  if (st) {
-    contents = (
-      <>
-        {st.threads.toLocaleString()} threads · {st.events.toLocaleString()} events ·{' '}
-        {st.fts_indexed.toLocaleString()} indexed
-        {st.vectors_indexed ? ` · ${st.vectors_indexed.toLocaleString()} vectors` : ''}
-      </>
-    )
-  } else if (err) {
-    contents = <>archive unavailable: {err}</>
-  } else {
-    contents = <>loading…</>
-  }
+  const { pathname } = useLocation()
 
   return (
-    <div className={'statusbar' + (err && !st ? ' err' : '')}>
+    <header className="appbar">
       <button
         className="sidebar-toggle"
         aria-label="open navigation"
@@ -69,7 +35,15 @@ export function StatusBar({
       >
         ☰
       </button>
-      <span className="status-copy">{contents}</span>
-    </div>
+      <div className="appbar-context">
+        <Link className="appbar-home" to="/">Archive</Link>
+        <span className="appbar-separator">/</span>
+        <span>{sectionLabel(pathname)}</span>
+      </div>
+      <button className="search-shortcut" type="button" onClick={onSearch}>
+        <span>Search</span>
+        <kbd>/</kbd>
+      </button>
+    </header>
   )
 }

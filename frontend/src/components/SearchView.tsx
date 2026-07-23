@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { Link, useSearchParams } from 'react-router-dom'
 import { api, SEARCH_LIMIT, type SearchHit, type SearchResponse } from '../api'
+import { SearchBox } from './SearchBox'
 
 function fmtDate(iso: string | null): string {
   if (!iso) return ''
@@ -92,6 +93,9 @@ export function SearchView() {
 
   return (
     <div className="wrap">
+      <div className="page-search">
+        <SearchBox variant="page" primary />
+      </div>
       <div className="submeta">
         {browse ? 'recent threads — newest activity first' : `results for “${q}”`}
         {filters.length > 0 && ` · ${filters.join(' · ')}`}

@@ -10,7 +10,7 @@ for (const route of ROUTES) {
 
     await page.goto(route.path)
     await expect(route.landmark(page)).toBeVisible()
-    await expect(page.locator('.statusbar')).toContainText('1 threads · 3 events')
+    await expect(page.locator('.appbar')).toBeVisible()
 
     expect(unhandled).toEqual([])
     expect(errors).toEqual([])
@@ -22,8 +22,9 @@ test('search opens and highlights the matching archived message', async ({ page 
   const unhandled = await mockApi(page)
 
   await page.goto('/')
-  await page.getByPlaceholder('search conversations…').fill('needle')
-  await page.getByPlaceholder('search conversations…').press('Enter')
+  const search = page.locator('[data-global-search][data-primary="true"]')
+  await search.fill('needle')
+  await search.press('Enter')
 
   await expect(page).toHaveURL(/\/search\?q=needle$/)
   await page.getByText('The needle lives here.').click()
@@ -34,6 +35,19 @@ test('search opens and highlights the matching archived message', async ({ page 
   await page.getByLabel('thinking').check()
   await page.locator('details.thinking summary').click()
   await expect(page.getByText('Private browser-test reasoning.')).toBeVisible()
+
+  expect(unhandled).toEqual([])
+  expect(errors).toEqual([])
+})
+
+test('home exposes recent conversations and the global search shortcut', async ({ page }) => {
+  const errors = monitorPage(page)
+  const unhandled = await mockApi(page)
+
+  await page.goto('/')
+  await expect(page.getByRole('link', { name: /Browser Test Thread/ }).last()).toBeVisible()
+  await page.keyboard.press('/')
+  await expect(page.locator('[data-global-search][data-primary="true"]')).toBeFocused()
 
   expect(unhandled).toEqual([])
   expect(errors).toEqual([])
@@ -81,7 +95,7 @@ for (const viewport of [
       expect((closedBox?.x ?? 0) + (closedBox?.width ?? 0)).toBeLessThanOrEqual(1)
       await menu.click()
       await expect(page.locator('#archive-navigation')).toHaveClass(/open/)
-      await expect(page.getByRole('searchbox', { name: 'search conversations…' })).toBeVisible()
+      await expect(page.getByRole('searchbox', { name: 'search conversations' })).toBeVisible()
       await page.getByRole('button', { name: 'close navigation' }).first().click()
       await expect(page.locator('#archive-navigation')).not.toHaveClass(/open/)
     } else {
