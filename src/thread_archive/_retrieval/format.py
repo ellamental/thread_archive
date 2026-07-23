@@ -29,8 +29,8 @@ COUNT_FETCH_CAP = 1000
 
 def subjects_line(hits: list[EventHit]) -> str | None:
     """The ``subjects:`` orientation header over a result set, or None — the
-    :mod:`.subjects` lens over the curated data plane; an uncurated archive
-    renders searches with no subjects line."""
+    :mod:`.subjects` lens over the topic-graph data plane; an archive with no
+    topic graph renders searches with no subjects line."""
     from . import subjects as _subjects
 
     if not _subjects.enabled():

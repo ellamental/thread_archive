@@ -31,7 +31,7 @@ logger = logging.getLogger(__name__)
 THREADS_SUBDIR = "threads"
 _CROSS_THREAD: dict[str, type] = {"thread_links": ThreadLink, "topic_messages": TopicMessage}
 
-# The curatorial event log (see KgEvent): an append-only file of every topic/link/
+# The topic-graph event log (see KgEvent): an append-only file of every topic/link/
 # evidence mutation. It is the *source of truth* for the knowledge layer — the
 # thread_links / topic_messages projections are folded from it on reindex. A
 # _CROSS_THREAD snapshot, if present, is treated as a reindex seed the replay

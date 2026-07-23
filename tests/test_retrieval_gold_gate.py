@@ -27,7 +27,11 @@ def test_discover_keeps_gold_files_and_drops_mining_siblings(tmp_path) -> None:
         "judged-cases.jsonl",
         "topic-cases-suicide.jsonl",
         "topic-cases-frustration.jsonl",
+        "rerank-cases.jsonl",
+        "findability-cases.jsonl",
         "judged-cases-detail.jsonl",
+        "rerank-cases-detail.jsonl",
+        "findability-cases-detail.jsonl",
         "topic-cases-suicide.detail.jsonl",
         "judged-seed.jsonl",
         "seed-candidates.jsonl",
@@ -40,6 +44,8 @@ def test_discover_keeps_gold_files_and_drops_mining_siblings(tmp_path) -> None:
         "judged-cases.jsonl",
         "topic-cases-suicide.jsonl",
         "topic-cases-frustration.jsonl",
+        "rerank-cases.jsonl",
+        "findability-cases.jsonl",
     }
 
 

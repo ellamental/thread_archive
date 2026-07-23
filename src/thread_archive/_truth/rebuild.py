@@ -59,7 +59,7 @@ def scan_truth_counts(
     kg_event_id_max: int | None = None, truth_dir: Path | None = None,
 ) -> dict:
     """Count threads + event lines across the truth directory — the per-thread
-    files *and* the curatorial log (``kg_events.jsonl``) — tallying any JSON
+    files *and* the topic-graph event log (``kg_events.jsonl``) — tallying any JSON
     parse errors. The integrity primitive behind ``thread_archive verify``: a clean
     archive has these match the SQLite projection's thread/event/kg-event counts
     (the JSONL ⊇ SQLite invariant) with zero parse errors.
@@ -79,11 +79,11 @@ def scan_truth_counts(
     thread and its duplicated lines as superseded, matching what a reindex of
     that directory materializes.
 
-    ``kg_events`` counts the curatorial log's distinct ids (the file is
+    ``kg_events`` counts the topic-graph event log's distinct ids (the file is
     append-only, so a crash-merge can legitimately duplicate a line; the
     projection materializes one row per id). Its unparseable lines fold into the
     same ``parse_errors`` tally and torn-tail/interior split as the per-thread
-    files — the curation truth deserves the same daily scan the conversation
+    files — the topic-graph truth deserves the same daily scan the conversation
     truth gets, not a weekly one.
 
     ``event_id_max`` / ``thread_id_max`` / ``kg_event_id_max`` bound the scan to
@@ -128,9 +128,9 @@ def scan_truth_counts(
                     continue
                 seen_keys.add(key)
                 n_effective += 1
-    # The curatorial log: distinct kg-event ids at or below the watermark, its
+    # The topic-graph event log: distinct kg-event ids at or below the watermark, its
     # parse errors folded into the same tally (and torn/interior split) so a
-    # damaged curation line fails the daily verify, not just the weekly deep one.
+    # damaged topic-graph line fails the daily verify, not just the weekly deep one.
     kg_ids: set = set()
     for rec in _iter_jsonl(d / KG_EVENTS_FILE, errors=parse_error_locs):
         kg_id = rec.get("id")
@@ -339,14 +339,14 @@ def _carry_import_state(index_path: Path, engine) -> int:
 def _replay_kg_events(
     d: Path, engine, *, errors: list[tuple[str, int]] | None = None,
 ) -> int:
-    """Fold the curatorial event log (``kg_events.jsonl``) onto the knowledge projection.
+    """Fold the topic-graph event log (``kg_events.jsonl``) onto the knowledge projection.
 
     Loads the log into the ``kg_events`` table and replays each event in ``id`` order
     through the materializer, mutating ``thread_links`` / ``topic_messages`` on top of
     whatever legacy snapshot seed was already loaded. The materializer is upsert +
     tombstone, so a delta that re-touches a seeded row (or deletes one) reconciles
     cleanly and the replay is idempotent and order-stable. A no-op when the log is
-    absent — an uncurated (or purely lexical) archive simply has no curation to fold.
+    absent — an archive with no topic graph (or a purely lexical one) simply has nothing to fold.
     Runs through an ORM ``Session`` so the fold can use the materializer, but it never
     *stages* truth (only :func:`append_kg_event` does), so the before-commit drain is a
     no-op here and the rebuild can't re-write the log it is reading."""
@@ -765,7 +765,7 @@ def reindex(*, vectors: bool = False, salvage: bool = False) -> dict:
                     err_sample = ", ".join(f"{p}:{ln}" for p, ln in interior[:5])
                     raise RuntimeError(
                         f"reindex: the rebuild would lose {lost['events']} committed "
-                        f"event(s), {lost['kg_events']} curation event(s) and "
+                        f"event(s), {lost['kg_events']} topic-graph event(s) and "
                         f"{lost['threads']} thread(s) the current index holds "
                         f"(event sample: {lost['event_sample']}; thread sample: "
                         f"{lost['thread_sample']}) "

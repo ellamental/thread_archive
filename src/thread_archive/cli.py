@@ -1297,6 +1297,25 @@ def _eval_metric_ks(metric: dict) -> list:
     return sorted(metric, key=lambda k: int(k))
 
 
+def cmd_mine(args: argparse.Namespace) -> int:
+    """Mint snapshot-bound gold eval cases with the agent miners — the deep tier
+    of the search-quality ladder (`evals/README.md`).
+
+    Unlike `eval` (a read-only self-checkup that ships to every install and spends
+    no tokens), `mine` drives headless `claude` agents against a frozen corpus
+    snapshot to produce graded relevance labels the cheaper protocols can't:
+    corpus-grounded golds from real queries, confound-dense topic benchmarks,
+    cheap in-pool rerank judgments, and generated findability cases. Bare `mine`
+    lists the miners; `mine <miner> --help` shows a miner's options; `mine all N`
+    sweeps the ones a count alone can drive.
+
+    Delegates to the `_mine` package, whose registry owns the subcommand grammar.
+    """
+    from . import _mine
+
+    return _mine.dispatch(list(args.rest))
+
+
 def cmd_setup(args: argparse.Namespace) -> int:
     """The `thread_archive setup` front door — delegate to the wizard flow."""
     from ._setup.wizard import run_setup
@@ -1490,6 +1509,18 @@ def build_parser() -> argparse.ArgumentParser:
     p_eval.add_argument("--seed", type=int, default=7, help="case sampling seed")
     p_eval.add_argument("--json", action="store_true", help="emit the report as JSON")
     p_eval.set_defaults(func=cmd_eval)
+
+    # The dev bench's gold miners — mint snapshot-bound eval cases (the deep tier
+    # of the quality ladder). The subcommand grammar is the registry's, parsed
+    # lazily inside cmd_mine, so the heavy _mine imports never load for an
+    # unrelated command. REMAINDER hands the whole tail to that parser.
+    p_mine = sub.add_parser(
+        "mine",
+        help="mint gold eval cases (agent miners; `mine` alone lists them)",
+    )
+    p_mine.add_argument("rest", nargs=argparse.REMAINDER,
+                        help="<miner> [options] | all [N] | (empty to list)")
+    p_mine.set_defaults(func=cmd_mine)
 
     p_backup = sub.add_parser("backup", help="mirror the JSONL truth dir to a backup destination")
     _add_home_arg(p_backup)

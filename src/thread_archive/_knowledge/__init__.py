@@ -1,4 +1,4 @@
-"""The knowledge layer's data plane — the curated records under the archive.
+"""The knowledge layer's data plane — the topic-graph records under the archive.
 
 The archive owns the knowledge graph's **data**, nothing more:
 
@@ -9,11 +9,11 @@ The archive owns the knowledge graph's **data**, nothing more:
   citations, the thread set behind search's ``topic_id`` scope, the part-of
   hierarchy) and owns the hierarchy vocabulary.
 
-The archive neither writes nor analyzes these records: whatever external
-curator exists writes through the truth log (appending ``KgEvent`` rows the
+The archive neither writes nor analyzes these records: an external write layer
+(if present) writes through the truth log (appending ``KgEvent`` rows the
 same way :mod:`.materialize` folds them), and any graph analytics live with
-that curator. The graph is empty (all queries return empty) until topics +
-links exist; the core archive works uncurated.
+that consumer. The graph is empty (all queries return empty) until topics +
+links exist; the core archive works without them.
 """
 
 from __future__ import annotations

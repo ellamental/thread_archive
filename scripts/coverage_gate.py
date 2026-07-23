@@ -29,6 +29,7 @@ FLOORS = {
     "_importers": 92.0,
     "_knowledge": 90.0,
     "_mcp": 92.0,
+    "_mine": 85.0,  # gold miners; the agent-driving run paths covered via seams, not real claude
     "_ops": 90.0,  # the durability kit
     "_providers": 90.0,
     "_repair": 90.0,

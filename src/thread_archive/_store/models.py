@@ -41,13 +41,13 @@ from .ulid import mint_ulid
 
 
 class Thread(Base):
-    """An imported conversation, or a curated topic.
+    """An imported conversation, or a topic.
 
     ``thread_type`` has three live kinds: 'conversation' (a chat session — the
     default, what importers create), 'system' (a subagent/machinery run — captured,
     but out of default search and browse; retrieval's ``agents``/``types`` controls
     reach it), and 'topic' (a
-    curated knowledge node in the topic graph; see :mod:`thread_archive._knowledge`).
+    knowledge node in the topic graph; see :mod:`thread_archive._knowledge`).
     Legacy imports carry other type strings (canvas, patch, outliner, …); readers
     treat the column as an open vocabulary. Modeling a topic *as* a thread is
     deliberate, not leftover polymorphism: it gives topics thread ids, so the graph's
@@ -271,9 +271,9 @@ class ImportState(Base):
 
 
 # ── Knowledge layer (data plane) ─────────────────────────────────────────────
-# Topics are threads (``thread_type='topic'``). ThreadLink is the curated edge
+# Topics are threads (``thread_type='topic'``). ThreadLink is the topic-graph edge
 # set and TopicMessage the message→topic evidence. Both are **projections of the
-# curatorial event log** (``KgEvent`` / ``kg_events.jsonl``): a curation write
+# topic-graph event log** (``KgEvent`` / ``kg_events.jsonl``): a write
 # appends an event and folds it into these
 # tables (see :mod:`thread_archive._knowledge.materialize`). A legacy snapshot of the
 # tables may still exist as a reindex seed, which the event replay reconciles on top.
@@ -399,12 +399,12 @@ class MetricsCursor(Base):
 
 
 class KgEvent(Base):
-    """Append-only curatorial event — the event-sourced spine of the topic graph.
+    """Append-only topic-graph event — the event-sourced spine of the topic graph.
 
     Every topic/link/evidence mutation is recorded here *first* (durable truth:
     ``kg_events.jsonl``) and then folded into the ``thread_links`` / ``topic_messages``
     projections by :mod:`thread_archive._knowledge.materialize`. The log is the source
-    of truth for curation; the projection tables are rebuildable from it (replayed in
+    of truth for the topic graph; the projection tables are rebuildable from it (replayed in
     ``id`` order on reindex). This is what restores event-sourcing to the knowledge
     layer: an unlink/archive is a tombstone event, never a silent overwrite, so the
     full operation history — when a link was made, edited, removed, by whom — survives.
@@ -439,7 +439,7 @@ class KgEvent(Base):
         Index("idx_kg_events_occurred", "occurred_at"),
         Index("idx_kg_events_actor_thread", "actor_thread_id"),
         Index("idx_kg_events_correlation", "correlation_id", postgresql_where=text("(correlation_id IS NOT NULL)")),
-        # Persistent id high-water across DELETE — see the Thread note. Curation
+        # Persistent id high-water across DELETE — see the Thread note. Topic-graph
         # writes mint kg-event ids on insert; without this, a reindex that empties the
         # table would let the next write restart ids from 1 and collide with a
         # historical id.

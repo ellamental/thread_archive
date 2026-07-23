@@ -58,7 +58,7 @@ def open_archive(home: Optional[str] = None) -> ArchivePaths:
     os.environ[ENV_HOME] = str(paths.home)
     try:
         init_engine(target)  # rebuilds when the DSN changed
-        # Read-path convergence: long-lived processes (a curation MCP server, the web
+        # Read-path convergence: long-lived processes (an MCP server, the web
         # app) pass through here on every call, so a reindex's index.db swap is
         # picked up on the next call. Writers get the authoritative check on
         # ingest-lock *acquire* (see _truth.shared_ingest_lock) — this one runs
@@ -113,7 +113,7 @@ def search(
     """Federated search over conversation events (lexical FTS5 + optional semantic
     vectors → RRF fusion → weighted rank → optional cross-encoder re-rank).
     Returns enriched event-hit dicts. ``source`` restricts to threads of the named
-    provider(s); ``topic_id`` restricts to a curated topic's member conversations
+    provider(s); ``topic_id`` restricts to a topic's member conversations
     (a compatibility scope over existing KG records);
     ``agents`` controls agent-run threads (``thread_type='system'``): 'exclude'
     (default) / 'include' / 'only'; ``types`` restricts to the named

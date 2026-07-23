@@ -273,8 +273,8 @@ def test_hashes_cross_store_catches_unkeyed_payload_divergence(archive_home, tmp
 
 # ── the kg log on the daily tier ──────────────────────────────────────────────
 def test_shallow_verify_scans_kg_log(archive_home, tmp_path) -> None:
-    """A damaged curation-log line fails the daily verify, not just the weekly
-    deep pass — kg_events.jsonl is the curation history's only truth."""
+    """A damaged topic-graph line fails the daily verify, not just the weekly
+    deep pass — kg_events.jsonl is the topic graph's only truth."""
     import_cc_session(tmp_path)
     from .kg_seed import create_topic
 

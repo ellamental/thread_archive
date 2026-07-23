@@ -2,6 +2,53 @@
 
 ## Unreleased
 
+- Search's community-coherence re-rank now gates on embedding availability at the
+  call site: it runs only when the embed arm is live (`embed.is_available()`), so a
+  core lexical install — or `THREAD_ARCHIVE_EMBED=off` — skips it instead of kicking a
+  graph build that probes an `event_vectors` table that never exists (previously a
+  swallowed per-query exception — fail-soft, but noisy). The graph primitives stay
+  embed-agnostic for tests and direct callers; only the search path gates.
+
+- The eval lab gained two external benchmark instruments beside `beir_eval.py`:
+  `evals/cdr_eval.py` (NVIDIA ChatRAG's CDR, a shared-corpus conversational-retrieval
+  benchmark scored by nDCG@10) and `evals/haystack_eval.py` (`--dataset
+  locomo|longmemeval`, per-question haystack retrieval scored by recall@k against the
+  datasets' published baselines). The haystack harness caches each built+embedded
+  corpus home by content under `~/.cache/thread-evals/homes/`, so a re-run — or the
+  `--rerank` pass over an already-embedded `--vectors` corpus — reuses the embeddings
+  instead of rebuilding (`--rebuild` forces a fresh build, `--fresh` uses throwaway
+  homes). Measured numbers land in `docs/search-quality.md` (External calibration):
+  the full stack reaches LoCoMo recall@10 0.756, above DRAGON's 0.662 at every cutoff.
+
+- `evals/search_lab.py` gained a **gold mode** (`--gold` / `--cases FILE`): the experiment
+  bench now races every `experiments/` configuration against the shipped baseline over the
+  snapshot-bound gold files — not only the synthetic corpus — running the fused production
+  pipeline natively over the frozen snapshot's vectors and printing one leaderboard per file.
+  This closes the promotion loop: `search_lab.py --gold` produces the challenger-vs-baseline
+  ΔMRR on the graded pools the gold gate floors, which is what actually credits a ranking
+  change (the synthetic bench only points a direction; `retrieval_eval.py --cases` scores a
+  single production config, not a challenger). Snapshot home defaults to `~/.thread/archive-snap`
+  (`$THREAD_ARCHIVE_SNAP`), gold dir to `~/.thread/archive` (`$THREAD_ARCHIVE_GOLD_DIR`), reusing
+  the gold gate's file-discovery and snapshot-fingerprint skip so a moved corpus is never scored
+  against stale golds. Coherence stays off (as on the synthetic bench) so the delta is
+  deterministic; the synthetic default and its tier-0 tests are unchanged.
+
+- Gold mining is now a first-class product subsystem: `thread_archive mine` (package
+  `thread_archive._mine`), replacing the `evals/retrieval_mine_gold.py` and `evals/topic_mine_gold.py`
+  scripts (deleted). A `Miner` contract + registry backs three shapes — `thread_archive mine` lists
+  the miners, `thread_archive mine <miner> [args]` runs one, `thread_archive mine all [N]` sweeps the
+  ones a count alone can drive. The two existing miners ported unchanged in behavior (`query` →
+  `judged-cases.jsonl`, `topic` → `topic-cases-<slug>.jsonl`), and two new cheap rungs join the ladder:
+  `rerank` grades a retrieved pool with one judge pass (precision/ordering within what search
+  retrieved; blind to recall by construction, but reports a `none-of-pool` recall-failure rate) and
+  `querygen` generates difficulty-laddered queries for a random thread to test findability (recall,
+  corpus-representative → `findability-cases.jsonl`). The agent corpus seam moved to `python -m
+  thread_archive._mine tool search|read`, so mining runs from an installed wheel, not only a dev
+  checkout. Output still lands under `~/.thread/archive/` with `cases`-in-name basenames, so the
+  `retrieval-gold-gate` discovery and the baseline sweep pick up the new files automatically (ungated
+  until a floor is calibrated). `evals/retrieval_eval.py` (the scorer) and the experiment lab stay on
+  the bench.
+
 - Removed the cross-encoder net-lift figure ("~2 points of success@10") from the docs
   (`_retrieval/rerank.py`, `docs/search-quality.md`) — a log-mined/title-proxy number never
   re-established on the snapshot-bound gold files that are now the measurement of record, where a

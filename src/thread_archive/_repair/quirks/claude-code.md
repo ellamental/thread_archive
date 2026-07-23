@@ -13,8 +13,8 @@ for one may need a config `derive()` for the others).
   workflow directory also holds a `journal.jsonl` — a run ledger, NOT a
   transcript; it repeats per run and must never be imported under one id.
 - Sessions born under the archive home are typed as hidden `system` threads —
-  curation runs depend on this to keep their own transcripts out of the review
-  queue.
+  scheduled background jobs depend on this to keep their own transcripts out of
+  the work queue.
 
 ## Line kinds and precedence
 

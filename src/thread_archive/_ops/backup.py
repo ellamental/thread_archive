@@ -73,7 +73,7 @@ _BUNDLE_HOME_FILES = (
 
 def _is_append_only_truth(rel: Path) -> bool:
     """True for truth files that only ever grow in normal operation: the per-thread
-    files and the curatorial event log. The cross-thread overlay snapshots and
+    files and the topic-graph event log. The cross-thread overlay snapshots and
     ``import_state.jsonl`` are full rewrites and may legitimately shrink."""
     return (
         rel.parts[:1] == ("threads",) or rel.name == "kg_events.jsonl"

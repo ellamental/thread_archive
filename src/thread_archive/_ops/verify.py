@@ -30,7 +30,7 @@ def verify(
     The index is compared against ``events_effective`` — the truth's line count
     after collapsing superseded lines (re-appended ids, same-content twins), which
     is exactly what a reindex materializes; the raw line count and the superseded
-    remainder are reported alongside. The curatorial log gets the same daily
+    remainder are reported alongside. The topic-graph event log gets the same daily
     treatment: ``kg_events.jsonl`` is parse-scanned and its distinct-id count
     compared to the ``kg_events`` table below a kg watermark. ``ok`` is True only
     when the effective counts align (events, threads, and kg events), nothing
@@ -790,9 +790,9 @@ def _verify_deep(watermark: int) -> dict:
 
     The knowledge layer gets the same treatment as events: the kg log and table
     are id-diffed below a kg watermark captured before any file is read (so a
-    live curation write can't false-alarm), and ids on both sides are
+    live topic-graph write can't false-alarm), and ids on both sides are
     content-compared (``kg.content_mismatch``) — the log is small enough to
-    fingerprint whole, and it is the curation history's only truth.
+    fingerprint whole, and it is the topic graph's only truth.
     """
     import json as _json
 
@@ -811,7 +811,7 @@ def _verify_deep(watermark: int) -> dict:
     threads_dir = d / THREADS_SUBDIR
 
     # The kg watermark, captured before any file is read: the kg id-diff below
-    # is otherwise unbounded, and a curation write landing mid-scan (its truth
+    # is otherwise unbounded, and a topic-graph write landing mid-scan (its truth
     # line is durable before its commit, but this pass may read the file first)
     # would false-alarm ``kg_index_only`` against a perfectly healthy archive.
     with get_session() as s0:
@@ -899,7 +899,7 @@ def _verify_deep(watermark: int) -> dict:
                     break
 
         # Knowledge layer: the kg truth log vs its table, by id — both sides
-        # bounded by the kg watermark captured up front, so a live curation
+        # bounded by the kg watermark captured up front, so a live topic-graph
         # write can't false-alarm — plus content parity for ids on both sides
         # (the kg analogue of the events cross-store check; the log is small
         # enough to compare whole).

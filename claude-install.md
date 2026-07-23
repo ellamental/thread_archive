@@ -53,7 +53,7 @@ once** (the decision point): lexical-only, or also embeddings?
 
 The base install includes the corpus-graph ranking stack (`leidenalg` +
 `python-igraph` + `networkx` — the coherence search signal needs no
-curation).
+topic graph).
 
 ## 2. Verify the install
 

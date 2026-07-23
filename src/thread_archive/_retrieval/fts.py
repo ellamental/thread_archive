@@ -590,7 +590,7 @@ THREAD_META_CONTENT_TYPES = ("title", "summary")
 
 def _thread_meta_desired(s: Session, thread_ids: Optional[list[str]]) -> dict[tuple[str, str], str]:
     """The meta docs that *should* exist: ``(thread_id, content_type) → content``.
-    Conversations only (topics read through their curated pages, not meta docs), search-
+    Conversations only (topics read through their pages, not meta docs), search-
     excluded threads omitted, empty title/summary omitted."""
     where = "t.thread_type = 'conversation' AND NOT t.exclude_from_search"
     params: dict = {}

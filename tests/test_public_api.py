@@ -50,6 +50,7 @@ CLI_VERBS = {
     "migrate",
     "status",
     "eval",
+    "mine",
     "backup",
     "verify",
     "restore-drill",

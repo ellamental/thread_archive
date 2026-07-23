@@ -418,13 +418,13 @@ def unstage_thread(session: Session, thread_id: str) -> None:
 
 
 def append_kg_event(session: Session, kg_event: object) -> None:
-    """Stage a curatorial event for the append-only ``kg_events.jsonl`` truth log.
+    """Stage a topic-graph event for the append-only ``kg_events.jsonl`` truth log.
 
     The knowledge-layer write seam (mirrors :func:`append_event_row` for the
-    conversation log): a curation write flushes the ``KgEvent`` (so ``id`` /
+    conversation log): a topic-graph write flushes the ``KgEvent`` (so ``id`` /
     ``recorded_at`` are populated), stages it here, and the row is appended to the
     single ``kg_events.jsonl`` file before the COMMIT it belongs to — keeping the
-    JSONL ⊇ SQLite invariant for curation. ``thread_id`` is irrelevant for the
+    JSONL ⊇ SQLite invariant for the topic graph. ``thread_id`` is irrelevant for the
     cross-thread log (it routes to one file, not a per-thread file), so pass ``"0"``."""
     _stage(session, "kg_event", "0", _row_dict(kg_event))
 

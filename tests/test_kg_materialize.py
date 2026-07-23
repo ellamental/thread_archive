@@ -1,7 +1,7 @@
 """The knowledge materializer's fold, tested directly at ``apply_event``.
 
-thread-librarian's test_kg_write.py proves the fold end-to-end through the
-curatorial write layer; these tests pin :func:`thread_archive._knowledge.materialize.apply_event` itself —
+The external write package's own tests prove the fold end-to-end through the
+write layer; these tests pin :func:`thread_archive._knowledge.materialize.apply_event` itself —
 the exact function both the live write and the reindex replay call — against a tmp
 store, using transient event objects shaped like replayed log rows:
 

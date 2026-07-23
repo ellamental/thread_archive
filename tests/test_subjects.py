@@ -1,4 +1,4 @@
-"""The relevant-subjects lens — curated topics as orientation over a result set.
+"""The relevant-subjects lens — topics as orientation over a result set.
 
 The lens names the subjects a search's hits cluster under, so it annotates results
 without touching their order. The load-bearing properties: coverage across the
@@ -105,7 +105,7 @@ def test_lens_is_fail_soft(archive_home) -> None:
 
 def test_subjects_line_carries_topic_ids() -> None:
     """Each subject shows its ``[topic <id>]`` — the lens is followable, not just
-    legible: the id opens the curated page via ``thread_read(topic_id)``."""
+    legible: the id opens the topic page via ``thread_read(topic_id)``."""
     line = _subjects.format_subjects_line([(7, "auth flow", 3), (9, "backups", 2)])
     assert line == "  subjects: auth flow [topic 7] (3) · backups [topic 9] (2)"
 

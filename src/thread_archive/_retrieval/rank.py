@@ -37,7 +37,7 @@ from .params import SearchParams
 
 # Per-content-type relevance multiplier — user messages are the most intentional,
 # tool/thinking the noisiest. A title is aboutness itself, so it ranks with user
-# text. A stored summary is *derived* — a keyword-dense curated digest whose
+# text. A stored summary is *derived* — a keyword-dense digest whose
 # short length already wins the density term, so an at-parity multiplier lets
 # summaries crowd verbatim evidence out of the top ranks and puts generated prose
 # above the record it summarizes. The discount keeps summaries findable (they are
@@ -204,7 +204,7 @@ def head_is_strong(hits: list[EventHit], terms: list[str]) -> bool:
     return term_hit_count(text, terms) >= strong_match_floor(len(terms))
 
 
-# Curated aboutness docs: a title/summary the query matches names what the thread
+# Aboutness docs: a title/summary the query matches names what the thread
 # *is*, the trustworthy-order case the strong-head stand-down was measured on.
 ABOUTNESS_CONTENT_TYPES = frozenset({"title", "summary"})
 
@@ -213,7 +213,7 @@ def head_is_query_echo(hits: list[EventHit], terms: list[str]) -> bool:
     """Whether the strong ranked head is a *message* that echoes the whole query
     verbatim as one contiguous phrase — a pasted prompt, a quoted ticket, a
     restated-but-unanswered question. Such a head is as plausibly the question as
-    the answer, so (unlike a curated title/summary the query matches) it does not
+    the answer, so (unlike a title/summary the query matches) it does not
     by itself make the lexical order trustworthy: the cross-encoder is let run to
     look for a differently-worded answer below it, but its verdict is trusted only
     when it actually rescues one (see :func:`thread_archive._retrieval.search`)."""

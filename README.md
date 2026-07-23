@@ -11,7 +11,7 @@
 
 > *"what did we decide about the auth flow in March?"*
 
-Your agent calls `thread_search`, the right conversation comes back, and `thread_read` replays the decision with everything around it. No workflow to adopt, no notes you were supposed to be taking — the memory was being written all along.
+Your agent calls `thread_search`, the right conversation comes back, and `thread_read` replays the decision with everything around it. No workflow to adopt, no notes you were supposed to be taking — the record was being written all along.
 
 **Searchable by you — and by your AI.**
 - Full-text and semantic search with reranking, filterable by time, source, tool, and content type; an empty query browses recent activity.
@@ -25,8 +25,6 @@ Your agent calls `thread_search`, the right conversation comes back, and `thread
 - Built-in backup, integrity verification, and restore drills: recovers from corruption or an errant delete, and the nightly pipeline checks that the backup actually restores. The archive is ordinary files on disk — whatever backs up the rest of your data covers it the same way.
 
 **Fixes itself where it broke.** A provider's transcript format drifts on the provider's schedule, not a maintainer's. Archive makes that drift loud and locally repairable: drift ledgers and a nightly coverage check catch the degradation, the raw source files are quarantined before the provider prunes them, the in-session search notice names the remedy, and `thread_archive fix-import <provider>` scaffolds an override patch — module, tests, evidence, real samples, and the repair protocol — so the fix gets written on the machine that has the samples, by you or by an agent you hand the scaffold to. The patch goes live only when its scaffolded test suite passes in a fresh subprocess, then re-import recovers everything consumed during the gap. The supported provider's worst case is *preserved but partially modeled until fixed* — and the fix doesn't wait on a release.
-
-**A memory an agent can organize.** The archive carries the *data plane* of an event-sourced topic graph a curating agent can build over it — creating topics, pinning key quotes, linking related threads, tending the hierarchy. Every curation act lands in the archive's truth log, so you can always see who connected what, and why. The curating agent itself is external — anything that writes `KgEvent`s through the truth log; without one the graph simply stays empty, and nothing else depends on it.
 
 **No hosted backend. No cloud. No subscription to lose your history to.** A background watcher keeps it current; every process — the MCP server, the web viewer, the daemons — runs locally, on your machine.
 
@@ -54,7 +52,7 @@ load-bearing — the `.mcp.json` wiring, the watcher/backup service units, and
 self-update all bake this clone's absolute path, so relocating it later means
 re-running the wiring (and `thread_archive daemon restart`), not a plain `mv`.
 Pick where it lives before you start. Clone it, open it in Claude Code, and let
-the agent install its own memory:
+the agent install its own archive:
 
 ```bash
 git clone https://github.com/ellamental/thread_archive.git thread-archive && cd thread-archive
@@ -261,11 +259,11 @@ The scope is deliberately narrow. These are design decisions, not gaps waiting
 on a release:
 
 - **More than one machine — and merging archives.** An archive belongs to one
-  machine. Thread and event ids are locally minted and live *inside* the
-  truth layer: they are the JSONL filenames, they sit in every record, in the
-  append-only curatorial log, and in the inline `[e12345]` citations stored
-  summaries carry. Two archives grown independently therefore occupy the same
-  id space with nothing to tell them apart, and cannot be combined. There is no
+  machine. Event ids (and legacy integer thread aliases) are locally minted
+  integers wired through the truth layer — the append-only event log,
+  causality links, redaction records. Two archives grown independently
+  therefore occupy the same id space with nothing to tell them apart, and
+  cannot be combined. There is no
   merge tool, no sync, and no federated search across archives. *Moving* an
   archive to another machine is supported — carry the directory, or
   `thread_archive restore <mirror> --to <home>`; running two and reconciling them
@@ -371,12 +369,6 @@ wins; ids that were never imported are skipped, not fatal.
   pinned as a permanent regression test on a synthetic corpus: a false "not
   found" against a high-confidence memory is the one failure class the suite
   guards hardest.
-- **Curatable** — an event-sourced topic graph (see below),
-  built by a curating agent, which also stores each conversation's
-  search-first summary: a few dense sentences indexed into the default search scope
-  and embedded for the semantic arm, plus a structured `indexed_summary`
-  (event-anchored markdown) for long threads, served by
-  `thread_read summary='short'|'indexed'`.
 
 ## MCP
 
@@ -384,7 +376,7 @@ One server, two explicit process modes. **`thread-archive`** (`archive-mcp`)
 serves the read-only `thread_search` / `thread_read` tools. The process is also
 read-only by default. Setting `THREAD_ARCHIVE_MCP_INGEST=1` opts it into local
 lazy catch-up ingest, throttled and cross-process-safe via the ingest-owner
-lock. Curation writes deliberately have no MCP surface in this package. Client
+lock. This server exposes no write surface. Client
 config with catch-up enabled:
 
 ```json
@@ -404,43 +396,6 @@ config with catch-up enabled:
 The shared HTTP server daemon is read-only by default too. Install it with
 `thread_archive daemon install --mcp --mcp-ingest` only when it should own catch-up;
 leave the flag off when the watcher already owns ingestion.
-
-## Knowledge layer (the topic graph)
-
-There are exactly two kinds of thread: imported **conversations** and curated **topics**
-(`thread_type='topic'`). A topic is modeled as a thread on purpose — so the graph's edges
-(`thread_links`) and message→topic citations (`topic_messages`) reference one id space.
-The archive keeps the **data plane** and its reads: the event log, its fold, the SQL
-topic reads (`_knowledge/`), and the relevant-subjects search lens (a pure projection
-over topic citations). Graph analytics over the curated graph — PageRank, communities,
-bridges, peers — are an external curator's business; the archive's base install carries
-the shared community spine (Leiden) and its own corpus-native embedding graph, the
-ranking signal that needs no curation.
-
-Curated records read everywhere they matter: `thread_read` on a topic id
-renders the topic's curated page (description, links, cited quotes — each quote anchored
-to open via `around_event`), `thread_search(topic_id=…)` scopes a search to the
-topic's member conversations, and whenever curated topics exist, search headers
-name the subjects a result set clusters under.
-
-Curation is **event-sourced**. Every graph write (`create_topic`, `link_threads`,
-`add_topic_evidence`, `merge_topics`, …) appends a `KgEvent` to an
-append-only `truth/kg_events.jsonl` and folds it into the SQLite projection in one
-transaction. The log is the source of truth for curation; `thread_links` / `topic_messages`
-are rebuildable from it — `reindex` replays the log (idempotent upsert + tombstone) to
-reconstruct them, so an unlink/merge/archive is recorded history, never silent loss.
-
-A curating agent works a **review queue** — event-bearing conversations still
-missing either half of the per-thread output, held back while a thread is still
-ingesting. Per thread the curator writes
-**~3+ topic citations** and a **stored summary**: a short,
-dense `summary` that immediately becomes a thread-meta search doc (the default search
-scope is user + title + summary, and the embed cohost picks it up for the semantic
-arm), plus an event-anchored `indexed_summary` for long threads. A conversation is
-done once it has both a citation/link and a summary. Summaries are deliberately *not*
-kg events: they're thread metadata like the title, made durable by the thread's own
-latest-wins truth record, which keeps redaction's thread-meta scrub the single place
-summary content ever needs erasing.
 
 ## Similar and related projects
 

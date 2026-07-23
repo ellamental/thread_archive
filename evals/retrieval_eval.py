@@ -2,7 +2,7 @@
 
 Three case protocols, one scoring loop:
 
-``--auto-titles N`` is a zero-curation proxy: sample N titled conversation
+``--auto-titles N`` is a zero-label proxy: sample N titled conversation
 threads, use each *title* as the query, and score whether the thread's own
 content ranks. Thread-meta docs (title/summary) are excluded from the searched
 scope so the eval never matches the query against itself. Cheap and stable, but
@@ -14,7 +14,7 @@ holds every ``thread_search`` call agents have made (the query) and the
 ``thread_read`` calls that followed in the same session (the click). Each
 search paired with its subsequent reads is a relevance judgment made by the
 searcher at the moment of searching — real query vocabulary, multi-gold, no
-curation. Pairing rules: a read labels the most recent prior search in its
+labels. Pairing rules: a read labels the most recent prior search in its
 session; reads of threads the agent had already opened before searching don't
 count (it knew them without the search); the originating session is skipped
 during ranking (it quotes the query verbatim). Read refs in the trail come in
@@ -35,8 +35,8 @@ not regression; no number from this protocol certifies improvement.
 ``--cases FILE`` evaluates a JSONL file of ``{"query": ..., "gold": [ids]}``
 rows (optional ``"grades"``: a ``thread id -> 0|1|2`` candidate pool nDCG
 scores against — grade the whole pool, not one golden result; optional
-``"sessions"``: thread ids to skip while ranking) — the hook for hand-curated
-or generated query sets. Mined and curated case files contain real usage; keep
+``"sessions"``: thread ids to skip while ranking) — the hook for hand-labeled
+or generated query sets. Mined and labeled case files contain real usage; keep
 them out of the repo.
 
 ``--behavior`` runs no ranking at all: it reports zero-label behavioral
@@ -68,6 +68,9 @@ against a corpus that has changed under them (re-mine after a new snapshot):
 
     export THREAD_ARCHIVE_HOME=~/.thread/archive-snap
     .venv/bin/python evals/retrieval_eval.py --cases ~/.thread/archive/judged-cases.jsonl
+
+The cases are minted by the ``thread_archive mine`` miners (package
+``thread_archive._mine``) — run ``thread_archive mine`` to list them.
 """
 
 from __future__ import annotations
@@ -85,9 +88,9 @@ from thread_archive import _api as api  # noqa: E402
 
 # The scoring engine lives in the package so the shipped `thread_archive eval` command
 # and this dev bench score off one code path. Re-exported at module scope
-# because the sibling harnesses (retrieval_mine_gold, topic_mine_gold,
-# graph_eval) and tests/test_retrieval_eval.py load this file by
-# path and reach these names as attributes on it.
+# because the sibling harnesses (graph_eval) and tests that load this file by
+# path reach these names as attributes on it. The scoring engine itself lives in
+# thread_archive._eval, which the mining package imports directly.
 from thread_archive._eval import (  # noqa: E402,F401
     EXCLUDE_META,
     RECALL_KS,
@@ -161,7 +164,7 @@ def _require_matching_snapshot(cases: list[dict], cases_path) -> None:
         raise SystemExit(
             f"{cases_path} was mined against snapshot(s) {stale}, but the current "
             f"snapshot is {current} — the corpus has changed and these golds are "
-            f"stale. Re-mine against this snapshot with retrieval_mine_gold.py."
+            f"stale. Re-mine against this snapshot with `thread_archive mine`."
         )
 
 

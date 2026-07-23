@@ -6,7 +6,7 @@ A single archive lives under one *home* directory:
       truth/              # the durable JSONL truth (the backup)
         manifest.json     # shard depth + checkpoint watermark
         threads/          # one file per thread: <id>.jsonl (metadata record + events)
-        kg_events.jsonl   # append-only curatorial log (topics / links / citations)
+        kg_events.jsonl   # append-only topic-graph event log (topics / links / citations)
         thread_links.jsonl    # cross-thread overlay (topic-graph edges, folded from kg_events)
         topic_messages.jsonl  # cross-thread overlay (topic evidence, folded from kg_events)
       index.db            # SQLite projection, rebuildable from truth/ via `thread_archive reindex`

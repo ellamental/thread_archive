@@ -1,12 +1,12 @@
-"""The knowledge-graph read API — getting curated topics *back out*.
+"""The knowledge-graph read API — getting topics *back out*.
 
-The write layer (a separate curation package's) accumulates topics, links,
+The write layer (a separate package's) accumulates topics, links,
 and citations; this module
 is the library surface that reads them back: one topic with everything attached
 (:func:`topic_get`), its citations with quotes (:func:`topic_members`), and the set of
 conversation threads a topic covers (:func:`topic_thread_ids`) — the resolver behind
 search's ``topic_id`` scope. Shared by the retrieval layer and any external
-curation tools so every surface renders the same graph.
+write tools so every surface renders the same graph.
 
 Archived citations and links are tombstones (``archived_at`` set) and are excluded
 everywhere here; an archived *topic* still reads (a merged-away topic stays referenced
@@ -23,7 +23,7 @@ from sqlalchemy.orm import Session
 from .._store import Thread, ThreadLink, TopicMessage, use_session
 
 # The hierarchy vocabulary: the two link types the topic tree is built from.
-# Data-plane constants — external curation tools share them from here.
+# Data-plane constants — external write tools share them from here.
 HIERARCHY_UP = "part-of"
 HIERARCHY_DOWN = "contains"
 
@@ -38,7 +38,7 @@ def _require_topic(session: Session, topic_id: str) -> Thread:
 def topic_get(topic_id: str, *, session: Optional[Session] = None) -> dict:
     """One topic with everything attached: metadata, links (both directions),
     citation count, and member threads. ``graph`` and ``peers`` are analytics
-    slots the data plane itself never fills — an external curation layer may
+    slots the data plane itself never fills — an external write layer may
     enrich the dict after calling; here they are always ``None`` / ``[]``.
 
     Raises ``ValueError`` when the id isn't a topic (conversations have

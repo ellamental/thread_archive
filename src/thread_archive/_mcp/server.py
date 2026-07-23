@@ -301,7 +301,7 @@ def thread_search(
 
     Query grammar: natural language, "quoted phrases", boolean AND/OR/NOT,
     pipe-OR (a|b), and code identifiers (get_session, a.b.c). Filter by
-    ``thread_id`` or ``topic_id`` (a curated topic's member conversations) —
+    ``thread_id`` or ``topic_id`` (a topic's member conversations) —
     both accept a ULID thread id, a legacy integer alias, or a provider session
     id, the same ref shapes ``thread_read`` takes —
     ``content_type`` (default user+title+summary; 'all' searches
@@ -474,9 +474,8 @@ def thread_read(
     first.
 
     A **topic id** (from a topic link in an old conversation) reads as the
-    topic's curated page instead of a transcript — a render of existing
-    knowledge-graph records; writing the curated graph is an external
-    curator's job, not this server's.
+    topic's page instead of a transcript — a render of existing
+    topic-graph records; this server only reads them.
 
     ``mode`` picks the view: 'user' (default) = only the USER messages — the real
     signal of what a thread was about and what was wanted, far cheaper than the
@@ -511,7 +510,7 @@ def thread_read(
     summary view instead of the transcript: ``true``/``'toc'`` = a compact per-message
     TOC; ``'short'`` = the thread's stored short summary (a few sentences);
     ``'indexed'`` = the stored indexed summary (structured, with event anchors) —
-    the stored kinds exist only where a curator has covered the thread.
+    the stored kinds exist only where a thread has one.
     ``user_only`` is a back-compat alias for ``mode`` (true→user, false→full);
     prefer ``mode``, which wins if both are set.
 

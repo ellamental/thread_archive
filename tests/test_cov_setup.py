@@ -941,7 +941,7 @@ def test_machine_installs_the_real_agents(tmp_path, monkeypatch, stub_bin) -> No
 
 
 def _seed_threads(tmp_path, conversations: int = 0, topics: int = 0) -> None:
-    """Real rows in the real index: imported conversations plus curated topics."""
+    """Real rows in the real index: imported conversations plus topics."""
     from tests.helpers import import_cc_session
 
     for i in range(conversations):
