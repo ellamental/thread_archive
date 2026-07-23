@@ -14,7 +14,6 @@ import pytest
 
 from thread_archive._mine import topic_mined as topic_mine
 
-
 # ── parse_survey ─────────────────────────────────────────────────────────────
 
 def test_parse_survey_keeps_angles_facets_and_candidates():

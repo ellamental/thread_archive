@@ -462,6 +462,51 @@ def test_substring_like_pass_only_runs_on_pool_shortfall(archive_home) -> None:
     assert "megaget_sessionizer" not in (hits[0]["full_content"] or "")
 
 
+def test_duplicate_flood_rescan_surfaces_a_buried_distinct_hit(archive_home) -> None:
+    """A MATCH pass flooded with byte-identical copies of one message can bury the
+    distinct answer below the pool cut. The rescan folds the flood to one
+    representative per ``(thread, content)`` and merges the survivors, so the
+    buried hit stays reachable — bounded, best-effort (see ``fts._rescan_distinct``)."""
+    from datetime import datetime, timezone
+
+    from thread_archive._retrieval import index_events, search_events
+    from thread_archive._store import Event, Thread, get_session
+
+    init_db()
+    with get_session() as s:
+        flood = Thread(name="conv:flood", title="flood", thread_type="conversation",
+                       source="cc", source_id="flood")
+        s.add(flood)
+        s.flush()
+        # Many copies of one high-term-frequency message: every one out-ranks the
+        # longer, single-mention buried doc, so the top of the pool is all flood.
+        events = [
+            Event(thread_id=flood.id, stream_id="f", event_type="user_message_sent",
+                  payload={"content": "zebra zebra zebra zebra"},
+                  occurred_at=datetime(2026, 1, 1, 10, i, tzinfo=timezone.utc))
+            for i in range(6)
+        ]
+        buried = Thread(name="conv:buried", title="buried", thread_type="conversation",
+                        source="cc", source_id="buried")
+        s.add(buried)
+        s.flush()
+        events.append(Event(
+            thread_id=buried.id, stream_id="b", event_type="user_message_sent",
+            payload={"content": "zebra distinctive marmoset sentinel phrase"},
+            occurred_at=datetime(2026, 1, 1, 9, 0, tzinfo=timezone.utc)))
+        for e in events:
+            s.add(e)
+        s.flush()
+        index_events(s, events)
+        s.commit()
+
+    # Cut at 4: the pool fills with flood copies (distinct·2 < len(hits)), so the
+    # rescan runs and the buried 'marmoset' hit — below every copy — is folded back
+    # in. Without it the top 4 would be flood copies alone.
+    hits = search_events("zebra", limit=4)
+    assert any("marmoset" in (h["full_content"] or "") for h in hits)
+
+
 def _seed_agent_thread(archive_home):
     """A third thread retyped 'system' — an agent-run (subagent/machinery) session
     that echoes the corpus vocabulary, the way a spawned swarm echoes its prompt."""

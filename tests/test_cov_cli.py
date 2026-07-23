@@ -9,17 +9,18 @@ seeded archive. This file covers the branches a real run cannot reach, two ways:
 * the verbs whose boundary is the operating system — the ``daemon`` LaunchAgent
   lifecycle and the watcher's long-running loop — which run for real against a
   redirected ``$HOME``: ``$PATH`` is pinned to a directory holding only the
-  ``launchctl`` stand-in the test wrote, and the loop is stopped by a real
-  ``SIGINT`` once it is observably running.
+  ``launchctl`` stand-in the test wrote, and the loop is stopped by a
+  ``KeyboardInterrupt`` — the operator's ^C — injected once it is observably
+  running.
 """
 
 from __future__ import annotations
 
 import argparse
+import ctypes
 import json
 import os
 import plistlib
-import signal
 import socket
 import sqlite3
 import subprocess
@@ -153,18 +154,43 @@ def _loop_is_running(archive_home) -> Callable[[], bool]:
     return running
 
 
-def _interrupt_once(ready: Callable[[], bool], *, timeout: float = 30.0) -> threading.Thread:
-    """Send this process a real ``SIGINT`` — the operator's ^C — once ``ready()``
-    holds. Python delivers it to the main thread, so the CLI's own
-    ``KeyboardInterrupt`` handler runs the real shutdown.
+def _raise_in_thread(thread_id: int, exc: type[BaseException]) -> None:
+    """Asynchronously raise ``exc`` in the thread with ``thread_id`` — the
+    operator's ^C landing in the blocked verb.
 
-    The SIGINT is unconditional: it fires when ``ready()`` holds, when the
+    Injecting the exception, rather than sending a process ``SIGINT``, is what
+    makes this work under ``pytest-xdist``: an xdist worker does not deliver a
+    ``SIGINT`` as a ``KeyboardInterrupt`` to the running test, so a signal-based
+    interrupt hangs the watch loop until the timeout there while passing serially.
+    ``PyThreadState_SetAsyncExc`` is signal-disposition-independent and delivers
+    exactly the ``KeyboardInterrupt`` the loop's own bytecode sees from a real ^C.
+
+    The exception is pending until the target next runs Python bytecode; the loop
+    wakes out of its short ``time.sleep`` slice within one slice and raises there."""
+    n = ctypes.pythonapi.PyThreadState_SetAsyncExc(
+        ctypes.c_ulong(thread_id), ctypes.py_object(exc)
+    )
+    if n != 1:  # 0 = the thread is already gone; >1 = the id matched too broadly
+        if n > 1:  # undo the over-broad set rather than corrupt an unrelated thread
+            ctypes.pythonapi.PyThreadState_SetAsyncExc(ctypes.c_ulong(thread_id), None)
+        raise RuntimeError(f"could not deliver interrupt to thread {thread_id} (n={n})")
+
+
+def _interrupt_once(ready: Callable[[], bool], *, timeout: float = 30.0) -> threading.Thread:
+    """Raise ``KeyboardInterrupt`` in the caller's thread — the operator's ^C —
+    once ``ready()`` holds, so the CLI's own ``KeyboardInterrupt`` handler runs
+    the real shutdown. The exception is injected into the *calling* thread (the
+    one about to block in the verb under test); see :func:`_raise_in_thread` for
+    why a process ``SIGINT`` won't do under xdist.
+
+    The interrupt is unconditional: it fires when ``ready()`` holds, when the
     deadline lapses, and — via the ``finally`` — even if ``ready()`` raises.
-    The caller's main thread is *blocked* in the verb under test; a poll thread
-    that dies without shooting leaves it blocked forever (a raising predicate,
+    The caller's thread is *blocked* in the verb under test; a poll thread
+    that dies without firing leaves it blocked forever (a raising predicate,
     e.g. a probe hitting a not-yet-listening socket, once hung whole CI sweeps).
     A predicate that raises therefore counts as "not ready yet" and is retried
     until the deadline."""
+    target = threading.get_ident()
 
     def wait_then_interrupt() -> None:
         deadline = time.monotonic() + timeout
@@ -177,7 +203,7 @@ def _interrupt_once(ready: Callable[[], bool], *, timeout: float = 30.0) -> thre
                     pass
                 time.sleep(0.02)
         finally:
-            os.kill(os.getpid(), signal.SIGINT)
+            _raise_in_thread(target, KeyboardInterrupt)
 
     t = threading.Thread(target=wait_then_interrupt, name="watch-interrupt", daemon=True)
     t.start()

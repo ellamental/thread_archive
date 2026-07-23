@@ -19,14 +19,15 @@ from thread_archive._mine import (
     _agent,
     _cli,
     _corpus,
-    _framework as fw,
     query_mined,
     querygen,
     rerank_judged,
     topic_mined,
 )
+from thread_archive._mine import (
+    _framework as fw,
+)
 from thread_archive._mine._agent import run_claude
-
 
 # ── seeding helpers ──────────────────────────────────────────────────────────
 
@@ -339,7 +340,7 @@ def test_querygen_miner_run_generates_cases(archive_home, tmp_path):
     result = querygen.MINER.run(ctx)
 
     assert result.written == 2
-    rows = [json.loads(l) for l in out.read_text().splitlines()]
+    rows = [json.loads(line) for line in out.read_text().splitlines()]
     assert all(r["gold"] == [tid] for r in rows)
     assert {r["difficulty"] for r in rows} == {"verbatim", "vague"}
     # denominator for the ledger, and provenance on every generated case

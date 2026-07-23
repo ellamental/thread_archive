@@ -30,8 +30,8 @@ Fastest tier first — climb until the evidence matches the stakes.
 |---|---|---|---|---|
 | 0 | `tests/test_search_quality.py` (in every pytest run) | checked-in synthetic corpus (`tests/quality_corpus.py`), lexical stack | seconds | every change |
 | 1 | `pytest -m quality_models` | same corpus, real embedding + rerank models | minutes | touching the model arms |
-| 2 | CI `retrieval-gate` (arm-liveness probes) + `retrieval-gold-gate` (gold-file regression floors) | live archive + the golds' frozen snapshot | ~a minute | every commit, via thread-ci |
-| 3 | `retrieval_eval.py` by hand, `graph_eval.py`, `--behavior` | live archive | minutes | evaluating a deliberate ranking change |
+| 2 | CI `retrieval-gate` (arm-liveness probes) | live archive | seconds | every commit, via thread-ci |
+| 3 | `retrieval_gold_gate.py` (grounded regression floors), `retrieval_eval.py` by hand, `graph_eval.py`, `--behavior` | live archive + the golds' frozen snapshot | minutes | evaluating a deliberate ranking change |
 | 3½ | `retrieval_eval.py --cases` on agent-mined golds (`thread_archive mine <miner>` to mint them) | a frozen corpus snapshot, corpus-grounded labels | seconds to score; agent-minutes per mined case | scoring against grounded labels; mining is an occasional cadence |
 | 4 | `pytest -m beir`; `cdr_eval.py`, `haystack_eval.py --dataset …` by hand | external IR / conversational-memory benchmarks | tens of minutes (built homes cache for re-runs) | calibrating against published baselines |
 
@@ -250,16 +250,16 @@ the re-rank budget.
   is as a **sampling frame**: real query shapes to seed the gold miner with,
   not a labeler.
 
-**Claim discipline.** Green tier 0 plus a quiet CI gate license exactly one
-claim: "search didn't break." The `retrieval-gold-gate` CI row makes that "didn't
-break" grounded rather than synthetic — it scores the gold files over their
-frozen snapshot on every commit and fails on a drop below a calibrated floor
-(`scripts/retrieval_gold_gate.py`) — but it is a **one-way floor, not a displayed
-score**: it holding means the ranking didn't regress past the baseline, never
-that it improved. The click-label protocols stay off the per-commit path for the
-opposite reason (they are censored by the incumbent, so a per-commit click-MRR
-invites being misread as quality); the gold files can ride CI precisely because
-they are grounded and gated as a floor. The claim "search improved" still
+**Claim discipline.** Green tier 0 licenses exactly one claim, synthetically:
+"search didn't break." Running `scripts/retrieval_gold_gate.py` on a ranking
+change makes that "didn't break" grounded rather than synthetic — it scores the
+gold files over their frozen snapshot and fails on a drop below a calibrated floor
+— but it is a **one-way floor, not a displayed score**: it holding means the
+ranking didn't regress past the baseline, never that it improved. It stays a
+deliberate floor rather than a per-commit number for the same reason the
+click-label protocols never run automatically: they are censored by the incumbent,
+so a per-commit click-MRR invites being misread as quality; scored as a one-way
+floor on a deliberate change, the grounded golds answer only "did it regress." The claim "search improved" still
 requires a gold-file delta scored on both sides of the change — every minted
 file, each over its own snapshot. Without those runs, report the change as
 unverified — not as an improvement.
@@ -313,9 +313,9 @@ that already worked, not a win — and it will not survive a hold-out.
   `test_beir_calibration.py`, `test_retrieval_gold_gate.py`) and run in every
   pytest pass — the lab stays runnable even when nobody has tuned search in
   months.
-- The `retrieval-gold-gate` CI row (`scripts/retrieval_gold_gate.py`) scores the
-  gold files over their snapshot on every commit as a regression floor. It runs
-  where the archive and the snapshot live (same as the arm-probe row); on a box
+- The gold gate (`scripts/retrieval_gold_gate.py`) scores the gold files over
+  their snapshot as a deliberate regression floor, run on a ranking change. It
+  runs where the archive and the snapshot live; on a box
   without the snapshot, or while a gold file is mid-re-mine, the affected file is
   skipped, not failed. Its floors are calibrated a few points under measured —
   raise a floor when a shipped change lifts a number and holds; add a floor entry

@@ -1,179 +1,260 @@
 # Measuring search quality
 
 How thread-archive measures its own retrieval, what the numbers say, and what
-they can and cannot certify. The instruments themselves live in `evals/`
-(`evals/README.md` is the working manual); the shipped operator command is
-`thread_archive eval` — a read-only self-checkup over your own archive.
+they can and cannot certify. The instruments live in `evals/` (`evals/README.md`
+is the working manual — the how; this is the numbers). The shipped operator
+command is `thread_archive eval` — a read-only self-checkup over your own archive
+that ships to every install.
 
-A caution before any number: the headline metrics below score **single
-searches in isolation**, because that is what the click protocol can label. It
-is not how agents use the tool. In practice an agent fires several searches —
-often in parallel, reformulating, browsing, then reading around a hit — and
-the session-level question ("did the agent get to the right conversation?")
-succeeds far more often than any one query's success@10 suggests. The
-single-shot numbers are the *tunable* signal, not the product experience.
+A caution before any number: the metrics below score **single searches in
+isolation**, because that is what a case protocol can label. It is not how agents
+use the tool. In practice an agent fires several searches — often in parallel,
+reformulating, browsing, then reading around a hit — and the session-level
+question ("did the agent get to the right conversation?") succeeds far more often
+than any one query's success@10 suggests. The single-shot numbers are the
+*tunable* signal, not the product experience.
 
-## Measured against real usage, not a synthetic benchmark
+## The measurement of record: the mined gold files
 
-Every `thread_search` an agent runs is itself archived, along with the
-`thread_read` that followed — so the archive holds a click-labeled query log
-of its own use. The eval harness (`evals/retrieval_eval.py --from-log`) mines
-those search→read pairs: each query is one an agent actually ran, and the
-thread the agent opened next is the answer that must rank. On a 17k-thread /
-3.7M-event archive, 561 mined cases:
+The baseline is a set of **agent-mined gold case files** — graded, corpus-grounded
+relevance pools scored over a *frozen corpus snapshot*, so the number moves only
+when the ranking code moves. `scripts/retrieval_gold_gate.py` scores every file
+over its bound snapshot with the production ranker at the canonical `limit=20` and
+prints per-file metrics; each run also appends to a timeseries ledger
+(`~/.thread/archive/gold-runs.jsonl`). At the shipped configuration
+(`fusion_weight=400`, cross-encoder off), the seven files read:
 
-| search stack | MRR | success@10 | p50 latency |
-|---|---|---|---|
-| core install (FTS5 lexical) | 0.19 | 0.33 | 0.6 s |
-| + local semantic fusion | 0.25 | 0.43 | 0.6 s |
-| + cross-encoder rerank | 0.25 | 0.44 | 3.1 s |
+| gold file | miner | n | MRR | success@10 | recall@10 | nDCG@10 |
+|---|---|---|---|---|---|---|
+| findability | `querygen` | 64 | 0.674 | 0.922 | 0.922 | 0.732 |
+| judged | `query` | 21 | 0.455 | 0.952 | 0.905 | 0.559 |
+| rerank-cases | `rerank` | 19 | 0.632 | 0.895 | 0.495 | 0.655 |
+| context-compaction | `topic` | 10 | 1.000 | 1.000 | 0.751 | 0.699 |
+| needle | `topic` | 10 | 0.762 | 0.900 | 0.543 | 0.609 |
+| suicide | `topic` | 7 | 0.929 | 1.000 | 0.879 | 0.739 |
+| frustration | `topic` | 7 | 0.554 | 0.857 | 0.605 | 0.528 |
 
-Rows are cumulative, and the labels carry a click's limits: the opened thread
-was the agent's pick from what search surfaced that day — not a verdict that
-nothing better existed — so relevant siblings score as misses, and a stack
-that surfaces what past search never could gets no credit for it. Good
-numbers here mean the stack reliably re-finds what real searches actually
-delivered; they cannot certify there was nothing better to find. Semantic
-fusion is the layer that pays — +10 points of success@10 over the lexical core
-at no latency cost — and how heavily its cross-arm agreement term is weighted
-against lexical density (`SearchParams.fusion_weight`) is the single biggest
-ranking knob: the paraphrase and vague query shapes live or die on it. The
-cross-encoder costs 5× the latency for a fraction of that, so it does not run
-automatically; `rerank=True` still forces it, and the gold files measure what
-it would buy. Both model arms have an off switch — `THREAD_ARCHIVE_EMBED=off` and
-`THREAD_ARCHIVE_RERANK=off` pin a process to
-the lexical core without uninstalling the extra, for a box that wants search
-cheap and free of the cold-start model load (`retrieval_eval.py
---lexical-only` measures that configuration). One more signal made the cut: a
-**community-coherence re-rank** from the corpus-native embedding graph
-(thread centroids → cosine kNN → Leiden — no topic-graph input, every embedded
-conversation a node). Within a ranked pool, threads whose community carries
-more of the pool's top mass get a small boost; on this protocol it lifts
-success at every depth past 1 (S@5 0.327→0.341, S@10 0.414→0.433, S@20
-0.492→0.508) with MRR flat, and `evals/graph_eval.py` re-measures it. It and
-the cross-encoder are alternative head orderers, so it orders the head only
-when the re-rank stands down (stacking coherence under a forced re-rank
-measures as a loss end-to-end — it reshuffles which candidates reach the
-rerank window). On by default; `THREAD_ARCHIVE_COHERENCE=off` disables, a float
-retunes gamma. Two graph signals were measured, rejected on the same
-protocol, and are not in the stack: PageRank authority from the topic
-graph degrades ranking monotonically with weight, because
-query-independent authority floats hub threads over the specific thread a
-query names. Stored thread summaries move these numbers by less than a
-point — whatever their value for browsing, ranked search does
-not measurably ride on them. (An earlier title-as-query eval said otherwise
-on every count; its queries were LLM distillations of the threads they named,
-and it flattered every layer that searched other distillations. It survives
-in the harness as a quick local probe; CI runs a lean arm-liveness gate (no
-metric) alongside a gold-file regression floor. The click-label numbers stay off
-the per-commit path — censored by the incumbent ranker, they wear the shape of a
-quality score without being one — but the snapshot-bound gold files, grounded and
-graded, ride CI as a **one-way floor** (`retrieval-gold-gate`) that fails only on
-a drop below a calibrated baseline, never displaying a per-commit quality
-number.)
+Read the metrics apart: **success@k** asks whether any grade-2 answer ranks by k,
+**recall@k** measures the fraction of a case's *whole* grade-2 set that ranks, and
+**nDCG@k** scores the order of the entire graded 2/1/0 pool (partial answers and
+hard negatives included). Which one is sharp depends on the miner, and the four
+cover complementary failure modes:
 
-## Beyond the click labels
+- **`querygen` → findability** — a random thread, difficulty-laddered queries
+  (verbatim / paraphrase / vague) that must re-find it; the single gold is that
+  thread, so success and recall coincide and read as raw findability. The ladder
+  separates: verbatim S@10 1.00, paraphrase 0.91, vague 0.85. Corpus-representative
+  recall.
+- **`query` → judged** — one `claude` agent per real trail query reads the
+  originating session for intent and sweeps the snapshot deep with its own
+  reformulations, crediting threads the incumbent buries. Multiple grade-2 answers,
+  so **recall@10** (0.905) is the signal — the recall-capable rung.
+- **`rerank` → rerank-cases** — a deep production pool graded 2/1/0 in one judge
+  pass; it scores ordering *within what search retrieved*, so **nDCG** is sharp and
+  recall@10 is bounded well under 1 by construction (the graded pool is far larger
+  than 10). Precision.
+- **`topic` → context-compaction / needle / suicide / frustration** — a topic dense
+  with confounds, one query per angle, a comprehensive graded pool (2=intended,
+  1=partial, 0=confound). Confound ranking; **nDCG** and success are the reads,
+  recall again bounded by the pool size.
 
-The same trail powers more instruments, each aimed at a limit of the
-click labels. Any harness run can append its numbers to a trend ledger
-(`--trend-out` → `~/.thread/archive/retrieval-trend.jsonl`), so deliberate
-measurements accumulate into a time series, and `--mined-after` holds out
-only the cases mined after a ranking change shipped. `--behavior` reports zero-label usage
-signals — for every search the trail shows whether the agent opened a
-result, searched again, or walked away — rates that move only when something
-real moves. And the gold miners produce the labels clicks can't: the
-`thread_archive mine` command (package `thread_archive._mine`) runs headless
-`claude` agents against a frozen corpus snapshot to mint graded gold cases —
-`mine query` reads a real query's session for intent and sweeps the snapshot
-deep for a corpus-grounded case; `mine topic` mints graded cases from a topic
-dense with confounds; the cheaper `mine rerank` grades a retrieved pool in one
-judge pass (ordering, not recall); and `mine querygen` generates
-difficulty-laddered queries for a random thread to test findability. All write
-snapshot-bound eval `--cases` files, so the one-time mining spend buys
-coverage-capable, deterministic labels every later eval run scores against for
-free. The scorer keeps first-hit success separate from true recall: success@k
-asks whether any grade-2 answer ranks by k, while recall@k measures the fraction
-of every case's known grade-2 set recovered. nDCG@k measures the order of the
-whole graded pool, including partial answers and hard negatives.
+Scoring is deterministic — same code, same snapshot, same digits — so a movement is
+never noise, but the resolution is `1/n` per file: one case going from rank 1 to
+unfound moves any metric by at most `1/n`, so anything smaller is a rank shuffle
+within cases that already worked. On the 7-case topic files that unit is 0.143; on
+the 64-case findability file it is 0.016. This is the one instrument that can credit
+an *improvement*: its grade-2 labels were mined to be complete, so a change that
+surfaces a better answer scores as a gain — not, as click labels do, as a loss.
+
+The gold files are the promotion bar. To claim "search improved," score the
+challenger and the shipped configuration on **every file, each over its own
+snapshot, on both sides of the change**, and keep a hold-out: tune against one file
+while another stays untouched until the confirming run. The `thread_archive mine`
+command mints these files; `evals/README.md` → "Taking a baseline" is the full
+protocol.
+
+## The stack, and what each layer buys
+
+Production `search` federates two arms — FTS5 **lexical** and an in-process
+**vector** (semantic, `nomic-embed-text`) — fuses them by reciprocal-rank fusion,
+scores the merged pool with the weighted lexical **ranker** (density / phrase /
+recency / content-type), then re-orders the head with the **community-coherence**
+signal. A **cross-encoder** re-rank exists but sits out by default. Every tunable
+is one field of `thread_archive._retrieval.SearchParams`; the shipped defaults ARE
+production, and each candidate is another instance scored against them.
+
+- **Cross-arm fusion is the dominant lever** (`fusion_weight=400`). Term density is
+  unbounded, so a short doc carrying a few of a long question's common words
+  outscores the fusion term's ceiling several times over and sinks the
+  vocab-mismatch answers the vector arm ranked first. Weighting cross-arm
+  *agreement* up to density's working scale keeps those answers reachable — the
+  paraphrase and vague shapes, where the lexical arm has no purchase, are the ones
+  that move. 400 is where every gold file reaches its best nDCG@10 and the head is
+  at its most confident (success@1 0.609; findability MRR 0.666 at recall@10 0.922,
+  past what the cross-encoder reaches) — the weight buys ordering, not just flatter
+  recall. Past ~500 the vector arm starts overriding lexical evidence it should
+  defer to and the keyword-shaped files give back recall. This is the single
+  biggest ranking knob, and it is what lets the cross-encoder ship off.
+- **Community-coherence re-rank** — a corpus-native embedding graph (thread
+  centroids → cosine kNN → Leiden, no topic-graph input, every embedded conversation
+  a node) partitions into communities; within a ranked pool, threads whose community
+  carries more of the pool's top mass get a small boost
+  (`score = 1/(60+rank) + γ·community_mass`, shipped γ=0.005). On by default, a
+  light precision head-orderer: on `evals/graph_eval.py`'s log-mined regression
+  protocol it lifts success at depth with MRR flat (baseline → coherence: S@5
+  0.40 → 0.45, S@10 0.52 → 0.53, recall@10 0.44 → 0.46), not a headline mover.
+  That harness is its regression check and the gate any new graph lever must pass.
+- **Cross-encoder re-rank — off by default** (`rerank_auto=False`). It is the
+  pipeline's dominant latency (2–4s on a long conceptual query, wide variance) and
+  buys ~no gold-file MRR over the fused lexical+semantic+coherence stack, so the
+  shipped search stays inside its latency budget without it. That verdict is
+  domain-bound, not general: on turn-level dialog retrieval the same arm is worth
+  +0.141 recall@10 over the same fused stack (External calibration), so it is
+  dormant here, not dead. `rerank=True` still forces it (evals, and a
+  quality-rebuild that must re-earn it within budget — a smaller model, a tighter
+  pool); its `rerank_pool` (12) and `rerank_doc_chars` (768) knobs stay for that
+  seam.
+
+Both model arms have an off switch — `THREAD_ARCHIVE_EMBED=off` and
+`THREAD_ARCHIVE_RERANK=off` pin a process to the lexical core without uninstalling
+the extra, for a box that wants search cheap and free of the cold-start model load;
+`THREAD_ARCHIVE_COHERENCE=off` stands the coherence re-rank down (a float retunes γ).
+
+Two signals were measured on this bench and are **not** in the stack: graph
+**expansion** (append community-mates of the pool's top seeds) loses success@20 for
+what it rescues (0.625 → 0.533, only 2 of 31 pool-misses recovered); and a
+topic-graph **PageRank authority** term degraded ranking monotonically with weight,
+because query-independent authority floats hub threads over the specific thread a
+query names — it is gone from the code. Stored **summaries** are not a rejected
+signal but a deliberate content-type discount (0.6 against a user message's 1.5): a
+derived digest's short length already wins the density term, so an at-parity weight
+would let generated prose crowd verbatim evidence out of the top ranks. The discount
+keeps summaries findable while making them yield to any primary source that matches
+comparably.
+
+## Latency
+
+Warm search is FTS-dominated with the cross-encoder off: **p50 ~800 ms, p95 ~1.5 s**.
+Three properties hold the tail there — auto-re-rank sits out, code-identifier queries
+ride indexed token-MATCH fallbacks rather than a full-table substring scan, and cold
+model loads are deferred to warm so they never land inside a request. The
+cross-encoder is both the top quality lever and the top latency, so re-enabling it is
+a budgeted decision, not a free one.
+`retrieval_gold_gate.py --latency` measures warm latency over the same queries it
+scores for quality (p50/p95/p99 by stage and query shape) and prints the joint
+report, so a `--set` tuning decision reads on both axes at once;
+`~/.thread/archive/latency-baseline.json` records the baseline, and the per-search
+usage ledger carries a per-stage breakdown (`fts_ms` / `semantic_ms` / `rerank_ms`)
+that makes any latency change self-diagnosing.
+
+## Beyond the gold files
+
+The archive's own tool-use trail powers two more instruments, each aimed at a limit
+of the gold files:
+
+- **Click labels (`--from-log`)** mine real `thread_search`→`thread_read` pairs from
+  the trail: the gold is whatever thread the agent opened, a subset of what search
+  surfaced *that day*. The labels are censored by the incumbent ranker — a change
+  that surfaces different-better results scores as a loss — so this is an **alarm,
+  not a baseline**: run it by hand to ask "did something collapse," never to credit
+  a change. Its lasting value to the bench is as a **sampling frame** — real query
+  shapes to seed the gold miner with. Nothing runs it on a cadence.
+- **Behavioral signals (`--behavior`)** report zero-label usage rates — for every
+  search, whether the agent opened a result, searched again, or walked away — rates
+  that move only when something real moves.
 
 ## External calibration
 
-The click labels and gold files both score the archive on its own corpus. The
-complementary question — are the retrieval *components* competitive against
-published baselines — is what the lab's three external benchmarks answer, each
-running the real pipeline over a third-party corpus (`evals/beir_eval.py`,
-`evals/cdr_eval.py`, `evals/haystack_eval.py`). None of these corpora resemble an
-agent's own session log, so a strong number certifies the machinery, never
-archive-domain quality — read each against that mismatch.
+The gold files score the archive on its own corpus. The complementary question — are
+the retrieval *components* competitive against published baselines — is what three
+external benchmarks answer, each running the real pipeline over a third-party corpus.
+None of these corpora resemble an agent's own session log, so a strong number
+certifies the machinery, never archive-domain quality — read each against that
+mismatch.
 
 | benchmark | task | metric | lexical | +vectors | +rerank | published ref |
 |---|---|---|---|---|---|---|
-| BEIR scifact | scientific-claim IR | nDCG@10 | 0.302 | 0.509 | — | 0.665 BM25 / 0.68 dense |
-| CDR (NVIDIA ChatRAG) | conversational retrieval | nDCG@10 | 0.101 | 0.249 | — | 0.504 best-of-16 |
-| LoCoMo | multi-session dialog, turn-level | recall@10 | 0.594 | 0.621 | **0.756** | 0.662 DRAGON |
-| LongMemEval-S | long-history QA, session-level | recall@10 | 0.892 | — | — | 0.710 BM25 / 0.823 Contriever |
+| BEIR scifact (`beir_eval.py`) | scientific-claim IR | nDCG@10 | 0.302 | 0.650 | — | 0.665 BM25 / 0.68 dense |
+| CDR (`cdr_eval.py`) | conversational retrieval | nDCG@10 | 0.101 | 0.458 | — | 0.504 best-of-16 |
+| LoCoMo (`haystack_eval.py`) | multi-session dialog, turn-level | recall@10 | 0.595 | 0.649 | **0.790** | 0.662 DRAGON |
+| LongMemEval-S (`haystack_eval.py`) | long-history QA, session-level | recall@10 | 0.894 | — | — | 0.710 BM25 / 0.823 Contriever |
 
-On **LoCoMo** the full stack — lexical + semantic + auto-gated rerank — reaches
-recall@10 0.756, above the specialized dense retriever DRAGON (0.662) at every
-cutoff (@5 0.702 vs 0.567, @25 0.829 vs 0.767, @50 0.859 vs 0.827); the rerank
-carries it, and it helps most on the entity- and precise-term categories
-(single-hop, temporal) an agent's queries are made of. On **CDR** the stack
-trails, on the implicit-semantic queries least like archive traffic — a
-model-bound gap (nomic-embed-text is small beside the reference embedders), not
-a pipeline one: recall@100 is 0.52, so the evidence is retrieved but ordered
-below the top ten nDCG@10 rewards. **BEIR** is out-of-domain scientific IR
-(recall@100 0.93; nDCG@10 held back by ordering on abstracts, not recall).
-**LongMemEval-S** is the easy split — its references are measured on the harder
--M split — so read 0.892 as ballpark, not a matched win.
+On the shipped default (no cross-encoder) the fused stack lands at 91–98% of every
+comparable reference. The suite doubles as a **held-out set** for ranking work: every
+weight is tuned against the archive's own mined gold files and nothing is tuned
+against these third-party corpora, so agreement between the two is what separates a
+real retrieval gain from a gold-file artifact. Score them after a defaults change.
 
-This is calibration, not the product measure: none of it scores the archive on
-the agentic coding and design sessions it actually serves.
+On **LoCoMo**, with the cross-encoder **forced on** (which production does not do),
+recall@10 reaches 0.790 — above the specialized dense retriever DRAGON (0.662) at
+every cutoff (@5 0.733 vs 0.567, @25 0.847 vs 0.767, @50 0.876 vs 0.827), helping
+most on the entity- and precise-term categories (single-hop 0.895, temporal 0.846)
+an agent's queries are made of. The arms are additive here: the re-rank is worth
++0.141 recall@10 on top of fusion, where on the gold files it buys ~no MRR over that
+same fused stack. The cross-encoder's value is domain-bound, and turn-level dialog is
+where it pays — at a price, 4207s for this pass against 157s for the +vectors one
+over the identical corpus.
 
-## The quality ladder
+On **CDR** the stack reaches 0.458 against the 0.504 best-of-16 reference, at
+recall@100 0.665. A weak number here is a ranking-weight symptom, not an
+embedder-size one: the same `nomic-embed-text` spans a nearly two-fold range on this
+benchmark under different fusion weights, so reach for the ranker before the model.
 
-The instruments stack into a **quality ladder**, fastest tier first — change
-a ranking weight and climb until the evidence matches the stakes. The scorers
-and experiments live together in `evals/` — the search lab — and the agent
-miners that feed them are the `thread_archive mine` command; `evals/README.md`
-is the working manual:
+**BEIR** is out-of-domain scientific IR, and the fused 0.650 sits inside the
+harness's own ±0.05 verdict band around BM25 ("in BM25 ballpark", −0.015), with
+recall@100 0.962. The **lexical arm alone is the open finding**: at 0.302 it trips
+that same harness's `BELOW BM25 — investigate`, because the ranker uses BM25 only to
+select the candidate pool and then re-scores from scratch — there is no bm25 term in
+`SearchParams` — on signals that are inert here (a corpus with no time axis and one
+content type). Retrieval is fine (lexical recall@100 0.716); the ordering is what
+loses.
+
+**LongMemEval-S** is the easy split, scored over its 470 non-abstention questions —
+its references are measured on the harder -M split — so read 0.894 as ballpark, not
+a matched win. This is calibration, not the product measure: none of it scores the
+archive on the agentic coding and design sessions it actually serves.
+
+## What rides CI, and the quality ladder
+
+Only two things gate every commit, and neither displays a quality number — by
+design, because a per-commit metric invites being read as a quality score, which the
+click-label protocols are censored against being:
+
+- **Tier 0** — `tests/test_search_quality.py` (metric floors near-saturated on the
+  checked-in synthetic corpus: they can only fall, a breakage detector),
+  `tests/test_search_recall_shape.py` (the exhaustive and chronological shapes the
+  ordering metrics can't score — every thread carrying a term is enumerable, first
+  and last mention are answerable — on nonce-term golds that are true by
+  construction) and `tests/test_reality_mechanisms.py` (deterministic pipeline
+  contracts — content types indexed, MCP default scope, reindex preserving what was
+  findable, the cross-encoder's gate/window paths) run in every pytest pass.
+- **`retrieval-gate`** (CI, `ci.toml`) — an **arm-liveness probe only**
+  (`retrieval_eval.py --probes-only --require-semantic --require-rerank`): it asserts
+  the embedding and cross-encoder arms actually load, so a dead model can't silently
+  degrade fused search to lexical while every row stays green. No metric run rides it.
+
+The grounded gold-file scoring is a **deliberate run, not a CI row** — its ~140
+model-loaded searches run at the edge of the 600 s runner cap, so it timed the sweep
+out under load. `retrieval_gold_gate.py` is where it lives now, doubling as the
+current-state read and the interactive tuning loop (`--set field=value` to score a
+candidate, `--cache` to persist candidate pools across processes for a ~7× re-run
+speedup, `--fail-early` to stop once a floor is provably unreachable, `--latency` for
+the speed axis).
+
+The instruments stack into a **quality ladder**, fastest tier first — climb until
+the evidence matches the stakes:
 
 | tier | what runs | corpus | cost | when |
 |---|---|---|---|---|
-| 0 | `tests/test_search_quality.py` (in every pytest run) | checked-in synthetic corpus (`tests/quality_corpus.py`), lexical stack | seconds | every change |
+| 0 | `tests/test_search_quality.py` + `tests/test_search_recall_shape.py` + `tests/test_reality_mechanisms.py` (every pytest run) | checked-in synthetic corpus, lexical stack | seconds | every change |
 | 1 | `pytest -m quality_models` | same corpus, real embedding + rerank models | minutes | touching the model arms |
-| 2 | CI `retrieval-gate` (arm-liveness probes) + `retrieval-gold-gate` (gold-file regression floors) | live archive + the golds' frozen snapshot | ~a minute | every commit, via thread-ci |
-| 3 | `retrieval_eval.py` by hand, `graph_eval.py`, `--behavior` | live archive | minutes | evaluating a deliberate ranking change |
-| 3½ | `retrieval_eval.py --cases` on agent-mined golds (`thread_archive mine <miner>` to mint them) | frozen snapshot, corpus-grounded labels | seconds to score; agent-minutes per mined case | scoring against grounded labels; mining is an occasional cadence |
-| 4 | `pytest -m beir`; `cdr_eval.py`, `haystack_eval.py --dataset …` by hand | external IR / conversational-memory benchmarks | tens of minutes (built homes cache for re-runs) | calibrating against published baselines |
+| 2 | CI `retrieval-gate` (arm-liveness probes) | live archive | ~a minute | every commit, via thread-ci |
+| 3 | `retrieval_gold_gate.py` (current-state read + tuning loop), `search_lab.py`, `graph_eval.py` | live archive + the golds' frozen snapshot | seconds to minutes | evaluating a deliberate ranking change |
+| 3½ | `thread_archive mine <miner>` to mint fresh golds, then re-score | frozen snapshot, corpus-grounded labels | seconds to score; agent-minutes per mined case | when a file's snapshot goes stale |
+| 4 | `pytest -m beir`; `cdr_eval.py`, `haystack_eval.py --dataset …` | external IR / conversational-memory benchmarks | tens of minutes | calibrating against published baselines |
 
-Tier 0 is the laboratory bench: known relevance structure, deterministic,
-and `run_cases(search=...)` scores any candidate ranker against the incumbent
-on identical cases — the A/B seam the higher tiers then validate on real
-usage.
-
-## The search lab
-
-That seam has a front door: **the search lab**. Every tunable of the pipeline
-(ranking weights, decay constants, pool sizes) lives in one object,
-`thread_archive._retrieval.SearchParams`, accepted by `search(params=...)` —
-the shipped defaults ARE the production configuration. Each module in
-`evals/experiments/` is one candidate configuration (a `SearchParams` value,
-or a full `SEARCH` callable for changes params can't express — the contract
-is in `evals/experiments/README.md`), and `evals/search_lab.py` scores the
-baseline plus every experiment on identical corpus cases and prints a
-leaderboard with deltas: seconds for the lexical stack, `--models` for the
-fused pipeline. On the gold bench `--sample FRAC` (paired with `--only
-<experiment>`) scores a deterministic subset of each file — the same slice every
-run — so a tuning loop takes minutes instead of the full bench's tens; a subset
-reads a direction, and the full bench is still the promotion bar. The corpus carries adversarial structure (a TF-spam paste
-bm25 loves, a recency pair whose old twin is the lexically stronger match)
-precisely so configurations *separate* — stripping the weighted ranker
-measurably loses. A winner here is a direction, not a verdict.
-
-The promotion bar is the snapshot-bound gold files: score the challenger and
-the shipped configuration with `retrieval_eval.py --cases` on every minted
-gold file, each over its own corpus snapshot, on both sides of the change —
-tuning against one file and confirming against a held-out one — before
-changing the defaults in `_retrieval/params.py`. Where the lab says "this
-direction looks good on the synthetic corpus," the gold delta says "on
-corpus-grounded labels from real usage, it measures better."
+The tunables all live in one object — `SearchParams` (`_retrieval/params.py`) — and
+each module in `evals/experiments/` is one candidate configuration the search lab
+races against the shipped defaults. Where the lab says "this direction looks good on
+the synthetic corpus," the gold-file delta says "on corpus-grounded labels from real
+usage, it measures better" — and only the second can promote a change.

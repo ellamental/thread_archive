@@ -2,6 +2,76 @@
 
 ## Unreleased
 
+- Search quality gained a **recall-shape tier** (`tests/test_search_recall_shape.py`)
+  alongside the ordering floors. The existing tier-0 metrics (MRR, success@k, and a
+  "recall@k" over golds that are mostly one thread) score which thread *wins*; they
+  are satisfied by a ranker that returns one right answer, so two shapes the archive
+  is actually asked for went unmeasured: "every thread that mentions X" and "the
+  first / last time we discussed X". Both are now scored on two blocks added to
+  `tests/quality_corpus.py`, built so their golds are true by construction rather
+  than by judgment — a **nonce sentinel term** carried by exactly 24 threads and
+  nothing else (past the default result window, so only `group='browse'` /
+  `output='count'` can return the set, and corpus noise can never fuzz the answer),
+  and a **dated series** of 12 mentions across a year whose earliest mention is
+  deliberately the weakest lexical match, so a chronological scan that merely echoed
+  relevance order fails. Adding 36 threads left the ordering metrics untouched
+  (MRR 1.0, recall@5 1.0).
+
+- Two tier-0 invariants were **measuring precision while reading as recall**, and are
+  now two-sided. `test_focused_thread_beats_passing_mentions` asserted a decoy's rank
+  only `if` it was present, so a ranker that dropped genuinely-matching threads passed
+  — demotion and disappearance were indistinguishable; it now requires each decoy to
+  come back. `test_quoted_phrase_excludes_scattered_words` pinned the entire result
+  list to a single thread, encoding "a quoted phrase has one answer" and making any
+  future fixture carrying the phrase a failure; it now names the two threads its
+  mechanism is about.
+
+- `search(sort=...)` **rejects** anything but `'oldest'` instead of silently ignoring
+  it. `group` and `agents` already validated; `sort` did not, so `sort='newest'` — the
+  plausible guess for "when was this last discussed" — returned relevance order, a
+  wrong answer indistinguishable from a right one. There is no newest sort; the most
+  recent mention is read off an enumerated result set.
+
+- External calibration re-measured at the shipped configuration (`fusion_weight=400`,
+  cross-encoder off), and the fused numbers moved a long way: BEIR scifact nDCG@10
+  0.509 → 0.650, CDR 0.249 → 0.458, LoCoMo recall@10 0.621 → 0.649, and LoCoMo with
+  the re-rank forced on 0.756 → 0.790. Every lexical-arm number is unchanged, the
+  expected shape — `fusion_weight` moves only the fused ranking. Three findings came
+  out of it:
+  - The lift **generalizes**. `fusion_weight` was tuned solely against the mined gold
+    files, and it lifted four third-party corpora nobody tuned against (+0.141 BEIR,
+    +0.209 CDR). The external suite therefore works as an unplanned held-out set for
+    gold-tuned ranking changes, and is worth scoring after a defaults change.
+  - The cross-encoder is **domain-bound, not superseded**. Its lift over fusion on
+    LoCoMo is +0.141 recall@10, essentially unchanged by the fusion increase, so on
+    turn-level dialog the two arms are additive rather than overlapping. The "buys
+    ~no MRR" verdict behind `rerank_auto=False` holds for the archive's own golds
+    only. It costs 4207s against the +vectors pass's 157s over the same corpus.
+  - The **lexical arm is the open problem**. At nDCG@10 0.302 it still trips
+    `beir_eval`'s own `BELOW BM25 — investigate` verdict (−0.363 against the 0.665
+    reference) while lexical recall@100 is 0.716 — the pool holds the right document
+    and the re-scoring buries it. BM25 ranks candidate *selection* only; there is no
+    bm25 term in `SearchParams`, and density/recency/content-type are inert on a
+    corpus with no time axis and one content type. A `bm25_weight` ranker term is the
+    experiment this points at; unmeasured so far.
+
+- `docs/search-quality.md` rewritten to the current measurement regime. It had led
+  with a click-label (`--from-log`) table as its headline metric; the measurement of
+  record is the seven snapshot-bound gold files, so the doc now leads with their
+  per-file MRR/success@10/recall@10/nDCG@10 and demotes the click protocol to the
+  alarm it is. Also corrected: the gold gate is a deliberate run rather than a CI
+  row, the cross-encoder ships off by default, coherence carries fresh `graph_eval`
+  numbers at the shipped γ=0.005, the rejected PageRank-authority term is gone from
+  the code rather than described as a live candidate, and a latency section covers
+  the p50/p95 the speed axis now measures.
+
+- `retrieval-gold-gate` dropped from the CI suite list (`ci.toml`). Its ~140 live
+  searches with the embedding + rerank models loaded run at the edge of the 600s
+  runner cap, so it timed the sweep out under load. The grounded regression floor
+  is now a deliberate run — `scripts/retrieval_gold_gate.py`, alongside the tuning
+  loop it already hosts — while the per-commit CI path keeps the `retrieval-gate`
+  arm-liveness probes.
+
 - The gold gate scores the speed axis too: `--latency [REPS]` measures warm
   latency over the same queries it scores for quality (pool cache OFF — the arms
   are the cost being measured) and prints the joint report, so a `--set` tuning

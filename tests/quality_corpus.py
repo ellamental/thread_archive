@@ -8,6 +8,23 @@ pair whose old twin is the lexically stronger match, and code identifiers. ``CAS
 that should win. Both are checked in — no real usage data, so unlike the
 mined case files this corpus belongs in the repo.
 
+Two blocks answer a different question from ``CASES``. ``CASES`` measures
+*ordering* — which thread wins — and its metrics (MRR, success@k) are satisfied
+by a ranker that returns one right answer. The exhaustive question — did search
+return **every** thread that matches, and can the caller tell which mention came
+first — is a different shape, and these two blocks are built for it:
+
+- the :data:`SENTINEL` block plants a nonce term in exactly :data:`SENTINEL_N`
+  threads and nowhere else, so "which threads mention it" is true by
+  construction no matter how much noise surrounds them, and ``SENTINEL_N`` sits
+  past the default result window so a ranked search *must* cut the set — only
+  the enumerating shapes (``group='browse'``, ``output='count'``) can return all
+  of it.
+- the :data:`SERIES` block mentions a second nonce term across
+  ``len(SERIES_DATES)`` threads spread over a year, with the chronologically
+  first mention deliberately the *weakest* lexical match — so a chronological
+  scan that merely agreed with relevance order would fail the case.
+
 ``build_corpus`` imports the corpus into the current (test-isolated) archive
 home and returns the name→thread_id map; ``run_cases`` scores a search
 callable against the case set with the same ``evaluate`` loop the live-archive
@@ -135,6 +152,66 @@ THREADS: dict[str, list[tuple[str, str]]] = {
     ],
 }
 
+# ── the exhaustive-recall block ──────────────────────────────────────────────
+#: A nonce term carried by exactly :data:`SENTINEL_N` threads and by nothing
+#: else in the corpus. Nonce vocabulary is what makes an exhaustive gold
+#: survive noise: the set of threads that match is fixed by construction, so
+#: adding fixtures for other cases can never fuzz it.
+SENTINEL = "quokka"
+#: Past the default result window (20) on purpose — a ranked search cannot
+#: return the whole set, so the case measures the enumerating shapes.
+SENTINEL_N = 24
+
+#: Alien vocabulary, sharing no term with any ``CASES`` query, so the block adds
+#: corpus bulk (and bm25 collection statistics) without competing for any gold.
+_SENTINEL_SUBJECTS = [
+    "burrow", "thicket", "lantern", "ridge", "harbor", "meadow", "cinder",
+    "willow", "quarry", "beacon", "hollow", "marsh",
+]
+
+SENTINEL_THREADS = [f"sentinel-{i:02d}" for i in range(SENTINEL_N)]
+for _i, _name in enumerate(SENTINEL_THREADS):
+    _subject = _SENTINEL_SUBJECTS[_i % len(_SENTINEL_SUBJECTS)]
+    THREADS[_name] = [(
+        f"{SENTINEL} sighting note {_i}: how did the {_subject} surface settle",
+        f"The {_subject} surface is settled; filed as {SENTINEL} batch {_i}.",
+    )]
+
+# ── the dated-series block ───────────────────────────────────────────────────
+#: A second nonce term, mentioned once per thread across a year. The first and
+#: last mention of a repeated term are questions about *chronology*, not
+#: relevance, so the series is shaped to break the tie between them: the
+#: earliest thread is the thinnest match and a late thread is the densest.
+SERIES = "kestrel"
+
+#: Ascending, one per series thread. Spread across months so no mention sits
+#: inside the recency half-life and density alone decides the ranked order.
+SERIES_DATES = [
+    "2025-03-05", "2025-04-18", "2025-05-30", "2025-07-11", "2025-08-22",
+    "2025-09-14", "2025-10-03", "2025-11-19", "2025-12-08", "2026-01-16",
+    "2026-02-02", "2026-02-18",
+]
+
+#: Series thread names in chronological order — the ordering ``sort='oldest'``
+#: must reproduce exactly.
+SERIES_ORDER = [f"series-{i:02d}" for i in range(len(SERIES_DATES))]
+#: The densest mention, and so the ranked winner: a chronological scan that
+#: returned this one first would just be relevance order wearing a date.
+SERIES_DENSEST = "series-07"
+for _i, _name in enumerate(SERIES_ORDER):
+    if _name == SERIES_DENSEST:
+        THREADS[_name] = [(
+            f"{SERIES} rollout status: is the {SERIES} rollout on track",
+            f"The {SERIES} rollout is on track; {SERIES} stage two ships next week.",
+        )]
+    else:
+        # One passing mention, in prose that carries none of the query's other
+        # terms — so the earliest thread cannot win on density.
+        THREADS[_name] = [(
+            f"notes from the week {_i} sync",
+            f"Someone raised {SERIES} in passing; nothing was decided.",
+        )]
+
 #: (query, gold thread names). Multi-gold rows score the best-ranked gold,
 #: matching the live harness's thread-level protocol.
 CASES: list[tuple[str, list[str]]] = [
@@ -162,13 +239,19 @@ CASES: list[tuple[str, list[str]]] = [
 
 
 def _timestamps(name: str, thread_index: int, turn: int) -> tuple[str, str]:
-    """Deterministic January dates, except the recency pair: ``recency-new``
-    is stamped near now so the exponential recency signal (half-life ~3 days)
-    is actually alive for its case; everything else is equally cold."""
+    """Deterministic consecutive dates from a January epoch, with two
+    exceptions: ``recency-new`` is stamped near now so the exponential recency
+    signal (half-life ~3 days) is actually alive for its case, and the series
+    block takes its designed dates — chronology is that block's whole subject.
+    Everything else is equally cold."""
     if name == "recency-new":
         base = datetime.now(timezone.utc) - timedelta(hours=2)
+    elif name in SERIES_ORDER:
+        day = datetime.fromisoformat(SERIES_DATES[SERIES_ORDER.index(name)])
+        base = day.replace(hour=10, tzinfo=timezone.utc)
     else:
-        base = datetime(2026, 1, 2 + thread_index, 10, 0, tzinfo=timezone.utc)
+        base = (datetime(2026, 1, 2, 10, 0, tzinfo=timezone.utc)
+                + timedelta(days=thread_index))
     u = base + timedelta(minutes=2 * turn)
     a = u + timedelta(seconds=30)
     fmt = "%Y-%m-%dT%H:%M:%SZ"

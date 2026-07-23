@@ -15,10 +15,12 @@ from pathlib import Path
 
 from thread_archive._mine import (
     _cli,
-    _framework as fw,
     load_registry,
     querygen,
     rerank_judged,
+)
+from thread_archive._mine import (
+    _framework as fw,
 )
 
 REPO = Path(__file__).resolve().parent.parent

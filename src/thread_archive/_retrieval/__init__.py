@@ -216,7 +216,7 @@ def retrieve_pool(
     over: int,
     structural: bool,
     params: Optional[SearchParams] = None,
-    thread_id: Optional[int | str] = None,
+    thread_id: Optional[str] = None,
     thread_ids: Optional[list[str]] = None,
     content_types: Optional[list[str]] = None,
     exclude_content_types: Optional[list[str]] = None,
@@ -433,6 +433,12 @@ def search(
         raise ValueError("agents must be 'exclude', 'include', or 'only'")
     if group is not None and group not in ("thread", "browse", "nested", "dup", "none"):
         raise ValueError("group must be 'thread', 'browse', 'nested', 'dup', or 'none'")
+    # 'oldest' is the only sort — relevance is the unnamed default. Rejected rather
+    # than ignored because the plausible guesses ('newest', 'recent') are asks for a
+    # *chronological* answer, and silently serving relevance order answers "when was
+    # this last discussed" with "what matched best", which reads as a real answer.
+    if sort is not None and sort != "oldest":
+        raise ValueError("sort must be 'oldest' or None (relevance)")
     # An explicit types list is the raw thread-type scope; the agents switch
     # stands down so types=['system'] just works without a second knob.
     agents_eff = "include" if types else (agents or "exclude")
