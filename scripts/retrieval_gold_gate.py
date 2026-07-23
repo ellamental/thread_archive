@@ -69,10 +69,13 @@ FLOORS: dict[str, dict[str, float]] = {
         "mrr": 0.50, "success10": 0.70, "recall10": 0.50, "ndcg10": 0.45,
     },
     # querygen findability — one gold/case, so recall10 tracks success10 (recover
-    # the single target = surface it). High by design (the query was authored from
-    # the thread), so read it as a findability floor, not a precision score.
+    # the single target = surface it). The query is authored from the thread, so
+    # these are paraphrase-match cases: the cross-encoder floats them, and with
+    # auto-re-rank shipping off for latency (params.rerank_auto) the floor sits at
+    # the lexical+semantic+coherence baseline. Recovering paraphrase recall without
+    # the cross-encoder is the rebuild that re-raises this floor.
     "findability-cases.jsonl": {
-        "mrr": 0.72, "success10": 0.85, "recall10": 0.85, "ndcg10": 0.75,
+        "mrr": 0.54, "success10": 0.83, "recall10": 0.83, "ndcg10": 0.60,
     },
     # rerank in-pool judgments — many golds/case (avg ~14), so recall10 is
     # structurally capped (can't fit ~14 golds in 10 slots) and floored low on

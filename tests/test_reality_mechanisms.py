@@ -345,7 +345,7 @@ def test_semantic_source_scope_ranks_inside_allowed_provider(
 def test_answer_below_copied_query_still_reaches_reranker(
     tmp_path, monkeypatch,
 ) -> None:
-    from thread_archive._retrieval import rerank, search
+    from thread_archive._retrieval import SearchParams, rerank, search
 
     query = "watcher disappearing root cause"
     answer = _import(tmp_path, "causal-answer", _session_lines(
@@ -362,8 +362,11 @@ def test_answer_below_copied_query_still_reaches_reranker(
     monkeypatch.delenv("THREAD_ARCHIVE_RERANK", raising=False)
     scorer = _MarkerScorer("KeepAlive lease")
     scripted = rerank.Reranker(model=scorer)
+    # Auto-re-rank ships off (latency); rerank_auto=True exercises the echo-head
+    # path this test is about (a copied query must still reach the cross-encoder).
     hits = search(
         query, limit=RECALL_LIMIT, content_types=["user"], reranker=scripted,
+        params=SearchParams(rerank_auto=True),
     )
 
     assert scorer.pools, "the strong copied query incorrectly suppressed reranking"

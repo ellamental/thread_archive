@@ -49,6 +49,14 @@
     serves lexical-only (fast) and the semantic/re-rank arms rejoin automatically
     once warm lands.
 
+  The gold gate's `findability-cases` floor is recalibrated to the reranker-off
+  baseline (MRR 0.72→0.54, nDCG@10 0.75→0.60): its paraphrase-match cases are the
+  one dimension the cross-encoder uniquely lifted, so it dropped when auto-re-rank
+  went off (most other gold files *improved* — the cross-encoder had been shuffling
+  their good heads). Recovering paraphrase recall without the cross-encoder is the
+  tracked quality-rebuild that re-raises the floor; both regimes are recorded in
+  `gold-runs.jsonl`.
+
 - `SearchParams` gained `rerank_doc_chars`, the per-passage character cap the
   cross-encoder scores each hit at — first-class so the search lab can race passage
   length as a plain `PARAMS` experiment.
