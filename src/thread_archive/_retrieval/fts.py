@@ -282,19 +282,44 @@ def _quote_phrase(text_: str) -> str:
     return '"' + text_.replace('"', "") + '"'
 
 
+def _identifier_tokens(text_: str) -> list[str]:
+    """The FTS tokens of a code query — the alphanumeric runs an identifier splits
+    into on its separators (``get_session`` → ``get`` ``session``, ``a.b.c`` →
+    ``a`` ``b`` ``c``). Order-preserving, deduped. These are reachable through the
+    FTS index, so a MATCH over them fills the candidate pool without the full-table
+    substring scan for any query whose tokens exist as tokens."""
+    out: list[str] = []
+    for tok in re.findall(r"[A-Za-z0-9]+", text_ or ""):
+        if tok not in out:
+            out.append(tok)
+    return out
+
+
+# The substring LIKE fallback is a full-table scan (no index serves an infix
+# LIKE). When it does run — a query whose tokens are all too rare for the indexed
+# passes to fill the pool — it is bounded to the most recent this-many rows by id.
+# The scan is recency-ordered already, so the cap keeps the newest within-token
+# matches and holds the worst case well under the latency budget instead of
+# walking the whole ~1M-doc corpus (~10s). id is the FTS rowid (append-ordered),
+# so a ``rowid >= max-cap`` floor is an indexed range, not a scan to find the cap.
+_LIKE_SCAN_CAP = 25000
+
+
 @dataclass(frozen=True)
 class _Pass:
     """One candidate-gathering pass of :func:`search_events`: a WHERE fragment
     plus its bound params, the ORDER BY, whether the fragment is an FTS5 MATCH
-    (drives the snippet expression and the fts5-syntax-error retry), and whether
-    the pass is a fallback — a substring LIKE full-table scan that only runs when
-    the passes before it left the candidate pool short."""
+    (drives the snippet expression and the fts5-syntax-error retry), whether the
+    pass is a fallback (runs only when the passes before it left the pool short),
+    and whether it is a full-table substring scan to bound to the recent-id window
+    (``scan_cap`` — the latency backstop on the one pass that can't ride the index)."""
 
     where: str
     params: dict = field(default_factory=dict)
     order: str = _RANK_EXPR
     use_match: bool = True
     is_fallback: bool = False
+    scan_cap: bool = False
 
 
 def search_events(
@@ -382,12 +407,31 @@ def search_events(
             like_params["or" + str(i)] = _like_substring(term)
             ors.append("content LIKE :or" + str(i) + " ESCAPE '\\'")
         passes.append(_Pass("(" + " OR ".join(ors) + ")", like_params,
-                            order="occurred_at DESC", use_match=False, is_fallback=True))
+                            order="occurred_at DESC", use_match=False, is_fallback=True,
+                            scan_cap=True))
     elif mode == "code":
         clean = _clean_query_text(query)
         passes.append(_Pass("event_search MATCH :q", {"q": _quote_phrase(clean)}))
+        # Indexed token fallbacks before the substring scan: an identifier
+        # tokenizes on its separators, so its tokens ride the FTS index. Filling
+        # the pool from a token AND (all tokens present) then a token OR (any)
+        # keeps the full-table LIKE from running for any query whose tokens exist
+        # as tokens — the common case, and the one that made ``foo_bar``-style
+        # queries scan the whole corpus.
+        toks = _identifier_tokens(clean)
+        if len(toks) > 1:
+            passes.append(_Pass("event_search MATCH :qand",
+                                {"qand": " AND ".join(_quote_phrase(t) for t in toks)},
+                                is_fallback=True))
+            passes.append(_Pass("event_search MATCH :qor",
+                                {"qor": " OR ".join(_quote_phrase(t) for t in toks)},
+                                is_fallback=True))
+        # The within-token substring catcher (``get_session`` inside
+        # ``megaget_sessionizer``) MATCH can't see — last, and bounded to the
+        # recent-id window so a rare-token query can't turn it into a full scan.
         passes.append(_Pass("content LIKE :codepat ESCAPE '\\'", {"codepat": _like_substring(clean)},
-                            order="occurred_at DESC", use_match=False, is_fallback=True))
+                            order="occurred_at DESC", use_match=False, is_fallback=True,
+                            scan_cap=True))
     else:
         passes.append(_Pass("event_search MATCH :q", {"q": to_match_query(query)}))
 
@@ -450,14 +494,24 @@ def search_events(
                 "snippet(event_search, 0, '', '', ' … ', 12)" if p.use_match
                 else "substr(content, 1, 300)"
             )
+            where = [p.where] + shared
+            pass_params: dict = dict(p.params)
+            # Bound a full-table substring scan to the recent-id window: an indexed
+            # rowid range instead of walking the whole corpus (the latency backstop
+            # on the one pass that can't use the FTS index). Skipped under an
+            # explicit id scope, where the pool is already a handful of threads and
+            # the recency cap would wrongly drop their older within-token matches.
+            if p.scan_cap and thread_id is None and thread_ids is None:
+                where.append("rowid >= (SELECT max(rowid) FROM event_search) - :scan_cap")
+                pass_params["scan_cap"] = _LIKE_SCAN_CAP
             sql = sa_text(
                 "SELECT event_id, thread_id, event_type, content_type, occurred_at, "
                 + snippet_expr + " AS snippet, content AS full_content "
-                "FROM event_search WHERE " + " AND ".join([p.where] + shared) +
+                "FROM event_search WHERE " + " AND ".join(where) +
                 " ORDER BY " + order + " LIMIT :lim"
             )
             try:
-                rows = s.execute(sql, {**shared_params, **p.params}).mappings().all()
+                rows = s.execute(sql, {**shared_params, **pass_params}).mappings().all()
             except OperationalError as exc:
                 # A residual fts5 syntax error (a shape to_match_query's
                 # validation didn't catch) retries once with every MATCH param
@@ -468,7 +522,7 @@ def search_events(
                     raise
                 logger.warning("FTS5 rejected MATCH %r; retrying fully quoted", p.params)
                 retry = {k: _quote_all_tokens(v) if isinstance(v, str) else v
-                         for k, v in p.params.items()}
+                         for k, v in pass_params.items()}
                 rows = s.execute(sql, {**shared_params, **retry}).mappings().all()
             for r in rows:
                 key = (r["event_id"], r["content_type"])

@@ -15,6 +15,27 @@ from typing import Generic, Optional, TypeVar
 
 M = TypeVar("M")
 
+# Process policy: when set, the request path serves without a model it would have
+# to CONSTRUCT — it uses a model only once already loaded, leaving the
+# tens-of-seconds construction to an explicit :meth:`ModelSlot.get` (an
+# on-startup ``warm()``), never a query. A long-running server sets this so a
+# query arriving before warming finishes returns fast (lexical-only) instead of
+# blocking on the cold load; a one-shot CLI leaves it off and loads lazily. Read
+# through :func:`defer_construction` so the request-path guards in ``embed`` /
+# ``rerank`` honor a value set after import.
+_DEFER_CONSTRUCTION = False
+
+
+def set_defer_construction(on: bool) -> None:
+    """Set the process load policy (see :data:`_DEFER_CONSTRUCTION`)."""
+    global _DEFER_CONSTRUCTION
+    _DEFER_CONSTRUCTION = on
+
+
+def defer_construction() -> bool:
+    """Whether the request path must not construct a model (warm loads it instead)."""
+    return _DEFER_CONSTRUCTION
+
 
 def _ignore(_e: Exception) -> None:
     """Default failure observer: the slot's cached degrade is the whole contract."""

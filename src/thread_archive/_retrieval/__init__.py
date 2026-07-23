@@ -210,14 +210,18 @@ def warm_models(embedder=None, reranker=None) -> None:
         logger.debug("warm_models: dummy warm search skipped", exc_info=True)
 
 
-def _do_rerank(query: str, terms: list[str], force: Optional[bool], reranker) -> bool:
+def _do_rerank(query: str, terms: list[str], force: Optional[bool], reranker,
+               auto_enabled: bool) -> bool:
     """The query-shape half of the re-rank gate. ``force`` (the ``rerank=`` arg)
-    overrides it; otherwise gate to conceptual multi-term queries *and* an
-    available reranker (the ``[embeddings]`` extra). The result-side half —
-    standing down on a strong lexical head — runs after ranking in ``search``."""
+    overrides everything; otherwise the auto path runs only when ``auto_enabled``
+    (``params.rerank_auto``) — off by default, the cross-encoder being the
+    pipeline's dominant latency for ~no gold-file gain — and the query has the
+    conceptual multi-term shape *and* a reranker is available. The result-side
+    half — standing down on a strong lexical head — runs after ranking in
+    ``search``."""
     if force is not None:
         return force and reranker.is_available()
-    return _rank.should_rerank(query, terms) and reranker.is_available()
+    return auto_enabled and _rank.should_rerank(query, terms) and reranker.is_available()
 
 
 def search(
@@ -459,7 +463,7 @@ def search(
             from . import rerank as _rerank_mod
 
             reranker = _rerank_mod.default()
-        do_rerank = _do_rerank(query, terms, rerank, reranker)
+        do_rerank = _do_rerank(query, terms, rerank, reranker, p.rerank_auto)
         if grouping:
             rank_to = len(fused)
         else:

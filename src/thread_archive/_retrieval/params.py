@@ -33,6 +33,14 @@ The shipped values, with their evidence:
 - ``pool_floor`` 200 — candidate pool depth. Not ``limit*5`` alone because
   reachability dies at the pool boundary: a relevant-but-old hit past bm25's
   top-N is unreachable no matter how the ranker weighs it.
+- ``rerank_auto`` ``False`` — whether a query auto-invokes the cross-encoder
+  re-rank on the conceptual-shape gate. Off by default: the cross-encoder is the
+  pipeline's dominant latency (measured 2–4s on a long conceptual query, with
+  wide variance) and buys ~no gold-file MRR over the fused
+  lexical+semantic+coherence stack, so the shipped search stays inside the latency
+  budget without it. An explicit ``rerank=True`` still forces it (evals, and the
+  quality-rebuild seam that must re-earn it within budget — a smaller model, a
+  tighter pool); the community-coherence re-rank still orders the head.
 - ``rerank_pool`` 12 — how many ranked candidates feed the cross-encoder
   before cutting to ``limit`` (the head is ``max(rerank_pool, limit)``, so a
   wider result window still reranks its whole depth). The cross-encoder is the
@@ -70,6 +78,7 @@ class SearchParams:
     density_norm_chars: int = 500
     rrf_k: int = 60
     pool_floor: int = 200
+    rerank_auto: bool = False
     rerank_pool: int = 12
     rerank_doc_chars: int = 768
     coherence_gamma: Optional[float] = None

@@ -39,7 +39,7 @@ from collections.abc import Callable
 from typing import Any, Optional, Protocol
 
 from .embed import importable, models_enabled, select_device, torch_accelerators
-from .model_slot import ModelSlot
+from .model_slot import ModelSlot, defer_construction
 
 logger = logging.getLogger(__name__)
 
@@ -182,6 +182,11 @@ class Reranker:
         # caller that reaches scoring directly honors it too and a switched-off stage
         # can never cold-load the cross-encoder.
         if not self.is_available():
+            return None
+        # Load policy: a server that defers construction to warm sits the re-rank
+        # out until the cross-encoder is resident, so a query racing the warm keeps
+        # the ranked order (fast) instead of blocking on the cold load.
+        if defer_construction() and not self.is_loaded():
             return None
         pairs = [[query, (d or "")[:RERANK_DOC_CHARS]] for d in docs]
         try:
