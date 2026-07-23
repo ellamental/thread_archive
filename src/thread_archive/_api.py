@@ -31,11 +31,19 @@ if TYPE_CHECKING:
 # The backup kit, re-exported (see docstring).
 from ._ops.backup import backup, list_generations, restore, restore_drill  # noqa: F401
 from ._ops.coverage import check_coverage  # noqa: F401
-from ._ops.health import read_health  # noqa: F401
+from ._ops.health import pipeline_verdict, read_health  # noqa: F401
 from ._ops.nightly import nightly  # noqa: F401
 from ._ops.snapshot import snapshot  # noqa: F401
 from ._ops.source_mirror import mirror_sources  # noqa: F401
 from ._ops.verify import verify  # noqa: F401
+
+_WATCH_PROCESS_ACTIVE = False
+
+
+def _set_watch_process_active(active: bool) -> None:
+    """Mark this process as the persistent watch loop for status consumers."""
+    global _WATCH_PROCESS_ACTIVE
+    _WATCH_PROCESS_ACTIVE = active
 
 
 def open_archive(home: Optional[str] = None) -> ArchivePaths:
@@ -362,6 +370,33 @@ def status(*, home: Optional[str] = None) -> dict:
     from ._truth.jsonl_log import _read_manifest
 
     health = read_health()
+    watch_pass = health.get("watch_pass_last")
+    backup_record = health.get("backup_last") or {}
+
+    watch_process_alive = _WATCH_PROCESS_ACTIVE
+    if isinstance(watch_pass, dict):
+        try:
+            pid = int(watch_pass.get("pid", 0))
+            if pid > 0:
+                os.kill(pid, 0)
+                watch_process_alive = True
+        except (OSError, TypeError, ValueError):
+            pass
+
+    backup_same_device = None
+    backup_dest = backup_record.get("dest") if isinstance(backup_record, dict) else None
+    if backup_dest:
+        try:
+            # A destination may have been unmounted or removed since the last
+            # run. Walk to its nearest existing parent so the warning still
+            # works before the next backup recreates the leaf.
+            dest_probe = Path(str(backup_dest)).expanduser()
+            while not dest_probe.exists() and dest_probe != dest_probe.parent:
+                dest_probe = dest_probe.parent
+            backup_same_device = paths.home.stat().st_dev == dest_probe.stat().st_dev
+        except OSError:
+            pass
+
     return {
         "home": str(paths.home),
         "truth_dir": str(paths.truth_dir),
@@ -382,6 +417,9 @@ def status(*, home: Optional[str] = None) -> dict:
         "last_coverage": health.get("coverage_last"),
         "last_source_mirror": health.get("source_mirror_last"),
         "last_self_update": health.get("self_update_last"),
+        "pipeline": pipeline_verdict(health),
+        "watch_process_alive": watch_process_alive,
+        "backup_same_device": backup_same_device,
     }
 
 

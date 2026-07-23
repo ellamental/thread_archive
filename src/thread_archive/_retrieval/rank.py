@@ -479,9 +479,9 @@ def cluster_by_thread(
 
 
 #: One doc's ranking features, in the order :func:`score_from_features` weights
-#: them: the four weighted signals, then the content-type multiplier applied to
+#: them: the five weighted signals, then the content-type multiplier applied to
 #: their sum.
-ScoreFeatures = tuple[float, float, float, float, float]
+ScoreFeatures = tuple[float, float, float, float, float, float]
 
 
 def score_features(
@@ -491,8 +491,8 @@ def score_features(
     params: Optional[SearchParams] = None,
     now: datetime | None = None,
 ) -> list[ScoreFeatures]:
-    """Per-doc ``(density, phrase, recency, fusion, ct_weight)`` — the half of
-    scoring that the four ranking *weights* do not touch.
+    """Per-doc ``(density, phrase, recency, fusion, bm25, ct_weight)`` — the half
+    of scoring that the five ranking *weights* do not touch.
 
     The split is a measurement seam. Regex term matching over every doc's full
     text dominates the scorer's cost, and it is identical for every configuration
@@ -537,6 +537,7 @@ def score_features(
         features.append((
             density, phrase_bonus, recency,
             result.get("_rrf", 0.0) or 0.0,
+            result.get("_lex", 0.0) or 0.0,
             ct_weights.get(result.get("content_type") or "", 1.0),
         ))
     return features
@@ -548,15 +549,16 @@ def score_from_features(
     """The combined relevance score per doc — a configuration's entire
     contribution to the ranking, given :func:`score_features` rows.
 
-    Only the *ratios* between the four weights matter: scaling all four by a
+    Only the *ratios* between the five weights matter: scaling all five by a
     constant scales every score and leaves the order untouched (the content-type
     multiplier distributes over the sum), which is why ``density_weight`` reads
     as the anchor the rest are calibrated against."""
     p = params or _DEFAULT_PARAMS
     return [
         (density * p.density_weight + phrase * p.phrase_weight
-         + recency * p.recency_weight + fusion * p.fusion_weight) * ct_weight
-        for density, phrase, recency, fusion, ct_weight in features
+         + recency * p.recency_weight + fusion * p.fusion_weight
+         + bm25 * p.bm25_weight) * ct_weight
+        for density, phrase, recency, fusion, bm25, ct_weight in features
     ]
 
 

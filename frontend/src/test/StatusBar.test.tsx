@@ -25,6 +25,11 @@ describe('app header', () => {
     expect(screen.getByText('Conversation')).toBeInTheDocument()
   })
 
+  it('labels the trust center as health', () => {
+    renderAt('/health')
+    expect(screen.getByText('Health')).toBeInTheDocument()
+  })
+
   it('offers a global search shortcut', async () => {
     const user = userEvent.setup()
     const onSearch = renderAt('/stats')

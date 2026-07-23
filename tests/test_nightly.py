@@ -196,6 +196,9 @@ def test_status_surfaces_the_drill_and_nightly_records(archive_home, tmp_path):
     st = ta.status()
     assert st["last_restore_drill"]["ok"] is True
     assert st["last_nightly"]["ok"] is True
+    assert st["pipeline"]["ok"] is True
+    assert st["pipeline"]["ran"] is True
+    assert st["backup_same_device"] is True
 
 
 def test_nightly_skips_heartbeat_without_family_logs_dir(
@@ -449,4 +452,3 @@ def test_nightly_backup_stage_reports_tcc_hint(archive_home, tmp_path):
         os.chflags(dest, 0)  # else even the tmp_path cleanup cannot remove it
     assert "backup" in result["failed_stages"]
     assert "TCC" in result["backup"]["error"]
-

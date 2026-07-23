@@ -41,6 +41,16 @@ def test_public_surface_round_trip(archive_home) -> None:
     assert st["home"] == str(archive_home)
 
 
+def test_status_knows_when_it_runs_inside_the_persistent_watcher(
+    archive_home,
+) -> None:
+    ta._set_watch_process_active(True)
+    try:
+        assert ta.status()["watch_process_alive"] is True
+    finally:
+        ta._set_watch_process_active(False)
+
+
 def test_public_api_is_exported() -> None:
     for name in ("open_archive", "search", "read_thread", "read_thread_structured",
                  "import_path", "reindex", "checkpoint", "watch", "status", "close"):

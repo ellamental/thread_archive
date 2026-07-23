@@ -29,6 +29,11 @@ function renderAt(url: string) {
 }
 
 describe('Sidebar search filters', () => {
+  it('links to the user-visible trust center', () => {
+    renderAt('/')
+    expect(screen.getByRole('link', { name: 'health' })).toHaveAttribute('href', '/health')
+  })
+
   it('arms filters in the fold-out and carries them into the next search', async () => {
     const user = userEvent.setup()
     renderAt('/')

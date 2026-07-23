@@ -6,6 +6,7 @@ function sectionLabel(pathname: string): string {
   if (pathname === '/threads') return 'Browse'
   if (pathname === '/stats') return 'Stats'
   if (pathname.startsWith('/stats/model/')) return 'Model stats'
+  if (pathname === '/health') return 'Health'
   if (pathname.startsWith('/archive/')) return 'Conversation'
   return 'Archive'
 }

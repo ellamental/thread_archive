@@ -222,10 +222,17 @@ def cmd_watch(args: argparse.Namespace) -> int:
         len(available), available, args.interval, watcher.maintenance_interval,
     )
     try:
+        # The cohosted status endpoint runs before a new daemon can finish its
+        # first potentially long provider sweep. Mark this process as the
+        # persistent capture owner so the trust center can distinguish
+        # "actively catching up" from a dead watcher whose completed-pass
+        # record merely looks recent.
+        api._set_watch_process_active(True)
         watcher.run()
     except KeyboardInterrupt:
         print("\nstopped.", flush=True)
     finally:
+        api._set_watch_process_active(False)
         if httpd is not None:
             # shutdown() must precede server_close(): closing the socket alone
             # doesn't wake the serve_forever poller on Linux, which keeps the

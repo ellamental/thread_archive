@@ -278,6 +278,18 @@ def retrieve_pool(
     if probe is not None:
         probe.fts_ms += (perf_counter() - _t0) * 1000.0
 
+    # Stamp each lexical hit with where the arm itself placed it — bm25 standing
+    # for a MATCH pass. FTS5 orders by bm25 but does not surface the score, and the
+    # ranker's own lexical signal (density) is IDF-blind: it counts matched terms
+    # per ``density_norm_chars``, weighing a corpus-wide common term exactly like
+    # the rare one that actually discriminates, then divides by length. So a short
+    # doc carrying a few common query words outscores the long doc carrying the
+    # discriminating ones. The reciprocal rank (peak-normalized to 1.0 at the head,
+    # the same shape ``_rrf_merge`` uses) puts the arm's own verdict in a form the
+    # scorer can weigh; ``bm25_weight`` is what admits it (see params.py).
+    for _i, _h in enumerate(lexical):
+        _h["_lex"] = round((p.rrf_k + 1) / (p.rrf_k + 1 + _i), 6)
+
     # A tool_name scope also sits the vector arm out: tool docs aren't embedded
     # (only user/text/title/summary are), so every semantic hit in a tool-scoped
     # search would be a hit the filter should have excluded. A types scope sits

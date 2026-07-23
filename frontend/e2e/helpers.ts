@@ -4,11 +4,13 @@ export const THREAD_ID = '01ARZ3NDEKTSV4RRFFQ69G5FAV'
 export const MODEL = 'claude-opus-4-8'
 
 const now = '2026-07-20T12:00:00Z'
+const healthNow = new Date().toISOString()
 
 const threadListItem = {
   id: THREAD_ID,
   title: 'Browser Test Thread',
   source: 'claude-code',
+  first_user_message: 'Open the browser test thread and verify its recent-card preview.',
   thread_type: 'conversation',
   updated_at: now,
 }
@@ -128,9 +130,61 @@ export async function mockApi(page: Page): Promise<string[]> {
         threads: 1,
         events: 3,
         topics: 0,
+        links: 0,
         fts_indexed: 3,
         vectors_indexed: 3,
         home: '/tmp/browser-archive',
+        truth_dir: '/tmp/browser-archive/truth',
+        index_path: '/tmp/browser-archive/index.db',
+        last_checkpoint_at: healthNow,
+        last_verify: { at: healthNow, ok: true, deep: true, hashes: true, parse_errors: 0 },
+        last_backup: {
+          at: healthNow,
+          ok: true,
+          dest: '/Volumes/browser-backup',
+          files_copied: 2,
+          mirror_complete: true,
+        },
+        last_restore_drill: { at: healthNow, ok: true, events: 3, seconds: 1 },
+        last_nightly: { at: healthNow, ok: true, dest: '/Volumes/browser-backup', failed_stages: [] },
+        last_watch_errors: null,
+        last_watch_pass: {
+          at: healthNow,
+          pid: 123,
+          passes: 8,
+          sources: {
+            'claude-code': {
+              checked: 2,
+              items: 1,
+              events: 3,
+              lines: 4,
+              parse_errors: 0,
+              errors: 0,
+            },
+          },
+        },
+        last_coverage: {
+          at: healthNow,
+          ok: true,
+          sources_checked: 1,
+          failed: [],
+          warnings: [],
+          skips_recent: 0,
+          drift_recent: 0,
+        },
+        last_source_mirror: { at: healthNow, ok: true, copied: 1, files: 2, bytes_out: 1024, errors: 0 },
+        last_self_update: { at: healthNow, ok: true, action: 'up-to-date', current: '0.9.1' },
+        pipeline: {
+          ran: true,
+          ok: true,
+          failed_stages: [],
+          recovered_stages: [],
+          tolerated_stages: [],
+          nightly_at: healthNow,
+          dest: '/Volumes/browser-backup',
+        },
+        watch_process_alive: true,
+        backup_same_device: false,
       })
     }
     if (path === '/api/sources') return json(route, { sources: [{ source: 'claude-code', threads: 1 }] })

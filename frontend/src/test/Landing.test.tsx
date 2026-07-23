@@ -26,7 +26,7 @@ function renderLanding() {
 function thread(overrides: Partial<ThreadListItem>): ThreadListItem {
   return {
     id: '1', title: 'a session', source: 'claude-code', thread_type: 'conversation',
-    updated_at: '2026-01-01T10:00:00Z',
+    updated_at: '2026-01-01T10:00:00Z', first_user_message: null,
     ...overrides,
   }
 }
@@ -67,7 +67,12 @@ describe('Landing', () => {
     mswJson('/api/sources', { sources: [] })
     mswJson('/api/threads', {
       threads: [
-        thread({ id: 't1', title: 'today talk', updated_at: isoOffsetDays(0) }),
+        thread({
+          id: 't1',
+          title: 'today talk',
+          updated_at: isoOffsetDays(0),
+          first_user_message: 'This is the opening user message.',
+        }),
         thread({ id: 't2', title: 'yesterday talk', updated_at: isoOffsetDays(1) }),
         thread({ id: 't3', title: 'older talk', updated_at: isoOffsetDays(9) }),
         // no title / source / date: falls back to Untitled, empty meta, Earlier
@@ -87,6 +92,10 @@ describe('Landing', () => {
     const untitled = screen.getByText('Untitled conversation')
     expect(untitled.closest('a')).toHaveAttribute('href', '/archive/t4')
     expect(screen.getByText('today talk').closest('a')).toHaveAttribute('href', '/archive/t1')
+    expect(screen.getByText('This is the opening user message.').closest('a')).toHaveAttribute(
+      'href',
+      '/archive/t1',
+    )
 
     // the meta line joins source and a formatted date, dropping the empties
     expect(screen.getAllByText(/claude-code · /).length).toBeGreaterThan(0)

@@ -87,6 +87,9 @@ export function Landing() {
               {group.threads.map((thread) => (
                 <Link className="recent-card" key={thread.id} to={'/archive/' + thread.id}>
                   <span className="recent-title">{thread.title || 'Untitled conversation'}</span>
+                  {thread.first_user_message && (
+                    <span className="recent-preview">{thread.first_user_message}</span>
+                  )}
                   <span className="recent-meta">
                     {[thread.source, fmtDate(thread.updated_at)].filter(Boolean).join(' · ')}
                   </span>

@@ -2,6 +2,33 @@
 
 ## Unreleased
 
+- Recent-conversation cards now include up to 200 characters from the first
+  non-empty user message, so a title alone is no longer the only recognition cue.
+
+- The ranker gained a **`bm25_weight` term** over `_lex`, the lexical arm's own
+  placement of a hit (peak-normalized reciprocal rank, stamped in the pool half of
+  `search`). It ships at `0.0`, so the shipped ordering is unchanged — confirmed on
+  both benches: BEIR scifact reproduces 0.3024 nDCG@10 exactly and all seven gold
+  files reproduce their baselines exactly at `bm25_weight=0`. The knob exists
+  because the arm's verdict was reaching the scorer through one channel only.
+  FTS5 orders by bm25 but never surfaces the score, and `_rrf` — the feature that
+  carries rank evidence — is computed only when the vector arm returns. A
+  lexical-only search (a `tool_name` or `types` scope, a structural query, an
+  archive without embeddings) therefore ranked on density alone, and density is
+  IDF-blind and length-normalized: it weighs a corpus-common term exactly like the
+  rare one that discriminates, then divides by length. Measured on BEIR scifact
+  over a fixed pool, varying only the ordering: the pool's own bm25 order scores
+  0.682 nDCG@10 (above the 0.665 published Anserini BM25 reference) and the
+  density re-scoring of that same pool scores 0.302, with 54 of 332 gold documents
+  pushed out of the top-200 entirely (recall@100 0.924 → 0.716) and top-10 median
+  document length falling 1496 → 835 chars. Gold-file sweep results and the
+  weight's in-domain trade are recorded in `params.py`; `evals/experiments/bm25_term.py`
+  races it on the lab.
+
+- `pool_cache.FORMAT_VERSION` → 2, since cached pools now carry `_lex`. A pool
+  cached by an older build would have scored the new term as zero and made a
+  `--set bm25_weight=…` sweep read as having no effect.
+
 - Search quality gained a **recall-shape tier** (`tests/test_search_recall_shape.py`)
   alongside the ordering floors. The existing tier-0 metrics (MRR, success@k, and a
   "recall@k" over golds that are mostly one thread) score which thread *wins*; they

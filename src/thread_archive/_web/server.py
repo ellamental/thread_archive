@@ -377,7 +377,8 @@ def _list_threads(*, limit: int, q: Optional[str], types: Optional[list[str]] = 
     ``types`` given, exactly those ``thread_type`` values are listed; without
     it, topics and system threads (subagent runs) are hidden — the sidebar's
     default. Archived threads never list; ``q`` filters on title/name
-    substring."""
+    substring. Each row also carries a compact preview of its first non-empty
+    user message."""
     from sqlalchemy import DateTime, func, select
 
     from .._store import Event, Thread, get_session
@@ -393,9 +394,22 @@ def _list_threads(*, limit: int, q: Optional[str], types: Optional[list[str]] = 
     last_active_at = func.coalesce(
         newest_event_at, Thread.updated_at, type_=DateTime(timezone=True)
     ).label("last_active_at")
+    user_content = func.trim(func.json_extract(Event.payload, "$.content"))
+    first_user_message = (
+        select(func.substr(user_content, 1, 200))
+        .where(
+            Event.thread_id == Thread.id,
+            Event.event_type.in_(("user_message_sent", "thread_message_sent")),
+            func.length(user_content) > 0,
+        )
+        .order_by(Event.id.asc())
+        .limit(1)
+        .scalar_subquery()
+        .label("first_user_message")
+    )
     stmt = (
         select(Thread.id, Thread.title, Thread.name, Thread.source,
-               Thread.thread_type, last_active_at)
+               Thread.thread_type, last_active_at, first_user_message)
         .where(Thread.archived.is_(False))
     )
     if types:
@@ -416,6 +430,7 @@ def _list_threads(*, limit: int, q: Optional[str], types: Optional[list[str]] = 
             "thread_type": r.thread_type,
             # the row's date in list consumers: last activity, not the raw column
             "updated_at": r.last_active_at.isoformat() if r.last_active_at else None,
+            "first_user_message": r.first_user_message,
         }
         for r in rows
     ]

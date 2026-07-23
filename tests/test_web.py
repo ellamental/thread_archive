@@ -122,6 +122,9 @@ def test_status_endpoint(archive_home):
     assert status == 200 and ctype == "application/json"
     assert payload["threads"] == 1 and payload["events"] > 0
     assert payload["fts_indexed"] > 0
+    assert payload["pipeline"]["ran"] is False
+    assert payload["watch_process_alive"] is False
+    assert payload["backup_same_device"] is None
 
 
 def test_health_endpoint(archive_home):
@@ -303,6 +306,22 @@ def test_threads_endpoint(archive_home):
     assert len(payload["threads"]) == 1
     t = payload["threads"][0]
     assert t["id"] and t["title"] and "updated_at" in t
+    assert t["first_user_message"] == "hello webview"
+
+
+def test_threads_first_user_message_preview_is_trimmed_and_capped(archive_home):
+    content = "  " + "x" * 205
+    f = archive_home / "long-first-message.jsonl"
+    user = dict(
+        USER,
+        uuid="long-user",
+        message={"role": "user", "content": content},
+    )
+    f.write_text(json.dumps(user) + "\n", encoding="utf-8")
+    ta.import_path(f)
+
+    _, _, payload = _get("/api/threads")
+    assert payload["threads"][0]["first_user_message"] == "x" * 200
 
 
 def test_threads_query_filter(archive_home):

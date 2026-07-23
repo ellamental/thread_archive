@@ -26,6 +26,26 @@ The shipped values, with their evidence:
   Saturating density instead (``d/(d+k)``, bounding it to compete on fusion's
   scale) buys the same paraphrase recall and costs far more elsewhere: the
   linear term is load-bearing for the topic files.
+- ``bm25_weight`` 0.0 — the weight on ``_lex``, the lexical arm's own placement
+  of a hit (peak-normalized reciprocal rank; FTS5 orders by bm25 but never
+  surfaces the score). Off by default because the fused stack already reaches
+  that verdict through ``_rrf``, which fuses the lexical and vector *ranks* —
+  so on the gold files, all of which run the fused pipeline, admitting it a
+  second time is a trade rather than a clear win: at 100 the findability file
+  gains .015 nDCG@10 and rerank-cases .052 success@10, while the frustration
+  file gives back .048 recall@10; at 200 findability gains .030 nDCG@10 and
+  context-compaction and frustration pay for it in recall; past ~400 the topic
+  files break their floors outright as bm25's order overrides the density
+  evidence they lean on. The term exists for the case ``_rrf`` cannot cover.
+  Fusion runs only when the vector arm returns, so a **lexical-only** search — a
+  ``tool_name`` or ``types`` scope, a structural query, an archive with no
+  embeddings — carries no rank evidence at all and ranks on density alone.
+  Density is IDF-blind and length-normalized (matched terms per
+  ``density_norm_chars``), which weighs a common term like the rare one that
+  discriminates and then favours the shorter doc. Out of domain, where that path
+  is the whole stack, the cost is the ballgame: on BEIR scifact the lexical
+  pool's own bm25 order scores .682 nDCG@10, and the density re-scoring of that
+  same pool scores .302.
 - ``recency_weight`` 1.0 — the corpus skews to OLD threads, so a strong
   recency boost buries what users actually read; 1.0 keeps a mild recent
   tiebreaker. The signal itself decays exponentially with
@@ -88,6 +108,7 @@ class SearchParams:
     phrase_weight: float = 50.0
     recency_weight: float = 1.0
     fusion_weight: float = 400.0
+    bm25_weight: float = 0.0
     content_type_weights: Optional[Mapping[str, float]] = None
     recency_half_life_hours: float = 72.0
     density_norm_chars: int = 500
