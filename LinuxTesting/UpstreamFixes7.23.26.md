@@ -99,6 +99,28 @@ Machine activation checklist, all done 2026-07-23:
 - `coverage` may keep reporting `degraded (validation_drift)` until the last
   pre-fix ledger records age out of its 7-day window — expected, no action.
 
+## CI triage (post-push)
+
+PR #2's CI came back red on `python (3.12)`, `python (3.14)`, and `frontend` —
+**all pre-existing, none from this PR's changes**: main's own CI shows the
+identical failure signature, including on a docs-only commit. Two causes:
+
+- **Ruff lint** — import-sort (I001) and one E741 (`l` as a variable name) in
+  the `_mine/` subsystem and its tests, introduced by the gold-gate/refactor
+  work on main. Fixed in this PR after merging `origin/main` into the branch:
+  `ruff check . --fix` (3 autofixes) plus renaming `l` → `line` in
+  `tests/test_mine_orchestration.py:343`. `ruff check .` now passes clean
+  (ruff 0.15.22), and the full suite + package lane stay green with main's
+  new tests included.
+- **Frontend coverage thresholds** — lines 89.72% vs 91% required, statements
+  86.53% vs 88%. Pre-existing on main, entirely outside this PR's scope
+  (no frontend file touched); needs real frontend test work in a follow-up.
+
+Also observed during triage: **main was force-pushed** (`1d0f94c...20a21b4`),
+which removed the direct-pushed commit `1d0f94c` (repair log + LinuxPatch
+artifacts) from main's history. No content is lost — that commit is in this
+PR branch's ancestry, so merging PR #2 restores it to main.
+
 ## Test evidence
 
 - `pytest tests/ -q` → exit 0, no XDG workaround, on Kubuntu / Python 3.14
