@@ -81,6 +81,7 @@ def record_search(
     hits: object,
     widened: bool,
     duration_ms: Optional[float] = None,
+    timings: Optional[dict[str, Any]] = None,
 ) -> None:
     """Record one ``thread_search`` call: the query, the non-default parameters,
     how many hits came back, the top result ids (``[event_id, thread_id]``
@@ -88,7 +89,14 @@ def record_search(
     whatever the engine returned — result ids are extracted defensively, so a
     non-ranked output shape (count/linkable) records its parameters and count
     without ids. ``duration_ms`` covers the retrieval work as the agent felt it
-    (including a widen retry), not ledger/render overhead."""
+    (including a widen retry), not ledger/render overhead.
+
+    ``timings`` is the optional per-stage breakdown of that latency (the engine's
+    :class:`thread_archive._retrieval._probe.SearchProbe` fields — ``fts_ms``,
+    ``semantic_ms``, ``rerank_ms``, ``did_rerank``, ``pool_size``, and ``cold``
+    when the models loaded inside the call). Total latency alone can't see which
+    stage regressed; this makes the ledger self-diagnosing — still ids and timings
+    only, never content."""
     if not _enabled():
         return
     record: dict[str, Any] = {
@@ -101,6 +109,8 @@ def record_search(
         record["widened"] = True
     if duration_ms is not None:
         record["duration_ms"] = round(duration_ms, 1)
+    if timings:
+        record.update(timings)
     results: list[list[int | str]] = []
     if isinstance(hits, list):
         record["n_hits"] = len(hits)

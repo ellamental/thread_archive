@@ -2,6 +2,30 @@
 
 ## Unreleased
 
+- The retrieval-usage ledger now records a **per-stage latency breakdown** for
+  every MCP search: `fts_ms`, `semantic_ms`, `rerank_ms`, `did_rerank`,
+  `pool_size`, and `cold` (present when a model loaded inside the request — the
+  cold-model tail). Total `duration_ms` alone couldn't see which stage a slow
+  search spent its time in; the breakdown makes the ledger self-diagnosing and any
+  latency change self-validating. A fail-soft, opt-in `_probe.SearchProbe`
+  context-local carries the timings out of `search()` — no probe installed (evals,
+  tests, direct callers) means every timing point is a cheap `is None` check, so an
+  unmeasured search is never slowed. Still ids and timings only, never content.
+
+- Search latency cut hard: the cross-encoder re-rank was 77–94% of a conceptual
+  query's wall-clock (the rest of the pipeline — FTS, vectors, ranking — runs in
+  under a second), so its two cost knobs are cheaper by default. `rerank_pool`
+  24→12 (candidates scored) and the new `rerank_doc_chars` 1500→768 (per-passage
+  cap) put ~4× fewer tokens through the model, taking a warm re-rank from ~3–6s to
+  ~1–1.5s. The re-rank still runs, gated as before; it just scores a tighter,
+  query-centred window. `evals/experiments/rerank_rich.py` holds the old budget so
+  the search lab can measure whether the cut cost any gold-file quality (the CI gold
+  gate is the standing floor); `rerank_pool8.py` is the next-cut candidate.
+
+- `SearchParams` gained `rerank_doc_chars`, the per-passage character cap the
+  cross-encoder scores each hit at — first-class so the search lab can race passage
+  length as a plain `PARAMS` experiment.
+
 - `evals/search_lab.py` gained `--sample FRAC`, a fast-iteration subset for the gold
   bench: it scores a deterministic, hash-selected slice of each gold file (the same
   cases every run, nested as `FRAC` grows) instead of the whole file. Paired with

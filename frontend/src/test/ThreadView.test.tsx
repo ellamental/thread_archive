@@ -3,6 +3,7 @@
 // merging into one labelled group.
 import { describe, expect, it, vi } from 'vitest'
 import { fireEvent, render, screen } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
 import { ThreadView } from '../components/ThreadView'
 import type { Message, StructuredThread } from '../api'
@@ -125,6 +126,60 @@ describe('ThreadView', () => {
     renderAt(`/archive/${TID}?e=15`)
     const msg = (await screen.findByText('second')).closest('.msg')
     expect(msg).toHaveClass('hit-target')
+  })
+
+  it('finds text within the open thread and moves between matching messages', async () => {
+    const user = userEvent.setup()
+    window.HTMLElement.prototype.scrollIntoView = vi.fn()
+    mswJson('/api/thread/:id', thread([
+      { ...asst('needle in the first turn', 'opus'), event_ids: [11] },
+      { ...asst('nothing here', 'opus'), event_ids: [12] },
+      { ...asst('another needle later', 'opus'), event_ids: [13] },
+    ]))
+    renderAt(`/archive/${TID}`)
+    await user.type(await screen.findByRole('searchbox', { name: 'find in thread' }), 'needle')
+    expect(screen.getByText('1 of 2')).toBeInTheDocument()
+    expect(screen.getByText('needle in the first turn').closest('.msg')).toHaveClass('find-target')
+
+    await user.click(screen.getByRole('button', { name: 'next in-thread match' }))
+    expect(screen.getByText('2 of 2')).toBeInTheDocument()
+    expect(screen.getByText('another needle later').closest('.msg')).toHaveClass('find-target')
+  })
+
+  it('expands and collapses every detail block in the reader', async () => {
+    const user = userEvent.setup()
+    mswJson('/api/thread/:id', thread([{
+      ...asst('with tools', 'opus'),
+      blocks: [
+        { type: 'tool_use', name: 'Read', input: { file: 'x' } },
+        { type: 'tool_result', output: 'done', truncated: false },
+      ],
+    }]))
+    const { container } = renderAt(`/archive/${TID}`)
+    await screen.findByText('Read')
+    const details = [...container.querySelectorAll<HTMLDetailsElement>('details.tool')]
+    expect(details.every((detail) => !detail.open)).toBe(true)
+
+    await user.click(screen.getByRole('button', { name: 'expand details' }))
+    expect(details.every((detail) => detail.open)).toBe(true)
+    await user.click(screen.getByRole('button', { name: 'collapse details' }))
+    expect(details.every((detail) => !detail.open)).toBe(true)
+  })
+
+  it('moves through the exact search-hit events carried by the result link', async () => {
+    const user = userEvent.setup()
+    window.HTMLElement.prototype.scrollIntoView = vi.fn()
+    mswJson('/api/thread/:id', thread([
+      { ...asst('first hit', 'opus'), event_ids: [11] },
+      { ...asst('second hit', 'opus'), event_ids: [12] },
+    ]))
+    renderAt(`/archive/${TID}?e=11&hits=11,12`)
+    expect((await screen.findByText('first hit')).closest('.msg')).toHaveClass('hit-target')
+    expect(screen.getByText('1 of 2')).toBeInTheDocument()
+
+    await user.click(screen.getByRole('button', { name: 'next hit →' }))
+    expect(screen.getByText('second hit').closest('.msg')).toHaveClass('hit-target')
+    expect(screen.getByText('2 of 2')).toBeInTheDocument()
   })
 
   it('shows the provenance line: date span, event count, session id', async () => {

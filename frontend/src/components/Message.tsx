@@ -327,6 +327,7 @@ export function Message({
   hueForModel,
   continued,
   highlighted,
+  findTarget,
   anchorId,
   permalink,
 }: {
@@ -340,6 +341,8 @@ export function Message({
   // This message holds the search hit the reader arrived by (?e= deep link) —
   // accented so the eye lands on the matching turn, not the top of the thread.
   highlighted?: boolean
+  // The active match from the reader's local find control.
+  findTarget?: boolean
   anchorId?: string
   // The in-app path deep-linking this message (/archive/<id>?e=<event>); when
   // present the footer offers a copy-link button.
@@ -367,7 +370,7 @@ export function Message({
       id={anchorId}
       className={
         'msg ' + message.role + (hue != null ? ' has-model' : '') + (continued ? ' cont' : '') +
-        (highlighted ? ' hit-target' : '')
+        (highlighted ? ' hit-target' : '') + (findTarget ? ' find-target' : '')
       }
       style={hue != null ? hueStyle(hue) : undefined}
     >

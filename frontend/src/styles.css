@@ -29,7 +29,11 @@ aside {
   width: 300px; min-width: 300px; border-right: 1px solid var(--line);
   background: var(--panel); display: flex; flex-direction: column; height: 100%;
 }
-.brand { padding: 14px 16px 10px; font-weight: 600; letter-spacing: .2px; }
+.brand {
+  padding: 14px 16px 10px; font-weight: 600; letter-spacing: .2px;
+  display: flex; align-items: center; justify-content: space-between;
+}
+.sidebar-close, .sidebar-toggle, .sidebar-scrim { display: none; }
 .searchbar { padding: 0 12px 12px; border-bottom: 1px solid var(--line); }
 .input {
   width: 100%; padding: 9px 11px; border: 1px solid var(--line); border-radius: 8px;
@@ -63,14 +67,46 @@ aside {
 
 /* ---- main ---- */
 main { flex: 1; display: flex; flex-direction: column; min-width: 0; height: 100%; }
-.statusbar { color: var(--muted); font-size: 12px; padding: 10px 28px; border-bottom: 1px solid var(--line); }
+.statusbar {
+  color: var(--muted); font-size: 12px; padding: 10px 28px; border-bottom: 1px solid var(--line);
+  display: flex; align-items: center; gap: 9px; min-height: 39px;
+}
+.status-copy { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .statusbar.err { color: #c4543b; }
 .content { flex: 1; overflow-y: auto; }
 .wrap { max-width: 840px; margin: 0 auto; padding: 24px 28px 96px; }
 h1.title { font-size: 19px; margin: 0 0 4px; }
 .submeta { color: var(--muted); font-size: 12px; margin-bottom: 18px; }
-.toggles { font-size: 12px; color: var(--muted); margin-bottom: 18px; }
-.toggles label { margin-right: 14px; cursor: pointer; }
+.reader-toolbar {
+  position: sticky; top: 0; z-index: 10;
+  display: flex; flex-direction: column; gap: 7px;
+  margin: 0 -8px 18px; padding: 8px;
+  border: 1px solid var(--line); border-radius: 10px;
+  background: var(--panel); box-shadow: 0 5px 14px color-mix(in srgb, var(--ink) 6%, transparent);
+  color: var(--muted); font-size: 12px;
+}
+.find-control, .reader-options, .hit-nav {
+  display: flex; align-items: center; gap: 7px; flex-wrap: wrap;
+}
+.find-input {
+  flex: 1; min-width: 170px; padding: 5px 8px;
+  border: 1px solid var(--line); border-radius: 7px;
+  background: var(--bg); color: var(--ink); font: inherit; outline: none;
+}
+.find-input:focus { border-color: var(--accent); }
+.find-status { min-width: 68px; text-align: right; font-variant-numeric: tabular-nums; }
+.reader-options label { cursor: pointer; }
+.toolbar-btn {
+  padding: 3px 8px; border: 1px solid var(--line); border-radius: 6px;
+  background: var(--bg); color: var(--muted); white-space: nowrap;
+}
+.toolbar-btn:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
+.toolbar-btn:disabled { opacity: .35; cursor: default; }
+.icon-btn { width: 29px; padding-inline: 0; text-align: center; }
+.hit-nav {
+  padding: 5px 0; border-top: 1px solid var(--line); border-bottom: 1px solid var(--line);
+}
+.hit-nav span { font-variant-numeric: tabular-nums; }
 
 /* the reader's provenance line: date span, event count, provider session id */
 .provenance { display: flex; flex-wrap: wrap; gap: 12px; margin-top: -12px; }
@@ -134,6 +170,10 @@ h1.title { font-size: 19px; margin: 0 0 4px; }
   font-size: 12px; margin: -8px 0 18px;
 }
 .subjects-label { color: var(--muted); }
+.subject-tag {
+  border: 1px solid var(--line); border-radius: 999px; padding: 1px 7px;
+  color: var(--muted); background: var(--bg); font-size: 11px;
+}
 
 /* ---- transcript ---- */
 .msg { position: relative; border-radius: 10px; padding: 12px 16px; margin: 12px 0; border: 1px solid var(--line); }
@@ -149,6 +189,13 @@ h1.title { font-size: 19px; margin: 0 0 4px; }
 .msg.cont { margin-top: 0; border-top: none; border-top-left-radius: 0; border-top-right-radius: 0; padding-top: 4px; }
 /* The message a search hit deep-linked to (?e=) — accented so the eye lands on it. */
 .msg.hit-target { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent-soft); }
+.msg.find-target {
+  border-color: #b07d1e;
+  box-shadow: 0 0 0 2px #c9962e22;
+}
+.msg.hit-target.find-target {
+  box-shadow: 0 0 0 2px var(--accent-soft), 0 0 0 4px #c9962e22;
+}
 .msg:has(+ .msg.cont) { border-bottom-left-radius: 0; border-bottom-right-radius: 0; }
 
 /* markdown */
@@ -416,4 +463,58 @@ a.session-link:hover { color: var(--accent); }
     background: hsl(var(--mc-h) 60% 60% / .26);
     border-color: hsl(var(--mc-h) 55% 60% / .75);
   }
+}
+
+@media (min-width: 760px) and (max-width: 1000px) {
+  aside { width: 260px; min-width: 260px; }
+  .wrap { padding-inline: 22px; }
+}
+
+@media (max-width: 759px) {
+  .app { position: relative; }
+  aside.sidebar {
+    position: fixed; inset: 0 auto 0 0; z-index: 40;
+    width: min(88vw, 340px); min-width: 0;
+    transform: translateX(-102%); visibility: hidden;
+    transition: transform .18s ease, visibility 0s linear .18s;
+    box-shadow: 10px 0 30px #0003;
+  }
+  aside.sidebar.open {
+    transform: translateX(0); visibility: visible;
+    transition-delay: 0s;
+  }
+  .sidebar-scrim {
+    display: block; position: fixed; inset: 0; z-index: 30;
+    width: 100%; height: 100%; background: #0006; cursor: default;
+  }
+  .sidebar-close {
+    display: block; width: 30px; height: 30px; text-align: center;
+    border-radius: 7px; color: var(--muted); font-size: 22px; line-height: 1;
+  }
+  .sidebar-close:hover { background: var(--accent-soft); color: var(--ink); }
+  main { width: 100%; }
+  .statusbar { padding: 8px 12px; }
+  .sidebar-toggle {
+    display: block; flex: none; width: 30px; height: 28px; text-align: center;
+    border: 1px solid var(--line); border-radius: 7px; background: var(--panel);
+  }
+  .wrap { max-width: none; padding: 18px 16px 76px; }
+  h1.title { font-size: 18px; line-height: 1.35; }
+  .provenance { gap: 6px 10px; }
+  .session-id { max-width: 100%; overflow-wrap: anywhere; }
+  .reader-toolbar { margin-inline: -4px; }
+  .find-control { flex-wrap: nowrap; }
+  .find-input { min-width: 0; }
+  .find-status { min-width: 58px; }
+  .reader-options { gap: 6px 10px; }
+  .hit-nav { justify-content: space-between; }
+  .msg { padding: 11px 13px; }
+  .stat-tiles { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+
+@media (max-width: 420px) {
+  .find-status { position: absolute; left: 18px; top: 46px; text-align: left; }
+  .find-control { margin-bottom: 17px; }
+  .reader-options .toolbar-btn { flex: 1; text-align: center; }
+  .stat-tiles { grid-template-columns: 1fr; }
 }

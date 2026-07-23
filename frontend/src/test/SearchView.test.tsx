@@ -100,9 +100,10 @@ describe('SearchView', () => {
     })
     renderAt('/search?q=x')
     expect(await screen.findByText('Thread One')).toBeInTheDocument()
-    expect(screen.getByText('#1 · 2 hits')).toBeInTheDocument()
+    expect(screen.getByText('2 hits')).toBeInTheDocument()
     expect(screen.getByText('Thread Two')).toBeInTheDocument()
-    expect(screen.getByText('#2 · 1 hit')).toBeInTheDocument()
+    expect(screen.getByText('1 hit')).toBeInTheDocument()
+    expect(screen.queryByText('#1 · 2 hits')).not.toBeInTheDocument()
     // a semantic hit is badged; the lexical ones aren't
     expect(screen.queryByText('semantic')).not.toBeInTheDocument()
   })
@@ -114,7 +115,7 @@ describe('SearchView', () => {
     })
     renderAt('/search?q=x')
     await user.click(await screen.findByText('a snippet'))
-    expect(screen.getByText('THREAD PAGE /archive/42?e=9')).toBeInTheDocument()
+    expect(screen.getByText('THREAD PAGE /archive/42?e=9&q=x')).toBeInTheDocument()
   })
 
   it('folds threads carrying the same text behind an expander, and opens them', async () => {
@@ -160,7 +161,7 @@ describe('SearchView', () => {
   it('badges semantic hits', async () => {
     mswJson('/api/search', { query: 'x', hits: [hit({ _semantic: 0.87 })] })
     renderAt('/search?q=x')
-    expect(await screen.findByText('semantic')).toBeInTheDocument()
+    expect(await screen.findByText('meaning match')).toBeInTheDocument()
   })
 
   it('shows the quality verdict, its caution note, and per-hit K/N badges', async () => {
@@ -170,11 +171,11 @@ describe('SearchView', () => {
       hits: [hit({ term_hits: 2 }), hit({ event_id: 2, thread_id: '2', term_hits: 0, snippet: 'other' })],
     })
     renderAt('/search?q=x')
-    expect(await screen.findByText('quality: partial')).toBeInTheDocument()
+    expect(await screen.findByText('mixed match')).toBeInTheDocument()
     expect(screen.getByText(/scan before trusting/)).toBeInTheDocument()
-    expect(screen.getByText('2/3')).toBeInTheDocument()
+    expect(screen.getByText('2 of 3 words')).toBeInTheDocument()
     // a zero-term hit is badged like a semantic guess
-    expect(screen.getByText('0/3')).toHaveClass('sem')
+    expect(screen.getByText('0 of 3 words')).toHaveClass('sem')
   })
 
   it('lists the subjects the results cluster under', async () => {
@@ -187,9 +188,11 @@ describe('SearchView', () => {
       hits: [hit({})],
     })
     renderAt('/search?q=x')
-    expect(await screen.findByText('subjects:')).toBeInTheDocument()
+    expect(await screen.findByText('common subjects:')).toBeInTheDocument()
     expect(screen.getByText('PageRank (1)')).toBeInTheDocument()
     expect(screen.getByText('Graph Theory (2)')).toBeInTheDocument()
+    expect(screen.getByText('PageRank (1)')).toHaveClass('subject-tag')
+    expect(screen.getByText('PageRank (1)')).not.toHaveClass('chip')
   })
 
   it('sends URL-carried filters with the search (until made day-inclusive)', async () => {

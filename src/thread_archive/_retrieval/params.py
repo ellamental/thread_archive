@@ -33,9 +33,18 @@ The shipped values, with their evidence:
 - ``pool_floor`` 200 — candidate pool depth. Not ``limit*5`` alone because
   reachability dies at the pool boundary: a relevant-but-old hit past bm25's
   top-N is unreachable no matter how the ranker weighs it.
-- ``rerank_pool`` 24 — how many ranked candidates feed the cross-encoder
-  before cutting to ``limit``: wide enough to cover the top-20 result window,
-  small enough to keep the in-process re-rank quick.
+- ``rerank_pool`` 12 — how many ranked candidates feed the cross-encoder
+  before cutting to ``limit`` (the head is ``max(rerank_pool, limit)``, so a
+  wider result window still reranks its whole depth). The cross-encoder is the
+  pipeline's dominant latency; the pool is the first knob on it, kept just past
+  the default result window rather than deep into backfill the ranker already
+  orders well.
+- ``rerank_doc_chars`` 768 — the per-passage character cap the cross-encoder
+  scores each hit at (MaxP: a long doc becomes its match-window/head/tail
+  passages, each capped here). The dominant knob on re-rank latency alongside
+  ``rerank_pool``: cost is per-token, so a pool of ``rerank_pool`` long hits
+  scores up to 3× that many passages of this length. The match-window keeps the
+  query-centred span; the search lab scores the quality cost of the shorter cap.
 - ``coherence_gamma`` ``None`` defers to the env knob
   (``$THREAD_ARCHIVE_COHERENCE``); a float forces the community-coherence
   re-rank's strength.
@@ -61,7 +70,8 @@ class SearchParams:
     density_norm_chars: int = 500
     rrf_k: int = 60
     pool_floor: int = 200
-    rerank_pool: int = 24
+    rerank_pool: int = 12
+    rerank_doc_chars: int = 768
     coherence_gamma: Optional[float] = None
 
 

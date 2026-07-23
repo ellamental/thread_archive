@@ -69,6 +69,33 @@ def test_duration_ms_recorded_when_given_and_omitted_when_not(archive_home) -> N
     assert "duration_ms" not in bare
 
 
+def test_timings_merged_when_given_and_absent_when_not(archive_home) -> None:
+    usage.record_search("q", params={}, hits=[], widened=False,
+                        timings={"fts_ms": 12.3, "semantic_ms": 4.5, "rerank_ms": 0.0,
+                                 "did_rerank": True, "pool_size": 198, "cold": True})
+    usage.record_search("q2", params={}, hits=[], widened=False)
+    with_t, without_t = _records(archive_home)
+    assert with_t["fts_ms"] == 12.3 and with_t["semantic_ms"] == 4.5
+    assert with_t["did_rerank"] is True and with_t["pool_size"] == 198 and with_t["cold"] is True
+    # A search with no probe breakdown records no stage fields (backward-compatible).
+    assert "fts_ms" not in without_t and "did_rerank" not in without_t
+
+
+def test_mcp_search_records_stage_timings(archive_home) -> None:
+    f = archive_home / "sess.jsonl"
+    _write_cc(f, [USER, ASSISTANT])
+    ta.import_path(f)
+
+    thread_search("hello ledger", limit=5)
+    (rec,) = _records(archive_home)
+    # The probe's per-stage breakdown rides every real MCP search: the fields are
+    # present (a lexical-only box still records fts/rerank, semantic sits at 0).
+    for field in ("fts_ms", "semantic_ms", "rerank_ms", "did_rerank", "pool_size"):
+        assert field in rec, field
+    assert rec["fts_ms"] >= 0.0 and isinstance(rec["did_rerank"], bool)
+    assert rec["duration_ms"] >= rec["fts_ms"]  # total covers the stage it contains
+
+
 def test_usage_log_disabled_by_env(archive_home, monkeypatch) -> None:
     monkeypatch.setenv("THREAD_ARCHIVE_USAGE_LOG", "0")
     usage.record_search("q", params={}, hits=[], widened=False)

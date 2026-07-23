@@ -156,6 +156,12 @@ class Reranker:
             return False
         return not self._slot.load_failed
 
+    def is_loaded(self) -> bool:
+        """True when the cross-encoder is already resident — a query would pay no
+        load. The cold/warm signal the usage ledger records: an available-but-unloaded
+        reranker means the first conceptual query eats the (tens-of-seconds) load."""
+        return self._slot.model is not None
+
     def warm(self) -> bool:
         """Eagerly load the cross-encoder so it isn't cold-loaded inside the first
         conceptual query (a >60s stall that can blow past an MCP client's request
@@ -225,6 +231,11 @@ def default() -> Reranker:
 def is_available() -> bool:
     """True when the process reranker can score. Cheap — does not load the model."""
     return _DEFAULT.is_available()
+
+
+def is_loaded() -> bool:
+    """True when the process reranker is already resident (a query pays no load)."""
+    return _DEFAULT.is_loaded()
 
 
 def warm() -> bool:

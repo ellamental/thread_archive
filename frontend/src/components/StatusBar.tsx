@@ -9,7 +9,13 @@ import { api, type Status } from '../api'
 export const REFRESH_MS = 60_000
 export const RETRY_MS = 3_000
 
-export function StatusBar() {
+export function StatusBar({
+  sidebarOpen = false,
+  onOpenSidebar,
+}: {
+  sidebarOpen?: boolean
+  onOpenSidebar?: () => void
+}) {
   const [st, setSt] = useState<Status | null>(null)
   const [err, setErr] = useState<string | null>(null)
 
@@ -36,15 +42,34 @@ export function StatusBar() {
     }
   }, [])
 
+  let contents
   // A prior good survey wins over a later failure: counts stay put through a blip.
-  if (st)
-    return (
-      <div className="statusbar">
+  if (st) {
+    contents = (
+      <>
         {st.threads.toLocaleString()} threads · {st.events.toLocaleString()} events ·{' '}
         {st.fts_indexed.toLocaleString()} indexed
         {st.vectors_indexed ? ` · ${st.vectors_indexed.toLocaleString()} vectors` : ''}
-      </div>
+      </>
     )
-  if (err) return <div className="statusbar err">archive unavailable: {err}</div>
-  return <div className="statusbar">loading…</div>
+  } else if (err) {
+    contents = <>archive unavailable: {err}</>
+  } else {
+    contents = <>loading…</>
+  }
+
+  return (
+    <div className={'statusbar' + (err && !st ? ' err' : '')}>
+      <button
+        className="sidebar-toggle"
+        aria-label="open navigation"
+        aria-controls="archive-navigation"
+        aria-expanded={sidebarOpen}
+        onClick={onOpenSidebar}
+      >
+        ☰
+      </button>
+      <span className="status-copy">{contents}</span>
+    </div>
+  )
 }

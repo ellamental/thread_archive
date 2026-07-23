@@ -41,7 +41,7 @@ from mcp.server.fastmcp import FastMCP
 
 from .. import _api as api
 from .._config import ENV_MCP_INGEST
-from .._retrieval import format_results, warm_models
+from .._retrieval import _probe, format_results, warm_models
 from .._retrieval import usage as _usage
 from .._retrieval._types import EventHit
 from .._retrieval.format import query_terms, term_hit_count, top_hit
@@ -405,26 +405,31 @@ def thread_search(
         )
 
     # Latency covers the retrieval work as the caller felt it — both arms plus
-    # any widen retry — but not the catch-up ingest above or rendering below.
+    # any widen retry — but not the catch-up ingest above or rendering below. The
+    # probe rides the same span, so its per-stage breakdown sums the widen retry
+    # too (the arms run again under the one installed probe).
     started = time.monotonic()
-    hits = _run(content_types)
+    with _probe.install() as probe:
+        hits = _run(content_types)
 
-    # One-shot scope widen: a default-scope search whose top hit contains no query
-    # term (or that found nothing) retries once over the whole transcript — the
-    # answer may live only in assistant text, a tool result, a tool's error, or the
-    # assistant's reasoning, and internalizing the retry saves the agent a
-    # round-trip the quality note would otherwise ask of it. Ranked/plain output
-    # only: structural shapes (browse/startswith/oldest/count/linkable) have no
-    # match signal to judge weakness by.
-    widened = False
-    ranked_shape = bool((query or "").strip()) and startswith is None and sort is None and output is None
-    if content_type is None and ranked_shape and _default_scope_is_weak(hits, query):
-        wide_hits = _run(WIDENED_SEARCH_CONTENT_TYPES)
-        if _has_strong_hit(wide_hits, query):
-            hits, widened = wide_hits, True
+        # One-shot scope widen: a default-scope search whose top hit contains no
+        # query term (or that found nothing) retries once over the whole transcript
+        # — the answer may live only in assistant text, a tool result, a tool's
+        # error, or the assistant's reasoning, and internalizing the retry saves the
+        # agent a round-trip the quality note would otherwise ask of it. Ranked/plain
+        # output only: structural shapes (browse/startswith/oldest/count/linkable)
+        # have no match signal to judge weakness by. Inside the probe span so the
+        # retry's stages are summed into the breakdown, as they are into the total.
+        widened = False
+        ranked_shape = bool((query or "").strip()) and startswith is None and sort is None and output is None
+        if content_type is None and ranked_shape and _default_scope_is_weak(hits, query):
+            wide_hits = _run(WIDENED_SEARCH_CONTENT_TYPES)
+            if _has_strong_hit(wide_hits, query):
+                hits, widened = wide_hits, True
 
-    # Usage ledger (fail-soft, ids only — see _retrieval.usage): the observed
-    # ground truth future retrieval evals are built from.
+    # Usage ledger (fail-soft, ids + timings only — see _retrieval.usage): the
+    # observed ground truth future retrieval evals are built from, now carrying a
+    # per-stage latency breakdown (which stage a slow search spent its time in).
     _usage.record_search(
         query,
         params={
@@ -439,6 +444,7 @@ def thread_search(
         hits=hits,
         widened=widened,
         duration_ms=(time.monotonic() - started) * 1000.0,
+        timings=probe.as_record(),
     )
 
     rendered = format_results(hits, query, output=output)
