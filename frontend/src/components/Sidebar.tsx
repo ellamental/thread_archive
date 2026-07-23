@@ -10,7 +10,13 @@ function fmtDate(iso: string | null): string {
     : d.toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' })
 }
 
-export function Sidebar() {
+export function Sidebar({
+  open = false,
+  onClose,
+}: {
+  open?: boolean
+  onClose?: () => void
+}) {
   const navigate = useNavigate()
   const { id } = useParams()
   const { pathname } = useLocation()
@@ -59,6 +65,7 @@ export function Sidebar() {
   function onSearchKey(e: KeyboardEvent<HTMLInputElement>) {
     if (e.key !== 'Enter') return
     navigate(searchUrl(term.trim(), { source, since, until }))
+    onClose?.()
   }
 
   // A filter change applies immediately when a search (or browse) is already on
@@ -75,8 +82,13 @@ export function Sidebar() {
   const sourceMissing = source && !sources.some((s) => s.source === source)
 
   return (
-    <aside>
-      <div className="brand">thread-archive</div>
+    <aside id="archive-navigation" className={'sidebar' + (open ? ' open' : '')}>
+      <div className="brand">
+        <span>thread-archive</span>
+        <button className="sidebar-close" aria-label="close navigation" onClick={onClose}>
+          ×
+        </button>
+      </div>
       <div className="searchbar">
         <input
           className="input"
@@ -142,10 +154,18 @@ export function Sidebar() {
         )}
       </div>
       <nav className="rail-nav">
-        <Link className={'rail-link' + (pathname === '/threads' ? ' active' : '')} to="/threads">
+        <Link
+          className={'rail-link' + (pathname === '/threads' ? ' active' : '')}
+          to="/threads"
+          onClick={onClose}
+        >
           all threads
         </Link>
-        <Link className={'rail-link' + (pathname === '/stats' ? ' active' : '')} to="/stats">
+        <Link
+          className={'rail-link' + (pathname === '/stats' ? ' active' : '')}
+          to="/stats"
+          onClick={onClose}
+        >
           stats
         </Link>
       </nav>
@@ -165,6 +185,7 @@ export function Sidebar() {
             key={t.id}
             className={'rail-item' + (t.id === activeId ? ' active' : '')}
             to={'/archive/' + t.id}
+            onClick={onClose}
           >
             <span className="t">{t.title || 'thread ' + t.id}</span>
             <span className="m">{[t.source, fmtDate(t.updated_at)].filter(Boolean).join(' · ')}</span>

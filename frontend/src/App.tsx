@@ -1,3 +1,4 @@
+import { useState } from 'react'
 import { Routes, Route } from 'react-router-dom'
 import { Sidebar } from './components/Sidebar'
 import { StatusBar } from './components/StatusBar'
@@ -9,11 +10,23 @@ import { ModelStatsView } from './components/ModelStatsView'
 import { Landing } from './components/Landing'
 
 export function App() {
+  const [sidebarOpen, setSidebarOpen] = useState(false)
+
   return (
     <div className="app">
-      <Sidebar />
+      <Sidebar open={sidebarOpen} onClose={() => setSidebarOpen(false)} />
+      {sidebarOpen && (
+        <button
+          className="sidebar-scrim"
+          aria-label="close navigation"
+          onClick={() => setSidebarOpen(false)}
+        />
+      )}
       <main>
-        <StatusBar />
+        <StatusBar
+          sidebarOpen={sidebarOpen}
+          onOpenSidebar={() => setSidebarOpen(true)}
+        />
         <div className="content">
           <Routes>
             <Route path="/" element={<Landing />} />

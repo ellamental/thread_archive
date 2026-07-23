@@ -174,6 +174,8 @@ export async function mockApi(page: Page): Promise<string[]> {
             role: 'assistant',
             blocks: [
               ...(thinking ? [{ type: 'thinking', text: 'Private browser-test reasoning.' }] : []),
+              { type: 'tool_use', name: 'Read', input: { file_path: '/tmp/needle.txt' } },
+              { type: 'tool_result', output: 'tool fixture complete', truncated: false },
               { type: 'text', text: '**The needle lives here.**' },
             ],
             event_ids: [12],

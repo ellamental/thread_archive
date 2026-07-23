@@ -11,6 +11,7 @@ function fmtDate(iso: string | null): string {
 interface Group {
   threadId: string
   title: string | null
+  source: string | null
   hits: SearchHit[]
 }
 
@@ -20,13 +21,28 @@ function group(hits: SearchHit[]): Group[] {
   for (const h of hits) {
     let g = byId.get(h.thread_id)
     if (!g) {
-      g = { threadId: h.thread_id, title: h.thread_title, hits: [] }
+      g = { threadId: h.thread_id, title: h.thread_title, source: h.thread_source ?? null, hits: [] }
       byId.set(h.thread_id, g)
       out.push(g)
     }
     g.hits.push(h)
   }
   return out
+}
+
+const qualityLabels = {
+  strong: 'good match',
+  partial: 'mixed match',
+  weak: 'weak match',
+  semantic: 'meaning-based match',
+} as const
+
+function hitUrl(g: Group, eventId: number, query: string): string {
+  const p = new URLSearchParams({ e: String(eventId) })
+  if (query) p.set('q', query)
+  const events = [...new Set(g.hits.map((hit) => hit.event_id))]
+  if (events.length > 1) p.set('hits', events.join(','))
+  return `/archive/${g.threadId}?${p.toString()}`
 }
 
 export function SearchView() {
@@ -82,16 +98,25 @@ export function SearchView() {
         {quality && (
           <>
             {' · '}
-            <span className={'badge quality-' + quality.verdict}>quality: {quality.verdict}</span>
+            <span
+              className={'badge quality-' + quality.verdict}
+              title="How closely the top results match the words and meaning of this search"
+            >
+              {qualityLabels[quality.verdict]}
+            </span>
           </>
         )}
       </div>
       {quality?.note && <div className="quality-note">{quality.note}</div>}
       {subjects.length > 0 && (
         <div className="subjects">
-          <span className="subjects-label">subjects:</span>
+          <span className="subjects-label">common subjects:</span>
           {subjects.map((s) => (
-            <span className="chip" key={s.topic_id}>
+            <span
+              className="subject-tag"
+              key={s.topic_id}
+              title={`Appears in ${s.chats} result conversation${s.chats === 1 ? '' : 's'}`}
+            >
               {s.title} ({s.chats})
             </span>
           ))}
@@ -133,23 +158,32 @@ export function SearchView() {
             <Link className="gh" to={'/archive/' + g.threadId}>
               <span>{g.title || 'thread ' + g.threadId}</span>
               <span className="src">
-                #{g.threadId} · {g.hits.length} hit{g.hits.length > 1 ? 's' : ''}
+                {[g.source, `${g.hits.length} hit${g.hits.length > 1 ? 's' : ''}`]
+                  .filter(Boolean)
+                  .join(' · ')}
               </span>
             </Link>
             {g.hits.map((h) => (
               // The dup disclosure is a sibling of the hit link, not a child:
               // an expander nested inside an <a> would be an anchor in an anchor.
               <div key={h.event_id}>
-                <Link className="hit" to={`/archive/${g.threadId}?e=${h.event_id}`}>
+                <Link className="hit" to={hitUrl(g, h.event_id, q)}>
                   <div className="snip">{h.snippet || h.full_content.slice(0, 280)}</div>
                   <div className="meta">
                     {h.term_hits != null && quality && (
-                      <span className={'badge' + (h.term_hits === 0 ? ' sem' : '')} title="query terms matched">
-                        {h.term_hits}/{quality.n_terms}
+                      <span
+                        className={'badge' + (h.term_hits === 0 ? ' sem' : '')}
+                        title="Search words found in this result"
+                      >
+                        {h.term_hits} of {quality.n_terms} words
                       </span>
                     )}
                     {h.content_type && <span className="badge">{h.content_type}</span>}
-                    {h._semantic != null && <span className="badge sem">semantic</span>}
+                    {h._semantic != null && (
+                      <span className="badge sem" title="Found by similarity in meaning">
+                        meaning match
+                      </span>
+                    )}
                     {h.occurred_at && <span className="badge">{fmtDate(h.occurred_at)}</span>}
                   </div>
                 </Link>

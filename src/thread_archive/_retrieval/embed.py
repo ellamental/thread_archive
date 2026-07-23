@@ -261,6 +261,12 @@ class Embedder:
             return False
         return not self._slot.load_failed
 
+    def is_loaded(self) -> bool:
+        """True when the model is already resident — a query would pay no load. The
+        cold/warm signal the usage ledger records: an available-but-unloaded model
+        means the first query to reach the arm eats the (tens-of-seconds) load."""
+        return self._slot.model is not None
+
     def warm(self) -> bool:
         """Eagerly load the model so it isn't cold-loaded inside the first query.
         Fail-soft and idempotent: returns False when the model is unavailable or the
@@ -315,6 +321,11 @@ def default() -> Embedder:
 def is_available() -> bool:
     """True when the process embedder can produce vectors. Cheap — does not load."""
     return _DEFAULT.is_available()
+
+
+def is_loaded() -> bool:
+    """True when the process embedder is already resident (a query pays no load)."""
+    return _DEFAULT.is_loaded()
 
 
 def warm() -> bool:

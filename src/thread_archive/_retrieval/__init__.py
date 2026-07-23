@@ -16,12 +16,14 @@ cross-encoder arms sit out and search is lexical-only (still through the ranker)
 from __future__ import annotations
 
 import logging
+from time import perf_counter
 from typing import Optional
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from .._store import Event, Thread, use_session
+from . import _probe
 from . import embed_graph as _embed_graph
 from . import rank as _rank
 from ._classify import resolve_relative_date
@@ -314,6 +316,18 @@ def search(
     first event it anchors to) collapse to the better-placed row in every
     row-shaped output, grouped or not."""
     p = params or _DEFAULT_PARAMS
+    # Stage-timing probe (fail-soft, None when nobody installed one). ``cold`` is
+    # sampled at entry: an available-but-unloaded model means the first query to
+    # reach that arm pays the tens-of-seconds load inside the request — the
+    # cold-model tail the usage ledger exists to name.
+    probe = _probe.current()
+    if probe is not None:
+        from . import embed as _embed_cold
+        from . import rerank as _rerank_cold
+
+        probe.cold = (_embed_cold.is_available() and not _embed_cold.is_loaded()) or (
+            _rerank_cold.is_available() and not _rerank_cold.is_loaded()
+        )
     since_r = resolve_relative_date(since) if since else None
     until_r = resolve_relative_date(until) if until else None
 
@@ -388,6 +402,7 @@ def search(
 
     terms = _rank.search_terms(query)
 
+    _t0 = perf_counter()
     lexical = search_events(
         query, thread_id=thread_id, thread_ids=thread_ids, content_types=content_types,
         exclude_content_types=exclude_content_types, limit=over,
@@ -399,22 +414,29 @@ def search(
         startswith=startswith, oldest_first=sort == "oldest",
         or_fallback=not (is_count or sort == "oldest"), session=session,
     )
+    if probe is not None:
+        probe.fts_ms += (perf_counter() - _t0) * 1000.0
     # A tool_name scope also sits the vector arm out: tool docs aren't embedded
     # (only user/text/title/summary are), so every semantic hit in a tool-scoped
     # search would be a hit the filter should have excluded. A types scope sits
     # it out too: vectors carry no thread-type filter, so its hits could leak
     # threads the filter excludes.
+    _t0 = perf_counter()
     semantic = None if structural or tool_name or types else _semantic_hits(
         query, thread_id=thread_id, content_types=content_types,
         exclude_content_types=exclude_content_types, since=since_r, until=until_r,
         over=over, source=source, thread_ids=thread_ids, agents=agents_eff,
         embedder=embedder,
     )
+    if probe is not None:
+        probe.semantic_ms += (perf_counter() - _t0) * 1000.0
 
     # Fuse the arms into a wide pool (keeps _rrf agreement + _semantic provenance),
     # then dedup byte-identical hits before ranking.
     fused = _rrf_merge([lexical, semantic], over, k=p.rrf_k) if semantic else lexical
     fused = _rank.dedup_results(fused)
+    if probe is not None:
+        probe.pool_size = len(fused)
 
     did_rerank = False
     if is_count:
@@ -460,8 +482,6 @@ def search(
         # only (RERANK_POOL): the cross-encoder's cost is per document, and past
         # the head the lexical order is only backfill.
         if do_rerank:
-            from . import rerank as _rerank
-
             # The head is at least `limit` deep: a result that will be displayed
             # must be one the cross-encoder actually scored, so a strong-but-sparse
             # hit sitting at position `rerank_pool`+1 (a long answering doc the
@@ -473,13 +493,16 @@ def search(
             # doc head alone — a hit whose relevant text sits mid-message, or whose
             # answer sits far past an incidental query term, would otherwise be
             # scored on its intro.
+            _t0 = perf_counter()
             reordered = reranker.rerank(
                 query, head,
                 get_text=lambda r: _rank.rerank_windows(
                     r.get("full_content") or r.get("snippet") or "",
-                    terms, _rerank.RERANK_DOC_CHARS,
+                    terms, p.rerank_doc_chars,
                 ),
             )
+            if probe is not None:
+                probe.rerank_ms += (perf_counter() - _t0) * 1000.0
             if reordered is not None:
                 # An echo-licensed re-rank (the head was a strong verbatim query
                 # echo, not a weak head) is trusted only when it actually rescues a
@@ -556,6 +579,8 @@ def search(
             r["_did_rerank"] = did_rerank
 
     _enrich_thread_titles(hits, session=session)
+    if probe is not None:
+        probe.did_rerank = did_rerank
     return hits
 
 
