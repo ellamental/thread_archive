@@ -237,11 +237,13 @@ def test_search_skips_rerank_on_strong_lexical_head(archive_home, monkeypatch) -
 def test_search_reranks_on_weak_lexical_head(archive_home, monkeypatch) -> None:
     # Only one of three terms lands (below the strong floor of 2) → the head is
     # weak — the vocab-mismatch shape the cross-encoder exists for — so it runs.
-    from thread_archive._retrieval import search
+    # Auto-re-rank ships off (latency); rerank_auto=True exercises the gate here.
+    from thread_archive._retrieval import SearchParams, search
 
     reranker, scorer = _live_reranker(monkeypatch)
     _seed_one_thread(archive_home, "the watcher process stopped overnight")
-    hits = search("watcher vanishing mysteriously", reranker=reranker)
+    hits = search("watcher vanishing mysteriously", reranker=reranker,
+                  params=SearchParams(rerank_auto=True))
     assert hits and scorer.pools, "weak head should have gone through the cross-encoder"
     assert hits[0]["_did_rerank"] is True
     # The pipeline scores the query against a window of each candidate's text.
