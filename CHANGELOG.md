@@ -11,7 +11,10 @@
   `--fail-early`, a smoke test runs the queries that were *slowest at baseline*
   (the corpus's own pathological cases) against a p95 ceiling and bails in tens of
   seconds before the full pass. `--budget-ms` sets an absolute ceiling; the
-  default is 1.5× the recorded latency baseline. `thread_archive._ops.speed` is
+  default is 1.5× the recorded latency baseline. `--latency-smoke` runs only that
+  smoke test — a ~1-minute interactive speed check (the quick loop is
+  `--cache --latency-smoke --set …`), with the full ~10-min pass kept for the
+  confirm. `thread_archive._ops.speed` is
   the measurement core (warm reps, cache suspended, per-stage from the same probe
   the usage ledger records), with a `latency-runs.jsonl` timeseries and
   `latency-baseline.json` beside the quality ones. First measurement: warm search

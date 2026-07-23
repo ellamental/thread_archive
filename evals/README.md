@@ -178,7 +178,14 @@ python scripts/retrieval_gold_gate.py --set rerank_auto=true --set rerank_pool=6
   embed, and the matvec are the cost being measured, not skipped — so `--latency`
   and `--cache` describe different runs (cache the quality pass, never the latency
   one). Cold model-load is excluded (a warmup pass hides it); this is warm
-  steady-state, the regime a ranking knob moves.
+  steady-state, the regime a ranking knob moves. The full pass is ~10 min (one
+  cache-off search per query per rep), so it's the *confirm*, not the loop.
+- `--latency-smoke` is the loop: **only** the pathological-query smoke test
+  (below), skipping the full pass — a ~1-minute speed check (mostly one-time model
+  load; the measurement is seconds). This is the interactive-iteration lever, the
+  speed counterpart of `--cache` for quality. The quick loop is
+  `--cache --latency-smoke --set field=value`: cached quality (~20 s) plus the
+  smoke, comfortably inside a warm window.
 - With `--fail-early`, a **latency smoke test** runs first: the `--smoke-queries`
   (default 8) queries that were *slowest at baseline* — empirically the corpus's
   pathological cases — against a p95 ceiling (`--budget-ms`, else 1.5× the

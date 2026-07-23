@@ -72,6 +72,8 @@ ledgers. With ``--fail-early`` a latency smoke test runs the ``--smoke-queries``
 slowest-at-baseline queries against a p95 ceiling (``--budget-ms``, else 1.5× the
 baseline) and bails before the full pass — the speed analog of the quality bound,
 though a heuristic rather than sound (see ``evals/README.md`` → "The speed axis").
+``--latency-smoke`` runs *only* that smoke test — a ~1-minute speed check for the
+interactive loop, the full ~10-minute pass reserved for the confirm.
 
 Snapshot binding: each gold file is bound by ``snapshot_id`` to the corpus
 snapshot it was mined against; this gate scores over that snapshot
@@ -530,6 +532,10 @@ def main(argv: list[str] | None = None) -> int:
                     help="also measure warm latency over the same queries (REPS timed "
                     "runs each, default 3, pool cache OFF) and print the joint "
                     "quality+speed report — the speed axis of a --set tuning decision")
+    ap.add_argument("--latency-smoke", action="store_true",
+                    help="quick speed check: run ONLY the pathological-query smoke test "
+                    "(seconds), skipping the full ~10-min latency pass — the "
+                    "interactive-iteration counterpart of --latency")
     ap.add_argument("--budget-ms", type=float, default=None, metavar="MS",
                     help="absolute p95 ceiling for the latency smoke test (default: "
                     "1.5x the recorded latency baseline's p95)")
@@ -617,17 +623,27 @@ def main(argv: list[str] | None = None) -> int:
     if overrides:
         print(f"gold gate: TUNING RUN — {overrides} (not a baseline)", flush=True)
 
-    # Speed fail-fast: before the full quality+latency work, run the candidate over
-    # the corpus's pathological queries and bail if it blows the latency ceiling.
+    # Speed fail-fast. The smoke runs the corpus's pathological queries against a
+    # ceiling in seconds, before the slow work: standalone (--latency-smoke, the
+    # interactive quick check) or as the front gate of a full --latency --fail-early
+    # pass. Either way a breach bails here — the point is not paying the full pass
+    # for a config already over budget.
+    want_full_latency = args.latency is not None
+    want_smoke = args.latency_smoke or (want_full_latency and fail_early)
     latency_baseline = None
-    if args.latency is not None:
+    if want_smoke or want_full_latency:
         from thread_archive._ops import speed
 
         latency_baseline = speed.read_baseline(home, snapshot_id=current)
-        if fail_early and latency_baseline is not None:
+    if want_smoke:
+        if latency_baseline is None:
+            print("latency smoke: no baseline recorded — run a full --latency pass "
+                  "once to seed it (nothing to cherry-pick pathological queries from)",
+                  flush=True)
+        else:
             reason = _latency_smoke(latency_baseline, params=params,
                                     k=args.smoke_queries, budget_ms=args.budget_ms,
-                                    reps=args.latency)
+                                    reps=args.latency or 3)
             if reason:
                 print(f"\nlatency regression: {reason}")
                 return 1
