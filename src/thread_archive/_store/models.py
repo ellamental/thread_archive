@@ -228,6 +228,15 @@ class EventFts(Base):
         Index("idx_events_fts_event_id", "event_id"),
         Index("idx_events_fts_thread_id", "thread_id"),
         Index("idx_events_fts_tool_name", "tool_name"),
+        # The thread-meta docs (titles/summaries) are a ~1% slice of this table that
+        # the maintenance sync reads in full every pass. Unindexed, finding them is a
+        # scan of the whole shadow — every indexed line of every conversation — to
+        # return a few thousand rows, and it grows with the corpus rather than with
+        # what changed. Mirrors ``idx_events_type`` on ``events``. Plain rather than
+        # partial on purpose: the reader binds the type as a parameter, and SQLite
+        # cannot match a partial index's predicate against a bound value, so a
+        # partial one would be built and then never used.
+        Index("idx_events_fts_event_type", "event_type"),
     )
 
 

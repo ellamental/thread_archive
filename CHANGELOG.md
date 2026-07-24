@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- **The thread-meta sync scanned the whole FTS shadow to find 1% of it.** The
+  maintenance pass reads every thread-meta doc out of `events_fts` to diff titles and
+  summaries, and `event_type` had no index — so finding ~11.9k rows meant scanning all
+  1.2M, every pass, growing with the corpus rather than with what changed. Adding
+  `idx_events_fts_event_type` (mirroring `idx_events_type` on `events`) takes that
+  query from 1659ms to 23ms and the whole sync from 1854ms to 130ms — 14x. Plain
+  rather than partial deliberately: the reader binds the event type as a parameter,
+  and SQLite cannot match a partial index's predicate against a bound value, so a
+  partial index would be built and then never used. `verify` reports it missing and
+  `reindex` heals it, like every other declared index.
+
 - **The embed cohost was the one drain that could fall behind silently.** `lag_s`
   covers lexical freshness; nothing covered the vector arm. If the cohost stalls,
   every other signal stays green — the poll loop is healthy, `lag_s` is low, searches
@@ -41,6 +52,16 @@
 - **The browser suite mocks `/api/archives`.** The health view gained the registry
   fetch; the e2e API surface did not, so `/health` failed its own no-unhandled-request
   assertion — the check working exactly as designed.
+- **The slowdown trend is measured in work, not items.** Items per second is only a
+  proxy for cost, and it is a bad one wherever items differ in size and the phase
+  orders them: the embed drain length-sorts on purpose, so its final window holds the
+  longest documents in the corpus and its rate collapses for a reason that is not cost
+  growth. A real 36-minute embed reported `slowing 122x` — true arithmetic, useless as
+  a signal, and it would have fired on every embed. A phase can now name the unit its
+  items are made of (`work_unit="chunks"` for the embed) and report it through
+  `advance(n, work=...)`; the trend uses that unit and the snapshot says which one it
+  used. Phases with no sub-item unit and no deliberate ordering — import — keep
+  trending on item count, which is where the signal is real.
 - **The haystack benchmarks are archives you can open.** LoCoMo and LongMemEval are
   scored per question — each question retrieves inside its own small history — so the
   harness built a throwaway home per question and the corpus existed only as hundreds

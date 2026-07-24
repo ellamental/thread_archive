@@ -225,6 +225,34 @@ def test_null_phase_is_a_silent_no_op():
     assert ph.done == 5  # advance still moves its own counter (the drain may read it)
 
 
+def test_every_phase_shape_shares_one_interface():
+    """The three phases are substitutable by contract: a drain is handed whichever
+    one its caller wants and must never branch on which. A signature that drifts on
+    one of them breaks its callers at runtime, in whichever process happens to be
+    running that path — so the interface is pinned here rather than discovered live."""
+    import inspect
+
+    run = load_runs.LoadRun("embed", DUMMY)
+    shapes = [load_runs.Phase(run, "embed", total=None),
+              load_runs.NullPhase(),
+              load_runs.CollectingPhase()]
+    for method in ("advance", "mark", "timed", "count"):
+        sigs = {str(inspect.signature(getattr(p, method))) for p in shapes}
+        assert len(sigs) == 1, f"{method} signatures diverged: {sigs}"
+    # The attributes a drain reads or sets directly, not only the methods.
+    for attr in ("total", "done", "work", "work_unit"):
+        assert all(hasattr(p, attr) for p in shapes), attr
+
+
+def test_collecting_phase_tracks_work_alongside_items():
+    # The drain reports chunks as work — items alone misrepresent a length-sorted
+    # phase, and a collecting phase has to carry the same unit as the tracked one.
+    ph = load_runs.CollectingPhase(work_unit="chunks")
+    ph.advance(3, work=12)
+    ph.advance(2, work=8)
+    assert ph.done == 5 and ph.work == 20 and ph.work_unit == "chunks"
+
+
 def test_collecting_phase_keeps_the_split_without_a_run():
     # Steady-state work reports the same internal split a tracked load does, but a
     # ledger row per batch would be noise — so it accumulates in memory instead.

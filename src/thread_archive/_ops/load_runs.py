@@ -102,7 +102,7 @@ class Phase:
     live-state rewrite.
 
     ``work_unit`` names what the phase's items are *made of* (chunks, bytes) when
-    they vary in size, and ``advance(n, work=...)` reports it. That unit, not the
+    they vary in size, and ``advance(n, work=...)`` reports it. That unit, not the
     item count, is what the slowdown trend is measured in — see :meth:`_sample`."""
 
     __slots__ = ("name", "total", "done", "started", "elapsed", "detail", "counts",
@@ -278,16 +278,19 @@ class CollectingPhase:
     Nothing here touches disk — what to do with the numbers is the caller's.
     """
 
-    __slots__ = ("total", "done", "detail", "counts")
+    __slots__ = ("total", "done", "work", "work_unit", "detail", "counts")
 
-    def __init__(self) -> None:
+    def __init__(self, work_unit: Optional[str] = None) -> None:
         self.total: Optional[int] = None
         self.done = 0
+        self.work = 0
+        self.work_unit = work_unit
         self.detail: dict[str, float] = {}
         self.counts: dict[str, int] = {}
 
-    def advance(self, n: int = 1) -> None:
+    def advance(self, n: int = 1, work: int = 0) -> None:
         self.done += n
+        self.work += work
 
     def mark(self, name: str, seconds: float) -> None:
         self.detail[name] = self.detail.get(name, 0.0) + seconds
