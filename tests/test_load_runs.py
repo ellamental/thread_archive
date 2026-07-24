@@ -59,6 +59,57 @@ def test_phase_reports_throughput_decay_the_mean_rate_hides():
     assert snap["rate_first_s"] > snap["rate_last_s"]
 
 
+def test_a_length_sorted_phase_trends_on_work_not_item_count():
+    """The embed drain length-sorts on purpose, so its last window holds the
+    longest documents in the corpus: items-per-second collapses at the tail for a
+    reason that is not cost growth, and an item-count trend reads a healthy phase
+    as catastrophically degrading. Trending the unit the encoder consumes —
+    chunks — compares like with like."""
+    run = load_runs.LoadRun("embed", DUMMY)
+    ph = load_runs.Phase(run, "embed", total=None, work_unit="chunks")
+
+    # Window one: 100 small events, one chunk each. Window two: 5 huge events,
+    # 20 chunks each. Same chunks per window — the encoder did the same work.
+    ph.advance(100, work=100)
+    ph._win_t -= load_runs._RATE_WINDOW_S + 1
+    ph._sample()
+    ph.advance(5, work=100)
+    ph._win_t -= load_runs._RATE_WINDOW_S + 1
+    ph._sample()
+
+    snap = ph.snapshot()
+    assert snap["slowdown"] == pytest.approx(1.0, rel=0.05), "flat work, flat trend"
+    assert snap["trend_unit"] == "chunks"  # the rates are not items per second
+    assert snap["done"] == 105
+
+    # The same phase measured on item count is the false alarm this replaces.
+    naive = load_runs.Phase(run, "embed", total=None)
+    naive.advance(100)
+    naive._win_t -= load_runs._RATE_WINDOW_S + 1
+    naive._sample()
+    naive.advance(5)
+    naive._win_t -= load_runs._RATE_WINDOW_S + 1
+    naive._sample()
+    assert naive.snapshot()["slowdown"] == pytest.approx(20.0, rel=0.05)
+
+
+def test_a_phase_without_a_work_unit_still_trends_on_items():
+    """Import has no sub-item unit and no deliberate ordering, so its item count
+    *is* the work — the quadratic-ingest signal must keep firing."""
+    run = load_runs.LoadRun("import", DUMMY)
+    ph = load_runs.Phase(run, "import", total=None)
+    ph.advance(1000)
+    ph._win_t -= load_runs._RATE_WINDOW_S + 1
+    ph._sample()
+    ph.advance(100)
+    ph._win_t -= load_runs._RATE_WINDOW_S + 1
+    ph._sample()
+
+    snap = ph.snapshot()
+    assert snap["slowdown"] == pytest.approx(10.0, rel=0.05)
+    assert "trend_unit" not in snap
+
+
 def test_phase_reports_no_decay_before_two_windows():
     run = load_runs.LoadRun("import", DUMMY)
     ph = load_runs.Phase(run, "import", total=None)
@@ -172,6 +223,45 @@ def test_null_phase_is_a_silent_no_op():
     with ph.timed("write"):
         pass
     assert ph.done == 5  # advance still moves its own counter (the drain may read it)
+
+
+def test_collecting_phase_keeps_the_split_without_a_run():
+    # Steady-state work reports the same internal split a tracked load does, but a
+    # ledger row per batch would be noise — so it accumulates in memory instead.
+    ph = load_runs.CollectingPhase()
+    ph.total = 64
+    with ph.timed("select"):
+        pass
+    with ph.timed("encode"):
+        pass
+    ph.count("chunks_pending", 3)
+    ph.count("chunks_pending", 4)
+    ph.advance(2)
+
+    assert ph.done == 2
+    assert ph.counts["chunks_pending"] == 7  # counts accumulate
+    assert set(ph.detail) == {"select", "encode"}
+    ms = ph.detail_ms()
+    assert set(ms) == {"select_ms", "encode_ms"}
+    assert all(v >= 0.0 for v in ms.values())
+
+
+def test_collecting_phase_charges_a_sub_step_that_raised():
+    # Work that fails slowly is the case worth seeing, so the timing lands anyway.
+    ph = load_runs.CollectingPhase()
+    with pytest.raises(RuntimeError):
+        with ph.timed("encode"):
+            raise RuntimeError("model died")
+    assert "encode" in ph.detail
+
+
+def test_collecting_phase_accumulates_repeated_marks():
+    # A drain calls timed('encode') once per batch; the phase reports their sum.
+    ph = load_runs.CollectingPhase()
+    ph.mark("encode", 1.0)
+    ph.mark("encode", 0.5)
+    assert ph.detail["encode"] == 1.5
+    assert ph.detail_ms()["encode_ms"] == 1500.0
 
 
 def test_read_runs_newest_first_and_bounded(home):

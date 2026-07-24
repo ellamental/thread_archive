@@ -333,7 +333,10 @@ def embed(
     from ._retrieval.vectors import index_events_local
 
     with load_run("embed", home=paths.home, reporter=progress) as run:
-        with run.phase("embed") as ph:
+        # Events vary hugely in size and the drain length-sorts them on purpose,
+        # so events-per-second is not a comparable quantity across the phase;
+        # chunks are the uniform unit the encoder actually consumes.
+        with run.phase("embed", work_unit="chunks") as ph:
             n = index_events_local(rebuild=rebuild, max_events=max_events,
                                    newest_first=newest_first, embedder=embedder,
                                    phase=ph)

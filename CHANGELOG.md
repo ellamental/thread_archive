@@ -2,6 +2,35 @@
 
 ## Unreleased
 
+- **The embed cohost was the one drain that could fall behind silently.** `lag_s`
+  covers lexical freshness; nothing covered the vector arm. If the cohost stalls,
+  every other signal stays green — the poll loop is healthy, `lag_s` is low, searches
+  return hits — and the only symptom is that the *right* hit is missing, because the
+  conversation was never embedded. Each pass now records into `watch_embed_last`:
+  docs embedded, wall time, docs still pending (with `capped` when the real backlog
+  exceeds one batch — a stalled drain and a caught-up one both embed zero, and only
+  that distinguishes them), chunks pending, and the newest embedded event's age.
+  The drain already reported a `select` / `model_load` / `encode` / `write` split
+  into a phase and the cohost was discarding it; `CollectingPhase` keeps those
+  timings in memory without writing a ledger row, so the steady path gets the same
+  breakdown a tracked load does.
+- **`maintain()` is timed.** It is the interval-gated upkeep whose two halves — the
+  manifest checkpoint and the shard rebalance — scale with the archive rather than
+  with what just arrived, the shape that became a quadratic term once already.
+  Gating bounds how often that is paid, not how much. `watch_maintain_last` records
+  the total split across `checkpoint_ms` and `thread_meta_ms`, so a regression names
+  its half instead of surfacing as the poll loop mysteriously slowing down.
+- **Latency records carry what else was running.** Every timing so far was a bare
+  duration with no way to tell a slow pipeline from a busy machine. Searches and
+  reads now sample contention at the start of their work: `inflight` (concurrent
+  calls in this process), `refreshing` (background matrix/graph rebuilds, which
+  stream the pack off disk and run for seconds), and `wal_age_s` — seconds since
+  anything last wrote the index, read off the SQLite WAL's mtime. That last one is
+  the cross-process signal: reads never touch the WAL, so a fresh one means the
+  watcher or an import is writing the database this search is reading, and it makes
+  the retrieval ledger joinable to the ingest side with no coordination between them.
+  Fields are omitted when they say nothing, so an idle-machine call records none.
+
 - **An archive opened just after boot is registered.** The registry's per-process
   throttle read a missing entry as "last registered at monotonic 0.0". `time.monotonic`
   has no defined epoch and counts from boot on Linux, so on a machine up less than the

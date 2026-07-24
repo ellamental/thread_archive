@@ -214,6 +214,13 @@ def get(*, block: bool = False) -> Optional[CorpusGraph]:
     return cached[1]
 
 
+def is_refreshing() -> bool:
+    """Whether a background graph rebuild is in flight in this process — read by the
+    contention sample. A build is measured in seconds (Leiden over the whole corpus),
+    so a search running beside one is not competing for nothing."""
+    return bool(_REFRESHING)
+
+
 def _refresh_async(key: int) -> None:
     with _REFRESH_LOCK:
         if key in _REFRESHING:

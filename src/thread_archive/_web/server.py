@@ -400,6 +400,7 @@ def _list_threads(
     reachable. Each row also carries a compact preview of its first non-empty
     user message."""
     from sqlalchemy import DateTime, func, select
+    from sqlalchemy.sql.elements import ColumnElement
 
     from .._store import Event, Thread, get_session
 
@@ -429,7 +430,7 @@ def _list_threads(
         .scalar_subquery()
         .label("first_user_message")
     )
-    filters = [Thread.archived.is_(False)]
+    filters: list[ColumnElement[bool]] = [Thread.archived.is_(False)]
     if types:
         filters.append(Thread.thread_type.in_(types))
     else:

@@ -142,6 +142,42 @@ def test_read_records_response_size(archive_home) -> None:
     assert rec["chars"] > 0
 
 
+def test_contention_context_rides_search_and_read(archive_home) -> None:
+    f = archive_home / "sess.jsonl"
+    _write_cc(f, [USER, ASSISTANT])
+    ta.import_path(f)
+
+    thread_search("hello ledger", limit=5)
+    thread_read(ta.search("hello ledger")[0]["thread_id"])
+    search, read = _records(archive_home)
+    # The import just wrote the index, so the WAL is fresh — that is the
+    # cross-process signal that makes this ledger joinable to the ingest side.
+    assert search["wal_age_s"] >= 0.0
+    assert read["wal_age_s"] >= 0.0
+    # A lone call has no in-flight peers and no rebuild running: the fields are
+    # omitted rather than recorded as nothing, so their presence carries signal.
+    assert "inflight" not in search and "refreshing" not in search
+
+
+def test_contention_sample_is_empty_on_an_idle_machine(archive_home) -> None:
+    from thread_archive._retrieval import _contention
+
+    # No archive touched yet — no WAL to stat, nothing in flight, no rebuilds.
+    assert _contention.sample() == {}
+
+
+def test_in_flight_counts_the_caller_itself(archive_home) -> None:
+    from thread_archive._retrieval import _contention
+
+    with _contention.in_flight():
+        # One call is not contention, so it stays out of the record...
+        assert "inflight" not in _contention.sample()
+        with _contention.in_flight():
+            # ...but a second concurrent call is exactly what the field is for.
+            assert _contention.sample()["inflight"] == 2
+    assert "inflight" not in _contention.sample()
+
+
 def test_record_warm_names_the_startup_cost(archive_home) -> None:
     usage.record_warm(duration_ms=21000.0,
                       stages={"embed_ms": 20000.0, "rerank_ms": 400.0, "search_ms": 600.0},

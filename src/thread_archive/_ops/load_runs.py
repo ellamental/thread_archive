@@ -99,12 +99,18 @@ class Phase:
     ``advance(n)`` moves the progress counter; ``mark(name, seconds)`` accumulates
     into ``detail`` so a phase can account for its own internal split. Both are
     cheap and neither writes to disk — the owning :class:`LoadRun` throttles the
-    live-state rewrite."""
+    live-state rewrite.
+
+    ``work_unit`` names what the phase's items are *made of* (chunks, bytes) when
+    they vary in size, and ``advance(n, work=...)` reports it. That unit, not the
+    item count, is what the slowdown trend is measured in — see :meth:`_sample`."""
 
     __slots__ = ("name", "total", "done", "started", "elapsed", "detail", "counts",
-                 "rate_first", "rate_last", "_win_t", "_win_done", "_run")
+                 "work", "work_unit", "rate_first", "rate_last", "_win_t",
+                 "_win_done", "_win_work", "_run")
 
-    def __init__(self, run: "LoadRun", name: str, total: Optional[int]) -> None:
+    def __init__(self, run: "LoadRun", name: str, total: Optional[int],
+                 work_unit: Optional[str] = None) -> None:
         self._run = run
         self.name = name
         self.total = total
@@ -113,6 +119,8 @@ class Phase:
         self.elapsed = 0.0
         self.detail: dict[str, float] = {}
         self.counts: dict[str, int] = {}
+        self.work = 0
+        self.work_unit = work_unit
         # Throughput of the first and most recent completed windows. A phase's
         # mean rate hides the shape: work whose per-item cost grows with the
         # corpus (a full-table rewrite, a directory walk) averages out to a
@@ -122,10 +130,13 @@ class Phase:
         self.rate_last: Optional[float] = None
         self._win_t = self.started
         self._win_done = 0
+        self._win_work = 0
 
-    def advance(self, n: int = 1) -> None:
-        """Move the progress counter by ``n`` and let the run refresh live state."""
+    def advance(self, n: int = 1, work: int = 0) -> None:
+        """Move the progress counter by ``n`` and let the run refresh live state.
+        ``work`` is how much of the phase's ``work_unit`` those items carried."""
         self.done += n
+        self.work += work
         self._run._touch()
 
     def _sample(self) -> None:
@@ -133,13 +144,24 @@ class Phase:
 
         Driven by the owning run's live-state refresh, so sampling costs the
         progress path nothing. A phase shorter than one window records no rates,
-        which is the honest answer — there is no trend in a single sample."""
+        which is the honest answer — there is no trend in a single sample.
+
+        Measured in ``work_unit`` when the phase reports one. An item count is
+        only a proxy for work, and it is a *bad* proxy wherever items differ in
+        size and the phase orders them: the embed drain length-sorts on purpose,
+        so its last window holds the longest documents in the corpus and its
+        items-per-second collapses at the tail for a reason that has nothing to
+        do with cost growth. Trending chunks per second instead compares like
+        with like."""
         now = time.monotonic()
         span = now - self._win_t
         if span < _RATE_WINDOW_S:
             return
-        moved = self.done - self._win_done
-        self._win_t, self._win_done = now, self.done
+        if self.work_unit:
+            moved = self.work - self._win_work
+        else:
+            moved = self.done - self._win_done
+        self._win_t, self._win_done, self._win_work = now, self.done, self.work
         if moved <= 0:
             return
         rate = moved / span
@@ -150,7 +172,7 @@ class Phase:
 
     def slowdown(self) -> Optional[float]:
         """How many times slower the latest window runs than the first, or None
-        before two windows have closed. Greater than ~1 means per-item cost is
+        before two windows have closed. Greater than ~1 means per-unit cost is
         growing as the phase runs — the signature of work that scales with what
         the phase has already written."""
         if not self.rate_first or not self.rate_last:
@@ -202,6 +224,8 @@ class Phase:
             d["rate_first_s"] = round(self.rate_first or 0.0, 2)
             d["rate_last_s"] = round(self.rate_last or 0.0, 2)
             d["slowdown"] = round(s, 2)
+            if self.work_unit:  # the trend's unit, which is not the item count
+                d["trend_unit"] = self.work_unit
         if self.detail:
             d["detail_s"] = {k: round(v, 3) for k, v in self.detail.items()}
         if self.counts:
@@ -216,14 +240,17 @@ class NullPhase:
     (a test, a one-off script, a library consumer) runs the same code path as a
     tracked one instead of branching on whether telemetry is present."""
 
-    __slots__ = ("total", "done")
+    __slots__ = ("total", "done", "work", "work_unit")
 
     def __init__(self) -> None:
         self.total: Optional[int] = None
         self.done = 0
+        self.work = 0
+        self.work_unit: Optional[str] = None
 
-    def advance(self, n: int = 1) -> None:
+    def advance(self, n: int = 1, work: int = 0) -> None:
         self.done += n
+        self.work += work
 
     def mark(self, name: str, seconds: float) -> None:
         pass
@@ -234,6 +261,53 @@ class NullPhase:
 
     def count(self, name: str, n: int) -> None:
         pass
+
+
+class CollectingPhase:
+    """A phase that keeps its own timings in memory, owned by no run.
+
+    For **steady-state** work that reports the same internal split a tracked load
+    does but is not a load. The watcher's embed cohost is the case: it runs
+    continuously in bounded batches, so a ledger row per batch would be noise, yet
+    the select/encode/write split is exactly as diagnostic there as in a cold build
+    — it is the difference between "the drain is slow" and "the drain is slow
+    because the anti-join that finds pending docs now scans millions of rows".
+
+    Same interface as :class:`NullPhase`, so the function being measured neither
+    knows nor branches; the caller reads :attr:`detail` and :attr:`counts` after.
+    Nothing here touches disk — what to do with the numbers is the caller's.
+    """
+
+    __slots__ = ("total", "done", "detail", "counts")
+
+    def __init__(self) -> None:
+        self.total: Optional[int] = None
+        self.done = 0
+        self.detail: dict[str, float] = {}
+        self.counts: dict[str, int] = {}
+
+    def advance(self, n: int = 1) -> None:
+        self.done += n
+
+    def mark(self, name: str, seconds: float) -> None:
+        self.detail[name] = self.detail.get(name, 0.0) + seconds
+
+    @contextmanager
+    def timed(self, name: str) -> Iterator[None]:
+        started = time.monotonic()
+        try:
+            yield
+        finally:
+            # In a finally so a sub-step that raises is still charged: work that
+            # fails slowly is the case worth seeing.
+            self.mark(name, time.monotonic() - started)
+
+    def count(self, name: str, n: int) -> None:
+        self.counts[name] = self.counts.get(name, 0) + n
+
+    def detail_ms(self) -> dict[str, float]:
+        """The sub-timings in milliseconds, the unit the health records use."""
+        return {k + "_ms": round(v * 1000.0, 1) for k, v in self.detail.items()}
 
 
 class LoadRun:
@@ -299,10 +373,13 @@ class LoadRun:
                 logger.debug("load telemetry: reporter failed (%s)", e)
 
     @contextmanager
-    def phase(self, name: str, total: Optional[int] = None) -> Iterator[Phase]:
+    def phase(self, name: str, total: Optional[int] = None,
+              work_unit: Optional[str] = None) -> Iterator[Phase]:
         """Run a named phase, timed. ``total`` (when known) is what makes the
-        phase's progress an ETA rather than just a counter."""
-        ph = Phase(self, name, total)
+        phase's progress an ETA rather than just a counter. ``work_unit`` names
+        the sub-item unit the slowdown trend should be measured in, for a phase
+        whose items vary in size."""
+        ph = Phase(self, name, total, work_unit)
         self.phases.append(ph)
         self.current = ph
         self._touch(force=True)

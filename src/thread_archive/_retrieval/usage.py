@@ -91,6 +91,7 @@ def record_search(
     render_ms: Optional[float] = None,
     failed: bool = False,
     timings: Optional[dict[str, Any]] = None,
+    context: Optional[dict[str, Any]] = None,
 ) -> None:
     """Record one ``thread_search`` call: the query, the non-default parameters,
     how many hits came back, the top result ids (``[event_id, thread_id]``
@@ -119,7 +120,14 @@ def record_search(
     evidence, and dropping it would bias every percentile computed off this file
     toward the searches that happened to succeed. Stated by the caller rather than
     inferred from a missing ``render_ms``, so a surface that legitimately records no
-    render (anything serving hits as data) isn't read as a failure."""
+    render (anything serving hits as data) isn't read as a failure.
+
+    ``context`` is what else was competing for the machine
+    (:mod:`thread_archive._retrieval._contention`): concurrent calls, background
+    rebuilds, and how recently another process wrote the index. Timings say where a
+    search spent its time; this says whether it had the machine to itself while
+    spending it — the difference between a slow pipeline and a busy box, which a
+    duration alone cannot tell apart."""
     if not _enabled():
         return
     record: dict[str, Any] = {
@@ -138,6 +146,8 @@ def record_search(
         record["failed"] = True
     if timings:
         record.update(timings)
+    if context:
+        record.update(context)
     results: list[list[int | str]] = []
     if isinstance(hits, list):
         record["n_hits"] = len(hits)
@@ -159,6 +169,7 @@ def record_read(
     duration_ms: Optional[float] = None,
     chars: Optional[int] = None,
     failed: bool = False,
+    context: Optional[dict[str, Any]] = None,
 ) -> None:
     """Record one ``thread_read`` call: the id as the caller passed it (thread
     id, legacy integer id, or provider session uuid — searches log thread ids,
@@ -173,7 +184,10 @@ def record_read(
     two comparable.
 
     ``failed`` marks a read that raised, for the same reason searches record it: the
-    slow failures are evidence, and dropping them flatters every percentile."""
+    slow failures are evidence, and dropping them flatters every percentile.
+    ``context`` is the same contention sample searches carry — a read hydrates from
+    the same store ingest is writing, and its tail (milliseconds at the median,
+    seconds at the worst) is exactly where that would show."""
     if not _enabled():
         return
     record: dict[str, Any] = {
@@ -189,6 +203,8 @@ def record_read(
         record["chars"] = chars
     if failed:
         record["failed"] = True
+    if context:
+        record.update(context)
     _append(record)
 
 

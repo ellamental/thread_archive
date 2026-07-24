@@ -317,20 +317,43 @@ class Watcher:
         """Cheap periodic upkeep: shard rebalance + thread-metadata backstop + manifest
         watermark + the thread-meta search docs (titles/summaries → FTS). Deliberately
         *not* the cross-thread overlay snapshots — conversation ingest never changes
-        those, so the live path leaves them untouched."""
+        those, so the live path leaves them untouched.
+
+        Timed into ``health.json`` (``watch_maintain_last``), split across its two
+        halves. "Cheap" is a property this work has to keep earning: both the manifest
+        snapshot and the rebalance sweep scale with the archive rather than with what
+        just arrived, which is the shape that turns into a quadratic term as the
+        corpus grows. Interval-gating bounds how often that is paid, not how much —
+        so the cost itself is worth watching, and a regression here would otherwise
+        surface only as the poll loop mysteriously slowing down."""
         from .._retrieval.fts import index_thread_meta
         from .._truth import checkpoint
 
+        started = time.monotonic()
         counts = checkpoint(snapshots=False)
+        checkpoint_ms = (time.monotonic() - started) * 1000.0
         # Sync title/summary search docs (diff-based — unchanged threads write
         # nothing). Catches both fresh imports and out-of-band summary writes.
+        meta_started = time.monotonic()
         try:
             meta = index_thread_meta()
             if meta:
                 counts = {**counts, "thread_meta_docs": meta}
         except Exception as e:  # noqa: BLE001 — upkeep must not kill the loop
             logger.warning("watch: thread-meta index error: %s", e)
+        meta_ms = (time.monotonic() - meta_started) * 1000.0
         logger.info("watch: maintenance %s", counts)
+        try:
+            from .._ops.health import record_health
+
+            record_health("watch_maintain_last", {
+                "ms": round(checkpoint_ms + meta_ms, 1),
+                "checkpoint_ms": round(checkpoint_ms, 1),
+                "thread_meta_ms": round(meta_ms, 1),
+                "counts": {k: v for k, v in counts.items() if isinstance(v, int)},
+            })
+        except Exception:  # noqa: BLE001 — advisory; the loop must survive
+            logger.debug("watch: could not record maintenance timing", exc_info=True)
         return counts
 
     def _embed_due(self, now: float, last_embed: float) -> bool:
@@ -365,13 +388,90 @@ class Watcher:
     def embed_pending(self) -> int:
         """Embed the freshest user/text events still missing a vector (bounded by
         ``embed_batch``). Returns the count embedded — 0 when caught up or when the
-        embed backend isn't installed."""
+        embed backend isn't installed.
+
+        The pass reports itself into ``health.json`` (``watch_embed_last``). This is
+        the semantic half of ingest freshness, and it fails silently in a way the
+        lexical half does not: if this drain falls behind, every other signal stays
+        green — the poll loop is healthy, ``lag_s`` is low, searches return hits —
+        and the only symptom is that the *right* hit is missing from the vector arm
+        because the conversation was never embedded. A drain that has stopped and one
+        that has caught up both embed zero docs per pass; only the pending count
+        tells them apart."""
+        from .._ops.load_runs import CollectingPhase
         from .._retrieval.vectors import index_events_local
 
-        n = index_events_local(max_events=self.embed_batch, newest_first=True)
+        phase = CollectingPhase()
+        started = time.monotonic()
+        n = index_events_local(max_events=self.embed_batch, newest_first=True, phase=phase)
+        elapsed_ms = (time.monotonic() - started) * 1000.0
         if n:
             logger.info("watch: embedded %d new vectors", n)
+        self._record_embed(n, elapsed_ms, phase)
         return n
+
+    def _record_embed(self, embedded: int, elapsed_ms: float, phase) -> None:
+        """Surface one embed-cohost pass into ``health.json``. Fail-soft: advisory,
+        must never take the loop down.
+
+        ``pending`` is what the pass found still missing a vector, capped by
+        ``embed_batch`` — so ``capped`` marks the case where the real backlog is
+        larger than one pass can see, which is the whole signal that a drain is
+        behind rather than caught up. The ``select`` / ``model_load`` / ``encode`` /
+        ``write`` split rides along from the drain's own sub-timings, so a slow pass
+        says which of the four it was."""
+        try:
+            rec: dict = {
+                "embedded": embedded,
+                "ms": round(elapsed_ms, 1),
+                "pending": phase.total or 0,
+            }
+            if phase.total and phase.total >= self.embed_batch:
+                rec["capped"] = True
+            rec.update(phase.detail_ms())
+            chunks = phase.counts.get("chunks_pending")
+            if chunks:
+                rec["chunks_pending"] = chunks
+            age = self._newest_vector_age_s()
+            if age is not None:
+                rec["newest_vector_age_s"] = age
+
+            from .._ops.health import record_health
+
+            record_health("watch_embed_last", rec)
+        except Exception:  # noqa: BLE001 — advisory; the loop must survive
+            logger.debug("watch: could not record embed pass", exc_info=True)
+
+    def _newest_vector_age_s(self) -> Optional[float]:
+        """How old the newest embedded event is — the vector arm's freshness.
+
+        An index seek, not a scan: ``event_id`` leads ``event_vectors``' primary key.
+        Structurally an over-estimate, and honestly so: only the user/text/title/
+        summary pools are embedded, so a trailing run of tool events (which never get
+        vectors) ages this number without anything being behind. It is a ceiling on
+        vector staleness, which is the direction that matters."""
+        try:
+            from datetime import datetime, timezone
+
+            from sqlalchemy import text as sa_text
+
+            from .._store import get_session
+
+            with get_session() as s:
+                newest = s.execute(sa_text(
+                    "SELECT e.occurred_at FROM events e WHERE e.id = "
+                    "(SELECT max(event_id) FROM event_vectors)"
+                )).scalar()
+            if not newest:
+                return None
+            if isinstance(newest, str):
+                newest = datetime.fromisoformat(newest)
+            if newest.tzinfo is None:
+                newest = newest.replace(tzinfo=timezone.utc)
+            return round((datetime.now(timezone.utc) - newest).total_seconds(), 1)
+        except Exception:  # noqa: BLE001 — advisory
+            logger.debug("watch: could not sample vector freshness", exc_info=True)
+            return None
 
     def run(self) -> None:
         """Loop forever (until :meth:`stop`): poll every ``interval`` seconds, and run

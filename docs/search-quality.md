@@ -180,6 +180,14 @@ that in and read cold on every search forever. Against them, a `warm` ledger row
 records each `warm_models` pass — how long a process takes to become useful, split by
 stage — so a slow first search can be told apart from warming that is broken.
 
+Alongside the timings, each record carries what else was competing for the machine:
+`inflight` (concurrent retrieval calls in this process), `refreshing` (background
+matrix/graph rebuilds in flight), and `wal_age_s` (seconds since anything last wrote
+the index, off the SQLite WAL's mtime — the cross-process signal, since reads never
+touch the WAL). Timings say where a search spent its time; these say whether it had
+the machine to itself while spending it, which a duration alone cannot tell apart.
+Fields are omitted when they say nothing, so an idle-machine search records none.
+
 `duration_ms` is retrieval only; `render_ms` beside it is the formatting that turns
 hits into the text the agent reads. Their sum is the tool call's wall clock, and
 keeping them apart distinguishes a slow *search* from a slow *answer*. Searches and

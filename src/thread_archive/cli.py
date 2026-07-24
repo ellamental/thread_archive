@@ -522,7 +522,9 @@ def _phase_line(ph: dict) -> str:
     # materially slower than its head is paying a cost that grows with its own
     # output, which the mean rate beside it hides.
     if (slow := ph.get("slowdown")) and slow >= 1.5:
-        bits.append(f"slowing {slow:,.1f}x ({ph.get('rate_first_s')}/s -> {ph.get('rate_last_s')}/s)")
+        unit = f" {u}" if (u := ph.get("trend_unit")) else ""
+        bits.append(f"slowing {slow:,.1f}x ({ph.get('rate_first_s')}{unit}/s -> "
+                    f"{ph.get('rate_last_s')}{unit}/s)")
     if (detail := ph.get("detail_s")):
         bits.append("[" + " ".join(f"{k} {_fmt_duration(v)}" for k, v in detail.items()) + "]")
     if (counts := ph.get("counts")):

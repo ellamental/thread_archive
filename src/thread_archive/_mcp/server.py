@@ -42,7 +42,7 @@ from mcp.server.fastmcp import FastMCP
 
 from .. import _api as api
 from .._config import ENV_MCP_INGEST
-from .._retrieval import _probe, format_results, warm_models
+from .._retrieval import _contention, _probe, format_results, warm_models
 from .._retrieval import usage as _usage
 from .._retrieval._types import EventHit
 from .._retrieval.format import query_terms, term_hit_count, top_hit
@@ -421,12 +421,18 @@ def thread_search(
     probe = None
     retrieval_ms: Optional[float] = None
     render_ms: Optional[float] = None
+    context: dict = {}
     started = time.monotonic()
     # Log in a finally so a raising search still leaves its usage record — a search
     # that failed slowly is the most important latency evidence there is, and it is
     # exactly the one an exception would otherwise erase.
     try:
-        with _probe.install() as probe:
+        # Contention is sampled inside the in-flight span (so this call counts
+        # itself) and at the *start* of the work: what the machine was doing when
+        # this search began is what shaped its latency. Sampling after would report
+        # a background rebuild that finished during the search as absent.
+        with _contention.in_flight(), _probe.install() as probe:
+            context = _contention.sample()
             hits = _run(content_types)
 
             # One-shot scope widen: a default-scope search whose top hit contains no
@@ -476,6 +482,7 @@ def thread_search(
             render_ms=render_ms,
             failed=sys.exc_info()[0] is not None,
             timings=probe.as_record() if probe is not None else None,
+            context=context,
         )
 
 
@@ -573,20 +580,23 @@ def thread_read(
     # a failed read is usage evidence too — with the latency it burned.
     started = time.monotonic()
     out: object = None
+    context: dict = {}
     try:
-        out = api.read_thread(
-            thread_id,
-            limit=limit,
-            offset=offset,
-            summary=summary,
-            mode=mode,
-            user_only=user_only,
-            tool_results=tool_results,
-            max_chars=max_chars,
-            after_event=after_event,
-            around_event=around_event,
-            context_turns=context_turns,
-        )
+        with _contention.in_flight():
+            context = _contention.sample()
+            out = api.read_thread(
+                thread_id,
+                limit=limit,
+                offset=offset,
+                summary=summary,
+                mode=mode,
+                user_only=user_only,
+                tool_results=tool_results,
+                max_chars=max_chars,
+                after_event=after_event,
+                around_event=around_event,
+                context_turns=context_turns,
+            )
         return out
     finally:
         _usage.record_read(
@@ -599,6 +609,7 @@ def thread_read(
             duration_ms=(time.monotonic() - started) * 1000.0,
             chars=len(out) if isinstance(out, str) else None,
             failed=sys.exc_info()[0] is not None,
+            context=context,
         )
 
 

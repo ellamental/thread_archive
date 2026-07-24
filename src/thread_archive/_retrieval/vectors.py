@@ -609,7 +609,7 @@ def index_events_local(
         with phase.timed("write"):
             _write_doc_vectors(docs)
         total += len(docs)
-        phase.advance(len(docs))
+        phase.advance(len(docs), work=len(texts))
         phase.count("chunks", len(texts))
         batch, batch_chunks = [], 0
         return True
@@ -846,6 +846,13 @@ def _refresh_matrix_async(key: tuple, cts: tuple[str, ...]) -> None:
                 _MATRIX_REFRESHING.discard(key)
 
     threading.Thread(target=_run, name="matrix-refresh", daemon=True).start()
+
+
+def is_refreshing() -> bool:
+    """Whether a background matrix rebuild is in flight in this process — read by
+    the contention sample, since a rebuild streams the whole pack off disk and
+    competes with any search running beside it."""
+    return bool(_MATRIX_REFRESHING)
 
 
 def _load_matrix(cts: tuple[str, ...]):
