@@ -120,6 +120,15 @@ identical failure signature, including on a docs-only commit. Two causes:
   (`str | None`) — `search()` resolves every ref to the ULID before calling,
   so the annotation was narrowed to the real contract (`Optional[str]`;
   verified `search()` is the only caller). `mypy`: 166 files, no issues.
+- **Python coverage floor** (surfaced once mypy passed) — `_retrieval` at
+  93.8% vs its 94% floor, dragged under by main's new pool-cache/latency code
+  arriving under-covered. Fixed by adding real-behavior tests (repo house
+  style forbids monkeypatching — enforced by `tests/meta/test_no_patch.py`):
+  `pool_cache.save()`'s no-path no-op and its failed-write cleanup (driven by
+  a genuinely read-only directory, per the `test_cov_ops_truth.py` precedent),
+  plus `browse.py`'s unparseable time-bound and thread-scope branches
+  (`thread_id`, empty/`thread_ids` lists, `types`, `agents='only'`).
+  `_retrieval` now 94.1%, gate green.
 - **Frontend coverage thresholds** — lines 89.72% vs 91% required, statements
   86.53% vs 88%. Pre-existing on main, entirely outside this PR's scope
   (no frontend file touched); needs real frontend test work in a follow-up.

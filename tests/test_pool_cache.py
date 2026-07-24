@@ -137,6 +137,29 @@ def test_an_unreadable_cache_file_costs_a_refetch_not_a_crash(tmp_path) -> None:
     assert cache.get(("k",)) is None
 
 
+def test_save_without_a_path_is_a_no_op() -> None:
+    cache = pool_cache.PoolCache()
+    cache.put(("k",), [_hit(1, "one")])
+    cache.save()  # nothing to persist, nothing to raise
+
+
+def test_a_failed_save_leaves_no_partial_file(tmp_path) -> None:
+    # Failing to persist is not failing the run — a real unwritable directory:
+    # save() swallows the error, and no cache file or temp file appears.
+    subdir = tmp_path / "pools"
+    subdir.mkdir()
+    path = subdir / "pools.pkl"
+    cache = pool_cache.PoolCache(path=path)
+    cache.put(("k",), [_hit(1, "one")])
+    subdir.chmod(0o500)
+    try:
+        cache.save()
+    finally:
+        subdir.chmod(0o700)
+    assert not path.exists()
+    assert not path.with_suffix(path.suffix + ".tmp").exists()
+
+
 def test_install_is_scoped_and_nests() -> None:
     assert pool_cache.current() is None
     outer = pool_cache.PoolCache()

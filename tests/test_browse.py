@@ -141,3 +141,36 @@ def test_topic_tree_read(archive_home) -> None:
     # view. Case/space-insensitive, and it beats uuid resolution.
     assert "topic tree" in read_thread("topics")
     assert "topic tree" in read_thread(" Topics ")
+
+
+def test_browse_time_bound_drops_unparseable_values() -> None:
+    # An unparseable since/until drops the bound rather than raising — the same
+    # pass-through the FTS path gives such values.
+    from thread_archive._retrieval.browse import _time_bound
+
+    assert _time_bound("not-a-date") is None
+    assert _time_bound(None) is None
+    assert _time_bound("2026-01-02T12:00:00+00:00") is not None
+
+
+def test_browse_thread_scopes(archive_home) -> None:
+    from thread_archive._retrieval.browse import browse_threads
+
+    seeded = _seed(archive_home)
+    tid = seeded["cursor_tid"]
+
+    assert [r["thread_id"] for r in browse_threads(thread_id=tid)] == [tid]
+    # an explicit empty scope matches nothing rather than everything
+    assert browse_threads(thread_ids=[]) == []
+    assert {r["thread_id"] for r in browse_threads(thread_ids=[tid])} == {tid}
+
+
+def test_browse_agents_only_lists_agent_threads(archive_home) -> None:
+    from thread_archive._retrieval.browse import browse_threads
+
+    _seed(archive_home)
+    sys_tid = _seed_direct("claude-code", "agent-run", 4, thread_type="system")
+
+    assert [r["thread_id"] for r in browse_threads(agents="only")] == [sys_tid]
+    typed = browse_threads(types=["conversation"])
+    assert typed and sys_tid not in {r["thread_id"] for r in typed}
