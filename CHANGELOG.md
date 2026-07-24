@@ -2,28 +2,70 @@
 
 ## Unreleased
 
+- New gold miner **`commit`** (`thread_archive mine commit`) and the
+  `evals/swechat_corpus.py` harness that feeds it. Every existing miner
+  establishes its labels by searching with the engine under test — the rerank
+  judge grades a pool production search returned, the query/topic labelers sweep
+  with their own reformulations through the same stack — so a systematic retrieval
+  blind spot is invisible to labeler and ranker alike and can never score as a
+  miss. `commit` takes its gold from **provenance** instead: a linkage file pairs
+  each session with the commits it demonstrably authored, an agent reads only the
+  commit (message + diff) and writes queries for it, and the linked session is the
+  answer. No search runs during labeling, and since the agent never reads the
+  target thread there is no vocabulary leakage either — the bias query-gen carries
+  by construction. Same-repo siblings grade themselves structurally (overlapping
+  files 1, disjoint 0), so the confound pool costs no tokens; only the grade-2 is
+  grounded, 1/0 are proxies. Needs a corpus shipping session↔commit provenance, so
+  it stays out of `mine all`.
+
+  `swechat_corpus.py` builds that corpus from
+  [SWE-chat](https://huggingface.co/datasets/SALT-NLP/SWE-chat) (public, ODC-BY,
+  arXiv:2604.20779), whose transcripts are native Claude Code JSONL and so ingest
+  through the shipped importer unchanged. Its value is being an **independent
+  hold-out**: every other gold file is mined from one corpus by one author, and
+  hold-out discipline within a corpus cannot see overfitting to it. Unlike the
+  BEIR/CDR/haystack yardsticks it is domain-matched — agent session logs, not a
+  third-party IR corpus. Roughly 2100 of 5851 sessions carry attributable commits,
+  about half of which have retrievable commit content.
+
 - Recent-conversation cards now include up to 200 characters from the first
   non-empty user message, so a title alone is no longer the only recognition cue.
 
-- The ranker gained a **`bm25_weight` term** over `_lex`, the lexical arm's own
+- The ranker gained a **`bm25_weight` term** over `_lex` — the lexical arm's own
   placement of a hit (peak-normalized reciprocal rank, stamped in the pool half of
-  `search`). It ships at `0.0`, so the shipped ordering is unchanged — confirmed on
-  both benches: BEIR scifact reproduces 0.3024 nDCG@10 exactly and all seven gold
-  files reproduce their baselines exactly at `bm25_weight=0`. The knob exists
-  because the arm's verdict was reaching the scorer through one channel only.
-  FTS5 orders by bm25 but never surfaces the score, and `_rrf` — the feature that
-  carries rank evidence — is computed only when the vector arm returns. A
-  lexical-only search (a `tool_name` or `types` scope, a structural query, an
-  archive without embeddings) therefore ranked on density alone, and density is
-  IDF-blind and length-normalized: it weighs a corpus-common term exactly like the
-  rare one that discriminates, then divides by length. Measured on BEIR scifact
+  `search`) — shipped at `100.0`. The arm's verdict previously reached the scorer
+  through one channel only: FTS5 orders by bm25 but never surfaces the score, and
+  `_rrf`, the feature carrying rank evidence, is computed only when the vector arm
+  returns. So a lexical-only search (a `tool_name` or `types` scope, a structural
+  query, an archive without embeddings) ranked on density alone — and density is
+  IDF-blind and length-normalized, weighing a corpus-common term exactly like the
+  rare one that discriminates and then dividing by length. Measured on BEIR scifact
   over a fixed pool, varying only the ordering: the pool's own bm25 order scores
-  0.682 nDCG@10 (above the 0.665 published Anserini BM25 reference) and the
-  density re-scoring of that same pool scores 0.302, with 54 of 332 gold documents
-  pushed out of the top-200 entirely (recall@100 0.924 → 0.716) and top-10 median
-  document length falling 1496 → 835 chars. Gold-file sweep results and the
-  weight's in-domain trade are recorded in `params.py`; `evals/experiments/bm25_term.py`
-  races it on the lab.
+  0.682 nDCG@10 (above the 0.665 published Anserini BM25 reference) while an
+  unweighted density re-scoring of that same pool scores 0.302, pushing 54 of 332
+  gold documents out of the top-200 entirely (recall@100 0.924 → 0.716) and
+  dropping top-10 median document length 1496 → 835 chars.
+
+  The shipped weight is set by the **gold files, not that benchmark**: 100 is
+  where findability gains .019 MRR / .015 nDCG@10, judged .013 MRR and
+  rerank-cases .052 success@10, against the recall it costs the confound-dense
+  files (frustration −.048 recall@10, context-compaction −.033). A deliberate
+  trade, taken on the in-domain delta. 200 buys findability another .015 nDCG@10
+  for more of the same recall; past ~400 bm25's order overrides the density
+  evidence the topic files lean on and they break their floors.
+  `evals/experiments/no_bm25.py` races the ablation.
+
+  The external suite, tuned against by nothing, agrees: BEIR scifact lexical
+  0.302 → 0.445 (recall@100 0.716 → 0.900) and fused 0.650 → 0.658; CDR lexical
+  0.101 → 0.230 (recall@100 0.250 → 0.569) and fused 0.458 → 0.492;
+  LongMemEval-S 0.894 → 0.912 recall@10. The benchmark gap is deliberately left
+  open — `bm25_weight` near 2000 reaches BEIR's BM25 reference and breaks five
+  gold floors doing it. LoCoMo is flat (fused 0.649 → 0.653, re-rank forced on
+  0.790 → 0.787) because the term is out of scale there, not inert: density is
+  normalized to `density_norm_chars` but unbounded, so on a corpus whose every
+  document is a sub-500-char turn (median 116) density runs several times larger
+  than on archive-length text and a fixed-scale bm25 term cannot reach it. Read
+  a flat number on a short-document corpus as scale, not as no effect.
 
 - `pool_cache.FORMAT_VERSION` → 2, since cached pools now carry `_lex`. A pool
   cached by an older build would have scored the new term as zero and made a

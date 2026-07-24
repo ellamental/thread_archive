@@ -22,17 +22,17 @@ when the ranking code moves. `scripts/retrieval_gold_gate.py` scores every file
 over its bound snapshot with the production ranker at the canonical `limit=20` and
 prints per-file metrics; each run also appends to a timeseries ledger
 (`~/.thread/archive/gold-runs.jsonl`). At the shipped configuration
-(`fusion_weight=400`, cross-encoder off), the seven files read:
+(`fusion_weight=400`, `bm25_weight=100`, cross-encoder off), the seven files read:
 
 | gold file | miner | n | MRR | success@10 | recall@10 | nDCG@10 |
 |---|---|---|---|---|---|---|
-| findability | `querygen` | 64 | 0.674 | 0.922 | 0.922 | 0.732 |
-| judged | `query` | 21 | 0.455 | 0.952 | 0.905 | 0.559 |
-| rerank-cases | `rerank` | 19 | 0.632 | 0.895 | 0.495 | 0.655 |
-| context-compaction | `topic` | 10 | 1.000 | 1.000 | 0.751 | 0.699 |
-| needle | `topic` | 10 | 0.762 | 0.900 | 0.543 | 0.609 |
-| suicide | `topic` | 7 | 0.929 | 1.000 | 0.879 | 0.739 |
-| frustration | `topic` | 7 | 0.554 | 0.857 | 0.605 | 0.528 |
+| findability | `querygen` | 64 | 0.693 | 0.922 | 0.922 | 0.747 |
+| judged | `query` | 21 | 0.468 | 0.952 | 0.905 | 0.562 |
+| rerank-cases | `rerank` | 19 | 0.633 | 0.947 | 0.495 | 0.647 |
+| context-compaction | `topic` | 10 | 1.000 | 1.000 | 0.717 | 0.701 |
+| needle | `topic` | 10 | 0.762 | 0.900 | 0.542 | 0.608 |
+| suicide | `topic` | 7 | 0.929 | 1.000 | 0.879 | 0.740 |
+| frustration | `topic` | 7 | 0.557 | 0.857 | 0.557 | 0.518 |
 
 Read the metrics apart: **success@k** asks whether any grade-2 answer ranks by k,
 **recall@k** measures the fraction of a case's *whole* grade-2 set that ranks, and
@@ -78,7 +78,7 @@ protocol.
 Production `search` federates two arms — FTS5 **lexical** and an in-process
 **vector** (semantic, `nomic-embed-text`) — fuses them by reciprocal-rank fusion,
 scores the merged pool with the weighted lexical **ranker** (density / phrase /
-recency / content-type), then re-orders the head with the **community-coherence**
+recency / content-type / bm25), then re-orders the head with the **community-coherence**
 signal. A **cross-encoder** re-rank exists but sits out by default. Every tunable
 is one field of `thread_archive._retrieval.SearchParams`; the shipped defaults ARE
 production, and each candidate is another instance scored against them.
@@ -90,11 +90,25 @@ production, and each candidate is another instance scored against them.
   *agreement* up to density's working scale keeps those answers reachable — the
   paraphrase and vague shapes, where the lexical arm has no purchase, are the ones
   that move. 400 is where every gold file reaches its best nDCG@10 and the head is
-  at its most confident (success@1 0.609; findability MRR 0.666 at recall@10 0.922,
-  past what the cross-encoder reaches) — the weight buys ordering, not just flatter
-  recall. Past ~500 the vector arm starts overriding lexical evidence it should
-  defer to and the keyword-shaped files give back recall. This is the single
-  biggest ranking knob, and it is what lets the cross-encoder ship off.
+  at its most confident — success@1 rises with the weight, so what it buys is
+  ordering, not just flatter recall. Past ~500 the vector arm starts overriding
+  lexical evidence it should defer to and the keyword-shaped files give back
+  recall. This is the single biggest ranking knob, and it is what lets the
+  cross-encoder ship off.
+- **The bm25 term** (`bm25_weight=100`) carries the lexical arm's own placement of a
+  hit (`_lex`, its peak-normalized reciprocal rank). It is the counterweight to
+  density's blind spot: density is IDF-blind and length-normalized, so it weighs a
+  corpus-common term exactly like the rare one that discriminates and then divides
+  by length — a short doc holding a few common query words outranks the long doc
+  holding the discriminating ones. 100 is a deliberate trade, not a free win: the
+  query-shaped files gain (findability +.019 MRR / +.015 nDCG@10 with all three
+  difficulty strata up, rerank-cases +.052 success@10) and the confound-dense topic
+  files pay in recall (frustration −.048 recall@10, context-compaction −.033). Past
+  ~400 bm25's order overrides the density evidence those files lean on and they
+  break their floors. The term matters most where fusion cannot reach: `_rrf` is
+  computed only when the vector arm returns, so a lexical-only search — a
+  `tool_name` or `types` scope, a structural query, an archive with no embeddings —
+  would otherwise rank on density alone.
 - **Community-coherence re-rank** — a corpus-native embedding graph (thread
   centroids → cosine kNN → Leiden, no topic-graph input, every embedded conversation
   a node) partitions into communities; within a ranked pool, threads whose community
@@ -109,7 +123,7 @@ production, and each candidate is another instance scored against them.
   buys ~no gold-file MRR over the fused lexical+semantic+coherence stack, so the
   shipped search stays inside its latency budget without it. That verdict is
   domain-bound, not general: on turn-level dialog retrieval the same arm is worth
-  +0.141 recall@10 over the same fused stack (External calibration), so it is
+  +0.134 recall@10 over the same fused stack (External calibration), so it is
   dormant here, not dead. `rerank=True` still forces it (evals, and a
   quality-rebuild that must re-earn it within budget — a smaller model, a tighter
   pool); its `rerank_pool` (12) and `rerank_doc_chars` (768) knobs stay for that
@@ -174,43 +188,54 @@ mismatch.
 
 | benchmark | task | metric | lexical | +vectors | +rerank | published ref |
 |---|---|---|---|---|---|---|
-| BEIR scifact (`beir_eval.py`) | scientific-claim IR | nDCG@10 | 0.302 | 0.650 | — | 0.665 BM25 / 0.68 dense |
-| CDR (`cdr_eval.py`) | conversational retrieval | nDCG@10 | 0.101 | 0.458 | — | 0.504 best-of-16 |
-| LoCoMo (`haystack_eval.py`) | multi-session dialog, turn-level | recall@10 | 0.595 | 0.649 | **0.790** | 0.662 DRAGON |
-| LongMemEval-S (`haystack_eval.py`) | long-history QA, session-level | recall@10 | 0.894 | — | — | 0.710 BM25 / 0.823 Contriever |
+| BEIR scifact (`beir_eval.py`) | scientific-claim IR | nDCG@10 | 0.445 | 0.658 | — | 0.665 BM25 / 0.68 dense |
+| CDR (`cdr_eval.py`) | conversational retrieval | nDCG@10 | 0.230 | 0.492 | — | 0.504 best-of-16 |
+| LoCoMo (`haystack_eval.py`) | multi-session dialog, turn-level | recall@10 | 0.595 | 0.653 | **0.787** | 0.662 DRAGON |
+| LongMemEval-S (`haystack_eval.py`) | long-history QA, session-level | recall@10 | 0.912 | — | — | 0.710 BM25 / 0.823 Contriever |
 
-On the shipped default (no cross-encoder) the fused stack lands at 91–98% of every
-comparable reference. The suite doubles as a **held-out set** for ranking work: every
+On the shipped default (no cross-encoder) the fused stack lands at 97–99% of every
+comparable reference, and above the reference on LongMemEval-S. The suite doubles as
+a **held-out set** for ranking work: every
 weight is tuned against the archive's own mined gold files and nothing is tuned
 against these third-party corpora, so agreement between the two is what separates a
 real retrieval gain from a gold-file artifact. Score them after a defaults change.
 
 On **LoCoMo**, with the cross-encoder **forced on** (which production does not do),
-recall@10 reaches 0.790 — above the specialized dense retriever DRAGON (0.662) at
-every cutoff (@5 0.733 vs 0.567, @25 0.847 vs 0.767, @50 0.876 vs 0.827), helping
-most on the entity- and precise-term categories (single-hop 0.895, temporal 0.846)
+recall@10 reaches 0.787 — above the specialized dense retriever DRAGON (0.662) at
+every cutoff (@5 0.731 vs 0.567, @25 0.842 vs 0.767, @50 0.869 vs 0.827), helping
+most on the entity- and precise-term categories (single-hop 0.892, temporal 0.842)
 an agent's queries are made of. The arms are additive here: the re-rank is worth
-+0.141 recall@10 on top of fusion, where on the gold files it buys ~no MRR over that
++0.134 recall@10 on top of fusion, where on the gold files it buys ~no MRR over that
 same fused stack. The cross-encoder's value is domain-bound, and turn-level dialog is
-where it pays — at a price, 4207s for this pass against 157s for the +vectors one
-over the identical corpus.
+where it pays — at a price, roughly an hour for this pass against a minute for the
++vectors one over the identical corpus.
 
-On **CDR** the stack reaches 0.458 against the 0.504 best-of-16 reference, at
-recall@100 0.665. A weak number here is a ranking-weight symptom, not an
+On **CDR** the stack reaches 0.492 against the 0.504 best-of-16 reference, at
+recall@100 0.706. A weak number here is a ranking-weight symptom, not an
 embedder-size one: the same `nomic-embed-text` spans a nearly two-fold range on this
-benchmark under different fusion weights, so reach for the ranker before the model.
+benchmark under different ranking weights, so reach for the ranker before the model.
 
-**BEIR** is out-of-domain scientific IR, and the fused 0.650 sits inside the
-harness's own ±0.05 verdict band around BM25 ("in BM25 ballpark", −0.015), with
-recall@100 0.962. The **lexical arm alone is the open finding**: at 0.302 it trips
-that same harness's `BELOW BM25 — investigate`, because the ranker uses BM25 only to
-select the candidate pool and then re-scores from scratch — there is no bm25 term in
-`SearchParams` — on signals that are inert here (a corpus with no time axis and one
-content type). Retrieval is fine (lexical recall@100 0.716); the ordering is what
-loses.
+**BEIR** is out-of-domain scientific IR, and the fused 0.658 sits inside the
+harness's own ±0.05 verdict band around BM25 ("in BM25 ballpark", −0.007), with
+recall@100 0.958. The **lexical arm is the standing gap**: at 0.445 it still trips
+that same harness's `BELOW BM25 — investigate`, and closing it is a knob-turn away —
+`bm25_weight` near 2000 reaches the reference — that the gold files refuse, because
+past ~400 the topic files break their floors. The weight is set in domain and the
+benchmark is left disagreeing, which is the arrangement worth keeping: this suite is
+the alarm, not the objective.
+
+The gap between these corpora is itself a finding. The bm25 term's effective
+strength scales **inversely with document length**, because density is normalized to
+a fixed `density_norm_chars` window but never bounded — a 116-char turn matching
+three terms scores `3 × 500/116 ≈ 13`, where a 1500-char abstract matching three
+scores `1`. So a weight calibrated on archive-length documents barely registers on
+turn-level corpora: LoCoMo (median turn 116 chars, every turn under the 500-char
+window) is unmoved by it, while session-level LongMemEval and abstract-level BEIR
+both move. Read a flat number on a short-document corpus as the term being out of
+scale there, not as the term doing nothing.
 
 **LongMemEval-S** is the easy split, scored over its 470 non-abstention questions —
-its references are measured on the harder -M split — so read 0.894 as ballpark, not
+its references are measured on the harder -M split — so read 0.912 as ballpark, not
 a matched win. This is calibration, not the product measure: none of it scores the
 archive on the agentic coding and design sessions it actually serves.
 

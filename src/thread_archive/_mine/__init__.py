@@ -15,10 +15,10 @@ from __future__ import annotations
 def load_registry() -> list:
     """Every registered miner, in list-view order. Imports the miner modules on
     demand (not at package import) so the corpus tool seam stays cheap."""
-    from . import query_mined, querygen, rerank_judged, topic_mined
+    from . import commit_linked, query_mined, querygen, rerank_judged, topic_mined
 
     return [query_mined.MINER, topic_mined.MINER,
-            rerank_judged.MINER, querygen.MINER]
+            rerank_judged.MINER, querygen.MINER, commit_linked.MINER]
 
 
 def dispatch(argv: list[str]) -> int:

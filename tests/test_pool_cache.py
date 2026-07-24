@@ -203,14 +203,17 @@ def test_scoring_is_scale_invariant() -> None:
 # --- the bm25 term -----------------------------------------------------------
 
 
-def test_bm25_term_is_inert_at_the_shipped_default() -> None:
-    # bm25_weight ships at 0.0, so a pool carrying _lex ranks exactly as one
-    # without it. The knob is opt-in; nothing about the shipped order moves.
+def test_bm25_term_is_scored_at_the_shipped_default() -> None:
+    # The shipped weight is live, so a hit's bm25 standing changes where it lands.
+    # A pool with no _lex at all still scores — the term degrades to 0, which is
+    # what a semantic-only pool and every pre-stamp cached pool look like.
     terms = ["alpha", "beta"]
-    with_lex = [_hit(1, "alpha beta", lex=0.02), _hit(2, "alpha beta padding", lex=1.0)]
-    without = [_hit(1, "alpha beta"), _hit(2, "alpha beta padding")]
-    assert ([h["event_id"] for h in rank.rank_search_results(with_lex, terms, 2, now=NOW)]
-            == [h["event_id"] for h in rank.rank_search_results(without, terms, 2, now=NOW)])
+    head = [_hit(1, "alpha beta padding", lex=1.0), _hit(2, "alpha beta padding", lex=0.02)]
+    assert [h["event_id"] for h in rank.rank_search_results(head, terms, 2, now=NOW)] == [1, 2]
+    flipped = [_hit(1, "alpha beta padding", lex=0.02), _hit(2, "alpha beta padding", lex=1.0)]
+    assert [h["event_id"] for h in rank.rank_search_results(flipped, terms, 2, now=NOW)] == [2, 1]
+    bare = [_hit(1, "alpha beta padding"), _hit(2, "alpha beta padding")]
+    assert len(rank.rank_search_results(bare, terms, 2, now=NOW)) == 2
 
 
 def test_bm25_term_can_outvote_density() -> None:
@@ -221,7 +224,9 @@ def test_bm25_term_can_outvote_density() -> None:
     short_confound = _hit(1, "alpha beta", lex=0.02)
     long_target = _hit(2, "alpha beta " + "unrelated padding " * 40, lex=1.0)
     pool = [short_confound, long_target]
-    assert rank.rank_search_results(pool, terms, 2, now=NOW)[0]["event_id"] == 1
+    without = rank.rank_search_results(
+        pool, terms, 2, params=SearchParams(bm25_weight=0.0), now=NOW)
+    assert without[0]["event_id"] == 1
     ranked = rank.rank_search_results(
         pool, terms, 2, params=SearchParams(bm25_weight=500.0), now=NOW)
     assert ranked[0]["event_id"] == 2
