@@ -526,8 +526,19 @@ def _phase_line(ph: dict) -> str:
 
 
 def cmd_archives(args: argparse.Namespace) -> int:
-    """List every known archive and what each one is doing."""
+    """List every known archive and what each one is doing; set/clear roles."""
     from . import _api as api
+    from ._ops.archives import set_role
+
+    if args.set_role or args.clear_role:
+        ref, role = args.set_role if args.set_role else (args.clear_role, None)
+        try:
+            entry = set_role(ref, role)
+        except (KeyError, ValueError) as e:
+            print(f"error: {e}")
+            return 1
+        print(f"{entry.get('label', '?')}: role "
+              f"{'cleared' if role is None else f'= {role}'}")
 
     rows = api.archives(home=args.home)
     if not rows:
@@ -541,8 +552,9 @@ def cmd_archives(args: argparse.Namespace) -> int:
         state = ""
         if load:
             state = f"  [{load.get('kind', '?')}: {load.get('status', '?')}]"
+        role = f"  ({a['role']})" if a.get("role") else ""
         print(f"{mark} {a.get('label', '?'):<20} {size / 1e9:6.2f} GB  "
-              f"{a.get('home', '?')}{gone}{state}")
+              f"{a.get('home', '?')}{role}{gone}{state}")
     return 0
 
 
@@ -1574,6 +1586,15 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_archives = sub.add_parser("archives", help="list known archives and their load state")
     _add_home_arg(p_archives)
+    p_archives.add_argument(
+        "--set-role", nargs=2, metavar=("ARCHIVE", "ROLE"),
+        help="tag an archive (by label, id, or home path) with a descriptive role "
+             "such as live, benchmark, or snapshot — shown wherever archives are listed",
+    )
+    p_archives.add_argument(
+        "--clear-role", metavar="ARCHIVE",
+        help="remove the role tag from an archive (by label, id, or home path)",
+    )
     p_archives.set_defaults(func=cmd_archives)
 
     p_coverage = sub.add_parser(

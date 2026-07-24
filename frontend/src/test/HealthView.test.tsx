@@ -246,6 +246,25 @@ it('never lets an indexed archive read as a reachable one', async () => {
   ).toBeInTheDocument()
 })
 
+it('shows an archive role as a badge, and no badge when none is set', async () => {
+  // The role says what an archive is *for* (live / benchmark / snapshot) —
+  // orthogonal to reachability, rendered only when the operator set one.
+  const bench: ArchiveEntry = {
+    ...loadedArchive(),
+    id: 'ddd444',
+    home: '/Users/test/.cache/swe-chat',
+    label: 'swe-chat',
+    active: false,
+    role: 'benchmark',
+  }
+  renderHealth(healthyStatus(), [loadedArchive(), bench])
+
+  const section = within(await screen.findByRole('region', { name: 'Archives on this machine' }))
+  expect(section.getByText('benchmark')).toBeInTheDocument()
+  // Exactly one role badge: the role-less archive renders none.
+  expect(section.getAllByTitle(/What this archive is for/)).toHaveLength(1)
+})
+
 it('reports what past loads cost, per phase', async () => {
   renderHealth(healthyStatus())
 

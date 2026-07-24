@@ -225,6 +225,18 @@ def snapshot(
     }
     _write_manifest(dest_path, manifest)
 
+    # A snapshot is a durable archive home, not workspace — make sure it is
+    # registered (the reindex's open already did, unless registration was
+    # suppressed or throttled) and say what it is. Fail-soft like every
+    # registry write: a bookkeeping miss must not fail a built snapshot.
+    from .archives import register, set_role
+
+    register(dest_path, force=True)
+    try:
+        set_role(str(dest_path), "snapshot")
+    except (KeyError, ValueError, OSError):
+        pass
+
     return {
         "dest": str(dest_path),
         "manifest": manifest,

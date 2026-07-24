@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- **Registry entries can say what an archive is *for*.** Entries in
+  `~/.thread/archives.json` carry an optional descriptive `role` (`live`,
+  `benchmark`, `snapshot`) set via `thread_archive archives --set-role` /
+  `--clear-role`, shown in the CLI listing and as a badge on the health page's
+  archive cards. Purely descriptive — a role grants and gates nothing.
+  `snapshot` stamps `role: snapshot` on its dest automatically. Scratch homes
+  stay out of the registry entirely: a restore drill's temp home and a restore's
+  staging directory no longer register (including via their smoke passes'
+  re-entrant opens).
+
 - **An abandoned CLI session no longer reads as a capture failure.** Capture
   coverage judged a source's ingest stale when its newest store *mtime* ran ahead
   of its newest archived event — so a session opened and never used (grok and

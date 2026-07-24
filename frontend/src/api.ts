@@ -161,6 +161,9 @@ export interface ArchiveEntry {
   label: string
   first_seen?: string
   last_opened?: string
+  // Descriptive tag set by the operator (or by tooling — a snapshot stamps
+  // 'snapshot' on its dest): what this archive is *for*. Grants nothing.
+  role?: string
   exists: boolean
   active: boolean
   index_bytes?: number

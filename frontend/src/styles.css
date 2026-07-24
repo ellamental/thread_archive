@@ -675,6 +675,13 @@ a.session-link:hover { color: var(--accent); }
   color: var(--accent); font-size: 9px; font-weight: 650;
   text-transform: uppercase; letter-spacing: .05em; white-space: nowrap;
 }
+/* What an archive is *for* (live / benchmark / snapshot) — descriptive, quieter
+   than the served/not-served reachability tag beside it. */
+.load-role-tag {
+  padding: 1px 6px; border-radius: 999px; background: color-mix(in srgb, var(--muted) 12%, transparent);
+  color: var(--muted); font-size: 9px; font-weight: 650;
+  text-transform: uppercase; letter-spacing: .05em; white-space: nowrap;
+}
 /* Not reachable by retrieval — stated, not merely omitted, so an indexed archive
    is never mistaken for a searchable one. */
 .load-served-tag.off {

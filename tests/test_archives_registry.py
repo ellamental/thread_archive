@@ -140,6 +140,60 @@ def test_open_archive_registers_the_home(registry, tmp_path, monkeypatch):
     assert str(home) in homes
 
 
+def test_set_role_by_label_id_and_home(registry):
+    archives.register(Path("/data/swe-chat"), force=True)
+    archives.register(Path("/data/other"), force=True)
+
+    entry = archives.set_role("swe-chat", "benchmark")  # by label
+    assert entry["role"] == "benchmark"
+    aid = archives.archive_id(Path("/data/other"))
+    assert archives.set_role(aid, "snapshot")["role"] == "snapshot"  # by id
+    assert archives.set_role("/data/other", "live")["role"] == "live"  # by home path
+
+    roles = {e["label"]: e.get("role") for e in archives.read_registry()}
+    assert roles == {"swe-chat": "benchmark", "other": "live"}
+
+
+def test_set_role_survives_reregistration_and_clears(registry):
+    home = Path("/data/arc")
+    archives.register(home, force=True)
+    archives.set_role("arc", "benchmark")
+    archives._last_registered.clear()
+    archives.register(home, force=True)  # a re-open must not shed the role
+    assert archives.read_registry()[0]["role"] == "benchmark"
+
+    cleared = archives.set_role("arc", None)
+    assert "role" not in cleared
+    assert "role" not in archives.read_registry()[0]
+
+
+def test_set_role_rejects_unknown_ambiguous_and_malformed(registry):
+    archives.register(Path("/data/arc"), force=True)
+    with pytest.raises(KeyError):
+        archives.set_role("no-such-archive", "live")
+    with pytest.raises(ValueError):
+        archives.set_role("arc", "Not A Role!")
+    # Two homes sharing a display label: the ref must refuse, not silently pick.
+    path = archives.registry_path()
+    data = json.loads(path.read_text())
+    data["archives"] = archives.merge_entry(
+        data["archives"], Path("/elsewhere/arc2"), at="T1", label="arc")
+    path.write_text(json.dumps(data))
+    with pytest.raises(ValueError):
+        archives.set_role("arc", "live")
+
+
+def test_suppress_registration_scopes_the_kill_switch(registry, monkeypatch):
+    with archives.suppress_registration():
+        archives.register(Path("/data/scratch"), force=True)
+        with pytest.raises(KeyError):  # role writes are off too
+            archives.set_role("/data/scratch", "snapshot")
+    assert archives.read_registry() == []  # nothing leaked into the registry
+    # The prior override (this fixture's sandbox path) is restored on exit.
+    archives.register(Path("/data/real"), force=True)
+    assert [e["label"] for e in archives.read_registry()] == ["real"]
+
+
 def test_list_is_newest_opened_first(registry):
     archives.register(Path("/a"), force=True)  # last_opened = now
     # Write a second entry opened far in the future, straight through the file.

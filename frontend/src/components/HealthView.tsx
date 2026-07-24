@@ -549,6 +549,14 @@ export function HealthView() {
                   <div className="load-archive-top">
                     <h3>
                       {archive.label}
+                      {archive.role && (
+                        <span
+                          className="load-role-tag"
+                          title="What this archive is for — a descriptive tag, set via `thread_archive archives --set-role`."
+                        >
+                          {archive.role}
+                        </span>
+                      )}
                       <span
                         className={`load-served-tag${archive.active ? '' : ' off'}`}
                         title={
