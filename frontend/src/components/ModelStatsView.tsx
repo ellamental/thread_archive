@@ -1,7 +1,8 @@
 import { useEffect, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
 import { api, type ModelStats } from '../api'
-import { hueStyle, modelHue } from '../modelColor'
+import { colorStyle, modelColor } from '../modelColor'
+import type { ModelColor } from '../modelColor'
 import { Bar, Tile, fmtInt, fmtTokens, fmtUsd } from './StatsView'
 
 // One model's drill-down, reached from the stats page's model list: how much it
@@ -29,7 +30,7 @@ function fmtDay(at: string | null): string {
     : d.toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' })
 }
 
-function MonthTable({ rows, hue, anyCost }: { rows: ModelStats['by_month']; hue: number; anyCost: boolean }) {
+function MonthTable({ rows, color, anyCost }: { rows: ModelStats['by_month']; color: ModelColor; anyCost: boolean }) {
   const maxTok = Math.max(1, ...rows.map((r) => r.tokens))
   return (
     <div className="stat-table-wrap">
@@ -52,7 +53,7 @@ function MonthTable({ rows, hue, anyCost }: { rows: ModelStats['by_month']; hue:
               <td>{fmtMonth(r.month)}</td>
               <td className="num">{r.sessions ? fmtInt(r.sessions) : '—'}</td>
               <td className="bar-col">
-                <Bar frac={r.tokens / maxTok} hue={hue} />
+                <Bar frac={r.tokens / maxTok} color={color} />
                 <span className="bar-num">{r.tokens ? fmtTokens(r.tokens) : '—'}</span>
               </td>
               <td className="num">{r.cache_read_tokens ? fmtTokens(r.cache_read_tokens) : '—'}</td>
@@ -68,7 +69,7 @@ function MonthTable({ rows, hue, anyCost }: { rows: ModelStats['by_month']; hue:
   )
 }
 
-function SessionTable({ rows, hue }: { rows: ModelStats['top_sessions']; hue: number }) {
+function SessionTable({ rows, color }: { rows: ModelStats['top_sessions']; color: ModelColor }) {
   const maxTok = Math.max(1, ...rows.map((r) => r.tokens))
   return (
     <div className="stat-table-wrap">
@@ -95,7 +96,7 @@ function SessionTable({ rows, hue }: { rows: ModelStats['top_sessions']; hue: nu
               <td>{fmtDay(r.at)}</td>
               <td>{r.source}</td>
               <td className="bar-col">
-                <Bar frac={r.tokens / maxTok} hue={hue} />
+                <Bar frac={r.tokens / maxTok} color={color} />
                 <span className="bar-num">{r.tokens ? fmtTokens(r.tokens) : '—'}</span>
               </td>
               <td className="num">{r.cache_read_tokens ? fmtTokens(r.cache_read_tokens) : '—'}</td>
@@ -125,7 +126,7 @@ export function ModelStatsView() {
 
   const o = data.overview
   const p = data.per_session
-  const hue = modelHue(data.model)
+  const color = modelColor(data.model)
   const span = [fmtDay(o.first_at), fmtDay(o.last_at)].filter(Boolean)
   const spanLabel = span.length === 2 && span[0] !== span[1] ? `${span[0]} – ${span[1]}` : span[0] || ''
 
@@ -137,7 +138,7 @@ export function ModelStatsView() {
         </Link>
       </div>
       <h1 className="title">
-        <span className="model-tag title-tag" style={hueStyle(hue)}>
+        <span className="model-tag title-tag" style={colorStyle(color)}>
           {data.model}
         </span>
       </h1>
@@ -178,7 +179,7 @@ export function ModelStatsView() {
 
       <div className="stat-section">
         <h2 className="stat-h">By month</h2>
-        <MonthTable rows={data.by_month} hue={hue} anyCost={data.by_month.some((r) => r.cost != null && r.cost > 0)} />
+        <MonthTable rows={data.by_month} color={color} anyCost={data.by_month.some((r) => r.cost != null && r.cost > 0)} />
         <p className="stat-note">
           Sessions land in the month they started; compactions in the month they happened. In a
           session that mixed models, tokens and requests are this model’s share, while compactions
@@ -189,7 +190,7 @@ export function ModelStatsView() {
       {data.top_sessions.length > 0 && (
         <div className="stat-section">
           <h2 className="stat-h">Heaviest sessions</h2>
-          <SessionTable rows={data.top_sessions} hue={hue} />
+          <SessionTable rows={data.top_sessions} color={color} />
         </div>
       )}
     </div>

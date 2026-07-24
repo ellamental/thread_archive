@@ -477,21 +477,27 @@ h1.topic-title { font-size: 19px; margin: 0 0 6px; }
 .raw-toggle:hover { border-color: var(--accent); }
 .raw-toggle.on { background: var(--accent-soft); border-color: var(--accent); color: var(--accent); }
 
-/* ---- per-model color coding (hue carried in --mc-h; see modelColor.ts) ---- */
+/* ---- per-model color coding (family hue in --mc-h, version shade in --mc-s;
+   see modelColor.ts) ---- */
+/* Resolve the model's saturation once per color-bearing element: the family's base
+   plus the version's offset. Descendants (a message's role label) inherit it. */
+.model-tag, .msg.has-model, .chip.model-chip, .stat-bar-fill.model {
+  --mc-sat: calc(60% + var(--mc-s, 0) * 1%);
+}
 /* Header line: one chip per model that answered in the thread. */
 .model-tags { display: inline-flex; flex-wrap: wrap; gap: 6px; margin-left: 8px; vertical-align: middle; }
 .model-tag {
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11px;
   padding: 1px 7px; border-radius: 5px;
-  color: hsl(var(--mc-h) 60% 40%);
-  background: hsl(var(--mc-h) 62% 50% / .12);
-  border: 1px solid hsl(var(--mc-h) 55% 50% / .35);
+  color: hsl(var(--mc-h) var(--mc-sat) 40%);
+  background: hsl(var(--mc-h) var(--mc-sat) 50% / .12);
+  border: 1px solid hsl(var(--mc-h) var(--mc-sat) 50% / .35);
 }
 /* Assistant message: an accent bar down the left in its model's hue, matching role label. */
-.msg.has-model { box-shadow: inset 3px 0 0 hsl(var(--mc-h) 55% 50%); }
-.msg.has-model .role { color: hsl(var(--mc-h) 52% 42%); }
+.msg.has-model { box-shadow: inset 3px 0 0 hsl(var(--mc-h) var(--mc-sat) 50%); }
+.msg.has-model .role { color: hsl(var(--mc-h) var(--mc-sat) 42%); }
 /* The per-model chips in the info drawer, tinted like the header (override plain .chip). */
-.chip.model-chip { color: hsl(var(--mc-h) 60% 40%); background: hsl(var(--mc-h) 62% 50% / .13); }
+.chip.model-chip { color: hsl(var(--mc-h) var(--mc-sat) 40%); background: hsl(var(--mc-h) var(--mc-sat) 50% / .13); }
 /* Header line for the subagents a thread spawned: a count + one model chip each. */
 .agent-sessions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 10px; margin-top: -12px; }
 .agent-sessions .model-tags { margin-left: 0; }
@@ -499,14 +505,17 @@ h1.topic-title { font-size: 19px; margin: 0 0 6px; }
 
 @media (prefers-color-scheme: dark) {
   /* Lighten every hue against the near-black panel so dark hues stay legible. */
-  .model-tag {
-    color: hsl(var(--mc-h) 70% 70%);
-    background: hsl(var(--mc-h) 60% 60% / .16);
-    border-color: hsl(var(--mc-h) 55% 60% / .4);
+  .model-tag, .msg.has-model, .chip.model-chip, .stat-bar-fill.model {
+    --mc-sat: calc(64% + var(--mc-s, 0) * 1%);
   }
-  .msg.has-model { box-shadow: inset 3px 0 0 hsl(var(--mc-h) 58% 60%); }
-  .msg.has-model .role { color: hsl(var(--mc-h) 62% 66%); }
-  .chip.model-chip { color: hsl(var(--mc-h) 70% 70%); background: hsl(var(--mc-h) 55% 55% / .18); }
+  .model-tag {
+    color: hsl(var(--mc-h) var(--mc-sat) 70%);
+    background: hsl(var(--mc-h) var(--mc-sat) 60% / .16);
+    border-color: hsl(var(--mc-h) var(--mc-sat) 60% / .4);
+  }
+  .msg.has-model { box-shadow: inset 3px 0 0 hsl(var(--mc-h) var(--mc-sat) 60%); }
+  .msg.has-model .role { color: hsl(var(--mc-h) var(--mc-sat) 66%); }
+  .chip.model-chip { color: hsl(var(--mc-h) var(--mc-sat) 70%); background: hsl(var(--mc-h) var(--mc-sat) 55% / .18); }
 }
 
 /* ---- stats page ---- */
@@ -544,14 +553,14 @@ h1.topic-title { font-size: 19px; margin: 0 0 6px; }
   background: var(--badge); overflow: hidden;
 }
 .stat-bar-fill { display: block; height: 100%; border-radius: 4px; background: var(--accent); }
-.stat-bar-fill.model { background: hsl(var(--mc-h) 55% 50%); }
+.stat-bar-fill.model { background: hsl(var(--mc-h) var(--mc-sat) 50%); }
 .bar-num { font-variant-numeric: tabular-nums; color: var(--muted); font-size: 12px; min-width: 46px; text-align: right; }
 
 /* A model tag that is also a link (stats → per-model drill-down). */
 a.model-link { text-decoration: none; }
 a.model-link .model-tag:hover {
-  background: hsl(var(--mc-h) 62% 50% / .22);
-  border-color: hsl(var(--mc-h) 55% 50% / .7);
+  background: hsl(var(--mc-h) var(--mc-sat) 50% / .22);
+  border-color: hsl(var(--mc-h) var(--mc-sat) 50% / .7);
 }
 /* The drill-down's h1 is the tag itself, scaled up from its 11px chip size. */
 .model-tag.title-tag { font-size: 17px; padding: 3px 12px; border-radius: 8px; }
@@ -775,10 +784,10 @@ a.session-link:hover { color: var(--accent); }
 }
 
 @media (prefers-color-scheme: dark) {
-  .stat-bar-fill.model { background: hsl(var(--mc-h) 58% 60%); }
+  .stat-bar-fill.model { background: hsl(var(--mc-h) var(--mc-sat) 60%); }
   a.model-link .model-tag:hover {
-    background: hsl(var(--mc-h) 60% 60% / .26);
-    border-color: hsl(var(--mc-h) 55% 60% / .75);
+    background: hsl(var(--mc-h) var(--mc-sat) 60% / .26);
+    border-color: hsl(var(--mc-h) var(--mc-sat) 60% / .75);
   }
   .health-page {
     --health-good: #75c994;

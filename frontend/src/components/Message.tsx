@@ -1,7 +1,8 @@
 import { useState } from 'react'
 import { Markdown } from './Markdown'
 import { RawContext } from './RawMode'
-import { hueStyle, modelHue } from '../modelColor'
+import { colorStyle, modelColor } from '../modelColor'
+import type { ModelColor } from '../modelColor'
 import type { Block, BlockImage, Message as Msg, MessageMeta } from '../api'
 
 function prettyInput(input: unknown): string {
@@ -266,7 +267,7 @@ function MessageMeta({
   meta?: MessageMeta
   raw: boolean
   onToggleRaw: (v: boolean) => void
-  hueForModel?: Record<string, number>
+  hueForModel?: Record<string, ModelColor>
 }) {
   const models = meta?.models ?? []
   const tok = meta?.tokens
@@ -275,7 +276,7 @@ function MessageMeta({
     <div className="msg-meta">
       <div className="msg-meta-row">
         {models.map((m) => (
-          <span className="chip model-chip" key={m} style={hueStyle(hueForModel?.[m] ?? modelHue(m))}>
+          <span className="chip model-chip" key={m} style={colorStyle(hueForModel?.[m] ?? modelColor(m))}>
             {m}
           </span>
         ))}
@@ -332,7 +333,7 @@ export function Message({
   permalink,
 }: {
   message: Msg
-  hueForModel?: Record<string, number>
+  hueForModel?: Record<string, ModelColor>
   // This message continues the previous one's group (same role, same model) — one
   // inference in an ongoing tool loop. Continuations drop the role label and merge
   // into the panel above, so a same-model turn reads as one stream and only a model
@@ -364,15 +365,15 @@ export function Message({
   // Tint an assistant message to match the model that produced it (this inference's
   // model — one per message now). Other roles carry no model, so no accent.
   const model = message.role === 'assistant' ? message.meta?.models?.[0] : undefined
-  const hue = model ? (hueForModel?.[model] ?? modelHue(model)) : undefined
+  const color = model ? (hueForModel?.[model] ?? modelColor(model)) : undefined
   return (
     <div
       id={anchorId}
       className={
-        'msg ' + message.role + (hue != null ? ' has-model' : '') + (continued ? ' cont' : '') +
+        'msg ' + message.role + (color ? ' has-model' : '') + (continued ? ' cont' : '') +
         (highlighted ? ' hit-target' : '') + (findTarget ? ' find-target' : '')
       }
-      style={hue != null ? hueStyle(hue) : undefined}
+      style={color ? colorStyle(color) : undefined}
     >
       {!continued && <div className="role">{message.role}</div>}
       <RawContext.Provider value={raw}>

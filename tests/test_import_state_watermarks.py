@@ -5,8 +5,9 @@
   rebuild never makes the importer adopt an active source at EOF and skip its
   unimported tail.
 * The maintenance checkpoint (``snapshots=False``) keeps ``import_state.jsonl``
-  fresh, and the watcher's import-state stamp moves on watermark-only changes,
-  so the snapshot can't go stale when no events were created.
+  fresh on its sweep interval, and the watcher's import-state stamp moves on
+  watermark-only changes, so the snapshot can't go stale when no events were
+  created.
 """
 
 from __future__ import annotations
@@ -77,6 +78,38 @@ def test_maintenance_checkpoint_snapshots_import_state(archive_home, tmp_path) -
     assert snap.exists()
     rows = [json.loads(ln) for ln in snap.read_text(encoding="utf-8").splitlines()]
     assert len(rows) == 1 and rows[0]["source"] == "claude-code"
+
+
+def test_maintenance_snapshot_rides_an_interval_not_every_import(archive_home, tmp_path):
+    """The snapshot rewrites every row, so doing it per imported file makes a bulk
+    import quadratic. The maintenance form runs it on the sweep interval instead —
+    first call always, then at most once per interval — while the full form (the
+    pre-backup / pre-reindex path) never defers."""
+    from thread_archive._truth import maintenance
+
+    snap = archive_home / "truth" / "import_state.jsonl"
+    import_cc_session(tmp_path, "a")  # first call in the process is always due
+    assert snap.exists()
+    first = snap.stat().st_mtime_ns
+
+    # A second import inside the interval advances the watermark in the index but
+    # does not pay for another full rewrite.
+    import_cc_session(tmp_path, "b")
+    assert snap.stat().st_mtime_ns == first
+    with get_session() as s:
+        assert s.execute(select(ImportState)).scalars().all()  # index is current
+
+    # The full form always writes, whatever the interval says.
+    ta.checkpoint()
+    assert snap.stat().st_mtime_ns != first
+    rows = [json.loads(ln) for ln in snap.read_text(encoding="utf-8").splitlines()]
+    assert len(rows) == 2  # both sources landed, so nothing was lost by deferring
+
+    # And the maintenance form resumes writing once the interval elapses.
+    maintenance._last_swept.clear()
+    before = snap.stat().st_mtime_ns
+    import_cc_session(tmp_path, "c")
+    assert snap.stat().st_mtime_ns != before
 
 
 def test_import_state_stamp_moves_on_watermark_only_change(archive_home, tmp_path):

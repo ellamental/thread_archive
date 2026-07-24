@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- **Model colors in the viewer mean something now.** The per-model accent used to
+  be a hash of the model's name, so `claude-opus-5` came up red while the other
+  opuses were green and a thread's colors said nothing about what ran in it. Hue
+  now comes from the model's family — every opus a green, every gpt/codex a blue,
+  fable red, sonnet violet, haiku amber, and so on down a table of the families
+  the archive actually holds — and the version picks a shade inside that family's
+  band, so a thread header or a stats table reads as "two opuses and a gpt" at a
+  glance. Models from unknown families keep a hashed hue, muted so they can't pass
+  for a family color.
+
 - **The drift quarantine is no longer eaten by the export-drop watcher.** Both
   live under `<home>/dumps/`, but only account exports are drops: the watcher
   scanned `dumps/drift/`, failed to classify it, and moved the whole tree into
