@@ -129,6 +129,18 @@ identical failure signature, including on a docs-only commit. Two causes:
   plus `browse.py`'s unparseable time-bound and thread-scope branches
   (`thread_id`, empty/`thread_ids` lists, `types`, `agents='only'`).
   `_retrieval` now 94.1%, gate green.
+- **Flaky archives-registry tests** (2026-07-24; failed on main's own CI on
+  both Python versions, and on this PR's 3.12 job only) —
+  `test_open_archive_registers_the_home` / `test_archives_lists_every_registered_home`
+  came back with an empty registry. Root cause in main's new
+  `_ops/archives.py`: the register-throttle memo read
+  `_last_registered.get(key, 0.0)` against `time.monotonic()`, whose epoch on
+  Linux is ~boot time — so on any machine with <5 minutes uptime (every fresh
+  CI runner) `now - 0.0` is inside the 300s interval and the FIRST
+  registration of every home is silently skipped. Local machines (hours of
+  uptime) never reproduce it; the 3.14 job passed only because its pytest
+  step crossed 300s of runner uptime before reaching the tests. Fixed with a
+  sentinel (`get(key)` + `is not None`) so an unseen home always registers.
 - **Frontend coverage thresholds** — lines 89.72% vs 91% required, statements
   86.53% vs 88%. Pre-existing on main, entirely outside this PR's scope
   (no frontend file touched); needs real frontend test work in a follow-up.

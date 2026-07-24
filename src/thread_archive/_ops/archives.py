@@ -149,7 +149,12 @@ def register(home: Path, *, label: Optional[str] = None, force: bool = False) ->
         return
     key = str(home)
     now = time.monotonic()
-    if not force and now - _last_registered.get(key, 0.0) < _REGISTER_INTERVAL_S:
+    # Sentinel, not 0.0: monotonic's epoch is unspecified — on Linux it is
+    # roughly seconds since boot, so on a young machine (a fresh CI runner)
+    # ``now - 0.0`` is under the interval and a default would silently skip
+    # every FIRST registration for the first five minutes of uptime.
+    last = _last_registered.get(key)
+    if not force and last is not None and now - last < _REGISTER_INTERVAL_S:
         return
     _last_registered[key] = now
     import fcntl
