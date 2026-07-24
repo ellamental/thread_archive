@@ -33,7 +33,7 @@ from ._ops.backup import backup, list_generations, restore, restore_drill  # noq
 from ._ops.coverage import check_coverage  # noqa: F401
 from ._ops.health import pipeline_verdict, read_health  # noqa: F401
 from ._ops.nightly import nightly  # noqa: F401
-from ._ops.snapshot import snapshot  # noqa: F401
+from ._ops.snapshot import snapshot, stamp_snapshot  # noqa: F401
 from ._ops.source_mirror import mirror_sources  # noqa: F401
 from ._ops.verify import verify  # noqa: F401
 

@@ -817,6 +817,81 @@ def test_served_requests_land_in_the_web_ledger(archive_home):
     assert "query" not in rec and "q" not in rec
 
 
+@pytest.mark.integration
+def test_a_served_search_records_where_its_time_went(archive_home):
+    # The viewer's worst recorded latency is a search, and an endpoint total names
+    # the endpoint and nothing else — the same reason the arm totals were split.
+    # A request that searched carries the breakdown; one that didn't stays a
+    # two-field row rather than reporting five zeros as "measured and instant".
+    import urllib.request
+    from urllib.parse import quote
+
+    from thread_archive._web import metrics, serve_in_thread
+
+    _seed(archive_home)
+    ta.open_archive(str(archive_home))
+    httpd = serve_in_thread(host="127.0.0.1", port=0)
+    try:
+        port = httpd.server_address[1]
+        for path in (f"/api/search?q={quote('hello webview')}", "/api/archives"):
+            with urllib.request.urlopen(f"http://127.0.0.1:{port}{path}", timeout=60) as r:
+                r.read()
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+
+    rows = [
+        json.loads(ln)
+        for ln in (archive_home / metrics.LEDGER_FILE).read_text(encoding="utf-8").splitlines()
+        if ln.strip()
+    ]
+    searched = [r for r in rows if r["path"] == "/api/search"][-1]
+    assert searched["fts_ms"] >= 0.0 and "did_rerank" in searched
+    assert searched["pool_size"] > 0
+    # Still endpoint-only: the breakdown says where time went, not what was typed.
+    assert "query" not in searched and "q" not in searched
+
+    plain = [r for r in rows if r["path"] == "/api/archives"][-1]
+    assert "fts_ms" not in plain and "pool_size" not in plain
+
+
+def test_concurrent_requests_are_counted_on_the_row(archive_home):
+    # A threading server serves the SPA's several per-page requests at once, so a
+    # slow row is routinely slow *beside* others. Recorded only above one — a
+    # request served alone counts itself and has nothing to report.
+    from thread_archive._web import metrics
+
+    metrics.record_request("/api/status", status=200, duration_ms=1.0, size=10)
+    with metrics.serving(), metrics.serving():
+        metrics.record_request("/api/threads", status=200, duration_ms=1.0, size=10)
+
+    rows = [
+        json.loads(ln)
+        for ln in (archive_home / metrics.LEDGER_FILE).read_text(encoding="utf-8").splitlines()
+        if ln.strip()
+    ]
+    assert "concurrent" not in rows[0]
+    assert rows[1]["concurrent"] == 2
+
+
+def test_contention_context_rides_along_when_there_is_something_to_say(archive_home):
+    # Same sample the MCP tools take, so one analysis reads both surfaces. It is
+    # self-limiting — a quiet machine reports nothing — so the field's presence is
+    # the signal and a browsing session doesn't bloat the ledger.
+    from thread_archive._web import metrics
+
+    metrics.record_request("/api/search", status=200, duration_ms=1.0,
+                           context={"refreshing": ["graph"]})
+    metrics.record_request("/api/status", status=200, duration_ms=1.0, context={})
+    rows = [
+        json.loads(ln)
+        for ln in (archive_home / metrics.LEDGER_FILE).read_text(encoding="utf-8").splitlines()
+        if ln.strip()
+    ]
+    assert rows[0]["context"] == {"refreshing": ["graph"]}
+    assert "context" not in rows[1]
+
+
 def test_web_metrics_disabled_by_env(archive_home, monkeypatch):
     from thread_archive._web import metrics
 

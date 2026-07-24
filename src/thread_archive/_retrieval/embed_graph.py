@@ -113,9 +113,22 @@ class CorpusGraph:
 # None is cached too — a store with no embedded vectors shouldn't re-probe on
 # every search, only when the token moves.
 _CACHE: dict = {}
-# Engines with a background refresh in flight (single-flight guard).
+# Engines with a background refresh thread in flight — the guard against spawning
+# a second one. It does not cover the build itself: `get(block=True)` builds on the
+# calling thread and would otherwise race a background refresh, so the work is
+# guarded separately below.
 _REFRESHING: set[int] = set()
 _REFRESH_LOCK = threading.Lock()
+# One build at a time per engine, whoever asked. The two entry points — the warm
+# pass building inline and the search path kicking a background refresh — otherwise
+# run the identical build concurrently, which is exactly what happens at startup:
+# the warm pass is ~15s into its build when the first search finds an empty cache.
+# The loser waits for the winner's result instead of duplicating it, which costs it
+# nothing (it was going to wait out a build either way) and halves the CPU and the
+# peak memory of a corpus-wide Leiden partition.
+_BUILDING: set[int] = set()
+_BUILD_LOCKS: dict[int, threading.Lock] = {}
+_BUILD_GUARD = threading.Lock()
 # Probe the validity token (a count scan) and kick a refresh at most this often: the
 # graph is a coarse community prior, so a minute of staleness is immaterial, and
 # without the gate every search during continuous ingest re-probes and rebuilds.
@@ -215,10 +228,15 @@ def get(*, block: bool = False) -> Optional[CorpusGraph]:
 
 
 def is_refreshing() -> bool:
-    """Whether a background graph rebuild is in flight in this process — read by the
-    contention sample. A build is measured in seconds (Leiden over the whole corpus),
-    so a search running beside one is not competing for nothing."""
-    return bool(_REFRESHING)
+    """Whether a graph build is in flight in this process — read by the contention
+    sample. A build is measured in seconds (Leiden over the whole corpus), so a
+    search running beside one is not competing for nothing.
+
+    Reads the build state rather than the background-thread guard: an inline build
+    (the warm pass) competes with a concurrent search exactly as much as a
+    backgrounded one does, and a contention signal that only sees one of them
+    under-reports the case with the worst timing — startup."""
+    return bool(_BUILDING)
 
 
 def _refresh_async(key: int) -> None:
@@ -242,11 +260,8 @@ def _refresh_async(key: int) -> None:
 def build(knn: int = KNN, min_sim: float = MIN_SIM) -> Optional[CorpusGraph]:
     """Build (or serve cached) the corpus graph. ``None`` when the store has no
     embedded vectors — the graph degrades with the semantic arm, not separately."""
-    import networkx as nx
-
     from .._store import get_engine
-    from .community import detect_communities
-    from .vectors import _build_matrix_entry, _validity_token, ensure_index
+    from .vectors import _validity_token, ensure_index
 
     if not ensure_index():  # creates event_vectors when absent, like _knn does
         return None
@@ -256,6 +271,40 @@ def build(knn: int = KNN, min_sim: float = MIN_SIM) -> Optional[CorpusGraph]:
     cached = _CACHE.get(key)
     if cached is not None and cached[0] == token:
         return cached[1]
+
+    with _build_lock(key):
+        # Re-checked under the lock: whoever we queued behind was building this
+        # same token, so their result is ours and the build we were about to do is
+        # already done. This is the whole point of the lock — not serializing
+        # builds, but making the second one unnecessary.
+        cached = _CACHE.get(key)
+        if cached is not None and cached[0] == token:
+            return cached[1]
+        with _BUILD_GUARD:
+            _BUILDING.add(key)
+        try:
+            return _build_graph(key, token, knn, min_sim)
+        finally:
+            with _BUILD_GUARD:
+                _BUILDING.discard(key)
+
+
+def _build_lock(key: int) -> threading.Lock:
+    """The per-engine build lock, created on first use."""
+    with _BUILD_GUARD:
+        lock = _BUILD_LOCKS.get(key)
+        if lock is None:
+            lock = _BUILD_LOCKS[key] = threading.Lock()
+        return lock
+
+
+def _build_graph(key: int, token: object, knn: int, min_sim: float) -> Optional[CorpusGraph]:
+    """The build proper — always called holding this engine's build lock, with the
+    cache already checked against ``token``."""
+    import networkx as nx
+
+    from .community import detect_communities
+    from .vectors import _build_matrix_entry
 
     # The authoritative build reads the live matrix directly (the pure builder),
     # not the search path's serve-stale cache — the graph must reflect the store

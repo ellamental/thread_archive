@@ -36,10 +36,12 @@ def test_as_record_shape_and_cold_only_when_true() -> None:
     probe.did_rerank = True
     probe.pool_size = 198
     rec = probe.as_record()
-    # The vector arm ran, so its sub-stages ride along (all zero here — nothing
+    # Both arms ran, so both sub-splits ride along (all zero here — nothing
     # recorded into them).
     assert rec == {"fts_ms": 12.3, "semantic_ms": 5.0, "rerank_ms": 100.1,
                    "did_rerank": True, "pool_size": 198,
+                   "match_ms": 0.0, "scan_ms": 0.0, "rescan_ms": 0.0,
+                   "build_ms": 0.0, "fts_passes": 0,
                    "embed_ms": 0.0, "scope_ms": 0.0, "matrix_ms": 0.0,
                    "knn_ms": 0.0, "hydrate_ms": 0.0}
     # cold is the exception (the cold-model tail), so it rides along only when set.
@@ -50,15 +52,39 @@ def test_as_record_shape_and_cold_only_when_true() -> None:
     assert "rerank_cold" not in rec
 
 
-def test_substages_absent_when_the_vector_arm_sat_out() -> None:
-    # A structural/tool-scoped search never reaches the vector arm. Five explicit
-    # zeros would read as "measured and instant" rather than "did not happen".
+def test_substages_are_gated_per_arm() -> None:
+    # A structural/tool-scoped search never reaches the vector arm. Explicit zeros
+    # would read as "measured and instant" rather than "did not happen" — and the
+    # gating is per arm, so the lexical split is still reported.
     probe = _probe.SearchProbe()
     probe.fts_ms = 40.0
     rec = probe.as_record()
     assert rec["semantic_ms"] == 0.0
     for name in _probe.SEMANTIC_SUBSTAGES:
         assert name not in rec
+    for name in _probe.FTS_SUBSTAGES:
+        assert name in rec
+    assert rec["fts_passes"] == 0
+
+    # A pool-cache hit sits both arms out: the record carries the pool it served
+    # and no split at all.
+    cached = _probe.SearchProbe()
+    cached.pool_size = 200
+    rec = cached.as_record()
+    assert cached.ran is True
+    for name in (*_probe.FTS_SUBSTAGES, *_probe.SEMANTIC_SUBSTAGES, "fts_passes"):
+        assert name not in rec
+
+
+def test_bump_tallies_and_survives_an_unknown_counter() -> None:
+    # The fail-soft contract the timing points rely on: a counter name that isn't a
+    # slot is a bug in the caller, never a broken search.
+    _probe.bump("fts_passes")  # no probe installed — a no-op, not an error
+    with _probe.install() as probe:
+        _probe.bump("fts_passes")
+        _probe.bump("fts_passes")
+        _probe.bump("no_such_counter")
+    assert probe.fts_passes == 2
 
 
 def test_cold_is_not_pinned_by_an_installed_but_idle_rerank_arm() -> None:

@@ -2,6 +2,38 @@
 
 ## Unreleased
 
+- **The lexical arm now says which pass spent the time.** `fts_ms` is the largest
+  stage of a settled warm search (486–838ms against the vector arm's 406–529ms) and
+  it covered the whole ladder as one number: an indexed FTS5 MATCH, the token-AND and
+  token-OR passes behind it, a full-table substring LIKE, a duplicate-flood re-gather,
+  plus hydrating every returned row into a hit. Those differ by orders of magnitude,
+  so the total named the arm and nothing else — the same problem already fixed on the
+  vector arm, sitting on the arm that now costs more. Searches record `match_ms`,
+  `scan_ms`, `rescan_ms`, `build_ms` and a `fts_passes` count beside the total, so a
+  slow arm distinguishes a slow index from a ladder that walked all the way down to
+  the scan. The bench reports the same split.
+- **Startup built the corpus graph twice, concurrently.** The build is the largest
+  single cost in a warm pass — 15s on a 8,961-thread corpus, more than the embedding
+  model and the cross-encoder together — and it had two entry points with only one
+  guard between them. `_refresh_async` prevents a second background refresh, but
+  `get(block=True)` builds on the calling thread and was covered by nothing, so the
+  warm pass and the first search that arrived during it ran the identical
+  corpus-wide Leiden partition side by side, doubling both CPU and peak memory at
+  the moment the process is already loading two models. `build()` is now
+  single-flight per engine: the loser waits on the winner and takes its result,
+  which costs it nothing (it was going to wait out a build regardless) and makes the
+  second build unnecessary rather than merely serialized. `graph_ms` in the `warm`
+  ledger rows ranged 13.7s–37.4s across four restarts; the spread was this.
+- **The embedder no longer renders a progress bar into the daemon log.** `encode`
+  left `show_progress_bar` at its default, so every batch wrote a multi-KB line of
+  carriage returns to `watcher-stderr.log` — 600-odd of them in the last 20k lines,
+  read by nobody, since every caller here is a daemon or a library call. The re-rank
+  path already passed `show_progress_bar=False`; embed now matches it.
+- **`is_refreshing()` now reports the inline build too.** It backed the `refreshing`
+  contention field but read the background-thread guard, so a search colliding with
+  the warm pass's build — the worst-timed collision there is, and the one that
+  actually happens on every startup — recorded no contention at all.
+
 - **The thread-meta sync scanned the whole FTS shadow to find 1% of it.** The
   maintenance pass reads every thread-meta doc out of `events_fts` to diff titles and
   summaries, and `event_type` had no index — so finding ~11.9k rows meant scanning all
@@ -115,6 +147,19 @@
   `web-requests.jsonl` (path, status, size, wall time; no query strings). Deliberately
   its own file — `retrieval-usage.jsonl` is the sampling frame evals are mined from,
   and folding a human clicking around into "queries an agent asked" would bias them.
+- **A served search now records where its time went.** The viewer's worst measured
+  latency is a search (a 65s `/api/search` sits in the ledger with no attribution
+  whatsoever), and an endpoint total names the endpoint and nothing else — the same
+  reason the arm totals were split into sub-stages. A probe now wraps the whole
+  dispatch, and its breakdown is folded flat into the row, under the field names the
+  retrieval ledger already uses so one analysis reads both surfaces. It rides along
+  only when the probe reports work, so the hundreds of cheap rows a browsing session
+  makes stay two fields wide instead of carrying five zeros that would read as
+  *measured and instant* rather than *did not happen*. Rows also carry `concurrent`
+  (requests being served at once — the server is threaded and the SPA opens several
+  per page, so a slow row is routinely slow *beside* others) and the same
+  `context` contention sample the MCP tools take. Both are self-limiting: a request
+  served alone on a quiet machine records neither.
 
 - **Bulk import was quadratic: each imported file paid for every file before it.**
   `import_path` runs the maintenance checkpoint per file, and two parts of that
@@ -316,6 +361,39 @@
   BEIR/CDR/haystack yardsticks it is domain-matched — agent session logs, not a
   third-party IR corpus. Roughly 2100 of 5851 sessions carry attributable commits,
   about half of which have retrievable commit content.
+
+- **A gold file's number meant nothing on its own.** `evals/bm25_baseline.py` scores
+  any case file with SQLite FTS5's `bm25()` alone — same cases, same metrics, same
+  searchable scope, none of the ranking above it (no density/phrase/recency
+  weighting, no RRF, no coherence pass, no rerank). The BEIR and haystack harnesses
+  carry published BM25 references for *their* corpora; a corpus the golds were
+  actually mined from had none, so an MRR could only be compared against itself.
+  With `retrieval_eval.py --lexical-only` and `--rerank off` as the middle rungs,
+  one case file now yields an ablation ladder from plain term matching to the
+  shipped pipeline. Ranks a thread by its best-matching chunk; the FTS5 auxiliary
+  function forces a MATERIALIZED CTE, since a plain subquery gets flattened into the
+  aggregate and errors.
+
+- **SWE-chat's derived artifacts moved out of the private gold dir.** Mined cases
+  live under `~/.thread/archive` because they quote the operator's real
+  conversations — but nothing mined off a public corpus does, and a gold file is
+  only meaningful beside the download it resolves against. `swechat_corpus.py` now
+  writes the linkage (and points the miner's `--out`) at `gold/` beside the data
+  dir, a sibling of the download so re-fetching the dataset never sees it.
+
+- **A corpus home built from a fixed dataset is already the snapshot.** Mining and
+  `retrieval_eval --cases` gate on a `snapshot.json` id, and the only way to get one
+  was `thread_archive snapshot <dir>` — which copies truth, rebuilds an index beside
+  it, and stamps the result. That pipeline exists to *make* a frozen home out of a
+  live one; a home an eval harness builds from a fixed download is born frozen, so
+  the copy bought nothing but a duplicate of a multi-GB home, and the SWE-chat
+  harness's documented flow ended by telling you to make one. `stamp_snapshot()`
+  writes the manifest in place instead — same contract, same content-derived id, no
+  copy — and `swechat_corpus.py` stamps at the end of both its phases. It refuses
+  the live archive (which grows, so a stamped id would go on blessing golds the
+  corpus has already moved past) unless forced. Re-stamping is the cadence after a
+  rebuild: the id follows the corpus, so the previous run's golds read as stale
+  rather than silently scoring against a corpus that changed shape underneath them.
 
 - Recent-conversation cards now include up to 200 characters from the first
   non-empty user message, so a title alone is no longer the only recognition cue.

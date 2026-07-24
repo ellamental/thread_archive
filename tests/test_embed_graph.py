@@ -105,6 +105,62 @@ def test_get_serves_cache_without_inline_build(archive_home) -> None:
     assert embed_graph.get() is g
 
 
+def test_concurrent_builders_coalesce_onto_one_build(archive_home) -> None:
+    """The warm pass builds inline while the search path kicks a background
+    refresh, and at startup those overlap by construction: the first search
+    arrives seconds into a build that has not populated the cache yet. Both were
+    computing the identical graph for the identical token, so the second one is
+    pure waste — a duplicate corpus-wide Leiden partition in CPU and peak memory.
+
+    Sequenced through the build lock rather than raced, so the assertion is about
+    the contract and not about which thread won."""
+    import threading
+
+    from thread_archive._retrieval.vectors import _validity_token
+    from thread_archive._store import get_engine, get_session
+
+    _seed(archive_home)
+    key = id(get_engine())
+    with get_session() as s:
+        token = _validity_token(s)
+
+    got: list = []
+    lock = embed_graph._build_lock(key)
+    with lock:
+        # Enters build(), misses the empty cache, and queues here behind us.
+        t = threading.Thread(target=lambda: got.append(embed_graph.build()))
+        t.start()
+        t.join(timeout=0.5)
+        assert t.is_alive(), "a second builder must queue, not build in parallel"
+        winner = embed_graph._build_graph(key, token, embed_graph.KNN, embed_graph.MIN_SIM)
+    t.join(timeout=30)
+
+    assert not t.is_alive()
+    assert winner is not None
+    # Re-checked the cache under the lock and took our result rather than
+    # rebuilding it: same object, not merely an equal one.
+    assert got == [winner]
+
+
+def test_the_contention_signal_tracks_building_not_thread_spawning() -> None:
+    """``is_refreshing`` feeds the contention sample that labels a slow search as
+    "ran beside a graph build". The two states are not the same: a spawned refresh
+    thread has not started building yet, and an inline build (the warm pass) never
+    spawns one at all — and that is precisely the build worth reporting, since it
+    collides with the first search of every startup."""
+    assert embed_graph.is_refreshing() is False
+    embed_graph._REFRESHING.add(1)
+    try:
+        assert embed_graph.is_refreshing() is False, "a queued thread is not a build"
+    finally:
+        embed_graph._REFRESHING.discard(1)
+    embed_graph._BUILDING.add(1)
+    try:
+        assert embed_graph.is_refreshing() is True
+    finally:
+        embed_graph._BUILDING.discard(1)
+
+
 def test_coherence_gamma_parsing() -> None:
     assert embed_graph.coherence_gamma("") == embed_graph.COHERENCE_GAMMA
     assert embed_graph.coherence_gamma("on") == embed_graph.COHERENCE_GAMMA

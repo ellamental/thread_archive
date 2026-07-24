@@ -23,6 +23,15 @@ itself, and hydrating candidate ids back into hits. A slow arm total names the a
 and nothing else, which is precisely useless in the tail — where the value is. So
 the vector arm reports :data:`SEMANTIC_SUBSTAGES` alongside its total, and a slow
 search says *which* of those five it was.
+
+The lexical arm hides the same problem behind a smaller number. ``fts_ms`` covers a
+*pipeline*: an indexed FTS5 MATCH, the token-AND/token-OR passes behind it, a
+full-table substring LIKE that runs only when those left the pool short, a
+duplicate-flood re-gather — and then building every returned row into a hit. An
+indexed pass and a full-table scan differ by orders of magnitude and the arm total
+can't tell them apart, so it reports :data:`FTS_SUBSTAGES` and ``fts_passes``
+beside it: whether the index itself was slow, or whether the fallback ladder walked
+all the way down to the scan.
 """
 
 from __future__ import annotations
@@ -41,6 +50,14 @@ _CURRENT: contextvars.ContextVar[Optional["SearchProbe"]] = contextvars.ContextV
 #: over them agree on the set without restating it.
 SEMANTIC_SUBSTAGES = ("embed_ms", "scope_ms", "matrix_ms", "knn_ms", "hydrate_ms")
 
+#: The lexical arm's internal split, summing to roughly ``fts_ms``. ``match_ms`` and
+#: ``scan_ms`` are its two SQL cost models — an indexed FTS5 MATCH against a
+#: full-table substring LIKE, which is why they are separate numbers and not one
+#: "sql_ms" — ``rescan_ms`` the whole duplicate-flood re-gather, and ``build_ms`` the
+#: Python-side hydration of result rows into hits, which a wide candidate pool makes
+#: a real cost rather than a rounding error.
+FTS_SUBSTAGES = ("match_ms", "scan_ms", "rescan_ms", "build_ms")
+
 
 class SearchProbe:
     """The mutable stage-timing accumulator one search fills.
@@ -48,7 +65,8 @@ class SearchProbe:
     Times accumulate (``+=``) so a widen retry — two engine passes under one
     installed probe — records the work as the caller felt it, summed; the scalar
     facts (``did_rerank``, ``pool_size``) take the last pass's value, the one
-    whose hits are returned.
+    whose hits are returned. ``fts_passes`` is a tally rather than a state, so it
+    sums alongside the times it explains.
 
     The cold flags are per-arm and set where the load would actually be paid, not
     sampled as one bit at entry: a model that is installed but never invoked (the
@@ -62,8 +80,8 @@ class SearchProbe:
 
     __slots__ = (
         "fts_ms", "semantic_ms", "rerank_ms", "did_rerank", "pool_size",
-        "embed_cold", "rerank_cold", "matrix_built",
-        *SEMANTIC_SUBSTAGES,
+        "embed_cold", "rerank_cold", "matrix_built", "fts_passes",
+        *SEMANTIC_SUBSTAGES, *FTS_SUBSTAGES,
     )
 
     def __init__(self) -> None:
@@ -75,8 +93,21 @@ class SearchProbe:
         self.embed_cold = False
         self.rerank_cold = False
         self.matrix_built = False
-        for name in SEMANTIC_SUBSTAGES:
+        self.fts_passes = 0
+        for name in (*SEMANTIC_SUBSTAGES, *FTS_SUBSTAGES):
             setattr(self, name, 0.0)
+
+    @property
+    def ran(self) -> bool:
+        """Whether any retrieval work happened under this probe.
+
+        A surface that installs one probe around a whole dispatch — the web
+        viewer wraps its router, which serves searches and static assets through
+        the same call — needs to tell "this request searched" from "this request
+        didn't", so it can attach a breakdown to the former and leave the latter
+        a two-field row. An untouched probe is not a search that took no time.
+        """
+        return bool(self.fts_ms or self.semantic_ms or self.rerank_ms or self.pool_size)
 
     @property
     def cold(self) -> bool:
@@ -88,12 +119,12 @@ class SearchProbe:
     def as_record(self) -> dict:
         """The ledger fields: per-stage milliseconds plus the scalar facts.
 
-        The vector arm's sub-stages ride along only when that arm actually ran: a
-        structural or tool-scoped search sits it out, and five explicit zeros
-        would read as *measured and instant* rather than *did not happen*. ``cold``
-        and its per-arm attribution are likewise the exception, present only when
-        a load was paid — so their presence, not a ``false`` on every warm record,
-        carries the signal."""
+        Each arm's sub-stages ride along only when that arm actually ran — a
+        structural or tool-scoped search sits the vector arm out, a pool-cache hit
+        sits both out — because explicit zeros would read as *measured and instant*
+        rather than *did not happen*. ``cold`` and its per-arm attribution are
+        likewise the exception, present only when a load was paid — so their
+        presence, not a ``false`` on every warm record, carries the signal."""
         rec: dict = {
             "fts_ms": round(self.fts_ms, 1),
             "semantic_ms": round(self.semantic_ms, 1),
@@ -101,6 +132,10 @@ class SearchProbe:
             "did_rerank": self.did_rerank,
             "pool_size": self.pool_size,
         }
+        if self.fts_ms:
+            for name in FTS_SUBSTAGES:
+                rec[name] = round(getattr(self, name), 1)
+            rec["fts_passes"] = self.fts_passes
         if self.semantic_ms:
             for name in SEMANTIC_SUBSTAGES:
                 rec[name] = round(getattr(self, name), 1)
@@ -135,6 +170,20 @@ def record(stage: str, started: float) -> None:
     try:
         setattr(probe, stage, getattr(probe, stage) + (perf_counter() - started) * 1000.0)
     except AttributeError:  # an unknown stage name is a bug, never a broken search
+        pass
+
+
+def bump(name: str) -> None:
+    """Add one to counter ``name`` on the current probe, if one is installed — the
+    tally counterpart to :func:`record` (``fts_passes``). A pass count is what turns
+    a slow arm total into a shape: the same milliseconds mean one thing spent in a
+    single index hit and another spent walking a fallback ladder."""
+    probe = _CURRENT.get()
+    if probe is None:
+        return
+    try:
+        setattr(probe, name, getattr(probe, name) + 1)
+    except AttributeError:
         pass
 
 

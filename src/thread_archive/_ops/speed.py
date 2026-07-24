@@ -53,13 +53,14 @@ LATENCY_BASELINE_FILE = "latency-baseline.json"
 #: probe (the wall-clock the caller feels); the arm totals sum to less than it (the
 #: ranking arithmetic and enrichment are the unattributed remainder).
 #:
-#: The vector arm's sub-stages ride along after the three arm totals, so a bench
-#: reports the same split production does — a regression that lands entirely inside
+#: Each arm's sub-stages ride along after the three arm totals, so a bench reports
+#: the same split production does — a regression that lands entirely inside
 #: ``semantic_ms`` still says which half of it moved. They nest inside their arm
 #: rather than adding to it, so only the first three are summable against the total.
 ARM_STAGES = ("fts_ms", "semantic_ms", "rerank_ms")
 SEMANTIC_SUBSTAGES = _probe.SEMANTIC_SUBSTAGES
-STAGES = ARM_STAGES + SEMANTIC_SUBSTAGES
+FTS_SUBSTAGES = _probe.FTS_SUBSTAGES
+STAGES = ARM_STAGES + SEMANTIC_SUBSTAGES + FTS_SUBSTAGES
 
 
 def percentile(xs: list[float], q: float) -> float:

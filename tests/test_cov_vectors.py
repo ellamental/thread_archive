@@ -56,11 +56,14 @@ class _ScriptedModel:
     def __init__(self, width: int = 4, dtype=np.float64) -> None:
         self.width, self.dtype, self.seen = width, dtype, []
 
-    def encode(self, prefixed, normalize_embeddings, convert_to_numpy):
+    def encode(self, prefixed, normalize_embeddings, convert_to_numpy, show_progress_bar):
         # The contract embed relies on: un-normalized (the store normalizes on
-        # write) and numpy out (it casts to float32 lists).
+        # write) and numpy out (it casts to float32 lists). No progress bar —
+        # every caller is a daemon or a library call, and the bar would render
+        # into a log file.
         assert normalize_embeddings is False
         assert convert_to_numpy is True
+        assert show_progress_bar is False
         self.seen.append(list(prefixed))
         return np.ones((len(prefixed), self.width), dtype=self.dtype)
 
@@ -385,7 +388,8 @@ def test_embedder_serializes_concurrent_encode(monkeypatch) -> None:
             self.max_inside = 0
             self._lk = threading.Lock()
 
-        def encode(self, prefixed, normalize_embeddings, convert_to_numpy):
+        def encode(self, prefixed, normalize_embeddings, convert_to_numpy,
+                   show_progress_bar=False):
             with self._lk:
                 self.inside += 1
                 self.max_inside = max(self.max_inside, self.inside)

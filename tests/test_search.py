@@ -11,7 +11,7 @@ from __future__ import annotations
 import json
 
 from thread_archive._importers import import_session_incremental
-from thread_archive._retrieval import read_thread, search
+from thread_archive._retrieval import _probe, read_thread, search
 from thread_archive._store import _base, get_engine, init_db
 from thread_archive._truth import jsonl_log, reindex
 
@@ -462,6 +462,40 @@ def test_substring_like_pass_only_runs_on_pool_shortfall(archive_home) -> None:
     assert "megaget_sessionizer" not in (hits[0]["full_content"] or "")
 
 
+def test_the_lexical_arm_reports_which_pass_spent_the_time(archive_home) -> None:
+    """``fts_ms`` covers a ladder of passes with unrelated cost models — an indexed
+    MATCH and a full-table substring scan differ by orders of magnitude — so the arm
+    total alone can't say whether the index was slow or whether the ladder ran all
+    the way down. Same corpus, same query, two pool cuts: the split and the pass
+    count tell those two searches apart."""
+    from thread_archive._retrieval import search_events
+
+    init_db()
+    f = archive_home / "code.jsonl"
+    _write_cc(f, _cc_turn("u1", "a1", "please call get_session for the pool",
+                          "the megaget_sessionizer helper wraps it", 1))
+    import_session_incremental(f, "proj:code")
+
+    # Saturated by the indexed phrase pass: every fallback is skipped, so the arm's
+    # whole cost is one MATCH and nothing was scanned.
+    with _probe.install() as saturated:
+        search_events("get_session", limit=1)
+    assert saturated.fts_passes == 1
+    assert saturated.match_ms > 0.0
+    assert saturated.scan_ms == 0.0
+
+    # Short pool: the ladder walks down through the indexed token passes and into
+    # the full-table LIKE. Identical arm, identical query — the difference is only
+    # visible in the split.
+    with _probe.install() as ladder:
+        search_events("get_session", limit=10)
+    assert ladder.fts_passes > saturated.fts_passes
+    assert ladder.scan_ms > 0.0
+    # Hydration is timed apart from the SQL: a wide pool spends real time building
+    # hits, and that is not the index being slow.
+    assert ladder.build_ms > 0.0
+
+
 def test_duplicate_flood_rescan_surfaces_a_buried_distinct_hit(archive_home) -> None:
     """A MATCH pass flooded with byte-identical copies of one message can bury the
     distinct answer below the pool cut. The rescan folds the flood to one
@@ -503,8 +537,13 @@ def test_duplicate_flood_rescan_surfaces_a_buried_distinct_hit(archive_home) -> 
     # Cut at 4: the pool fills with flood copies (distinct·2 < len(hits)), so the
     # rescan runs and the buried 'marmoset' hit — below every copy — is folded back
     # in. Without it the top 4 would be flood copies alone.
-    hits = search_events("zebra", limit=4)
+    with _probe.install() as probe:
+        hits = search_events("zebra", limit=4)
     assert any("marmoset" in (h["full_content"] or "") for h in hits)
+    # The rescan is a second SQL shape over the same MATCH, so its cost is its own
+    # bucket rather than more milliseconds inside the pass that triggered it.
+    assert probe.rescan_ms > 0.0
+    assert probe.fts_passes == 1  # the rescan is not a pass; it is what follows one
 
 
 def _seed_agent_thread(archive_home):

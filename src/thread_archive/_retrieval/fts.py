@@ -24,6 +24,7 @@ import logging
 import re
 from dataclasses import dataclass, field
 from datetime import datetime
+from time import perf_counter
 from typing import Optional
 
 from sqlalchemy import delete, insert, select
@@ -32,6 +33,7 @@ from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session
 
 from .._store import Event, EventFts, use_session
+from . import _probe
 from ._classify import canonical_time_bound, classify_query
 from ._extract import INDEXABLE_EVENT_TYPES, extract_fts_content
 from ._types import EventHit
@@ -510,6 +512,12 @@ def search_events(
                 "FROM event_search WHERE " + " AND ".join(where) +
                 " ORDER BY " + order + " LIMIT :lim"
             )
+            # An indexed MATCH and a full-table LIKE are separate buckets: they
+            # differ by orders of magnitude, and which one a slow arm spent its time
+            # in is the whole question. The syntax-error retry stays inside the same
+            # bucket — it is the same pass, paid twice.
+            _probe.bump("fts_passes")
+            _t = perf_counter()
             try:
                 rows = s.execute(sql, {**shared_params, **pass_params}).mappings().all()
             except OperationalError as exc:
@@ -524,6 +532,8 @@ def search_events(
                 retry = {k: _quote_all_tokens(v) if isinstance(v, str) else v
                          for k, v in pass_params.items()}
                 rows = s.execute(sql, {**shared_params, **retry}).mappings().all()
+            _probe.record("match_ms" if p.use_match else "scan_ms", _t)
+            _t = perf_counter()
             for r in rows:
                 key = (r["event_id"], r["content_type"])
                 if key in seen:
@@ -538,6 +548,7 @@ def search_events(
                     full_content=r["full_content"] or "",
                     occurred_at=r["occurred_at"],
                 ))
+            _probe.record("build_ms", _t)
 
         for p in passes:
             if p.is_fallback and len(hits) >= limit:
@@ -570,7 +581,12 @@ def search_events(
                 return " ".join((c or "").split()).lower()
             distinct = len({(h["thread_id"], _norm(h.get("full_content") or "")) for h in hits})
             if distinct * 2 < len(hits):
+                # Whole stage in one bucket, hydration included: the rescan is a
+                # single extra SQL shape that either runs or doesn't, and its cost
+                # is worth knowing against the passes rather than split within.
+                _t = perf_counter()
                 _rescan_distinct(s, match_pass, shared, shared_params, limit, seen, hits)
+                _probe.record("rescan_ms", _t)
     return hits
 
 

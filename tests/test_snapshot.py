@@ -197,6 +197,79 @@ def test_snapshot_can_skip_verification(seeded, tmp_path):
     assert (dest / "index.db").is_file()
 
 
+def test_stamp_makes_a_born_frozen_home_bindable_without_copying_it(seeded, tmp_path):
+    """A corpus home built from a fixed dataset needs the identity, not a copy of
+    itself: stamping writes the same manifest in place, and the id is the
+    fingerprint of the home's own corpus."""
+    before = sorted(p.name for p in seeded.iterdir())
+
+    manifest = api.stamp_snapshot(str(seeded))
+
+    assert manifest["snapshot_id"] == corpus_fingerprint()
+    assert read_snapshot_id(str(seeded)) == manifest["snapshot_id"]
+    assert manifest["in_place"] is True
+    assert manifest["counts"]["events"] == api.status(home=str(seeded))["events"]
+    # Nothing was copied: the home gained the manifest and nothing else.
+    assert sorted(p.name for p in seeded.iterdir()) == sorted([*before, SNAPSHOT_MANIFEST])
+
+
+def test_stamp_leaves_the_process_pinned_where_it_started(seeded, tmp_path):
+    """Stamping another home reads it — and must not leave the caller's engine
+    pointed at it."""
+    from thread_archive._store import active_dsn
+
+    other = tmp_path / "corpus"
+    api.snapshot(str(other), home=str(seeded))  # a second, self-contained home
+    api.open_archive(str(seeded))
+
+    api.stamp_snapshot(str(other))
+
+    assert active_dsn() == f"sqlite:///{seeded / 'index.db'}"
+
+
+def test_stamped_home_satisfies_the_mining_gate(seeded):
+    """The point of stamping: `mine` refuses a home that is not a snapshot, and a
+    stamped one passes with the id its cases will carry."""
+    from thread_archive._mine import _framework as fw
+
+    with pytest.raises(SystemExit):
+        fw.require_snapshot()
+
+    sid = api.stamp_snapshot(str(seeded))["snapshot_id"]
+    assert fw.require_snapshot() == sid
+
+
+def test_re_stamping_tracks_a_rebuilt_corpus(seeded, tmp_path):
+    """Re-stamping an unchanged corpus reproduces the id; a corpus that changed
+    takes a new one, so golds mined against the old id read as stale."""
+    first = api.stamp_snapshot(str(seeded))["snapshot_id"]
+    assert api.stamp_snapshot(str(seeded))["snapshot_id"] == first
+
+    import_cc_session(tmp_path, "grown")
+    api.checkpoint()
+    assert api.stamp_snapshot(str(seeded))["snapshot_id"] != first
+
+
+def test_stamp_refuses_the_live_archive(tmp_path, monkeypatch):
+    """The live archive grows, so an id stamped over it would go on blessing golds
+    the corpus has moved past. Only an explicit force gets through."""
+    from thread_archive import _config as config
+
+    # A real archive at the default location, reached the way the operator's is.
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    live = config.default_home()
+    live.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setenv(config.ENV_HOME, str(live))
+    import_cc_session(tmp_path, "widget")
+    api.checkpoint()
+
+    with pytest.raises(ValueError):
+        api.stamp_snapshot(str(live))
+    assert read_snapshot_id(str(live)) is None
+
+    assert api.stamp_snapshot(str(live), force=True)["snapshot_id"]
+
+
 def test_snapshot_leaves_the_process_pinned_to_the_source(seeded, tmp_path):
     """reindex/verify repoint the engine at the destination mid-build; the op
     must restore the source pin so a caller holding the live engine isn't

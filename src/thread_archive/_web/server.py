@@ -24,6 +24,7 @@ from typing import TYPE_CHECKING, Optional
 from urllib.parse import parse_qs, unquote, urlparse
 
 from .. import _api as api
+from .._retrieval import _contention, _probe
 from . import metrics as _metrics
 
 if TYPE_CHECKING:
@@ -733,8 +734,13 @@ class _Handler(BaseHTTPRequestHandler):
         # request — the 500 path below is recorded with the time it burned, since a
         # slow failure is the most interesting latency there is.
         _started = time.monotonic()
+        # One probe around the whole dispatch rather than a search-path special
+        # case: endpoints other than /api/search reach the engine too, and a probe
+        # nobody fills costs a contextvar set and reports nothing.
+        probe = None
         try:
-            status, ctype, body, headers = route("GET", parsed.path, parse_qs(parsed.query))
+            with _metrics.serving(), _probe.install() as probe:
+                status, ctype, body, headers = route("GET", parsed.path, parse_qs(parsed.query))
         except Exception:  # noqa: BLE001 — isolate per request; never kill the loop
             # Detail stays server-side: exception text can carry paths/SQL/query
             # internals, and the body goes to whoever reached the port.
@@ -746,6 +752,12 @@ class _Handler(BaseHTTPRequestHandler):
             status=status,
             duration_ms=(time.monotonic() - _started) * 1000.0,
             size=len(body),
+            probe=probe,
+            # Sampled after the work, at the surface that served it — the same
+            # place the MCP tools sample theirs. The viewer shares a process with
+            # the watcher, so a background matrix or graph refresh here is
+            # competing with this very request.
+            context=_contention.sample(),
         )
         self.send_response(status)
         self.send_header("Content-Type", ctype)

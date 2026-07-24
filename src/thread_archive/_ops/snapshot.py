@@ -26,6 +26,11 @@ the mined-gold eval otherwise carries: a gold mined against the snapshot can't
 be outranked by a thread that landed after mining, because no such thread
 exists in the frozen corpus.
 
+Some corpora are born frozen — an eval harness builds a home from a fixed
+dataset and nothing ever appends to it. Copying such a home to freeze it buys
+nothing, so :func:`stamp_snapshot` writes the manifest in place: same contract,
+same content-derived id, no copy.
+
 Point an eval at one with ``THREAD_ARCHIVE_HOME=<dest>``: the shipped
 ``thread_archive eval`` and the dev bench under ``evals/`` both resolve the home
 from the environment, so a snapshot needs no new plumbing to score against.
@@ -261,6 +266,90 @@ def snapshot(
         "reindex": reindex_result,
         "verify": snap_verify,
     }
+
+
+def stamp_snapshot(home: Optional[str] = None, *, force: bool = False) -> dict:
+    """Record a snapshot manifest for a home that is *already* frozen, copying
+    nothing. Returns the manifest.
+
+    :func:`snapshot` exists to make a frozen home out of a live one: it copies
+    truth, materializes the index beside the copy, and stamps the result. A corpus
+    home an eval harness builds from a fixed dataset is born frozen — nothing
+    appends to it — so the copy buys nothing and the only thing missing is the
+    identity a mined case binds to. This writes that identity in place, under the
+    same manifest contract, so ``mine`` and ``retrieval_eval --cases`` accept the
+    home and their golds still bind to a corpus that cannot move under them.
+
+    Re-stamping is the cadence after a rebuild: the id is a content fingerprint, so
+    a rebuilt corpus takes a new one and golds mined against the old id read as
+    stale rather than silently scoring against a corpus that has changed shape.
+
+    Refuses the default archive home unless ``force`` — the live archive grows, and
+    an id stamped over it would go on blessing golds the corpus has moved past.
+    """
+    from sqlalchemy import func, select
+
+    from .._api import open_archive, status
+    from .._config import default_home
+    from .._store import KgEvent, use_session
+    from .._truth.jsonl_log import _read_manifest
+
+    paths = resolve_paths(home)
+    dest = paths.home
+    if not force and dest.expanduser().resolve() == default_home().expanduser().resolve():
+        raise ValueError(
+            f"refusing to stamp the live archive at {dest} as a snapshot: it grows, "
+            "so the recorded id would stop describing the corpus. Freeze a copy "
+            "with `thread_archive snapshot <dir>`, or pass force=True."
+        )
+    if not paths.index_path.exists():
+        raise FileNotFoundError(f"no archive home at {dest} (no {paths.index_path})")
+
+    # Reading the corpus repoints the process engine; leave the caller pinned where
+    # it started, like `snapshot` does around its reindex.
+    prev = str(resolve_paths(None).home)
+    open_archive(str(dest))
+    try:
+        counts = status(home=str(dest))
+        with use_session() as s:
+            kg_events = s.execute(select(func.count()).select_from(KgEvent)).scalar() or 0
+        snapshot_id = corpus_fingerprint()
+        truth_format_version = _read_manifest(paths.truth_dir).get("version")
+        embedding_space = _embedding_space()
+    finally:
+        if prev != str(dest):
+            open_archive(prev)
+
+    manifest = {
+        "kind": "thread-archive-snapshot",
+        "snapshot_id": snapshot_id,
+        "created_at": _now_iso(),
+        "source_home": str(dest),
+        # Distinguishes a home stamped where it was built from one copied out of a
+        # live archive: same contract, but there is no separate source to name.
+        "in_place": True,
+        "archive_version": _archive_version(),
+        "truth_format_version": truth_format_version,
+        "embedding_space": embedding_space,
+        "counts": {
+            "threads": counts["threads"],
+            "events": counts["events"],
+            "kg_events": int(kg_events),
+            "vectors": counts["vectors_indexed"],
+        },
+        "source_verify_ok": None,
+        "verify_ok": None,
+    }
+    _write_manifest(dest, manifest)
+
+    from .archives import register, set_role
+
+    register(dest, force=True)
+    try:
+        set_role(str(dest), "snapshot")
+    except (KeyError, ValueError, OSError):
+        pass
+    return manifest
 
 
 def _free_bytes(path: Path) -> int:

@@ -42,7 +42,7 @@ class SentenceEncoder(Protocol):
     else that encodes the same way."""
 
     def encode(self, sentences: list[str], normalize_embeddings: bool,
-               convert_to_numpy: bool) -> Any: ...
+               convert_to_numpy: bool, show_progress_bar: bool) -> Any: ...
 
 
 # Cap input length before embedding. On the in-process torch path a batch of many
@@ -311,7 +311,11 @@ class Embedder:
                 if model is None:
                     return None
                 # Un-normalized to match the contract — the vector store normalizes on write.
-                vecs = model.encode(prefixed, normalize_embeddings=False, convert_to_numpy=True)
+                # No progress bar: every caller here is a daemon or a library call,
+                # so the bar renders into a log file — one multi-KB line of carriage
+                # returns per batch, written to disk, read by nobody.
+                vecs = model.encode(prefixed, normalize_embeddings=False,
+                                    convert_to_numpy=True, show_progress_bar=False)
         except Exception as e:  # noqa: BLE001
             logger.warning("embed: encode failed (%s)", e)
             return None

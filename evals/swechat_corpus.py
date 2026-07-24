@@ -21,8 +21,14 @@ Two phases, separable:
 - **build** — ingest every transcript into a throwaway home, one thread per
   session, ``source_id`` = the SWE-chat ``session_id`` so the linkage can find it
   again. ``--vectors`` embeds (needed for the semantic arms; slow).
-- **linkage** — join the parquet tables into ``commit-linkage.jsonl`` under the
-  gold dir: one row per session whose commits are unambiguously its own.
+- **linkage** — join the parquet tables into ``commit-linkage.jsonl``: one row per
+  session whose commits are unambiguously its own.
+
+Derived artifacts — the linkage and the golds mined from it — land in ``gold/``
+beside the download (see :func:`default_gold_dir`), not in the archive's private
+gold dir. Either phase ends by stamping the home as a snapshot in place (no copy:
+it was built frozen), which is what ``mine`` and ``retrieval_eval --cases`` bind
+their golds to.
 
   The join that matters: a checkpoint with ``session_count == 1`` and commits
   attached attributes those commits to exactly one session, so the session that
@@ -39,8 +45,7 @@ Usage::
 
     python evals/swechat_corpus.py --data ~/dev/swe-chat-data/swe-chat
     python evals/swechat_corpus.py --data ... --linkage-only   # reuse built home
-    thread_archive snapshot <dir> && THREAD_ARCHIVE_HOME=<dir> \\
-        thread_archive mine commit --target 10
+    THREAD_ARCHIVE_HOME=<home> thread_archive mine commit --target 10
 """
 
 from __future__ import annotations
@@ -61,6 +66,20 @@ from thread_archive._store import use_session  # noqa: E402
 
 DEFAULT_HOME = Path.home() / ".cache" / "thread-evals" / "homes" / "swe-chat"
 DEFAULT_DATA = Path.home() / "dev" / "swe-chat-data" / "swe-chat"
+
+
+def default_gold_dir(data: Path) -> Path:
+    """Where this corpus's derived artifacts belong: ``gold/`` beside the download,
+    not the archive's own gold dir.
+
+    The archive keeps mined cases out of any repo because they quote the operator's
+    real conversations. Nothing mined here does — the corpus is a public dataset, the
+    golds cite public sessions, and they are only meaningful next to the download
+    they resolve against. Beside the data they can travel with it; under
+    ``~/.thread/archive`` they are private-by-default artifacts nobody else can use.
+    A sibling of the download rather than a directory inside it, so re-running the
+    dataset fetch never sees them."""
+    return data.parent / "gold"
 
 # Per-commit diff kept in the linkage file. The authoring agent sees at most
 # MAX_PATCH_CHARS of it; storing a little more leaves room for multi-commit
@@ -221,6 +240,26 @@ def build_home(data: Path, home: Path, *, limit: int, vectors: bool,
     return done
 
 
+def repo_groups(data: Path, sessions: set[str]) -> dict[str, list[str]]:
+    """``{repo_id: [session_id, ...]}`` over the sessions actually ingested — the
+    grouping ``corpus_topics.py --groups`` turns into one topic per repository.
+
+    A repository is the confound-dense subject the topic miner wants, established
+    by provenance rather than by a model: every session in it shares file names,
+    module names and domain vocabulary, so a query naming any of them has many
+    near-misses and one right answer. Unlike a grouping read off the embedding
+    graph, it owes nothing to the model the vector arm also ranks with."""
+    pq = _require_pyarrow()
+    t = pq.read_table(data / "sessions.parquet",
+                      columns=["session_id", "repo_id"]).to_pylist()
+    out: dict[str, list[str]] = {}
+    for row in t:
+        sid = str(row["session_id"])
+        if sid in sessions:
+            out.setdefault(str(row["repo_id"]), []).append(sid)
+    return out
+
+
 def thread_ids_by_session(home: Path) -> dict[str, str]:
     """``session_id -> thread_id`` for everything ingested into ``home``. Reads the
     store rather than a build-time map, so ``--linkage-only`` works against a home
@@ -341,9 +380,11 @@ def main(argv: list[str] | None = None) -> int:
                     help=f"SWE-chat download dir (default {DEFAULT_DATA})")
     ap.add_argument("--home", type=Path, default=DEFAULT_HOME,
                     help=f"corpus home to build (default {DEFAULT_HOME})")
+    ap.add_argument("--gold-dir", type=Path, default=None,
+                    help="where this corpus's derived artifacts land "
+                         "(default: gold/ beside the download)")
     ap.add_argument("--out", type=Path, default=None,
-                    help="linkage file (default ~/.thread/archive/"
-                         f"{commit_linked.LINKAGE_NAME})")
+                    help=f"linkage file (default <gold-dir>/{commit_linked.LINKAGE_NAME})")
     ap.add_argument("--limit", type=int, default=0, metavar="N",
                     help="ingest only the first N transcripts (0 = all)")
     ap.add_argument("--max-sessions", type=int, default=0, metavar="N",
@@ -382,14 +423,32 @@ def main(argv: list[str] | None = None) -> int:
     mapping = thread_ids_by_session(home)
     if not mapping:
         raise SystemExit(f"no ingested sessions in {home} — build it first")
+    gold = (args.gold_dir or default_gold_dir(args.data)).expanduser()
+    groups = repo_groups(args.data, set(mapping))
+    groups_path = gold / "repo-groups.json"
+    groups_path.parent.mkdir(parents=True, exist_ok=True)
+    groups_path.write_text(json.dumps(groups, indent=1) + "\n")
+    print(f"repo groups: {len(groups)} repo(s) over {sum(map(len, groups.values()))} "
+          f"session(s) -> {groups_path}")
+
     rows = build_linkage(args.data, mapping)
-    out = write_linkage(rows, (args.out or commit_linked.linkage_path()).expanduser())
+    out = write_linkage(rows, (args.out or gold / commit_linked.LINKAGE_NAME).expanduser())
 
     repos = len({r["repo"] for r in rows})
     print(f"linkage: {len(rows)} session(s) with attributable commits across "
           f"{repos} repo(s) -> {out}")
-    print("next: thread_archive snapshot <dir>; THREAD_ARCHIVE_HOME=<dir> "
-          "thread_archive mine commit --target 10")
+
+    # The home is the snapshot: it is built from a fixed download and nothing
+    # appends to it, so it needs the manifest mining binds against, not a copy of
+    # itself. Stamped last, once the corpus is final — the id is a content
+    # fingerprint, so a rebuild takes a new one and the previous run's golds read
+    # as stale instead of scoring against a corpus that changed underneath them.
+    manifest = api.stamp_snapshot(str(home))
+    print(f"snapshot: {home} stamped {manifest['snapshot_id']} "
+          f"({manifest['counts']['threads']} threads, "
+          f"{manifest['counts']['vectors']} vectors)")
+    print(f"next: THREAD_ARCHIVE_HOME={home} thread_archive mine commit --target 10 \\\n"
+          f"        --linkage {out} --out {gold / 'commit-cases.jsonl'}")
     return 0
 
 
