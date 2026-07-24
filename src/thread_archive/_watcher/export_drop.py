@@ -44,13 +44,19 @@ from pathlib import Path
 from typing import Callable, Iterator, Optional
 
 from .base import SourceWatcher, WatchResult
+from .drift_snapshot import DRIFT_DIRNAME
 
 logger = logging.getLogger(__name__)
 
-# Reserved subdirs, both skipped when scanning: exports that need attention go to
-# ``failed/``; cleanly-imported exports are retained (never deleted) in ``imported/``.
+# Reserved subdirs, all skipped when scanning: exports that need attention go to
+# ``failed/``; cleanly-imported exports are retained (never deleted) in ``imported/``;
+# ``drift/`` is the drift quarantine's preservation copies (see
+# :mod:`.drift_snapshot`), which share this directory but are not drops — scanning
+# them would quarantine the only copy of a degraded source's raw store as an
+# "unrecognized export".
 QUARANTINE_DIRNAME = "failed"
 IMPORTED_DIRNAME = "imported"
+RESERVED_DIRNAMES = (QUARANTINE_DIRNAME, IMPORTED_DIRNAME, DRIFT_DIRNAME)
 
 
 class ExportDropWatcher(SourceWatcher):
@@ -115,15 +121,16 @@ class ExportDropWatcher(SourceWatcher):
     def _candidates(self) -> Iterator[Path]:
         """Top-level zips and export directories in the drop zone, sorted by name.
 
-        Skips dotfiles and the reserved ``failed/`` and ``imported/`` subdirs (so
-        quarantined and retained exports are never rescanned)."""
+        Skips dotfiles and the reserved subdirs (``RESERVED_DIRNAMES``), so
+        quarantined and retained exports are never rescanned and the drift
+        quarantine is left alone."""
         if not self.dumps_dir.exists():
             return
         for entry in sorted(self.dumps_dir.iterdir(), key=lambda p: p.name):
             if entry.name.startswith("."):
                 continue
             if entry.is_dir():
-                if entry.name in (QUARANTINE_DIRNAME, IMPORTED_DIRNAME):
+                if entry.name in RESERVED_DIRNAMES:
                     continue
                 yield entry
             elif entry.is_file() and entry.suffix.lower() == ".zip":

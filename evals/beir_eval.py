@@ -178,32 +178,44 @@ def ingest_corpus(corpus_path: Path, work: Path, max_docs: int | None) -> dict[s
     import logging
 
     from thread_archive import _api as api
+    from thread_archive._ops.load_runs import load_run
 
     # Each doc is a first-time import under its own source id, so the importer's
     # per-source cursor bookkeeping (rewind/re-import notices) is just noise here.
     logging.getLogger("thread_archive._importers._cursor").setLevel(logging.ERROR)
 
+    # One cheap line-count pass buys the phase a total, i.e. an ETA.
+    with corpus_path.open(encoding="utf-8") as fh:
+        total = sum(1 for line in fh if line.strip())
+    if max_docs:
+        total = min(total, max_docs)
+
     doc_of_thread: dict[str, str] = {}
     n = 0
     t0 = time.monotonic()
-    for doc_id, text in load_corpus(corpus_path):
-        # A distinct source path + id per doc: a reused path reads as the same
-        # session being edited (cursor rewind), collapsing every doc into one
-        # thread. Unlink after import so the work dir doesn't hold the whole corpus.
-        f = work / f"doc-{n}.jsonl"
-        f.write_text(
-            "\n".join(json.dumps(x) for x in _session_lines(doc_id, text)) + "\n",
-            encoding="utf-8",
-        )
-        res = api.import_path(f, source_id=f"beir-{doc_id}")
-        f.unlink()
-        doc_of_thread[str(res.thread_id)] = doc_id
-        n += 1
-        if n % 500 == 0:
-            rate = n / (time.monotonic() - t0)
-            _log(f"  ingested {n} docs ({rate:.0f}/s)")
-        if max_docs and n >= max_docs:
-            break
+    # Tracked like any archive load: live progress/ETA to <home>/load-state.json,
+    # a ledger row after — a corpus build is as visible as a real import.
+    with load_run("import", note=f"BEIR corpus build ({corpus_path.parent.name})") as run:
+        with run.phase("import", total=total) as ph:
+            for doc_id, text in load_corpus(corpus_path):
+                # A distinct source path + id per doc: a reused path reads as the same
+                # session being edited (cursor rewind), collapsing every doc into one
+                # thread. Unlink after import so the work dir doesn't hold the whole corpus.
+                f = work / f"doc-{n}.jsonl"
+                f.write_text(
+                    "\n".join(json.dumps(x) for x in _session_lines(doc_id, text)) + "\n",
+                    encoding="utf-8",
+                )
+                res = api.import_path(f, source_id=f"beir-{doc_id}")
+                f.unlink()
+                doc_of_thread[str(res.thread_id)] = doc_id
+                n += 1
+                ph.advance()
+                if n % 500 == 0:
+                    rate = n / (time.monotonic() - t0)
+                    _log(f"  ingested {n} docs ({rate:.0f}/s)")
+                if max_docs and n >= max_docs:
+                    break
     _log(f"ingested {n} docs in {time.monotonic() - t0:.0f}s")
     return doc_of_thread
 

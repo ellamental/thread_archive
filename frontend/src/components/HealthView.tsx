@@ -338,9 +338,11 @@ function buildNotices(status: Status): Notice[] {
   return notices
 }
 
-// How often the archive list re-reads while a load is in flight. A load is the one
-// thing on this page that changes by the second, so it polls to stay a live view;
-// when nothing is loading there is nothing to animate and it backs off.
+// How often this page re-reads. A load in flight is the one thing here that
+// changes by the second, so the archive list tracks it closely; everything else
+// (and the archive list when nothing is loading) refreshes on the idle cadence,
+// which is what keeps the ages and staleness verdicts honest while the page sits
+// open.
 const LOADING_POLL_MS = 2_000
 const IDLE_POLL_MS = 30_000
 
@@ -349,8 +351,36 @@ export function HealthView() {
   const [error, setError] = useState<string | null>(null)
   const [archives, setArchives] = useState<ArchiveEntry[] | null>(null)
 
+  // The status records are all read as ages ("last check 3m ago", stale past a
+  // threshold), so a one-shot fetch would leave the page asserting a freshness
+  // that decays the whole time it sits open. It re-reads on the idle cadence;
+  // after the first success a failed poll keeps the last good evidence rather
+  // than blanking the page.
   useEffect(() => {
-    api.status().then(setStatus).catch((e) => setError(String(e.message ?? e)))
+    let cancelled = false
+    let loaded = false
+    let timer: ReturnType<typeof setTimeout>
+    const tick = () => {
+      api
+        .status()
+        .then((s) => {
+          if (cancelled) return
+          loaded = true
+          setStatus(s)
+          setError(null)
+        })
+        .catch((e) => {
+          if (!cancelled && !loaded) setError(String(e.message ?? e))
+        })
+        .finally(() => {
+          if (!cancelled) timer = setTimeout(tick, IDLE_POLL_MS)
+        })
+    }
+    tick()
+    return () => {
+      cancelled = true
+      clearTimeout(timer)
+    }
   }, [])
 
   const loading = (archives || []).some((a) => liveLoad(a)?.status === 'running')

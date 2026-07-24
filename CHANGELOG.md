@@ -2,6 +2,27 @@
 
 ## Unreleased
 
+- **The drift quarantine is no longer eaten by the export-drop watcher.** Both
+  live under `<home>/dumps/`, but only account exports are drops: the watcher
+  scanned `dumps/drift/`, failed to classify it, and moved the whole tree into
+  `dumps/failed/` as an unrecognized export — burying the preservation copy of a
+  degraded source's raw store (often the only copy left once the harness prunes)
+  under a name that means "this export needs a look", raising a capture error per
+  sweep, and costing the snapshotter the prior generations it copies
+  incrementally against, so each night re-copied the whole active window. The
+  drift dir is now reserved alongside `failed/` and `imported/`.
+
+- **A quiet archive no longer reads as a stalled watcher.** The health page ages
+  the operational records against *now* — capture is stale past 15 minutes — but
+  they rode the status survey's TTL cache, which nothing refreshes but a request.
+  A page opened after twenty idle minutes therefore got a twenty-minute-old "last
+  check" stamp and declared a perfectly live watcher stalled, red trust center and
+  all. `api.operational_records` splits the freshness-bearing half of `status`
+  (health records, pipeline verdict, watcher liveness, backup device check, load
+  state) from the expensive counts; `/api/status` serves the counts cached and the
+  records fresh. The health page re-reads on its idle cadence too, so ages stay
+  true while it sits open instead of freezing at load time.
+
 - **Registry entries can say what an archive is *for*.** Entries in
   `~/.thread/archives.json` carry an optional descriptive `role` (`live`,
   `benchmark`, `snapshot`) set via `thread_archive archives --set-role` /

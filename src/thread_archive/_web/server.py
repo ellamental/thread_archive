@@ -338,7 +338,18 @@ def _survey(name: str, compute, ttl: float) -> dict:
 
 
 def _status() -> dict:
-    return _survey("status", api.status, _STATUS_TTL)
+    """The survey's counts from cache; its operational records read fresh.
+
+    Only the counts are expensive, and only they tolerate age. The records
+    (``api.operational_records``) are what the health page ages against *now*,
+    so serving a cached copy of them turns idle time into a fault: nothing
+    refreshes this cache but a request, so a page opened after twenty quiet
+    minutes would read a twenty-minute-old "capture last checked" stamp and call
+    a perfectly live watcher stalled."""
+    return {
+        **_survey("status", api.status, _STATUS_TTL),
+        **api.operational_records(),
+    }
 
 
 def _list_sources() -> list[dict]:

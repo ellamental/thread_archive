@@ -396,6 +396,33 @@ def status(*, home: Optional[str] = None) -> dict:
         ).scalar() or 0
         links = s.execute(select(func.count()).select_from(ThreadLink)).scalar() or 0
     from ._retrieval.vectors import get_status as _vec_status
+
+    return {
+        "home": str(paths.home),
+        "truth_dir": str(paths.truth_dir),
+        "index_path": str(paths.index_path),
+        "threads": int(threads),
+        "events": int(events),
+        "topics": int(topics),
+        "links": int(links),
+        "fts_indexed": fts_status()["indexed"],
+        "vectors_indexed": _vec_status().get("indexed", 0),
+        **operational_records(home=home),
+    }
+
+
+def operational_records(*, home: Optional[str] = None) -> dict:
+    """The freshness-bearing half of :func:`status`: the ``health.json`` records,
+    the pipeline verdict, watcher liveness, the backup's same-device check, and
+    the load state.
+
+    Split out because every field here is judged against *now* — a reader asks
+    "how long since capture last checked in?" and answers red past a threshold.
+    Costed to be read fresh on every request (a JSON file, a manifest, two
+    stats, one ``kill(pid, 0)``) so it never has to ride a cache: served from a
+    snapshot even minutes old, a live watcher's last pass reads as a stall.
+    """
+    paths = open_archive(home)
     from ._truth.jsonl_log import _read_manifest
 
     health = read_health()
@@ -427,15 +454,6 @@ def status(*, home: Optional[str] = None) -> dict:
             pass
 
     return {
-        "home": str(paths.home),
-        "truth_dir": str(paths.truth_dir),
-        "index_path": str(paths.index_path),
-        "threads": int(threads),
-        "events": int(events),
-        "topics": int(topics),
-        "links": int(links),
-        "fts_indexed": fts_status()["indexed"],
-        "vectors_indexed": _vec_status().get("indexed", 0),
         "last_checkpoint_at": _read_manifest(paths.truth_dir).get("last_checkpoint_at"),
         "last_verify": health.get("verify_last"),
         "last_backup": health.get("backup_last"),

@@ -112,26 +112,33 @@ def ingest_corpus(corpus: dict[str, str], work: Path, max_docs: int | None) -> d
     import logging
 
     from thread_archive import _api as api
+    from thread_archive._ops.load_runs import load_run
 
     logging.getLogger("thread_archive._importers._cursor").setLevel(logging.ERROR)
 
     doc_of_thread: dict[str, str] = {}
     n = 0
     t0 = time.monotonic()
-    for doc_id, text in corpus.items():
-        f = work / f"doc-{n}.jsonl"
-        f.write_text(
-            "\n".join(json.dumps(x) for x in _session_lines(doc_id, text)) + "\n",
-            encoding="utf-8",
-        )
-        res = api.import_path(f, source_id=f"cdr-{doc_id}")
-        f.unlink()
-        doc_of_thread[str(res.thread_id)] = doc_id
-        n += 1
-        if n % 1000 == 0:
-            _log(f"  ingested {n} docs ({n / (time.monotonic() - t0):.0f}/s)")
-        if max_docs and n >= max_docs:
-            break
+    total = min(len(corpus), max_docs) if max_docs else len(corpus)
+    # Tracked like any archive load: live progress/ETA while the ~9k docs ingest,
+    # a ledger row after — the health page sees this build like a real import.
+    with load_run("import", note="CDR corpus build") as run:
+        with run.phase("import", total=total) as ph:
+            for doc_id, text in corpus.items():
+                f = work / f"doc-{n}.jsonl"
+                f.write_text(
+                    "\n".join(json.dumps(x) for x in _session_lines(doc_id, text)) + "\n",
+                    encoding="utf-8",
+                )
+                res = api.import_path(f, source_id=f"cdr-{doc_id}")
+                f.unlink()
+                doc_of_thread[str(res.thread_id)] = doc_id
+                n += 1
+                ph.advance()
+                if n % 1000 == 0:
+                    _log(f"  ingested {n} docs ({n / (time.monotonic() - t0):.0f}/s)")
+                if max_docs and n >= max_docs:
+                    break
     _log(f"ingested {n} docs in {time.monotonic() - t0:.0f}s")
     return doc_of_thread
 

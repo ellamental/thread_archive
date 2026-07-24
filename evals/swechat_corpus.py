@@ -196,15 +196,24 @@ def build_home(data: Path, home: Path, *, limit: int, vectors: bool,
     os.environ["THREAD_ARCHIVE_HOME"] = str(home)
     api.open_archive(str(home))
 
+    # The ingest is a tracked load run, like the embed after it: progress/ETA in
+    # <home>/load-state.json while it runs, a ledger row when it ends — a corpus
+    # build must be as visible as any other archive load.
+    from thread_archive._ops.load_runs import load_run
+
     done = 0
-    for i, path in enumerate(usable, 1):
-        try:
-            api.import_path(path, provider=SOURCE, source_id=path.stem)
-            done += 1
-        except Exception as exc:  # one malformed transcript must not end the build
-            print(f"  ! {path.name}: {type(exc).__name__}: {exc}")
-        if i % 250 == 0:
-            print(f"  ingested {i}/{len(usable)} ({done} ok)")
+    with load_run("import", home=home, note="swe-chat corpus build") as run:
+        with run.phase("import", total=len(usable)) as ph:
+            for i, path in enumerate(usable, 1):
+                try:
+                    api.import_path(path, provider=SOURCE, source_id=path.stem)
+                    done += 1
+                except Exception as exc:  # one malformed transcript must not end the build
+                    print(f"  ! {path.name}: {type(exc).__name__}: {exc}")
+                    ph.count("failed", 1)
+                ph.advance()
+                if i % 250 == 0:
+                    print(f"  ingested {i}/{len(usable)} ({done} ok)")
     print(f"ingested {done}/{len(usable)} transcripts into {home}")
     if vectors:
         print("embedding (slow)...")
