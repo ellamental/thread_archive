@@ -96,6 +96,30 @@ def test_describe_reads_live_load_state_and_existence(registry, tmp_path):
     assert d["load"]["kind"] == "embed"
 
 
+def test_describe_carries_the_recent_load_history(registry, tmp_path):
+    """The health view asks 'which archives are loading, which are loaded, and what
+    did past loads cost' in one call — so each entry carries its own recent runs."""
+    home = tmp_path / "arc"
+    home.mkdir()
+    with load_runs.load_run("import", home=home):
+        pass
+    with load_runs.load_run("embed", home=home):
+        pass
+    archives.register(home, force=True)
+
+    entry = archives.list_archives()[0]
+    assert [r["kind"] for r in entry["runs"]] == ["embed", "import"]  # newest first
+    assert all(r["status"] == "ok" for r in entry["runs"])
+    # Bounded: a ledger grows forever, a health render must not scale with it.
+    assert archives.describe(entry, runs=1)["runs"] == entry["runs"][:1]
+    assert archives.describe(entry, runs=0)["runs"] == []
+
+
+def test_describe_of_a_missing_home_has_no_runs(registry, tmp_path):
+    archives.register(tmp_path / "never-made", force=True)
+    assert archives.list_archives()[0]["runs"] == []
+
+
 def test_describe_marks_a_missing_home(registry, tmp_path):
     gone = tmp_path / "deleted"
     archives.register(gone, force=True)  # never created

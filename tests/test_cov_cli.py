@@ -21,6 +21,7 @@ import ctypes
 import json
 import os
 import plistlib
+import pty
 import socket
 import sqlite3
 import subprocess
@@ -44,11 +45,13 @@ from thread_archive.cli import main
 from .helpers import (
     cc_assistant,
     cc_user,
+    corrupt_event_line,
     event_count,
     import_cc_session,
     one_thread_file,
     write_jsonl,
 )
+from .test_migrate_thread_ulids import make_legacy_home
 
 # coverage tag: cli
 
@@ -1622,6 +1625,253 @@ def test_mirror_failed_provider_reports_extras_and_errors(capsys) -> None:
     assert "    sweep: OSError: disk full" in out and "    db: locked" in out
     assert "demo-harness     unsupported (watcher shape has no mirror path)" in out
     assert "FAILED → /h/source-mirror (4.0s)" in out
+
+
+# ── loads: the wait, stated in the units a person waits in ───────────────────
+
+
+def test_fmt_duration_scales_to_the_wait() -> None:
+    # A load is a thing you sit through; "15132s" is not an answer to "how long".
+    assert cli._fmt_duration(None) == "?"
+    assert cli._fmt_duration(12.7) == "12s"
+    assert cli._fmt_duration(450) == "7m30s"
+    assert cli._fmt_duration(15132) == "4h12m"
+
+
+def test_progress_line_reports_phase_percent_rate_and_eta(capsys) -> None:
+    cli._progress_line({"phases": [
+        {"name": "embed", "done": 2500, "total": 10000,
+         "rate_per_s": 27.7, "eta_s": 271},
+    ]})
+    out = capsys.readouterr().out
+    assert "embed: 2,500/10,000" in out
+    assert "25.0%" in out and "27.7/s" in out and "ETA 4m31s" in out
+    assert out.startswith("\r")  # rewrites its own line, never scrolls
+
+
+def test_progress_line_without_a_total_states_only_what_it_knows(capsys) -> None:
+    # An untotalled phase has no percent and no ETA to give; it must still report.
+    cli._progress_line({"phases": [{"name": "import", "done": 41}]})
+    out = capsys.readouterr().out
+    assert "import: 41" in out
+    assert "%" not in out and "ETA" not in out
+
+
+def test_progress_line_says_nothing_before_the_first_phase(capsys) -> None:
+    cli._progress_line({})
+    assert capsys.readouterr().out == ""
+
+
+def test_loads_reports_no_load_and_no_history(archive_home, capsys) -> None:
+    rc = main(["loads", "--home", str(archive_home)])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "current: no load in flight" in out
+    assert "no recorded runs" in out
+
+
+def test_loads_reports_a_stalled_load_and_the_run_history(archive_home, capsys) -> None:
+    """A load whose process is gone reads as stalled — the case the record exists
+    for — and each finished run shows its phases with their internal split."""
+    from thread_archive._ops import load_runs
+
+    (archive_home / load_runs.STATE_FILE).write_text(json.dumps({
+        "kind": "embed", "status": "running", "pid": 0, "elapsed_s": 3700,
+        "phases": [{"name": "embed", "elapsed_s": 3700, "done": 900, "total": 5000,
+                    "rate_per_s": 14.2}],
+    }), encoding="utf-8")
+    load_runs.ledger_path(archive_home).write_text("\n".join([
+        json.dumps({"at": "2026-07-20T04:00:00+00:00", "kind": "reindex",
+                    "status": "ok", "duration_s": 92,
+                    "phases": [{"name": "reindex", "elapsed_s": 92, "done": 40,
+                                "counts": {"threads": 12}}]}),
+        json.dumps({"at": "2026-07-21T04:00:00+00:00", "kind": "embed",
+                    "status": "failed", "duration_s": 5400,
+                    "phases": [{"name": "embed", "elapsed_s": 5400, "done": 300,
+                                "total": 900, "rate_per_s": 3.1,
+                                "detail_s": {"encode": 5100, "write": 120}}]}),
+    ]) + "\n", encoding="utf-8")
+
+    assert main(["loads", "--home", str(archive_home)]) == 0
+    out = capsys.readouterr().out
+    assert "current: embed — stalled" in out
+    assert "the load died mid-phase" in out
+    assert "embed" in out and "900/5,000 done" in out and "14.2/s" in out
+    assert "recent runs (2):" in out
+    assert "2026-07-21T04:00:00  embed    failed" in out
+    assert "[encode 1h25m write 2m00s]" in out   # where the time actually went
+    assert "(threads=12)" in out
+
+
+# ── archives: every known home, and what each is doing ───────────────────────
+
+
+def test_archives_reports_an_empty_registry(archive_home, monkeypatch, capsys) -> None:
+    # Opening an archive registers it, so the empty list is what an operator who
+    # turned registration off sees — not a state the verb can reach on its own.
+    monkeypatch.setenv("THREAD_ARCHIVE_REGISTRY", "0")
+    assert main(["archives", "--home", str(archive_home)]) == 0
+    assert "no archives registered yet" in capsys.readouterr().out
+
+
+def test_archives_marks_the_active_home_and_flags_a_missing_one(
+    archive_home, tmp_path, monkeypatch, capsys
+) -> None:
+    """The registry outlives the homes in it — an archive whose directory is gone
+    must still be listed, and said to be gone, rather than silently dropped."""
+    from thread_archive._ops import archives as reg
+    from thread_archive._ops import load_runs
+
+    monkeypatch.setenv("THREAD_ARCHIVE_REGISTRY", str(tmp_path / "reg.json"))
+    reg._last_registered.clear()
+    gone = tmp_path / "deleted-archive"
+    gone.mkdir()
+    reg.register(gone, force=True)
+    gone.rmdir()
+    (archive_home / load_runs.STATE_FILE).write_text(
+        json.dumps({"kind": "import", "status": "running", "pid": os.getpid()}),
+        encoding="utf-8",
+    )
+    reg.register(archive_home, force=True)
+
+    assert main(["archives", "--home", str(archive_home)]) == 0
+    out = capsys.readouterr().out
+    assert f"* {'arc':<20}" in out                      # active home, marked
+    assert "[import: running]" in out                   # its live load state
+    assert "deleted-archive" in out and "(missing)" in out
+
+
+# ── progress on a real terminal: the tty-only arm of the long verbs ──────────
+
+
+def _run_on_a_terminal(argv: list[str], archive_home: Path, home: Path) -> str:
+    """Run the CLI with its stdout attached to a real pty, and return what a
+    terminal would have shown.
+
+    The live progress display is gated on ``sys.stdout.isatty()`` — the arm a
+    captured or redirected stream never takes — so the only honest way to see it
+    is to give the process an actual terminal."""
+    master, slave = pty.openpty()
+    proc = subprocess.Popen(
+        [sys.executable, "-m", "thread_archive", *argv],
+        stdout=slave, stderr=subprocess.DEVNULL,
+        env={**os.environ, "HOME": str(home), "THREAD_ARCHIVE_HOME": str(archive_home),
+             "THREAD_ARCHIVE_EMBED": "off", "THREAD_ARCHIVE_RERANK": "off"},
+    )
+    os.close(slave)  # the child now holds the only writer; read drains to EOF
+    chunks: list[bytes] = []
+    try:
+        while True:
+            try:
+                data = os.read(master, 4096)
+            except OSError:  # the pty raises rather than EOFs when the child goes
+                break
+            if not data:
+                break
+            chunks.append(data)
+    finally:
+        os.close(master)
+    assert proc.wait(timeout=180) == 0
+    return b"".join(chunks).decode()
+
+
+@pytest.mark.integration
+def test_the_long_verbs_draw_progress_on_a_terminal_and_wipe_it(
+    archive_home, tmp_path
+) -> None:
+    """``watch --once`` and ``embed`` rewrite one line while they work, then clear
+    it — so the summary lands on a clean line instead of a half-drawn bar."""
+    machine = tmp_path / "machine"
+    machine.mkdir()
+
+    watched = _run_on_a_terminal(["watch", "--once", "--no-embed"], archive_home, machine)
+    assert "\r  import: 0" in watched                    # the live phase line…
+    assert "\r" + " " * 80 + "\r" in watched              # …wiped before the summary
+    assert watched.rstrip().endswith("watch: checked 0 sources, imported 0 items (0 events)")
+
+    embedded = _run_on_a_terminal(["embed"], archive_home, machine)
+    assert "\r  embed: 0" in embedded
+    assert "\r" + " " * 80 + "\r" in embedded
+    assert embedded.rstrip().endswith("embedded 0")
+
+
+# ── snapshot / migrate: the failure arms ─────────────────────────────────────
+
+
+def test_snapshot_reports_a_failed_build(archive_home, tmp_path, capsys) -> None:
+    # A destination the process cannot create: the OS error is the operator's
+    # answer, not a traceback.
+    import_cc_session(tmp_path, "snap")
+    locked = tmp_path / "read-only-parent"
+    locked.mkdir()
+    os.chmod(locked, 0o500)
+    try:
+        assert main(["snapshot", str(locked / "frozen"), "--home", str(archive_home)]) == 1
+    finally:
+        os.chmod(locked, 0o700)
+    assert "snapshot failed: [Errno 13] Permission denied" in capsys.readouterr().err
+
+
+def test_snapshot_that_fails_verification_warns_and_exits_1(
+    archive_home, tmp_path, capsys
+) -> None:
+    """A snapshot is built to be trusted by later runs, so one built from damaged
+    truth must not read as done — it says so and exits nonzero, over a real torn
+    truth line rather than a claimed one."""
+    import_cc_session(tmp_path, "snapc")
+    corrupt_event_line(one_thread_file(archive_home))
+
+    assert main(["snapshot", str(tmp_path / "frozen"), "--home", str(archive_home)]) == 1
+    cap = capsys.readouterr()
+    assert "WARNING: the built snapshot failed verification" in cap.err
+    assert "done:" in cap.out  # the dest is still named — it exists, it is just suspect
+
+
+def test_migrate_reports_what_it_moved(tmp_path, capsys) -> None:
+    """The v1→v2 truth migration over a real legacy home: it swaps truth, rebuilds
+    the index, verifies it, and reports what moved."""
+    home = tmp_path / "legacy"
+    home.mkdir()
+    make_legacy_home(home)
+
+    assert main(["migrate", "--home", str(home)]) == 0
+    out = capsys.readouterr().out
+    assert "migration complete: truth format v2, threads=3 events=4" in out
+
+
+def test_migrate_dry_run_says_truth_was_untouched(tmp_path, capsys) -> None:
+    home = tmp_path / "legacy-dry"
+    home.mkdir()
+    make_legacy_home(home)
+
+    assert main(["migrate", "--dry-run", "--home", str(home)]) == 0
+    out = capsys.readouterr().out
+    assert "migration dry run complete; truth was not changed" in out
+    # The proof it was a dry run: truth is still v1 on disk.
+    assert '"version": 1' in (home / "truth" / "manifest.json").read_text(encoding="utf-8")
+
+
+def test_migrate_reports_a_failure(tmp_path, capsys) -> None:
+    # Unreadable truth metadata: the migration cannot start, and says why.
+    home = tmp_path / "legacy-broken"
+    home.mkdir()
+    make_legacy_home(home)
+    (home / "truth" / "manifest.json").write_text("{not json", encoding="utf-8")
+
+    assert main(["migrate", "--home", str(home)]) == 1
+    assert "migration failed: Expecting property name" in capsys.readouterr().err
+
+
+# ── eval: an archive with nothing to sample ──────────────────────────────────
+
+
+def test_eval_titles_on_an_empty_archive_scores_nothing(archive_home, capsys) -> None:
+    # Day zero: no threads, so there are no cases and no scores — reported as an
+    # empty measurement rather than a division by zero.
+    assert main(["eval", "--home", str(archive_home)]) == 0
+    out = capsys.readouterr().out
+    assert "(0 conversation threads)" in out
+    assert "No titled conversation threads with enough content to score yet." in out
 
 
 # ── main() with no subcommand prints help ────────────────────────────────────

@@ -1,7 +1,7 @@
 import { expect, it } from 'vitest'
-import { render, screen } from '@testing-library/react'
+import { render, screen, within } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
-import type { Status } from '../api'
+import type { ArchiveEntry, Status } from '../api'
 import { HealthView } from '../components/HealthView'
 import { mswError, mswJson, mswPending } from './msw'
 
@@ -57,8 +57,42 @@ function healthyStatus(): Status {
   }
 }
 
-function renderHealth(body: unknown) {
+function loadedArchive(): ArchiveEntry {
+  return {
+    id: 'aaa111',
+    home: '/Users/test/.thread/archive',
+    label: 'archive',
+    first_seen: now(),
+    last_opened: now(),
+    exists: true,
+    active: true,
+    index_bytes: 12_000_000_000,
+    load: {},
+    runs: [
+      {
+        kind: 'embed',
+        status: 'ok',
+        at: now(),
+        duration_s: 1215.7,
+        phases: [
+          {
+            name: 'embed',
+            done: 22134,
+            total: 22134,
+            elapsed_s: 1215.7,
+            rate_per_s: 18.2,
+            eta_s: null,
+            detail_s: { select: 0.1, encode: 1210.7, write: 4 },
+          },
+        ],
+      },
+    ],
+  }
+}
+
+function renderHealth(body: unknown, archives: ArchiveEntry[] = [loadedArchive()]) {
   mswJson('/api/status', body)
+  mswJson('/api/archives', { archives })
   return render(
     <MemoryRouter>
       <HealthView />
@@ -117,6 +151,7 @@ it('does not hide a provider parser failure inside an otherwise fresh pass', asy
 
 it('renders durable loading and error states', async () => {
   mswPending('/api/status')
+  mswJson('/api/archives', { archives: [] })
   const pending = render(
     <MemoryRouter>
       <HealthView />
@@ -126,10 +161,127 @@ it('renders durable loading and error states', async () => {
   pending.unmount()
 
   mswError('/api/status', 503, 'offline')
+  mswJson('/api/archives', { archives: [] })
   render(
     <MemoryRouter>
       <HealthView />
     </MemoryRouter>,
   )
   expect(await screen.findByText(/health unavailable: 503: offline/)).toBeInTheDocument()
+})
+
+it('shows an archive that is loading right now, with phase progress and an ETA', async () => {
+  const loading: ArchiveEntry = {
+    ...loadedArchive(),
+    id: 'bbb222',
+    home: '/Users/test/.cache/swe-chat',
+    label: 'swe-chat',
+    active: false,
+    runs: [],
+    load: {
+      kind: 'reindex',
+      status: 'running',
+      started_at: now(),
+      elapsed_s: 90,
+      phase: 'embed',
+      phases: [
+        { name: 'truth', done: 726, total: 726, elapsed_s: 12, rate_per_s: 60, eta_s: null },
+        { name: 'embed', done: 6137, total: 22134, elapsed_s: 78, rate_per_s: 25.6, eta_s: 624 },
+      ],
+    },
+  }
+  renderHealth(healthyStatus(), [loading, loadedArchive()])
+
+  expect(await screen.findByRole('heading', { name: 'Archives on this machine' })).toBeInTheDocument()
+  expect(screen.getByText('Loading')).toBeInTheDocument()
+  expect(screen.getByText('loading now')).toBeInTheDocument()
+  // The live phase, its progress, and the ETA — the numbers a wait is judged by.
+  expect(screen.getByText(/6,137 \/ 22,134/)).toBeInTheDocument()
+  expect(screen.getByText(/ETA 10.4 min/)).toBeInTheDocument()
+  const bar = screen.getByRole('progressbar', { name: 'embed progress' })
+  expect(bar).toHaveAttribute('aria-valuenow', '28')
+})
+
+it('separates a loaded archive from one that has never recorded a load', async () => {
+  const untracked: ArchiveEntry = {
+    ...loadedArchive(),
+    id: 'ccc333',
+    home: '/Users/test/.thread/other',
+    label: 'other',
+    active: false,
+    runs: [],
+    load: {},
+  }
+  renderHealth(healthyStatus(), [loadedArchive(), untracked])
+
+  expect(await screen.findByText('Indexed')).toBeInTheDocument()
+  // An index with no tracked load is 'Untracked', not 'Indexed' — unproven, not proven.
+  expect(screen.getByText('Untracked')).toBeInTheDocument()
+  expect(
+    screen.getByText('No tracked load has been recorded for this archive.'),
+  ).toBeInTheDocument()
+})
+
+it('never lets an indexed archive read as a reachable one', async () => {
+  // The two axes are independent: swe-chat can be fully indexed and still answer
+  // no query, because retrieval binds to the one home its process was started on.
+  const unreachable: ArchiveEntry = {
+    ...loadedArchive(),
+    id: 'ddd444',
+    home: '/Users/test/.cache/swe-chat',
+    label: 'swe-chat',
+    active: false,
+  }
+  renderHealth(healthyStatus(), [loadedArchive(), unreachable])
+
+  // Both are Indexed…
+  expect(await screen.findAllByText('Indexed')).toHaveLength(2)
+  const section = within(screen.getByRole('region', { name: 'Archives on this machine' }))
+  // …but exactly one is served, and the other says so out loud rather than
+  // leaving reachability to be inferred from a missing badge.
+  expect(section.getAllByTitle(/Retrieval answers from this archive/)).toHaveLength(1)
+  expect(section.getAllByTitle(/Indexed but not reachable/)).toHaveLength(1)
+  expect(
+    section.getByText(/answer from the single archive their process was started against/),
+  ).toBeInTheDocument()
+})
+
+it('reports what past loads cost, per phase', async () => {
+  renderHealth(healthyStatus())
+
+  expect(await screen.findByRole('heading', { name: 'What past loads cost' })).toBeInTheDocument()
+  const history = within(screen.getByRole('region', { name: 'What past loads cost' }))
+  // The run's total, its phase breakdown, and its verdict all land in the row.
+  expect(history.getAllByText('20.3 min').length).toBeGreaterThan(0)
+  // 'embed' twice: the load's kind, and the phase chip inside it.
+  expect(history.getAllByText('embed')).toHaveLength(2)
+  expect(history.getByText('Complete')).toBeInTheDocument()
+})
+
+it('marks a load whose process died as stalled rather than running', async () => {
+  const stalled: ArchiveEntry = {
+    ...loadedArchive(),
+    runs: [],
+    load: { kind: 'embed', status: 'stalled', pid: 999, elapsed_s: 40, phases: [] },
+  }
+  renderHealth(healthyStatus(), [stalled])
+
+  expect(await screen.findByText('Stalled')).toBeInTheDocument()
+  expect(screen.queryByText('loading now')).not.toBeInTheDocument()
+})
+
+it('keeps the trust verdict when the archive registry is unreadable', async () => {
+  mswJson('/api/status', healthyStatus())
+  mswError('/api/archives', 500, 'registry gone')
+  render(
+    <MemoryRouter>
+      <HealthView />
+    </MemoryRouter>,
+  )
+
+  // The protection verdict still renders — a registry failure degrades its own
+  // section instead of blanking the page.
+  expect(await screen.findByRole('heading', { name: 'Your archive is protected' })).toBeInTheDocument()
+  const section = screen.getByRole('region', { name: 'Archives on this machine' })
+  expect(within(section).getByText('reading the archive registry…')).toBeInTheDocument()
 })

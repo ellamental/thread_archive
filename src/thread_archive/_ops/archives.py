@@ -177,11 +177,21 @@ def forget(home: Path) -> bool:
     return True
 
 
-def describe(entry: dict, *, active_home: Optional[Path] = None) -> dict:
+# Recent load runs carried inline per archive. The health view wants "which
+# archives are loading, which are loaded, and what did past loads cost" from one
+# fetch — a per-archive history request would be an N+1 against N small files for
+# no benefit. Bounded because a ledger grows forever and a health render must not
+# scale with it.
+_RUNS_PER_ARCHIVE = 8
+
+
+def describe(entry: dict, *, active_home: Optional[Path] = None,
+             runs: int = _RUNS_PER_ARCHIVE) -> dict:
     """One registry entry enriched with the state read live from its home: whether
-    it still exists, its load state, and its size on disk. Read-only and cheap —
-    it stats the home and reads one small JSON, never opens the index."""
-    from .load_runs import read_state
+    it still exists, its load state, its recent load runs, and its size on disk.
+    Read-only and cheap — it stats the home and reads two small files, never opens
+    the index. ``runs=0`` skips the history read."""
+    from .load_runs import read_runs, read_state
 
     home = Path(entry.get("home", ""))
     out: dict[str, Any] = dict(entry)
@@ -191,8 +201,10 @@ def describe(entry: dict, *, active_home: Optional[Path] = None) -> dict:
                      if out["exists"] else False)
     if not out["exists"]:
         out["load"] = {}
+        out["runs"] = []
         return out
     out["load"] = read_state(home)
+    out["runs"] = read_runs(runs, home) if runs else []
     try:
         index = home / "index.db"
         out["index_bytes"] = index.stat().st_size if index.exists() else 0
@@ -201,11 +213,13 @@ def describe(entry: dict, *, active_home: Optional[Path] = None) -> dict:
     return out
 
 
-def list_archives(*, active_home: Optional[Path] = None) -> list[dict]:
-    """Every known archive with its current load state, newest-opened first.
+def list_archives(*, active_home: Optional[Path] = None,
+                  runs: int = _RUNS_PER_ARCHIVE) -> list[dict]:
+    """Every known archive with its current load state and recent load history,
+    newest-opened first.
 
     The one call that answers "what archives do I have and what is each one
     doing" — including archives this process has not opened."""
-    entries = [describe(e, active_home=active_home) for e in read_registry()]
+    entries = [describe(e, active_home=active_home, runs=runs) for e in read_registry()]
     entries.sort(key=lambda e: str(e.get("last_opened") or ""), reverse=True)
     return entries

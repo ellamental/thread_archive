@@ -568,6 +568,8 @@ a.session-link:hover { color: var(--accent); }
   --health-warn-bg: #fff7e5;
   --health-bad: #b34233;
   --health-bad-bg: #fff0ed;
+  --health-busy: #2f6296;
+  --health-busy-bg: #eaf1f9;
   max-width: 1120px; margin: 0 auto; padding: 34px 38px 96px;
 }
 .health-hero {
@@ -654,6 +656,70 @@ a.session-link:hover { color: var(--accent); }
 .health-pill.warn { color: var(--health-warn); background: var(--health-warn-bg); }
 .health-pill.bad { color: var(--health-bad); background: var(--health-bad-bg); }
 .health-pill.quiet { color: var(--muted); background: var(--badge); }
+.health-pill.busy { color: var(--health-busy); background: var(--health-busy-bg); }
+
+/* ---- archive loading ---- */
+.load-archive-list { display: flex; flex-direction: column; gap: 10px; }
+.load-archive {
+  min-width: 0; padding: 15px 17px; border: 1px solid var(--line);
+  border-radius: 12px; background: var(--panel);
+  box-shadow: inset 0 3px 0 var(--line);
+}
+.load-archive.good { box-shadow: inset 0 3px 0 var(--health-good); }
+.load-archive.bad { box-shadow: inset 0 3px 0 var(--health-bad); }
+.load-archive.busy { box-shadow: inset 0 3px 0 var(--health-busy); }
+.load-archive-top { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.load-archive-top h3 { margin: 0; display: flex; align-items: center; gap: 7px; font-size: 14px; }
+.load-served-tag {
+  padding: 1px 6px; border-radius: 999px; background: var(--accent-soft);
+  color: var(--accent); font-size: 9px; font-weight: 650;
+  text-transform: uppercase; letter-spacing: .05em; white-space: nowrap;
+}
+/* Not reachable by retrieval — stated, not merely omitted, so an indexed archive
+   is never mistaken for a searchable one. */
+.load-served-tag.off {
+  background: transparent; color: var(--muted);
+  border: 1px solid var(--line); font-weight: 600;
+}
+.load-archive .health-path { margin-top: 6px; }
+.load-archive-meta {
+  display: flex; flex-wrap: wrap; gap: 14px; margin-top: 8px;
+  color: var(--muted); font-size: 11px; font-variant-numeric: tabular-nums;
+}
+.load-archive-none { margin: 9px 0 0; color: var(--muted); font-size: 11px; }
+.load-live { color: var(--health-busy); font-weight: 650; }
+
+.load-progress { margin-top: 12px; }
+.load-progress-top {
+  display: flex; align-items: baseline; justify-content: space-between; gap: 12px;
+  margin-bottom: 6px;
+}
+.load-phase-name { font-size: 12px; font-weight: 650; }
+.load-phase-counts {
+  color: var(--muted); font-size: 11px; font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+.load-bar { height: 6px; border-radius: 999px; background: var(--badge); overflow: hidden; }
+.load-bar-fill {
+  height: 100%; border-radius: 999px; background: var(--health-busy);
+  transition: width .4s ease;
+}
+
+.load-archive-last {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; margin-top: 11px;
+  padding-top: 11px; border-top: 1px solid var(--line);
+}
+.load-last-label { color: var(--muted); font-size: 11px; }
+.load-last-total { font-size: 12px; font-weight: 650; font-variant-numeric: tabular-nums; }
+.load-chips { display: inline-flex; flex-wrap: wrap; gap: 5px; }
+.load-chip {
+  display: inline-flex; align-items: baseline; gap: 5px; padding: 2px 7px;
+  border-radius: 6px; background: var(--badge); font-size: 10px;
+}
+.load-chip-name { color: var(--muted); }
+.load-chip-value { font-weight: 650; font-variant-numeric: tabular-nums; }
+.load-chip-empty { color: var(--muted); font-size: 11px; }
+.health-table td .load-chips { white-space: normal; }
 
 .health-table-wrap {
   overflow-x: auto; border: 1px solid var(--line); border-radius: 11px; background: var(--panel);
@@ -669,6 +735,10 @@ a.session-link:hover { color: var(--accent); }
 .health-table th.num, .health-table td.num { text-align: right; font-variant-numeric: tabular-nums; }
 .health-provider { font-weight: 600; }
 .health-footnote { margin: 9px 2px 0; color: var(--muted); font-size: 11px; }
+.health-footnote code {
+  padding: 0 3px; border-radius: 4px; background: var(--badge);
+  font: 10px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace;
+}
 .health-empty-card {
   padding: 26px; border: 1px dashed var(--line); border-radius: 11px;
   color: var(--muted); text-align: center;
@@ -710,6 +780,8 @@ a.session-link:hover { color: var(--accent); }
     --health-warn-bg: #392d15;
     --health-bad: #e98778;
     --health-bad-bg: #3d211f;
+    --health-busy: #86b3e0;
+    --health-busy-bg: #1d2c3a;
   }
 }
 

@@ -1,12 +1,16 @@
 import { useEffect, useMemo, useState } from 'react'
 import {
   api,
+  type ArchiveEntry,
   type HealthRecord,
+  type LoadPhase,
+  type LoadRun,
   type Status,
   type WatchSourceRecord,
 } from '../api'
 
-type Tone = 'good' | 'warn' | 'bad' | 'quiet'
+// 'busy' is work in flight — distinct from 'warn', which means someone must act.
+type Tone = 'good' | 'warn' | 'bad' | 'quiet' | 'busy'
 
 interface Notice {
   key: string
@@ -59,6 +63,96 @@ function bytes(n?: number): string {
   if (n < 1024 ** 2) return `${(n / 1024).toFixed(1)} KB`
   if (n < 1024 ** 3) return `${(n / 1024 ** 2).toFixed(1)} MB`
   return `${(n / 1024 ** 3).toFixed(1)} GB`
+}
+
+function duration(s?: number | null): string {
+  if (s == null) return '—'
+  if (s < 1) return `${Math.round(s * 1000)}ms`
+  if (s < 90) return s < 10 ? `${s.toFixed(1)}s` : `${Math.round(s)}s`
+  if (s < 5400) return `${(s / 60).toFixed(1)} min`
+  return `${(s / 3600).toFixed(1)} h`
+}
+
+// The live record an in-flight load publishes, or null when this archive has no
+// load state at all (never loaded through the tracked paths).
+function liveLoad(archive: ArchiveEntry): LoadRun | null {
+  const load = archive.load as LoadRun
+  return load && load.status ? load : null
+}
+
+// The state of an archive's *derived* data — index, lexical search, vectors —
+// and nothing else. This axis says whether a load built the archive's indexes, not
+// whether anything can query it; reachability is a separate marker (see
+// `servedTag`), because an archive can be perfectly indexed and unreachable.
+// 'Untracked' is deliberately weaker than 'Indexed': an index exists but no load
+// was ever recorded for it, so its completeness is unproven rather than proven.
+function indexState(archive: ArchiveEntry): { label: string; tone: Tone } {
+  if (!archive.exists) return { label: 'Missing', tone: 'bad' }
+  const live = liveLoad(archive)
+  if (live?.status === 'running') return { label: 'Loading', tone: 'busy' }
+  if (live?.status === 'stalled') return { label: 'Stalled', tone: 'bad' }
+  const last = archive.runs?.[0] ?? live
+  if (last?.status === 'failed') return { label: 'Load failed', tone: 'bad' }
+  if (last?.status === 'ok') return { label: 'Indexed', tone: 'good' }
+  if ((archive.index_bytes ?? 0) > 0) return { label: 'Untracked', tone: 'quiet' }
+  return { label: 'Empty', tone: 'quiet' }
+}
+
+function currentPhase(load: LoadRun): LoadPhase | null {
+  const phases = load.phases || []
+  return phases.length ? phases[phases.length - 1] : null
+}
+
+function PhaseProgress({ phase }: { phase: LoadPhase }) {
+  const pct =
+    phase.total && phase.total > 0
+      ? Math.min(100, (phase.done / phase.total) * 100)
+      : null
+  return (
+    <div className="load-progress">
+      <div className="load-progress-top">
+        <span className="load-phase-name">{phase.name}</span>
+        <span className="load-phase-counts">
+          {int(phase.done)}
+          {phase.total != null ? ` / ${int(phase.total)}` : ''}
+          {phase.rate_per_s != null ? ` · ${phase.rate_per_s.toFixed(1)}/s` : ''}
+          {phase.eta_s != null ? ` · ETA ${duration(phase.eta_s)}` : ''}
+        </span>
+      </div>
+      {pct != null && (
+        <div
+          className="load-bar"
+          role="progressbar"
+          aria-label={`${phase.name} progress`}
+          aria-valuenow={Math.round(pct)}
+          aria-valuemin={0}
+          aria-valuemax={100}
+        >
+          <div className="load-bar-fill" style={{ width: `${pct}%` }} />
+        </div>
+      )}
+    </div>
+  )
+}
+
+// Each phase as a chip: what it was and what it cost. This is the thing that turns
+// "the load felt slow" into "the embed phase was 20 minutes of the 21".
+function PhaseChips({ phases }: { phases: LoadPhase[] }) {
+  if (!phases.length) return <span className="load-chip-empty">no phases recorded</span>
+  return (
+    <span className="load-chips">
+      {phases.map((phase) => (
+        <span className="load-chip" key={phase.name} title={
+          Object.entries(phase.detail_s || {})
+            .map(([k, v]) => `${k} ${duration(v)}`)
+            .join(' · ') || undefined
+        }>
+          <span className="load-chip-name">{phase.name}</span>
+          <span className="load-chip-value">{duration(phase.elapsed_s)}</span>
+        </span>
+      ))}
+    </span>
+  )
 }
 
 function shellArg(value: string): string {
@@ -244,13 +338,55 @@ function buildNotices(status: Status): Notice[] {
   return notices
 }
 
+// How often the archive list re-reads while a load is in flight. A load is the one
+// thing on this page that changes by the second, so it polls to stay a live view;
+// when nothing is loading there is nothing to animate and it backs off.
+const LOADING_POLL_MS = 2_000
+const IDLE_POLL_MS = 30_000
+
 export function HealthView() {
   const [status, setStatus] = useState<Status | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const [archives, setArchives] = useState<ArchiveEntry[] | null>(null)
 
   useEffect(() => {
     api.status().then(setStatus).catch((e) => setError(String(e.message ?? e)))
   }, [])
+
+  const loading = (archives || []).some((a) => liveLoad(a)?.status === 'running')
+
+  useEffect(() => {
+    let cancelled = false
+    let timer: ReturnType<typeof setTimeout>
+    const tick = () => {
+      api
+        .archives()
+        .then((rows) => {
+          if (!cancelled) setArchives(rows)
+        })
+        .catch(() => {
+          // An archive listing failure must never blank the trust page — the
+          // section degrades to whatever it last showed.
+        })
+        .finally(() => {
+          if (!cancelled) timer = setTimeout(tick, loading ? LOADING_POLL_MS : IDLE_POLL_MS)
+        })
+    }
+    tick()
+    return () => {
+      cancelled = true
+      clearTimeout(timer)
+    }
+  }, [loading])
+
+  // Every archive's runs on one timeline — the cross-archive load history.
+  const history = useMemo(() => {
+    const rows: { archive: string; run: LoadRun }[] = []
+    for (const archive of archives || [])
+      for (const run of archive.runs || []) rows.push({ archive: archive.label, run })
+    rows.sort((a, b) => String(b.run.at || '').localeCompare(String(a.run.at || '')))
+    return rows.slice(0, 12)
+  }, [archives])
 
   const notices = useMemo(() => (status ? buildNotices(status) : []), [status])
 
@@ -384,6 +520,123 @@ export function HealthView() {
             }
           />
         </div>
+      </section>
+
+      <section className="health-section" aria-labelledby="archives-heading">
+        <div className="health-section-heading">
+          <div>
+            <p className="eyebrow">Archives</p>
+            <h2 id="archives-heading">Archives on this machine</h2>
+          </div>
+          {loading && <span className="health-section-meta load-live">loading now</span>}
+        </div>
+        {archives === null ? (
+          <div className="health-empty-card">reading the archive registry…</div>
+        ) : archives.length === 0 ? (
+          <div className="health-empty-card">
+            No archives registered yet. An archive is registered the first time it is opened.
+          </div>
+        ) : (
+          <div className="load-archive-list">
+            {archives.map((archive) => {
+              const state = indexState(archive)
+              const live = liveLoad(archive)
+              const running = live?.status === 'running'
+              const phase = live ? currentPhase(live) : null
+              const last = archive.runs?.[0]
+              return (
+                <article className={`load-archive ${state.tone}`} key={archive.id}>
+                  <div className="load-archive-top">
+                    <h3>
+                      {archive.label}
+                      <span
+                        className={`load-served-tag${archive.active ? '' : ' off'}`}
+                        title={
+                          archive.active
+                            ? 'Retrieval answers from this archive — it is the home this process was started against.'
+                            : 'Indexed but not reachable: retrieval answers only from the served archive.'
+                        }
+                      >
+                        {archive.active ? 'served' : 'not served'}
+                      </span>
+                    </h3>
+                    <Pill tone={state.tone}>{state.label}</Pill>
+                  </div>
+                  <code className="health-path" title={archive.home}>{archive.home}</code>
+                  <div className="load-archive-meta">
+                    <span>{bytes(archive.index_bytes)} index</span>
+                    <span title={dateTime(archive.last_opened)}>opened {age(archive.last_opened)}</span>
+                  </div>
+                  {running && phase && <PhaseProgress phase={phase} />}
+                  {!running && last && (
+                    <div className="load-archive-last">
+                      <span className="load-last-label">
+                        last load · {last.kind} · {age(last.at)}
+                      </span>
+                      <span className="load-last-total">{duration(last.duration_s)}</span>
+                      <PhaseChips phases={last.phases || []} />
+                    </div>
+                  )}
+                  {!running && !last && (
+                    <p className="load-archive-none">No tracked load has been recorded for this archive.</p>
+                  )}
+                </article>
+              )
+            })}
+          </div>
+        )}
+        <p className="health-footnote">
+          A load builds one archive's derived data — index, lexical search, vectors — from its truth
+          log. Lexical search is usable as soon as the index is built; the embed phase backfills
+          semantic search behind it. Being indexed does not make an archive reachable:{' '}
+          <code>thread_search</code> and <code>thread_read</code> answer from the single archive their
+          process was started against, marked <em>served</em> here.
+        </p>
+      </section>
+
+      <section className="health-section" aria-labelledby="load-history-heading">
+        <div className="health-section-heading">
+          <div>
+            <p className="eyebrow">Load history</p>
+            <h2 id="load-history-heading">What past loads cost</h2>
+          </div>
+        </div>
+        {history.length ? (
+          <div className="health-table-wrap">
+            <table className="health-table">
+              <thead>
+                <tr>
+                  <th>Archive</th>
+                  <th>Load</th>
+                  <th>Finished</th>
+                  <th className="num">Duration</th>
+                  <th>Phases</th>
+                  <th>Status</th>
+                </tr>
+              </thead>
+              <tbody>
+                {history.map(({ archive, run }, index) => (
+                  <tr key={`${archive}-${run.at}-${index}`}>
+                    <td className="health-provider">{archive}</td>
+                    <td>{run.kind}</td>
+                    <td title={dateTime(run.at)}>{age(run.at)}</td>
+                    <td className="num">{duration(run.duration_s)}</td>
+                    <td><PhaseChips phases={run.phases || []} /></td>
+                    <td>
+                      <Pill tone={run.status === 'ok' ? 'good' : 'bad'}>
+                        {run.status === 'ok' ? 'Complete' : run.status}
+                      </Pill>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        ) : (
+          <div className="health-empty-card">
+            No loads recorded yet. Import, reindex, and embed runs are logged here as they happen.
+          </div>
+        )}
       </section>
 
       <section className="health-section" aria-labelledby="providers-heading">

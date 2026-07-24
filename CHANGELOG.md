@@ -53,6 +53,23 @@
   (`_SORT_WINDOW` docs), not global: the drain still walks newest-window-first, so
   recent-thread semantic recall stays current and a large pass writes the newest
   docs durably before the oldest. `sort_window=0` restores the natural order.
+- **The health view shows every archive's load state and history.** The registry
+  and the load ledger had no surface: "which archives are loading, which are built,
+  and what did past loads cost" was answerable only by reading files. The health
+  page now lists every known archive with its live phase, progress, rate and ETA
+  (polling while a load is in flight, backing off when idle), plus a cross-archive
+  history table with each run's per-phase cost. It reads from each home's own state
+  file, so a load running in another process — on an archive this one never opened —
+  is visible as it happens. Each registry entry carries its own recent runs, so the
+  view is one fetch rather than one per archive.
+- **"Loaded" claimed something the product does not do.** Being indexed and being
+  reachable are independent: `thread_search` / `thread_read` answer from the single
+  archive their process was started against, so an archive can be fully built and
+  answer no query. The state pill now names only the derived-data axis — `Indexed`,
+  or `Untracked` when an index exists but no load was ever recorded for it, so
+  completeness is unproven rather than asserted — and reachability is its own
+  marker, `served` / `not served`, stated on every archive rather than inferred
+  from a missing badge.
 - **The embed model's cold load was billed to `encode`.** The model loads lazily
   inside the first `embed_documents` call, so the tens of seconds it takes landed
   inside the first batch's `encode` timing — on a short pass that was most of the

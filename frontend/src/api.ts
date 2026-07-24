@@ -125,6 +125,51 @@ export interface PipelineVerdict {
   dest: string | null
 }
 
+// ── archive loading ─────────────────────────────────────────────────────────
+// One phase of a load (import, truth, fts, embed, vector-cache): its wall time,
+// how far it got, and the named sub-timings that say where the time went.
+export interface LoadPhase {
+  name: string
+  done: number
+  total: number | null
+  elapsed_s: number
+  rate_per_s: number | null
+  eta_s: number | null
+  detail_s?: Record<string, number>
+  counts?: Record<string, number>
+}
+
+// A load of one archive — live (status 'running') or finished. `stalled` means
+// the process that was writing it is gone, so the progress will never advance.
+export interface LoadRun {
+  kind: string
+  home?: string
+  pid?: number
+  status: 'running' | 'ok' | 'failed' | 'stalled' | string
+  started_at?: string
+  at?: string
+  elapsed_s?: number
+  duration_s?: number
+  error?: string | null
+  phase?: string | null
+  phases?: LoadPhase[]
+}
+
+export interface ArchiveEntry {
+  id: string
+  home: string
+  label: string
+  first_seen?: string
+  last_opened?: string
+  exists: boolean
+  active: boolean
+  index_bytes?: number
+  // The live load state published by whatever process is loading this archive —
+  // {} when no load has ever been recorded for it.
+  load: LoadRun | Record<string, never>
+  runs?: LoadRun[]
+}
+
 export interface ThreadListItem {
   id: string
   title: string | null
@@ -410,6 +455,8 @@ async function getJSON<T>(url: string): Promise<T> {
 
 export const api = {
   status: () => getJSON<Status>('/api/status'),
+  archives: () =>
+    getJSON<{ archives: ArchiveEntry[] }>('/api/archives').then((d) => d.archives),
   // No `types` → the server's default view (topics and system/subagent runs
   // hidden); an explicit list selects exactly those thread types.
   threads: (opts: { q?: string; types?: string[]; limit?: number } = {}) => {
