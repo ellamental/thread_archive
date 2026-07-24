@@ -43,6 +43,7 @@ import numpy as np
 from sqlalchemy import text as sa_text
 
 from .._store import get_engine, get_session
+from . import _probe
 from ._types import EventHit
 from .embed import EMBEDDING_CHAR_CAP
 from .fts import build_event_hit
@@ -862,6 +863,10 @@ def _load_matrix(cts: tuple[str, ...]):
             _matrix_checked_at[key] = now
             _refresh_matrix_async(key, tuple(sorted(cts)))
         return cached[1:]
+    # The inline build — the one path that reads the whole pack on the request
+    # thread. Flagged, not just timed: it is the difference between a search that
+    # was slow and a search that was slow *because it was the first one*.
+    _probe.flag("matrix_built")
     entry = _build_matrix_entry(cts)
     _store_matrix_entry(key, entry)
     _matrix_checked_at[key] = time.monotonic()
@@ -886,32 +891,44 @@ def _knn(qvec, cts: tuple[str, ...], cand: int, allowed_ids=None) -> list[tuple[
     those event ids *before* the top-k cut, so a scoped search (one thread, a time
     window) ranks within its scope instead of hoping the scope survives a
     corpus-wide top-k."""
+    # Split the matrix load off the arithmetic: serving a warm cached matrix is
+    # free, while a cold one builds the pack inline (see :func:`_load_matrix`) and
+    # reads the whole corpus off disk. Charging both to one number makes the
+    # expensive case indistinguishable from a slow matvec.
+    _t = time.perf_counter()
     ids, ct_arr, mat, doc_inverse, doc_rep, scope_rows = _load_matrix(cts)
+    _probe.record("matrix_ms", _t)
     n = len(ids)
     if n == 0:
         return []
-    q = _normalize(qvec)
-    # Full-matrix matvec (streams the mmap; same float32 bits as an in-RAM
-    # multiply), gathered down to the scope's rows so everything below stays
-    # scope-local exactly as before.
-    sims = np.asarray(mat @ q, dtype=np.float32)[scope_rows]
-    rows = np.arange(n)
-    if allowed_ids is not None:
-        rows = np.nonzero(np.isin(ids, allowed_ids))[0]
-        if len(rows) == 0:
-            return []
-    # Max-pool chunk sims into per-doc scores (out-of-scope docs stay at -inf).
-    doc_scores = np.full(len(doc_rep), -np.inf, dtype=np.float32)
-    np.maximum.at(doc_scores, doc_inverse[rows], sims[rows].astype(np.float32))
-    live = np.nonzero(doc_scores > -np.inf)[0]
-    k = min(cand, len(live))
-    if k < len(live):
-        part = np.argpartition(-doc_scores[live], k - 1)[:k]
-        pool = live[part]
-    else:
-        pool = live
-    order = sorted(pool, key=lambda d: (-float(doc_scores[d]), int(ids[doc_rep[d]])))
-    return [(int(ids[doc_rep[d]]), str(ct_arr[doc_rep[d]]), float(doc_scores[d])) for d in order]
+    _t = time.perf_counter()
+    try:
+        q = _normalize(qvec)
+        # Full-matrix matvec (streams the mmap; same float32 bits as an in-RAM
+        # multiply), gathered down to the scope's rows so everything below stays
+        # scope-local exactly as before.
+        sims = np.asarray(mat @ q, dtype=np.float32)[scope_rows]
+        rows = np.arange(n)
+        if allowed_ids is not None:
+            rows = np.nonzero(np.isin(ids, allowed_ids))[0]
+            if len(rows) == 0:
+                return []
+        # Max-pool chunk sims into per-doc scores (out-of-scope docs stay at -inf).
+        doc_scores = np.full(len(doc_rep), -np.inf, dtype=np.float32)
+        np.maximum.at(doc_scores, doc_inverse[rows], sims[rows].astype(np.float32))
+        live = np.nonzero(doc_scores > -np.inf)[0]
+        k = min(cand, len(live))
+        if k < len(live):
+            part = np.argpartition(-doc_scores[live], k - 1)[:k]
+            pool = live[part]
+        else:
+            pool = live
+        order = sorted(pool, key=lambda d: (-float(doc_scores[d]), int(ids[doc_rep[d]])))
+        return [(int(ids[doc_rep[d]]), str(ct_arr[doc_rep[d]]), float(doc_scores[d])) for d in order]
+    finally:
+        # In a finally so the empty-scope early return is charged too — the matvec
+        # ran before it, and an unmeasured exit would read as a free search.
+        _probe.record("knn_ms", _t)
 
 
 def _in_clause(column: str, values: list, prefix: str, params: dict, negate: bool) -> str:
@@ -973,6 +990,7 @@ def search(
     if not has_vectors:
         return None
 
+    _t = time.perf_counter()
     try:
         if embedder is None:
             from .embed import default as _default_embedder
@@ -982,6 +1000,10 @@ def search(
     except Exception as e:  # noqa: BLE001
         logger.debug("vectors: query embed failed: %s", e)
         return None
+    finally:
+        # In a finally so a failed embed still reports the time it burned — a
+        # model that takes tens of seconds and then raises is the expensive case.
+        _probe.record("embed_ms", _t)
     if not qvec:
         return None
 
@@ -1022,10 +1044,12 @@ def search(
         # Bulk-fetch the in-scope ids in one buffered round-trip, not row-by-row:
         # a broad time bound puts millions of ids in scope, and fetchone-per-row
         # through the ORM spends seconds on Python overhead the numpy mask doesn't need.
+        _t = time.perf_counter()
         with get_session() as s:
             rows = s.execute(
                 sa_text("SELECT e.id " + ajoin + " WHERE " + " AND ".join(awhere)), aparams,
             ).fetchall()
+        _probe.record("scope_ms", _t)
         if not rows:
             return []
         allowed_ids = np.fromiter((r[0] for r in rows), dtype=np.int64, count=len(rows))
@@ -1071,6 +1095,10 @@ def search(
         "f.content AS full_content, e.occurred_at " + join +
         " WHERE " + " AND ".join(where)
     )
+    # Hydration — the candidate ids back into hits, over a wide IN clause. Timed
+    # together with the row build below: both scale with the candidate pool, and
+    # the query and the Python loop are one cost to the caller.
+    _t = time.perf_counter()
     with get_session() as s:
         hit_rows = s.execute(sql, params).mappings().all()
 
@@ -1089,6 +1117,7 @@ def search(
         hydrated.append((sim, hit))
 
     hydrated.sort(key=lambda t: (-t[0], t[1]["event_id"]))
+    _probe.record("hydrate_ms", _t)
     return [h for _, h in hydrated[:limit]]
 
 

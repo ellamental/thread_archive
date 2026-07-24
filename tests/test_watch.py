@@ -265,6 +265,51 @@ def test_watcher_run_loop_survives_a_failing_pass(archive_home, caplog) -> None:
     assert sum("ingest pass failed" in r.getMessage() for r in caplog.records) == 2
 
 
+def test_pass_records_its_own_latency_and_per_source_cost(archive_home, tmp_path) -> None:
+    """The heartbeat carries how long the loop takes, not only what it did.
+
+    Counts alone can't distinguish a source polled a million times for nothing from
+    one polled twice expensively, and only one of those is worth making cheaper."""
+    import json
+
+    init_db()
+    projects = tmp_path / "projects"
+    _write_cc(projects, "myproj", "sess", [USER, ASSISTANT])
+
+    watcher = Watcher([ClaudeCodeWatcher(projects_dirs=[projects])], interval=1.0)
+    watcher.poll_once()
+
+    health = json.loads((archive_home / "health.json").read_text(encoding="utf-8"))
+    rec = health["watch_pass_last"]
+    assert rec["pass_ms"] >= 0.0
+    assert rec["pass_ms_max"] >= rec["pass_ms"]
+    # Per-source wall time rides beside that source's yield counters.
+    assert rec["sources"]["claude-code"]["ms"] >= 0
+
+
+def test_ingest_lag_sampled_only_when_a_pass_imported(archive_home, tmp_path) -> None:
+    """Lag is the ingest side's latency — how far behind real time the newest
+    ingested event is. On a quiet loop the newest event simply ages, which is the
+    machine being idle rather than ingest falling behind, so it isn't resampled."""
+    import json
+
+    init_db()
+    projects = tmp_path / "projects"
+    _write_cc(projects, "myproj", "sess", [USER, ASSISTANT])
+
+    watcher = Watcher([ClaudeCodeWatcher(projects_dirs=[projects])], interval=1.0)
+    watcher.poll_once()  # imports — samples lag
+    first = watcher._lag_s
+    assert first is not None and first > 0
+
+    watcher._lag_s = None
+    watcher.poll_once()  # nothing new — no resample
+    assert watcher._lag_s is None
+
+    health = json.loads((archive_home / "health.json").read_text(encoding="utf-8"))
+    assert "lag_s" not in health["watch_pass_last"] or health["watch_pass_last"]["lag_s"] > 0
+
+
 def test_watcher_maintenance_writes_manifest_not_overlays(archive_home, tmp_path) -> None:
     """maintain() runs the cheap upkeep (manifest/rebalance) but does NOT rewrite the
     cross-thread overlay snapshots — conversation ingest never changes them."""

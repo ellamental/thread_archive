@@ -2,6 +2,71 @@
 
 ## Unreleased
 
+- **The vector arm's latency is now attributable.** `semantic_ms` covered five
+  unrelated costs — the query embedding, the scope-mask query, serving the KNN
+  matrix, the matvec, and hydration — so a 28-second observation named an arm and
+  nothing else, which is precisely useless in the tail where the value is. The probe
+  now reports `embed_ms` / `scope_ms` / `matrix_ms` / `knn_ms` / `hydrate_ms` nested
+  inside the arm total, plus `matrix_built` for the inline pack build a process's
+  first query pays. The sub-stages ride the same probe the bench reads, so
+  `retrieval_gold_gate.py --latency` and the production ledger report the same split.
+- **The cold-model flag was pinned true and named nothing.** `cold` was one bit OR'd
+  across both model arms and sampled at entry, so an installed-but-disabled
+  cross-encoder — permanently "available and not loaded" — made every search read
+  cold. It is now per-arm and sampled where a load would actually be paid:
+  `embed_cold` at entry (the vector arm runs on every non-structural query),
+  `rerank_cold` at the re-rank itself, so an arm that sits out contributes no signal.
+- **Startup cost is recorded.** `warm_models` exists to move the tens-of-seconds model
+  load off the request path, and moving a cost is not removing it. Each pass now
+  writes a `warm` ledger row — total plus `embed_ms` / `rerank_ms` / `graph_ms` /
+  `search_ms`, and the stages that failed — so "how long after a restart is this
+  server useful" has an answer, and a load creeping toward an MCP client's timeout is
+  visible before it crosses.
+- **Searches that raise are recorded.** Reads already logged in a `finally`; searches
+  did not, so a search that failed slowly left no trace — biasing every percentile
+  computed off the ledger toward the calls that happened to succeed. Both now record
+  `failed`, with the time burned. Rendering is measured too, as `render_ms` beside a
+  `duration_ms` that still means retrieval alone, and reads record `chars` — a read's
+  cost tracks how much conversation it materialized, so latency without size was a
+  distribution missing its main explanatory variable.
+- **The watcher timed itself.** The pass heartbeat recorded what ingest did and never
+  how long it took: no pass wall time, no per-source cost, and no freshness number at
+  all. It now carries `pass_ms` / `pass_ms_max`, a per-source cumulative `ms` beside
+  each source's yield counters (a source polled 1.5M times for nothing and one polled
+  twice expensively were indistinguishable), and `lag_s` — how far behind real time
+  the newest ingested event is, sampled only on passes that actually imported.
+- **The web viewer has request telemetry.** It is a real read surface running the same
+  engine, and nothing had ever recorded its latency. Served requests now append to
+  `web-requests.jsonl` (path, status, size, wall time; no query strings). Deliberately
+  its own file — `retrieval-usage.jsonl` is the sampling frame evals are mined from,
+  and folding a human clicking around into "queries an agent asked" would bias them.
+
+- **Bulk import was quadratic: each imported file paid for every file before it.**
+  `import_path` runs the maintenance checkpoint per file, and two parts of that
+  pass cost O(archive size) — the `import_state` snapshot rewrites every row (with
+  two fsyncs), and the shard-rebalance sweep walks every thread file to count them.
+  Per file that is invisible; across a cold catch-up or a corpus build it is a
+  quadratic term, and it dominated: on a 9,146-conversation build the `import_state`
+  table reached 9,146 rows and 3.4 MB, rewritten in full 9,146 times. Ingest
+  throughput collapsed from ~89/s to ~8.5/s *within a single build*. Both are
+  cadence work whose staleness is already documented as safe, so the maintenance
+  form now runs them on a sweep interval (first call in a process always, then at
+  most every 30s) while the full form — pre-backup, pre-reindex — never defers.
+  A/B over 6,000 imports, one binary and one machine: 225s → 40s (5.6×), with
+  throughput decay across the build falling from 6.8× to 2.2× — what remains is
+  index growth, not a quadratic term. On the real CDR corpus, 3,000 conversations
+  ingest in 27.0s against 71.4s. The live watcher benefits too: it was rewriting
+  the whole snapshot every poll.
+- **A phase now reports whether it is slowing down, not just its mean rate.** A mean
+  is exactly the statistic that hides work whose per-item cost grows with what it
+  has already written — the import collapse above averaged out to a healthy-looking
+  15.8/s. Each phase keeps the throughput of its first and most recent 10s windows
+  and reports `slowdown` (their ratio) into the live state and the ledger; the CLI
+  prints it once it is material. Sampling rides the existing live-state refresh, so
+  the progress path pays nothing, and a phase shorter than two windows reports no
+  trend rather than a fabricated one. On the A/B above it read 6.23 against 1.56 —
+  the pathology is now a number the ledger carries, not something to notice by eye.
+
 - **Model colors in the viewer mean something now.** The per-model accent used to
   be a hash of the model's name, so `claude-opus-5` came up red while the other
   opuses were green and a thread's colors said nothing about what ran in it. Hue

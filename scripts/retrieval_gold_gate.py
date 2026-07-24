@@ -363,7 +363,10 @@ def _print_latency(stats, baseline) -> None:
           f"(rerank fired {stats.rerank_rate:.0%}, pool p50 {stats.pool_p50:.0f})", flush=True)
     for stage in speed.STAGES:
         st = stats.stages[stage]
-        print(f"    {stage:11s} p50 {st['p50']:6.0f}  p95 {st['p95']:6.0f}", flush=True)
+        # The vector arm's sub-stages nest inside semantic_ms rather than adding to
+        # it — indented so the column can't be read as four more summable arms.
+        lead = "      " if stage in speed.SEMANTIC_SUBSTAGES else "    "
+        print(f"{lead}{stage:11s} p50 {st['p50']:6.0f}  p95 {st['p95']:6.0f}", flush=True)
     for shape, m in stats.by_shape.items():
         print(f"    shape {shape:14s} n={int(m['n']):4d}  p50 {m['p50']:6.0f}  "
               f"p95 {m['p95']:6.0f}", flush=True)

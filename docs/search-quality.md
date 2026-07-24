@@ -158,8 +158,33 @@ a budgeted decision, not a free one.
 scores for quality (p50/p95/p99 by stage and query shape) and prints the joint
 report, so a `--set` tuning decision reads on both axes at once;
 `~/.thread/archive/latency-baseline.json` records the baseline, and the per-search
-usage ledger carries a per-stage breakdown (`fts_ms` / `semantic_ms` / `rerank_ms`)
-that makes any latency change self-diagnosing.
+usage ledger carries a per-stage breakdown that makes any latency change
+self-diagnosing.
+
+The breakdown is the three arm totals (`fts_ms` / `semantic_ms` / `rerank_ms`) plus,
+when the vector arm ran, its internal split: `embed_ms` (the query embedding),
+`scope_ms` (the id-mask query a scoped search runs before the KNN), `matrix_ms`
+(serving the KNN matrix, which builds the vector pack inline on a process's first
+query — flagged `matrix_built`), `knn_ms` (the matvec and top-k), and `hydrate_ms`
+(candidate ids back into hits). The sub-stages nest inside `semantic_ms` rather than
+adding to it. This split exists because the arm totals name an arm and nothing else,
+which is useless in the tail: a 28-second `semantic_ms` can be a cold model, a mask
+query over millions of ids, or a pack read off disk, and those have nothing in
+common but the bucket they were charged to.
+
+Two flags separate the cold regime from the warm one. `cold` marks a search that
+paid a model load inside the request, attributed to the arm that paid it
+(`embed_cold` / `rerank_cold`) — per-arm because a cross-encoder that is installed
+and never invoked is permanently "available and not loaded", and a single flag folded
+that in and read cold on every search forever. Against them, a `warm` ledger row
+records each `warm_models` pass — how long a process takes to become useful, split by
+stage — so a slow first search can be told apart from warming that is broken.
+
+`duration_ms` is retrieval only; `render_ms` beside it is the formatting that turns
+hits into the text the agent reads. Their sum is the tool call's wall clock, and
+keeping them apart distinguishes a slow *search* from a slow *answer*. Searches and
+reads that raise are recorded too, marked `failed`, with the time they burned —
+dropping them would bias every percentile toward the calls that happened to succeed.
 
 ## Beyond the gold files
 

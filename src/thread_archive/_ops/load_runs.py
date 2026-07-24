@@ -51,6 +51,11 @@ STATE_FILE = "load-state.json"
 # progress reporting into the bottleneck it is measuring.
 _STATE_WRITE_INTERVAL_S = 1.0
 
+# Throughput-window length for the first/last rate comparison. Long enough that a
+# window is a trend rather than a hiccup, short enough that a minute-long phase
+# still closes several.
+_RATE_WINDOW_S = 10.0
+
 
 def _enabled() -> bool:
     return os.environ.get("THREAD_ARCHIVE_LOAD_LOG", "1").strip().lower() not in (
@@ -96,7 +101,8 @@ class Phase:
     cheap and neither writes to disk — the owning :class:`LoadRun` throttles the
     live-state rewrite."""
 
-    __slots__ = ("name", "total", "done", "started", "elapsed", "detail", "counts", "_run")
+    __slots__ = ("name", "total", "done", "started", "elapsed", "detail", "counts",
+                 "rate_first", "rate_last", "_win_t", "_win_done", "_run")
 
     def __init__(self, run: "LoadRun", name: str, total: Optional[int]) -> None:
         self._run = run
@@ -107,11 +113,49 @@ class Phase:
         self.elapsed = 0.0
         self.detail: dict[str, float] = {}
         self.counts: dict[str, int] = {}
+        # Throughput of the first and most recent completed windows. A phase's
+        # mean rate hides the shape: work whose per-item cost grows with the
+        # corpus (a full-table rewrite, a directory walk) averages out to a
+        # healthy-looking number while the tail crawls. Keeping both ends turns
+        # "it felt slow near the end" into a ratio the ledger carries.
+        self.rate_first: Optional[float] = None
+        self.rate_last: Optional[float] = None
+        self._win_t = self.started
+        self._win_done = 0
 
     def advance(self, n: int = 1) -> None:
         """Move the progress counter by ``n`` and let the run refresh live state."""
         self.done += n
         self._run._touch()
+
+    def _sample(self) -> None:
+        """Close the current throughput window if it has run long enough.
+
+        Driven by the owning run's live-state refresh, so sampling costs the
+        progress path nothing. A phase shorter than one window records no rates,
+        which is the honest answer — there is no trend in a single sample."""
+        now = time.monotonic()
+        span = now - self._win_t
+        if span < _RATE_WINDOW_S:
+            return
+        moved = self.done - self._win_done
+        self._win_t, self._win_done = now, self.done
+        if moved <= 0:
+            return
+        rate = moved / span
+        if self.rate_first is None:
+            self.rate_first = rate  # the baseline; a trend needs a second window
+        else:
+            self.rate_last = rate
+
+    def slowdown(self) -> Optional[float]:
+        """How many times slower the latest window runs than the first, or None
+        before two windows have closed. Greater than ~1 means per-item cost is
+        growing as the phase runs — the signature of work that scales with what
+        the phase has already written."""
+        if not self.rate_first or not self.rate_last:
+            return None
+        return self.rate_first / self.rate_last
 
     def mark(self, name: str, seconds: float) -> None:
         """Accumulate ``seconds`` under ``name`` in this phase's sub-timing split."""
@@ -154,6 +198,10 @@ class Phase:
             d["rate_per_s"] = round(r, 2)
         if (e := self.eta_s()) is not None:
             d["eta_s"] = round(e, 1)
+        if (s := self.slowdown()) is not None:
+            d["rate_first_s"] = round(self.rate_first or 0.0, 2)
+            d["rate_last_s"] = round(self.rate_last or 0.0, 2)
+            d["slowdown"] = round(s, 2)
         if self.detail:
             d["detail_s"] = {k: round(v, 3) for k, v in self.detail.items()}
         if self.counts:
@@ -236,6 +284,8 @@ class LoadRun:
         if not force and now - self._last_write < _STATE_WRITE_INTERVAL_S:
             return
         self._last_write = now
+        if self.current is not None:
+            self.current._sample()  # ride the refresh; the progress path pays nothing
         snap = self.snapshot()
         if _enabled():
             try:

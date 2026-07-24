@@ -18,6 +18,13 @@ lives beside the other home-root ledgers (``capture-skips.jsonl``,
 ``validation-drift.jsonl``), outside ``truth/`` — it is operational telemetry,
 not archive data, and no backup/verify path depends on it.
 
+Three record kinds, distinguished by ``kind``: ``search`` and ``read`` for the two
+tools, and ``warm`` for one :func:`thread_archive._retrieval.warm_models` pass.
+The warm row is here rather than in its own file because it is the other half of
+the same latency story — the startup cost the model arms carry, recorded where it
+is paid on purpose, against the cold flags that mark a request unlucky enough to
+pay it inside the call.
+
 Append-only JSONL, advisory, fail-soft — a ledger write must never break the
 retrieval call it describes. ``THREAD_ARCHIVE_USAGE_LOG=0`` disables it. The
 file self-rotates: at ``max_bytes()`` the current file is renamed to
@@ -81,6 +88,8 @@ def record_search(
     hits: object,
     widened: bool,
     duration_ms: Optional[float] = None,
+    render_ms: Optional[float] = None,
+    failed: bool = False,
     timings: Optional[dict[str, Any]] = None,
 ) -> None:
     """Record one ``thread_search`` call: the query, the non-default parameters,
@@ -88,15 +97,29 @@ def record_search(
     pairs) for later join against reads, and the call's latency. ``hits`` is
     whatever the engine returned — result ids are extracted defensively, so a
     non-ranked output shape (count/linkable) records its parameters and count
-    without ids. ``duration_ms`` covers the retrieval work as the agent felt it
-    (including a widen retry), not ledger/render overhead.
+    without ids.
 
-    ``timings`` is the optional per-stage breakdown of that latency (the engine's
-    :class:`thread_archive._retrieval._probe.SearchProbe` fields — ``fts_ms``,
-    ``semantic_ms``, ``rerank_ms``, ``did_rerank``, ``pool_size``, and ``cold``
-    when the models loaded inside the call). Total latency alone can't see which
-    stage regressed; this makes the ledger self-diagnosing — still ids and timings
-    only, never content."""
+    Latency comes in two numbers because they answer different questions.
+    ``duration_ms`` is the retrieval work as the agent felt it (including a widen
+    retry); ``render_ms`` is the formatting that turns those hits into the text the
+    agent reads. Their sum is the tool call's wall-clock, and keeping them apart is
+    what distinguishes a slow *search* from a slow *answer* — a wide result set can
+    make the second large while the first is unchanged. ``render_ms`` is absent on a
+    search that never reached the render.
+
+    ``timings`` is the optional per-stage breakdown of ``duration_ms`` (the engine's
+    :class:`thread_archive._retrieval._probe.SearchProbe` record — the three arm
+    totals, the vector arm's sub-stages when it ran, ``did_rerank``, ``pool_size``,
+    and the cold/``matrix_built`` flags when they apply). Total latency alone can't
+    see which stage regressed; this makes the ledger self-diagnosing — still ids and
+    timings only, never content.
+
+    A search that raised is recorded too — the caller passes ``failed`` — with the
+    time it burned before it did: an error that takes a minute to arrive is latency
+    evidence, and dropping it would bias every percentile computed off this file
+    toward the searches that happened to succeed. Stated by the caller rather than
+    inferred from a missing ``render_ms``, so a surface that legitimately records no
+    render (anything serving hits as data) isn't read as a failure."""
     if not _enabled():
         return
     record: dict[str, Any] = {
@@ -109,6 +132,10 @@ def record_search(
         record["widened"] = True
     if duration_ms is not None:
         record["duration_ms"] = round(duration_ms, 1)
+    if render_ms is not None:
+        record["render_ms"] = round(render_ms, 1)
+    if failed:
+        record["failed"] = True
     if timings:
         record.update(timings)
     results: list[list[int | str]] = []
@@ -130,11 +157,23 @@ def record_read(
     *,
     params: Optional[dict[str, Any]] = None,
     duration_ms: Optional[float] = None,
+    chars: Optional[int] = None,
+    failed: bool = False,
 ) -> None:
     """Record one ``thread_read`` call: the id as the caller passed it (thread
     id, legacy integer id, or provider session uuid — searches log thread ids,
     so joins work for the id-from-search path) plus the non-default view
-    parameters and the read's latency."""
+    parameters and the read's latency.
+
+    ``chars`` is the size of what came back. A read's cost tracks how much
+    conversation it materialized far more than which thread it opened, so latency
+    without size is a distribution with its main explanatory variable missing — the
+    reason a median read is milliseconds and the worst is seconds is mostly that
+    they are not the same amount of work. Recorded as the denominator that makes the
+    two comparable.
+
+    ``failed`` marks a read that raised, for the same reason searches record it: the
+    slow failures are evidence, and dropping them flatters every percentile."""
     if not _enabled():
         return
     record: dict[str, Any] = {
@@ -146,4 +185,38 @@ def record_read(
         record.update({k: v for k, v in params.items() if v not in (None, False, 0)})
     if duration_ms is not None:
         record["duration_ms"] = round(duration_ms, 1)
+    if chars is not None:
+        record["chars"] = chars
+    if failed:
+        record["failed"] = True
+    _append(record)
+
+
+def record_warm(
+    *,
+    duration_ms: float,
+    stages: dict[str, float],
+    failed: Optional[list[str]] = None,
+) -> None:
+    """Record one :func:`thread_archive._retrieval.warm_models` pass — how long a
+    process took to become useful, split by stage (``embed_ms``, ``rerank_ms``,
+    ``graph_ms``, ``search_ms``).
+
+    A ``warm`` row is the counterpart to the cold flags on a search: those say a
+    request paid a load, this says what the load costs when it is paid where it
+    should be. Together they answer the question neither can alone — whether a
+    slow first search means warming is broken or merely that a query arrived
+    before it finished. ``failed`` names the stages that raised; a warm pass is
+    best-effort, so a partial one is normal and worth distinguishing from a
+    complete one that was simply slow."""
+    if not _enabled():
+        return
+    record: dict[str, Any] = {
+        "at": datetime.now(timezone.utc).isoformat(),
+        "kind": "warm",
+        "duration_ms": round(duration_ms, 1),
+    }
+    record.update({k: round(v, 1) for k, v in stages.items()})
+    if failed:
+        record["failed_stages"] = failed
     _append(record)

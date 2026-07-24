@@ -31,11 +31,12 @@ from __future__ import annotations
 import argparse
 import logging
 import os
+import sys
 import threading
 import time
 from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import Literal, Optional
+from typing import Any, Literal, Optional
 
 from mcp.server.fastmcp import FastMCP
 
@@ -407,54 +408,75 @@ def thread_search(
             rerank=rerank,
         )
 
-    # Latency covers the retrieval work as the caller felt it — both arms plus
-    # any widen retry — but not the catch-up ingest above or rendering below. The
-    # probe rides the same span, so its per-stage breakdown sums the widen retry
-    # too (the arms run again under the one installed probe).
+    # ``duration_ms`` covers the retrieval work as the caller felt it — both arms
+    # plus any widen retry — and ``render_ms`` the formatting that turns hits into
+    # the text the agent actually reads. Both are the agent's wait; only the
+    # background catch-up above is excluded, because it does not block. The probe
+    # rides the retrieval span, so its per-stage breakdown sums the widen retry too
+    # (the arms run again under the one installed probe).
+    # None, not [], so a search that raised records no ``n_hits`` at all rather
+    # than an empty one — "it failed" and "it found nothing" are different facts.
+    hits: Any = None
+    widened = False
+    probe = None
+    retrieval_ms: Optional[float] = None
+    render_ms: Optional[float] = None
     started = time.monotonic()
-    with _probe.install() as probe:
-        hits = _run(content_types)
+    # Log in a finally so a raising search still leaves its usage record — a search
+    # that failed slowly is the most important latency evidence there is, and it is
+    # exactly the one an exception would otherwise erase.
+    try:
+        with _probe.install() as probe:
+            hits = _run(content_types)
 
-        # One-shot scope widen: a default-scope search whose top hit contains no
-        # query term (or that found nothing) retries once over the whole transcript
-        # — the answer may live only in assistant text, a tool result, a tool's
-        # error, or the assistant's reasoning, and internalizing the retry saves the
-        # agent a round-trip the quality note would otherwise ask of it. Ranked/plain
-        # output only: structural shapes (browse/startswith/oldest/count/linkable)
-        # have no match signal to judge weakness by. Inside the probe span so the
-        # retry's stages are summed into the breakdown, as they are into the total.
-        widened = False
-        ranked_shape = bool((query or "").strip()) and startswith is None and sort is None and output is None
-        if content_type is None and ranked_shape and _default_scope_is_weak(hits, query):
-            wide_hits = _run(WIDENED_SEARCH_CONTENT_TYPES)
-            if _has_strong_hit(wide_hits, query):
-                hits, widened = wide_hits, True
+            # One-shot scope widen: a default-scope search whose top hit contains no
+            # query term (or that found nothing) retries once over the whole transcript
+            # — the answer may live only in assistant text, a tool result, a tool's
+            # error, or the assistant's reasoning, and internalizing the retry saves the
+            # agent a round-trip the quality note would otherwise ask of it. Ranked/plain
+            # output only: structural shapes (browse/startswith/oldest/count/linkable)
+            # have no match signal to judge weakness by. Inside the probe span so the
+            # retry's stages are summed into the breakdown, as they are into the total.
+            ranked_shape = bool((query or "").strip()) and startswith is None and sort is None and output is None
+            if content_type is None and ranked_shape and _default_scope_is_weak(hits, query):
+                wide_hits = _run(WIDENED_SEARCH_CONTENT_TYPES)
+                if _has_strong_hit(wide_hits, query):
+                    hits, widened = wide_hits, True
 
-    # Usage ledger (fail-soft, ids + timings only — see _retrieval.usage): the
-    # observed ground truth future retrieval evals are built from, now carrying a
-    # per-stage latency breakdown (which stage a slow search spent its time in).
-    _usage.record_search(
-        query,
-        params={
-            "limit": limit, "thread_id": thread_id, "topic_id": topic_id,
-            "content_type": content_type,
-            "exclude_content_type": exclude_content_type, "since": since,
-            "until": until, "tool_name": tool_name, "source": source,
-            "types": types, "agents": agents,
-            "startswith": startswith, "sort": sort, "group": group,
-            "output": output, "rerank": rerank,
-        },
-        hits=hits,
-        widened=widened,
-        duration_ms=(time.monotonic() - started) * 1000.0,
-        timings=probe.as_record(),
-    )
-
-    rendered = format_results(hits, query, output=output)
-    if widened:
-        rendered = ("note: no strong keyword match in the default scope (user/title/summary) — "
-                    "results below include assistant text, tool output, and reasoning\n" + rendered)
-    return _degradation_notices() + rendered
+        retrieval_ms = (time.monotonic() - started) * 1000.0
+        _t_render = time.monotonic()
+        rendered = format_results(hits, query, output=output)
+        if widened:
+            rendered = ("note: no strong keyword match in the default scope (user/title/summary) — "
+                        "results below include assistant text, tool output, and reasoning\n" + rendered)
+        render_ms = (time.monotonic() - _t_render) * 1000.0
+        return _degradation_notices() + rendered
+    finally:
+        # Usage ledger (fail-soft, ids + timings only — see _retrieval.usage): the
+        # observed ground truth future retrieval evals are built from, carrying a
+        # per-stage latency breakdown (which stage a slow search spent its time in).
+        _usage.record_search(
+            query,
+            params={
+                "limit": limit, "thread_id": thread_id, "topic_id": topic_id,
+                "content_type": content_type,
+                "exclude_content_type": exclude_content_type, "since": since,
+                "until": until, "tool_name": tool_name, "source": source,
+                "types": types, "agents": agents,
+                "startswith": startswith, "sort": sort, "group": group,
+                "output": output, "rerank": rerank,
+            },
+            hits=hits,
+            widened=widened,
+            # Retrieval alone, so the field keeps meaning what every recorded
+            # search so far has meant; render is its own number beside it. A search
+            # that raised never rendered, so its whole elapsed time is retrieval.
+            duration_ms=(retrieval_ms if retrieval_ms is not None
+                         else (time.monotonic() - started) * 1000.0),
+            render_ms=render_ms,
+            failed=sys.exc_info()[0] is not None,
+            timings=probe.as_record() if probe is not None else None,
+        )
 
 
 @mcp.tool()
@@ -550,8 +572,9 @@ def thread_read(
     # Log in a finally so a raising read still leaves its usage record —
     # a failed read is usage evidence too — with the latency it burned.
     started = time.monotonic()
+    out: object = None
     try:
-        return api.read_thread(
+        out = api.read_thread(
             thread_id,
             limit=limit,
             offset=offset,
@@ -564,6 +587,7 @@ def thread_read(
             around_event=around_event,
             context_turns=context_turns,
         )
+        return out
     finally:
         _usage.record_read(
             thread_id,
@@ -573,6 +597,8 @@ def thread_read(
                 "around_event": around_event, "tool_results": tool_results,
             },
             duration_ms=(time.monotonic() - started) * 1000.0,
+            chars=len(out) if isinstance(out, str) else None,
+            failed=sys.exc_info()[0] is not None,
         )
 
 

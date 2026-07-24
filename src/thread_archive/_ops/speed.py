@@ -42,15 +42,24 @@ from pathlib import Path
 from time import perf_counter
 from typing import Any, Callable, Optional
 
+from .._retrieval import _probe
+
 logger = logging.getLogger(__name__)
 
 LATENCY_RUNS_FILE = "latency-runs.jsonl"
 LATENCY_BASELINE_FILE = "latency-baseline.json"
 
 #: The stages the probe attributes wall-clock to. Total is measured outside the
-#: probe (the wall-clock the caller feels); the stages sum to less than it (the
+#: probe (the wall-clock the caller feels); the arm totals sum to less than it (the
 #: ranking arithmetic and enrichment are the unattributed remainder).
-STAGES = ("fts_ms", "semantic_ms", "rerank_ms")
+#:
+#: The vector arm's sub-stages ride along after the three arm totals, so a bench
+#: reports the same split production does — a regression that lands entirely inside
+#: ``semantic_ms`` still says which half of it moved. They nest inside their arm
+#: rather than adding to it, so only the first three are summable against the total.
+ARM_STAGES = ("fts_ms", "semantic_ms", "rerank_ms")
+SEMANTIC_SUBSTAGES = _probe.SEMANTIC_SUBSTAGES
+STAGES = ARM_STAGES + SEMANTIC_SUBSTAGES
 
 
 def percentile(xs: list[float], q: float) -> float:

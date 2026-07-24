@@ -38,6 +38,37 @@ def test_phase_eta_absent_without_total_or_progress():
     assert "eta_s" not in ph.snapshot()  # a total is what makes progress an ETA
 
 
+def test_phase_reports_throughput_decay_the_mean_rate_hides():
+    """Work whose per-item cost grows with what it has already written (a
+    full-table rewrite, a directory walk) keeps a healthy-looking mean while the
+    tail crawls. The first/last window comparison is what makes that visible."""
+    run = load_runs.LoadRun("import", DUMMY)
+    ph = load_runs.Phase(run, "import", total=None)
+
+    # One window's worth of fast progress, then one of slow — windows are closed
+    # by rewinding the window clock rather than sleeping.
+    ph.done = 1000
+    ph._win_t -= load_runs._RATE_WINDOW_S + 1
+    ph._sample()
+    ph.done += 100
+    ph._win_t -= load_runs._RATE_WINDOW_S + 1
+    ph._sample()
+
+    snap = ph.snapshot()
+    assert snap["slowdown"] == pytest.approx(10.0, rel=0.05)
+    assert snap["rate_first_s"] > snap["rate_last_s"]
+
+
+def test_phase_reports_no_decay_before_two_windows():
+    run = load_runs.LoadRun("import", DUMMY)
+    ph = load_runs.Phase(run, "import", total=None)
+    ph.done = 50
+    ph._win_t -= load_runs._RATE_WINDOW_S + 1
+    ph._sample()  # one window closed — a single sample is not a trend
+    assert ph.slowdown() is None
+    assert "slowdown" not in ph.snapshot()
+
+
 def test_phase_detail_and_counts_accumulate():
     run = load_runs.LoadRun("embed", DUMMY)
     ph = load_runs.Phase(run, "embed", total=None)

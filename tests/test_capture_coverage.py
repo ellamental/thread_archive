@@ -166,10 +166,13 @@ def test_poll_once_records_heartbeat_with_per_source_yield(archive_home):
     assert rec is not None
     assert rec["passes"] == 1
     src = rec["sources"]["stub-src"]
+    # ``ms`` is this source's cumulative poll time, beside its yield counters — a
+    # stub returns instantly, so only its presence is meaningful here.
     assert src == {
         "checked": 3, "items": 1, "events": 2,
-        "lines": 7, "parse_errors": 1, "errors": 0,
+        "lines": 7, "parse_errors": 1, "errors": 0, "ms": src["ms"],
     }
+    assert src["ms"] >= 0
 
 
 def test_heartbeat_accumulates_and_throttles(archive_home):

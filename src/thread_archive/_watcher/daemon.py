@@ -90,6 +90,13 @@ class Watcher:
         self._passes = 0
         self._source_totals: dict[str, dict[str, int]] = {}
         self._heartbeat_recorded_at: Optional[float] = None
+        # Pass wall time: the last one and the worst one since start. The worst is
+        # kept because the heartbeat is throttled to one write per 5 minutes — a
+        # last-pass-only number samples whichever pass happened to be running at
+        # write time and would miss the slow ones entirely.
+        self._pass_ms: Optional[float] = None
+        self._pass_ms_max: float = 0.0
+        self._lag_s: Optional[float] = None
 
     def _record_errors(self, errors: list[str]) -> None:
         """Surface poll errors into ``<home>/health.json`` (``watch_errors_last``),
@@ -115,11 +122,18 @@ class Watcher:
         except Exception:  # noqa: BLE001 — advisory; the loop must survive
             logger.exception("watch: could not record poll errors in health.json")
 
-    def _bump_source(self, name: str, r: WatchResult) -> None:
-        """Fold one watcher's poll result into the per-source running totals."""
+    def _bump_source(self, name: str, r: WatchResult, ms: float = 0.0) -> None:
+        """Fold one watcher's poll result — and the wall time it took — into the
+        per-source running totals.
+
+        ``ms`` is cumulative, like every other counter here, because the question it
+        answers is cumulative: which source the loop actually spends its time in. A
+        source polled 1.5M times for nothing and a source polled twice expensively
+        are indistinguishable by counts alone, and only one of them is worth
+        making cheaper."""
         t = self._source_totals.setdefault(name, {
             "checked": 0, "items": 0, "events": 0,
-            "lines": 0, "parse_errors": 0, "errors": 0,
+            "lines": 0, "parse_errors": 0, "errors": 0, "ms": 0,
         })
         t["checked"] += r.sources_checked
         t["items"] += r.items_imported
@@ -127,6 +141,42 @@ class Watcher:
         t["lines"] += r.lines_processed
         t["parse_errors"] += r.parse_errors
         t["errors"] += len(r.errors)
+        t["ms"] = int(t.get("ms", 0) + ms)
+
+    def _sample_lag(self) -> None:
+        """Sample ingest lag: how far behind real time the newest ingested event is.
+
+        Freshness is the ingest side's latency — an archive that indexes an hour late
+        is slow in the way that matters to an agent asking about the conversation it
+        just had, and no counter here can see it. Read off the last row the store
+        wrote (primary-key ordered, so it costs an index seek, not a scan of millions
+        of rows) and compared to now.
+
+        Only sampled on a pass that actually imported: on a quiet loop the newest
+        event simply ages, which is the machine being idle, not ingest falling behind.
+        A bulk backfill of old conversations inflates it for the same reason — the
+        number is the age of what was last written, and it is honest about being that.
+        Fail-soft; a lag sample must never take the poll loop down."""
+        try:
+            from datetime import datetime, timezone
+
+            from sqlalchemy import text as sa_text
+
+            from .._store import get_session
+
+            with get_session() as s:
+                newest = s.execute(
+                    sa_text("SELECT occurred_at FROM events ORDER BY id DESC LIMIT 1")
+                ).scalar()
+            if not newest:
+                return
+            if isinstance(newest, str):
+                newest = datetime.fromisoformat(newest)
+            if newest.tzinfo is None:
+                newest = newest.replace(tzinfo=timezone.utc)
+            self._lag_s = round((datetime.now(timezone.utc) - newest).total_seconds(), 1)
+        except Exception:  # noqa: BLE001 — advisory; the loop must survive
+            logger.debug("watch: could not sample ingest lag", exc_info=True)
 
     def _record_pass(self) -> None:
         """Surface ingest liveness into ``health.json`` (``watch_pass_last``),
@@ -134,10 +184,15 @@ class Watcher:
         errors alone leave silence ambiguous: a healthy quiet loop and a wedged
         (or dead) one look identical to ``thread_archive status``. This record's age
         disambiguates, and its per-source cumulative counters (checked / items /
-        events / lines / parse_errors / errors since process start) are the yield
+        events / lines / parse_errors / errors / ms since process start) are the yield
         accounting a capture audit reads — a source whose ``lines`` climb while
-        ``events`` stay flat is a parser gone blind. Fail-soft: advisory, must
-        never take the poll loop down."""
+        ``events`` stay flat is a parser gone blind, and one whose ``ms`` climbs while
+        its counts stay flat is the loop paying for nothing.
+
+        The pass timings (``pass_ms``, ``pass_ms_max``) and ``lag_s`` carry the
+        loop's own latency: how long a sweep takes, how bad the worst has been, and
+        how far behind real time the newest ingested event is. Fail-soft: advisory,
+        must never take the poll loop down."""
         # Clear-on-green: watch_errors_last is a failure-only record — nothing
         # retires it, so a prior run's error (it persists across restarts) keeps
         # painting `thread_archive status` red under a heartbeat that says the daemon
@@ -161,7 +216,7 @@ class Watcher:
 
             from .._ops.health import record_health
 
-            record_health("watch_pass_last", {
+            rec: dict = {
                 "pid": os.getpid(),
                 "started_at": self._started_at,
                 "passes": self._passes,
@@ -170,7 +225,13 @@ class Watcher:
                     for name, t in sorted(self._source_totals.items())
                     if any(t.values())
                 },
-            })
+            }
+            if self._pass_ms is not None:
+                rec["pass_ms"] = round(self._pass_ms, 1)
+                rec["pass_ms_max"] = round(self._pass_ms_max, 1)
+            if self._lag_s is not None:
+                rec["lag_s"] = self._lag_s
+            record_health("watch_pass_last", rec)
             self._heartbeat_recorded_at = now
         except Exception:  # noqa: BLE001 — advisory; the loop must survive
             logger.exception("watch: could not record pass heartbeat in health.json")
@@ -196,7 +257,9 @@ class Watcher:
                     phase.count("parse_errors", r.parse_errors)
 
         total = WatchResult()
+        pass_started = time.monotonic()
         for w in self.watchers:
+            source_started = time.monotonic()
             try:
                 if not w.is_available():
                     continue
@@ -207,9 +270,16 @@ class Watcher:
             except Exception as e:  # noqa: BLE001 — a broken source must not stop the loop
                 logger.warning("%s: poll error: %s", w.source_name, e)
                 r = WatchResult(errors=[f"{w.source_name}: poll error: {e}"])
-            self._bump_source(w.source_name, r)
+            # A source that raised still gets charged its time — one that is slow to
+            # fail is a real cost of the loop. (An unavailable source `continue`s
+            # above and is charged nothing, which is what it costs.)
+            self._bump_source(w.source_name, r, (time.monotonic() - source_started) * 1000.0)
             total = total + r
 
+        self._pass_ms = (time.monotonic() - pass_started) * 1000.0
+        self._pass_ms_max = max(self._pass_ms_max, self._pass_ms)
+        if total.events_created > 0:
+            self._sample_lag()
         self._passes += 1
         self._record_pass()
         if total.errors:

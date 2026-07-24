@@ -518,6 +518,11 @@ def _phase_line(ph: dict) -> str:
         bits.append(f"{done:,}" + (f"/{ph['total']:,}" if ph.get("total") else "") + " done")
     if (rate := ph.get("rate_per_s")):
         bits.append(f"{rate:,.1f}/s")
+    # Only worth printing once it means something: a phase whose tail runs
+    # materially slower than its head is paying a cost that grows with its own
+    # output, which the mean rate beside it hides.
+    if (slow := ph.get("slowdown")) and slow >= 1.5:
+        bits.append(f"slowing {slow:,.1f}x ({ph.get('rate_first_s')}/s -> {ph.get('rate_last_s')}/s)")
     if (detail := ph.get("detail_s")):
         bits.append("[" + " ".join(f"{k} {_fmt_duration(v)}" for k, v in detail.items()) + "]")
     if (counts := ph.get("counts")):

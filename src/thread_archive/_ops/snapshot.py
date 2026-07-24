@@ -8,6 +8,7 @@ materialized alongside, laid out as an ordinary archive home:
       index.db        # rebuilt from <dest>/truth — the cached, materialized projection
       vector-pack/    # the mmap vector cache, rebuilt lazily on first search
       snapshot.json   # provenance: when, from where, counts, embedding space, versions
+      load-runs.jsonl # how the build went: copy / index / verify phase timings
 
 Truth is the record; the index is a disposable cache rebuilt from it, so the
 snapshot survives an index-format change under future code (a ``reindex`` in
@@ -185,25 +186,41 @@ def snapshot(
             "(copied truth + its rebuilt index) — free disk space or choose another destination"
         )
 
-    # Drain-consistent copy: hold the truth-write mutex for the traversal so no
-    # append batch lands in (or rolls back out of) a file mid-copy. The rebalance
-    # lock keeps a shard sweep from moving files under the traversal. delete=False:
-    # a snapshot is additive into its own (fresh, or prior-snapshot) tree.
-    with _try_rebalance_lock():
-        with _truth_write_lock():
-            copy_result = mirror_dir(src_paths.truth_dir, dest_truth, delete=False)
+    # Building a snapshot is a load like any other, tracked in the home being
+    # built: on a large corpus it runs for tens of minutes, and the copy that
+    # opens it is the stretch with nothing else to watch. ``reindex`` opens its
+    # own run inside the index phase, so the live state there is its finer-grained
+    # one and the ledger ends up holding both records.
+    from .load_runs import load_run
 
-    # Materialize the index from the copied truth. reindex repoints the process
-    # engine at dest; restore the source pin afterward so a caller (or the next
-    # test) is left where it started.
-    try:
-        reindex_result = reindex(home=str(dest_path), vectors=vectors)
-        snap_verify = verify(home=str(dest_path)) if verify_result else None
-        dest_manifest_version = _read_manifest(dest_truth).get("version")
-        snapshot_id = corpus_fingerprint()
-    finally:
-        close()
-        open_archive(src_home)
+    with load_run("snapshot", home=dest_path, note=f"from {src_home}") as run:
+        # Drain-consistent copy: hold the truth-write mutex for the traversal so no
+        # append batch lands in (or rolls back out of) a file mid-copy. The rebalance
+        # lock keeps a shard sweep from moving files under the traversal. delete=False:
+        # a snapshot is additive into its own (fresh, or prior-snapshot) tree.
+        with run.phase("copy") as ph:
+            with _try_rebalance_lock():
+                with _truth_write_lock():
+                    copy_result = mirror_dir(src_paths.truth_dir, dest_truth, delete=False)
+            ph.count("files", int(copy_result.get("files_copied") or 0))
+            ph.count("bytes", int(copy_result.get("bytes_copied") or 0))
+
+        # Materialize the index from the copied truth. reindex repoints the process
+        # engine at dest; restore the source pin afterward so a caller (or the next
+        # test) is left where it started.
+        try:
+            with run.phase("index"):
+                reindex_result = reindex(home=str(dest_path), vectors=vectors)
+            if verify_result:
+                with run.phase("verify"):
+                    snap_verify = verify(home=str(dest_path))
+            else:
+                snap_verify = None
+            dest_manifest_version = _read_manifest(dest_truth).get("version")
+            snapshot_id = corpus_fingerprint()
+        finally:
+            close()
+            open_archive(src_home)
 
     manifest = {
         "kind": "thread-archive-snapshot",

@@ -36,9 +36,62 @@ def test_as_record_shape_and_cold_only_when_true() -> None:
     probe.did_rerank = True
     probe.pool_size = 198
     rec = probe.as_record()
+    # The vector arm ran, so its sub-stages ride along (all zero here — nothing
+    # recorded into them).
     assert rec == {"fts_ms": 12.3, "semantic_ms": 5.0, "rerank_ms": 100.1,
-                   "did_rerank": True, "pool_size": 198}
+                   "did_rerank": True, "pool_size": 198,
+                   "embed_ms": 0.0, "scope_ms": 0.0, "matrix_ms": 0.0,
+                   "knn_ms": 0.0, "hydrate_ms": 0.0}
     # cold is the exception (the cold-model tail), so it rides along only when set.
     assert "cold" not in rec
-    probe.cold = True
-    assert probe.as_record()["cold"] is True
+    probe.embed_cold = True
+    rec = probe.as_record()
+    assert rec["cold"] is True and rec["embed_cold"] is True
+    assert "rerank_cold" not in rec
+
+
+def test_substages_absent_when_the_vector_arm_sat_out() -> None:
+    # A structural/tool-scoped search never reaches the vector arm. Five explicit
+    # zeros would read as "measured and instant" rather than "did not happen".
+    probe = _probe.SearchProbe()
+    probe.fts_ms = 40.0
+    rec = probe.as_record()
+    assert rec["semantic_ms"] == 0.0
+    for name in _probe.SEMANTIC_SUBSTAGES:
+        assert name not in rec
+
+
+def test_cold_is_not_pinned_by_an_installed_but_idle_rerank_arm() -> None:
+    # The whole reason the flag is per-arm: a cross-encoder that is installed and
+    # never invoked must contribute no cold signal, or every search reads cold.
+    probe = _probe.SearchProbe()
+    assert probe.cold is False
+    probe.rerank_cold = True
+    assert probe.cold is True and probe.as_record()["rerank_cold"] is True
+
+
+def test_record_and_flag_are_noops_without_a_probe() -> None:
+    # Every record point sits on a hot path and must cost nothing when unmeasured.
+    assert _probe.current() is None
+    _probe.record("embed_ms", 0.0)  # must not raise
+    _probe.flag("matrix_built")
+
+
+def test_record_accumulates_and_flag_sets() -> None:
+    from time import perf_counter
+
+    with _probe.install() as probe:
+        _probe.record("embed_ms", perf_counter())
+        _probe.record("embed_ms", perf_counter())
+        _probe.flag("matrix_built")
+        # Accumulates rather than overwrites — a widen retry runs the arms twice
+        # under one probe and the caller felt both.
+        assert probe.embed_ms >= 0.0
+        assert probe.matrix_built is True
+    assert probe.as_record()["matrix_built"] is True
+
+
+def test_unknown_stage_never_breaks_a_search() -> None:
+    with _probe.install():
+        _probe.record("no_such_ms", 0.0)
+        _probe.flag("no_such_flag")

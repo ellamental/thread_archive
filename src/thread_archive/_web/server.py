@@ -24,6 +24,7 @@ from typing import TYPE_CHECKING, Optional
 from urllib.parse import parse_qs, unquote, urlparse
 
 from .. import _api as api
+from . import metrics as _metrics
 
 if TYPE_CHECKING:
     from .._retrieval._types import EventHit
@@ -702,6 +703,12 @@ class _Handler(BaseHTTPRequestHandler):
             self.wfile.write(body)
             return
         parsed = urlparse(self.path)
+        # Timed around the router, not inside it: `route` is the socket-free core
+        # the tests drive directly, and it should stay a pure function of its
+        # arguments. This is also the boundary where a failed request is still a
+        # request — the 500 path below is recorded with the time it burned, since a
+        # slow failure is the most interesting latency there is.
+        _started = time.monotonic()
         try:
             status, ctype, body, headers = route("GET", parsed.path, parse_qs(parsed.query))
         except Exception:  # noqa: BLE001 — isolate per request; never kill the loop
@@ -710,6 +717,12 @@ class _Handler(BaseHTTPRequestHandler):
             log.exception("web request failed: %s", parsed.path)
             status, ctype, headers = 500, "application/json", {}
             body = json.dumps({"error": "internal error"}).encode()
+        _metrics.record_request(
+            parsed.path,
+            status=status,
+            duration_ms=(time.monotonic() - _started) * 1000.0,
+            size=len(body),
+        )
         self.send_response(status)
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(body)))

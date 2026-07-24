@@ -15,6 +15,7 @@ import shutil
 import time
 from datetime import datetime
 from pathlib import Path
+from typing import Optional
 
 from sqlalchemy import select
 
@@ -61,13 +62,19 @@ _SWEEP_INTERVAL_S = 30.0
 _last_swept: dict[str, float] = {}
 
 
-def _due(d: Path, component: str, *, interval: float = _SWEEP_INTERVAL_S) -> bool:
+def _due(d: Path, component: str, *, interval: Optional[float] = None) -> bool:
     """Whether ``component``'s interval has elapsed for the truth dir ``d``, marking
     it run when it has. First call in a process is always due, so a one-shot import
-    still snapshots."""
+    still snapshots.
+
+    The interval is read per call rather than bound as a default, so the module
+    global is the single live knob (a benchmark comparing cadences, a test forcing
+    every call due) instead of a value frozen at import."""
     key = f"{d}\0{component}"
     now = time.monotonic()
-    if now - _last_swept.get(key, float("-inf")) < interval:
+    if now - _last_swept.get(key, float("-inf")) < (
+        _SWEEP_INTERVAL_S if interval is None else interval
+    ):
         return False
     _last_swept[key] = now
     return True

@@ -68,6 +68,38 @@ def test_snapshot_registers_its_dest_with_the_snapshot_role(seeded, tmp_path, mo
     assert entry["role"] == "snapshot"
 
 
+def test_snapshot_records_its_build_as_a_load_run(seeded, tmp_path):
+    """A snapshot of a real corpus runs for tens of minutes, so the build has to be
+    inspectable while it happens and afterwards — as a run in the home being built,
+    with the copy that opens it timed separately from the index it materializes."""
+    from thread_archive._ops.load_runs import read_runs
+
+    dest = tmp_path / "snap"
+    api.snapshot(str(dest), home=str(seeded))
+
+    runs = read_runs(home=dest)  # newest first
+    build = [r for r in runs if r.get("kind") == "snapshot"]
+    assert build, f"no snapshot run recorded in {dest}: {runs}"
+    rec = build[0]
+    assert rec["status"] == "ok"
+    phases = {p["name"]: p for p in rec["phases"]}
+    assert set(phases) == {"copy", "index", "verify"}
+    assert phases["copy"]["counts"]["files"] > 0
+    assert phases["copy"]["counts"]["bytes"] > 0
+    # reindex keeps its own, finer-grained record of the index phase.
+    assert any(r.get("kind") == "reindex" for r in runs), runs
+
+
+def test_snapshot_build_record_omits_the_verify_phase_when_not_verifying(seeded, tmp_path):
+    from thread_archive._ops.load_runs import read_runs
+
+    dest = tmp_path / "snap"
+    api.snapshot(str(dest), home=str(seeded), verify_result=False)
+
+    rec = [r for r in read_runs(home=dest) if r.get("kind") == "snapshot"][0]
+    assert [p["name"] for p in rec["phases"]] == ["copy", "index"]
+
+
 def test_snapshot_is_frozen_against_source_growth(seeded, tmp_path):
     """The isolation the ``until`` trick used to provide: a snapshot's corpus is
     fixed, so a thread added to the source after the snapshot never appears in

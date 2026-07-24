@@ -168,7 +168,17 @@ def warm_models(embedder=None, reranker=None) -> None:
     reuses (the vector matrix, the reranker's warmed inference path). ``embedder`` and
     ``reranker`` are the models to prime (default: the process ones). Fail-soft
     throughout: a missing ``[embeddings]`` extra, a load failure, or an unavailable store
-    just leaves search to cold-load lazily, exactly as before."""
+    just leaves search to cold-load lazily, exactly as before.
+
+    The pass times itself into the usage ledger. This is the startup cost the whole
+    function exists to move off the request path, and moving a cost is not the same
+    as removing it: until it is recorded, "how long after a restart is this server
+    actually useful" has no answer, and a model load that slowly regresses past an
+    MCP client's timeout looks identical to one that doesn't."""
+    started = perf_counter()
+    stage_ms: dict[str, float] = {}
+    failed: list[str] = []
+
     if embedder is None:
         from . import embed as _embed
 
@@ -178,11 +188,14 @@ def warm_models(embedder=None, reranker=None) -> None:
 
         reranker = _rerank.default()
 
-    for stage in (embedder, reranker):
+    for name, stage in (("embed", embedder), ("rerank", reranker)):
+        _t = perf_counter()
         try:
             stage.warm()
         except Exception:  # noqa: BLE001 — warming is best-effort; never raise into a caller
+            failed.append(name)
             logger.debug("warm_models: a model stage failed to preload", exc_info=True)
+        stage_ms[name + "_ms"] = (perf_counter() - _t) * 1000.0
 
     # Run one throwaway search end to end: it loads the vector matrix and runs a first
     # cross-encoder inference, both of which cache process-globally for the real queries.
@@ -195,11 +208,15 @@ def warm_models(embedder=None, reranker=None) -> None:
     # search (a stale graph refreshes in the background; the FIRST build is
     # the warm pass's job).
     if _embed_graph.coherence_gamma() > 0.0:
+        _t = perf_counter()
         try:
             _embed_graph.get(block=True)
         except Exception:  # noqa: BLE001 — warming is best-effort
+            failed.append("graph")
             logger.debug("warm_models: corpus graph build skipped", exc_info=True)
+        stage_ms["graph_ms"] = (perf_counter() - _t) * 1000.0
 
+    _t = perf_counter()
     try:
         from .. import _api as api
 
@@ -207,7 +224,20 @@ def warm_models(embedder=None, reranker=None) -> None:
         # force it past the gates (a strong-headed warm hit would otherwise skip it).
         api.search(_WARM_QUERY, limit=1, content_types=["user", "title", "summary"], rerank=True)
     except Exception:  # noqa: BLE001 — a store that isn't ready just warms the models, not the caches
+        failed.append("search")
         logger.debug("warm_models: dummy warm search skipped", exc_info=True)
+    stage_ms["search_ms"] = (perf_counter() - _t) * 1000.0
+
+    try:
+        from . import usage as _usage
+
+        _usage.record_warm(
+            duration_ms=(perf_counter() - started) * 1000.0,
+            stages=stage_ms,
+            failed=failed,
+        )
+    except Exception:  # noqa: BLE001 — telemetry is advisory; warming stays fail-soft
+        logger.debug("warm_models: could not record the warm pass", exc_info=True)
 
 
 def retrieve_pool(
@@ -426,18 +456,18 @@ def search(
     first event it anchors to) collapse to the better-placed row in every
     row-shaped output, grouped or not."""
     p = params or _DEFAULT_PARAMS
-    # Stage-timing probe (fail-soft, None when nobody installed one). ``cold`` is
-    # sampled at entry: an available-but-unloaded model means the first query to
-    # reach that arm pays the tens-of-seconds load inside the request — the
-    # cold-model tail the usage ledger exists to name.
+    # Stage-timing probe (fail-soft, None when nobody installed one). The embed
+    # arm's cold bit is sampled at entry: an available-but-unloaded embedder means
+    # this query pays the tens-of-seconds load inside the request — the cold-model
+    # tail the usage ledger exists to name. The cross-encoder's bit is NOT sampled
+    # here, because "available and not loaded" is its permanent resting state
+    # whenever re-rank is off; it is set at the re-rank itself, where a load would
+    # actually be paid (see :meth:`_probe.SearchProbe`).
     probe = _probe.current()
     if probe is not None:
         from . import embed as _embed_cold
-        from . import rerank as _rerank_cold
 
-        probe.cold = (_embed_cold.is_available() and not _embed_cold.is_loaded()) or (
-            _rerank_cold.is_available() and not _rerank_cold.is_loaded()
-        )
+        probe.embed_cold = _embed_cold.is_available() and not _embed_cold.is_loaded()
     since_r = resolve_relative_date(since) if since else None
     until_r = resolve_relative_date(until) if until else None
 
@@ -586,6 +616,15 @@ def search(
             # doc head alone — a hit whose relevant text sits mid-message, or whose
             # answer sits far past an incidental query term, would otherwise be
             # scored on its intro.
+            # Sampled here rather than at entry: this is the point past which a
+            # cross-encoder load is definitely paid, so the flag names a real cost
+            # instead of an installed-but-idle model.
+            if probe is not None:
+                from . import rerank as _rerank_cold
+
+                probe.rerank_cold = (
+                    _rerank_cold.is_available() and not _rerank_cold.is_loaded()
+                )
             _t0 = perf_counter()
             reordered = reranker.rerank(
                 query, head,

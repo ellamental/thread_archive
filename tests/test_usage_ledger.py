@@ -96,6 +96,62 @@ def test_mcp_search_records_stage_timings(archive_home) -> None:
     assert rec["duration_ms"] >= rec["fts_ms"]  # total covers the stage it contains
 
 
+def test_render_is_measured_beside_retrieval_not_inside_it(archive_home) -> None:
+    f = archive_home / "sess.jsonl"
+    _write_cc(f, [USER, ASSISTANT])
+    ta.import_path(f)
+
+    thread_search("hello ledger", limit=5)
+    (rec,) = _records(archive_home)
+    # Formatting hits into the text the agent reads is part of the agent's wait,
+    # so it is recorded — but kept out of duration_ms, which keeps meaning
+    # retrieval alone.
+    assert "render_ms" in rec and rec["render_ms"] >= 0.0
+    assert "failed" not in rec
+
+
+def test_a_raising_search_is_still_recorded_with_the_time_it_burned(archive_home) -> None:
+    import pytest
+
+    f = archive_home / "sess.jsonl"
+    _write_cc(f, [USER, ASSISTANT])
+    ta.import_path(f)
+
+    # A real engine rejection through the front door: 'newest' is not a sort the
+    # engine offers, and it raises from inside the timed span.
+    with pytest.raises(ValueError):
+        thread_search("hello ledger", limit=5, sort="newest")
+    (rec,) = _records(archive_home)
+    # The failure is the point: dropping slow errors biases every percentile
+    # computed off this file toward the searches that happened to succeed.
+    assert rec["failed"] is True
+    assert rec["duration_ms"] >= 0.0
+    assert "render_ms" not in rec  # it never reached the render
+
+
+def test_read_records_response_size(archive_home) -> None:
+    f = archive_home / "sess.jsonl"
+    _write_cc(f, [USER, ASSISTANT])
+    ta.import_path(f)
+
+    threads = ta.search("hello ledger", limit=1)
+    thread_read(threads[0]["thread_id"])
+    rec = [r for r in _records(archive_home) if r["kind"] == "read"][-1]
+    # Latency without size is a distribution missing its main explanatory
+    # variable — a read's cost tracks how much it materialized.
+    assert rec["chars"] > 0
+
+
+def test_record_warm_names_the_startup_cost(archive_home) -> None:
+    usage.record_warm(duration_ms=21000.0,
+                      stages={"embed_ms": 20000.0, "rerank_ms": 400.0, "search_ms": 600.0},
+                      failed=["graph"])
+    (rec,) = _records(archive_home)
+    assert rec["kind"] == "warm"
+    assert rec["duration_ms"] == 21000.0 and rec["embed_ms"] == 20000.0
+    assert rec["failed_stages"] == ["graph"]
+
+
 def test_usage_log_disabled_by_env(archive_home, monkeypatch) -> None:
     monkeypatch.setenv("THREAD_ARCHIVE_USAGE_LOG", "0")
     usage.record_search("q", params={}, hits=[], widened=False)

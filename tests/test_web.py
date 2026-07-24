@@ -746,6 +746,56 @@ def test_serve_in_thread_cohosts(archive_home):
         httpd.server_close()
 
 
+@pytest.mark.integration
+def test_served_requests_land_in_the_web_ledger(archive_home):
+    # The viewer runs the same engine the MCP tools do; until this file existed,
+    # a page that took twenty seconds and one that took two hundred milliseconds
+    # were indistinguishable from the outside.
+    import urllib.request
+
+    from thread_archive._web import metrics, serve_in_thread
+
+    _seed(archive_home)
+    ta.open_archive(str(archive_home))
+    httpd = serve_in_thread(host="127.0.0.1", port=0)
+    try:
+        port = httpd.server_address[1]
+        with urllib.request.urlopen(f"http://127.0.0.1:{port}/api/status", timeout=5) as r:
+            r.read()
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+
+    rows = [
+        json.loads(ln)
+        for ln in (archive_home / metrics.LEDGER_FILE).read_text(encoding="utf-8").splitlines()
+        if ln.strip()
+    ]
+    rec = [r for r in rows if r["path"] == "/api/status"][-1]
+    assert rec["status"] == 200
+    assert rec["duration_ms"] >= 0.0 and rec["size"] > 0
+    # Endpoint and outcome only — the ledger has no reason to accumulate whatever
+    # anyone typed into the search box.
+    assert "query" not in rec and "q" not in rec
+
+
+def test_web_metrics_disabled_by_env(archive_home, monkeypatch):
+    from thread_archive._web import metrics
+
+    monkeypatch.setenv("THREAD_ARCHIVE_WEB_METRICS", "0")
+    metrics.record_request("/api/status", status=200, duration_ms=1.0, size=10)
+    assert not (archive_home / metrics.LEDGER_FILE).exists()
+
+
+def test_web_metrics_write_failure_is_fail_soft(archive_home):
+    # A metrics write must never break the request it describes: the ledger path
+    # is a directory here, so the append raises for real inside the product.
+    from thread_archive._web import metrics
+
+    (archive_home / metrics.LEDGER_FILE).mkdir()
+    metrics.record_request("/api/status", status=200, duration_ms=1.0, size=10)
+
+
 def test_non_loopback_bind_refused(monkeypatch):
     # the viewer is unauthenticated full read; a stray --web-host must not expose it
     from thread_archive._web import serve_in_thread
