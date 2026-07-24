@@ -101,6 +101,52 @@ def test_length_batched_is_stable_within_a_window() -> None:
     assert [r[0] for r in out] == ["c", "a", "b"]
 
 
+def test_drain_bills_the_cold_model_load_separately(archive_home) -> None:
+    """A lazily-loaded model would otherwise cold-load inside the first embed call
+    and be billed to ``encode`` — on a short pass, most of the reported encode."""
+    import json
+
+    from thread_archive import _api as ta
+    from thread_archive._ops import load_runs
+
+    class _LazyEmbedder(_OrderRecordingEmbedder):
+        def __init__(self) -> None:
+            super().__init__()
+            self.loaded = False
+            self.warms = 0
+
+        def is_loaded(self) -> bool:
+            return self.loaded
+
+        def warm(self) -> bool:
+            self.warms += 1
+            self.loaded = True
+            return True
+
+    f = archive_home / "sess.jsonl"
+    f.write_text(json.dumps(
+        {"type": "user", "uuid": "u0", "timestamp": "2026-01-01T10:00:00Z", "cwd": "/p",
+         "message": {"role": "user", "content": "a question worth embedding"}}) + "\n",
+        encoding="utf-8")
+    ta.import_path(f)
+
+    emb = _LazyEmbedder()
+    run = load_runs.LoadRun("embed", archive_home)
+    with run.phase("embed") as ph:
+        assert vectors.index_events_local(embedder=emb, phase=ph) == 1
+    assert emb.warms == 1                              # warmed once, up front…
+    assert "model_load" in ph.snapshot()["detail_s"]   # …and billed to its own line
+
+    # An already-loaded model costs no warm and gets no model_load line.
+    emb2 = _LazyEmbedder()
+    emb2.loaded = True
+    run2 = load_runs.LoadRun("embed", archive_home)
+    with run2.phase("embed") as ph2:
+        vectors.index_events_local(embedder=emb2, phase=ph2, rebuild=True)
+    assert emb2.warms == 0
+    assert "model_load" not in ph2.snapshot()["detail_s"]
+
+
 def test_drain_length_sorts_within_window(archive_home) -> None:
     """The embed drain reorders pending docs by length within a recency window so
     each encode batch is length-homogeneous (near-zero pad waste), while a whole

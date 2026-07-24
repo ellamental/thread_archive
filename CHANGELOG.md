@@ -53,6 +53,11 @@
   (`_SORT_WINDOW` docs), not global: the drain still walks newest-window-first, so
   recent-thread semantic recall stays current and a large pass writes the newest
   docs durably before the oldest. `sort_window=0` restores the natural order.
+- **The embed model's cold load was billed to `encode`.** The model loads lazily
+  inside the first `embed_documents` call, so the tens of seconds it takes landed
+  inside the first batch's `encode` timing — on a short pass that was most of the
+  reported encode, and it inflated encode's share of the embed. The drain now warms
+  the model up front under its own `model_load` sub-timing.
 
 - **Stats token and cost totals were over-counted.** Claude Code repeats one
   response's full usage object across every transcript row that response produced,

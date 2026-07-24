@@ -575,6 +575,17 @@ def index_events_local(
     # (the embedder pads to the batch's longest text): near-zero pad waste, newest
     # window still drained and durably written first.
     pending = _length_batched(pending, sort_window)
+    # The model loads lazily inside the first embed call, so a cold load — tens of
+    # seconds — would land inside the first ``encode`` and inflate it, which on a
+    # short pass is most of the reported encode. Load it here under its own
+    # sub-timing so the split stays honest. Duck-typed: an embedder stand-in need
+    # only implement ``embed_documents``, and ``warm`` is idempotent.
+    if pending:
+        warm = getattr(embedder, "warm", None)
+        is_loaded = getattr(embedder, "is_loaded", None)
+        if warm is not None and not (is_loaded and is_loaded()):
+            with phase.timed("model_load"):
+                warm()
 
     total = 0
     batch: list[tuple[int, str, list[str]]] = []
