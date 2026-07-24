@@ -49,6 +49,18 @@ _REGISTER_INTERVAL_S = 300.0
 _last_registered: dict[str, float] = {}
 
 
+def _throttled(key: str, now: float) -> bool:
+    """Whether ``key`` was registered recently enough to skip re-registering.
+
+    A key with no memo entry is *never registered*, not "registered at time 0.0":
+    ``time.monotonic``'s epoch is unspecified, and on Linux it counts from boot, so
+    a 0.0 default reads as "registered ``now`` seconds ago" — on a machine up for
+    less than the interval that is inside the window, and every FIRST registration
+    is silently swallowed until the box has been up longer than the interval."""
+    last = _last_registered.get(key)
+    return last is not None and now - last < _REGISTER_INTERVAL_S
+
+
 def _enabled() -> bool:
     return os.environ.get("THREAD_ARCHIVE_REGISTRY", "1").strip().lower() not in _OFF
 
@@ -149,7 +161,7 @@ def register(home: Path, *, label: Optional[str] = None, force: bool = False) ->
         return
     key = str(home)
     now = time.monotonic()
-    if not force and now - _last_registered.get(key, 0.0) < _REGISTER_INTERVAL_S:
+    if not force and _throttled(key, now):
         return
     _last_registered[key] = now
     import fcntl

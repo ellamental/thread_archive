@@ -187,9 +187,37 @@ export async function mockApi(page: Page): Promise<string[]> {
         backup_same_device: false,
       })
     }
+    if (path === '/api/archives') {
+      // The registry the health view lists beside /api/status — one entry, the
+      // home that /api/status reports, so the two agree about which archive is live.
+      return json(route, {
+        archives: [
+          {
+            id: 'browser01',
+            home: '/tmp/browser-archive',
+            label: 'browser-archive',
+            first_seen: healthNow,
+            last_opened: healthNow,
+            exists: true,
+            active: true,
+            index_bytes: 4096,
+            load: {},
+            runs: [],
+          },
+        ],
+      })
+    }
     if (path === '/api/sources') return json(route, { sources: [{ source: 'claude-code', threads: 1 }] })
     if (path === '/api/thread-types') return json(route, { types: [{ thread_type: 'conversation', threads: 1 }] })
-    if (path === '/api/threads') return json(route, { threads: [threadListItem] })
+    if (path === '/api/threads') {
+      return json(route, {
+        threads: [threadListItem],
+        total: 1,
+        page: 1,
+        page_size: Number(url.searchParams.get('limit') ?? 150),
+        pages: 1,
+      })
+    }
     if (path === '/api/search') {
       const query = url.searchParams.get('q') ?? ''
       return json(route, {

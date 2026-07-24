@@ -54,6 +54,49 @@ test('home exposes recent conversations and the global search shortcut', async (
   expect(errors).toEqual([])
 })
 
+test('browse reaches every thread through URL-backed pagination', async ({ page }) => {
+  const errors = monitorPage(page)
+  const unhandled = await mockApi(page)
+  const threads = Array.from({ length: 101 }, (_, i) => ({
+    id: `${THREAD_ID.slice(0, -3)}${String(i + 1).padStart(3, '0')}`,
+    title: `Paginated Thread ${i + 1}`,
+    source: 'claude-code',
+    first_user_message: null,
+    thread_type: 'conversation',
+    updated_at: '2026-07-20T12:00:00Z',
+  }))
+  await page.route('**/api/threads?*', async (route) => {
+    const url = new URL(route.request().url())
+    const current = Number(url.searchParams.get('page') ?? 1)
+    const pageSize = Number(url.searchParams.get('limit') ?? 100)
+    await route.fulfill({
+      contentType: 'application/json',
+      body: JSON.stringify({
+        threads: threads.slice((current - 1) * pageSize, current * pageSize),
+        total: threads.length,
+        page: current,
+        page_size: pageSize,
+        pages: Math.ceil(threads.length / pageSize),
+      }),
+    })
+  })
+
+  await page.goto('/threads')
+  const topPager = page.getByRole('navigation', { name: 'thread pages top' })
+  const browse = page.locator('main .wrap')
+  await expect(topPager).toContainText('Page 1 of 2')
+  await expect(browse.getByText('Paginated Thread 1', { exact: true })).toBeVisible()
+  await expect(browse.getByText('Paginated Thread 101', { exact: true })).toHaveCount(0)
+
+  await topPager.getByRole('button', { name: 'Next' }).click()
+  await expect(page).toHaveURL(/\/threads\?page=2$/)
+  await expect(browse.getByText('Paginated Thread 101', { exact: true })).toBeVisible()
+  await expect(browse.getByText('Paginated Thread 1', { exact: true })).toHaveCount(0)
+
+  expect(unhandled).toEqual([])
+  expect(errors).toEqual([])
+})
+
 test('thread reader find and detail controls work in the browser', async ({ page }) => {
   const errors = monitorPage(page)
   const unhandled = await mockApi(page)

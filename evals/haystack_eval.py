@@ -14,6 +14,9 @@ Each built corpus home is **cached** (keyed by content) and reused across runs, 
 a re-run — or the ``--rerank`` pass over an already-embedded ``--vectors`` corpus —
 skips ingest and embedding entirely (rerank is query-time, so it needs no rebuild).
 ``--rebuild`` forces a fresh build; ``--fresh`` uses throwaway homes with no reuse.
+These homes are workspace rather than archives — hundreds per run — so they stay out
+of the registry. ``haystack_corpus.py`` builds the complementary shape: the whole
+dataset as one registered ``benchmark`` home, to operate on rather than to score.
 
 Two datasets, one loop (``--dataset``):
 

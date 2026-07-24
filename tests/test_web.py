@@ -304,9 +304,47 @@ def test_threads_endpoint(archive_home):
     status, _, payload = _get("/api/threads")
     assert status == 200
     assert len(payload["threads"]) == 1
+    assert payload["total"] == 1
+    assert payload["page"] == 1
+    assert payload["page_size"] == 100
+    assert payload["pages"] == 1
     t = payload["threads"][0]
     assert t["id"] and t["title"] and "updated_at" in t
     assert t["first_user_message"] == "hello webview"
+
+
+def test_threads_endpoint_paginates_every_matching_thread(archive_home):
+    from datetime import datetime, timedelta, timezone
+
+    from thread_archive._store import Thread, get_session
+
+    ta.open_archive(str(archive_home))
+    at = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    with get_session() as s:
+        for i in range(5):
+            s.add(
+                Thread(
+                    name=f"page-{i}",
+                    title=f"page thread {i}",
+                    thread_type="conversation",
+                    source="demo-harness",
+                    source_id=f"page-{i}",
+                    inserted_at=at + timedelta(days=i),
+                    updated_at=at + timedelta(days=i),
+                )
+            )
+        s.commit()
+
+    pages = [_get("/api/threads", limit=2, page=n)[2] for n in (1, 2, 3)]
+    assert [(p["page"], p["page_size"], p["total"], p["pages"]) for p in pages] == [
+        (1, 2, 5, 3),
+        (2, 2, 5, 3),
+        (3, 2, 5, 3),
+    ]
+    listed = [thread["id"] for page in pages for thread in page["threads"]]
+    assert len(listed) == 5
+    assert len(set(listed)) == 5
+    assert [len(page["threads"]) for page in pages] == [2, 2, 1]
 
 
 def test_threads_first_user_message_preview_is_trimmed_and_capped(archive_home):

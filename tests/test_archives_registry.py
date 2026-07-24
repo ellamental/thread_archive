@@ -69,6 +69,24 @@ def test_forget_removes_only_the_named_home(registry):
     assert archives.forget(Path("/a")) is False  # already gone
 
 
+def test_throttle_never_swallows_a_first_registration(registry):
+    """The throttle skips a *re*-registration, never the first one.
+
+    ``time.monotonic``'s epoch is unspecified — on Linux it counts from boot, so a
+    just-booted box reports single-digit seconds. A throttle that reads "no entry"
+    as "registered at 0.0" then drops every first registration until the box has
+    been up longer than the interval. Asserted at three seconds of uptime, which a
+    long-running dev machine can never reach on its own clock."""
+    assert archives._throttled("/data/known", 3.0) is False  # never seen → register
+    archives.register(Path("/data/known"))  # unforced, as the real open path calls it
+    assert [e["home"] for e in archives.read_registry()] == ["/data/known"]
+
+    # Only a real prior registration throttles, and only within the interval.
+    archives._last_registered["/data/known"] = 1.0
+    assert archives._throttled("/data/known", 3.0) is True
+    assert archives._throttled("/data/known", 1.0 + archives._REGISTER_INTERVAL_S) is False
+
+
 def test_disabled_registry_writes_nothing(tmp_path, monkeypatch):
     path = tmp_path / "archives.json"
     monkeypatch.setenv("THREAD_ARCHIVE_REGISTRY", "0")

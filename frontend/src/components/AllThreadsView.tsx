@@ -1,10 +1,8 @@
 import { useEffect, useMemo, useState } from 'react'
 import { Link, useSearchParams } from 'react-router-dom'
-import { api, type ThreadListItem, type ThreadTypeCount } from '../api'
+import { api, type ThreadPage, type ThreadTypeCount } from '../api'
 
-// One page of the newest threads — the server clamps /api/threads to 500, so
-// asking for more silently caps there anyway.
-export const ALL_THREADS_LIMIT = 500
+export const ALL_THREADS_PAGE_SIZE = 100
 
 function fmtDate(iso: string | null): string {
   if (!iso) return ''
@@ -21,7 +19,7 @@ function fmtDate(iso: string | null): string {
 export function AllThreadsView() {
   const [params, setParams] = useSearchParams()
   const [types, setTypes] = useState<ThreadTypeCount[] | null>(null)
-  const [threads, setThreads] = useState<ThreadListItem[] | null>(null)
+  const [result, setResult] = useState<ThreadPage | null>(null)
   const [err, setErr] = useState<string | null>(null)
   const [filter, setFilter] = useState('')
 
@@ -29,6 +27,8 @@ export function AllThreadsView() {
     () => new Set((params.get('hide') ?? '').split(',').filter(Boolean)),
     [params],
   )
+  const parsedPage = Number(params.get('page') ?? '1')
+  const page = Number.isInteger(parsedPage) && parsedPage > 0 ? parsedPage : 1
 
   useEffect(() => {
     api.threadTypes().then(setTypes).catch((e) => setErr(String(e.message ?? e)))
@@ -45,24 +45,106 @@ export function AllThreadsView() {
   useEffect(() => {
     if (!types) return
     if (visible.length === 0) {
-      setThreads([])
+      setResult({
+        threads: [],
+        total: 0,
+        page: 1,
+        page_size: ALL_THREADS_PAGE_SIZE,
+        pages: 0,
+      })
       return
     }
     let live = true
+    setResult(null)
+    setErr(null)
     api
-      .threads({ types: visible, limit: ALL_THREADS_LIMIT, q: filter.trim() || undefined })
-      .then((t) => live && setThreads(t))
+      .threadPage({
+        types: visible,
+        limit: ALL_THREADS_PAGE_SIZE,
+        page,
+        q: filter.trim() || undefined,
+      })
+      .then((data) => {
+        if (!live) return
+        if (data.pages > 0 && page > data.pages) {
+          const next = new URLSearchParams(params)
+          if (data.pages === 1) next.delete('page')
+          else next.set('page', String(data.pages))
+          setParams(next, { replace: true })
+          return
+        }
+        setResult(data)
+      })
       .catch((e) => live && setErr(String(e.message ?? e)))
     return () => {
       live = false
     }
-  }, [types, visible, filter])
+  }, [types, visible, filter, page, params, setParams])
 
   function toggle(t: string) {
     const next = new Set(hidden)
     if (next.has(t)) next.delete(t)
     else next.add(t)
-    setParams(next.size ? { hide: [...next].sort().join(',') } : {}, { replace: true })
+    const nextParams = new URLSearchParams(params)
+    if (next.size) nextParams.set('hide', [...next].sort().join(','))
+    else nextParams.delete('hide')
+    nextParams.delete('page')
+    setParams(nextParams, { replace: true })
+  }
+
+  function goToPage(nextPage: number) {
+    const next = new URLSearchParams(params)
+    if (nextPage <= 1) next.delete('page')
+    else next.set('page', String(nextPage))
+    setParams(next)
+  }
+
+  function updateFilter(value: string) {
+    setFilter(value)
+    if (page !== 1) {
+      const next = new URLSearchParams(params)
+      next.delete('page')
+      setParams(next, { replace: true })
+    }
+  }
+
+  function pager(position: 'top' | 'bottom') {
+    if (!result || result.pages <= 1) return null
+    return (
+      <nav className="thread-pagination" aria-label={`thread pages ${position}`}>
+        <button
+          className="toolbar-btn"
+          disabled={result.page === 1}
+          onClick={() => goToPage(1)}
+        >
+          First
+        </button>
+        <button
+          className="toolbar-btn"
+          disabled={result.page === 1}
+          onClick={() => goToPage(result.page - 1)}
+        >
+          Previous
+        </button>
+        <span>
+          Page {result.page.toLocaleString()} of {result.pages.toLocaleString()}
+        </span>
+        <button
+          className="toolbar-btn"
+          disabled={result.page === result.pages}
+          onClick={() => goToPage(result.page + 1)}
+        >
+          Next
+        </button>
+        <button
+          className="toolbar-btn"
+          disabled={result.page === result.pages}
+          onClick={() => goToPage(result.pages)}
+        >
+          Last
+        </button>
+      </nav>
+    )
   }
 
   if (err) return <div className="empty">threads unavailable: {err}</div>
@@ -90,19 +172,20 @@ export function AllThreadsView() {
           type="search"
           placeholder="filter by title…"
           value={filter}
-          onChange={(e) => setFilter(e.target.value)}
+          onChange={(e) => updateFilter(e.target.value)}
           autoComplete="off"
         />
       </div>
-      {threads === null && <div className="empty">loading…</div>}
-      {threads !== null && (
+      {result === null && <div className="empty">loading…</div>}
+      {result !== null && (
         <>
           <div className="submeta">
-            {threads.length >= ALL_THREADS_LIMIT
-              ? `newest ${ALL_THREADS_LIMIT.toLocaleString()} shown — hide types or filter to reach older threads`
-              : `${threads.length.toLocaleString()} thread${threads.length === 1 ? '' : 's'}`}
+            {result.total.toLocaleString()} thread{result.total === 1 ? '' : 's'}
+            {result.pages > 0 &&
+              ` · page ${result.page.toLocaleString()} of ${result.pages.toLocaleString()}`}
           </div>
-          {threads.map((t) => (
+          {pager('top')}
+          {result.threads.map((t) => (
             <Link
               className="hit"
               key={t.id}
@@ -118,7 +201,8 @@ export function AllThreadsView() {
               </div>
             </Link>
           ))}
-          {threads.length === 0 && (
+          {pager('bottom')}
+          {result.threads.length === 0 && (
             <div className="empty">
               {visible.length === 0 ? 'every type is hidden' : 'no matches'}
             </div>

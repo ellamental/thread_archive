@@ -380,7 +380,13 @@ def _list_sources() -> list[dict]:
 _DEFAULT_HIDDEN_TYPES = ("topic", "system")
 
 
-def _list_threads(*, limit: int, q: Optional[str], types: Optional[list[str]] = None) -> list[dict]:
+def _list_threads(
+    *,
+    limit: int,
+    page: int,
+    q: Optional[str],
+    types: Optional[list[str]] = None,
+) -> dict:
     """Recent threads by last *activity* — the newest event's ``occurred_at``,
     falling back to the row's ``updated_at`` for event-less threads. The raw
     ``updated_at`` column can't mean "recently active" here: it is the truth
@@ -389,7 +395,9 @@ def _list_threads(*, limit: int, q: Optional[str], types: Optional[list[str]] = 
     ``types`` given, exactly those ``thread_type`` values are listed; without
     it, topics and system threads (subagent runs) are hidden — the sidebar's
     default. Archived threads never list; ``q`` filters on title/name
-    substring. Each row also carries a compact preview of its first non-empty
+    substring. Results are paginated rather than silently capped: the response
+    carries the matching total and enough page metadata for every row to remain
+    reachable. Each row also carries a compact preview of its first non-empty
     user message."""
     from sqlalchemy import DateTime, func, select
 
@@ -421,22 +429,31 @@ def _list_threads(*, limit: int, q: Optional[str], types: Optional[list[str]] = 
         .scalar_subquery()
         .label("first_user_message")
     )
+    filters = [Thread.archived.is_(False)]
+    if types:
+        filters.append(Thread.thread_type.in_(types))
+    else:
+        filters.append(Thread.thread_type.not_in(_DEFAULT_HIDDEN_TYPES))
+    if q:
+        like = f"%{q}%"
+        filters.append(Thread.title.ilike(like) | Thread.name.ilike(like))
+
     stmt = (
         select(Thread.id, Thread.title, Thread.name, Thread.source,
                Thread.thread_type, last_active_at, first_user_message)
-        .where(Thread.archived.is_(False))
+        .where(*filters)
+        .order_by(last_active_at.desc(), Thread.id.desc())
+        .offset((page - 1) * limit)
+        .limit(limit)
     )
-    if types:
-        stmt = stmt.where(Thread.thread_type.in_(types))
-    else:
-        stmt = stmt.where(Thread.thread_type.not_in(_DEFAULT_HIDDEN_TYPES))
-    if q:
-        like = f"%{q}%"
-        stmt = stmt.where(Thread.title.ilike(like) | Thread.name.ilike(like))
-    stmt = stmt.order_by(last_active_at.desc()).limit(limit)
     with get_session() as s:
+        total = int(
+            s.execute(
+                select(func.count()).select_from(Thread).where(*filters)
+            ).scalar_one()
+        )
         rows = s.execute(stmt).all()
-    return [
+    threads = [
         {
             "id": r.id,
             "title": r.title or r.name,
@@ -448,6 +465,13 @@ def _list_threads(*, limit: int, q: Optional[str], types: Optional[list[str]] = 
         }
         for r in rows
     ]
+    return {
+        "threads": threads,
+        "total": total,
+        "page": page,
+        "page_size": limit,
+        "pages": (total + limit - 1) // limit,
+    }
 
 
 def _list_thread_types() -> list[dict]:
@@ -648,13 +672,12 @@ def route(method: str, path: str, params: dict) -> Response:
 
     if path == "/api/threads":
         return _ok(
-            {
-                "threads": _list_threads(
-                    limit=_int(params, "limit", 100),
-                    q=_first(params, "q"),
-                    types=_csv(params, "types"),
-                )
-            }
+            _list_threads(
+                limit=_int(params, "limit", 100),
+                page=_int(params, "page", 1, hi=1_000_000),
+                q=_first(params, "q"),
+                types=_csv(params, "types"),
+            )
         )
 
     if path == "/api/thread-types":

@@ -2,10 +2,10 @@
 // system/subagent and topic threads the sidebar hides), a checkbox per type to
 // hide it (URL-carried via ?hide=), title filtering, and per-type row links.
 import { describe, expect, it } from 'vitest'
-import { render, screen } from '@testing-library/react'
+import { render, screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom'
-import { AllThreadsView, ALL_THREADS_LIMIT } from '../components/AllThreadsView'
+import { AllThreadsView, ALL_THREADS_PAGE_SIZE } from '../components/AllThreadsView'
 import type { ThreadListItem, ThreadTypeCount } from '../api'
 import { http, HttpResponse, mswError, mswHandler, mswJson, mswPending, recordRequests } from './msw'
 
@@ -14,9 +14,15 @@ function PageStub() {
   return <div>PAGE {loc.pathname}</div>
 }
 
+function LocationStub() {
+  const loc = useLocation()
+  return <div data-testid="location">{loc.pathname + loc.search}</div>
+}
+
 function renderThreads(url = '/threads') {
   return render(
     <MemoryRouter initialEntries={[url]}>
+      <LocationStub />
       <Routes>
         <Route path="/threads" element={<AllThreadsView />} />
         <Route path="*" element={<PageStub />} />
@@ -44,8 +50,18 @@ function thread(overrides: Partial<ThreadListItem>): ThreadListItem {
 function stubThreads(fixture: ThreadListItem[]) {
   mswHandler(
     http.get('/api/threads', ({ request }) => {
-      const types = (new URL(request.url).searchParams.get('types') ?? '').split(',')
-      return HttpResponse.json({ threads: fixture.filter((t) => types.includes(t.thread_type)) })
+      const params = new URL(request.url).searchParams
+      const types = (params.get('types') ?? '').split(',')
+      const page = Number(params.get('page') ?? 1)
+      const pageSize = Number(params.get('limit') ?? ALL_THREADS_PAGE_SIZE)
+      const matches = fixture.filter((t) => types.includes(t.thread_type))
+      return HttpResponse.json({
+        threads: matches.slice((page - 1) * pageSize, page * pageSize),
+        total: matches.length,
+        page,
+        page_size: pageSize,
+        pages: Math.ceil(matches.length / pageSize),
+      })
     }),
   )
 }
@@ -75,7 +91,7 @@ describe('AllThreadsView', () => {
     expect(await screen.findByText('a session')).toBeInTheDocument()
     expect(screen.getByText('🤖 a subagent run')).toBeInTheDocument()
     expect(screen.getByText('a topic')).toBeInTheDocument()
-    expect(screen.getByText('3 threads')).toBeInTheDocument()
+    expect(screen.getByText(/3 threads · page 1 of 1/)).toBeInTheDocument()
     const req = seen.find((u) => u.startsWith('/api/threads'))
     expect(decodeURIComponent(req ?? '')).toContain('types=conversation,system,topic')
     // the system checkbox is annotated as the subagent bucket
@@ -141,12 +157,41 @@ describe('AllThreadsView', () => {
     expect(seen.some((u) => u.includes('q=needle'))).toBe(true)
   })
 
-  it('flags a full page as truncated instead of pretending it is complete', async () => {
+  it('paginates through every thread and carries the page in the URL', async () => {
+    const user = userEvent.setup()
     mswJson('/api/thread-types', { types: TYPES })
-    mswJson('/api/threads', {
-      threads: Array.from({ length: ALL_THREADS_LIMIT }, (_, i) => thread({ id: String(i + 1) })),
-    })
+    stubThreads(
+      Array.from({ length: ALL_THREADS_PAGE_SIZE + 1 }, (_, i) =>
+        thread({ id: String(i + 1), title: `thread ${i + 1}` }),
+      ),
+    )
     renderThreads()
-    expect(await screen.findByText(/newest 500 shown/)).toBeInTheDocument()
+    expect(await screen.findByText(/101 threads · page 1 of 2/)).toBeInTheDocument()
+    expect(screen.getByText('thread 1')).toBeInTheDocument()
+    expect(screen.queryByText('thread 101')).not.toBeInTheDocument()
+
+    await user.click(
+      within(screen.getByRole('navigation', { name: 'thread pages top' })).getByText('Next'),
+    )
+    expect(await screen.findByText('thread 101')).toBeInTheDocument()
+    expect(screen.getByText(/101 threads · page 2 of 2/)).toBeInTheDocument()
+    expect(screen.getByTestId('location')).toHaveTextContent('/threads?page=2')
+  })
+
+  it('opens a requested page and resets to page one when filtering', async () => {
+    const user = userEvent.setup()
+    const seen = recordRequests()
+    mswJson('/api/thread-types', { types: TYPES })
+    stubThreads(
+      Array.from({ length: ALL_THREADS_PAGE_SIZE + 1 }, (_, i) =>
+        thread({ id: String(i + 1), title: `thread ${i + 1}` }),
+      ),
+    )
+    renderThreads('/threads?page=2')
+    expect(await screen.findByText('thread 101')).toBeInTheDocument()
+
+    await user.type(screen.getByPlaceholderText('filter by title…'), 'needle')
+    expect(await screen.findByText('thread 1')).toBeInTheDocument()
+    expect(seen.some((u) => u.includes('page=1') && u.includes('q=needle'))).toBe(true)
   })
 })

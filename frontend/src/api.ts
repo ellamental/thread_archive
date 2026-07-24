@@ -189,6 +189,14 @@ export interface ThreadTypeCount {
   threads: number
 }
 
+export interface ThreadPage {
+  threads: ThreadListItem[]
+  total: number
+  page: number
+  page_size: number
+  pages: number
+}
+
 export interface SearchHit {
   event_id: number
   thread_id: string
@@ -462,13 +470,22 @@ export const api = {
     getJSON<{ archives: ArchiveEntry[] }>('/api/archives').then((d) => d.archives),
   // No `types` → the server's default view (topics and system/subagent runs
   // hidden); an explicit list selects exactly those thread types.
-  threads: (opts: { q?: string; types?: string[]; limit?: number } = {}) => {
-    const params = new URLSearchParams({ limit: String(opts.limit ?? 150) })
+  threadPage: (
+    opts: { q?: string; types?: string[]; limit?: number; page?: number } = {},
+  ) => {
+    const params = new URLSearchParams({
+      limit: String(opts.limit ?? 150),
+      page: String(opts.page ?? 1),
+    })
     if (opts.q) params.set('q', opts.q)
     if (opts.types) params.set('types', opts.types.join(','))
-    return getJSON<{ threads: ThreadListItem[] }>('/api/threads?' + params.toString()).then(
-      (d) => d.threads,
-    )
+    return getJSON<ThreadPage>('/api/threads?' + params.toString())
+  },
+  threads: (opts: { q?: string; types?: string[]; limit?: number } = {}) => {
+    const params = new URLSearchParams({ limit: String(opts.limit ?? 150), page: '1' })
+    if (opts.q) params.set('q', opts.q)
+    if (opts.types) params.set('types', opts.types.join(','))
+    return getJSON<ThreadPage>('/api/threads?' + params.toString()).then((d) => d.threads)
   },
   threadTypes: () =>
     getJSON<{ types: ThreadTypeCount[] }>('/api/thread-types').then((d) => d.types),

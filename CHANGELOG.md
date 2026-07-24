@@ -2,6 +2,31 @@
 
 ## Unreleased
 
+- **An archive opened just after boot is registered.** The registry's per-process
+  throttle read a missing entry as "last registered at monotonic 0.0". `time.monotonic`
+  has no defined epoch and counts from boot on Linux, so on a machine up less than the
+  five-minute interval every *first* registration was silently swallowed — an archive
+  could be opened repeatedly and never become known. A missing entry now means never
+  registered. Caught as two red tests on CI's fresh runners that no long-uptime dev box
+  could reproduce; pinned by a test that fakes three seconds of uptime.
+- **The browser suite mocks `/api/archives`.** The health view gained the registry
+  fetch; the e2e API surface did not, so `/health` failed its own no-unhandled-request
+  assertion — the check working exactly as designed.
+- **The haystack benchmarks are archives you can open.** LoCoMo and LongMemEval are
+  scored per question — each question retrieves inside its own small history — so the
+  harness built a throwaway home per question and the corpus existed only as hundreds
+  of fingerprint-named micro homes: not openable, not searchable, not visible anywhere
+  archives are listed. `evals/haystack_corpus.py` builds each dataset as one ordinary
+  home beside `homes/cdr` and `homes/swe-chat` (locomo one thread per turn, ids
+  namespaced by conversation since `dia_id` restarts at `D1:1` in each; longmemeval one
+  thread per haystack session, deduped across the shared pool), tracked like any load
+  and tagged `benchmark`. The per-question homes stay unregistered workspace.
+- **Building a snapshot is a tracked load.** A snapshot of a real corpus runs for tens
+  of minutes and only the index phase — `reindex`'s own run — was recorded, so the copy
+  that opens it was a silent stretch with nothing to watch and no record afterward. The
+  build now writes a `snapshot` run into the home it builds, phased `copy` / `index` /
+  `verify`, with the copy's file and byte counts. `reindex` still keeps its finer-grained
+  record inside the index phase; the ledger holds both.
 - **The vector arm's latency is now attributable.** `semantic_ms` covered five
   unrelated costs — the query embedding, the scope-mask query, serving the KNN
   matrix, the matvec, and hydration — so a 28-second observation named an arm and

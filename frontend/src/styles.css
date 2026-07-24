@@ -405,6 +405,15 @@ h1.title { font-size: 19px; margin: 0 0 4px; }
 }
 .type-filter input { cursor: pointer; accent-color: var(--accent); align-self: center; }
 .type-filter:hover { color: var(--accent); }
+.thread-pagination {
+  display: flex; align-items: center; justify-content: center; flex-wrap: wrap;
+  gap: 7px; margin: 0 0 18px; color: var(--muted); font-size: 12px;
+}
+.thread-pagination + .hit { margin-top: 0; }
+.hit + .thread-pagination { margin-top: 18px; }
+.thread-pagination span {
+  min-width: 92px; text-align: center; font-variant-numeric: tabular-nums;
+}
 
 /* ---- topics ---- */
 .topics-filter { margin-bottom: 18px; }
