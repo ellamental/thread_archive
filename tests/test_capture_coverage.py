@@ -11,7 +11,9 @@ never throw.
 from __future__ import annotations
 
 import json
+import os
 import time
+from datetime import datetime, timezone
 
 from thread_archive import _api as ta
 from thread_archive._importers import import_session_incremental
@@ -21,7 +23,13 @@ from thread_archive._ops.health import pipeline_verdict, read_health, record_hea
 from thread_archive._watcher.base import SourceDiscovery, SourceWatcher, WatchResult
 from thread_archive._watcher.daemon import Watcher
 
-from .helpers import cc_assistant, cc_user, import_cc_session, write_jsonl
+from .helpers import (
+    append_jsonl,
+    cc_assistant,
+    cc_user,
+    import_cc_session,
+    write_jsonl,
+)
 
 # ── stubs ────────────────────────────────────────────────────────────────────
 
@@ -224,6 +232,99 @@ def test_coverage_flags_stale_ingest_against_events_not_watermarks(archive_home,
     assert not r["ok"]
     assert any("stale" in msg for msg in r["failed"])
     assert r["sources"]["claude-code"]["failed"] == "stale_ingest"
+
+
+# ── settled empty sessions: store activity the archive has accounted for ─────
+
+CODEX_REAL = [
+    {"type": "session_meta", "timestamp": "2026-01-01T10:00:00Z",
+     "payload": {"id": "real", "cwd": "/proj"}},
+    {"type": "event_msg", "timestamp": "2026-01-01T10:00:01Z",
+     "payload": {"type": "user_message", "message": "hello", "turn_id": "t1"}},
+    {"type": "event_msg", "timestamp": "2026-01-01T10:00:02Z",
+     "payload": {"type": "agent_message", "message": "hi"}},
+]
+#: What a CLI session opened and never used leaves behind: metadata, no turns.
+CODEX_ABANDONED = [
+    {"type": "session_meta", "timestamp": "2026-01-01T10:00:00Z",
+     "payload": {"id": "abandoned", "cwd": "/proj"}},
+]
+
+
+def _codex_store_with_abandoned_session(tmp_path, *, extra_lines=()):
+    """A codex store holding one real (imported) session and one abandoned
+    session whose store mtime is *now* — the shape that used to read as stale
+    ingest. Returns ``(watcher, abandoned_path)``; the abandoned session is
+    imported once per call to :func:`append_jsonl`-driven growth in ``extra_lines``,
+    so a caller can script repeat consumption."""
+    from thread_archive._importers import import_codex_session_incremental
+    from thread_archive._watcher.sources import codex_watcher
+
+    sessions = tmp_path / "codex-sessions"
+    sessions.mkdir()
+    ta.open_archive()
+
+    real = sessions / "real.jsonl"
+    write_jsonl(real, CODEX_REAL)
+    import_codex_session_incremental(real, "real")
+    # A real session's file stopped moving when its last turn landed.
+    written = datetime(2026, 1, 1, 10, 0, 2, tzinfo=timezone.utc).timestamp()
+    os.utime(real, (written, written))
+
+    abandoned = sessions / "abandoned.jsonl"
+    write_jsonl(abandoned, CODEX_ABANDONED)
+    import_codex_session_incremental(abandoned, "abandoned")
+    for line in extra_lines:
+        append_jsonl(abandoned, [line])
+        import_codex_session_incremental(abandoned, "abandoned")
+
+    now = time.time()
+    os.utime(abandoned, (now, now))
+    return codex_watcher(sessions), abandoned
+
+
+def test_coverage_excuses_a_settled_empty_session(archive_home, tmp_path):
+    # The newest thing in the store is a session the importer consumed whole and
+    # judged contentless. Nothing was lost, so nothing is stale — and without
+    # this, one abandoned session pins the source red until the next real
+    # conversation lands.
+    watcher, _ = _codex_store_with_abandoned_session(tmp_path)
+    r = check_coverage(watchers=[watcher], min_history=1)
+    assert r["ok"]
+    assert "failed" not in r["sources"]["codex"]
+    assert r["sources"]["codex"]["unaccounted_store_latest"] is None
+
+
+def test_coverage_flags_a_session_consumed_over_and_over(archive_home, tmp_path):
+    # A parser gone blind leaves the same trace as an abandoned session — except
+    # its session keeps growing, so it is consumed again and again. Repetition is
+    # what disqualifies the id, and the drift stays caught.
+    watcher, _ = _codex_store_with_abandoned_session(
+        tmp_path,
+        extra_lines=[
+            {"type": "event_msg", "timestamp": "2026-07-01T10:00:00Z",
+             "payload": {"type": "unknown_to_this_parser", "message": "real content"}},
+        ],
+    )
+    r = check_coverage(watchers=[watcher], min_history=1)
+    assert not r["ok"]
+    assert r["sources"]["codex"]["failed"] == "stale_ingest"
+
+
+def test_coverage_flags_a_store_file_grown_past_its_watermark(archive_home, tmp_path):
+    # Settled once, then appended to with no import behind it — a wedged ingest
+    # loop. The watermark no longer covers the file's bytes, so it counts as
+    # activity again.
+    watcher, abandoned = _codex_store_with_abandoned_session(tmp_path)
+    append_jsonl(abandoned, [
+        {"type": "event_msg", "timestamp": "2026-07-01T10:00:00Z",
+         "payload": {"type": "user_message", "message": "never imported", "turn_id": "t9"}},
+    ])
+    now = time.time()
+    os.utime(abandoned, (now, now))
+    r = check_coverage(watchers=[watcher], min_history=1)
+    assert not r["ok"]
+    assert r["sources"]["codex"]["failed"] == "stale_ingest"
 
 
 def test_coverage_green_within_grace(archive_home, tmp_path):

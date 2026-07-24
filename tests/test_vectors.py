@@ -63,6 +63,124 @@ class _FixedEmbedder:
         return [list(self.vec) for _ in texts]
 
 
+class _OrderRecordingEmbedder:
+    """Records the length of every text handed to ``embed_documents``, in call
+    order — so a test can read back the batch composition the drain built."""
+
+    def __init__(self) -> None:
+        self.seen_lengths: list[int] = []
+
+    def is_available(self) -> bool:
+        return True
+
+    def space_key(self) -> str:
+        return "local:test"
+
+    def embed_documents(self, texts):
+        self.seen_lengths.extend(len(t) for t in texts)
+        return [[1.0] + [0.0] * 767 for _ in texts]
+
+
+def test_length_batched_sorts_within_windows_preserving_recency() -> None:
+    rows = [(i, "user", "x" * n) for i, n in enumerate([500, 10, 300, 20, 400])]
+    # A window spanning the whole set: fully length-sorted.
+    out = vectors._length_batched(list(rows), 999)
+    assert [len(r[2]) for r in out] == [10, 20, 300, 400, 500]
+    # Windowed: sorted within each pair, but window 0's docs all precede window 1's —
+    # the newest-window-first grain the recency order relies on.
+    out2 = vectors._length_batched(list(rows), 2)
+    assert [len(r[2]) for r in out2] == [10, 500, 20, 300, 400]
+    assert sorted(out2) == sorted(rows)              # a permutation — nothing lost or added
+    assert vectors._length_batched(list(rows), 0) == rows  # disabled → identity
+
+
+def test_length_batched_is_stable_within_a_window() -> None:
+    # Equal-length docs keep their incoming (recency) order after the sort.
+    rows = [("a", "user", "yy"), ("b", "user", "zz"), ("c", "user", "w")]
+    out = vectors._length_batched(list(rows), 999)
+    assert [r[0] for r in out] == ["c", "a", "b"]
+
+
+def test_drain_bills_the_cold_model_load_separately(archive_home) -> None:
+    """A lazily-loaded model would otherwise cold-load inside the first embed call
+    and be billed to ``encode`` — on a short pass, most of the reported encode."""
+    import json
+
+    from thread_archive import _api as ta
+    from thread_archive._ops import load_runs
+
+    class _LazyEmbedder(_OrderRecordingEmbedder):
+        def __init__(self) -> None:
+            super().__init__()
+            self.loaded = False
+            self.warms = 0
+
+        def is_loaded(self) -> bool:
+            return self.loaded
+
+        def warm(self) -> bool:
+            self.warms += 1
+            self.loaded = True
+            return True
+
+    f = archive_home / "sess.jsonl"
+    f.write_text(json.dumps(
+        {"type": "user", "uuid": "u0", "timestamp": "2026-01-01T10:00:00Z", "cwd": "/p",
+         "message": {"role": "user", "content": "a question worth embedding"}}) + "\n",
+        encoding="utf-8")
+    ta.import_path(f)
+
+    emb = _LazyEmbedder()
+    run = load_runs.LoadRun("embed", archive_home)
+    with run.phase("embed") as ph:
+        assert vectors.index_events_local(embedder=emb, phase=ph) == 1
+    assert emb.warms == 1                              # warmed once, up front…
+    assert "model_load" in ph.snapshot()["detail_s"]   # …and billed to its own line
+
+    # An already-loaded model costs no warm and gets no model_load line.
+    emb2 = _LazyEmbedder()
+    emb2.loaded = True
+    run2 = load_runs.LoadRun("embed", archive_home)
+    with run2.phase("embed") as ph2:
+        vectors.index_events_local(embedder=emb2, phase=ph2, rebuild=True)
+    assert emb2.warms == 0
+    assert "model_load" not in ph2.snapshot()["detail_s"]
+
+
+def test_drain_length_sorts_within_window(archive_home) -> None:
+    """The embed drain reorders pending docs by length within a recency window so
+    each encode batch is length-homogeneous (near-zero pad waste), while a whole
+    window still drains before the next. The set embedded is identical either way."""
+    import json
+
+    from thread_archive import _api as ta
+
+    lengths = [500, 10, 300, 20, 400]  # jagged, in event_id (natural) order
+    f = archive_home / "sess.jsonl"
+    lines = [
+        {"type": "user", "uuid": f"u{i}", "timestamp": f"2026-01-01T10:0{i}:00Z",
+         "cwd": "/p", "message": {"role": "user", "content": "x" * n}}
+        for i, n in enumerate(lengths)
+    ]
+    f.write_text("\n".join(json.dumps(ln) for ln in lines) + "\n", encoding="utf-8")
+    ta.import_path(f)
+
+    # sort_window=0 hands the embedder the jagged sequence as-is (padding waste).
+    nat = _OrderRecordingEmbedder()
+    assert vectors.index_events_local(embedder=nat, sort_window=0) == 5
+    assert nat.seen_lengths == lengths
+
+    # A window of 2: each pair length-sorts, first window's docs still lead.
+    win = _OrderRecordingEmbedder()
+    assert vectors.index_events_local(embedder=win, sort_window=2, rebuild=True) == 5
+    assert win.seen_lengths == [10, 500, 20, 300, 400]
+
+    # The default single window length-sorts the whole pass — the padding win.
+    allw = _OrderRecordingEmbedder()
+    assert vectors.index_events_local(embedder=allw, rebuild=True) == 5
+    assert allw.seen_lengths == sorted(lengths)
+
+
 def test_vector_store_upsert_and_knn(archive_home) -> None:
     init_db()
     vectors.ensure_index()

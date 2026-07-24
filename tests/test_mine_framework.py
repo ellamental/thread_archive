@@ -39,7 +39,7 @@ _SPEC.loader.exec_module(gate)
 def test_registry_names_are_unique_and_populated():
     reg = load_registry()
     names = [m.name for m in reg]
-    assert names == ["query", "topic", "rerank", "querygen"]
+    assert names == ["query", "topic", "rerank", "querygen", "commit"]
     assert len(set(names)) == len(names)
 
 
@@ -74,7 +74,8 @@ def test_miner_case_files_are_discovered_by_the_gate(tmp_path):
         (tmp_path / fw.detail_path_for(Path(f"{stem}.jsonl")).name).write_text("{}\n")
     found = {p.name for p in gate.discover_gold_files(tmp_path)}
     assert found == {"judged-cases.jsonl", "topic-cases-suicide.jsonl",
-                     "rerank-cases.jsonl", "findability-cases.jsonl"}
+                     "rerank-cases.jsonl", "findability-cases.jsonl",
+                     "commit-cases.jsonl"}
 
 
 def test_only_topic_is_excluded_from_mine_all():

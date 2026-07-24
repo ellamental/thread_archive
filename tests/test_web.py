@@ -122,6 +122,9 @@ def test_status_endpoint(archive_home):
     assert status == 200 and ctype == "application/json"
     assert payload["threads"] == 1 and payload["events"] > 0
     assert payload["fts_indexed"] > 0
+    assert payload["pipeline"]["ran"] is False
+    assert payload["watch_process_alive"] is False
+    assert payload["backup_same_device"] is None
 
 
 def test_health_endpoint(archive_home):
@@ -303,6 +306,22 @@ def test_threads_endpoint(archive_home):
     assert len(payload["threads"]) == 1
     t = payload["threads"][0]
     assert t["id"] and t["title"] and "updated_at" in t
+    assert t["first_user_message"] == "hello webview"
+
+
+def test_threads_first_user_message_preview_is_trimmed_and_capped(archive_home):
+    content = " \n\t" + "x" * 205 + "\r\n"
+    f = archive_home / "long-first-message.jsonl"
+    user = dict(
+        USER,
+        uuid="long-user",
+        message={"role": "user", "content": content},
+    )
+    f.write_text(json.dumps(user) + "\n", encoding="utf-8")
+    ta.import_path(f)
+
+    _, _, payload = _get("/api/threads")
+    assert payload["threads"][0]["first_user_message"] == "x" * 200
 
 
 def test_threads_query_filter(archive_home):
@@ -395,19 +414,39 @@ def test_read_endpoint(archive_home):
 def test_status_survey_is_cached(archive_home):
     # The status bar asks on every page load while the survey counts every
     # table, so the route serves a per-home TTL cache. A thread that lands
-    # between two requests proves it: the second answer is the first one, not a
-    # fresh count.
+    # between two requests proves it: the second answer's counts are the first
+    # one's, not a fresh count.
     from thread_archive._web import server as web_server
 
     _seed(archive_home)
-    first = _get("/api/status")
-    assert first[2]["threads"] == 1
+    assert _get("/api/status")[2]["threads"] == 1
 
     _seed_demo_harness(archive_home)  # a second real thread, mid-TTL
-    assert _get("/api/status") == first  # served from cache, not re-counted
+    assert _get("/api/status")[2]["threads"] == 1  # served from cache
 
     web_server._survey_cache.clear()
     assert _get("/api/status")[2]["threads"] == 2  # a cold survey does see it
+
+
+def test_status_records_are_never_cached(archive_home):
+    # The counts tolerate age; the operational records do not — the health page
+    # ages them against now and calls capture stalled past 15 minutes. Nothing
+    # but a request refreshes the survey cache, so a cached record would make
+    # idle time look like a dead watcher: the stamp must be re-read every time,
+    # while the counts stay cached.
+    from thread_archive._ops.health import record_health
+
+    _seed(archive_home)
+    record_health("watch_pass_last", {"pid": 0, "passes": 1})
+    first = _get("/api/status")[2]
+
+    _seed_demo_harness(archive_home)  # a second thread, mid-TTL
+    record_health("watch_pass_last", {"pid": 0, "passes": 2})
+    second = _get("/api/status")[2]
+
+    assert second["last_watch_pass"]["passes"] == 2
+    assert second["last_watch_pass"]["at"] != first["last_watch_pass"]["at"]
+    assert second["threads"] == first["threads"] == 1
 
 
 def test_survey_cold_fill_is_shared(archive_home):

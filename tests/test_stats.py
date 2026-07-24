@@ -185,6 +185,109 @@ def test_claude_cache_alias_is_deduplicated_across_incremental_folds(archive_hom
     add_response("3", "msg-next-response", 7000)
     assert ta.stats()["overview"]["cache_read_tokens"] == 16000
 
+    # Every other figure is deduplicated by the same request identity, not just the
+    # cached-read one: three events, two responses, two requests' worth of tokens.
+    payload = ta.stats()
+    by_model = {r["model"]: r for r in payload["by_model"]}
+    assert by_model["claude-opus-4-8"]["requests"] == 2
+    assert payload["overview"]["tokens"] == 4  # 2 responses x (1 in + 1 out)
+
+
+def test_repeated_usage_object_does_not_multiply_any_column(archive_home):
+    """Claude Code emits one response's usage across several transcript rows. Summing
+    those rows counts the response once per row — the defect this ledger exists to
+    stop, and it has to hold for every column, not only the cached-read one."""
+    ta.open_archive(str(archive_home))
+    from thread_archive._store import get_engine
+
+    tid = "01CLAUDEDUPE0000000000001"
+    with get_engine().begin() as c:
+        c.execute(
+            text(
+                "INSERT INTO threads (id, name, thread_type, source, archived) "
+                "VALUES (:id, 'dupes', 'conversation', 'claude-code', 0)"
+            ),
+            {"id": tid},
+        )
+
+    def emit(suffix, message_id, *, inp, out, think, cache, cost):
+        payload = {
+            "model": "claude-opus-4-8",
+            "input_tokens": inp,
+            "output_tokens": out,
+            "thinking_tokens": think,
+            "cache_read_input_tokens": cache,
+            "cost": cost,
+            "annotations": {"message_id": message_id},
+        }
+        with get_engine().begin() as c:
+            c.execute(
+                text(
+                    "INSERT INTO events "
+                    "(thread_id, stream_id, event_type, payload, occurred_at) "
+                    "VALUES (:tid, :sid, 'api_request_completed', :p, :ts)"
+                ),
+                {"tid": tid, "sid": f"s{suffix}", "p": json.dumps(payload),
+                 "ts": f"2026-06-02T10:00:{int(suffix):02d}Z"},
+            )
+
+    # One response, three transcript rows repeating its usage verbatim.
+    for i in range(3):
+        emit(i, "msg-a", inp=5000, out=400, think=100, cache=20000, cost=0.25)
+    # A second, genuinely distinct response.
+    emit(3, "msg-b", inp=6000, out=500, think=0, cache=21000, cost=0.30)
+
+    payload = ta.stats()
+    row = {r["model"]: r for r in payload["by_model"]}["claude-opus-4-8"]
+    assert row["requests"] == 2  # responses, not transcript rows
+    assert row["input_tokens"] == 11000
+    assert row["output_tokens"] == 900
+    assert row["cache_read_tokens"] == 41000
+    assert abs(row["cost"] - 0.55) < 1e-9
+    assert payload["overview"]["tokens"] == 11900
+
+
+def test_amended_events_survive_a_partial_usage_row(archive_home):
+    """A response's counts can arrive partial and be completed by a later row. The
+    canonical value is the largest seen, so the final total wins over the partial —
+    and a duplicate that omits cost entirely must not erase the cost already held."""
+    ta.open_archive(str(archive_home))
+    from thread_archive._store import get_engine
+
+    tid = "01CLAUDEPARTIAL000000001"
+    with get_engine().begin() as c:
+        c.execute(
+            text(
+                "INSERT INTO threads (id, name, thread_type, source, archived) "
+                "VALUES (:id, 'partial', 'conversation', 'claude-code', 0)"
+            ),
+            {"id": tid},
+        )
+
+    def emit(suffix, payload):
+        payload = {"model": "m", "annotations": {"message_id": "msg-a"}, **payload}
+        with get_engine().begin() as c:
+            c.execute(
+                text(
+                    "INSERT INTO events "
+                    "(thread_id, stream_id, event_type, payload, occurred_at) "
+                    "VALUES (:tid, :sid, 'api_request_completed', :p, :ts)"
+                ),
+                {"tid": tid, "sid": f"s{suffix}", "p": json.dumps(payload),
+                 "ts": f"2026-06-03T10:00:{suffix:02d}Z"},
+            )
+
+    emit(0, {"input_tokens": 100, "output_tokens": 5, "cost": 0.02})
+    assert ta.stats()["overview"]["tokens"] == 105
+
+    # A later poll carries the completed counts and no cost field at all.
+    emit(1, {"input_tokens": 100, "output_tokens": 40})
+    payload = ta.stats()
+    assert payload["overview"]["tokens"] == 140  # the finished count, still one request
+    row = {r["model"]: r for r in payload["by_model"]}["m"]
+    assert row["requests"] == 1
+    assert abs(row["cost"] - 0.02) < 1e-9  # not erased by the cost-less duplicate
+
 
 def test_legacy_codex_input_is_split_from_cached_reads(archive_home):
     # Legacy Codex events carry provider-native input inclusive of cache and no

@@ -50,7 +50,8 @@ def test_all_subcommands_present() -> None:
     assert set(sub.choices) == {
         "setup", "import", "import-export", "providers", "watch", "reindex", "snapshot",
         "migrate", "embed",
-        "status", "eval", "mine", "backup", "verify", "repair", "restore-drill", "restore",
+        "status", "loads", "archives",
+        "eval", "mine", "backup", "verify", "repair", "restore-drill", "restore",
         "nightly", "coverage", "mirror", "redact", "unredact", "daemon",
         "fix-import", "self-update",
     }
@@ -82,8 +83,9 @@ def test_embed_cli_dispatches(seeded, monkeypatch, capsys) -> None:
     rc = main(["embed", "--rebuild", "--limit", "100", "--newest-first",
                "--home", str(seeded)])
     assert rc == 0
+    # progress is None here: capsys makes stdout a non-tty, so the CLI stays quiet.
     assert seen == {"home": str(seeded), "rebuild": True, "max_events": 100,
-                    "newest_first": True}
+                    "newest_first": True, "progress": None}
     assert "embedded 4" in capsys.readouterr().out
 
 

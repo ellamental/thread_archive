@@ -37,7 +37,7 @@ import re
 from collections import defaultdict
 from datetime import datetime
 from pathlib import Path
-from typing import Optional
+from typing import Callable, Optional
 
 from thread_archive._thread_import import DefaultEventBuilder
 from thread_archive._thread_import.parsers.claude_code import ClaudeCodeParser
@@ -206,7 +206,7 @@ class ExthostWatcher(SourceWatcher):
     def is_available(self) -> bool:
         return bool(self._logs())
 
-    def poll(self) -> WatchResult:
+    def poll(self, on_item: Optional[Callable[[WatchResult], None]] = None) -> WatchResult:
         result = WatchResult()
         seen_this_poll: set[str] = set()
         for path in self._logs():
@@ -231,6 +231,8 @@ class ExthostWatcher(SourceWatcher):
                 if not deferred:
                     self._seen_fp[key] = fp
                 result = result + r
+                if on_item is not None:
+                    on_item(r)
             except Exception as e:  # noqa: BLE001 — one bad log must not stop the poll
                 msg = f"cc-exthost {p.name}: {e}"
                 logger.warning(msg)

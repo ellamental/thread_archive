@@ -60,6 +60,13 @@ export function Sidebar({
         >
           stats
         </Link>
+        <Link
+          className={'rail-link' + (pathname === '/health' ? ' active' : '')}
+          to="/health"
+          onClick={onClose}
+        >
+          health
+        </Link>
       </nav>
       <div className="rail-head">
         <span>Recent</span>

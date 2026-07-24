@@ -175,15 +175,35 @@ class Watcher:
         except Exception:  # noqa: BLE001 — advisory; the loop must survive
             logger.exception("watch: could not record pass heartbeat in health.json")
 
-    def poll_once(self) -> WatchResult:
+    def poll_once(self, phase=None) -> WatchResult:
         """One poll across every available source. Imported events are durable in the
-        truth log on commit (inline) — this does not checkpoint."""
+        truth log on commit (inline) — this does not checkpoint.
+
+        ``phase`` (a :class:`~.._ops.load_runs.Phase`) tracks this sweep as a load:
+        the pending item count seeds its total up front (so a first import reports an
+        ETA, not just a spinner) and each imported file advances it. Defaults to no
+        tracking, so the continuous daemon loop runs the identical, untracked path
+        and never writes a per-poll ledger row."""
+        on_item = None
+        if phase is not None:
+            phase.total = self._pending_estimate()
+
+            def on_item(r: WatchResult) -> None:  # noqa: E306
+                phase.advance(max(1, r.items_imported))
+                phase.count("events", r.events_created)
+                phase.count("lines", r.lines_processed)
+                if r.parse_errors:
+                    phase.count("parse_errors", r.parse_errors)
+
         total = WatchResult()
         for w in self.watchers:
             try:
                 if not w.is_available():
                     continue
-                r = w.poll()
+                # Only thread the progress callback when tracking — the continuous
+                # path calls poll() with its historical signature, so a source
+                # (a plugin, a test stub) that hasn't adopted on_item still works.
+                r = w.poll(on_item=on_item) if on_item is not None else w.poll()
             except Exception as e:  # noqa: BLE001 — a broken source must not stop the loop
                 logger.warning("%s: poll error: %s", w.source_name, e)
                 r = WatchResult(errors=[f"{w.source_name}: poll error: {e}"])
@@ -200,6 +220,28 @@ class Watcher:
                 total.events_created, total.items_imported,
             )
         return total
+
+    def _pending_estimate(self) -> Optional[int]:
+        """A cheap up-front guess at how many items this sweep will import, for the
+        load phase's total — the sum of each available source's stat-only discovery
+        count. It is the *store* size, not the not-yet-imported remainder (that would
+        need a per-item watermark join): on a fresh home the two are equal, which is
+        the first-load case the ETA is for; on an incremental catch-up it overcounts,
+        and the already-imported items advance fast as fingerprint skips. None when no
+        source can count itself cheaply, so the phase falls back to a bare counter."""
+        total = 0
+        counted = False
+        for w in self.watchers:
+            try:
+                if not w.is_available():
+                    continue
+                items = w.discover().items
+            except Exception:  # noqa: BLE001 — a discovery failure must not block the poll
+                continue
+            if items:
+                total += items
+                counted = True
+        return total if counted else None
 
     def maintain(self) -> dict:
         """Cheap periodic upkeep: shard rebalance + thread-metadata backstop + manifest

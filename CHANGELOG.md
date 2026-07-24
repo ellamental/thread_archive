@@ -2,6 +2,294 @@
 
 ## Unreleased
 
+- **Model colors in the viewer mean something now.** The per-model accent used to
+  be a hash of the model's name, so `claude-opus-5` came up red while the other
+  opuses were green and a thread's colors said nothing about what ran in it. Hue
+  now comes from the model's family — every opus a green, every gpt/codex a blue,
+  fable red, sonnet violet, haiku amber, and so on down a table of the families
+  the archive actually holds — and the version picks a shade inside that family's
+  band, so a thread header or a stats table reads as "two opuses and a gpt" at a
+  glance. Models from unknown families keep a hashed hue, muted so they can't pass
+  for a family color.
+
+- **The drift quarantine is no longer eaten by the export-drop watcher.** Both
+  live under `<home>/dumps/`, but only account exports are drops: the watcher
+  scanned `dumps/drift/`, failed to classify it, and moved the whole tree into
+  `dumps/failed/` as an unrecognized export — burying the preservation copy of a
+  degraded source's raw store (often the only copy left once the harness prunes)
+  under a name that means "this export needs a look", raising a capture error per
+  sweep, and costing the snapshotter the prior generations it copies
+  incrementally against, so each night re-copied the whole active window. The
+  drift dir is now reserved alongside `failed/` and `imported/`.
+
+- **A quiet archive no longer reads as a stalled watcher.** The health page ages
+  the operational records against *now* — capture is stale past 15 minutes — but
+  they rode the status survey's TTL cache, which nothing refreshes but a request.
+  A page opened after twenty idle minutes therefore got a twenty-minute-old "last
+  check" stamp and declared a perfectly live watcher stalled, red trust center and
+  all. `api.operational_records` splits the freshness-bearing half of `status`
+  (health records, pipeline verdict, watcher liveness, backup device check, load
+  state) from the expensive counts; `/api/status` serves the counts cached and the
+  records fresh. The health page re-reads on its idle cadence too, so ages stay
+  true while it sits open instead of freezing at load time.
+
+- **Registry entries can say what an archive is *for*.** Entries in
+  `~/.thread/archives.json` carry an optional descriptive `role` (`live`,
+  `benchmark`, `snapshot`) set via `thread_archive archives --set-role` /
+  `--clear-role`, shown in the CLI listing and as a badge on the health page's
+  archive cards. Purely descriptive — a role grants and gates nothing.
+  `snapshot` stamps `role: snapshot` on its dest automatically. Scratch homes
+  stay out of the registry entirely: a restore drill's temp home and a restore's
+  staging directory no longer register (including via their smoke passes'
+  re-entrant opens).
+
+- **An abandoned CLI session no longer reads as a capture failure.** Capture
+  coverage judged a source's ingest stale when its newest store *mtime* ran ahead
+  of its newest archived event — so a session opened and never used (grok and
+  codex write metadata at startup, before any turn) failed the nightly's coverage
+  stage from the moment it was consumed until the next real conversation landed,
+  and marked its source `degraded`, the verdict the MCP search notice and
+  `fix-import` key on. Staleness now measures the store activity the archive has
+  yet to *account for*: a file the importer consumed whole and settled as an empty
+  session — one routine skip-ledger record, watermark covering its current bytes —
+  is not evidence of missed capture. A session the archive keeps re-consuming to no
+  effect is not settled and still fails, which is what keeps the drift catch the
+  comparison exists for: a blind parser's sessions grow.
+- **Loading an archive is now a tracked, phased, timed event.** Bringing an
+  archive up to date — importing transcripts, rebuilding FTS, embedding vectors —
+  was the longest thing the product does and the least visible: work happened
+  inside one call that returned a count at the end, so "is it stuck or working",
+  "how far along", and "which phase costs the hours" were unanswerable. The
+  `_ops.load_runs` ledger records each load as a run of phases; a phase carries its
+  wall time, a `done/total` progress counter with a live ETA, and a `detail`
+  split of named sub-timings. The embed drain reports its `select`/`encode`/`write`
+  split (measured: encode is ~96% of it), so where the time goes is a fact, not a
+  guess. Live progress publishes to `<home>/load-state.json` for any process to
+  read (`thread_archive loads`, `GET /api/loads`); a summary lands in
+  `<home>/load-runs.jsonl`. A run that dies mid-phase reads as `stalled`, not
+  `running`. `reindex`, `embed`, and the one-shot `watch --once` catch-up are
+  tracked; the continuous daemon poll stays untracked (it keeps its pass
+  heartbeat and writes no per-poll rows). `THREAD_ARCHIVE_LOAD_LOG=0` disables it.
+- **Time-to-first-usable-search is import, not embed.** Lexical search is live the
+  moment import finishes (FTS is trigger-maintained; the vector arm degrades in
+  until vectors exist), so the number that gates a new user's first search is the
+  import throughput (~16 MB/s on this hardware), not the hours-long cold embed that
+  runs in the background behind it. The `watch --once` catch-up now shows a live
+  per-file progress line with an ETA.
+- **A registry of known archives** (`~/.thread/archives.json`): an archive becomes
+  known by being opened, so `thread_archive archives` / `GET /api/archives` can
+  list every home and its live load state — including archives the current process
+  hasn't opened. `THREAD_ARCHIVE_REGISTRY=0` disables it.
+- **The embedder loaded fp32 while the cross-encoder loaded fp16.** The dtype
+  policy lived in `rerank.py` and `embed.py` never applied it, so the corpus embed
+  ran at full precision — the difference between a cold embed in an hour and in
+  several. The policy now lives once in `embed.py` and both model paths read it.
+- **The embed drain now length-sorts within a recency window, ~halving encode.**
+  The embedder pads every text in an encode batch to the longest one in it; draining
+  docs in the store's natural (`event_id`) order put a 30-char user turn and a
+  2048-char slice in the same batch, so most of the encode was padding (measured
+  ~4/5 waste, and encode is the bulk of the embed). The drain now length-sorts the
+  pending docs so each batch is length-homogeneous — measured 14.2 → 27.7 chunks/s,
+  a ~2× speedup on the longest phase of a cold load. The sort is *windowed*
+  (`_SORT_WINDOW` docs), not global: the drain still walks newest-window-first, so
+  recent-thread semantic recall stays current and a large pass writes the newest
+  docs durably before the oldest. `sort_window=0` restores the natural order.
+- **The health view shows every archive's load state and history.** The registry
+  and the load ledger had no surface: "which archives are loading, which are built,
+  and what did past loads cost" was answerable only by reading files. The health
+  page now lists every known archive with its live phase, progress, rate and ETA
+  (polling while a load is in flight, backing off when idle), plus a cross-archive
+  history table with each run's per-phase cost. It reads from each home's own state
+  file, so a load running in another process — on an archive this one never opened —
+  is visible as it happens. Each registry entry carries its own recent runs, so the
+  view is one fetch rather than one per archive.
+- **"Loaded" claimed something the product does not do.** Being indexed and being
+  reachable are independent: `thread_search` / `thread_read` answer from the single
+  archive their process was started against, so an archive can be fully built and
+  answer no query. The state pill now names only the derived-data axis — `Indexed`,
+  or `Untracked` when an index exists but no load was ever recorded for it, so
+  completeness is unproven rather than asserted — and reachability is its own
+  marker, `served` / `not served`, stated on every archive rather than inferred
+  from a missing badge.
+- **The embed model's cold load was billed to `encode`.** The model loads lazily
+  inside the first `embed_documents` call, so the tens of seconds it takes landed
+  inside the first batch's `encode` timing — on a short pass that was most of the
+  reported encode, and it inflated encode's share of the embed. The drain now warms
+  the model up front under its own `model_load` sub-timing.
+
+- **Stats token and cost totals were over-counted.** Claude Code repeats one
+  response's full usage object across every transcript row that response produced,
+  so an event is not a request. The rollup deduplicated exactly one column —
+  `cache_read_tokens`, via a `request_cache_metrics` ledger — while the fold
+  directly above it summed the same duplicate rows straight into `requests`,
+  `input_tokens`, `output_tokens`, `thinking_tokens`, `cost` and `cost_requests`.
+  On this archive that was 31M phantom output tokens and 25k phantom requests
+  (production totals on the rebuild: requests 461,397 → 436,407, input 92.55M →
+  88.15M, output 306.54M → 275.71M). The ledger is now `request_metrics` and holds
+  every usage figure, one canonical row per provider request, `MAX` per field so a
+  duplicate arriving in a later watcher poll still collapses. `thread_metrics` is
+  re-derived from it rather than accumulated into, which also makes re-folding an
+  already-folded window a no-op instead of a doubling — verified bit-identical
+  against a 200k-event re-fold on the live index.
+- `refresh_metrics` rebuilds only the threads the folded window touched. It
+  previously reran an unbounded full-table `UPDATE … SET cache_read_tokens = (
+  correlated subquery)` over every `thread_metrics` row on every fold, which is the
+  per-request full survey the incremental cursor exists to avoid.
+- `metrics_cursor.cache_requests_ready` (a one-shot "backfilled once" bool) is now
+  `projection_version`, an integer compared against `_metrics.PROJECTION_VERSION`.
+  Any change to the fold that makes old sums incomparable is a bump, and the next
+  refresh discards and rebuilds instead of adding to them.
+- Fixed a crash opening any archive predating both metrics columns. `_ADDED_COLUMNS`
+  iterates in dict order, and the `thread_metrics` fixup wrote
+  `metrics_cursor.cache_requests_ready` — a column the *next* entry had not created
+  yet — so `init_db` raised `no such column` and the open died. It self-healed on a
+  second open (the ALTER autocommits, the fixup's DML rolls back), which disguised a
+  deterministic ordering bug as a transient race. Schema provisioning no longer
+  writes data at all: it provisions shape, and `refresh_metrics` owns staleness via
+  `projection_version`, so the steps are order-independent by construction.
+- `init_db` drops projections a newer shape superseded (`request_cache_metrics`, the
+  `cache_requests_ready` column) rather than stranding them. They are disposable
+  re-derivations of the event log, and a stale one left in place reads like a live one.
+
+- New gold miner **`commit`** (`thread_archive mine commit`) and the
+  `evals/swechat_corpus.py` harness that feeds it. Every existing miner
+  establishes its labels by searching with the engine under test — the rerank
+  judge grades a pool production search returned, the query/topic labelers sweep
+  with their own reformulations through the same stack — so a systematic retrieval
+  blind spot is invisible to labeler and ranker alike and can never score as a
+  miss. `commit` takes its gold from **provenance** instead: a linkage file pairs
+  each session with the commits it demonstrably authored, an agent reads only the
+  commit (message + diff) and writes queries for it, and the linked session is the
+  answer. No search runs during labeling, and since the agent never reads the
+  target thread there is no vocabulary leakage either — the bias query-gen carries
+  by construction. Same-repo siblings grade themselves structurally (overlapping
+  files 1, disjoint 0), so the confound pool costs no tokens; only the grade-2 is
+  grounded, 1/0 are proxies. Needs a corpus shipping session↔commit provenance, so
+  it stays out of `mine all`.
+
+  `swechat_corpus.py` builds that corpus from
+  [SWE-chat](https://huggingface.co/datasets/SALT-NLP/SWE-chat) (public, ODC-BY,
+  arXiv:2604.20779), whose transcripts are native Claude Code JSONL and so ingest
+  through the shipped importer unchanged. Its value is being an **independent
+  hold-out**: every other gold file is mined from one corpus by one author, and
+  hold-out discipline within a corpus cannot see overfitting to it. Unlike the
+  BEIR/CDR/haystack yardsticks it is domain-matched — agent session logs, not a
+  third-party IR corpus. Roughly 2100 of 5851 sessions carry attributable commits,
+  about half of which have retrievable commit content.
+
+- Recent-conversation cards now include up to 200 characters from the first
+  non-empty user message, so a title alone is no longer the only recognition cue.
+
+- The ranker gained a **`bm25_weight` term** over `_lex` — the lexical arm's own
+  placement of a hit (peak-normalized reciprocal rank, stamped in the pool half of
+  `search`) — shipped at `100.0`. The arm's verdict previously reached the scorer
+  through one channel only: FTS5 orders by bm25 but never surfaces the score, and
+  `_rrf`, the feature carrying rank evidence, is computed only when the vector arm
+  returns. So a lexical-only search (a `tool_name` or `types` scope, a structural
+  query, an archive without embeddings) ranked on density alone — and density is
+  IDF-blind and length-normalized, weighing a corpus-common term exactly like the
+  rare one that discriminates and then dividing by length. Measured on BEIR scifact
+  over a fixed pool, varying only the ordering: the pool's own bm25 order scores
+  0.682 nDCG@10 (above the 0.665 published Anserini BM25 reference) while an
+  unweighted density re-scoring of that same pool scores 0.302, pushing 54 of 332
+  gold documents out of the top-200 entirely (recall@100 0.924 → 0.716) and
+  dropping top-10 median document length 1496 → 835 chars.
+
+  The shipped weight is set by the **gold files, not that benchmark**: 100 is
+  where findability gains .019 MRR / .015 nDCG@10, judged .013 MRR and
+  rerank-cases .052 success@10, against the recall it costs the confound-dense
+  files (frustration −.048 recall@10, context-compaction −.033). A deliberate
+  trade, taken on the in-domain delta. 200 buys findability another .015 nDCG@10
+  for more of the same recall; past ~400 bm25's order overrides the density
+  evidence the topic files lean on and they break their floors.
+  `evals/experiments/no_bm25.py` races the ablation.
+
+  The external suite, tuned against by nothing, agrees: BEIR scifact lexical
+  0.302 → 0.445 (recall@100 0.716 → 0.900) and fused 0.650 → 0.658; CDR lexical
+  0.101 → 0.230 (recall@100 0.250 → 0.569) and fused 0.458 → 0.492;
+  LongMemEval-S 0.894 → 0.912 recall@10. The benchmark gap is deliberately left
+  open — `bm25_weight` near 2000 reaches BEIR's BM25 reference and breaks five
+  gold floors doing it. LoCoMo is flat (fused 0.649 → 0.653, re-rank forced on
+  0.790 → 0.787) because the term is out of scale there, not inert: density is
+  normalized to `density_norm_chars` but unbounded, so on a corpus whose every
+  document is a sub-500-char turn (median 116) density runs several times larger
+  than on archive-length text and a fixed-scale bm25 term cannot reach it. Read
+  a flat number on a short-document corpus as scale, not as no effect.
+
+- `pool_cache.FORMAT_VERSION` → 2, since cached pools now carry `_lex`. A pool
+  cached by an older build would have scored the new term as zero and made a
+  `--set bm25_weight=…` sweep read as having no effect.
+
+- Search quality gained a **recall-shape tier** (`tests/test_search_recall_shape.py`)
+  alongside the ordering floors. The existing tier-0 metrics (MRR, success@k, and a
+  "recall@k" over golds that are mostly one thread) score which thread *wins*; they
+  are satisfied by a ranker that returns one right answer, so two shapes the archive
+  is actually asked for went unmeasured: "every thread that mentions X" and "the
+  first / last time we discussed X". Both are now scored on two blocks added to
+  `tests/quality_corpus.py`, built so their golds are true by construction rather
+  than by judgment — a **nonce sentinel term** carried by exactly 24 threads and
+  nothing else (past the default result window, so only `group='browse'` /
+  `output='count'` can return the set, and corpus noise can never fuzz the answer),
+  and a **dated series** of 12 mentions across a year whose earliest mention is
+  deliberately the weakest lexical match, so a chronological scan that merely echoed
+  relevance order fails. Adding 36 threads left the ordering metrics untouched
+  (MRR 1.0, recall@5 1.0).
+
+- Two tier-0 invariants were **measuring precision while reading as recall**, and are
+  now two-sided. `test_focused_thread_beats_passing_mentions` asserted a decoy's rank
+  only `if` it was present, so a ranker that dropped genuinely-matching threads passed
+  — demotion and disappearance were indistinguishable; it now requires each decoy to
+  come back. `test_quoted_phrase_excludes_scattered_words` pinned the entire result
+  list to a single thread, encoding "a quoted phrase has one answer" and making any
+  future fixture carrying the phrase a failure; it now names the two threads its
+  mechanism is about.
+
+- `search(sort=...)` **rejects** anything but `'oldest'` instead of silently ignoring
+  it. `group` and `agents` already validated; `sort` did not, so `sort='newest'` — the
+  plausible guess for "when was this last discussed" — returned relevance order, a
+  wrong answer indistinguishable from a right one. There is no newest sort; the most
+  recent mention is read off an enumerated result set.
+
+- External calibration re-measured at the shipped configuration (`fusion_weight=400`,
+  cross-encoder off), and the fused numbers moved a long way: BEIR scifact nDCG@10
+  0.509 → 0.650, CDR 0.249 → 0.458, LoCoMo recall@10 0.621 → 0.649, and LoCoMo with
+  the re-rank forced on 0.756 → 0.790. Every lexical-arm number is unchanged, the
+  expected shape — `fusion_weight` moves only the fused ranking. Three findings came
+  out of it:
+  - The lift **generalizes**. `fusion_weight` was tuned solely against the mined gold
+    files, and it lifted four third-party corpora nobody tuned against (+0.141 BEIR,
+    +0.209 CDR). The external suite therefore works as an unplanned held-out set for
+    gold-tuned ranking changes, and is worth scoring after a defaults change.
+  - The cross-encoder is **domain-bound, not superseded**. Its lift over fusion on
+    LoCoMo is +0.141 recall@10, essentially unchanged by the fusion increase, so on
+    turn-level dialog the two arms are additive rather than overlapping. The "buys
+    ~no MRR" verdict behind `rerank_auto=False` holds for the archive's own golds
+    only. It costs 4207s against the +vectors pass's 157s over the same corpus.
+  - The **lexical arm is the open problem**. At nDCG@10 0.302 it still trips
+    `beir_eval`'s own `BELOW BM25 — investigate` verdict (−0.363 against the 0.665
+    reference) while lexical recall@100 is 0.716 — the pool holds the right document
+    and the re-scoring buries it. BM25 ranks candidate *selection* only; there is no
+    bm25 term in `SearchParams`, and density/recency/content-type are inert on a
+    corpus with no time axis and one content type. A `bm25_weight` ranker term is the
+    experiment this points at; unmeasured so far.
+
+- `docs/search-quality.md` rewritten to the current measurement regime. It had led
+  with a click-label (`--from-log`) table as its headline metric; the measurement of
+  record is the seven snapshot-bound gold files, so the doc now leads with their
+  per-file MRR/success@10/recall@10/nDCG@10 and demotes the click protocol to the
+  alarm it is. Also corrected: the gold gate is a deliberate run rather than a CI
+  row, the cross-encoder ships off by default, coherence carries fresh `graph_eval`
+  numbers at the shipped γ=0.005, the rejected PageRank-authority term is gone from
+  the code rather than described as a live candidate, and a latency section covers
+  the p50/p95 the speed axis now measures.
+
+- `retrieval-gold-gate` dropped from the CI suite list (`ci.toml`). Its ~140 live
+  searches with the embedding + rerank models loaded run at the edge of the 600s
+  runner cap, so it timed the sweep out under load. The grounded regression floor
+  is now a deliberate run — `scripts/retrieval_gold_gate.py`, alongside the tuning
+  loop it already hosts — while the per-commit CI path keeps the `retrieval-gate`
+  arm-liveness probes.
+
 - The gold gate scores the speed axis too: `--latency [REPS]` measures warm
   latency over the same queries it scores for quality (pool cache OFF — the arms
   are the cost being measured) and prints the joint report, so a `--set` tuning

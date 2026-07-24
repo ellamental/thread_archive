@@ -46,8 +46,6 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterable
 
-from sqlalchemy import text
-
 from .._store import Event, get_session
 from .._thread_import.event_builder import _DEDUP_CONTENT_KEYS
 from .._truth.jsonl_log import (
@@ -189,26 +187,12 @@ def amend_event_payloads(
                 _append_amendment_records(d, audit)
         if metrics_dirty:
             # The incremental stats cursor only notices appended event ids; an
-            # amendment changes a row behind that cursor. Drop the disposable
-            # projection and rewind it so the next stats read rebuilds from the
-            # amended event log instead of serving stale token or cost totals.
+            # amendment changes a row behind that cursor, so the next stats read
+            # would serve token or cost totals folded from the pre-amendment payload.
+            from .._store._metrics import invalidate_metrics
+
             with get_session() as s:
-                s.execute(text("DELETE FROM thread_metrics"))
-                s.execute(text("DELETE FROM request_cache_metrics"))
-                s.execute(
-                    text(
-                        "INSERT OR IGNORE INTO metrics_cursor "
-                        "(id, through_event_id, cache_requests_ready) "
-                        "VALUES (1, 0, 0)"
-                    )
-                )
-                s.execute(
-                    text(
-                        "UPDATE metrics_cursor SET through_event_id = 0, "
-                        "cache_requests_ready = 0 "
-                        "WHERE id = 1"
-                    )
-                )
+                invalidate_metrics(s)
                 s.commit()
     logger.info(
         "amend: %d event(s) amended across %d thread(s) (%d no-op)",

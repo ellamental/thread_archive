@@ -5,15 +5,179 @@ export interface Status {
   threads: number
   events: number
   topics: number
+  links: number
   fts_indexed: number
   vectors_indexed: number
   home: string
+  truth_dir: string
+  index_path: string
+  last_checkpoint_at: string | null
+  last_verify: VerifyRecord | null
+  last_backup: BackupRecord | null
+  last_restore_drill: RestoreDrillRecord | null
+  last_nightly: NightlyRecord | null
+  last_watch_errors: WatchErrorRecord | null
+  last_watch_pass: WatchPassRecord | null
+  last_coverage: CoverageRecord | null
+  last_source_mirror: SourceMirrorRecord | null
+  last_self_update: SelfUpdateRecord | null
+  pipeline: PipelineVerdict
+  watch_process_alive: boolean
+  backup_same_device: boolean | null
+}
+
+export interface HealthRecord {
+  at: string
+  ok?: boolean
+}
+
+export interface VerifyRecord extends HealthRecord {
+  ok: boolean
+  deep?: boolean
+  hashes?: boolean
+  failed?: number
+  parse_errors?: number
+  drift_events?: number
+  drift_threads?: number
+}
+
+export interface BackupRecord extends HealthRecord {
+  ok: boolean
+  dest?: string
+  verify_ok?: boolean
+  mirror_complete?: boolean
+  files_copied?: number
+  keyring_in_bundle?: boolean
+}
+
+export interface RestoreDrillRecord extends HealthRecord {
+  ok: boolean
+  dest?: string
+  events?: number
+  coverage?: number
+  seconds?: number
+}
+
+export interface NightlyRecord extends HealthRecord {
+  ok: boolean
+  dest?: string
+  failed_stages?: string[]
+  deep?: boolean
+  hashes?: boolean
+  drill?: boolean
+}
+
+export interface WatchSourceRecord {
+  checked: number
+  items: number
+  events: number
+  lines: number
+  parse_errors: number
+  errors: number
+}
+
+export interface WatchPassRecord extends HealthRecord {
+  pid?: number
+  started_at?: string
+  passes?: number
+  sources?: Record<string, WatchSourceRecord>
+}
+
+export interface WatchErrorRecord extends HealthRecord {
+  count_since_start?: number
+  errors?: string[]
+}
+
+export interface CoverageRecord extends HealthRecord {
+  ok: boolean
+  sources_checked?: number
+  failed?: string[]
+  warnings?: string[]
+  degraded?: Record<string, unknown>
+  skips_recent?: number
+  drift_recent?: number
+}
+
+export interface SourceMirrorRecord extends HealthRecord {
+  ok: boolean
+  copied?: number
+  files?: number
+  bytes_out?: number
+  errors?: number
+  unsupported?: string[]
+}
+
+export interface SelfUpdateRecord extends HealthRecord {
+  ok: boolean
+  action?: 'updated' | 'update' | 'up-to-date' | 'blocked' | 'unavailable' | string
+  current?: string
+  tag?: string
+  reason?: string
+}
+
+export interface PipelineVerdict {
+  ran: boolean
+  ok: boolean
+  failed_stages: string[]
+  recovered_stages: string[]
+  tolerated_stages: string[]
+  nightly_at: string | null
+  dest: string | null
+}
+
+// ── archive loading ─────────────────────────────────────────────────────────
+// One phase of a load (import, truth, fts, embed, vector-cache): its wall time,
+// how far it got, and the named sub-timings that say where the time went.
+export interface LoadPhase {
+  name: string
+  done: number
+  total: number | null
+  elapsed_s: number
+  rate_per_s: number | null
+  eta_s: number | null
+  detail_s?: Record<string, number>
+  counts?: Record<string, number>
+}
+
+// A load of one archive — live (status 'running') or finished. `stalled` means
+// the process that was writing it is gone, so the progress will never advance.
+export interface LoadRun {
+  kind: string
+  home?: string
+  pid?: number
+  status: 'running' | 'ok' | 'failed' | 'stalled' | string
+  started_at?: string
+  at?: string
+  elapsed_s?: number
+  duration_s?: number
+  error?: string | null
+  phase?: string | null
+  phases?: LoadPhase[]
+}
+
+export interface ArchiveEntry {
+  id: string
+  home: string
+  label: string
+  first_seen?: string
+  last_opened?: string
+  // Descriptive tag set by the operator (or by tooling — a snapshot stamps
+  // 'snapshot' on its dest): what this archive is *for*. Grants nothing.
+  role?: string
+  exists: boolean
+  active: boolean
+  index_bytes?: number
+  // The live load state published by whatever process is loading this archive —
+  // {} when no load has ever been recorded for it.
+  load: LoadRun | Record<string, never>
+  runs?: LoadRun[]
 }
 
 export interface ThreadListItem {
   id: string
   title: string | null
   source: string | null
+  first_user_message: string | null
   // 'conversation' | 'system' (subagent runs) | 'topic' | legacy type strings —
   // an open vocabulary; /api/thread-types is the live census.
   thread_type: string
@@ -294,6 +458,8 @@ async function getJSON<T>(url: string): Promise<T> {
 
 export const api = {
   status: () => getJSON<Status>('/api/status'),
+  archives: () =>
+    getJSON<{ archives: ArchiveEntry[] }>('/api/archives').then((d) => d.archives),
   // No `types` → the server's default view (topics and system/subagent runs
   // hidden); an explicit list selects exactly those thread types.
   threads: (opts: { q?: string; types?: string[]; limit?: number } = {}) => {

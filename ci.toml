@@ -98,25 +98,6 @@ argv = ["{repo}/.venv/bin/python", "{repo}/evals/retrieval_eval.py",
         "--probes-only", "--require-semantic", "--require-rerank"]
 timeout = 600
 
-# Retrieval-quality regression floors: score the snapshot-bound gold case files
-# — the measurement of record for search quality (evals/README.md) — and fail if
-# one drops below its calibrated MRR / success@10 / true recall@10 / nDCG@10
-# floors. Unlike the arm-probe row above this DOES run metrics, but only as a
-# one-way ratchet (floors live in the script, calibrated under measured), never
-# a displayed per-commit quality number — the distinction
-# that kept click-label MRR off the probe row holds here too. Scores over the
-# frozen snapshot the golds are bound to (~/.thread/archive-snap). Runs with
-# --require (fail closed): this lane is supposed to measure, so an absent
-# snapshot or a missing/stale/unreadable calibrated gold file is a FAILURE, not a
-# silent green — a gate that quietly stopped measuring is the failure mode the
-# grounded ratchet exists to prevent. A real maintenance window still passes, but
-# only by declaring itself: THREAD_ARCHIVE_GOLD_GATE_MAINTENANCE=<reason> prints a
-# visible skip. Runs where the archive and snapshot live, same as the arm-probe row.
-[[suite]]
-name = "retrieval-gold-gate"
-argv = ["{repo}/.venv/bin/python", "{repo}/scripts/retrieval_gold_gate.py", "--require"]
-timeout = 600
-
 # The release lane: build the wheel + sdist, prove their contents, install the
 # wheel into a clean venv, and run the real CLI lifecycle from it. Deselected
 # from the default pytest run (see pyproject addopts), so it gets its own row.

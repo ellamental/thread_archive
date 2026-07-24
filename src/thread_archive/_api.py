@@ -31,11 +31,19 @@ if TYPE_CHECKING:
 # The backup kit, re-exported (see docstring).
 from ._ops.backup import backup, list_generations, restore, restore_drill  # noqa: F401
 from ._ops.coverage import check_coverage  # noqa: F401
-from ._ops.health import read_health  # noqa: F401
+from ._ops.health import pipeline_verdict, read_health  # noqa: F401
 from ._ops.nightly import nightly  # noqa: F401
 from ._ops.snapshot import snapshot  # noqa: F401
 from ._ops.source_mirror import mirror_sources  # noqa: F401
 from ._ops.verify import verify  # noqa: F401
+
+_WATCH_PROCESS_ACTIVE = False
+
+
+def _set_watch_process_active(active: bool) -> None:
+    """Mark this process as the persistent watch loop for status consumers."""
+    global _WATCH_PROCESS_ACTIVE
+    _WATCH_PROCESS_ACTIVE = active
 
 
 def open_archive(home: Optional[str] = None) -> ArchivePaths:
@@ -74,6 +82,12 @@ def open_archive(home: Optional[str] = None) -> ArchivePaths:
 
         close_engine()
         raise
+    # An archive becomes *known* by being used — no enrollment step to forget.
+    # After the open succeeds, so a home that can't be opened is never advertised
+    # as one of the user's archives; throttled and fail-soft inside register().
+    from ._ops.archives import register
+
+    register(paths.home)
     return paths
 
 
@@ -293,6 +307,7 @@ def embed(
     max_events: Optional[int] = None,
     newest_first: bool = False,
     embedder=None,
+    progress=None,
 ) -> dict:
     """Embed the user/text events that are missing a vector (incremental anti-join).
 
@@ -306,12 +321,22 @@ def embed(
     :func:`thread_archive._retrieval.vectors.index_events_local`, so a caller
     holding a loaded model, or indexing into a second embedding space, does not
     have to reach past this surface for it. No-op without the ``[embeddings]``
-    extra. Returns ``{'embedded': n}``."""
-    open_archive(home)
+    extra. Returns ``{'embedded': n}``.
+
+    The run is tracked: progress, rate, and ETA are published to
+    ``<home>/load-state.json`` for any other process to read (:func:`load_status`),
+    and a summary lands in the load ledger. ``progress`` is an optional callable
+    taking the run snapshot, for a foreground caller that wants to show it —
+    a cold embed is measured in hours and must not look like a hang."""
+    paths = open_archive(home)
+    from ._ops.load_runs import load_run
     from ._retrieval.vectors import index_events_local
 
-    n = index_events_local(rebuild=rebuild, max_events=max_events,
-                           newest_first=newest_first, embedder=embedder)
+    with load_run("embed", home=paths.home, reporter=progress) as run:
+        with run.phase("embed") as ph:
+            n = index_events_local(rebuild=rebuild, max_events=max_events,
+                                   newest_first=newest_first, embedder=embedder,
+                                   phase=ph)
     return {"embedded": n}
 
 
@@ -323,9 +348,18 @@ def checkpoint(*, home: Optional[str] = None) -> dict:
     return _checkpoint()
 
 
-def watch(*, home: Optional[str] = None, interval: float = 5.0, once: bool = False):
-    """Watch local AI-tool stores and import incrementally. Blocks unless ``once``."""
-    open_archive(home)
+def watch(*, home: Optional[str] = None, interval: float = 5.0, once: bool = False,
+          progress=None):
+    """Watch local AI-tool stores and import incrementally. Blocks unless ``once``.
+
+    A one-shot sweep (``once=True``) is the bulk catch-up a new archive loads
+    through — the first import that makes search usable — so it is tracked: its
+    progress, rate, and ETA are published to ``<home>/load-state.json`` and a
+    summary lands in the load ledger (:func:`load_status`), and ``progress`` (a
+    callable taking the run snapshot) lets a foreground caller show it. The
+    continuous loop is steady-state, not a load: it keeps its own pass heartbeat
+    and writes no per-poll ledger rows."""
+    paths = open_archive(home)
     from ._truth import shared_ingest_lock
     from ._watcher import Watcher
 
@@ -333,8 +367,11 @@ def watch(*, home: Optional[str] = None, interval: float = 5.0, once: bool = Fal
     if once:
         # run() takes the shared reindex lock per pass; a one-shot poll needs the
         # same coverage (blocking — it has no next pass to retry on).
-        with shared_ingest_lock():
-            return watcher.poll_once()
+        from ._ops.load_runs import load_run
+
+        with load_run("import", home=paths.home, reporter=progress) as run:
+            with run.phase("import") as ph, shared_ingest_lock():
+                return watcher.poll_once(phase=ph)
     watcher.run()
     return None
 
@@ -359,9 +396,7 @@ def status(*, home: Optional[str] = None) -> dict:
         ).scalar() or 0
         links = s.execute(select(func.count()).select_from(ThreadLink)).scalar() or 0
     from ._retrieval.vectors import get_status as _vec_status
-    from ._truth.jsonl_log import _read_manifest
 
-    health = read_health()
     return {
         "home": str(paths.home),
         "truth_dir": str(paths.truth_dir),
@@ -372,6 +407,53 @@ def status(*, home: Optional[str] = None) -> dict:
         "links": int(links),
         "fts_indexed": fts_status()["indexed"],
         "vectors_indexed": _vec_status().get("indexed", 0),
+        **operational_records(home=home),
+    }
+
+
+def operational_records(*, home: Optional[str] = None) -> dict:
+    """The freshness-bearing half of :func:`status`: the ``health.json`` records,
+    the pipeline verdict, watcher liveness, the backup's same-device check, and
+    the load state.
+
+    Split out because every field here is judged against *now* — a reader asks
+    "how long since capture last checked in?" and answers red past a threshold.
+    Costed to be read fresh on every request (a JSON file, a manifest, two
+    stats, one ``kill(pid, 0)``) so it never has to ride a cache: served from a
+    snapshot even minutes old, a live watcher's last pass reads as a stall.
+    """
+    paths = open_archive(home)
+    from ._truth.jsonl_log import _read_manifest
+
+    health = read_health()
+    watch_pass = health.get("watch_pass_last")
+    backup_record = health.get("backup_last") or {}
+
+    watch_process_alive = _WATCH_PROCESS_ACTIVE
+    if isinstance(watch_pass, dict):
+        try:
+            pid = int(watch_pass.get("pid", 0))
+            if pid > 0:
+                os.kill(pid, 0)
+                watch_process_alive = True
+        except (OSError, TypeError, ValueError):
+            pass
+
+    backup_same_device = None
+    backup_dest = backup_record.get("dest") if isinstance(backup_record, dict) else None
+    if backup_dest:
+        try:
+            # A destination may have been unmounted or removed since the last
+            # run. Walk to its nearest existing parent so the warning still
+            # works before the next backup recreates the leaf.
+            dest_probe = Path(str(backup_dest)).expanduser()
+            while not dest_probe.exists() and dest_probe != dest_probe.parent:
+                dest_probe = dest_probe.parent
+            backup_same_device = paths.home.stat().st_dev == dest_probe.stat().st_dev
+        except OSError:
+            pass
+
+    return {
         "last_checkpoint_at": _read_manifest(paths.truth_dir).get("last_checkpoint_at"),
         "last_verify": health.get("verify_last"),
         "last_backup": health.get("backup_last"),
@@ -382,7 +464,42 @@ def status(*, home: Optional[str] = None) -> dict:
         "last_coverage": health.get("coverage_last"),
         "last_source_mirror": health.get("source_mirror_last"),
         "last_self_update": health.get("self_update_last"),
+        "pipeline": pipeline_verdict(health),
+        "watch_process_alive": watch_process_alive,
+        "backup_same_device": backup_same_device,
+        "load": _load_state(paths.home),
     }
+
+
+def _load_state(home: Path) -> dict:
+    from ._ops.load_runs import read_state
+
+    return read_state(home)
+
+
+def load_status(*, home: Optional[str] = None, limit: int = 20) -> dict:
+    """How loading this archive is going: the live state of any in-flight load
+    (phase, progress, rate, ETA) plus the recent finished runs.
+
+    ``current`` is the record a long load publishes as it works, so progress is
+    readable from outside the process doing it; ``recent`` is the history, which is
+    what turns "the embed felt slow" into a per-phase series. A ``current`` whose
+    writing process is gone comes back as ``stalled`` rather than ``running``."""
+    paths = open_archive(home)
+    from ._ops.load_runs import read_runs, read_state
+
+    return {"home": str(paths.home), "current": read_state(paths.home),
+            "recent": read_runs(limit, paths.home)}
+
+
+def archives(*, home: Optional[str] = None) -> list[dict]:
+    """Every known archive with its load state — including archives this process
+    has not opened. An archive is registered by being opened, so this is the list
+    of homes that have been used, each enriched live from its own directory."""
+    paths = open_archive(home)
+    from ._ops.archives import list_archives
+
+    return list_archives(active_home=paths.home)
 
 
 def stats(*, home: Optional[str] = None, model_limit: Optional[int] = None) -> dict:

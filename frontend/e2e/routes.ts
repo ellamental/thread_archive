@@ -20,6 +20,10 @@ export const ROUTES: SmokeRoute[] = [
   { path: '/threads', landmark: (page) => page.getByPlaceholder('filter by title…') },
   { path: '/stats', landmark: (page) => page.getByRole('heading', { name: 'Stats' }) },
   {
+    path: '/health',
+    landmark: (page) => page.getByRole('heading', { name: 'Your archive is protected' }),
+  },
+  {
     path: `/stats/model/${MODEL}`,
     landmark: (page) => page.getByRole('heading', { name: MODEL }),
   },

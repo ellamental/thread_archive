@@ -129,6 +129,23 @@ def _device() -> str:
     return select_device(os.environ.get("THREAD_ARCHIVE_EMBED_DEVICE"), *torch_accelerators())
 
 
+def dtype_kwargs(device: str) -> dict:
+    """Model kwargs for ``device``: fp16 on an accelerator — roughly double the
+    inference speed at a numerical difference that does not move ranking — and
+    nothing on CPU, where fp16 is emulated and slower.
+
+    Both model paths share this one policy. They did not always: the cross-encoder
+    applied it and the embedder loaded fp32, which is the difference between a cold
+    corpus embedding in an hour and in several."""
+    if not device.startswith(("mps", "cuda")):
+        return {}
+    try:
+        import torch
+    except ImportError as e:  # extra absent — degrade via the slot's failure cache
+        raise RuntimeError(f"[embeddings] extra not installed: {e}") from e
+    return {"torch_dtype": torch.float16}
+
+
 # ── hub cache / offline pinning ───────────────────────────────────────────────
 def _hub_cache_dir() -> str:
     """The HF hub cache directory, resolved the way huggingface_hub does — but as a pure
@@ -183,6 +200,7 @@ def build_model(sentence_transformer: Callable[..., SentenceEncoder], name: str)
     model = sentence_transformer(
         name, revision=revision_for(name),
         trust_remote_code=True, device=device,
+        model_kwargs=dtype_kwargs(device),
     )
     # sentence-transformers renamed the accessor; take whichever this model has.
     # Only a log detail, so a model carrying neither still loads.

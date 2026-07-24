@@ -52,6 +52,22 @@ def test_snapshot_is_a_self_contained_searchable_home(seeded, tmp_path):
     assert hits, "the snapshot's own content must be searchable"
 
 
+def test_snapshot_registers_its_dest_with_the_snapshot_role(seeded, tmp_path, monkeypatch):
+    # A snapshot is a durable archive home — it must show up in the registry,
+    # tagged with what it is (unlike a drill temp, which stays out entirely).
+    from thread_archive._ops import archives
+
+    registry = tmp_path / "archives.json"
+    monkeypatch.setenv("THREAD_ARCHIVE_REGISTRY", str(registry))
+    archives._last_registered.clear()
+
+    dest = tmp_path / "snap"
+    api.snapshot(str(dest), home=str(seeded))
+    entry = archives.resolve_ref(str(dest))
+    assert entry is not None, archives.read_registry()
+    assert entry["role"] == "snapshot"
+
+
 def test_snapshot_is_frozen_against_source_growth(seeded, tmp_path):
     """The isolation the ``until`` trick used to provide: a snapshot's corpus is
     fixed, so a thread added to the source after the snapshot never appears in

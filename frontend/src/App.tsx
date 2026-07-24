@@ -7,6 +7,7 @@ import { ThreadView } from './components/ThreadView'
 import { AllThreadsView } from './components/AllThreadsView'
 import { StatsView } from './components/StatsView'
 import { ModelStatsView } from './components/ModelStatsView'
+import { HealthView } from './components/HealthView'
 import { Landing } from './components/Landing'
 
 export function App() {
@@ -81,6 +82,7 @@ export function App() {
             <Route path="/threads" element={<AllThreadsView />} />
             <Route path="/stats" element={<StatsView />} />
             <Route path="/stats/model/:model" element={<ModelStatsView />} />
+            <Route path="/health" element={<HealthView />} />
             <Route path="/archive/:id" element={<ThreadView />} />
           </Routes>
         </div>

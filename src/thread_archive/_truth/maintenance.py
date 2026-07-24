@@ -12,6 +12,7 @@ import json
 import logging
 import os
 import shutil
+import time
 from datetime import datetime
 from pathlib import Path
 
@@ -41,6 +42,36 @@ from .locks import (
 )
 
 logger = logging.getLogger(__name__)
+
+# Two parts of the maintenance pass cost O(archive size) per call: the
+# ``import_state`` snapshot rewrites every row, and the rebalance sweep counts
+# every thread file. Both are *cadence* work, and the maintenance form runs once
+# per imported file — so on a bulk import (a cold catch-up, a corpus build) they
+# turn ingest quadratic: each import pays for every import before it.
+#
+# Both are safe to run on an interval rather than every call. A stale
+# ``import_state`` snapshot costs a re-import of the overlap, which ``dedup_key``
+# collapses (see :func:`_checkpoint_locked`); a deferred rebalance leaves the
+# shard threshold crossed slightly late, and the sweep is already written to
+# finish an interrupted migration on a later pass. Freshness that must not lag —
+# pre-backup, pre-reindex — comes from the full form, which never defers.
+_SWEEP_INTERVAL_S = 30.0
+# Keyed by truth dir: a process that switches homes must not inherit another
+# home's cadence. Monotonic, so a wall-clock jump can't stall a sweep.
+_last_swept: dict[str, float] = {}
+
+
+def _due(d: Path, component: str, *, interval: float = _SWEEP_INTERVAL_S) -> bool:
+    """Whether ``component``'s interval has elapsed for the truth dir ``d``, marking
+    it run when it has. First call in a process is always due, so a one-shot import
+    still snapshots."""
+    key = f"{d}\0{component}"
+    now = time.monotonic()
+    if now - _last_swept.get(key, float("-inf")) < interval:
+        return False
+    _last_swept[key] = now
+    return True
+
 
 # ── checkpoint (cross-thread snapshots + metadata-update backstop) ───────────
 def _write_snapshot(d: Path, name: str, model: type) -> int:
@@ -122,12 +153,20 @@ def _checkpoint_locked(*, snapshots: bool = True) -> dict:
     # still restores cursors instead of adopting active sources at EOF. A stale
     # snapshot is safe (import resumes from the older watermark and dedup_key
     # collapses the overlap), but a *fresh* one keeps the regression window at
-    # minutes instead of a backup cycle — and the table is small, so unlike the
-    # cross-thread overlays it is snapshotted on the maintenance cadence too.
-    counts["import_state"] = _write_snapshot(d, "import_state", ImportState)
+    # minutes instead of a backup cycle — so unlike the cross-thread overlays it
+    # rides the maintenance cadence too, on the sweep interval (the rewrite is
+    # O(rows): one row per source, and a source-per-file importer has many).
+    if snapshots or _due(d, "import_state"):
+        counts["import_state"] = _write_snapshot(d, "import_state", ImportState)
     # Rebalance BEFORE the thread-metadata backstop, so the backstop appends at the
     # post-rebalance depth and can never manufacture a flat twin of a just-moved file.
-    depth = _maybe_rebalance(d, int(m.get("shard_depth", 0)))
+    # Deferring the sweep only delays the threshold; the depth written below still
+    # comes from the manifest, so paths stay correct on the calls that skip it.
+    depth = (
+        _maybe_rebalance(d, int(m.get("shard_depth", 0)))
+        if snapshots or _due(d, "rebalance")
+        else int(m.get("shard_depth", 0))
+    )
     # Re-read the manifest: a concurrent sweep (ours skips when the rebalance lock is
     # held) may have advanced shard_depth — never write a stale depth back over it.
     m = _read_manifest(d)

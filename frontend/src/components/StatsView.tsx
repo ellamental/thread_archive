@@ -1,7 +1,8 @@
 import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { api, type Stats, type StatsModel, type StatsSource } from '../api'
-import { hueStyle, modelHue } from '../modelColor'
+import { assignColors, colorStyle } from '../modelColor'
+import type { ModelColor } from '../modelColor'
 
 // The stats page: token & cost analytics over the whole archive, read from an
 // incrementally-maintained rollup (server-side). Cost is only present for the
@@ -36,13 +37,13 @@ function fmtMonth(iso: string | null): string {
 }
 
 // A proportional fill bar (0..1 of the row's value against the column max).
-export function Bar({ frac, hue }: { frac: number; hue?: number }) {
+export function Bar({ frac, color }: { frac: number; color?: ModelColor }) {
   const pct = Math.max(frac <= 0 ? 0 : 2, Math.min(100, frac * 100)) // floor a nonzero value so it's visible
   return (
     <span className="stat-bar">
       <span
-        className={'stat-bar-fill' + (hue != null ? ' model' : '')}
-        style={{ width: pct + '%', ...(hue != null ? hueStyle(hue) : {}) }}
+        className={'stat-bar-fill' + (color ? ' model' : '')}
+        style={{ width: pct + '%', ...(color ? colorStyle(color) : {}) }}
       />
     </span>
   )
@@ -98,6 +99,9 @@ function ProviderTable({ rows }: { rows: StatsSource[] }) {
 
 function ModelTable({ rows }: { rows: StatsModel[] }) {
   const maxReq = Math.max(1, ...rows.map((r) => r.requests))
+  // Colored as a set: same-family models keep the family hue and separate by shade,
+  // so a table of five opuses reads as five greens rather than five identical chips.
+  const colors = assignColors(rows.map((r) => r.model))
   const anyCost = rows.some((r) => r.cost != null && r.cost > 0)
   return (
     <div className="stat-table-wrap">
@@ -117,13 +121,13 @@ function ModelTable({ rows }: { rows: StatsModel[] }) {
             <tr key={r.model}>
               <td>
                 <Link className="model-link" to={'/stats/model/' + encodeURIComponent(r.model)}>
-                  <span className="model-tag" style={hueStyle(modelHue(r.model))}>
+                  <span className="model-tag" style={colorStyle(colors[r.model])}>
                     {r.model}
                   </span>
                 </Link>
               </td>
               <td className="bar-col">
-                <Bar frac={r.requests / maxReq} hue={modelHue(r.model)} />
+                <Bar frac={r.requests / maxReq} color={colors[r.model]} />
                 <span className="bar-num">{fmtInt(r.requests)}</span>
               </td>
               <td className="num">{r.tokens ? fmtTokens(r.tokens) : '—'}</td>

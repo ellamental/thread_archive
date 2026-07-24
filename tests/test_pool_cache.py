@@ -17,11 +17,15 @@ from thread_archive._retrieval.params import SearchParams
 NOW = datetime(2026, 7, 1, 12, 0, 0)
 
 
-def _hit(event_id: int, content: str, *, rrf: float = 0.0, ct: str = "user") -> dict:
-    return {
+def _hit(event_id: int, content: str, *, rrf: float = 0.0, ct: str = "user",
+         lex: float | None = None) -> dict:
+    hit = {
         "event_id": event_id, "thread_id": f"t{event_id}", "content_type": ct,
         "full_content": content, "occurred_at": "2026-06-01T00:00:00", "_rrf": rrf,
     }
+    if lex is not None:
+        hit["_lex"] = lex
+    return hit
 
 
 # --- the key ----------------------------------------------------------------
@@ -63,8 +67,9 @@ def test_key_covers_every_pool_reaching_search_param() -> None:
     # only reach the *ranking* half are correctly invisible here.
     ranking_only = {
         "density_weight", "phrase_weight", "recency_weight", "fusion_weight",
-        "content_type_weights", "recency_half_life_hours", "density_norm_chars",
-        "rerank_auto", "rerank_pool", "rerank_doc_chars", "coherence_gamma",
+        "bm25_weight", "content_type_weights", "recency_half_life_hours",
+        "density_norm_chars", "rerank_auto", "rerank_pool", "rerank_doc_chars",
+        "coherence_gamma",
     }
     # pool_floor reaches the key folded into `over`, which the caller resolves.
     keyed = {"rrf_k", "pool_floor"}
@@ -204,17 +209,57 @@ def test_features_do_not_move_with_the_weights() -> None:
 
 
 def test_scoring_is_scale_invariant() -> None:
-    # All four weights times a constant is the same order — the reason
+    # All five weights times a constant is the same order — the reason
     # density_weight reads as the anchor the others are calibrated against.
-    pool = [_hit(1, "alpha beta", rrf=0.4), _hit(2, "alpha", rrf=0.9),
-            _hit(3, "beta gamma delta epsilon", rrf=0.2)]
+    pool = [_hit(1, "alpha beta", rrf=0.4, lex=0.3), _hit(2, "alpha", rrf=0.9, lex=0.1),
+            _hit(3, "beta gamma delta epsilon", rrf=0.2, lex=1.0)]
     terms = ["alpha", "beta"]
-    base = SearchParams()
+    base = SearchParams(bm25_weight=250.0)
     scaled = SearchParams(
         density_weight=base.density_weight * 3, phrase_weight=base.phrase_weight * 3,
-        recency_weight=base.recency_weight * 3, fusion_weight=base.fusion_weight * 3)
+        recency_weight=base.recency_weight * 3, fusion_weight=base.fusion_weight * 3,
+        bm25_weight=base.bm25_weight * 3)
     assert (rank.rank_search_results(pool, terms, 3, params=base, now=NOW)
             == rank.rank_search_results(pool, terms, 3, params=scaled, now=NOW))
+
+
+# --- the bm25 term -----------------------------------------------------------
+
+
+def test_bm25_term_is_scored_at_the_shipped_default() -> None:
+    # The shipped weight is live, so a hit's bm25 standing changes where it lands.
+    # A pool with no _lex at all still scores — the term degrades to 0, which is
+    # what a semantic-only pool and every pre-stamp cached pool look like.
+    terms = ["alpha", "beta"]
+    head = [_hit(1, "alpha beta padding", lex=1.0), _hit(2, "alpha beta padding", lex=0.02)]
+    assert [h["event_id"] for h in rank.rank_search_results(head, terms, 2, now=NOW)] == [1, 2]
+    flipped = [_hit(1, "alpha beta padding", lex=0.02), _hit(2, "alpha beta padding", lex=1.0)]
+    assert [h["event_id"] for h in rank.rank_search_results(flipped, terms, 2, now=NOW)] == [2, 1]
+    bare = [_hit(1, "alpha beta padding"), _hit(2, "alpha beta padding")]
+    assert len(rank.rank_search_results(bare, terms, 2, now=NOW)) == 2
+
+
+def test_bm25_term_can_outvote_density() -> None:
+    # The failure the term exists for: density is IDF-blind and length-normalized,
+    # so the short doc matching common terms outranks the long doc the lexical arm
+    # put first. Weighted, the arm's own verdict wins the head back.
+    terms = ["alpha", "beta"]
+    short_confound = _hit(1, "alpha beta", lex=0.02)
+    long_target = _hit(2, "alpha beta " + "unrelated padding " * 40, lex=1.0)
+    pool = [short_confound, long_target]
+    without = rank.rank_search_results(
+        pool, terms, 2, params=SearchParams(bm25_weight=0.0), now=NOW)
+    assert without[0]["event_id"] == 1
+    ranked = rank.rank_search_results(
+        pool, terms, 2, params=SearchParams(bm25_weight=500.0), now=NOW)
+    assert ranked[0]["event_id"] == 2
+
+
+def test_lex_is_absent_for_a_hit_no_lexical_arm_returned() -> None:
+    # A semantic-only hit never had a bm25 standing; it must score 0 on the term
+    # rather than inherit a neighbour's.
+    feats = rank.score_features([_hit(1, "alpha", rrf=0.9)], ["alpha"], now=NOW)
+    assert feats[0][4] == 0.0
 
 
 # --- against a real corpus ---------------------------------------------------

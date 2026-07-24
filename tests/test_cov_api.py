@@ -213,6 +213,86 @@ def test_watch_loop_keeps_polling(archive_home, tmp_path) -> None:
             proc.stdout.close()
 
 
+def test_status_survives_a_dead_watch_pid_and_a_vanished_backup_dest(
+    archive_home, tmp_path
+) -> None:
+    """Health is read from records that outlive what they describe: the watcher
+    that wrote the last pass may be gone, and the backup volume may be unmounted.
+    Neither may take the status report down with it."""
+    from thread_archive._ops.health import record_health
+
+    record_health("watch_pass_last", {"pid": 2 ** 31 - 1, "sources": {}})  # no such process
+    record_health("backup_last", {"ok": True, "dest": str(tmp_path / "unmounted" / "bak")})
+
+    st = ta.status()
+    assert st["threads"] == 0
+    assert st["last_backup"]["dest"].endswith("bak")
+
+
+def test_load_status_reports_the_live_state_and_the_history(archive_home) -> None:
+    """The library view of a load in flight — what ``thread_archive loads`` and
+    ``GET /api/loads`` both read."""
+    from thread_archive._ops import load_runs
+
+    empty = ta.load_status()
+    assert empty["home"] == str(archive_home)
+    assert empty["current"] == {} and empty["recent"] == []
+
+    with load_runs.load_run("reindex", home=archive_home) as run:
+        with run.phase("reindex", total=2) as ph:
+            ph.advance(2)
+        live = ta.load_status()
+        assert live["current"]["kind"] == "reindex"
+        assert live["current"]["status"] == "running"
+
+    done = ta.load_status()
+    assert done["current"]["status"] == "ok"
+    assert [r["kind"] for r in done["recent"]] == ["reindex"]
+
+
+def test_archives_lists_every_registered_home(archive_home, tmp_path, monkeypatch) -> None:
+    """An archive is known by having been opened — including one this process
+    never opened, which is the whole point of the registry."""
+    from thread_archive._ops import archives as reg
+
+    monkeypatch.setenv("THREAD_ARCHIVE_REGISTRY", str(tmp_path / "registry.json"))
+    reg._last_registered.clear()
+    other = tmp_path / "other-archive"
+    other.mkdir()
+    reg.register(other, force=True)
+
+    rows = ta.archives()
+    by_home = {r["home"]: r for r in rows}
+    assert by_home[str(archive_home)]["active"] is True
+    assert by_home[str(other)]["active"] is False and by_home[str(other)]["exists"] is True
+
+
+def test_amend_and_amendments_round_trip_through_the_api(archive_home) -> None:
+    """``amend`` writes superseding truth lines and ``amendments`` reads the audit
+    trail back — the append-only edit path, driven through the library front door."""
+    from sqlalchemy import select
+
+    from thread_archive._store import Event, get_session
+
+    f = archive_home / "sess.jsonl"
+    _write_cc(f, [USER, ASSISTANT])
+    ta.import_path(f)
+    ta.checkpoint()
+
+    thread_id = ta.search("hello api")[0]["thread_id"]
+    with get_session() as s:
+        event_id = s.execute(
+            select(Event.id).where(Event.thread_id == thread_id).order_by(Event.id)
+        ).scalars().first()
+
+    assert ta.amendments() == []
+    result = ta.amend([(thread_id, event_id, {"note": "amended by test"})], reason="cov")
+    assert result["events_amended"] == 1
+
+    trail = ta.amendments()
+    assert [a["reason"] for a in trail] == ["cov"]
+
+
 def test_redactions_delegates(archive_home) -> None:
     """The redaction list is the lifecycle view of the real redaction log."""
     from thread_archive._ops.redact import redact_events

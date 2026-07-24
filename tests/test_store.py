@@ -183,47 +183,106 @@ def test_add_missing_column_backfills_and_is_idempotent(tmp_path) -> None:
     eng.dispose()
 
 
-def test_added_metrics_column_rewinds_derived_projection(tmp_path) -> None:
+def test_init_db_opens_a_store_predating_every_metrics_column(tmp_path) -> None:
+    # Provisioning steps must not depend on each other's order. A store old enough to
+    # be missing both metrics columns has to open on the first try — reaching across
+    # tables to fix up data mid-ALTER made that a guaranteed crash on exactly the
+    # oldest installs, the ones with the most to lose.
     from sqlalchemy import text
 
-    from thread_archive._store import schema as schema_mod
+    eng = build_engine(_dsn(tmp_path))
+    init_db(eng)
+    with eng.begin() as conn:
+        conn.execute(text("ALTER TABLE thread_metrics DROP COLUMN cache_read_tokens"))
+        conn.execute(text("ALTER TABLE metrics_cursor DROP COLUMN projection_version"))
+
+    init_db(eng)  # must not raise
+
+    with eng.begin() as conn:
+        tm = {r[1] for r in conn.execute(text("PRAGMA table_info(thread_metrics)"))}
+        mc = {r[1] for r in conn.execute(text("PRAGMA table_info(metrics_cursor)"))}
+    assert "cache_read_tokens" in tm
+    assert "projection_version" in mc
+    eng.dispose()
+
+
+def test_init_db_drops_superseded_projections(tmp_path) -> None:
+    # The rollup's old shape is a disposable re-derivation, so it is dropped rather
+    # than carried — a stale table left behind reads exactly like a live one.
+    from sqlalchemy import text
+
+    eng = build_engine(_dsn(tmp_path))
+    init_db(eng)
+    with eng.begin() as conn:
+        conn.execute(text("CREATE TABLE request_cache_metrics (thread_id TEXT)"))
+        conn.execute(
+            text("ALTER TABLE metrics_cursor ADD COLUMN cache_requests_ready BOOLEAN")
+        )
+
+    init_db(eng)
+
+    with eng.begin() as conn:
+        tables = {
+            r[0]
+            for r in conn.execute(text("SELECT name FROM sqlite_master WHERE type='table'"))
+        }
+        mc = {r[1] for r in conn.execute(text("PRAGMA table_info(metrics_cursor)"))}
+    assert "request_cache_metrics" not in tables
+    assert "cache_requests_ready" not in mc
+    eng.dispose()
+
+
+def test_stale_projection_version_rebuilds_instead_of_accumulating(tmp_path) -> None:
+    # Sums folded by an older definition of the projection cannot be added to by a
+    # newer one. The refresh owns that call — schema provisioning never touches data.
+    from sqlalchemy import text
+
+    from thread_archive._store._metrics import PROJECTION_VERSION, refresh_metrics
 
     eng = build_engine(_dsn(tmp_path))
     init_db(eng)
     with eng.begin() as conn:
         conn.execute(
             text(
-                "INSERT INTO thread_metrics "
-                "(thread_id, model, requests, input_tokens) "
+                "INSERT INTO threads (id, name, thread_type, source, archived) "
+                "VALUES ('t1', 'n1', 'conversation', 'demo-harness', 0)"
+            )
+        )
+        conn.execute(
+            text(
+                "INSERT INTO events (thread_id, stream_id, event_type, payload, occurred_at) "
+                "VALUES ('t1', 's0', 'api_request_completed', :payload, :at)"
+            ),
+            {
+                "payload": '{"model": "m1", "input_tokens": 7, "output_tokens": 3}',
+                "at": "2026-06-01T10:00:00Z",
+            },
+        )
+        # A rollup left behind by an older shape: wrong sums, cursor already advanced.
+        conn.execute(
+            text(
+                "INSERT INTO thread_metrics (thread_id, model, requests, input_tokens) "
                 "VALUES ('t1', 'm1', 1, 99)"
             )
         )
         conn.execute(
             text(
-                "INSERT INTO metrics_cursor (id, through_event_id) "
-                "VALUES (1, 123)"
+                "INSERT INTO metrics_cursor (id, through_event_id, projection_version) "
+                "VALUES (1, 999, 0)"
             )
         )
-        conn.execute(
-            text("ALTER TABLE thread_metrics DROP COLUMN cache_read_tokens")
-        )
 
-    schema_mod._add_missing_columns(eng)
+    refresh_metrics(eng)
+
     with eng.begin() as conn:
-        have = {
-            row[1]
-            for row in conn.execute(text("PRAGMA table_info(thread_metrics)"))
-        }
-        assert "cache_read_tokens" in have
-        assert conn.execute(text("SELECT COUNT(*) FROM thread_metrics")).scalar() == 0
-        assert (
-            conn.execute(
-                text(
-                    "SELECT through_event_id FROM metrics_cursor WHERE id = 1"
-                )
-            ).scalar()
-            == 0
-        )
+        row = conn.execute(
+            text("SELECT requests, input_tokens, output_tokens FROM thread_metrics")
+        ).all()
+        version = conn.execute(
+            text("SELECT projection_version FROM metrics_cursor WHERE id = 1")
+        ).scalar()
+    assert row == [(1, 7, 3)]  # rebuilt from the events, not added to the stale 99
+    assert version == PROJECTION_VERSION
     eng.dispose()
 
 

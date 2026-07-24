@@ -34,7 +34,7 @@ const TYPES: ThreadTypeCount[] = [
 function thread(overrides: Partial<ThreadListItem>): ThreadListItem {
   return {
     id: '1', title: 'a session', source: 'claude-code', thread_type: 'conversation',
-    updated_at: '2026-01-01T10:00:00Z',
+    updated_at: '2026-01-01T10:00:00Z', first_user_message: null,
     ...overrides,
   }
 }

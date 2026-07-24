@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import { api, type StructuredThread } from '../api'
 import { Message } from './Message'
-import { assignHues, hueStyle } from '../modelColor'
+import { assignColors, colorStyle } from '../modelColor'
 
 // The message holding the deep-linked event (?e= from a search hit). Exact
 // membership wins; otherwise the last message that starts at-or-before the event —
@@ -150,11 +150,11 @@ export function ThreadView() {
 
   const models = threadModels(data)
   const agents = data.agent_sessions ?? null
-  // Assign hues over the thread's own models first (they keep their header order),
+  // Assign colors over the thread's own models first (they keep their header order),
   // then any model only the subagents used — so a model shared by both reads the
   // same color on the header line and the agents line.
   const agentModels = agents?.by_model.map((b) => b.model) ?? []
-  const hues = assignHues([...models, ...agentModels.filter((m) => !models.includes(m))])
+  const colors = assignColors([...models, ...agentModels.filter((m) => !models.includes(m))])
   const span = fmtSpan(data.started_at, data.ended_at)
   const hitPos = hitEvents.indexOf(focusEvent)
 
@@ -166,7 +166,7 @@ export function ThreadView() {
         {models.length > 0 && (
           <span className="model-tags">
             {models.map((m) => (
-              <span className="model-tag" key={m} style={hueStyle(hues[m])}>
+              <span className="model-tag" key={m} style={colorStyle(colors[m])}>
                 {m}
               </span>
             ))}
@@ -196,7 +196,7 @@ export function ThreadView() {
           {agents.by_model.length > 0 && (
             <span className="model-tags">
               {agents.by_model.map(({ model, count }) => (
-                <span className="model-tag" key={model} style={hueStyle(hues[model])}>
+                <span className="model-tag" key={model} style={colorStyle(colors[model])}>
                   {model}
                   {count > 1 && <span className="agent-count"> ×{count}</span>}
                 </span>
@@ -287,7 +287,7 @@ export function ThreadView() {
             <Message
               key={i}
               message={m}
-              hueForModel={hues}
+              hueForModel={colors}
               continued={continued}
               highlighted={i === focusIdx}
               findTarget={i === findIdx && findTerm.trim().length > 0}

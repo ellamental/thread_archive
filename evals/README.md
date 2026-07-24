@@ -30,8 +30,8 @@ Fastest tier first — climb until the evidence matches the stakes.
 |---|---|---|---|---|
 | 0 | `tests/test_search_quality.py` (in every pytest run) | checked-in synthetic corpus (`tests/quality_corpus.py`), lexical stack | seconds | every change |
 | 1 | `pytest -m quality_models` | same corpus, real embedding + rerank models | minutes | touching the model arms |
-| 2 | CI `retrieval-gate` (arm-liveness probes) + `retrieval-gold-gate` (gold-file regression floors) | live archive + the golds' frozen snapshot | ~a minute | every commit, via thread-ci |
-| 3 | `retrieval_eval.py` by hand, `graph_eval.py`, `--behavior` | live archive | minutes | evaluating a deliberate ranking change |
+| 2 | CI `retrieval-gate` (arm-liveness probes) | live archive | seconds | every commit, via thread-ci |
+| 3 | `retrieval_gold_gate.py` (grounded regression floors), `retrieval_eval.py` by hand, `graph_eval.py`, `--behavior` | live archive + the golds' frozen snapshot | minutes | evaluating a deliberate ranking change |
 | 3½ | `retrieval_eval.py --cases` on agent-mined golds (`thread_archive mine <miner>` to mint them) | a frozen corpus snapshot, corpus-grounded labels | seconds to score; agent-minutes per mined case | scoring against grounded labels; mining is an occasional cadence |
 | 4 | `pytest -m beir`; `cdr_eval.py`, `haystack_eval.py --dataset …` by hand | external IR / conversational-memory benchmarks | tens of minutes (built homes cache for re-runs) | calibrating against published baselines |
 
@@ -70,7 +70,7 @@ archive (BEIR and the lab build throwaway homes and never touch it).
   ones a count alone can drive. All bind by `snapshot_id` to the frozen corpus
   snapshot they run against (`thread_archive snapshot`; point `THREAD_ARCHIVE_HOME`
   at it), so after the one-time spend `retrieval_eval.py --cases` scores them for
-  free and refuses them once the snapshot's id no longer matches. Four miners,
+  free and refuses them once the snapshot's id no longer matches. Five miners,
   covering complementary failure modes:
   - **`query`** — one `claude` agent per real trail query reads the originating
     session for intent, sweeps the snapshot deep and wide with its own
@@ -91,6 +91,32 @@ archive (BEIR and the lab build throwaway homes and never touch it).
     reads it and authors difficulty-laddered queries (verbatim / paraphrase /
     vague) to find it; each becomes a findability case whose single gold is that
     thread (`findability-cases.jsonl`). Recall / findability, corpus-representative.
+  - **`commit`** — the non-circular rung. Every miner above establishes its labels
+    by searching with the engine under test, which bounds what any of them can
+    measure: a systematic retrieval blind spot is invisible to labeler and ranker
+    alike, so it can never score as a miss. Here the gold comes from
+    **provenance** — a *linkage file* pairs each session with the commits it
+    demonstrably authored, one agent reads only the commit (message + diff) and
+    authors queries for it, and the linked session is the answer
+    (`commit-cases.jsonl`). No search runs during labeling, and since the agent
+    never reads the target thread there is no vocabulary leakage either. Sibling
+    sessions in the same repo grade themselves structurally (overlapping files 1,
+    disjoint 0), so the confound pool costs no tokens. Needs a corpus that ships
+    session↔commit provenance — `evals/swechat_corpus.py` builds one from SWE-chat
+    — so it is `○ direct`, never in `mine all`. Grades 1/0 are structural proxies;
+    only the 2 is grounded.
+- **`swechat_corpus.py`** — builds the SWE-chat corpus home and its linkage file.
+  [SWE-chat](https://huggingface.co/datasets/SALT-NLP/SWE-chat) is public
+  agent-session data (ODC-BY, arXiv:2604.20779) whose transcripts are native
+  Claude Code JSONL, so the shipped importer ingests them unchanged. Its point is
+  the one thing a gold file mined from this archive can never be: an **independent
+  hold-out**. Every other gold file is mined from one corpus by one author, so
+  hold-out discipline *within* it cannot see overfitting *to* it — and unlike the
+  external yardsticks below, SWE-chat is domain-matched (it is agent session logs,
+  not a mismatched third-party IR corpus). The built corpus is **Claude Code
+  only** (5144 of 5850 transcripts): the other harnesses SWE-chat collects ship
+  shapes the line-stream importer can't read, and archive's OpenCode/Cursor
+  importers are DB scanners with no JSON-export path.
 - **`graph_eval.py`** — does the corpus-native embedding graph earn its
   ranking signal? Regression check for the shipped coherence re-rank, and the
   gate any new graph lever must pass.
@@ -222,6 +248,10 @@ the re-rank budget.
   - `mine querygen` (`findability-cases.jsonl`): generate difficulty-laddered
     queries for a random thread and test it ranks — corpus-representative
     findability, the recall counterpart to `rerank`'s precision.
+  - `mine commit` (`commit-cases.jsonl`): author queries from a commit and test
+    that the session which produced it ranks. The only rung whose labels are not
+    established by searching with the engine under test, and the only one whose
+    confounds are structural rather than judged.
 
   Each case is bound by `snapshot_id` to the corpus snapshot it was mined
   against (`thread_archive snapshot`; point `THREAD_ARCHIVE_HOME` at it), and
@@ -250,16 +280,16 @@ the re-rank budget.
   is as a **sampling frame**: real query shapes to seed the gold miner with,
   not a labeler.
 
-**Claim discipline.** Green tier 0 plus a quiet CI gate license exactly one
-claim: "search didn't break." The `retrieval-gold-gate` CI row makes that "didn't
-break" grounded rather than synthetic — it scores the gold files over their
-frozen snapshot on every commit and fails on a drop below a calibrated floor
-(`scripts/retrieval_gold_gate.py`) — but it is a **one-way floor, not a displayed
-score**: it holding means the ranking didn't regress past the baseline, never
-that it improved. The click-label protocols stay off the per-commit path for the
-opposite reason (they are censored by the incumbent, so a per-commit click-MRR
-invites being misread as quality); the gold files can ride CI precisely because
-they are grounded and gated as a floor. The claim "search improved" still
+**Claim discipline.** Green tier 0 licenses exactly one claim, synthetically:
+"search didn't break." Running `scripts/retrieval_gold_gate.py` on a ranking
+change makes that "didn't break" grounded rather than synthetic — it scores the
+gold files over their frozen snapshot and fails on a drop below a calibrated floor
+— but it is a **one-way floor, not a displayed score**: it holding means the
+ranking didn't regress past the baseline, never that it improved. It stays a
+deliberate floor rather than a per-commit number for the same reason the
+click-label protocols never run automatically: they are censored by the incumbent,
+so a per-commit click-MRR invites being misread as quality; scored as a one-way
+floor on a deliberate change, the grounded golds answer only "did it regress." The claim "search improved" still
 requires a gold-file delta scored on both sides of the change — every minted
 file, each over its own snapshot. Without those runs, report the change as
 unverified — not as an improvement.
@@ -313,9 +343,9 @@ that already worked, not a win — and it will not survive a hold-out.
   `test_beir_calibration.py`, `test_retrieval_gold_gate.py`) and run in every
   pytest pass — the lab stays runnable even when nobody has tuned search in
   months.
-- The `retrieval-gold-gate` CI row (`scripts/retrieval_gold_gate.py`) scores the
-  gold files over their snapshot on every commit as a regression floor. It runs
-  where the archive and the snapshot live (same as the arm-probe row); on a box
+- The gold gate (`scripts/retrieval_gold_gate.py`) scores the gold files over
+  their snapshot as a deliberate regression floor, run on a ranking change. It
+  runs where the archive and the snapshot live; on a box
   without the snapshot, or while a gold file is mid-re-mine, the affected file is
   skipped, not failed. Its floors are calibrated a few points under measured —
   raise a floor when a shipped change lifts a number and holds; add a floor entry

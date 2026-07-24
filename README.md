@@ -259,15 +259,15 @@ The scope is deliberately narrow. These are design decisions, not gaps waiting
 on a release:
 
 - **More than one machine — and merging archives.** An archive belongs to one
-  machine. Event ids (and legacy integer thread aliases) are locally minted
-  integers wired through the truth layer — the append-only event log,
-  causality links, redaction records. Two archives grown independently
-  therefore occupy the same id space with nothing to tell them apart, and
-  cannot be combined. There is no
-  merge tool, no sync, and no federated search across archives. *Moving* an
-  archive to another machine is supported — carry the directory, or
-  `thread_archive restore <mirror> --to <home>`; running two and reconciling them
-  later is not.
+  machine. There is no merge tool, no sync, and no federated search across
+  archives — a deliberate single-machine scope, not a technical wall. Thread
+  ids are globally-unique ULIDs, so two archives never collide there; what a
+  merge would still have to reconcile is the locally-minted **event id** space
+  wired through the truth layer — the append-only event log, causality links,
+  redaction records — by remapping one archive's ids past the other's.
+  Mechanical, but unbuilt. *Moving* an archive to another machine is supported
+  — carry the directory, or `thread_archive restore <mirror> --to <home>`;
+  running two and reconciling them later is not.
 - **Anything but macOS and Linux.** The always-on pieces — watcher, scheduled
   backup, shared MCP server — are launchd LaunchAgents on macOS and systemd
   `--user` units on Linux, and public CI exercises both (the Linux lane against
@@ -307,68 +307,6 @@ or `&redirect=1` → a `302` to `/archive/<id>`. (Local — no separate backend
 involved.) `id` may repeat — a caller that cannot tell which uuid it holds is the
 session id sends every candidate, best guess first, and the first that resolves
 wins; ids that were never imported are skipped, not fatal.
-
-## What it does
-
-- **Ingests 8 agent harnesses** into one event model — Claude Code, Codex, Grok,
-  Antigravity, Cowork (transcript line-streams) and Cursor, OpenCode, Claude
-  Science (SQLite scanners). Web chats (claude.ai, ChatGPT, xAI) are the one manual
-  path: drop a downloaded account export into `<home>/dumps/` (picked up on the next
-  ingest pass) or run `thread_archive import-export <path>` — a redrop merges, importing only
-  what grew. Imports are idempotent, atomic, and survive a full reindex losslessly. A
-  `cc-exthost` watcher also recovers mid-turn Claude Code steering messages that never
-  reach the session JSONL.
-- **Takes provider plugins**, so a harness archive has never heard of can be preserved
-  without a fork. A provider is one descriptor — where its transcripts live, how to
-  read them, what its format looks like — declared against the public
-  `thread_archive.provider` API and found through a `thread_archive.providers` entry
-  point. The built-in providers are built from that same API, so a plugin is a
-  first-class source: same poll loop, same off switch, same coverage reporting.
-  `thread_archive providers` lists what is registered; see [docs/providers.md](docs/providers.md).
-- **Self-feeds** — the watcher tails local stores and ingests incrementally; events land
-  in the JSONL truth *before* their commit (no checkpoint in the hot loop). Zero-daemon
-  freshness comes from the setup-generated MCP catch-up opt-in; a one-command
-  service install (`thread_archive daemon install` — launchd on macOS, systemd on
-  Linux) makes it always-fresh. Neither mode
-  needs an external service.
-- **Declares itself** — the installer writes a small discovery manifest
-  `<home>/product.json` (`host/write-manifest.py`; `make install-agent` runs
-  it): name, version, data paths, and the viewer URL when the watcher serves
-  one, so sibling tooling can find the archive by enumeration. The writer is
-  the reference for its shape; harmless when nothing consumes it.
-- **Searches locally** — FTS5 lexical (boolean / phrase / pipe-OR / code-identifier),
-  optionally fused with local semantic vectors and a cross-encoder re-rank; plus
-  transcript reconstruction for reading. An empty query **browses**: one row per
-  thread by last activity, under the same time/source/type filters — orientation
-  ("what happened yesterday") without guessing keywords. Ranked results come one
-  row per thread — repeats and cross-thread duplicate content fold into
-  annotations instead of spending result slots (`group='none'` for every hit).
-- **Rebuilds losslessly** — `rm index.db && thread_archive reindex` reconstructs the entire
-  index from the JSONL truth; a `cp`/`rsync` of the truth dir *is* the backup.
-- **Checks for releases** — provider formats drift, and a parser fix only matters if it
-  reaches the machines that need it. The watcher fetches release tags daily and reports
-  when the newest tag has soaked for 48 hours; applying it is the explicit
-  `thread_archive self-update` operation: checkout → reinstall → smoke check → daemon restart,
-  rolling back if the new install doesn't stand up. It never touches a tree with local
-  changes, and never crosses a truth-format bump without
-  `--allow-format-bump`. Scheduled checks can be disabled with
-  `{"update": {"enabled": false}}`; operators who deliberately want unattended apply
-  can set `{"update": {"auto_apply": true}}`. Wheel installs are untouched.
-- **Redacts without deleting history** — `thread_archive redact` crypto-shreds content
-  (truth lines, index rows and free pages, search docs, vectors, citation quotes,
-  derived titles) into an encrypted bundle on the append-only redaction log, keyed
-  by `<home>/keyring.json` (outside the truth dir — the truth mirror and its dated
-  generations hold ciphertext only; the keyring rides the backup's head-only
-  `.recovery` bundle so a restore keeps active redactions reversible, with
-  `{"backup": {"include_keyring": false}}` in config.json as the ciphertext-only
-  opt-out). Reversible while the key is held (`thread_archive unredact`); escrow the key
-  off the machine (`--show-key` + `--forget`) or destroy it for crypto-erasure. The
-  original provider store keeps its own copy — redaction covers the archive.
-- **Guards its operator's reality** — when search once answered "not found"
-  against a conversation that was right there, that failure's *mechanism* is
-  pinned as a permanent regression test on a synthetic corpus: a false "not
-  found" against a high-confidence memory is the one failure class the suite
-  guards hardest.
 
 ## MCP
 

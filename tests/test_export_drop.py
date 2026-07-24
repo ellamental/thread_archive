@@ -176,6 +176,27 @@ def test_unrecognized_zip_is_quarantined_not_deleted(archive_home) -> None:
     assert r2.sources_checked == 0 and not r2.errors
 
 
+def test_drift_quarantine_is_not_scanned(archive_home) -> None:
+    """``dumps/drift/`` shares the drop zone but holds preservation copies of a
+    degraded source's raw store — the only copy left once the harness prunes.
+    Scanning it would classify it as an unrecognized export and file it under
+    ``failed/``, burying the quarantine and costing the drift snapshotter the
+    prior generations it does incremental copies against."""
+    init_db()
+    dumps = archive_home / "dumps"
+    gen = dumps / "drift" / "claude-code" / "20260101T000000Z"
+    gen.mkdir(parents=True)
+    (gen / "manifest.json").write_text('{"source": "claude-code"}', encoding="utf-8")
+
+    w = ExportDropWatcher(dumps_dir=dumps)
+    w.poll()
+    r = w.poll()
+
+    assert r.sources_checked == 0 and not r.errors
+    assert gen.exists()
+    assert not (dumps / "failed").exists()
+
+
 def test_failed_import_is_quarantined(archive_home) -> None:
     """A truncated download: the sibling markers still classify it as a claude.ai
     export, and the bulk importer raises on the half-written ``conversations.json``.

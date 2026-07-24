@@ -46,6 +46,7 @@ test('home exposes recent conversations and the global search shortcut', async (
 
   await page.goto('/')
   await expect(page.getByRole('link', { name: /Browser Test Thread/ }).last()).toBeVisible()
+  await expect(page.getByText('Open the browser test thread and verify its recent-card preview.')).toBeVisible()
   await page.keyboard.press('/')
   await expect(page.locator('[data-global-search][data-primary="true"]')).toBeFocused()
 

@@ -338,7 +338,18 @@ def _survey(name: str, compute, ttl: float) -> dict:
 
 
 def _status() -> dict:
-    return _survey("status", api.status, _STATUS_TTL)
+    """The survey's counts from cache; its operational records read fresh.
+
+    Only the counts are expensive, and only they tolerate age. The records
+    (``api.operational_records``) are what the health page ages against *now*,
+    so serving a cached copy of them turns idle time into a fault: nothing
+    refreshes this cache but a request, so a page opened after twenty quiet
+    minutes would read a twenty-minute-old "capture last checked" stamp and call
+    a perfectly live watcher stalled."""
+    return {
+        **_survey("status", api.status, _STATUS_TTL),
+        **api.operational_records(),
+    }
 
 
 def _list_sources() -> list[dict]:
@@ -377,7 +388,8 @@ def _list_threads(*, limit: int, q: Optional[str], types: Optional[list[str]] = 
     ``types`` given, exactly those ``thread_type`` values are listed; without
     it, topics and system threads (subagent runs) are hidden — the sidebar's
     default. Archived threads never list; ``q`` filters on title/name
-    substring."""
+    substring. Each row also carries a compact preview of its first non-empty
+    user message."""
     from sqlalchemy import DateTime, func, select
 
     from .._store import Event, Thread, get_session
@@ -393,9 +405,24 @@ def _list_threads(*, limit: int, q: Optional[str], types: Optional[list[str]] = 
     last_active_at = func.coalesce(
         newest_event_at, Thread.updated_at, type_=DateTime(timezone=True)
     ).label("last_active_at")
+    user_content = func.trim(
+        func.json_extract(Event.payload, "$.content"), " \t\r\n"
+    )
+    first_user_message = (
+        select(func.substr(user_content, 1, 200))
+        .where(
+            Event.thread_id == Thread.id,
+            Event.event_type.in_(("user_message_sent", "thread_message_sent")),
+            func.length(user_content) > 0,
+        )
+        .order_by(Event.id.asc())
+        .limit(1)
+        .scalar_subquery()
+        .label("first_user_message")
+    )
     stmt = (
         select(Thread.id, Thread.title, Thread.name, Thread.source,
-               Thread.thread_type, last_active_at)
+               Thread.thread_type, last_active_at, first_user_message)
         .where(Thread.archived.is_(False))
     )
     if types:
@@ -416,6 +443,7 @@ def _list_threads(*, limit: int, q: Optional[str], types: Optional[list[str]] = 
             "thread_type": r.thread_type,
             # the row's date in list consumers: last activity, not the raw column
             "updated_at": r.last_active_at.isoformat() if r.last_active_at else None,
+            "first_user_message": r.first_user_message,
         }
         for r in rows
     ]
@@ -487,6 +515,15 @@ def route(method: str, path: str, params: dict) -> Response:
 
     if path == "/api/status":
         return _ok(_status())
+
+    if path == "/api/loads":
+        # Live load progress + recent runs. Cheap by construction — two small
+        # files off the home, no index counting — so a page watching a running
+        # load can poll it without competing with the load for the store.
+        return _ok(api.load_status(limit=_int(params, "limit", 20, hi=200)))
+
+    if path == "/api/archives":
+        return _ok({"archives": api.archives()})
 
     if path == "/api/sources":
         return _ok({"sources": _list_sources()})

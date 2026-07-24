@@ -337,7 +337,10 @@ def thread_search(
 
     ``startswith`` does a structural prefix scan (content LIKE 'prefix%'; query text
     unused). ``sort='oldest'`` returns matches chronologically (find when something
-    was first discussed) instead of the default recency-biased ranking.
+    was first discussed) instead of the default recency-biased ranking; it is the
+    only sort, and any other value is an error. For the most *recent* mention,
+    enumerate the matches (``group='browse'``) and read the latest date off them —
+    there is no newest sort to ask for.
     ``context_lines`` (default 2; set 0 for the raw FTS snippet) replaces each
     snippet with a numbered ±N-line window around the match; ``context_events``
     ('N' / 'before:after' /

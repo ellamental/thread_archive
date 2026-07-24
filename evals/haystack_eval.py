@@ -211,14 +211,22 @@ def _build_group(api, home: Path, corpus: dict[str, str], *, vectors: bool) -> d
 
     work = home / "_ingest"
     work.mkdir(parents=True, exist_ok=True)
+    # Tracked like any archive load (progress lands in this home's
+    # load-state.json/ledger — the home is unregistered, but a stalled or slow
+    # build is still inspectable via `thread_archive loads --home <home>`).
+    from thread_archive._ops.load_runs import load_run
+
     doc_of_thread: dict[str, str] = {}
-    for i, (docid, text) in enumerate(corpus.items()):
-        f = work / f"d{i}.jsonl"
-        f.write_text("\n".join(json.dumps(x) for x in _session_lines(docid, text)) + "\n",
-                     encoding="utf-8")
-        res = api.import_path(f, source_id=f"hay-{docid}")
-        f.unlink()
-        doc_of_thread[str(res.thread_id)] = docid
+    with load_run("import", home=home, note="haystack corpus build") as run:
+        with run.phase("import", total=len(corpus)) as ph:
+            for i, (docid, text) in enumerate(corpus.items()):
+                f = work / f"d{i}.jsonl"
+                f.write_text("\n".join(json.dumps(x) for x in _session_lines(docid, text)) + "\n",
+                             encoding="utf-8")
+                res = api.import_path(f, source_id=f"hay-{docid}")
+                f.unlink()
+                doc_of_thread[str(res.thread_id)] = docid
+                ph.advance()
     if vectors:
         api.embed()
     shutil.rmtree(work, ignore_errors=True)
@@ -397,7 +405,13 @@ def main() -> int:
     args = ap.parse_args()
     if args.ks is None:
         args.ks = "5,10,25,50" if args.dataset == "locomo" else "5,10"
-    return run(args)
+    # Per-question haystacks mean hundreds of tiny fingerprint-named corpus homes
+    # per run — workspace, not archives. Registering them would bury the real
+    # entries in ~/.thread/archives.json.
+    from thread_archive._ops.archives import suppress_registration
+
+    with suppress_registration():
+        return run(args)
 
 
 if __name__ == "__main__":

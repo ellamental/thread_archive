@@ -166,6 +166,73 @@ def test_watcher_poll_once_is_inline_durable(archive_home, tmp_path) -> None:
     assert not (archive_home / "truth" / "manifest.json").exists()
 
 
+def test_tracked_poll_advances_a_phase_per_imported_file(archive_home, tmp_path) -> None:
+    """A poll handed a phase reports per-file progress (the loading experience):
+    a total seeded from discovery, an advance per import, and the event/line counts."""
+    from thread_archive._ops import load_runs
+
+    init_db()
+    projects = tmp_path / "projects"
+
+    def _turn(u, a, txt):
+        return [
+            {"type": "user", "uuid": u, "timestamp": "2026-01-01T10:00:00Z",
+             "cwd": "/proj", "message": {"role": "user", "content": txt}},
+            {"type": "assistant", "uuid": a, "timestamp": "2026-01-01T10:00:05Z",
+             "message": {"role": "assistant", "model": "claude-opus-4",
+                         "content": [{"type": "text", "text": "ok"}]}},
+        ]
+
+    # Distinct uuids per file — identical uuids dedup across the archive and the
+    # second file would import nothing.
+    _write_cc(projects, "p", "s1", _turn("u1", "a1", "first"))
+    _write_cc(projects, "p", "s2", _turn("u2", "a2", "second"))
+
+    watcher = Watcher([ClaudeCodeWatcher(projects_dirs=[projects])], interval=1.0)
+    run = load_runs.LoadRun("import", archive_home)
+    with run.phase("import") as ph:
+        result = watcher.poll_once(phase=ph)
+
+    assert result.items_imported == 2
+    snap = ph.snapshot()
+    assert snap["done"] == 2                 # advanced once per file
+    assert snap["total"] == 2                # seeded from the source's discovery count
+    assert snap["counts"]["events"] > 0      # the event/line accounting rode along
+
+
+def test_untracked_poll_is_unchanged(archive_home, tmp_path) -> None:
+    # The continuous daemon path passes no phase: same behavior, no telemetry.
+    from thread_archive._ops import load_runs
+
+    init_db()
+    projects = tmp_path / "projects"
+    _write_cc(projects, "p", "s1", [USER, ASSISTANT])
+    watcher = Watcher([ClaudeCodeWatcher(projects_dirs=[projects])], interval=1.0)
+    result = watcher.poll_once()  # no phase
+    assert result.items_imported == 1
+    assert load_runs.read_state(archive_home) == {}  # nothing published
+
+
+def test_watch_once_api_tracks_a_load_run(archive_home, tmp_path, monkeypatch) -> None:
+    from thread_archive import _api as api
+    from thread_archive._ops import load_runs
+
+    init_db()
+    # The real claude-code source discovers ~/.claude*/projects; stage one there
+    # under a throwaway HOME so api.watch's own source wiring (not a hand-built
+    # watcher) is what imports — the path a new user actually loads through.
+    fake_home = tmp_path / "userhome"
+    _write_cc(fake_home / ".claude" / "projects", "p", "s1", [USER, ASSISTANT])
+    monkeypatch.setenv("HOME", str(fake_home))
+
+    seen = []
+    res = api.watch(once=True, progress=seen.append)
+    assert res.items_imported >= 1
+    row = load_runs.read_runs(home=archive_home)[0]
+    assert row["kind"] == "import" and row["status"] == "ok"
+    assert seen  # the progress reporter fired
+
+
 def test_watcher_run_loop_survives_a_failing_pass(archive_home, caplog) -> None:
     """An exception escaping the pass body (lock acquisition, a poll bug) must
     not exit the loop — process death means launchd restarts every few seconds

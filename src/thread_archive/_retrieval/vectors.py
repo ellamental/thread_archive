@@ -76,6 +76,45 @@ def _chunk(content: str) -> list[str]:
         for i in range(0, min(len(content), MAX_CHUNKS * CHUNK_CHARS), CHUNK_CHARS)
     ] or [content]
 
+
+def _chunk_count(content: str) -> int:
+    """How many vectors ``content`` needs — ``len(_chunk(content))`` without building
+    the slices. This is the formula the drain's anti-join duplicates in SQL; keeping
+    the Python side to one named definition is half of keeping the two identical."""
+    return max(1, min(MAX_CHUNKS, (len(content) + CHUNK_CHARS - 1) // CHUNK_CHARS))
+
+
+# Length-sorted encode window. The embedder pads every chunk in an encode batch to
+# the longest one in it, so a batch that mixes a 30-char user turn with a 2048-char
+# slice spends most of its compute on padding. Draining docs in the store's natural
+# (event_id) order guarantees that mix — measured pad waste ~4/5 of the encode, and
+# encode is ~19/20 of the whole embed. Length-sorting so each batch is
+# length-homogeneous cuts that waste to near nothing and roughly halves the embed,
+# the longest phase of a cold load. The sort is *windowed*, not global: the drain
+# still walks the pending set newest-window-first — recency is what keeps
+# recent-thread semantic recall current, and a large single pass writes the newest
+# docs durably before the oldest — and only the order *within* a window of this many
+# docs is length-permuted. Big enough that a window holds thousands of chunks (where
+# the pad win saturates) and a whole cohost pass drains as one window; small enough
+# to keep the recency grain fine.
+_SORT_WINDOW = 2048
+
+
+def _length_batched(pending: list, window: int) -> list:
+    """Reorder ``pending`` rows (``(event_id, content_type, content)``) so each
+    ``batch_size`` slice the drain encodes together is length-homogeneous — near-zero
+    embed pad waste — while preserving newest-window-first recency at ``window``
+    granularity. ``window <= 0`` leaves the order untouched. Stable within a window,
+    so equal-length docs keep the incoming (recency) order."""
+    if window <= 0 or len(pending) <= 1:
+        return pending
+    out: list = []
+    for start in range(0, len(pending), window):
+        block = pending[start:start + window]
+        block.sort(key=lambda r: len(r[2]))
+        out.extend(block)
+    return out
+
 # Embedded content-type pools: user → default pool; text → scoped assistant pool;
 # title/summary → the thread-meta docs (thread-level aboutness).
 _USER_CONTENT_TYPES = ("user",)
@@ -459,6 +498,8 @@ def index_events_local(
     max_events: int | None = None,
     newest_first: bool = False,
     embedder=None,
+    phase=None,
+    sort_window: int = _SORT_WINDOW,
 ) -> int:
     """Compute event vectors in-process from the FTS shadow (user/text/title/summary
     pools), one vector per :data:`CHUNK_CHARS` chunk (long docs get several).
@@ -474,9 +515,26 @@ def index_events_local(
     computed with (default: the process embedder) — pass one to index into a
     different embedding space than the process default queries. Returns docs
     embedded. No-op (0) when the store isn't SQLite or the embedder is unavailable.
+
+    ``phase`` is a :class:`~thread_archive._ops.load_runs.Phase` this drain reports
+    into: the pending total up front (so the wait carries an ETA instead of being
+    open-ended), a tick per doc, and the ``select`` / ``encode`` / ``write`` split.
+    This is the longest phase of a cold load, and that split is what says *which*
+    of the three the hours went to. Defaults to a null phase, so an untracked call
+    runs the identical path.
+
+    ``sort_window`` length-orders the docs *within* each window of that many before
+    batching (see :data:`_SORT_WINDOW`): the embedder pads every text in an encode
+    batch to the longest, so a length-homogeneous batch roughly halves the encode —
+    the dominant cost — while the windowing keeps the drain newest-window-first.
+    ``0`` restores the store's natural order.
     """
     if not is_available():
         return 0
+    if phase is None:
+        from .._ops.load_runs import NullPhase
+
+        phase = NullPhase()
     if embedder is None:
         from .embed import default as _default_embedder
 
@@ -509,8 +567,25 @@ def index_events_local(
     params: dict = {} if rebuild else {"mx": MAX_CHUNKS, "cc": CHUNK_CHARS}
     if max_events:
         params["cap"] = int(max_events)
-    with get_session() as s:
+    with phase.timed("select"), get_session() as s:
         pending = [(r.eid, r.ct, r.content) for r in s.execute(sql, params)]
+    phase.total = len(pending)
+    phase.count("chunks_pending", sum(_chunk_count(c) for _, _, c in pending))
+    # Length-sort within recency windows so each encode batch is length-homogeneous
+    # (the embedder pads to the batch's longest text): near-zero pad waste, newest
+    # window still drained and durably written first.
+    pending = _length_batched(pending, sort_window)
+    # The model loads lazily inside the first embed call, so a cold load — tens of
+    # seconds — would land inside the first ``encode`` and inflate it, which on a
+    # short pass is most of the reported encode. Load it here under its own
+    # sub-timing so the split stays honest. Duck-typed: an embedder stand-in need
+    # only implement ``embed_documents``, and ``warm`` is idempotent.
+    if pending:
+        warm = getattr(embedder, "warm", None)
+        is_loaded = getattr(embedder, "is_loaded", None)
+        if warm is not None and not (is_loaded and is_loaded()):
+            with phase.timed("model_load"):
+                warm()
 
     total = 0
     batch: list[tuple[int, str, list[str]]] = []
@@ -521,7 +596,8 @@ def index_events_local(
         if not batch:
             return True
         texts = [t for _, _, chunks in batch for t in chunks]
-        vecs = embedder.embed_documents(texts)
+        with phase.timed("encode"):
+            vecs = embedder.embed_documents(texts)
         if not vecs:
             logger.warning("vectors.index_events_local: embed returned None — stopping at %d", total)
             return False
@@ -529,8 +605,11 @@ def index_events_local(
         for eid, ct, chunks in batch:
             docs.append((eid, ct, vecs[pos:pos + len(chunks)]))
             pos += len(chunks)
-        _write_doc_vectors(docs)
+        with phase.timed("write"):
+            _write_doc_vectors(docs)
         total += len(docs)
+        phase.advance(len(docs))
+        phase.count("chunks", len(texts))
         batch, batch_chunks = [], 0
         return True
 

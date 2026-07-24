@@ -6,15 +6,28 @@ JSON ``payload`` (``input_tokens`` / ``cache_read_tokens`` /
 ``model``). Surveying them straight from
 ``events`` means JSON-extracting
 across hundreds of thousands of fat payloads on a multi-GB index — seconds per pass,
-far too slow to run per request. :class:`ThreadMetrics` is the standing aggregate,
-and this module keeps it current: :func:`refresh_metrics` folds only the events past
-a global cursor (:class:`MetricsCursor`) into per-(thread, model) running sums, so the
-full survey is paid once and every refresh after that touches only what landed since.
+far too slow to run per request. :func:`refresh_metrics` folds only the events past a
+global cursor (:class:`MetricsCursor`), so the full survey is paid once and every
+refresh after that touches only what landed since.
+
+The fold has two stages, and the split is load-bearing. An event is *not* a request:
+Claude Code repeats one response's usage object across every transcript row that
+response produced, and those rows can arrive in different watcher polls. So the window
+first collapses into :class:`RequestMetric`, one durable row per provider request,
+where a duplicate meets the row it duplicates however late it shows up. Only then are
+the per-(thread, model) sums in :class:`ThreadMetrics` re-derived from that ledger.
+Deriving them from ``events`` instead counts a repeated response once per row.
+
+:class:`ThreadMetrics` is therefore a pure function of the ledger, never an
+accumulator, and re-deriving a thread is idempotent — which is what lets a refresh
+rebuild just the threads the window touched instead of the whole table.
 
 Correctness rests on the event log being append-only with monotonic ids: folding
-``through < id <= upto`` and advancing the cursor to ``upto`` sums each event exactly
-once. The one violation is a reindex rebuilding the log; that's caught by the cursor
-running ahead of ``MAX(events.id)``, which resets the cache to a clean rebuild.
+``through < id <= upto`` and advancing the cursor to ``upto`` visits each event
+exactly once. Two things violate that, and both resolve to the same rebuild — a
+reindex rebuilding the log (caught by the cursor running ahead of ``MAX(events.id)``,
+since the ids the ledger keys on no longer name the same rows) and a change to the
+fold itself (caught by ``projection_version``).
 
 These writes go through a raw core connection (``engine.begin()``), never an
 ``ArchiveSession`` — the rollup is a derived index projection and must not reach the
@@ -39,22 +52,50 @@ NON_MODELS: tuple[str, ...] = ("", "unknown", "<synthetic>")
 # watcher's own process, the only writer of this cache.
 _refresh_lock = threading.Lock()
 
-# Fold new completed-request events into the per-(thread, model) running sums. Null
-# token fields coalesce to 0; ``cost`` sums treating a null (a route that reported
-# none, e.g. local models) as 0, while ``cost_requests`` counts the requests that
-# actually carried a cost so "$0" stays distinct from "no cost recorded".
-_FOLD_SQL = text(
-    """
-    INSERT INTO thread_metrics (
-        thread_id, model, requests,
-        input_tokens, cache_read_tokens, output_tokens, thinking_tokens,
-        cost, cost_requests
+# The shape of the projection. Bump it whenever a change to the fold makes sums
+# produced by the old definition incomparable with new ones; a cursor carrying an
+# older version has its projections discarded and rebuilt rather than added to.
+PROJECTION_VERSION = 1
+
+# The provider request a row belongs to. Claude Code repeats one response's usage
+# object across several transcript rows; every other source keys on the event id,
+# which is unique per row and so groups each event alone.
+_REQUEST_KEY = """
+        CASE
+            WHEN t.source = 'claude-code'
+            THEN COALESCE(
+                json_extract(e.payload, '$.annotations.message_id'),
+                printf('event:%d', e.id)
+            )
+            ELSE printf('event:%d', e.id)
+        END
+"""
+
+# The threads the just-folded window can have changed. Scoping the rebuild to these
+# is what keeps a refresh proportional to what arrived rather than to archive size.
+_TOUCHED = """
+        SELECT DISTINCT e.thread_id FROM events e
+        WHERE e.event_type = 'api_request_completed'
+          AND e.id > :through AND e.id <= :upto
+"""
+
+# Collapse the window's events into one canonical row per provider request, then
+# carry that row forward. ``MAX`` per field is what absorbs a duplicate: the repeated
+# usage objects either match or grow toward the response's final counts, so the
+# largest is the true one. The ON CONFLICT repeats the same rule against whatever the
+# ledger already holds, so a duplicate arriving in a *later* poll collapses too — the
+# reason this ledger is durable rather than a per-batch subquery.
+_FOLD_REQUESTS_SQL = text(
+    f"""
+    INSERT INTO request_metrics (
+        thread_id, request_key, model,
+        input_tokens, cache_read_tokens, output_tokens, thinking_tokens, cost
     )
     SELECT
         e.thread_id,
-        COALESCE(json_extract(e.payload, '$.model'), '') AS model,
-        COUNT(*),
-        COALESCE(SUM(
+        {_REQUEST_KEY} AS request_key,
+        COALESCE(MAX(COALESCE(json_extract(e.payload, '$.model'), '')), '') AS model,
+        COALESCE(MAX(
             CASE
                 WHEN COALESCE(
                     CAST(json_extract(e.payload, '$.input_tokens_includes_cache') AS INTEGER),
@@ -71,53 +112,13 @@ _FOLD_SQL = text(
                 ELSE CAST(json_extract(e.payload, '$.input_tokens') AS INTEGER)
             END
         ), 0),
-        0,
-        COALESCE(SUM(CAST(json_extract(e.payload, '$.output_tokens') AS INTEGER)), 0),
-        COALESCE(SUM(CAST(json_extract(e.payload, '$.thinking_tokens') AS INTEGER)), 0),
-        COALESCE(SUM(CAST(json_extract(e.payload, '$.cost') AS REAL)), 0),
-        SUM(CASE WHEN json_extract(e.payload, '$.cost') IS NOT NULL THEN 1 ELSE 0 END)
-    FROM events e
-    JOIN threads t ON t.id = e.thread_id
-    WHERE e.event_type = 'api_request_completed'
-      AND e.id > :through AND e.id <= :upto
-    GROUP BY e.thread_id, model
-    ON CONFLICT(thread_id, model) DO UPDATE SET
-        requests        = requests        + excluded.requests,
-        input_tokens    = input_tokens    + excluded.input_tokens,
-        cache_read_tokens = cache_read_tokens + excluded.cache_read_tokens,
-        output_tokens   = output_tokens   + excluded.output_tokens,
-        thinking_tokens = thinking_tokens + excluded.thinking_tokens,
-        cost            = cost            + excluded.cost,
-        cost_requests   = cost_requests   + excluded.cost_requests
-    """
-)
-
-_FOLD_CACHE_REQUESTS_SQL = text(
-    """
-    INSERT INTO request_cache_metrics (
-        thread_id, request_key, model, cache_read_tokens
-    )
-    SELECT
-        e.thread_id,
-        CASE
-            WHEN t.source = 'claude-code'
-            THEN COALESCE(
-                json_extract(e.payload, '$.annotations.message_id'),
-                printf('event:%d', e.id)
-            )
-            ELSE printf('event:%d', e.id)
-        END AS request_key,
-        COALESCE(json_extract(e.payload, '$.model'), '') AS model,
-        MAX(MAX(
-            COALESCE(
-                CAST(json_extract(e.payload, '$.cache_read_tokens') AS INTEGER),
-                0
-            ),
-            COALESCE(
-                CAST(json_extract(e.payload, '$.cache_read_input_tokens') AS INTEGER),
-                0
-            )
-        )) AS cache_read_tokens
+        COALESCE(MAX(MAX(
+            COALESCE(CAST(json_extract(e.payload, '$.cache_read_tokens') AS INTEGER), 0),
+            COALESCE(CAST(json_extract(e.payload, '$.cache_read_input_tokens') AS INTEGER), 0)
+        )), 0),
+        COALESCE(MAX(CAST(json_extract(e.payload, '$.output_tokens') AS INTEGER)), 0),
+        COALESCE(MAX(CAST(json_extract(e.payload, '$.thinking_tokens') AS INTEGER)), 0),
+        MAX(CAST(json_extract(e.payload, '$.cost') AS REAL))
     FROM events e
     JOIN threads t ON t.id = e.thread_id
     WHERE e.event_type = 'api_request_completed'
@@ -125,24 +126,77 @@ _FOLD_CACHE_REQUESTS_SQL = text(
     GROUP BY e.thread_id, request_key
     ON CONFLICT(thread_id, request_key) DO UPDATE SET
         model = excluded.model,
+        input_tokens = MAX(request_metrics.input_tokens, excluded.input_tokens),
         cache_read_tokens = MAX(
-            request_cache_metrics.cache_read_tokens,
-            excluded.cache_read_tokens
-        )
+            request_metrics.cache_read_tokens, excluded.cache_read_tokens
+        ),
+        output_tokens = MAX(request_metrics.output_tokens, excluded.output_tokens),
+        thinking_tokens = MAX(request_metrics.thinking_tokens, excluded.thinking_tokens),
+        -- Two-argument MAX() returns null if either side is, which would erase a
+        -- recorded cost the moment a duplicate arrived without one.
+        cost = CASE
+            WHEN excluded.cost IS NULL THEN request_metrics.cost
+            WHEN request_metrics.cost IS NULL THEN excluded.cost
+            ELSE MAX(request_metrics.cost, excluded.cost)
+        END
     """
 )
 
-_REFRESH_THREAD_CACHE_SQL = text(
-    """
-    UPDATE thread_metrics
-    SET cache_read_tokens = COALESCE((
-        SELECT SUM(r.cache_read_tokens)
-        FROM request_cache_metrics r
-        WHERE r.thread_id = thread_metrics.thread_id
-          AND r.model = thread_metrics.model
-    ), 0)
+# Re-derive the per-(thread, model) sums for the touched threads from the ledger.
+# ``thread_metrics`` is a pure function of ``request_metrics``, never an accumulator,
+# so re-folding a window that was already folded cannot drift. ``cost`` sums treating
+# a null (a route that reported none, e.g. local models) as 0, while ``cost_requests``
+# counts the requests that actually carried one so "$0" stays distinct from "no cost
+# recorded".
+_CLEAR_TOUCHED_SQL = text(f"DELETE FROM thread_metrics WHERE thread_id IN ({_TOUCHED})")
+
+_REBUILD_TOUCHED_SQL = text(
+    f"""
+    INSERT INTO thread_metrics (
+        thread_id, model, requests,
+        input_tokens, cache_read_tokens, output_tokens, thinking_tokens,
+        cost, cost_requests
+    )
+    SELECT
+        r.thread_id,
+        r.model,
+        COUNT(*),
+        COALESCE(SUM(r.input_tokens), 0),
+        COALESCE(SUM(r.cache_read_tokens), 0),
+        COALESCE(SUM(r.output_tokens), 0),
+        COALESCE(SUM(r.thinking_tokens), 0),
+        COALESCE(SUM(r.cost), 0),
+        COUNT(r.cost)
+    FROM request_metrics r
+    WHERE r.thread_id IN ({_TOUCHED})
+    GROUP BY r.thread_id, r.model
     """
 )
+
+
+def invalidate_metrics(conn) -> None:  # noqa: ANN001 — Connection or Session, both execute()
+    """Discard both projections and rewind the cursor so the next refresh rebuilds
+    from the event log.
+
+    For callers that change events *behind* the cursor — an amendment rewrites a row
+    the append-only fold has already passed, so no future window would ever revisit it.
+    """
+    conn.execute(text("DELETE FROM thread_metrics"))
+    conn.execute(text("DELETE FROM request_metrics"))
+    conn.execute(
+        text(
+            "INSERT OR IGNORE INTO metrics_cursor "
+            "(id, through_event_id, projection_version) VALUES (1, 0, :version)"
+        ),
+        {"version": PROJECTION_VERSION},
+    )
+    conn.execute(
+        text(
+            "UPDATE metrics_cursor SET through_event_id = 0, projection_version = :version "
+            "WHERE id = 1"
+        ),
+        {"version": PROJECTION_VERSION},
+    )
 
 
 def refresh_metrics(engine: Engine | None = None) -> None:
@@ -150,7 +204,8 @@ def refresh_metrics(engine: Engine | None = None) -> None:
 
     Idempotent and cheap when already current (an indexed ``MAX(id)`` read, then a
     no-op). The first call on a fresh cache — and the call after a reindex — pays the
-    full survey once; every call after folds only newly-arrived events.
+    full survey once; every call after that folds only newly-arrived events and
+    re-derives only the threads those events touched.
     """
     engine = engine or get_engine()
     with _refresh_lock, engine.begin() as conn:
@@ -160,43 +215,38 @@ def refresh_metrics(engine: Engine | None = None) -> None:
         conn.execute(
             text(
                 "INSERT OR IGNORE INTO metrics_cursor "
-                "(id, through_event_id, cache_requests_ready) VALUES (1, 0, 0)"
-            )
+                "(id, through_event_id, projection_version) VALUES (1, 0, :version)"
+            ),
+            {"version": PROJECTION_VERSION},
         )
         cursor = conn.execute(
             text(
-                "SELECT through_event_id, cache_requests_ready "
+                "SELECT through_event_id, projection_version "
                 "FROM metrics_cursor WHERE id = 1"
             )
         ).first()
         through = int(cursor[0] or 0) if cursor else 0
-        cache_requests_ready = bool(cursor[1]) if cursor else False
-        if not cache_requests_ready:
-            # This request-level projection was added after the standing rollup.
-            # Rewind both projections once so historical aliases and request ids
-            # are folded into the canonical shape.
-            conn.execute(text("DELETE FROM thread_metrics"))
-            conn.execute(text("DELETE FROM request_cache_metrics"))
-            through = 0
-        if through > upto:
-            # The log shrank below the cursor — a reindex rebuilt it. Reset and rebuild
-            # from zero rather than trust sums whose events may no longer exist.
-            conn.execute(text("DELETE FROM thread_metrics"))
-            conn.execute(text("DELETE FROM request_cache_metrics"))
+        version = int(cursor[1] or 0) if cursor else 0
+        if version != PROJECTION_VERSION or through > upto:
+            # Either the standing sums were folded by an older definition of the
+            # projection, or the log shrank below the cursor — a reindex rebuilt it,
+            # so the event ids the ledger keys on no longer name the same rows.
+            # Neither can be reconciled with an incremental fold; rebuild instead.
+            invalidate_metrics(conn)
             through = 0
         if through >= upto:
             return  # already current
         params = {"through": through, "upto": upto}
-        conn.execute(_FOLD_SQL, params)
-        conn.execute(_FOLD_CACHE_REQUESTS_SQL, params)
-        conn.execute(_REFRESH_THREAD_CACHE_SQL)
+        conn.execute(_FOLD_REQUESTS_SQL, params)
+        conn.execute(_CLEAR_TOUCHED_SQL, params)
+        conn.execute(_REBUILD_TOUCHED_SQL, params)
         conn.execute(
             text(
                 "UPDATE metrics_cursor "
-                "SET through_event_id = :upto, cache_requests_ready = 1 "
+                "SET through_event_id = :upto, projection_version = :version "
                 "WHERE id = 1"
             ),
-            {"upto": upto},
+            {"upto": upto, "version": PROJECTION_VERSION},
         )
 
 

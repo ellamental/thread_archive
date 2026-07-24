@@ -1,8 +1,8 @@
 """The gold-mining framework — the contract every miner shares.
 
 A *miner* turns real corpus signal into snapshot-bound eval ``--cases`` rows: a
-graded relevance benchmark that later ``retrieval_eval.py --cases`` runs (and the
-``retrieval-gold-gate`` CI row) score against for free. Each miner spends real
+graded relevance benchmark that later ``retrieval_eval.py --cases`` runs (and
+``retrieval_gold_gate.py``) score against for free. Each miner spends real
 agent tokens once to mint labels a cheaper protocol can't; the shapes differ
 (one starts from a real query, one from a topic, one reranks a retrieved pool,
 one generates queries for a known thread), but they all:

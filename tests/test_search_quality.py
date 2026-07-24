@@ -20,6 +20,12 @@ from .quality_corpus import CASES, build_corpus, run_cases, top_threads
 # Floors, not targets: the corpus is built to be near-perfectly solvable by the
 # lexical stack (measured MRR ≈ 1.0), so the floors sit with headroom below
 # that. A breach means a ranking change reshuffled known-relevance cases.
+#
+# Both floors are *ordering* measures. Most CASES rows name a single gold, so
+# their "recall@k" is success@k in disguise — it asks whether the one right
+# thread was found, not whether every matching thread came back. The exhaustive
+# question is scored separately, on golds that are true by construction, in
+# test_search_recall_shape.py; don't read these numbers as recall guarantees.
 MIN_MRR = 0.85
 MIN_RECALL_5 = 0.90
 
@@ -50,12 +56,17 @@ def test_focused_thread_beats_passing_mentions(corpus) -> None:
     """A thread about authentication outranks a long dump and an unrelated
     thread that each mention the term once, AND a paste that spams the term
     dozens of times (bm25's favourite — per-length density normalization is
-    what keeps it down)."""
+    what keeps it down).
+
+    Two-sided on purpose: every decoy genuinely carries the term, so each must
+    still be *returned*, below the focused thread. Demoting a weak match is
+    ranking; dropping it is a recall loss, and asserting only the head can't
+    tell the two apart."""
     ranked = top_threads("authentication")
     assert ranked[0] == corpus["auth"]
     for decoy in ("dump", "css-decoy", "auth-spam"):
-        if corpus[decoy] in ranked:
-            assert ranked.index(corpus[decoy]) > 0
+        assert corpus[decoy] in ranked, f"{decoy} matches the query but went missing"
+        assert ranked.index(corpus[decoy]) > 0
 
 
 def test_contiguous_phrase_beats_scattered_words(corpus) -> None:
@@ -67,8 +78,13 @@ def test_contiguous_phrase_beats_scattered_words(corpus) -> None:
 
 
 def test_quoted_phrase_excludes_scattered_words(corpus) -> None:
+    """The claim is exclusion of the scattered thread, not that exactly one
+    thread may ever match the phrase — so it names the two threads it is about
+    rather than pinning the whole result list, which would make any future
+    fixture carrying the phrase a failure."""
     ranked = top_threads('"graceful shutdown handler"')
-    assert ranked == [corpus["phrase"]]
+    assert corpus["phrase"] in ranked
+    assert corpus["phrase-scatter"] not in ranked
 
 
 def test_recency_breaks_a_density_tie(corpus) -> None:

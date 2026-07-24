@@ -75,6 +75,47 @@ def record_skip(
 _ROUTINE_SKIP_REASON = "no_importable_content"
 
 
+def settled_empty_ids(source: str) -> set[str]:
+    """``source_id``s consumed exactly once, on the routine empty-session path.
+
+    The signature of a session opened and never used: the watcher saw it, the
+    importer judged its lines contentless, and nothing was ever appended to make
+    it worth a second look. A parser gone blind to a changed format leaves a
+    different trace — the session keeps growing, so it is consumed again and
+    again, each pass adding another record for the same id — and repetition is
+    the only tell available at this layer, since both cases carry the same
+    reason. So a second record disqualifies an id, as does any non-routine
+    consumption (``empty_import_discarded`` is drift-adjacent by construction).
+
+    The capture-coverage check reads this to tell store activity the archive has
+    accounted for from store activity it is failing to ingest. Fail-soft toward
+    red: an unreadable ledger settles nothing.
+    """
+    counts: dict[str, int] = {}
+    routine: dict[str, bool] = {}
+    try:
+        with open(resolve_paths().home / LEDGER_FILE, encoding="utf-8") as fh:
+            for line in fh:
+                if not line.strip():
+                    continue
+                try:
+                    rec = json.loads(line)
+                except ValueError:
+                    continue
+                if rec.get("source") != source:
+                    continue
+                sid = str(rec.get("source_id") or "")
+                if not sid:
+                    continue
+                counts[sid] = counts.get(sid, 0) + 1
+                routine[sid] = (
+                    routine.get(sid, True) and rec.get("reason") == _ROUTINE_SKIP_REASON
+                )
+    except OSError:
+        return set()
+    return {sid for sid, n in counts.items() if n == 1 and routine[sid]}
+
+
 def summarize_skips(*, days: float = 7.0) -> dict:
     """Ledger volume: total records ever, and records + lines within ``days``.
     ``recent_substantive`` is the subset of recent records whose reason is not the

@@ -41,7 +41,7 @@ def test_manifest_corruption_infers_shard_depth_from_layout(
     d = archive_home / "truth"
 
     monkeypatch.setenv("THREAD_ARCHIVE_SHARDFLAT_MAX", "1")  # force a rebalance at 2 threads
-    jsonl_log.checkpoint(snapshots=False)
+    jsonl_log.checkpoint()  # full form: never defers the sweep to the interval
     assert jsonl_log._shard_depth(d) >= 1
     depth = jsonl_log._shard_depth(d)
 

@@ -18,7 +18,9 @@ class EventHit(TypedDict):
 
     The required keys are what ``build_event_hit`` constructs. The optional ones
     are stage annotations: ``_semantic`` (vector-arm cosine, carried through
-    fusion), ``_rrf`` (normalized fusion score), ``_did_rerank`` (whether the
+    fusion), ``_lex`` (the lexical arm's normalized reciprocal rank — bm25 for a
+    MATCH pass),
+    ``_rrf`` (normalized fusion score), ``_did_rerank`` (whether the
     cross-encoder re-ordered the head — drives the renderer's quality verdict),
     ``context`` (±N-line window around the match), ``context_events``
     (neighbouring events, ``{"before": [...], "after": [...]}``), and the
@@ -51,6 +53,7 @@ class EventHit(TypedDict):
     full_content: str
     occurred_at: Optional[datetime]
     _semantic: NotRequired[float]
+    _lex: NotRequired[float]
     _rrf: NotRequired[float]
     _did_rerank: NotRequired[bool]
     _thread_more: NotRequired[int]
