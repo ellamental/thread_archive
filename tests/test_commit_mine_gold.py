@@ -267,32 +267,31 @@ def test_transcript_detector_accepts_jsonl_and_rejects_pretty_printed(tmp_path):
     assert not sc.is_claude_code_transcript(absent)
 
 
-def test_select_corpus_caps_each_repo_and_prefers_linked(monkeypatch):
+def test_choose_sessions_caps_each_repo_and_prefers_linked():
     """A budget must not land inside one codebase. SWE-chat's largest repo holds 870
     of 5851 sessions, so taking repos whole would spend a modest budget on a single
     project and leave a benchmark that measures search over that project."""
     sc = _corpus_module()
-    big = [{"session_id": f"B{i}", "repo_id": "o/big"} for i in range(500)]
-    smalls = [{"session_id": f"S{r}_{i}", "repo_id": f"o/s{r}"}
-              for r in range(5) for i in range(20)]
-
-    class _Tbl:
-        def to_pylist(self):
-            return big + smalls
-
-    monkeypatch.setattr(sc, "_require_pyarrow",
-                        lambda: type("pq", (), {"read_table": staticmethod(
-                            lambda *a, **k: _Tbl())}))
+    by_repo = {"o/big": [f"B{i}" for i in range(500)]}
+    for r in range(5):
+        by_repo[f"o/s{r}"] = [f"S{r}_{i}" for i in range(20)]
     # every small repo's first session is commit-linked; the big repo has none
-    linked = [{"session_id": f"S{r}_0"} for r in range(5)]
-    monkeypatch.setattr(sc, "_linkage_eligible", lambda data: linked)
+    linked = {f"S{r}_0" for r in range(5)}
 
-    keep = sc.select_corpus(Path("/nowhere"), budget=100, per_repo=10)
+    keep = sc.choose_sessions(by_repo, linked, budget=100, per_repo=10)
     assert len(keep) == 60                       # 6 repos, each held to the cap
-    from collections import Counter
-    by_repo = Counter(s.split("_")[0] if s.startswith("S") else "B" for s in keep)
-    assert max(by_repo.values()) <= 10           # no repo exceeds the cap
-    assert all(f"S{r}_0" in keep for r in range(5))   # linked sessions kept first
+    for members in by_repo.values():
+        assert len(keep & set(members)) <= 10    # no repo exceeds the cap
+    assert linked <= keep                        # linked sessions kept first
+
+
+def test_choose_sessions_spends_the_budget_on_the_richest_repos():
+    """Ranking is by commit-linked yield: a budget too small for every repo must go
+    where cases can actually be mined."""
+    sc = _corpus_module()
+    by_repo = {"rich": ["r1", "r2"], "poor": ["p1", "p2"]}
+    keep = sc.choose_sessions(by_repo, {"r1", "r2"}, budget=2, per_repo=10)
+    assert keep == {"r1", "r2"}
 
 
 def test_select_corpus_without_a_budget_takes_everything():

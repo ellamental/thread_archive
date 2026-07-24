@@ -723,7 +723,10 @@ def reindex(*, vectors: bool = False, salvage: bool = False) -> dict:
     counts: dict = {}
     parse_errors: list[tuple[str, int]] = []
 
-    with _hold_reindex_lock():
+    from .._ops.load_runs import load_run
+
+    with load_run("reindex", home=index_path.parent,
+                  note="vectors" if vectors else None) as _run, _hold_reindex_lock():
         # Entering the truth-write mutex resolves any crashed drain's leftover
         # intent (a partial batch) before the rebuild reads the files.
         with _truth_write_lock():
@@ -732,7 +735,11 @@ def reindex(*, vectors: bool = False, salvage: bool = False) -> dict:
         loader = build_engine(f"sqlite:///{tmp_path}", enforce_fk=False)
         try:
             init_db(loader)
-            counts["threads"], counts["events"] = load_thread_files(d, loader, errors=parse_errors)
+            with _run.phase("truth") as _ph:
+                counts["threads"], counts["events"] = load_thread_files(
+                    d, loader, errors=parse_errors)
+                _ph.count("threads", counts["threads"])
+                _ph.count("events", counts["events"])
             # The loader counts rows loaded; OR REPLACE + the (thread_id, dedup_key)
             # unique index collapse superseded lines (re-appended ids, same-content
             # twins from a lost-commit re-import, a thread's stale twin at another
@@ -797,7 +804,9 @@ def reindex(*, vectors: bool = False, salvage: bool = False) -> dict:
             with use_engine(loader):
                 from .._retrieval.fts import rebuild_fts
 
-                counts["fts"] = rebuild_fts()
+                with _run.phase("fts") as _ph:
+                    counts["fts"] = rebuild_fts()
+                    _ph.count("rows", counts["fts"] or 0)
                 # Vectors always survive the rebuild: restore the durable sidecar
                 # cache (space-key-guarded; the hours-long embed runs once, ever)
                 # into the build regardless of the ``vectors`` flag — a plain
@@ -822,8 +831,12 @@ def reindex(*, vectors: bool = False, salvage: bool = False) -> dict:
                 if pruned:
                     counts["vectors_pruned"] = pruned
                 if vectors:
-                    counts["vectors_embedded"] = _vec.index_events_local(rebuild=False)
-                    counts["vectors_cached"] = _vec.save_vectors_sidecar(d)
+                    with _run.phase("embed") as _ph:
+                        counts["vectors_embedded"] = _vec.index_events_local(
+                            rebuild=False, phase=_ph)
+                    with _run.phase("vector-cache") as _ph:
+                        counts["vectors_cached"] = _vec.save_vectors_sidecar(d)
+                        _ph.count("vectors", counts["vectors_cached"] or 0)
         except BaseException:
             loader.dispose()
             _unlink_build(tmp_path)  # the old index was never touched

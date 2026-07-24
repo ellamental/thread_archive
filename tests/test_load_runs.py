@@ -1,0 +1,152 @@
+"""The load ledger + live-state file — loading an archive as a tracked event."""
+
+from __future__ import annotations
+
+from pathlib import Path
+
+import pytest
+
+from thread_archive._ops import load_runs
+
+DUMMY = Path("/x")  # a run's home is irrelevant to the arithmetic tests
+
+
+@pytest.fixture
+def home(tmp_path):
+    d = tmp_path / "home"
+    d.mkdir()
+    return d
+
+
+# ── phase arithmetic (no sleeping — set the clock fields directly) ─────────────
+def test_phase_reports_rate_and_eta_from_progress():
+    run = load_runs.LoadRun("embed", DUMMY)
+    ph = load_runs.Phase(run, "embed", total=100)
+    ph.done = 20
+    ph.elapsed = 10.0  # 2/s
+    snap = ph.snapshot()
+    assert snap["rate_per_s"] == 2.0
+    # 80 remaining at 2/s → 40s.
+    assert snap["eta_s"] == 40.0
+
+
+def test_phase_eta_absent_without_total_or_progress():
+    run = load_runs.LoadRun("embed", DUMMY)
+    ph = load_runs.Phase(run, "embed", total=None)
+    ph.done = 5
+    ph.elapsed = 1.0
+    assert "eta_s" not in ph.snapshot()  # a total is what makes progress an ETA
+
+
+def test_phase_detail_and_counts_accumulate():
+    run = load_runs.LoadRun("embed", DUMMY)
+    ph = load_runs.Phase(run, "embed", total=None)
+    ph.mark("encode", 1.5)
+    ph.mark("encode", 0.5)  # accumulates
+    ph.mark("write", 0.25)
+    ph.count("chunks", 10)
+    ph.count("chunks", 5)
+    snap = ph.snapshot()
+    assert snap["detail_s"] == {"encode": 2.0, "write": 0.25}
+    assert snap["counts"] == {"chunks": 15}
+
+
+def test_timed_marks_the_block():
+    run = load_runs.LoadRun("embed", DUMMY)
+    ph = load_runs.Phase(run, "embed", total=None)
+    with ph.timed("select"):
+        pass
+    assert "select" in ph.detail and ph.detail["select"] >= 0.0
+
+
+# ── the run: live state + ledger row ──────────────────────────────────────────
+def test_run_publishes_live_state_then_appends_a_ledger_row(home):
+    with load_runs.load_run("embed", home=home) as run:
+        with run.phase("embed", total=4) as ph:
+            for _ in range(4):
+                ph.advance()
+            ph.count("chunks", 8)
+        # While the run is live, the state file exists and reads back.
+        live = load_runs.read_state(home)
+        assert live["kind"] == "embed"
+        assert live["phases"][0]["done"] == 4
+    # After it ends, a ledger row lands and the state reads ok.
+    runs = load_runs.read_runs(home=home)
+    assert len(runs) == 1
+    row = runs[0]
+    assert row["kind"] == "embed" and row["status"] == "ok"
+    assert row["phases"][0]["counts"] == {"chunks": 8}
+    assert load_runs.read_state(home)["status"] == "ok"
+
+
+def test_a_failed_run_is_recorded_not_swallowed(home):
+    with pytest.raises(ValueError):
+        with load_runs.load_run("reindex", home=home):
+            raise ValueError("truth torn")
+    row = load_runs.read_runs(home=home)[0]
+    assert row["status"] == "failed"
+    assert "ValueError" in row["error"]  # the failure is the case a count-at-the-end loses
+    assert load_runs.read_state(home)["status"] == "failed"
+
+
+def test_running_state_with_a_dead_writer_reads_as_stalled(home):
+    # A load that died mid-phase leaves a 'running' state behind; a dead pid must
+    # not read as still-running. Inject the liveness predicate (house style: a seam,
+    # not a patched os.kill).
+    load_runs._write_atomic(
+        load_runs.state_path(home),
+        {"kind": "embed", "status": "running", "pid": 4242, "phases": []},
+    )
+    assert load_runs.read_state(home, alive=lambda pid: True)["status"] == "running"
+    assert load_runs.read_state(home, alive=lambda pid: False)["status"] == "stalled"
+
+
+def test_reporter_is_called_with_snapshots(home):
+    seen = []
+    with load_runs.load_run("embed", home=home, reporter=seen.append) as run:
+        with run.phase("embed", total=2) as ph:
+            ph.advance()
+            ph.advance()
+    assert seen  # got at least the phase-enter/exit forced refreshes
+    assert seen[-1]["kind"] == "embed"
+
+
+def test_reporter_failure_never_breaks_the_run(home):
+    def boom(_snap):
+        raise RuntimeError("reporter down")
+
+    # The reporter raising must not propagate — telemetry is advisory.
+    with load_runs.load_run("embed", home=home, reporter=boom) as run:
+        with run.phase("embed", total=1) as ph:
+            ph.advance()
+    assert load_runs.read_runs(home=home)[0]["status"] == "ok"
+
+
+def test_disabled_writes_nothing(home, monkeypatch):
+    monkeypatch.setenv("THREAD_ARCHIVE_LOAD_LOG", "0")
+    with load_runs.load_run("embed", home=home) as run:
+        with run.phase("embed", total=1) as ph:
+            ph.advance()
+    assert not load_runs.state_path(home).exists()
+    assert not load_runs.ledger_path(home).exists()
+    assert load_runs.read_runs(home=home) == []
+
+
+def test_null_phase_is_a_silent_no_op():
+    # The default a drain gets when nothing tracks it — same interface, records nothing.
+    ph = load_runs.NullPhase()
+    ph.advance(5)
+    ph.mark("encode", 1.0)
+    ph.count("chunks", 3)
+    with ph.timed("write"):
+        pass
+    assert ph.done == 5  # advance still moves its own counter (the drain may read it)
+
+
+def test_read_runs_newest_first_and_bounded(home):
+    for i in range(5):
+        with load_runs.load_run(f"k{i}", home=home):
+            pass
+    runs = load_runs.read_runs(limit=3, home=home)
+    assert len(runs) == 3
+    assert [r["kind"] for r in runs] == ["k4", "k3", "k2"]  # newest first

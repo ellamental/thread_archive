@@ -49,6 +49,8 @@ CLI_VERBS = {
     "snapshot",
     "migrate",
     "status",
+    "loads",
+    "archives",
     "eval",
     "mine",
     "backup",

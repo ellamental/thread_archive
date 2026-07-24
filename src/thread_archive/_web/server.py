@@ -505,6 +505,15 @@ def route(method: str, path: str, params: dict) -> Response:
     if path == "/api/status":
         return _ok(_status())
 
+    if path == "/api/loads":
+        # Live load progress + recent runs. Cheap by construction — two small
+        # files off the home, no index counting — so a page watching a running
+        # load can poll it without competing with the load for the store.
+        return _ok(api.load_status(limit=_int(params, "limit", 20, hi=200)))
+
+    if path == "/api/archives":
+        return _ok({"archives": api.archives()})
+
     if path == "/api/sources":
         return _ok({"sources": _list_sources()})
 

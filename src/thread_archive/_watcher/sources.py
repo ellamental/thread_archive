@@ -98,7 +98,10 @@ class FileSessionWatcher(SourceWatcher):
         return stat_discovery(self.source_name, (p for p, _ in self.iter_files()))
 
     def store_paths(self) -> Iterator[Path]:
-        return (p for p, _ in self.iter_files())
+        return (p for p, _ in self.store_items())
+
+    def store_items(self) -> Iterator[tuple[Path, str]]:
+        return self.iter_files()
 
     def _probe(self, target: tuple[Path, str]):
         session_file, _ = target
@@ -127,10 +130,11 @@ class FileSessionWatcher(SourceWatcher):
         logger.warning(msg)
         return WatchResult(sources_checked=1, errors=[msg])
 
-    def poll(self) -> WatchResult:
+    def poll(self, on_item: Optional[Callable[[WatchResult], None]] = None) -> WatchResult:
         return fingerprint_poll(
             self.iter_files(), self._seen,
             probe=self._probe, work=self._work, on_error=self._import_error,
+            on_item=on_item,
         )
 
 
@@ -373,10 +377,11 @@ class DbScanWatcher(SourceWatcher):
         logger.warning("%s scan failed: %s", label, exc)
         return WatchResult(errors=[f"{label}: scan failed: {exc}"])
 
-    def poll(self) -> WatchResult:
+    def poll(self, on_item: Optional[Callable[[WatchResult], None]] = None) -> WatchResult:
         return fingerprint_poll(
             self._targets(), self._last_mtime,
             probe=self._probe, work=self._work, on_error=self._scan_error,
+            on_item=on_item,
         )
 
 

@@ -2,6 +2,58 @@
 
 ## Unreleased
 
+- **An abandoned CLI session no longer reads as a capture failure.** Capture
+  coverage judged a source's ingest stale when its newest store *mtime* ran ahead
+  of its newest archived event — so a session opened and never used (grok and
+  codex write metadata at startup, before any turn) failed the nightly's coverage
+  stage from the moment it was consumed until the next real conversation landed,
+  and marked its source `degraded`, the verdict the MCP search notice and
+  `fix-import` key on. Staleness now measures the store activity the archive has
+  yet to *account for*: a file the importer consumed whole and settled as an empty
+  session — one routine skip-ledger record, watermark covering its current bytes —
+  is not evidence of missed capture. A session the archive keeps re-consuming to no
+  effect is not settled and still fails, which is what keeps the drift catch the
+  comparison exists for: a blind parser's sessions grow.
+- **Loading an archive is now a tracked, phased, timed event.** Bringing an
+  archive up to date — importing transcripts, rebuilding FTS, embedding vectors —
+  was the longest thing the product does and the least visible: work happened
+  inside one call that returned a count at the end, so "is it stuck or working",
+  "how far along", and "which phase costs the hours" were unanswerable. The
+  `_ops.load_runs` ledger records each load as a run of phases; a phase carries its
+  wall time, a `done/total` progress counter with a live ETA, and a `detail`
+  split of named sub-timings. The embed drain reports its `select`/`encode`/`write`
+  split (measured: encode is ~96% of it), so where the time goes is a fact, not a
+  guess. Live progress publishes to `<home>/load-state.json` for any process to
+  read (`thread_archive loads`, `GET /api/loads`); a summary lands in
+  `<home>/load-runs.jsonl`. A run that dies mid-phase reads as `stalled`, not
+  `running`. `reindex`, `embed`, and the one-shot `watch --once` catch-up are
+  tracked; the continuous daemon poll stays untracked (it keeps its pass
+  heartbeat and writes no per-poll rows). `THREAD_ARCHIVE_LOAD_LOG=0` disables it.
+- **Time-to-first-usable-search is import, not embed.** Lexical search is live the
+  moment import finishes (FTS is trigger-maintained; the vector arm degrades in
+  until vectors exist), so the number that gates a new user's first search is the
+  import throughput (~16 MB/s on this hardware), not the hours-long cold embed that
+  runs in the background behind it. The `watch --once` catch-up now shows a live
+  per-file progress line with an ETA.
+- **A registry of known archives** (`~/.thread/archives.json`): an archive becomes
+  known by being opened, so `thread_archive archives` / `GET /api/archives` can
+  list every home and its live load state — including archives the current process
+  hasn't opened. `THREAD_ARCHIVE_REGISTRY=0` disables it.
+- **The embedder loaded fp32 while the cross-encoder loaded fp16.** The dtype
+  policy lived in `rerank.py` and `embed.py` never applied it, so the corpus embed
+  ran at full precision — the difference between a cold embed in an hour and in
+  several. The policy now lives once in `embed.py` and both model paths read it.
+- **The embed drain now length-sorts within a recency window, ~halving encode.**
+  The embedder pads every text in an encode batch to the longest one in it; draining
+  docs in the store's natural (`event_id`) order put a 30-char user turn and a
+  2048-char slice in the same batch, so most of the encode was padding (measured
+  ~4/5 waste, and encode is the bulk of the embed). The drain now length-sorts the
+  pending docs so each batch is length-homogeneous — measured 14.2 → 27.7 chunks/s,
+  a ~2× speedup on the longest phase of a cold load. The sort is *windowed*
+  (`_SORT_WINDOW` docs), not global: the drain still walks newest-window-first, so
+  recent-thread semantic recall stays current and a large pass writes the newest
+  docs durably before the oldest. `sort_window=0` restores the natural order.
+
 - **Stats token and cost totals were over-counted.** Claude Code repeats one
   response's full usage object across every transcript row that response produced,
   so an event is not a request. The rollup deduplicated exactly one column —

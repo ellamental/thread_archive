@@ -45,6 +45,7 @@ def fingerprint_poll(
     probe: Callable[[T], Union[tuple[str, F], "WatchResult", None]],
     work: Callable[[T], "WatchResult"],
     on_error: Callable[[T, Exception], "WatchResult"],
+    on_item: Optional[Callable[["WatchResult"], None]] = None,
 ) -> "WatchResult":
     """One fingerprint-skip poll pass, shared by the file- and db-scan sources.
 
@@ -55,7 +56,13 @@ def fingerprint_poll(
     ``work`` runs and its fingerprint is advanced **only after ``work`` returns**
     — a raise routes to ``on_error`` and leaves the fingerprint stale so the next
     poll retries the target. Fingerprints for targets no longer present are pruned.
-    ``seen`` is the caller's per-instance fingerprint cache, mutated in place."""
+    ``seen`` is the caller's per-instance fingerprint cache, mutated in place.
+
+    ``on_item`` is called with each imported item's :class:`WatchResult` right after
+    the import commits — the seam a tracked bulk load (``watch --once``) uses to
+    advance its progress phase per file, so a thousand-file first import reports
+    live rather than as one number at the end. Called only on real work, never on a
+    skip, so progress reflects imports done, not targets seen."""
     result = WatchResult()
     seen_this_poll: set[str] = set()
     for target in targets:
@@ -77,6 +84,8 @@ def fingerprint_poll(
             continue
         seen[key] = fingerprint  # advance only after a successful unit of work
         result = result + done
+        if on_item is not None:
+            on_item(done)
     if seen_this_poll:
         for key in [k for k in seen if k not in seen_this_poll]:
             del seen[key]
@@ -114,8 +123,14 @@ class SourceWatcher(ABC):
         ...
 
     @abstractmethod
-    def poll(self) -> WatchResult:
-        """Poll for changes and import new content (catching per-item errors)."""
+    def poll(self, on_item: Optional[Callable[["WatchResult"], None]] = None) -> WatchResult:
+        """Poll for changes and import new content (catching per-item errors).
+
+        ``on_item``, when given, is called with each imported item's result as it
+        commits — the per-file progress seam a tracked bulk load advances on. A
+        source that imports in one indivisible unit may call it once at the end;
+        one that iterates (the file/db sources, via :func:`fingerprint_poll`)
+        calls it per item."""
         ...
 
     @abstractmethod
@@ -134,4 +149,13 @@ class SourceWatcher(ABC):
         quarantine, :mod:`.drift_snapshot`). Base form: none — a watcher that
         cannot enumerate its store cheaply yields nothing and its source is
         snapshot-exempt."""
+        return iter(())
+
+    def store_items(self) -> Iterator[tuple[Path, str]]:
+        """:meth:`store_paths` with the ``source_id`` each file imports under.
+
+        The pairing is what lets the capture-coverage check ask per file whether
+        the archive has already accounted for it, rather than judging a source on
+        its newest store mtime alone. Base form: none — a watcher that cannot
+        pair its files leaves coverage to judge on raw store activity."""
         return iter(())

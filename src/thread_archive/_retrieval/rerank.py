@@ -38,7 +38,13 @@ import os
 from collections.abc import Callable
 from typing import Any, Optional, Protocol
 
-from .embed import importable, models_enabled, select_device, torch_accelerators
+from .embed import (
+    dtype_kwargs,
+    importable,
+    models_enabled,
+    select_device,
+    torch_accelerators,
+)
 from .model_slot import ModelSlot, defer_construction
 
 logger = logging.getLogger(__name__)
@@ -77,19 +83,6 @@ def _device() -> str:
     override = (os.environ.get("THREAD_ARCHIVE_RERANK_DEVICE")
                 or os.environ.get("THREAD_ARCHIVE_EMBED_DEVICE"))
     return select_device(override, *torch_accelerators())
-
-
-def dtype_kwargs(device: str) -> dict:
-    """Model kwargs for ``device``: fp16 on an accelerator — ~2× the inference speed at
-    scores whose ordering is indistinguishable from fp32 (measured over real pools: zero
-    pairwise rank flips) — and nothing on CPU, where fp16 is emulated and slower."""
-    if not device.startswith(("mps", "cuda")):
-        return {}
-    try:
-        import torch
-    except ImportError as e:  # extra absent — degrade via the slot's failure cache
-        raise RuntimeError(f"[embeddings] extra not installed: {e}") from e
-    return {"torch_dtype": torch.float16}
 
 
 def build_model(cross_encoder: Callable[..., PairScorer], name: str) -> PairScorer:

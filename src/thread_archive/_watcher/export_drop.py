@@ -41,7 +41,7 @@ from __future__ import annotations
 import logging
 import shutil
 from pathlib import Path
-from typing import Iterator, Optional
+from typing import Callable, Iterator, Optional
 
 from .base import SourceWatcher, WatchResult
 
@@ -83,7 +83,7 @@ class ExportDropWatcher(SourceWatcher):
     def is_available(self) -> bool:
         return self.dumps_dir.exists()
 
-    def poll(self) -> WatchResult:
+    def poll(self, on_item: Optional[Callable[[WatchResult], None]] = None) -> WatchResult:
         # Compute this poll's signals first, decide what's settled, *then* mutate —
         # so the delete/move during import can't perturb the scan we're iterating.
         current: dict[str, tuple] = {}
@@ -106,7 +106,10 @@ class ExportDropWatcher(SourceWatcher):
 
         result = WatchResult()
         for path in settled:
-            result = result + self._process(path)
+            done = self._process(path)
+            result = result + done
+            if on_item is not None:
+                on_item(done)
         return result
 
     def _candidates(self) -> Iterator[Path]:

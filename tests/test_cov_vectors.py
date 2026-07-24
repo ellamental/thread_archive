@@ -407,8 +407,9 @@ def test_build_model_pins_the_revision_and_trusts_remote_code(monkeypatch) -> No
     made = []
 
     class RecordingST:
-        def __init__(self, name, revision=None, trust_remote_code=False, device=None):
-            made.append((name, revision, trust_remote_code, device))
+        def __init__(self, name, revision=None, trust_remote_code=False, device=None,
+                     model_kwargs=None):
+            made.append((name, revision, trust_remote_code, device, model_kwargs))
 
         def get_sentence_embedding_dimension(self):
             return 768
@@ -420,7 +421,26 @@ def test_build_model_pins_the_revision_and_trusts_remote_code(monkeypatch) -> No
     assert embed.PINNED_REVISIONS[embed.DEFAULT_MODEL]
     assert made == [(
         embed.DEFAULT_MODEL, embed.PINNED_REVISIONS[embed.DEFAULT_MODEL], True, "cpu",
+        {},
     )]
+
+
+def test_embed_build_model_applies_the_accelerator_dtype(monkeypatch) -> None:
+    """The embedder must load at the same dtype policy as the cross-encoder. These
+    two paths diverged once — rerank applied fp16 and embed silently loaded fp32,
+    which is the difference between a cold corpus embedding in an hour and in
+    several — so pin that they now read one policy."""
+    torch = pytest.importorskip("torch")
+    monkeypatch.setenv("THREAD_ARCHIVE_EMBED_DEVICE", "mps")
+    made = []
+
+    class RecordingST:
+        def __init__(self, name, revision=None, trust_remote_code=False, device=None,
+                     model_kwargs=None):
+            made.append((device, model_kwargs))
+
+    embed.build_model(RecordingST, embed.DEFAULT_MODEL)
+    assert made == [("mps", {"torch_dtype": torch.float16})]
 
 
 def test_build_model_reads_either_dimension_accessor(monkeypatch) -> None:

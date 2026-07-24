@@ -18,7 +18,14 @@ coverage is their reconciliation:
   writes (``store_mtime_tracks_content``; live-SQLite stores churn mtimes without
   new conversations and are exempt). Compared against archived *events*, not
   import watermarks, deliberately: soft format drift advances watermarks while
-  producing nothing, and this comparison is the one that still catches it.
+  producing nothing, and this comparison is the one that still catches it. The
+  activity counted is what the archive has **yet to account for**: a store file
+  the importer consumed whole and settled as an empty session (an opened-and-
+  never-used CLI session — :func:`.._importers._skip_ledger.settled_empty_ids`)
+  is not evidence of missed capture, and without that carve-out one abandoned
+  session pins its source red until the next real conversation lands. A session
+  the archive keeps re-consuming to no effect is *not* settled and still fails
+  here, which is what keeps the drift catch: a blind parser's sessions grow.
 - **never ingested** (warn): a store with content and zero import history —
   either a first import still in flight, or a hole.
 - **report-only**: sources disabled in config, and archive sources with no
@@ -169,6 +176,55 @@ def _newest_export_event(source: str) -> Optional[float]:
     return _epoch(newest)
 
 
+def _settled_empty_sizes(source: str) -> dict[str, int]:
+    """``{source_id: consumed file size}`` for this source's settled empty
+    sessions — ids the skip ledger settled (see
+    :func:`.._importers._skip_ledger.settled_empty_ids`) whose import made no
+    thread. The size is the watermark's: a file that has since grown past it
+    holds bytes the archive has not looked at, so it counts as activity again."""
+    from sqlalchemy import select
+
+    from .._importers._skip_ledger import settled_empty_ids
+    from .._store import ImportState, get_session
+
+    settled = settled_empty_ids(source)
+    if not settled:
+        return {}
+    with get_session() as s:
+        rows = s.execute(
+            select(ImportState.source_id, ImportState.last_file_size).where(
+                ImportState.source == source,
+                ImportState.thread_id.is_(None),
+            )
+        )
+        return {sid: int(size or 0) for sid, size in rows if sid in settled}
+
+
+def _unaccounted_latest(w, discovered_latest: Optional[float]) -> Optional[float]:
+    """Newest mtime among ``w``'s store files the archive has yet to account for.
+
+    ``None`` when every file is accounted for. A watcher that cannot enumerate
+    its store in ``(path, source_id)`` pairs offers nothing to refine, so its
+    raw discovery stands — unrefined activity reads as unaccounted, never the
+    other way round."""
+    items = list(w.store_items())
+    if not items:
+        return discovered_latest
+    settled = _settled_empty_sizes(w.source_name)
+    latest: Optional[float] = None
+    for path, source_id in items:
+        try:
+            st = path.stat()
+        except OSError:
+            continue
+        if st.st_size == 0:
+            continue
+        if settled.get(source_id) == st.st_size:
+            continue
+        latest = st.st_mtime if latest is None else max(latest, st.st_mtime)
+    return latest
+
+
 def check_coverage(
     *,
     home: Optional[str] = None,
@@ -231,6 +287,21 @@ def check_coverage(
             "mtime_tracks_content": bool(w.store_mtime_tracks_content),
         }
 
+        stale_at: Optional[float] = None
+        if (
+            w.store_mtime_tracks_content
+            and not store_empty
+            and d.latest is not None
+            and hist_count > 0
+            and d.latest - (newest or 0.0) > grace
+        ):
+            # Looks stale on raw mtimes — re-ask against the activity the archive
+            # has yet to account for, which is what "missed capture" means.
+            stale_at = _unaccounted_latest(w, d.latest)
+            if stale_at is not None and stale_at - (newest or 0.0) <= grace:
+                stale_at = None
+            entry["unaccounted_store_latest"] = _iso(stale_at)
+
         if store_empty and hist_count >= min_history:
             entry["failed"] = "went_dark"
             failed.append(
@@ -238,16 +309,10 @@ def check_coverage(
                 "sessions of history (fix the store path, or disable the source in "
                 "config.json if it was retired)"
             )
-        elif (
-            w.store_mtime_tracks_content
-            and not store_empty
-            and d.latest is not None
-            and hist_count > 0
-            and d.latest - (newest or 0.0) > grace
-        ):
+        elif stale_at is not None:
             entry["failed"] = "stale_ingest"
             failed.append(
-                f"{name} ingest is stale: store activity at {_iso(d.latest)} but "
+                f"{name} ingest is stale: store activity at {_iso(stale_at)} but "
                 f"newest archived event is {entry['newest_event_at'] or 'absent'} "
                 "— recent store writes are not becoming events (wedged ingest, or "
                 "a parser blind to a changed format)"

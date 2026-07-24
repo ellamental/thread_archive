@@ -115,37 +115,26 @@ def is_claude_code_transcript(path: Path) -> bool:
 DEFAULT_PER_REPO = 40
 
 
-def select_corpus(data: Path, budget: int,
-                  per_repo: int = DEFAULT_PER_REPO) -> set[str] | None:
-    """Session ids for a corpus of about ``budget`` sessions. ``None`` when
-    ``budget`` is 0 — take everything.
+def choose_sessions(by_repo: dict[str, list[str]], linked: set[str], budget: int,
+                    per_repo: int) -> set[str]:
+    """The corpus selection itself, over plain data — which sessions a ``budget``
+    buys. :func:`select_corpus` is the parquet-reading wrapper.
 
-    Embedding is what bounds a corpus home: ~2 docs/s against 249k embeddable docs
-    for full SWE-chat, some 40 hours. So the corpus has to be smaller than the
+    Embedding is what bounds a corpus home (a full SWE-chat build is 249k
+    embeddable docs at ~10-16 chunks/s), so the corpus has to be smaller than the
     download, and *what* gets dropped decides whether it still measures anything.
     Two rules do the work:
 
     - **Rank repos by commit-linked yield.** The budget should go where cases can
       actually be mined, not to repos with no attributable commits.
     - **Cap each repo, linked sessions first.** Session counts are power-law skewed
-      — SWE-chat's largest repo is 870 sessions, so taking repos whole would spend
-      an entire modest budget inside one codebase and leave a benchmark that
+      — SWE-chat's largest repo is 870 of 5851 sessions, so taking repos whole would
+      spend an entire modest budget inside one codebase and leave a benchmark that
       measures search over a single project. Capping spreads the budget across many
       repos while still leaving each gold far more siblings than its pool can hold.
     """
-    if not budget:
-        return None
-    pq = _require_pyarrow()
-    sessions = pq.read_table(data / "sessions.parquet",
-                             columns=["session_id", "repo_id"]).to_pylist()
-    linked = {r["session_id"] for r in _linkage_eligible(data)}
-
-    by_repo: dict[str, list[str]] = {}
-    for s in sessions:
-        by_repo.setdefault(str(s["repo_id"]), []).append(str(s["session_id"]))
     ranked = sorted(by_repo.items(),
                     key=lambda kv: -sum(1 for s in kv[1] if s in linked))
-
     keep: set[str] = set()
     for _repo, members in ranked:
         if len(keep) >= budget:
@@ -156,6 +145,23 @@ def select_corpus(data: Path, budget: int,
                    + [s for s in members if s not in linked])
         keep.update(ordered[:min(per_repo, budget - len(keep))])
     return keep
+
+
+def select_corpus(data: Path, budget: int,
+                  per_repo: int = DEFAULT_PER_REPO) -> set[str] | None:
+    """Session ids for a corpus of about ``budget`` sessions, read from the parquet
+    tables and chosen by :func:`choose_sessions`. ``None`` when ``budget`` is 0 —
+    take everything."""
+    if not budget:
+        return None
+    pq = _require_pyarrow()
+    sessions = pq.read_table(data / "sessions.parquet",
+                             columns=["session_id", "repo_id"]).to_pylist()
+    by_repo: dict[str, list[str]] = {}
+    for s in sessions:
+        by_repo.setdefault(str(s["repo_id"]), []).append(str(s["session_id"]))
+    linked = {r["session_id"] for r in _linkage_eligible(data)}
+    return choose_sessions(by_repo, linked, budget, per_repo)
 
 
 def build_home(data: Path, home: Path, *, limit: int, vectors: bool,

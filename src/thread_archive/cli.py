@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import argparse
 import sys
+from typing import Optional
 
 from . import __version__
 from ._config import resolve_paths
@@ -184,6 +185,7 @@ def cmd_watch(args: argparse.Namespace) -> int:
     )
 
     if args.once:
+        from ._ops.load_runs import load_run
         from ._truth import shared_ingest_lock
 
         # Same coverage as api.watch(once=True): the poll appends truth and
@@ -191,10 +193,18 @@ def cmd_watch(args: argparse.Namespace) -> int:
         # one-shot racing a reindex can land truth after the rebuild's read
         # point and commit into the inode the swap replaces. Blocking (bounded
         # by one rebuild): a one-shot has no later pass to retry on.
-        with shared_ingest_lock():
-            result = watcher.poll_once()
-            if result.events_created > 0:
-                watcher.maintain()  # one upkeep pass (rebalance/manifest) for the one-shot
+        # The one-shot catch-up is a tracked load — it's the bulk import that makes
+        # search usable, so its progress/rate/ETA publish to load-state.json and a
+        # summary lands in the ledger, exactly like `embed`.
+        quiet = getattr(args, "quiet", False) or not sys.stdout.isatty()
+        with load_run("import", home=resolve_paths(args.home).home,
+                      reporter=None if quiet else _progress_line) as run:
+            with run.phase("import") as ph, shared_ingest_lock():
+                result = watcher.poll_once(phase=ph)
+                if result.events_created > 0:
+                    watcher.maintain()  # one upkeep pass (rebalance/manifest) for the one-shot
+        if not quiet:
+            sys.stdout.write("\r" + " " * 80 + "\r")
         print(
             f"watch: checked {result.sources_checked} sources, "
             f"imported {result.items_imported} items ({result.events_created} events)",
@@ -428,13 +438,111 @@ def cmd_migrate(args: argparse.Namespace) -> int:
     return 0
 
 
+def _fmt_duration(seconds: Optional[float]) -> str:
+    """``4h12m`` / ``7m30s`` / ``12s`` — a wait stated in the units a person waits in."""
+    if seconds is None:
+        return "?"
+    s = int(seconds)
+    if s >= 3600:
+        return f"{s // 3600}h{(s % 3600) // 60:02d}m"
+    if s >= 60:
+        return f"{s // 60}m{s % 60:02d}s"
+    return f"{s}s"
+
+
+def _progress_line(snap: dict) -> None:
+    """Rewrite one console line with the run's current phase, progress, and ETA."""
+    phases = snap.get("phases") or []
+    if not phases:
+        return
+    ph = phases[-1]
+    done, total = ph.get("done", 0), ph.get("total")
+    bits = [f"{ph.get('name', '?')}: {done:,}" + (f"/{total:,}" if total else "")]
+    if total:
+        bits.append(f"{100.0 * done / max(total, 1):.1f}%")
+    if (rate := ph.get("rate_per_s")):
+        bits.append(f"{rate:,.1f}/s")
+    if (eta := ph.get("eta_s")) is not None:
+        bits.append(f"ETA {_fmt_duration(eta)}")
+    sys.stdout.write("\r  " + "  ".join(bits).ljust(78))
+    sys.stdout.flush()
+
+
 def cmd_embed(args: argparse.Namespace) -> int:
     from . import _api as api
 
     print("embedding missing vectors (rebuild=%s)..." % args.rebuild, flush=True)
+    quiet = getattr(args, "quiet", False) or not sys.stdout.isatty()
     res = api.embed(home=args.home, rebuild=args.rebuild, max_events=args.limit,
-                    newest_first=args.newest_first)
+                    newest_first=args.newest_first,
+                    progress=None if quiet else _progress_line)
+    if not quiet:
+        sys.stdout.write("\r" + " " * 80 + "\r")
     print(f"  embedded {res['embedded']}")
+    return 0
+
+
+def cmd_loads(args: argparse.Namespace) -> int:
+    """Show how loading this archive is going, and how it has gone."""
+    from . import _api as api
+
+    res = api.load_status(home=args.home, limit=args.limit)
+    cur = res.get("current") or {}
+    if cur:
+        status = cur.get("status", "?")
+        print(f"current: {cur.get('kind', '?')} — {status} "
+              f"({_fmt_duration(cur.get('elapsed_s'))} elapsed, pid {cur.get('pid', '?')})")
+        for ph in cur.get("phases") or []:
+            print("  " + _phase_line(ph))
+        if status == "stalled":
+            print("  (the process writing this state is gone — the load died mid-phase)")
+    else:
+        print("current: no load in flight")
+    runs = res.get("recent") or []
+    if not runs:
+        print("no recorded runs")
+        return 0
+    print(f"\nrecent runs ({len(runs)}):")
+    for r in runs:
+        print(f"  {r.get('at', '?')[:19]}  {r.get('kind', '?'):<8} {r.get('status', '?'):<7} "
+              f"{_fmt_duration(r.get('duration_s'))}")
+        for ph in r.get("phases") or []:
+            print("      " + _phase_line(ph))
+    return 0
+
+
+def _phase_line(ph: dict) -> str:
+    """One phase as a line: its wall time, what it moved, and its internal split."""
+    bits = [f"{ph.get('name', '?'):<14} {_fmt_duration(ph.get('elapsed_s')):>7}"]
+    if (done := ph.get("done")):
+        bits.append(f"{done:,}" + (f"/{ph['total']:,}" if ph.get("total") else "") + " done")
+    if (rate := ph.get("rate_per_s")):
+        bits.append(f"{rate:,.1f}/s")
+    if (detail := ph.get("detail_s")):
+        bits.append("[" + " ".join(f"{k} {_fmt_duration(v)}" for k, v in detail.items()) + "]")
+    if (counts := ph.get("counts")):
+        bits.append("(" + " ".join(f"{k}={v:,}" for k, v in counts.items()) + ")")
+    return "  ".join(bits)
+
+
+def cmd_archives(args: argparse.Namespace) -> int:
+    """List every known archive and what each one is doing."""
+    from . import _api as api
+
+    rows = api.archives(home=args.home)
+    if not rows:
+        print("no archives registered yet")
+        return 0
+    for a in rows:
+        mark = "*" if a.get("active") else " "
+        gone = "" if a.get("exists") else "  (missing)"
+        size = a.get("index_bytes") or 0
+        load = a.get("load") or {}
+        state = ""
+        if load:
+            state = f"  [{load.get('kind', '?')}: {load.get('status', '?')}]"
+        print(f"{mark} {a.get('label', '?'):<20} {size / 1e9:6.2f} GB  "
+              f"{a.get('home', '?')}{gone}{state}")
     return 0
 
 
@@ -1392,6 +1500,8 @@ def build_parser() -> argparse.ArgumentParser:
     p_watch = sub.add_parser("watch", help="watch local AI-tool stores and import incrementally")
     _add_home_arg(p_watch)
     p_watch.add_argument("--once", action="store_true", help="poll once and exit")
+    p_watch.add_argument("--quiet", action="store_true",
+                         help="suppress the live progress line (--once)")
     p_watch.add_argument("--interval", type=float, default=5.0, help="poll interval in seconds")
     p_watch.add_argument("--web", action="store_true", help="cohost the web viewer (persistent URL)")
     p_watch.add_argument("--web-host", default="127.0.0.1", help="cohosted viewer bind host (non-loopback refused unless THREAD_ARCHIVE_WEB_NONLOCAL=1)")
@@ -1452,7 +1562,19 @@ def build_parser() -> argparse.ArgumentParser:
     p_embed.add_argument("--limit", type=int, default=None, help="cap events embedded this run")
     p_embed.add_argument("--newest-first", action="store_true",
                          help="embed the freshest gap first (recent threads findable soonest)")
+    p_embed.add_argument("--quiet", action="store_true",
+                         help="suppress the live progress line")
     p_embed.set_defaults(func=cmd_embed)
+
+    p_loads = sub.add_parser(
+        "loads", help="load progress: the in-flight load and recent runs, by phase")
+    _add_home_arg(p_loads)
+    p_loads.add_argument("--limit", type=int, default=10, help="recent runs to show")
+    p_loads.set_defaults(func=cmd_loads)
+
+    p_archives = sub.add_parser("archives", help="list known archives and their load state")
+    _add_home_arg(p_archives)
+    p_archives.set_defaults(func=cmd_archives)
 
     p_coverage = sub.add_parser(
         "coverage",
