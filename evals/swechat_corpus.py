@@ -46,6 +46,7 @@ Usage::
 from __future__ import annotations
 
 import argparse
+import functools
 import json
 import os
 import shutil
@@ -106,8 +107,59 @@ def is_claude_code_transcript(path: Path) -> bool:
     return False
 
 
+#: Sessions kept per repository when a corpus budget is set. The miner grades at
+#: most MAX_PARTIAL + MAX_CONFOUND (6 + 12) siblings into a pool, so a repo needs
+#: only a few dozen members to give every gold a full-density confound set; past
+#: that, extra sessions from the same codebase buy nothing the pool can use and
+#: cost embedding time that another repo's confounds would use better.
+DEFAULT_PER_REPO = 40
+
+
+def select_corpus(data: Path, budget: int,
+                  per_repo: int = DEFAULT_PER_REPO) -> set[str] | None:
+    """Session ids for a corpus of about ``budget`` sessions. ``None`` when
+    ``budget`` is 0 — take everything.
+
+    Embedding is what bounds a corpus home: ~2 docs/s against 249k embeddable docs
+    for full SWE-chat, some 40 hours. So the corpus has to be smaller than the
+    download, and *what* gets dropped decides whether it still measures anything.
+    Two rules do the work:
+
+    - **Rank repos by commit-linked yield.** The budget should go where cases can
+      actually be mined, not to repos with no attributable commits.
+    - **Cap each repo, linked sessions first.** Session counts are power-law skewed
+      — SWE-chat's largest repo is 870 sessions, so taking repos whole would spend
+      an entire modest budget inside one codebase and leave a benchmark that
+      measures search over a single project. Capping spreads the budget across many
+      repos while still leaving each gold far more siblings than its pool can hold.
+    """
+    if not budget:
+        return None
+    pq = _require_pyarrow()
+    sessions = pq.read_table(data / "sessions.parquet",
+                             columns=["session_id", "repo_id"]).to_pylist()
+    linked = {r["session_id"] for r in _linkage_eligible(data)}
+
+    by_repo: dict[str, list[str]] = {}
+    for s in sessions:
+        by_repo.setdefault(str(s["repo_id"]), []).append(str(s["session_id"]))
+    ranked = sorted(by_repo.items(),
+                    key=lambda kv: -sum(1 for s in kv[1] if s in linked))
+
+    keep: set[str] = set()
+    for _repo, members in ranked:
+        if len(keep) >= budget:
+            break
+        # Linked sessions first: they are the ones that can become golds, and the
+        # rest of the repo is only there to be their confounds.
+        ordered = ([s for s in members if s in linked]
+                   + [s for s in members if s not in linked])
+        keep.update(ordered[:min(per_repo, budget - len(keep))])
+    return keep
+
+
 def build_home(data: Path, home: Path, *, limit: int, vectors: bool,
-               fresh: bool) -> int:
+               fresh: bool, sessions: set[str] | None = None) -> int:
     """Ingest SWE-chat transcripts into ``home``, one thread per session. Returns
     the count imported. ``source_id`` is the session id (the transcript stem), which
     is what makes the linkage phase able to map a session to its thread.
@@ -122,6 +174,9 @@ def build_home(data: Path, home: Path, *, limit: int, vectors: bool,
         raise SystemExit(f"no transcripts under {data / 'transcripts'}")
     if limit:
         transcripts = transcripts[:limit]
+
+    if sessions is not None:
+        transcripts = [p for p in transcripts if p.stem in sessions]
 
     usable = [p for p in transcripts if is_claude_code_transcript(p)]
     skipped = len(transcripts) - len(usable)
@@ -181,11 +236,12 @@ def _as_list(value) -> list:
     return []
 
 
-def build_linkage(data: Path, thread_of_session: dict[str, str]) -> list[dict]:
-    """Join the parquet tables into linkage rows for sessions with attributable
-    commits. Only sessions present in ``thread_of_session`` (i.e. actually ingested)
-    yield a row — a linkage row naming a thread that isn't in the corpus is a case
-    whose gold can never rank."""
+@functools.lru_cache(maxsize=1)
+def _linkage_eligible(data: Path) -> list[dict]:
+    """Sessions whose commits are attributable to them alone, each with the commit
+    material a case is authored from. Independent of any built home: the corpus
+    selector ranks repos with it *before* ingest, and :func:`build_linkage` maps
+    thread ids onto it afterward. Cached — the commits table is a 1 GB read."""
     pq = _require_pyarrow()
     read = lambda name, cols: pq.read_table(  # noqa: E731
         data / f"{name}.parquet", columns=cols).to_pylist()
@@ -219,9 +275,6 @@ def build_linkage(data: Path, thread_of_session: dict[str, str]) -> list[dict]:
 
     rows: list[dict] = []
     for s in sessions:
-        tid = thread_of_session.get(str(s["session_id"]))
-        if tid is None:
-            continue
         pks = {id_to_pk.get(i) for i in _as_list(s["checkpoint_ids"])}
         pks.add(s["canonical_checkpoint_pk"])
         owned = [c for pk in (pks & solo) for c in by_checkpoint[pk]]
@@ -229,7 +282,6 @@ def build_linkage(data: Path, thread_of_session: dict[str, str]) -> list[dict]:
             continue
         rows.append({
             "session_id": str(s["session_id"]),
-            "thread_id": tid,
             "repo": str(s["repo_id"]),
             "files": [str(f) for f in _as_list(s["files_touched"])],
             "commits": [{
@@ -244,6 +296,18 @@ def build_linkage(data: Path, thread_of_session: dict[str, str]) -> list[dict]:
     print(f"  linkage: {unretrieved} commit row(s) skipped as unretrieved "
           f"(status != ok)")
     return rows
+
+
+def build_linkage(data: Path, thread_of_session: dict[str, str]) -> list[dict]:
+    """Linkage rows for the sessions actually present in the built home. A row
+    naming a thread the corpus doesn't hold is a case whose gold can never rank, so
+    an uningested session yields nothing."""
+    out: list[dict] = []
+    for row in _linkage_eligible(data):
+        tid = thread_of_session.get(row["session_id"])
+        if tid is not None:
+            out.append({"thread_id": tid, **row})
+    return out
 
 
 def write_linkage(rows: list[dict], out: Path) -> Path:
@@ -267,6 +331,15 @@ def main(argv: list[str] | None = None) -> int:
                          f"{commit_linked.LINKAGE_NAME})")
     ap.add_argument("--limit", type=int, default=0, metavar="N",
                     help="ingest only the first N transcripts (0 = all)")
+    ap.add_argument("--max-sessions", type=int, default=0, metavar="N",
+                    help="cap the corpus near N sessions, taken whole repo at a "
+                         "time (repos ranked by commit-linked yield). Embedding "
+                         "runs ~2 docs/s, so the full corpus is ~40 h; this is the "
+                         "knob that makes a build finish. 0 = all")
+    ap.add_argument("--per-repo", type=int, default=DEFAULT_PER_REPO, metavar="N",
+                    help=f"sessions kept per repo under a budget (default "
+                         f"{DEFAULT_PER_REPO}; the miner pools at most 18 "
+                         "confounds, so more buys nothing)")
     ap.add_argument("--vectors", action="store_true",
                     help="embed after ingest (needed for the semantic arms)")
     ap.add_argument("--fresh", action="store_true",
@@ -284,8 +357,12 @@ def main(argv: list[str] | None = None) -> int:
         raise SystemExit(f"refusing: corpus home {home} overlaps the real archive {real}")
 
     if not args.linkage_only:
+        keep = select_corpus(args.data, args.max_sessions, args.per_repo)
+        if keep is not None:
+            print(f"corpus budget {args.max_sessions}: keeping {len(keep)} session(s), "
+                  f"<={args.per_repo}/repo, ranked by commit-linked yield")
         build_home(args.data, home, limit=args.limit, vectors=args.vectors,
-                   fresh=args.fresh)
+                   fresh=args.fresh, sessions=keep)
 
     mapping = thread_ids_by_session(home)
     if not mapping:

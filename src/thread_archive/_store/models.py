@@ -23,7 +23,6 @@ from datetime import datetime
 
 from sqlalchemy import (
     BigInteger,
-    Boolean,
     DateTime,
     ForeignKey,
     Index,
@@ -384,29 +383,39 @@ class ThreadMetrics(Base):
     __table_args__ = (Index("idx_thread_metrics_model", "model"),)
 
 
-class RequestCacheMetric(Base):
-    """One canonical cached-input count per provider API request.
+class RequestMetric(Base):
+    """One canonical usage row per provider API request.
 
-    Claude Code repeats a response's full usage object on every transcript row
-    for that response. Those rows can arrive in different watcher polls, so the
-    provider request identity must survive between incremental folds. Sources
-    without a stable request id use the event id.
+    Claude Code repeats a response's full usage object across every transcript row
+    belonging to that response, and those rows can arrive in different watcher polls,
+    so the provider request identity has to survive between incremental folds. Sources
+    without a stable request id key on the event id, which is unique per row and so
+    collapses nothing.
+
+    Every token and cost figure the stats page shows is summed from here rather than
+    straight off ``events``: the duplicate rows are indistinguishable from separate
+    requests at the event level, so summing them there reports one response several
+    times over.
 
     This is a disposable projection of the event log, like ``thread_metrics``.
     """
 
-    __tablename__ = "request_cache_metrics"
+    __tablename__ = "request_metrics"
 
     thread_id: Mapped[str] = mapped_column(Text, primary_key=True)
     request_key: Mapped[str] = mapped_column(Text, primary_key=True)
     model: Mapped[str] = mapped_column(Text, nullable=False, default="", server_default="")
+    input_tokens: Mapped[int] = mapped_column(BigInteger, default=0, server_default=text("0"))
     cache_read_tokens: Mapped[int] = mapped_column(
         BigInteger, default=0, server_default=text("0")
     )
+    output_tokens: Mapped[int] = mapped_column(BigInteger, default=0, server_default=text("0"))
+    thinking_tokens: Mapped[int] = mapped_column(BigInteger, default=0, server_default=text("0"))
+    # Null when the route reported no cost at all (e.g. a subscription tool). That is
+    # what keeps "no cost recorded" distinguishable from a genuine $0 once summed.
+    cost: Mapped[float | None] = mapped_column(REAL, nullable=True, default=None)
 
-    __table_args__ = (
-        Index("idx_request_cache_metrics_thread_model", "thread_id", "model"),
-    )
+    __table_args__ = (Index("idx_request_metrics_thread_model", "thread_id", "model"),)
 
 
 class MetricsCursor(Base):
@@ -424,8 +433,11 @@ class MetricsCursor(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, default=1)
     through_event_id: Mapped[int] = mapped_column(BigInteger, default=0, server_default=text("0"))
-    cache_requests_ready: Mapped[bool] = mapped_column(
-        Boolean, default=False, server_default=text("0")
+    # Which definition of the projection produced the standing sums. Sums folded by an
+    # older shape cannot be added to by a newer one, so a refresh that finds this
+    # trailing ``PROJECTION_VERSION`` discards both projections and rebuilds.
+    projection_version: Mapped[int] = mapped_column(
+        Integer, default=0, server_default=text("0")
     )
 
 

@@ -11,6 +11,7 @@ and the snapshot binding on each assembled case.
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 from thread_archive._mine import commit_linked as cm
 
@@ -264,6 +265,39 @@ def test_transcript_detector_accepts_jsonl_and_rejects_pretty_printed(tmp_path):
 
     absent = tmp_path / "nope.jsonl"
     assert not sc.is_claude_code_transcript(absent)
+
+
+def test_select_corpus_caps_each_repo_and_prefers_linked(monkeypatch):
+    """A budget must not land inside one codebase. SWE-chat's largest repo holds 870
+    of 5851 sessions, so taking repos whole would spend a modest budget on a single
+    project and leave a benchmark that measures search over that project."""
+    sc = _corpus_module()
+    big = [{"session_id": f"B{i}", "repo_id": "o/big"} for i in range(500)]
+    smalls = [{"session_id": f"S{r}_{i}", "repo_id": f"o/s{r}"}
+              for r in range(5) for i in range(20)]
+
+    class _Tbl:
+        def to_pylist(self):
+            return big + smalls
+
+    monkeypatch.setattr(sc, "_require_pyarrow",
+                        lambda: type("pq", (), {"read_table": staticmethod(
+                            lambda *a, **k: _Tbl())}))
+    # every small repo's first session is commit-linked; the big repo has none
+    linked = [{"session_id": f"S{r}_0"} for r in range(5)]
+    monkeypatch.setattr(sc, "_linkage_eligible", lambda data: linked)
+
+    keep = sc.select_corpus(Path("/nowhere"), budget=100, per_repo=10)
+    assert len(keep) == 60                       # 6 repos, each held to the cap
+    from collections import Counter
+    by_repo = Counter(s.split("_")[0] if s.startswith("S") else "B" for s in keep)
+    assert max(by_repo.values()) <= 10           # no repo exceeds the cap
+    assert all(f"S{r}_0" in keep for r in range(5))   # linked sessions kept first
+
+
+def test_select_corpus_without_a_budget_takes_everything():
+    sc = _corpus_module()
+    assert sc.select_corpus(Path("/nowhere"), budget=0) is None
 
 
 def test_as_list_normalizes_json_string_columns():

@@ -2,6 +2,40 @@
 
 ## Unreleased
 
+- **Stats token and cost totals were over-counted.** Claude Code repeats one
+  response's full usage object across every transcript row that response produced,
+  so an event is not a request. The rollup deduplicated exactly one column —
+  `cache_read_tokens`, via a `request_cache_metrics` ledger — while the fold
+  directly above it summed the same duplicate rows straight into `requests`,
+  `input_tokens`, `output_tokens`, `thinking_tokens`, `cost` and `cost_requests`.
+  On this archive that was 31M phantom output tokens and 25k phantom requests
+  (production totals on the rebuild: requests 461,397 → 436,407, input 92.55M →
+  88.15M, output 306.54M → 275.71M). The ledger is now `request_metrics` and holds
+  every usage figure, one canonical row per provider request, `MAX` per field so a
+  duplicate arriving in a later watcher poll still collapses. `thread_metrics` is
+  re-derived from it rather than accumulated into, which also makes re-folding an
+  already-folded window a no-op instead of a doubling — verified bit-identical
+  against a 200k-event re-fold on the live index.
+- `refresh_metrics` rebuilds only the threads the folded window touched. It
+  previously reran an unbounded full-table `UPDATE … SET cache_read_tokens = (
+  correlated subquery)` over every `thread_metrics` row on every fold, which is the
+  per-request full survey the incremental cursor exists to avoid.
+- `metrics_cursor.cache_requests_ready` (a one-shot "backfilled once" bool) is now
+  `projection_version`, an integer compared against `_metrics.PROJECTION_VERSION`.
+  Any change to the fold that makes old sums incomparable is a bump, and the next
+  refresh discards and rebuilds instead of adding to them.
+- Fixed a crash opening any archive predating both metrics columns. `_ADDED_COLUMNS`
+  iterates in dict order, and the `thread_metrics` fixup wrote
+  `metrics_cursor.cache_requests_ready` — a column the *next* entry had not created
+  yet — so `init_db` raised `no such column` and the open died. It self-healed on a
+  second open (the ALTER autocommits, the fixup's DML rolls back), which disguised a
+  deterministic ordering bug as a transient race. Schema provisioning no longer
+  writes data at all: it provisions shape, and `refresh_metrics` owns staleness via
+  `projection_version`, so the steps are order-independent by construction.
+- `init_db` drops projections a newer shape superseded (`request_cache_metrics`, the
+  `cache_requests_ready` column) rather than stranding them. They are disposable
+  re-derivations of the event log, and a stale one left in place reads like a live one.
+
 - New gold miner **`commit`** (`thread_archive mine commit`) and the
   `evals/swechat_corpus.py` harness that feeds it. Every existing miner
   establishes its labels by searching with the engine under test — the rerank
