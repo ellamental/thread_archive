@@ -126,11 +126,11 @@ class PoolCache:
             self.misses += 1
             return None
         self.hits += 1
-        return [dict(h) for h in pool]
+        return [h.copy() for h in pool]
 
     def put(self, key: tuple, pool: list[EventHit]) -> None:
         """Store a copy of ``pool``, insulated from the caller's later mutations."""
-        self._pools[key] = [dict(h) for h in pool]
+        self._pools[key] = [h.copy() for h in pool]
 
     def __len__(self) -> int:
         return len(self._pools)

@@ -216,7 +216,9 @@ def retrieve_pool(
     over: int,
     structural: bool,
     params: Optional[SearchParams] = None,
-    thread_id: Optional[int | str] = None,
+    # A resolved thread id: ``search`` turns any ref (legacy int, session id)
+    # into the ULID before calling — the raw ref never reaches the pool.
+    thread_id: Optional[str] = None,
     thread_ids: Optional[list[str]] = None,
     content_types: Optional[list[str]] = None,
     exclude_content_types: Optional[list[str]] = None,

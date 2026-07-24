@@ -112,6 +112,14 @@ identical failure signature, including on a docs-only commit. Two causes:
   `tests/test_mine_orchestration.py:343`. `ruff check .` now passes clean
   (ruff 0.15.22), and the full suite + package lane stay green with main's
   new tests included.
+- **Mypy** (surfaced once ruff passed) — 3 errors in main's new pool-cache
+  work, none in this PR's files: `pool_cache.py` copied hits with `dict(h)`,
+  erasing the `EventHit` TypedDict type (fixed with `h.copy()`, which keeps
+  it — behaviorally identical shallow copy), and `retrieve_pool` declared
+  `thread_id: int | str | None` while passing it to `search_events`
+  (`str | None`) — `search()` resolves every ref to the ULID before calling,
+  so the annotation was narrowed to the real contract (`Optional[str]`;
+  verified `search()` is the only caller). `mypy`: 166 files, no issues.
 - **Frontend coverage thresholds** — lines 89.72% vs 91% required, statements
   86.53% vs 88%. Pre-existing on main, entirely outside this PR's scope
   (no frontend file touched); needs real frontend test work in a follow-up.
