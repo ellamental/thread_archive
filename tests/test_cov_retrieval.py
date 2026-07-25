@@ -498,6 +498,34 @@ def test_fts_tool_completed_paths() -> None:
     assert _fts_tool_completed({"tool_name": "Bash"}) == []
 
 
+def test_tool_output_is_extracted_but_never_indexed() -> None:
+    """Tool output is preserved and readable but stays out of the search index.
+
+    The per-event extractors still produce it — truth reconciliation and any
+    non-search reader wants the real shape — and the policy filter drops it at the
+    one seam every writer and ``verify`` share. The tool *call* is not affected:
+    "when did we run this" is a question the archive answers.
+    """
+    from thread_archive._retrieval._extract import (
+        UNINDEXED_CONTENT_TYPES,
+        _extract_fts_content,
+        _fts_tool_completed,
+    )
+
+    assert UNINDEXED_CONTENT_TYPES == {"tool_result", "tool_error"}
+    # the raw extractor still names the content …
+    assert _fts_tool_completed({"output": "grep dump", "tool_name": "Bash"})[0][1] == "tool_result"
+    assert _extract_fts_content("tool_execution_completed",
+                                {"output": "grep dump", "tool_name": "Bash"})[0][1] == "tool_result"
+    # … and the policy seam drops it
+    assert extract_fts_content("tool_execution_completed",
+                               {"output": "grep dump", "tool_name": "Bash"}) == []
+    # the call survives, tool name and arguments intact
+    call = extract_fts_content("tool_use_complete",
+                               {"tool_name": "Bash", "input": {"command": "ls"}})
+    assert call and call[0][1] == "tool" and call[0][2] == "Bash"
+
+
 def test_extract_fts_content_dispatch() -> None:
     assert extract_fts_content("user_message_sent", {}) == []           # empty payload
     assert extract_fts_content("user_message_sent", {"content": ""}) == []  # empty content
@@ -516,10 +544,10 @@ def test_extract_fts_content_dispatch() -> None:
     # tool dispatch routes through the shared helpers
     assert extract_fts_content("tool_use_complete",
                                {"tool_name": "Bash", "input": {"command": "ls"}})[0][1] == "tool"
+    # tool OUTPUT is extracted but never indexed — see the policy test below
     assert extract_fts_content("tool_execution_completed",
-                               {"output": "done", "tool_name": "Bash"})[0][1] == "tool_result"
-    assert extract_fts_content("tool_execution_error", {"error": "e", "tool_name": "B"}) == \
-        [("e", "tool_error", "B")]
+                               {"output": "done", "tool_name": "Bash"}) == []
+    assert extract_fts_content("tool_execution_error", {"error": "e", "tool_name": "B"}) == []
     assert extract_fts_content("tool_execution_error", {}) == []
     assert extract_fts_content("context_summary", {"content": "c"}) == [("c", "context_summary", None)]
     assert extract_fts_content("context_summary", {}) == []

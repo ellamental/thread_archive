@@ -49,6 +49,17 @@ from .read import read_thread, read_thread_structured, resolve_thread_ref
 
 logger = logging.getLogger(__name__)
 
+#: The content scope a search runs in when its caller names none: everything the
+#: index holds except derived thread summaries, which are the librarian's text
+#: rather than the record and so stay opt-in.
+#:
+#: Defined here rather than at the agent surface because two callers must agree on
+#: it: the surface, and :func:`warm_models` — the vector matrix caches per
+#: content-type scope, so a warm pass primed against a different scope leaves the
+#: first real query to build a matrix inside the request.
+DEFAULT_CONTENT_TYPES: Optional[list[str]] = None
+DEFAULT_EXCLUDE_CONTENT_TYPES = ("summary",)
+
 
 def _enrich_thread_titles(hits: list[EventHit], *, session: Optional[Session] = None) -> None:
     """Fill ``thread_title`` on hits from the threads table (one query)."""
@@ -210,10 +221,9 @@ def warm_models(embedder=None, reranker=None) -> None:
 
     # Run one throwaway search end to end: it loads the vector matrix and runs a first
     # cross-encoder inference, both of which cache process-globally for the real queries.
-    # Scope it to the agent surface's default (mcp.server's DEFAULT_SEARCH_CONTENT_TYPES),
-    # so the matrix this primes is keyed the same as the real queries reuse (the matrix
-    # cache is keyed by content-type scope; a mismatched scope would prime a matrix the
-    # real query never touches).
+    # Scoped to :data:`DEFAULT_CONTENT_TYPES` so the matrix this primes is keyed the
+    # same as the real queries reuse (the matrix cache is keyed by content-type scope;
+    # a mismatched scope would prime a matrix the real query never touches).
     # Build the corpus graph inline while we're already off the request path —
     # the coherence re-rank serves from this cache and never builds during a
     # search (a stale graph refreshes in the background; the FIRST build is
@@ -233,7 +243,8 @@ def warm_models(embedder=None, reranker=None) -> None:
 
         # rerank=True: the point is priming the cross-encoder's inference path, so
         # force it past the gates (a strong-headed warm hit would otherwise skip it).
-        api.search(_WARM_QUERY, limit=1, content_types=["user", "title"], rerank=True)
+        api.search(_WARM_QUERY, limit=1, content_types=DEFAULT_CONTENT_TYPES,
+                   exclude_content_types=list(DEFAULT_EXCLUDE_CONTENT_TYPES), rerank=True)
     except Exception:  # noqa: BLE001 — a store that isn't ready just warms the models, not the caches
         failed.append("search")
         logger.debug("warm_models: dummy warm search skipped", exc_info=True)

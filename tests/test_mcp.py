@@ -231,39 +231,22 @@ def test_mcp_search_pages_through_the_result_set(archive_home) -> None:
     assert "past the end" in past
 
 
-def test_mcp_search_defaults_to_user_only(archive_home) -> None:
-    """Bare thread_search scopes to USER messages; assistant text is opt-in via
-    content_type='all' (or the specific type) — except the one-shot dry-scope
-    widen, covered by its own test. Mirrors the archive backend default."""
+def test_mcp_search_defaults_to_the_whole_transcript(archive_home) -> None:
+    """Bare thread_search reads the whole conversation — an answer that lives only
+    in assistant text is found on the first pass, with no scope to widen and no
+    note to explain. An explicit content_type still narrows to one type."""
     f = archive_home / "sess.jsonl"
     _write_cc(f, [USER, ASSISTANT])  # USER: "hello mcp"; ASSISTANT: "hi from mcp"
     ta.import_path(f)
 
-    # default scope answers the query with the user hit — assistant text stays out
-    assert "hi from mcp" not in thread_search("mcp")
-    # 'all' clears the filter → assistant text now found (group='none': grouping
-    # would fold the assistant hit into the higher-weighted user hit's row)
-    assert "hi from mcp" in thread_search("from mcp", content_type="all", group="none")
-    # an explicit type targets it directly
-    assert "hi from mcp" in thread_search("from mcp", content_type="text")
-    # the user message is always reachable under the default
-    assert "hello mcp" in thread_search("hello mcp")
-
-
-def test_mcp_search_widens_to_text_when_default_scope_dry(archive_home) -> None:
-    """A default-scope search with no keyword match retries once with assistant
-    text included (and says so); an explicit content_type never widens."""
-    f = archive_home / "sess.jsonl"
-    _write_cc(f, [USER, ASSISTANT])  # USER: "hello mcp"; ASSISTANT: "hi from mcp"
-    ta.import_path(f)
-
-    # "hi" appears only in assistant text → default scope is dry → auto-widen
+    # "hi" appears only in assistant text, and the default scope reaches it
     out = thread_search("hi")
     assert "hi from mcp" in out
-    assert out.startswith("note: no strong keyword match in the default scope")
-    # an explicit scope is a deliberate choice — no widen, no note
-    narrow = thread_search("hi", content_type="user")
-    assert "hi from mcp" not in narrow and "note: no keyword match" not in narrow
+    assert not out.startswith("note:")  # nothing to apologize for
+    # the user message is reachable under the same default
+    assert "hello mcp" in thread_search("hello mcp")
+    # an explicit type still narrows: "hi" is not in the user message
+    assert "hi from mcp" not in thread_search("hi", content_type="user")
 
 
 def test_mcp_search_prepends_degradation_notice(archive_home) -> None:
@@ -601,11 +584,22 @@ def test_maybe_catch_up_runs_the_pass_off_the_caller_thread(archive_home, monkey
             raise AssertionError("the background pass never released the slot")
 
 
-def test_default_scope_weakness_needs_query_terms() -> None:
-    """A termless query (empty / punctuation-only) can never be judged weak —
-    there is nothing to look for in the top hit."""
-    assert server._default_scope_is_weak([], "") is False
-    assert server._default_scope_is_weak([], "  ") is False
+def test_default_scope_is_the_whole_transcript_minus_summaries() -> None:
+    """The default search scope names no content type — everything the index holds
+    is in play — and excludes only the librarian's derived summaries. Tool output
+    needs no exclusion here because it never reaches the index at all."""
+    assert server.DEFAULT_SEARCH_CONTENT_TYPES is None
+    assert server.DEFAULT_SEARCH_EXCLUDE == ("summary",)
+
+
+def test_warm_pass_primes_the_scope_agents_search() -> None:
+    """The warm search and the agent surface share one scope constant: the vector
+    matrix caches per content-type scope, so a drift between them would leave the
+    first real query building a matrix inside the request."""
+    from thread_archive import _retrieval
+
+    assert server.DEFAULT_SEARCH_CONTENT_TYPES is _retrieval.DEFAULT_CONTENT_TYPES
+    assert server.DEFAULT_SEARCH_EXCLUDE is _retrieval.DEFAULT_EXCLUDE_CONTENT_TYPES
 
 
 def test_degradation_notice_accepts_naive_timestamp(archive_home) -> None:

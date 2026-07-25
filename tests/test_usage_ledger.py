@@ -30,12 +30,11 @@ def test_record_search_writes_ids_and_omits_none_params(archive_home) -> None:
     hits = [{"event_id": 7, "thread_id": 3, "snippet": "SECRET CONTENT"},
             {"event_id": "8", "thread_id": "3"}]
     usage.record_search("what did we decide", params={"limit": 10, "source": None},
-                        hits=hits, widened=True)
+                        hits=hits)
     (rec,) = _records(archive_home)
     assert rec["kind"] == "search"
     assert rec["query"] == "what did we decide"
     assert rec["limit"] == 10 and "source" not in rec
-    assert rec["widened"] is True
     assert rec["n_hits"] == 2
     assert rec["results"] == [[7, "3"], [8, "3"]]  # event id int, thread id string
     # ids only — never content
@@ -43,9 +42,8 @@ def test_record_search_writes_ids_and_omits_none_params(archive_home) -> None:
 
 
 def test_record_search_tolerates_non_hit_shapes(archive_home) -> None:
-    usage.record_search("q", params={}, hits="a rendered string", widened=False)
-    usage.record_search("q2", params={}, hits=[{"count": 5}, {"event_id": "x", "thread_id": 1}],
-                        widened=False)
+    usage.record_search("q", params={}, hits="a rendered string")
+    usage.record_search("q2", params={}, hits=[{"count": 5}, {"event_id": "x", "thread_id": 1}])
     recs = _records(archive_home)
     assert "n_hits" not in recs[0] and "results" not in recs[0]
     assert recs[1]["n_hits"] == 2 and "results" not in recs[1]
@@ -60,7 +58,7 @@ def test_record_read_int_and_uuid(archive_home) -> None:
 
 
 def test_duration_ms_recorded_when_given_and_omitted_when_not(archive_home) -> None:
-    usage.record_search("q", params={}, hits=[], widened=False, duration_ms=12.3456)
+    usage.record_search("q", params={}, hits=[], duration_ms=12.3456)
     usage.record_read(1, duration_ms=0.74)
     usage.record_read(2)
     search, read, bare = _records(archive_home)
@@ -70,10 +68,10 @@ def test_duration_ms_recorded_when_given_and_omitted_when_not(archive_home) -> N
 
 
 def test_timings_merged_when_given_and_absent_when_not(archive_home) -> None:
-    usage.record_search("q", params={}, hits=[], widened=False,
+    usage.record_search("q", params={}, hits=[],
                         timings={"fts_ms": 12.3, "semantic_ms": 4.5, "rerank_ms": 0.0,
                                  "did_rerank": True, "pool_size": 198, "cold": True})
-    usage.record_search("q2", params={}, hits=[], widened=False)
+    usage.record_search("q2", params={}, hits=[])
     with_t, without_t = _records(archive_home)
     assert with_t["fts_ms"] == 12.3 and with_t["semantic_ms"] == 4.5
     assert with_t["did_rerank"] is True and with_t["pool_size"] == 198 and with_t["cold"] is True
@@ -190,7 +188,7 @@ def test_record_warm_names_the_startup_cost(archive_home) -> None:
 
 def test_usage_log_disabled_by_env(archive_home, monkeypatch) -> None:
     monkeypatch.setenv("THREAD_ARCHIVE_USAGE_LOG", "0")
-    usage.record_search("q", params={}, hits=[], widened=False)
+    usage.record_search("q", params={}, hits=[])
     usage.record_read(1)
     assert _records(archive_home) == []
 
@@ -214,7 +212,7 @@ def test_usage_write_failure_is_fail_soft(archive_home) -> None:
     blocked = archive_home / usage.LEDGER_FILE
     blocked.mkdir()
 
-    usage.record_search("q", params={}, hits=[], widened=False)  # must not raise
+    usage.record_search("q", params={}, hits=[])  # must not raise
     usage.record_read(1)  # nor the second time
 
     assert blocked.is_dir() and not any(blocked.iterdir()), "nothing was written"

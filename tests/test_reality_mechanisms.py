@@ -16,10 +16,12 @@ The contracts:
   that indexed it.
 - **reindex preserves placement** — rebuilding derived state must retain the
   ranked thread order, not merely leave every record findable somewhere.
-- **the MCP default scope widens to the whole transcript** — an answer living
-  only in a tool result, a tool error, or the assistant's reasoning must be
-  reachable from the default user/title scope, and a partial
-  default-scope hit must not block the widening.
+- **the MCP default scope is the whole transcript** — an answer living only in
+  assistant text or in the assistant's reasoning must be reachable from a bare
+  search, and a partial hit must not hide it.
+- **tool output is preserved but unsearchable** — dropping it from the index
+  must never drop it from the record: the thread stays reachable by the question
+  that prompted it and by the call that ran it, with the output intact on read.
 - **semantic scopes rank inside the scope** — a lower-similarity in-provider
   hit must survive a flood of nearer vectors from excluded providers.
 - **a copied query is not an answered query** — a lexically strong but
@@ -246,17 +248,33 @@ def test_partial_default_scope_hit_does_not_hide_assistant_answer(tmp_path) -> N
     )
 
 
-def test_mcp_default_scope_reaches_tool_result_answer(tmp_path) -> None:
-    from thread_archive._mcp.server import thread_search
+def test_tool_output_is_unsearchable_but_still_readable(tmp_path) -> None:
+    """Tool output is preserved and replays in full; it is simply not matchable.
 
-    query = "flange stress test regression"
-    answer = _import(tmp_path, "tr-answer", _tool_result_turn(
-        "tr-answer", 1, "run it",
-        "FAILED tests/test_flange.py::test_stress - flange stress test regression"))
-    _import(tmp_path, "partial", _session_lines("partial", 2, "flange inventory", "none"))
-    assert str(answer) in thread_search(query, content_type="tool_result", rerank=False)
-    assert str(answer) in thread_search(query, rerank=False), (
-        "the tool_result answer is unreachable from the MCP default scope")
+    The capability cliff this guards is *preservation*, not retrieval: dropping
+    tool output from the index must never drop it from the record. A grep dump
+    stops competing with real answers in search, and the conversation that ran it
+    is still reachable — by what the person asked and by the tool call itself —
+    with the output right there when the thread is opened.
+    """
+    from thread_archive._mcp.server import thread_read, thread_search
+
+    # the question and the output share no vocabulary, so each assertion below
+    # isolates one of them
+    thread = _import(tmp_path, "tr-answer", _tool_result_turn(
+        "tr-answer", 1, "did the parts suite run clean",
+        "FAILED tests/test_flange.py::test_stress - flange stress regression"))
+
+    # not matchable — not under the default scope, and not even when named
+    assert str(thread) not in thread_search("flange stress regression", rerank=False)
+    assert str(thread) not in thread_search(
+        "flange stress regression", content_type="tool_result", rerank=False)
+    # still reachable: the question that prompted it, and the call that ran it
+    assert str(thread) in thread_search("did the parts suite run clean", rerank=False)
+    assert str(thread) in thread_search("run", content_type="tool", rerank=False)
+    # and the output itself is intact in the record
+    assert "FAILED tests/test_flange.py::test_stress" in thread_read(
+        str(thread), mode="full", tool_results=True)
 
 
 def test_mcp_default_scope_reaches_thinking_answer(tmp_path) -> None:
@@ -273,18 +291,18 @@ def test_mcp_default_scope_reaches_thinking_answer(tmp_path) -> None:
         "the reasoning that holds the answer is unreachable from the MCP default scope")
 
 
-def test_mcp_default_scope_reaches_tool_error_answer(tmp_path) -> None:
-    from thread_archive._mcp.server import thread_search
+def test_tool_error_output_follows_the_same_rule(tmp_path) -> None:
+    """A failing tool's output is tool output: unsearchable, fully preserved."""
+    from thread_archive._mcp.server import thread_read, thread_search
 
-    query = "obsidian migration constraint violation"
-    answer = _import(tmp_path, "err", _tool_result_turn(
-        "err", 1, "run it",
-        "ERROR: obsidian migration constraint violation on column epoch_id",
-        is_error=True))
-    _import(tmp_path, "partial", _session_lines("partial", 2, "obsidian notes", "none"))
-    assert str(answer) in thread_search(query, content_type="tool_error", rerank=False)
-    assert str(answer) in thread_search(query, rerank=False), (
-        "the failing tool's error is unreachable from the MCP default scope")
+    thread = _import(tmp_path, "err", _tool_result_turn(
+        "err", 1, "why did the obsidian import blow up",
+        "ERROR: constraint violation on column epoch_id", is_error=True))
+
+    assert str(thread) not in thread_search("epoch_id constraint violation", rerank=False)
+    assert str(thread) in thread_search("why did the obsidian import blow up", rerank=False)
+    assert "constraint violation on column epoch_id" in thread_read(
+        str(thread), mode="full", tool_results=True)
 
 
 def test_summaries_stay_out_of_search_unless_named(tmp_path) -> None:

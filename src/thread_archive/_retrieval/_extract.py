@@ -6,6 +6,9 @@ event-type hierarchy.
 
 Each extractor returns ``(content, content_type, tool_name)`` tuples; an event
 with no searchable content returns ``[]``.
+
+Not every preserved event earns an index row: see :data:`UNINDEXED_CONTENT_TYPES`
+for the content the archive keeps in truth but deliberately leaves unsearchable.
 """
 
 from __future__ import annotations
@@ -40,6 +43,28 @@ INDEXABLE_EVENT_TYPES = [
     "content_block",
     "message",
 ]
+
+
+#: Content types extracted from truth but deliberately kept OUT of the search
+#: index — preserved and readable, never searchable by content.
+#:
+#: Tool output is what a tool handed back: file bodies, command stdout, API
+#: responses, stack traces. It is the bulk of the corpus by bytes (measured: 1.72
+#: of 2.06 GB indexed, 36% of documents) and the worst of it by signal — a grep
+#: dump or a re-read file puts thousands of incidental term occurrences behind
+#: whichever conversation happened to run the command, so a query matches the
+#: *machine's* words rather than anyone's. Ranking measured better without it on
+#: both eval protocols, not merely cheaper: the tail it removes was competing with
+#: real answers.
+#:
+#: The tool *call* stays indexed. It is small (0.15 GB), it carries the tool name
+#: and its arguments, and "when did we run this" is a question the archive is
+#: expected to answer — excluding calls too measured worse on every metric.
+#:
+#: Truth is untouched: the JSONL keeps every byte, ``thread_read`` replays these
+#: events in full, and the code axis reads ``event_paths``, not this index. What
+#: changes is only what a content search can match.
+UNINDEXED_CONTENT_TYPES = frozenset({"tool_result", "tool_error"})
 
 
 def _to_str(value) -> str:
@@ -125,7 +150,21 @@ def _fts_tool_completed(payload: dict) -> list[tuple[str, str, Optional[str]]]:
 
 
 def extract_fts_content(event_type: str, payload: dict) -> list[tuple[str, str, Optional[str]]]:
-    """Extract searchable ``(content, content_type, tool_name)`` tuples from an event."""
+    """Extract searchable ``(content, content_type, tool_name)`` tuples from an event.
+
+    The index-policy seam: :data:`UNINDEXED_CONTENT_TYPES` is filtered out here,
+    after extraction, so every writer and every checker agrees on what an event
+    *should* have in the index without restating the rule. The incremental write
+    path, the bulk rebuild, and ``verify``'s truth-vs-index reconciliation all read
+    this one function — a policy applied in any of them alone would make the others
+    report drift.
+    """
+    return [t for t in _extract_fts_content(event_type, payload)
+            if t[1] not in UNINDEXED_CONTENT_TYPES]
+
+
+def _extract_fts_content(event_type: str, payload: dict) -> list[tuple[str, str, Optional[str]]]:
+    """Per-event-type extraction, before the index policy applies."""
     if not payload:
         return []
 

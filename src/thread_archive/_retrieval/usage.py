@@ -86,7 +86,6 @@ def record_search(
     *,
     params: dict[str, Any],
     hits: object,
-    widened: bool,
     duration_ms: Optional[float] = None,
     render_ms: Optional[float] = None,
     failed: bool = False,
@@ -101,8 +100,8 @@ def record_search(
     without ids.
 
     Latency comes in two numbers because they answer different questions.
-    ``duration_ms`` is the retrieval work as the agent felt it (including a widen
-    retry); ``render_ms`` is the formatting that turns those hits into the text the
+    ``duration_ms`` is the retrieval work as the agent felt it;
+    ``render_ms`` is the formatting that turns those hits into the text the
     agent reads. Their sum is the tool call's wall-clock, and keeping them apart is
     what distinguishes a slow *search* from a slow *answer* — a wide result set can
     make the second large while the first is unchanged. ``render_ms`` is absent on a
@@ -136,8 +135,6 @@ def record_search(
         "query": query,
     }
     record.update({k: v for k, v in params.items() if v is not None})
-    if widened:
-        record["widened"] = True
     if duration_ms is not None:
         record["duration_ms"] = round(duration_ms, 1)
     if render_ms is not None:

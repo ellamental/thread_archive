@@ -42,11 +42,15 @@ from mcp.server.fastmcp import FastMCP
 
 from .. import _api as api
 from .._config import ENV_MCP_INGEST
-from .._retrieval import _contention, _probe, format_results, warm_models
+from .._retrieval import (
+    DEFAULT_CONTENT_TYPES,
+    DEFAULT_EXCLUDE_CONTENT_TYPES,
+    _contention,
+    _probe,
+    format_results,
+    warm_models,
+)
 from .._retrieval import usage as _usage
-from .._retrieval._types import EventHit
-from .._retrieval.format import query_terms, term_hit_count, top_hit
-from .._retrieval.rank import strong_match_floor
 
 logger = logging.getLogger(__name__)
 
@@ -144,13 +148,23 @@ def _resolve_ref(ref: int | str) -> Optional[str]:
         return resolve_thread_ref(s, ref)
 
 
-# The agent-facing default search scope: USER messages plus thread titles — the
-# intentional signals of what a thread was about, straight from the record.
-# Stored thread summaries are derived text (the librarian writes them over the
-# archive), not the record itself, so search never reads them unless the caller
-# names them — content_type='summary' targets them, content_type='all' includes
-# them. Assistant text, tool calls/results, and thinking are likewise opt-in.
-DEFAULT_SEARCH_CONTENT_TYPES = ("user", "title")
+# The agent-facing default search scope: the whole conversation — what anyone
+# said, thought, or ran. An answer lives wherever it happens to live, and a scope
+# narrower than the transcript makes "not found" mean "not found *here*", which
+# reads identically to the conversation not existing.
+#
+# What tool handed *back* is not in scope, because it is not in the index at all
+# (see :data:`.._retrieval._extract.UNINDEXED_CONTENT_TYPES`) — the one exclusion
+# that measured better rather than merely cheaper.
+#
+# Stored thread summaries stay opt-in: they are derived text (the librarian writes
+# them over the archive), not the record, so a search should not answer from them
+# unless asked — content_type='summary' targets them, content_type='all' includes
+# them.
+#
+# The scope itself lives in the retrieval layer, which shares it with the warm pass.
+DEFAULT_SEARCH_CONTENT_TYPES = DEFAULT_CONTENT_TYPES
+DEFAULT_SEARCH_EXCLUDE = DEFAULT_EXCLUDE_CONTENT_TYPES
 
 
 def _commit_note(scope: dict) -> str:
@@ -195,55 +209,6 @@ def _commit_note(scope: dict) -> str:
         note += ("      (history walk hit its bound — some files have no lower bound "
                  "and may over-credit)\n")
     return note
-
-
-# Where the default scope widens to when it comes up dry: the whole transcript.
-# Conclusions live in assistant text, but in a corpus that is mostly tool content
-# an answer can exist ONLY in a tool result, a tool's error, or the assistant's
-# own reasoning — a false "not found" against a conversation that is right there.
-# So a query the default scope can't answer gets one automatic retry with the
-# content-type filter cleared (``None`` = every type) minus the derived summary
-# docs, which stay opt-in in every scope the caller didn't name. One retry, only
-# on the default scope, only when no query term landed — an explicit
-# content_type is a deliberate choice and is never second-guessed.
-WIDENED_SEARCH_CONTENT_TYPES = None
-WIDENED_SEARCH_EXCLUDE = ("summary",)
-
-
-def _default_scope_is_weak(hits: "list[EventHit]", query: str) -> bool:
-    """True when a default-scope result set warrants the one-shot widen to
-    assistant text: no hits at all, or a top hit that is not a *strong* match for
-    the query (below :func:`strong_match_floor` of its terms). A single stray token
-    landing in a user/title hit must not pass for an answer and block the widen
-    from reaching an exact answer that lives in assistant text — the same
-    trustworthy-match bar the result header calls ``strong``."""
-    terms = query_terms(query)
-    if not terms:
-        return False
-    if not hits:
-        return True
-    # top_hit, not hits[0] — the nested shape orders rows by thread, not by rank.
-    top = top_hit(hits)
-    text = top.get("full_content") or top.get("snippet") or ""
-    return term_hit_count(text, terms) < strong_match_floor(len(terms))
-
-
-def _has_strong_hit(hits: "list[EventHit]", query: str) -> bool:
-    """True when *any* returned hit is a strong match for the query (≥
-    :func:`strong_match_floor` of its terms land in its content). The widen keeps its
-    result when it surfaces a strong match anywhere, not only at the top: an answer
-    that lives in a low-weight content type — a tool result, the assistant's
-    reasoning — is a real find even when it ranks below a weak-but-high-weight user
-    hit that happens to share a stray query term."""
-    terms = query_terms(query)
-    if not terms:
-        return False
-    floor = strong_match_floor(len(terms))
-    for h in hits:
-        text = h.get("full_content") or h.get("snippet") or ""
-        if term_hit_count(text, terms) >= floor:
-            return True
-    return False
 
 
 # ── degradation notice ────────────────────────────────────────────────────────
@@ -346,22 +311,23 @@ def thread_search(
     and system threads unless ``types``/``agents`` says otherwise; ranking
     options (content_type, context, rerank) don't apply.
 
-    By default USER messages and thread titles are searched — the strongest
-    signals of what a thread was about. When that scope
-    comes up dry (no query term in the top hit), the search retries once with
-    assistant text included and says so in the output. Assistant text,
-    tool calls/results, thinking, and stored thread summaries (librarian-derived
-    text, not the record) are otherwise opt-in: pass
-    ``content_type='all'`` to search everything, or a specific ``content_type``
-    (text/thinking/tool/tool_result/summary/...) to target one.
+    The whole conversation is searched by default — user messages, thread titles,
+    assistant text, its reasoning, and the tool calls that were run. What a tool
+    handed **back** is not searchable at all: tool output is preserved in full and
+    replays in ``thread_read``, but it is deliberately left out of the index, where
+    it buried real answers under grep dumps and re-read files. Stored thread
+    summaries (librarian-derived text, not the record) are the one opt-in scope:
+    pass ``content_type='summary'`` to target them or ``content_type='all'`` to
+    fold them in; a specific ``content_type`` (user/text/thinking/tool/title/...)
+    narrows to one.
 
     Query grammar: natural language, "quoted phrases", boolean AND/OR/NOT,
     pipe-OR (a|b), and code identifiers (get_session, a.b.c). Filter by
     ``thread_id`` or ``topic_id`` (a topic's member conversations) —
     both accept a ULID thread id, a legacy integer alias, or a provider session
     id, the same ref shapes ``thread_read`` takes —
-    ``content_type`` (default user+title; 'all' searches
-    everything),
+    ``content_type`` (default: everything but derived summaries; 'all' folds
+    those in too),
     ``exclude_content_type`` (comma-separated types to drop), ``tool_name``,
     ``source`` (comma-separated providers, e.g. 'claude-code,cursor'),
     ``types`` (comma-separated ``thread_type`` values — 'conversation',
@@ -492,14 +458,17 @@ def thread_search(
             return (f"topic {topic_id} not found — topic_id takes a topic's ULID id "
                     f"or its legacy integer id")
         topic_id = resolved
-    # Default scope is user messages + thread titles; an explicit type targets one,
-    # and content_type='all' clears the filter to search everything (see the constant).
+    # Default scope is the whole conversation minus derived summaries; an explicit
+    # type targets one, and content_type='all' drops even the summary exclusion
+    # (see the constants).
+    default_exclude: tuple[str, ...] = ()
     if content_type == "all":
         content_types = None
     elif content_type:
         content_types = [content_type]
     else:
-        content_types = list(DEFAULT_SEARCH_CONTENT_TYPES)
+        content_types = DEFAULT_SEARCH_CONTENT_TYPES
+        default_exclude = DEFAULT_SEARCH_EXCLUDE
     exclude = [c.strip() for c in exclude_content_type.split(",") if c.strip()] if exclude_content_type else None
     sources = [s.strip() for s in source.split(",") if s.strip()] if source else None
     type_list = [t.strip() for t in types.split(",") if t.strip()] if types else None
@@ -547,16 +516,13 @@ def thread_search(
             page=page,
         )
 
-    # ``duration_ms`` covers the retrieval work as the caller felt it — both arms
-    # plus any widen retry — and ``render_ms`` the formatting that turns hits into
-    # the text the agent actually reads. Both are the agent's wait; only the
-    # background catch-up above is excluded, because it does not block. The probe
-    # rides the retrieval span, so its per-stage breakdown sums the widen retry too
-    # (the arms run again under the one installed probe).
+    # ``duration_ms`` covers the retrieval work as the caller felt it — both arms —
+    # and ``render_ms`` the formatting that turns hits into the text the agent
+    # actually reads. Both are the agent's wait; only the background catch-up above
+    # is excluded, because it does not block.
     # None, not [], so a search that raised records no ``n_hits`` at all rather
     # than an empty one — "it failed" and "it found nothing" are different facts.
     hits: Any = None
-    widened = False
     probe = None
     retrieval_ms: Optional[float] = None
     render_ms: Optional[float] = None
@@ -572,36 +538,11 @@ def thread_search(
         # a background rebuild that finished during the search as absent.
         with _contention.in_flight(), _probe.install() as probe:
             context = _contention.sample()
-            hits = _run(content_types)
-
-            # One-shot scope widen: a default-scope search whose top hit contains no
-            # query term (or that found nothing) retries once over the whole transcript
-            # — the answer may live only in assistant text, a tool result, a tool's
-            # error, or the assistant's reasoning, and internalizing the retry saves the
-            # agent a round-trip the quality note would otherwise ask of it. Ranked/plain
-            # output only: structural shapes (browse/startswith/oldest/count/linkable)
-            # have no match signal to judge weakness by. Inside the probe span so the
-            # retry's stages are summed into the breakdown, as they are into the total.
-            # Never past page 1: the widen swaps the corpus scope mid-enumeration,
-            # and it decides on the top hit — which is a *different* hit on every
-            # page, so a walk could widen at page 3, narrow again at page 4, and
-            # silently interleave two different result sets. The page-1 response
-            # says when it widened, so a caller enumerating a widened search
-            # carries content_type='all' explicitly from there.
-            ranked_shape = (bool((query or "").strip()) and startswith is None
-                            and sort is None and output is None and page == 1)
-            if content_type is None and ranked_shape and _default_scope_is_weak(hits, query):
-                wide_hits = _run(WIDENED_SEARCH_CONTENT_TYPES,
-                                 extra_exclude=WIDENED_SEARCH_EXCLUDE)
-                if _has_strong_hit(wide_hits, query):
-                    hits, widened = wide_hits, True
+            hits = _run(content_types, extra_exclude=default_exclude)
 
         retrieval_ms = (time.monotonic() - started) * 1000.0
         _t_render = time.monotonic()
         rendered = format_results(hits, query, output=output)
-        if widened:
-            rendered = ("note: no strong keyword match in the default scope (user/title/summary) — "
-                        "results below include assistant text, tool output, and reasoning\n" + rendered)
         render_ms = (time.monotonic() - _t_render) * 1000.0
         return _degradation_notices() + commit_note + rendered
     finally:
@@ -621,7 +562,6 @@ def thread_search(
                 "output": output, "rerank": rerank, "match": match, "page": page,
             },
             hits=hits,
-            widened=widened,
             # Retrieval alone, so the field keeps meaning what every recorded
             # search so far has meant; render is its own number beside it. A search
             # that raised never rendered, so its whole elapsed time is retrieval.

@@ -2,6 +2,44 @@
 
 ## Unreleased
 
+- **Tool output is no longer indexed, and `thread_search` reads the whole
+  transcript by default.** These are one change: the narrow default scope existed
+  because the index was mostly machine output, and once that output is gone the
+  reason for the narrowness goes with it.
+
+  Tool results and tool errors were 1.72 of the 2.06 GB indexed and 36% of the
+  documents — a grep dump or a re-read file putting thousands of incidental term
+  occurrences behind whichever conversation happened to run the command, so a
+  query matched the machine's words rather than anyone's. They are extracted as
+  before and preserved in full; `thread_read` still replays them. They simply do
+  not reach the index, filtered at the one seam every writer and `verify` share,
+  so no path can disagree about what should be there. Tool *calls* stay indexed:
+  they are 0.15 GB, they carry the tool name and its arguments, and excluding them
+  too measured worse on every metric.
+
+  The default scope was `('user', 'title')` — 4% of the corpus — which did not
+  make the lexical arm cheaper (FTS5 scores its whole match list whether or not a
+  content-type filter follows), left the candidate pool short so the fallback
+  ladder fired on nearly every query, and then tripped the one-shot widen that
+  ran the entire search a second time. Measured on 120 real search→read pairs
+  from the usage ledger: the retry fired 56 times and was adopted 40. The scope is
+  now every indexed type except the librarian's derived summaries, which stay
+  opt-in, and the widen retry and its note are gone — there is nothing left to
+  widen to.
+
+  Both eval protocols moved the right way. Against real usage: MRR 0.3195 →
+  0.3190, nDCG@10 0.3196 → 0.3229, recall@10 0.4579 → 0.4618, at 2.15x the speed.
+  Against title recall: MRR 0.9461 → 0.9513, success@1 0.925 → 0.933, nDCG@10
+  0.9534 → 0.9591, at 1.33x. Dropping the scope alone (keeping tool output
+  indexed) was faster still and *lost* MRR on both — the exclusion is what pays
+  for the widening, which is why the two ship together.
+
+  The comparison needed a harness that did not exist: `eval` scores `api.search`
+  with the wide scope, so it had never exercised the narrow-then-widen path an
+  agent actually calls. The warm pass now shares one scope constant with the
+  surface, since the vector matrix caches per content-type scope and a drift
+  between them leaves the first real query building a matrix inside the request.
+
 - **The MCP tool's own guards were the untested half of search.** `search()` is
   covered exhaustively; `thread_search` — the surface an agent actually calls —
   had a layer of logic above it that no test reached. It bounds what a caller can
