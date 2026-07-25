@@ -400,31 +400,23 @@ def _latency_smoke(baseline, *, params, k: int, budget_ms, reps: int) -> str | N
 
 
 def _build_coherence_graph() -> None:
-    """Build the corpus graph inline, before any case is scored.
+    """Build the corpus graph inline before scoring, and say so.
 
-    The community-coherence re-rank reads a cached graph and returns ``None``
-    while a background build is still running, so on the request path a cold
-    process simply ranks without the boost for its first queries. Under a scoring
-    loop that same behaviour is a race against the scorer: the build lands partway
-    through, the cases before it are ranked without coherence and the cases after
-    it with, and where the boundary falls depends on wall-clock — how fast the box
-    is, whether the pools came from a cache. Two runs of identical code then
-    disagree, and every floor calibrated from them inherits the split.
-
-    Building inline first costs one build and makes a run a function of the code
-    and the snapshot alone. Fail-soft and a no-op when coherence is off or the
-    graph can't be built — both leave every case ranked the same way, which is the
-    property that matters."""
+    The determinism this buys — and why a scoring loop cannot leave it to the
+    background build — is :func:`thread_archive._eval.warm_for_scoring`, which
+    every scoring path now shares. This wrapper exists for the operator-facing
+    line: the build is the long pause before a gate run's first number, and a run
+    that looks hung is worth one print."""
+    from thread_archive._eval import warm_for_scoring
     from thread_archive._retrieval import embed_graph
 
     if embed_graph.coherence_gamma() <= 0.0:
         return
     print("gold gate: building corpus graph (coherence)...", flush=True)
-    try:
-        embed_graph.get(block=True)
-    except Exception as exc:  # noqa: BLE001 — scoring without it beats not scoring
-        print(f"gold gate: corpus graph unavailable ({exc}); "
-              f"scoring without the coherence re-rank", flush=True)
+    warm_for_scoring()
+    if embed_graph.get(block=False) is None:
+        print("gold gate: corpus graph unavailable; "
+              "scoring without the coherence re-rank", flush=True)
 
 
 def _run_scored(cases: list[dict], *, params, early_stop, cache) -> dict:

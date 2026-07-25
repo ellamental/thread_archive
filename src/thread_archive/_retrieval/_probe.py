@@ -32,6 +32,13 @@ indexed pass and a full-table scan differ by orders of magnitude and the arm tot
 can't tell them apart, so it reports :data:`FTS_SUBSTAGES` and ``fts_passes``
 beside it: whether the index itself was slow, or whether the fallback ladder walked
 all the way down to the scan.
+
+``set_ms`` is the fourth stage and the odd one out: the exact-set scan
+(:func:`~.fts.matched_threads` / :func:`~.fts.count_matches`) that answers *how
+many* rather than *which*. It rides no arm — it runs beside them, on the shapes
+that promise a caller a complete enumeration — and its cost scales with the match
+list rather than with the pool, so a search whose latency moved into this bucket
+moved there for a different reason than any of the three above.
 """
 
 from __future__ import annotations
@@ -79,7 +86,7 @@ class SearchProbe:
     """
 
     __slots__ = (
-        "fts_ms", "semantic_ms", "rerank_ms", "did_rerank", "pool_size",
+        "fts_ms", "semantic_ms", "rerank_ms", "set_ms", "did_rerank", "pool_size",
         "embed_cold", "rerank_cold", "matrix_built", "fts_passes",
         *SEMANTIC_SUBSTAGES, *FTS_SUBSTAGES,
     )
@@ -88,6 +95,7 @@ class SearchProbe:
         self.fts_ms = 0.0
         self.semantic_ms = 0.0
         self.rerank_ms = 0.0
+        self.set_ms = 0.0
         self.did_rerank = False
         self.pool_size = 0
         self.embed_cold = False
@@ -107,7 +115,8 @@ class SearchProbe:
         didn't", so it can attach a breakdown to the former and leave the latter
         a two-field row. An untouched probe is not a search that took no time.
         """
-        return bool(self.fts_ms or self.semantic_ms or self.rerank_ms or self.pool_size)
+        return bool(self.fts_ms or self.semantic_ms or self.rerank_ms or self.set_ms
+                    or self.pool_size)
 
     @property
     def cold(self) -> bool:
@@ -139,6 +148,8 @@ class SearchProbe:
         if self.semantic_ms:
             for name in SEMANTIC_SUBSTAGES:
                 rec[name] = round(getattr(self, name), 1)
+        if self.set_ms:
+            rec["set_ms"] = round(self.set_ms, 1)
         if self.matrix_built:
             rec["matrix_built"] = True
         if self.cold:

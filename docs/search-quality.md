@@ -6,13 +6,16 @@ is the working manual — the how; this is the numbers). The shipped operator
 command is `thread_archive eval` — a read-only self-checkup over your own archive
 that ships to every install.
 
-A caution before any number: the metrics below score **single searches in
-isolation**, because that is what a case protocol can label. It is not how agents
-use the tool. In practice an agent fires several searches — often in parallel,
-reformulating, browsing, then reading around a hit — and the session-level
-question ("did the agent get to the right conversation?") succeeds far more often
-than any one query's success@10 suggests. The single-shot numbers are the
-*tunable* signal, not the product experience.
+A caution before any number: most metrics below score **single searches in
+isolation**, and where the first right answer lands. That is not how agents use the
+tool. An agent fires several searches carrying terms that surround what it wants,
+dedupes the results by hand, and reads around whatever looks worth opening. What
+that workflow needs is not an answer ranked first but a window full of relevant
+material, so the measure that matches it is **how much of what is relevant comes
+back** — "What the window holds" below, which scores the fan-out end to end rather
+than assuming it rescues the single-shot numbers. MRR and success@1 stay in the
+report because they are sharp tuning signals, not because they describe the
+experience.
 
 ## The measurement of record: the mined gold files
 
@@ -21,8 +24,16 @@ relevance pools scored over a *frozen corpus snapshot*, so the number moves only
 when the ranking code moves. `scripts/retrieval_gold_gate.py` scores every file
 over its bound snapshot with the production ranker at the canonical `limit=20` and
 prints per-file metrics; each run also appends to a timeseries ledger
-(`~/.thread/archive/gold-runs.jsonl`). At the shipped configuration
-(`fusion_weight=400`, `bm25_weight=100`, cross-encoder off), the seven files read:
+(`~/.thread/archive/gold-runs.jsonl`).
+
+The gold dir holds 317 cases across 25 files: 64 `querygen`, 21 `query`, 19
+`rerank`, and 213 `topic` cases spanning 22 topics. Pooled at the shipped
+configuration, the `topic` files read MRR 0.784 / success@10 0.962 / nDCG@10 0.557,
+and their recall@10 of 0.371 is ceiling-bound rather than low — see "What the
+window holds". Seven files carry calibrated floors and are the ones the gate can
+fail on; the rest are scored and reported but ungated until a floor is added for
+them. At the shipped configuration (`fusion_weight=400`, `bm25_weight=100`,
+cross-encoder off), the floored files read:
 
 | gold file | miner | n | MRR | success@10 | recall@10 | nDCG@10 |
 |---|---|---|---|---|---|---|
@@ -35,10 +46,11 @@ prints per-file metrics; each run also appends to a timeseries ledger
 | frustration | `topic` | 7 | 0.557 | 0.857 | 0.557 | 0.518 |
 
 Read the metrics apart: **success@k** asks whether any grade-2 answer ranks by k,
-**recall@k** measures the fraction of a case's *whole* grade-2 set that ranks, and
-**nDCG@k** scores the order of the entire graded 2/1/0 pool (partial answers and
-hard negatives included). Which one is sharp depends on the miner, and the four
-cover complementary failure modes:
+**recall@k** measures the fraction of a case's *whole* grade-2 set that ranks,
+**window fill** is that fraction against what could fit in k rather than against
+the whole set, and **nDCG@k** scores the order of the entire graded 2/1/0 pool
+(partial answers and hard negatives included). Which one is sharp depends on the
+miner, and the four cover complementary failure modes:
 
 - **`querygen` → findability** — a random thread, difficulty-laddered queries
   (verbatim / paraphrase / vague) that must re-find it; the single gold is that
@@ -53,16 +65,27 @@ cover complementary failure modes:
   pass; it scores ordering *within what search retrieved*, so **nDCG** is sharp and
   recall@10 is bounded well under 1 by construction (the graded pool is far larger
   than 10). Precision.
-- **`topic` → context-compaction / needle / suicide / frustration** — a topic dense
-  with confounds, one query per angle, a comprehensive graded pool (2=intended,
-  1=partial, 0=confound). Confound ranking; **nDCG** and success are the reads,
-  recall again bounded by the pool size.
+- **`topic` → 22 files, one per topic** — a topic dense with confounds, one query
+  per angle, a comprehensive graded pool (2=intended, 1=partial, 0=confound).
+  Confound ranking, and the only protocol with enough answers per case to measure
+  *completeness*: median grade-2 sets run from 3 on a narrow topic to 23 on a broad
+  one, so **window fill** and **nDCG** are the reads and raw recall@k is bounded by
+  pool size. Topics that sit in a family of near-synonyms (`Cloth` beside
+  `Cloth testing`, `cloth UI`, `Cloth architecture`; `Librarian System` beside
+  `librarian process`, `librarian queue`) carry the hardest negatives, because the
+  confounds are real conversations rather than synthesized ones.
 
-Scoring is deterministic — same code, same snapshot, same digits — so a movement is
-never noise, but the resolution is `1/n` per file: one case going from rank 1 to
+Scoring is deterministic in a **warmed** process — same code, same snapshot, same
+digits — so a movement is never noise. Cold, it is not: the coherence re-rank reads
+a corpus graph built in the background, and queries that land before it is ready
+score as if coherence were off, which moves a file by roughly 0.02 window fill and
+hits whatever runs first hardest. `thread_archive._retrieval.warm_models()` closes
+it. Resolution is otherwise `1/n` per file: one case going from rank 1 to
 unfound moves any metric by at most `1/n`, so anything smaller is a rank shuffle
-within cases that already worked. On the 7-case topic files that unit is 0.143; on
-the 64-case findability file it is 0.016. This is the one instrument that can credit
+within cases that already worked. On a 10-case topic file that unit is 0.100 and on
+the smallest 7-case ones 0.143; on the 64-case findability file it is 0.016. Pooling
+a protocol's files is what buys resolution below that. This is the one instrument
+that can credit
 an *improvement*: its grade-2 labels were mined to be complete, so a change that
 surfaces a better answer scores as a gain — not, as click labels do, as a loss.
 
@@ -72,6 +95,56 @@ snapshot, on both sides of the change**, and keep a hold-out: tune against one f
 while another stays untouched until the confirming run. The `thread_archive mine`
 command mints these files; `evals/README.md` → "Taking a baseline" is the full
 protocol.
+
+## What the window holds
+
+The measure that matches the workflow is **window fill**: of the relevant threads
+that *could* fit the window an agent reads, what share actually do. It is
+ceiling-normalized (`hits@k / min(k, |gold|)`) because raw recall@k on a
+multi-answer case scores the size of the gold set as much as the ranking — a case
+with 23 relevant threads cannot exceed 0.43 recall@10 however well it ranks. Over
+the 213 `topic` cases, against `evals/bm25_baseline.py` on the same snapshot at
+k=10:
+
+| measure | stack | BM25 |
+|---|---|---|
+| window fill, answers (grade 2) | 0.517 | 0.389 |
+| window fill, answers + partials (grade ≥1) | 0.608 | 0.432 |
+| union coverage across a topic's queries | 0.353 | 0.265 |
+
+**Union coverage** scores the fan-out end to end: fire every query a topic carries,
+union the windows, dedupe, and measure the share of the topic's whole relevant set
+assembled. The stack leads it on all 22 topics, and per-query fill on 21 of 22, so
+the margin does not wash out when an agent reformulates — reformulating lifts both
+rankers by about the same factor rather than closing the gap.
+
+Read the absolute number, not only the margin. **Union coverage of 0.353 means
+that firing every angle a topic has and deduping still assembles roughly a third of
+the relevant material.** That is the standing headroom, and ordering metrics cannot
+see it: a file can score 0.9 MRR while surfacing a quarter of what is relevant, and
+several do. No amount of reordering reaches it — only recall does.
+
+A fill number means nothing on its own, which is what the BM25 reference is for; it
+is also not comparable across corpora. The same stack *loses* the window on a
+homogeneous corpus of other people's coding sessions (`evals/swechat_corpus.py`
+builds it): there the gold is single-answer, so fill reduces to success@10, and the
+stack reaches 0.653 against BM25's 0.773 on commit-linked cases and 0.867 against
+0.933 on query-gen. **Selectivity** is the corpus property that predicts the
+direction — the share of the corpus a query's terms match at all. The archive sits
+near 50%, so lexical matching still filters and the arms above it have something to
+arbitrate; that corpus sits near 95%, where matching filters nothing, IDF-weighted
+ranking is the only signal left, and the extra machinery has nothing to add.
+
+**The circularity that bounds all of it.** `topic`, `query`, and `rerank` gold is
+labeled by agents that search with the production stack, so the relevant set is
+approximately what this ranker can reach across many reformulations. A completeness
+metric is more exposed to that than an ordering one: a thread the stack
+systematically cannot surface never enters the gold, and so can never be counted as
+missing. Read 0.517 as an upper bound and 0.353 as an *overestimate* of true
+coverage. Only gold whose membership is fixed outside retrieval closes it —
+`commit`'s provenance labels, or the tool-use trail's record of which sessions
+edited a given file, which yields multi-answer sets no ranker had a hand in
+choosing.
 
 ## The stack, and what each layer buys
 

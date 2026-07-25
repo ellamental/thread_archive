@@ -28,13 +28,19 @@ from sqlalchemy import DateTime, func, select
 from sqlalchemy.orm import Session
 
 from .._store import Event, Thread, use_session
-from ._types import EventHit
+from ._types import EventHit, Results
 
 # Hidden from a default browse (mirrors the web recent list): topics are
 # separate artifacts (thread_read(topic_id) keeps rendering one) and
 # 'system' threads (Task-tool subagent runs) are machinery, not sessions anyone
 # revisits by recency. Both stay reachable through an explicit ``types``.
 DEFAULT_HIDDEN_TYPES = ("topic", "system")
+
+#: How many conversations the code-axis browse resolves before it stops. Unlike
+#: the rest of this module the code axis is not a plain indexed SELECT — it
+#: resolves per-thread op tallies through :func:`.code.blame_path` — so it is the
+#: one browse shape whose enumeration can be a floor rather than a total.
+_CODE_AXIS_CAP = 2000
 
 
 def _time_bound(value: Optional[str]) -> Optional[datetime]:
@@ -63,6 +69,7 @@ def browse_threads(
     path: Optional[str] = None,
     path_ops: Optional[list[str]] = None,
     oldest_first: bool = False,
+    page: int = 1,
     session: Optional[Session] = None,
 ) -> list[EventHit]:
     """List threads by last activity — the engine behind an empty-query search.
@@ -88,7 +95,13 @@ def browse_threads(
     ``agents`` mirrors keyword search's switch over agent-run threads
     (``thread_type='system'``): 'exclude' (default) hides them alongside topics,
     'include' lists them among the conversations (topics stay hidden), 'only'
-    lists nothing else. An explicit ``types`` list wins over ``agents``."""
+    lists nothing else. An explicit ``types`` list wins over ``agents``.
+
+    ``page`` (1-based) walks the list. This is the shape pagination is exact for:
+    the population is a plain indexed SELECT over ``threads``, so the total is one
+    ``count(*)`` and each page is an OFFSET into a total order — no candidate pool,
+    nothing cut, every row reachable. The result carries that total, so a caller
+    can tell the last page from a page that merely came back short."""
     newest_event_at = (
         select(Event.occurred_at)
         .where(Event.thread_id == Thread.id)
@@ -120,7 +133,7 @@ def browse_threads(
         stmt = stmt.where(Thread.id == thread_id)
     elif thread_ids is not None:
         if not thread_ids:
-            return []
+            return Results()
         stmt = stmt.where(Thread.id.in_(thread_ids))
     else:
         stmt = stmt.where(Thread.exclude_from_search.is_(False))
@@ -142,25 +155,34 @@ def browse_threads(
     if path:
         from .code import blame_path
 
-        blamed = blame_path(path, ops=path_ops, limit=2000, agents=agents,
+        blamed = blame_path(path, ops=path_ops, limit=_CODE_AXIS_CAP, agents=agents,
                             sources=source, session=session)
         code_stats = {t["thread_id"]: t for t in blamed["threads"]}
         if not code_stats:
-            return []
+            return Results()
         stmt = stmt.where(Thread.id.in_(list(code_stats)))
     since_dt, until_dt = _time_bound(since), _time_bound(until)
     if since_dt is not None:
         stmt = stmt.where(last_active >= since_dt)
     if until_dt is not None:
         stmt = stmt.where(last_active <= until_dt)
+    # The population, before ordering and before the page is cut out of it — what
+    # the total counts. Captured here so the count can't drift from the list by
+    # picking up a LIMIT the list applies later.
+    population = stmt
     stmt = stmt.order_by(last_active.asc() if oldest_first else last_active.desc())
     # A reordered browse must not be truncated by SQL's LIMIT before its own sort
     # runs — the rows that survive would be the wrong ones.
     given_order = list(thread_ids) if (preserve_order and thread_ids) else None
+    limit = max(1, limit)
+    offset = (max(1, page) - 1) * limit
     if not code_stats and given_order is None:
-        stmt = stmt.limit(max(1, limit))
+        stmt = stmt.limit(limit).offset(offset)
 
     with use_session(session) as s:
+        total = int(s.execute(
+            select(func.count()).select_from(population.subquery())
+        ).scalar_one())
         rows = s.execute(stmt).all()
 
     hits: list[EventHit] = []
@@ -196,9 +218,16 @@ def browse_threads(
         hits.sort(key=lambda h: order.get(h["thread_id"], len(order)))
         if oldest_first:
             hits.reverse()
-        hits = hits[: max(1, limit)]
+        hits = hits[offset:offset + limit]
         # The renderer's header names the ordering, and "by last activity" would be
         # a plain untruth about a list the caller ranked.
         for hit in hits:
             hit["_browse_order"] = "given"
-    return hits
+    return Results(
+        hits, total=total, total_threads=total, page=max(1, page),
+        pages=(total + limit - 1) // limit,
+        # The code axis resolves its population through blame_path, which stops at
+        # _CODE_AXIS_CAP; every other browse shape counts its whole population.
+        capped=len(code_stats) >= _CODE_AXIS_CAP,
+        exhaustive=len(code_stats) < _CODE_AXIS_CAP,
+    )

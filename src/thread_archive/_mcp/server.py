@@ -325,6 +325,8 @@ def thread_search(
     context_lines: int = 2,
     context_events: Optional[str] = None,
     rerank: Optional[bool] = None,
+    match: Optional[str] = None,
+    page: int = 1,
 ) -> str:
     """Search the local conversation archive (federated: lexical FTS5 + optional
     semantic vectors → fusion → rank → optional cross-encoder re-rank).
@@ -439,6 +441,27 @@ def thread_search(
     returns JSON of event/thread ids. ``rerank`` forces the cross-encoder head
     re-rank on/off (else auto-gated: conceptual queries whose top hit isn't
     already a strong literal match, when the ``[embeddings]`` extra is installed).
+
+    **Listing every match.** Results are a page, and the header says which:
+    ``12 of 340 · page 1/29``. ``page=N`` (1-based) walks them. Pages are slices
+    of one ordering, so walking them never repeats or skips a row, and a page past
+    the end says so instead of looking like a query that matched nothing.
+
+    ``group='browse'`` is the shape that enumerates **completely**: its thread
+    list is resolved from the whole match set rather than cut from the ranked
+    candidate pool, so ``N of M`` is a real total and paging to the last page
+    reaches every matched thread. The other shapes rank a bounded pool, so they
+    report ``N of ≥M`` and say ``truncated`` — for "find me every thread that
+    mentions X", use ``group='browse'`` and page to the end. A ``+`` on a total
+    (``≥5000+``) means even the set scan stopped early, so it is a floor.
+
+    ``match`` picks what counts as a match. ``'token'`` (default) is the indexed
+    search described above: it matches whole words, so ``p4`` finds ``p4`` and not
+    ``mp4``. ``'substring'`` matches raw text anywhere inside a word — ``p4`` then
+    also finds ``mp4``, ``p400``, ``gcp4`` — which no index can do, so it pays a
+    full-table scan (seconds on a large archive) and runs no fallback tiers. Reach
+    for it when enumerating every occurrence of an identifier, a fragment, or a
+    string that lives inside longer words; leave it alone otherwise.
     """
     INGEST.maybe_catch_up()
     # Bound caller-supplied sizing before it reaches the engine: limit drives a
@@ -447,6 +470,13 @@ def thread_search(
     # exactly this reason; context_lines is a per-hit window, bounded likewise.
     limit = max(1, min(int(limit), 500))
     context_lines = max(0, min(int(context_lines), 50))
+    # The pool is sized from page*limit, so an unbounded page is an unbounded
+    # scan by another name. 200 pages of the 500-row max is far past any real
+    # enumeration and still a bounded worst case.
+    page = max(1, min(int(page), 200))
+    if match is not None and match not in ("token", "substring"):
+        return ("match must be 'token' (indexed, default) or 'substring' "
+                "(uncapped infix scan — finds p4 inside mp4)")
     # Resolve id-shaped filters up front (ULID / legacy integer alias / provider
     # session id) so the engine only ever sees canonical ULID thread ids, and a
     # ref that matches nothing says so instead of silently returning zero hits.
@@ -513,6 +543,8 @@ def thread_search(
             context_lines=context_lines,
             context_events=context_events,
             rerank=rerank,
+            match=match or "token",
+            page=page,
         )
 
     # ``duration_ms`` covers the retrieval work as the caller felt it — both arms
@@ -550,7 +582,14 @@ def thread_search(
             # output only: structural shapes (browse/startswith/oldest/count/linkable)
             # have no match signal to judge weakness by. Inside the probe span so the
             # retry's stages are summed into the breakdown, as they are into the total.
-            ranked_shape = bool((query or "").strip()) and startswith is None and sort is None and output is None
+            # Never past page 1: the widen swaps the corpus scope mid-enumeration,
+            # and it decides on the top hit — which is a *different* hit on every
+            # page, so a walk could widen at page 3, narrow again at page 4, and
+            # silently interleave two different result sets. The page-1 response
+            # says when it widened, so a caller enumerating a widened search
+            # carries content_type='all' explicitly from there.
+            ranked_shape = (bool((query or "").strip()) and startswith is None
+                            and sort is None and output is None and page == 1)
             if content_type is None and ranked_shape and _default_scope_is_weak(hits, query):
                 wide_hits = _run(WIDENED_SEARCH_CONTENT_TYPES,
                                  extra_exclude=WIDENED_SEARCH_EXCLUDE)
@@ -579,7 +618,7 @@ def thread_search(
                 "types": types, "agents": agents, "path": path,
                 "path_ops": path_ops, "commit": commit,
                 "startswith": startswith, "sort": sort, "group": group,
-                "output": output, "rerank": rerank,
+                "output": output, "rerank": rerank, "match": match, "page": page,
             },
             hits=hits,
             widened=widened,

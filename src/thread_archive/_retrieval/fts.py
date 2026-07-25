@@ -324,6 +324,125 @@ class _Pass:
     scan_cap: bool = False
 
 
+#: The match modes an explicit ``match=`` selects between. ``token`` is the
+#: indexed FTS5 MATCH — the shipped behavior, and what every query mode in
+#: :func:`~._classify.classify_query` builds on. ``substring`` is the uncapped
+#: infix LIKE: it finds ``p4`` inside ``mp4`` and ``p400``, which no MATCH can
+#: see, and pays a full-table scan for it (see :func:`search_events`).
+MATCH_MODES = ("token", "substring")
+
+
+def _shared_filters(
+    *,
+    thread_id: Optional[str] = None,
+    thread_ids: Optional[list[str]] = None,
+    tool_name: Optional[str] = None,
+    path: Optional[str] = None,
+    types: Optional[list[str]] = None,
+    content_types: Optional[list[str]] = None,
+    exclude_content_types: Optional[list[str]] = None,
+    source: Optional[list[str]] = None,
+    since: Optional[str] = None,
+    until: Optional[str] = None,
+    agents: str = "exclude",
+) -> tuple[list[str], dict]:
+    """The scope predicate every pass and every exact-set query shares, as
+    ``(where_fragments, params)``.
+
+    One definition, three readers — the candidate-pool passes
+    (:func:`search_events`), the per-thread tally (:func:`matched_threads`), and
+    the capped total (:func:`count_matches`). Shared because a filter that
+    applied to the pool but not to the tally would make the two disagree about
+    the same corpus, and the tally is what a paginated caller trusts to know
+    when it has seen everything.
+    """
+    shared: list[str] = []
+    params: dict = {}
+    if thread_id is not None:
+        shared.append("thread_id = :tid")
+        params["tid"] = thread_id
+    elif thread_ids is not None:
+        # A resolved id-set scope (e.g. a topic's member threads). Like a single
+        # explicit thread_id, the scope is deliberate and bypasses the blacklist.
+        shared.append(_in_clause("thread_id", thread_ids, "tids", params, negate=False))
+    else:
+        # Honor the per-thread search blacklist (threads.exclude_from_search).
+        # An explicit thread_id scope is deliberate and bypasses it.
+        shared.append("thread_id NOT IN (SELECT id FROM threads WHERE exclude_from_search)")
+        # Agent-run threads (subagent/machinery sessions) ride the same pattern:
+        # out of the default pool, reachable via agents='include'/'only', an
+        # explicit thread scope, or a ``types`` filter that names 'system'
+        # (an explicit type request must not be emptied by the default).
+        if agents == "exclude" and not (types and "system" in types):
+            shared.append("thread_id NOT IN (SELECT id FROM threads WHERE thread_type = 'system')")
+        elif agents == "only":
+            shared.append("thread_id IN (SELECT id FROM threads WHERE thread_type = 'system')")
+    if tool_name:
+        shared.append("tool_name = :tool")
+        params["tool"] = tool_name
+    if path:
+        from .code import path_scope_sql
+
+        shared.append(path_scope_sql(path, params))
+    if types:
+        # event_search carries thread_id but not thread_type; constrain via the
+        # threads table (idx_threads_type), same pattern as the source filter.
+        shared.append(
+            "thread_id IN (SELECT id FROM threads WHERE "
+            + _in_clause("thread_type", types, "tt", params, negate=False) + ")"
+        )
+    if content_types:
+        shared.append(_in_clause("content_type", content_types, "ct", params, negate=False))
+    if exclude_content_types:
+        shared.append(_in_clause("content_type", exclude_content_types, "xct", params, negate=True))
+    if source:
+        # event_search carries thread_id but not source; constrain to threads of
+        # the named provider(s) via an indexed subquery (idx_threads_source). An
+        # empty match yields no rows rather than invalid SQL.
+        shared.append(
+            "thread_id IN (SELECT id FROM threads WHERE "
+            + _in_clause("source", source, "src", params, negate=False) + ")"
+        )
+    if since:
+        shared.append("occurred_at >= :since")
+        params["since"] = since
+    if until:
+        shared.append("occurred_at <= :until")
+        params["until"] = until
+    return shared, params
+
+
+def _primary_predicate(
+    query: str, *, match_mode: str, startswith: Optional[str]
+) -> Optional[tuple[str, dict]]:
+    """The single WHERE fragment that defines a query's match **set** — what the
+    exact-set queries count and group over, as ``(fragment, params)``.
+
+    This is deliberately the *primary* pass only, never the fallback ladder
+    :func:`search_events` runs to fill a short pool. The tiers exist to top up a
+    candidate pool with looser matches (an OR pass over a conjunctive query, the
+    within-token substring catcher); folding them into the set would make "every
+    thread matching this query" mean something different on a corpus where the
+    strict pass happened to come back short. ``None`` when the query has no
+    matchable content.
+    """
+    if startswith is not None:
+        return "content LIKE :sw ESCAPE '\\'", {"sw": _like_prefix(startswith)}
+    if match_mode == "substring":
+        clean = _clean_query_text(query)
+        return ("content LIKE :sub ESCAPE '\\'", {"sub": _like_substring(clean)}) if clean else None
+    mode, _ = classify_query(query)
+    if mode == "or":
+        terms = [t for t in (_clean_query_text(t) for t in (query or "").split("|")) if t]
+        if not terms:
+            return None
+        return "event_search MATCH :q", {"q": " OR ".join(_quote_phrase(t) for t in terms)}
+    if mode == "code":
+        clean = _clean_query_text(query)
+        return ("event_search MATCH :q", {"q": _quote_phrase(clean)}) if clean else None
+    return "event_search MATCH :q", {"q": to_match_query(query)}
+
+
 def search_events(
     query: str,
     thread_id: Optional[str] = None,
@@ -342,6 +461,7 @@ def search_events(
     agents: str = "exclude",
     oldest_first: bool = False,
     or_fallback: bool = True,
+    match_mode: str = "token",
     session: Optional[Session] = None,
 ) -> list[EventHit]:
     """Lexical search over the FTS5 index → canonical event-hit dicts.
@@ -383,8 +503,21 @@ def search_events(
     :mod:`.code`) — a subquery rather than a materialized id list, because a broad
     pattern puts thousands of threads in scope and a bound-parameter list that wide
     would have to be silently truncated.
+
+    ``match_mode='substring'`` replaces the whole mode ladder above with ONE
+    uncapped infix LIKE over the cleaned query text. It is the only way to reach
+    a within-token match the index cannot see (``p4`` inside ``mp4``), and the
+    only path that lifts :data:`_LIKE_SCAN_CAP`: the cap is a latency backstop on
+    a scan the caller did not ask for, and an explicit ``match='substring'`` is
+    the caller asking for it — the same "a deliberate scope stands the default
+    down" rule the blacklist and the ``agents`` filter already follow. It costs a
+    full-table scan (no index serves an infix LIKE) and runs alone: no fallback
+    ladder and no flood rescan, because there is no short pool to top up — the
+    scan either found a row or the row does not contain the substring.
     """
     ensure_fts(session)
+    if match_mode not in MATCH_MODES:
+        raise ValueError("match must be 'token' or 'substring'")
     if thread_ids is not None and not thread_ids:
         return []  # an empty id-set scope matches nothing (IN () isn't valid SQL)
     mode, is_boolean = classify_query(query)
@@ -402,6 +535,20 @@ def search_events(
         # so a % or _ in user input matches literally rather than as a LIKE wildcard.
         passes.append(_Pass("content LIKE :sw ESCAPE '\\'", {"sw": _like_prefix(startswith)},
                             order="occurred_at DESC", use_match=False))
+    elif match_mode == "substring":
+        # One uncapped scan, no ladder behind it: an explicit substring ask has
+        # exactly one right answer set, and a fallback tier could only widen it
+        # past what the caller asked for.
+        clean = _clean_query_text(query)
+        if not clean:
+            return []
+        # Ordered by rowid, not occurred_at: the scan already has to visit every
+        # row, and ``occurred_at`` is UNINDEXED, so sorting by it means materializing
+        # and sorting the whole match list (measured ~14s where the scan alone is
+        # ~1s). The FTS rowid is append-ordered, so DESC walks the index backwards
+        # for the same newest-first intent at no cost.
+        passes.append(_Pass("content LIKE :sub ESCAPE '\\'", {"sub": _like_substring(clean)},
+                            order="rowid DESC", use_match=False))
     elif mode == "or":
         terms = [_clean_query_text(t) for t in (query or "").split("|")]
         terms = [t for t in terms if t]
@@ -443,59 +590,13 @@ def search_events(
     else:
         passes.append(_Pass("event_search MATCH :q", {"q": to_match_query(query)}))
 
-    shared: list[str] = []
-    shared_params: dict = {"lim": limit}
-    if thread_id is not None:
-        shared.append("thread_id = :tid")
-        shared_params["tid"] = thread_id
-    elif thread_ids is not None:
-        # A resolved id-set scope (e.g. a topic's member threads). Like a single
-        # explicit thread_id, the scope is deliberate and bypasses the blacklist.
-        shared.append(_in_clause("thread_id", thread_ids, "tids", shared_params, negate=False))
-    else:
-        # Honor the per-thread search blacklist (threads.exclude_from_search).
-        # An explicit thread_id scope is deliberate and bypasses it.
-        shared.append("thread_id NOT IN (SELECT id FROM threads WHERE exclude_from_search)")
-        # Agent-run threads (subagent/machinery sessions) ride the same pattern:
-        # out of the default pool, reachable via agents='include'/'only', an
-        # explicit thread scope, or a ``types`` filter that names 'system'
-        # (an explicit type request must not be emptied by the default).
-        if agents == "exclude" and not (types and "system" in types):
-            shared.append("thread_id NOT IN (SELECT id FROM threads WHERE thread_type = 'system')")
-        elif agents == "only":
-            shared.append("thread_id IN (SELECT id FROM threads WHERE thread_type = 'system')")
-    if tool_name:
-        shared.append("tool_name = :tool")
-        shared_params["tool"] = tool_name
-    if path:
-        from .code import path_scope_sql
-
-        shared.append(path_scope_sql(path, shared_params))
-    if types:
-        # event_search carries thread_id but not thread_type; constrain via the
-        # threads table (idx_threads_type), same pattern as the source filter.
-        shared.append(
-            "thread_id IN (SELECT id FROM threads WHERE "
-            + _in_clause("thread_type", types, "tt", shared_params, negate=False) + ")"
-        )
-    if content_types:
-        shared.append(_in_clause("content_type", content_types, "ct", shared_params, negate=False))
-    if exclude_content_types:
-        shared.append(_in_clause("content_type", exclude_content_types, "xct", shared_params, negate=True))
-    if source:
-        # event_search carries thread_id but not source; constrain to threads of
-        # the named provider(s) via an indexed subquery (idx_threads_source). An
-        # empty match yields no rows rather than invalid SQL.
-        shared.append(
-            "thread_id IN (SELECT id FROM threads WHERE "
-            + _in_clause("source", source, "src", shared_params, negate=False) + ")"
-        )
-    if since:
-        shared.append("occurred_at >= :since")
-        shared_params["since"] = since
-    if until:
-        shared.append("occurred_at <= :until")
-        shared_params["until"] = until
+    shared, shared_params = _shared_filters(
+        thread_id=thread_id, thread_ids=thread_ids, tool_name=tool_name, path=path,
+        types=types, content_types=content_types,
+        exclude_content_types=exclude_content_types, source=source,
+        since=since, until=until, agents=agents,
+    )
+    shared_params["lim"] = limit
 
     hits: list[EventHit] = []
     seen: set[tuple[int, Optional[str]]] = set()
@@ -570,7 +671,8 @@ def search_events(
         # the meaningful terms (stopwords carry no retrieval signal). Explicit
         # boolean / quoted / pipe-OR / identifier queries asked for their own
         # semantics and are left alone.
-        if (or_fallback and startswith is None and mode == "tsquery" and not is_boolean
+        if (or_fallback and startswith is None and match_mode == "token"
+                and mode == "tsquery" and not is_boolean
                 and '"' not in (query or "") and len(hits) < limit):
             from .rank import search_terms
 
@@ -636,6 +738,118 @@ def _rescan_distinct(
             content_type=r["content_type"], snippet=r["snip"] or "",
             full_content=r["full_content"] or "", occurred_at=r["occurred_at"],
         ))
+
+
+#: How many matched rows the exact-set queries below will scan before giving up
+#: on an exact answer. The scan is the whole cost of both (the GROUP BY forfeits
+#: FTS5's streaming rank-sort, so a broad query would otherwise walk its entire
+#: match list — measured ~7s for a 460k-match term over this corpus). Capped and
+#: taken newest-first, the same query lands in well under a second and the answer
+#: degrades to an honest floor rather than to a slow exact one. 20k is chosen to
+#: cover realistic enumeration targets outright: a term appearing in ~1k threads
+#: resolves exactly, and only corpus-common words hit the cap.
+SET_SCAN_CAP = 20000
+
+
+def _set_scan_sql(select_cols: str, predicate: str, shared: list[str], *, group: str = "") -> str:
+    """SQL for a capped exact-set query: take the newest ``SET_SCAN_CAP`` matched
+    rows, then aggregate. The cap sits on the *inner* scan, so it bounds the work
+    rather than the output — a ``LIMIT`` on the aggregate would still walk every
+    match to produce the groups it then discards.
+
+    Newest-first (``rowid DESC`` — the FTS rowid is append-ordered, so this is an
+    index walk, not a sort) because a capped enumeration has to drop *something*
+    and the recent end is what the rest of the system biases toward; ordering
+    would otherwise fall to fts5's internal rowid-ascending iteration and silently
+    return the OLDEST slice of a truncated set."""
+    inner = (
+        "SELECT thread_id, event_id, occurred_at FROM event_search WHERE "
+        + " AND ".join([predicate] + shared)
+        + " ORDER BY rowid DESC LIMIT :set_cap"
+    )
+    return "SELECT " + select_cols + " FROM (" + inner + ")" + group
+
+
+def matched_threads(
+    query: str,
+    *,
+    match_mode: str = "token",
+    startswith: Optional[str] = None,
+    session: Optional[Session] = None,
+    **scope,
+) -> tuple[list[dict], bool]:
+    """Every thread the query matches, tallied — the exact-set half of a
+    thread-granular list, as ``(rows, capped)``.
+
+    Rows are ``{thread_id, n_hits, event_id, last_match}``, newest match first;
+    ``event_id`` is the thread's newest matching event, so a row opens where the
+    query landed rather than at the thread's tail. ``capped`` is True when the
+    scan hit :data:`SET_SCAN_CAP` and the enumeration is therefore a floor.
+
+    This is the query that makes a *complete* answer possible. The candidate pool
+    :func:`search_events` returns is a cut — ``pool_floor`` rows deep, ordered by
+    relevance — so the threads past it are unreachable at any page depth and,
+    worse, indistinguishable from a set that simply ended. Here the set is
+    resolved directly and ranking is a separate question applied on top of it.
+    ``**scope`` takes the :func:`_shared_filters` arguments verbatim.
+    """
+    ensure_fts(session)
+    if match_mode not in MATCH_MODES:
+        raise ValueError("match must be 'token' or 'substring'")
+    if scope.get("thread_ids") is not None and not scope["thread_ids"]:
+        return [], False
+    predicate = _primary_predicate(query, match_mode=match_mode, startswith=startswith)
+    if predicate is None:
+        return [], False
+    where, params = predicate
+    shared, shared_params = _shared_filters(**scope)
+    sql = sa_text(_set_scan_sql(
+        "thread_id, count(*) AS n_hits, max(event_id) AS event_id, "
+        "max(occurred_at) AS last_match",
+        where, shared, group=" GROUP BY thread_id ORDER BY last_match DESC",
+    ))
+    _t = perf_counter()
+    with use_session(session) as s:
+        rows = s.execute(sql, {**shared_params, **params, "set_cap": SET_SCAN_CAP}).mappings().all()
+    _probe.record("set_ms", _t)
+    total_hits = sum(r["n_hits"] for r in rows)
+    return [dict(r) for r in rows], total_hits >= SET_SCAN_CAP
+
+
+def count_matches(
+    query: str,
+    *,
+    match_mode: str = "token",
+    startswith: Optional[str] = None,
+    session: Optional[Session] = None,
+    **scope,
+) -> tuple[int, int, bool]:
+    """The match set's size as ``(n_events, n_threads, capped)`` — what a result
+    page is a page *of*.
+
+    The event-granular counterpart to :func:`matched_threads`, under the same
+    :data:`SET_SCAN_CAP`; ``capped`` True means both numbers are floors. An exact
+    uncapped count is deliberately not offered: over this corpus a common term
+    costs seconds to count exactly, and every search would pay it to render one
+    header line."""
+    ensure_fts(session)
+    if match_mode not in MATCH_MODES:
+        raise ValueError("match must be 'token' or 'substring'")
+    if scope.get("thread_ids") is not None and not scope["thread_ids"]:
+        return 0, 0, False
+    predicate = _primary_predicate(query, match_mode=match_mode, startswith=startswith)
+    if predicate is None:
+        return 0, 0, False
+    where, params = predicate
+    shared, shared_params = _shared_filters(**scope)
+    sql = sa_text(_set_scan_sql(
+        "count(*) AS n_events, count(DISTINCT thread_id) AS n_threads", where, shared,
+    ))
+    _t = perf_counter()
+    with use_session(session) as s:
+        row = s.execute(sql, {**shared_params, **params, "set_cap": SET_SCAN_CAP}).mappings().one()
+    _probe.record("set_ms", _t)
+    return row["n_events"], row["n_threads"], row["n_events"] >= SET_SCAN_CAP
 
 
 def _write_doc(

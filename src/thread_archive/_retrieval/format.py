@@ -42,6 +42,32 @@ def _hit_text(h: EventHit) -> str:
     return h.get("full_content") or h.get("snippet") or ""
 
 
+def _scale(hits, unit: str) -> str:
+    """The ``· N of M · page P/Q`` suffix that turns a result count into a
+    position in a set — or ``''`` when the shape can't say.
+
+    A page with nothing naming the whole is the defect this exists to fix: ten
+    rows read identically whether they are all of them or ten of nine hundred,
+    and an agent trying to enumerate has no way to tell that it stopped early.
+    ``+`` marks a floor (the set scan capped), and a set the pipeline cut rather
+    than resolved says ``≥`` and names the shape that *can* enumerate it."""
+    total = getattr(hits, "total_threads" if unit == "thread" else "total", None)
+    if total is None:
+        return ""
+    page, pages = getattr(hits, "page", 1), getattr(hits, "pages", None)
+    exhaustive = getattr(hits, "exhaustive", False)
+    mark = "+" if getattr(hits, "capped", False) else ""
+    # "≥" over "of": a cut pool knows how far it reached, not how much there was,
+    # and rendering that reach as a total is the same silent-truncation lie in a
+    # new place.
+    out = f" · {len(hits)} of {total}{mark}" if exhaustive else f" · {len(hits)} of ≥{total}"
+    if pages and pages > 1:
+        out += f" · page {page}/{pages}{mark}"
+    if not exhaustive:
+        out += " · truncated (group='browse' enumerates every matched thread)"
+    return out
+
+
 def top_hit(hits: list[EventHit]) -> EventHit:
     """The best-ranked hit — what the match-quality verdict judges. Row order is
     ranked order in every shape but the nested one, which re-sorts hits into
@@ -123,9 +149,10 @@ def _format_browse(hits: list[EventHit]) -> str:
     big it was: the op tally, the window of touches, and an ``event_id`` that opens
     at the work instead of at the thread's tail."""
     code_axis = bool(hits and hits[0].get("_path_ops") is not None)
+    scale = _scale(hits, "thread")
     if code_axis:
         lines = [
-            f"{len(hits)} thread(s) · touched this path — changes first, then most recent",
+            f"{len(hits)} thread(s) · touched this path — changes first, then most recent{scale}",
             "  open one at the work: thread_read(thread_id, around_event=event_id, mode='chat')",
             "  what else it changed: thread_read(thread_id, summary='files')",
             "",
@@ -133,14 +160,15 @@ def _format_browse(hits: list[EventHit]) -> str:
     elif hits and hits[0].get("_browse_order") == "given":
         lines = [
             f"{len(hits)} thread(s) · in the order the scope ranked them "
-            "(see the note above), not by last activity",
+            f"(see the note above), not by last activity{scale}",
             "  open one: thread_read(thread_id) · its tail: "
             "thread_read(thread_id, around_event=event_id)",
             "",
         ]
     else:
         lines = [
-            f"{len(hits)} thread(s) · browse (no query) — one row per thread, by last activity",
+            f"{len(hits)} thread(s) · browse (no query) — one row per thread, "
+            f"by last activity{scale}",
             "  open one: thread_read(thread_id) · its tail: "
             "thread_read(thread_id, around_event=event_id)",
             "",
@@ -243,6 +271,14 @@ def format_results(hits: list[EventHit], query: str, *, output: str | None = Non
     if output == "linkable":
         return _format_linkable(hits)
     if not hits:
+        # An empty page past the end is not an empty result set, and the two must
+        # never render the same: an enumerator that walked off the end would read
+        # its own success as "this query matches nothing".
+        page, pages = getattr(hits, "page", 1), getattr(hits, "pages", None)
+        if page > 1:
+            end = f" (the last is {pages})" if pages else ""
+            return (f'Page {page} is past the end of the results for "{query}"{end}. '
+                    f"Every match has been listed.")
         if not (query or "").strip():
             return ("No threads matched the browse filters. Widen the window or drop a "
                     "filter (browse lists threads by last activity; topics/system threads "
@@ -260,11 +296,12 @@ def format_results(hits: list[EventHit], query: str, *, output: str | None = Non
     group = hits[0].get("_group")
     n_threads = len({h["thread_id"] for h in hits})
     if group == "browse":
-        header = f'{n_threads} thread(s) for "{query}"'
+        header = f'{n_threads} thread(s) for "{query}"' + _scale(hits, "thread")
     elif group == "nested":
-        header = f'{len(hits)} result(s) in {n_threads} thread(s) for "{query}"'
+        header = (f'{len(hits)} result(s) in {n_threads} thread(s) for "{query}"'
+                  + _scale(hits, "thread"))
     else:
-        header = f'{len(hits)} result(s) for "{query}"'
+        header = f'{len(hits)} result(s) for "{query}"' + _scale(hits, "row")
     if verdict:
         header += f" · quality={verdict[0]}"
 

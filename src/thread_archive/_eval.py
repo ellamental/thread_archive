@@ -65,6 +65,7 @@ archive; the caller opens it (``_api.open_archive``) first.
 from __future__ import annotations
 
 import json
+import logging
 import math
 import random
 import re
@@ -78,6 +79,8 @@ from sqlalchemy import text as sa_text
 from . import _api as api
 from ._retrieval.read import resolve_thread_ref
 from ._store import use_session
+
+logger = logging.getLogger(__name__)
 
 RECALL_KS = (1, 5, 10, 20)
 
@@ -410,6 +413,34 @@ class EvalProgress:
         return (self.sums[metric] + (self.n - self.scored)) / self.n
 
 
+def warm_for_scoring() -> None:
+    """Build the corpus graph inline, before any case is scored.
+
+    The community-coherence re-rank reads a cached graph and returns ``None``
+    while a background build is still running, so on the request path a cold
+    process simply ranks without the boost for its first queries. Under a scoring
+    loop that same behaviour is a race against the scorer: the build lands partway
+    through, the cases before it are ranked without coherence and the cases after
+    it with, and where the boundary falls depends on wall-clock — how fast the box
+    is, whether the pools came from a cache. Two runs of identical code then
+    disagree (~0.02 window fill on a file, concentrated in whatever ran first),
+    and every floor calibrated from them inherits the split.
+
+    Building inline first costs one build and makes a run a function of the code
+    and the snapshot alone. Fail-soft, and a no-op when coherence is off or the
+    graph can't be built — both leave every case ranked the same way, which is the
+    property that matters. Idempotent: the graph is cached, so the scoring loops
+    that call this per file pay for it once."""
+    from ._retrieval import embed_graph
+
+    if embed_graph.coherence_gamma() <= 0.0:
+        return
+    try:
+        embed_graph.get(block=True)
+    except Exception:  # noqa: BLE001 — scoring without it beats not scoring
+        logger.debug("warm_for_scoring: corpus graph unavailable", exc_info=True)
+
+
 def evaluate(cases: list[dict], *, limit: int, rerank, content_type,
              exclude_content_types: list[str] | None, search=None,
              early_stop=None) -> dict:
@@ -432,10 +463,12 @@ def evaluate(cases: list[dict], *, limit: int, rerank, content_type,
     scored on different cases. The report carries ``aborted`` (the reason, or
     ``None``) and ``scored`` so a caller can tell the two apart.
 
-    Determinism is the caller's job, not a per-case date bound: agent-mined cases
-    are scored over the frozen snapshot they were mined against (the caller binds
-    the home by ``snapshot_id``), so the corpus can't move underneath the ranking
-    and the search runs in its native production shape and latency."""
+    Binding the corpus is the caller's job: agent-mined cases are scored over the
+    frozen snapshot they were mined against (the caller binds the home by
+    ``snapshot_id``), so the corpus can't move underneath the ranking and the
+    search runs in its native production shape and latency. Holding the *ranker*
+    still is this function's job, via :func:`warm_for_scoring` below."""
+    warm_for_scoring()
     if search is None:
         search = api.search
     per_shape: dict[str, list[float]] = {}

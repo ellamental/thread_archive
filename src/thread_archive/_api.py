@@ -125,6 +125,8 @@ def search(
     context_lines: int = 2,
     context_events: Optional[str] = None,
     rerank: Optional[bool] = None,
+    match: str = "token",
+    page: int = 1,
     params=None,
 ) -> "list[EventHit]":
     """Federated search over conversation events (lexical FTS5 + optional semantic
@@ -153,7 +155,15 @@ def search(
     ``path`` (narrowed by ``path_ops``) restricts to the conversations that touched
     a file — the code axis; with an empty query that browse IS the "who worked on
     this file" answer, its rows carrying the op tally. ``thread_ids`` is a
-    pre-resolved id-set scope for a caller that resolved the conversations itself."""
+    pre-resolved id-set scope for a caller that resolved the conversations itself.
+
+    ``match`` picks what counts as a match: ``'token'`` (default) is the indexed
+    FTS5 pipeline, ``'substring'`` an uncapped infix scan that reaches within-token
+    matches the index cannot see (``p4`` in ``mp4``) at the price of a full-table
+    scan. ``page`` (1-based) walks the result set; the returned
+    :class:`~._retrieval._types.Results` — a plain ``list`` subclass — carries
+    ``total`` / ``total_threads`` / ``pages`` and the ``exhaustive`` flag saying
+    whether paging can reach every match."""
     open_archive(home)
     from ._retrieval import search as _search
 
@@ -180,6 +190,8 @@ def search(
         context_lines=context_lines,
         context_events=context_events,
         rerank=rerank,
+        match=match,
+        page=page,
         params=params,
     )
 

@@ -50,6 +50,16 @@ archive (BEIR and the lab build throwaway homes and never touch it).
   ordering of the whole 2/1/0 pool. `--probes-only` skips the metric run for
   the CI gate's arm-liveness checks. Every other live-archive instrument
   reuses its miner (`mine_log_cases`).
+- **`window_fill.py`** — the product measure: how much of what is relevant comes
+  back in the window an agent reads, rather than where the first hit lands. Scores
+  **window fill** (`hits@k / min(k, |gold|)` — ceiling-normalized, so it measures
+  ranking rather than gold-set size) and **union coverage** (fire every query a
+  topic file carries, union the windows, dedupe, and measure the share of the whole
+  subject assembled — the fan-out workflow end to end), both against
+  `bm25_baseline`'s plain BM25 over the same snapshot. Multi-answer `topic` files
+  are the protocol with the resolution to measure it; single-gold files reduce it
+  to success@k. It warms the models and corpus graph first, which the other
+  instruments do not — see the caution below.
 - **`search_lab.py`** — the experiment bench. Races every configuration in
   `experiments/` against the shipped defaults and prints a leaderboard. A bare
   run scores **both benches** (`--gold` / `--synthetic` narrow to one): the gold
@@ -279,6 +289,17 @@ the re-rank budget.
   delta as evidence a change helped. The trail's lasting value to this bench
   is as a **sampling frame**: real query shapes to seed the gold miner with,
   not a labeler.
+
+- **A cold process scores a different number than a warm one.** The coherence
+  re-rank reads a corpus graph built in the background, so queries that land before
+  it is ready score as if coherence were off — same code, same snapshot, different
+  digits depending on how long the process has been up. A file measured cold and
+  warm in one session differs by roughly 0.02 window fill, and the drift is largest
+  in whatever runs first. `window_fill.py` calls
+  `thread_archive._retrieval.warm_models()` before scoring; `retrieval_eval.py` and
+  `scripts/retrieval_gold_gate.py` do not, so their first file carries whatever
+  warmup state the process happened to have. Re-run a suspicious delta before
+  believing it, and prefer a warmed process for anything that will be quoted.
 
 **Claim discipline.** Green tier 0 licenses exactly one claim, synthetically:
 "search didn't break." Running `scripts/retrieval_gold_gate.py` on a ranking

@@ -53,7 +53,7 @@ _CURRENT: contextvars.ContextVar[Optional["PoolCache"]] = contextvars.ContextVar
 #: change to what ``retrieve_pool`` returns). Part of every key, so a stale
 #: on-disk cache from an older build misses instead of feeding the ranker a pool
 #: it can no longer score correctly.
-FORMAT_VERSION = 2
+FORMAT_VERSION = 3
 
 
 def key_for(
@@ -76,15 +76,19 @@ def key_for(
     oldest_first: bool = False,
     or_fallback: bool = True,
     path: Optional[str] = None,
+    match_mode: str = "token",
 ) -> tuple:
     """The cache key for one pool: every input that changes what the arms return
     or how they fuse.
 
     ``over`` is the already-resolved pool depth (it folds ``limit`` and
     ``pool_floor``, the two knobs that set it) and ``rrf_k`` the fusion constant —
-    the two ``SearchParams`` fields that reach this half of the pipeline. The rest
-    are the query and its structural scope. Ordering-insensitive for the list
-    arguments, so ``['user','text']`` and ``['text','user']`` share a pool.
+    the two ``SearchParams`` fields that reach this half of the pipeline.
+    ``match_mode`` selects the lexical arm's predicate outright (indexed token
+    MATCH vs uncapped infix scan), so two modes over one query are two different
+    pools. The rest are the query and its structural scope. Ordering-insensitive
+    for the list arguments, so ``['user','text']`` and ``['text','user']`` share
+    a pool.
     """
     def norm(v: Optional[list[str]]) -> Optional[tuple[str, ...]]:
         return tuple(sorted(v)) if v else None
@@ -93,7 +97,7 @@ def key_for(
         FORMAT_VERSION, query, over, rrf_k, structural,
         thread_id, norm(thread_ids), norm(content_types), norm(exclude_content_types),
         since, until, tool_name, norm(source), norm(types),
-        agents, startswith, oldest_first, or_fallback, path,
+        agents, startswith, oldest_first, or_fallback, path, match_mode,
     )
 
 

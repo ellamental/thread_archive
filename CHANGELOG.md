@@ -2,6 +2,95 @@
 
 ## Unreleased
 
+- **Search can be used to enumerate, not just to find: `page=`, honest totals,
+  and `match='substring'`.** A result was a cut with nothing naming the whole, so
+  ten rows read identically whether they were all of them or ten of nine hundred
+  — which made "list every thread that mentions X" unanswerable, and worse,
+  unanswerable *silently*. Three changes close it.
+
+  `page=N` walks the set, and every page is a slice of one ordering, so a walk
+  neither repeats nor skips a row. Getting that right meant making *nothing* that
+  shapes the order depend on which page was asked for — not the candidate pool's
+  depth, not the cross-encoder's head. Sizing the pool from `page × limit` (the
+  obvious move, since a deeper page needs deeper candidates) is precisely the bug:
+  the coherence re-rank scores a thread's community against the pool's mass, so a
+  pool that grew per page handed each page a differently-ordered list. Measured
+  before the fix, a 721-thread walk served 122 rows twice and skipped as many.
+  One pool per `(query, limit)` fixes it; what it costs is depth, which is why the
+  ranked shapes report their totals as floors and `group='browse'` — unbounded,
+  since the exact set supplies whatever the pool never reached — is the shape to
+  enumerate with. The MCP layer stops widening the content-type scope past page 1
+  for the same class of reason: the widen decides on the top hit, a different hit
+  on every page, so a walk could widen at page 3 and narrow again at page 4,
+  silently interleaving two corpora.
+
+  Results now carry the size of the set they are a page of. Where the pool held
+  every match, that is a real total; where it was cut, the header says `of ≥N ·
+  truncated` rather than passing a reach off as a total. `group='browse'` is the
+  shape that enumerates completely: its thread list is resolved from the whole
+  match set (one capped `GROUP BY` over the same predicate and filters as the
+  pool) instead of being cut from the ranked pool, so paging it to the end reaches
+  every matched thread — including those ranked past the pool boundary, which were
+  never ranked low, only absent. Ranked order still leads; the threads no ranking
+  pass ever scored follow by recency.
+
+  In that shape the match set is authoritative and the pool supplies only order,
+  which cuts both ways: threads the pool never reached are appended, and threads
+  the pool held that are *not* in the set are dropped. The pool is federated, so
+  the vector arm contributes semantic neighbours that need not contain the query
+  at all — a relevance aid, not set membership. Left in, they made the total climb
+  as a caller paged through it (721 → 1280 across fifteen pages), which is worse
+  than reporting no total. Whether the pool saturated is still tracked, on its
+  *raw* reach rather than its length: dedup shrinks the list, so length would call
+  a saturated pool short and report a cut as complete.
+
+  `match='substring'` is the opt-in that reaches within-token matches no index can
+  see. `p4` as a token finds `p4`; as a substring it also finds `mp4`, `p400`,
+  `gcp4` — on this corpus 1937 threads against 894, more than double. The infix
+  scan already existed but only as a *fallback*, gated to identifier-shaped
+  queries and capped to the most recent 25k rows, which reached under a fifth of
+  the real set. That cap is right for a scan nobody asked for and wrong as a
+  ceiling on an explicit request, so an explicit `match='substring'` lifts it —
+  the same rule the search blacklist and the `agents` filter already follow. It
+  costs a full-table scan (~1.5s CPU plus IO over ~4M documents) and runs alone,
+  with no fallback ladder to widen past what was asked for.
+
+  Two measurements shaped the implementation. Exact totals are not affordable on
+  every search — counting a 550k-match term exactly costs ~6.5s — so the set scan
+  is capped at 20k rows and a total that hit the cap renders as a floor (`N+`).
+  And the substring pool pass orders by rowid, not `occurred_at`: the latter is
+  UNINDEXED, so sorting by it materialized and sorted the whole match list (~14s
+  where the scan alone is ~1s).
+
+- **Search quality is measured by how full the window is, not by where the first
+  hit lands.** Agents do not read a ranking; they fire several searches carrying
+  terms that surround what they want, dedupe by hand, and read around whatever
+  looks worth opening. MRR scores the wrong thing for that, and it was hiding the
+  actual problem: `evals/window_fill.py` scores the share of the window's relevant
+  capacity that relevant threads occupy (ceiling-normalized, because raw recall@k
+  on a multi-answer case scores gold-set size as much as ranking), plus **union
+  coverage** — fire every query a topic carries, union the windows, and measure how
+  much of the subject was assembled. The stack leads BM25 on every topic, but the
+  absolute union coverage says a third of the relevant material comes back. That is
+  a recall ceiling no reordering reaches, and it is invisible to MRR: files scoring
+  0.9 MRR surface a quarter of what is relevant.
+
+  The instrument warms the models and corpus graph before scoring. Without that a
+  run races itself — the coherence re-rank reads a graph built in the background, so
+  queries landing before it is ready score as if coherence were off, and the same
+  code over the same snapshot yields different digits depending on timing (~0.02
+  window fill on a file). `retrieval_eval.py` and the gold gate do not warm.
+
+- **The archive gold set covers 22 topics.** Mined against the same frozen snapshot
+  the existing files bind to, so every case scores together: 317 cases across 25
+  files (64 `querygen`, 21 `query`, 19 `rerank`, 213 `topic`). Topics were chosen
+  for subject coverage and for sitting inside families of near-synonyms, where the
+  hard negatives are real neighbouring conversations rather than synthesized ones —
+  the two family picks (`Cloth`, `Librarian System`) produced the widest margins.
+  Selecting instead by how lexically separable a topic's title is does not predict
+  anything and should not be used: across 21 topics the correlation with the stack's
+  margin is −0.33, not significant, and it changed sign between batches.
+
 - **The code axis: `path=` and `commit=` scopes on search, and a files view on
   read.** The archive claims to be a richer record of what your agents did than git
   alone, but it could not answer the most ordinary question about that record —
