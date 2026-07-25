@@ -963,11 +963,12 @@ def _stored_summaries_enabled() -> bool:
 
 def _resolve_summary_kind(summary: bool | str) -> Optional[str]:
     """Map the ``summary`` knob → ``None`` (normal read), ``'toc'``, ``'short'``,
-    ``'indexed'``, or ``'?'`` for an unrecognised string (the caller reports it).
+    ``'indexed'``, ``'files'``, or ``'?'`` for an unrecognised string (the caller
+    reports it).
     Bool-ish strings are accepted because MCP clients sometimes stringify booleans."""
     if isinstance(summary, str):
         v = summary.strip().lower()
-        if v in ("short", "indexed", "toc"):
+        if v in ("short", "indexed", "toc", "files"):
             return v
         if v in ("true", "1", "yes"):
             return "toc"
@@ -975,6 +976,33 @@ def _resolve_summary_kind(summary: bool | str) -> Optional[str]:
             return None
         return "?"
     return "toc" if summary else None
+
+
+def _files_summary(thread: Thread, session: Optional[Session] = None) -> str:
+    """The files this conversation touched — the code axis read backwards.
+
+    A summary view rather than a transcript because that is what it is: the same
+    question ``summary='toc'`` answers ("what is in here") asked about code instead
+    of about messages. Ops are tallied per file, changes first, each with the event
+    id that opens the transcript where the file was last touched.
+    """
+    from .code import ALL_OPS, refresh_code_index, thread_files
+
+    refresh_code_index(max_batches=8, session=session)
+    result = thread_files(thread.id, session=session)
+    title = thread.title or thread.name or "(untitled)"
+    if not result["files"]:
+        return (f"Thread {thread.id}: {title}\n\nNo files recorded — this conversation's "
+                "tools named none, or its provider's transcript carries no tool calls.")
+    lines = [f"# Thread {thread.id}: {title} (files touched)", "",
+             f"{result['total_files']} file(s), changes first."]
+    for f in result["files"]:
+        ops = " · ".join(f"{op} {f['ops'][op]}" for op in ALL_OPS if f["ops"].get(op))
+        lines.append(f"  {f['path']}\n     {ops} · last {str(f['last'] or '')[:16]} "
+                     f"· event {f['event_id']}")
+    lines.append("")
+    lines.append("Open one: thread_read(thread_id, around_event=<event>, mode='full').")
+    return "\n".join(lines)
 
 
 def _stored_summary(thread: Thread, kind: str) -> str:
@@ -1193,7 +1221,8 @@ def read_thread(
     and defaults to the readable ``chat`` view when no mode is explicit. A hit on an
     event the transcript hides opens the turn at its position (with no ``match:``
     marker, since the event itself isn't rendered). ``summary``
-    picks a summary view instead of the transcript —
+    picks a summary view instead of the transcript — ``'files'`` = the files this
+    session touched (the code axis read backwards),
     ``True``/``'toc'`` = compact per-message TOC, ``'short'`` = the stored short
     summary (``Thread.summary``), ``'indexed'`` = the stored indexed summary
     (``Thread.indexed_summary``, structured, with event anchors). ``user_only`` is a
@@ -1208,7 +1237,8 @@ def read_thread(
     if summary_kind == "?":
         return (
             f"Unknown summary kind {summary!r} — use 'short' (stored short summary), "
-            f"'indexed' (stored indexed summary), or true/'toc' (compact message TOC)."
+            f"'indexed' (stored indexed summary), 'files' (the files this session "
+            f"touched), or true/'toc' (compact message TOC)."
         )
     if summary_kind in ("short", "indexed") and not _stored_summaries_enabled():
         return (
@@ -1226,6 +1256,8 @@ def read_thread(
             return f"Thread {thread_id} not found."
         if summary_kind in ("short", "indexed"):
             return _stored_summary(thread, summary_kind)
+        if summary_kind == "files":
+            return _files_summary(thread, session=s)
         events = s.execute(
             select(Event).where(Event.thread_id == thread_id).order_by(Event.id)
         ).scalars().all()

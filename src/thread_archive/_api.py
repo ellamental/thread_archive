@@ -116,6 +116,9 @@ def search(
     types: Optional[list[str]] = None,
     agents: Optional[str] = None,
     startswith: Optional[str] = None,
+    path: Optional[str] = None,
+    path_ops: Optional[list[str]] = None,
+    thread_ids: Optional[list[str]] = None,
     sort: Optional[str] = None,
     group: Optional[str] = None,
     output: Optional[str] = None,
@@ -146,7 +149,11 @@ def search(
     ``group='dup'`` folds only cross-thread duplicate content, keeping each
     surviving thread's own hits. ``group='browse'`` / ``group='nested'`` turn a
     keyword search into the thread-granular list shapes — matched threads alone,
-    or every hit clustered under its thread — with ``limit`` counting threads."""
+    or every hit clustered under its thread — with ``limit`` counting threads.
+    ``path`` (narrowed by ``path_ops``) restricts to the conversations that touched
+    a file — the code axis; with an empty query that browse IS the "who worked on
+    this file" answer, its rows carrying the op tally. ``thread_ids`` is a
+    pre-resolved id-set scope for a caller that resolved the conversations itself."""
     open_archive(home)
     from ._retrieval import search as _search
 
@@ -164,6 +171,9 @@ def search(
         types=types,
         agents=agents,
         startswith=startswith,
+        path=path,
+        path_ops=path_ops,
+        thread_ids=thread_ids,
         sort=sort,
         group=group,
         output=output,
@@ -172,6 +182,66 @@ def search(
         rerank=rerank,
         params=params,
     )
+
+
+def blame(
+    *,
+    path: Optional[str] = None,
+    commit: Optional[str] = None,
+    thread_id: Optional[int | str] = None,
+    home: Optional[str] = None,
+    ops: Optional[list[str]] = None,
+    limit: int = 20,
+    since: Optional[str] = None,
+    until: Optional[str] = None,
+    source: Optional[list[str]] = None,
+    agents: str = "exclude",
+    repo: Optional[str] = None,
+    refresh: bool = True,
+) -> dict:
+    """The code axis: which conversations touched a file, or produced a commit.
+
+    Exactly one of ``path`` / ``commit`` / ``thread_id`` selects the direction —
+    file → conversations, commit → the session behind it, conversation → its files.
+    ``refresh`` tops up the projection first (bounded; the cursor makes the rest of
+    a backfill the next call's work) so a just-finished session is answerable.
+    """
+    given = [n for n, v in (("path", path), ("commit", commit), ("thread_id", thread_id)) if v]
+    if len(given) != 1:
+        raise ValueError("blame takes exactly one of path=, commit=, thread_id= "
+                         f"(got {given or 'none'})")
+    open_archive(home)
+    from ._retrieval import code as _code
+    from ._retrieval.read import resolve_thread_ref
+    from ._store import use_session
+
+    if refresh:
+        # Bounded: an MCP call must not block on a cold archive's whole backfill.
+        _code.refresh_code_index(max_batches=8)
+    if commit:
+        return _code.blame_commit(commit, repo=repo, limit=limit)
+    if path:
+        return _code.blame_path(path, ops=ops, limit=limit, since=since, until=until,
+                                sources=source, agents=agents)
+    # Only the thread direction is left (the exactly-one check above). ``str`` is
+    # lossless for every ref shape — an all-digit string resolves as the legacy id
+    # an int would have.
+    with use_session(None) as s:
+        resolved = resolve_thread_ref(s, str(thread_id))
+    if resolved is None:
+        return {"thread_id": thread_id, "total_files": 0, "files": [],
+                "note": "no such thread"}
+    return _code.thread_files(resolved, ops=ops, limit=limit)
+
+
+def code_index(*, home: Optional[str] = None, rebuild: bool = False) -> dict:
+    """Fold the code axis forward (or ``rebuild`` it from scratch) and report the
+    projection's counts + freshness."""
+    open_archive(home)
+    from ._retrieval import code as _code
+
+    result = _code.rebuild_code_index() if rebuild else _code.refresh_code_index()
+    return {**_code.code_index_status(), "folded": result}
 
 
 def read_thread(
@@ -199,7 +269,8 @@ def read_thread(
     size-budgeted (``max_chars``, default ~48k). ``tool_results`` (default off) adds
     tool output under each call in ``full``. ``summary`` swaps in a summary view:
     ``True``/``'toc'`` = compact TOC, ``'short'`` / ``'indexed'`` = the stored thread
-    summaries. ``around_event`` opens a search-result event with
+    summaries, ``'files'`` = the files this session touched (the code axis, read
+    backwards from :func:`search`'s ``path`` scope). ``around_event`` opens a search-result event with
     ``context_turns`` turns of surrounding context; see
     :func:`thread_archive._retrieval.read_thread` for the full contract."""
     open_archive(home)
@@ -398,8 +469,10 @@ def status(*, home: Optional[str] = None) -> dict:
             select(func.count()).select_from(Thread).where(Thread.thread_type == "topic")
         ).scalar() or 0
         links = s.execute(select(func.count()).select_from(ThreadLink)).scalar() or 0
+    from ._retrieval.code import code_index_status
     from ._retrieval.vectors import get_status as _vec_status
 
+    code = code_index_status()
     return {
         "home": str(paths.home),
         "truth_dir": str(paths.truth_dir),
@@ -410,6 +483,15 @@ def status(*, home: Optional[str] = None) -> dict:
         "links": int(links),
         "fts_indexed": fts_status()["indexed"],
         "vectors_indexed": _vec_status().get("indexed", 0),
+        "code_paths_indexed": code["paths"],
+        "code_files": code["distinct_paths"],
+        "code_commits": code["commits"],
+        # False while the fold is still walking the log — the one state where an
+        # empty blame answer means "not indexed yet", not "nobody touched it".
+        # ``code_pending`` distinguishes ordinary between-passes lag from a real
+        # backfill; the read paths top the fold up before querying either way.
+        "code_current": code["current"],
+        "code_pending": code["pending"],
         **operational_records(home=home),
     }
 

@@ -53,11 +53,17 @@ class Watcher:
         embed: bool = True,
         embed_interval: float = 300.0,
         embed_batch: int = 512,
+        code_batches: int = 8,
     ) -> None:
         self.watchers = watchers if watchers is not None else enabled_watchers(home)
         self.home = home
         self.interval = interval
         self.maintenance_interval = maintenance_interval
+        # Code-axis fold budget per maintenance pass, in event-id windows. Steady
+        # state is one nearly-empty window; the number is what bounds the *first*
+        # pass on an archive whose history predates the projection, which walks the
+        # whole event log and would otherwise hold the loop for minutes.
+        self.code_batches = code_batches
         # Live vector cohost: keep the semantic arm current with ingest so recent
         # threads are findable by *meaning*, not just by keyword. The embed backend
         # loads once and stays warm in this process; each pass is bounded by
@@ -315,7 +321,8 @@ class Watcher:
 
     def maintain(self) -> dict:
         """Cheap periodic upkeep: shard rebalance + thread-metadata backstop + manifest
-        watermark + the thread-meta search docs (titles/summaries → FTS). Deliberately
+        watermark + the thread-meta search docs (titles/summaries → FTS) + the code
+        axis (paths/commits → their projections). Deliberately
         *not* the cross-thread overlay snapshots — conversation ingest never changes
         those, so the live path leaves them untouched.
 
@@ -342,14 +349,31 @@ class Watcher:
         except Exception as e:  # noqa: BLE001 — upkeep must not kill the loop
             logger.warning("watch: thread-meta index error: %s", e)
         meta_ms = (time.monotonic() - meta_started) * 1000.0
+        # The code axis. Bounded per pass: the first pass on an existing archive is
+        # a corpus-wide backfill, and the poll loop must not disappear into it — the
+        # cursor keeps the remainder for the next pass rather than losing the work.
+        code_started = time.monotonic()
+        try:
+            from .._retrieval.code import refresh_code_index
+
+            folded = refresh_code_index(max_batches=self.code_batches)
+            if folded["paths"] or folded["commits"]:
+                counts = {**counts, "code_paths": folded["paths"],
+                          "code_commits": folded["commits"]}
+        except Exception as e:  # noqa: BLE001 — upkeep must not kill the loop
+            logger.warning("watch: code index error: %s", e)
+            folded = {"done": None}
+        code_ms = (time.monotonic() - code_started) * 1000.0
         logger.info("watch: maintenance %s", counts)
         try:
             from .._ops.health import record_health
 
             record_health("watch_maintain_last", {
-                "ms": round(checkpoint_ms + meta_ms, 1),
+                "ms": round(checkpoint_ms + meta_ms + code_ms, 1),
                 "checkpoint_ms": round(checkpoint_ms, 1),
                 "thread_meta_ms": round(meta_ms, 1),
+                "code_ms": round(code_ms, 1),
+                "code_backfilling": folded.get("done") is False,
                 "counts": {k: v for k, v in counts.items() if isinstance(v, int)},
             })
         except Exception:  # noqa: BLE001 — advisory; the loop must survive

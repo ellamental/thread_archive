@@ -51,9 +51,11 @@ Usage::
 from __future__ import annotations
 
 import argparse
+import collections
 import functools
 import json
 import os
+import re
 import shutil
 import sys
 from pathlib import Path
@@ -260,6 +262,78 @@ def repo_groups(data: Path, sessions: set[str]) -> dict[str, list[str]]:
     return out
 
 
+# Cross-cutting subjects, named by the class of file a session touched. Each
+# entry is (title, path predicate); a session joins a group when any of its
+# `files_touched` paths matches. Ordered widest-net last so the printed summary
+# reads from sharpest to broadest.
+FILE_CLASSES: list[tuple[str, "re.Pattern[str]"]] = [
+    ("CI workflow and pipeline config",
+     re.compile(r"(^|/)\.github/workflows/|(^|/)(\.gitlab-ci\.yml|azure-pipelines\.yml)$")),
+    ("Dependency and lockfile management",
+     re.compile(r"(^|/)(package(-lock)?\.json|pnpm-lock\.yaml|yarn\.lock|Cargo\.(toml|lock)"
+                r"|go\.(mod|sum)|requirements\.txt|pyproject\.toml|uv\.lock|Gemfile(\.lock)?"
+                r"|composer\.json)$")),
+    ("Styling and CSS",
+     re.compile(r"\.(css|scss|sass|less)$|tailwind\.config\.")),
+    ("Agent instruction files",
+     re.compile(r"(^|/)(CLAUDE|AGENTS|GEMINI)\.md$|(^|/)\.cursorrules$|(^|/)\.claude/")),
+    ("Test suites",
+     re.compile(r"(^|/)(tests?|__tests__|spec)/|[._](test|spec)\.[a-z]+$|_test\.go$")),
+]
+
+# A group this small can't support a survey; a group this dominated by one repo
+# is the repo topic again under another name.
+MIN_CLASS_MEMBERS = 20
+MAX_CLASS_REPO_SHARE = 0.5
+
+
+def file_class_groups(data: Path, sessions: set[str]) -> dict[str, list[str]]:
+    """``{subject: [session_id, ...]}`` grouped by the *class of file* a session
+    touched — the cross-cutting counterpart to :func:`repo_groups`.
+
+    A repository topic is confound-dense but trivially separable: each repo owns
+    its own file and module names, so nothing in one repo competes with a query
+    aimed at another. The subjects that cut *across* repos are the harder case,
+    and ``files_touched`` names them out of the dataset itself: sessions that
+    edited a workflow file were doing CI work whatever the project, and they
+    collide on `yaml`, `runner`, `job`, `matrix` regardless of repo.
+
+    Membership here is a proxy — touching a workflow file is not proof the
+    session was *about* CI — and it does not need to be exact, because it never
+    reaches the gold. The grouping only decides which subjects a survey agent is
+    pointed at; the graded pool comes from the labeler judging each thread
+    against the query's stated intent. Groups too small to survey, or so
+    dominated by a single repo that they restate :func:`repo_groups`, are
+    dropped.
+
+    Unlike the embedding communities ``corpus_topics.py --propose`` offers, this
+    reads a recorded fact about each session, so it shares no model with the
+    vector arm and cannot cluster on harness boilerplate."""
+    pq = _require_pyarrow()
+    rows = pq.read_table(data / "sessions.parquet",
+                         columns=["session_id", "repo_id", "files_touched"]).to_pylist()
+    hits: dict[str, list[str]] = {title: [] for title, _ in FILE_CLASSES}
+    repos: dict[str, collections.Counter] = {
+        title: collections.Counter() for title, _ in FILE_CLASSES}
+    for row in rows:
+        sid = str(row["session_id"])
+        if sid not in sessions:
+            continue
+        paths = _as_list(row.get("files_touched"))
+        for title, pattern in FILE_CLASSES:
+            if any(pattern.search(str(p)) for p in paths):
+                hits[title].append(sid)
+                repos[title][str(row["repo_id"])] += 1
+    out = {}
+    for title, members in hits.items():
+        if len(members) < MIN_CLASS_MEMBERS:
+            continue
+        if repos[title].most_common(1)[0][1] / len(members) > MAX_CLASS_REPO_SHARE:
+            continue
+        out[title] = members
+    return out
+
+
 def thread_ids_by_session(home: Path) -> dict[str, str]:
     """``session_id -> thread_id`` for everything ingested into ``home``. Reads the
     store rather than a build-time map, so ``--linkage-only`` works against a home
@@ -430,6 +504,11 @@ def main(argv: list[str] | None = None) -> int:
     groups_path.write_text(json.dumps(groups, indent=1) + "\n")
     print(f"repo groups: {len(groups)} repo(s) over {sum(map(len, groups.values()))} "
           f"session(s) -> {groups_path}")
+
+    subjects = file_class_groups(args.data, set(mapping))
+    subjects_path = gold / "subject-groups.json"
+    subjects_path.write_text(json.dumps(subjects, indent=1) + "\n")
+    print(f"subject groups: {len(subjects)} cross-repo subject(s) -> {subjects_path}")
 
     rows = build_linkage(args.data, mapping)
     out = write_linkage(rows, (args.out or gold / commit_linked.LINKAGE_NAME).expanduser())

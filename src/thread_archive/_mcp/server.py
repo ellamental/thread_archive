@@ -144,22 +144,70 @@ def _resolve_ref(ref: int | str) -> Optional[str]:
         return resolve_thread_ref(s, ref)
 
 
-# The agent-facing default search scope: USER messages plus the thread-meta docs
-# (title + stored summary) — the intentional signals of what a thread was about.
-# Assistant text, tool calls/results, and thinking are opt-in (pass an explicit
-# content_type), and content_type='all' clears the filter to search everything.
-# Mirrors the archive backend's thread_search default.
-DEFAULT_SEARCH_CONTENT_TYPES = ("user", "title", "summary")
+# The agent-facing default search scope: USER messages plus thread titles — the
+# intentional signals of what a thread was about, straight from the record.
+# Stored thread summaries are derived text (the librarian writes them over the
+# archive), not the record itself, so search never reads them unless the caller
+# names them — content_type='summary' targets them, content_type='all' includes
+# them. Assistant text, tool calls/results, and thinking are likewise opt-in.
+DEFAULT_SEARCH_CONTENT_TYPES = ("user", "title")
+
+
+def _commit_note(scope: dict) -> str:
+    """What a ``commit=`` scope resolved to, as the note printed above the results.
+
+    Every other scope filters by one fixed relation — ``path`` means "touched this
+    file", ``topic_id`` means "cited under this topic". This one is a *set* of
+    contributing sessions assembled from an authorship window, so the note carries
+    what the rows cannot: how much of the commit each accounts for, which of them
+    actually ran it, and the fact that file overlap is evidence rather than proof.
+    """
+    sha, resolution = scope["sha"], scope["resolution"]
+    if resolution == "invalid":
+        return f"note: '{sha}' is not a commit sha — {scope['note']}\n"
+    if resolution == "unknown":
+        searched = ", ".join(scope.get("searched_repos") or []) or "(none found)"
+        return (f"note: commit {sha} — no match. {scope['note']}.\n"
+                f"      repos searched: {searched}\n"
+                f"      If the repository is elsewhere, pass repo='/path/to/repo'.\n")
+    if resolution == "recorded-only":
+        c = scope["commit"]
+        return (f"note: commit {c['sha']} — only the committing session is known. "
+                f"{scope['note']}.\n"
+                f"      \"{c['subject'] or '(no subject)'}\" · "
+                f"{str(c['occurred_at'] or '')[:16]}\n")
+    c = scope["commit"]
+    committed = scope["committed_by"]
+    who = (", ".join(committed) if committed
+           else "nobody in this archive (committed outside any session)")
+    shares = " · ".join(
+        f"{t['thread_id']} {len(t['matched_files'])}/{len(c['files'])}"
+        + (" (ran it)" if t["committed"] else "")
+        for t in scope["threads"][:6]
+    )
+    note = (f"note: commit {c['sha'][:12]} — {scope['total_threads']} contributing "
+            f"session(s). {scope['note']}.\n"
+            f"      \"{c['subject']}\" · {c['committed_at'][:16]} · "
+            f"{len(c['files'])} file(s) · {c['repo']}\n"
+            f"      ran the commit: {who}\n"
+            f"      share of its files: {shares}\n")
+    if scope.get("window_capped"):
+        note += ("      (history walk hit its bound — some files have no lower bound "
+                 "and may over-credit)\n")
+    return note
+
 
 # Where the default scope widens to when it comes up dry: the whole transcript.
 # Conclusions live in assistant text, but in a corpus that is mostly tool content
 # an answer can exist ONLY in a tool result, a tool's error, or the assistant's
 # own reasoning — a false "not found" against a conversation that is right there.
 # So a query the default scope can't answer gets one automatic retry with the
-# content-type filter cleared (``None`` = every type). One retry, only on the
-# default scope, only when no query term landed — an explicit content_type is a
-# deliberate choice and is never second-guessed.
+# content-type filter cleared (``None`` = every type) minus the derived summary
+# docs, which stay opt-in in every scope the caller didn't name. One retry, only
+# on the default scope, only when no query term landed — an explicit
+# content_type is a deliberate choice and is never second-guessed.
 WIDENED_SEARCH_CONTENT_TYPES = None
+WIDENED_SEARCH_EXCLUDE = ("summary",)
 
 
 def _default_scope_is_weak(hits: "list[EventHit]", query: str) -> bool:
@@ -267,6 +315,10 @@ def thread_search(
     types: Optional[str] = None,
     agents: Optional[str] = None,
     startswith: Optional[str] = None,
+    path: Optional[str] = None,
+    path_ops: Optional[str] = None,
+    commit: Optional[str] = None,
+    repo: Optional[str] = None,
     sort: Optional[str] = None,
     group: Optional[str] = None,
     output: Optional[str] = None,
@@ -292,20 +344,21 @@ def thread_search(
     and system threads unless ``types``/``agents`` says otherwise; ranking
     options (content_type, context, rerank) don't apply.
 
-    By default USER messages, thread titles, and stored thread summaries are
-    searched — the strongest signals of what a thread was about. When that scope
+    By default USER messages and thread titles are searched — the strongest
+    signals of what a thread was about. When that scope
     comes up dry (no query term in the top hit), the search retries once with
     assistant text included and says so in the output. Assistant text,
-    tool calls/results, and thinking are otherwise opt-in: pass
+    tool calls/results, thinking, and stored thread summaries (librarian-derived
+    text, not the record) are otherwise opt-in: pass
     ``content_type='all'`` to search everything, or a specific ``content_type``
-    (text/thinking/tool/tool_result/...) to target one.
+    (text/thinking/tool/tool_result/summary/...) to target one.
 
     Query grammar: natural language, "quoted phrases", boolean AND/OR/NOT,
     pipe-OR (a|b), and code identifiers (get_session, a.b.c). Filter by
     ``thread_id`` or ``topic_id`` (a topic's member conversations) —
     both accept a ULID thread id, a legacy integer alias, or a provider session
     id, the same ref shapes ``thread_read`` takes —
-    ``content_type`` (default user+title+summary; 'all' searches
+    ``content_type`` (default user+title; 'all' searches
     everything),
     ``exclude_content_type`` (comma-separated types to drop), ``tool_name``,
     ``source`` (comma-separated providers, e.g. 'claude-code,cursor'),
@@ -335,6 +388,42 @@ def thread_search(
     thread, the rest folded into its header. Reach for browse to see *which
     conversations* touched something, nested to read *what they said* about it
     with the thread structure intact.
+
+    **The code axis.** Search finds where something was *discussed*; ``path`` and
+    ``commit`` find where it was *done*. Every path the archive's tools named — each
+    ``Edit``, ``Read``, ``Write``, ``apply_patch`` header, and path-shaped shell
+    argument, in every provider's spelling — is indexed structurally, so these are
+    lookups rather than text searches that happen to match a path.
+
+    ``path`` takes a **bare name** (``rank.py``), a **partial path**
+    (``_retrieval/rank.py``), an **absolute path** — a file, or a directory whose
+    whole subtree matches, which is how you ask about a repo or a module
+    (``path='/repo', path_ops='edit,write,delete'`` = "which sessions changed
+    anything in this repo") — or a **glob** (``*.py``). ``path_ops`` narrows the
+    verbs: ``edit`` / ``write`` / ``delete`` are changes, ``read`` is a look, and
+    ``search`` (a grep's scope) / ``run`` (a path inside a shell command) are
+    incidental mentions, kept distinguishable rather than dropped.
+
+    With an **empty query** that is the whole "who worked on this file" answer: one
+    row per conversation, ordered changes-before-looks, each carrying its op tally,
+    the window of touches, and an ``event_id`` that opens at the work rather than at
+    the thread's tail. With a query it scopes the search instead — "retry backoff" +
+    ``path='rank.py'`` is what we said about retries while working on that file. The
+    inverse ("what did this session change") is
+    ``thread_read(thread_id, summary='files')``.
+
+    ``commit`` is the loop back from ``git blame``: git names the commit, this names
+    the conversations it is **made of** — every session whose edits to its files fall
+    inside its authorship window (after each file was last committed, up to this
+    commit). Usually more than one: a commit carries work from several sittings. The
+    session that *ran* ``git commit`` is flagged among them, not substituted for
+    them — wherever a human commits out of band it is nobody, and where an agent
+    commits it is usually just the session that typed the command. The note above the
+    results carries what the rows can't: each session's share of the commit's files,
+    which of them ran it, and that file overlap is evidence rather than proof.
+    ``repo='/path'`` points at the repository when it isn't one the archive has seen
+    sessions run in; without a reachable repo only a recorded committer can be named.
+    Empty query lists those sessions; a query searches inside them.
 
     ``startswith`` does a structural prefix scan (content LIKE 'prefix%'; query text
     unused). ``sort='oldest'`` returns matches chronologically (find when something
@@ -373,8 +462,8 @@ def thread_search(
             return (f"topic {topic_id} not found — topic_id takes a topic's ULID id "
                     f"or its legacy integer id")
         topic_id = resolved
-    # Default scope is user messages only; an explicit type targets it, and
-    # content_type='all' clears the filter to search everything (see the constant).
+    # Default scope is user messages + thread titles; an explicit type targets one,
+    # and content_type='all' clears the filter to search everything (see the constant).
     if content_type == "all":
         content_types = None
     elif content_type:
@@ -384,15 +473,30 @@ def thread_search(
     exclude = [c.strip() for c in exclude_content_type.split(",") if c.strip()] if exclude_content_type else None
     sources = [s.strip() for s in source.split(",") if s.strip()] if source else None
     type_list = [t.strip() for t in types.split(",") if t.strip()] if types else None
+    op_list = [o.strip() for o in path_ops.split(",") if o.strip()] if path_ops else None
 
-    def _run(cts):
+    # An ordinary thread scope, like topic_id — but resolved here rather than in the
+    # engine, because the miss has to explain itself: a sha in no session and no
+    # known repo scopes to nothing, and bare zero rows would read as "no session
+    # touched this commit" when the truth is "that sha was never found". This is the
+    # layer that renders notes (the widen retry sits here for the same reason).
+    commit_note = ""
+    commit_threads: Optional[list[str]] = None
+    if commit:
+        verdict = api.blame(commit=commit, repo=repo, limit=max(limit, 10))
+        commit_note = _commit_note(verdict)
+        commit_threads = [t["thread_id"] for t in verdict["threads"]]
+        if not commit_threads:
+            return _degradation_notices() + commit_note
+
+    def _run(cts, extra_exclude=()):
         return api.search(
             query,
             limit=limit,
             thread_id=thread_id,
             topic_id=topic_id,
             content_types=cts,
-            exclude_content_types=exclude,
+            exclude_content_types=[*(exclude or []), *extra_exclude] or None,
             since=since,
             until=until,
             tool_name=tool_name,
@@ -400,6 +504,9 @@ def thread_search(
             types=type_list,
             agents=agents,
             startswith=startswith,
+            path=path,
+            path_ops=op_list,
+            thread_ids=commit_threads,
             sort=sort,
             group=group,
             output=output,
@@ -445,7 +552,8 @@ def thread_search(
             # retry's stages are summed into the breakdown, as they are into the total.
             ranked_shape = bool((query or "").strip()) and startswith is None and sort is None and output is None
             if content_type is None and ranked_shape and _default_scope_is_weak(hits, query):
-                wide_hits = _run(WIDENED_SEARCH_CONTENT_TYPES)
+                wide_hits = _run(WIDENED_SEARCH_CONTENT_TYPES,
+                                 extra_exclude=WIDENED_SEARCH_EXCLUDE)
                 if _has_strong_hit(wide_hits, query):
                     hits, widened = wide_hits, True
 
@@ -456,7 +564,7 @@ def thread_search(
             rendered = ("note: no strong keyword match in the default scope (user/title/summary) — "
                         "results below include assistant text, tool output, and reasoning\n" + rendered)
         render_ms = (time.monotonic() - _t_render) * 1000.0
-        return _degradation_notices() + rendered
+        return _degradation_notices() + commit_note + rendered
     finally:
         # Usage ledger (fail-soft, ids + timings only — see _retrieval.usage): the
         # observed ground truth future retrieval evals are built from, carrying a
@@ -468,7 +576,8 @@ def thread_search(
                 "content_type": content_type,
                 "exclude_content_type": exclude_content_type, "since": since,
                 "until": until, "tool_name": tool_name, "source": source,
-                "types": types, "agents": agents,
+                "types": types, "agents": agents, "path": path,
+                "path_ops": path_ops, "commit": commit,
                 "startswith": startswith, "sort": sort, "group": group,
                 "output": output, "rerank": rerank,
             },
@@ -548,7 +657,11 @@ def thread_read(
     summary view instead of the transcript: ``true``/``'toc'`` = a compact per-message
     TOC; ``'short'`` = the thread's stored short summary (a few sentences);
     ``'indexed'`` = the stored indexed summary (structured, with event anchors) —
-    the stored kinds exist only where a thread has one.
+    the stored kinds exist only where a thread has one; ``'files'`` = the **files
+    this session touched**, tallied per file with changes first and an event id per
+    file to open the transcript where it was last worked on. That is the code axis
+    read backwards — ``thread_search(path=…)`` asks which sessions touched a file,
+    this asks which files a session touched.
     ``user_only`` is a back-compat alias for ``mode`` (true→user, false→full);
     prefer ``mode``, which wins if both are set.
 
@@ -560,7 +673,8 @@ def thread_read(
         offset: Skip first N turns. Use the offset from a CHUNKED footer to read the
             next chunk. Negative counts from end: -20 = last 20 turns. Default: 0.
         summary: Summary view instead of full content — true/'toc' for a compact
-            TOC with previews, 'short' or 'indexed' for the stored thread summary.
+            TOC with previews, 'short' or 'indexed' for the stored thread summary,
+            'files' for the files this session touched.
         mode: View — 'user' (default), 'chat', 'full', 'last' (final assistant
             text only), or 'ends' (first + last turns). Default: user.
         user_only: Back-compat alias for mode (true→user, false→full). Prefer mode.

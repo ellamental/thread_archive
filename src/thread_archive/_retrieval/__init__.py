@@ -11,6 +11,8 @@ the re-rank pays its seconds only on the vocab-mismatch queries it was built for
 With no ``[embeddings]`` extra the vector and
 cross-encoder arms sit out and search is lexical-only (still through the ranker).
 ``read_thread`` reconstructs a conversation; ``rebuild_fts`` is the FTS half of reindex.
+:mod:`.code` is the other retrieval axis — the files a conversation touched and the
+commits it produced, indexed structurally rather than as text.
 """
 
 from __future__ import annotations
@@ -30,6 +32,14 @@ from ._classify import resolve_relative_date
 from ._context import extract_context_lines, get_context_events, parse_context_events_spec
 from ._types import EventHit
 from .browse import browse_threads
+from .code import (
+    blame_commit,
+    blame_path,
+    code_index_status,
+    rebuild_code_index,
+    refresh_code_index,
+    thread_files,
+)
 from .format import COUNT_FETCH_CAP, format_results
 from .fts import ensure_fts, fts_status, index_events, index_thread_meta, rebuild_fts, search_events
 from .params import DEFAULT as _DEFAULT_PARAMS
@@ -101,7 +111,7 @@ def _rrf_merge(result_lists: list[list[EventHit]], limit: int, k: int = 60) -> l
 
 
 def _semantic_hits(query, *, thread_id, content_types, exclude_content_types, since, until, over,
-                   source, thread_ids=None, agents="exclude", embedder=None):
+                   source, thread_ids=None, agents="exclude", path=None, embedder=None):
     """The vector arm — None when the extra is absent, nothing's indexed, or embed fails."""
     try:
         from . import vectors
@@ -111,7 +121,7 @@ def _semantic_hits(query, *, thread_id, content_types, exclude_content_types, si
         return vectors.search(
             query, thread_id=thread_id, content_types=content_types,
             exclude_content_types=exclude_content_types, limit=over, since=since, until=until,
-            source=source, thread_ids=thread_ids, agents=agents, embedder=embedder,
+            source=source, thread_ids=thread_ids, agents=agents, path=path, embedder=embedder,
         )
     except Exception:  # noqa: BLE001 — vector arm must never break lexical search
         logger.exception("semantic arm failed; search continues lexical-only")
@@ -222,7 +232,7 @@ def warm_models(embedder=None, reranker=None) -> None:
 
         # rerank=True: the point is priming the cross-encoder's inference path, so
         # force it past the gates (a strong-headed warm hit would otherwise skip it).
-        api.search(_WARM_QUERY, limit=1, content_types=["user", "title", "summary"], rerank=True)
+        api.search(_WARM_QUERY, limit=1, content_types=["user", "title"], rerank=True)
     except Exception:  # noqa: BLE001 — a store that isn't ready just warms the models, not the caches
         failed.append("search")
         logger.debug("warm_models: dummy warm search skipped", exc_info=True)
@@ -257,6 +267,7 @@ def retrieve_pool(
     types: Optional[list[str]] = None,
     agents: str = "exclude",
     startswith: Optional[str] = None,
+    path: Optional[str] = None,
     oldest_first: bool = False,
     or_fallback: bool = True,
     embedder=None,
@@ -289,6 +300,7 @@ def retrieve_pool(
             exclude_content_types=exclude_content_types, since=since, until=until,
             tool_name=tool_name, source=source, types=types, agents=agents,
             startswith=startswith, oldest_first=oldest_first, or_fallback=or_fallback,
+            path=path,
         )
         cached = cache.get(key)
         if cached is not None:
@@ -301,7 +313,7 @@ def retrieve_pool(
         query, thread_id=thread_id, thread_ids=thread_ids, content_types=content_types,
         exclude_content_types=exclude_content_types, limit=over,
         since=since, until=until, tool_name=tool_name, source=source,
-        types=types, agents=agents,
+        types=types, agents=agents, path=path,
         startswith=startswith, oldest_first=oldest_first,
         or_fallback=or_fallback, session=session,
     )
@@ -330,7 +342,7 @@ def retrieve_pool(
         query, thread_id=thread_id, content_types=content_types,
         exclude_content_types=exclude_content_types, since=since, until=until,
         over=over, source=source, thread_ids=thread_ids, agents=agents,
-        embedder=embedder,
+        path=path, embedder=embedder,
     )
     if probe is not None:
         probe.semantic_ms += (perf_counter() - _t0) * 1000.0
@@ -375,6 +387,9 @@ def search(
     types: Optional[list[str]] = None,
     agents: Optional[str] = None,
     startswith: Optional[str] = None,
+    path: Optional[str] = None,
+    path_ops: Optional[list[str]] = None,
+    thread_ids: Optional[list[str]] = None,
     sort: Optional[str] = None,
     group: Optional[str] = None,
     output: Optional[str] = None,
@@ -408,6 +423,22 @@ def search(
     hides topics and system threads); with a query it scopes the keyword search
     the same way — and sits the semantic arm out, since vectors carry no
     thread-type filter.
+
+    ``path`` restricts to the conversations that **touched a file** — the code axis
+    (:mod:`.code`), in the pattern shapes :func:`.code.path_predicate` reads (bare
+    name, partial path, absolute path or directory subtree, glob), narrowed by
+    ``path_ops`` to particular verbs. It composes both ways the tool already works:
+    with a query it scopes the search ("what did we say about retries, among the
+    sessions that edited rank.py"), and with an **empty query** it is the code-axis
+    browse — the conversations that worked on that file, ordered changes-first, each
+    row carrying its op tally and opening at the touch rather than at the thread's
+    tail (see :func:`.browse.browse_threads`).
+
+    ``thread_ids`` is a pre-resolved id-set scope, for a caller that worked out the
+    conversations itself — the MCP layer's ``commit`` scope resolves there rather
+    than here, because a sha that matches nothing scopes to nothing and the caller
+    has to be told *that* instead of being handed an empty result. It intersects
+    with ``topic_id`` rather than replacing it.
 
     ``startswith`` does a structural prefix scan (query text unused). ``sort='oldest'``
     returns the earliest matches chronologically, bypassing the ranker — the lexical
@@ -497,14 +528,25 @@ def search(
     # A topic scope resolves to the topic's member conversations (cited or linked)
     # and rides the same id-set filter in both arms. A topic with no members — or
     # a non-topic id — matches nothing rather than silently searching everything.
-    thread_ids: Optional[list[str]] = None
+    # A resolved id-set scope may arrive from the caller (the commit scope resolves
+    # to one there, because its verdict has to be rendered beside the results).
+    # A caller-supplied list arrives ranked (the commit scope ranks by share of the
+    # commit), so its order is part of the answer and survives to the browse.
+    caller_ranked = thread_ids is not None
+    if thread_ids is not None:
+        thread_ids = list(thread_ids)
+        if not thread_ids:
+            return []
     if topic_id is not None:
         from .._knowledge.read import topic_thread_ids
 
         try:
-            thread_ids = topic_thread_ids(topic_id, session=session)
+            members = topic_thread_ids(topic_id, session=session)
         except ValueError:
             return []
+        # Two scopes compose by intersection, never by replacement — a caller that
+        # named both meant both.
+        thread_ids = members if thread_ids is None else [t for t in thread_ids if t in set(members)]
         if not thread_ids:
             return []
 
@@ -514,8 +556,8 @@ def search(
         return browse_threads(
             limit=limit, since=since_r, until=until_r, source=source, types=types,
             agents=agents or "exclude",
-            thread_id=thread_id, thread_ids=thread_ids,
-            oldest_first=sort == "oldest", session=session,
+            thread_id=thread_id, thread_ids=thread_ids, path=path, path_ops=path_ops,
+            preserve_order=caller_ranked, oldest_first=sort == "oldest", session=session,
         )
 
     is_count = output == "count"
@@ -552,7 +594,7 @@ def search(
         query, over=over, structural=structural, params=p,
         thread_id=thread_id, thread_ids=thread_ids, content_types=content_types,
         exclude_content_types=exclude_content_types, since=since_r, until=until_r,
-        tool_name=tool_name, source=source, types=types, agents=agents_eff,
+        tool_name=tool_name, source=source, types=types, agents=agents_eff, path=path,
         # Strict matching for count and oldest: the OR tier would inflate a tally
         # with partial matches, and in a chronological sort an older partial match
         # would leapfrog the true first mention.
@@ -731,4 +773,10 @@ __all__ = [
     "fts_status",
     "format_results",
     "search_events",
+    "blame_path",
+    "blame_commit",
+    "thread_files",
+    "refresh_code_index",
+    "rebuild_code_index",
+    "code_index_status",
 ]

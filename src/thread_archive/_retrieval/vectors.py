@@ -960,6 +960,7 @@ def search(
     source: Optional[list[str]] = None,
     thread_ids: Optional[list[str]] = None,
     agents: str = "exclude",
+    path: Optional[str] = None,
     embedder=None,
 ) -> Optional[list[EventHit]]:
     """Embedded semantic search: embed the query, brute-force cosine KNN, hydrate.
@@ -1021,7 +1022,7 @@ def search(
         return []  # an empty id-set scope matches nothing
     selective = (thread_id is not None or thread_ids is not None
                  or since is not None or until is not None or bool(source)
-                 or agents == "only")
+                 or bool(path) or agents == "only")
     allowed_ids = None
     if selective:
         awhere = []
@@ -1048,6 +1049,12 @@ def search(
         if source:
             ajoin += " JOIN threads t ON t.id = e.thread_id"
             awhere.append(_in_clause("t.source", source, "src", aparams, negate=False))
+        if path:
+            # The same code-axis scope the lexical arm applies, so both arms search
+            # the same set of conversations rather than one of them ignoring it.
+            from .code import path_scope_sql
+
+            awhere.append(path_scope_sql(path, aparams, column="e.thread_id"))
         # Bulk-fetch the in-scope ids in one buffered round-trip, not row-by-row:
         # a broad time bound puts millions of ids in scope, and fetchone-per-row
         # through the ORM spends seconds on Python overhead the numpy mask doesn't need.
@@ -1086,20 +1093,26 @@ def search(
             where.append("f.thread_id IN (SELECT id FROM threads WHERE thread_type = 'system')")
     if exclude_content_types:
         where.append(_in_clause("f.content_type", exclude_content_types, "xct", params, negate=True))
+    # Times come off the shadow row, which carries its own ``occurred_at`` kept in
+    # step with ``events`` by the sync triggers and the rebuild — the same column
+    # the lexical arm reads, so both arms date a hit the same way. Reaching into
+    # ``events`` for it instead would mean one scattered rowid lookup per candidate
+    # into a multi-million-row table, and the candidate list is three times the
+    # pool: that join alone costs about as much as the rest of hydration together.
     if since:
-        where.append("e.occurred_at >= :since")
+        where.append("f.occurred_at >= :since")
         params["since"] = since
     if until:
-        where.append("e.occurred_at <= :until")
+        where.append("f.occurred_at <= :until")
         params["until"] = until
-    join = "FROM events_fts f JOIN events e ON e.id = f.event_id"
+    join = "FROM events_fts f"
     if source:
         join += " JOIN threads t ON t.id = f.thread_id"
         where.append(_in_clause("t.source", source, "src", params, negate=False))
 
     sql = sa_text(
         "SELECT f.event_id, f.thread_id, f.event_type, f.content_type, "
-        "f.content AS full_content, e.occurred_at " + join +
+        "f.content AS full_content, f.occurred_at " + join +
         " WHERE " + " AND ".join(where)
     )
     # Hydration — the candidate ids back into hits, over a wide IN clause. Timed

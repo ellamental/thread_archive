@@ -59,6 +59,9 @@ def browse_threads(
     agents: str = "exclude",
     thread_id: Optional[str] = None,
     thread_ids: Optional[list[str]] = None,
+    preserve_order: bool = False,
+    path: Optional[str] = None,
+    path_ops: Optional[list[str]] = None,
     oldest_first: bool = False,
     session: Optional[Session] = None,
 ) -> list[EventHit]:
@@ -67,6 +70,20 @@ def browse_threads(
     Archived threads never list. The per-thread search blacklist
     (``threads.exclude_from_search``) is honored except under an explicit
     ``thread_id``/``thread_ids`` scope, mirroring keyword search.
+
+    ``preserve_order`` keeps a caller-supplied ``thread_ids`` in the order it was
+    given instead of re-sorting by last activity — for a scope whose *ranking* is
+    the answer (the commit scope ranks by share of the commit), where re-sorting
+    would put a different session at the top than the one the caller ranked first.
+
+    ``path`` turns the list into the **code-axis** browse: the conversations that
+    touched a file, and each row carries what it did to it — the op tally, the first
+    and last touch of *that path*, how many files under it the thread matched — with
+    ``event_id`` re-pointed at the strongest, newest touch so opening the row lands
+    on the edit rather than on the thread's tail. Ordering follows the evidence
+    (changes before looks, then recency) instead of last activity, unless
+    ``oldest_first`` asks for the chronological view. That is the whole "which
+    conversations edited this, and when" answer, in the shape a browse already has.
 
     ``agents`` mirrors keyword search's switch over agent-run threads
     (``thread_type='system'``): 'exclude' (default) hides them alongside topics,
@@ -118,14 +135,30 @@ def browse_threads(
             stmt = stmt.where(Thread.thread_type.not_in(DEFAULT_HIDDEN_TYPES))
     if source:
         stmt = stmt.where(Thread.source.in_(source))
+    # The code-axis scope is resolved rather than subqueried here: the browse row
+    # has to carry the per-thread op tally and the touch anchor, and the ordering
+    # follows them — none of which a bare id filter could supply.
+    code_stats: dict = {}
+    if path:
+        from .code import blame_path
+
+        blamed = blame_path(path, ops=path_ops, limit=2000, agents=agents,
+                            sources=source, session=session)
+        code_stats = {t["thread_id"]: t for t in blamed["threads"]}
+        if not code_stats:
+            return []
+        stmt = stmt.where(Thread.id.in_(list(code_stats)))
     since_dt, until_dt = _time_bound(since), _time_bound(until)
     if since_dt is not None:
         stmt = stmt.where(last_active >= since_dt)
     if until_dt is not None:
         stmt = stmt.where(last_active <= until_dt)
-    stmt = stmt.order_by(
-        last_active.asc() if oldest_first else last_active.desc()
-    ).limit(max(1, limit))
+    stmt = stmt.order_by(last_active.asc() if oldest_first else last_active.desc())
+    # A reordered browse must not be truncated by SQL's LIMIT before its own sort
+    # runs — the rows that survive would be the wrong ones.
+    given_order = list(thread_ids) if (preserve_order and thread_ids) else None
+    if not code_stats and given_order is None:
+        stmt = stmt.limit(max(1, limit))
 
     with use_session(session) as s:
         rows = s.execute(stmt).all()
@@ -133,7 +166,7 @@ def browse_threads(
     hits: list[EventHit] = []
     for r in rows:
         title = r.title or r.name or "(untitled)"
-        hits.append({
+        hit: EventHit = {
             "event_id": r.newest_event_id or 0,
             "thread_id": r.id,
             "thread_title": title,
@@ -145,5 +178,27 @@ def browse_threads(
             "_browse": True,
             "thread_source": r.source,
             "n_events": r.n_events,
-        })
+        }
+        stats = code_stats.get(r.id)
+        if stats is not None:
+            hit["_path_ops"] = stats["ops"]
+            hit["_path_first"] = stats["first"]
+            hit["_path_last"] = stats["last"]
+            hit["_path_files"] = stats["n_paths"]
+            hit["_path_sample"] = stats["paths"]
+            # Open the row where the file was worked on, not at the thread's tail.
+            hit["event_id"] = stats["event_id"] or hit["event_id"]
+        hits.append(hit)
+
+    ranking = list(code_stats) if code_stats else given_order
+    if ranking is not None:
+        order = {tid: i for i, tid in enumerate(ranking)}
+        hits.sort(key=lambda h: order.get(h["thread_id"], len(order)))
+        if oldest_first:
+            hits.reverse()
+        hits = hits[: max(1, limit)]
+        # The renderer's header names the ordering, and "by last activity" would be
+        # a plain untruth about a list the caller ranked.
+        for hit in hits:
+            hit["_browse_order"] = "given"
     return hits

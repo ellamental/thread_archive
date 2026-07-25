@@ -1092,6 +1092,13 @@ def report_status(st: dict) -> int:
     print(f"threads: {st['threads']}")
     print(f"events:  {st['events']}")
     print(f"indexed: {st['fts_indexed']}")
+    # The code axis. The pending count is the fold's trailing edge — normally the
+    # handful of events that landed since the last maintenance pass, and a large
+    # number only while an existing archive's history is still being walked.
+    pending = st.get("code_pending", 0)
+    print(f"code:    {st.get('code_files', 0)} files, {st.get('code_commits', 0)} "
+          f"commits, {st.get('code_paths_indexed', 0)} touches"
+          + (f" ({pending} events pending)" if pending else ""))
     v, b = st.get("last_verify"), st.get("last_backup")
     d = st.get("last_restore_drill")
     if v and v["ok"]:

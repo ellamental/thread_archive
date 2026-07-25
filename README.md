@@ -19,6 +19,30 @@ Your agent calls `thread_search`, the right conversation comes back, and `thread
 - Search is the access layer over the archive, not the archive itself — an agent typically fires several searches, reformulates, and reads around a hit, and the archive underneath guarantees the conversation is *there* to find. Quality is measured against the archive's own logged usage — real queries, real follow-up reads — with a CI gate that alarms on collapse; the numbers, the protocol, and its limits live in [docs/search-quality.md](docs/search-quality.md), and `thread_archive eval` runs the same self-checkup read-only on your own archive.
 - Redaction with encrypted recovery bundles: scrub secrets from the archive without destroying them irrevocably.
 
+**Indexed by code, not just by words.** Every path your agents' tools named — each
+`Edit`, `Read`, `Write`, `apply_patch` header, and path-shaped shell argument, in
+every provider's spelling — is folded into a structural index. It arrives as two
+new scopes on the tools that already exist, because the questions are the ones
+search already had shapes for — list the conversations, or search inside them:
+
+- `thread_search(path='rank.py')` — *which conversations worked on this file*. With
+  an empty query it is the list, ordered changes-before-looks, each row carrying its
+  op tally and opening at the touch rather than at the session's tail; with a query
+  it scopes the search to those sessions. A directory asks about a whole repo or
+  module (`path='/repo', path_ops='edit,write,delete'`), a glob about a file type.
+- `thread_search(commit='31bade5')` — *which conversations this commit is made of*,
+  the loop back from `git blame`. Not one session: a commit carries work from several
+  sittings, so it resolves to every session whose edits fall inside the commit's
+  authorship window — after each of its files was last committed, up to this commit —
+  ranked by how much of it they account for. The session that *ran* `git commit` is
+  flagged among them rather than standing in for them, which matters most where you
+  commit by hand and it is nobody.
+- `thread_read(thread_id, summary='files')` — the same index backwards: *what this
+  session actually changed.*
+
+The index is a disposable projection of the event log: it backfills itself over an
+existing archive and rebuilds with `reindex`.
+
 **Built like a database, not a folder of exports.**
 - Plain JSONL files are the source of truth — human-readable, greppable, yours. The search index is disposable and rebuilds from them at any time.
 - Crash-safe writes with intent journaling, fsync discipline, and automatic recovery. Your history survives power loss, killed processes, and corrupted indexes.
@@ -172,7 +196,7 @@ src/thread_archive/
   _truth/           # JSONL truth log + reindex
   _ops/             # backup kit: backup/mirror + restore drill, verify tiers, nightly, health records
   _importers/       # incremental import orchestration
-  _retrieval/       # FTS5 + vector search, read reconstruction
+  _retrieval/       # FTS5 + vector search, read reconstruction, the code axis (code.py)
   _knowledge/       # knowledge-layer data plane: KgEvent fold + SQL topic reads
   _watcher/         # local-source watcher (self-feeding ingest)
   _mcp/             # the library-native read MCP server

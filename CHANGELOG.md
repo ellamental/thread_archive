@@ -2,6 +2,76 @@
 
 ## Unreleased
 
+- **The code axis: `path=` and `commit=` scopes on search, and a files view on
+  read.** The archive claims to be a richer record of what your agents did than git
+  alone, but it could not answer the most ordinary question about that record —
+  *which conversations edited this file* — except by text-searching for a path and
+  hoping the session spelled it the same way. Every path was already there, in the
+  tool calls: an `Edit`'s `file_path`, an `apply_patch` header, a `Read`'s
+  `target_file`, a shell command's arguments. They are now folded into `event_paths`
+  / `event_commits` — disposable projections of the event log, cursor-folded like
+  the metrics rollup, so an existing archive backfills itself (~314k rows over a
+  3.9M-event corpus, in under a minute) and a reindex rebuilds them. Provider
+  spellings collapse at extraction: `Edit`, `search_replace`, and `edit_file` are
+  one op, and paths are normalized against the session's working directory —
+  including the `cd` inside a shell command, which is where a relative path in a
+  `Bash` call usually actually resolves.
+
+  It rides the tools that already exist rather than a third one, because the two
+  questions it answers are the two shapes `thread_search` already had: an empty
+  query lists conversations, a query searches inside them. `path=` (bare name,
+  partial path, absolute file, directory subtree — which is how you ask about a repo
+  — or glob, narrowed by `path_ops`) makes the empty-query browse the full "who
+  worked on this file" answer: ordered changes-before-looks, each row carrying its
+  op tally, the window of touches, and an `event_id` re-pointed at the strongest
+  touch so opening it lands on the edit rather than the session's tail. `commit=`
+  closes the loop from `git blame`, and resolves to every session the commit is
+  **made of** rather than to one author: a commit carries work from several sittings,
+  so the scope is the sessions whose edits fall inside its *authorship window* —
+  after each of its files was last committed (one `git log --name-only` walk supplies
+  the per-file floor), up to the commit itself. Without that floor a file edited
+  across a year of sessions would credit every one of them to whichever commit
+  happened to touch it. The session that ran `git commit` is flagged among the
+  contributors rather than substituted for them — wherever a human commits out of
+  band it is nobody, and where an agent commits it is usually just the session that
+  typed the command. Each session's share of the commit, which of them ran it, and
+  the fact that file overlap is evidence rather than proof ride as a note above the
+  rows, since the rows themselves are ordinary thread rows. `thread_read(thread_id, summary='files')`
+  is the same index backwards. `thread_archive status` reports the projection's
+  counts and its trailing edge.
+
+- **Search no longer reads stored summaries unless the caller names them.** The
+  agent default scope searched user messages, thread titles, *and* stored thread
+  summaries — but summaries are the librarian's derived text, not the record, so
+  a hit could land on a paraphrase the conversation never said, and findability
+  quietly depended on how much of the corpus the gardener had summarized. The
+  default scope is now user+title, and the dry-scope auto-widen — which clears
+  the content-type filter to everything — now excludes summary docs too, so no
+  scope the caller didn't name reads them. ``content_type='summary'`` targets
+  them and ``content_type='all'`` still searches truly everything. The warm
+  search primes the new scope key.
+
+- **A passing run says so again.** `addopts` carried `-q`, and pytest's verbosity
+  is cumulative — so the `-q` every caller types (the README's own run line, both
+  install guides, the two ci.toml pytest rows) stacked to `-qq`, where pytest stops
+  printing the `N passed in Xs` counts line. A green suite emitted a field of dots
+  and nothing else, and the standard verification — `pytest … | grep -E
+  'passed|failed'` — came back *empty*, byte-identical to a command that never ran.
+  Readers who couldn't tell green from broken re-ran the suite repeatedly, chasing a
+  line the config had suppressed. Quiet is the caller's to pass, not the config's:
+  `addopts` no longer sets it, and `tests/meta/test_output_summary.py` spawns a real
+  `-q` run against the shipped config to prove the counts line survives.
+- **Semantic hydration stopped joining `events` for a column it already had.**
+  `hydrate_ms` was the biggest single stage of a settled warm search (137–177ms,
+  ~80% of the warm vector arm), and roughly half of it was one join. Turning KNN
+  candidates back into hits selected `e.occurred_at` through `events_fts f JOIN
+  events e ON e.id = f.event_id` — a scattered rowid lookup into a 3.9M-row table
+  per candidate, and the candidate list is three times the pool wide (594 lookups
+  for a 198-hit pool) — while the shadow row carries its own `occurred_at` in step
+  with `events`, and the lexical arm was already reading it there. Over eight
+  first-touch 594-id pools the join costs a median 121.4ms against 67.2ms without
+  it. The `since`/`until` bounds move to the shadow column with it, so the two arms
+  now date and window a hit identically.
 - **The lexical arm now says which pass spent the time.** `fts_ms` is the largest
   stage of a settled warm search (486–838ms against the vector arm's 406–529ms) and
   it covered the whole ladder as one number: an indexed FTS5 MATCH, the token-AND and
@@ -373,6 +443,44 @@
   shipped pipeline. Ranks a thread by its best-matching chunk; the FTS5 auxiliary
   function forces a MATERIALIZED CTE, since a plain subquery gets flattened into the
   aggregate and errors.
+
+- **Mined gold is exportable as a benchmark somebody else can run.** Every case the
+  miners write is keyed by a thread id this archive minted at ingest, so the gold
+  under `swe-chat-data/gold/` scored only here — the queries and judgments were
+  portable, the identifiers were not. `evals/swechat_bench.py export` rewrites them
+  onto the dataset's own `session_id` and writes the four files a retrieval benchmark
+  is made of: `queries.jsonl`, TREC `qrels.txt`, a `corpus.jsonl` pinning the exact
+  documents in scope, and a manifest carrying the dataset revision, the selection
+  rule, the harness bound and the scoring contract. Query ids are content-addressed
+  over protocol, scope and text, so re-exporting is stable and runs stay comparable;
+  scope is in the digest because the same question asked of two repositories is two
+  questions. The corpus text is pinned by id and revision rather than copied — the
+  upstream dataset is gated, and mirroring it would route around that.
+  `swechat_bench.py run` drives a ranker over the exported queries into a TREC run
+  file, so the runner contract is a file format rather than a call into `evaluate()`;
+  FTS5's `bm25()` is lower-is-better and gets negated on the way out, since a
+  conforming scorer sorts on the score column and would otherwise read that baseline
+  as its own exact reverse. The published scorer agrees with `evaluate()` to
+  floating point (max delta 2.2e-16) across every protocol and both baselines,
+  including the queries a ranker answers with nothing — those stay in the
+  denominator on both sides.
+
+- **The SWE-chat corpus grows cross-repo topics, grouped by what sessions touched.**
+  One topic per repository is confound-dense but trivially separable — each repo
+  owns its file and module names, so nothing in one competes with a query aimed at
+  another, and the topic miner's whole point is subjects where near-misses are real.
+  The embedding communities `corpus_topics.py --propose` offers do not supply the
+  missing case on this corpus: measured against the repo partition, five of twelve
+  are 78–100% a single repo (the repo topic renamed) and three cluster on harness
+  boilerplate — one is forty sessions sharing a Conductor system preamble, another
+  sixteen sharing a persona header. `swechat_corpus.py` now also groups by the class
+  of file a session touched (`files_touched`, a recorded fact, so no model is shared
+  with the vector arm and boilerplate cannot form a cluster), keeping the groups big
+  enough to survey and not dominated by one repo: CI config, dependency manifests,
+  styling, agent instruction files, test suites — 31 to 145 sessions each, spread
+  over 15 to 19 repositories. Membership is a proxy and does not need to be exact;
+  it selects the subject a survey agent is pointed at, while the graded pool still
+  comes from the labeler judging each thread against the query's intent.
 
 - **SWE-chat's derived artifacts moved out of the private gold dir.** Mined cases
   live under `~/.thread/archive` because they quote the operator's real

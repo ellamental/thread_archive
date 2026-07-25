@@ -18,7 +18,7 @@ The contracts:
   ranked thread order, not merely leave every record findable somewhere.
 - **the MCP default scope widens to the whole transcript** — an answer living
   only in a tool result, a tool error, or the assistant's reasoning must be
-  reachable from the default user/title/summary scope, and a partial
+  reachable from the default user/title scope, and a partial
   default-scope hit must not block the widening.
 - **semantic scopes rank inside the scope** — a lower-similarity in-provider
   hit must survive a flood of nearer vectors from excluded providers.
@@ -212,9 +212,9 @@ def test_reindex_preserves_ranked_thread_placement(tmp_path) -> None:
     assert [h["thread_id"] for h in after] == before_threads
 
 
-# ── agent-facing MCP default scope (user/title/summary, widens to everything) ─
+# ── agent-facing MCP default scope (user/title, widens to everything) ────────
 #
-# The agent-facing thread_search default is user/title/summary. In a corpus that
+# The agent-facing thread_search default is user/title. In a corpus that
 # is mostly tool content, an answer that exists ONLY in a tool result, a tool
 # error, or the assistant's own reasoning would be a false not-found — so when
 # the default scope comes up dry the search widens once to the whole transcript,
@@ -285,6 +285,33 @@ def test_mcp_default_scope_reaches_tool_error_answer(tmp_path) -> None:
     assert str(answer) in thread_search(query, content_type="tool_error", rerank=False)
     assert str(answer) in thread_search(query, rerank=False), (
         "the failing tool's error is unreachable from the MCP default scope")
+
+
+def test_summaries_stay_out_of_search_unless_named(tmp_path) -> None:
+    """Stored thread summaries are derived text (the librarian's, not the
+    record), so neither the default scope nor its auto-widen may read them —
+    only an explicit content_type reaches them."""
+    from sqlalchemy import update
+
+    from thread_archive._mcp.server import thread_search
+    from thread_archive._retrieval import index_thread_meta
+    from thread_archive._store import Thread, use_session
+
+    query = "glockenspiel recital logistics"
+    tid = _import(tmp_path, "summarized", _session_lines(
+        "summarized", 1, "plan the school concert", "planned it"))
+    with use_session() as s:
+        s.execute(update(Thread).where(Thread.id == tid).values(
+            summary="Sorted out the glockenspiel recital logistics."))
+        s.commit()
+    index_thread_meta()
+
+    # Control: the summary doc is indexed and reachable once named.
+    assert str(tid) in thread_search(query, content_type="summary", rerank=False)
+    # A dry default scope guarantees the widen fires here — and even the widened
+    # everything-scope must not surface the summary-only vocabulary.
+    assert str(tid) not in thread_search(query, rerank=False), (
+        "a stored summary leaked into a search that never asked for summaries")
 
 
 # ── semantic scope filtering ─────────────────────────────────────────────────

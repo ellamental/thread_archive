@@ -106,22 +106,58 @@ def _format_linkable(hits: list[EventHit]) -> str:
     return json.dumps(out, indent=2)
 
 
+def _ops_tally(ops: dict) -> str:
+    """``edit 3 · read 12`` in strength order — the verb that matters reads first."""
+    from .code import ALL_OPS
+
+    return " · ".join(f"{op} {ops[op]}" for op in ALL_OPS if ops.get(op))
+
+
 def _format_browse(hits: list[EventHit]) -> str:
     """Render browse rows (empty-query search) as a thread list: one line per
     thread — id, title, source, type, size, last activity — plus the follow-up
-    verbs an agent needs to go deeper."""
-    lines = [
-        f"{len(hits)} thread(s) · browse (no query) — one row per thread, by last activity",
-        "  open one: thread_read(thread_id) · its tail: thread_read(thread_id, around_event=event_id)",
-        "",
-    ]
+    verbs an agent needs to go deeper.
+
+    A ``path``-scoped browse is the same list answering a different question, so it
+    says so and each row carries what the thread *did* to the file rather than how
+    big it was: the op tally, the window of touches, and an ``event_id`` that opens
+    at the work instead of at the thread's tail."""
+    code_axis = bool(hits and hits[0].get("_path_ops") is not None)
+    if code_axis:
+        lines = [
+            f"{len(hits)} thread(s) · touched this path — changes first, then most recent",
+            "  open one at the work: thread_read(thread_id, around_event=event_id, mode='chat')",
+            "  what else it changed: thread_read(thread_id, summary='files')",
+            "",
+        ]
+    elif hits and hits[0].get("_browse_order") == "given":
+        lines = [
+            f"{len(hits)} thread(s) · in the order the scope ranked them "
+            "(see the note above), not by last activity",
+            "  open one: thread_read(thread_id) · its tail: "
+            "thread_read(thread_id, around_event=event_id)",
+            "",
+        ]
+    else:
+        lines = [
+            f"{len(hits)} thread(s) · browse (no query) — one row per thread, by last activity",
+            "  open one: thread_read(thread_id) · its tail: "
+            "thread_read(thread_id, around_event=event_id)",
+            "",
+        ]
     for h in hits:
         ts = h.get("occurred_at")
         when = ts.strftime("%Y-%m-%d %H:%M") if isinstance(ts, datetime) else str(ts or "")[:16]
+        head = (f"[{h['thread_id']}/{h['event_id']}] {h.get('thread_title')} · "
+                f"{h.get('thread_source') or '?'}")
+        if not code_axis:
+            lines.append(f"{head} · {h.get('content_type')} · {h.get('n_events', 0)} ev · {when}")
+            continue
+        files = h.get("_path_files") or 0
         lines.append(
-            f"[{h['thread_id']}/{h['event_id']}] {h.get('thread_title')} · "
-            f"{h.get('thread_source') or '?'} · {h.get('content_type')} · "
-            f"{h.get('n_events', 0)} ev · {when}"
+            f"{head}\n     {_ops_tally(h['_path_ops'])}"
+            + (f" · {files} file(s)" if files > 1 else "")
+            + f" · {str(h.get('_path_first') or '')[:16]} → {str(h.get('_path_last') or '')[:16]}"
         )
     return "\n".join(lines)
 

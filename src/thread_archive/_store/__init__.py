@@ -20,8 +20,11 @@ from ._base import (
     use_session,
 )
 from .models import (
+    CodeCursor,
     Event,
+    EventCommit,
     EventFts,
+    EventPath,
     ImportState,
     KgEvent,
     MetricsCursor,
@@ -60,6 +63,9 @@ __all__ = [
     "Thread",
     "Event",
     "EventFts",
+    "EventPath",
+    "EventCommit",
+    "CodeCursor",
     "ImportState",
     "ThreadLink",
     "ThreadMetrics",

@@ -336,6 +336,7 @@ def search_events(
     source: Optional[list[str]] = None,
     types: Optional[list[str]] = None,
     startswith: Optional[str] = None,
+    path: Optional[str] = None,
     *,
     thread_ids: Optional[list[str]] = None,
     agents: str = "exclude",
@@ -377,6 +378,11 @@ def search_events(
     searches them alongside conversations, 'only' searches nothing else. Like the
     blacklist, an explicit ``thread_id``/``thread_ids`` scope is deliberate and
     bypasses the filter.
+
+    ``path`` restricts to the threads that touched a file (see
+    :mod:`.code`) — a subquery rather than a materialized id list, because a broad
+    pattern puts thousands of threads in scope and a bound-parameter list that wide
+    would have to be silently truncated.
     """
     ensure_fts(session)
     if thread_ids is not None and not thread_ids:
@@ -461,6 +467,10 @@ def search_events(
     if tool_name:
         shared.append("tool_name = :tool")
         shared_params["tool"] = tool_name
+    if path:
+        from .code import path_scope_sql
+
+        shared.append(path_scope_sql(path, shared_params))
     if types:
         # event_search carries thread_id but not thread_type; constrain via the
         # threads table (idx_threads_type), same pattern as the source filter.

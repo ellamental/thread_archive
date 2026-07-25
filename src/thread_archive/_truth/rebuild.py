@@ -807,6 +807,18 @@ def reindex(*, vectors: bool = False, salvage: bool = False) -> dict:
                 with _run.phase("fts") as _ph:
                     counts["fts"] = rebuild_fts()
                     _ph.count("rows", counts["fts"] or 0)
+                # The code axis rides the same rebuild: it is a projection of the
+                # events, so the fresh index would otherwise publish with an empty
+                # one and answer "no conversation touched that file" until the
+                # watcher's next maintenance pass caught it up.
+                from .._retrieval.code import rebuild_code_index
+
+                with _run.phase("code") as _ph:
+                    folded = rebuild_code_index()
+                    counts["code_paths"] = folded["paths"]
+                    counts["code_commits"] = folded["commits"]
+                    _ph.count("paths", folded["paths"])
+                    _ph.count("commits", folded["commits"])
                 # Vectors always survive the rebuild: restore the durable sidecar
                 # cache (space-key-guarded; the hours-long embed runs once, ever)
                 # into the build regardless of the ``vectors`` flag — a plain

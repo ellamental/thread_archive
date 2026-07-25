@@ -33,6 +33,17 @@ class EventHit(TypedDict):
     thread's newest event, plus ``thread_source`` / ``n_events`` for the
     list renderer.
 
+    ``_browse_order`` marks a browse whose rows are NOT in last-activity order —
+    the caller ranked them (the commit scope ranks by share of the commit) — so the
+    renderer's header can say which ordering it is showing.
+
+    A browse scoped by ``path`` (the code axis) carries the ``_path_*`` columns
+    instead of describing the thread's size: what it did to that file
+    (``_path_ops``), the window of touches (``_path_first`` / ``_path_last``), how
+    many matching files it touched (``_path_files``, with ``_path_sample`` naming
+    the first of them) — and its ``event_id`` is re-pointed at the strongest, newest
+    touch, so opening the row lands on the work rather than on the thread's tail.
+
     A keyword search asked for a thread-granular list (``search(group=…)``)
     carries ``_group`` naming the shape, the same ``thread_source`` /
     ``n_events`` columns, and — under ``group='nested'``, whose clustering
@@ -65,5 +76,11 @@ class EventHit(TypedDict):
     _rank_pos: NotRequired[int]
     thread_source: NotRequired[Optional[str]]
     n_events: NotRequired[int]
+    _browse_order: NotRequired[str]
+    _path_ops: NotRequired[dict[str, int]]
+    _path_first: NotRequired[Optional[str]]
+    _path_last: NotRequired[Optional[str]]
+    _path_files: NotRequired[int]
+    _path_sample: NotRequired[list[str]]
     term_hits: NotRequired[int]
     dup_threads: NotRequired[list[dict]]

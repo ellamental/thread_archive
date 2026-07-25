@@ -240,6 +240,102 @@ class EventFts(Base):
     )
 
 
+class EventPath(Base):
+    """One file a tool event touched — the code axis of the archive.
+
+    A disposable projection of the event log, like :class:`EventFts`: the paths are
+    already in the events (an ``Edit``'s ``file_path``, an ``apply_patch``'s header,
+    a shell command's arguments), and this table is the *structured* copy that makes
+    "which conversations edited rank.py" an indexed lookup instead of a text search
+    that happens to match a path. Extraction is
+    :func:`thread_archive._retrieval._paths.extract_paths`; the fold is
+    :mod:`thread_archive._retrieval.code`.
+
+    ``path`` is normalized (posix separators, ``..`` collapsed, relative resolved
+    against the thread's working directory) so one file has one spelling across
+    sessions; ``basename`` is the same path's final segment, indexed because a bare
+    name is what a caller actually types. ``op`` is the verb — ``read`` / ``edit`` /
+    ``write`` / ``delete`` are direct touches, ``search`` (a grep's scope) and
+    ``run`` (a path inside a command line) are weaker mentions kept distinguishable
+    rather than dropped. ``event_id`` / ``thread_id`` are soft references (no FK,
+    mirroring :class:`EventFts`) so the projection never constrains a reindex's bulk
+    reload.
+    """
+
+    __tablename__ = "event_paths"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    event_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    thread_id: Mapped[str] = mapped_column(Text)
+    path: Mapped[str] = mapped_column(Text)
+    basename: Mapped[str] = mapped_column(Text)
+    op: Mapped[str] = mapped_column(Text)
+    tool_name: Mapped[str | None] = mapped_column(Text, default=None)
+    occurred_at: Mapped[str | None] = mapped_column(Text, default=None)
+
+    __table_args__ = (
+        # A bare-name query is the common one and cuts the table hardest, so it
+        # leads; the path index serves prefix (directory) and exact lookups, and
+        # the composite serves "what did this thread touch" without a table scan.
+        Index("idx_event_paths_basename", "basename"),
+        Index("idx_event_paths_path", "path"),
+        Index("idx_event_paths_thread", "thread_id", "path"),
+        Index("idx_event_paths_event", "event_id"),
+    )
+
+
+class EventCommit(Base):
+    """A commit an event's tool output shows being *created* — the other half of the
+    code axis, and what closes the loop from ``git blame`` to the conversation.
+
+    A projection like :class:`EventPath`, folded by the same pass. Only
+    commit-creation output produces a row (see
+    :func:`thread_archive._retrieval._paths.extract_commits`): a session that ran
+    ``git log`` saw a hundred shas and authored none of them, so reading a sha is
+    deliberately not provenance.
+
+    ``sha`` is stored exactly as git printed it — usually the 7-character
+    abbreviation — so lookups match on prefix in either direction. ``repo`` is the
+    thread's working directory, the best available guess at which repository the
+    commit landed in.
+    """
+
+    __tablename__ = "event_commits"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    event_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    thread_id: Mapped[str] = mapped_column(Text)
+    sha: Mapped[str] = mapped_column(Text)
+    subject: Mapped[str | None] = mapped_column(Text, default=None)
+    repo: Mapped[str | None] = mapped_column(Text, default=None)
+    occurred_at: Mapped[str | None] = mapped_column(Text, default=None)
+
+    __table_args__ = (
+        Index("idx_event_commits_sha", "sha"),
+        Index("idx_event_commits_thread", "thread_id"),
+        Index("idx_event_commits_event", "event_id"),
+    )
+
+
+class CodeCursor(Base):
+    """The code-index watermark: the highest ``events.id`` already folded into
+    :class:`EventPath` / :class:`EventCommit`. A single row (``id = 1``).
+
+    Same contract as :class:`MetricsCursor`, for the same reason — the fold is
+    append-only over monotonic ids, so folding only ``id > through_event_id`` is
+    exact. ``projection_version`` is what makes the extraction rules revisable: a
+    fold that finds a trailing version discards both projections and rebuilds,
+    because rows written under older rules cannot be added to by newer ones. A log
+    that shrank below the cursor (a reindex rebuilt it) triggers the same rebuild.
+    """
+
+    __tablename__ = "code_cursor"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, default=1)
+    through_event_id: Mapped[int] = mapped_column(BigInteger, default=0, server_default=text("0"))
+    projection_version: Mapped[int] = mapped_column(Integer, default=0, server_default=text("0"))
+
+
 class ImportState(Base):
     """Per-source import watermark so incremental import is idempotent.
 

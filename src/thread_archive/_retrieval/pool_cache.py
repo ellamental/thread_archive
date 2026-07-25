@@ -75,6 +75,7 @@ def key_for(
     startswith: Optional[str] = None,
     oldest_first: bool = False,
     or_fallback: bool = True,
+    path: Optional[str] = None,
 ) -> tuple:
     """The cache key for one pool: every input that changes what the arms return
     or how they fuse.
@@ -92,7 +93,7 @@ def key_for(
         FORMAT_VERSION, query, over, rrf_k, structural,
         thread_id, norm(thread_ids), norm(content_types), norm(exclude_content_types),
         since, until, tool_name, norm(source), norm(types),
-        agents, startswith, oldest_first, or_fallback,
+        agents, startswith, oldest_first, or_fallback, path,
     )
 
 

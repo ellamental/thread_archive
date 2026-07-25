@@ -574,6 +574,46 @@ def test_a_broken_semantic_arm_never_breaks_lexical_search(archive_home) -> None
     assert hits and wrong_width.queries == ["watcher daemon"]
 
 
+def test_semantic_hits_are_dated_from_the_shadow_row(archive_home) -> None:
+    """The vector arm dates a hit — and cuts a ``since`` window — from the FTS
+    shadow's own ``occurred_at``, never by joining ``events`` for it: that would be
+    one scattered rowid lookup per candidate into a multi-million-row table, and
+    the candidate list runs three times the pool wide. What makes it safe is that
+    the shadow's copy *is* the event's, so this pins the agreement and both things
+    that lean on it."""
+    from datetime import datetime
+
+    from sqlalchemy import text as sa_text
+
+    from thread_archive._store import get_session
+
+    init_db()
+    _seed_thread(archive_home, "the vector arm dates its own hits")
+    vectors.ensure_index()
+    with get_session() as s:
+        rows = s.execute(sa_text(
+            "SELECT f.event_id, f.content_type, f.occurred_at, e.occurred_at AS ev "
+            "FROM events_fts f JOIN events e ON e.id = f.event_id "
+            "WHERE f.content_type IS NOT NULL AND f.occurred_at IS NOT NULL"
+        )).mappings().all()
+    assert rows
+    assert all(str(r["occurred_at"]) == str(r["ev"]) for r in rows)
+    vectors.index_vectors([(r["event_id"], r["content_type"], _unit((0, 1.0))) for r in rows])
+
+    emb = _FixedEmbedder()
+    hits = vectors.search("anything", embedder=emb, limit=50)
+    assert hits
+    dated = {r["event_id"]: str(r["occurred_at"]) for r in rows}
+    for h in hits:
+        assert h["occurred_at"] == datetime.fromisoformat(dated[h["event_id"]])
+
+    stamps = sorted(set(dated.values()))
+    assert len(stamps) > 1  # need two distinct stamps for the window to cut between
+    late = vectors.search("anything", embedder=emb, limit=50, since=stamps[-1])
+    assert late and len(late) < len(hits)
+    assert all(h["occurred_at"] == datetime.fromisoformat(stamps[-1]) for h in late)
+
+
 def test_vectors_search_sits_out_when_unindexed(archive_home) -> None:
     init_db()
     vectors.ensure_index()
