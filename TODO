@@ -1,0 +1,4 @@
+- AX on thread_search and thread_read
+  - instructions/tool-calling tests and whatnot (also token efficiency)
+
+- mining more gold from our personal+swe-chat corpora for search quality testing (as well as ensuring that we're testing/weighting the right things... like "N in the top 10" should be way more important than "top 1")

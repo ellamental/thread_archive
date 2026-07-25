@@ -53,7 +53,8 @@ dependencies = [
 embeddings = ["sentence-transformers>=3.0", "einops>=0.7", "torch>=2.0"]
 # pyarrow: evals/swechat_corpus.py reads the SWE-chat parquet tables to derive the
 # commit miner's session↔commit linkage. Bench-only — no product code imports it.
-dev = ["pytest>=8.0", "pytest-cov>=5.0", "pytest-xdist>=3.6", "pytest-timeout>=2.3", "ruff>=0.6", "mypy>=1.11", "build>=1.2", "pyarrow>=17.0"]
+# hypothesis: generated queries against the never-raise contract (tests/test_search_fuzz.py).
+dev = ["pytest>=8.0", "pytest-cov>=5.0", "pytest-xdist>=3.6", "pytest-timeout>=2.3", "ruff>=0.6", "mypy>=1.11", "build>=1.2", "pyarrow>=17.0", "hypothesis>=6.100"]
 # What a provider plugin needs to test itself against the archive: the golden
 # harness and isolated-home fixture in thread_archive.provider.testing.
 testing = ["pytest>=8.0"]

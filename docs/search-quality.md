@@ -27,13 +27,13 @@ prints per-file metrics; each run also appends to a timeseries ledger
 (`~/.thread/archive/gold-runs.jsonl`).
 
 The gold dir holds 317 cases across 25 files: 64 `querygen`, 21 `query`, 19
-`rerank`, and 213 `topic` cases spanning 22 topics. Pooled at the shipped
-configuration, the `topic` files read MRR 0.784 / success@10 0.962 / nDCG@10 0.557,
-and their recall@10 of 0.371 is ceiling-bound rather than low — see "What the
-window holds". Seven files carry calibrated floors and are the ones the gate can
-fail on; the rest are scored and reported but ungated until a floor is added for
-them. At the shipped configuration (`fusion_weight=400`, `bm25_weight=100`,
-cross-encoder off), the floored files read:
+`rerank`, and 213 `topic` cases spanning 22 topics. Pooled, the `topic` files read
+MRR 0.781 / success@10 0.958 / nDCG@10 0.575, and their recall@10 of 0.383 is
+ceiling-bound rather than low — see "What the window holds". Seven files carry
+calibrated floors and are the ones the gate can fail on; the rest are scored and
+reported but ungated until a floor is added for them. At the shipped configuration
+(`fusion_weight=400`, `bm25_weight=100`, cross-encoder off), the floored files
+read:
 
 | gold file | miner | n | MRR | success@10 | recall@10 | nDCG@10 |
 |---|---|---|---|---|---|---|
@@ -75,12 +75,11 @@ miner, and the four cover complementary failure modes:
   `librarian process`, `librarian queue`) carry the hardest negatives, because the
   confounds are real conversations rather than synthesized ones.
 
-Scoring is deterministic in a **warmed** process — same code, same snapshot, same
-digits — so a movement is never noise. Cold, it is not: the coherence re-rank reads
-a corpus graph built in the background, and queries that land before it is ready
-score as if coherence were off, which moves a file by roughly 0.02 window fill and
-hits whatever runs first hardest. `thread_archive._retrieval.warm_models()` closes
-it. Resolution is otherwise `1/n` per file: one case going from rank 1 to
+Scoring is deterministic — same code, same snapshot, same digits — so a movement is
+never noise. That holds because the scorer builds the corpus graph before its first
+case (`_eval.warm_for_scoring`): the coherence re-rank otherwise no-ops until a
+background build lands, which would split a run in two and move a file by roughly
+0.02 window fill. Resolution is otherwise `1/n` per file: one case going from rank 1 to
 unfound moves any metric by at most `1/n`, so anything smaller is a rank shuffle
 within cases that already worked. On a 10-case topic file that unit is 0.100 and on
 the smallest 7-case ones 0.143; on the 64-case findability file it is 0.016. Pooling

@@ -14,6 +14,9 @@ __pycache__/
 .pytest_cache/
 .ruff_cache/
 .mypy_cache/
+# hypothesis's example database (tests/test_search_fuzz.py) — a local replay
+# cache of falsifying examples, regenerated on demand.
+.hypothesis/
 
 # Xcode/SwiftPM DerivedData. Archive has no native build of its own; a `.build/`
 # here only appears when a sibling mac Makefile is invoked with the wrong cwd —

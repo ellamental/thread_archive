@@ -192,6 +192,36 @@ def test_apply_coherence_reorders_ranked_hits(archive_home) -> None:
     assert _retrieval._apply_coherence(ranked[:2], gamma=0.05) == ranked[:2]
 
 
+def test_coherence_stands_down_when_there_is_no_graph_to_order_by(archive_home) -> None:
+    """The state every archive is in before its first graph build, and the one a
+    core install stays in permanently: content indexed, nothing embedded, so there
+    is no corpus graph and no community to order by.
+
+    The re-rank is a refinement on top of a ranking that is already correct, so the
+    contract is that it hands that ranking straight back — not that it waits for a
+    build, and not that it fails. Losing this makes the graph a dependency of
+    search rather than an improvement to it."""
+    from thread_archive import _retrieval
+
+    init_db()
+    ids = []
+    with get_session() as s:
+        for name in ("x", "y", "z"):
+            t = Thread(name=f"t-{name}", title=name.upper(), thread_type="conversation")
+            s.add(t)
+            s.flush()
+            ids.append(t.id)
+        s.commit()
+    embed_graph.reset_cache()
+
+    assert embed_graph.build() is None      # nothing embedded → nothing to build from
+    assert embed_graph.get() is None        # ...so the cache has nothing to serve
+
+    ranked = [{"thread_id": t, "event_id": i, "full_content": "x"}
+              for i, t in enumerate(ids, start=1)]
+    assert _retrieval._apply_coherence(list(ranked), gamma=0.05) == ranked
+
+
 def test_mass_is_rank_weighted_and_normalized() -> None:
     pool = ["a", "b", "c"]
     community = {"a": 1, "b": 1, "c": 2}

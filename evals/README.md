@@ -290,16 +290,16 @@ the re-rank budget.
   is as a **sampling frame**: real query shapes to seed the gold miner with,
   not a labeler.
 
-- **A cold process scores a different number than a warm one.** The coherence
-  re-rank reads a corpus graph built in the background, so queries that land before
-  it is ready score as if coherence were off — same code, same snapshot, different
-  digits depending on how long the process has been up. A file measured cold and
-  warm in one session differs by roughly 0.02 window fill, and the drift is largest
-  in whatever runs first. `window_fill.py` calls
-  `thread_archive._retrieval.warm_models()` before scoring; `retrieval_eval.py` and
-  `scripts/retrieval_gold_gate.py` do not, so their first file carries whatever
-  warmup state the process happened to have. Re-run a suspicious delta before
-  believing it, and prefer a warmed process for anything that will be quoted.
+- **A cold process would score a different number than a warm one**, which is why
+  every scoring path builds the corpus graph before its first case
+  (`thread_archive._eval.warm_for_scoring`, called from `evaluate` and from the
+  instruments that search directly). The coherence re-rank reads a graph built in
+  the background and no-ops until it lands, so under a scoring loop the build
+  arrives partway through and splits a run in two — cases before it ranked without
+  coherence, cases after it with, the boundary set by wall-clock. Left alone that
+  is worth ~0.02 window fill on a file, concentrated in whatever ran first, and two
+  runs of identical code disagree. If you write a new instrument that calls
+  `api.search` in a loop rather than going through `evaluate`, call it yourself.
 
 **Claim discipline.** Green tier 0 licenses exactly one claim, synthetically:
 "search didn't break." Running `scripts/retrieval_gold_gate.py` on a ranking

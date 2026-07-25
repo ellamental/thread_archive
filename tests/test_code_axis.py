@@ -643,6 +643,81 @@ def test_contributors_are_bounded_by_the_authorship_window(archive_home, tmp_pat
     assert before not in ids
 
 
+def _bulk_commits(repo, n: int) -> None:
+    """``n`` empty commits on top of HEAD, cheaply.
+
+    The authorship-window walk is bounded, so a test that needs to *outrun* that
+    bound needs real commits by the hundred. One ``git commit`` per commit is a
+    subprocess each and runs to seconds; one ``fast-import`` stream is milliseconds.
+    """
+    branch = subprocess.run(["git", "-C", str(repo), "rev-parse", "--abbrev-ref", "HEAD"],
+                            capture_output=True, text=True, check=True).stdout.strip()
+    head = subprocess.run(["git", "-C", str(repo), "rev-parse", "HEAD"],
+                          capture_output=True, text=True, check=True).stdout.strip()
+    stream = []
+    for i in range(n):
+        msg = f"noise {i}"
+        stream.append(
+            f"commit refs/heads/{branch}\nmark :{1000 + i}\n"
+            f"committer t <t@t> {1700000000 + i} +0000\n"
+            f"data {len(msg)}\n{msg}\n" + (f"from {head}\n" if i == 0 else "")
+        )
+    subprocess.run(["git", "-C", str(repo), "fast-import", "--quiet"],
+                   input="".join(stream), text=True, capture_output=True, check=True)
+    # fast-import moves the ref behind git's back; resync the tree it left stale.
+    subprocess.run(["git", "-C", str(repo), "reset", "-q", "--hard"],
+                   capture_output=True, check=True)
+
+
+@pytest.mark.skipif(not _git_available(), reason="git not installed")
+def test_a_capped_history_walk_says_it_may_over_credit(archive_home, tmp_path):
+    """The floor comes from a bounded walk, and past that bound there is no floor
+    to find — so every prior edit to the file gets credited to this commit. That is
+    the one case where the contributor list is knowably too generous, and silence
+    would make it indistinguishable from a list that is exactly right."""
+    from thread_archive._mcp.server import thread_search
+    from thread_archive._retrieval.code import _HISTORY_WALK
+
+    repo, _root = _repo_with_commit(tmp_path, {"rank.py": "one\n"}, "first",
+                                    when="2020-01-10T12:00:00+00:00")
+    _bulk_commits(repo, _HISTORY_WALK + 20)  # rank.py's last commit now out of reach
+    repo, capped_sha = _repo_with_commit(tmp_path, {"rank.py": "two\n"}, "second",
+                                         repo=repo, when="2026-01-20T12:00:00+00:00")
+
+    ta.open_archive()
+    editor = _seed_editor(repo, "edited it", "rank.py", day=1)
+    code.refresh_code_index()
+    _stamp_touches(editor, "2026-01-15 00:00:00.000000")
+
+    verdict = code.blame_commit(capped_sha, repo=str(repo))
+    assert verdict["window_capped"] is True
+    assert editor in [t["thread_id"] for t in verdict["threads"]]
+
+    out = thread_search(query="", commit=capped_sha, repo=str(repo))
+    assert "history older than" in out and "may over-credit" in out
+
+
+@pytest.mark.skipif(not _git_available(), reason="git not installed")
+def test_a_walk_that_found_its_floor_claims_no_over_credit(archive_home, tmp_path):
+    """The other side of it: an ordinary commit whose files were all floored says
+    nothing. A caveat printed on every commit is one nobody reads on the commit
+    that earned it."""
+    from thread_archive._mcp.server import thread_search
+
+    repo, _first = _repo_with_commit(tmp_path, {"rank.py": "one\n"}, "first",
+                                     when="2026-01-10T12:00:00+00:00")
+    repo, sha = _repo_with_commit(tmp_path, {"rank.py": "two\n"}, "second", repo=repo,
+                                  when="2026-01-20T12:00:00+00:00")
+
+    ta.open_archive()
+    editor = _seed_editor(repo, "edited it", "rank.py", day=1)
+    code.refresh_code_index()
+    _stamp_touches(editor, "2026-01-15 00:00:00.000000")
+
+    assert code.blame_commit(sha, repo=str(repo))["window_capped"] is False
+    assert "may over-credit" not in thread_search(query="", commit=sha, repo=str(repo))
+
+
 @pytest.mark.skipif(not _git_available(), reason="git not installed")
 def test_a_file_added_by_the_commit_has_no_floor(archive_home, tmp_path):
     """Nothing committed it before, so every prior edit to that path is the work

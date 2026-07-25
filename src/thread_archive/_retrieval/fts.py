@@ -204,12 +204,33 @@ def ensure_fts(session: Optional[Session] = None) -> None:
             s.commit()
 
 
+#: What SQLite cannot carry in a bound parameter, whatever we wrap it in. NUL is
+#: C's string terminator: sqlite3 reports ``unterminated string`` for a param
+#: holding one, and inside a quoted FTS5 phrase it truncates the expression
+#: mid-token — so even the fully-quoted demotion form below raises on it. A lone
+#: surrogate is not encodable to UTF-8 at all, so the driver raises before SQLite
+#: sees the statement.
+_SQL_UNSAFE = re.compile("[\x00\ud800-\udfff]")
+
+
+def _sql_safe(text_: str) -> str:
+    """Drop the code points of :data:`_SQL_UNSAFE`.
+
+    Queries arrive from an agent over MCP, where a JSON string is free to carry
+    ``\\u0000`` or an unpaired ``\\ud800``; neither is text anyone meant to search
+    for, so they are dropped the way a stray ``"`` is rather than escaped. Applied
+    by each builder immediately before its text becomes a bound param, so every
+    entry point into the lexical arm inherits it.
+    """
+    return _SQL_UNSAFE.sub("", text_ or "")
+
+
 def _quote_all_tokens(text_: str) -> str:
     """Every whitespace token as a quoted FTS5 phrase term — no operators, no
     syntax, so the expression can never raise. The demotion target for malformed
     boolean shapes and the retry form for a residual fts5 syntax error."""
     toks = []
-    for tok in re.findall(r"\S+", text_ or ""):
+    for tok in re.findall(r"\S+", _sql_safe(text_)):
         inner = tok.replace('"', "")
         if inner:
             toks.append('"' + inner + '"')
@@ -227,7 +248,7 @@ def to_match_query(query: str) -> str:
     form instead of raising out of MATCH."""
     out: list[str] = []
     ops: list[bool] = []
-    for tok in re.findall(r'"[^"]*"|\S+', query or ""):
+    for tok in re.findall(r'"[^"]*"|\S+', _sql_safe(query)):
         if tok in ("AND", "OR", "NOT"):
             out.append(tok)
             ops.append(True)
@@ -256,7 +277,7 @@ def _escape_like(text_: str) -> str:
     """Escape LIKE wildcards (``\\`` ``%`` ``_``) so the text matches literally;
     pair with ``ESCAPE '\\'`` in the SQL. Identifier queries are full of ``_`` —
     unescaped, ``get_session`` would match ``getXsession``."""
-    return text_.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    return _sql_safe(text_).replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
 
 
 def _like_prefix(prefix: str) -> str:
@@ -281,7 +302,7 @@ def _in_clause(column: str, values: list, prefix: str, params: dict, negate: boo
 
 def _quote_phrase(text_: str) -> str:
     """A cleaned text span as one FTS5 phrase term."""
-    return '"' + text_.replace('"', "") + '"'
+    return '"' + _sql_safe(text_).replace('"', "") + '"'
 
 
 def _identifier_tokens(text_: str) -> list[str]:

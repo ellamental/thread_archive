@@ -29,6 +29,22 @@ def _write_cc(path, lines):
     path.write_text("\n".join(json.dumps(ln) for ln in lines) + "\n", encoding="utf-8")
 
 
+def _ledger(archive_home) -> list[dict]:
+    """The usage records this process wrote, oldest first.
+
+    The tool clamps its sizing arguments and then runs with the clamped values;
+    the ledger logs the parameters the search *actually* ran with, so it is where
+    a bound that never reached the engine is observable without reaching inside
+    the call.
+    """
+    from thread_archive._retrieval import usage
+
+    path = archive_home / usage.LEDGER_FILE
+    if not path.exists():
+        return []
+    return [json.loads(ln) for ln in path.read_text(encoding="utf-8").splitlines() if ln.strip()]
+
+
 def test_mcp_registers_two_tools() -> None:
     tools = asyncio.run(mcp.list_tools())
     names = {t.name for t in tools}
@@ -81,6 +97,138 @@ def test_mcp_search_new_filters(archive_home) -> None:
     assert "hello mcp" not in thread_search("hello", exclude_content_type="user")
     # rerank=False is accepted (cross-encoder forced off) and still searches
     assert "hello mcp" in thread_search("hello", rerank=False)
+
+
+def test_mcp_search_filters_by_tool_name_and_until(archive_home) -> None:
+    """The two remaining engine filters the tool passes straight through: which
+    tool an event ran, and the upper end of the time window."""
+    early = archive_home / "early.jsonl"
+    _write_cc(early, [
+        {"type": "user", "uuid": "e1", "timestamp": "2026-01-01T10:00:00Z",
+         "cwd": "/proj", "message": {"role": "user", "content": "grep the changelog"}},
+        {"type": "assistant", "uuid": "e2", "timestamp": "2026-01-01T10:00:05Z",
+         "message": {"role": "assistant", "model": "claude-opus-4", "content": [
+             {"type": "tool_use", "id": "t1", "name": "Bash",
+              "input": {"command": "grep -n changelog README.md"}}]}},
+    ])
+    ta.import_path(early)
+    late = archive_home / "late.jsonl"
+    _write_cc(late, [
+        {"type": "user", "uuid": "l1", "timestamp": "2026-06-01T10:00:00Z",
+         "cwd": "/proj", "message": {"role": "user", "content": "grep the changelog again"}},
+    ])
+    ta.import_path(late)
+
+    # until bounds the window: the June turn drops, the January one stays.
+    bounded = thread_search("changelog", until="2026-02-01", group="none")
+    assert "grep the changelog" in bounded
+    assert "changelog again" not in bounded
+
+    # tool_name scopes to events that ran that tool; a tool nobody ran is empty.
+    assert "grep -n changelog" in thread_search("changelog", tool_name="Bash",
+                                                content_type="all")
+    assert thread_search("changelog", tool_name="Nonesuch",
+                         content_type="all").startswith("No results")
+
+
+# ── bounding what the caller can ask for ─────────────────────────────────────
+# The tool is the trust boundary: an agent picks these numbers, and each of them
+# multiplies work inside the engine. The engine itself takes them at face value.
+
+
+def test_mcp_search_bounds_caller_supplied_sizing(archive_home) -> None:
+    """``limit`` sizes the candidate pool (``max(limit*5, 200)`` rows) and ``page``
+    multiplies it, so an unbounded value is an unbounded scan by another name. Both
+    are clamped before they reach the engine — [1, 500] and [1, 200] — and the
+    ledger records the parameters the search actually ran with."""
+    f = archive_home / "sess.jsonl"
+    _write_cc(f, [USER, ASSISTANT])
+    ta.import_path(f)
+
+    thread_search("hello", limit=99999, page=99999)
+    thread_search("hello", limit=0, page=0)
+    over, under = _ledger(archive_home)[-2:]
+    assert (over["limit"], over["page"]) == (500, 200)
+    assert (under["limit"], under["page"]) == (1, 1)
+
+
+def test_mcp_search_clamped_limit_still_answers(archive_home) -> None:
+    """The floor is a clamp, not a rejection: ``limit=0`` is nonsense a caller can
+    still send, and it must return the one best hit rather than an empty result
+    that reads as 'nothing matched'."""
+    f = archive_home / "sess.jsonl"
+    _write_cc(f, [USER, ASSISTANT])
+    ta.import_path(f)
+
+    assert "hello mcp" in thread_search("hello", limit=0)
+
+
+def test_mcp_search_bounds_the_context_window(archive_home) -> None:
+    """``context_lines`` is a per-hit window, and a hit can be a very long
+    document — an unbounded window renders the whole thing, once per hit. Clamped
+    to 50 lines either side, so a 300-line message returns its middle, not itself."""
+    # Line 1 is the thread's title, so it renders in the hit header whatever the
+    # window does — the sentinels sit well inside the document instead.
+    body = "\n".join(
+        ["a session about the drive"]
+        + [f"pad-{i:04d}" for i in range(2, 150)]
+        + ["the tachyon condenser leaks"]
+        + [f"pad-{i:04d}" for i in range(151, 301)]
+    )
+    f = archive_home / "long.jsonl"
+    _write_cc(f, [{"type": "user", "uuid": "L1", "timestamp": "2026-01-01T10:00:00Z",
+                   "cwd": "/proj", "message": {"role": "user", "content": body}}])
+    ta.import_path(f)
+
+    out = thread_search("tachyon", context_lines=99999)
+    assert "the tachyon condenser leaks" in out       # the match is centred
+    assert "pad-0100" in out and "pad-0200" in out    # ±50 lines: the window's edges
+    assert "pad-0099" not in out                      # one line further up — clamped off
+    assert "pad-0201" not in out                      # and one further down
+
+
+def test_mcp_search_rejects_an_unknown_match_mode(archive_home) -> None:
+    """An unusable argument is answered, not raised: the tool's caller is a model,
+    and an MCP exception is a failed tool call it has to guess its way out of. The
+    reply names both modes so the retry is informed."""
+    f = archive_home / "sess.jsonl"
+    _write_cc(f, [USER, ASSISTANT])
+    ta.import_path(f)
+
+    out = thread_search("hello", match="regex")
+    assert "match must be 'token'" in out and "substring" in out
+    assert "hello mcp" not in out                     # refused, not silently served
+    # the two real modes still run
+    assert "hello mcp" in thread_search("hello", match="token")
+    assert "hello mcp" in thread_search("hello", match="substring")
+
+
+def test_mcp_search_pages_through_the_result_set(archive_home) -> None:
+    """Paging is verified against the engine elsewhere; this is the tool carrying
+    it — the page reaching the engine, and the header telling the agent where it
+    is, which is the whole mechanism by which it knows to ask for more."""
+    for i in range(7):
+        f = archive_home / f"p{i}.jsonl"
+        _write_cc(f, [{"type": "user", "uuid": f"p{i}", "cwd": "/proj",
+                       "timestamp": f"2026-01-0{(i % 7) + 1}T10:00:00Z",
+                       "message": {"role": "user", "content": f"the widget report {i}"}}])
+        ta.import_path(f)
+
+    first = thread_search("widget", limit=3, group="browse")
+    assert "page 1/3" in first and "of 7" in first
+    second = thread_search("widget", limit=3, page=2, group="browse")
+    assert "page 2/3" in second
+
+    # disjoint pages: no thread served twice across the walk
+    def _ids(rendered):
+        return {ln.split()[0] for ln in rendered.splitlines() if ln.startswith("01")}
+
+    walked = [_ids(thread_search("widget", limit=3, page=p, group="browse"))
+              for p in (1, 2, 3)]
+    assert sum(len(p) for p in walked) == len(set().union(*walked))
+
+    past = thread_search("widget", limit=3, page=9, group="browse")
+    assert "past the end" in past
 
 
 def test_mcp_search_defaults_to_user_only(archive_home) -> None:

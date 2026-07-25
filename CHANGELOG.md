@@ -2,6 +2,50 @@
 
 ## Unreleased
 
+- **The MCP tool's own guards were the untested half of search.** `search()` is
+  covered exhaustively; `thread_search` — the surface an agent actually calls —
+  had a layer of logic above it that no test reached. It bounds what a caller can
+  ask for (`limit` to [1, 500], `page` to [1, 200], `context_lines` to ±50) because
+  each one multiplies work inside the engine and the engine takes them at face
+  value; none of the three clamps had a test, and `page` had never been passed
+  through the tool at all. Nor had `tool_name` or `until`. The clamps are now
+  pinned against the usage ledger, which records the parameters a search *actually
+  ran with* — the one place a bound that never reached the engine is observable
+  without reaching inside the call. Two rejections joined them: an unusable `match`
+  mode is answered rather than raised (the caller is a model, and an MCP exception
+  is a failed tool call it has to guess its way out of), and a commit whose
+  authorship walk hit its bound now provably says so — past that bound there is no
+  floor to find, so every prior edit gets credited and the list is knowably too
+  generous. Silence there is indistinguishable from a list that is exactly right.
+
+- **A NUL byte or a lone surrogate in a query raised out of search; generated
+  queries now hold the never-raise contract.** The pipeline's answer to a
+  malformed query is supposed to be results or no results, never a raw FTS5
+  syntax error — and every malformed shape demotes to a fully-quoted literal to
+  guarantee it. Two code points defeated that demotion. NUL is C's string
+  terminator, so it truncates a bound parameter mid-token: SQLite reported
+  `unterminated string`, and because the NUL survived into the quoted phrase, the
+  retry-quoted fallback the arm keeps for exactly this case raised too. A lone
+  surrogate isn't encodable to UTF-8 at all, so the driver raised before SQLite
+  saw the statement. Both ride in freely over MCP, where a JSON query string may
+  carry `\u0000` or an unpaired `\ud800`. Each builder now drops them immediately
+  before its text becomes a bound param, so every entry point into the lexical arm
+  inherits the guard.
+
+  Found by the thing that shipped alongside the fix: `tests/test_search_fuzz.py`
+  puts generated queries through the contract instead of a list of shapes someone
+  thought of. It runs through `search_events` rather than any one builder, because
+  `to_match_query` is only one of four MATCH expressions the classifier picks
+  between — a fuzzer pointed at it alone would leave the pipe-OR join, the
+  code-mode phrase, and the identifier-token fallbacks unexercised. Every property
+  ends in real SQL: a builder that returns a string without raising has proven
+  nothing when the failure mode is FTS5 rejecting that string. The LIKE scans get
+  the same treatment from the other side — `matched == (needle in haystack)` in
+  both directions is the whole specification of "matches literally", and the
+  reverse direction is the one that bites, since an unescaped `_` makes
+  `get_session` match `getXsession` and reads as a hit rather than as a bug.
+  Derandomized, so a red names the change under test rather than the dice.
+
 - **Search can be used to enumerate, not just to find: `page=`, honest totals,
   and `match='substring'`.** A result was a cut with nothing naming the whole, so
   ten rows read identically whether they were all of them or ten of nine hundred
@@ -75,11 +119,16 @@
   a recall ceiling no reordering reaches, and it is invisible to MRR: files scoring
   0.9 MRR surface a quarter of what is relevant.
 
-  The instrument warms the models and corpus graph before scoring. Without that a
-  run races itself — the coherence re-rank reads a graph built in the background, so
-  queries landing before it is ready score as if coherence were off, and the same
-  code over the same snapshot yields different digits depending on timing (~0.02
-  window fill on a file). `retrieval_eval.py` and the gold gate do not warm.
+- **Scoring builds the corpus graph before its first case, on every path.** A
+  scoring loop races the coherence re-rank's background graph build: it lands
+  partway through, cases before it rank without coherence and cases after it with,
+  and the boundary moves with wall-clock — so two runs of identical code over one
+  frozen snapshot disagree by ~0.02 window fill on a file, concentrated in whatever
+  ran first. The gold gate already built the graph inline; `retrieval_eval.py`, the
+  shipped `thread_archive eval`, and anything else going through
+  `_eval.evaluate` did not. That build is now `_eval.warm_for_scoring`, called by
+  the scorer itself, with the gate's copy delegating to it so there is one
+  implementation and one docstring explaining why.
 
 - **The archive gold set covers 22 topics.** Mined against the same frozen snapshot
   the existing files bind to, so every case scores together: 317 cases across 25
