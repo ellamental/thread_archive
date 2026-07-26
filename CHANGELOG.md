@@ -2,6 +2,23 @@
 
 ## Unreleased
 
+- **Thread ids minted in the same millisecond sorted arbitrarily.** A ULID's
+  timestamp orders ids *between* milliseconds; within one, order came from 80
+  freshly-random bits, so two threads created in the same millisecond could sort
+  either way and `ORDER BY id` — the property the id format exists to provide —
+  silently stopped being creation order at that resolution. A clock stepped
+  backwards by NTP or a suspend/resume was the same bug over a wider window: ids
+  that sort before ones already handed out.
+
+  Minting for *now* now carries the previous id's random field forward and
+  increments it whenever the clock has not advanced past the last mint, which
+  covers both cases with one rule. The carry is locked (the watcher imports on a
+  threadpool) and dropped on a pid change, so a fork can't leave two processes
+  incrementing from the same value. Minting with an explicit timestamp — import
+  backfill, migration — stays outside the sequence in both directions: it neither
+  consults nor advances the carry, so historical or bad future-dated timestamps
+  cannot drag live minting with them.
+
 - **Tool output is no longer indexed, and `thread_search` reads the whole
   transcript by default.** These are one change: the narrow default scope existed
   because the index was mostly machine output, and once that output is gone the
