@@ -1,7 +1,7 @@
 """Gold-mining miners for the search-quality bench.
 
 Development machinery, not product: this package is excluded from the wheel, so
-``thread_archive mine`` is a repo-only command that runs beside the ``evals/``
+``thread_archive mine`` is a repo-only command that runs beside the ``search_lab/``
 bench its output feeds (an install answers it with a pointer to the repo).
 
 Each miner mints snapshot-bound eval ``--cases`` rows from a different real

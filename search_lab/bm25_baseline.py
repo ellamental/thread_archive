@@ -30,7 +30,7 @@ four make an ablation ladder over one case file.
 Read-only. Runs against whatever ``THREAD_ARCHIVE_HOME`` names, and refuses cases
 mined against a different corpus, exactly as the eval does::
 
-    THREAD_ARCHIVE_HOME=<snapshot> python evals/bm25_baseline.py \\
+    THREAD_ARCHIVE_HOME=<snapshot> python search_lab/bm25_baseline.py \\
         --cases ~/dev/swe-chat-data/gold/commit-cases.jsonl
 """
 

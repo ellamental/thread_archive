@@ -55,7 +55,7 @@ tests/install/fixtures-real/
 coverage.json
 coverage-*.json
 
-# BEIR calibration cache (evals/beir_eval.py, the `beir` test lane): downloaded
+# BEIR calibration cache (search_lab/beir_eval.py, the `beir` test lane): downloaded
 # datasets + the built archive/embeddings, kept so re-runs skip the rebuild.
 /.beir-cache/
 

@@ -34,8 +34,8 @@ absolute numbers as upper bounds.
 
 Read-only. Runs against whatever ``THREAD_ARCHIVE_HOME`` names::
 
-    THREAD_ARCHIVE_HOME=~/.thread/archive-snap python evals/window_fill.py
-    THREAD_ARCHIVE_HOME=~/.thread/archive-snap python evals/window_fill.py \\
+    THREAD_ARCHIVE_HOME=~/.thread/archive-snap python search_lab/window_fill.py
+    THREAD_ARCHIVE_HOME=~/.thread/archive-snap python search_lab/window_fill.py \\
         --cases ~/.thread/archive/topic-cases-cloth.jsonl
 """
 

@@ -15,7 +15,7 @@ S@5 0.327→0.341, S@10 0.414→0.433, S@20 0.492→0.508 across gammas
 0.002–0.01 — with MRR flat: it consolidates the mid-list around the query's
 community, it does not move the top hit. The same signal computed from the
 topic graph loses on the identical cases, which is why the topic graph
-stays out of ranking. ``evals/graph_eval.py`` is the measurement harness.
+stays out of ranking. ``search_lab/graph_eval.py`` is the measurement harness.
 
 ``THREAD_ARCHIVE_COHERENCE`` tunes it per process: unset/``on`` uses the
 default gamma, ``off``/``0`` disables, a float overrides gamma.

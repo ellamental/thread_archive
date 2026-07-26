@@ -38,9 +38,9 @@ part of this archive.
 Read-only against the corpus home. ``export`` needs the home only for the
 thread -> session id map::
 
-    THREAD_ARCHIVE_HOME=<corpus> python evals/swechat_bench.py export \\
+    THREAD_ARCHIVE_HOME=<corpus> python search_lab/swechat_bench.py export \\
         --gold ~/dev/swe-chat-data/gold --out ~/dev/swe-chat-data/bench
-    THREAD_ARCHIVE_HOME=<corpus> python evals/swechat_bench.py run \\
+    THREAD_ARCHIVE_HOME=<corpus> python search_lab/swechat_bench.py run \\
         --bench ~/dev/swe-chat-data/bench --ranker bm25
 """
 

@@ -43,8 +43,8 @@ themselves need nothing beyond the archive.
 
 Usage::
 
-    python evals/swechat_corpus.py --data ~/dev/swe-chat-data/swe-chat
-    python evals/swechat_corpus.py --data ... --linkage-only   # reuse built home
+    python search_lab/swechat_corpus.py --data ~/dev/swe-chat-data/swe-chat
+    python search_lab/swechat_corpus.py --data ... --linkage-only   # reuse built home
     THREAD_ARCHIVE_HOME=<home> thread_archive mine commit --target 10
 """
 

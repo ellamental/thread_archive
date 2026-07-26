@@ -1,22 +1,25 @@
 import { expect, it } from 'vitest'
-import { render, screen } from '@testing-library/react'
+import { render, screen, waitFor } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
 import { MemoryRouter } from 'react-router-dom'
 import type { RetrievalReport } from '../api'
 import { RetrievalView } from '../components/RetrievalView'
-import { mswError, mswJson } from './msw'
+import { mswError, mswJson, recordRequests } from './msw'
 
 function report(over: Partial<RetrievalReport> = {}): RetrievalReport {
   return {
     home: '/Users/test/.thread/archive',
-    days: 14,
+    hours: 14 * 24,
+    bucket: 'day',
     at: new Date().toISOString(),
     served: {
-      days: 14,
+      hours: 14 * 24,
+      bucket: 'day',
       n: 40,
       n_unknown_regime: 12,
-      daily: [
-        { day: '2026-07-25', n: 20, warm: { n: 18, p50: 240, p90: 900 }, cold: { n: 2, p50: 8200, p90: 11000 } },
-        { day: '2026-07-26', n: 20, warm: { n: 16, p50: 210, p90: 800 }, cold: { n: 4, p50: 9100, p90: 13000 } },
+      buckets: [
+        { at: '2026-07-25', n: 20, warm: { n: 18, p50: 240, p90: 900 }, cold: { n: 2, p50: 8200, p90: 11000 } },
+        { at: '2026-07-26', n: 20, warm: { n: 16, p50: 210, p90: 800 }, cold: { n: 4, p50: 9100, p90: 13000 } },
       ],
       warm: { n: 34, p50: 228, p90: 860, p99: 2415 },
       cold: { n: 6, p50: 8600, p90: 12500, p99: 13100 },
@@ -29,7 +32,7 @@ function report(over: Partial<RetrievalReport> = {}): RetrievalReport {
         { stage: 'semantic_ms', n: 34, p50: 90, p90: 293 },
       ],
     },
-    restarts: { n: 39, daily: [{ day: '2026-07-26', n: 39 }], p50_ms: 22300, total_s: 1836 },
+    restarts: { n: 39, bucket: 'day', buckets: [{ at: '2026-07-26', n: 39 }], p50_ms: 22300, total_s: 1836 },
     bench: {
       gold: [{ at: '2026-07-26T10:00:00Z', commit: 'abc', p50: 900, p95: 2000, p99: 3000, n_queries: 300, tuning: false }],
       observed: [{ at: '2026-07-26T19:00:00Z', commit: 'def', p50: 228, p95: 1412, p99: 2415, n_queries: 40, tuning: false }],
@@ -101,6 +104,57 @@ it('survives a section the server could not assemble', async () => {
   expect(await screen.findByText('228ms')).toBeInTheDocument()
   expect(screen.getByText(/No bench runs recorded/)).toBeInTheDocument()
   expect(screen.getByText('No gold runs recorded.')).toBeInTheDocument()
+})
+
+it('asks for a shorter window in hours, so a sub-day view is expressible', async () => {
+  const seen = recordRequests()
+  mswJson('/api/retrieval', report())
+  view()
+  await screen.findByText('228ms')
+  await userEvent.selectOptions(screen.getByLabelText(/window/), '24')
+  await waitFor(() => expect(seen).toContain('/api/retrieval?hours=24'))
+})
+
+it('draws an hourly window on the operator’s clock, not the ledger’s UTC', async () => {
+  // 18:00 UTC is 13:00 in CDT; a chart that labels it 18:00 puts this afternoon's
+  // spike five hours from where it felt like it happened.
+  const hourly = report({
+    hours: 6,
+    bucket: 'hour',
+    served: {
+      hours: 6,
+      bucket: 'hour',
+      n: 3,
+      n_unknown_regime: 0,
+      buckets: [
+        { at: '2026-07-26T16', n: 0 },
+        { at: '2026-07-26T17', n: 2, warm: { n: 2, p50: 190, p90: 240 } },
+        { at: '2026-07-26T18', n: 1, warm: { n: 1, p50: 220, p90: 220 } },
+      ],
+      warm: { n: 3, p50: 200, p90: 240, p99: 240 },
+      cold: { n: 0, p50: 0, p90: 0, p99: 0 },
+    },
+  })
+  mswJson('/api/retrieval', hourly)
+  const { container } = view()
+  await screen.findByText(/Median served latency per hour/)
+  const served = container.querySelector('.rv-chart')!
+  const clock = (iso: string) => {
+    const t = new Date(iso)
+    return {
+      hh: `${String(t.getHours()).padStart(2, '0')}:00`,
+      full: `${t.getMonth() + 1}/${t.getDate()} ${String(t.getHours()).padStart(2, '0')}:00`,
+    }
+  }
+  const labels = [...served.querySelectorAll('text')].map((n) => n.textContent)
+  expect(labels).toContain(clock('2026-07-26T17:00:00Z').hh)
+  // The empty bucket is a gap, not a point: two warm samples, two dots.
+  expect(served.querySelectorAll('circle')).toHaveLength(2)
+  // …and the count behind a point is reachable, because at this resolution a
+  // median is often over a single search.
+  expect([...served.querySelectorAll('circle title')].map((n) => n.textContent)).toContain(
+    `${clock('2026-07-26T18:00:00Z').full} · 1 warm search · p50 220ms`,
+  )
 })
 
 it('surfaces a failed fetch instead of rendering an empty page', async () => {

@@ -21,7 +21,7 @@ The weights come from :class:`.params.SearchParams` (see that module for the
 production values and their evidence); content-type from
 ``_CONTENT_TYPE_WEIGHT`` (user > text > tool_result …). An alternative
 configuration is another ``SearchParams`` instance passed down from
-``search(params=...)`` — the seam the search lab experiments ride.
+``search(params=...)`` — the seam a measured candidate rides.
 """
 
 from __future__ import annotations

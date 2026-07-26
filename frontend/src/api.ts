@@ -515,11 +515,17 @@ export interface LatencyBand {
   p99?: number
 }
 
-/** One day of served searches. `warm`/`cold` are separate because a process's
+/** How the window is sliced. `hour` for short windows, `day` beyond three days. */
+export type Bucket = 'hour' | 'day'
+
+/** One bucket of served searches. `at` is its UTC start — `2026-07-26` for a day,
+ *  `2026-07-26T14` for an hour. `warm`/`cold` are separate because a process's
  *  first search runs an order of magnitude slower than its thousandth; `unknown`
- *  is the window that predates the uptime field, kept apart rather than assumed. */
-export interface ServedDay {
-  day: string
+ *  is the window that predates the uptime field, kept apart rather than assumed.
+ *  A bucket with no searches carries only `at` and `n: 0` — the span is dense, so
+ *  a quiet stretch draws as a gap rather than closing up. */
+export interface ServedBucket {
+  at: string
   n: number
   warm?: LatencyBand
   cold?: LatencyBand
@@ -527,10 +533,11 @@ export interface ServedDay {
 }
 
 export interface Served {
-  days: number
+  hours: number
+  bucket: Bucket
   n: number
   n_unknown_regime: number
-  daily: ServedDay[]
+  buckets: ServedBucket[]
   warm: LatencyBand
   cold: LatencyBand
 }
@@ -549,9 +556,12 @@ export interface Stages {
   stages: StageRow[]
 }
 
+/** Sparse, unlike `Served.buckets`: this is read as a table, and an empty row is
+ *  noise where an empty chart point is information. */
 export interface Restarts {
   n: number
-  daily: { day: string; n: number }[]
+  bucket: Bucket
+  buckets: { at: string; n: number }[]
   p50_ms: number
   total_s: number
 }
@@ -577,7 +587,8 @@ export interface QualityPoint {
 
 export interface RetrievalReport {
   home: string
-  days: number
+  hours: number
+  bucket: Bucket
   at: string
   served: Served | null
   stages: Stages | null
@@ -691,6 +702,8 @@ export const api = {
   modelStats: (model: string) =>
     getJSON<ModelStats>('/api/stats/model/' + encodeURIComponent(model)),
   // How search itself is doing — read off the retrieval ledgers, not the index,
-  // so it keeps answering while a rebuild has the corpus unavailable.
-  retrieval: (days = 14) => getJSON<RetrievalReport>(`/api/retrieval?days=${days}`),
+  // so it keeps answering while a rebuild has the corpus unavailable. The window
+  // is hours because the useful ones are short: a regression that lands at noon
+  // is invisible in a 14-day median for a week.
+  retrieval: (hours = 14 * 24) => getJSON<RetrievalReport>(`/api/retrieval?hours=${hours}`),
 }

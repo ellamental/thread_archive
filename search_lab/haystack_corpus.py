@@ -28,8 +28,8 @@ here is about the same units the scored harness ranks:
 
 Usage::
 
-    python evals/haystack_corpus.py --dataset locomo --vectors
-    python evals/haystack_corpus.py --dataset longmemeval --vectors
+    python search_lab/haystack_corpus.py --dataset locomo --vectors
+    python search_lab/haystack_corpus.py --dataset longmemeval --vectors
 """
 
 from __future__ import annotations

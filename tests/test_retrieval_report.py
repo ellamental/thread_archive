@@ -24,11 +24,19 @@ def _write(home, records: list[dict]) -> None:
         "\n".join(json.dumps(r) for r in records) + "\n", encoding="utf-8")
 
 
-def _search(duration, *, uptime=None, query="a real question", **extra) -> dict:
-    rec = {"at": _at(), "kind": "search", "query": query, "duration_ms": duration, **extra}
+def _search(duration, *, uptime=None, query="a real question", minutes_ago=0.0,
+            **extra) -> dict:
+    rec = {"at": _at(minutes_ago), "kind": "search", "query": query,
+           "duration_ms": duration, **extra}
     if uptime is not None:
         rec["uptime_s"] = uptime
     return rec
+
+
+def _filled(section: dict) -> list[dict]:
+    """The buckets that actually hold something. The span is dense, so most of a
+    24-hour window is empty by design."""
+    return [b for b in section["buckets"] if b["n"]]
 
 
 def test_percentile_of_nothing_is_zero() -> None:
@@ -69,7 +77,7 @@ def test_a_search_with_no_recorded_process_age_is_its_own_bucket(archive_home) -
     out = rr.served(archive_home)
     assert out["n_unknown_regime"] == 1
     assert out["warm"]["n"] == 1 and out["cold"]["n"] == 0
-    assert out["daily"][0]["unknown"]["n"] == 1
+    assert _filled(out)[0]["unknown"]["n"] == 1
 
 
 def test_stages_exclude_the_known_cold_but_keep_the_unproven(archive_home) -> None:
@@ -135,7 +143,48 @@ def test_a_missing_ledger_yields_an_empty_section_not_a_failure(archive_home) ->
 
 def test_report_carries_every_section(archive_home) -> None:
     _write(archive_home, [_search(200.0, uptime=900.0)])
-    out = rr.report(archive_home, days=7)
-    assert out["days"] == 7
+    out = rr.report(archive_home, hours=7 * 24)
+    assert out["hours"] == 7 * 24
     for section in ("served", "stages", "restarts", "bench", "quality"):
         assert section in out
+
+
+def test_a_short_window_is_bucketed_by_the_hour(archive_home) -> None:
+    """A day's worth of searches at daily resolution is one point, which cannot say
+    whether the slow patch was this morning or the restart at lunch."""
+    _write(archive_home, [
+        _search(200.0, uptime=900.0, minutes_ago=10),
+        _search(9000.0, uptime=5.0, minutes_ago=200),
+    ])
+    out = rr.served(archive_home, hours=24)
+    assert out["bucket"] == rr.HOUR
+    assert len(_filled(out)) == 2, "two searches three hours apart are two buckets"
+    assert rr.default_bucket(24) == rr.HOUR and rr.default_bucket(14 * 24) == rr.DAY
+
+
+def test_the_span_keeps_its_empty_buckets(archive_home) -> None:
+    """Emitting only the buckets that saw traffic compresses the axis onto the times
+    something happened, and a line drawn over that joins 3am to noon as though the
+    hours between were steady. A quiet stretch is a fact about the window."""
+    _write(archive_home, [_search(200.0, uptime=900.0)])
+    out = rr.served(archive_home, hours=6)
+    assert len(out["buckets"]) >= 6
+    assert sum(b["n"] for b in out["buckets"]) == 1
+    # Ordered oldest-first, so the chart's x-axis is time.
+    assert [b["at"] for b in out["buckets"]] == sorted(b["at"] for b in out["buckets"])
+
+
+def test_restarts_follow_the_windows_resolution(archive_home) -> None:
+    """Read as a table rather than a chart, so it stays sparse — but it has to key
+    on the same bucket as the latency beside it, or a spike cannot be lined up with
+    the restart that caused it."""
+    _write(archive_home, [
+        {"at": _at(10), "kind": "warm", "duration_ms": 22000.0},
+        {"at": _at(200), "kind": "warm", "duration_ms": 21000.0},
+    ])
+    out = rr.restarts(archive_home, hours=24)
+    assert out["bucket"] == rr.HOUR
+    assert len(out["buckets"]) == 2 and all(len(b["at"]) == 13 for b in out["buckets"])
+    wide = rr.restarts(archive_home, hours=14 * 24)
+    assert wide["bucket"] == rr.DAY
+    assert all(len(b["at"]) == 10 for b in wide["buckets"])

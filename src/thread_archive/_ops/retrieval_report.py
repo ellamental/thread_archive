@@ -61,6 +61,24 @@ STAGES = ("fts_ms", "semantic_ms", "match_ms", "scan_ms", "embed_ms", "scope_ms"
           "matrix_ms", "knn_ms", "hydrate_ms", "set_ms", "rerank_ms", "rank_ms",
           "extend_ms", "enrich_ms", "render_ms")
 
+HOUR = "hour"
+DAY = "day"
+
+#: The default window, and the one the viewer opens on.
+DEFAULT_HOURS = 14 * 24
+
+#: Windows this short or shorter are bucketed by the hour. Three days of hourly
+#: points is 72 — fine enough to show today's shape and to place a slow patch
+#: against the restart that caused it, coarse enough that a bucket usually holds
+#: more than one search. Past it the buckets are days: an hourly median over a
+#: month is mostly a chart of when nobody was working.
+HOURLY_MAX_HOURS = 72
+
+
+def default_bucket(hours: int) -> str:
+    """``hour`` or ``day`` for a window, by :data:`HOURLY_MAX_HOURS`."""
+    return HOUR if hours <= HOURLY_MAX_HOURS else DAY
+
 
 def percentile(xs: list[float], q: float) -> float:
     """Nearest-rank percentile. Zero for an empty sample — a chart point that does
@@ -69,6 +87,45 @@ def percentile(xs: list[float], q: float) -> float:
         return 0.0
     ordered = sorted(xs)
     return ordered[min(int(len(ordered) * q), len(ordered) - 1)]
+
+
+def _bucket_key(at: str, bucket: str) -> str:
+    """Which bucket an ISO timestamp falls in, sliced rather than parsed.
+
+    UTC, because that is what the ledger records; rendering the label in the
+    operator's own clock is the viewer's job, and only for hourly buckets — a
+    daily bucket is a UTC calendar day, and relabelling it locally would name a
+    different day than the one it aggregates."""
+    return at[:13] if bucket == HOUR else at[:10]
+
+
+def _bucket_span(hours: int, bucket: str) -> list[str]:
+    """Every bucket key in the window, including the ones with nothing in them.
+
+    Emitting only the buckets that saw traffic would compress the axis onto the
+    times something happened, and a chart drawn over that joins Tuesday to Friday
+    as though the days between were steady. A quiet stretch is a fact about the
+    window, and at hourly resolution it is most of one."""
+    now = datetime.now(timezone.utc)
+    cutoff = now - timedelta(hours=hours)
+    if bucket == HOUR:
+        t, step, width = cutoff.replace(minute=0, second=0, microsecond=0), timedelta(hours=1), 13
+    else:
+        t, step, width = (cutoff.replace(hour=0, minute=0, second=0, microsecond=0),
+                          timedelta(days=1), 10)
+    keys = []
+    while t <= now:
+        keys.append(t.isoformat()[:width])
+        t += step
+    return keys
+
+
+def _band(xs: list[float], *, p99: bool = False) -> dict[str, Any]:
+    out = {"n": len(xs), "p50": round(percentile(xs, 0.50), 1),
+           "p90": round(percentile(xs, 0.90), 1)}
+    if p99:
+        out["p99"] = round(percentile(xs, 0.99), 1)
+    return out
 
 
 def _rows(path: Path) -> Iterator[dict]:
@@ -88,13 +145,13 @@ def _rows(path: Path) -> Iterator[dict]:
         return
 
 
-def _searches(home: Path, *, days: int) -> list[dict]:
+def _searches(home: Path, *, hours: int) -> list[dict]:
     """Real agent searches within the window — probes dropped, failures kept.
 
     Failures stay because dropping slow errors biases every percentile toward the
     searches that happened to succeed, which is the same reason the ledger records
     them in the first place."""
-    cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+    cutoff = (datetime.now(timezone.utc) - timedelta(hours=hours)).isoformat()
     from .._retrieval.usage import LEDGER_FILE
 
     return [
@@ -116,41 +173,41 @@ def _regime(rec: dict) -> str:
     return "cold" if uptime < COLD_UPTIME_S else "warm"
 
 
-def served(home: Path, *, days: int = 14) -> dict[str, Any]:
-    """What agents got, by day and by regime.
+def served(home: Path, *, hours: int = DEFAULT_HOURS,
+           bucket: Optional[str] = None) -> dict[str, Any]:
+    """What agents got, per bucket and per regime.
 
-    ``daily`` carries one entry per day with a count and p50/p90 per regime, so the
-    chart can draw warm and cold as separate series. Drawing them as one is the
-    thing this exists to prevent: over a restart-heavy window the combined median
-    tracks the restart rate rather than the code."""
-    rows = _searches(home, days=days)
-    by_day: dict[str, dict[str, list[float]]] = defaultdict(lambda: defaultdict(list))
+    ``buckets`` carries one entry per hour or per day — see :func:`default_bucket`
+    — with a count and p50/p90 per regime, so the chart can draw warm and cold as
+    separate series. Drawing them as one is the thing this exists to prevent: over
+    a restart-heavy window the combined median tracks the restart rate rather than
+    the code."""
+    bucket = bucket or default_bucket(hours)
+    rows = _searches(home, hours=hours)
+    grouped: dict[str, dict[str, list[float]]] = defaultdict(lambda: defaultdict(list))
     for r in rows:
-        by_day[r["at"][:10]][_regime(r)].append(r["duration_ms"])
-    daily = []
-    for day in sorted(by_day):
-        entry: dict[str, Any] = {"day": day, "n": sum(len(v) for v in by_day[day].values())}
-        for regime, xs in by_day[day].items():
-            entry[regime] = {"n": len(xs), "p50": round(percentile(xs, 0.50), 1),
-                             "p90": round(percentile(xs, 0.90), 1)}
-        daily.append(entry)
+        grouped[_bucket_key(r["at"], bucket)][_regime(r)].append(r["duration_ms"])
+    buckets = []
+    for key in _bucket_span(hours, bucket):
+        found = grouped.get(key, {})
+        entry: dict[str, Any] = {"at": key, "n": sum(len(v) for v in found.values())}
+        for regime, xs in found.items():
+            entry[regime] = _band(xs)
+        buckets.append(entry)
     warm = [r["duration_ms"] for r in rows if _regime(r) == "warm"]
     cold = [r["duration_ms"] for r in rows if _regime(r) == "cold"]
     return {
-        "days": days,
+        "hours": hours,
+        "bucket": bucket,
         "n": len(rows),
         "n_unknown_regime": sum(1 for r in rows if _regime(r) == "unknown"),
-        "daily": daily,
-        "warm": {"n": len(warm), "p50": round(percentile(warm, 0.50), 1),
-                 "p90": round(percentile(warm, 0.90), 1),
-                 "p99": round(percentile(warm, 0.99), 1)},
-        "cold": {"n": len(cold), "p50": round(percentile(cold, 0.50), 1),
-                 "p90": round(percentile(cold, 0.90), 1),
-                 "p99": round(percentile(cold, 0.99), 1)},
+        "buckets": buckets,
+        "warm": _band(warm, p99=True),
+        "cold": _band(cold, p99=True),
     }
 
 
-def stages(home: Path, *, days: int = 14) -> dict[str, Any]:
+def stages(home: Path, *, hours: int = DEFAULT_HOURS) -> dict[str, Any]:
     """Where a served search spends its time, p50/p90 per stage.
 
     Known-cold searches are excluded — a cold process's first search is nearly all
@@ -165,7 +222,7 @@ def stages(home: Path, *, days: int = 14) -> dict[str, Any]:
     two arms are returned flat rather than as shares of a whole: they run
     concurrently, so their sum exceeds the total and any stacked chart of them is a
     lie about where the wall-clock went."""
-    rows = [r for r in _searches(home, days=days) if _regime(r) != "cold"]
+    rows = [r for r in _searches(home, hours=hours) if _regime(r) != "cold"]
     out = []
     for stage in STAGES:
         xs = [r[stage] for r in rows if isinstance(r.get(stage), (int, float))]
@@ -181,22 +238,28 @@ def stages(home: Path, *, days: int = 14) -> dict[str, Any]:
     }
 
 
-def restarts(home: Path, *, days: int = 14) -> dict[str, Any]:
-    """Process starts per day, counted off the warm-pass rows, with what they cost.
+def restarts(home: Path, *, hours: int = DEFAULT_HOURS,
+             bucket: Optional[str] = None) -> dict[str, Any]:
+    """Process starts per bucket, counted off the warm-pass rows, with what they cost.
 
     On this deployment the restart rate is the single largest influence on served
     latency — every cache retrieval leans on is process-local — so it belongs
-    beside the latency charts rather than in a separate operational corner."""
-    cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+    beside the latency charts rather than in a separate operational corner.
+
+    Unlike :func:`served` this is sparse: it is read as a table, and a table of
+    empty rows is only noise where an empty chart point is information."""
+    bucket = bucket or default_bucket(hours)
+    cutoff = (datetime.now(timezone.utc) - timedelta(hours=hours)).isoformat()
     from .._retrieval.usage import LEDGER_FILE
 
     rows = [r for r in _rows(home / LEDGER_FILE)
             if r.get("kind") == "warm" and r.get("at", "") >= cutoff]
-    per_day = Counter(r["at"][:10] for r in rows)
+    per_bucket = Counter(_bucket_key(r["at"], bucket) for r in rows)
     durations = [r["duration_ms"] for r in rows if r.get("duration_ms")]
     return {
         "n": len(rows),
-        "daily": [{"day": d, "n": per_day[d]} for d in sorted(per_day)],
+        "bucket": bucket,
+        "buckets": [{"at": b, "n": per_bucket[b]} for b in sorted(per_bucket)],
         "p50_ms": round(percentile(durations, 0.50), 1),
         "total_s": round(sum(durations) / 1000.0, 1),
     }
@@ -250,7 +313,8 @@ def quality(home: Path, *, limit: int = 40) -> dict[str, Any]:
     return {"points": points[-limit:], "latest": latest}
 
 
-def report(home: Optional[Path] = None, *, days: int = 14) -> dict[str, Any]:
+def report(home: Optional[Path] = None, *, hours: int = DEFAULT_HOURS,
+           bucket: Optional[str] = None) -> dict[str, Any]:
     """The whole page's data in one call. Every section is independently fail-soft:
     a missing or unreadable ledger yields an empty section, never a failed page —
     an operator view that goes blank when one input is absent is the least useful
@@ -259,18 +323,20 @@ def report(home: Optional[Path] = None, *, days: int = 14) -> dict[str, Any]:
         from .._config import resolve_paths
 
         home = resolve_paths().home
-    out: dict[str, Any] = {"home": str(home), "days": days,
+    bucket = bucket or default_bucket(hours)
+    out: dict[str, Any] = {"home": str(home), "hours": hours, "bucket": bucket,
                            "at": datetime.now(timezone.utc).isoformat()}
-    for name, fn in (("served", served), ("stages", stages), ("restarts", restarts)):
+
+    def section(fn, **kw):
         try:
-            out[name] = fn(home, days=days)
+            return fn(home, **kw)
         except Exception:  # noqa: BLE001 — one bad ledger must not blank the page
-            logger.debug("retrieval report: %s section failed", name, exc_info=True)
-            out[name] = None
-    for name, fn in (("bench", bench), ("quality", quality)):
-        try:
-            out[name] = fn(home)
-        except Exception:  # noqa: BLE001
-            logger.debug("retrieval report: %s section failed", name, exc_info=True)
-            out[name] = None
+            logger.debug("retrieval report: %s section failed", fn.__name__, exc_info=True)
+            return None
+
+    out["served"] = section(served, hours=hours, bucket=bucket)
+    out["stages"] = section(stages, hours=hours)
+    out["restarts"] = section(restarts, hours=hours, bucket=bucket)
+    out["bench"] = section(bench)
+    out["quality"] = section(quality)
     return out

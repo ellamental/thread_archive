@@ -49,9 +49,9 @@ home. The datasets are fetched by the recon step, not this script:
     #   curl -L -o ~/.cache/thread-evals/longmemeval/data/longmemeval_s_cleaned.json \\
     #     https://huggingface.co/datasets/xiaowu0162/longmemeval-cleaned/resolve/main/longmemeval_s_cleaned.json
 
-    .venv/bin/python evals/haystack_eval.py --dataset locomo
-    .venv/bin/python evals/haystack_eval.py --dataset longmemeval
-    .venv/bin/python evals/haystack_eval.py --dataset locomo --vectors
+    .venv/bin/python search_lab/haystack_eval.py --dataset locomo
+    .venv/bin/python search_lab/haystack_eval.py --dataset longmemeval
+    .venv/bin/python search_lab/haystack_eval.py --dataset locomo --vectors
 """
 
 from __future__ import annotations

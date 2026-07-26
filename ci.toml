@@ -90,11 +90,11 @@ argv = ["{repo}/.venv/bin/python", "{repo}/scripts/coverage_gate.py", "{repo}/co
 # wears the shape of a quality score without being one (the golds are
 # censored by what the incumbent ranker surfaced), and per-commit quality
 # numbers invite exactly that misread. Quality is measured against the
-# snapshot-bound gold case files (evals/README.md → "Taking a baseline"),
+# snapshot-bound gold case files (search_lab/README.md → "Taking a baseline"),
 # scored deliberately, not per commit.
 [[suite]]
 name = "retrieval-gate"
-argv = ["{repo}/.venv/bin/python", "{repo}/evals/retrieval_eval.py",
+argv = ["{repo}/.venv/bin/python", "{repo}/search_lab/retrieval_eval.py",
         "--probes-only", "--require-semantic", "--require-rerank"]
 timeout = 600
 

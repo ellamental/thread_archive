@@ -2,10 +2,11 @@ import { useEffect, useMemo, useState } from 'react'
 import {
   api,
   type BenchPoint,
+  type Bucket,
   type LatencyBand,
   type QualityPoint,
   type RetrievalReport,
-  type ServedDay,
+  type ServedBucket,
 } from '../api'
 
 // How search itself is doing. Every other view here is about the corpus; this one
@@ -34,13 +35,49 @@ function band(b: LatencyBand | undefined, key: 'p50' | 'p90' | 'p99'): number | 
 }
 
 function day(iso: string): string {
-  return iso.slice(5).replace('-', '/')
+  return iso.slice(5, 10).replace('-', '/')
 }
+
+/**
+ * A bucket's axis label.
+ *
+ * Hourly buckets are rendered in the operator's own clock — "when did it get
+ * slow" is a question about the wall in this room, and the ledger's UTC would put
+ * this afternoon's spike five hours from where it felt like it happened. Daily
+ * buckets keep their UTC date: shifting a calendar day into local time would name
+ * a different day than the one it aggregates.
+ */
+function bucketLabel(at: string, bucket: Bucket, full = false): string {
+  if (bucket !== 'hour') return day(at)
+  const t = new Date(at + ':00:00Z')
+  const hh = `${String(t.getHours()).padStart(2, '0')}:00`
+  const date = `${t.getMonth() + 1}/${t.getDate()}`
+  // On the axis, midnight carries the date instead of an hour so a multi-day
+  // hourly axis says which day it crossed into. In a table or a tooltip there is
+  // room for both, and no neighbouring label to read the date off.
+  if (full) return `${date} ${hh}`
+  return t.getHours() === 0 ? date : hh
+}
+
+/** The selectable windows, in hours. Everything at or under 72h comes back
+ *  bucketed hourly (the server decides — see `default_bucket`). */
+const WINDOWS: { hours: number; label: string }[] = [
+  { hours: 6, label: '6 hours' },
+  { hours: 24, label: '24 hours' },
+  { hours: 72, label: '3 days' },
+  { hours: 7 * 24, label: '7 days' },
+  { hours: 14 * 24, label: '14 days' },
+  { hours: 30 * 24, label: '30 days' },
+  { hours: 90 * 24, label: '90 days' },
+]
 
 interface Series {
   label: string
   color: string
-  points: { x: number; y: number | null }[]
+  /** `title` is the point's native tooltip. It carries the sample count, which
+   *  matters most at hourly resolution: a median over one search is that search,
+   *  and the chart cannot say so on its own. */
+  points: { x: number; y: number | null; title?: string }[]
   /** Drawn behind the others, thin and dashed: a series that is *present* but not
    *  the subject. The unmeasured-age line is 260-odd legacy searches blending cold
    *  starts with warm ones, and at equal weight it is the only line long enough to
@@ -144,7 +181,9 @@ function LineChart({
                   r={s.muted ? 1.6 : 3.5}
                   fill={s.color}
                   opacity={s.muted ? 0.45 : 1}
-                />
+                >
+                  {p.title && <title>{p.title}</title>}
+                </circle>
               ) : null,
             )}
           </g>
@@ -160,9 +199,11 @@ function LineChart({
             className="rv-mark"
           />
           {/* Flipped to the rule's left once it sits in the last third: measurement
-              usually begins near *now*, so anchored right the label runs off the box. */}
+              usually begins near *now*, so anchored right the label runs off the box.
+              The gap clears a point sitting on the rule — the first measured bucket
+              often has one, and butted up against the text it reads as a bullet. */}
           <text
-            x={x(measuredFrom) + (measuredFrom > n * 0.66 ? -5 : 5)}
+            x={x(measuredFrom) + (measuredFrom > n * 0.66 ? -9 : 9)}
             y={padT + 9}
             className="rv-axis"
             textAnchor={measuredFrom > n * 0.66 ? 'end' : 'start'}
@@ -219,29 +260,40 @@ function Legend({ items }: { items: { label: string; color: string; muted?: bool
 export function RetrievalView() {
   const [report, setReport] = useState<RetrievalReport | null>(null)
   const [error, setError] = useState<string | null>(null)
-  const [days, setDays] = useState(14)
+  const [hours, setHours] = useState(14 * 24)
 
   useEffect(() => {
     let live = true
     setReport(null)
     setError(null)
     api
-      .retrieval(days)
+      .retrieval(hours)
       .then((r) => live && setReport(r))
       .catch((e) => live && setError(String(e)))
     return () => {
       live = false
     }
-  }, [days])
+  }, [hours])
 
   const servedSeries = useMemo(() => {
-    const daily: ServedDay[] = report?.served?.daily ?? []
-    const pick = (d: ServedDay, k: 'warm' | 'cold' | 'unknown') => d[k]?.p50 ?? null
+    const buckets: ServedBucket[] = report?.served?.buckets ?? []
+    const unit: Bucket = report?.served?.bucket ?? 'day'
+    const pick = (b: ServedBucket, k: 'warm' | 'cold' | 'unknown', i: number) => {
+      const band = b[k]
+      return {
+        x: i,
+        y: band && band.n > 0 ? band.p50 : null,
+        title: band
+          ? `${bucketLabel(b.at, unit, true)} · ${band.n} ${k} ${band.n === 1 ? 'search' : 'searches'} · p50 ${ms(band.p50)}`
+          : undefined,
+      }
+    }
     return {
-      labels: daily.map((d) => day(d.day)),
+      unit,
+      labels: buckets.map((b) => bucketLabel(b.at, unit)),
       series: [
-        { label: 'warm p50', color: WARM, points: daily.map((d, i) => ({ x: i, y: pick(d, 'warm') })) },
-        { label: 'cold p50', color: COLD, points: daily.map((d, i) => ({ x: i, y: pick(d, 'cold') })) },
+        { label: 'warm p50', color: WARM, points: buckets.map((b, i) => pick(b, 'warm', i)) },
+        { label: 'cold p50', color: COLD, points: buckets.map((b, i) => pick(b, 'cold', i)) },
         {
           // Not a third regime — a blend of the other two, from before the
           // process age was recorded. Kept so the window has history, drawn
@@ -249,10 +301,10 @@ export function RetrievalView() {
           label: 'before process age was recorded (cold and warm mixed)',
           color: QUIET,
           muted: true,
-          points: daily.map((d, i) => ({ x: i, y: pick(d, 'unknown') })),
+          points: buckets.map((b, i) => pick(b, 'unknown', i)),
         },
       ].filter((s) => s.points.some((p) => p.y != null)),
-      measuredFrom: daily.findIndex((d) => d.warm != null || d.cold != null),
+      measuredFrom: buckets.findIndex((b) => b.warm != null || b.cold != null),
     }
   }, [report])
 
@@ -280,11 +332,12 @@ export function RetrievalView() {
         <h1>Retrieval</h1>
         <label className="rv-range">
           window
-          <select value={days} onChange={(e) => setDays(Number(e.target.value))}>
-            <option value={7}>7 days</option>
-            <option value={14}>14 days</option>
-            <option value={30}>30 days</option>
-            <option value={90}>90 days</option>
+          <select value={hours} onChange={(e) => setHours(Number(e.target.value))}>
+            {WINDOWS.map((w) => (
+              <option key={w.hours} value={w.hours}>
+                {w.label}
+              </option>
+            ))}
           </select>
         </label>
       </header>
@@ -319,9 +372,12 @@ export function RetrievalView() {
       <section>
         <h2>What agents got</h2>
         <p className="muted">
-          Median served latency per day. Warm and cold are drawn apart on purpose — every
-          cache search leans on is process-local, so a restart resets them and the first
-          search pays the reload. Averaging the two tracks the restart rate, not the code.
+          Median served latency per {servedSeries.unit}. Warm and cold are drawn apart on
+          purpose — every cache search leans on is process-local, so a restart resets them
+          and the first search pays the reload. Averaging the two tracks the restart rate,
+          not the code.
+          {servedSeries.unit === 'hour' &&
+            ' At this resolution a point is often a handful of searches, sometimes one; hover for the count.'}
         </p>
         <LineChart
           series={servedSeries.series}
@@ -448,36 +504,37 @@ export function RetrievalView() {
         )}
       </section>
 
-      {restarts && restarts.daily.length > 0 && (
+      {restarts && restarts.buckets.length > 0 && (
         <section>
           <h2>Restarts</h2>
           <p className="muted">
-            Process starts per day, and what they cost. This is here because it is the
-            largest single influence on what agents feel: {ms(restarts.p50_ms)} of warm-up
-            per start, {restarts.total_s.toFixed(0)}s across the window.
+            Process starts per {restarts.bucket}, and what they cost. This is here because
+            it is the largest single influence on what agents feel: {ms(restarts.p50_ms)} of
+            warm-up per start, {restarts.total_s.toFixed(0)}s across the window. Only
+            {' '}{restarts.bucket}s with a start are listed.
           </p>
           <div className="stat-table-wrap">
             <table className="stat-table">
               <thead>
                 <tr>
-                  <th>day</th>
+                  <th>{restarts.bucket}</th>
                   <th className="bar-col">starts</th>
                 </tr>
               </thead>
               <tbody>
-                {restarts.daily.map((d) => (
-                  <tr key={d.day}>
-                    <td>{day(d.day)}</td>
+                {restarts.buckets.map((b) => (
+                  <tr key={b.at}>
+                    <td>{bucketLabel(b.at, restarts.bucket, true)}</td>
                     <td className="bar-col">
                       <span className="stat-bar">
                         <span
                           className="stat-bar-fill"
                           style={{
-                            width: `${(100 * d.n) / Math.max(...restarts.daily.map((x) => x.n))}%`,
+                            width: `${(100 * b.n) / Math.max(...restarts.buckets.map((x) => x.n))}%`,
                           }}
                         />
                       </span>
-                      <span className="bar-num">{d.n}</span>
+                      <span className="bar-num">{b.n}</span>
                     </td>
                   </tr>
                 ))}

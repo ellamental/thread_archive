@@ -17,18 +17,22 @@ const threadListItem = {
 
 // The retrieval page reads three ledgers; the fixture carries one warm day and one
 // cold search so both regimes render — a single-regime fixture would let the page
-// ship with the blend it exists to avoid.
+// ship with the blend it exists to avoid. One empty bucket too: the span is dense,
+// and a page that cannot draw a gap would pass a fixture that has none.
 const retrieval = {
   home: '/Users/test/.thread/archive',
-  days: 14,
+  hours: 14 * 24,
+  bucket: 'day',
   at: now,
   served: {
-    days: 14,
+    hours: 14 * 24,
+    bucket: 'day',
     n: 24,
     n_unknown_regime: 4,
-    daily: [
-      { day: '2026-07-19', n: 12, warm: { n: 11, p50: 240, p90: 900 }, cold: { n: 1, p50: 8200, p90: 8200 } },
-      { day: '2026-07-20', n: 12, warm: { n: 11, p50: 210, p90: 800 }, cold: { n: 1, p50: 9100, p90: 9100 } },
+    buckets: [
+      { at: '2026-07-19', n: 12, warm: { n: 11, p50: 240, p90: 900 }, cold: { n: 1, p50: 8200, p90: 8200 } },
+      { at: '2026-07-20', n: 0 },
+      { at: '2026-07-21', n: 12, warm: { n: 11, p50: 210, p90: 800 }, cold: { n: 1, p50: 9100, p90: 9100 } },
     ],
     warm: { n: 22, p50: 228, p90: 860, p99: 2415 },
     cold: { n: 2, p50: 8600, p90: 9100, p99: 9100 },
@@ -41,7 +45,7 @@ const retrieval = {
       { stage: 'semantic_ms', n: 22, p50: 90, p90: 293 },
     ],
   },
-  restarts: { n: 3, daily: [{ day: '2026-07-20', n: 3 }], p50_ms: 22300, total_s: 67 },
+  restarts: { n: 3, bucket: 'day', buckets: [{ at: '2026-07-20', n: 3 }], p50_ms: 22300, total_s: 67 },
   bench: {
     gold: [{ at: now, commit: 'abc1234', p50: 900, p95: 2000, p99: 3000, n_queries: 300, tuning: false }],
     observed: [{ at: now, commit: 'abc1234', p50: 228, p95: 1412, p99: 2415, n_queries: 40, tuning: false }],

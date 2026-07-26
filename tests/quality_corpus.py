@@ -284,13 +284,13 @@ def build_corpus(archive_home: Path) -> dict[str, str]:
 
 
 def load_eval_harness():
-    """The live harness's scoring module (``evals/retrieval_eval.py``),
+    """The live harness's scoring module (``search_lab/retrieval_eval.py``),
     imported by path — same metric loop for every tier."""
     mod = sys.modules.get("retrieval_eval")
     if mod is None:
         spec = importlib.util.spec_from_file_location(
             "retrieval_eval",
-            Path(__file__).resolve().parent.parent / "evals" / "retrieval_eval.py",
+            Path(__file__).resolve().parent.parent / "search_lab" / "retrieval_eval.py",
         )
         mod = importlib.util.module_from_spec(spec)
         sys.modules["retrieval_eval"] = mod

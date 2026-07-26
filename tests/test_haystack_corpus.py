@@ -16,8 +16,8 @@ from pathlib import Path
 
 
 def _corpus_module():
-    """``evals/haystack_corpus.py``, loaded by path (a script, not a package module)."""
-    path = Path(__file__).resolve().parents[1] / "evals" / "haystack_corpus.py"
+    """``search_lab/haystack_corpus.py``, loaded by path (a script, not a package module)."""
+    path = Path(__file__).resolve().parents[1] / "search_lab" / "haystack_corpus.py"
     spec = importlib.util.spec_from_file_location("haystack_corpus", path)
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)

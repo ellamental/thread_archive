@@ -1,7 +1,7 @@
-# evals/ — the search lab
+# search_lab/ — the search lab
 
-Everything that *scores* search quality lives here: the harness scripts, the
-experiment configurations, and this manual. The tools that *mint* the graded
+Everything that *scores* search quality lives here: the harness scripts and
+this manual. The tools that *mint* the graded
 gold cases those scorers run against — the agent miners — live in the tree as
 `thread_archive mine` (package `thread_archive._mine`), a repo-only command:
 the package is excluded from the wheel, so mining runs from a checkout beside
@@ -18,9 +18,9 @@ The scoring core these scripts share — the case protocols (title sampling, log
 mining) and the MRR/success/true-recall/nDCG loop — lives in the package at
 `thread_archive._eval`, so the shipped `thread_archive eval` command (the operator's
 read-only self-checkup over their own archive) and this dev bench score off one
-code path. The bench is the *rest* of the ladder: the CI gate, the experiment
-runner, and the gold-mining tiers that answer "should we change ranking," none
-of which ship.
+code path. The bench is the *rest* of the ladder: the CI gate, the tuning loop,
+and the gold-mining tiers that answer "should we change ranking," none of which
+ship.
 
 ## The quality ladder
 
@@ -61,19 +61,6 @@ archive (BEIR and the lab build throwaway homes and never touch it).
   are the protocol with the resolution to measure it; single-gold files reduce it
   to success@k. It warms the models and corpus graph first, which the other
   instruments do not — see the caution below.
-- **`search_lab.py`** — the experiment bench. Races every configuration in
-  `experiments/` against the shipped defaults and prints a leaderboard. A bare
-  run scores **both benches** (`--gold` / `--synthetic` narrow to one): the gold
-  bench over the snapshot-bound gold files (the fused pipeline over the frozen
-  snapshot, one leaderboard per file — the promotion-grade delta, the same graded
-  pools the gold gate floors) and the synthetic bench (`--models` for the fused
-  pipeline) where a win is only a *direction*. The synthetic leaderboard lands in
-  seconds while the gold pass is still running, so a gross regression shows
-  immediately and the grounded verdict follows. `--sample FRAC` scores a
-  deterministic subset of each gold file (the same hash-selected slice every run)
-  — with `--only <experiment>` it turns the gold pass from tens of minutes into a
-  couple, for fast iteration; it reads a *direction*, not the promotion delta, so
-  drop it for the full-bench confirm before promoting.
 - **`latency_replay.py`** — the speed bench over the queries agents actually ran.
   Everything else here scores *curated* cases; this replays the usage ledger, which
   is a different population and the only one that answers "did this help **us**". A
@@ -127,7 +114,7 @@ archive (BEIR and the lab build throwaway homes and never touch it).
     never reads the target thread there is no vocabulary leakage either. Sibling
     sessions in the same repo grade themselves structurally (overlapping files 1,
     disjoint 0), so the confound pool costs no tokens. Needs a corpus that ships
-    session↔commit provenance — `evals/swechat_corpus.py` builds one from SWE-chat
+    session↔commit provenance — `search_lab/swechat_corpus.py` builds one from SWE-chat
     — so it is `○ direct`, never in `mine all`. Grades 1/0 are structural proxies;
     only the 2 is grounded.
 - **`swechat_corpus.py`** — builds the SWE-chat corpus home and its linkage file.
@@ -160,8 +147,6 @@ archive (BEIR and the lab build throwaway homes and never touch it).
     across runs, so a re-run (or the rerank pass over an already-embedded corpus)
     skips ingest+embed — scored by recall@k against the datasets' published recall
     baselines.
-- **`experiments/`** — configurations-as-code for the lab; the contract is in
-  its README.
 
 ## Taking a baseline (measure → change → measure)
 
@@ -210,9 +195,8 @@ python scripts/retrieval_gold_gate.py --cache --fail-early --set fusion_weight=5
 A candidate that survives this still owes the full-bench confirm: drop `--cache`
 and `--fail-early` for the run that credits it, and read it under the hold-out
 discipline below. Fast iteration is for killing bad ideas, not for promoting good
-ones. `search_lab.py` remains the instrument for racing several *named*
-experiments at once with a leaderboard; the gate is the instrument for one knob
-at a time, against the floors that actually gate CI.
+ones. The gate is the instrument for one knob at a time, against the floors that
+actually gate CI.
 
 **The speed axis — the same knob costs latency.** The dominant quality lever (the
 cross-encoder re-rank) is also the dominant latency, so a quality change is
@@ -284,7 +268,7 @@ the re-rank budget.
   made mechanical. A file whose `snapshot_id` matches no snapshot on hand is
   stale: re-mine it, don't score it against a moved corpus.
 - **Tier 0** is two shapes, both in every pytest run. The metric floors
-  (`search_lab.py` / `tests/test_search_quality.py`) are near-saturated by
+  (`tests/test_search_quality.py`) are near-saturated by
   design (MRR ≈ 1.0 on the synthetic corpus) — they can only fall: a
   breakage detector, not an improvement meter. The mechanism contracts
   (`tests/test_reality_mechanisms.py`) pin deterministic properties of the
@@ -346,23 +330,20 @@ that already worked, not a win — and it will not survive a hold-out.
 
 ## Changing ranking, start to finish
 
-1. Write the change as an experiment in `experiments/` (a `SearchParams`
-   value, or a `SEARCH` callable) with a falsifiable `HYPOTHESIS`.
-2. `search_lab.py` — a bare run scores both benches: the synthetic leaderboard
-   (does the direction hold?) lands in seconds, and the gold pass races that same
-   experiment against the baseline over every minted gold file (each over its own
-   snapshot), on the graded pools the gold gate floors — the delta that can
-   actually credit the change. While iterating, `--only <experiment> --sample
-   0.15` scores a deterministic slice of each file in a couple of minutes — a fast
-   grounded direction; drop `--sample` for the full-bench run that credits the
-   change. Tune against one file; confirm against the held-out one. (`--synthetic`
-   / `--gold` narrow to one bench; `retrieval_eval.py --cases` scores a *single*
-   production config over one file — reach for it to read a shipped config's
-   absolute numbers, not to race a challenger.)
-3. Promote once the gold-file delta holds (and `--from-log`, read as an alarm
-   only, hasn't collapsed): fold the winner into `_retrieval/params.py` defaults,
-   delete or keep the experiment as documentation, and let tier 0/2 ratchet the
-   new shape.
+1. State the change as a falsifiable hypothesis about one knob on
+   `SearchParams` (`_retrieval/params.py`), and write down what would refute it.
+2. `retrieval_gold_gate.py` — the tuning loop drives that knob through
+   `search(params=...)` over the minted gold files (each scored on its own
+   snapshot, on the graded pools the gate floors) and reports the delta against
+   the incumbent. While iterating, `--cache` and `--fail-early` cut a bad idea
+   short; `--only <fragment>` narrows to the tune half of the split. Tune against
+   one file; confirm against the held-out one. (`retrieval_eval.py --cases`
+   scores a *single* config over one file — reach for it to read a shipped
+   config's absolute numbers, not to measure a change.)
+3. Promote once the gold-file delta holds on the full-bench confirm — `--cache`
+   and `--fail-early` dropped — and `--from-log`, read as an alarm only, hasn't
+   collapsed: fold the winner into `_retrieval/params.py` defaults with its
+   evidence in the docstring, and let tier 0/2 ratchet the new shape.
 
 ## Cost and hygiene
 
@@ -374,7 +355,7 @@ that already worked, not a win — and it will not survive a hold-out.
   never in the repo. The synthetic corpus is the one exception: no real data, so
   it's checked in.
 - The fast tests guarding these harnesses live in `tests/`
-  (`test_retrieval_eval.py`, `test_search_lab.py`, `test_mine_framework.py`,
+  (`test_retrieval_eval.py`, `test_search_params.py`, `test_mine_framework.py`,
   `test_retrieval_mine_gold.py`, `test_topic_mine_gold.py`, `test_graph_eval.py`,
   `test_beir_calibration.py`, `test_retrieval_gold_gate.py`) and run in every
   pytest pass — the lab stays runnable even when nobody has tuned search in

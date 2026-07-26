@@ -232,12 +232,12 @@ def test_commit_miner_is_registered():
 # ── the SWE-chat corpus builder ──────────────────────────────────────────────
 
 def _corpus_module():
-    """``evals/swechat_corpus.py``, loaded by path (a script, not a package
+    """``search_lab/swechat_corpus.py``, loaded by path (a script, not a package
     module) — the same way test_mine_framework loads the gold gate."""
     import importlib.util
     from pathlib import Path
 
-    path = Path(__file__).resolve().parents[1] / "evals" / "swechat_corpus.py"
+    path = Path(__file__).resolve().parents[1] / "search_lab" / "swechat_corpus.py"
     spec = importlib.util.spec_from_file_location("swechat_corpus", path)
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)

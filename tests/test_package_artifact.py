@@ -86,7 +86,7 @@ def test_wheel_carries_the_whole_runtime(dist) -> None:
 def test_wheel_omits_the_dev_only_gold_miners(dist) -> None:
     # The miners are development machinery: they spend tokens on headless
     # `claude` agents, and what they mint is only useful beside the scoring
-    # bench and gold files under evals/ — repo territory, not an install's.
+    # bench and gold files under search_lab/ — repo territory, not an install's.
     wheel, _ = dist
     names = zipfile.ZipFile(wheel).namelist()
     leaked = [n for n in names if "_mine" in n]

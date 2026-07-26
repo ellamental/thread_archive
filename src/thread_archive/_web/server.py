@@ -999,7 +999,10 @@ def route(
         # keep answering while a rebuild has the index unavailable.
         from .._ops import retrieval_report
 
-        return _ok(retrieval_report.report(days=_int(params, "days", 14, hi=365)))
+        # Hours, not days: the short windows are where a regression shows up the
+        # same afternoon it lands, and a day is the coarsest thing they can say.
+        return _ok(retrieval_report.report(
+            hours=_int(params, "hours", retrieval_report.DEFAULT_HOURS, hi=365 * 24)))
 
     # unmatched API path — don't fall through to the SPA shell
     if path.startswith("/api/"):

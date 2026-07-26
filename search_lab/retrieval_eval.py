@@ -57,8 +57,8 @@ measurement to the snapshot-bound gold files.
 
 Read-only. The title / log protocols run against the live archive:
 
-    .venv/bin/python evals/retrieval_eval.py --auto-titles 200
-    .venv/bin/python evals/retrieval_eval.py --from-log 500
+    .venv/bin/python search_lab/retrieval_eval.py --auto-titles 200
+    .venv/bin/python search_lab/retrieval_eval.py --from-log 500
 
 The agent-mined ``--cases`` protocol runs against the frozen corpus snapshot the
 cases were mined against — point ``THREAD_ARCHIVE_HOME`` at that snapshot. Each
@@ -67,7 +67,7 @@ refuses any case whose id does not match the home, so golds are never scored
 against a corpus that has changed under them (re-mine after a new snapshot):
 
     export THREAD_ARCHIVE_HOME=~/.thread/archive-snap
-    .venv/bin/python evals/retrieval_eval.py --cases ~/.thread/archive/judged-cases.jsonl
+    .venv/bin/python search_lab/retrieval_eval.py --cases ~/.thread/archive/judged-cases.jsonl
 
 The cases are minted by the ``thread_archive mine`` miners (package
 ``thread_archive._mine``) — run ``thread_archive mine`` to list them.

@@ -1,7 +1,7 @@
 # Measuring search quality
 
 How thread-archive measures its own retrieval, what the numbers say, and what
-they can and cannot certify. The instruments live in `evals/` (`evals/README.md`
+they can and cannot certify. The instruments live in `search_lab/` (`search_lab/README.md`
 is the working manual — the how; this is the numbers). The shipped operator
 command is `thread_archive eval` — a read-only self-checkup over your own archive
 that ships to every install.
@@ -98,7 +98,7 @@ The gold files are the promotion bar. To claim "search improved," score the
 challenger and the shipped configuration on **every file, each over its own
 snapshot, on both sides of the change**, and keep a hold-out: tune against one file
 while another stays untouched until the confirming run. The `thread_archive mine`
-command mints these files; `evals/README.md` → "Taking a baseline" is the full
+command mints these files; `search_lab/README.md` → "Taking a baseline" is the full
 protocol.
 
 ## What the window holds
@@ -108,7 +108,7 @@ that *could* fit the window an agent reads, what share actually do. It is
 ceiling-normalized (`hits@k / min(k, |gold|)`) because raw recall@k on a
 multi-answer case scores the size of the gold set as much as the ranking — a case
 with 23 relevant threads cannot exceed 0.43 recall@10 however well it ranks. Over
-the 213 `topic` cases, against `evals/bm25_baseline.py` on the same snapshot at
+the 213 `topic` cases, against `search_lab/bm25_baseline.py` on the same snapshot at
 k=10:
 
 | measure | stack | BM25 |
@@ -131,7 +131,7 @@ several do. No amount of reordering reaches it — only recall does.
 
 A fill number means nothing on its own, which is what the BM25 reference is for; it
 is also not comparable across corpora. The same stack *loses* the window on a
-homogeneous corpus of other people's coding sessions (`evals/swechat_corpus.py`
+homogeneous corpus of other people's coding sessions (`search_lab/swechat_corpus.py`
 builds it): there the gold is single-answer, so fill reduces to success@10, and the
 stack reaches 0.653 against BM25's 0.773 on commit-linked cases and 0.867 against
 0.933 on query-gen. **Selectivity** is the corpus property that predicts the
@@ -204,7 +204,7 @@ production, and each candidate is another instance scored against them.
   a node) partitions into communities; within a ranked pool, threads whose community
   carries more of the pool's top mass get a small boost
   (`score = 1/(60+rank) + γ·community_mass`, shipped γ=0.005). On by default, a
-  light precision head-orderer: on `evals/graph_eval.py`'s log-mined regression
+  light precision head-orderer: on `search_lab/graph_eval.py`'s log-mined regression
   protocol it lifts success at depth with MRR flat (baseline → coherence: S@5
   0.40 → 0.45, S@10 0.52 → 0.53, recall@10 0.44 → 0.46), not a headline mover.
   That harness is its regression check and the gate any new graph lever must pass.
@@ -412,12 +412,14 @@ the evidence matches the stakes:
 | 0 | `tests/test_search_quality.py` + `tests/test_search_recall_shape.py` + `tests/test_reality_mechanisms.py` (every pytest run) | checked-in synthetic corpus, lexical stack | seconds | every change |
 | 1 | `pytest -m quality_models` | same corpus, real embedding + rerank models | minutes | touching the model arms |
 | 2 | CI `retrieval-gate` (arm-liveness probes) | live archive | ~a minute | every commit, via thread-ci |
-| 3 | `retrieval_gold_gate.py` (current-state read + tuning loop), `search_lab.py`, `graph_eval.py` | live archive + the golds' frozen snapshot | seconds to minutes | evaluating a deliberate ranking change |
+| 3 | `retrieval_gold_gate.py` (current-state read + tuning loop), `graph_eval.py` | live archive + the golds' frozen snapshot | seconds to minutes | evaluating a deliberate ranking change |
 | 3½ | `thread_archive mine <miner>` to mint fresh golds, then re-score | frozen snapshot, corpus-grounded labels | seconds to score; agent-minutes per mined case | when a file's snapshot goes stale |
 | 4 | `pytest -m beir`; `cdr_eval.py`, `haystack_eval.py --dataset …` | external IR / conversational-memory benchmarks | tens of minutes | calibrating against published baselines |
 
-The tunables all live in one object — `SearchParams` (`_retrieval/params.py`) — and
-each module in `evals/experiments/` is one candidate configuration the search lab
-races against the shipped defaults. Where the lab says "this direction looks good on
-the synthetic corpus," the gold-file delta says "on corpus-grounded labels from real
-usage, it measures better" — and only the second can promote a change.
+The tunables all live in one object — `SearchParams` (`_retrieval/params.py`) — and a
+candidate configuration is another instance of it, passed through `search(params=...)`
+and scored against the incumbent on identical cases. The gold gate drives that seam one
+knob at a time; `tests/test_search_params.py` keeps it open. A direction that looks good
+on the synthetic corpus is only a direction — the gold-file delta says "on
+corpus-grounded labels from real usage, it measures better," and only the second can
+promote a change.

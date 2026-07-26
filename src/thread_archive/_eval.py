@@ -2,7 +2,7 @@
 
 This is the reusable engine behind two callers: the ``thread_archive eval`` CLI
 command (the shipped, user-facing checkup — "is search working on *my* data")
-and the dev bench under ``evals/`` (the full quality ladder — the CI gate, the
+and the dev bench under ``search_lab/`` (the full quality ladder — the CI gate, the
 experiment runner, the LLM judges). Both build eval *cases* under one of a few
 protocols and score a search function against them with the same MRR / success@k
 / recall@k / nDCG@k loop, so the number the CI gate defends and the number a

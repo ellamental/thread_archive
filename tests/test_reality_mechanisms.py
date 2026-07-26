@@ -5,7 +5,7 @@ capability, a scope rule, or a rerank code path — not a ranking preference.
 The bar is "the agent can see it at all" (surfaces in the top ``RECALL_LIMIT``
 hits), because the failure mode guarded is a false "not found" against a
 conversation that is right there. Ranking *quality* is not asserted here: that
-is measured against the snapshot-bound gold files (see evals/README.md).
+is measured against the snapshot-bound gold files (see search_lab/README.md).
 
 The contracts:
 

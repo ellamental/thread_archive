@@ -1,7 +1,7 @@
 """Retrieval-quality regression floors over the snapshot-bound gold case files.
 
 The measurement of record for search quality is the agent-mined gold files
-(``evals/README.md`` → "Taking a baseline"): graded, corpus-grounded pools
+(``search_lab/README.md`` → "Taking a baseline"): graded, corpus-grounded pools
 scored over a frozen corpus snapshot, so the number moves only when the ranking
 code moves. This gate scores every gold file that has a calibrated floor and
 fails when one drops below it — a ratchet against regression, not a target.
@@ -25,7 +25,7 @@ line: these are click-label re-find scores, a regression signal, never a
 certification that search is *good*.
 
 The gate *reads* the gold files; it does not tune against them, so it does not
-consume the hold-out (``evals/README.md`` → "Hold-out discipline"). That
+consume the hold-out (``search_lab/README.md`` → "Hold-out discipline"). That
 discipline governs the human tuning loop — don't validate on the file you tuned
 against — and is orthogonal to scoring both files as regression floors.
 
@@ -71,7 +71,7 @@ measurement); ``--latency`` and ``--cache`` therefore describe different runs. A
 ledgers. With ``--fail-early`` a latency smoke test runs the ``--smoke-queries``
 slowest-at-baseline queries against a p95 ceiling (``--budget-ms``, else 1.5× the
 baseline) and bails before the full pass — the speed analog of the quality bound,
-though a heuristic rather than sound (see ``evals/README.md`` → "The speed axis").
+though a heuristic rather than sound (see ``search_lab/README.md`` → "The speed axis").
 ``--latency-smoke`` runs *only* that smoke test — a ~1-minute speed check for the
 interactive loop, the full ~10-minute pass reserved for the confirm.
 

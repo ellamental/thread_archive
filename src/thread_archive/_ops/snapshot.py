@@ -19,7 +19,7 @@ reindex`` relies on.
 
 Why freeze at all: a frozen corpus makes search deterministic. The same code
 returns the same results forever, because the corpus can't grow underneath the
-measurement — which is exactly what a regression gate and an experiment bench
+measurement — which is exactly what a regression gate and a scored bench
 want. The number moves only when the *code* moves, never because the live
 archive gained threads. It also removes the need for the ``until`` date bound
 the mined-gold eval otherwise carries: a gold mined against the snapshot can't
@@ -32,7 +32,7 @@ nothing, so :func:`stamp_snapshot` writes the manifest in place: same contract,
 same content-derived id, no copy.
 
 Point an eval at one with ``THREAD_ARCHIVE_HOME=<dest>``: the shipped
-``thread_archive eval`` and the dev bench under ``evals/`` both resolve the home
+``thread_archive eval`` and the dev bench under ``search_lab/`` both resolve the home
 from the environment, so a snapshot needs no new plumbing to score against.
 """
 

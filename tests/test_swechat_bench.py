@@ -29,7 +29,7 @@ from .helpers import cc_assistant, cc_user, write_jsonl
 
 _SPEC = importlib.util.spec_from_file_location(
     "swechat_bench",
-    Path(__file__).resolve().parent.parent / "evals" / "swechat_bench.py",
+    Path(__file__).resolve().parent.parent / "search_lab" / "swechat_bench.py",
 )
 bench = importlib.util.module_from_spec(_SPEC)
 sys.modules["swechat_bench"] = bench

@@ -8,7 +8,7 @@ a case carries the ``snapshot_id`` of the corpus it was mined against, and the
 eval binds to it.
 
 The miner lives in the package (``thread_archive._mine.query_mined``); the eval
-hub it feeds still lives on the bench (``evals/retrieval_eval.py``), loaded by
+hub it feeds still lives on the bench (``search_lab/retrieval_eval.py``), loaded by
 path here for the snapshot-binding contract tests.
 """
 
@@ -22,11 +22,11 @@ import pytest
 
 from thread_archive._mine import query_mined as mine_gold
 
-_EVALS = Path(__file__).resolve().parent.parent / "evals"
+_LAB = Path(__file__).resolve().parent.parent / "search_lab"
 
 
 def _load(name: str):
-    spec = importlib.util.spec_from_file_location(name, _EVALS / f"{name}.py")
+    spec = importlib.util.spec_from_file_location(name, _LAB / f"{name}.py")
     mod = importlib.util.module_from_spec(spec)
     sys.modules[name] = mod
     spec.loader.exec_module(mod)

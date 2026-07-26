@@ -38,12 +38,12 @@ data itself ships in the cloned repo (no download).
     #   git clone https://github.com/l-yohai/CDR-Benchmark ~/.cache/thread-evals/CDR-Benchmark
 
     # fast lexical baseline (ingests the corpus once, then cached):
-    .venv/bin/python evals/cdr_eval.py
+    .venv/bin/python search_lab/cdr_eval.py
 
     # add the semantic arm; add the auto-gated cross-encoder (the production stack).
     # the embed pass is cached, so the second reuses the first's vectors:
-    .venv/bin/python evals/cdr_eval.py --vectors
-    .venv/bin/python evals/cdr_eval.py --vectors --rerank auto
+    .venv/bin/python search_lab/cdr_eval.py --vectors
+    .venv/bin/python search_lab/cdr_eval.py --vectors --rerank auto
 """
 
 from __future__ import annotations
@@ -64,7 +64,7 @@ sys.path.insert(0, str(_HERE.parent / "src"))
 # Reuse beir_eval's generic, task-agnostic primitives so the two harnesses ingest
 # and score off one code path (the same reason the mining package imports the
 # shared scoring engine): `_session_lines` (a doc as a one-turn session), `score_run`
-# (standard IR metrics for one ranking), and `dcg`. Loaded by path — evals/ is a
+# (standard IR metrics for one ranking), and `dcg`. Loaded by path — search_lab/ is a
 # script dir, not an importable package.
 _SPEC = importlib.util.spec_from_file_location("beir_eval", _HERE / "beir_eval.py")
 beir_eval = importlib.util.module_from_spec(_SPEC)

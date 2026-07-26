@@ -1327,7 +1327,7 @@ def cmd_eval(args: argparse.Namespace) -> int:
     pairs mined from the tool-use trail — meaningful once search has been used),
     and `behavior` (zero-label click/reformulate/abandon rates). The deeper
     tiers of the quality ladder (agent-mined gold cases, the experiment lab,
-    BEIR) stay in the dev bench under evals/ — they answer "should we change
+    BEIR) stay in the dev bench under search_lab/ — they answer "should we change
     ranking," not "does search work on my data."
     """
     from . import _api as api
@@ -1457,7 +1457,7 @@ def _eval_metric_ks(metric: dict) -> list:
 
 def cmd_mine(args: argparse.Namespace) -> int:
     """Mint snapshot-bound gold eval cases with the agent miners — the deep tier
-    of the search-quality ladder (`evals/README.md`).
+    of the search-quality ladder (`search_lab/README.md`).
 
     Unlike `eval` (a read-only self-checkup that ships to every install and spends
     no tokens), `mine` drives headless `claude` agents against a frozen corpus
@@ -1469,7 +1469,7 @@ def cmd_mine(args: argparse.Namespace) -> int:
 
     Development machinery, not product: the `_mine` package is excluded from the
     wheel (it only pays off beside the scoring bench and gold files under
-    `evals/`), so an install answers with a pointer to the repo instead of a
+    `search_lab/`), so an install answers with a pointer to the repo instead of a
     traceback. `find_spec`, not a caught ImportError, so a *broken* `_mine` still
     raises its real error rather than being misreported as a missing one.
 
@@ -1480,7 +1480,7 @@ def cmd_mine(args: argparse.Namespace) -> int:
             "mine is development machinery and ships only in the source repo.\n"
             "The miners spend real tokens driving headless `claude` agents, and the\n"
             "cases they mint are only useful beside the scoring bench and gold files\n"
-            "under evals/ — neither of which is part of an install. Run them from a\n"
+            "under search_lab/ — neither of which is part of an install. Run them from a\n"
             "checkout: https://github.com/ellamental/thread_archive\n"
             "\n"
             "`thread_archive eval` is the self-checkup that does work here: it scores\n"

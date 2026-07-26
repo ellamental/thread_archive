@@ -23,11 +23,11 @@ un-ignorable. The ledger half comes straight from ``retrieval-usage.jsonl`` over
 the same window, so a run says both "what the pipeline costs" and "what agents got"
 — and when they disagree the gap is the finding, not a rounding error.
 
-    .venv/bin/python evals/latency_replay.py                   # replay the ledger
-    .venv/bin/python evals/latency_replay.py --limit 40         # 40 most recent calls
-    .venv/bin/python evals/latency_replay.py --cold             # first-sight regime
-    .venv/bin/python evals/latency_replay.py --reps 5 --baseline
-    .venv/bin/python evals/latency_replay.py --json out.json
+    .venv/bin/python search_lab/latency_replay.py                   # replay the ledger
+    .venv/bin/python search_lab/latency_replay.py --limit 40         # 40 most recent calls
+    .venv/bin/python search_lab/latency_replay.py --cold             # first-sight regime
+    .venv/bin/python search_lab/latency_replay.py --reps 5 --baseline
+    .venv/bin/python search_lab/latency_replay.py --json out.json
 
 ``--cold`` drops the per-query warmup and times a single first sight of each call,
 which is the regime production actually serves — agents rarely repeat a query. On

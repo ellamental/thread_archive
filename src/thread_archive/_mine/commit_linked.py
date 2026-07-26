@@ -12,7 +12,7 @@ miner escapes it the same way but with a stronger gold: the session is not
 
 The input is a **linkage file** — one row per session that is externally linked to
 the commits it authored (see :data:`LINKAGE_NAME`). A corpus that ships session ↔
-commit provenance can produce one; ``evals/swechat_corpus.py`` writes it for the
+commit provenance can produce one; ``search_lab/swechat_corpus.py`` writes it for the
 SWE-chat dataset. Nothing here is specific to that dataset: the miner reads the
 linkage shape, not a corpus.
 
@@ -145,7 +145,7 @@ def load_linkage(path: Path) -> list[dict]:
         raise SystemExit(
             f"no linkage file at {path}. The commit miner needs session ↔ commit "
             "provenance for the corpus; build it first (for SWE-chat: "
-            "`python evals/swechat_corpus.py --linkage-only`), or pass --linkage.")
+            "`python search_lab/swechat_corpus.py --linkage-only`), or pass --linkage.")
     out: list[dict] = []
     for line in path.read_text().splitlines():
         if not line.strip():

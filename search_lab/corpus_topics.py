@@ -50,9 +50,9 @@ script, like ``swechat_corpus.py`` needing the pyarrow dev extra.
 
 Writes, and needs the librarian importable. Refuses the live archive unless forced::
 
-    THREAD_ARCHIVE_HOME=<corpus> .venv/bin/python evals/corpus_topics.py \\
+    THREAD_ARCHIVE_HOME=<corpus> .venv/bin/python search_lab/corpus_topics.py \\
         --groups ~/dev/swe-chat-data/gold/repo-groups.json
-    THREAD_ARCHIVE_HOME=<corpus> .venv/bin/python evals/corpus_topics.py \\
+    THREAD_ARCHIVE_HOME=<corpus> .venv/bin/python search_lab/corpus_topics.py \\
         --propose /tmp/communities.json --samples 6
 """
 

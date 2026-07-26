@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+- **`evals/` is now `search_lab/`, and the old experiment runner is gone.**
+  The directory is the search lab — the name it went by in prose while the
+  directory said something vaguer. What blocked the rename was a `search_lab.py`
+  inside it: a leaderboard runner that raced configuration modules from
+  `experiments/` against the shipped defaults. It measured on the synthetic
+  corpus, where a win is only a direction, and the instrument that can actually
+  promote a change — `retrieval_gold_gate.py`, one knob at a time against the
+  floors CI enforces — had superseded it. Both are deleted along with the 16
+  checked-in experiment configs. The `SearchParams` seam they rode is untouched
+  and still load-bearing for the gate and `quality_corpus.run_cases(params=...)`;
+  the three tests that hold it open moved to `tests/test_search_params.py`. The
+  bench's on-disk cache stays at `~/.cache/thread-evals` — renaming it would
+  invalidate tens of gigabytes of downloaded BEIR/LoCoMo corpora for nothing.
+
 - **The base install is lexical-only all the way down: Leiden moved behind an
   extra.** `leidenalg` + `python-igraph` are the only dependencies with a narrow
   wheel matrix (no musllinux-aarch64 at all, a manylinux floor of 2.28), so they
@@ -139,10 +153,21 @@
 
   The charts are inline SVG on a **log** axis: these series span ~30 ms to ~30 s,
   and linearly every warm number is a flat line pinned to zero under one cold spike
-  — the whole question lives in the bottom 2% of a linear chart. Restarts per day
-  are on the page because they are the largest single influence on what agents feel.
+  — the whole question lives in the bottom 2% of a linear chart. Restarts are on the
+  page because they are the largest single influence on what agents feel.
 
-- **`evals/latency_replay.py` — the speed bench over the queries agents actually
+  The window is in hours and the resolution follows it: 6h/24h/3d come back
+  bucketed hourly, longer windows by day. A day is the coarsest thing a daily
+  bucket can say, which is no help when a change lands at noon and the question is
+  whether the afternoon is worse than the morning. Hourly labels are drawn on the
+  operator's clock rather than the ledger's UTC — "when did it get slow" is a
+  question about the wall in this room — while daily buckets keep their UTC date,
+  since shifting a calendar day into local time would name a different day than the
+  one it aggregates. The bucket span is **dense**: emitting only the buckets that
+  saw traffic compresses the axis onto the times something happened, and a line
+  drawn over that joins 3am to noon as though the hours between were steady.
+
+- **`search_lab/latency_replay.py` — the speed bench over the queries agents actually
   ran.** Every existing instrument scores curated cases, and a gold case is mined to
   be *gradeable*: that selection excludes most of what real traffic looks like.
   Time-scoped asks, browse walks and sentence punctuation are all common in the
