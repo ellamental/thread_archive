@@ -1,7 +1,11 @@
 """Gold-mining miners for the search-quality bench.
 
+Development machinery, not product: this package is excluded from the wheel, so
+``thread_archive mine`` is a repo-only command that runs beside the ``evals/``
+bench its output feeds (an install answers it with a pointer to the repo).
+
 Each miner mints snapshot-bound eval ``--cases`` rows from a different real
-signal; :mod:`._framework` defines the shared contract and the operator command
+signal; :mod:`._framework` defines the shared contract and the command
 ``thread_archive mine`` (list / ``<miner>`` / ``all``) drives them. This package
 stays import-light: the miner modules (and their sqlalchemy / api imports) load
 lazily via :func:`load_registry`, so ``python -m thread_archive._mine tool ...``

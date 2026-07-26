@@ -8,7 +8,9 @@ branches directly with the result shapes a real run can't produce.
 
 from __future__ import annotations
 
+import importlib
 import json
+import re
 import subprocess
 import sys
 import threading
@@ -40,6 +42,46 @@ def test_mine_lists_miners(capsys: pytest.CaptureFixture[str]) -> None:
     assert "Gold miners" in out
     for name in ("query", "topic", "rerank", "querygen"):
         assert name in out
+
+
+def test_mine_points_at_the_repo_when_the_package_is_absent(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # `_mine` is dev machinery excluded from the wheel, so this is the path every
+    # install takes: a pointer at the repo, never an ImportError traceback.
+    # Reproduced without patching, by building the wheel's actual shape — a package
+    # dir symlinking every module EXCEPT `_mine` — and importing the real CLI
+    # through it. `cmd_mine` probes `f"{__package__}._mine"`, so under this package
+    # name the miners are genuinely absent, exactly as in an install.
+    pkg = Path(ta.__file__).resolve().parent
+    root = tmp_path / "wheel-shape"
+    shadow = root / "ta_without_mine"
+    shadow.mkdir(parents=True)
+    for child in pkg.iterdir():
+        if child.name not in {"_mine", "__pycache__"}:
+            (shadow / child.name).symlink_to(child)
+
+    sys.path.insert(0, str(root))
+    try:
+        rc = importlib.import_module("ta_without_mine.cli").main(["mine"])
+    finally:
+        # The shadow package points into tmp_path; don't leave it importable.
+        sys.path.remove(str(root))
+        for name in [n for n in sys.modules if n.startswith("ta_without_mine")]:
+            del sys.modules[name]
+
+    assert rc == 2
+    err = capsys.readouterr().err
+    assert "development machinery" in err, err
+    assert "github.com" in err, err
+
+
+def test_mine_stays_off_the_public_help(capsys: pytest.CaptureFixture[str]) -> None:
+    # Every verb `--help` lists should be one an install can actually run, and
+    # `mine` is not. It stays registered (below) — just unadvertised.
+    with pytest.raises(SystemExit):
+        main(["--help"])
+    assert not re.search(r"^\s+mine\b", capsys.readouterr().out, re.M)
 
 
 def test_all_subcommands_present() -> None:

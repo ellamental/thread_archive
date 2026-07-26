@@ -2,9 +2,10 @@
 
 Everything that *scores* search quality lives here: the harness scripts, the
 experiment configurations, and this manual. The tools that *mint* the graded
-gold cases those scorers run against — the agent miners — moved into the product
-as `thread_archive mine` (package `thread_archive._mine`), so they ship and run
-from an install, not only a dev checkout; `thread_archive mine` alone lists them.
+gold cases those scorers run against — the agent miners — live in the tree as
+`thread_archive mine` (package `thread_archive._mine`), a repo-only command:
+the package is excluded from the wheel, so mining runs from a checkout beside
+this bench, never from a user's install. `thread_archive mine` alone lists them.
 Day to day none of this runs by hand — tier 0 rides every pytest pass and the CI
 retrieval gate rides every commit. Come here when you're *changing ranking*: this
 directory is the whole scoring workbench, and the ladder below is the order to

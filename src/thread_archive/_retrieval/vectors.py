@@ -1033,13 +1033,22 @@ def search(
             aparams["tid"] = thread_id
         if thread_ids is not None:
             awhere.append(_in_clause("e.thread_id", thread_ids, "tids", aparams, negate=False))
-        if thread_id is None and thread_ids is None:
-            # No explicit thread scope: apply the agents filter to the mask so
-            # ranking happens within the allowed pool (essential for 'only').
-            if agents == "exclude":
-                awhere.append("e.thread_id NOT IN (SELECT id FROM threads WHERE thread_type = 'system')")
-            elif agents == "only":
-                awhere.append("e.thread_id IN (SELECT id FROM threads WHERE thread_type = 'system')")
+        # ``agents='only'`` has to ride the mask: agent-run threads are a small
+        # minority of the corpus, so a corpus-wide top-k would be almost entirely
+        # rows the filter then throws away and the arm would return nothing.
+        #
+        # ``'exclude'`` is deliberately absent, and the asymmetry is the point. It
+        # removes a minority the other way — most of the corpus survives it — so
+        # ranking inside the mask and ranking outside it agree on the head, while
+        # the clause itself is what makes this query cost seconds: a thread_type
+        # lookup per row turns an index-only range scan over ``idx_events_occurred``
+        # into one table probe per matched event, measured at 9.2s against 0.9s for a
+        # six-month window. Hydration below re-applies the same filter, and that is
+        # already the *only* thing keeping agent threads out of an unscoped search —
+        # that path builds no mask at all. Leaving it out here makes a time-scoped
+        # search cost what an unscoped one costs, and filter where it filters.
+        if thread_id is None and thread_ids is None and agents == "only":
+            awhere.append("e.thread_id IN (SELECT id FROM threads WHERE thread_type = 'system')")
         if since:
             awhere.append("e.occurred_at >= :since")
             aparams["since"] = since

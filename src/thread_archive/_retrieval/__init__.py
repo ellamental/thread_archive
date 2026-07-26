@@ -863,7 +863,9 @@ def search(
             rank_to = len(fused)
         else:
             rank_to = max(depth, p.rerank_pool) if do_rerank else depth
+        _t_rank = perf_counter()
         ranked = _rank.rank_search_results(fused, terms, rank_to, params=p)
+        _probe.record("rank_ms", _t_rank)
         # Result-side half of the gate: when the ranked head is a strong literal
         # match the lexical order is trustworthy and the cross-encoder stands down
         # — it exists for the vocab-mismatch case, and re-ranking a confident head
@@ -938,7 +940,9 @@ def search(
             # build that probes a table that isn't there. The graph primitives stay
             # embed-agnostic for tests and direct callers; only the search path gates.
             if _embed.is_available():
+                _t_coh = perf_counter()
                 ranked = _apply_coherence(ranked, p.coherence_gamma)
+                _probe.record("coherence_ms", _t_coh)
 
     # A pool that came back short of what it asked for holds the WHOLE match set:
     # nothing was cut, so the shaped rows below are already the total and no extra
@@ -953,6 +957,7 @@ def search(
         # Every row-shaped output collapses same-anchor twins (a thread-meta
         # title/summary doc and the first event it anchors to — one anchor,
         # two rows that open identically in thread_read).
+        _t_group = perf_counter()
         ranked = _rank.collapse_same_anchor(ranked)
         if grouping:
             if group == "nested":
@@ -961,6 +966,12 @@ def search(
                 ranked = _rank.cluster_by_thread(ranked, max_threads=depth)
             elif group == "browse":
                 ranked = _rank.group_by_thread(ranked, fold_duplicates=False)
+                # The fold and the reconciliation below have unrelated cost models —
+                # one scales with the pool, the other with the whole match set — so
+                # the group clock closes here and reopens past the extend rather
+                # than billing both to one number.
+                _probe.record("group_ms", _t_group)
+                _t_extend = perf_counter()
                 # The exhaustive shape: the match set decides membership and the
                 # pool only orders it, whether or not the pool saturated.
                 # Unconditional because the reconciliation is what makes the set
@@ -978,11 +989,14 @@ def search(
                         agents=agents_eff,
                     ),
                 )
+                _probe.record("extend_ms", _t_extend)
+                _t_group = perf_counter()
                 exhaustive = not capped
             elif group == "dup":
                 ranked = _rank.fold_duplicate_threads(ranked)
             else:
                 ranked = _rank.group_by_thread(ranked)
+        _probe.record("group_ms", _t_group)
 
     # What this page is a page OF. The shaped row count is the honest total
     # whenever the pool held everything; past that only the browse shape resolves
@@ -1001,6 +1015,7 @@ def search(
         hits = ranked[offset:offset + limit]
 
     # Per-hit enrichments the renderer reads. A pure tally (count) needs none.
+    _t_enrich = perf_counter()
     if not is_count:
         if grouping and listing and group is not None:
             # The list shapes render thread rows, so they need the thread columns.
@@ -1027,6 +1042,7 @@ def search(
             r["_did_rerank"] = did_rerank
 
     _enrich_thread_titles(hits, session=session)
+    _probe.record("enrich_ms", _t_enrich)
     if probe is not None:
         probe.did_rerank = did_rerank
     # The list shapes count in threads, so that is the number their pages divide;

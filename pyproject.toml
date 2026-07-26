@@ -87,6 +87,13 @@ path = "src/thread_archive/__init__.py"
 # zero-dependency clean island, kept private (no public top-level package)
 # until its API is deliberately exposed.
 packages = ["src/thread_archive"]
+# The gold miners are development machinery, not product. They drive headless
+# `claude` sessions to grade cases, and they only pay off beside the scoring
+# bench and gold-case files under evals/ — which exist in the repo, not in an
+# install. So they stay in the sdist (whose tests cover them) and run from a
+# checkout, but never land in a user's site-packages; `thread_archive mine`
+# answers with a pointer to the repo when the package is absent (cli.cmd_mine).
+exclude = ["src/thread_archive/_mine"]
 # The web viewer ships pre-built: frontend/ (node, dev-only) builds into
 # _web/static/, which is committed and packaged so `pip install` needs no node.
 # Under the package dir and tracked, so hatchling includes it by default; declared

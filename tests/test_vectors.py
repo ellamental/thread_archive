@@ -706,3 +706,66 @@ def test_the_vector_arm_runs_beside_the_lexical_one(archive_home) -> None:
     assert all(t is not caller for t in emb.threads), "the vector arm stayed on the caller"
     assert all(emb.saw_probe), "the arm thread could not see the installed probe"
     assert probe.embed_ms > 0, "the arm's stages did not reach the caller's probe"
+
+
+def test_a_time_scoped_search_still_excludes_agent_threads(archive_home) -> None:
+    """The scope mask no longer carries the ``agents='exclude'`` filter — it costs a
+    table probe per matched event, and an unscoped search never applied it there
+    anyway. Hydration is what enforces it, for scoped and unscoped alike; this pins
+    that a time-scoped search is not the hole that opens if it ever stops.
+
+    ``agents='only'`` keeps its mask clause, because a corpus-wide top-k would be
+    almost entirely rows it then discards."""
+    import json
+
+    from thread_archive import _api as ta
+
+    init_db()
+    emb = _FixedEmbedder()
+    lines = [
+        {"type": "user", "uuid": "h1", "cwd": "/p", "timestamp": "2026-01-02T10:00:00Z",
+         "message": {"role": "user", "content": "vector search ranking in the session"}},
+    ]
+    f = archive_home / "human.jsonl"
+    f.write_text("\n".join(json.dumps(ln) for ln in lines) + "\n", encoding="utf-8")
+    ta.import_path(f)
+
+    agent = archive_home / "agent.jsonl"
+    agent.write_text(json.dumps(
+        {"type": "user", "uuid": "s1", "cwd": "/p", "timestamp": "2026-01-02T11:00:00Z",
+         "message": {"role": "user", "content": "vector search ranking in the subagent"}},
+    ) + "\n", encoding="utf-8")
+    ta.import_path(agent)
+
+    from sqlalchemy import text as sa_text
+
+    from thread_archive._store import get_session
+    with get_session() as s:  # mark the second session an agent run
+        s.execute(sa_text("UPDATE threads SET thread_type = 'system' "
+                          "WHERE source_id LIKE :sid"), {"sid": "%agent%"})
+        s.commit()
+    assert vectors.index_events_local(embedder=emb) > 0
+
+    scoped = vectors.search("vector search ranking", since="2026-01-01", embedder=emb) or []
+    types = _thread_types(t["thread_id"] for t in scoped)
+    assert scoped, "the time-scoped vector arm returned nothing"
+    assert "system" not in types, "an agent thread survived a time-scoped search"
+
+    only = vectors.search("vector search ranking", since="2026-01-01",
+                          agents="only", embedder=emb) or []
+    assert only and _thread_types(t["thread_id"] for t in only) == {"system"}
+
+
+def _thread_types(thread_ids) -> set:
+    from sqlalchemy import text as sa_text
+
+    from thread_archive._store import get_session
+
+    ids = list(dict.fromkeys(thread_ids))
+    if not ids:
+        return set()
+    with get_session() as s:
+        rows = s.execute(
+            sa_text("SELECT thread_type FROM threads WHERE id IN ("
+                    + ",".join(f"'{i}'" for i in ids) + ")")).fetchall()
+    return {r[0] for r in rows}

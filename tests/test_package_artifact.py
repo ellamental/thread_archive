@@ -12,6 +12,7 @@ against the built artifact or the cleanly-installed environment.
 from __future__ import annotations
 
 import json
+import re
 import subprocess
 import sys
 import tarfile
@@ -80,6 +81,24 @@ def test_wheel_carries_the_whole_runtime(dist) -> None:
     assert "thread_archive/_web/static/index.html" in names
     assert any(n.startswith("thread_archive/_web/static/assets/") and n.endswith(".js")
                for n in names)
+
+
+def test_wheel_omits_the_dev_only_gold_miners(dist) -> None:
+    # The miners are development machinery: they spend tokens on headless
+    # `claude` agents, and what they mint is only useful beside the scoring
+    # bench and gold files under evals/ — repo territory, not an install's.
+    wheel, _ = dist
+    names = zipfile.ZipFile(wheel).namelist()
+    leaked = [n for n in names if "_mine" in n]
+    assert not leaked, f"the dev-only miners leaked into the wheel: {leaked}"
+
+
+def test_sdist_keeps_the_gold_miners(dist) -> None:
+    # The other half of the split: the sdist ships tests, and the mining tests
+    # import thread_archive._mine — dropping it there would ship a red suite.
+    _, sdist = dist
+    names = tarfile.open(sdist).getnames()
+    assert any("/src/thread_archive/_mine/" in n for n in names)
 
 
 def test_wheel_plants_no_public_top_level_packages(dist) -> None:
@@ -264,6 +283,20 @@ def test_installed_first_run_discovers_realistic_stores_and_searches(installed, 
 
     # keep=True: pytest owns tmp_path's cleanup, so first_run must not rmtree it.
     first_run.run(bin_dir=installed, home=tmp_path, keep=True)
+
+
+def test_installed_mine_points_at_the_repo_and_stays_off_the_front_door(installed, tmp_path) -> None:
+    # The miners are excluded from the wheel, so the verb must degrade to a
+    # pointer — not an ImportError traceback — and must not advertise itself in
+    # `--help`, where every listed verb is one an install can actually run.
+    r = _run(installed, ["thread_archive", "mine"], tmp_path)
+    assert r.returncode == 2, f"{r.stdout}\n{r.stderr}"
+    assert "development machinery" in r.stderr, r.stderr
+    assert "Traceback" not in r.stderr, r.stderr
+
+    h = _run(installed, ["thread_archive", "--help"], tmp_path)
+    assert h.returncode == 0, h.stderr
+    assert not re.search(r"^\s+mine\b", h.stdout, re.M), h.stdout
 
 
 def test_installed_package_is_private_and_asset_complete(installed, tmp_path) -> None:

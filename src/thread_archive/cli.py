@@ -21,6 +21,7 @@ tools, and the web viewer is cohosted by the always-on watcher
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import sys
 from typing import Optional
 
@@ -1448,8 +1449,28 @@ def cmd_mine(args: argparse.Namespace) -> int:
     lists the miners; `mine <miner> --help` shows a miner's options; `mine all N`
     sweeps the ones a count alone can drive.
 
+    Development machinery, not product: the `_mine` package is excluded from the
+    wheel (it only pays off beside the scoring bench and gold files under
+    `evals/`), so an install answers with a pointer to the repo instead of a
+    traceback. `find_spec`, not a caught ImportError, so a *broken* `_mine` still
+    raises its real error rather than being misreported as a missing one.
+
     Delegates to the `_mine` package, whose registry owns the subcommand grammar.
     """
+    if importlib.util.find_spec(f"{__package__}._mine") is None:
+        print(
+            "mine is development machinery and ships only in the source repo.\n"
+            "The miners spend real tokens driving headless `claude` agents, and the\n"
+            "cases they mint are only useful beside the scoring bench and gold files\n"
+            "under evals/ — neither of which is part of an install. Run them from a\n"
+            "checkout: https://github.com/ellamental/thread_archive\n"
+            "\n"
+            "`thread_archive eval` is the self-checkup that does work here: it scores\n"
+            "search quality on your own archive, read-only, spending nothing.",
+            file=sys.stderr,
+        )
+        return 2
+
     from . import _mine
 
     return _mine.dispatch(list(args.rest))
@@ -1673,13 +1694,13 @@ def build_parser() -> argparse.ArgumentParser:
     p_eval.set_defaults(func=cmd_eval)
 
     # The dev bench's gold miners — mint snapshot-bound eval cases (the deep tier
-    # of the quality ladder). The subcommand grammar is the registry's, parsed
-    # lazily inside cmd_mine, so the heavy _mine imports never load for an
-    # unrelated command. REMAINDER hands the whole tail to that parser.
-    p_mine = sub.add_parser(
-        "mine",
-        help="mint gold eval cases (agent miners; `mine` alone lists them)",
-    )
+    # of the quality ladder). No `help=`, deliberately: that is what keeps the verb
+    # out of `--help`, since the package behind it is excluded from the wheel and
+    # only a checkout can run it (see cmd_mine). Registered unconditionally so the
+    # parser is identical in both environments. The subcommand grammar is the
+    # registry's, parsed lazily inside cmd_mine, so the heavy _mine imports never
+    # load for an unrelated command. REMAINDER hands the whole tail to that parser.
+    p_mine = sub.add_parser("mine")
     p_mine.add_argument("rest", nargs=argparse.REMAINDER,
                         help="<miner> [options] | all [N] | (empty to list)")
     p_mine.set_defaults(func=cmd_mine)

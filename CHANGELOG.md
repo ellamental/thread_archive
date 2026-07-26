@@ -2,6 +2,53 @@
 
 ## Unreleased
 
+- **The gold miners no longer ship in the wheel.** `thread_archive._mine` is
+  development machinery: the miners spend real tokens driving headless `claude`
+  agents, and the cases they mint are only useful beside the scoring bench and
+  gold files under `evals/` — which live in the repo and never shipped. So the
+  install carried the engine without the bench it feeds, on a verb almost no
+  user would run. Excluded from the wheel (`tool.hatch.build.targets.wheel`);
+  the sdist keeps it, since the sdist ships the tests that cover it.
+
+  `mine` stays registered in the parser — identical in both environments, so
+  the CLI-verb ratchet stays deterministic — but it no longer carries a `help=`
+  string, which is what keeps it out of `--help` where every listed verb should
+  be one an install can actually run. Invoked anyway, it prints a pointer to the
+  repo and exits 2 rather than raising ImportError; the availability check is
+  `find_spec`, so a *broken* `_mine` in a checkout still raises its real error
+  instead of being misreported as a missing one. Mining from a checkout is
+  unchanged. `eval` — the read-only, token-free search self-checkup — is
+  untouched and remains part of the product.
+
+- **A `since` filter cost the vector arm seconds, and it was one redundant clause.**
+  The ledger's slowest real searches all carried a time bound, and the cost scaled
+  with the width of the window rather than with anything about the query: measured
+  on the live archive, `since=7d` cost 580 ms, `since=60d` 4.6 s, `since=180d`
+  11.6 s — with the lexical arm flat at ~80 ms throughout and essentially all of the
+  rest in the vector arm's scope mask.
+
+  The mask pre-restricts the KNN to in-scope event ids so ranking happens *within*
+  the scope, and it carried the `agents='exclude'` filter alongside the time bound.
+  That one clause is what made it expensive: a `thread_type` lookup per row turns an
+  index-only range scan over `idx_events_occurred` into a table probe per matched
+  event — 9.2 s against 0.9 s for a six-month window, with the row count identical
+  either way. It was also redundant. Hydration re-applies the same filter, and that
+  is already the *only* thing keeping agent threads out of an **unscoped** search,
+  which builds no mask at all — so a time-scoped search was paying seconds for a
+  guarantee the unscoped path gets for free.
+
+  Dropped from the mask, kept at hydration. `agents='only'` keeps its clause, and
+  the asymmetry is the reason: 'only' selects a small minority, so a corpus-wide
+  top-k would be almost entirely rows the filter then discards, while 'exclude'
+  removes a minority the other way and leaves the head unchanged. Measured
+  end-to-end through the MCP server: `since=180d` 11.6 s → 1.33 s, `60d` 4.6 s →
+  0.46 s, `30d` 1.55 s → 0.32 s. Gold gate unchanged on all seven floored files.
+
+  What remains in that stage is the ~1 s it takes to materialize 3.6M ids and build
+  the numpy mask, which no SQL change reaches. The fix for that one is to carry
+  `occurred_at` in the vector pack so a time scope becomes a numpy comparison over
+  an array already in RAM, with no id query at all.
+
 - **Three latency findings off the retrieval-usage ledger, and one non-finding.**
   The ledger is the only record of what search costs an agent in practice, and its
   post-fix window read p50 352 ms / p90 4.2 s / p99 16 s — a distribution the gold

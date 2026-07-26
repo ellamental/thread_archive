@@ -95,9 +95,10 @@ def require_snapshot() -> str:
 
 def tool_cmd() -> str:
     """The command a mining agent shells into for snapshot-bound corpus access:
-    ``python -m thread_archive._mine tool search|read``. Uses ``-m`` (not a repo
-    path) so mining works from an installed wheel, not only a dev checkout; the
-    agent inherits ``THREAD_ARCHIVE_HOME`` (the snapshot) from the run's env."""
+    ``python -m thread_archive._mine tool search|read``. Uses ``-m`` on the running
+    interpreter (not a hardcoded repo path) so the agent resolves the package
+    through whatever environment launched the run; it inherits
+    ``THREAD_ARCHIVE_HOME`` (the snapshot) from that run's env."""
     return f"{sys.executable} -m thread_archive._mine tool"
 
 
