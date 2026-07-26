@@ -292,6 +292,73 @@ def test_count_matches_reports_events_and_threads(archive_home) -> None:
     assert (n_events, n_threads, capped) == (5, 5, False)
 
 
+# ── bounding a scanning predicate ────────────────────────────────────────────
+# SET_SCAN_CAP counts rows that MATCHED, which describes a MATCH's work and not a
+# LIKE's: a LIKE has no index to walk, so it reads every row to find out. Left at
+# that the cost inverts — a corpus-common substring hits the cap early and a rare
+# one never does, making the *selective* query, which is the whole point of the
+# mode, the expensive one.
+
+
+def test_a_scanning_predicate_is_the_one_that_carries_a_row_window() -> None:
+    from thread_archive._retrieval.fts import _primary_predicate
+
+    def scans(query, *, match="token", startswith=None):
+        return _primary_predicate(query, match_mode=match, startswith=startswith)[2]
+
+    assert scans("widget report", match="substring") is True
+    assert scans("", startswith="widget") is True
+    assert scans("widget report") is False
+    assert scans("widget | report") is False  # the OR pass is still a MATCH
+
+
+def test_the_row_window_bounds_the_scan_and_says_so() -> None:
+    """Past the cap the scan cannot have seen the whole corpus, so the answer is a
+    floor — the same degradation the match cap already promises, reported the same
+    way."""
+    from thread_archive._retrieval.fts import SET_EXAMINE_CAP, _scan_window
+
+    below, floored = _scan_window(SET_EXAMINE_CAP - 1)
+    assert floored is False and below["scan_floor"] == 0
+
+    above, floored = _scan_window(SET_EXAMINE_CAP + 500)
+    assert floored is True and above["scan_floor"] == 500
+
+
+def test_an_unreadable_watermark_declines_to_bound_the_scan() -> None:
+    """Slow is recoverable; silently truncated is not. With no watermark to
+    measure the window from, the scan runs unbounded rather than guessing a floor
+    that might cut the corpus in half."""
+    from thread_archive._retrieval.fts import _scan_window
+
+    params, floored = _scan_window(object())
+    assert floored is False and params["scan_floor"] == 0
+
+
+def test_only_a_scanning_predicate_pays_for_the_window_clause() -> None:
+    """A MATCH walks one term's doclist — already proportional to what it finds —
+    so bounding it by rowid would drop matches for nothing."""
+    from thread_archive._retrieval.fts import _set_scan_sql
+
+    scanning = _set_scan_sql("thread_id", "content LIKE :sub", [], scan_floor=True)
+    assert "rowid > :scan_floor" in scanning
+    matching = _set_scan_sql("thread_id", "event_search MATCH :q", [])
+    assert "scan_floor" not in matching
+
+
+def test_a_substring_set_within_the_window_is_still_exact(archive_home) -> None:
+    """The window is a ceiling on work, not a haircut: a corpus smaller than it
+    resolves the same set it always did, within-token matches included."""
+    init_db()
+    f = archive_home / "mp4.jsonl"
+    _write_cc(f, [_cc_user("s1", "the mp4 encode failed", 1),
+                  _cc_user("s2", "unrelated report", 2)])
+    import_session_incremental(f, "proj:mp4")
+    rows, capped = matched_threads("p4", match_mode="substring", content_types=["user"])
+    assert capped is False  # nothing was cut, so the enumeration is a total
+    assert len(rows) == 1 and rows[0]["n_hits"] == 1
+
+
 def test_the_exact_set_honors_the_same_scope_as_the_pool(archive_home) -> None:
     """A filter that applied to the pool but not the tally would make the two
     disagree about the same corpus — and the tally is what a paginated caller

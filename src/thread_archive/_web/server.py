@@ -3,11 +3,17 @@
 The whole read surface the UI needs already exists as the plain Python library
 (:mod:`thread_archive._api`): ``search`` / ``read_thread`` / ``status``. This is a
 skin over it — no ranking/fusion logic is duplicated here. :func:`route` is a pure
-``(method, path, params) -> (status, content_type, body, headers)`` function so
-tests drive it without opening a socket. :func:`serve_in_thread` runs it in a
+``(method, path, params, body) -> (status, content_type, body, headers)`` function
+so tests drive it without opening a socket. :func:`serve_in_thread` runs it in a
 background daemon thread so the always-on ``thread_archive watch --web`` process can
 cohost the viewer (one process, one engine) — that's how the read surface gets a
-persistent URL with no extra daemon or standalone web verb.
+persistent URL with no extra daemon. ``thread_archive web`` opens that URL; it
+never starts a server of its own.
+
+One endpoint writes: ``POST /api/upload`` accepts an account-export ZIP into the
+drop zone the cohosting watcher already imports from. It carries its own
+cross-site guards (see :func:`_write_allowed`) on top of the Host check every
+request passes.
 """
 
 from __future__ import annotations
@@ -15,13 +21,16 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
+import shutil
 import threading
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING, Optional, Protocol
 from urllib.parse import parse_qs, unquote, urlparse
+from uuid import uuid4
 
 from .. import _api as api
 from .._retrieval import _contention, _probe
@@ -75,6 +84,88 @@ def _host_allowed(host: Optional[str]) -> bool:
     else:
         name = host
     return name.lower() in _LOOPBACK_HOSTS
+
+
+# A header no cross-origin HTML form can set. Sending it forces the browser to
+# preflight the request, and this server answers no preflight — so a write can
+# only come from a page this server served. Required on every write.
+_UPLOAD_HEADER = "X-Archive-Upload"
+
+
+def _origin_allowed(origin: Optional[str]) -> bool:
+    """Whether a write's ``Origin`` names this loopback server.
+
+    The Host check above cannot see this attack: a page on any domain can post a
+    form at ``http://127.0.0.1:8787`` and the browser sends *this server's* name
+    as Host. What it also sends is the attacking page's Origin, which is not
+    loopback. An absent Origin is rejected — every browser sends one on a
+    cross-origin write, so its absence is not a same-origin request."""
+    if not origin:
+        return False
+    parsed = urlparse(origin.strip())
+    if parsed.scheme not in ("http", "https"):
+        return False
+    return _host_allowed(parsed.netloc)
+
+
+def _write_allowed(headers) -> bool:
+    """Whether a write request may proceed: same-origin, and unforgeable as a form.
+
+    Both guards are needed. The custom header alone would pass a request from a
+    page that has managed a preflight; a loopback Origin alone trusts a header
+    non-browser clients set freely. Under the deliberate non-loopback opt-in the
+    origin is by definition not loopback, so only the header requirement holds —
+    exposing the viewer is already the act that accepts that."""
+    if headers.get(_UPLOAD_HEADER) is None:
+        return False
+    if os.environ.get(_NONLOCAL_OPTIN) == "1":
+        return True
+    return _origin_allowed(headers.get("Origin"))
+
+
+class _Readable(Protocol):
+    """The one thing a request body's source has to do. Stated as a protocol so
+    the router depends on ``read``, not on a socket — which is what lets a test
+    hand it a ``BytesIO`` and drive the real upload path."""
+
+    def read(self, size: int = ..., /) -> bytes: ...
+
+
+class RequestBody:
+    """An unread request body: the socket to read it from, and its declared length.
+
+    Handed to :func:`route` instead of ``bytes`` because the one thing posted here
+    is an account export, routinely gigabytes — buffering it whole to hand the
+    router a ``bytes`` would spend the archive's memory on a file whose only
+    destination is disk. :meth:`spool_to` streams it in chunks instead.
+
+    ``remaining`` is what the HTTP adapter reads afterward to decide whether the
+    connection can be kept alive: a body the router declined to read leaves bytes
+    in the socket that the next request on that connection would parse as its own
+    request line."""
+
+    __slots__ = ("stream", "length", "remaining")
+
+    def __init__(self, stream: _Readable, length: int) -> None:
+        self.stream = stream
+        self.length = length
+        self.remaining = length
+
+    def spool_to(self, path: Path) -> int:
+        """Write the body to ``path`` in chunks; returns the bytes written.
+
+        A short read means the client went away mid-upload; the count comes back
+        below :attr:`length` and the caller discards the partial file rather than
+        letting a truncated ZIP reach the drop zone."""
+        with open(path, "wb") as fh:
+            while self.remaining > 0:
+                chunk = self.stream.read(min(_UPLOAD_CHUNK, self.remaining))
+                if not chunk:
+                    break
+                fh.write(chunk)
+                self.remaining -= len(chunk)
+        return self.length - self.remaining
+
 
 # Content types for the built bundle (vite emits hashed assets/*.js|css + fonts).
 _CTYPES = {
@@ -495,6 +586,206 @@ def _list_thread_types() -> list[dict]:
     return [{"thread_type": r[0], "threads": r[1]} for r in rows if r[0]]
 
 
+# ---------------------------------------------------------------------------
+# the drop zone: uploading an account export
+# ---------------------------------------------------------------------------
+# An upload lands in ``<home>/dumps/`` and is imported by the export-drop watcher
+# cohosting this server — the page hands the ZIP to the same folder a Finder drag
+# would, so there is one import path with one set of settle / retain / quarantine
+# rules (:mod:`thread_archive._watcher.export_drop`) rather than a second copy of
+# them here. Importing inline would also hold a request thread for however long a
+# multi-gigabyte export takes.
+#
+# The write is a spool to a dot-prefixed temp file plus an atomic rename, so the
+# watcher never sees a partially-written drop: it skips dotfiles, and what appears
+# under a scanned name appears whole.
+
+_UPLOAD_CHUNK = 1 << 20
+_UNSAFE_DROP_CHARS = re.compile(r"[^A-Za-z0-9._-]+")
+_DROP_NAME_MAX = 120
+_ZIP_SUFFIX = ".zip"
+
+
+def free_margin() -> int:
+    """Free space an upload must leave behind it (1 GiB by default).
+
+    An account export is a large file, and the archive it feeds grows again while
+    importing it — filling the disk to the last byte would break the very import
+    the upload exists for, and take the watcher's other sources down with it.
+    Raise ``THREAD_ARCHIVE_UPLOAD_FREE_MARGIN`` on a machine that needs more
+    headroom than that."""
+    return int(os.environ.get("THREAD_ARCHIVE_UPLOAD_FREE_MARGIN") or 1 << 30)
+
+
+def _drop_filename(raw: str) -> Optional[str]:
+    """A safe ``dumps/`` filename for an uploaded export, or None if it isn't one.
+
+    Only ``.zip`` is accepted: all three account exports download as one, and the
+    drop watcher's scan considers nothing else at top level — a name it would
+    never look at is not a drop, it is litter that sits in the folder forever.
+    The name is reduced to its basename (both separators, since the uploader's
+    machine picks which) and to a conservative character set, with leading dots
+    stripped: the watcher skips dotfiles, and ``..`` must not survive as a name."""
+    name = raw.replace("\\", "/").rsplit("/", 1)[-1].strip()
+    if not name.lower().endswith(_ZIP_SUFFIX):
+        return None
+    stem = _UNSAFE_DROP_CHARS.sub("-", name[: -len(_ZIP_SUFFIX)]).strip("-.")
+    return (stem[:_DROP_NAME_MAX] or "export") + _ZIP_SUFFIX
+
+
+def _unique_drop_path(dumps: Path, filename: str) -> Path:
+    """``dumps/<filename>``, numbered until it names nothing that already exists.
+
+    The number goes before the extension, never after it: the watcher only
+    considers files whose suffix is ``.zip``, so a ``foo.zip.1`` would sit in the
+    drop zone unseen and unimported."""
+    dest = dumps / filename
+    stem = filename[: -len(_ZIP_SUFFIX)]
+    n = 1
+    while dest.exists():
+        dest = dumps / f"{stem}-{n}{_ZIP_SUFFIX}"
+        n += 1
+    return dest
+
+
+def _classify_drop(path: Path) -> tuple[Optional[str], Optional[str]]:
+    """``(kind, label)`` of the first registered provider that claims this bundle.
+
+    The drop watcher's own claim, asked early — whichever spec answers here is the
+    one that will import the file, and a bundle nothing claims is one nothing
+    would have imported. A ``detect`` that raises is "not mine", exactly as in the
+    watcher: a provider that cannot decide must not block one that can."""
+    from .._providers import export_specs
+
+    for provider, spec in export_specs():
+        try:
+            if spec.detect(path):
+                return spec.kind, spec.label
+        except Exception:  # noqa: BLE001 — a broken detect must not block the rest
+            log.exception(
+                "upload: provider %r failed to classify %s — treated as not its export",
+                provider.name, path.name,
+            )
+    return None, None
+
+
+def _export_labels() -> str:
+    """The exports this install can import, for an error the uploader can act on."""
+    from .._providers import export_specs
+
+    return ", ".join(spec.label for _, spec in export_specs()) or "none registered"
+
+
+def _receive_drop(raw_name: str, body: RequestBody) -> Response:
+    """Take an uploaded account export into the drop zone.
+
+    Spooled, classified, then renamed into place, so what the watcher eventually
+    scans is a complete bundle some provider has already claimed. An unrecognized
+    ZIP is refused here rather than dropped: the watcher would only quarantine it
+    seconds later, and the uploader still has the download, so an answer now is
+    worth more than a file in ``failed/``. Hand-dropping into the folder stays the
+    escape hatch for a shape this classifier hasn't learned yet."""
+    filename = _drop_filename(raw_name)
+    if filename is None:
+        return _text(400, "an account export uploads as a .zip")
+    dumps = api.open_archive().dumps_dir
+    try:
+        dumps.mkdir(parents=True, exist_ok=True)
+    except OSError as e:
+        return _text(500, f"cannot open the drop zone: {e}")
+    try:
+        dumps.chmod(0o700)  # conversation content: the home's privacy, re-asserted
+    except OSError:
+        pass
+
+    if body.length + free_margin() > shutil.disk_usage(dumps).free:
+        return _text(507, "not enough free disk space for this export")
+
+    tmp = dumps / f".upload-{os.getpid()}-{uuid4().hex}.part"
+    try:
+        written = body.spool_to(tmp)
+        if written != body.length:
+            tmp.unlink(missing_ok=True)
+            return _text(400, "the upload ended early — nothing was imported")
+        kind, label = _classify_drop(tmp)
+        if kind is None:
+            tmp.unlink(missing_ok=True)
+            return _text(
+                415,
+                f"not a recognized account export ({_export_labels()}). "
+                f"Upload the ZIP as downloaded, without unpacking or repacking it.",
+            )
+        dest = _unique_drop_path(dumps, filename)
+        os.replace(tmp, dest)
+    except OSError as e:
+        log.warning("upload: could not write %s into the drop zone: %s", filename, e)
+        try:
+            tmp.unlink(missing_ok=True)
+        except OSError:
+            pass
+        return _text(500, f"could not write the upload: {e}")
+    log.info("upload: accepted %s export %s (%d bytes)", label, dest.name, written)
+    return _ok({"name": dest.name, "kind": kind, "label": label,
+                "bytes": written, "dumps_dir": str(dumps)})
+
+
+def _drop_entry(path: Path) -> dict:
+    """One drop as ``{name, bytes, at}``. A directory reports no size — summing a
+    whole unpacked export's tree on every poll costs more than the number is worth."""
+    try:
+        st = path.stat()
+        return {
+            "name": path.name,
+            "bytes": None if path.is_dir() else st.st_size,
+            "at": datetime.fromtimestamp(st.st_mtime, timezone.utc).isoformat(),
+        }
+    except OSError:  # vanished mid-scan — the watcher moves these under us
+        return {"name": path.name, "bytes": None, "at": None}
+
+
+def _drop_entries(directory: Path, *, skip: tuple[str, ...] = ()) -> list[dict]:
+    """Every drop in one directory, newest first. Dotfiles (in-flight uploads) and
+    the reserved subdirs are not drops and never list."""
+    try:
+        entries = list(directory.iterdir())
+    except OSError:
+        return []
+    out = [
+        _drop_entry(e) for e in entries
+        if not e.name.startswith(".") and e.name not in skip
+    ]
+    out.sort(key=lambda e: (e["at"] or "", e["name"]), reverse=True)
+    return out
+
+
+def _drops() -> dict:
+    """The drop zone's census: waiting to import, imported, needs a look.
+
+    The uploader's honest progress signal, because the import is the watcher's
+    work and not this server's. A drop leaves ``waiting`` when the watcher has
+    taken it, and reappears under ``imported`` (kept as the recovery copy — the
+    normalized truth can't be assumed to carry everything the download did) or
+    under ``failed`` (quarantined for review, never deleted)."""
+    from .._watcher.export_drop import (
+        IMPORTED_DIRNAME,
+        QUARANTINE_DIRNAME,
+        RESERVED_DIRNAMES,
+    )
+
+    dumps = api.open_archive().dumps_dir
+    imported: list[dict] = []
+    for kind_dir in sorted((dumps / IMPORTED_DIRNAME).glob("*")):
+        if kind_dir.is_dir():
+            imported += [{**e, "kind": kind_dir.name} for e in _drop_entries(kind_dir)]
+    imported.sort(key=lambda e: (e["at"] or "", e["name"]), reverse=True)
+    return {
+        "dumps_dir": str(dumps),
+        "waiting": _drop_entries(dumps, skip=RESERVED_DIRNAMES),
+        "imported": imported,
+        "failed": _drop_entries(dumps / QUARANTINE_DIRNAME),
+    }
+
+
 def resolve_archive_link(link_id: str, source: Optional[str] = None) -> Optional[str]:
     """Resolve a pasted/sprayed ref to its archive (ULID) thread id.
 
@@ -527,8 +818,22 @@ def resolve_archive_link(link_id: str, source: Optional[str] = None) -> Optional
 # ---------------------------------------------------------------------------
 # the router (socket-free, the testable core)
 # ---------------------------------------------------------------------------
-def route(method: str, path: str, params: dict) -> Response:
-    """Resolve one request to ``(status, content_type, body, extra_headers)``."""
+def route(
+    method: str, path: str, params: dict, body: Optional[RequestBody] = None
+) -> Response:
+    """Resolve one request to ``(status, content_type, body, extra_headers)``.
+
+    ``body`` is the unread request body, present only on a write. The adapter has
+    already established that a write may be made at all — the router's job is
+    what it means, not whether it is allowed."""
+    if method == "POST":
+        if path == "/api/upload":
+            if body is None:
+                return _text(400, "missing upload body")
+            return _receive_drop(_first(params, "name") or "", body)
+        # Every other path is a read surface, so the method is what is wrong with
+        # this request — not the address.
+        return _text(405, "method not allowed")
     if method != "GET":
         return _text(405, "method not allowed")
 
@@ -551,6 +856,11 @@ def route(method: str, path: str, params: dict) -> Response:
 
     if path == "/api/archives":
         return _ok({"archives": api.archives()})
+
+    if path == "/api/drops":
+        # The drop zone as the upload page reads it. Directory listings only —
+        # cheap enough to poll while an import the watcher owns runs elsewhere.
+        return _ok(_drops())
 
     if path == "/api/sources":
         return _ok({"sources": _list_sources()})
@@ -600,9 +910,7 @@ def route(method: str, path: str, params: dict) -> Response:
         # see _truth.blobs), addressed by content hash; the reader's <img> tags
         # point here. The name regex is the traversal guard, and content
         # addressing makes the response immutable, so cache it hard.
-        import re as _re
-
-        m = _re.match(r"^([0-9a-f]{64})(\.[A-Za-z0-9]{1,8})?$", path[len("/api/blob/"):])
+        m = re.match(r"^([0-9a-f]{64})(\.[A-Za-z0-9]{1,8})?$", path[len("/api/blob/"):])
         if not m:
             return _text(404, "bad blob name")
         api.open_archive()
@@ -612,10 +920,10 @@ def route(method: str, path: str, params: dict) -> Response:
         if bp is None:
             return _text(404, "no such blob")
         try:
-            body = bp.read_bytes()
+            blob = bp.read_bytes()
         except OSError:
             return _text(404, "no such blob")
-        return 200, media_type_for_path(bp), body, {
+        return 200, media_type_for_path(bp), blob, {
             "Cache-Control": "public, max-age=31536000, immutable",
         }
 
@@ -714,19 +1022,49 @@ class _Handler(BaseHTTPRequestHandler):
         for key, value in _SECURITY_HEADERS.items():
             self.send_header(key, value)
 
-    def do_GET(self):  # noqa: N802 — stdlib dispatch name
+    def _refuse(self, status: int, message: str) -> None:
+        """Answer a request that never reached the router. Closes the connection:
+        a refused write has an unread body still in the socket."""
+        body = message.encode()
+        self.send_response(status)
+        self.send_header("Content-Type", "text/plain; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Connection", "close")
+        self._send_security_headers()
+        self.end_headers()
+        self.wfile.write(body)
+
+    def _host_ok(self) -> bool:
         # DNS-rebinding defense (see _host_allowed). The deliberate non-loopback
         # opt-in also disables the check: an exposed server is reached by a
         # non-loopback name by definition.
-        if not _host_allowed(self.headers.get("Host")) and os.environ.get(_NONLOCAL_OPTIN) != "1":
-            body = b"forbidden: bad Host header"
-            self.send_response(403)
-            self.send_header("Content-Type", "text/plain; charset=utf-8")
-            self.send_header("Content-Length", str(len(body)))
-            self._send_security_headers()
-            self.end_headers()
-            self.wfile.write(body)
+        if _host_allowed(self.headers.get("Host")) or os.environ.get(_NONLOCAL_OPTIN) == "1":
+            return True
+        self._refuse(403, "forbidden: bad Host header")
+        return False
+
+    def do_GET(self):  # noqa: N802 — stdlib dispatch name
+        if not self._host_ok():
             return
+        self._dispatch("GET", None)
+
+    def do_POST(self):  # noqa: N802 — stdlib dispatch name
+        if not self._host_ok():
+            return
+        if not _write_allowed(self.headers):
+            self._refuse(403, "forbidden: cross-site write")
+            return
+        try:
+            length = int(self.headers.get("Content-Length", ""))
+        except ValueError:
+            self._refuse(411, "length required")
+            return
+        if length < 0:
+            self._refuse(400, "bad content length")
+            return
+        self._dispatch("POST", RequestBody(self.rfile, length))
+
+    def _dispatch(self, method: str, body: Optional[RequestBody]) -> None:
         parsed = urlparse(self.path)
         # Timed around the router, not inside it: `route` is the socket-free core
         # the tests drive directly, and it should stay a pure function of its
@@ -741,18 +1079,27 @@ class _Handler(BaseHTTPRequestHandler):
         span = None
         try:
             with _metrics.serving(), _contention.in_flight() as span, _probe.install() as probe:
-                status, ctype, body, headers = route("GET", parsed.path, parse_qs(parsed.query))
+                status, ctype, out, headers = route(
+                    method, parsed.path, parse_qs(parsed.query), body
+                )
         except Exception:  # noqa: BLE001 — isolate per request; never kill the loop
             # Detail stays server-side: exception text can carry paths/SQL/query
             # internals, and the body goes to whoever reached the port.
             log.exception("web request failed: %s", parsed.path)
             status, ctype, headers = 500, "application/json", {}
-            body = json.dumps({"error": "internal error"}).encode()
+            out = json.dumps({"error": "internal error"}).encode()
+        if body is not None and body.remaining:
+            # A body the router declined to read is still sitting in the socket,
+            # where the next keep-alive request would parse it as its own request
+            # line. Close rather than drain: the unread remainder is a whole
+            # export. send_header('Connection', 'close') sets close_connection.
+            headers = {**headers, "Connection": "close"}
         _metrics.record_request(
             parsed.path,
+            method=method,
             status=status,
             duration_ms=(time.monotonic() - _started) * 1000.0,
-            size=len(body),
+            size=len(out),
             probe=probe,
             # Sampled after the work, at the surface that served it — the same
             # place the MCP tools sample theirs. The viewer shares a process with
@@ -765,12 +1112,12 @@ class _Handler(BaseHTTPRequestHandler):
         )
         self.send_response(status)
         self.send_header("Content-Type", ctype)
-        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Content-Length", str(len(out)))
         self._send_security_headers()
         for key, value in headers.items():
             self.send_header(key, value)
         self.end_headers()
-        self.wfile.write(body)
+        self.wfile.write(out)
 
     def log_message(self, *args):  # keep the foreground console quiet
         pass

@@ -4,7 +4,7 @@ import { fileURLToPath } from 'node:url'
 
 import { expect, test } from '@playwright/test'
 
-import { ROUTES } from './routes'
+import { PUBLIC_ROUTES, ROUTES } from './routes'
 
 const here = dirname(fileURLToPath(import.meta.url))
 const appSource = readFileSync(resolve(here, '..', 'src', 'App.tsx'), 'utf8')
@@ -16,9 +16,9 @@ function routePattern(path: string): RegExp {
   )
 }
 
-test('every application route has exactly one browser smoke case', () => {
-  const declared = [...appSource.matchAll(/<Route\s+path="([^"]+)"/g)].map((match) => match[1])
+const declared = [...appSource.matchAll(/<Route\s+path="([^"]+)"/g)].map((match) => match[1])
 
+test('every application route has exactly one browser smoke case', () => {
   const missing = declared.filter(
     (route) => !ROUTES.some((smoke) => routePattern(route).test(smoke.path)),
   )
@@ -29,4 +29,12 @@ test('every application route has exactly one browser smoke case', () => {
   expect(missing, `Routes without browser coverage: ${missing.join(', ')}`).toEqual([])
   expect(orphaned, `Browser cases without an application route: ${orphaned.join(', ')}`).toEqual([])
   expect(new Set(ROUTES.map((route) => route.path)).size).toBe(ROUTES.length)
+})
+
+test('every committed page route still exists', () => {
+  // The coverage test above is a bijection between App and the smoke cases, so
+  // deleting a route *and* its case leaves it green. This is the other half: the
+  // URLs archive promises to outside callers cannot quietly disappear.
+  const dropped = PUBLIC_ROUTES.filter((route) => !declared.includes(route))
+  expect(dropped, `Committed routes missing from App: ${dropped.join(', ')}`).toEqual([])
 })

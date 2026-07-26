@@ -95,6 +95,7 @@ def record_request(
     *,
     status: int,
     duration_ms: float,
+    method: str = "GET",
     size: Optional[int] = None,
     probe: Optional["SearchProbe"] = None,
     context: Optional[dict[str, Any]] = None,
@@ -105,6 +106,10 @@ def record_request(
     one analysis reads both — and only when it says a search ran. ``context`` is a
     :func:`thread_archive._retrieval._contention.sample`, itself already empty on a
     quiet machine, so a request with nothing competing writes no context at all.
+
+    ``method`` is recorded only when it isn't a read: an upload's cost is the
+    uploader's connection, not this archive's, and a row that looked like a GET of
+    the same path would drag that time into the read-latency distribution.
     """
     if not _enabled():
         return
@@ -114,6 +119,8 @@ def record_request(
         "status": status,
         "duration_ms": round(duration_ms, 1),
     }
+    if method != "GET":
+        record["method"] = method
     if size is not None:
         record["size"] = size
     if probe is not None and probe.ran:

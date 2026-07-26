@@ -579,7 +579,9 @@ a.session-link:hover { color: var(--accent); }
 .stat-table td.session-cell { max-width: 340px; overflow: hidden; text-overflow: ellipsis; }
 
 /* ---- health / trust center ---- */
-.health-page {
+/* The status-tone palette. Shared with the import page, which reports the same
+   four states over a different subject (a drop waiting, imported, quarantined). */
+.health-page, .upload-page {
   --health-good: #27774a;
   --health-good-bg: #edf8f1;
   --health-warn: #956413;
@@ -798,7 +800,7 @@ a.session-link:hover { color: var(--accent); }
     background: hsl(var(--mc-h) var(--mc-sat) 60% / .26);
     border-color: hsl(var(--mc-h) var(--mc-sat) 60% / .75);
   }
-  .health-page {
+  .health-page, .upload-page {
     --health-good: #75c994;
     --health-good-bg: #173425;
     --health-warn: #e1b557;
@@ -809,6 +811,79 @@ a.session-link:hover { color: var(--accent); }
     --health-busy-bg: #1d2c3a;
   }
 }
+
+/* ---- import an account export ---- */
+.upload-page { max-width: 880px; }
+.upload-page h1 { margin: 0 0 10px; font-size: 22px; letter-spacing: -.01em; }
+.upload-lede { margin: 0 0 26px; color: var(--muted); max-width: 62ch; }
+
+/* A label, not a div: clicking anywhere in the zone opens the picker and the
+   real input keeps the keyboard path, while the drag handlers ride on top. */
+.dropzone {
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  gap: 4px; padding: 44px 24px; cursor: pointer; text-align: center;
+  border: 1.5px dashed var(--line); border-radius: 14px; background: var(--panel);
+  transition: border-color .15s ease, background .15s ease;
+}
+.dropzone:hover, .dropzone:focus-within { border-color: var(--accent); }
+.dropzone.dragging { border-color: var(--accent); background: var(--accent-soft); }
+.dropzone-input {
+  position: absolute; width: 1px; height: 1px; opacity: 0; pointer-events: none;
+}
+.dropzone-title { font-size: 16px; font-weight: 600; }
+.dropzone-sub { color: var(--muted); font-size: 12px; }
+
+.upload-queue { display: flex; flex-direction: column; gap: 8px; margin-top: 16px; }
+.upload-row {
+  padding: 12px 15px; border: 1px solid var(--line); border-radius: 10px;
+  background: var(--panel); box-shadow: inset 0 2px 0 var(--line);
+}
+.upload-row.good { box-shadow: inset 0 2px 0 var(--health-good); }
+.upload-row.bad, .upload-row.rejected { box-shadow: inset 0 2px 0 var(--health-bad); }
+.upload-row.busy, .upload-row.uploading { box-shadow: inset 0 2px 0 var(--health-busy); }
+.upload-row-top { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; }
+.upload-name { font-weight: 600; min-width: 0; overflow-wrap: anywhere; }
+.upload-state { flex: none; color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; }
+.upload-bar {
+  height: 6px; margin-top: 9px; border-radius: 999px; background: var(--badge); overflow: hidden;
+}
+.upload-bar-fill {
+  height: 100%; border-radius: 999px; background: var(--health-busy); transition: width .2s linear;
+}
+.upload-detail { margin-top: 5px; color: var(--muted); font-size: 12px; overflow-wrap: anywhere; }
+
+.upload-section { margin-top: 38px; }
+.upload-section h2 { font-size: 15px; margin: 0 0 10px; }
+.upload-section p { margin: 0 0 10px; color: var(--muted); max-width: 68ch; }
+.upload-note { font-size: 12px; }
+
+.provider-cards {
+  display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; margin-bottom: 12px;
+}
+.provider-card {
+  padding: 15px 16px; border: 1px solid var(--line); border-radius: 12px; background: var(--panel);
+}
+.provider-card h3 { margin: 0; font-size: 14px; }
+.provider-where { margin: 2px 0 10px !important; font-size: 11px; }
+.provider-path { margin: 0 0 8px !important; color: var(--ink) !important; font-size: 12px; }
+.provider-detail { font-size: 11px; line-height: 1.5; }
+
+.drop-path {
+  font: 12px/1.6 ui-monospace, SFMono-Regular, Menlo, monospace;
+  overflow-wrap: anywhere; margin-bottom: 18px !important;
+}
+.drop-list { margin-bottom: 18px; }
+.drop-list h3 {
+  margin: 0 0 6px; font-size: 11px; text-transform: uppercase;
+  letter-spacing: .08em; color: var(--muted); font-weight: 600;
+}
+.drop-empty { color: var(--muted); font-size: 12px; margin: 0 !important; }
+.drop-row {
+  display: flex; justify-content: space-between; align-items: baseline; gap: 12px;
+  padding: 6px 0; border-bottom: 1px solid var(--line);
+}
+.drop-name { min-width: 0; overflow-wrap: anywhere; font-size: 13px; }
+.drop-meta { flex: none; color: var(--muted); font-size: 11px; }
 
 @media (min-width: 760px) and (max-width: 1000px) {
   aside { width: 260px; min-width: 260px; }
@@ -879,6 +954,8 @@ a.session-link:hover { color: var(--accent); }
   .health-hero { padding: 22px; }
   .health-check-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .health-detail-grid { grid-template-columns: 1fr; }
+  .provider-cards { grid-template-columns: 1fr; }
+  .dropzone { padding: 34px 18px; }
 }
 
 @media (max-width: 420px) {

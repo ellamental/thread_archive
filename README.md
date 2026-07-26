@@ -212,7 +212,7 @@ tests/install/      # from-nothing install proofs: clean-container Docker + real
 
 ## Stability
 
-The public API is exactly three things:
+The public API is exactly four things:
 
 - **the retrieval MCP tools** — `thread_search` and `thread_read`, served by
   `archive-mcp`;
@@ -227,11 +227,17 @@ The public API is exactly three things:
   `testing` submodules, documented in [docs/providers.md](docs/providers.md).
   A provider maintained outside this repo is written against it and cannot
   follow the private tree's churn, so these names keep working.
+- **the web viewer's URLs** — the read-only UI at `http://127.0.0.1:8787`
+  ([below](#web-viewer)): its page routes and the two JSON endpoints other
+  programs call. Editor buttons, sibling navbars, and health probes link these
+  from outside the repo, so they keep working.
 
 Everything else is private support machinery and may change without notice:
-the `thread_archive` CLI, the web
-viewer, and every other Python module. More surface gets exposed
-deliberately as it matures. `tests/test_public_api.py` ratchets the boundary.
+the `thread_archive` CLI, the viewer's bundle and markup, and every other
+Python module. More surface gets exposed
+deliberately as it matures. `tests/test_public_api.py` ratchets the boundary,
+with the viewer's page routes pinned in `frontend/e2e/route-coverage.spec.ts`
+against the route table itself.
 
 Releases (changelog compression, version bump, release commit, annotated tag)
 follow [docs/releasing.md](https://github.com/ellamental/thread_archive/blob/main/docs/releasing.md).
@@ -309,8 +315,37 @@ The always-on watcher cohosts a local search + reader UI: `thread_archive watch 
 HTTP server handing out a pre-built React bundle plus a few JSON endpoints, in
 the watcher's *own* process. One process, one SQLite engine — the viewer reads
 concurrently with the watcher's writes, which WAL makes safe (`_store/_base.py`).
-No second daemon, and no standalone `web` verb: the viewer exists where the
-persistent URL is.
+No second daemon: the viewer exists where the persistent URL is.
+
+`thread_archive web` opens that URL in a browser. An opener, not a server.
+
+**The URLs are a supported interface.** Other programs link into the viewer —
+editor "open in archive" buttons, sibling consoles' navbars, health probes — so
+these paths keep working:
+
+| Path | What it is |
+| --- | --- |
+| `/` | landing: recent threads, global search |
+| `/search` | search results |
+| `/threads` | every thread |
+| `/stats` | token/cost analytics (`/stats/model/<model>` drills in) |
+| `/health` | the archive's own status page |
+| `/archive/<thread_id>` | one conversation, rendered |
+| `GET /api/health` | `{ok, home}` — cheap liveness for probes |
+| `GET /api/archive-link?id=<session-uuid>` | resolve a provider session id to its thread (below) |
+
+Every page route has a real-browser case in `frontend/e2e/` — one Chromium
+navigation per route, asserting its landmark renders with no console errors and
+no unmocked fetch — and `route-coverage.spec.ts` keeps that a bijection, so a
+new route without a browser case reds the suite.
+
+Everything under `/api/` other than those two backs the viewer's own bundle and
+is private — it changes with the frontend. So is the markup: the interface is
+the URL, not the DOM. Every route is GET (anything else is a `405`) and none
+writes truth — the conversation record is never touched by a page view; the
+stats pages do fold a derived rollup into the index, which is the rebuildable
+projection. The server binds loopback only, since it serves the whole archive
+with no auth (a non-loopback bind needs `THREAD_ARCHIVE_WEB_NONLOCAL=1`).
 
 **Runtime is node-free**: the bundle is built ahead of time and committed under
 `_web/static/`, so the install never touches node. Node is a *build*-only tool:

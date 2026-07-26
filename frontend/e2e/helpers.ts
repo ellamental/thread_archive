@@ -207,6 +207,27 @@ export async function mockApi(page: Page): Promise<string[]> {
         ],
       })
     }
+    if (path === '/api/upload') {
+      // The write endpoint, answered as the server does: the name the drop
+      // landed under and the export it was recognized as.
+      return json(route, {
+        name: url.searchParams.get('name') ?? 'export.zip',
+        kind: 'grok',
+        label: 'xAI (Grok)',
+        bytes: 4,
+        dumps_dir: '/tmp/browser-archive/dumps',
+      })
+    }
+    if (path === '/api/drops') {
+      // The drop zone the import page reads: one bundle in each state, so the
+      // page's three lists all render rather than every one falling to "empty".
+      return json(route, {
+        dumps_dir: '/tmp/browser-archive/dumps',
+        waiting: [{ name: 'chatgpt-export.zip', bytes: 2048, at: now }],
+        imported: [{ name: 'claude-export.zip', bytes: 4096, at: now, kind: 'claude' }],
+        failed: [{ name: 'unrecognized.zip', bytes: 64, at: now }],
+      })
+    }
     if (path === '/api/sources') return json(route, { sources: [{ source: 'claude-code', threads: 1 }] })
     if (path === '/api/thread-types') return json(route, { types: [{ thread_type: 'conversation', threads: 1 }] })
     if (path === '/api/threads') {

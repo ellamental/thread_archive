@@ -450,9 +450,9 @@ def _shared_filters(
 
 def _primary_predicate(
     query: str, *, match_mode: str, startswith: Optional[str]
-) -> Optional[tuple[str, dict]]:
+) -> Optional[tuple[str, dict, bool]]:
     """The single WHERE fragment that defines a query's match **set** — what the
-    exact-set queries count and group over, as ``(fragment, params)``.
+    exact-set queries count and group over, as ``(fragment, params, scans)``.
 
     This is deliberately the *primary* pass only, never the fallback ladder
     :func:`search_events` runs to fill a short pool. The tiers exist to top up a
@@ -461,22 +461,30 @@ def _primary_predicate(
     thread matching this query" mean something different on a corpus where the
     strict pass happened to come back short. ``None`` when the query has no
     matchable content.
+
+    ``scans`` says which cost model the fragment has, and the exact-set queries
+    need it to bound themselves (see :data:`SET_EXAMINE_CAP`). A ``MATCH`` walks
+    one term's doclist, so its work is proportional to how much it *finds*; a
+    ``LIKE`` has no index to walk and reads the corpus, so its work is
+    proportional to how much it *skips*.
     """
     if startswith is not None:
-        return "content LIKE :sw ESCAPE '\\'", {"sw": _like_prefix(startswith)}
+        return "content LIKE :sw ESCAPE '\\'", {"sw": _like_prefix(startswith)}, True
     if match_mode == "substring":
         clean = _clean_query_text(query)
-        return ("content LIKE :sub ESCAPE '\\'", {"sub": _like_substring(clean)}) if clean else None
+        if not clean:
+            return None
+        return "content LIKE :sub ESCAPE '\\'", {"sub": _like_substring(clean)}, True
     mode, _ = classify_query(query)
     if mode == "or":
         terms = [t for t in (_clean_query_text(t) for t in (query or "").split("|")) if t]
         if not terms:
             return None
-        return "event_search MATCH :q", {"q": " OR ".join(_quote_phrase(t) for t in terms)}
+        return "event_search MATCH :q", {"q": " OR ".join(_quote_phrase(t) for t in terms)}, False
     if mode == "code":
         clean = _clean_query_text(query)
-        return ("event_search MATCH :q", {"q": _quote_phrase(clean)}) if clean else None
-    return "event_search MATCH :q", {"q": to_match_query(query)}
+        return ("event_search MATCH :q", {"q": _quote_phrase(clean)}, False) if clean else None
+    return "event_search MATCH :q", {"q": to_match_query(query)}, False
 
 
 def search_events(
@@ -806,11 +814,29 @@ def _rescan_distinct(
 #: taken newest-first, the same query lands in well under a second and the answer
 #: degrades to an honest floor rather than to a slow exact one. 20k is chosen to
 #: cover realistic enumeration targets outright: a term appearing in ~1k threads
-#: resolves exactly, and only corpus-common words hit the cap.
+#: resolves exactly, and only corpus-common words hit the cap. This bounds a
+#: ``MATCH``; :data:`SET_EXAMINE_CAP` is what bounds a scanning predicate, whose
+#: work a *match* count cannot describe.
 SET_SCAN_CAP = 20000
 
+#: How many rows a *scanning* predicate (the ``LIKE`` of substring/startswith
+#: mode) will examine before giving up on an exact answer, as a rowid window off
+#: the newest end. :data:`SET_SCAN_CAP` alone does not bound these: it counts rows
+#: that MATCHED, and a ``LIKE`` has no index to walk, so it reads every row to find
+#: out. That inverts the cost — the cap engages early for a corpus-common
+#: substring and never at all for a rare one, making the *selective* query, which
+#: is what the mode exists for, the expensive one. Measured over this corpus a
+#: whole-table pass costs ~0.25µs/row warm, so this window is what "well under a
+#: second" means in rows; it bounds a cost that otherwise grows with the corpus
+#: forever. A ``MATCH`` predicate needs no window — it walks one term's doclist,
+#: which is already proportional to what it finds.
+SET_EXAMINE_CAP = 2_000_000
 
-def _set_scan_sql(select_cols: str, predicate: str, shared: list[str], *, group: str = "") -> str:
+
+def _set_scan_sql(
+    select_cols: str, predicate: str, shared: list[str], *, group: str = "",
+    scan_floor: bool = False,
+) -> str:
     """SQL for a capped exact-set query: take the newest ``SET_SCAN_CAP`` matched
     rows, then aggregate. The cap sits on the *inner* scan, so it bounds the work
     rather than the output — a ``LIMIT`` on the aggregate would still walk every
@@ -820,10 +846,17 @@ def _set_scan_sql(select_cols: str, predicate: str, shared: list[str], *, group:
     index walk, not a sort) because a capped enumeration has to drop *something*
     and the recent end is what the rest of the system biases toward; ordering
     would otherwise fall to fts5's internal rowid-ascending iteration and silently
-    return the OLDEST slice of a truncated set."""
+    return the OLDEST slice of a truncated set.
+
+    ``scan_floor`` adds the :data:`SET_EXAMINE_CAP` window for a predicate that
+    reads rather than seeks. fts5 takes a rowid bound as a range constraint on the
+    same walk the ordering already uses, so the window truncates the scan instead
+    of filtering its output — and it truncates the OLD end, which is the same
+    thing the match cap drops."""
+    floor = ["rowid > :scan_floor"] if scan_floor else []
     inner = (
         "SELECT thread_id, event_id, occurred_at FROM event_search WHERE "
-        + " AND ".join([predicate] + shared)
+        + " AND ".join([predicate] + floor + shared)
         + " ORDER BY rowid DESC LIMIT :set_cap"
     )
     return "SELECT " + select_cols + " FROM (" + inner + ")" + group
@@ -920,7 +953,7 @@ def reset_set_memo() -> None:
 
 def _set_memo_key(
     kind: str, where: str, params: dict, shared: list[str], shared_params: dict,
-    session: Optional[Session],
+    watermark: object,
 ) -> tuple:
     """The memo key for one exact-set query: the SQL it would run, its bound values,
     and the index it would run against.
@@ -934,8 +967,22 @@ def _set_memo_key(
     return (
         kind, id(get_engine()), where,
         tuple(sorted(params.items())), tuple(shared), tuple(sorted(shared_params.items())),
-        _set_watermark(session),
+        watermark,
     )
+
+
+def _scan_window(watermark: object) -> tuple[dict, bool]:
+    """The :data:`SET_EXAMINE_CAP` window off ``watermark``, as ``(params, floored)``.
+
+    ``floored`` is what the caller ORs into its ``capped`` flag: past the cap the
+    scan cannot have seen the whole corpus, so the answer is a floor. Below it the
+    window covers every row that exists and the answer stays exact. An unreadable
+    watermark (:func:`_set_watermark` returns a sentinel) declines to bound the
+    scan rather than guessing a floor that might cut the corpus in half — slow is
+    recoverable, silently truncated is not."""
+    if not isinstance(watermark, int) or watermark <= SET_EXAMINE_CAP:
+        return {"scan_floor": 0}, False
+    return {"scan_floor": watermark - SET_EXAMINE_CAP}, True
 
 
 def matched_threads(
@@ -969,10 +1016,11 @@ def matched_threads(
     predicate = _primary_predicate(query, match_mode=match_mode, startswith=startswith)
     if predicate is None:
         return [], False
-    where, params = predicate
+    where, params, scans = predicate
     shared, shared_params = _shared_filters(**scope)
     _t = perf_counter()
-    key = _set_memo_key("threads", where, params, shared, shared_params, session)
+    watermark = _set_watermark(session)
+    key = _set_memo_key("threads", where, params, shared, shared_params, watermark)
     memo = _set_memo_get(key)
     if memo is not None:
         # Fresh dicts per hand-out: the rows travel into a caller that builds hits
@@ -980,16 +1028,20 @@ def matched_threads(
         # answer that drifts from the query it answers.
         _probe.record("set_ms", _t)
         return [dict(r) for r in memo[0]], memo[1]
+    window, floored = _scan_window(watermark) if scans else ({"scan_floor": 0}, False)
     sql = sa_text(_set_scan_sql(
         "thread_id, count(*) AS n_hits, max(event_id) AS event_id, "
         "max(occurred_at) AS last_match",
         where, shared, group=" GROUP BY thread_id ORDER BY last_match DESC",
+        scan_floor=scans,
     ))
     with use_session(session) as s:
-        rows = s.execute(sql, {**shared_params, **params, "set_cap": SET_SCAN_CAP}).mappings().all()
+        rows = s.execute(
+            sql, {**shared_params, **params, **window, "set_cap": SET_SCAN_CAP},
+        ).mappings().all()
     _probe.record("set_ms", _t)
     total_hits = sum(r["n_hits"] for r in rows)
-    result = ([dict(r) for r in rows], total_hits >= SET_SCAN_CAP)
+    result = ([dict(r) for r in rows], floored or total_hits >= SET_SCAN_CAP)
     _set_memo_put(key, result)
     return [dict(r) for r in result[0]], result[1]
 
@@ -1018,21 +1070,27 @@ def count_matches(
     predicate = _primary_predicate(query, match_mode=match_mode, startswith=startswith)
     if predicate is None:
         return 0, 0, False
-    where, params = predicate
+    where, params, scans = predicate
     shared, shared_params = _shared_filters(**scope)
     _t = perf_counter()
-    key = _set_memo_key("count", where, params, shared, shared_params, session)
+    watermark = _set_watermark(session)
+    key = _set_memo_key("count", where, params, shared, shared_params, watermark)
     memo = _set_memo_get(key)
     if memo is not None:
         _probe.record("set_ms", _t)
         return memo
+    window, floored = _scan_window(watermark) if scans else ({"scan_floor": 0}, False)
     sql = sa_text(_set_scan_sql(
         "count(*) AS n_events, count(DISTINCT thread_id) AS n_threads", where, shared,
+        scan_floor=scans,
     ))
     with use_session(session) as s:
-        row = s.execute(sql, {**shared_params, **params, "set_cap": SET_SCAN_CAP}).mappings().one()
+        row = s.execute(
+            sql, {**shared_params, **params, **window, "set_cap": SET_SCAN_CAP},
+        ).mappings().one()
     _probe.record("set_ms", _t)
-    result = (row["n_events"], row["n_threads"], row["n_events"] >= SET_SCAN_CAP)
+    result = (row["n_events"], row["n_threads"],
+              floored or row["n_events"] >= SET_SCAN_CAP)
     _set_memo_put(key, result)
     return result
 

@@ -46,6 +46,38 @@ def test_search_terms_quoted_phrase_is_one_term() -> None:
     assert "login flow" in terms and "auth" in terms
 
 
+def test_search_terms_drops_the_punctuation_prose_hangs_off_a_word() -> None:
+    """A term carrying its sentence punctuation matches nothing at all: the density
+    pattern anchors both ends on word boundaries, and a boundary after a comma
+    needs a word character next to it — so ``thread,`` finds ``thread,x`` and never
+    the ``thread,`` of ordinary prose."""
+    assert rank.search_terms("losing my thread, waking up") == [
+        "losing", "thread", "waking", "up",
+    ]
+    assert rank.search_terms("is it done?  yes!") == ["done", "yes"]
+    assert rank.search_terms("the daemon restarted. what now") == [
+        "daemon", "restarted", "now",
+    ]
+    # …and only from the ends. Interior punctuation is what makes these one term.
+    assert rank.search_terms("MRR 0.45 in foo.bar") == ["mrr", "0.45", "foo.bar"]
+
+
+def test_a_query_that_punctuates_still_scores_its_own_words() -> None:
+    """The failure this closes is silent: a document holding the query verbatim
+    scored short of the term count that decides ``quality=strong`` and the re-rank
+    stand-down."""
+    query = "loneliness after losing my thread, waking up"
+    terms = rank.search_terms(query)
+    assert rank.term_hit_count(query, terms) == len(terms)
+
+
+def test_punctuation_does_not_smuggle_a_stopword_past_the_filter() -> None:
+    """``this,`` used to survive where ``this`` is dropped — putting a corpus-wide
+    word into both the ranking set and the lexical arm's OR union."""
+    assert "this," not in rank.search_terms("what is this, and why")
+    assert rank.search_terms("fix the auth bug, please") == ["fix", "auth", "bug", "please"]
+
+
 def test_search_terms_drops_stopwords() -> None:
     # Function words don't count toward density or the K/N quality verdict.
     assert rank.search_terms("how did we fix the auth bug") == ["fix", "auth", "bug"]

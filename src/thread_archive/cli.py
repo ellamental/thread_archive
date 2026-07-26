@@ -15,7 +15,9 @@ set so the change is deliberate).
 
 Retrieval deliberately has no CLI verbs: search and read are the public MCP
 tools, and the web viewer is cohosted by the always-on watcher
-(``thread_archive watch --web``). One retrieval surface, not three.
+(``thread_archive watch --web``). One retrieval surface, not three. ``web`` is
+not an exception — it hands that viewer's URL to a browser and serves nothing
+itself.
 """
 
 from __future__ import annotations
@@ -159,6 +161,20 @@ def cmd_import_export(args: argparse.Namespace) -> int:
         f"imported export {args.path}: processed={result.processed} "
         f"imported={result.imported} skipped={result.skipped} events={result.events_created}"
     )
+    return 0
+
+
+def cmd_web(args: argparse.Namespace) -> int:
+    """Open the cohosted viewer in a browser — the URL, and nothing else.
+
+    The viewer runs inside the always-on watcher process (``watch --web``), so
+    there is one read URL over one SQLite engine and this verb only points at it.
+    """
+    import webbrowser
+
+    url = f"http://127.0.0.1:{args.port}"
+    print(url)
+    webbrowser.open(url)
     return 0
 
 
@@ -1392,7 +1408,8 @@ def build_parser() -> argparse.ArgumentParser:
         prog="thread_archive",
         description="Serverless-native local archive for AI conversations (JSONL truth + SQLite index).",
         epilog="Retrieval has no CLI verbs by design: search/read are the archive-mcp "
-               "tools, and the web viewer is cohosted by `thread_archive watch --web`.",
+               "tools, and the web viewer is cohosted by `thread_archive watch --web` "
+               "(`thread_archive web` opens it).",
     )
     parser.add_argument("--version", action="version", version=f"thread-archive {__version__}")
     sub = parser.add_subparsers(dest="command", metavar="<command>")
@@ -1462,6 +1479,13 @@ def build_parser() -> argparse.ArgumentParser:
     p_watch.add_argument("--embed-batch", type=int, default=512,
                          help="max events embedded per cohost pass (default 512)")
     p_watch.set_defaults(func=cmd_watch)
+
+    # Opens the cohosted viewer; never serves it (see cmd_web).
+    p_web = sub.add_parser(
+        "web", help="open the cohosted web viewer in a browser (the watcher serves it)"
+    )
+    p_web.add_argument("--port", type=int, default=8787, help="viewer port (default 8787)")
+    p_web.set_defaults(func=cmd_web)
 
     p_reindex = sub.add_parser("reindex", help="rebuild index.db from the JSONL truth directory")
     _add_home_arg(p_reindex)

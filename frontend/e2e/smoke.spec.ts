@@ -166,3 +166,44 @@ test('stats drills into a model and back through real browser navigation', async
   expect(unhandled).toEqual([])
   expect(errors).toEqual([])
 })
+
+test('an export dragged onto the import page uploads and is tracked to imported', async ({
+  page,
+}) => {
+  const errors = monitorPage(page)
+  const unhandled = await mockApi(page)
+  // Registered after mockApi, so it wins: the drop zone as the watcher works
+  // through it, flipped between polls.
+  const zone = {
+    dumps_dir: '/tmp/browser-archive/dumps',
+    waiting: [] as unknown[],
+    imported: [] as unknown[],
+    failed: [] as unknown[],
+  }
+  await page.route('**/api/drops', async (route) => {
+    await route.fulfill({ contentType: 'application/json', body: JSON.stringify(zone) })
+  })
+
+  await page.goto('/upload')
+  await expect(page.getByText('/tmp/browser-archive/dumps')).toBeVisible()
+
+  const dataTransfer = await page.evaluateHandle(() => {
+    const transfer = new DataTransfer()
+    transfer.items.add(new File(['PK'], 'grok-export.zip', { type: 'application/zip' }))
+    return transfer
+  })
+  await page.locator('.dropzone').dispatchEvent('drop', { dataTransfer })
+
+  await expect(page.locator('.upload-row')).toContainText('grok-export.zip')
+  await expect(page.locator('.upload-row')).toContainText('waiting for the importer')
+
+  // The watcher imports it and retains the download as the recovery copy; the
+  // page finds that out by polling the folder.
+  zone.imported = [
+    { name: 'grok-export.zip', bytes: 4, at: '2026-07-20T12:00:00Z', kind: 'grok' },
+  ]
+  await expect(page.locator('.upload-row')).toContainText('imported', { timeout: 15_000 })
+
+  expect(unhandled).toEqual([])
+  expect(errors).toEqual([])
+})

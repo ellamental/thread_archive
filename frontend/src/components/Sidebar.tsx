@@ -67,6 +67,13 @@ export function Sidebar({
         >
           health
         </Link>
+        <Link
+          className={'rail-link' + (pathname === '/upload' ? ' active' : '')}
+          to="/upload"
+          onClick={onClose}
+        >
+          import
+        </Link>
       </nav>
       <div className="rail-head">
         <span>Recent</span>

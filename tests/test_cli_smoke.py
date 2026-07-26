@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import importlib
 import json
+import os
 import re
 import subprocess
 import sys
@@ -90,7 +91,7 @@ def test_all_subcommands_present() -> None:
     # (test_public_api.py owns the boundary ratchet; this is the wiring smoke.)
     sub = next(a for a in parser._actions if hasattr(a, "choices") and a.choices)
     assert set(sub.choices) == {
-        "setup", "import", "import-export", "providers", "watch", "reindex", "snapshot",
+        "setup", "import", "import-export", "providers", "watch", "web", "reindex", "snapshot",
         "migrate", "embed",
         "status", "loads", "archives",
         "eval", "mine", "backup", "verify", "repair", "restore-drill", "restore",
@@ -114,6 +115,30 @@ def seeded(archive_home, tmp_path):
     import_cc_session(tmp_path)
     ta.checkpoint()
     return archive_home
+
+
+def test_web_opens_the_viewer_url_in_a_browser(tmp_path) -> None:
+    """`web` hands the viewer's URL to the browser and does nothing else. Proved
+    end to end — a real subprocess, the real stdlib webbrowser, and a real
+    browser: a script named by $BROWSER (the stdlib's own seam) that records the
+    URL it was handed. In a subprocess because webbrowser resolves $BROWSER once
+    per interpreter."""
+    recorded = tmp_path / "opened.txt"
+    fake_browser = tmp_path / "fakebrowser"  # no spaces: $BROWSER is one executable
+    fake_browser.write_text(f'#!/bin/sh\nprintf "%s" "$1" > {recorded}\n', encoding="utf-8")
+    fake_browser.chmod(0o755)
+
+    proc = subprocess.run(
+        [sys.executable, "-m", "thread_archive.cli", "web", "--port", "9731"],
+        capture_output=True, text=True, timeout=60,
+        env={**os.environ, "BROWSER": str(fake_browser)},
+    )
+
+    assert proc.returncode == 0, proc.stderr
+    # Nothing is listening on 9731 — opening is the whole job, so the URL goes to
+    # the browser regardless of what's behind it.
+    assert recorded.read_text(encoding="utf-8") == "http://127.0.0.1:9731"
+    assert proc.stdout.strip() == "http://127.0.0.1:9731"
 
 
 def test_embed_cli_dispatches(seeded, monkeypatch, capsys) -> None:

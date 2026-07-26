@@ -173,6 +173,37 @@ export interface ArchiveEntry {
   runs?: LoadRun[]
 }
 
+// ── the drop zone (account-export upload) ───────────────────────────────────
+// One bundle in `<home>/dumps/`. `bytes` is null for a directory (an export
+// unpacked by hand) — the server doesn't walk a tree to size it.
+export interface DropEntry {
+  name: string
+  bytes: number | null
+  at: string | null
+  // `imported` entries only: the retention slug of the provider that claimed it.
+  kind?: string
+}
+
+// What the drop zone holds. `waiting` is yet to be imported — the watcher takes
+// a bundle a poll or two after it lands, then it reappears under `imported` (kept
+// as the recovery copy) or `failed` (quarantined, never deleted).
+export interface DropZone {
+  dumps_dir: string
+  waiting: DropEntry[]
+  imported: DropEntry[]
+  failed: DropEntry[]
+}
+
+// An upload the server took: the name it landed under, and which provider's
+// export it recognized it as.
+export interface UploadAccepted {
+  name: string
+  kind: string
+  label: string
+  bytes: number
+  dumps_dir: string
+}
+
 export interface ThreadListItem {
   id: string
   title: string | null
@@ -464,6 +495,49 @@ async function getJSON<T>(url: string): Promise<T> {
   return r.json() as Promise<T>
 }
 
+/**
+ * POST one account-export ZIP to the drop zone, reporting upload progress.
+ *
+ * XHR rather than fetch: an account export is routinely gigabytes, and fetch
+ * exposes no upload progress at all — a multi-minute send with no bar is
+ * indistinguishable from a hung one.
+ *
+ * `X-Archive-Upload` is the server's cross-site guard, not decoration. No HTML
+ * form can set a custom header, so sending one forces a preflight that the
+ * server never answers — which is what keeps some other page's form from
+ * posting at this port. Rejections come back as a plain-text reason to show.
+ */
+export function uploadExport(
+  file: File,
+  onProgress?: (fraction: number) => void,
+): Promise<UploadAccepted> {
+  return new Promise((resolve, reject) => {
+    const request = new XMLHttpRequest()
+    request.open('POST', '/api/upload?name=' + encodeURIComponent(file.name))
+    request.setRequestHeader('X-Archive-Upload', '1')
+    request.setRequestHeader('Content-Type', 'application/zip')
+    if (onProgress) {
+      request.upload.addEventListener('progress', (event) => {
+        if (event.lengthComputable && event.total > 0) onProgress(event.loaded / event.total)
+      })
+    }
+    request.addEventListener('load', () => {
+      if (request.status < 200 || request.status >= 300) {
+        reject(new Error(request.responseText.trim() || `upload failed (${request.status})`))
+        return
+      }
+      try {
+        resolve(JSON.parse(request.responseText) as UploadAccepted)
+      } catch {
+        reject(new Error('the server accepted the upload but answered unreadably'))
+      }
+    })
+    request.addEventListener('error', () => reject(new Error('the connection to the archive failed')))
+    request.addEventListener('abort', () => reject(new Error('upload cancelled')))
+    request.send(file)
+  })
+}
+
 export const api = {
   status: () => getJSON<Status>('/api/status'),
   archives: () =>
@@ -509,6 +583,9 @@ export const api = {
     getJSON<{ thread_id: string; url: string }>(
       '/api/archive-link?id=' + encodeURIComponent(id),
     ),
+  // What is in the drop zone right now — the upload page's progress signal,
+  // since the import itself is the watcher's work, not the server's.
+  drops: () => getJSON<DropZone>('/api/drops'),
   stats: () => getJSON<Stats>('/api/stats'),
   // Model ids can contain '/' (router models), so the name is a percent-encoded
   // path tail, not a query param — the server decodes it back.

@@ -108,11 +108,40 @@ def _drop_stopwords(terms: list[str]) -> list[str]:
     return kept or terms
 
 
+#: Characters that can only be furniture at a ranking term's edge — sentence
+#: punctuation, quotes and brackets, the FTS prefix marker. Stripped from both
+#: ends of every single-word term, and only from the ends: interior punctuation is
+#: what makes ``foo.bar`` and ``0.45`` one term rather than two.
+#:
+#: Left on, an edge character makes a term match *nothing*. :func:`_term_pattern`
+#: anchors both ends on word boundaries, and a boundary after a non-word character
+#: needs a word character next to it — so ``thread,`` matches ``thread,x`` and not
+#: the ``thread,`` of ordinary prose. The term is dead: it scores no density on any
+#: document, including one holding the query verbatim, and it drags down the
+#: term-hit count that decides ``quality=strong`` and the re-rank stand-down. It
+#: also slips the term past :data:`_STOPWORDS`, so ``this,`` survives where ``this``
+#: is dropped and a corpus-wide word joins both the ranking set and the OR union.
+_TERM_EDGE = ",.;:!?*\"'()[]{}<>…“”‘’"
+
+
+def _edge_stripped(terms: list[str]) -> list[str]:
+    """``terms`` with :data:`_TERM_EDGE` furniture off both ends, empties dropped.
+    Phrase terms (from quoted spans) are handed over untouched — a quoted span is
+    verbatim by definition, punctuation and all."""
+    out = []
+    for t in terms:
+        stripped = t if " " in t else t.strip(_TERM_EDGE)
+        if stripped:
+            out.append(stripped)
+    return out
+
+
 def search_terms(query: str) -> list[str]:
     """Lowercased ranking terms for ``query`` — the term set the density/phrase
     scorer matches against. Identifier-style words (``help_think``) are preserved
     intact; quoted spans become one phrase term each; AND/OR/NOT/pipe and
-    function words (:data:`_STOPWORDS`) are dropped."""
+    function words (:data:`_STOPWORDS`) are dropped, as is the edge punctuation a
+    natural-language query carries (:data:`_TERM_EDGE`)."""
     if not query or not query.strip():
         return []
     # Backticks are markdown fencing a user wraps around an identifier
@@ -124,14 +153,16 @@ def search_terms(query: str) -> list[str]:
         phrases = [m.strip().lower() for m in re.findall(r'"([^"]+)"', query) if m.strip()]
         outside = re.sub(r'"[^"]*"', " ", query)
         words = [w.lower() for w in outside.split() if w not in ("AND", "OR", "NOT", "|")]
-        terms = phrases + words
+        terms = phrases + _edge_stripped(words)
         if not terms:
-            terms = [t.lower() for t in query.split() if t not in ("AND", "OR", "NOT")]
+            terms = _edge_stripped(
+                [t.lower() for t in query.split() if t not in ("AND", "OR", "NOT")]
+            )
         return _drop_stopwords(terms)
     q = re.sub(r"(?<=\w)-(?=\w)", " ", query)
     q = re.sub(r"[:\^()\[\]{}]", " ", q)
     q = re.sub(r"\s+", " ", q).strip()
-    return _drop_stopwords([t.lower() for t in q.split()])
+    return _drop_stopwords(_edge_stripped([t.lower() for t in q.split()]))
 
 
 _IDENTIFIER_RE = re.compile(r"[_]|::|(?<=\w)\.(?=\w)")

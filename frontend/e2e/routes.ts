@@ -7,6 +7,22 @@ export interface SmokeRoute {
   landmark: (page: Page) => Locator
 }
 
+/**
+ * The page routes archive commits to (README → "Web viewer"). Editor buttons,
+ * sibling consoles' navbars and bookmarks link these from outside this repo, so
+ * a rename strands a URL living in someone else's source. Adding a route is
+ * free; dropping one of these is a deliberate act that edits this list.
+ */
+export const PUBLIC_ROUTES: readonly string[] = [
+  '/',
+  '/search',
+  '/threads',
+  '/stats',
+  '/stats/model/:model',
+  '/health',
+  '/archive/:id',
+]
+
 /** One concrete browser case for every route declared by App. */
 export const ROUTES: SmokeRoute[] = [
   {
@@ -22,6 +38,10 @@ export const ROUTES: SmokeRoute[] = [
   {
     path: '/health',
     landmark: (page) => page.getByRole('heading', { name: 'Your archive is protected' }),
+  },
+  {
+    path: '/upload',
+    landmark: (page) => page.getByRole('heading', { name: 'Import an account export' }),
   },
   {
     path: `/stats/model/${MODEL}`,

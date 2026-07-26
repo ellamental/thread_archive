@@ -1045,3 +1045,267 @@ def test_error_body_is_generic(tmp_path, monkeypatch, caplog):
     finally:
         httpd.shutdown()
         httpd.server_close()
+
+
+# ---- the drop zone: uploading an account export ----------------------------
+# The upload is a *write* into the archive home, and the only one this surface
+# has, so both halves are exercised here: what lands (a complete, classified
+# bundle under a name the drop watcher will actually scan) and what doesn't
+# (anything the watcher would only quarantine, and any write the browser's
+# same-origin story doesn't vouch for).
+
+
+def _claude_export_zip(path, *, uuid="conv-web-1", name="Uploaded Web Chat"):
+    """A minimal but real claude.ai account export ZIP, at ``path``."""
+    import zipfile
+
+    conv = {
+        "uuid": uuid, "name": name,
+        "created_at": "2026-01-01T10:00:00Z", "updated_at": "2026-01-01T10:00:10Z",
+        "chat_messages": [
+            {"uuid": "m1", "sender": "human", "text": "hello from an uploaded export",
+             "content": [{"type": "text", "text": "hello from an uploaded export"}],
+             "created_at": "2026-01-01T10:00:00Z"},
+            {"uuid": "m2", "sender": "assistant", "text": "hi from claude",
+             "content": [{"type": "text", "text": "hi from claude"}],
+             "created_at": "2026-01-01T10:00:05Z"},
+        ],
+    }
+    with zipfile.ZipFile(path, "w") as zf:
+        zf.writestr("conversations.json", json.dumps([conv]))
+        zf.writestr("users.json", json.dumps([{"uuid": "user-1"}]))
+    return path
+
+
+def _post(path, payload: bytes, *, declared=None, **params):
+    """Drive one upload through the router with ``payload`` as the body."""
+    import io
+
+    from thread_archive._web import RequestBody
+
+    body = RequestBody(io.BytesIO(payload), len(payload) if declared is None else declared)
+    qp = {k: [str(v)] for k, v in params.items()}
+    status, ctype, out, _ = route("POST", path, qp, body)
+    return status, (json.loads(out) if ctype.startswith("application/json") else out.decode())
+
+
+def test_upload_lands_a_classified_drop(archive_home, tmp_path):
+    payload = _claude_export_zip(tmp_path / "claude.zip").read_bytes()
+
+    status, body = _post("/api/upload", payload, name="claude-export.zip")
+
+    assert status == 200
+    assert (body["kind"], body["bytes"]) == ("claude", len(payload))
+    assert body["label"]  # the provider's own name for the export, for the page
+    dropped = archive_home / "dumps" / "claude-export.zip"
+    assert dropped.read_bytes() == payload
+    assert body["dumps_dir"] == str(archive_home / "dumps")
+
+
+def test_uploaded_drop_is_imported_by_the_watcher(archive_home, tmp_path):
+    """The upload's whole contract: what it writes, the drop watcher imports.
+
+    This is why the endpoint doesn't import anything itself — one import path,
+    with the settle/retain/quarantine rules that path already owns."""
+    from sqlalchemy import select
+
+    from thread_archive._store import Thread, get_session, init_db
+    from thread_archive._watcher import ExportDropWatcher
+
+    init_db()
+    payload = _claude_export_zip(tmp_path / "claude.zip").read_bytes()
+    assert _post("/api/upload", payload, name="claude-export.zip")[0] == 200
+
+    w = ExportDropWatcher(dumps_dir=archive_home / "dumps")
+    w.poll()  # first poll only records the settle signal
+    w.poll()  # unchanged since — import
+
+    with get_session() as s:
+        titles = s.execute(select(Thread.title).where(Thread.source == "claude")).scalars().all()
+    assert titles == ["Uploaded Web Chat"]
+    # …and the drop is retained as the recovery copy, not left in the zone.
+    assert not (archive_home / "dumps" / "claude-export.zip").exists()
+    assert (archive_home / "dumps" / "imported" / "claude" / "claude-export.zip").is_file()
+
+
+def test_upload_rejects_a_name_the_watcher_would_never_scan(archive_home, tmp_path):
+    payload = _claude_export_zip(tmp_path / "claude.zip").read_bytes()
+
+    status, message = _post("/api/upload", payload, name="conversations.json")
+
+    assert status == 400
+    assert ".zip" in message
+    assert list((archive_home / "dumps").glob("*")) == [] or not (archive_home / "dumps").exists()
+
+
+def test_upload_rejects_a_zip_no_provider_claims(archive_home):
+    import io
+    import zipfile
+
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        zf.writestr("notes.txt", "not an account export")
+
+    status, message = _post("/api/upload", buf.getvalue(), name="holiday-photos.zip")
+
+    assert status == 415
+    assert "recognized" in message
+    # Refused, and nothing left behind — not even the spooled temp file.
+    assert list((archive_home / "dumps").iterdir()) == []
+
+
+def test_upload_name_cannot_escape_the_drop_zone(archive_home, tmp_path):
+    payload = _claude_export_zip(tmp_path / "claude.zip").read_bytes()
+
+    status, body = _post("/api/upload", payload, name="../../../../tmp/evil.zip")
+
+    assert status == 200
+    assert body["name"] == "evil.zip"
+    assert (archive_home / "dumps" / "evil.zip").is_file()
+    assert not (tmp_path.parent / "evil.zip").exists()
+
+
+def test_upload_collision_keeps_the_zip_extension(archive_home, tmp_path):
+    """A numbered second copy stays ``…-1.zip``, never ``….zip.1``.
+
+    The drop watcher only ever considers files whose suffix is ``.zip``, so a
+    number appended after the extension would park the upload in the drop zone
+    permanently — present, and never looked at."""
+    payload = _claude_export_zip(tmp_path / "claude.zip").read_bytes()
+
+    first = _post("/api/upload", payload, name="export.zip")[1]["name"]
+    second = _post("/api/upload", payload, name="export.zip")[1]["name"]
+
+    assert (first, second) == ("export.zip", "export-1.zip")
+    assert {p.name for p in (archive_home / "dumps").iterdir()} == {"export.zip", "export-1.zip"}
+
+
+def test_upload_discards_a_body_that_ended_early(archive_home, tmp_path):
+    payload = _claude_export_zip(tmp_path / "claude.zip").read_bytes()
+
+    # Declares more than it sends: the uploader's connection died mid-file.
+    status, message = _post(
+        "/api/upload", payload[: len(payload) // 2],
+        declared=len(payload), name="claude-export.zip",
+    )
+
+    assert status == 400
+    assert "ended early" in message
+    assert list((archive_home / "dumps").iterdir()) == []  # no truncated ZIP to import
+
+
+def test_upload_refused_when_it_would_not_leave_the_headroom(archive_home, tmp_path, monkeypatch):
+    """The real free-space check, over this disk's real free space.
+
+    An export that fills the volume breaks the import it was uploaded for — and
+    the watcher's other sources with it. Demanding more headroom than any disk
+    has fires the same branch a genuinely full one would."""
+    payload = _claude_export_zip(tmp_path / "claude.zip").read_bytes()
+    monkeypatch.setenv("THREAD_ARCHIVE_UPLOAD_FREE_MARGIN", str(1 << 60))
+
+    status, message = _post("/api/upload", payload, name="claude-export.zip")
+
+    assert status == 507
+    assert "space" in message
+    assert list((archive_home / "dumps").iterdir()) == []  # refused before spooling
+
+
+def test_upload_missing_body_is_400(archive_home):
+    status, _, _, _ = route("POST", "/api/upload", {}, None)
+    assert status == 400
+
+
+# ---- who may write ---------------------------------------------------------
+def test_write_needs_both_a_loopback_origin_and_the_custom_header():
+    """A cross-origin form post carries this server's own Host, so the
+    rebinding check can't see it. What it cannot do is name a loopback Origin or
+    set a header that forces a preflight this server never answers."""
+    from thread_archive._web import server
+
+    allowed = {"Origin": "http://127.0.0.1:8787", "X-Archive-Upload": "1"}
+    assert server._write_allowed(allowed)
+    assert server._write_allowed({"Origin": "http://localhost:8787", "X-Archive-Upload": "1"})
+
+    assert not server._write_allowed({"X-Archive-Upload": "1"})  # no Origin at all
+    assert not server._write_allowed({"Origin": "http://127.0.0.1:8787"})  # no header
+    assert not server._write_allowed(
+        {"Origin": "https://evil.example", "X-Archive-Upload": "1"}
+    )
+    assert not server._write_allowed({"Origin": "file://", "X-Archive-Upload": "1"})
+
+
+def test_deliberate_exposure_still_needs_the_custom_header(monkeypatch):
+    """With the non-loopback opt-in set, the origin is not loopback by
+    definition — the header requirement is what still holds."""
+    from thread_archive._web import server
+
+    monkeypatch.setenv("THREAD_ARCHIVE_WEB_NONLOCAL", "1")
+    assert server._write_allowed({"Origin": "http://box.local:8787", "X-Archive-Upload": "1"})
+    assert not server._write_allowed({"Origin": "http://box.local:8787"})
+
+
+# ---- the drop-zone census the upload page polls ----------------------------
+def test_drops_reports_waiting_imported_and_failed(archive_home, tmp_path):
+    dumps = archive_home / "dumps"
+    (dumps / "imported" / "claude").mkdir(parents=True)
+    (dumps / "failed").mkdir(parents=True)
+    _claude_export_zip(dumps / "waiting.zip")
+    _claude_export_zip(dumps / "imported" / "claude" / "last-good.zip")
+    (dumps / "failed" / "broken.zip").write_bytes(b"nope")
+    (dumps / ".upload-1-abc.part").write_bytes(b"still arriving")
+
+    status, _, body = _get("/api/drops")
+
+    assert status == 200
+    assert body["dumps_dir"] == str(dumps)
+    # An in-flight upload is not a drop, and neither are the reserved subdirs.
+    assert [d["name"] for d in body["waiting"]] == ["waiting.zip"]
+    assert body["waiting"][0]["bytes"] == (dumps / "waiting.zip").stat().st_size
+    assert body["waiting"][0]["at"]
+    assert [(d["name"], d["kind"]) for d in body["imported"]] == [("last-good.zip", "claude")]
+    assert [d["name"] for d in body["failed"]] == ["broken.zip"]
+
+
+def test_drops_on_an_untouched_archive_is_empty(archive_home):
+    status, _, body = _get("/api/drops")
+    assert status == 200
+    assert (body["waiting"], body["imported"], body["failed"]) == ([], [], [])
+
+
+@pytest.mark.integration
+def test_upload_over_real_http(archive_home, tmp_path):
+    """The adapter half: a real POST, with the guards a browser would satisfy."""
+    import urllib.error
+    import urllib.request
+
+    from thread_archive._web import server
+
+    payload = _claude_export_zip(tmp_path / "claude.zip").read_bytes()
+    httpd = server.serve_in_thread(host="127.0.0.1", port=0)
+    try:
+        port = httpd.server_address[1]
+        url = f"http://127.0.0.1:{port}/api/upload?name=claude-export.zip"
+
+        request = urllib.request.Request(
+            url, data=payload, method="POST",
+            headers={"Origin": f"http://127.0.0.1:{port}", "X-Archive-Upload": "1",
+                     "Content-Type": "application/zip"},
+        )
+        with urllib.request.urlopen(request, timeout=10) as response:
+            assert json.load(response)["kind"] == "claude"
+        assert (archive_home / "dumps" / "claude-export.zip").read_bytes() == payload
+
+        # The same bytes from a page this server did not serve: refused without
+        # reading the body, and the connection closed rather than left holding it.
+        cross_site = urllib.request.Request(
+            url, data=payload, method="POST",
+            headers={"Origin": "https://evil.example", "X-Archive-Upload": "1"},
+        )
+        with pytest.raises(urllib.error.HTTPError) as excinfo:
+            urllib.request.urlopen(cross_site, timeout=10)
+        assert excinfo.value.code == 403
+        excinfo.value.close()
+        assert {p.name for p in (archive_home / "dumps").iterdir()} == {"claude-export.zip"}
+    finally:
+        httpd.shutdown()
+        httpd.server_close()

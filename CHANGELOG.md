@@ -2,6 +2,75 @@
 
 ## Unreleased
 
+- **A ranking term no longer carries the punctuation prose hangs off a word.**
+  `search_terms` stripped brackets and colons but not the comma, period, question
+  mark or exclamation mark a natural-language query is written with, so
+  `"losing my thread, waking up"` yielded the term `thread,`. That term matches
+  *nothing*: the density pattern anchors both ends on word boundaries, and a
+  boundary after a comma needs a word character beside it, so `thread,` finds
+  `thread,x` and never the `thread,` of ordinary prose. A document holding the
+  query verbatim scored 6 of 7 terms rather than 7 — quietly, under the count that
+  decides `quality=strong` and the re-rank stand-down. It also slipped the word
+  past the stopword filter: `this,` survived where `this` is dropped, putting a
+  corpus-wide term into the ranking set and into the OR union that is the lexical
+  arm's largest stage.
+
+  Stripped from both ends only — interior punctuation is what makes `foo.bar` and
+  `0.45` one term — and quoted spans are left verbatim, punctuation included. Over
+  the ledger's real queries this removed every self-unmatchable term (12 across
+  141 queries, 5% of which carried one). The gold gate holds and is otherwise
+  flat (weighted MRR 0.7451 → 0.7476, nDCG unchanged): the curated cases are
+  written without sentence punctuation, so they under-represent the shape this
+  fixes.
+
+- **The exact-set scan is now bounded for a scanning predicate, not just a matching
+  one.** `SET_SCAN_CAP` counts rows that *matched*, which describes a `MATCH`'s work
+  and not a `LIKE`'s: a `LIKE` has no index to walk, so it reads every row to find
+  out whether it matched. Left at that the cost inverted — measured over this
+  corpus, `LIKE '%the%'` hit the cap after 20k rows and cost 27 ms, while
+  `LIKE '%zzqqxx%'` matched once, never engaged the cap, and read all 794k rows for
+  316 ms. The *selective* query, which is what `match='substring'` exists for, was
+  the expensive one, and its cost grew with the corpus without bound.
+
+  `SET_EXAMINE_CAP` bounds it in the only currency that describes the work: rows
+  examined, as a rowid window off the newest end. fts5 takes a rowid bound as a
+  range constraint on the walk the ordering already uses, so the window truncates
+  the scan rather than filtering its output (measured: 373 ms → 60 ms → 13 ms as
+  the window narrows to 200k then 20k rows), and it truncates the old end, which is
+  what the match cap already drops. When it engages the answer reports `capped`,
+  degrading to the honest floor the exhaustive shape already knows how to serve. An
+  unreadable watermark declines to bound the scan at all: slow is recoverable,
+  silently truncated is not. At 2M rowids it does not engage on today's corpus — it
+  is a ceiling on growth, not a haircut.
+
+- **`thread_archive web` opens the viewer.** The read UI had a persistent URL and
+  no front door: knowing it meant knowing `127.0.0.1:8787` by heart. The CLI
+  deliberately refused a `web` verb because a verb that *served* the viewer would
+  fork the one read surface into two — a second SQLite engine reading a store the
+  watcher is writing. That rules out a server, not an opener, and this is the
+  opener: print the URL, hand it to the browser, done. The pin in
+  `test_public_api.py` still bars `search`/`read`; a `web` that served would be
+  the thing it exists to catch.
+
+- **The web viewer is a supported interface — the public API is four things, not
+  three.** It was documented as private support machinery, which had stopped
+  being true: lab's navbar links `/search`, the editor's "open in archive" button
+  opens `/archive/<id>`, the patcher allowlists `127.0.0.1:8787` in a CSP, and
+  the family manifest probes `/api/health`. Those URLs live in other repos'
+  source, where archive's private-tree churn can't reach them, which is the same
+  argument that makes the provider plugin API public.
+
+  So the commitment is now stated and ratcheted: the page routes (`/`, `/search`,
+  `/threads`, `/stats`, `/stats/model/<model>`, `/health`, `/archive/<thread_id>`)
+  and two JSON endpoints — `/api/health` and `/api/archive-link`. Everything else
+  under `/api/` backs the viewer's own bundle and stays private, as does the
+  markup: the interface is the URL, not the DOM. Each half is pinned where it
+  lives — the endpoints against the router in `test_public_api.py`, the page
+  routes against `App.tsx`'s own route table in `e2e/route-coverage.spec.ts`,
+  beside the bijection it already enforces between routes and browser cases. So
+  dropping one is a deliberate act, not a silent break in a product that doesn't
+  run these tests.
+
 - **A time-scoped search no longer queries `events` at all — the vector pack carries
   its own dates.** With the redundant `agents` clause gone, what remained in the KNN
   scope mask was the time bound itself, and it was still the largest thing a
