@@ -306,18 +306,18 @@ def test_the_exact_set_honors_the_same_scope_as_the_pool(archive_home) -> None:
 # The set scan does not depend on the page: a browse resolves the whole match set
 # to decide membership and totals, then slices one page out of it. Walking N pages
 # re-ran the identical scan N times, and it is the largest stage in that walk.
-def test_paging_a_browse_resolves_the_exact_set_once(archive_home, monkeypatch) -> None:
+def test_paging_a_browse_resolves_the_exact_set_once(archive_home) -> None:
+    from thread_archive._retrieval.fts import reset_set_memo, set_memo_stats
+
     _seed_many(archive_home, 12)
-    from thread_archive._retrieval import fts
-
-    scans = []
-    real = fts._set_scan_sql
-    monkeypatch.setattr(fts, "_set_scan_sql", lambda *a, **k: scans.append(1) or real(*a, **k))
-
+    reset_set_memo()
     first = search("widget", limit=5, group="browse", page=1)
+    assert set_memo_stats()["misses"] == 1  # page 1 pays the scan
     for page in (2, 3):
-        assert search("widget", limit=5, group="browse", page=page).total_threads == first.total_threads
-    assert len(scans) == 1, "later pages re-ran the set scan"
+        later = search("widget", limit=5, group="browse", page=page)
+        assert later.total_threads == first.total_threads
+    stats = set_memo_stats()
+    assert stats["hits"] == 2 and stats["misses"] == 1
 
 
 def test_the_memoized_set_still_sees_newly_indexed_threads(archive_home) -> None:
@@ -332,21 +332,19 @@ def test_the_memoized_set_still_sees_newly_indexed_threads(archive_home) -> None
     assert search("widget", limit=10, group="browse").total_threads == before + 1
 
 
-def test_resetting_the_memo_forces_a_fresh_scan(archive_home, monkeypatch) -> None:
+def test_resetting_the_memo_forces_a_fresh_scan(archive_home) -> None:
     """Redaction and reindex drop the memo outright: both change the set in ways
     the append watermark cannot see."""
-    _seed_many(archive_home, 4)
-    from thread_archive._retrieval import fts
+    from thread_archive._retrieval.fts import reset_set_memo, set_memo_stats
 
+    _seed_many(archive_home, 4)
+    reset_set_memo()
     assert count_matches("widget", content_types=["user"])[0] == 4
-    scans = []
-    real = fts._set_scan_sql
-    monkeypatch.setattr(fts, "_set_scan_sql", lambda *a, **k: scans.append(1) or real(*a, **k))
-    count_matches("widget", content_types=["user"])
-    assert scans == []  # served from the memo
-    fts.reset_set_memo()
-    count_matches("widget", content_types=["user"])
-    assert len(scans) == 1
+    assert count_matches("widget", content_types=["user"])[0] == 4
+    assert set_memo_stats() == {"entries": 1, "hits": 1, "misses": 1}
+    reset_set_memo()
+    assert count_matches("widget", content_types=["user"])[0] == 4
+    assert set_memo_stats() == {"entries": 1, "hits": 0, "misses": 1}
 
 
 def test_the_memo_does_not_hand_out_its_own_rows(archive_home) -> None:

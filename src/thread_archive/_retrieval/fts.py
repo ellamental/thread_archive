@@ -843,6 +843,20 @@ _SET_MEMO_MAX = 8
 
 _set_memo: "OrderedDict[tuple, tuple[float, Any]]" = OrderedDict()
 _set_memo_lock = threading.Lock()
+_set_memo_hits = 0
+_set_memo_misses = 0
+
+
+def set_memo_stats() -> dict:
+    """How the exact-set memo is doing: ``{entries, hits, misses}``.
+
+    A memo whose hit rate is zero is pure overhead wearing the shape of an
+    optimization, and nothing else in a served page distinguishes the two — the
+    latency it saves is exactly the latency it would have cost. Counted so the
+    question is answerable from outside (the counters mirror
+    :class:`.pool_cache.PoolCache`'s)."""
+    with _set_memo_lock:
+        return {"entries": len(_set_memo), "hits": _set_memo_hits, "misses": _set_memo_misses}
 
 
 def _set_watermark(session: Optional[Session]) -> object:
@@ -870,17 +884,19 @@ def _set_memo_get(key: tuple) -> Any:
     slices of one ordering, and a set re-resolved per page against a moving index
     can drop a row a later page was counting on.
     """
+    global _set_memo_hits, _set_memo_misses
     now = time.monotonic()
     with _set_memo_lock:
         entry = _set_memo.get(key)
-        if entry is None:
-            return None
-        stored_at, value = entry
-        if now - stored_at > _SET_MEMO_TTL_S:
+        if entry is not None and now - entry[0] > _SET_MEMO_TTL_S:
             del _set_memo[key]
+            entry = None
+        if entry is None:
+            _set_memo_misses += 1
             return None
+        _set_memo_hits += 1
         _set_memo.move_to_end(key)
-        return value
+        return entry[1]
 
 
 def _set_memo_put(key: tuple, value: Any) -> None:
@@ -893,11 +909,13 @@ def _set_memo_put(key: tuple, value: Any) -> None:
 
 
 def reset_set_memo() -> None:
-    """Drop every memoized exact-set answer. For where a stale set would be *wrong*
-    rather than merely dated — redaction (rows that must stop being counted) and
-    reindex — mirroring :func:`.vectors.reset_matrix_cache`."""
+    """Drop every memoized exact-set answer and its counters. For where a stale set
+    would be *wrong* rather than merely dated — redaction (rows that must stop being
+    counted) and reindex — mirroring :func:`.vectors.reset_matrix_cache`."""
+    global _set_memo_hits, _set_memo_misses
     with _set_memo_lock:
         _set_memo.clear()
+        _set_memo_hits = _set_memo_misses = 0
 
 
 def _set_memo_key(

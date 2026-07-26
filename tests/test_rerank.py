@@ -344,24 +344,25 @@ def test_warm_models_defaults_to_the_process_models(archive_home) -> None:
     assert rerank.is_available() is False
 
 
+
 def test_warm_models_primes_search_before_it_builds_the_graph(archive_home, monkeypatch) -> None:
-    """Order is the whole point of the warm pass. The corpus graph is the longest
-    stage and the only one no search blocks on — the coherence re-rank serves what
-    is cached and leaves the ranking alone when nothing is — so building it first
-    would leave every query in that window paying full cold-search latency, which
-    is the cost this function exists to move off the request path."""
-    from thread_archive._retrieval import _embed_graph
-    from thread_archive import _api
+    """Order is the whole point of the warm pass. The corpus graph is its longest
+    stage and the only one no search blocks on — the coherence re-rank serves what is
+    cached and leaves the ranking alone when nothing is — so building it first leaves
+    every query arriving in that window paying full cold-search latency, which is the
+    cost this function exists to move off the request path.
 
-    order: list[str] = []
-    monkeypatch.setattr(_embed_graph, "coherence_gamma", lambda: 1.0)
-    monkeypatch.setattr(_embed_graph, "get", lambda **kw: order.append("graph"))
-    real_search = _api.search
-    monkeypatch.setattr(
-        _api, "search",
-        lambda *a, **k: (order.append("search"), real_search(*a, **k))[1],
-    )
+    Read off the ledger row the pass writes: its stage keys are recorded as the
+    stages complete, so their order in the record is the order they ran in."""
+    import json
 
+    from thread_archive._config import resolve_paths
+
+    monkeypatch.setenv("THREAD_ARCHIVE_COHERENCE", "on")  # else the graph stage sits out
     _seed_one_thread(archive_home, "the launchd supervisor restarted the watcher daemon")
     warm_models()
-    assert order == ["search", "graph"]
+
+    ledger = resolve_paths().home / "retrieval-usage.jsonl"
+    warms = [json.loads(ln) for ln in ledger.read_text().splitlines() if ln.strip()]
+    stages = list(next(r for r in reversed(warms) if r.get("kind") == "warm"))
+    assert stages.index("search_ms") < stages.index("graph_ms")

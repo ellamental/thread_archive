@@ -2,6 +2,63 @@
 
 ## Unreleased
 
+- **Three latency findings off the retrieval-usage ledger, and one non-finding.**
+  The ledger is the only record of what search costs an agent in practice, and its
+  post-fix window read p50 352 ms / p90 4.2 s / p99 16 s — a distribution the gold
+  gate's warm bench cannot see, because the expensive shapes are the ones no bench
+  repeats. Three of them were addressable.
+
+  *The two pool arms ran in series.* The lexical FTS pass and the vector pass share
+  only the query and the scope — neither reads the other's output — yet the pool
+  waited on their sum. The vector arm now runs on its own thread while the lexical
+  arm stays on the caller's (which is where a caller-supplied session has to stay),
+  and the pool waits on the slower of the two. The overlap is real rather than
+  bookkeeping: both arms spend nearly all their time inside code that releases the
+  GIL. Worth ~50 ms of a 630 ms search on the gold-query mix, which is inside that
+  bench's own run-to-run noise, and rather more on real traffic, where the arms are
+  closer in size (measured over the ledger's own query mix: p50 312 → 261 ms). The
+  tail is the real target — the ledger holds searches whose vector arm ran 9 s and
+  28 s beside a lexical arm that had long since finished.
+
+  *A browse walk re-resolved the whole match set on every page.* `group='browse'`
+  resolves its thread list from the exact set rather than from the ranked pool, and
+  that scan does not depend on which page was asked for — so a caller paging to the
+  end paid the identical scan once per page, and it was the largest stage of the
+  walk. It is memoized now, keyed on the SQL it would run plus the index's append
+  watermark, so ingest invalidates it rather than the memo hiding rows that arrived
+  after it. Redaction and reindex drop it outright: a delete leaves the watermark
+  where it was, and a rebuild re-mints the rowids. Measured over full walks on the
+  live archive, 27–54% off the wall-clock, with the set scan falling from 0.1–1.9 s
+  to ~2 ms. Freezing the set for the walk also makes the pages *more* coherent than
+  re-resolving them did — they are sold as slices of one ordering, and a set
+  re-resolved per page against a moving index can drop a row a later page was
+  counting on.
+
+  *The warm pass built the corpus graph before it primed search.* The graph is the
+  longest of the four warm stages and the only one no search blocks on — the
+  coherence re-rank serves whatever is cached and leaves the ranking alone when
+  nothing is — so every query arriving in that window paid full cold-search latency
+  for a stage it was not waiting for. It runs last now. Over the last twelve warm
+  passes on this box, time-to-search-ready falls from a median 16.3 s to 10.4 s
+  (worst case 80 s to 29 s).
+
+  The non-finding is worth as much as the three. The **OR top-up tier** — the
+  any-of-these-terms MATCH that runs when the strict pass leaves the pool short —
+  is the single largest stage of a natural-language search, and its cost is set
+  entirely by its commonest token: one corpus-wide word puts six figures of rows
+  through bm25 to fill slots the strict pass declined. Ordering it by rowid instead
+  of by rank runs 3–9× faster and looked like free money. It is not: it puts
+  findability and judged-cases below floor, the vague shape hardest. Pruning the
+  high-document-frequency terms out of the union is not order-preserving either —
+  it changes 10–85% of the pool's own top 20. That breadth *is* the recall for the
+  queries the tier exists to serve. Both dead ends are recorded at the tier itself,
+  so the next attempt starts past them.
+
+  One consequence for anyone reading a stage breakdown: `fts_ms` and `semantic_ms`
+  now cover overlapping wall-clock and no longer sum toward the total. They are
+  durations, not shares — which is the point of recording them apart, since what a
+  search waits on is the slower of the two.
+
 - **The claude-code parser was marked degraded for shipping releases.** The
   version tripwire records a first-sighted harness version to the validation-drift
   ledger — deliberately, since format changes ride version bumps and the sighting

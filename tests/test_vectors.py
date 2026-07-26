@@ -654,3 +654,55 @@ def test_encode_honors_the_off_switch(monkeypatch):
     # …and the process embedder the vector arm actually reaches for is stood down too.
     assert embed.is_available() is False
     assert embed.embed_query("anything at all") is None
+
+
+def test_the_vector_arm_runs_beside_the_lexical_one(archive_home) -> None:
+    """The two pool arms share only the query and the scope, so they run at once and
+    the pool waits on the slower rather than on their sum.
+
+    Two things have to hold for that to be safe, and neither shows up in a result:
+    the arm has to leave the calling thread (or nothing overlaps), and the search's
+    context has to travel with it. The timing probe is context-local, so a worker
+    started without a copied context finds no probe and drops the vector arm's whole
+    sub-split — silently, and only in production, where anyone is measuring."""
+    import json
+    import threading
+
+    from thread_archive import _api as ta
+    from thread_archive._retrieval import _probe, search
+
+    class _ThreadRecordingEmbedder(_FixedEmbedder):
+        """Records which thread each query was embedded on, and whether the search's
+        probe was reachable from there."""
+
+        def __init__(self) -> None:
+            super().__init__()
+            self.threads: list = []
+            self.saw_probe: list[bool] = []
+
+        def embed_query(self, text):
+            self.threads.append(threading.current_thread())
+            self.saw_probe.append(_probe.current() is not None)
+            return super().embed_query(text)
+
+    init_db()
+    emb = _ThreadRecordingEmbedder()
+    lines = []
+    for i in range(4):
+        lines.append({"type": "user", "uuid": f"u{i}", "cwd": "/p",
+                      "timestamp": f"2026-01-01T10:0{i}:00Z",
+                      "message": {"role": "user", "content": f"vector search ranking {i}"}})
+    f = archive_home / "arms.jsonl"
+    f.write_text("\n".join(json.dumps(ln) for ln in lines) + "\n", encoding="utf-8")
+    ta.import_path(f)
+    assert vectors.index_events_local(embedder=emb) > 0
+
+    with _probe.install() as probe:
+        hits = search("vector search ranking", limit=5, embedder=emb)
+
+    assert hits
+    assert emb.threads, "the vector arm never ran"
+    caller = threading.current_thread()
+    assert all(t is not caller for t in emb.threads), "the vector arm stayed on the caller"
+    assert all(emb.saw_probe), "the arm thread could not see the installed probe"
+    assert probe.embed_ms > 0, "the arm's stages did not reach the caller's probe"
