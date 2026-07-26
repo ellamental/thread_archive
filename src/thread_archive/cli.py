@@ -1168,9 +1168,9 @@ def report_status(st: dict) -> int:
         print("ingest:  no pass recorded")
     u = st.get("last_self_update")
     if u:
-        # Only ever printed once a release check has run. Scheduled checks are
-        # non-mutating by default; the line names an available release so the
-        # operator can choose when to apply it.
+        # Only ever printed once the operator has run a release check; nothing
+        # checks on its own. The line names an available release so the next
+        # `thread_archive self-update` is an informed choice.
         action = u.get("action", "?")
         if action == "updated":
             print(f"update:  {u.get('reason')} {u['at']} ({_age(u['at'])})")
@@ -1215,8 +1215,6 @@ def report_self_update(res: dict) -> int:
         print(f"self-update: up to date (v{res['current']}) — {res['reason']}")
     else:
         print(f"self-update: {action.upper() if action else '?'}: {res.get('reason')}")
-    for line in res.get("skipped") or []:
-        print(f"  · {line}")
     return 0 if res.get("ok") else 1
 
 

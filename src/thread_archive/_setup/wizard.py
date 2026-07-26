@@ -365,8 +365,8 @@ def _offer_watcher(
         return "already-running"
     _say("Keep it fresh? A background watcher tails these stores so new")
     _say("conversations land within seconds, and serves the web viewer at http://127.0.0.1:8787.")
-    _say("It also checks release tags about once a day and reports when an update is")
-    _say("available. Applying it is explicit: `thread_archive self-update`.")
+    _say("It never updates the install — releases are yours to take:")
+    _say("`thread_archive self-update --check` reports one, `self-update` applies it.")
     answer = ask(
         "  [Enter] install watcher · s = skip (MCP wiring can enable catch-up)  > ",
         default="", interactive=interactive,

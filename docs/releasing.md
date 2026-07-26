@@ -7,12 +7,13 @@ compress the changelog, bump the version, one release commit, an annotated
 tag pushed to GitHub. The tag is what a consumer can pin and what
 `thread_archive status` / bug reports can be correlated against.
 
-**Pushing the tag publishes it.** Installed watchers check release tags daily
-and report a tag once it has cleared the 48-hour soak window; applying it is an
-explicit `thread_archive self-update` operation. Operators may deliberately opt back
-into unattended apply with `update.auto_apply`, so the preflight below remains
-the release gate rather than a formality. This machine's clone runs ahead of
-consumers, so a bad release should hurt here first.
+**Pushing the tag publishes it.** No install takes it on its own — a consumer
+gets the release when they run `thread_archive self-update`, and `--check` is
+how they see one exists. That is a delay, not a safety net: the tag is offered
+to every clone the moment it is pushed, and the preflight below is the only
+gate between a bad release and the first operator who reaches for it. This
+machine's clone runs ahead of consumers, so a bad release should hurt here
+first.
 
 The version's single source of truth is `__version__` in
 `src/thread_archive/__init__.py`; pyproject declares `version` dynamic and
@@ -20,9 +21,10 @@ hatch reads it from there. Nothing else carries the number.
 
 ## 0. The repo is release infrastructure — keep it hardened
 
-Release tags are executable software offered to every installed clone, and
-operators can opt into unattended apply. The GitHub repo's protections are
-therefore part of the release mechanism, not optional hygiene. The standing
+Release tags are executable software offered to every installed clone, and a
+`self-update` fast-forwards to whatever the newest one contains. The GitHub
+repo's protections are therefore part of the release mechanism, not optional
+hygiene. The standing
 requirements: two-factor auth on every account that can push, a tag protection
 rule covering `v*` (nobody but the release path can create or move release
 tags), and branch protection on `main`.

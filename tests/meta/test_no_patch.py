@@ -47,7 +47,7 @@ BASELINE: dict[str, int] = {
     "test_nightly.py": 4,
     "test_repair.py": 4,
     "test_search.py": 2,
-    "test_self_update.py": 6,
+    "test_self_update.py": 3,
     "test_store.py": 3,
     "test_truth_manifest.py": 1,
     "test_watch.py": 4,

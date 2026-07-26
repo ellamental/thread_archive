@@ -2,6 +2,44 @@
 
 ## Unreleased
 
+- **The dedup-key backfill could not reach a single account export.** Its scope
+  was "threads present in `import_state`", on the reasoning that `dedup_key`
+  exists for import idempotence and only watermarked threads are re-imported.
+  Export importers never write a watermark — they record provenance on
+  `Thread.source_id` — so the scope excluded every ChatGPT, claude.ai and xAI
+  thread outright. Those are the threads that get re-imported *most*: an account
+  export is cumulative, so every fresh download re-delivers the entire history
+  and dedup is the only thing standing between that and a doubled conversation.
+
+  Scope is now either marker — a watermark or a `source_id`. Live-captured
+  threads (neither) still stay out, since their event structure differs from the
+  importer's and the recompute is not validated against it. On the development
+  archive this moves ChatGPT from 100% NULL keys to 0.4%, claude.ai to 0%, and
+  Cursor to 0.1%; 1,115,535 keys backfilled across 3,947 threads with zero
+  warnings and zero plan errors.
+
+  Finishing such a pass with `rebuild_truth_from_store()` needs `force=True`, and
+  the reason is worth knowing before anyone reaches for it: the containment
+  pre-flight keys a truth unit on `dedup_key` *falling back to the event id*, so
+  a backfilled row is an id-unit in the truth and a key-unit in the store, and
+  every backfilled event reads as missing. The gate's count should equal the
+  backfill count exactly — anything above it is a real gap, not the shift.
+
+- **Nothing updates itself any more.** The watcher's hourly release probe, the
+  once-a-day check it spawned, the `update.auto_apply` opt-in to unattended
+  apply, and the `update.enabled` / `update.check_interval_hours` switches that
+  configured all of it are gone. `thread_archive self-update` is the whole
+  mechanism now — the operator runs it, `--check` reports without touching the
+  clone, and `update.remote` is the only knob left.
+
+  The 48-hour soak window went with them. It existed so a bad release could be
+  yanked before an unattended install took it; with no unattended install to
+  protect, it was only a delay between pushing a tag and being able to apply it,
+  and the plan's tag-by-tag walk (skip the young ones, maybe stop at an older
+  matured tag) collapses to "the newest release tag." Every guardrail on the
+  explicit operation stays: clean tree, fast-forward only, the truth-format gate
+  behind `--allow-format-bump`, smoke-check and rollback, patch retirement.
+
 - **Thread ids minted in the same millisecond sorted arbitrarily.** A ULID's
   timestamp orders ids *between* milliseconds; within one, order came from 80
   freshly-random bits, so two threads created in the same millisecond could sort

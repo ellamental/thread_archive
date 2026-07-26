@@ -43,12 +43,12 @@ from collections import defaultdict
 from pathlib import Path
 from typing import Any, Optional
 
-from sqlalchemy import func, select, update
+from sqlalchemy import func, or_, select, update
 from sqlalchemy import text as sa_text
 
 from thread_archive._thread_import.event_builder import compute_content_hash, compute_dedup_key
 
-from .._store import Event, ImportState, get_session
+from .._store import Event, ImportState, Thread, get_session
 from .backfill_reconcile import _norm_key, _pmid
 
 logger = logging.getLogger(__name__)
@@ -216,17 +216,25 @@ def plan_thread(
 
 
 def _threads_with_null_keys(session, limit: Optional[int]) -> list[str]:
-    """Import-derived threads (present in import_state) that have NULL-key events.
+    """Import-derived threads that have NULL-key events.
 
-    Scoped to import-derived threads on purpose: dedup_key exists for *import*
-    idempotence, and only these threads are ever re-imported. Live-captured threads
-    (the original app's live event stream — no import_state, no source) are never
-    re-imported, so their NULL keys are harmless; recompute skips them (their event
-    structure also differs from the importer's and isn't validated here)."""
+    Import-derived is recognized by two markers because neither covers it alone:
+    the watcher's ``ImportState`` watermarks, and ``Thread.source_id``. Export
+    importers write the provenance but never a watermark, so a scope keyed on
+    watermarks alone reaches no account export at all (ChatGPT, claude.ai, xAI) —
+    and those are re-imported the most, since an account export is cumulative and
+    every fresh download re-delivers the whole history.
+
+    Live-captured threads — neither watermark nor ``source_id`` — stay out: their
+    event structure differs from the importer's and is not validated here."""
     imported = select(ImportState.thread_id).where(ImportState.thread_id.is_not(None))
+    from_export = select(Thread.id).where(Thread.source_id.is_not(None))
     q = (
         select(Event.thread_id)
-        .where(Event.dedup_key.is_(None), Event.thread_id.in_(imported))
+        .where(
+            Event.dedup_key.is_(None),
+            or_(Event.thread_id.in_(imported), Event.thread_id.in_(from_export)),
+        )
         .group_by(Event.thread_id)
         .order_by(func.count().desc())
     )

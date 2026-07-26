@@ -1333,7 +1333,7 @@ def test_status_self_update_available_names_explicit_apply(capsys) -> None:
     old = "2026-07-10T00:00:00+00:00"
     st = _status_base(
         last_self_update={"ok": True, "action": "update", "current": "0.9.0",
-                          "tag": "v0.9.1", "reason": "past soak window", "at": old},
+                          "tag": "v0.9.1", "reason": "newest release tag", "at": old},
     )
     assert cli.report_status(st) == 0
     out = capsys.readouterr().out
@@ -1536,24 +1536,22 @@ def test_self_update_check_reports_available(capsys) -> None:
     """``--check`` plans only, so its output has to name the verb that applies it."""
     rc = cli.report_self_update(
         {"ok": True, "action": "update", "current": "0.9.0", "tag": "v0.9.1",
-         "reason": "tag is 30h old"},
+         "reason": "v0.9.1 is the newest release tag"},
     )
     assert rc == 0
     out = capsys.readouterr().out
-    assert "self-update: v0.9.1 available (tag is 30h old)" in out
+    assert "self-update: v0.9.1 available (v0.9.1 is the newest release tag)" in out
     assert "run `thread_archive self-update` to apply" in out
 
 
-def test_self_update_up_to_date_lists_skipped(capsys) -> None:
+def test_self_update_up_to_date(capsys) -> None:
     rc = cli.report_self_update(
         {"ok": True, "action": "up-to-date", "current": "0.9.1",
-         "reason": "newest tag is installed",
-         "skipped": ["v0.9.2: only 2h old", "v0.9.3: format bump"]},
+         "reason": "newest tag is installed"},
     )
     assert rc == 0
-    out = capsys.readouterr().out
-    assert "self-update: up to date (v0.9.1) — newest tag is installed" in out
-    assert "· v0.9.2: only 2h old" in out and "· v0.9.3: format bump" in out
+    assert "self-update: up to date (v0.9.1) — newest tag is installed" in \
+        capsys.readouterr().out
 
 
 def test_self_update_blocked_returns_1(capsys) -> None:

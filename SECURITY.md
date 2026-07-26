@@ -53,14 +53,15 @@ threat model is correspondingly narrow, and these are its load-bearing walls:
 
 ## The self-update mechanism
 
-Installs cloned from git check release tags daily by default and report an
-eligible update without applying it. `thread_archive self-update` is the explicit
-mutating operation: it fast-forwards the clone to the newest release tag once
-the tag is 48 hours old, reinstalls, smoke-checks, and rolls back on failure.
-Its trust anchor is transport security to the git remote you cloned from — the
-same trust the install itself made. There is no signature layer, so applying a
-malicious tag is the supply-chain risk to weigh. The updater never crosses a
-truth-format bump without an explicit flag and never touches a tree with local
-changes. `{"update": {"enabled": false}}` disables scheduled checks;
-`{"update": {"auto_apply": true}}` deliberately opts back into unattended
-apply.
+Nothing updates itself. An installed clone never checks for releases on its own
+and never applies one; `thread_archive self-update` is the only thing that
+moves the checkout, and you run it. `--check` fetches release tags and reports
+what is available without touching the clone.
+
+Applied, it fast-forwards the clone to the newest release tag, reinstalls,
+smoke-checks, and rolls back on failure. Its trust anchor is transport security
+to the git remote you cloned from — the same trust the install itself made.
+There is no signature layer, so applying a malicious tag is the supply-chain
+risk to weigh, and the timing of that exposure is yours to choose. The updater
+never crosses a truth-format bump without an explicit flag and never touches a
+tree with local changes.

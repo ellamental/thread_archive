@@ -1,10 +1,9 @@
-"""Self-update: plan gating (soak, dirty tree, divergence, format bump),
-apply/rollback, and the watcher-side spawn gate — against real throwaway git
-repos, with the mutating steps (pip, smoke, restarts) stubbed."""
+"""Self-update: plan gating (dirty tree, divergence, format bump) and
+apply/rollback — against real throwaway git repos, with the mutating steps
+(pip, smoke, restarts) stubbed."""
 
 from __future__ import annotations
 
-import json
 import subprocess
 import time
 from pathlib import Path
@@ -12,13 +11,7 @@ from pathlib import Path
 import pytest
 
 from thread_archive import _update
-from thread_archive._update import (
-    UpdatePlan,
-    apply_update,
-    check_due,
-    maybe_spawn_self_update,
-    plan_update,
-)
+from thread_archive._update import UpdatePlan, apply_update, plan_update
 
 OLD = {"GIT_COMMITTER_DATE": "2026-01-01T00:00:00Z",
        "GIT_AUTHOR_DATE": "2026-01-01T00:00:00Z"}
@@ -88,29 +81,18 @@ def test_updates_to_matured_newer_tag(repo: Path) -> None:
     assert (plan.action, plan.tag) == ("update", "v0.0.5")
 
 
-def test_soak_window_holds_young_tag_back(repo: Path) -> None:
+def test_newest_tag_wins_however_recently_it_was_cut(repo: Path) -> None:
+    """No age gate: the candidate is the highest release tag, full stop — an
+    intermediate release is never a stepping stone, and a tag cut a minute ago
+    is as eligible as one from last month."""
     (repo / "f").write_text("1")
     _commit(repo, "v0.0.5")
-    fresh = {"GIT_COMMITTER_DATE": time.strftime("%Y-%m-%dT%H:%M:%S")}
-    _tag(repo, "v0.0.5", env=fresh)
-    plan = _plan(repo, min_age_hours=48)
-    assert plan.action == "up-to-date"
-    assert any("soak window" in s for s in plan.skipped)
-    # A zero-hour window applies it immediately.
-    assert _plan(repo, min_age_hours=0).action == "update"
-
-
-def test_soak_skips_young_but_takes_matured_older(repo: Path) -> None:
-    (repo / "f").write_text("1")
-    _commit(repo, "v0.0.5")
-    _tag(repo, "v0.0.5")  # old → eligible
+    _tag(repo, "v0.0.5")
     (repo / "f").write_text("2")
     _commit(repo, "v0.0.6")
     _tag(repo, "v0.0.6", env={"GIT_COMMITTER_DATE": time.strftime("%Y-%m-%dT%H:%M:%S")})
     _git(repo, "checkout", "-q", "v0.0.4")  # the consumer sits at their installed release
-    plan = _plan(repo, min_age_hours=48)
-    assert (plan.action, plan.tag) == ("update", "v0.0.5")
-    assert any(s.startswith("v0.0.6") for s in plan.skipped)
+    assert (_plan(repo).action, _plan(repo).tag) == ("update", "v0.0.6")
 
 
 def test_dirty_tree_blocks(repo: Path) -> None:
@@ -285,8 +267,8 @@ def test_apply_does_not_roll_back_after_migration_starts(repo: Path) -> None:
 
 
 def test_self_update_records_health(repo: Path, monkeypatch) -> None:
-    """The orchestrator stamps health.json (the status line + the spawner's
-    once-per-interval gate); a manual check counts as the latest check."""
+    """The orchestrator stamps health.json — the record behind the status line
+    and the viewer's health panel."""
     from thread_archive._ops.health import read_health
 
     monkeypatch.setattr(_update, "install_repo", lambda: repo)
@@ -296,7 +278,6 @@ def test_self_update_records_health(repo: Path, monkeypatch) -> None:
     assert res["action"] == "up-to-date"
     rec = read_health()[_update.HEALTH_KEY]
     assert rec["action"] == "up-to-date" and rec["ok"]
-    assert not check_due()
 
     res = _update.self_update()
     rec = read_health()[_update.HEALTH_KEY]
@@ -307,57 +288,6 @@ def test_self_update_unavailable_without_clone(monkeypatch) -> None:
     monkeypatch.setattr(_update, "install_repo", lambda: None)
     res = _update.self_update()
     assert res["action"] == "unavailable" and not res["ok"]
-
-
-# ── the watcher's spawn gate ─────────────────────────────────────────────────
-
-
-def test_check_due_reads_health_stamp(monkeypatch) -> None:
-    from thread_archive._ops.health import clear_health, record_health
-
-    clear_health(_update.HEALTH_KEY)
-    assert check_due()
-    record_health(_update.HEALTH_KEY, {"ok": True, "action": "up-to-date"})
-    assert not check_due()
-
-
-def test_maybe_spawn_respects_config_and_install(archive_home, monkeypatch, tmp_path) -> None:
-    from thread_archive._ops.health import clear_health, record_health
-
-    spawned: list[list[str]] = []
-    monkeypatch.setattr(_update.subprocess, "Popen",
-                        lambda cmd, **kw: spawned.append(cmd))
-
-    def set_update_config(**cfg) -> None:
-        """The operator's switch: ``update`` in the home's own config.json."""
-        (archive_home / "config.json").write_text(
-            json.dumps({"update": cfg}), encoding="utf-8")
-
-    # Disabled → no spawn, whatever else holds.
-    set_update_config(enabled=False)
-    clear_health(_update.HEALTH_KEY)  # due, so only the switch can be stopping it
-    assert not maybe_spawn_self_update()
-
-    # Enabled but not a clone install → no spawn.
-    set_update_config(enabled=True)
-    monkeypatch.setattr(_update, "install_repo", lambda: None)
-    assert not maybe_spawn_self_update()
-
-    # Enabled, clone, due → a detached check-only invocation by default.
-    monkeypatch.setattr(_update, "install_repo", lambda: tmp_path)
-    assert maybe_spawn_self_update()
-    assert spawned and spawned[0][1] == "self-update"
-    assert "--check" in spawned[0]
-
-    # Unattended apply exists only behind an explicit opt-in.
-    set_update_config(enabled=True, auto_apply=True)
-    assert maybe_spawn_self_update()
-    assert "--check" not in spawned[1]
-
-    # Not due (a check was just stamped) → no second spawn.
-    record_health(_update.HEALTH_KEY, {"ok": True, "action": "up-to-date"})
-    assert not maybe_spawn_self_update()
-    assert len(spawned) == 2
 
 
 # ── the default executors ────────────────────────────────────────────────

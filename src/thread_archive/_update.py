@@ -1,53 +1,44 @@
-"""Self-update from the release tags — how a fix reaches an install nobody tends.
+"""Self-update from the release tags — how a fix reaches an installed clone.
 
 The clone is the install, so an update is a ``git fetch`` + ``git checkout
 <tag>`` + ``pip install -e .`` + agent restart — no registry, no installer.
 This module automates exactly that, off the annotated release tags
-(``vX.Y.Z``, see docs/releasing.md), with the guardrails that make running it
-unattended defensible on a machine that holds someone's entire conversation
-history:
+(``vX.Y.Z``, see docs/releasing.md).
+
+**The operator drives it.** ``thread_archive self-update`` is the whole
+mechanism: nothing polls for releases, nothing applies one on its own, and no
+configuration turns unattended apply on. ``--check`` plans and reports without
+changing the clone. Guardrails on the explicit operation, on a machine that
+holds someone's entire conversation history:
 
 - **Tags only, never a branch head.** The candidate is the highest semver tag
   newer than the running ``__version__``. A moved tag is not followed (plain
   ``fetch --tags`` won't clobber an existing local tag).
-- **Soak window.** A tag younger than ``update.min_age_hours`` (default 48) is
-  not applied — the window in which a bad release can be yanked before any
-  unattended install has taken it. The operator's own machine runs ahead of
-  the window, so problems surface there first.
 - **Never with local work in play.** A dirty working tree, or local commits
   the release line doesn't contain (HEAD not an ancestor of the tag), blocks
   the update. A development clone is therefore never clobbered; a consumer
   clone is always clean.
-- **Never across a truth-format bump unattended.** A reader refuses a truth
+- **Never across a truth-format bump without asking.** A reader refuses a truth
   directory newer than it understands (docs/format.md), so applying a release
   that bumps ``TRUTH_FORMAT_VERSION`` makes rollback a hard stop the moment
   the new code touches the store. The tag's declared format version is read
   out of the tag itself (``git grep``); if it is newer than ours — or cannot
-  be determined — the update requires a human (``thread_archive self-update
-  --allow-format-bump``).
+  be determined — the update requires ``thread_archive self-update
+  --allow-format-bump``.
 - **Verify, then roll back.** After checkout + reinstall, the new code must
   pass a smoke check (``thread_archive status`` under the new install). On failure
   the previous commit is checked out and reinstalled — the archive keeps
   running the code that worked.
 
-Release discovery is the watcher's job: its poll loop probes
-:func:`maybe_spawn_self_update` hourly, which spawns a detached
-``thread_archive self-update --check`` at most once per
-``update.check_interval_hours`` (default 24, stamped in ``health.json``).
-Checks fetch release tags and report availability without changing the clone.
-Applying an update is an explicit ``thread_archive self-update`` operation unless the
-operator deliberately opts back into unattended apply. Config rides
-``config.json``::
+The outcome of each run is stamped in ``health.json``, which is what
+``thread_archive status`` and the web viewer's health panel report. Config
+rides ``config.json``::
 
-    {"update": {"enabled": true, "auto_apply": false, "min_age_hours": 48,
-                "remote": "origin", "check_interval_hours": 24}}
+    {"update": {"remote": "origin"}}
 
-``enabled: false`` turns scheduled checks off (the manual verb still works).
-``auto_apply: true`` makes a scheduled check apply an eligible release using
-the guarded checkout/reinstall/rollback path below. A wheel install (no clone)
-has nothing to update against and is reported as unavailable. Trust anchor:
-HTTPS to the remote the user cloned from — the same trust the install itself
-made; there is no signature layer.
+A wheel install (no clone) has nothing to update against and is reported as
+unavailable. Trust anchor: HTTPS to the remote the user cloned from — the same
+trust the install itself made; there is no signature layer.
 """
 
 from __future__ import annotations
@@ -56,15 +47,12 @@ import logging
 import re
 import subprocess
 import sys
-import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Optional
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_MIN_AGE_HOURS = 48.0
-DEFAULT_CHECK_INTERVAL_HOURS = 24.0
 DEFAULT_REMOTE = "origin"
 
 # Network ops (fetch) get the long leash; local git is fast but not instant on
@@ -88,7 +76,6 @@ class UpdatePlan:
     reason: str
     current: str
     tag: Optional[str] = None
-    skipped: list[str] = field(default_factory=list)  # tags passed over, annotated
     current_format: Optional[int] = None
     target_format: Optional[int] = None
 
@@ -101,19 +88,6 @@ def update_config(home: Optional[str] = None) -> dict:
 
     cfg = load_config(home).get("update", {})
     return cfg if isinstance(cfg, dict) else {}
-
-
-def update_enabled(home: Optional[str] = None) -> bool:
-    return bool(update_config(home).get("enabled", True))
-
-
-def auto_apply_enabled(home: Optional[str] = None) -> bool:
-    """Whether scheduled release checks may mutate the installed clone.
-
-    False by default: finding an update and applying it are separate trust
-    decisions. The explicit ``thread_archive self-update`` command is unaffected.
-    """
-    return bool(update_config(home).get("auto_apply", False))
 
 
 def _running_version() -> str:
@@ -154,20 +128,6 @@ def _parse_tag(tag: str) -> Optional[tuple[int, int, int]]:
     return tuple(int(g) for g in m.groups()) if m else None  # type: ignore[return-value]
 
 
-def _tag_timestamp(repo: Path, tag: str) -> Optional[float]:
-    """When the tag was cut (taggerdate for annotated tags, commit date as the
-    lightweight-tag fallback) — the soak clock. ``None`` when unreadable."""
-    r = _git(repo, "for-each-ref", "--format=%(taggerdate:unix)", f"refs/tags/{tag}")
-    stamp = r.stdout.strip()
-    if not stamp:
-        r = _git(repo, "log", "-1", "--format=%ct", tag)
-        stamp = r.stdout.strip()
-    try:
-        return float(stamp)
-    except ValueError:
-        return None
-
-
 # Where TRUTH_FORMAT_VERSION lives. The anchored probe reads exactly this file
 # so an unrelated assignment elsewhere in the tag (a test, a fixture) can never
 # shadow the real constant on a safety gate.
@@ -197,27 +157,24 @@ def plan_update(
     repo: Path,
     *,
     remote: str = DEFAULT_REMOTE,
-    min_age_hours: float = DEFAULT_MIN_AGE_HOURS,
     allow_format_bump: bool = False,
     fetch: bool = True,
     current_version: Optional[str] = None,
     local_format_version: Optional[int] = None,
-    now: Optional[float] = None,
 ) -> UpdatePlan:
     """Decide whether — and to which tag — this clone should update.
 
     Pure decision, no mutation (the fetch updates refs, nothing else). The
-    candidate is the **highest** eligible tag: newer than the running version,
-    older than the soak window, reachable from HEAD (fast-forward only), and
-    inside the truth-format gate. A younger tag merely waits; a format-gated
-    tag blocks everything above it too (updating past it would cross the same
-    format boundary).
+    candidate is the **highest** release tag newer than the running version;
+    it is taken only if it is reachable from HEAD (fast-forward only) and
+    inside the truth-format gate. A format-gated candidate blocks rather than
+    falling back to a lower tag — the operator asked for the newest release,
+    and stopping short of it deserves to be said out loud.
     """
     version: str = _running_version() if current_version is None else current_version
     local_fmt: int = (
         _local_format_version() if local_format_version is None else local_format_version
     )
-    now = time.time() if now is None else now
     current = _parse_tag(f"v{version}")
     if current is None:
         return UpdatePlan("blocked", f"unparseable running version {version!r}", version)
@@ -246,50 +203,32 @@ def plan_update(
         return UpdatePlan("up-to-date", "no release tag newer than the running version",
                           version)
 
-    skipped: list[str] = []
-    # Highest first; a format-gated tag blocks everything below it from being a
-    # stepping stone PAST it, but a lower, ungated tag is still a valid stop.
-    for tag in sorted(tags, key=lambda t: _parse_tag(t) or (0, 0, 0), reverse=True):
-        stamp = _tag_timestamp(repo, tag)
-        if stamp is None or (now - stamp) < min_age_hours * 3600:
-            age_h = None if stamp is None else (now - stamp) / 3600
-            skipped.append(
-                f"{tag}: inside the {min_age_hours:g}h soak window"
-                + (f" ({age_h:.1f}h old)" if age_h is not None else " (age unreadable)")
-            )
-            continue
-        fmt = _tag_format_version(repo, tag)
-        if fmt is None:
-            return UpdatePlan(
-                "blocked",
-                f"{tag} does not declare a readable truth-format version",
-                version, tag=tag, skipped=skipped, current_format=local_fmt,
-            )
-        if not allow_format_bump and fmt > local_fmt:
-            return UpdatePlan(
-                "blocked",
-                f"{tag} declares truth-format version {fmt} > local {local_fmt} — "
-                "a one-way door; run `thread_archive self-update --allow-format-bump` deliberately",
-                version, tag=tag, skipped=skipped, current_format=local_fmt,
-                target_format=fmt,
-            )
-        r = _git(repo, "merge-base", "--is-ancestor", "HEAD", tag)
-        if r.returncode != 0:
-            return UpdatePlan(
-                "blocked",
-                f"local history diverged from the release line (HEAD is not an "
-                f"ancestor of {tag})",
-                version, tag=tag, skipped=skipped,
-            )
+    tag = max(tags, key=lambda t: _parse_tag(t) or (0, 0, 0))
+    fmt = _tag_format_version(repo, tag)
+    if fmt is None:
         return UpdatePlan(
-            "update", f"{tag} is released and past the soak window", version,
-            tag=tag, skipped=skipped, current_format=local_fmt, target_format=fmt,
+            "blocked",
+            f"{tag} does not declare a readable truth-format version",
+            version, tag=tag, current_format=local_fmt,
         )
-
+    if not allow_format_bump and fmt > local_fmt:
+        return UpdatePlan(
+            "blocked",
+            f"{tag} declares truth-format version {fmt} > local {local_fmt} — "
+            "a one-way door; run `thread_archive self-update --allow-format-bump` deliberately",
+            version, tag=tag, current_format=local_fmt, target_format=fmt,
+        )
+    r = _git(repo, "merge-base", "--is-ancestor", "HEAD", tag)
+    if r.returncode != 0:
+        return UpdatePlan(
+            "blocked",
+            f"local history diverged from the release line (HEAD is not an "
+            f"ancestor of {tag})",
+            version, tag=tag,
+        )
     return UpdatePlan(
-        "up-to-date",
-        "newer tag(s) exist but none has cleared the soak window yet",
-        version, skipped=skipped,
+        "update", f"{tag} is the newest release tag", version,
+        tag=tag, current_format=local_fmt, target_format=fmt,
     )
 
 
@@ -485,10 +424,9 @@ def self_update(
     retire: Optional[Callable[[Optional[str], str], None]] = None,
 ) -> dict:
     """One full check-and-maybe-apply, recorded in ``health.json`` (the record
-    is both the ``thread_archive status`` line and the once-per-interval stamp the
-    watcher's spawner gates on). ``check_only`` plans and reports without
-    changing the installed checkout. A manual check counts as the latest check,
-    so the watcher does not immediately repeat the same network work."""
+    behind the ``thread_archive status`` line and the viewer's health panel).
+    ``check_only`` plans and reports without changing the installed
+    checkout."""
     repo = install_repo()
     if repo is None:
         return {"ok": False, "action": "unavailable", "current": "",
@@ -498,7 +436,6 @@ def self_update(
     plan = plan_update(
         repo,
         remote=str(cfg.get("remote", DEFAULT_REMOTE)),
-        min_age_hours=float(cfg.get("min_age_hours", DEFAULT_MIN_AGE_HOURS)),
         allow_format_bump=allow_format_bump,
     )
     if plan.action == "update" and not check_only:
@@ -508,8 +445,6 @@ def self_update(
     else:
         result = {"ok": plan.action != "blocked", "action": plan.action,
                   "current": plan.current, "tag": plan.tag, "reason": plan.reason}
-    if plan.skipped:
-        result["skipped"] = plan.skipped
 
     try:
         from ._ops.health import record_health
@@ -518,53 +453,3 @@ def self_update(
     except Exception:  # noqa: BLE001 — advisory
         logger.exception("self-update: could not record outcome in health.json")
     return result
-
-
-def check_due(home: Optional[str] = None) -> bool:
-    """Is a scheduled check due — no recorded check, or the last one older than
-    ``update.check_interval_hours``? Reads the stamp :func:`self_update` leaves,
-    so daemon restarts don't refetch."""
-    from ._ops.health import _parse_at, read_health
-
-    interval_h = float(update_config(home).get(
-        "check_interval_hours", DEFAULT_CHECK_INTERVAL_HOURS))
-    at = _parse_at((read_health().get(HEALTH_KEY) or {}).get("at"))
-    return at is None or (time.time() - at) >= interval_h * 3600
-
-
-def maybe_spawn_self_update(home: Optional[str] = None) -> bool:
-    """The watcher's hourly probe: when enabled, installed from a clone, and
-    due, spawn a **detached** ``thread_archive self-update --check`` with its output
-    appended to ``<home>/logs/self-update.log``. ``update.auto_apply=true``
-    deliberately removes ``--check`` and restores guarded unattended apply.
-    Returns whether a spawn happened.
-    Fail-soft throughout — the poll loop must never die to an update probe."""
-    try:
-        if not update_enabled(home):
-            return False
-        if install_repo() is None:
-            return False
-        if not check_due(home):
-            return False
-        from ._config import resolve_paths
-        from ._service import entry_path
-
-        log_dir = resolve_paths(home).home / "logs"
-        log_dir.mkdir(parents=True, exist_ok=True)
-        cmd = [str(entry_path("thread_archive")), "self-update"]
-        auto_apply = auto_apply_enabled(home)
-        if not auto_apply:
-            cmd.append("--check")
-        if home:
-            cmd += ["--home", str(home)]
-        with open(log_dir / "self-update.log", "a", encoding="utf-8") as fh:
-            subprocess.Popen(cmd, stdout=fh, stderr=subprocess.STDOUT,
-                             start_new_session=True)
-        logger.info(
-            "self-update: spawned scheduled %s",
-            "apply" if auto_apply else "check",
-        )
-        return True
-    except Exception:  # noqa: BLE001 — advisory; the caller is the ingest loop
-        logger.exception("self-update: scheduled spawn failed")
-        return False

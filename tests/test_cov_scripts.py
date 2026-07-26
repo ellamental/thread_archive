@@ -216,6 +216,43 @@ def test_recompute_threads_with_null_keys_respects_limit(archive_home) -> None:
         assert len(rc._threads_with_null_keys(s, 1)) == 1
 
 
+def test_recompute_scope_reaches_exports_and_excludes_live_capture(archive_home) -> None:
+    """Import-derived means a watermark *or* a source_id, not a watermark alone.
+
+    Export importers record provenance on ``Thread.source_id`` and never write an
+    ``ImportState`` row, so a watermark-only scope reaches no account export — and
+    those are re-imported the most, since every fresh export re-delivers the whole
+    history. Live-captured threads carry neither marker and stay out."""
+    init_db()
+    base = datetime(2026, 1, 1, 10, 0, 0, tzinfo=timezone.utc)
+
+    def _seed(*, source: str, source_id: str | None, watermark: bool) -> int:
+        with get_session() as s:
+            t = Thread(name=f"scope-{source}", source=source, source_id=source_id)
+            s.add(t)
+            s.flush()
+            tid = t.id
+            if watermark:
+                s.add(ImportState(source=source, source_id=source_id or "w", thread_id=tid))
+            s.add(Event(
+                thread_id=tid, stream_id="st", api_call_id=None,
+                event_type="text_complete", payload={"block_index": 0, "text": "x"},
+                occurred_at=base, dedup_key=None,
+            ))
+            s.commit()
+        return tid
+
+    export = _seed(source="chatgpt", source_id="conv-1", watermark=False)
+    watched = _seed(source="claude-code", source_id="proj:s1", watermark=True)
+    live = _seed(source="auto", source_id=None, watermark=False)
+
+    with get_session() as s:
+        reached = set(rc._threads_with_null_keys(s, None))
+    assert export in reached, "an account export must be reachable"
+    assert watched in reached, "a watermarked thread must stay reachable"
+    assert live not in reached, "live capture has neither marker and stays out"
+
+
 def test_recompute_multiple_anchor_pmids_warns(archive_home) -> None:
     """A group whose anchors disagree on provider_message_id can't be keyed — warned."""
     _seed_recompute_thread(archive_home, [

@@ -175,8 +175,8 @@ thread_archive daemon <action>   # install/uninstall/restart/status a service ag
                           #   systemd --user on Linux) — the always-on
                           #   watcher (default), --mcp the shared server, --backup the nightly
                           #   pipeline (`daemon install --backup --dest <path> [--at HH:MM]`), or
-thread_archive self-update       # explicitly fast-forward this clone to the newest eligible release tag
-                          #   (the watcher checks daily; --check also reports without applying)
+thread_archive self-update       # fast-forward this clone to the newest release tag — operator-driven,
+                          #   nothing updates on its own (--check reports without applying)
 ```
 
 The CLI is private operational tooling (see Stability below) — the process
