@@ -15,6 +15,43 @@ const threadListItem = {
   updated_at: now,
 }
 
+// The retrieval page reads three ledgers; the fixture carries one warm day and one
+// cold search so both regimes render — a single-regime fixture would let the page
+// ship with the blend it exists to avoid.
+const retrieval = {
+  home: '/Users/test/.thread/archive',
+  days: 14,
+  at: now,
+  served: {
+    days: 14,
+    n: 24,
+    n_unknown_regime: 4,
+    daily: [
+      { day: '2026-07-19', n: 12, warm: { n: 11, p50: 240, p90: 900 }, cold: { n: 1, p50: 8200, p90: 8200 } },
+      { day: '2026-07-20', n: 12, warm: { n: 11, p50: 210, p90: 800 }, cold: { n: 1, p50: 9100, p90: 9100 } },
+    ],
+    warm: { n: 22, p50: 228, p90: 860, p99: 2415 },
+    cold: { n: 2, p50: 8600, p90: 9100, p99: 9100 },
+  },
+  stages: {
+    n: 22,
+    n_unproven: 4,
+    stages: [
+      { stage: 'fts_ms', n: 22, p50: 178, p90: 1344 },
+      { stage: 'semantic_ms', n: 22, p50: 90, p90: 293 },
+    ],
+  },
+  restarts: { n: 3, daily: [{ day: '2026-07-20', n: 3 }], p50_ms: 22300, total_s: 67 },
+  bench: {
+    gold: [{ at: now, commit: 'abc1234', p50: 900, p95: 2000, p99: 3000, n_queries: 300, tuning: false }],
+    observed: [{ at: now, commit: 'abc1234', p50: 228, p95: 1412, p99: 2415, n_queries: 40, tuning: false }],
+  },
+  quality: {
+    points: [{ at: now, commit: 'abc1234', passed: true, mrr: 0.7476, ndcg: 0.6264, n: 317 }],
+    latest: { at: now, commit: 'abc1234', passed: true, mrr: 0.7476, ndcg: 0.6264, n: 317 },
+  },
+}
+
 const stats = {
   overview: {
     conversations: 1,
@@ -295,6 +332,7 @@ export async function mockApi(page: Page): Promise<string[]> {
     }
     if (path === '/api/stats') return json(route, stats)
     if (path === `/api/stats/model/${MODEL}`) return json(route, modelStats)
+    if (path === '/api/retrieval') return json(route, retrieval)
 
     unhandled.push(`${route.request().method()} ${path}`)
     return json(route, { error: 'unhandled browser-test API request' }, 501)

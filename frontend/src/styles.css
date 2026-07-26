@@ -971,3 +971,22 @@ a.session-link:hover { color: var(--accent); }
   .health-check { min-height: 0; }
   .health-section-heading { align-items: start; flex-direction: column; gap: 4px; }
 }
+
+/* ---- retrieval health ---- */
+/* Charts are inline SVG: a handful of series for one operator, which is less code
+   than a charting dependency that renders them. */
+.rv-head { display: flex; align-items: baseline; justify-content: space-between; gap: 16px; }
+.rv-range { font-size: 13px; color: var(--muted); display: flex; align-items: center; gap: 6px; }
+.rv-range select {
+  background: var(--badge); color: var(--ink); border: 1px solid var(--line);
+  border-radius: 6px; padding: 2px 6px; font: inherit;
+}
+.rv-chart { width: 100%; height: auto; display: block; margin: 8px 0 4px; overflow: visible; }
+.rv-grid { stroke: var(--line); stroke-width: 1; stroke-dasharray: 2 3; }
+.rv-axis { fill: var(--muted); font-size: 10px; font-variant-numeric: tabular-nums; }
+.rv-legend { display: flex; flex-wrap: wrap; gap: 14px; font-size: 12px; color: var(--muted); margin: 0 0 4px; }
+.rv-swatch { display: inline-block; width: 10px; height: 3px; border-radius: 2px; vertical-align: middle; }
+.small { font-size: 12px; }
+.rv-swatch.muted { height: 1px; opacity: .5; }
+.rv-legend .rv-muted-key { opacity: .65; }
+.rv-mark { stroke: var(--accent); stroke-width: 1; stroke-dasharray: 2 3; opacity: .5; }

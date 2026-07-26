@@ -25,9 +25,10 @@ xcode-select -p            # C-compiler toolchain (see below)
 
 If `python3` is older than 3.12, stop and tell the human — nothing below will work.
 
-The base install has C-extension dependencies (`python-igraph`, `leidenalg`,
-`cryptography`). These normally resolve to prebuilt wheels, but if pip has to
-build one from source — no wheel for this Python/arch yet — it needs a C
+The base install's compiled dependencies (`numpy`, `cryptography`) publish wide
+wheel matrices and normally need no compiler. The narrow ones are behind the
+`[leiden]` extra (`python-igraph`, `leidenalg`), which `[embeddings]` pulls in —
+so if you install either extra and pip has to build from source, it needs a C
 compiler. On a fresh Mac that means the **Xcode Command Line Tools**; if
 `xcode-select -p` printed nothing (or the install later dies with a compiler
 error), install them and retry:
@@ -36,9 +37,9 @@ error), install them and retry:
 xcode-select --install
 ```
 
-(The `[embeddings]` extra pulls `torch`, whose wheel availability lags new
-Python releases the most — if that step can't find a wheel, it's the same
-class of failure.)
+(`[embeddings]` also pulls `torch`, whose wheel availability lags new Python
+releases the most — if that step can't find a wheel, it's the same class of
+failure.)
 
 ## 1. Create the venv and install the package
 
@@ -55,9 +56,11 @@ once** (the decision point): lexical-only, or also embeddings?
 .venv/bin/pip install -e '.[embeddings]'   # only if they want vectors
 ```
 
-The base install includes the corpus-graph ranking stack (`leidenalg` +
-`python-igraph` + `networkx` — the coherence search signal needs no
-topic graph).
+`[embeddings]` also brings the corpus-graph ranking stack (`leidenalg` +
+`python-igraph`, on top of the base `networkx`): the coherence search signal is
+computed over the vector pack, so it arrives with vectors and needs no topic
+graph. `.[all]` is the same set under one name. A lexical-only install has no
+corpus graph to partition and wants none of it.
 
 ## 2. Verify the install
 

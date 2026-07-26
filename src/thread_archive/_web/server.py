@@ -993,6 +993,14 @@ def route(
     if path == "/api/thread-types":
         return _ok({"types": _list_thread_types()})
 
+    if path == "/api/retrieval":
+        # Read straight off the ledgers rather than the index — this is the one
+        # view whose subject is the *search pipeline*, not the corpus, so it must
+        # keep answering while a rebuild has the index unavailable.
+        from .._ops import retrieval_report
+
+        return _ok(retrieval_report.report(days=_int(params, "days", 14, hi=365)))
+
     # unmatched API path — don't fall through to the SPA shell
     if path.startswith("/api/"):
         return _text(404, "not found")

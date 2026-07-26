@@ -54,6 +54,24 @@ function healthyStatus(): Status {
     },
     watch_process_alive: true,
     backup_same_device: false,
+    libraries: [
+      {
+        name: 'leidenalg + python-igraph',
+        tier: 'extra',
+        capability: 'Community detection for the search coherence re-rank',
+        installed: true,
+        state: 'ok',
+        detail: 'Leiden partitions the corpus graph.',
+      },
+      {
+        name: 'sentence-transformers + torch',
+        tier: 'extra',
+        capability: 'Semantic search (the vector arm)',
+        installed: false,
+        state: 'off',
+        detail: 'Search is lexical-only. Install the [embeddings] extra to add the vector arm.',
+      },
+    ],
   }
 }
 
@@ -110,6 +128,34 @@ it('turns operational evidence into a clear protected verdict', async () => {
   expect(screen.getByText('Best effort')).toBeInTheDocument()
   expect(screen.getByText('/Volumes/backup/thread-archive')).toBeInTheDocument()
   expect(screen.queryByRole('heading', { name: 'Action queue' })).not.toBeInTheDocument()
+})
+
+it('reports search libraries, and a feature merely absent raises no action', async () => {
+  renderHealth(healthyStatus())
+
+  expect(await screen.findByRole('heading', { name: 'Search libraries' })).toBeInTheDocument()
+  expect(screen.getByText('leidenalg + python-igraph')).toBeInTheDocument()
+  // An uninstalled extra is reported, never as a fault: a lexical-only install is a
+  // shape of the product, not a broken one, so it still reads as protected.
+  expect(screen.getByText('Not installed')).toBeInTheDocument()
+  expect(screen.getByRole('heading', { name: 'Your archive is protected' })).toBeInTheDocument()
+  expect(screen.queryByRole('heading', { name: 'Action queue' })).not.toBeInTheDocument()
+})
+
+it('raises the silent fault when a live feature lost the library that does it well', async () => {
+  const status = healthyStatus()
+  status.libraries[0] = {
+    ...status.libraries[0],
+    installed: false,
+    state: 'degraded',
+    detail: 'The coherence re-rank is running on Louvain.',
+  }
+  renderHealth(status)
+
+  expect(await screen.findByRole('heading', { name: 'Your archive needs attention' })).toBeInTheDocument()
+  expect(screen.getByText('leidenalg + python-igraph is not installed')).toBeInTheDocument()
+  expect(screen.getByText("pip install 'thread-archive[all]'")).toBeInTheDocument()
+  expect(screen.getByText('Degraded')).toBeInTheDocument()
 })
 
 it('prioritizes unresolved protection gaps and gives executable remedies', async () => {

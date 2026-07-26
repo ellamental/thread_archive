@@ -1,18 +1,25 @@
 """Community detection — Leiden, with a Louvain fallback. The shared spine.
 
-Leiden (Traag et al. 2019) strictly dominates Louvain — it guarantees
-well-connected communities (Louvain can leave a community internally
-disconnected) and converges to a better partition. We run it locally via
-``leidenalg`` + ``python-igraph`` (base dependencies), with no graph server.
+Leiden (Traag et al. 2019) guarantees well-connected communities, which Louvain
+does not, and converges to a better partition. We run it locally via
+``leidenalg`` + ``python-igraph`` (the ``leiden`` extra), with no graph server.
 
 This is the archive's community engine: the corpus-native embedding graph
 (:mod:`.embed_graph`) partitions with it. It is import-safe for external
 analytics layers to reuse.
 
-:func:`detect_communities` falls back to networkx's Louvain (free with the
-base ``networkx`` dependency) if those C extensions ever fail to import, so a
-read path can never crash on community detection. Both paths are **seeded**
-for a deterministic partition across runs.
+:func:`detect_communities` falls back to networkx's Louvain (free with the base
+``networkx`` dependency) when the extra is absent or its C extensions fail to
+import, so a read path can never crash on community detection. Both paths are
+**seeded** for a deterministic partition across runs.
+
+The two engines agree on most of a corpus and differ on the modularity metric by
+under a point, so the fallback is not a broad quality cliff — but where they
+disagree, a whole region can partition differently and the coherence re-rank
+consolidates that region's mid-list differently with it. On the gold bench that
+lands as a single topic breaching its recall floor while the pooled numbers barely
+move, which is why the fallback is reported (:func:`engine`) rather than trusted
+to be harmless.
 """
 
 from __future__ import annotations
@@ -31,9 +38,13 @@ _LEIDEN_AVAILABLE: bool | None = None
 
 
 def leiden_available() -> bool:
-    """Whether the Leiden engine (``leidenalg`` + ``igraph``) can be imported. They are
-    base dependencies, so this is normally true; it guards the fail-soft fallback for
-    the rare environment where the C extensions can't load. Memoized — probes once."""
+    """Whether the Leiden engine (``leidenalg`` + ``igraph``) can be imported — the
+    ``leiden`` extra, present or not. Memoized: probes once, at most one log line.
+
+    A failed probe logs at info, not warning. Absent is the correct state for a
+    lexical-only install, which never builds the graph this engine partitions; whether
+    it is a *fault* depends on what else is installed, and that judgment belongs to
+    :func:`thread_archive.libraries`, which can see the vector arm from here."""
     global _LEIDEN_AVAILABLE
     if _LEIDEN_AVAILABLE is None:
         try:
@@ -41,9 +52,22 @@ def leiden_available() -> bool:
             import leidenalg  # noqa: F401
 
             _LEIDEN_AVAILABLE = True
-        except Exception:
+        except ImportError:
             _LEIDEN_AVAILABLE = False
+            logger.info(
+                "leidenalg/python-igraph not importable — community detection uses "
+                "Louvain. Install thread-archive[leiden] for the Leiden engine."
+            )
     return _LEIDEN_AVAILABLE
+
+
+def engine() -> str:
+    """The live community engine: ``"leiden"`` or ``"louvain"``.
+
+    Reported by :func:`thread_archive.status` so which one is running is a fact an
+    operator can read rather than infer — the module docstring covers what the
+    difference costs."""
+    return "leiden" if leiden_available() else "louvain"
 
 
 def detect_communities(graph: "nx.Graph") -> list[list[str]]:
@@ -63,8 +87,13 @@ def detect_communities(graph: "nx.Graph") -> list[list[str]]:
 
 
 def _leiden(graph: "nx.Graph") -> list[list[str]]:
-    import igraph as ig
-    import leidenalg as la
+    # Fail-soft like the probe above — the extra may be absent, and a caller that
+    # reached here past `leiden_available()` still must not crash a read path.
+    try:
+        import igraph as ig
+        import leidenalg as la
+    except ImportError:  # pragma: no cover — the probe gates this call
+        return [sorted(c) for c in louvain_communities(graph, weight="weight", seed=SEED)]
 
     nodes = list(graph.nodes())
     index = {n: i for i, n in enumerate(nodes)}

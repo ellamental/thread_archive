@@ -462,8 +462,79 @@ def watch(*, home: Optional[str] = None, interval: float = 5.0, once: bool = Fal
     return None
 
 
+def libraries() -> list[dict]:
+    """The capability matrix behind search: which libraries this install actually has,
+    what each one buys, and whether its absence is a fault.
+
+    Absent is not the same as broken, and ``state`` is where that judgment lives.
+    ``off`` is a feature this install doesn't have — a choice, and the base install is
+    lexical-only by design. ``degraded`` is a feature it *is* running, worse: the piece
+    that would do the job well is missing and something lower-quality stands in.
+
+    Only the Leiden engine can be either. Its graph is built from the vector pack, so a
+    lexical-only install never partitions anything and its absence is ``off``; once the
+    vector arm is live the coherence re-rank runs on whatever engine is there, and
+    Louvain ranks below the archive's gated recall floor — ``degraded``. That is the
+    whole reason `embeddings` pulls the `leiden` extra: the two are only ever
+    meaningfully installed together.
+
+    Import probes only; nothing here loads a model or builds an index."""
+    from ._retrieval import rerank
+    from ._retrieval.community import engine as community_engine
+    from ._retrieval.embed import importable, is_available as embed_available
+
+    leiden = community_engine() == "leiden"
+    # The engine only has work to do where there are vectors to build a graph from.
+    coherence_runs = embed_available()
+    return [
+        {
+            "name": "leidenalg + python-igraph",
+            "tier": "extra",
+            "capability": "Community detection for the search coherence re-rank",
+            "installed": leiden,
+            "state": "ok" if leiden else "degraded" if coherence_runs else "off",
+            "detail": (
+                "Leiden partitions the corpus graph."
+                if leiden
+                else "Semantic search is on, so the coherence re-rank is running on "
+                     "Louvain — below the archive's gated recall floor. Install "
+                     "thread-archive[leiden] to restore it."
+                if coherence_runs
+                else "Unused without semantic search: the corpus graph is built from "
+                     "the vector pack, which a lexical-only install does not have."
+            ),
+        },
+        {
+            "name": "sentence-transformers + torch",
+            "tier": "extra",
+            "capability": "Semantic search (the vector arm)",
+            "installed": importable("sentence_transformers"),
+            "state": "ok" if embed_available() else "off",
+            "detail": (
+                "Queries and documents embed locally."
+                if embed_available()
+                else "Search is lexical-only. Install the [embeddings] extra to add "
+                     "the vector arm."
+            ),
+        },
+        {
+            "name": "cross-encoder reranker",
+            "tier": "extra",
+            "capability": "Re-ranking the retrieved pool",
+            "installed": importable("sentence_transformers"),
+            "state": "ok" if rerank.is_available() else "off",
+            "detail": (
+                "The top pool is re-scored by the cross-encoder."
+                if rerank.is_available()
+                else "Results keep their fusion order."
+            ),
+        },
+    ]
+
+
 def status(*, home: Optional[str] = None) -> dict:
-    """Archive health: paths + thread/event/topic/link/FTS counts, plus the
+    """Archive health: paths + thread/event/topic/link/FTS counts, the library
+    capability matrix (:func:`libraries`), plus the
     operational records — when the last checkpoint, verify, and backup ran and
     how they went (``last_verify`` / ``last_backup`` from ``<home>/health.json``,
     written by :func:`verify` / :func:`backup`). Staleness here is the signal
@@ -504,6 +575,7 @@ def status(*, home: Optional[str] = None) -> dict:
         # backfill; the read paths top the fold up before querying either way.
         "code_current": code["current"],
         "code_pending": code["pending"],
+        "libraries": libraries(),
         **operational_records(home=home),
     }
 

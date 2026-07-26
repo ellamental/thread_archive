@@ -86,3 +86,47 @@ def test_reindex_via_api(archive_home) -> None:
     counts = ta.reindex()
     assert counts["events"] > 0 and counts["fts"] > 0
     assert {h["event_id"] for h in ta.search("hello")} == before
+
+
+def test_libraries_describes_this_install(archive_home) -> None:
+    """The capability matrix reports what is really importable here — no fixture, no
+    stub, whatever this venv happens to carry."""
+    from thread_archive._retrieval.community import engine, leiden_available
+
+    rows = {row["name"]: row for row in ta.libraries()}
+    leiden = rows["leidenalg + python-igraph"]
+    assert leiden["installed"] is leiden_available()
+    assert engine() == ("leiden" if leiden_available() else "louvain")
+
+    # Every row is renderable: the health page and the CLI both read these keys.
+    for row in rows.values():
+        assert row["tier"] in ("base", "extra")
+        assert row["state"] in ("ok", "degraded", "off")
+        assert row["capability"] and row["detail"]
+
+
+def test_a_missing_leiden_is_only_a_fault_where_it_would_run(archive_home, monkeypatch) -> None:
+    """The engine partitions a graph built from the vector pack, so its absence means
+    two different things. Lexical-only: nothing to partition, ``off``. Vectors on: the
+    coherence re-rank runs on Louvain, below the gated recall floor, ``degraded``.
+
+    Driven through the product's own embed switch — the same one an operator sets —
+    rather than over the module's attributes."""
+    from thread_archive._retrieval.community import leiden_available
+
+    def leiden_row() -> dict:
+        return next(r for r in ta.libraries() if r["name"].startswith("leidenalg"))
+
+    monkeypatch.setenv("THREAD_ARCHIVE_EMBED", "off")
+    assert leiden_row()["state"] == ("ok" if leiden_available() else "off")
+
+    # The states are exhaustive and each carries a remedy an operator can act on.
+    for row in ta.libraries():
+        assert row["state"] in ("ok", "degraded", "off")
+        if row["state"] == "degraded":
+            assert "install" in row["detail"].lower()
+
+
+def test_status_carries_the_library_matrix(archive_home) -> None:
+    st = ta.status()
+    assert [row["name"] for row in st["libraries"]] == [row["name"] for row in ta.libraries()]

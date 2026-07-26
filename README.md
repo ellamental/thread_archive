@@ -80,19 +80,26 @@ conversation stores and shows what it found — counts, sizes, date ranges —
 install the always-on watcher (launchd on macOS, systemd on Linux; includes
 the web viewer at :8787), **schedule a nightly backup** (a second question —
 *where should backups go?* — that installs the daily backup → verify →
-restore-drill pipeline to a disk you name), and wire the MCP server into
-detected clients (the `claude` CLI, or it prints the JSON block for any other
-client). Every choice is skippable and persists in `<home>/config.json`; a
-disabled source stays disabled across every ingest path. The end state is a
-populated, searchable archive served over MCP, plus the `thread_archive`
-operator CLI and the pre-built web viewer (no node at any point).
-`thread_archive status` shows status; `thread_archive setup` revisits the
-choices. Non-interactive (agents, scripts): `thread_archive setup --yes`
-accepts every default — without `--yes`, a non-TTY run only prints guidance
-and never ingests.
+restore-drill pipeline to a disk you name), wire the MCP server into detected
+clients (the `claude` CLI, or it prints the JSON block for any other client),
+and — with the watcher serving it — open the archive in your browser. Every
+choice is skippable and persists in `<home>/config.json`; a disabled source
+stays disabled across every ingest path — and across later runs of `setup`,
+which only changes a source's policy where you state a new one (the edit
+selection). The end state is a populated, searchable archive served over MCP,
+plus the `thread_archive` operator CLI and the pre-built web viewer (no node at
+any point). `thread_archive status` shows status; `thread_archive setup`
+revisits the choices. Non-interactive (agents,
+scripts): `thread_archive setup --yes` accepts every default — without `--yes`,
+a non-TTY run only prints guidance and never ingests, and neither shape opens a
+browser.
 
 Local semantic search is optional and heavy (pulls torch — sized for a dev
-machine): `pip install 'thread-archive[embeddings]'`.
+machine): `pip install 'thread-archive[embeddings]'`. It brings the corpus-graph
+ranking stack with it (the `[leiden]` extra: `leidenalg` + `python-igraph`),
+since that signal is computed over the vectors. `[all]` is every runtime feature
+under one name; the base install is lexical-only and pulls no C extension beyond
+what `numpy` and `mcp` already need.
 
 **Without the wizard.** The same pieces by hand: `thread_archive watch --once`
 runs one ingest pass over this machine's stores (or `thread_archive import

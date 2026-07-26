@@ -1820,3 +1820,30 @@ def test_main_no_command_prints_help(capsys) -> None:
     assert rc == 0
     out = capsys.readouterr().out
     assert "usage" in out.lower() or "archive" in out
+
+
+def test_status_reports_the_library_matrix_and_shouts_about_a_missing_base_one(capsys) -> None:
+    """The capability line always prints; only a degraded *base* library earns its own
+    line. An uninstalled extra is a choice, and a choice is not an alarm."""
+    st = _status_base(libraries=[
+        {"name": "leidenalg + python-igraph", "tier": "base",
+         "capability": "Community detection for the search coherence re-rank",
+         "installed": False, "state": "degraded",
+         "detail": "C extensions did not import — falling back to Louvain."},
+        {"name": "sentence-transformers + torch", "tier": "extra",
+         "capability": "Semantic search (the vector arm)",
+         "installed": False, "state": "off", "detail": "Search is lexical-only."},
+    ])
+    assert cli.report_status(st) == 0
+    out = capsys.readouterr().out
+    assert "libs:    leidenalg degraded, sentence-transformers off" in out
+    assert "DEGRADED — community detection for the search coherence re-rank" in out
+    assert "falling back to Louvain" in out
+    # The extra's absence is reported on the summary line and nowhere else.
+    assert "Semantic search" not in out
+
+
+def test_status_prints_no_library_line_when_the_payload_carries_none(capsys) -> None:
+    """An older status payload (no ``libraries`` key) still renders."""
+    assert cli.report_status(_status_base()) == 0
+    assert "libs:" not in capsys.readouterr().out

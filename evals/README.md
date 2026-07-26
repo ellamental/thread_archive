@@ -74,6 +74,20 @@ archive (BEIR and the lab build throwaway homes and never touch it).
   — with `--only <experiment>` it turns the gold pass from tens of minutes into a
   couple, for fast iteration; it reads a *direction*, not the promotion delta, so
   drop it for the full-bench confirm before promoting.
+- **`latency_replay.py`** — the speed bench over the queries agents actually ran.
+  Everything else here scores *curated* cases; this replays the usage ledger, which
+  is a different population and the only one that answers "did this help **us**". A
+  gold case is mined to be gradeable, and that selection excludes most of what real
+  traffic looks like — time-scoped asks, browse walks, sentence punctuation are all
+  common in the ledger and near-absent from the golds, so a change to any of them
+  reads flat on `retrieval_gold_gate.py --latency` while moving real searches by an
+  order of magnitude. Replays real *calls*, parameters included (a recorded browse
+  ask replayed as bare text understates it 12×), and prints the ledger's **served**
+  distribution beside the bench's own. Expect those to diverge — the bench is warm
+  with the pool cache off, production is whatever the serving process happened to
+  be — and read the gap as a fact about conditions, not about the code. Runs against
+  the live archive, not a snapshot; `--baseline` sets the reference, and the
+  timeseries is tagged `query_set=observed` so it never averages with the gold rows.
 - **`thread_archive mine`** — the gold miners (package `thread_archive._mine`),
   the only tokens-spending tier. Each mints snapshot-bound eval `--cases` files
   under `~/.thread/archive/`; `thread_archive mine` alone lists them, `thread_archive

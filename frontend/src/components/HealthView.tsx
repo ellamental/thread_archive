@@ -3,6 +3,7 @@ import {
   api,
   type ArchiveEntry,
   type HealthRecord,
+  type LibraryEntry,
   type LoadPhase,
   type LoadRun,
   type Status,
@@ -168,6 +169,18 @@ function recordTone(record: HealthRecord | null, staleAfter: number): Tone {
   return 'good'
 }
 
+// 'quiet' for an uninstalled extra and 'warn' for a missing base library: the first is
+// a choice about what this install does, the second is an install that didn't finish.
+function libraryTone(library: LibraryEntry): Tone {
+  if (library.state === 'degraded') return 'warn'
+  return library.state === 'ok' ? 'good' : 'quiet'
+}
+
+function libraryState(library: LibraryEntry): string {
+  if (library.state === 'ok') return 'Active'
+  return library.state === 'degraded' ? 'Missing' : 'Not installed'
+}
+
 function Pill({ tone, children }: { tone: Tone; children: React.ReactNode }) {
   return <span className={`health-pill ${tone}`}>{children}</span>
 }
@@ -316,6 +329,21 @@ function buildNotices(status: Status): Notice[] {
     })
   }
 
+  // A feature running without the library that does it well is the one fault nothing
+  // else on this page can show: search keeps answering, so every other check stays
+  // green while ranking quality sits below the archive's own gated baseline. An
+  // absent library the install has no use for is 'off' and never lands here.
+  for (const library of status.libraries || []) {
+    if (library.state !== 'degraded') continue
+    notices.push({
+      key: `library-${library.name}`,
+      tone: 'warn',
+      title: `${library.name} is not installed`,
+      detail: `${library.capability} is degraded. ${library.detail}`,
+      command: "pip install 'thread-archive[all]'",
+    })
+  }
+
   const update = status.last_self_update
   if (update?.action === 'update') {
     notices.push({
@@ -433,6 +461,7 @@ export function HealthView() {
         ? 'Your archive needs attention'
         : 'Protection is incomplete'
   const providerRows = Object.entries(status.last_watch_pass?.sources || {})
+  const libraries = status.libraries || []
   const backupTone = recordTone(status.last_backup, 36 * HOUR)
   const verifyTone = recordTone(status.last_verify, 36 * HOUR)
   const drillTone = recordTone(status.last_restore_drill, 8 * DAY)
@@ -771,6 +800,30 @@ export function HealthView() {
             <div><dt>Vector indexed</dt><dd>{int(status.vectors_indexed)}</dd></div>
           </dl>
           <code className="health-path" title={status.home}>{status.home}</code>
+        </section>
+
+        <section className="health-detail" aria-labelledby="libraries-heading">
+          <div className="health-detail-title">
+            <h2 id="libraries-heading">Search libraries</h2>
+            <Pill tone={libraries.some((l) => l.state === 'degraded') ? 'warn' : 'good'}>
+              {libraries.some((l) => l.state === 'degraded') ? 'Degraded' : 'Complete'}
+            </Pill>
+          </div>
+          <dl>
+            {libraries.map((library) => (
+              <div key={library.name}>
+                <dt title={library.capability}>{library.name}</dt>
+                <dd title={library.detail}>
+                  <Pill tone={libraryTone(library)}>{libraryState(library)}</Pill>
+                </dd>
+              </div>
+            ))}
+          </dl>
+          <p className="health-footnote">
+            Base libraries ship with the archive; an extra is installed on purpose. Search
+            answers either way — a missing base library costs ranking quality silently, which
+            is why it is listed here.
+          </p>
         </section>
 
         <section className="health-detail" aria-labelledby="update-heading">

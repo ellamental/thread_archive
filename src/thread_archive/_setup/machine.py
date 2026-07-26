@@ -3,7 +3,8 @@
 Setup is the one part of the archive that acts on the machine *outside* the
 archive home: it asks whether the always-on watcher and the nightly backup are
 already scheduled for this home, whether this install has the optional
-embeddings extra, and — with consent — it schedules the agents.
+embeddings extra, whether the cohosted viewer is answering — and, with consent,
+it schedules the agents and opens that viewer in a browser.
 
 Every one of those goes through a :class:`Machine`, which the flow is handed
 (:func:`..wizard.run_setup`, :func:`..wizard.print_status`) rather than reaching
@@ -22,6 +23,10 @@ default home and setup leaves it alone.
 from __future__ import annotations
 
 import importlib.util
+import socket
+import time
+import webbrowser
+from collections.abc import Callable
 from pathlib import Path
 from typing import Optional
 
@@ -74,6 +79,22 @@ class Machine:
         except (ImportError, ValueError):  # pragma: no cover — importlib edge
             return False
 
+    def viewer_ready(self, port: int, *, attempts: int = 20, delay: float = 0.5) -> bool:
+        """Whether the watcher's cohosted viewer accepts connections on ``port``.
+
+        Polled rather than asked once: the watcher serving it may have been
+        installed seconds ago and still be starting, and a browser pointed at it
+        too early lands on a refused connection instead of the archive.
+        """
+        for attempt in range(attempts):
+            try:
+                with socket.create_connection(("127.0.0.1", port), timeout=1.0):
+                    return True
+            except OSError:
+                if attempt + 1 < attempts:
+                    time.sleep(delay)
+        return False
+
     # ── changes ──────────────────────────────────────────────────────────────
 
     def install_watcher(self, home: Optional[str] = None) -> None:
@@ -89,6 +110,20 @@ class Machine:
         from .. import _service
 
         _service.install_backup(dest, home)
+
+    def open_browser(
+        self, url: str, *, opener: Callable[[str], bool] = webbrowser.open
+    ) -> bool:
+        """Open ``url`` in this host's browser. ``False`` when it has none — a
+        headless box is a reason to print the URL, never to fail setup.
+
+        ``opener`` is where "a browser" comes from: this host's, or another
+        caller's, so a run can be driven without a window opening on a screen.
+        """
+        try:
+            return bool(opener(url))
+        except Exception:  # noqa: BLE001 — a browser is never worth failing setup over
+            return False
 
     # ── the shared probe ─────────────────────────────────────────────────────
 

@@ -82,6 +82,67 @@ def _append(record: dict) -> None:
         logger.warning("could not record retrieval usage", exc_info=True)
 
 
+#: The recorded parameters a replay reproduces. Every one of these changes what a
+#: search costs, so replaying a call without them measures a workload nobody ran —
+#: a ``group='browse', match='substring'`` ask replayed as bare text at the default
+#: limit understates it by 12x on this corpus. ``page`` is here because a walk's
+#: later pages are the expensive ones. Filters that only narrow (``thread_id``,
+#: ``path``) are deliberately absent: they bind to ids that may no longer exist, and
+#: a replay that raises measures nothing at all.
+REPLAYED_PARAMS = (
+    "limit", "page", "group", "match", "since", "until", "source", "agents",
+    "types", "sort", "startswith", "tool_name",
+)
+
+
+def read_calls(
+    home: Any = None, *, limit: Optional[int] = None, exclude: tuple[str, ...] = (),
+) -> list[tuple[str, dict]]:
+    """The searches agents actually ran, newest first, as ``(query, kwargs)``.
+
+    The observed distribution, which is a different population from any curated
+    case file and the only one that answers "did this change help *us*". Gold cases
+    are mined to be gradeable — a query with a knowable right answer — and that
+    selection quietly excludes most of what the shapes a change touches look like:
+    over this ledger, time-scoped asks, browse walks, and the sentence punctuation
+    an agent writes with are all common in traffic and near-absent from the golds.
+
+    Deduped on the whole call, not the query text: the same words asked at page 1
+    and at page 30 are two workloads and the second is the expensive one, while a
+    query an agent repeated verbatim while paging is one measurement rather than
+    forty. Newest first so a ``limit`` takes the current distribution rather than an
+    archaeological one; queries drift as the corpus and the tools do. ``exclude``
+    drops queries by exact text, for the throwaway probes a bench or a smoke test
+    leaves behind. Empty when the ledger is missing or unreadable — a replay with
+    nothing to replay is not an error, it is a young archive."""
+    path = (resolve_paths(home).home if home is None else home) / LEDGER_FILE
+    seen: dict[tuple, dict] = {}
+    try:
+        with open(path, encoding="utf-8") as fh:
+            rows = fh.readlines()
+    except OSError:
+        return []
+    for line in reversed(rows):
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            rec = json.loads(line)
+        except ValueError:
+            continue  # a torn final line from a concurrent append is not a failure
+        if rec.get("kind") != "search":
+            continue
+        query = rec.get("query")
+        if not isinstance(query, str) or not query.strip() or query in exclude:
+            continue
+        kwargs = {k: rec[k] for k in REPLAYED_PARAMS if rec.get(k) is not None}
+        key = (query, tuple(sorted((k, str(v)) for k, v in kwargs.items())))
+        seen.setdefault(key, {"query": query, "kwargs": kwargs})
+        if limit is not None and len(seen) >= limit:
+            break
+    return [(c["query"], c["kwargs"]) for c in seen.values()]
+
+
 def record_search(
     query: str,
     *,

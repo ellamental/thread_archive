@@ -49,6 +49,22 @@ logger = logging.getLogger(__name__)
 LATENCY_RUNS_FILE = "latency-runs.jsonl"
 LATENCY_BASELINE_FILE = "latency-baseline.json"
 
+#: The query set a measurement ran over. Latency is only comparable within one:
+#: the gold files and the usage ledger are different populations of query, and a
+#: p50 taken over one says nothing about a p50 taken over the other — the golds are
+#: selected for being gradeable, the ledger for being real. Named on every run row
+#: and given its own baseline file, so the two timeseries cannot be read as one.
+GOLD_SET = "gold"
+OBSERVED_SET = "observed"
+
+
+def baseline_file(query_set: str) -> str:
+    """The baseline filename for ``query_set``. The gold set keeps the bare name it
+    has always had — its baseline is the one every existing reference points at."""
+    if query_set == GOLD_SET:
+        return LATENCY_BASELINE_FILE
+    return f"latency-baseline-{query_set}.json"
+
 #: The stages the probe attributes wall-clock to. Total is measured outside the
 #: probe — the wall-clock the caller feels — and **none of these sum to it**. The
 #: two pool arms run concurrently (see :func:`thread_archive._retrieval.retrieve_pool`),
@@ -202,7 +218,7 @@ def ceiling_ms(baseline: Optional[dict[str, Any]], *, budget_ms: Optional[float]
 
 
 def measure(
-    queries: list[str],
+    queries: list[Any],
     *,
     search: Optional[Callable] = None,
     reps: int = 3,
@@ -211,6 +227,15 @@ def measure(
     on_query: Optional[Callable[[int, int], None]] = None,
 ) -> LatencyStats:
     """Warm-latency distribution of ``search`` over ``queries``.
+
+    An entry is either a query string, run at ``limit`` with everything else
+    defaulted, or a ``(query, kwargs)`` pair carrying the arguments the call was
+    actually made with. The pair form exists because the arguments are part of the
+    cost and not a detail of it: measured on this archive, replaying a recorded
+    ``group='browse', match='substring'`` call as a bare query at ``limit=10``
+    understates it by 12x, and a browse walk's later pages carry pools an order of
+    magnitude deeper than page one. A bench that keeps only the query text measures
+    a workload no agent ran.
 
     Each query runs ``reps`` timed times; with ``warmup`` an extra untimed run
     precedes them so the models and process caches are hot and only steady-state
@@ -236,12 +261,14 @@ def measure(
     # session) has a cache installed, latency must be measured against the live
     # index, not its cached pools.
     with pool_cache.suspend():
-        for i, query in enumerate(queries):
+        for i, entry in enumerate(queries):
+            query, kwargs = entry if isinstance(entry, tuple) else (entry, {})
+            kwargs = {"limit": limit, **kwargs}
             if on_query is not None:
                 on_query(i, len(queries))
             if warmup:
                 try:
-                    search(query, limit=limit)
+                    search(query, **kwargs)
                 except Exception:  # noqa: BLE001 — a query that errors is not a timing
                     logger.debug("latency warmup failed for %r", query, exc_info=True)
                     continue
@@ -250,7 +277,7 @@ def measure(
                 with _probe.install() as probe:
                     t0 = perf_counter()
                     try:
-                        search(query, limit=limit)
+                        search(query, **kwargs)
                     except Exception:  # noqa: BLE001 — skip the query, don't skew the stats
                         logger.debug("latency rep failed for %r", query, exc_info=True)
                         break
@@ -275,10 +302,13 @@ def _enabled() -> bool:
 def record_run(
     home: Path, *, snapshot_id: Optional[str], stats: LatencyStats,
     config: Optional[dict[str, Any]] = None, overrides: Optional[dict[str, Any]] = None,
+    query_set: str = GOLD_SET,
 ) -> None:
     """Append one latency measurement to ``<home>/latency-runs.jsonl`` — the
     speed timeseries beside the quality one, so a latency regression is a lookup,
-    not a re-run of the old code. ``overrides`` flags a tuning run. Fail-soft."""
+    not a re-run of the old code. ``overrides`` flags a tuning run, ``query_set``
+    names the population measured (:data:`GOLD_SET` / :data:`OBSERVED_SET`) so rows
+    from the two never average together. Fail-soft."""
     if not _enabled():
         return
     from . import gold_runs
@@ -288,6 +318,7 @@ def record_run(
         "kind": "latency-run",
         "snapshot_id": snapshot_id,
         "commit": gold_runs.git_commit(),
+        "query_set": query_set,
         "config": config if config is not None else gold_runs.active_config(),
         **stats.as_record(),
     }
@@ -302,10 +333,13 @@ def record_run(
         logger.warning("could not record latency run", exc_info=True)
 
 
-def write_baseline(home: Path, *, snapshot_id: Optional[str], stats: LatencyStats) -> None:
-    """Overwrite ``<home>/latency-baseline.json`` with the shipped config's warm
+def write_baseline(home: Path, *, snapshot_id: Optional[str], stats: LatencyStats,
+                   query_set: str = GOLD_SET) -> None:
+    """Overwrite ``query_set``'s baseline with the shipped config's warm
     distribution — the reference a ``--set`` run diffs against. Written only by a
-    full, unmodified run, for the same reason its quality twin is."""
+    full, unmodified run, for the same reason its quality twin is. Each query set
+    gets its own file (:func:`baseline_file`): one file would mean whichever set
+    ran last defined the reference for both."""
     if not _enabled():
         return
     import json
@@ -315,10 +349,11 @@ def write_baseline(home: Path, *, snapshot_id: Optional[str], stats: LatencyStat
     blob = {
         "at": datetime.now(timezone.utc).isoformat(),
         "snapshot_id": snapshot_id, "commit": gold_runs.git_commit(),
+        "query_set": query_set,
         **stats.as_record(include_by_query=True),
     }
     try:
-        path = home / LATENCY_BASELINE_FILE
+        path = home / baseline_file(query_set)
         tmp = path.with_suffix(".json.tmp")
         tmp.write_text(json.dumps(blob, separators=(",", ":")), encoding="utf-8")
         tmp.replace(path)
@@ -326,17 +361,21 @@ def write_baseline(home: Path, *, snapshot_id: Optional[str], stats: LatencyStat
         logger.warning("could not write latency baseline", exc_info=True)
 
 
-def read_baseline(home: Path, *, snapshot_id: Optional[str] = None) -> Optional[dict[str, Any]]:
-    """The recorded warm-latency baseline, or ``None``. A ``snapshot_id`` mismatch
-    reads as absent: latency over a different corpus (a different pool size, a
-    different vector count) is not a comparable reference."""
+def read_baseline(home: Path, *, snapshot_id: Optional[str] = None,
+                  query_set: str = GOLD_SET) -> Optional[dict[str, Any]]:
+    """``query_set``'s recorded warm-latency baseline, or ``None``. A ``snapshot_id``
+    mismatch reads as absent: latency over a different corpus (a different pool
+    size, a different vector count) is not a comparable reference. A file written
+    before the sets were named reads as the gold set, which is what it was."""
     import json
 
-    path = home / LATENCY_BASELINE_FILE
+    path = home / baseline_file(query_set)
     try:
         blob = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         return None
     if snapshot_id is not None and blob.get("snapshot_id") != snapshot_id:
+        return None
+    if blob.get("query_set", GOLD_SET) != query_set:
         return None
     return blob

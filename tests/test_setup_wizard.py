@@ -157,13 +157,16 @@ class FakeMachine:
         self, *, can_schedule: bool = True, service_kind: str = "launchd",
         watcher: bool = False, backup: bool = False,
         backup_dest: Optional[str] = None, embeddings: bool = True,
+        viewer_ready: bool = True, browser: bool = True,
     ):
         self.can_schedule = can_schedule
         self.service_kind = service_kind if can_schedule else None
         self._watcher, self._backup = watcher, backup
         self._backup_dest = backup_dest
         self._embeddings = embeddings
+        self._viewer_ready, self._browser = viewer_ready, browser
         self.installed: list[tuple] = []
+        self.opened: list[str] = []
 
     def watcher_running(self, home=None) -> bool:
         return self._watcher
@@ -177,11 +180,18 @@ class FakeMachine:
     def embeddings_installed(self) -> bool:
         return self._embeddings
 
+    def viewer_ready(self, port: int) -> bool:
+        return self._viewer_ready
+
     def install_watcher(self, home=None) -> None:
         self.installed.append(("watcher", home))
 
     def install_backup(self, dest, home=None) -> None:
         self.installed.append(("backup", dest, home))
+
+    def open_browser(self, url: str) -> bool:
+        self.opened.append(url)
+        return self._browser
 
 
 class FakeWatcher(SourceWatcher):
@@ -272,6 +282,127 @@ def test_edit_to_zero_disables_every_source(archive_home, monkeypatch, capsys) -
     assert cfg["sources"]["claude-code"] == {"enabled": False}
     assert cfg["sources"]["cursor"] == {"enabled": False}
     assert cfg["sources"]["cc-exthost"] == {"enabled": False}
+
+
+# ── re-running setup over answers already given ───────────────────────────────
+#
+# An opt-out is the operator's standing answer, and `thread_archive setup` is
+# meant to be re-run (it is how every choice is revisited). So a later run may
+# only change the source policy where the operator states a new one — the edit
+# pass. Anything else leaves it alone: a re-run that silently re-enables a
+# source is capture they declined.
+
+
+def _replies(*typed: str):
+    """An ``ask`` seam that replays typed answers, ``""`` meaning Enter — the
+    same default-substitution the real prompt does, so a test can press Enter.
+    Every prompt it was asked is kept on ``.prompts`` (a fake ask never reaches
+    stdout, so that is where the question's own wording is asserted)."""
+    it = iter(typed)
+    prompts: list[str] = []
+
+    def ask(prompt, *, default, interactive):
+        prompts.append(prompt)
+        return next(it, "") or default
+
+    ask.prompts = prompts  # type: ignore[attr-defined]
+    return ask
+
+
+def _setup(archive_home, fakes, ask, *, yes: bool = False) -> dict:
+    argv = ["setup", "--skip-watcher", "--skip-backup", "--skip-mcp"]
+    rc = wizard.run_setup(
+        _args(*(argv + ["--yes"] if yes else argv)), watchers=fakes,
+        interactive=not yes, ask=ask, machine=FakeMachine(),
+    )
+    assert rc == 0
+    return json.loads((archive_home / "config.json").read_text())
+
+
+def test_rerun_with_defaults_keeps_an_opt_out(archive_home, capsys) -> None:
+    fakes = [FakeWatcher("claude-code"), FakeWatcher("cursor")]
+    _setup(archive_home, fakes, _replies("e", "n", "y"))  # edit; drop claude-code
+    assert fakes[0].polled == 0 and fakes[1].polled == 1
+
+    # Pressing Enter through a second run states nothing about policy: the
+    # opt-out survives, and the disabled store is neither listed as included nor
+    # imported.
+    ask = _replies("")
+    cfg = _setup(archive_home, fakes, ask)
+    assert cfg["sources"]["claude-code"] == {"enabled": False}
+    assert cfg["sources"]["cc-exthost"] == {"enabled": False}
+    assert fakes[0].polled == 0 and fakes[1].polled == 2
+    out = capsys.readouterr().out
+    assert "[ ] Claude Code" in out and "(off — e to change)" in out
+    assert "[x] Cursor" in out
+    # And the offer says what Enter will actually do — not "import all".
+    assert any("import the checked ones" in p for p in ask.prompts)
+
+
+def test_rerun_skipping_the_import_keeps_an_opt_out(archive_home, capsys) -> None:
+    fakes = [FakeWatcher("claude-code"), FakeWatcher("cursor")]
+    _setup(archive_home, fakes, _replies("e", "n", "y"))
+    cfg = _setup(archive_home, fakes, _replies("s"))
+    assert cfg["sources"]["claude-code"] == {"enabled": False}
+    assert fakes[1].polled == 1  # "s" imports nothing at all this run
+
+
+def test_rerun_with_yes_keeps_an_opt_out(archive_home, capsys) -> None:
+    # --yes is how agents and scripts drive this flow; accepting every default
+    # must not mean re-enabling a source the operator turned off.
+    fakes = [FakeWatcher("claude-code"), FakeWatcher("cursor")]
+    _setup(archive_home, fakes, _replies("e", "n", "y"))
+    cfg = _setup(archive_home, fakes, _replies(), yes=True)
+    assert cfg["sources"]["claude-code"] == {"enabled": False}
+    assert fakes[0].polled == 0 and fakes[1].polled == 2
+    assert "claude-code" not in {w.source_name for w in enabled_watchers()}
+
+
+def test_edit_pass_is_seeded_with_what_each_source_is_set_to(archive_home, capsys) -> None:
+    fakes = [FakeWatcher("claude-code"), FakeWatcher("cursor")]
+    _setup(archive_home, fakes, _replies("e", "n", "y"))
+
+    # Enter through the whole edit pass: each source keeps its current state, so
+    # revisiting the selection to look at it changes nothing.
+    cfg = _setup(archive_home, fakes, _replies("e", "", ""))
+    assert cfg["sources"]["claude-code"] == {"enabled": False}
+    assert "cursor" not in cfg["sources"]
+    assert fakes[0].polled == 0 and fakes[1].polled == 2
+
+    # An explicit yes is what lifts it — and the source comes back for every
+    # ingest path, not just this run's import.
+    cfg = _setup(archive_home, fakes, _replies("e", "y", ""))
+    assert "claude-code" not in cfg["sources"]
+    assert "cc-exthost" not in cfg["sources"]
+    assert fakes[0].polled == 1 and fakes[1].polled == 3
+    assert "claude-code" in {w.source_name for w in enabled_watchers()}
+
+
+def test_rerun_with_every_source_off_offers_only_the_edit(archive_home, capsys) -> None:
+    fakes = [FakeWatcher("claude-code"), FakeWatcher("cursor")]
+    _setup(archive_home, fakes, _replies("e", "n", "n"))
+    capsys.readouterr()
+
+    ask = _replies("")
+    cfg = _setup(archive_home, fakes, ask)
+    assert cfg["sources"]["claude-code"] == {"enabled": False}
+    assert cfg["sources"]["cursor"] == {"enabled": False}
+    assert all(f.polled == 0 for f in fakes)
+    assert "Every store found is switched off in your config" in capsys.readouterr().out
+    # Nothing to skip: the only thing on offer is the edit that would turn one on.
+    assert ask.prompts == ["  [Enter] leave them off · e = edit selection  > "]
+
+
+def test_unreadable_policy_is_restated_by_the_run(archive_home, capsys) -> None:
+    # A config that load_config can't trust disables every source for ingest —
+    # and is exactly the file this run rewrites, so it seeds nothing: the flow
+    # behaves like first contact and leaves a valid policy behind.
+    config.config_path().write_text("{not json")
+    fakes = [FakeWatcher("claude-code")]
+    cfg = _setup(archive_home, fakes, _replies(""))
+    assert cfg.get("sources", {}) == {}  # all enabled again, and readable
+    assert fakes[0].polled == 1
+    assert "(off — e to change)" not in capsys.readouterr().out
 
 
 def test_skip_import_keeps_sources_enabled(archive_home, capsys) -> None:
@@ -374,6 +505,95 @@ def test_setup_records_backup_outcome(archive_home, capsys) -> None:
     assert machine.installed == []
     cfg = json.loads((archive_home / "config.json").read_text())
     assert cfg["setup"]["backup"] == {"status": "skipped"}
+
+
+# ── the viewer offer ──────────────────────────────────────────────────────────
+#
+# Never a real browser or a real socket: the offer asks its FakeMachine whether
+# the viewer answers and hands it the URL to open, so a test can't put a window
+# on the operator's screen or reach a watcher actually serving :8787 here.
+
+
+def test_offer_viewer_opens_the_url(archive_home, capsys) -> None:
+    machine = FakeMachine()
+    assert wizard._offer_viewer(
+        True, machine, ask=lambda prompt, *, default, interactive: "",
+    ) == "opened"
+    assert machine.opened == ["http://127.0.0.1:8787"]
+    assert "Opened http://127.0.0.1:8787" in capsys.readouterr().out
+
+
+def test_offer_viewer_skip_answer(archive_home, capsys) -> None:
+    machine = FakeMachine()
+    assert wizard._offer_viewer(
+        True, machine, ask=lambda prompt, *, default, interactive: "s",
+    ) == "skipped"
+    assert machine.opened == []  # a skip opens nothing
+    assert "http://127.0.0.1:8787 whenever you want it" in capsys.readouterr().out
+
+
+def test_offer_viewer_not_offered_without_a_terminal(archive_home, capsys) -> None:
+    # --yes drives this flow from agents and scripts: no prompt, and above all no
+    # browser window on someone's desktop as a side effect.
+    machine = FakeMachine()
+    asked: list[str] = []
+    assert wizard._offer_viewer(
+        False, machine,
+        ask=lambda prompt, *, default, interactive: asked.append(prompt) or "",
+    ) == "not-offered"
+    assert asked == [] and machine.opened == []
+    assert capsys.readouterr().out == ""
+
+
+def test_offer_viewer_waits_for_a_viewer_that_never_answers(archive_home, capsys) -> None:
+    # The watcher was installed seconds ago; if its viewer still isn't up, say so
+    # rather than opening a browser onto a refused connection.
+    machine = FakeMachine(viewer_ready=False)
+    assert wizard._offer_viewer(
+        True, machine, ask=lambda prompt, *, default, interactive: "",
+    ) == "unavailable"
+    assert machine.opened == []
+    assert "Not answering yet" in capsys.readouterr().out
+
+
+def test_offer_viewer_headless_host_prints_the_url(archive_home, capsys) -> None:
+    machine = FakeMachine(browser=False)
+    assert wizard._offer_viewer(
+        True, machine, ask=lambda prompt, *, default, interactive: "",
+    ) == "failed"
+    assert "No browser to open here — visit http://127.0.0.1:8787" in capsys.readouterr().out
+
+
+def test_setup_ends_in_the_viewer_and_records_it(archive_home, capsys) -> None:
+    # End to end: the watcher install serves the viewer, so first contact ends in
+    # a browser and the verdict lands in config beside the other setup choices.
+    machine = FakeMachine()
+    rc = wizard.run_setup(
+        _args("setup", "--skip-import", "--skip-backup", "--skip-mcp"),
+        watchers=[], machine=machine, interactive=True,
+        ask=lambda prompt, *, default, interactive: "",
+    )
+    assert rc == 0
+    assert machine.installed == [("watcher", None)]
+    assert machine.opened == ["http://127.0.0.1:8787"]
+    cfg = json.loads((archive_home / "config.json").read_text())
+    assert cfg["setup"]["viewer"] == "opened"
+    assert cfg["setup"]["completed_at"]
+
+
+def test_setup_without_a_watcher_makes_no_viewer_offer(archive_home, capsys) -> None:
+    # Nothing is serving :8787, so there is nothing to open — and no dead prompt.
+    machine = FakeMachine()
+    rc = wizard.run_setup(
+        _args("setup", "--skip-import", "--skip-watcher", "--skip-backup", "--skip-mcp"),
+        watchers=[], machine=machine, interactive=True,
+        ask=lambda prompt, *, default, interactive: "",
+    )
+    assert rc == 0
+    assert machine.opened == []
+    cfg = json.loads((archive_home / "config.json").read_text())
+    assert "viewer" not in cfg["setup"]
+    assert "See it?" not in capsys.readouterr().out
 
 
 # ── client wiring ────────────────────────────────────────────────────────────

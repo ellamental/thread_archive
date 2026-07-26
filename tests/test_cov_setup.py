@@ -23,6 +23,7 @@ import importlib.util
 import json
 import os
 import plistlib
+import socket
 import subprocess
 import sys
 import time
@@ -156,6 +157,7 @@ class FakeMachine:
         watcher: bool = False, backup: bool = False,
         backup_dest: Optional[str] = None, embeddings: bool = True,
         install_fails: Optional[str] = None,
+        viewer_ready: bool = True, browser: bool = True,
     ):
         self.can_schedule = can_schedule
         self.service_kind = service_kind if can_schedule else None
@@ -163,7 +165,9 @@ class FakeMachine:
         self._backup_dest = backup_dest
         self._embeddings = embeddings
         self._install_fails = install_fails
+        self._viewer_ready, self._browser = viewer_ready, browser
         self.installed: list[tuple] = []
+        self.opened: list[str] = []
 
     def watcher_running(self, home=None) -> bool:
         return self._watcher
@@ -177,6 +181,9 @@ class FakeMachine:
     def embeddings_installed(self) -> bool:
         return self._embeddings
 
+    def viewer_ready(self, port: int) -> bool:
+        return self._viewer_ready
+
     def install_watcher(self, home=None) -> None:
         if self._install_fails:
             raise SystemExit(self._install_fails)
@@ -186,6 +193,10 @@ class FakeMachine:
         if self._install_fails:
             raise SystemExit(self._install_fails)
         self.installed.append(("backup", dest, home))
+
+    def open_browser(self, url: str) -> bool:
+        self.opened.append(url)
+        return self._browser
 
 
 class FakeWatcher(SourceWatcher):
@@ -935,6 +946,38 @@ def test_machine_installs_the_real_agents(tmp_path, monkeypatch, stub_bin) -> No
     assert written["EnvironmentVariables"]["THREAD_ARCHIVE_HOME"] == arc
     assert m.backup_dest() == "/Volumes/B/arc"
     assert _subcommands(log) == ["bootout", "bootstrap", "bootout", "bootstrap"]
+
+
+def test_machine_sees_a_listening_viewer(tmp_path) -> None:
+    # A real socket on a real port stands in for the watcher's cohosted viewer:
+    # bound → ready, and the same port once nothing holds it → not ready.
+    with socket.socket() as srv:
+        srv.bind(("127.0.0.1", 0))
+        srv.listen(1)
+        port = srv.getsockname()[1]
+        assert Machine().viewer_ready(port, attempts=1) is True
+    # The retry loop gives up rather than hanging when nothing ever answers.
+    assert Machine().viewer_ready(port, attempts=2, delay=0.01) is False
+
+
+def test_machine_opens_a_browser() -> None:
+    # The one host action a test must not do for real — it would put a window on
+    # the operator's screen — so the opener comes through the method's own seam.
+    opened: list[str] = []
+
+    def _opener(url: str) -> bool:
+        opened.append(url)
+        return True
+
+    assert Machine().open_browser("http://127.0.0.1:8787", opener=_opener) is True
+    assert opened == ["http://127.0.0.1:8787"]
+
+    def _no_display(url: str) -> bool:
+        raise OSError("no display")
+
+    # A host with no browser reports it; setup prints the URL instead of failing.
+    assert Machine().open_browser("http://x", opener=_no_display) is False
+    assert Machine().open_browser("http://x", opener=lambda url: False) is False
 
 
 # ── print_status: the darwin + recorded-backup/verify branches ────────────────

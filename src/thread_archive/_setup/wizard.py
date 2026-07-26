@@ -4,9 +4,14 @@ The consumer front door: install the package, run ``thread_archive setup``, and
 the product explains itself — it discovers the machine's conversation stores and
 shows what it found *before* touching anything, states exactly where copies
 will live (local only), imports with consent and narration, then offers the
-always-on watcher, a scheduled nightly backup, and MCP wiring. Every step can
-be skipped, and decisions persist in ``<home>/config.json`` (see
-:mod:`.._config`) where every ingest path respects them.
+always-on watcher, a scheduled nightly backup, and MCP wiring, and finally opens
+the archive in a browser. Every step can be skipped, and decisions persist in
+``<home>/config.json`` (see :mod:`.._config`) where every ingest path respects
+them.
+
+Re-running is how those decisions are revisited, so a later run only changes a
+source's policy where the operator states a new one — in the edit pass. Every
+other path through the flow leaves each source as they last left it.
 
 Setup is one verb of the unified ``thread_archive`` CLI (:mod:`..cli`); the
 operator verbs (backup / verify / nightly / daemon) are its siblings, as are
@@ -31,7 +36,7 @@ from pathlib import Path
 from typing import Optional
 
 from .. import __version__
-from .._config import load_config, resolve_paths, save_config
+from .._config import load_config, resolve_paths, save_config, source_enabled
 from .machine import Machine
 
 
@@ -149,7 +154,7 @@ def run_setup(
     ask: Callable[..., str] = _ask,
     machine: Optional[Machine] = None,
 ) -> int:
-    """Discover → consent → import → watcher → backup → MCP wiring.
+    """Discover → consent → import → watcher → backup → MCP wiring → viewer.
     Returns exit code.
 
     The flow's collaborators are keyword parameters: ``interactive`` overrides
@@ -192,50 +197,79 @@ def run_setup(
             found.append((w, report))
         else:
             absent.append(w.source_name)
+    # A readable policy is the operator's standing answer, so a source they
+    # turned off is shown unchecked and stays out of everything below until they
+    # say otherwise. An unreadable one (load_config marked it invalid) states
+    # nothing this run must respect — it's the file this run rewrites.
+    known_policy = getattr(cfg, "valid", True)
+    off = {
+        w.source_name for w, _ in found
+        if known_policy and not source_enabled(cfg, w.source_name)
+    }
     for w, r in found:
         label = source_label(r.name)
         items = f"{r.items:,} sessions" if r.items is not None else "live store"
         span = _fmt_range(r.earliest, r.latest)
-        _say(f"  [x] {label:<15} {items:>15}   {_fmt_bytes(r.bytes):>9}   {span}")
+        box = " " if w.source_name in off else "x"
+        note = "   (off — e to change)" if w.source_name in off else ""
+        _say(f"  [{box}] {label:<15} {items:>15}   {_fmt_bytes(r.bytes):>9}   {span}{note}")
     if absent:
         _say(f"  not found: {', '.join(source_label(n) for n in absent)}")
     _say(f"  account exports ({_export_labels()}): drop the ZIP into {paths.dumps_dir} anytime.")
     _say()
 
     # 2. Consent + selection.
-    selected = [w for w, _ in found]
-    edited = False
+    selected = [w for w, _ in found if w.source_name not in off]
+    edited, answer = False, ""
     if not found:
         _say("No local stores found — the archive starts empty and fills as sources appear.")
         do_import = False
-    else:
-        total = _fmt_bytes(sum(r.bytes for _, r in found))
+    elif not selected:
+        _say("Every store found is switched off in your config — nothing to import.")
         answer = ask(
-            f"Import these now? Roughly {total} of source data; a large store takes a few minutes.\n"
-            "  [Enter] import all · e = edit selection · s = skip import  > ",
+            "  [Enter] leave them off · e = edit selection  > ",
             default="", interactive=interactive,
         )
-        if answer == "e":
-            edited = True
-            selected = []
-            for w, r in found:
-                label = source_label(r.name)
-                keep = ask(f"  include {label}? [Y/n] > ", default="y", interactive=interactive)
-                if keep not in ("n", "no"):
-                    selected.append(w)
-        do_import = answer not in ("s", "n", "no") and bool(selected)
+        do_import = False
+    else:
+        total = _fmt_bytes(sum(r.bytes for w, r in found if w.source_name not in off))
+        take = "import the checked ones" if off else "import all"
+        answer = ask(
+            f"Import these now? Roughly {total} of source data; a large store takes a few minutes.\n"
+            f"  [Enter] {take} · e = edit selection · s = skip import  > ",
+            default="", interactive=interactive,
+        )
+        do_import = answer not in ("s", "n", "no")
+    if answer == "e":
+        # The only place a source's policy is stated: each answer is seeded with
+        # what that source is set to now, so Enter through the pass changes
+        # nothing and every change is something the operator typed.
+        edited = True
+        selected = []
+        for w, r in found:
+            label = source_label(r.name)
+            hint = "(off now) [y/N]" if w.source_name in off else "[Y/n]"
+            keep = ask(
+                f"  include {label}? {hint} > ",
+                default="n" if w.source_name in off else "y", interactive=interactive,
+            )
+            if keep not in ("n", "no"):
+                selected.append(w)
+        do_import = bool(selected)
 
-    # Persist source opt-outs (only deviations are recorded; absence = enabled).
-    # A per-source "no" in the edit pass is a lasting opt-out; skipping the
-    # import wholesale is not — the source stays enabled for later ingest.
-    chosen = {w.source_name for w in selected}
+    # Persist the source policy. Only the edit pass states one — "no" is a
+    # lasting opt-out, "yes" lifts one — and only deviations are recorded
+    # (absence = enabled). Every other run says nothing about policy and leaves
+    # each source as it was last left: importing all, skipping the import, and
+    # --yes alike must never silently re-enable a source that was turned off.
     sources_cfg = cfg.setdefault("sources", {})
-    for w, _ in found:
-        name = w.source_name
-        if edited and name not in chosen:
-            sources_cfg[name] = {"enabled": False}
-        else:
-            sources_cfg.pop(name, None)
+    if edited:
+        chosen = {w.source_name for w in selected}
+        for w, _ in found:
+            if w.source_name in chosen:
+                sources_cfg.pop(w.source_name, None)
+            else:
+                sources_cfg[w.source_name] = {"enabled": False}
     # A source that follows another (a recovery pass over its store) inherits that
     # source's choice — recovering from a store the operator opted out of would
     # reintroduce exactly what they declined. Ingest enforces this too; writing it
@@ -268,13 +302,20 @@ def run_setup(
     cfg["setup"]["clients"] = {"claude": _offer_mcp(args, interactive, ask=ask)}
     _say()
 
-    # 7. Done.
+    # 7. The viewer — offered only when the watcher is serving it. Last question,
+    # before the summary rather than after it: the browser comes up while the
+    # terminal's closing words stay the reference to come back to.
+    watching = cfg["setup"]["watcher"] in ("launchd", "systemd", "scheduled", "already-running")
+    if watching:
+        cfg["setup"]["viewer"] = _offer_viewer(interactive, machine, ask=ask)
+        _say()
+
+    # 8. Done.
     cfg["setup"]["completed_at"] = datetime.now().astimezone().isoformat(timespec="seconds")
     save_config(cfg, args.home)
     _say("Done. Ask your agent: \"what have we discussed about …?\"")
     _say("  or ask it here:   thread_archive search \"…\"  ·  thread_archive read <id>")
     _say("  status anytime:   thread_archive status")
-    watching = cfg["setup"]["watcher"] in ("launchd", "systemd", "scheduled", "already-running")
     if watching:
         _say("  web viewer:       http://127.0.0.1:8787")
     # With the viewer up, the drag-and-drop page is the shorter road to the same
@@ -508,6 +549,42 @@ def _offer_mcp(
     _say("  Wired: thread-archive (search/read), user scope — every Claude Code")
     _say("  session can now search this archive.")
     return "wired"
+
+
+def _offer_viewer(
+    interactive: bool,
+    machine: Machine,
+    *,
+    port: int = 8787,
+    ask: Callable[..., str] = _ask,
+) -> str:
+    """Offer to open the archive in a browser — the last question of first
+    contact.
+
+    Only reached when the watcher is serving the viewer, and only asked of a
+    terminal: ``--yes`` drives this flow from agents and scripts, where a
+    browser window is a surprise on someone's desktop rather than a default, and
+    the URL is in the closing summary either way. Returns the recorded outcome.
+    """
+    url = f"http://127.0.0.1:{port}"
+    if not interactive:
+        return "not-offered"
+    _say("See it? The viewer is this archive in a browser — search, and read any")
+    _say("conversation back the way it happened.")
+    answer = ask(
+        f"  [Enter] open {url} · s = skip  > ", default="", interactive=interactive
+    )
+    if answer in ("s", "n", "no"):
+        _say(f"  Skipped — {url} whenever you want it.")
+        return "skipped"
+    if not machine.viewer_ready(port):
+        _say(f"  Not answering yet — the viewer comes up with the watcher; try {url} in a moment.")
+        return "unavailable"
+    if not machine.open_browser(url):
+        _say(f"  No browser to open here — visit {url}.")
+        return "failed"
+    _say(f"  Opened {url}.")
+    return "opened"
 
 
 def _indent(block: str, by: str = "    ") -> str:

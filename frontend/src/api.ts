@@ -24,6 +24,20 @@ export interface Status {
   pipeline: PipelineVerdict
   watch_process_alive: boolean
   backup_same_device: boolean | null
+  libraries: LibraryEntry[]
+}
+
+// One capability behind search and the library that provides it. 'off' is a feature
+// this install doesn't have, which is a choice. 'degraded' is a feature it does have,
+// running on a lesser substitute — search still answers, at lower quality, so nothing
+// else on the page would show it.
+export interface LibraryEntry {
+  name: string
+  tier: 'base' | 'extra'
+  capability: string
+  installed: boolean
+  state: 'ok' | 'degraded' | 'off'
+  detail: string
 }
 
 export interface HealthRecord {
@@ -489,6 +503,91 @@ export interface ModelStats {
   top_sessions: ModelStatsSession[]
 }
 
+// --- retrieval health -------------------------------------------------------
+// Latency is reported as percentiles, never as an average: the distribution has a
+// long tail (a cold process, a browse walk over a deep pool), and a mean over it
+// describes no search anyone actually ran.
+
+export interface LatencyBand {
+  n: number
+  p50: number
+  p90: number
+  p99?: number
+}
+
+/** One day of served searches. `warm`/`cold` are separate because a process's
+ *  first search runs an order of magnitude slower than its thousandth; `unknown`
+ *  is the window that predates the uptime field, kept apart rather than assumed. */
+export interface ServedDay {
+  day: string
+  n: number
+  warm?: LatencyBand
+  cold?: LatencyBand
+  unknown?: LatencyBand
+}
+
+export interface Served {
+  days: number
+  n: number
+  n_unknown_regime: number
+  daily: ServedDay[]
+  warm: LatencyBand
+  cold: LatencyBand
+}
+
+export interface StageRow {
+  stage: string
+  n: number
+  p50: number
+  p90: number
+}
+
+export interface Stages {
+  n: number
+  /** Rows whose process age is unknown — included, but not provably warm. */
+  n_unproven: number
+  stages: StageRow[]
+}
+
+export interface Restarts {
+  n: number
+  daily: { day: string; n: number }[]
+  p50_ms: number
+  total_s: number
+}
+
+export interface BenchPoint {
+  at: string
+  commit: string | null
+  p50: number
+  p95: number
+  p99: number
+  n_queries: number
+  tuning: boolean
+}
+
+export interface QualityPoint {
+  at: string
+  commit: string | null
+  passed: boolean
+  mrr: number
+  ndcg: number
+  n: number
+}
+
+export interface RetrievalReport {
+  home: string
+  days: number
+  at: string
+  served: Served | null
+  stages: Stages | null
+  restarts: Restarts | null
+  /** Keyed by query set — `gold` and `observed` are different populations of
+   *  query and are never drawn as one line. */
+  bench: Record<string, BenchPoint[]> | null
+  quality: { points: QualityPoint[]; latest: QualityPoint | null } | null
+}
+
 async function getJSON<T>(url: string): Promise<T> {
   const r = await fetch(url)
   if (!r.ok) throw new Error(`${r.status}: ${await r.text()}`)
@@ -591,4 +690,7 @@ export const api = {
   // path tail, not a query param — the server decodes it back.
   modelStats: (model: string) =>
     getJSON<ModelStats>('/api/stats/model/' + encodeURIComponent(model)),
+  // How search itself is doing — read off the retrieval ledgers, not the index,
+  // so it keeps answering while a rebuild has the corpus unavailable.
+  retrieval: (days = 14) => getJSON<RetrievalReport>(`/api/retrieval?days=${days}`),
 }

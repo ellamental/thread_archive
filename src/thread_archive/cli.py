@@ -1087,6 +1087,21 @@ def cmd_status(args: argparse.Namespace) -> int:
     return report_status(api.status(home=args.home))
 
 
+def _report_libraries(rows: list[dict]) -> None:
+    """One ``libs:`` line for the capability matrix, plus a loud line per degraded
+    entry. A library this install has no use for rides the summary line and nothing
+    more — ``off`` is a shape of the product, not a fault. ``degraded`` means a feature
+    is running on a lesser substitute, which nothing else would show, so it gets its own
+    line with the remedy on it."""
+    if not rows:
+        return
+    summary = ", ".join(f"{r['name'].split(' ')[0]} {r['state']}" for r in rows)
+    print(f"libs:    {summary}")
+    for row in rows:
+        if row["state"] == "degraded":
+            print(f"         DEGRADED — {row['capability'].lower()}: {row['detail']}")
+
+
 def report_status(st: dict) -> int:
     """Print the operator report for an ``_api.status`` result; return its exit code."""
     print(f"home:    {st['home']}")
@@ -1095,6 +1110,7 @@ def report_status(st: dict) -> int:
     print(f"threads: {st['threads']}")
     print(f"events:  {st['events']}")
     print(f"indexed: {st['fts_indexed']}")
+    _report_libraries(st.get("libraries") or [])
     # The code axis. The pending count is the fold's trailing edge — normally the
     # handful of events that landed since the last maintenance pass, and a large
     # number only while an existing archive's history is still being walked.

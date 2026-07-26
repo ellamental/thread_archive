@@ -29,27 +29,46 @@ classifiers = [
 ]
 
 # One storage/runtime path: JSONL + SQLite. No server backends behind extras.
-# (Non-Negotiable #1.) numpy is for the optional vector layer but light enough
-# to keep in the base; embeddings (torch) is the only genuinely heavy,
-# genuinely optional piece. networkx + the Leiden engine serve the archive's
-# own corpus-native embedding graph (_retrieval/embed_graph.py — the coherence
-# ranking signal) and the shared community spine (_retrieval/community.py);
-# analytics over the topic graph are an external consumer's, not carried here.
+# (Non-Negotiable #1.) numpy is for the optional vector layer but light enough to
+# keep in the base; networkx is the kNN graph container and the seeded Louvain
+# engine for _retrieval/community.py, the shared community spine.
+#
+# What is deliberately NOT here is the Leiden engine. The base install still has
+# compiled dependencies (numpy, and pydantic-core/cryptography under mcp), but
+# those publish wheels across musl, aarch64, and glibc back to 2.17. leidenalg +
+# python-igraph are the narrow ones — no musllinux-aarch64 wheel at all, and a
+# manylinux floor of 2.28 — so they are the only deps that turn `pip install
+# thread-archive` into a source build needing a C toolchain. Behind an extra, that
+# platform tax is paid by installs that asked for the feature.
 dependencies = [
     "sqlalchemy>=2.0",
     "numpy>=1.26",
-    "networkx>=3.2",  # kNN graph container + the seeded Louvain fallback
-    "leidenalg>=0.10",  # Leiden community detection (well-connected communities)
-    "python-igraph>=0.11",  # leidenalg's graph backend
+    "networkx>=3.2",  # kNN graph container + the seeded Louvain engine
     "mcp>=1.0",
 ]
 
 [project.optional-dependencies]
+# Leiden community detection — C extensions, and the only ones the archive uses.
+# They partition the corpus-native embedding graph (_retrieval/embed_graph.py)
+# that the coherence re-rank reads. Optional because that graph is built from the
+# vector pack: a lexical-only install never builds it and never calls the engine.
+# `embeddings` therefore pulls this in — semantic search is exactly the condition
+# under which the engine has work to do, and Louvain ranks below the archive's
+# gated recall floor. A consumer that partitions a graph of its own (the librarian's
+# topic graph, which needs no vectors) depends on `thread-archive[leiden]` directly.
+leiden = ["leidenalg>=0.10", "python-igraph>=0.11"]
 # Local semantic search (nomic-embed-text-v1.5 via sentence-transformers). Heavy;
 # the base install is lexical-only. einops is needed by nomic's trust_remote_code
 # model. torch is declared rather than left to arrive under sentence-transformers:
 # embed.py and rerank.py import it directly to pick the device and the fp16 dtype.
-embeddings = ["sentence-transformers>=3.0", "einops>=0.7", "torch>=2.0"]
+embeddings = [
+    "sentence-transformers>=3.0", "einops>=0.7", "torch>=2.0",
+    "thread-archive[leiden]",
+]
+# Every runtime feature in one name, for an install that wants the whole product
+# rather than a considered subset. Runtime only — `dev` and `testing` are bench
+# and plugin-author tooling, not features, so they stay out.
+all = ["thread-archive[embeddings]", "thread-archive[leiden]"]
 # pyarrow: evals/swechat_corpus.py reads the SWE-chat parquet tables to derive the
 # commit miner's session↔commit linkage. Bench-only — no product code imports it.
 # hypothesis: generated queries against the never-raise contract (tests/test_search_fuzz.py).

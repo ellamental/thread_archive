@@ -2,6 +2,50 @@
 
 ## Unreleased
 
+- **The base install is lexical-only all the way down: Leiden moved behind an
+  extra.** `leidenalg` + `python-igraph` are the only dependencies with a narrow
+  wheel matrix (no musllinux-aarch64 at all, a manylinux floor of 2.28), so they
+  were the only reason `pip install thread-archive` could turn into a source
+  build needing a C toolchain. They now live in a `leiden` extra that
+  `[embeddings]` pulls in, because the graph they partition is built from the
+  vector pack — a lexical-only install never builds it and never calls the
+  engine. A new `[all]` extra is every runtime feature under one name. The
+  librarian, whose topic graph needs the engine without needing vectors, depends
+  on `thread-archive[leiden]` directly.
+
+- **A degraded search feature is now visible instead of silent.**
+  `thread_archive status` and the viewer's health page report the capability
+  matrix behind search — the Leiden community engine, the vector arm, the
+  cross-encoder — and distinguish a feature this install simply doesn't have
+  (`off`, a choice) from one that is running on a lesser substitute
+  (`degraded`). Only the second raises an action. That distinction is what makes
+  the extra safe: with vectors on but Leiden absent, the coherence re-rank runs
+  on Louvain and sits below the archive's own gated recall floor while every
+  other check on the page stays green.
+
+- **A re-run of `setup` can no longer re-enable a source you turned off.** The
+  flow rewrote the whole source policy from each run's answers, so a second run
+  that pressed Enter (or `s`, or came from `--yes`) cleared every per-source
+  opt-out — capture the operator had declined, quietly restored by the command
+  that exists to revisit choices. Policy now changes only where a policy is
+  stated: the edit pass, whose per-source question is seeded with what that
+  source is set to now, so Enter through it changes nothing and a "yes" is what
+  lifts an opt-out. Disabled stores are listed unchecked (`[ ] … (off — e to
+  change)`), stay out of the import, and the offer says "import the checked
+  ones" rather than "import all" when any is off; with every found store off,
+  only the edit is offered. An unreadable `config.json` still seeds nothing —
+  it is the file the run replaces.
+
+- **Setup ends in the archive, not at a URL.** With the watcher installed, its
+  cohosted viewer is already serving — so the wizard's last question offers to
+  open it, and a first install finishes looking at its own conversations
+  instead of at a localhost address to copy by hand. The offer waits for the
+  just-installed watcher's port to answer before opening anything, and is asked
+  only of a terminal: `--yes` (agents, scripts) records `not-offered` and never
+  puts a window on someone's desktop. Both host actions — the port probe and
+  the browser — go through `_setup.machine.Machine` like every other thing
+  setup does outside the archive home, so the whole flow stays scriptable.
+
 - **The install story is the package, not the clone.** The README, releasing
   doc, and install docs now lead with `pip install thread-archive &&
   thread_archive setup`; the clone with an editable venv is the from-source/
@@ -74,6 +118,53 @@
   (`THREAD_ARCHIVE_UPLOAD_FREE_MARGIN`): filling the disk would break the very
   import the upload exists for. A body the router declines to read closes the
   connection rather than being drained — the unread remainder is a whole export.
+
+- **A retrieval page in the viewer** (`/retrieval`, `GET /api/retrieval`). Every
+  other view there is about the corpus; this one is about the pipeline that reads
+  it. It assembles the three ledgers that record retrieval — served latency from
+  `retrieval-usage.jsonl`, the controlled bench from `latency-runs.jsonl`, quality
+  from `gold-runs.jsonl` — because none of them answers alone: latency without
+  quality is half a verdict, since most of the cheap ways to make search faster are
+  ways to make it worse.
+
+  Three rules live in `_ops/retrieval_report.py` rather than in the caller, each
+  because getting it wrong produces a plausible chart that is simply false. Probe
+  queries are excluded (a one-character bench leftover returns in ~1 ms and pulls
+  every percentile toward a number nobody experienced). Cold and warm are drawn as
+  separate series and never averaged — measured on the live archive the same day,
+  warm p50 is 104 ms against 7.5 s for a process's first search, so a blended median
+  tracks the restart rate rather than the code. Query sets and pooled runs stay
+  apart. Searches predating the process-age field are their own bucket and the page
+  says how many, rather than folding them into whichever regime flatters.
+
+  The charts are inline SVG on a **log** axis: these series span ~30 ms to ~30 s,
+  and linearly every warm number is a flat line pinned to zero under one cold spike
+  — the whole question lives in the bottom 2% of a linear chart. Restarts per day
+  are on the page because they are the largest single influence on what agents feel.
+
+- **`evals/latency_replay.py` — the speed bench over the queries agents actually
+  ran.** Every existing instrument scores curated cases, and a gold case is mined to
+  be *gradeable*: that selection excludes most of what real traffic looks like.
+  Time-scoped asks, browse walks and sentence punctuation are all common in the
+  usage ledger and near-absent from the golds, so today's scan and term changes read
+  flat on `retrieval_gold_gate.py --latency` while moving real searches by an order
+  of magnitude. The ledger now supplies the query set and `_ops.speed` supplies the
+  controlled conditions.
+
+  It replays real *calls*, not real query text — the parameters are part of the
+  cost, and a recorded `group='browse', match='substring'` ask replayed as bare text
+  at the default limit understates it 12×. `speed.measure` accordingly accepts
+  `(query, kwargs)` beside a bare string, and a replayed `limit` overrides the
+  bench's own so a walk's later pages keep the pools they had.
+
+  It also prints the ledger's **served** distribution beside its own, because those
+  diverged here by 20× while every bench read "fast" — the bench is warm with the
+  pool cache off, production is whatever the serving process happened to be. A run
+  that can only report the flattering half of that is the failure mode this exists
+  to make un-ignorable. Latency rows and baselines are now tagged with the query set
+  (`gold` / `observed`) and given separate baseline files: the two populations are
+  not comparable, and one file would mean whichever set ran last defined the
+  reference for both.
 
 - **A gold run scored from persisted pools now says so.** `--cache` leaves the
   scores meaningful and the `p50_ms` meaningless — the arms never run, so a pooled

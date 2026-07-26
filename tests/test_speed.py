@@ -165,6 +165,36 @@ def test_measure_attributes_stage_times_from_the_probe() -> None:
     assert stats.rerank_rate == 1.0
 
 
+def test_measure_replays_the_arguments_a_call_was_made_with() -> None:
+    """The parameters are part of the cost, not a detail of it — a recorded browse
+    ask replayed as bare text at the default limit measures a workload nobody ran."""
+    seen: list[dict] = []
+
+    def fake_search(query, **kw):
+        seen.append(kw)
+        return []
+
+    speed.measure([("q", {"group": "browse", "page": 4}), "plain"],
+                  search=fake_search, reps=1, warmup=False, limit=10)
+    assert seen[0] == {"limit": 10, "group": "browse", "page": 4}
+    # …and a bare string still means "defaults", so existing callers are unchanged.
+    assert seen[1] == {"limit": 10}
+
+
+def test_a_replayed_call_may_override_the_benchs_own_limit() -> None:
+    """A walk's later pages carry pools an order of magnitude deeper than page one;
+    forcing the bench's limit over the recorded one would flatten exactly that."""
+    seen: list[dict] = []
+
+    def fake_search(query, **kw):
+        seen.append(kw)
+        return []
+
+    speed.measure([("q", {"limit": 50})], search=fake_search, reps=1, warmup=False,
+                  limit=10)
+    assert seen[0]["limit"] == 50
+
+
 # --- the timeseries + baseline ----------------------------------------------
 
 
@@ -185,6 +215,29 @@ def test_baseline_roundtrips_with_per_query(archive_home) -> None:
 def test_baseline_from_another_snapshot_is_not_served(archive_home) -> None:
     speed.write_baseline(archive_home, snapshot_id="snap1", stats=_stats())
     assert speed.read_baseline(archive_home, snapshot_id="snap2") is None
+
+
+def test_each_query_set_keeps_its_own_baseline(archive_home) -> None:
+    """The gold files and the usage ledger are different populations of query — a
+    p50 over one is not a reference for the other. One file would mean whichever set
+    ran last defined the reference for both."""
+    gold = speed._summarize([_sample(700, query="g")], n_queries=1, reps=1)
+    observed = speed._summarize([_sample(4000, query="o")], n_queries=1, reps=1)
+    speed.write_baseline(archive_home, snapshot_id=None, stats=gold)
+    speed.write_baseline(archive_home, snapshot_id=None, stats=observed,
+                         query_set=speed.OBSERVED_SET)
+    assert speed.read_baseline(archive_home)["by_query"] == {"g": 700.0}
+    assert speed.read_baseline(
+        archive_home, query_set=speed.OBSERVED_SET)["by_query"] == {"o": 4000.0}
+
+
+def test_a_run_row_names_the_population_it_measured(archive_home) -> None:
+    speed.record_run(archive_home, snapshot_id=None, stats=_stats())
+    speed.record_run(archive_home, snapshot_id=None, stats=_stats(),
+                     query_set=speed.OBSERVED_SET)
+    rows = [__import__("json").loads(line) for line in
+            (archive_home / speed.LATENCY_RUNS_FILE).read_text().splitlines()]
+    assert [r["query_set"] for r in rows] == [speed.GOLD_SET, speed.OBSERVED_SET]
 
 
 def test_record_run_appends_and_flags_a_tuning_run(archive_home) -> None:
