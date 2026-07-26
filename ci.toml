@@ -1,17 +1,17 @@
-# thread-archive's CI suite manifest — consumed by thread-ci
-# (~/dev/thread/ops/ci). Runs land in the same ~/.thread/ci store and the same
-# read surfaces as the monorepo's. {repo} = this repo root, {home} = the user's
-# home.
+# thread-archive's CI suite manifest — consumed by the maintainer's local
+# commit-triggered CI sweeper (thread-ci). Nothing in the package reads it;
+# without that tool it is inert documentation of the full local quality bar.
+# {repo} = this repo root, {home} = the user's home.
 #
 # Gates the documented quality bar (README → "confirm green"): ruff + the pytest
 # suite from the repo's own venv, and a typecheck of the frontend. Fast gates
-# first so failures surface early, matching the monorepo ci.toml's ordering.
+# first so failures surface early.
 
 [ci]
 nice = 10
 default_timeout = 900
 # npx (frontend-typecheck) resolves off the fnm default-alias dir — a stable
-# symlink, same reasoning as the monorepo ci.toml's path_prepend.
+# symlink, so a node upgrade never breaks the row's path.
 path_prepend = ["{repo}/.venv/bin", "{home}/.local/share/fnm/aliases/default/bin"]
 
 # The family lint bar (config in pyproject [tool.ruff]; ruff is in the dev
@@ -59,8 +59,8 @@ name = "pytest"
 # Branch coverage rides every sweep: the term report keeps blind spots visible in
 # the row output, and the JSON report feeds the coverage-gate row below.
 #
-# -n 4 matches the box's performance-core count (the monorepo's lab row makes the
-# same call). --dist=loadfile keeps a file's tests together on one worker: the
+# -n 4 matches the box's performance-core count. --dist=loadfile keeps a file's
+# tests together on one worker: the
 # suite's isolation is per-test (conftest's _isolate_archive resets the global
 # engine and truth handles around each), but a file's tests still share the
 # module-level fixtures they were written against, and loadfile preserves that

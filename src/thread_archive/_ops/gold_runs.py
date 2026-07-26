@@ -95,6 +95,7 @@ def record_run(
     config: Optional[dict[str, Any]] = None,
     commit: Optional[str] = None,
     overrides: Optional[dict[str, Any]] = None,
+    pool_cache: bool = False,
 ) -> None:
     """Append one gold-gate run to ``<home>/gold-runs.jsonl``. ``files`` maps each
     scored gold file to its metrics (``mrr``/``success10``/``recall10``/``ndcg10``/
@@ -103,7 +104,14 @@ def record_run(
     the row as an experiment rather than a baseline. ``home`` is passed explicitly
     — the gate repoints ``THREAD_ARCHIVE_HOME`` at the frozen snapshot to score,
     so the ledger location can't be read back off the env. Fail-soft: any write
-    error is logged and swallowed."""
+    error is logged and swallowed.
+
+    ``pool_cache`` marks a run that scored from persisted candidate pools. Its
+    scores are the point of such a run and are unaffected; its ``p50_ms`` is not a
+    retrieval latency at all, because the arms never ran — measured on this corpus,
+    a cached run's median lands near 60 ms against ~900 ms for the same files
+    uncached. Unflagged, the two sit in one column and the timeseries reads as a
+    tenfold speedup no code change caused."""
     if not _enabled():
         return
     record: dict[str, Any] = {
@@ -120,6 +128,10 @@ def record_run(
         # shipped one. Flagged so reading the timeseries can't mistake an
         # experiment for a baseline movement.
         record["overrides"] = overrides
+    if pool_cache:
+        # Same reason, for the latency column: a pooled run's p50 measures the
+        # cache, not the pipeline.
+        record["pool_cache"] = True
     try:
         path = home / LEDGER_FILE
         with open(path, "a", encoding="utf-8") as fh:

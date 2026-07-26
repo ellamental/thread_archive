@@ -1,23 +1,28 @@
 """The ``archive`` command — a thin CLI over the :mod:`thread_archive._api` surface.
 
-**Private operational tooling, not public API.** The package's public surface
-is the retrieval MCP tools plus the truth format (see the package docstring);
-this CLI is the process seam the service manager, cron, and operators use to run
-the private machinery — ingest (``import``, ``import-export``, ``watch``,
-``embed``), the backup kit (``backup``, ``verify``, ``restore-drill``,
-``restore``, ``reindex``, ``snapshot``, ``migrate``, ``repair``, ``status``, ``nightly``, ``coverage``),
-the search-quality self-checkup (``eval`` — read-only, scores retrieval on the
-operator's own data), and the service-agent lifecycle (``daemon``). Verbs may change without
-external notice, but they are *wired into* the service manifests, lab's cron
-script, the /ci skill, and the monitor's heartbeat contract — renaming one
-means updating those in the same change (``tests/test_public_api.py`` pins the
-set so the change is deliberate).
+Two kinds of verb live here.
 
-Retrieval deliberately has no CLI verbs: search and read are the public MCP
-tools, and the web viewer is cohosted by the always-on watcher
-(``thread_archive watch --web``). One retrieval surface, not three. ``web`` is
-not an exception — it hands that viewer's URL to a browser and serves nothing
-itself.
+**Retrieval — ``search`` and ``read`` — is supported surface.** They are the
+``thread_search`` / ``thread_read`` tools with a terminal in front of them: one
+implementation (:mod:`thread_archive._tools`), served to agents over MCP and to
+a person here, so what you get at a prompt is what the agent would have gotten,
+notes and all. Their flags mirror the tool parameters one for one.
+
+**Every other verb is private operational tooling.** They are the process seam
+the service manager, cron, and operators use to run the private machinery —
+ingest (``import``, ``import-export``, ``watch``, ``embed``), the backup kit
+(``backup``, ``verify``, ``restore-drill``, ``restore``, ``reindex``,
+``snapshot``, ``migrate``, ``repair``, ``status``, ``nightly``, ``coverage``),
+the search-quality self-checkup (``eval`` — read-only, scores retrieval on the
+operator's own data), and the service-agent lifecycle (``daemon``). Those verbs
+may change without external notice, but they are *wired into* the service
+manifests, lab's cron script, the /ci skill, and the monitor's heartbeat
+contract — renaming one means updating those in the same change
+(``tests/test_public_api.py`` pins the set so the change is deliberate).
+
+The web viewer is the same archive through a browser, cohosted by the always-on
+watcher (``thread_archive watch --web``); ``web`` is not a third read surface —
+it hands that viewer's URL to a browser and serves nothing itself.
 """
 
 from __future__ import annotations
@@ -76,6 +81,83 @@ def _self_throttle() -> None:
             libc.setiopolicy_np(0, 1, 5)
         except Exception:  # pragma: no cover — platform best-effort
             pass
+
+
+def cmd_search(args: argparse.Namespace) -> int:
+    """``thread_archive search`` — the ``thread_search`` tool, rendered to stdout.
+
+    Every flag is passed through unchanged: the clamping, the default scope, the
+    degradation notice, and the usage-ledger record are the tool's, so a query
+    typed here and the same query asked over MCP return the same text.
+    """
+    from . import _api as api
+    from . import _tools
+
+    api.open_archive(args.home)
+    try:
+        with _tools.serving("cli"):
+            out = _tools.thread_search(
+                args.query,
+                limit=args.limit,
+                thread_id=args.thread_id,
+                topic_id=args.topic_id,
+                content_type=args.content_type,
+                exclude_content_type=args.exclude_content_type,
+                since=args.since,
+                until=args.until,
+                tool_name=args.tool_name,
+                source=args.source,
+                types=args.types,
+                agents=args.agents,
+                startswith=args.startswith,
+                path=args.path,
+                path_ops=args.path_ops,
+                commit=args.commit,
+                repo=args.repo,
+                sort=args.sort,
+                group=args.group,
+                output=args.output,
+                context_lines=args.context_lines,
+                context_events=args.context_events,
+                rerank=args.rerank,
+                match=args.match,
+                page=args.page,
+            )
+    except ValueError as e:
+        # The engine rejects an out-of-contract scope by name (--agents, --group,
+        # --sort) and its message names the values that do work. Print that rather
+        # than restating the set here as argparse choices: a second copy of the
+        # valid values is a copy that drifts from the engine's.
+        print(f"search: {e}", file=sys.stderr)
+        return 2
+    print(out)
+    return 0
+
+
+def cmd_read(args: argparse.Namespace) -> int:
+    """``thread_archive read`` — the ``thread_read`` tool, rendered to stdout."""
+    from . import _api as api
+    from . import _tools
+
+    api.open_archive(args.home)
+    with _tools.serving("cli"):
+        print(_tools.thread_read(
+            args.id,
+            limit=args.limit,
+            offset=args.offset,
+            summary=args.summary,
+            mode=args.mode,
+            tool_results=args.tool_results,
+            max_chars=args.max_chars,
+            after_event=args.after_event,
+            around_event=args.around_event,
+            context_turns=args.context_turns,
+        ))
+    # A ref naming nothing readable is an operator error, not a short thread. The
+    # rendered text already says so in prose (right for the agent surface, invisible
+    # to a shell), so the exit code is decided by resolving the ref rather than by
+    # reading that prose back — `read_thread` has more than one way to say no.
+    return 0 if _tools._resolve_ref(args.id) is not None else 1
 
 
 def cmd_import(args: argparse.Namespace) -> int:
@@ -1407,9 +1489,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="thread_archive",
         description="Serverless-native local archive for AI conversations (JSONL truth + SQLite index).",
-        epilog="Retrieval has no CLI verbs by design: search/read are the archive-mcp "
-               "tools, and the web viewer is cohosted by `thread_archive watch --web` "
-               "(`thread_archive web` opens it).",
+        epilog="`search` and `read` are the archive-mcp tools at a terminal — same "
+               "implementation, same results. The web viewer is the third door, "
+               "cohosted by `thread_archive watch --web` (`thread_archive web` opens it).",
     )
     parser.add_argument("--version", action="version", version=f"thread-archive {__version__}")
     sub = parser.add_subparsers(dest="command", metavar="<command>")
@@ -1431,6 +1513,165 @@ def build_parser() -> argparse.ArgumentParser:
                          help="schedule nightly backups to PATH without prompting")
     p_setup.add_argument("--skip-mcp", action="store_true", help="don't offer MCP wiring")
     p_setup.set_defaults(func=cmd_setup)
+
+    # Retrieval. The flags mirror the thread_search / thread_read tool parameters;
+    # the long-form contract for each (what a scope means, when to reach for it)
+    # lives in the tools' own docstrings, in _tools.py.
+    p_search = sub.add_parser(
+        "search",
+        help="search the archive — the thread_search tool, at a terminal",
+        description=(
+            "Search the local conversation archive: lexical FTS5 + optional semantic\n"
+            "vectors, fused, ranked, optionally re-ranked. This is the thread_search\n"
+            "MCP tool with a terminal in front of it — same results, same notes.\n"
+            "\n"
+            "An empty query is a browse: one row per thread, newest activity first,\n"
+            "honoring the structural filters. Results are one page — the header names\n"
+            "the page and the total, --page walks them, and --group browse is the\n"
+            "shape that enumerates every matched thread completely.\n"
+            "\n"
+            "Read the quality signal in the header before trusting a hit: weak, or a\n"
+            "0-of-N term count, means these are nearest-neighbour guesses."
+        ),
+        epilog=(
+            "examples:\n"
+            "  thread_archive search 'retry backoff' --since 7d\n"
+            "  thread_archive search --source cursor --limit 20   # browse: recent cursor sessions\n"
+            "  thread_archive search --path _retrieval/rank.py --path-ops edit,write\n"
+            "  thread_archive search auth --group browse --page 2\n"
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    _add_home_arg(p_search)
+    p_search.add_argument(
+        "query", nargs="?", default="",
+        help="natural language, \"quoted phrases\", AND/OR/NOT, pipe-OR (a|b), or code "
+             "identifiers; omit it to browse threads by last activity",
+    )
+    p_search.add_argument("--limit", type=int, default=10,
+                          help="results per page — threads for the list shapes (default 10)")
+    p_search.add_argument("--page", type=int, default=1,
+                          help="1-based page of the same ordering (default 1)")
+    p_search.add_argument("--thread-id", default=None, metavar="REF",
+                          help="scope to one conversation (ULID, legacy integer id, or "
+                               "provider session id)")
+    p_search.add_argument("--topic-id", default=None, metavar="REF",
+                          help="scope to a topic's member conversations")
+    p_search.add_argument("--content-type", default=None, metavar="TYPE",
+                          help="one of user/text/thinking/tool/title/summary/... "
+                               "(default: everything but derived summaries; 'all' folds those in)")
+    p_search.add_argument("--exclude-content-type", default=None, metavar="TYPES",
+                          help="comma-separated content types to drop")
+    p_search.add_argument("--since", default=None, metavar="WHEN",
+                          help="lower bound — ISO timestamp or a relative age like 7d")
+    p_search.add_argument("--until", default=None, metavar="WHEN",
+                          help="upper bound — ISO timestamp or a relative age")
+    p_search.add_argument("--tool-name", default=None, metavar="NAME",
+                          help="only events that ran this tool (e.g. Bash)")
+    p_search.add_argument("--source", default=None, metavar="PROVIDERS",
+                          help="comma-separated providers, e.g. claude-code,cursor")
+    p_search.add_argument("--types", default=None, metavar="TYPES",
+                          help="comma-separated thread_type values: conversation, topic, system")
+    p_search.add_argument("--agents", default=None, metavar="MODE",
+                          help="agent-run (subagent/machinery) threads: exclude (default), "
+                               "include, or only")
+    p_search.add_argument("--startswith", default=None, metavar="PREFIX",
+                          help="structural prefix scan over content (the query text is unused)")
+    p_search.add_argument("--path", default=None, metavar="PATH",
+                          help="the code axis: conversations that touched this file — a bare "
+                               "name, a partial or absolute path, a directory (its whole "
+                               "subtree), or a glob")
+    p_search.add_argument("--path-ops", default=None, metavar="OPS",
+                          help="narrow --path to these verbs: edit,write,delete (changes), "
+                               "read (a look), search,run (incidental mentions)")
+    p_search.add_argument("--commit", default=None, metavar="SHA",
+                          help="the loop back from git blame: the conversations this commit "
+                               "is made of")
+    p_search.add_argument("--repo", default=None, metavar="PATH",
+                          help="with --commit: the repository, when it isn't one the archive "
+                               "has seen sessions run in")
+    p_search.add_argument("--sort", default=None, metavar="ORDER",
+                          help="'oldest' for chronological order (when was this first "
+                               "discussed); the default is relevance")
+    p_search.add_argument("--group", default=None, metavar="MODE",
+                          help="how hits relate to threads: the default folds to one row per "
+                               "thread; 'none' is every hit, 'browse' lists matched threads, "
+                               "'nested' clusters hits under theirs")
+    p_search.add_argument("--output", default=None, metavar="SHAPE",
+                          help="'count' for a per-thread tally, 'linkable' for JSON event/thread ids")
+    p_search.add_argument("--context-lines", type=int, default=2, metavar="N",
+                          help="±N numbered lines around each match (0 = the raw FTS snippet)")
+    p_search.add_argument("--context-events", default=None, metavar="SPEC",
+                          help="append neighbouring events: 'N', 'before:after', or "
+                               "'before:after:types'")
+    p_search.add_argument("--match", default=None, metavar="MODE",
+                          help="'token' (default, indexed) or 'substring' (uncapped infix "
+                               "scan — finds p4 inside mp4)")
+    rerank = p_search.add_mutually_exclusive_group()
+    rerank.add_argument("--rerank", dest="rerank", action="store_true", default=None,
+                        help="force the cross-encoder re-rank on (needs the [embeddings] extra)")
+    rerank.add_argument("--no-rerank", dest="rerank", action="store_false",
+                        help="force it off (the default auto-gates on the query's shape)")
+    p_search.set_defaults(func=cmd_search)
+
+    p_read = sub.add_parser(
+        "read",
+        help="read a conversation — the thread_read tool, at a terminal",
+        description=(
+            "Replay a thread from the event log. The id is whatever you have: the\n"
+            "archive's ULID (what search results carry), a legacy integer id, or the\n"
+            "session uuid the harness knows the conversation by — all three resolve.\n"
+            "A topic id reads as that topic's page.\n"
+            "\n"
+            "The read is size-budgeted, so a long thread comes back in chunks with a\n"
+            "footer naming the offset to continue from. Exits nonzero when the id\n"
+            "names nothing readable."
+        ),
+        epilog=(
+            "examples:\n"
+            "  thread_archive read 01JQ8ZK4X0000000000000000 --mode chat\n"
+            "  thread_archive read 4d1c9f2e-… --summary files    # what this session changed\n"
+            "  thread_archive read 812 --around-event 90210      # open a search hit in context\n"
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    _add_home_arg(p_read)
+    p_read.add_argument(
+        "id", metavar="ID",
+        help="ULID thread id, legacy integer id, or a provider session uuid",
+    )
+    p_read.add_argument(
+        "--mode", default=None, choices=["user", "chat", "full", "last", "ends"],
+        help="view: user (default — the questions asked), chat (readable conversation), "
+             "full (every tool call too), last (the closing assistant text), "
+             "ends (first + last turns)",
+    )
+    p_read.add_argument(
+        "--summary", nargs="?", const="toc", default=False,
+        choices=["toc", "short", "indexed", "files"],
+        help="a summary instead of the transcript: toc (per-message contents; the "
+             "default when the flag is bare), short / indexed (the stored summaries, "
+             "where a thread has one), files (what this session touched)",
+    )
+    p_read.add_argument("--limit", type=int, default=200, metavar="N",
+                        help="max turns per chunk (default 200; the char budget usually bites first)")
+    p_read.add_argument("--offset", type=int, default=0, metavar="N",
+                        help="skip N turns — the CHUNKED footer names the next one; "
+                             "negative counts from the end (-20 = last 20 turns)")
+    p_read.add_argument("--max-chars", type=int, default=0, metavar="N",
+                        help="per-chunk character budget (default ~48k); lower it for a "
+                             "cheap skim of a long thread")
+    p_read.add_argument("--tool-results", action="store_true",
+                        help="fold each tool's output under its call (needs --mode full)")
+    p_read.add_argument("--around-event", type=int, default=None, metavar="EVENT_ID",
+                        help="open a search hit: its whole turn, plus --context-turns "
+                             "either side")
+    p_read.add_argument("--after-event", type=int, default=None, metavar="EVENT_ID",
+                        help="resume from the turn after this event (a robust --offset)")
+    p_read.add_argument("--context-turns", type=int, default=1, metavar="N",
+                        help="turns either side of --around-event, or per end for "
+                             "--mode ends (default 1)")
+    p_read.set_defaults(func=cmd_read)
 
     p_import = sub.add_parser("import", help="import a transcript or provider store")
     _add_home_arg(p_import)

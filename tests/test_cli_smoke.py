@@ -91,7 +91,8 @@ def test_all_subcommands_present() -> None:
     # (test_public_api.py owns the boundary ratchet; this is the wiring smoke.)
     sub = next(a for a in parser._actions if hasattr(a, "choices") and a.choices)
     assert set(sub.choices) == {
-        "setup", "import", "import-export", "providers", "watch", "web", "reindex", "snapshot",
+        "setup", "search", "read",
+        "import", "import-export", "providers", "watch", "web", "reindex", "snapshot",
         "migrate", "embed",
         "status", "loads", "archives",
         "eval", "mine", "backup", "verify", "repair", "restore-drill", "restore",

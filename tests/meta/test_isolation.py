@@ -6,7 +6,7 @@ installed entrypoints), ``~/.config``. The suite gets a throwaway ``$HOME`` and 
 whole product resolves into it.
 
 The redirect is set in ``conftest.py`` at **import** time rather than in a fixture,
-and that timing is the load-bearing part. Modules across this monorepo bake machine
+and that timing is the load-bearing part. Modules in this codebase bake machine
 locations into module-level constants — a store dir, a plist dir, an installed
 entrypoint's symlink — each evaluated once, when the module is first imported. A
 fixture runs long after that, so it can redirect a call-time ``Path.home()`` and
@@ -50,7 +50,7 @@ REAL_HOME = Path(pwd.getpwuid(os.getuid()).pw_dir)
 HOME_AT_IMPORT = Path(os.environ.get("HOME", str(REAL_HOME)))
 
 # The operator's live state. Not the whole of the real home: the source checkout
-# lives under it too (``~/dev/thread``), and a module resolving its own repo root
+# typically lives under it too, and a module resolving its own repo root
 # from ``__file__`` is reading source, which is fine. These are the directories
 # where a stray write lands on production.
 REAL_STATE_DIRS = (

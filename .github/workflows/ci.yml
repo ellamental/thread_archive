@@ -1,11 +1,10 @@
 # The public CI gate on GitHub. Mirrors the documented quality bar (README →
-# "confirm green") for anyone without the local thread-ci: ruff + mypy + the
-# pytest suite with its coverage floor, plus the frontend typecheck/tests and the
-# wheel/sdist release lane.
+# "confirm green"): ruff + mypy + the pytest suite with its coverage floor,
+# plus the frontend typecheck/tests and the wheel/sdist release lane.
 #
 # The one ci.toml row deliberately absent is retrieval-gate: it scores search
-# quality against THIS machine's live ~/.thread/archive, which no runner has. It
-# stays a local/thread-ci gate.
+# quality against the maintainer's live archive, which no runner has. It stays
+# a local gate (see ci.toml).
 #
 # The suite is model-free (conftest forces the embed/rerank availability gates
 # off), so CI installs only the base + [dev] deps — never the heavy [embeddings]

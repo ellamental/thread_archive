@@ -147,8 +147,9 @@ def _run(bin_dir: Path, argv: list[str], home: Path) -> subprocess.CompletedProc
 
 
 def test_installed_cli_lifecycle_import_reindex_verify(installed, tmp_path) -> None:
-    # Retrieval has no CLI verbs (search/read are the MCP tools, exercised
-    # below); the CLI lifecycle is ingest + the backup kit.
+    # Ingest, the backup kit, and — from the same console script — retrieval:
+    # `search` / `read` are the MCP tools with a terminal in front of them (the
+    # MCP door is driven over stdio below), so the install has to answer on both.
     home = tmp_path
     session_file = home / "sess.jsonl"
     session_file.write_text(
@@ -166,6 +167,16 @@ def test_installed_cli_lifecycle_import_reindex_verify(installed, tmp_path) -> N
 
     r = _run(installed, ["thread_archive","verify"], home)
     assert r.returncode == 0, f"verify red on a fresh install:\n{r.stdout}\n{r.stderr}"
+
+    # Retrieval, end to end on the installed package: browse to a thread id, then
+    # read that thread back.
+    r = _run(installed, ["thread_archive","search","--output","linkable"], home)
+    assert r.returncode == 0, r.stderr
+    thread_id = json.loads(r.stdout)[0]["thread_id"]
+
+    r = _run(installed, ["thread_archive","read", thread_id], home)
+    assert r.returncode == 0, r.stderr
+    assert "[USER" in r.stdout
 
 
 # ── the installed MCP server: the actual consumer path ───────────────────────

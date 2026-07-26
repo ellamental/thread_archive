@@ -1,4 +1,9 @@
-"""The library-native MCP server exposes thread_search + thread_read."""
+"""The library-native MCP server exposes thread_search + thread_read.
+
+The tools' own behaviour is `thread_archive._tools` (shared with the CLI verbs —
+tests/test_cli_retrieval.py drives that door); what this file covers is the MCP
+serving of them: schema, transports, the bind guard, and the cohosted ingest.
+"""
 
 from __future__ import annotations
 
@@ -15,6 +20,7 @@ import urllib.request
 import pytest
 
 from thread_archive import _api as ta
+from thread_archive import _tools
 from thread_archive._mcp import server
 from thread_archive._mcp.server import IngestThrottle, ServePlan, mcp, thread_read, thread_search
 
@@ -588,8 +594,8 @@ def test_default_scope_is_the_whole_transcript_minus_summaries() -> None:
     """The default search scope names no content type — everything the index holds
     is in play — and excludes only the librarian's derived summaries. Tool output
     needs no exclusion here because it never reaches the index at all."""
-    assert server.DEFAULT_SEARCH_CONTENT_TYPES is None
-    assert server.DEFAULT_SEARCH_EXCLUDE == ("summary",)
+    assert _tools.DEFAULT_SEARCH_CONTENT_TYPES is None
+    assert _tools.DEFAULT_SEARCH_EXCLUDE == ("summary",)
 
 
 def test_warm_pass_primes_the_scope_agents_search() -> None:
@@ -598,8 +604,8 @@ def test_warm_pass_primes_the_scope_agents_search() -> None:
     first real query building a matrix inside the request."""
     from thread_archive import _retrieval
 
-    assert server.DEFAULT_SEARCH_CONTENT_TYPES is _retrieval.DEFAULT_CONTENT_TYPES
-    assert server.DEFAULT_SEARCH_EXCLUDE is _retrieval.DEFAULT_EXCLUDE_CONTENT_TYPES
+    assert _tools.DEFAULT_SEARCH_CONTENT_TYPES is _retrieval.DEFAULT_CONTENT_TYPES
+    assert _tools.DEFAULT_SEARCH_EXCLUDE is _retrieval.DEFAULT_EXCLUDE_CONTENT_TYPES
 
 
 def test_degradation_notice_accepts_naive_timestamp(archive_home) -> None:
@@ -615,7 +621,7 @@ def test_degradation_notice_accepts_naive_timestamp(archive_home) -> None:
             "mystery": {"reason": "novel_failure"},
         },
     }}))
-    notice = server._degradation_notices()
+    notice = _tools._degradation_notices()
     assert "grok import is degraded (content is being consumed without importing" in notice
     assert "since 2026-07-01" in notice
     # unknown reason → generic phrase, and no dangling "since" for a missing date
@@ -629,7 +635,7 @@ def test_degradation_notice_fails_soft_on_unparseable_record(archive_home) -> No
         "at": None,
         "degraded": {"grok": {"reason": "went_dark"}},
     }}))
-    assert server._degradation_notices() == ""
+    assert _tools._degradation_notices() == ""
 
 
 def test_maybe_catch_up_throttles_repeat_attempts(archive_home, monkeypatch) -> None:

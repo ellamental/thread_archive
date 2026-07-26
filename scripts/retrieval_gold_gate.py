@@ -771,6 +771,7 @@ def main(argv: list[str] | None = None) -> int:
         gold_runs.record_run(
             home, snapshot_id=current, files=measured, passed=not breaches,
             config=gold_runs.active_config(params), overrides=overrides or None,
+            pool_cache=cache is not None,
         )
     # The per-case baseline describes the shipped configuration, whole and
     # passing. A tuning run scores a different ranking, a --only run a subset, an

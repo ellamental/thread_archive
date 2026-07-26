@@ -9,8 +9,9 @@ truth. A `cp`/`rsync` of the truth directory *is* the backup; `thread_archive re
 reconstructs everything else from it.
 
 The format is one half of the package's public API — the other half is the
-retrieval MCP tools (`thread_search` / `thread_read`); everything else,
-the `thread_archive` CLI included, is private support machinery. This document is
+retrieval tools (`thread_search` / `thread_read`, served over MCP and as the
+`thread_archive search` / `thread_archive read` verbs); everything else,
+the rest of the `thread_archive` CLI included, is private support machinery. This document is
 the durability promise: data written by one release must stay readable by
 the next. The CLI's backup verbs (`backup`, `verify`, `restore-drill`,
 `reindex`, `repair`) are the private enforcement machinery behind that

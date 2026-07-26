@@ -1,10 +1,11 @@
 """Ratchet the public API boundary.
 
-The public API is exactly four things: the retrieval MCP tools
-(``thread_search`` / ``thread_read``, served by ``archive-mcp``), the
-on-disk truth format (docs/format.md), the provider plugin API
+The public API is exactly four things: the retrieval tools
+(``thread_search`` / ``thread_read`` — served to agents by ``archive-mcp`` and
+to a person by the ``thread_archive search`` / ``thread_archive read`` verbs),
+the on-disk truth format (docs/format.md), the provider plugin API
 (``thread_archive.provider``, docs/providers.md), and the web viewer's URLs
-(README → "Web viewer"). Everything else — the
+(README → "Web viewer"). Everything else — the rest of the
 ``thread_archive`` CLI, the ``_api`` coordination layer, every underscore-prefixed
 module — is private support machinery. These tests make
 widening the surface a deliberate act (edit the pinned sets here) instead of
@@ -32,18 +33,21 @@ PUBLIC_API = ["__version__"]
 # checkout and is never shipped.
 PUBLIC_MODULES = {"cli", "provider"}
 
-# The CLI is private tooling, but its verbs are wired into the LaunchAgent
+# Most of the CLI is private tooling, but its verbs are wired into the LaunchAgent
 # plists, lab's cron script, the /ci skill, and the monitor's heartbeat
 # contract — this pin makes renaming one a deliberate act that updates those
 # in the same change, not a compatibility promise to anyone external.
-# Retrieval verbs (search/read) are deliberately absent and must stay absent:
-# the public MCP tools are the one retrieval surface, and the watcher cohosts the
-# viewer. `web` is an opener, not a retrieval verb — it hands the cohosted
-# viewer's URL to a browser and returns nothing itself; a `web` that *served*
-# would be the second read surface this pin exists to catch. `eval` is a measurement
-# verb — it scores search quality read-only and returns no results to the caller.
+# `search` and `read` are the exception: they are the retrieval tools with a
+# terminal in front of them (one implementation in thread_archive/_tools.py,
+# served over MCP and here), so they carry the same public promise the tools do
+# and there is nothing to keep out. What stays out is a *second implementation* —
+# `web` is an opener, not a read surface: it hands the cohosted viewer's URL to a
+# browser and returns nothing itself. `eval` is a measurement verb — it scores
+# search quality read-only and returns no results to the caller.
 CLI_VERBS = {
     "setup",
+    "search",
+    "read",
     "import",
     "import-export",
     "providers",

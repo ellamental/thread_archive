@@ -1,4 +1,8 @@
-# Installing thread-archive (instructions for Claude)
+# Installing thread-archive from source (instructions for Claude)
+
+This is the **from-source** install. The packaged path is
+`pip install thread-archive && thread_archive setup` and needs no agent; this
+doc is for running from a clone — development, or changes not yet released.
 
 You are an instance of Claude Code, running inside a fresh clone of `thread-archive`.
 The human cloned the repo and asked you to install it. Follow these steps in order.
@@ -123,11 +127,13 @@ An empty archive has nothing to search. Two ways to get conversations in:
 Then confirm it landed:
 
 ```bash
-.venv/bin/thread_archive status            # threads / events / indexed counts
+.venv/bin/thread_archive status                    # threads / events / indexed counts
+.venv/bin/thread_archive search "<something you discussed>"   # retrieval, right now
 ```
 
-(Search lives in the MCP tools, not the CLI — once Claude Code is restarted
-with the config below, `thread_search` is the smoke test for retrieval.)
+(`search` and `read` are the `thread_search` / `thread_read` tools at a
+terminal — same implementation, so a hit here is a hit over MCP once Claude
+Code is restarted with the config below.)
 
 The SQLite index is built during import; if it ever looks wrong, `thread_archive reindex`
 rebuilds it losslessly from the JSONL truth.

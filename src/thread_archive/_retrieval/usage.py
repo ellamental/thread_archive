@@ -2,11 +2,12 @@
 
 Retrieval quality has exactly one honest ground truth: what agents actually
 search for and which results they go on to read. This ledger captures that
-real task — every ``thread_search`` and ``thread_read`` served by the MCP
-surface — so evals (and the knowledge-layer verdict) can be built from
-observed behaviour instead of intuition: it is the sampling frame of real
-query shapes the gold miner draws from. A read joins to the searches before it
-by thread id.
+real task — every ``thread_search`` and ``thread_read`` the tools serve, over
+MCP or from the CLI verbs — so evals (and the knowledge-layer verdict) can be
+built from observed behaviour instead of intuition: it is the sampling frame of
+real query shapes the gold miner draws from. A read joins to the searches before
+it by thread id. A ``surface`` field marks the calls that came from a terminal;
+its absence means MCP, the population these records have always described.
 
 Records hold query text, filter parameters, result *ids*, and the call's
 wall-clock latency (``duration_ms``) — never event content, snippets, or
@@ -121,12 +122,16 @@ def record_search(
     inferred from a missing ``render_ms``, so a surface that legitimately records no
     render (anything serving hits as data) isn't read as a failure.
 
-    ``context`` is what else was competing for the machine
+    ``context`` is the conditions the call ran under
     (:mod:`thread_archive._retrieval._contention`): concurrent calls, background
-    rebuilds, and how recently another process wrote the index. Timings say where a
-    search spent its time; this says whether it had the machine to itself while
-    spending it — the difference between a slow pipeline and a busy box, which a
-    duration alone cannot tell apart."""
+    rebuilds, how recently another process wrote the index, and how long the serving
+    process had been alive. Timings say where a search spent its time; this says
+    whether it had the machine to itself while spending it, and whether it had its
+    caches yet — the difference between a slow pipeline, a busy box, and a cold
+    start, which a duration alone cannot tell apart. Without the last of those no
+    before/after over this file means anything: retrieval's caches are all
+    process-local, restarts are frequent, and a comparison that cannot exclude a
+    cold process is comparing cache states rather than code."""
     if not _enabled():
         return
     record: dict[str, Any] = {

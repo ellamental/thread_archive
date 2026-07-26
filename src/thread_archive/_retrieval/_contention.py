@@ -31,13 +31,29 @@ Three signals, each cheap enough to take on every search:
     watcher, an import, an embed drain — is actively writing the database this
     search is reading. Absent when there is no WAL or it can't be stat'd.
 
-Every field is omitted unless it says something (no in-flight peers, no refresh, a
-long-quiet WAL), so a search on an idle machine records nothing and the fields'
-presence carries the signal. That economy has a cost worth naming: an absent field
-means *nothing to report*, never *not measured*, and the two are only the same as
-long as every surface that records a search also enters the in-flight span. A
-surface that samples without entering it makes its own calls invisible to everyone
-else's peak, and the ledger then reads idle on a machine that was not.
+``uptime_s``
+    How long the serving process had been alive. Every cache retrieval leans on —
+    the vector matrix, the embedding and cross-encoder models, the exact-set memo,
+    SQLite's page cache — is process-local and starts empty, so the same query
+    against the same corpus costs an order of magnitude more at second five than at
+    second five hundred. Without this the two are the same row, and *every*
+    before/after comparison over the ledger silently compares cache states instead
+    of code.
+
+    It doubles as process identity, which is why it is a duration and not a
+    boolean: ``at - uptime_s`` is the process's start, so records sharing one value
+    came from one process, and a threshold for "cold" can be chosen when the
+    question is asked rather than baked in when it is recorded.
+
+The other fields are omitted unless they say something (no in-flight peers, no
+refresh, a long-quiet WAL), so a search on an idle machine records nothing and
+their presence carries the signal. That economy has a cost worth naming: an absent
+field means *nothing to report*, never *not measured*, and the two are only the
+same as long as every surface that records a search also enters the in-flight span.
+A surface that samples without entering it makes its own calls invisible to
+everyone else's peak, and the ledger then reads idle on a machine that was not.
+``uptime_s`` is the exception and is always present: there is no reading of it that
+means *nothing to report*, and it is the denominator the others are read against.
 """
 
 from __future__ import annotations
@@ -54,6 +70,13 @@ logger = logging.getLogger(__name__)
 #: Above this, a WAL write is old enough that it tells us nothing about *this*
 #: call — the point is naming concurrent writes, not dating the last one.
 _WAL_STALE_S = 60.0
+
+#: When this process started, on the monotonic clock. Module import is close enough
+#: to process start for the question this answers (was anything cached yet), and it
+#: is the one moment guaranteed to precede every search the process serves — a
+#: wall-clock read would drift with the system clock and make two records from one
+#: process disagree about when it started.
+_STARTED = time.monotonic()
 
 _INFLIGHT_LOCK = threading.Lock()
 _inflight = 0
@@ -166,11 +189,12 @@ def peak_inflight(span: Optional[Span]) -> dict[str, Any]:
 
 
 def sample() -> dict[str, Any]:
-    """The contention facts worth recording, omitting the ones that say nothing.
+    """The contention facts worth recording, omitting the ones that say nothing —
+    except ``uptime_s``, which every reading of is worth knowing.
 
     Taken at the *start* of the work; the concurrency field is not among them and
     arrives separately from :func:`peak_inflight`."""
-    rec: dict[str, Any] = {}
+    rec: dict[str, Any] = {"uptime_s": round(time.monotonic() - _STARTED, 1)}
     try:
         busy = _refreshing()
         if busy:

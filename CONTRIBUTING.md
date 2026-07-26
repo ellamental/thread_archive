@@ -1,10 +1,29 @@
 # Contributing
 
-Ideas and suggestions are welcome, please open an issue to discuss.
+This project doesn't accept code contributions, and that's a deliberate
+policy, not a gap in the process. It's one maintainer's name on software that
+holds people's entire conversation history; every merged line is something we
+have to have read, understood, and become responsible for. In the era of
+capable LLMs, reviewing a chunk of code that presumably works costs more than
+writing it ourselves — so PRs, including agent-written ones, won't be merged.
+Sorry if that lands wrong; it's about keeping the trust surface small, not
+about your work.
 
-We don't accept code contributions. In the era of capable llms, the security surface of "just writing it ourself" is much more appealing than "a chunk of code that presumably works". Forks are highly encouraged!
+What does help:
 
-You could write, maintain and distribute community plugins though... at some point we'll write something up about that
+- **Bug reports are genuinely welcome** — especially import drift (a provider
+  changed its on-disk format and something degraded). Open an issue with the
+  `thread_archive coverage` / `thread_archive status` output if you have it.
+- **Ideas and design suggestions**: open an issue and talk it through. If
+  something substantial comes out of it, it gets written here, with the
+  discussion as input.
+- **Provider support is the sanctioned extension point.** A new or fixed
+  provider doesn't need a PR at all: the plugin API
+  ([docs/providers.md](docs/providers.md)) lets you write and maintain a
+  provider in your own repo, and `thread_archive fix-import` scaffolds a local
+  repair when a built-in one drifts.
+- **Fork it.** MIT license, no CLA, genuinely encouraged — if you want to take
+  it somewhere we wouldn't, that's the right vehicle, not a patch queue.
 
 ## Security Reporting
 

@@ -1,6 +1,6 @@
 """The family manifest writer — ``host/write-manifest.py``.
 
-Shape per the thread monorepo's ``docs/spec/product-json.md``: three required
+Shape per the thread family's product-json convention: three required
 fields (v/name/version), optional surfaces only when they exist, atomic write
 into the archive home.
 

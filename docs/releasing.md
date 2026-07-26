@@ -1,19 +1,21 @@
 # Releasing thread-archive
 
-Distribution is a git clone: the clone is the install (`pip install -e .`
-into the clone's venv — see the README's Install section). There is no
-package registry. A release is therefore a *pointer*, not an upload:
-compress the changelog, bump the version, one release commit, an annotated
-tag pushed to GitHub. The tag is what a consumer can pin and what
-`thread_archive status` / bug reports can be correlated against.
+Distribution is the package registry: `pip install thread-archive` (the
+README's Install section), with the git clone as the from-source/development
+path. A release is therefore both an upload and a pointer: compress the
+changelog, bump the version, one release commit, an annotated tag pushed to
+GitHub, and the wheel + sdist published to PyPI. The tag is what a source
+clone pins and fast-forwards to; the registry version is what a packaged
+install takes; both are what `thread_archive status` / bug reports correlate
+against — so the tag and the upload carry the same version, always.
 
-**Pushing the tag publishes it.** No install takes it on its own — a consumer
-gets the release when they run `thread_archive self-update`, and `--check` is
-how they see one exists. That is a delay, not a safety net: the tag is offered
-to every clone the moment it is pushed, and the preflight below is the only
-gate between a bad release and the first operator who reaches for it. This
-machine's clone runs ahead of consumers, so a bad release should hurt here
-first.
+**Publishing is the point of no return.** A packaged consumer gets the release
+when they run `pip install -U thread-archive`; a source clone when they run
+`thread_archive self-update` (`--check` is how either sees one exists). That
+is a delay, not a safety net: the release is offered to everyone the moment
+it is published, and the preflight below is the only gate between a bad
+release and the first operator who reaches for it. This machine's clone runs
+ahead of consumers, so a bad release should hurt here first.
 
 The version's single source of truth is `__version__` in
 `src/thread_archive/__init__.py`; pyproject declares `version` dynamic and
@@ -84,18 +86,36 @@ git tag -a vX.Y.Z -m "thread-archive X.Y.Z — <one-line theme of the release>"
 git push origin main vX.Y.Z
 ```
 
-## 5. Verify from the outside
+## 5. Build + publish to PyPI
 
-Prove the release installs from the repo, not just from this checkout's
+From the release commit, build fresh artifacts and upload them:
+
+```bash
+rm -rf dist/
+.venv/bin/python -m build
+.venv/bin/python -m twine upload dist/*
+```
+
+The package lane in preflight already proved these artifacts' contents and a
+clean-venv install; this step only reproduces them from the tagged commit and
+ships them. Credentials are the operator's (a PyPI token scoped to this
+project) — nothing in the repo or CI holds them.
+
+## 6. Verify from the outside
+
+Prove the release installs from the registry, not just from this checkout's
 long-lived venv:
 
 ```bash
 python3 -m venv /tmp/ta-verify
-/tmp/ta-verify/bin/pip install "git+https://github.com/ellamental/thread_archive.git@vX.Y.Z"
+/tmp/ta-verify/bin/pip install thread-archive==X.Y.Z
 /tmp/ta-verify/bin/thread_archive --help
 ```
 
-## 6. Roll the local deployment
+(`pip install "git+https://github.com/ellamental/thread_archive.git@vX.Y.Z"`
+is the same check for the source lane.)
+
+## 7. Roll the local deployment
 
 The daemons on this machine run from the clone's editable install, so being
 on the release commit *is* the deployment — with two follow-throughs:
@@ -108,15 +128,17 @@ on the release commit *is* the deployment — with two follow-throughs:
 
 ## Yanking a bad release
 
-Delete the bad tag as soon as possible:
+Yank it from the registry and delete the bad tag as soon as possible:
 
 ```bash
+# on PyPI: yank version X.Y.Z (project settings, or `twine` cannot — use the web UI)
 git push origin :refs/tags/vX.Y.Z     # delete the remote tag
 ```
 
-That removes it from future checks. It does **not** heal a clone whose operator
-already applied it, or remove a tag a check already fetched locally. Always
-follow with the real fix:
+A yank stops new resolvers from picking the version (an explicit `==X.Y.Z` pin
+can still fetch it); the tag deletion removes it from future self-update
+checks. Neither heals an install whose operator already applied it, or removes
+a tag a check already fetched locally. Always follow with the real fix:
 
 ```bash
 # fix, then release vX.Y.(Z+1) normally

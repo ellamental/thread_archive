@@ -9,8 +9,9 @@ be skipped, and decisions persist in ``<home>/config.json`` (see
 :mod:`.._config`) where every ingest path respects them.
 
 Setup is one verb of the unified ``thread_archive`` CLI (:mod:`..cli`); the
-operator verbs (backup / verify / nightly / daemon) are its siblings, and
-retrieval stays with the MCP tools and the web viewer.
+operator verbs (backup / verify / nightly / daemon) are its siblings, as are
+``search`` and ``read`` — the retrieval tools at a terminal, the same ones this
+wizard wires into MCP clients.
 
 Non-interactive use: ``thread_archive setup --yes`` accepts every default
 without prompting (how an agent drives it). Without ``--yes``, a non-TTY
@@ -271,10 +272,18 @@ def run_setup(
     cfg["setup"]["completed_at"] = datetime.now().astimezone().isoformat(timespec="seconds")
     save_config(cfg, args.home)
     _say("Done. Ask your agent: \"what have we discussed about …?\"")
+    _say("  or ask it here:   thread_archive search \"…\"  ·  thread_archive read <id>")
     _say("  status anytime:   thread_archive status")
-    if cfg["setup"]["watcher"] in ("launchd", "systemd", "scheduled", "already-running"):
+    watching = cfg["setup"]["watcher"] in ("launchd", "systemd", "scheduled", "already-running")
+    if watching:
         _say("  web viewer:       http://127.0.0.1:8787")
-    _say(f"  account exports:  drop ZIPs into {paths.dumps_dir}")
+    # With the viewer up, the drag-and-drop page is the shorter road to the same
+    # drop folder — so name it first and keep the folder as the fallback.
+    _say(
+        "  account exports:  drop ZIPs at http://127.0.0.1:8787/upload"
+        if watching
+        else f"  account exports:  drop ZIPs into {paths.dumps_dir}"
+    )
     if not machine.embeddings_installed():
         _say("  semantic search:  not installed — `.venv/bin/pip install -e '.[embeddings]'` from the clone adds it (large: torch)")
     return 0

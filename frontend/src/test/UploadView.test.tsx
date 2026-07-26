@@ -1,5 +1,5 @@
 import { expect, it } from 'vitest'
-import { render, screen, waitFor } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter } from 'react-router-dom'
 import type { DropZone } from '../api'
@@ -50,16 +50,24 @@ it('tells the reader where each provider hides its export', async () => {
 it('lists what the drop folder already holds', async () => {
   mswJson('/api/drops', {
     dumps_dir: DUMPS,
-    waiting: [{ name: 'chatgpt.zip', bytes: 2048, at: '2026-07-26T10:00:00Z' }],
+    waiting: [{ name: 'chatgpt.zip', bytes: 3_500_000_000, at: '2026-07-26T10:00:00Z' }],
     imported: [{ name: 'claude.zip', bytes: 4096, at: '2026-07-25T10:00:00Z', kind: 'claude' }],
-    failed: [{ name: 'mystery.zip', bytes: 12, at: '2026-07-24T10:00:00Z' }],
+    failed: [
+      { name: 'mystery.zip', bytes: 12, at: null },
+      // An export someone unpacked into a folder: no size, and a directory is
+      // exactly the shape this page cannot upload but the drop folder accepts.
+      { name: 'data-2026-batch-0001', bytes: null, at: '2026-07-24T10:00:00Z' },
+    ],
   })
   view()
 
   expect(await screen.findByText('chatgpt.zip')).toBeInTheDocument()
   expect(screen.getByText('mystery.zip')).toBeInTheDocument()
+  expect(screen.getByText('data-2026-batch-0001')).toBeInTheDocument()
   expect(screen.getByText('claude.zip')).toBeInTheDocument()
   expect(screen.getByText(/claude · 4 KB/)).toBeInTheDocument()
+  expect(screen.getByText(/3\.26 GB/)).toBeInTheDocument()
+  expect(screen.getByText('12 B')).toBeInTheDocument()
 })
 
 it('uploads a chosen file under its own name, with the write guard header', async () => {
@@ -104,14 +112,46 @@ it('follows an accepted upload through to imported', async () => {
   await userEvent.upload(dropInput(), exportZip())
   expect(await screen.findByText('waiting for the importer')).toBeInTheDocument()
 
-  // The watcher imports it and retains it as the recovery copy — which the page
+  // Taken out of the zone and not yet anywhere else: the import is running.
+  state.zone = emptyZone()
+  expect(await screen.findByText('importing…', {}, { timeout: 9000 })).toBeInTheDocument()
+
+  // Imported, and the download retained as the recovery copy — which the page
   // learns by polling the folder, not by being told.
   state.zone = {
     ...emptyZone(),
     imported: [{ name: 'claude-export.zip', bytes: 20, at: '2026-07-26T12:00:05Z', kind: 'claude' }],
   }
-  expect(await screen.findByText('imported', {}, { timeout: 8000 })).toBeInTheDocument()
-}, 12_000)
+  expect(await screen.findByText('imported', {}, { timeout: 9000 })).toBeInTheDocument()
+}, 25_000)
+
+it('takes a file dragged onto the zone, and lights up while it is over', async () => {
+  const seen: string[] = []
+  servingDrops(emptyZone())
+  mswHandler(
+    http.post('/api/upload', ({ request }) => {
+      seen.push(new URL(request.url).searchParams.get('name') ?? '')
+      return HttpResponse.json({
+        name: 'grok-export.zip', kind: 'grok', label: 'xAI (Grok)',
+        bytes: 14, dumps_dir: DUMPS,
+      })
+    }),
+  )
+  const { container } = view()
+  const zone = container.querySelector('.dropzone') as HTMLElement
+
+  fireEvent.dragOver(zone)
+  expect(zone).toHaveClass('dragging')
+  fireEvent.dragLeave(zone)
+  expect(zone).not.toHaveClass('dragging')
+
+  fireEvent.drop(zone, { dataTransfer: { files: [exportZip('grok-export.zip')] } })
+
+  await waitFor(() => expect(seen).toEqual(['grok-export.zip']))
+  // The drag highlight clears once the file is taken, not on the next hover.
+  expect(zone).not.toHaveClass('dragging')
+  expect(await screen.findByText(/xAI \(Grok\)/)).toBeInTheDocument()
+})
 
 it('reports a quarantined drop as needing a look', async () => {
   const state = servingDrops(emptyZone())

@@ -743,7 +743,7 @@ def test_a_commit_nobody_committed_still_resolves_its_contributors(archive_home,
     assert result["committed_by"] == []
     assert [t["thread_id"] for t in result["threads"]] == [tid]
 
-    from thread_archive._mcp.server import _commit_note
+    from thread_archive._tools import _commit_note
 
     note = _commit_note(result)
     assert "1 contributing session(s)" in note
@@ -771,7 +771,7 @@ def test_recorded_only_when_the_repository_is_out_of_reach(archive_home):
     assert [t["thread_id"] for t in result["threads"]] == [tid]
     assert result["threads"][0]["committed"] is True
 
-    from thread_archive._mcp.server import _commit_note
+    from thread_archive._tools import _commit_note
 
     assert "only the committing session is known" in _commit_note(result)
 

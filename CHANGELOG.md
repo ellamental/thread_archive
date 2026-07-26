@@ -2,6 +2,104 @@
 
 ## Unreleased
 
+- **The install story is the package, not the clone.** The README, releasing
+  doc, and install docs now lead with `pip install thread-archive &&
+  thread_archive setup`; the clone with an editable venv is the from-source/
+  development path (claude-install.md now says so up front), and releasing
+  gains a build + PyPI publish step plus registry yank guidance. `self-update`
+  stays the source-clone updater and, on a wheel install, now points at
+  `pip install -U thread-archive` instead of just reporting "nothing to update
+  against". Alongside: repo files that spoke only to the maintainer's machine
+  were generalized (host/README grants table and its stale `_launchd.py`
+  pointer, ci.toml/ci.yml comments, monorepo-ancestry narration in docstrings),
+  the root TODO scratch note and stale `dist/` artifacts are gone, the empty
+  `docs/plans/` directory is removed, and the local `host/repair-dumps/` undo
+  payloads moved out of the repo tree into `~/.thread/archive/repair-dumps/`.
+
+- **Retrieval has a terminal now: `thread_archive search` and `thread_archive
+  read`.** The archive could be searched by an agent over MCP or browsed in the
+  viewer, but not from the shell it lives in — a question you wanted answered
+  before opening a client meant starting a client. The two verbs close that: every
+  tool parameter is a flag (`--since 7d`, `--source cursor`, `--path rank.py
+  --path-ops edit,write`, `--group browse`, `--output linkable` for pipeable
+  JSON), an omitted query browses recent threads, and `read` takes the same three
+  ref shapes the tool does — ULID, legacy integer id, or the session uuid the
+  harness knows.
+
+  They are not a second implementation, which is the point. The tools moved out
+  of the MCP server into `thread_archive/_tools.py`, and both doors call it: the
+  clamping, the default scope, the degradation notice, the commit note, and the
+  usage-ledger record are one copy of the code, so an answer typed at a prompt is
+  the answer the agent would have gotten. The MCP server keeps what is genuinely
+  its own — transport, bind plan, and the cohosted catch-up ingest a one-shot CLI
+  process has no business kicking — and registers the shared functions as its
+  tools, schema and description built from their real signatures.
+
+  Retrieval verbs had been kept out on purpose ("one retrieval surface, not
+  three"); what changed is the reading of that rule. The thing worth refusing is
+  a second implementation of search, not a second way to reach the first one.
+  `search` and `read` join the public surface the tools already carried; the rest
+  of the CLI stays private operational tooling. Ledger rows from a terminal carry
+  `surface: "cli"` — an operator's queries are a different population from an
+  agent's, and the evals sample from that file.
+
+- **An account export can be dropped on the viewer.** Web chats were the one
+  source with no path in that didn't involve a terminal: you downloaded a ZIP,
+  then had to find `~/.thread/archive/dumps/` in a file manager or know
+  `thread_archive import-export` existed. The new `/upload` page takes the drag —
+  and, as much to the point, says where each provider's export is hidden
+  (claude.ai, ChatGPT and xAI each bury it under a differently-named settings
+  page), what the ZIP becomes, and what happens to the download afterward.
+
+  `POST /api/upload` spools the body to a dot-prefixed temp file, classifies it
+  through the same provider `detect` the drop watcher uses, then renames it into
+  `<home>/dumps/`. It imports nothing itself: the export-drop watcher already owns
+  settling, merging a re-export, retaining the download as the recovery copy and
+  quarantining what needs a look, and a second implementation of those rules
+  living in a request handler is how they drift apart. So the page reports
+  progress by reading the drop zone (`GET /api/drops`) rather than by being told.
+
+  A ZIP no provider claims is refused with the reason rather than dropped — the
+  watcher would only quarantine it seconds later, and the uploader still has the
+  file. The name is reduced to a basename in a safe charset, and a collision
+  numbers *before* the extension: the watcher scans only `.zip`, so a
+  `foo.zip.1` would have sat in the drop zone forever, present and never looked at.
+
+  This is the read surface's first write, so it carries its own guards. The Host
+  check every request passes cannot see a cross-origin form post — the browser
+  sends *this* server's name as Host — so a write additionally needs a loopback
+  `Origin` and an `X-Archive-Upload` header, which no form can set without first
+  winning a preflight the server never answers. The body streams in 1 MiB chunks
+  and must leave a gigabyte of headroom behind it
+  (`THREAD_ARCHIVE_UPLOAD_FREE_MARGIN`): filling the disk would break the very
+  import the upload exists for. A body the router declines to read closes the
+  connection rather than being drained — the unread remainder is a whole export.
+
+- **A gold run scored from persisted pools now says so.** `--cache` leaves the
+  scores meaningful and the `p50_ms` meaningless — the arms never run, so a pooled
+  run's median lands near 60 ms against ~900 ms for the same files uncached. The
+  run record did not distinguish them, so the latency timeseries held two
+  populations in one column and read as a tenfold speedup no code change caused.
+  `pool_cache` marks the row, present-when-true like `overrides` beside it.
+
+- **Every ledger record now says how old the process serving it was.** The ledger
+  exists partly to catch latency regressions result-quality evals cannot see, and
+  it could not: every cache retrieval leans on — the vector matrix, the embedding
+  and cross-encoder models, the exact-set memo, SQLite's page cache — is
+  process-local and starts empty, restarts are frequent (34 warm passes in one
+  day), and nothing in a record distinguished a process's first search from its
+  thousandth. Measured on the live archive the gap is an order of magnitude:
+  `embed_ms` 5310 against 20, `knn_ms` 2368 against 25. Any before/after over the
+  file was comparing cache states and calling the result a measurement.
+
+  `uptime_s` rides in the contention context, so both surfaces and both tools pick
+  it up. Recorded as a duration rather than a cold/warm verdict, for two reasons:
+  the threshold for "cold" then belongs to whoever asks the question rather than to
+  whoever wrote the field, and `at - uptime_s` is the process's start time — so it
+  doubles as the process identity that groups a run's records together, which the
+  file otherwise has no way to express. It is the one contention field always
+  present: there is no reading of it that means *nothing to report*.
+
 - **A ranking term no longer carries the punctuation prose hangs off a word.**
   `search_terms` stripped brackets and colons but not the comma, period, question
   mark or exclamation mark a natural-language query is written with, so

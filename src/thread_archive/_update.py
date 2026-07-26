@@ -1,9 +1,11 @@
-"""Self-update from the release tags — how a fix reaches an installed clone.
+"""Self-update from the release tags — how a fix reaches a from-source install.
 
-The clone is the install, so an update is a ``git fetch`` + ``git checkout
-<tag>`` + ``pip install -e .`` + agent restart — no registry, no installer.
+A source install is a git clone with an editable venv, so its update is a
+``git fetch`` + ``git checkout <tag>`` + ``pip install -e .`` + agent restart.
 This module automates exactly that, off the annotated release tags
-(``vX.Y.Z``, see docs/releasing.md).
+(``vX.Y.Z``, see docs/releasing.md). A packaged (wheel) install updates
+through its package manager instead — ``pip install -U thread-archive`` — and
+this module reports it as such rather than touching anything.
 
 **The operator drives it.** ``thread_archive self-update`` is the whole
 mechanism: nothing polls for releases, nothing applies one on its own, and no
@@ -430,7 +432,7 @@ def self_update(
     repo = install_repo()
     if repo is None:
         return {"ok": False, "action": "unavailable", "current": "",
-                "reason": "not a git install — nothing to update against"}
+                "reason": "not a git install — update with `pip install -U thread-archive`"}
 
     cfg = update_config(home)
     plan = plan_update(

@@ -6,8 +6,8 @@ export — a ZIP (or unzipped batch directory) of *all* your conversations — d
 ``~/.thread/archive/dumps/``, and the watcher imports it on the next poll and clears it.
 
 Serverless by construction: it calls the in-process bulk importer
-(:mod:`.._importers.exports`) directly. The monorepo ancestor POSTed the path to a backend
-that ran the import server-side; here there is no backend — the import *is* local.
+(:mod:`.._importers.exports`) directly — no backend runs the import; the
+import *is* local.
 
 Lifecycle of one dropped export:
 

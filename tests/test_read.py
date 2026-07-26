@@ -1,11 +1,11 @@
 """thread_read transcript contract — mode views, turn pagination, budget, summary.
 
-Pins the standalone ``read_thread`` to the monorepo ``thread_read`` behavior:
+Pins the ``read_thread`` transcript contract:
 default user-only, ``mode`` = user/chat/full, turn pagination (limit/offset/
 after_event), search-result focus (around_event/context_turns), a ~48k char budget
 with a CHUNKED footer, and the ``summary`` views
 (TOC, plus the stored short/indexed thread summaries behind a feature flag).
-Tool *results* are never rendered (calls only), matching the monorepo.
+Tool *results* are never rendered (calls only).
 
 Events are seeded directly so the rendering contract is tested independently of the
 importers: one thread with thinking + tool-call + tool-result + text blocks across
@@ -251,7 +251,7 @@ def test_mode_ends_budget_keeps_outermost_turns(archive_home) -> None:
 def test_steps_close_at_text(archive_home) -> None:
     """turn 2 yields two assistant steps (preamble; then Read+conclusion). The
     compaction turn collapses to a placeholder, so its reply isn't a separate step
-    (matches the monorepo: a compaction turn is a boundary marker, not content)."""
+    (a compaction turn is a boundary marker, not content)."""
     tid = _seed()
     out = read_thread(tid, mode="full")
     assert out.count("[ASSISTANT") == 3  # t1:1, t2:2  (t3 collapses to a placeholder)

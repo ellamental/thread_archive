@@ -13,8 +13,9 @@ FROM python:3.12-slim
 
 # build-essential covers any source build of a C-extension dependency (they
 # normally resolve to manylinux wheels, but this keeps the build robust on any
-# arch). git is product runtime, not a build tool: the clone is the install and
-# self-update drives git directly, so the suite legitimately exercises it.
+# arch). git is product runtime, not a build tool: a from-source install is a
+# clone and self-update drives git directly, so the suite legitimately
+# exercises it.
 RUN apt-get update \
     && apt-get install -y --no-install-recommends build-essential git \
     && rm -rf /var/lib/apt/lists/* \

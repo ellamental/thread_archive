@@ -6,8 +6,8 @@ content the moment it lands — no external service feeds the archive, and nothi
 has to be migrated in after the fact.
 
 The LaunchAgent itself is installed by the package — `thread_archive daemon install`
-(`src/thread_archive/_launchd.py` generates and loads the plist; no template
-here). This directory is the **operator layer on top**: the Makefile wraps the
+(`src/thread_archive/_service/launchd.py` generates and loads the plist; no
+template here). This directory is the **operator layer on top**: the Makefile wraps the
 daemon verb and additionally writes the thread-family manifest
 (`write-manifest.py`, which needs the repo checkout and never ships).
 
@@ -23,7 +23,7 @@ runs concurrently with the watcher's writes; WAL makes that safe (`_store/_base.
 
 ## What it watches
 
-The nine providers with importers, at their default home-dir locations:
+The watched providers, at their default home-dir locations:
 
 | provider       | store                                                        |
 |----------------|--------------------------------------------------------------|
@@ -106,14 +106,14 @@ home-resident `archive-mcp` needs read grants for the three `$HOME` paths it tou
 
 | grant (read-only)              | why                                              |
 |--------------------------------|--------------------------------------------------|
-| `~/dev/thread/archive`         | the repo: the venv **and** the editable `src/`   |
-| `~/.pyenv`                     | the interpreter + `libpython` + stdlib (pyenv build) |
+| the clone's path               | the repo: the venv **and** the editable `src/`   |
+| the interpreter's prefix       | python + `libpython` + stdlib (e.g. `~/.pyenv` for a pyenv build) |
 | `~/.thread/archive`            | the archive data (`index.db`, truth log)         |
 
 Grants are persistent "host access" mounts (`host_grants` table): add them from the app's
 **Permissions** panel, or ask the Science agent to grant filesystem access to those paths
 (it calls `request_host_access` → you approve the card). Then in **Connectors → add a
-*Local command* connector** pointing at `~/dev/thread/archive/.venv/bin/archive-mcp` and
+*Local command* connector** pointing at `<clone>/.venv/bin/archive-mcp` and
 **Reconnect**. (Verified by replicating the seatbelt profile with `sandbox-exec`: with the
 three grants, `thread_search` returns live results; the optional embed/re-rank models stay
 disabled under the sandbox, which only degrades semantic ranking — FTS is unaffected.)

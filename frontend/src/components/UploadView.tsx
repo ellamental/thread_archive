@@ -127,16 +127,22 @@ export function UploadView() {
     void refresh()
   }, [refresh])
 
-  const pending =
+  // Poll only while something is still moving. An upload that was refused,
+  // imported, or quarantined has arrived somewhere final — polling past that
+  // would keep asking a question with a settled answer for as long as the page
+  // is open.
+  const busy =
     uploads.some((upload) => upload.phase === 'uploading') ||
-    uploads.some((upload) => upload.droppedAs && !has(drops?.imported ?? [], upload.droppedAs)) ||
+    uploads.some(
+      (upload) => settledState(drops, upload, seenWaiting.current)?.tone === 'busy',
+    ) ||
     (drops?.waiting.length ?? 0) > 0
 
   useEffect(() => {
-    if (!pending) return
+    if (!busy) return
     const timer = window.setInterval(() => void refresh(), POLL_MS)
     return () => window.clearInterval(timer)
-  }, [pending, refresh])
+  }, [busy, refresh])
 
   const update = useCallback((id: number, patch: Partial<Upload>) => {
     setUploads((current) =>

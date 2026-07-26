@@ -59,6 +59,7 @@ dev = ["pytest>=8.0", "pytest-cov>=5.0", "pytest-xdist>=3.6", "pytest-timeout>=2
 testing = ["pytest>=8.0"]
 
 [project.urls]
+Homepage = "https://github.com/ellamental/thread_archive"
 Repository = "https://github.com/ellamental/thread_archive"
 Changelog = "https://github.com/ellamental/thread_archive/blob/main/CHANGELOG.md"
 
@@ -159,8 +160,8 @@ filterwarnings = [
 # the first test can be minutes on a loaded box).
 timeout = 300
 
-# The family lint bar (same shape as the thread monorepo products): pycodestyle +
-# pyflakes + import sort, long lines tolerated. Gated by the ruff row in ci.toml.
+# The lint bar: pycodestyle + pyflakes + import sort, long lines tolerated.
+# Gated by the ruff row in ci.toml.
 [tool.ruff]
 line-length = 120
 

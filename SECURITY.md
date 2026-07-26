@@ -21,6 +21,15 @@ threat model is correspondingly narrow, and these are its load-bearing walls:
   it, you are the authentication layer. Every response carries a restrictive
   content-security policy; Markdown in archived messages may automatically
   load only same-origin blobs already stored by the archive.
+- **The viewer's one write is an export upload, and it is guarded separately.**
+  `POST /api/upload` puts an account-export ZIP into `<home>/dumps/`, where the
+  watcher imports it. The Host check does not cover this: a page on any domain
+  can post a form at this port, and the browser sends the *server's* name as
+  Host. So a write also requires a loopback `Origin` and an `X-Archive-Upload`
+  header — unsettable by a form, which forces a preflight this server never
+  answers. What lands is bounded too: a `.zip` under a sanitized name, refused
+  unless a registered provider's `detect` claims it, and refused before spooling
+  if it would not leave a gigabyte of disk free.
 - **The MCP tools are read-only, and the process defaults to read-only.** The
   one server this package ships exposes only `thread_search` / `thread_read`.
   `THREAD_ARCHIVE_MCP_INGEST=1` is a separate, explicit process-level opt-in to

@@ -161,7 +161,27 @@ def test_contention_sample_is_empty_on_an_idle_machine(archive_home) -> None:
     from thread_archive._retrieval import _contention
 
     # No archive touched yet — no WAL to stat, nothing in flight, no rebuilds.
-    assert _contention.sample() == {}
+    # Uptime is the exception: no reading of it means "nothing to report".
+    assert set(_contention.sample()) == {"uptime_s"}
+
+
+def test_every_search_says_how_old_the_process_serving_it_was(archive_home) -> None:
+    """Every cache retrieval leans on is process-local, so the same query costs an
+    order of magnitude more at second five than at second five hundred. A ledger
+    that cannot tell those apart cannot answer whether a change helped — it compares
+    cache states and calls the result a measurement."""
+    f = archive_home / "sess.jsonl"
+    _write_cc(f, [USER, ASSISTANT])
+    ta.import_path(f)
+
+    thread_search("hello ledger", limit=5)
+    thread_read(ta.search("hello ledger")[0]["thread_id"])
+    search, read = _records(archive_home)
+    assert search["uptime_s"] >= 0.0 and read["uptime_s"] >= 0.0
+    # Recorded as a duration, not a cold/warm verdict: ``at - uptime_s`` is the
+    # process's start, so it doubles as the identity that groups a process's
+    # records — and the threshold for "cold" is chosen when the question is asked.
+    assert read["uptime_s"] >= search["uptime_s"]
 
 
 def test_in_flight_counts_the_caller_itself(archive_home) -> None:

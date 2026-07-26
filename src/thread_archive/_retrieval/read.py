@@ -636,8 +636,8 @@ def _absorb_stream_deltas(events: Sequence[Event]) -> list:
 
 
 def _build_steps(events: list[Event], render: Optional[RenderPolicy] = None) -> list[dict]:
-    """Fold the granular event stream into steps (the monorepo's regroup_by_steps
-    analogue): a USER message is its own step; assistant block events accumulate
+    """Fold the granular event stream into steps: a USER message is its own
+    step; assistant block events accumulate
     into one step that closes at each text output. Tool calls + thinking thus group
     under the step whose text they precede; trailing tools form a final step.
 

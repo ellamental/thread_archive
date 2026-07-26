@@ -28,7 +28,11 @@ FLOORS = {
     "_eval": 95.0,  # search-quality scoring core behind `thread_archive eval` + the evals/ bench
     "_importers": 92.0,
     "_knowledge": 90.0,
-    "_mcp": 92.0,
+    # The MCP transport shim: bind plan, cohosted ingest, tool registration. What
+    # it does NOT hold is the tools themselves (`_tools`, floored below), and the
+    # small remainder here is mostly `main()` — the blocking serve loop, proved by
+    # real subprocesses in the package lane, where nothing is measured.
+    "_mcp": 82.0,
     "_mine": 85.0,  # gold miners; the agent-driving run paths covered via seams, not real claude
     "_ops": 90.0,  # the durability kit
     "_providers": 90.0,
@@ -39,6 +43,7 @@ FLOORS = {
     "_setup": 94.0,
     "_store": 95.0,
     "_thread_import": 92.0,  # vendored provider parsers, exercised end-to-end by the parser + golden suites
+    "_tools": 97.0,  # thread_search / thread_read themselves — driven from both doors (MCP + CLI)
     "_truth": 93.0,
     "_update": 80.0,
     "_watcher": 94.0,

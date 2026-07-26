@@ -35,6 +35,21 @@ def test_record_and_read_round_trip(archive_home) -> None:
     assert len(runs) == 1 and runs[0]["snapshot_id"] == "snap123"
 
 
+def test_a_pooled_run_says_so_because_its_latency_is_not_the_pipeline(archive_home) -> None:
+    """Scoring from persisted pools leaves the scores meaningful and the ``p50_ms``
+    meaningless — the arms never ran. Unflagged, a pooled row and a real one sit in
+    one column and the timeseries reads as a speedup no code change caused."""
+    gold_runs.record_run(archive_home, snapshot_id="s", files=FILES, passed=True,
+                         config={}, commit="c", pool_cache=True)
+    gold_runs.record_run(archive_home, snapshot_id="s", files=FILES, passed=True,
+                         config={}, commit="c")
+    pooled, plain = _records(archive_home)
+    assert pooled["pool_cache"] is True
+    # Omitted rather than False on an ordinary run: the flag's presence is what
+    # marks the row, like ``overrides`` beside it.
+    assert "pool_cache" not in plain
+
+
 def test_read_runs_newest_first_and_limit(archive_home) -> None:
     for i in range(3):
         gold_runs.record_run(archive_home, snapshot_id=f"s{i}", files=FILES,
