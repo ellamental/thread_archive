@@ -113,11 +113,20 @@ def build_event_hit(
     snippet: str,
     full_content: str,
     occurred_at: Optional[str],
+    bm25: Optional[float] = None,
 ) -> EventHit:
     """One event search hit in the canonical shape. ``thread_title`` is enriched
     by the caller. ``occurred_at`` is the stored column text (canonical naive
     form); it parses to a naive datetime — a stray offset-carrying value is
-    normalized to local-naive so every hit's datetime compares against the rest."""
+    normalized to local-naive so every hit's datetime compares against the rest.
+
+    ``bm25`` is FTS5's own score for the hit, negated so higher is better
+    (``rank`` is more-negative-is-better), and stamped as ``_bm25`` only when the
+    pass that found it was a MATCH — a substring scan has no score, and a
+    semantic-only hit never sees this constructor. It arrives here raw, on a
+    per-query scale set by the query's term count and their IDF;
+    :func:`thread_archive._retrieval.retrieve_pool` normalizes it against the
+    pool's peak before the ranker weighs it."""
     dt: Optional[datetime] = None
     if occurred_at:
         try:
@@ -127,7 +136,7 @@ def build_event_hit(
         else:
             if dt.tzinfo is not None:
                 dt = dt.astimezone().replace(tzinfo=None)
-    return {
+    hit: EventHit = {
         "event_id": event_id,
         "thread_id": thread_id,
         "thread_title": None,
@@ -137,6 +146,9 @@ def build_event_hit(
         "full_content": full_content,
         "occurred_at": dt,
     }
+    if bm25 is not None:
+        hit["_bm25"] = -float(bm25)
+    return hit
 
 
 def _event_search_shape(s: Session) -> Optional[bool]:
@@ -638,9 +650,16 @@ def search_events(
             if p.scan_cap and thread_id is None and thread_ids is None:
                 where.append("rowid >= (SELECT max(rowid) FROM event_search) - :scan_cap")
                 pass_params["scan_cap"] = _LIKE_SCAN_CAP
+            # ``rank`` rides the SELECT list beside the row: FTS5 already computed
+            # it for the sort, it is NULL on a non-MATCH pass rather than an error,
+            # and the query plan is unchanged (still ``INDEX …:M`` — the streaming
+            # rank-sort, measured at parity). That surfaces the arm's own bm25
+            # magnitude, which the ranker weighs as ``bm25_score_weight``; without
+            # it the arm's verdict survives only as the order rows arrive in.
             sql = sa_text(
                 "SELECT event_id, thread_id, event_type, content_type, occurred_at, "
-                + snippet_expr + " AS snippet, content AS full_content "
+                + snippet_expr + " AS snippet, content AS full_content, "
+                + _RANK_EXPR + " AS bm25 "
                 "FROM event_search WHERE " + " AND ".join(where) +
                 " ORDER BY " + order + " LIMIT :lim"
             )
@@ -679,6 +698,7 @@ def search_events(
                     snippet=r["snippet"] or "",
                     full_content=r["full_content"] or "",
                     occurred_at=r["occurred_at"],
+                    bm25=r["bm25"],
                 ))
             _probe.record("build_ms", _t)
 
@@ -740,7 +760,8 @@ def _rescan_distinct(
         " ORDER BY rank LIMIT :flood_cap"
     )
     sql = sa_text(
-        "SELECT event_id, thread_id, event_type, content_type, occurred_at, snip, full_content "
+        "SELECT event_id, thread_id, event_type, content_type, occurred_at, snip, full_content, "
+        "MIN(rk) AS bm25 "
         "FROM (" + inner + ") GROUP BY thread_id, full_content ORDER BY MIN(rk) LIMIT :lim"
     )
     params = {**shared_params, **match_pass.params, "flood_cap": _FLOOD_RESCAN_CAP}
@@ -758,6 +779,7 @@ def _rescan_distinct(
             event_id=r["event_id"], thread_id=r["thread_id"], event_type=r["event_type"],
             content_type=r["content_type"], snippet=r["snip"] or "",
             full_content=r["full_content"] or "", occurred_at=r["occurred_at"],
+            bm25=r["bm25"],
         ))
 
 

@@ -118,6 +118,21 @@ def test_nightly_escalation_is_age_gated(archive_home, tmp_path):
     assert ta.nightly(dest)["escalations"] == {"deep": False, "hashes": False}
 
 
+def test_nightly_hashes_pass_scans_the_mirror_without_a_deep_pass(archive_home, tmp_path):
+    """The mirror's content-hash scan needs both ``hashes`` and a non-None
+    ``backup``. On a night where only the hashes gate is due, the mirror must
+    still be pulled in — otherwise the scan runs only when the two age gates
+    coincide, and the fallback copy goes unchecked for rot at rest."""
+    _seed(archive_home)
+    dest = str(tmp_path / "mirror")
+    ta.nightly(dest)  # first run escalates both, leaving fresh green records
+    ops_health.record_health("verify_hashes_last", {"ok": False})  # hashes only
+
+    res = ta.nightly(dest)
+    assert res["escalations"] == {"deep": False, "hashes": True}
+    assert "hashes" in res["verify"]["backup"]
+
+
 def test_nightly_failed_deep_pass_reruns_next_night(archive_home, tmp_path):
     _seed(archive_home)
     dest = str(tmp_path / "mirror")

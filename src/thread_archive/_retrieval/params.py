@@ -48,6 +48,39 @@ The shipped values, with their evidence:
   that opens is the ballgame: on BEIR scifact the lexical pool's own bm25 order
   scores .682 nDCG@10 and an unweighted density re-scoring of that same pool
   scores .302.
+- ``bm25_score_weight`` 100.0 — the weight on ``_bm25``, FTS5's own bm25 score for
+  the hit (peak-normalized over the pool). It is the *magnitude* behind
+  ``bm25_weight``'s ordinal: the reciprocal-rank proxy is a near-flat gradient by
+  construction (at ``rrf_k`` 60 a 200-deep pool spans 1.00 down to 0.23), so it can
+  only nudge, where the score separates a doc carrying the rare discriminating term
+  from one carrying three common ones — IDF and length normalization the density
+  term does not have. 100 is the peak: it lifts every floored file's nDCG@10
+  (findability +.010, judged +.012, rerank +.010) with no file's recall paying, and
+  past ~200 the confound-dense topic files give back recall as bm25's verdict starts
+  overriding the density evidence they lean on (400 costs the pooled bench .013
+  nDCG@10, 800 costs .043).
+- ``semantic_weight`` 200.0 — the weight on the vector arm's cosine, spread
+  min-max across the pool (see :func:`~.rank.score_features`). Fusion weighs the
+  arms' *agreement* by rank; this weighs how near the arm actually judged a hit to
+  be, which rank-based fusion discards — RRF at ``rrf_k`` 60 cannot tell a 0.72
+  cosine from a 0.55 one. It is the larger of the two magnitude terms because it
+  moves recall as well as order: +.020 recall@10 and +.025 nDCG@10 on the protocol
+  files at 200. Past ~400 it starts overriding lexical evidence it should defer to
+  and the recall-capable ``judged`` file gives back a case; the raw cosine is worth
+  roughly a third of the normalized one, because unspread it is mostly a constant
+  offset that the content-type multiplier scales into a content-type preference.
+- ``thread_evidence_weight`` 0.0 — off. The signal (how many distinct matches the
+  pool holds from a hit's thread) is the largest measured lever on subject-shaped
+  queries: +.022 nDCG@10 / +.017 recall@10 over the 22 ``topic`` gold files, where
+  the product's standing headroom lives. It ships off because of what it trades for
+  that. Evidence favours the thread that returns to a subject over the thread that
+  settles it in one exchange, so a broad query whose answer is one *specific*
+  conversation loses it: on ``judged`` the query "how can we improve thread_search"
+  falls from rank 1 to past 20, and it falls at every weight tested down to 25 — the
+  log damping bounds how far a chatty thread can climb, not whether it climbs past a
+  single-mention answer. A query-shape gate is the seam that would earn it (the
+  subject-shaped queries it helps are the ones ``rank.should_rerank`` already
+  classifies); until then the recall-capable file's verdict stands.
 - ``recency_weight`` 1.0 — the corpus skews to OLD threads, so a strong
   recency boost buries what users actually read; 1.0 keeps a mild recent
   tiebreaker. The signal itself decays exponentially with
@@ -111,6 +144,9 @@ class SearchParams:
     recency_weight: float = 1.0
     fusion_weight: float = 400.0
     bm25_weight: float = 100.0
+    bm25_score_weight: float = 100.0
+    semantic_weight: float = 200.0
+    thread_evidence_weight: float = 0.0
     content_type_weights: Optional[Mapping[str, float]] = None
     recency_half_life_hours: float = 72.0
     density_norm_chars: int = 500

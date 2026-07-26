@@ -2,6 +2,91 @@
 
 ## Unreleased
 
+- **The ranker threw away both of its arms' scores and ranked on their rank.**
+  The lexical arm's contribution was a positional proxy — a hit's reciprocal rank
+  within the pool — on the stated reasoning that "FTS5 orders by bm25 but does not
+  surface the score." FTS5 does surface it: the hidden `rank` column reads as an
+  ordinary output column, is NULL rather than an error on a non-MATCH pass, and
+  leaves the query plan untouched (still the streaming rank-sort, `INDEX …:M`,
+  measured at parity), so the score was one SELECT-list entry away the whole time.
+  The vector arm's cosine was already on every hit, carried through fusion as
+  provenance and never scored. What the ranker saw of either arm was therefore an
+  *ordinal*: at `rrf_k` 60 the proxy spans 1.00 down to 0.23 across a 200-deep pool,
+  a gradient flat enough to nudge and never to decide, and RRF cannot tell a 0.72
+  cosine from a 0.55 one.
+
+  Both magnitudes are now weighted signals — `bm25_score_weight` 100 and
+  `semantic_weight` 200 — pool-normalized so the weights read against a fixed scale.
+  The cosine is spread min-max across the pool rather than used raw, which is worth
+  roughly three times as much: unspread it is mostly a constant offset, and the
+  content-type multiplier scales the whole sum, so a flat semantic term would have
+  amplified content-type preference instead of relevance. Over all 25 mined gold
+  files (317 cases, scored on their frozen snapshot), pooled recall@10 rises
+  0.5331 → 0.5434 and nDCG@10 0.6124 → 0.6263; on the three protocol files held out
+  from the tuning, +0.020 recall@10 / +0.025 nDCG@10. Findability's hardest strata
+  are where it lands — vague recall@10 0.850 → 0.900, paraphrase 0.909 → 0.955,
+  verbatim already saturated — which is the shape a dense magnitude should buy: the
+  queries whose wording the lexical arm cannot match. Two of the seven floored files
+  give a little back (frustration −0.047 recall@10, needle −0.019, each inside one
+  case of that file's resolution); every floor holds.
+
+- **A thread's ranking ignored how much of it matched.** Every ranking signal
+  scores one event, and grouping then represents a thread by its best one, so a
+  conversation that returns to a subject twenty times ranked exactly like one that
+  mentioned it once — on whichever event happened to score highest.
+  `thread_evidence_weight` weighs the pool's distinct matches per thread, log-damped,
+  and it is the largest lever measured on subject-shaped queries: +0.022 nDCG@10 and
+  +0.017 recall@10 across the 22 `topic` gold files, where the standing headroom is.
+
+  It ships **off**, because of what buys that. Evidence favours the thread that
+  keeps returning to a subject over the one that settles it in a single exchange, so
+  a broad query whose answer is one specific conversation loses it: on the
+  recall-capable `judged` file, "how can we improve thread_search" falls from rank 1
+  to past 20, and it falls at every weight down to 25. Log damping bounds how far a
+  chatty thread climbs, not whether it climbs past a single-mention answer. The seam
+  that would earn the signal is a query-shape gate — the subject-shaped queries it
+  helps are the ones `rank.should_rerank` already classifies — and until that exists
+  the hold-out's verdict stands. Its cost is skipped entirely at weight 0, so the
+  disabled knob is free per search.
+
+- **Two fifths of the corpus was outside the truth re-emit's content gate.**
+  `rebuild_truth_from_store` is the one operation that overwrites truth from the
+  index, and its content pre-flight validated each payload against the hash tail
+  in its own `dedup_key`. That is unavailable to a row with no key — 1,598,464
+  events of 3,955,358 on the development archive (`api_request_started` 803k,
+  `tool_execution_completed` 249k, the thinking/text deltas 333k, `progress`
+  128k). Those rows were checked for *existence* by the containment pre-flight
+  and never for *content*, so rot in one would be written over the good truth
+  line, destroying the redundant copy that proves it — the same laundering
+  `_content_divergence` already names in the reindex direction, but permanent,
+  since a re-emit leaves nothing to compare against afterward.
+
+  A fourth pre-flight (`_unkeyed_store_rows_diverging_from_truth`) now compares
+  the unkeyed rows against their truth lines by canonical payload fingerprint —
+  the comparator is shared with `verify --hashes` so the two gates can't drift.
+  Scoped to unkeyed rows deliberately: a *keyed* row that disagrees with its
+  truth line while passing its own key hash means the truth line rotted, and the
+  re-emit is the repair, so blocking there would refuse the operation in the one
+  case it fixes. `force=True` overrides, as with the other pre-flights.
+
+  This moves detection for the unkeyed half from "whenever the 30-day
+  `verify --hashes` tier next runs" to "at the moment the destructive operation
+  runs." The cadence is unchanged; it is early warning, not the last line.
+
+- **The backup mirror's rot scan needed two age gates to coincide.** The scan
+  sits behind `hashes` *and* a non-None `backup`, and the nightly passed the
+  destination only when the 7-day `deep` gate was due — so on a night the 30-day
+  `hashes` gate came due alone, the live stores were re-hashed and the mirror was
+  skipped, with the hashes clock reset either way. Expected interval for the
+  mirror's only content check was therefore ~7× its nominal one. Either
+  escalation now pulls the mirror in.
+
+  This matters because the mirror is the fallback copy, and the check it was
+  missing is the one that sees rot at rest: an unchanged destination file is
+  never re-copied (size+mtime skip), and the parse-and-count scan stays green on
+  a payload that rotted into still-valid JSON. The nightly restore drill proves
+  the mirror parses and reconstructs; it does not re-hash payloads.
+
 - **The dedup-key backfill could not reach a single account export.** Its scope
   was "threads present in `import_state`", on the reasoning that `dedup_key`
   exists for import idempotence and only watermarked threads are re-imported.

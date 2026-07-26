@@ -123,13 +123,21 @@ from pathlib import Path
 # headroom is not absorbing measurement noise. It is a tolerance, and its natural
 # unit is one case: on a file of ``n`` cases, a single case falling from rank 1 to
 # unfound moves any of these metrics by at most ``1/n``. Each floor therefore sits
-# ``1/n`` under its measured value, rounded down — one case may regress, two fail
-# the gate. Small files buy the widest headroom because a case is worth more there
-# (a 7-case topic file tolerates 0.143; the 64-case findability file, 0.016), which
-# is why the absolute gaps below differ so much between files.
+# **at most** ``1/n`` under its measured value, rounded down — one case may regress,
+# two fail the gate. Small files buy the widest headroom because a case is worth
+# more there (a 7-case topic file tolerates 0.143; the 64-case findability file,
+# 0.016), which is why the absolute gaps below differ so much between files.
+#
+# Some floors sit closer than that, because the ratchet only turns one way. A
+# ranking change that lifts the bench overall can still trade a single file down
+# while leaving it above its floor; the floor stays where it is, and that file's
+# headroom is now under one case. So a breach there means "this file is at the
+# limit of what the current ranking gives it", which is exactly what it should
+# mean — the metric to read before loosening anything is the measured number the
+# run prints, not the gap to the floor.
 FLOORS: dict[str, dict[str, float]] = {
     "judged-cases.jsonl": {
-        "mrr": 0.40, "success10": 0.90, "recall10": 0.85, "ndcg10": 0.51,
+        "mrr": 0.43, "success10": 0.90, "recall10": 0.85, "ndcg10": 0.52,
     },
     "topic-cases-suicide.jsonl": {
         "mrr": 0.78, "success10": 0.85, "recall10": 0.78, "ndcg10": 0.59,
@@ -158,13 +166,13 @@ FLOORS: dict[str, dict[str, float]] = {
     # are re-mined one-per-thread — the current fixture over-weights a few threads
     # with duplicate tiers, and a floor calibrated on that skew would bake it in.
     "findability-cases.jsonl": {
-        "mrr": 0.65, "success10": 0.90, "recall10": 0.90, "ndcg10": 0.71,
+        "mrr": 0.71, "success10": 0.93, "recall10": 0.93, "ndcg10": 0.76,
     },
     # rerank in-pool judgments — many golds/case (avg ~14), so recall10 is
     # structurally capped (can't fit ~14 golds in 10 slots) and floored low on
     # purpose; success10 and nDCG10 are the load-bearing signals here.
     "rerank-cases.jsonl": {
-        "mrr": 0.57, "success10": 0.84, "recall10": 0.44, "ndcg10": 0.60,
+        "mrr": 0.60, "success10": 0.84, "recall10": 0.44, "ndcg10": 0.60,
     },
 }
 

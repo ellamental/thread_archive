@@ -155,7 +155,12 @@ def nightly(
     try:
         v = verify(
             home=home, deep=deep_due, hashes=hashes_due,
-            backup=str(dest) if deep_due else None,
+            # Either escalation pulls the mirror in. The mirror's content-hash
+            # scan lives behind `hashes` AND a non-None `backup`, so gating the
+            # dest on `deep` alone would run it only on nights the two age gates
+            # happen to coincide — the mirror is the fallback copy, and its
+            # parse-and-count scan stays green on payloads that rotted at rest.
+            backup=str(dest) if (deep_due or hashes_due) else None,
         )
         verify_ok = bool(v["ok"])
     except Exception as e:

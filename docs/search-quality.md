@@ -37,13 +37,19 @@ read:
 
 | gold file | miner | n | MRR | success@10 | recall@10 | nDCG@10 |
 |---|---|---|---|---|---|---|
-| findability | `querygen` | 64 | 0.693 | 0.922 | 0.922 | 0.747 |
-| judged | `query` | 21 | 0.468 | 0.952 | 0.905 | 0.562 |
-| rerank-cases | `rerank` | 19 | 0.633 | 0.947 | 0.495 | 0.647 |
-| context-compaction | `topic` | 10 | 1.000 | 1.000 | 0.717 | 0.701 |
-| needle | `topic` | 10 | 0.762 | 0.900 | 0.542 | 0.608 |
-| suicide | `topic` | 7 | 0.929 | 1.000 | 0.879 | 0.740 |
-| frustration | `topic` | 7 | 0.557 | 0.857 | 0.557 | 0.518 |
+| findability | `querygen` | 64 | 0.726 | 0.953 | 0.953 | 0.780 |
+| judged | `query` | 21 | 0.480 | 0.952 | 0.905 | 0.574 |
+| rerank-cases | `rerank` | 19 | 0.658 | 0.895 | 0.496 | 0.648 |
+| context-compaction | `topic` | 10 | 0.917 | 1.000 | 0.734 | 0.698 |
+| needle | `topic` | 10 | 0.750 | 0.900 | 0.523 | 0.599 |
+| suicide | `topic` | 7 | 0.833 | 1.000 | 0.879 | 0.716 |
+| frustration | `topic` | 7 | 0.552 | 0.857 | 0.510 | 0.497 |
+
+Pooled over all 25 files (317 cases) that reads recall@10 0.543 and nDCG@10 0.626.
+The two arm-magnitude terms below are what separate it from the rank-only ranking
+that scored 0.533 / 0.612; the gain concentrates in the query shapes the lexical
+arm cannot match (findability's vague stratum recall@10 0.850 → 0.900, paraphrase
+0.909 → 0.955) and `frustration` and `needle` pay a case of it back.
 
 Read the metrics apart: **success@k** asks whether any grade-2 answer ranks by k,
 **recall@k** measures the fraction of a case's *whole* grade-2 set that ranks,
@@ -167,6 +173,18 @@ production, and each candidate is another instance scored against them.
   lexical evidence it should defer to and the keyword-shaped files give back
   recall. This is the single biggest ranking knob, and it is what lets the
   cross-encoder ship off.
+- **The two arm magnitudes** (`bm25_score_weight=100`, `semantic_weight=200`) are
+  what each arm *scored* a hit, beside what it *ranked* it. Both are pool-normalized
+  to [0,1]: `_bm25` is FTS5's own bm25 (surfaced by selecting the hidden `rank`
+  column — free, and the query plan is unchanged), `_semantic` the vector arm's
+  cosine spread min-max across the pool. The rank-based terms below cannot express
+  what these do, by construction: at `rrf_k` 60 a reciprocal rank spans 1.00 down to
+  0.23 over a 200-deep pool, and RRF cannot tell a 0.72 cosine from a 0.55 one. The
+  cosine must be *spread* rather than used raw — raw it is mostly a constant offset,
+  and since the content-type multiplier scales the whole sum, a flat semantic term
+  amplifies content-type preference instead of relevance; spread is worth roughly
+  three times as much. Together +0.020 recall@10 / +0.025 nDCG@10 on the three
+  protocol files, which were held out of the weights' tuning.
 - **The bm25 term** (`bm25_weight=100`) carries the lexical arm's own placement of a
   hit (`_lex`, its peak-normalized reciprocal rank). It is the counterweight to
   density's blind spot: density is IDF-blind and length-normalized, so it weighs a
@@ -206,12 +224,27 @@ Both model arms have an off switch — `THREAD_ARCHIVE_EMBED=off` and
 the extra, for a box that wants search cheap and free of the cold-start model load;
 `THREAD_ARCHIVE_COHERENCE=off` stands the coherence re-rank down (a float retunes γ).
 
-Two signals were measured on this bench and are **not** in the stack: graph
+Three signals were measured on this bench and are **not** in the stack. Graph
 **expansion** (append community-mates of the pool's top seeds) loses success@20 for
-what it rescues (0.625 → 0.533, only 2 of 31 pool-misses recovered); and a
+what it rescues (0.625 → 0.533, only 2 of 31 pool-misses recovered); a
 topic-graph **PageRank authority** term degraded ranking monotonically with weight,
 because query-independent authority floats hub threads over the specific thread a
-query names — it is gone from the code. Stored **summaries** are not a rejected
+query names — it is gone from the code. **Thread evidence**
+(`thread_evidence_weight`, shipped 0.0) is the third, and it stays in the code
+because it is the largest lever measured on subject-shaped queries: +0.022 nDCG@10 /
++0.017 recall@10 over the 22 `topic` files. It fails for the same reason PageRank
+did, one step closer in — evidence is query-*dependent*, but it still favours the
+thread that keeps returning to a subject over the one that settles it in a single
+exchange, so a broad query answered by one specific conversation loses it ("how can
+we improve thread_search" falls from rank 1 to past 20 on `judged`, at every weight
+down to 25). A query-shape gate is the seam that would earn it.
+
+A negative worth keeping: **pool depth is not the recall lever it looks like.**
+29% of the golds' grade-2 answers never enter the 200-event candidate pool at all,
+but doubling `pool_floor` to 400 does not recover them — recall@10 moves +0.002 on
+the topic files and −0.010 on the protocol files, nDCG@10 down on both. A deeper
+pool hands the ranker more confounds along with the extra answers, and it ranks the
+confounds too. Stored **summaries** are not a rejected
 signal but a deliberate content-type discount (0.6 against a user message's 1.5): a
 derived digest's short length already wins the density term, so an at-parity weight
 would let generated prose crowd verbatim evidence out of the top ranks. The discount

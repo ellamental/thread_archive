@@ -479,9 +479,10 @@ def cluster_by_thread(
 
 
 #: One doc's ranking features, in the order :func:`score_from_features` weights
-#: them: the five weighted signals, then the content-type multiplier applied to
+#: them: the eight weighted signals, then the content-type multiplier applied to
 #: their sum.
-ScoreFeatures = tuple[float, float, float, float, float, float]
+ScoreFeatures = tuple[
+    float, float, float, float, float, float, float, float, float]
 
 
 def score_features(
@@ -491,8 +492,9 @@ def score_features(
     params: Optional[SearchParams] = None,
     now: datetime | None = None,
 ) -> list[ScoreFeatures]:
-    """Per-doc ``(density, phrase, recency, fusion, bm25, ct_weight)`` — the half
-    of scoring that the five ranking *weights* do not touch.
+    """Per-doc ``(density, phrase, recency, fusion, bm25, bm25_score, semantic,
+    thread_evidence, ct_weight)`` — the half of scoring that the ranking *weights*
+    do not touch.
 
     The split is a measurement seam. Regex term matching over every doc's full
     text dominates the scorer's cost, and it is identical for every configuration
@@ -504,12 +506,57 @@ def score_features(
     ``now`` anchors the recency decay and is the one input a caller comparing
     configurations must pin: left to the clock it drifts between runs, so two
     otherwise-identical scorings taken far enough apart do not agree exactly.
+
+    The semantic feature is the vector arm's cosine **spread across this pool**
+    (min-max, so the pool's nearest neighbour reads 1.0 and its most distant 0.0),
+    not the raw cosine. Raw, the signal is nearly all constant: an embedder's
+    cosines over a candidate pool sit in a narrow band, so the weighted term would
+    contribute a large offset and a small gradient — and the offset is not even
+    neutral, because the content-type multiplier scales the whole sum, which would
+    turn a flat semantic term into a content-type preference amplifier. Spread
+    across the pool, what the weight buys is the ordering the arm actually
+    expresses. A hit the vector arm never returned reads 0.0, exactly as it
+    already does for the lexical features.
+
+    ``thread_evidence`` is the one feature that reads the pool rather than the
+    doc: how many **distinct** matches the pool holds from this hit's thread,
+    log-damped and normalized against the thread that carries the most. Every other
+    signal scores a single event, and grouping then represents a thread by its best
+    one — so a conversation that returns to a subject twenty times ranks exactly
+    like one that mentioned it once in passing, on whichever of its events happened
+    to score highest. Repetition is evidence of what a thread is *about*, which is
+    what a subject-shaped query asks for.
+
+    Two things keep it evidence rather than a length prior. Matches are counted by
+    :func:`_norm_content` identity, the same digit-folded near-duplicate key the
+    cross-thread fold uses, so a thread emitting twenty copies of one status line
+    counts once — the corpus's routine floods are the threads a raw count would
+    reward most. And the count is log-damped, so the chattiest thread on a subject
+    cannot outweigh a specific conversation that a query names outright.
     """
     p = params or _DEFAULT_PARAMS
     now = now or datetime.now(timezone.utc).replace(tzinfo=None)  # naive-UTC, matching occurred_at
     ct_weights = p.content_type_weights if p.content_type_weights is not None else _CONTENT_TYPE_WEIGHT
     term_patterns = {t: _term_pattern(t) for t in terms}
     full_phrase = " ".join(terms)
+
+    sims = [s for s in (r.get("_semantic") for r in results) if s is not None]
+    sim_lo = min(sims) if sims else 0.0
+    sim_span = (max(sims) - sim_lo) if sims else 0.0
+
+    # Counted only when something weighs it: the near-duplicate identity is a
+    # regex pass over every candidate's full text, which is the scorer's dominant
+    # cost, and the shipped weight is 0.0.
+    thread_hits: dict[str, int] = {}
+    ev_peak = 0.0
+    if p.thread_evidence_weight:
+        distinct: dict[str, set[str]] = {}
+        for r in results:
+            tid = r.get("thread_id")
+            if tid:
+                distinct.setdefault(tid, set()).add(_norm_content(r))
+        thread_hits = {tid: len(seen) for tid, seen in distinct.items()}
+        ev_peak = math.log1p(max(thread_hits.values()) - 1) if thread_hits else 0.0
 
     features: list[ScoreFeatures] = []
     for result in results:
@@ -534,10 +581,18 @@ def score_features(
 
         recency = recency_score(result.get("occurred_at", ""), now,
                                 half_life_hours=p.recency_half_life_hours)
+        sim = result.get("_semantic")
+        semantic = ((sim - sim_lo) / sim_span) if (sim is not None and sim_span > 0) else 0.0
+        evidence = (
+            math.log1p(thread_hits.get(result.get("thread_id") or "", 1) - 1) / ev_peak
+            if ev_peak > 0 else 0.0
+        )
         features.append((
             density, phrase_bonus, recency,
             result.get("_rrf", 0.0) or 0.0,
             result.get("_lex", 0.0) or 0.0,
+            result.get("_bm25", 0.0) or 0.0,
+            semantic, evidence,
             ct_weights.get(result.get("content_type") or "", 1.0),
         ))
     return features
@@ -549,7 +604,7 @@ def score_from_features(
     """The combined relevance score per doc — a configuration's entire
     contribution to the ranking, given :func:`score_features` rows.
 
-    Only the *ratios* between the five weights matter: scaling all five by a
+    Only the *ratios* between the weights matter: scaling them all by a
     constant scales every score and leaves the order untouched (the content-type
     multiplier distributes over the sum), which is why ``density_weight`` reads
     as the anchor the rest are calibrated against."""
@@ -557,8 +612,10 @@ def score_from_features(
     return [
         (density * p.density_weight + phrase * p.phrase_weight
          + recency * p.recency_weight + fusion * p.fusion_weight
-         + bm25 * p.bm25_weight) * ct_weight
-        for density, phrase, recency, fusion, bm25, ct_weight in features
+         + bm25 * p.bm25_weight + bm25_score * p.bm25_score_weight
+         + semantic * p.semantic_weight + evidence * p.thread_evidence_weight) * ct_weight
+        for (density, phrase, recency, fusion, bm25, bm25_score, semantic, evidence,
+             ct_weight) in features
     ]
 
 

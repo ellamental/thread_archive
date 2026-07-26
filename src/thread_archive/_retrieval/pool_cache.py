@@ -53,7 +53,7 @@ _CURRENT: contextvars.ContextVar[Optional["PoolCache"]] = contextvars.ContextVar
 #: change to what ``retrieve_pool`` returns). Part of every key, so a stale
 #: on-disk cache from an older build misses instead of feeding the ranker a pool
 #: it can no longer score correctly.
-FORMAT_VERSION = 3
+FORMAT_VERSION = 4
 
 
 def key_for(

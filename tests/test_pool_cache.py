@@ -67,7 +67,9 @@ def test_key_covers_every_pool_reaching_search_param() -> None:
     # only reach the *ranking* half are correctly invisible here.
     ranking_only = {
         "density_weight", "phrase_weight", "recency_weight", "fusion_weight",
-        "bm25_weight", "content_type_weights", "recency_half_life_hours",
+        "bm25_weight", "bm25_score_weight", "semantic_weight",
+        "thread_evidence_weight",
+        "content_type_weights", "recency_half_life_hours",
         "density_norm_chars", "rerank_auto", "rerank_pool", "rerank_doc_chars",
         "coherence_gamma",
     }

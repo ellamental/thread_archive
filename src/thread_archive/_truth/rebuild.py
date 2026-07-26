@@ -974,6 +974,18 @@ def _hash_key_check(payload: object, dedup_key: str, *, d: "Path | None" = None)
     return False
 
 
+def _payload_fingerprint(event_type: object, payload: object) -> str:
+    """Canonical content fingerprint of one stored event — the cross-store
+    comparator. Both stores' copies are parsed to Python objects first, so
+    serializer differences (key order, ascii escaping) can't false-positive;
+    timestamps are deliberately excluded (the two stores format them
+    differently)."""
+    import hashlib
+
+    blob = json.dumps([event_type, payload], sort_keys=True, default=str, ensure_ascii=False)
+    return hashlib.sha256(blob.encode("utf-8")).hexdigest()[:16]
+
+
 def _store_rows_failing_key_hash() -> tuple[int, list[str]]:
     """Store event rows whose payload no longer re-hashes to the content hash
     embedded in their own ``dedup_key`` — the content half of the pre-flight
@@ -1069,6 +1081,77 @@ def _truth_units_missing_from_store(d: Path) -> tuple[int, list[str], dict[str, 
     return missing, sample, dropped
 
 
+def _unkeyed_store_rows_diverging_from_truth(d: Path) -> tuple[int, list[str]]:
+    """Index rows with NO ``dedup_key`` whose payload disagrees with the truth
+    line of the same event id — the content pre-flight for the rows
+    :func:`_store_rows_failing_key_hash` structurally cannot see.
+
+    A key's hash tail lets a keyed row self-validate; an unkeyed row carries no
+    digest of its own, so its only redundant copy is the truth line. Writes flow
+    one way (truth before index) and nothing mutates payloads after commit, so
+    the two are copies of one content: disagreement is corruption on one side.
+    Which side can't be told apart here — that is exactly why the re-emit must
+    refuse rather than pick, since overwriting the truth line destroys the copy
+    a later comparison would need.
+
+    Scoped to unkeyed rows on purpose. A keyed row that disagrees with its truth
+    line but passes its own key hash is a *rotted truth line*, and re-emitting
+    over it is the repair, not the damage — blocking on that would refuse the
+    operation in the one case it fixes.
+
+    Truth-side identity follows the reindex loader: the last line per id wins,
+    canonical-depth file last. Index rows with no truth line at all are skipped
+    (index-only growth is what a re-emit legitimately materializes; the reverse
+    direction is :func:`_truth_units_missing_from_store`'s job). Walked one
+    thread at a time so memory stays bounded. Returns ``(diverging, sample)``."""
+    threads_dir = d / THREADS_SUBDIR
+    depth = _shard_depth(d)
+    files_by_stem: dict[str, list[Path]] = {}
+    if threads_dir.exists():
+        for path in threads_dir.rglob("*.jsonl"):
+            files_by_stem.setdefault(path.stem, []).append(path)
+
+    diverging = 0
+    sample: list[str] = []
+    with get_session() as s:
+        conn = s.connection().connection  # raw sqlite3 — stream, don't materialize
+        for stem, paths in files_by_stem.items():
+            tid = stem
+            if normalize_ulid(tid) is None:  # stray file — not a thread id
+                continue
+            fingerprints: dict[int, str] = {}
+            for path in sorted(paths, key=lambda p: p == _thread_file(d, tid, depth)):
+                for rec in _iter_jsonl(path):
+                    if rec.get("type", "event") != "event" or rec.get("id") is None:
+                        continue
+                    if rec.get("dedup_key"):  # keyed: the key-hash gate covers it
+                        continue
+                    fingerprints[int(rec["id"])] = _payload_fingerprint(
+                        rec.get("event_type"), rec.get("payload")
+                    )
+            if not fingerprints:
+                continue
+            for ev_id, etype, payload_text in conn.execute(
+                "SELECT id, event_type, payload FROM events "
+                "WHERE thread_id = ? AND dedup_key IS NULL", (tid,)
+            ):
+                truth_fp = fingerprints.get(int(ev_id))
+                if truth_fp is None:  # index-only row — the re-emit adds it
+                    continue
+                try:
+                    payload = (
+                        json.loads(payload_text)
+                        if isinstance(payload_text, str) else payload_text
+                    )
+                except ValueError:
+                    payload = None
+                if truth_fp != _payload_fingerprint(etype, payload):
+                    diverging += 1
+                    if len(sample) < 10:
+                        sample.append(f"thread {tid}: event {ev_id}")
+    return diverging, sample
+
+
 def rebuild_truth_from_store(*, force: bool = False) -> dict:
     """Re-emit the entire per-thread truth from the current SQLite store.
 
@@ -1089,13 +1172,17 @@ def rebuild_truth_from_store(*, force: bool = False) -> dict:
     pass that rewrites payloads in place keeps its units (the ``dedup_key``
     column carries the identity), so the intended use survives the gate.
 
-    Two further pre-flights guard the *content* of what gets written: the truth
+    Three further pre-flights guard the *content* of what gets written: the truth
     must carry no fields the running code's models don't map (``_coerce``
     tolerates them on reload, but a re-emit would drop them from the truth
-    forever — an older binary must not lossily rewrite newer truth), and every
+    forever — an older binary must not lossily rewrite newer truth), every
     store payload with a hash-tailed ``dedup_key`` must still re-hash to it
     (:func:`_store_rows_failing_key_hash` — a corrupted index row that kept its
-    id and key must not replace the good truth line).
+    id and key must not replace the good truth line), and every *unkeyed* store
+    payload must still agree with its truth line
+    (:func:`_unkeyed_store_rows_diverging_from_truth` — a row with no key carries
+    no digest to self-validate against, so the truth line is its only redundant
+    copy and the re-emit would destroy it).
 
     ``force=True`` overrides the pre-flights only (for a deliberate, understood
     shrink or drop — e.g. a duplicate-collapse repair, or an in-place payload
@@ -1137,6 +1224,17 @@ def rebuild_truth_from_store(*, force: bool = False) -> dict:
                     "Investigate with `thread_archive verify --hashes` and repair the index "
                     "(`thread_archive reindex`) first, or pass force=True if the payloads are "
                     "known-good (an in-place repair that didn't recompute its keys)."
+                )
+            diverging, div_sample = _unkeyed_store_rows_diverging_from_truth(d)
+            if diverging:
+                raise RuntimeError(
+                    f"rebuild_truth_from_store: {diverging} unkeyed store payload(s) "
+                    f"disagree with their truth line (sample: {div_sample}) — those rows "
+                    "carry no key hash to self-validate, so the truth line is their only "
+                    "redundant copy and re-emitting would destroy it. Investigate with "
+                    "`thread_archive verify --hashes` (the `cross` counts) and repair the "
+                    "index (`thread_archive reindex`) first, or pass force=True if the "
+                    "store's copy is known-good."
                 )
         return _rebuild_truth_from_store_locked(d)
 

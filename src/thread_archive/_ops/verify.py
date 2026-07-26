@@ -566,14 +566,14 @@ def _hash_scan_truth_dir(truth_dir: Path, watermark: Optional[int]) -> dict:
 
 def _payload_fingerprint(event_type: object, payload: object) -> str:
     """Canonical content fingerprint of one stored event — the cross-store
-    comparator. Both stores' copies are parsed to Python objects first, so
+    comparator, shared with the re-emit's unkeyed-divergence pre-flight so the
+    two can't drift. Both stores' copies are parsed to Python objects first, so
     serializer differences (key order, ascii escaping) can't false-positive;
     timestamps are deliberately excluded (the two stores format them
     differently)."""
-    import hashlib
+    from .._truth.jsonl_log import _payload_fingerprint as _impl
 
-    blob = json.dumps([event_type, payload], sort_keys=True, default=str, ensure_ascii=False)
-    return hashlib.sha256(blob.encode("utf-8")).hexdigest()[:16]
+    return _impl(event_type, payload)
 
 
 def _verify_hashes(watermark: int) -> dict:

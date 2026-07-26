@@ -351,6 +351,24 @@ def retrieve_pool(
     for _i, _h in enumerate(lexical):
         _h["_lex"] = round((p.rrf_k + 1) / (p.rrf_k + 1 + _i), 6)
 
+    # Beside that positional proxy, the arm's own bm25 *magnitude* (``_bm25``,
+    # stamped raw by the MATCH passes), peak-normalized to [0,1] like ``_rrf`` and
+    # ``_lex`` so ``bm25_score_weight`` is calibrated against a fixed scale rather
+    # than a per-query one (bm25's raw range moves with term count and IDF).
+    # The two lexical signals are not redundant: the proxy is a near-flat gradient
+    # by construction — at rrf_k=60 the whole 200-deep pool spans 1.00 down to 0.23
+    # — so it can only nudge, where the score separates a doc carrying the rare
+    # discriminating term from one carrying three common ones. Hits with no score
+    # (the substring-scan pass, semantic-only hits) read 0.0, exactly as they
+    # already do for ``_lex``.
+    # Normalized unconditionally, so a raw per-query magnitude can never reach the
+    # ranker: with no positive peak to divide by there is no scale to weigh against,
+    # and the signal reads 0.0 rather than whatever the arm happened to return.
+    _peak = max((_h.get("_bm25", 0.0) or 0.0 for _h in lexical), default=0.0)
+    for _h in lexical:
+        if "_bm25" in _h:
+            _h["_bm25"] = round(max(_h["_bm25"], 0.0) / _peak, 6) if _peak > 0 else 0.0
+
     # A tool_name scope also sits the vector arm out: tool docs aren't embedded
     # (only user/text/title/summary are), so every semantic hit in a tool-scoped
     # search would be a hit the filter should have excluded. A types scope sits

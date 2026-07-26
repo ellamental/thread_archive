@@ -12,6 +12,10 @@
   the truth, and gates on per-unit content containment so a missing event
   can't hide behind an index-only one keeping counts equal (``force=True`` is
   the deliberate override).
+* The re-emit's content gates cover both halves of the corpus: a keyed row
+  validates against the hash in its own key, an unkeyed row against its truth
+  line — the only redundant copy it has. Keyed divergence is *allowed* (the
+  truth line rotted; the re-emit is the repair).
 """
 
 from __future__ import annotations
@@ -247,6 +251,57 @@ def test_rebuild_truth_refuses_store_payloads_failing_their_key_hash(archive_hom
     with pytest.raises(RuntimeError, match="dedup-key content hash"):
         rebuild_truth_from_store()
     rebuild_truth_from_store(force=True)  # the deliberate override still works
+
+
+def test_rebuild_truth_refuses_unkeyed_store_payload_diverging_from_truth(
+    archive_home, tmp_path
+):
+    """An unkeyed index row carries no hash to self-validate against, so the
+    key-hash gate structurally cannot see rot in it. Its truth line is the only
+    redundant copy — the re-emit must refuse rather than launder the corruption
+    by overwriting the copy that proves it."""
+    import_cc_session(tmp_path)
+    with get_session() as s:
+        s.execute(text(
+            "UPDATE events SET dedup_key = NULL "
+            "WHERE id = (SELECT min(id) FROM events)"))
+        ev_id = s.execute(text("SELECT min(id) FROM events")).scalar()
+        s.commit()
+    # Sync the truth to the now-unkeyed row first (force: dropping the key is
+    # itself a unit change), so only the payload swap is under test.
+    rebuild_truth_from_store(force=True)
+
+    with get_session() as s:
+        s.execute(text("UPDATE events SET payload = :p WHERE id = :i"),
+                  {"p": '{"content": "rotted in the index, no key to catch it"}',
+                   "i": ev_id})
+        s.commit()
+
+    with pytest.raises(RuntimeError, match="disagree with their truth line"):
+        rebuild_truth_from_store()
+    rebuild_truth_from_store(force=True)  # the deliberate override still works
+
+
+def test_rebuild_truth_allows_keyed_divergence_that_repairs_rotted_truth(
+    archive_home, tmp_path
+):
+    """The unkeyed gate is scoped on purpose: a *keyed* row that disagrees with
+    its truth line but still passes its own key hash means the truth line rotted,
+    and re-emitting over it is the repair. Blocking that would refuse the
+    operation in the one case it fixes."""
+    import_cc_session(tmp_path)
+    tf = one_thread_file(archive_home)
+    ev_id = _swap_payload_in_place(tf)  # rot the truth, keep id + dedup_key
+    with get_session() as s:
+        assert s.execute(text("SELECT dedup_key FROM events WHERE id = :i"),
+                         {"i": ev_id}).scalar() is not None
+
+    rebuild_truth_from_store()  # no force: the good index copy wins
+
+    lines = tf.read_text(encoding="utf-8").splitlines()
+    rec = next(json.loads(ln) for ln in lines
+               if '"type": "event"' in ln and json.loads(ln).get("id") == ev_id)
+    assert "bit rot" not in json.dumps(rec["payload"])
 
 
 def test_rebuild_truth_refuses_to_drop_unknown_truth_fields(archive_home, tmp_path):
