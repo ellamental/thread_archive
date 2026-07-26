@@ -45,7 +45,7 @@ from mcp.server.fastmcp import FastMCP
 
 from .. import _tools
 from .._config import ENV_MCP_INGEST
-from .._retrieval import warm_models
+from .._retrieval import start_warm_models
 
 logger = logging.getLogger(__name__)
 
@@ -246,23 +246,11 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
     """Serve, per ``argv`` (the process's command line by default). Blocks in the
     transport's run loop until the client disconnects or the process is stopped."""
     plan = plan_serve(argv)
-    # Warm the embedding + cross-encoder models on a background daemon thread. The cold load
-    # is tens of seconds; when it lands inside the first conceptual search it can exceed the
-    # client's MCP request timeout (commonly 60s), which surfaces to the model as a
-    # failed tool call. Warming at startup moves that cost off the request path — the models
-    # are (usually) resident by the time the first query arrives, and _load()'s lock makes an
-    # early query that races the warm wait on one load rather than kick off a second. Daemon
-    # so it never holds up interpreter exit; warm_models is fail-soft (a missing extra / load
-    # failure just restores the lazy behaviour).
+    # Warm the embedding + cross-encoder models at startup. The cold load is tens of
+    # seconds; when it lands inside the first conceptual search it can exceed the client's
+    # MCP request timeout (commonly 60s), which surfaces to the model as a failed tool call.
     if plan.warm:
-        # Defer model construction to this warm: until it lands, a query serves
-        # lexical-only (fast) instead of blocking on the tens-of-seconds cold load
-        # — the arms rejoin automatically once the models are resident. Without
-        # this a query racing the warm waits out the whole load in-request.
-        from .._retrieval.model_slot import set_defer_construction
-
-        set_defer_construction(True)
-        threading.Thread(target=warm_models, name="archive-warm-models", daemon=True).start()
+        start_warm_models()
     # Startup catch-up: whatever landed in the local stores since the last
     # ingest (by any process) is searchable by the time the first query
     # arrives — or shortly after; the pass is additive, never blocking.

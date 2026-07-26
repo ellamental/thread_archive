@@ -42,8 +42,7 @@ PUBLIC_MODULES = {"cli", "provider"}
 # served over MCP and here), so they carry the same public promise the tools do
 # and there is nothing to keep out. What stays out is a *second implementation* —
 # `web` is an opener, not a read surface: it hands the cohosted viewer's URL to a
-# browser and returns nothing itself. `eval` is a measurement verb — it scores
-# search quality read-only and returns no results to the caller.
+# browser and returns nothing itself.
 CLI_VERBS = {
     "setup",
     "search",
@@ -55,12 +54,9 @@ CLI_VERBS = {
     "web",
     "embed",
     "reindex",
-    "snapshot",
     "migrate",
     "status",
     "loads",
-    "archives",
-    "eval",
     "mine",
     "backup",
     "verify",

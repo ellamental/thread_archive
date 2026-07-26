@@ -20,7 +20,13 @@ from pathlib import Path
 
 import pytest
 
-from thread_archive._mine import query_mined as mine_gold
+# ``_mine`` is repo-only — the wheel excludes it (pyproject
+# [tool.hatch.build.targets.wheel]), so an installed-package run has nothing to
+# import here. Gate before the imports so that run skips the module instead of
+# erroring at collection.
+pytest.importorskip("thread_archive._mine", reason="_mine is repo-only (excluded from the wheel)")
+
+from thread_archive._mine import query_mined as mine_gold  # noqa: E402
 
 _LAB = Path(__file__).resolve().parent.parent / "search_lab"
 

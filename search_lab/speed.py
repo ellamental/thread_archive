@@ -42,7 +42,7 @@ from pathlib import Path
 from time import perf_counter
 from typing import Any, Callable, Optional
 
-from .._retrieval import _probe
+from thread_archive._retrieval import _probe
 
 logger = logging.getLogger(__name__)
 
@@ -249,9 +249,10 @@ def measure(
     split is read from a fresh probe installed per rep. Hits are discarded — this
     measures time, not relevance (the quality pass measures relevance, over the
     same queries)."""
-    from .. import _api as api
-    from .._eval import query_shape
-    from .._retrieval import _probe, pool_cache
+    from eval_core import query_shape
+
+    from thread_archive import _api as api
+    from thread_archive._retrieval import _probe, pool_cache
 
     if search is None:
         search = api.search
@@ -311,7 +312,7 @@ def record_run(
     from the two never average together. Fail-soft."""
     if not _enabled():
         return
-    from . import gold_runs
+    import gold_runs
 
     record: dict[str, Any] = {
         "at": datetime.now(timezone.utc).isoformat(),
@@ -344,7 +345,7 @@ def write_baseline(home: Path, *, snapshot_id: Optional[str], stats: LatencyStat
         return
     import json
 
-    from . import gold_runs
+    import gold_runs
 
     blob = {
         "at": datetime.now(timezone.utc).isoformat(),

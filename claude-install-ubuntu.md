@@ -56,7 +56,7 @@ human once** (the decision point): lexical-only, or also embeddings?
 ```
 
 `[embeddings]` also brings the corpus-graph ranking stack (`leidenalg` +
-`python-igraph`, on top of the base `networkx`); `.[all]` is the same set under
+`igraph`, on top of the base `networkx`); `.[all]` is the same set under
 one name. A lexical-only install needs none of it.
 
 ## 2. Verify the install

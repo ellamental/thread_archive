@@ -250,23 +250,6 @@ def test_load_status_reports_the_live_state_and_the_history(archive_home) -> Non
     assert [r["kind"] for r in done["recent"]] == ["reindex"]
 
 
-def test_archives_lists_every_registered_home(archive_home, tmp_path, monkeypatch) -> None:
-    """An archive is known by having been opened — including one this process
-    never opened, which is the whole point of the registry."""
-    from thread_archive._ops import archives as reg
-
-    monkeypatch.setenv("THREAD_ARCHIVE_REGISTRY", str(tmp_path / "registry.json"))
-    reg._last_registered.clear()
-    other = tmp_path / "other-archive"
-    other.mkdir()
-    reg.register(other, force=True)
-
-    rows = ta.archives()
-    by_home = {r["home"]: r for r in rows}
-    assert by_home[str(archive_home)]["active"] is True
-    assert by_home[str(other)]["active"] is False and by_home[str(other)]["exists"] is True
-
-
 def test_amend_and_amendments_round_trip_through_the_api(archive_home) -> None:
     """``amend`` writes superseding truth lines and ``amendments`` reads the audit
     trail back — the append-only edit path, driven through the library front door."""

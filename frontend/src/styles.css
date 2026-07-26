@@ -771,6 +771,52 @@ a.session-link:hover { color: var(--accent); }
   color: var(--muted); text-align: center;
 }
 
+/* The storage meter's four categorical slots. Both modes are stepped for their
+   own surface rather than flipped, and the set is validated for lightness,
+   chroma, colorblind separation, and contrast against the panel it sits on. On
+   the light panel the sources and other slots land under 3:1, which is why every
+   segment carries a legend label and a table row and none is identified by
+   colour alone. */
+:root {
+  --disk-truth: #2a78d6; --disk-index: #eb6834;
+  --disk-sources: #1baf7a; --disk-other: #eda100;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --disk-truth: #3987e5; --disk-index: #d95926;
+    --disk-sources: #199e70; --disk-other: #c98500;
+  }
+}
+/* A 2px gap in the surface colour separates adjacent fills, so a boundary is
+   never two hues touching. */
+.disk-meter {
+  display: flex; gap: 2px; overflow: hidden; height: 15px;
+  border-radius: 4px; background: var(--line);
+}
+.disk-seg { min-width: 0; height: 100%; }
+.disk-seg.truth { background: var(--disk-truth); }
+.disk-seg.index { background: var(--disk-index); }
+.disk-seg.sources { background: var(--disk-sources); }
+.disk-seg.other { background: var(--disk-other); }
+.disk-legend {
+  display: flex; flex-wrap: wrap; gap: 5px 20px; margin-top: 11px;
+  font-size: 12px;
+}
+.disk-legend-item { display: flex; align-items: baseline; gap: 7px; min-width: 0; }
+.disk-swatch {
+  flex: none; width: 9px; height: 9px; border-radius: 2px;
+  background: var(--muted);
+}
+.disk-swatch.truth { background: var(--disk-truth); }
+.disk-swatch.index { background: var(--disk-index); }
+.disk-swatch.sources { background: var(--disk-sources); }
+.disk-swatch.other { background: var(--disk-other); }
+.disk-legend-name { font-weight: 600; }
+.disk-legend-size { color: var(--muted); font-variant-numeric: tabular-nums; }
+.disk-legend-note { color: var(--muted); font-size: 11px; }
+.disk-table-wrap { margin-top: 14px; }
+.health-table td .disk-swatch { display: inline-block; margin-right: 7px; }
+
 .health-detail-grid {
   display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px;
 }

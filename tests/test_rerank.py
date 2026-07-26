@@ -14,6 +14,7 @@ from datetime import datetime, timedelta
 import pytest
 
 from thread_archive._retrieval import embed, rank, rerank, warm_models
+from thread_archive._retrieval.model_slot import set_defer_construction
 
 
 def _hit(eid, content, ct="user", occurred_at=None, rrf=0.0):
@@ -326,6 +327,54 @@ def test_warm_reports_the_load_outcome(monkeypatch) -> None:
         broken = cls(load=_unloadable)
         assert broken.warm() is False
         assert broken.warm() is False  # the cached failure holds
+
+
+def test_deferred_construction_holds_a_query_out_of_the_cold_load(monkeypatch) -> None:
+    """The other half of a server's startup warm: while the warm is still loading, a
+    query must not start a load of its own. Both arms sit out — the caller keeps its
+    lexical results, in milliseconds instead of tens of seconds — and rejoin the moment
+    the model is resident, which is what makes the policy safe to leave on for the
+    process's life rather than something the warm has to switch back off."""
+    monkeypatch.delenv("THREAD_ARCHIVE_RERANK", raising=False)
+    scorer = _ScriptedScorer(scores=[0.5])
+    loads: list[int] = []
+
+    def _load():
+        loads.append(1)
+        return scorer
+
+    reranker = rerank.Reranker(load=_load)
+    set_defer_construction(True)
+
+    assert reranker.rerank_scores("q", ["a doc"]) is None  # mid-warm: the arm sits out…
+    assert loads == []  # …without starting the load itself
+    assert reranker.is_available() is True  # and it is a deferral, not a degrade
+
+    assert reranker.warm() is True  # the warm pass is the one caller that may load
+    assert loads == [1]
+    assert reranker.rerank_scores("q", ["a doc"]) == [0.5]  # the arm rejoins, unprompted
+
+
+def test_start_warm_models_defers_construction_and_runs_the_pass(archive_home) -> None:
+    """What a long-running server calls at startup: the pass runs on a background
+    thread (so the bind isn't held up by a tens-of-seconds load) and the process
+    switches to deferred construction (so a query arriving meanwhile serves fast
+    rather than paying the load the warm is already paying)."""
+    import json
+
+    from thread_archive._retrieval import start_warm_models
+    from thread_archive._retrieval.model_slot import defer_construction
+
+    _seed_one_thread(archive_home, "the launchd supervisor restarted the watcher daemon")
+    thread = start_warm_models()
+    assert defer_construction() is True  # in force before the thread has done anything
+    thread.join(30)
+
+    assert thread.is_alive() is False
+    assert thread.daemon is True  # never holds up interpreter exit
+    ledger = archive_home / "retrieval-usage.jsonl"
+    rows = [json.loads(ln) for ln in ledger.read_text(encoding="utf-8").splitlines() if ln.strip()]
+    assert any(r.get("kind") == "warm" for r in rows)  # the pass ran, and timed itself
 
 
 def test_warm_models_never_raises(monkeypatch) -> None:

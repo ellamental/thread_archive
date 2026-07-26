@@ -47,11 +47,14 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
+# The lab dir too, so bare sibling imports (eval_core, snapshot, …) resolve
+# however this file was loaded: as a script, by path, or as search_lab.X.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from bm25_baseline import bm25_search  # noqa: E402
+from eval_core import warm_for_scoring  # noqa: E402
 
 from thread_archive import _api as api  # noqa: E402
-from thread_archive._eval import warm_for_scoring  # noqa: E402
 from thread_archive._mine._framework import gold_dir  # noqa: E402
 
 
@@ -61,7 +64,7 @@ def _fill(retrieved: list[str], gold: set[str], k: int) -> float:
 
 
 def score_file(path: Path, k: int) -> dict | None:
-    rows = [json.loads(l) for l in path.read_text().splitlines() if l.strip()]
+    rows = [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
     acc = {"f2s": 0.0, "f2b": 0.0, "f1s": 0.0, "f1b": 0.0, "n": 0}
     u_gold: set[str] = set()
     u_st: set[str] = set()

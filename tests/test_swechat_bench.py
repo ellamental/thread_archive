@@ -21,8 +21,8 @@ from pathlib import Path
 import pytest
 from sqlalchemy import text
 
+from search_lab.snapshot import stamp_snapshot
 from thread_archive import _api as ta
-from thread_archive._ops.snapshot import stamp_snapshot
 from thread_archive._store import use_session
 
 from .helpers import cc_assistant, cc_user, write_jsonl

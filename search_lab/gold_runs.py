@@ -70,7 +70,7 @@ def active_config(params: Any = None) -> dict[str, Any]:
     explained one. ``params`` defaults to the shipped values; a tuning run passes
     the configuration it actually scored, so the ledger row and its numbers can
     never describe different rankings."""
-    from .._retrieval import SearchParams
+    from thread_archive._retrieval import SearchParams
 
     params = asdict(params if params is not None else SearchParams())
     # content_type_weights is a mapping-or-None; asdict keeps it JSON-safe already.

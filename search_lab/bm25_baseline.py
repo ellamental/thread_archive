@@ -43,11 +43,14 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
+# The lab dir too, so bare sibling imports (eval_core, snapshot, …) resolve
+# however this file was loaded: as a script, by path, or as search_lab.X.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import retrieval_eval as harness  # noqa: E402
+from eval_core import EXCLUDE_META, evaluate, load_case_file  # noqa: E402
 
 from thread_archive import _api as api  # noqa: E402
-from thread_archive._eval import EXCLUDE_META, evaluate, load_case_file  # noqa: E402
 from thread_archive._store import use_session  # noqa: E402
 
 # FTS5 reads bare punctuation as query syntax, so every term is quoted and the

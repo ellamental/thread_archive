@@ -1,4 +1,4 @@
-"""The mining run ledger (:mod:`thread_archive._ops.mine_runs`).
+"""The mining run ledger (``search_lab/mine_runs.py``).
 
 The denominator behind a mined benchmark — how many units a run attempted, and
 the per-unit outcome breakdown (a judge's ``none-of-pool``, a generator's drop) —
@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import json
 
-from thread_archive._ops import mine_runs
+from search_lab import mine_runs
 
 
 def test_record_and_read_round_trips_newest_first(tmp_path) -> None:

@@ -13,13 +13,21 @@ import importlib.util
 import sys
 from pathlib import Path
 
-from thread_archive._mine import (
+import pytest
+
+# ``_mine`` is repo-only — the wheel excludes it (pyproject
+# [tool.hatch.build.targets.wheel]), so an installed-package run has nothing to
+# import here. Gate before the imports so that run skips the module instead of
+# erroring at collection.
+pytest.importorskip("thread_archive._mine", reason="_mine is repo-only (excluded from the wheel)")
+
+from thread_archive._mine import (  # noqa: E402
     _cli,
     load_registry,
     querygen,
     rerank_judged,
 )
-from thread_archive._mine import (
+from thread_archive._mine import (  # noqa: E402
     _framework as fw,
 )
 

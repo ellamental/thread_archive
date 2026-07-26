@@ -11,9 +11,33 @@ stays import-light: the miner modules (and their sqlalchemy / api imports) load
 lazily via :func:`load_registry`, so ``python -m thread_archive._mine tool ...``
 — the hot per-search corpus seam the agents shell into — pays for nothing but
 :mod:`._corpus`.
+
+The miners share three cores with the bench they feed — the scoring engine, the
+snapshot binding, and the run ledgers — and those live in ``search_lab/``, beside
+the harnesses that read what mining writes. :func:`_bootstrap_lab` is what makes
+them importable: the checkout root goes on ``sys.path``, which is sound here for
+the same reason the wheel exclusion is — this package only exists in a checkout.
 """
 
 from __future__ import annotations
+
+
+def _bootstrap_lab() -> None:
+    """Put the checkout root on ``sys.path`` so ``search_lab`` imports resolve.
+
+    Silent when the directory is absent: an install that somehow carries ``_mine``
+    fails at the first lab import with a plain ImportError naming what's missing,
+    which beats a path hack that pretends to have worked.
+    """
+    import sys
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[3]  # <repo>/src/thread_archive/_mine
+    if (root / "search_lab").is_dir() and str(root) not in sys.path:
+        sys.path.insert(0, str(root))
+
+
+_bootstrap_lab()
 
 
 def load_registry() -> list:

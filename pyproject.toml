@@ -36,7 +36,7 @@ classifiers = [
 # What is deliberately NOT here is the Leiden engine. The base install still has
 # compiled dependencies (numpy, and pydantic-core/cryptography under mcp), but
 # those publish wheels across musl, aarch64, and glibc back to 2.17. leidenalg +
-# python-igraph are the narrow ones — no musllinux-aarch64 wheel at all, and a
+# igraph are the narrow ones — no musllinux-aarch64 wheel at all, and a
 # manylinux floor of 2.28 — so they are the only deps that turn `pip install
 # thread-archive` into a source build needing a C toolchain. Behind an extra, that
 # platform tax is paid by installs that asked for the feature.
@@ -56,7 +56,13 @@ dependencies = [
 # under which the engine has work to do, and Louvain ranks below the archive's
 # gated recall floor. A consumer that partitions a graph of its own (the librarian's
 # topic graph, which needs no vectors) depends on `thread-archive[leiden]` directly.
-leiden = ["leidenalg>=0.10", "python-igraph>=0.11"]
+#
+# `igraph`, not the `python-igraph` alias: the alias is an empty shim that only
+# depends on `igraph`, and the code imports `igraph`. Declaring what is imported
+# is what lets the dependency-tier ratchet resolve the name without the package
+# installed — through the alias it can't, and an install without the extra reads
+# the guarded `import igraph` as undeclared.
+leiden = ["leidenalg>=0.10", "igraph>=0.11"]
 # Local semantic search (nomic-embed-text-v1.5 via sentence-transformers). Heavy;
 # the base install is lexical-only. einops is needed by nomic's trust_remote_code
 # model. torch is declared rather than left to arrive under sentence-transformers:

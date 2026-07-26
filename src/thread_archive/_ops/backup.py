@@ -772,46 +772,40 @@ def restore_drill(
         # members are plain copies with their own atomic writers).
         "bundle": _bundle_status(dest_path),
     }
-    from .archives import suppress_registration
-
     drill_home = Path(tempfile.mkdtemp(prefix="thread-archive-restore-drill-"))
     try:
-        # The drill home is workspace, not one of the user's archives — every
-        # open below (including the smoke pass's re-entrant reads) stays out of
-        # the registry.
-        with suppress_registration():
-            # The generations subtree, the recovery bundle, and any half-published
-            # mirror temp files are destination bookkeeping, not truth — the drill
-            # restores the mirror. copyfile, not the default copy2: the drill
-            # consumes JSONL content only, and metadata replication EPERMs on
-            # network mirrors (smbfs refuses reads of system xattrs like
-            # com.apple.provenance).
-            shutil.copytree(
-                dest_path, drill_home / "truth",
-                copy_function=shutil.copyfile,
-                ignore=shutil.ignore_patterns(_GENERATIONS_SUBDIR, _RECOVERY_SUBDIR, ".*.tmp-*"),
-            )
-            open_archive(str(drill_home))
-            from .._truth import reindex as _reindex
+        # The generations subtree, the recovery bundle, and any half-published
+        # mirror temp files are destination bookkeeping, not truth — the drill
+        # restores the mirror. copyfile, not the default copy2: the drill
+        # consumes JSONL content only, and metadata replication EPERMs on
+        # network mirrors (smbfs refuses reads of system xattrs like
+        # com.apple.provenance).
+        shutil.copytree(
+            dest_path, drill_home / "truth",
+            copy_function=shutil.copyfile,
+            ignore=shutil.ignore_patterns(_GENERATIONS_SUBDIR, _RECOVERY_SUBDIR, ".*.tmp-*"),
+        )
+        open_archive(str(drill_home))
+        from .._truth import reindex as _reindex
 
-            try:
-                counts = _reindex()
-            except RuntimeError as e:  # a refused/failed rebuild IS the drill's finding
-                result.update({"ok": False, "error": str(e)})
-                counts = None
-            if counts is not None:
-                result["rebuilt"] = counts
-                result["coverage"] = round(counts["events"] / (live_events or 1), 6)
-                result["smoke"] = _drill_smoke(
-                    str(drill_home), expect_content=counts["events"] > 0
-                )
-                result["ok"] = (
-                    scan["parse_errors"] == 0
-                    and counts["events"] == scan["events_effective"]
-                    and counts["threads"] == scan["threads"]
-                    and result["coverage"] >= 0.98
-                    and result["smoke"]["ok"]
-                )
+        try:
+            counts = _reindex()
+        except RuntimeError as e:  # a refused/failed rebuild IS the drill's finding
+            result.update({"ok": False, "error": str(e)})
+            counts = None
+        if counts is not None:
+            result["rebuilt"] = counts
+            result["coverage"] = round(counts["events"] / (live_events or 1), 6)
+            result["smoke"] = _drill_smoke(
+                str(drill_home), expect_content=counts["events"] > 0
+            )
+            result["ok"] = (
+                scan["parse_errors"] == 0
+                and counts["events"] == scan["events_effective"]
+                and counts["threads"] == scan["threads"]
+                and result["coverage"] >= 0.98
+                and result["smoke"]["ok"]
+            )
     finally:
         close()
         if keep_home:
@@ -923,35 +917,29 @@ def restore(
             ignore=shutil.ignore_patterns(_GENERATIONS_SUBDIR, _RECOVERY_SUBDIR, ".*.tmp-*"),
         )
         staging.chmod(0o700)
-        # Staging is workspace until it renames into place — its opens (and the
-        # smoke pass's re-entrant reads) stay out of the registry; the published
-        # home registers itself at the post-publish reopen below.
-        from .archives import suppress_registration
+        open_archive(str(staging))
+        from .._truth import reindex as _reindex
 
-        with suppress_registration():
-            open_archive(str(staging))
-            from .._truth import reindex as _reindex
-
-            try:
-                counts = _reindex()
-            except RuntimeError as e:
-                result["error"] = f"reindex failed: {e}"
-                counts = None
-            if counts is not None:
-                result["rebuilt"] = counts
-                result["smoke"] = _drill_smoke(str(staging), expect_content=counts["events"] > 0)
-                verified = (
-                    counts["events"] == scan["events_effective"]
-                    and counts["threads"] == scan["threads"]
-                    and result["smoke"]["ok"]
+        try:
+            counts = _reindex()
+        except RuntimeError as e:
+            result["error"] = f"reindex failed: {e}"
+            counts = None
+        if counts is not None:
+            result["rebuilt"] = counts
+            result["smoke"] = _drill_smoke(str(staging), expect_content=counts["events"] > 0)
+            verified = (
+                counts["events"] == scan["events_effective"]
+                and counts["threads"] == scan["threads"]
+                and result["smoke"]["ok"]
+            )
+            if not verified:
+                result["error"] = (
+                    "staged rebuild failed verification (counts or smoke) — "
+                    "target left untouched"
                 )
-                if not verified:
-                    result["error"] = (
-                        "staged rebuild failed verification (counts or smoke) — "
-                        "target left untouched"
-                    )
-                    counts = None
-            close()
+                counts = None
+        close()
         if counts is None:
             shutil.rmtree(staging, ignore_errors=True)
             return result

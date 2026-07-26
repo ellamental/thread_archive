@@ -33,7 +33,6 @@ from ._ops.backup import backup, list_generations, restore, restore_drill  # noq
 from ._ops.coverage import check_coverage  # noqa: F401
 from ._ops.health import pipeline_verdict, read_health  # noqa: F401
 from ._ops.nightly import nightly  # noqa: F401
-from ._ops.snapshot import snapshot, stamp_snapshot  # noqa: F401
 from ._ops.source_mirror import mirror_sources  # noqa: F401
 from ._ops.verify import verify  # noqa: F401
 
@@ -82,12 +81,6 @@ def open_archive(home: Optional[str] = None) -> ArchivePaths:
 
         close_engine()
         raise
-    # An archive becomes *known* by being used — no enrollment step to forget.
-    # After the open succeeds, so a home that can't be opened is never advertised
-    # as one of the user's archives; throttled and fail-soft inside register().
-    from ._ops.archives import register
-
-    register(paths.home)
     return paths
 
 
@@ -481,7 +474,8 @@ def libraries() -> list[dict]:
     Import probes only; nothing here loads a model or builds an index."""
     from ._retrieval import rerank
     from ._retrieval.community import engine as community_engine
-    from ._retrieval.embed import importable, is_available as embed_available
+    from ._retrieval.embed import importable
+    from ._retrieval.embed import is_available as embed_available
 
     leiden = community_engine() == "leiden"
     # The engine only has work to do where there are vectors to build a graph from.
@@ -661,14 +655,18 @@ def load_status(*, home: Optional[str] = None, limit: int = 20) -> dict:
             "recent": read_runs(limit, paths.home)}
 
 
-def archives(*, home: Optional[str] = None) -> list[dict]:
-    """Every known archive with its load state — including archives this process
-    has not opened. An archive is registered by being opened, so this is the list
-    of homes that have been used, each enriched live from its own directory."""
-    paths = open_archive(home)
-    from ._ops.archives import list_archives
+def disk_usage(*, home: Optional[str] = None, top: int = 12) -> dict:
+    """What this archive costs on disk, split into truth (irreplaceable), index
+    (rebuildable), retained raw sources, and everything else — plus the largest
+    entries by name, which is what turns a total into an action.
 
-    return list_archives(active_home=paths.home)
+    Deliberately not part of :func:`status`: it walks the home, and the viewer
+    polls status on a timer. Callers that want the number ask for it.
+    """
+    from ._ops.disk import disk_usage as _disk_usage
+
+    # No open_archive: measuring a home must never be what creates one.
+    return _disk_usage(home=home, top=top)
 
 
 def stats(*, home: Optional[str] = None, model_limit: Optional[int] = None) -> dict:

@@ -1,7 +1,15 @@
 """How retrieval is doing, assembled from the three ledgers that record it.
 
-The read-only summary behind the viewer's retrieval page. Three files answer three
-different questions and none of them answers alone:
+A bench instrument, read deliberately::
+
+    .venv/bin/python search_lab/retrieval_report.py --hours 336
+
+It reads latency and quality series and says nothing a user of the archive could
+act on, so it stays here rather than on a page in the viewer: a served-latency
+percentile is a fact about the machine and the model cache, and the quality series
+is scored against golds whose limits only someone holding the protocol can weigh.
+
+Three files answer three different questions and none of them answers alone:
 
 ``retrieval-usage.jsonl``
     What agents actually *got* — served latency, per stage, under whatever
@@ -152,7 +160,7 @@ def _searches(home: Path, *, hours: int) -> list[dict]:
     searches that happened to succeed, which is the same reason the ledger records
     them in the first place."""
     cutoff = (datetime.now(timezone.utc) - timedelta(hours=hours)).isoformat()
-    from .._retrieval.usage import LEDGER_FILE
+    from thread_archive._retrieval.usage import LEDGER_FILE
 
     return [
         r for r in _rows(home / LEDGER_FILE)
@@ -250,7 +258,7 @@ def restarts(home: Path, *, hours: int = DEFAULT_HOURS,
     empty rows is only noise where an empty chart point is information."""
     bucket = bucket or default_bucket(hours)
     cutoff = (datetime.now(timezone.utc) - timedelta(hours=hours)).isoformat()
-    from .._retrieval.usage import LEDGER_FILE
+    from thread_archive._retrieval.usage import LEDGER_FILE
 
     rows = [r for r in _rows(home / LEDGER_FILE)
             if r.get("kind") == "warm" and r.get("at", "") >= cutoff]
@@ -270,7 +278,7 @@ def bench(home: Path, *, limit: int = 40) -> dict[str, list[dict[str, Any]]]:
 
     Never merged: the gold files and the usage ledger are different populations of
     query, so a p50 over one is not a point on the other's line."""
-    from . import speed
+    import speed
 
     series: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for r in _rows(home / speed.LATENCY_RUNS_FILE):
@@ -293,7 +301,7 @@ def quality(home: Path, *, limit: int = 40) -> dict[str, Any]:
     persisted candidate pools, which leaves the *scores* meaningful but makes them
     a different measurement from the run beside them, and a line that silently
     mixes the two is worse than a shorter line."""
-    from . import gold_runs
+    import gold_runs
 
     points = []
     for r in _rows(home / gold_runs.LEDGER_FILE):
@@ -320,7 +328,7 @@ def report(home: Optional[Path] = None, *, hours: int = DEFAULT_HOURS,
     an operator view that goes blank when one input is absent is the least useful
     thing it could do."""
     if home is None:
-        from .._config import resolve_paths
+        from thread_archive._config import resolve_paths
 
         home = resolve_paths().home
     bucket = bucket or default_bucket(hours)
@@ -340,3 +348,26 @@ def report(home: Optional[Path] = None, *, hours: int = DEFAULT_HOURS,
     out["bench"] = section(bench)
     out["quality"] = section(quality)
     return out
+
+
+def main(argv: Optional[list[str]] = None) -> int:
+    """Print the report as JSON — the series, for reading or piping into a plot."""
+    import argparse
+
+    parser = argparse.ArgumentParser(
+        prog="search_lab/retrieval_report.py",
+        description="Latency and quality series off the retrieval ledgers.")
+    parser.add_argument("--hours", type=int, default=DEFAULT_HOURS,
+                        help=f"window to summarize (default {DEFAULT_HOURS})")
+    parser.add_argument("--bucket", choices=(HOUR, DAY),
+                        help="series granularity (default: by window size)")
+    parser.add_argument("--home", help="archive home (default: $THREAD_ARCHIVE_HOME)")
+    args = parser.parse_args(argv)
+
+    home = Path(args.home).expanduser() if args.home else None
+    print(json.dumps(report(home, hours=args.hours, bucket=args.bucket), indent=2))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

@@ -854,8 +854,11 @@ def route(
         # load can poll it without competing with the load for the store.
         return _ok(api.load_status(limit=_int(params, "limit", 20, hi=200)))
 
-    if path == "/api/archives":
-        return _ok({"archives": api.archives()})
+    if path == "/api/disk":
+        # What the home costs, by kind. Its own endpoint rather than a field on
+        # /api/status because it walks the directory tree: the health page polls
+        # status every 30s and has no reason to re-walk 40k files that often.
+        return _ok(api.disk_usage())
 
     if path == "/api/drops":
         # The drop zone as the upload page reads it. Directory listings only —
@@ -993,17 +996,6 @@ def route(
     if path == "/api/thread-types":
         return _ok({"types": _list_thread_types()})
 
-    if path == "/api/retrieval":
-        # Read straight off the ledgers rather than the index — this is the one
-        # view whose subject is the *search pipeline*, not the corpus, so it must
-        # keep answering while a rebuild has the index unavailable.
-        from .._ops import retrieval_report
-
-        # Hours, not days: the short windows are where a regression shows up the
-        # same afternoon it lands, and a day is the coarsest thing they can say.
-        return _ok(retrieval_report.report(
-            hours=_int(params, "hours", retrieval_report.DEFAULT_HOURS, hi=365 * 24)))
-
     # unmatched API path — don't fall through to the SPA shell
     if path.startswith("/api/"):
         return _text(404, "not found")
@@ -1137,7 +1129,7 @@ class _Handler(BaseHTTPRequestHandler):
 class _ArchiveHTTPServer(ThreadingHTTPServer):
     """HTTP server that owns the background work it starts.
 
-    The stdlib server tracks request threads, but the three startup prewarms are
+    The stdlib server tracks request threads, but the startup prewarms are
     ours. Joining them on a clean close prevents a stopped cohost from leaving
     database work running against an archive the caller has already torn down.
     """

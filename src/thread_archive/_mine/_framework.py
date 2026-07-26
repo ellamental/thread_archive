@@ -80,13 +80,13 @@ def require_snapshot() -> str:
     archive. Mining must run against a frozen snapshot so every case binds to a
     corpus that can't grow underneath the measurement; the id travels in each row
     and the eval refuses to score cases whose id no longer matches the home."""
-    from .._ops.snapshot import read_snapshot_id
+    from search_lab.snapshot import read_snapshot_id
 
     sid = read_snapshot_id()
     if sid is None:
         raise SystemExit(
             "mining must run against a corpus snapshot, not the live archive: "
-            "`thread_archive snapshot <dir>`, then point THREAD_ARCHIVE_HOME at "
+            "`python search_lab/snapshot.py <dir>`, then point THREAD_ARCHIVE_HOME at "
             "it. Cases carry the snapshot's id so the eval can reject them once "
             "the corpus has moved on."
         )
@@ -197,7 +197,7 @@ def miner_commit() -> str | None:
     straddle a commit). ``None`` outside a git checkout — best-effort provenance,
     never a hard dependency. Shares the one git-commit reader with the gold-run
     ledger so both ledgers name the code the same way."""
-    from .._ops.gold_runs import git_commit
+    from search_lab.gold_runs import git_commit
 
     return git_commit()
 

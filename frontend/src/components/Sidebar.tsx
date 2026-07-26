@@ -68,13 +68,6 @@ export function Sidebar({
           health
         </Link>
         <Link
-          className={'rail-link' + (pathname === '/retrieval' ? ' active' : '')}
-          to="/retrieval"
-          onClick={onClose}
-        >
-          retrieval
-        </Link>
-        <Link
           className={'rail-link' + (pathname === '/upload' ? ' active' : '')}
           to="/upload"
           onClick={onClose}

@@ -1,11 +1,13 @@
 import { useEffect, useMemo, useState } from 'react'
 import {
   api,
-  type ArchiveEntry,
+  type DiskEntry,
+  type DiskUsage,
   type HealthRecord,
   type LibraryEntry,
   type LoadPhase,
   type LoadRun,
+  type LoadStatus,
   type Status,
   type WatchSourceRecord,
 } from '../api'
@@ -72,31 +74,6 @@ function duration(s?: number | null): string {
   if (s < 90) return s < 10 ? `${s.toFixed(1)}s` : `${Math.round(s)}s`
   if (s < 5400) return `${(s / 60).toFixed(1)} min`
   return `${(s / 3600).toFixed(1)} h`
-}
-
-// The live record an in-flight load publishes, or null when this archive has no
-// load state at all (never loaded through the tracked paths).
-function liveLoad(archive: ArchiveEntry): LoadRun | null {
-  const load = archive.load as LoadRun
-  return load && load.status ? load : null
-}
-
-// The state of an archive's *derived* data — index, lexical search, vectors —
-// and nothing else. This axis says whether a load built the archive's indexes, not
-// whether anything can query it; reachability is a separate marker (see
-// `servedTag`), because an archive can be perfectly indexed and unreachable.
-// 'Untracked' is deliberately weaker than 'Indexed': an index exists but no load
-// was ever recorded for it, so its completeness is unproven rather than proven.
-function indexState(archive: ArchiveEntry): { label: string; tone: Tone } {
-  if (!archive.exists) return { label: 'Missing', tone: 'bad' }
-  const live = liveLoad(archive)
-  if (live?.status === 'running') return { label: 'Loading', tone: 'busy' }
-  if (live?.status === 'stalled') return { label: 'Stalled', tone: 'bad' }
-  const last = archive.runs?.[0] ?? live
-  if (last?.status === 'failed') return { label: 'Load failed', tone: 'bad' }
-  if (last?.status === 'ok') return { label: 'Indexed', tone: 'good' }
-  if ((archive.index_bytes ?? 0) > 0) return { label: 'Untracked', tone: 'quiet' }
-  return { label: 'Empty', tone: 'quiet' }
 }
 
 function currentPhase(load: LoadRun): LoadPhase | null {
@@ -373,11 +350,124 @@ function buildNotices(status: Status): Notice[] {
 // open.
 const LOADING_POLL_MS = 2_000
 const IDLE_POLL_MS = 30_000
+// Storage is the one figure here that costs a directory walk to produce, and the
+// one that moves in hours rather than seconds. Its own slow cadence keeps the
+// page's 30s heartbeat from re-walking the home forty times an hour.
+const DISK_POLL_MS = 5 * 60_000
+
+// The kinds a byte can be, in the order the meter stacks them: least disposable
+// first, so the bar reads left to right as what must be kept → what could be
+// reclaimed. The note is the reason the kind exists, which is what makes the
+// number actionable — a share of the disk means nothing without knowing whether
+// deleting it loses anything.
+const DISK_KINDS: { key: DiskEntry['kind']; label: string; note: string }[] = [
+  { key: 'truth', label: 'Truth', note: 'the conversations themselves — irreplaceable' },
+  { key: 'index', label: 'Index', note: 'derived; rebuilds from truth' },
+  { key: 'sources', label: 'Raw sources', note: 'provider files and drift quarantine, never auto-pruned' },
+  { key: 'other', label: 'Other', note: 'logs, telemetry, migration payloads, caches' },
+]
+
+/** Storage as one proportional bar plus the entries behind it.
+ *
+ *  Segments are labeled in the legend and listed in the table below rather than
+ *  written into the bar: two of the four fills sit under 3:1 against the light
+ *  panel, and at these widths a segment can be a few pixels wide anyway.
+ */
+function StorageSection({ disk }: { disk: DiskUsage | null }) {
+  const total = disk?.total_bytes || 0
+  const share = (n: number) => (total > 0 ? (n / total) * 100 : 0)
+  return (
+    <section className="health-section" aria-labelledby="storage-usage-heading">
+      <div className="health-section-heading">
+        <div>
+          <p className="eyebrow">Storage</p>
+          <h2 id="storage-usage-heading">What this archive costs on disk</h2>
+        </div>
+        {disk && (
+          <span className="health-section-meta">
+            {bytes(disk.total_bytes)} · {int(disk.files)} files
+          </span>
+        )}
+      </div>
+      {!disk ? (
+        <div className="health-empty-card">measuring the archive home…</div>
+      ) : (
+        <>
+          <div
+            className="disk-meter"
+            role="img"
+            aria-label={DISK_KINDS.map(
+              (k) => `${k.label} ${bytes(disk.kinds[k.key])}`,
+            ).join(', ')}
+          >
+            {DISK_KINDS.map((kind) => (
+              <div
+                key={kind.key}
+                className={`disk-seg ${kind.key}`}
+                style={{ width: `${share(disk.kinds[kind.key])}%` }}
+                title={`${kind.label}: ${bytes(disk.kinds[kind.key])} — ${kind.note}`}
+              />
+            ))}
+          </div>
+          <div className="disk-legend">
+            {DISK_KINDS.map((kind) => (
+              <div className="disk-legend-item" key={kind.key}>
+                <span className={`disk-swatch ${kind.key}`} aria-hidden="true" />
+                <span className="disk-legend-name">{kind.label}</span>
+                <span className="disk-legend-size">
+                  {bytes(disk.kinds[kind.key])} · {share(disk.kinds[kind.key]).toFixed(0)}%
+                </span>
+                <span className="disk-legend-note">{kind.note}</span>
+              </div>
+            ))}
+          </div>
+          <div className="health-table-wrap disk-table-wrap">
+            <table className="health-table">
+              <thead>
+                <tr>
+                  <th>Entry</th>
+                  <th>Kind</th>
+                  <th className="num">Size</th>
+                  <th className="num">Share</th>
+                </tr>
+              </thead>
+              <tbody>
+                {disk.entries.map((entry) => (
+                  <tr key={entry.name}>
+                    <td className="health-provider">
+                      <span className={`disk-swatch ${entry.kind}`} aria-hidden="true" />
+                      {entry.name}
+                    </td>
+                    <td>{DISK_KINDS.find((k) => k.key === entry.kind)?.label ?? entry.kind}</td>
+                    <td className="num">{bytes(entry.bytes)}</td>
+                    <td className="num">{share(entry.bytes).toFixed(1)}%</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          {disk.external.length > 0 && (
+            <p className="health-footnote">
+              Counted from outside the home: {disk.external.join(' · ')}
+            </p>
+          )}
+          <p className="health-footnote">
+            {bytes(disk.rebuildable_bytes)} of this is index, which <code>thread_archive reindex</code>{' '}
+            and <code>thread_archive embed</code> rebuild from truth. Raw sources and the drift
+            quarantine are kept on purpose — they outlive what the harnesses delete — so pruning
+            them is a decision the archive leaves to you.
+          </p>
+        </>
+      )}
+    </section>
+  )
+}
 
 export function HealthView() {
   const [status, setStatus] = useState<Status | null>(null)
   const [error, setError] = useState<string | null>(null)
-  const [archives, setArchives] = useState<ArchiveEntry[] | null>(null)
+  const [loads, setLoads] = useState<LoadStatus | null>(null)
+  const [disk, setDisk] = useState<DiskUsage | null>(null)
 
   // The status records are all read as ages ("last check 3m ago", stale past a
   // threshold), so a one-shot fetch would leave the page asserting a freshness
@@ -411,19 +501,19 @@ export function HealthView() {
     }
   }, [])
 
-  const loading = (archives || []).some((a) => liveLoad(a)?.status === 'running')
+  const loading = loads?.current?.status === 'running'
 
   useEffect(() => {
     let cancelled = false
     let timer: ReturnType<typeof setTimeout>
     const tick = () => {
       api
-        .archives()
+        .loads()
         .then((rows) => {
-          if (!cancelled) setArchives(rows)
+          if (!cancelled) setLoads(rows)
         })
         .catch(() => {
-          // An archive listing failure must never blank the trust page — the
+          // A load-ledger read failure must never blank the trust page — the
           // section degrades to whatever it last showed.
         })
         .finally(() => {
@@ -437,14 +527,40 @@ export function HealthView() {
     }
   }, [loading])
 
-  // Every archive's runs on one timeline — the cross-archive load history.
+  // Disk usage on its own slow timer: a walk of the home, and a figure that
+  // moves over hours. A failure leaves the section on its last good reading
+  // rather than blanking it — the rest of the page's evidence is unaffected.
+  useEffect(() => {
+    let cancelled = false
+    let timer: ReturnType<typeof setTimeout>
+    const tick = () => {
+      api
+        .disk()
+        .then((d) => {
+          if (!cancelled) setDisk(d)
+        })
+        .catch(() => {})
+        .finally(() => {
+          if (!cancelled) timer = setTimeout(tick, DISK_POLL_MS)
+        })
+    }
+    tick()
+    return () => {
+      cancelled = true
+      clearTimeout(timer)
+    }
+  }, [])
+
+  // The finished loads, newest first — what building this archive's derived data
+  // has cost. Truncated: the page is evidence at a glance, not a full ledger.
   const history = useMemo(() => {
-    const rows: { archive: string; run: LoadRun }[] = []
-    for (const archive of archives || [])
-      for (const run of archive.runs || []) rows.push({ archive: archive.label, run })
-    rows.sort((a, b) => String(b.run.at || '').localeCompare(String(a.run.at || '')))
+    const rows = [...(loads?.recent || [])]
+    rows.sort((a, b) => String(b.at || '').localeCompare(String(a.at || '')))
     return rows.slice(0, 12)
-  }, [archives])
+  }, [loads])
+
+  const live = loads?.current ?? null
+  const livePhase = live ? currentPhase(live) : null
 
   const notices = useMemo(() => (status ? buildNotices(status) : []), [status])
 
@@ -581,85 +697,7 @@ export function HealthView() {
         </div>
       </section>
 
-      <section className="health-section" aria-labelledby="archives-heading">
-        <div className="health-section-heading">
-          <div>
-            <p className="eyebrow">Archives</p>
-            <h2 id="archives-heading">Archives on this machine</h2>
-          </div>
-          {loading && <span className="health-section-meta load-live">loading now</span>}
-        </div>
-        {archives === null ? (
-          <div className="health-empty-card">reading the archive registry…</div>
-        ) : archives.length === 0 ? (
-          <div className="health-empty-card">
-            No archives registered yet. An archive is registered the first time it is opened.
-          </div>
-        ) : (
-          <div className="load-archive-list">
-            {archives.map((archive) => {
-              const state = indexState(archive)
-              const live = liveLoad(archive)
-              const running = live?.status === 'running'
-              const phase = live ? currentPhase(live) : null
-              const last = archive.runs?.[0]
-              return (
-                <article className={`load-archive ${state.tone}`} key={archive.id}>
-                  <div className="load-archive-top">
-                    <h3>
-                      {archive.label}
-                      {archive.role && (
-                        <span
-                          className="load-role-tag"
-                          title="What this archive is for — a descriptive tag, set via `thread_archive archives --set-role`."
-                        >
-                          {archive.role}
-                        </span>
-                      )}
-                      <span
-                        className={`load-served-tag${archive.active ? '' : ' off'}`}
-                        title={
-                          archive.active
-                            ? 'Retrieval answers from this archive — it is the home this process was started against.'
-                            : 'Indexed but not reachable: retrieval answers only from the served archive.'
-                        }
-                      >
-                        {archive.active ? 'served' : 'not served'}
-                      </span>
-                    </h3>
-                    <Pill tone={state.tone}>{state.label}</Pill>
-                  </div>
-                  <code className="health-path" title={archive.home}>{archive.home}</code>
-                  <div className="load-archive-meta">
-                    <span>{bytes(archive.index_bytes)} index</span>
-                    <span title={dateTime(archive.last_opened)}>opened {age(archive.last_opened)}</span>
-                  </div>
-                  {running && phase && <PhaseProgress phase={phase} />}
-                  {!running && last && (
-                    <div className="load-archive-last">
-                      <span className="load-last-label">
-                        last load · {last.kind} · {age(last.at)}
-                      </span>
-                      <span className="load-last-total">{duration(last.duration_s)}</span>
-                      <PhaseChips phases={last.phases || []} />
-                    </div>
-                  )}
-                  {!running && !last && (
-                    <p className="load-archive-none">No tracked load has been recorded for this archive.</p>
-                  )}
-                </article>
-              )
-            })}
-          </div>
-        )}
-        <p className="health-footnote">
-          A load builds one archive's derived data — index, lexical search, vectors — from its truth
-          log. Lexical search is usable as soon as the index is built; the embed phase backfills
-          semantic search behind it. Being indexed does not make an archive reachable:{' '}
-          <code>thread_search</code> and <code>thread_read</code> answer from the single archive their
-          process was started against, marked <em>served</em> here.
-        </p>
-      </section>
+      <StorageSection disk={disk} />
 
       <section className="health-section" aria-labelledby="load-history-heading">
         <div className="health-section-heading">
@@ -667,13 +705,29 @@ export function HealthView() {
             <p className="eyebrow">Load history</p>
             <h2 id="load-history-heading">What past loads cost</h2>
           </div>
+          {loading && <span className="health-section-meta load-live">loading now</span>}
         </div>
+        {live && livePhase && (
+          <div className="load-archive busy">
+            <div className="load-archive-top">
+              <h3>{live.kind} in flight</h3>
+              <Pill tone={live.status === 'stalled' ? 'bad' : 'busy'}>
+                {live.status === 'stalled' ? 'Stalled' : 'Loading'}
+              </Pill>
+            </div>
+            <PhaseProgress phase={livePhase} />
+            {live.status === 'stalled' && (
+              <p className="load-archive-none">
+                The process writing this state is gone — the load died mid-phase.
+              </p>
+            )}
+          </div>
+        )}
         {history.length ? (
           <div className="health-table-wrap">
             <table className="health-table">
               <thead>
                 <tr>
-                  <th>Archive</th>
                   <th>Load</th>
                   <th>Finished</th>
                   <th className="num">Duration</th>
@@ -682,10 +736,9 @@ export function HealthView() {
                 </tr>
               </thead>
               <tbody>
-                {history.map(({ archive, run }, index) => (
-                  <tr key={`${archive}-${run.at}-${index}`}>
-                    <td className="health-provider">{archive}</td>
-                    <td>{run.kind}</td>
+                {history.map((run, index) => (
+                  <tr key={`${run.at}-${index}`}>
+                    <td className="health-provider">{run.kind}</td>
                     <td title={dateTime(run.at)}>{age(run.at)}</td>
                     <td className="num">{duration(run.duration_s)}</td>
                     <td><PhaseChips phases={run.phases || []} /></td>

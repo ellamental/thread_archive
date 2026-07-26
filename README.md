@@ -7,17 +7,19 @@
 
 **Thread Archive is a local-first archive for the AI agents that work on your machine — built by Claude Code, for Claude Code.** Preservation is the product: every session your agent harnesses record lands in one durable, append-only archive you own, on your own disk — kept safe past harness rotation, provider format drift, and index corruption, and served back to your agents over MCP. Claude Code is the supported, first-class source; the other harnesses it reads — Codex, Cursor, OpenCode, Grok, and friends — are best-effort and community-maintainable (see *When an import drifts*). Web chats (claude.ai, ChatGPT, xAI) import too, from account exports you download by hand and drop on the viewer's upload page; the live, self-feeding path is the agent tooling.
 
-**Day one is the demo.** The history already exists — your Claude Code sessions are sitting in `~/.claude` right now, as JSONL nothing can search and the harness eventually rotates away. Point archive at them, and minutes later ask, mid-conversation:
+**Your agent's transcripts are temporary by default.** Claude Code writes each session to `~/.claude` as JSONL, keeps it for 30 days, and deletes it — a sensible default for a harness's working files, a lossy one for the only record of how the work got decided. Nothing searches them in the meantime either.
 
-> *"what did we decide about the auth flow in March?"*
+**Day one still gives you something to search.** Point archive at this machine's stores and whatever is still on disk imports as a head start; from then on every session lands in an append-only log you own, and the window stops mattering. Minutes after setup, ask mid-conversation:
 
-Your agent calls `thread_search`, the right conversation comes back, and `thread_read` replays the decision with everything around it. No workflow to adopt, no notes you were supposed to be taking — the record was being written all along.
+> *"what did we decide about the auth flow?"*
+
+Your agent searches, reads around the hits, and comes back with what you decided and why — a few `thread_search` calls and a couple of `thread_read`s, the way it would work through a codebase it hadn't seen. What it reads is the conversation itself, not a summary someone made of one. No workflow to adopt, no notes you were supposed to be taking — from here on the record is being written.
 
 **Searchable by you — and by your AI.**
 - Full-text and semantic search with reranking, filterable by time, source, tool, and content type; an empty query browses recent activity.
 - Exposed over MCP (`thread_search`, `thread_read`), so Claude (or any MCP client) can search and read your entire history mid-conversation.
 - The same two tools are CLI verbs — `thread_archive search "auth flow" --since 30d`, `thread_archive read <id>` — one implementation behind both, so what you get at a prompt is what your agent gets.
-- Search is the access layer over the archive, not the archive itself — an agent typically fires several searches, reformulates, and reads around a hit, and the archive underneath guarantees the conversation is *there* to find. Quality is measured against the archive's own logged usage — real queries, real follow-up reads — with a CI gate that alarms on collapse; the numbers, the protocol, and its limits live in [docs/search-quality.md](docs/search-quality.md), and `thread_archive eval` runs the same self-checkup read-only on your own archive.
+- Search is the access layer over the archive, not the archive itself — an agent typically fires several searches, reformulates, and reads around a hit, and the archive underneath guarantees the conversation is *there* to find. Quality is measured against graded, corpus-grounded gold cases over a frozen snapshot, with a CI gate that alarms on collapse; the numbers, the protocol, and its limits live in [docs/search-quality.md](docs/search-quality.md). Your install reports whether search is *degraded* (`thread_archive status`, the viewer's health page) rather than a score — a metric with no baseline beside it isn't something you can act on.
 
 **Indexed by code, not just by words.** Every path your agents' tools named — each
 `Edit`, `Read`, `Write`, `apply_patch` header, and path-shaped shell argument, in
@@ -96,7 +98,7 @@ browser.
 
 Local semantic search is optional and heavy (pulls torch — sized for a dev
 machine): `pip install 'thread-archive[embeddings]'`. It brings the corpus-graph
-ranking stack with it (the `[leiden]` extra: `leidenalg` + `python-igraph`),
+ranking stack with it (the `[leiden]` extra: `leidenalg` + `igraph`),
 since that signal is computed over the vectors. `[all]` is every runtime feature
 under one name; the base install is lexical-only and pulls no C extension beyond
 what `numpy` and `mcp` already need.
@@ -145,17 +147,6 @@ plus `thread_archive daemon restart`, not a plain `mv`. A clone updates by
 fast-forwarding to a release tag (`thread_archive self-update`); a pip install
 updates with `pip install -U thread-archive`.
 
-Skipped the watcher? Still covered: setup-generated MCP entries explicitly set
-`THREAD_ARCHIVE_MCP_INGEST=1`, opting `archive-mcp` into **lazy catch-up
-ingest**. A background pass at startup and (throttled) around tool calls imports
-whatever landed in your local AI-tool stores since the last pass. A bare
-`archive-mcp` invocation without that setting is fully read-only. On a fresh
-archive give the first pass a minute to chew before expecting search hits; the
-watcher install (`thread_archive setup`, or `thread_archive daemon install`) is the
-always-fresh upgrade. With the daemon installed, opted-in MCP passes degrade to
-no-op lock probes — exactly one process ingests at a time, however many clients
-are open.
-
 ## CLI
 
 One namespaced command. **`thread_archive setup`** runs the wizard (discover →
@@ -189,9 +180,6 @@ thread_archive nightly <dest>    # the scheduled pipeline: backup → verify (ag
 thread_archive coverage          # capture-coverage check: source stores reconciled against the archive
 thread_archive mirror            # mirror raw harness source stores into <home>/source-mirror
                           #   (verbatim, gzip; nothing ever deleted)
-thread_archive eval              # search-quality self-checkup on your own archive (read-only; --from-log
-                          #   scores real mined queries, --behavior reports usage rates — see
-                          #   docs/search-quality.md)
 thread_archive status            # archive health / counts / last verify + backup + drill + coverage outcomes
 thread_archive daemon <action>   # install/uninstall/restart/status a service agent (launchd on macOS,
                           #   systemd --user on Linux) — the always-on
@@ -234,7 +222,8 @@ src/thread_archive/
 frontend/           # the viewer's React+Vite source (dev-only; builds into _web/static/)
 host/               # operator layer: Makefile over `thread_archive daemon`, family-manifest writer
 scripts/            # repo tooling (coverage gate, frontend-build check, license notices)
-search_lab/         # the search lab: quality + calibration harnesses (see search_lab/README.md)
+search_lab/         # the search lab (never shipped): the scoring core, quality + calibration
+                      #   harnesses, corpus freezing, run ledgers — see search_lab/README.md
 tests/install/      # from-nothing install proofs: clean-container Docker + realistic
                       #   discovery-driven first run (~/.claude-style stores, macOS + Linux)
 ```

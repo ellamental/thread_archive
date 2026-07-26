@@ -611,6 +611,15 @@ def print_status(args: argparse.Namespace, *, machine: Optional[Machine] = None)
     convs = st["threads"] - topics
     topics_part = f" · {topics:,} topics" if topics else ""
     _say(f"  archive:  {convs:,} conversations{topics_part} · {st['events']:,} events · {st['fts_indexed']:,} indexed")
+    # What it costs to keep, split so the number is answerable: an archive is
+    # mostly not its conversations, and the biggest part of it is usually the
+    # projection `thread_archive reindex` can rebuild.
+    from .._ops.disk import format_bytes as _bytes
+
+    disk = api.disk_usage(home=args.home)
+    _say(f"  disk:     {_bytes(disk['total_bytes'])} — "
+         f"{_bytes(disk['kinds']['truth'])} conversations, "
+         f"{_bytes(disk['rebuildable_bytes'])} rebuildable index")
     if machine.can_schedule:
         _say(f"  watcher:  {'running' if machine.watcher_running(args.home) else 'not running — `thread_archive setup` offers it'}")
     disabled = sorted(

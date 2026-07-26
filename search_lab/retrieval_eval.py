@@ -83,15 +83,14 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
+# The lab dir too, so bare sibling imports (eval_core, snapshot, …) resolve
+# however this file was loaded: as a script, by path, or as search_lab.X.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from thread_archive import _api as api  # noqa: E402
-
-# The scoring engine lives in the package so the shipped `thread_archive eval` command
-# and this dev bench score off one code path. Re-exported at module scope
-# because the sibling harnesses (graph_eval) and tests that load this file by
-# path reach these names as attributes on it. The scoring engine itself lives in
-# thread_archive._eval, which the mining package imports directly.
-from thread_archive._eval import (  # noqa: E402,F401
+# The scoring engine (eval_core) re-exported at module scope, because the sibling
+# harnesses (graph_eval) and the tests that load this file by path reach these
+# names as attributes on it.
+from eval_core import (  # noqa: E402,F401
     EXCLUDE_META,
     RECALL_KS,
     _trail_events,  # noqa: E402,F401
@@ -106,6 +105,8 @@ from thread_archive._eval import (  # noqa: E402,F401
     resolve_read_refs,
     sample_title_cases,
 )
+
+from thread_archive import _api as api  # noqa: E402
 from thread_archive._store import use_session  # noqa: E402
 
 # The rerank liveness pair: a query, its answer, and a decoy no working
@@ -149,7 +150,7 @@ def _require_matching_snapshot(cases: list[dict], cases_path) -> None:
     and every case's id must match it. A mismatch means the snapshot changed since
     mining — re-mine against the new one. Cases with no ``snapshot_id`` are
     pre-binding (old format) and count as a mismatch."""
-    from thread_archive._ops.snapshot import read_snapshot_id
+    from snapshot import read_snapshot_id
 
     current = read_snapshot_id()
     if current is None:

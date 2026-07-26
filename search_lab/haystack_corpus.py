@@ -178,15 +178,6 @@ def main(argv: list[str] | None = None) -> int:
         "doc_of_thread": doc_of_thread,
     }, indent=2), encoding="utf-8")
 
-    # A benchmark corpus is a durable archive, not workspace — say what it is so
-    # it reads correctly wherever archives are listed. Fail-soft, like every
-    # registry write: bookkeeping must not fail a built corpus.
-    from thread_archive._ops.archives import set_role
-
-    try:
-        set_role(str(home), "benchmark")
-    except (KeyError, ValueError, OSError) as e:
-        _log(f"note: could not tag {home} as a benchmark ({e})")
     _log(f"built {home}")
     return 0
 

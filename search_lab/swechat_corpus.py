@@ -61,6 +61,11 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+# The lab dir too, so bare sibling imports (eval_core, snapshot, …) resolve
+# however this file was loaded: as a script, by path, or as search_lab.X.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+from snapshot import stamp_snapshot  # noqa: E402
 
 from thread_archive import _api as api  # noqa: E402
 from thread_archive._mine import commit_linked  # noqa: E402
@@ -522,7 +527,7 @@ def main(argv: list[str] | None = None) -> int:
     # itself. Stamped last, once the corpus is final — the id is a content
     # fingerprint, so a rebuild takes a new one and the previous run's golds read
     # as stale instead of scoring against a corpus that changed underneath them.
-    manifest = api.stamp_snapshot(str(home))
+    manifest = stamp_snapshot(str(home))
     print(f"snapshot: {home} stamped {manifest['snapshot_id']} "
           f"({manifest['counts']['threads']} threads, "
           f"{manifest['counts']['vectors']} vectors)")

@@ -1,12 +1,15 @@
 """Search-quality measurement over the live archive — the scoring core.
 
-This is the reusable engine behind two callers: the ``thread_archive eval`` CLI
-command (the shipped, user-facing checkup — "is search working on *my* data")
-and the dev bench under ``search_lab/`` (the full quality ladder — the CI gate, the
-experiment runner, the LLM judges). Both build eval *cases* under one of a few
-protocols and score a search function against them with the same MRR / success@k
-/ recall@k / nDCG@k loop, so the number the CI gate defends and the number a
-user sees on their own archive come off the same code path.
+The reusable engine every harness in this directory scores through: they build
+eval *cases* under one of the protocols below and hand them to :func:`evaluate`,
+which runs one MRR / success@k / recall@k / nDCG@k loop. One scoring path, so a
+number from the gold gate and a number from a calibration run mean the same
+thing.
+
+Measurement, not product: quality numbers are read deliberately against a
+snapshot-bound baseline (``search_lab/README.md`` → "Taking a baseline"), by
+someone who knows what the golds are worth. An install ships no scoring surface
+at all.
 
 Case protocols:
 
@@ -76,9 +79,9 @@ from typing import Any
 
 from sqlalchemy import text as sa_text
 
-from . import _api as api
-from ._retrieval.read import resolve_thread_ref
-from ._store import use_session
+from thread_archive import _api as api
+from thread_archive._retrieval.read import resolve_thread_ref
+from thread_archive._store import use_session
 
 logger = logging.getLogger(__name__)
 
@@ -431,7 +434,7 @@ def warm_for_scoring() -> None:
     graph can't be built — both leave every case ranked the same way, which is the
     property that matters. Idempotent: the graph is cached, so the scoring loops
     that call this per file pay for it once."""
-    from ._retrieval import embed_graph
+    from thread_archive._retrieval import embed_graph
 
     if embed_graph.coherence_gamma() <= 0.0:
         return

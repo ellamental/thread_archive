@@ -69,7 +69,7 @@ def _isolate_home(monkeypatch):
 @pytest.fixture(autouse=True)
 def _isolate_archive(tmp_path, monkeypatch):
     from thread_archive import _config as config
-    from thread_archive._retrieval import embed_graph, fts, vectors
+    from thread_archive._retrieval import embed_graph, fts, model_slot, vectors
     from thread_archive._store import _base
     from thread_archive._truth import jsonl_log
 
@@ -100,6 +100,11 @@ def _isolate_archive(tmp_path, monkeypatch):
     # accumulate there and each open stays a pure store op; the registry has its
     # own coverage (test_archives_registry.py opts back in with a tmp path).
     monkeypatch.setenv("THREAD_ARCHIVE_REGISTRY", "0")
+    # The load policy is a process global a server sets at startup (see
+    # model_slot): a test that starts one would otherwise leave every later test in
+    # the worker serving lexical-only, which looks like a ranking bug rather than a
+    # leaked flag.
+    model_slot.set_defer_construction(False)
     _base.close_engine()
     jsonl_log.reset_handles()
     # The retrieval caches key on id(get_engine()); a closed engine's id can be reused

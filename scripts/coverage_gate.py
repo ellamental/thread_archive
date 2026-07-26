@@ -25,7 +25,6 @@ from pathlib import Path
 # package (top-level dir/module under src/thread_archive/) -> minimum percent
 FLOORS = {
     "_api": 90.0,  # thin dispatch layer over the private machinery
-    "_eval": 95.0,  # search-quality scoring core behind `thread_archive eval` + the search_lab/ bench
     "_importers": 92.0,
     "_knowledge": 90.0,
     # The MCP transport shim: bind plan, cohosted ingest, tool registration. What

@@ -31,9 +31,14 @@ dataset and nothing ever appends to it. Copying such a home to freeze it buys
 nothing, so :func:`stamp_snapshot` writes the manifest in place: same contract,
 same content-derived id, no copy.
 
-Point an eval at one with ``THREAD_ARCHIVE_HOME=<dest>``: the shipped
-``thread_archive eval`` and the dev bench under ``search_lab/`` both resolve the home
-from the environment, so a snapshot needs no new plumbing to score against.
+Point a harness at one with ``THREAD_ARCHIVE_HOME=<dest>``: every module here
+resolves the home from the environment, so a snapshot needs no new plumbing to
+score against.
+
+Bench machinery — an install has no snapshot verb. A frozen corpus is only worth
+building next to something that measures against it, and the durability kit an
+install *does* ship (``backup`` / ``restore`` / ``restore-drill``) is what copies
+an archive for keeping.
 """
 
 from __future__ import annotations
@@ -43,9 +48,9 @@ import os
 from pathlib import Path
 from typing import Optional
 
-from .._config import resolve_paths
-from .backup import _chmod_private, _mkdir_private, mirror_dir
-from .verify import verify
+from thread_archive._config import resolve_paths
+from thread_archive._ops.backup import _chmod_private, _mkdir_private, mirror_dir
+from thread_archive._ops.verify import verify
 
 SNAPSHOT_MANIFEST = "snapshot.json"
 
@@ -65,7 +70,7 @@ def corpus_fingerprint() -> str:
 
     from sqlalchemy import text as sa_text
 
-    from .._store import use_session
+    from thread_archive._store import use_session
 
     h = hashlib.sha256()
     with use_session() as s:
@@ -95,7 +100,7 @@ def _embedding_space() -> Optional[str]:
     (the lexical-only install) — recorded so a reader knows which model the
     snapshot's vectors resolve in."""
     try:
-        from .._retrieval.embed import is_available, space_key
+        from thread_archive._retrieval.embed import is_available, space_key
 
         return space_key() if is_available() else None
     except Exception:
@@ -104,7 +109,7 @@ def _embedding_space() -> Optional[str]:
 
 def _write_manifest(dest: Path, manifest: dict) -> Path:
     """Write ``snapshot.json`` atomically and durably (tmp + fsync + rename)."""
-    from .._truth.jsonl_log import _fsync_dir
+    from thread_archive._truth.jsonl_log import _fsync_dir
 
     path = dest / SNAPSHOT_MANIFEST
     tmp = path.with_name(path.name + f".tmp.{os.getpid()}")
@@ -159,10 +164,10 @@ def snapshot(
                 "pass force=True to snapshot into it anyway"
             )
 
-    from .._api import close, open_archive, reindex
-    from .._retrieval.vectors import save_vectors_sidecar
-    from .._truth import checkpoint as _checkpoint
-    from .._truth.jsonl_log import _read_manifest, _truth_write_lock, _try_rebalance_lock
+    from thread_archive._api import close, open_archive, reindex
+    from thread_archive._retrieval.vectors import save_vectors_sidecar
+    from thread_archive._truth import checkpoint as _checkpoint
+    from thread_archive._truth.jsonl_log import _read_manifest, _truth_write_lock, _try_rebalance_lock
 
     src_paths = resolve_paths(home)
     src_home = str(src_paths.home)
@@ -196,7 +201,7 @@ def snapshot(
     # opens it is the stretch with nothing else to watch. ``reindex`` opens its
     # own run inside the index phase, so the live state there is its finer-grained
     # one and the ledger ends up holding both records.
-    from .load_runs import load_run
+    from thread_archive._ops.load_runs import load_run
 
     with load_run("snapshot", home=dest_path, note=f"from {src_home}") as run:
         # Drain-consistent copy: hold the truth-write mutex for the traversal so no
@@ -247,18 +252,6 @@ def snapshot(
     }
     _write_manifest(dest_path, manifest)
 
-    # A snapshot is a durable archive home, not workspace — make sure it is
-    # registered (the reindex's open already did, unless registration was
-    # suppressed or throttled) and say what it is. Fail-soft like every
-    # registry write: a bookkeeping miss must not fail a built snapshot.
-    from .archives import register, set_role
-
-    register(dest_path, force=True)
-    try:
-        set_role(str(dest_path), "snapshot")
-    except (KeyError, ValueError, OSError):
-        pass
-
     return {
         "dest": str(dest_path),
         "manifest": manifest,
@@ -289,10 +282,10 @@ def stamp_snapshot(home: Optional[str] = None, *, force: bool = False) -> dict:
     """
     from sqlalchemy import func, select
 
-    from .._api import open_archive, status
-    from .._config import default_home
-    from .._store import KgEvent, use_session
-    from .._truth.jsonl_log import _read_manifest
+    from thread_archive._api import open_archive, status
+    from thread_archive._config import default_home
+    from thread_archive._store import KgEvent, use_session
+    from thread_archive._truth.jsonl_log import _read_manifest
 
     paths = resolve_paths(home)
     dest = paths.home
@@ -300,7 +293,7 @@ def stamp_snapshot(home: Optional[str] = None, *, force: bool = False) -> dict:
         raise ValueError(
             f"refusing to stamp the live archive at {dest} as a snapshot: it grows, "
             "so the recorded id would stop describing the corpus. Freeze a copy "
-            "with `thread_archive snapshot <dir>`, or pass force=True."
+            "with `python search_lab/snapshot.py <dir>`, or pass force=True."
         )
     if not paths.index_path.exists():
         raise FileNotFoundError(f"no archive home at {dest} (no {paths.index_path})")
@@ -341,14 +334,6 @@ def stamp_snapshot(home: Optional[str] = None, *, force: bool = False) -> dict:
         "verify_ok": None,
     }
     _write_manifest(dest, manifest)
-
-    from .archives import register, set_role
-
-    register(dest, force=True)
-    try:
-        set_role(str(dest), "snapshot")
-    except (KeyError, ValueError, OSError):
-        pass
     return manifest
 
 
@@ -370,6 +355,72 @@ def _now_iso() -> str:
 
 
 def _archive_version() -> str:
-    from .. import __version__
+    from thread_archive import __version__
 
     return __version__
+
+
+def main(argv: Optional[list[str]] = None) -> int:
+    """Build a snapshot from the command line::
+
+        .venv/bin/python search_lab/snapshot.py <dest>
+
+    Throttled to background priority: a full copy plus index rebuild is hours of
+    I/O on a real corpus and must not starve the interactive machine.
+    """
+    import argparse
+    import sys
+
+    parser = argparse.ArgumentParser(
+        prog="search_lab/snapshot.py",
+        description="Freeze the corpus into a self-contained, immutable archive "
+                    "home — a fixed THREAD_ARCHIVE_HOME to measure against.",
+    )
+    parser.add_argument("dest", help="directory to write the frozen snapshot into")
+    parser.add_argument("--home", help="archive home to snapshot (default: $THREAD_ARCHIVE_HOME)")
+    parser.add_argument(
+        "--vectors", action="store_true",
+        help="also embed any events the copied sidecar cache lacks (default: "
+             "restore cached vectors only — the copied truth already carries them)",
+    )
+    parser.add_argument(
+        "--force", action="store_true",
+        help="snapshot into a non-empty destination that is not already a snapshot",
+    )
+    parser.add_argument(
+        "--no-verify", dest="verify", action="store_false",
+        help="skip verifying the built snapshot (truth == index)",
+    )
+    args = parser.parse_args(argv)
+
+    if not os.environ.get("THREAD_ARCHIVE_NO_THROTTLE"):
+        try:
+            os.nice(10)
+        except OSError:
+            pass
+
+    print(f"snapshotting {resolve_paths(args.home).home} → {args.dest} (throttled)")
+    try:
+        res = snapshot(args.dest, home=args.home, vectors=args.vectors,
+                       verify_result=args.verify, force=args.force)
+    except FileExistsError as e:
+        print(f"snapshot refused: {e}", file=sys.stderr)
+        return 1
+    except (RuntimeError, OSError) as e:
+        print(f"snapshot failed: {e}", file=sys.stderr)
+        return 1
+    m = res["manifest"]
+    c = m["counts"]
+    print(f"  threads {c['threads']:>9}")
+    print(f"  events  {c['events']:>9}")
+    print(f"  vectors {c['vectors']:>9}" + ("" if c["vectors"] else "   (lexical-only)"))
+    if m["verify_ok"] is False:
+        print("  WARNING: the built snapshot failed verification — inspect before relying on it",
+              file=sys.stderr)
+    print(f"done: {res['dest']}")
+    print(f"  measure against it with  THREAD_ARCHIVE_HOME={res['dest']}")
+    return 0 if m["verify_ok"] is not False else 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

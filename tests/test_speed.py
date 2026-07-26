@@ -10,7 +10,7 @@ target in a unit test.
 
 from __future__ import annotations
 
-from thread_archive._ops import speed
+from search_lab import speed
 from thread_archive._retrieval import pool_cache
 
 # --- percentiles + aggregation ----------------------------------------------

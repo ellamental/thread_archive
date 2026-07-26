@@ -44,10 +44,6 @@ export const ROUTES: SmokeRoute[] = [
     landmark: (page) => page.getByRole('heading', { name: 'Import an account export' }),
   },
   {
-    path: '/retrieval',
-    landmark: (page) => page.getByRole('heading', { name: 'Retrieval', level: 1 }),
-  },
-  {
     path: `/stats/model/${MODEL}`,
     landmark: (page) => page.getByRole('heading', { name: MODEL }),
   },

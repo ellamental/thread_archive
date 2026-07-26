@@ -49,7 +49,7 @@ def _enabled() -> bool:
 def _gold_dir() -> Path:
     """The gold dir the mining pipeline writes cases into — where this ledger lands
     too, so the run record travels beside the golds it produced."""
-    from .._mine._framework import gold_dir
+    from thread_archive._mine._framework import gold_dir
 
     return gold_dir()
 
@@ -73,7 +73,7 @@ def record_run(
     swallowed so telemetry can't break a mining run."""
     if not _enabled():
         return
-    from .gold_runs import git_commit
+    from gold_runs import git_commit
 
     record: dict[str, Any] = {
         "at": datetime.now(timezone.utc).isoformat(),

@@ -408,13 +408,7 @@ def main() -> int:
     args = ap.parse_args()
     if args.ks is None:
         args.ks = "5,10,25,50" if args.dataset == "locomo" else "5,10"
-    # Per-question haystacks mean hundreds of tiny fingerprint-named corpus homes
-    # per run — workspace, not archives. Registering them would bury the real
-    # entries in ~/.thread/archives.json.
-    from thread_archive._ops.archives import suppress_registration
-
-    with suppress_registration():
-        return run(args)
+    return run(args)
 
 
 if __name__ == "__main__":

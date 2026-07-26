@@ -12,7 +12,13 @@ from __future__ import annotations
 
 import pytest
 
-from thread_archive._mine import topic_mined as topic_mine
+# ``_mine`` is repo-only — the wheel excludes it (pyproject
+# [tool.hatch.build.targets.wheel]), so an installed-package run has nothing to
+# import here. Gate before the imports so that run skips the module instead of
+# erroring at collection.
+pytest.importorskip("thread_archive._mine", reason="_mine is repo-only (excluded from the wheel)")
+
+from thread_archive._mine import topic_mined as topic_mine  # noqa: E402
 
 # ── parse_survey ─────────────────────────────────────────────────────────────
 

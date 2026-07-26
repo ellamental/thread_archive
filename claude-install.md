@@ -27,7 +27,7 @@ If `python3` is older than 3.12, stop and tell the human — nothing below will 
 
 The base install's compiled dependencies (`numpy`, `cryptography`) publish wide
 wheel matrices and normally need no compiler. The narrow ones are behind the
-`[leiden]` extra (`python-igraph`, `leidenalg`), which `[embeddings]` pulls in —
+`[leiden]` extra (`igraph`, `leidenalg`), which `[embeddings]` pulls in —
 so if you install either extra and pip has to build from source, it needs a C
 compiler. On a fresh Mac that means the **Xcode Command Line Tools**; if
 `xcode-select -p` printed nothing (or the install later dies with a compiler
@@ -57,7 +57,7 @@ once** (the decision point): lexical-only, or also embeddings?
 ```
 
 `[embeddings]` also brings the corpus-graph ranking stack (`leidenalg` +
-`python-igraph`, on top of the base `networkx`): the coherence search signal is
+`igraph`, on top of the base `networkx`): the coherence search signal is
 computed over the vector pack, so it arrives with vectors and needs no topic
 graph. `.[all]` is the same set under one name. A lexical-only install has no
 corpus graph to partition and wants none of it.

@@ -59,15 +59,24 @@ name = "pytest"
 # Branch coverage rides every sweep: the term report keeps blind spots visible in
 # the row output, and the JSON report feeds the coverage-gate row below.
 #
-# -n 4 matches the box's performance-core count. --dist=loadfile keeps a file's
+# -n 6 matches the EFFICIENCY-core count, not the performance-core one: the sweeper
+# runs every suite in the OS background tier (`taskpolicy -b` on Apple Silicon), so
+# the workers never land on a P-core and sizing to those oversubscribes the cores
+# they actually get. Measured on this box, whole suite under that tier: 175s at -n 4,
+# 158s at -n 6, 183s at -n 8. --dist=loadfile keeps a file's
 # tests together on one worker: the
 # suite's isolation is per-test (conftest's _isolate_archive resets the global
 # engine and truth handles around each), but a file's tests still share the
 # module-level fixtures they were written against, and loadfile preserves that
 # without forcing a serial run. Coverage is a union over the workers' data files,
 # so the floors below gate the same numbers a serial run produces.
+#
+# --durations surfaces the slowest tests in the row's own log, which is the only
+# place a per-test slowdown is visible: loadfile pins a file to one worker, so a
+# file that grows expensive setup lengthens the whole sweep's critical path while
+# every row still reads green.
 argv = ["{repo}/.venv/bin/pytest", "-q", "--tb=short", "-p", "no:cacheprovider",
-        "-n", "4", "--dist=loadfile",
+        "-n", "6", "--dist=loadfile", "--durations=15",
         "--cov=src", "--cov-branch", "--cov-report=term", "--cov-report=json:coverage.json"]
 # cwd omitted = repo root, so it resolves testpaths=["tests"] from pyproject.
 timeout = 1800

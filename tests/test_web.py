@@ -127,6 +127,22 @@ def test_status_endpoint(archive_home):
     assert payload["backup_same_device"] is None
 
 
+def test_disk_endpoint(archive_home):
+    """The storage section's source. Separate from /api/status because it walks
+    the home — the health page polls status every 30s and this every 5 minutes."""
+    _seed(archive_home)
+    status, ctype, payload = _get("/api/disk")
+    assert status == 200 and ctype == "application/json"
+    assert payload["total_bytes"] > 0
+    assert sum(payload["kinds"].values()) == payload["total_bytes"]
+    assert payload["kinds"]["truth"] > 0
+    assert payload["rebuildable_bytes"] == payload["kinds"]["index"]
+    assert any(e["name"] == "index.db" for e in payload["entries"])
+    # Disk is the one figure a status survey cache must not serve: it is the
+    # answer to "is my disk filling up", which nothing else on the page tracks.
+    assert "disk" not in _get("/api/status")[2]
+
+
 def test_health_endpoint(archive_home):
     # Cheap liveness (the family manifest's health URL) — no index survey.
     _seed(archive_home)
@@ -833,7 +849,7 @@ def test_a_served_search_records_where_its_time_went(archive_home):
     httpd = serve_in_thread(host="127.0.0.1", port=0)
     try:
         port = httpd.server_address[1]
-        for path in (f"/api/search?q={quote('hello webview')}", "/api/archives"):
+        for path in (f"/api/search?q={quote('hello webview')}", "/api/status"):
             with urllib.request.urlopen(f"http://127.0.0.1:{port}{path}", timeout=60) as r:
                 r.read()
     finally:
@@ -851,7 +867,7 @@ def test_a_served_search_records_where_its_time_went(archive_home):
     # Still endpoint-only: the breakdown says where time went, not what was typed.
     assert "query" not in searched and "q" not in searched
 
-    plain = [r for r in rows if r["path"] == "/api/archives"][-1]
+    plain = [r for r in rows if r["path"] == "/api/status"][-1]
     assert "fts_ms" not in plain and "pool_size" not in plain
 
 

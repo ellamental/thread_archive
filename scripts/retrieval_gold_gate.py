@@ -16,7 +16,7 @@ did search break below the grounded baseline — and only that.
 
 The gate's *verdict* stays a floor check, but each run's measured numbers — which
 it already prints — are also appended to a run ledger
-(``<home>/gold-runs.jsonl``, :mod:`thread_archive._ops.gold_runs`): per-file
+(``<home>/gold-runs.jsonl``, ``search_lab/gold_runs.py``): per-file
 MRR/success/recall/nDCG/p50 under the ``SearchParams`` and commit that produced
 them. So the baseline is a recorded timeseries, and the before/after of a
 defaults change (e.g. a re-rank budget cut) is a lookup — ``--history`` — not a
@@ -62,7 +62,7 @@ file (nor does a subset or aborted run) — that reference belongs to the shippe
 configuration alone.
 
 **The speed axis.** ``--latency [REPS]`` adds warm-latency measurement over the
-same queries (:mod:`thread_archive._ops.speed`), printing the joint quality+speed
+same queries (``search_lab/speed.py``), printing the joint quality+speed
 report — the two numbers a ``--set`` decision trades between, since the
 cross-encoder re-rank is both the top quality lever and the top latency. The pool
 cache is forced OFF for the latency pass (the arms are the cost under
@@ -110,6 +110,10 @@ import json
 import os
 import sys
 from pathlib import Path
+
+# The scoring core lives in the lab beside the gold files this gate defends, so
+# the checkout root goes on the path (this script only ever runs from one).
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 # Gold-file basename -> floors for complementary failure modes: MRR protects the
 # first good answer, success@10 protects whether any answer remains reachable,
@@ -272,7 +276,7 @@ class FloorWatch:
     verdict is settled.
 
     Two independent triggers, both fed the running state
-    (:class:`~thread_archive._eval.EvalProgress`) after every case:
+    (``search_lab.eval_core.EvalProgress``) after every case:
 
     *The bound.* Each metric's per-case contribution is capped at 1.0, so the
     highest value still reachable is ``(running sum + unscored cases) / n``. Once
@@ -347,7 +351,7 @@ def _score(cases: list[dict], *, params=None, early_stop=None) -> dict:
 
     ``params`` overrides the shipped ``SearchParams`` (the ``--set`` tuning path);
     ``early_stop`` is the abort predicate."""
-    from thread_archive._eval import evaluate
+    from search_lab.eval_core import evaluate
 
     return evaluate(cases, limit=20, rerank=None, content_type=None,
                     exclude_content_types=None, search=_candidate_search(params),
@@ -357,7 +361,7 @@ def _score(cases: list[dict], *, params=None, early_stop=None) -> dict:
 def _print_latency(stats, baseline) -> None:
     """The joint report's speed half: the warm distribution, per stage and per
     query shape, with a delta against the recorded baseline where one exists."""
-    from thread_archive._ops import speed
+    from search_lab import speed
 
     def delta(cur: float, key: str) -> str:
         if not baseline:
@@ -389,7 +393,7 @@ def _latency_smoke(baseline, *, params, k: int, budget_ms, reps: int) -> str | N
     — a uniform slowdown, or a worsened heavy path — in tens of seconds. ``None``
     when there's nothing to check (no baseline to cherry-pick from, or no
     ceiling)."""
-    from thread_archive._ops import speed
+    from search_lab import speed
 
     queries = speed.smoke_set(baseline, k)
     ceiling = speed.ceiling_ms(baseline, budget_ms=budget_ms, factor=1.5,
@@ -412,11 +416,11 @@ def _build_coherence_graph() -> None:
     """Build the corpus graph inline before scoring, and say so.
 
     The determinism this buys — and why a scoring loop cannot leave it to the
-    background build — is :func:`thread_archive._eval.warm_for_scoring`, which
+    background build — is ``search_lab.eval_core.warm_for_scoring``, which
     every scoring path now shares. This wrapper exists for the operator-facing
     line: the build is the long pause before a gate run's first number, and a run
     that looks hung is worth one print."""
-    from thread_archive._eval import warm_for_scoring
+    from search_lab.eval_core import warm_for_scoring
     from thread_archive._retrieval import embed_graph
 
     if embed_graph.coherence_gamma() <= 0.0:
@@ -441,7 +445,7 @@ def _run_scored(cases: list[dict], *, params, early_stop, cache) -> dict:
 
 
 def _load(path: Path) -> list[dict]:
-    from thread_archive._eval import load_case_file
+    from search_lab.eval_core import load_case_file
 
     return load_case_file(path)
 
@@ -484,8 +488,8 @@ def _print_history(limit: int | None) -> int:
     actually scored over time, per file, under the config that produced it. The
     read-back half of the ledger: what a defaults change is compared against
     without re-running the old configuration."""
+    from search_lab import gold_runs
     from thread_archive._config import default_home
-    from thread_archive._ops import gold_runs
 
     home = Path(os.environ.get("THREAD_ARCHIVE_HOME") or default_home())
     runs = gold_runs.read_runs(home, limit=limit)
@@ -607,7 +611,7 @@ def main(argv: list[str] | None = None) -> int:
 
     _build_coherence_graph()
 
-    from thread_archive._ops import gold_runs
+    from search_lab import gold_runs
 
     # Per-case reference for the fail-early ordering and the regression watch.
     # Bound to this snapshot: scores from a different corpus describe different
@@ -636,7 +640,7 @@ def main(argv: list[str] | None = None) -> int:
     want_smoke = args.latency_smoke or (want_full_latency and fail_early)
     latency_baseline = None
     if want_smoke or want_full_latency:
-        from thread_archive._ops import speed
+        from search_lab import speed
 
         latency_baseline = speed.read_baseline(home, snapshot_id=current)
     if want_smoke:
@@ -789,7 +793,7 @@ def main(argv: list[str] | None = None) -> int:
     # latency baseline, records the timeseries, and — on a clean full shipped run —
     # refreshes that baseline, exactly mirroring the quality side.
     if args.latency is not None and latency_queries:
-        from thread_archive._ops import speed
+        from search_lab import speed
 
         n = len(latency_queries)
         print(f"\nlatency: {n} queries × {args.latency} reps, warm, pool cache off "

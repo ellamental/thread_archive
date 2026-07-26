@@ -15,7 +15,15 @@ import json
 import subprocess
 from datetime import datetime, timezone
 
-from thread_archive._mine import (
+import pytest
+
+# ``_mine`` is repo-only — the wheel excludes it (pyproject
+# [tool.hatch.build.targets.wheel]), so an installed-package run has nothing to
+# import here. Gate before the imports so that run skips the module instead of
+# erroring at collection.
+pytest.importorskip("thread_archive._mine", reason="_mine is repo-only (excluded from the wheel)")
+
+from thread_archive._mine import (  # noqa: E402
     _agent,
     _cli,
     _corpus,
@@ -24,10 +32,10 @@ from thread_archive._mine import (
     rerank_judged,
     topic_mined,
 )
-from thread_archive._mine import (
+from thread_archive._mine import (  # noqa: E402
     _framework as fw,
 )
-from thread_archive._mine._agent import run_claude
+from thread_archive._mine._agent import run_claude  # noqa: E402
 
 # ── seeding helpers ──────────────────────────────────────────────────────────
 
@@ -487,7 +495,7 @@ def test_execute_records_the_run_denominator_to_the_ledger(tmp_path, monkeypatch
     # attempted count and the outcome breakdown — the abstention/drop denominator,
     # made durable instead of surviving only in the console line. HOME points the
     # gold dir (where the ledger lands, beside the cases) at a throwaway.
-    from thread_archive._ops import mine_runs
+    from search_lab import mine_runs
 
     monkeypatch.setenv("HOME", str(tmp_path))
     gold_dir = tmp_path / ".thread" / "archive"

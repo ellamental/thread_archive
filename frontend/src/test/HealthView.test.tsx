@@ -1,7 +1,7 @@
 import { expect, it } from 'vitest'
 import { render, screen, within } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
-import type { ArchiveEntry, Status } from '../api'
+import type { LoadStatus, Status } from '../api'
 import { HealthView } from '../components/HealthView'
 import { mswError, mswJson, mswPending } from './msw'
 
@@ -75,18 +75,11 @@ function healthyStatus(): Status {
   }
 }
 
-function loadedArchive(): ArchiveEntry {
+function loadedRuns(): LoadStatus {
   return {
-    id: 'aaa111',
     home: '/Users/test/.thread/archive',
-    label: 'archive',
-    first_seen: now(),
-    last_opened: now(),
-    exists: true,
-    active: true,
-    index_bytes: 12_000_000_000,
-    load: {},
-    runs: [
+    current: null,
+    recent: [
       {
         kind: 'embed',
         status: 'ok',
@@ -108,9 +101,37 @@ function loadedArchive(): ArchiveEntry {
   }
 }
 
-function renderHealth(body: unknown, archives: ArchiveEntry[] = [loadedArchive()]) {
+const noLoads: LoadStatus = { home: '/Users/test/.thread/archive', current: null, recent: [] }
+
+/** A home whose bytes are mostly *not* its conversations — the case the storage
+ *  section exists for. */
+function diskUsage(overrides: Record<string, unknown> = {}) {
+  return {
+    home: '/home/u/.thread/archive',
+    total_bytes: 32 * 1024 ** 3,
+    files: 41_189,
+    kinds: {
+      truth: 8 * 1024 ** 3,
+      index: 12 * 1024 ** 3,
+      sources: 2 * 1024 ** 3,
+      other: 10 * 1024 ** 3,
+    },
+    rebuildable_bytes: 12 * 1024 ** 3,
+    entries: [
+      { name: 'index.db', bytes: 11 * 1024 ** 3, kind: 'index' },
+      { name: 'truth', bytes: 8 * 1024 ** 3, kind: 'truth' },
+      { name: 'pre-ulid-backup', bytes: 6 * 1024 ** 3, kind: 'other' },
+      { name: 'source-mirror', bytes: 2 * 1024 ** 3, kind: 'sources' },
+    ],
+    external: [],
+    ...overrides,
+  }
+}
+
+function renderHealth(body: unknown, loads: LoadStatus = loadedRuns()) {
   mswJson('/api/status', body)
-  mswJson('/api/archives', { archives })
+  mswJson('/api/loads', loads)
+  mswJson('/api/disk', diskUsage())
   return render(
     <MemoryRouter>
       <HealthView />
@@ -197,7 +218,8 @@ it('does not hide a provider parser failure inside an otherwise fresh pass', asy
 
 it('renders durable loading and error states', async () => {
   mswPending('/api/status')
-  mswJson('/api/archives', { archives: [] })
+  mswJson('/api/loads', noLoads)
+  mswJson('/api/disk', diskUsage())
   const pending = render(
     <MemoryRouter>
       <HealthView />
@@ -207,7 +229,8 @@ it('renders durable loading and error states', async () => {
   pending.unmount()
 
   mswError('/api/status', 503, 'offline')
-  mswJson('/api/archives', { archives: [] })
+  mswJson('/api/loads', noLoads)
+  mswJson('/api/disk', diskUsage())
   render(
     <MemoryRouter>
       <HealthView />
@@ -216,15 +239,10 @@ it('renders durable loading and error states', async () => {
   expect(await screen.findByText(/health unavailable: 503: offline/)).toBeInTheDocument()
 })
 
-it('shows an archive that is loading right now, with phase progress and an ETA', async () => {
-  const loading: ArchiveEntry = {
-    ...loadedArchive(),
-    id: 'bbb222',
-    home: '/Users/test/.cache/swe-chat',
-    label: 'swe-chat',
-    active: false,
-    runs: [],
-    load: {
+it('shows the load in flight, with phase progress and an ETA', async () => {
+  const inFlight: LoadStatus = {
+    ...loadedRuns(),
+    current: {
       kind: 'reindex',
       status: 'running',
       started_at: now(),
@@ -236,9 +254,9 @@ it('shows an archive that is loading right now, with phase progress and an ETA',
       ],
     },
   }
-  renderHealth(healthyStatus(), [loading, loadedArchive()])
+  renderHealth(healthyStatus(), inFlight)
 
-  expect(await screen.findByRole('heading', { name: 'Archives on this machine' })).toBeInTheDocument()
+  expect(await screen.findByText('reindex in flight')).toBeInTheDocument()
   expect(screen.getByText('Loading')).toBeInTheDocument()
   expect(screen.getByText('loading now')).toBeInTheDocument()
   // The live phase, its progress, and the ETA — the numbers a wait is judged by.
@@ -246,69 +264,6 @@ it('shows an archive that is loading right now, with phase progress and an ETA',
   expect(screen.getByText(/ETA 10.4 min/)).toBeInTheDocument()
   const bar = screen.getByRole('progressbar', { name: 'embed progress' })
   expect(bar).toHaveAttribute('aria-valuenow', '28')
-})
-
-it('separates a loaded archive from one that has never recorded a load', async () => {
-  const untracked: ArchiveEntry = {
-    ...loadedArchive(),
-    id: 'ccc333',
-    home: '/Users/test/.thread/other',
-    label: 'other',
-    active: false,
-    runs: [],
-    load: {},
-  }
-  renderHealth(healthyStatus(), [loadedArchive(), untracked])
-
-  expect(await screen.findByText('Indexed')).toBeInTheDocument()
-  // An index with no tracked load is 'Untracked', not 'Indexed' — unproven, not proven.
-  expect(screen.getByText('Untracked')).toBeInTheDocument()
-  expect(
-    screen.getByText('No tracked load has been recorded for this archive.'),
-  ).toBeInTheDocument()
-})
-
-it('never lets an indexed archive read as a reachable one', async () => {
-  // The two axes are independent: swe-chat can be fully indexed and still answer
-  // no query, because retrieval binds to the one home its process was started on.
-  const unreachable: ArchiveEntry = {
-    ...loadedArchive(),
-    id: 'ddd444',
-    home: '/Users/test/.cache/swe-chat',
-    label: 'swe-chat',
-    active: false,
-  }
-  renderHealth(healthyStatus(), [loadedArchive(), unreachable])
-
-  // Both are Indexed…
-  expect(await screen.findAllByText('Indexed')).toHaveLength(2)
-  const section = within(screen.getByRole('region', { name: 'Archives on this machine' }))
-  // …but exactly one is served, and the other says so out loud rather than
-  // leaving reachability to be inferred from a missing badge.
-  expect(section.getAllByTitle(/Retrieval answers from this archive/)).toHaveLength(1)
-  expect(section.getAllByTitle(/Indexed but not reachable/)).toHaveLength(1)
-  expect(
-    section.getByText(/answer from the single archive their process was started against/),
-  ).toBeInTheDocument()
-})
-
-it('shows an archive role as a badge, and no badge when none is set', async () => {
-  // The role says what an archive is *for* (live / benchmark / snapshot) —
-  // orthogonal to reachability, rendered only when the operator set one.
-  const bench: ArchiveEntry = {
-    ...loadedArchive(),
-    id: 'ddd444',
-    home: '/Users/test/.cache/swe-chat',
-    label: 'swe-chat',
-    active: false,
-    role: 'benchmark',
-  }
-  renderHealth(healthyStatus(), [loadedArchive(), bench])
-
-  const section = within(await screen.findByRole('region', { name: 'Archives on this machine' }))
-  expect(section.getByText('benchmark')).toBeInTheDocument()
-  // Exactly one role badge: the role-less archive renders none.
-  expect(section.getAllByTitle(/What this archive is for/)).toHaveLength(1)
 })
 
 it('reports what past loads cost, per phase', async () => {
@@ -324,29 +279,78 @@ it('reports what past loads cost, per phase', async () => {
 })
 
 it('marks a load whose process died as stalled rather than running', async () => {
-  const stalled: ArchiveEntry = {
-    ...loadedArchive(),
-    runs: [],
-    load: { kind: 'embed', status: 'stalled', pid: 999, elapsed_s: 40, phases: [] },
+  const stalled: LoadStatus = {
+    ...noLoads,
+    current: { kind: 'embed', status: 'stalled', pid: 999, elapsed_s: 40,
+               phases: [{ name: 'embed', done: 10, total: 100, elapsed_s: 40,
+                          rate_per_s: 0.25, eta_s: null }] },
   }
-  renderHealth(healthyStatus(), [stalled])
+  renderHealth(healthyStatus(), stalled)
 
   expect(await screen.findByText('Stalled')).toBeInTheDocument()
+  expect(
+    screen.getByText(/The process writing this state is gone/),
+  ).toBeInTheDocument()
   expect(screen.queryByText('loading now')).not.toBeInTheDocument()
 })
 
-it('keeps the trust verdict when the archive registry is unreadable', async () => {
+it('keeps the trust verdict when the load ledger is unreadable', async () => {
   mswJson('/api/status', healthyStatus())
-  mswError('/api/archives', 500, 'registry gone')
+  mswError('/api/loads', 500, 'ledger gone')
+  mswJson('/api/disk', diskUsage())
   render(
     <MemoryRouter>
       <HealthView />
     </MemoryRouter>,
   )
 
-  // The protection verdict still renders — a registry failure degrades its own
+  // The protection verdict still renders — a ledger failure degrades its own
   // section instead of blanking the page.
   expect(await screen.findByRole('heading', { name: 'Your archive is protected' })).toBeInTheDocument()
-  const section = screen.getByRole('region', { name: 'Archives on this machine' })
-  expect(within(section).getByText('reading the archive registry…')).toBeInTheDocument()
+  const section = screen.getByRole('region', { name: 'What past loads cost' })
+  expect(within(section).getByText(/No loads recorded yet/)).toBeInTheDocument()
+})
+
+it('breaks the disk total into what must be kept and what rebuilds', async () => {
+  renderHealth(healthyStatus())
+  await screen.findByRole('heading', { name: 'Your archive is protected' })
+
+  const section = screen.getByRole('region', { name: 'What this archive costs on disk' })
+  expect(await within(section).findByText('32.0 GB · 41,189 files')).toBeInTheDocument()
+  // Every kind is named and sized — the split is the point, not the total.
+  // 'Truth' reads twice on purpose: once in the legend, once as an entry's kind.
+  expect(within(section).getAllByText('Truth')).toHaveLength(2)
+  expect(within(section).getByText('8.0 GB · 25%')).toBeInTheDocument()
+  expect(within(section).getByText('12.0 GB · 38%')).toBeInTheDocument()
+  // The entries behind it, so an unlabelled 10 GB becomes a name to act on.
+  expect(within(section).getByText('pre-ulid-backup')).toBeInTheDocument()
+  expect(within(section).getByText(/12.0 GB of this is index/)).toBeInTheDocument()
+})
+
+it('identifies disk segments by label, never by colour alone', async () => {
+  renderHealth(healthyStatus())
+  await screen.findByRole('heading', { name: 'Your archive is protected' })
+
+  const section = screen.getByRole('region', { name: 'What this archive costs on disk' })
+  const meter = await within(section).findByRole('img')
+  // The bar carries the whole reading for anyone who cannot see the fills.
+  expect(meter).toHaveAccessibleName(
+    'Truth 8.0 GB, Index 12.0 GB, Raw sources 2.0 GB, Other 10.0 GB',
+  )
+})
+
+it('measures storage on its own cadence and survives its failure', async () => {
+  mswJson('/api/status', healthyStatus())
+  mswJson('/api/loads', noLoads)
+  mswError('/api/disk', 500, 'walk failed')
+  render(
+    <MemoryRouter>
+      <HealthView />
+    </MemoryRouter>,
+  )
+
+  // A failed walk degrades its own section; the rest of the evidence stands.
+  expect(await screen.findByRole('heading', { name: 'Your archive is protected' })).toBeInTheDocument()
+  const section = screen.getByRole('region', { name: 'What this archive costs on disk' })
+  expect(within(section).getByText('measuring the archive home…')).toBeInTheDocument()
 })

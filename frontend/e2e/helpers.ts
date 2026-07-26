@@ -228,24 +228,46 @@ export async function mockApi(page: Page): Promise<string[]> {
         backup_same_device: false,
       })
     }
-    if (path === '/api/archives') {
-      // The registry the health view lists beside /api/status — one entry, the
-      // home that /api/status reports, so the two agree about which archive is live.
+    if (path === '/api/loads') {
+      // The load ledger behind the health page's history section. Nothing in
+      // flight, one finished run — the state a settled archive is in.
       return json(route, {
-        archives: [
+        home: '/tmp/browser-archive',
+        current: null,
+        recent: [
           {
-            id: 'browser01',
-            home: '/tmp/browser-archive',
-            label: 'browser-archive',
-            first_seen: healthNow,
-            last_opened: healthNow,
-            exists: true,
-            active: true,
-            index_bytes: 4096,
-            load: {},
-            runs: [],
+            kind: 'reindex',
+            status: 'ok',
+            at: healthNow,
+            duration_s: 12.5,
+            phases: [
+              { name: 'truth', done: 3, total: 3, elapsed_s: 12.5, rate_per_s: 0.24, eta_s: null },
+            ],
           },
         ],
+      })
+    }
+    if (path === '/api/disk') {
+      // The storage section's walk of the home. Sized so the four segments are
+      // all visibly present rather than one fill and three slivers.
+      return json(route, {
+        home: '/tmp/browser-archive',
+        total_bytes: 32 * 1024 ** 3,
+        files: 41189,
+        kinds: {
+          truth: 8 * 1024 ** 3,
+          index: 12 * 1024 ** 3,
+          sources: 2 * 1024 ** 3,
+          other: 10 * 1024 ** 3,
+        },
+        rebuildable_bytes: 12 * 1024 ** 3,
+        entries: [
+          { name: 'index.db', bytes: 11 * 1024 ** 3, kind: 'index' },
+          { name: 'truth', bytes: 8 * 1024 ** 3, kind: 'truth' },
+          { name: 'pre-ulid-backup', bytes: 6 * 1024 ** 3, kind: 'other' },
+          { name: 'source-mirror', bytes: 2 * 1024 ** 3, kind: 'sources' },
+        ],
+        external: [],
       })
     }
     if (path === '/api/upload') {

@@ -149,7 +149,7 @@ def export(gold_dir: Path, out: Path, *, data: Path) -> dict:
     rather than exported half-translated: a qrels row naming a document outside
     the corpus scores as an unfindable gold for every system equally, which looks
     like a hard query instead of a broken export."""
-    from thread_archive._ops.snapshot import read_snapshot_id
+    from snapshot import read_snapshot_id
 
     to_session = session_map()
     cases = load_gold(gold_dir)
@@ -322,8 +322,9 @@ def emit_run(bench: Path, out: Path, *, ranker: str, tag: str, depth: int) -> in
     hit. Those rows carry a rank-derived score, which is what the run format is
     entitled to claim — inventing a fused score would read as a comparable
     magnitude and be one only by accident."""
+    from snapshot import read_snapshot_id
+
     from thread_archive import _api as api
-    from thread_archive._ops.snapshot import read_snapshot_id
 
     manifest = json.loads((bench / "manifest.json").read_text())
     if manifest.get("snapshot_id") != read_snapshot_id():
@@ -344,8 +345,8 @@ def emit_run(bench: Path, out: Path, *, ranker: str, tag: str, depth: int) -> in
         search = api.search
 
     to_session = session_map()
-    queries = [json.loads(l) for l in (bench / "queries.jsonl").read_text().splitlines()
-               if l.strip()]
+    queries = [json.loads(line) for line in (bench / "queries.jsonl").read_text().splitlines()
+               if line.strip()]
 
     def ranked(text: str) -> list[dict]:
         return search(text, limit=depth, content_types=None,

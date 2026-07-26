@@ -45,7 +45,6 @@ from thread_archive.cli import main
 from .helpers import (
     cc_assistant,
     cc_user,
-    corrupt_event_line,
     event_count,
     import_cc_session,
     one_thread_file,
@@ -593,6 +592,40 @@ def test_watch_web_cohosts_the_viewer_and_closes_it_on_interrupt(
     with socket.socket() as s:
         s.settimeout(5)
         assert s.connect_ex(("127.0.0.1", port)) != 0
+
+
+@pytest.mark.integration
+def test_watch_web_warms_the_retrieval_models_on_start(archive_home, tmp_path, monkeypatch) -> None:
+    """The cohosting daemon warms retrieval before anyone can search it. The cold load
+    is tens of seconds while the viewer's search box says only "searching…", so a first
+    query that pays it reads as a broken product — and every query after is sub-second,
+    which puts the whole cost on the one search that forms someone's impression.
+
+    Read off the ledger row the warm pass writes as its last act, and off the load
+    policy the daemon switches on for the window before it lands. This suite is
+    model-free, so the pass here is arms that stand down and a lexical priming search:
+    what is under test is that the daemon runs it at all, on its own thread, without
+    holding up the loop it is about to enter."""
+    monkeypatch.setenv("HOME", str(tmp_path / "machine"))
+    from thread_archive._retrieval.model_slot import defer_construction
+
+    ledger = archive_home / "retrieval-usage.jsonl"
+
+    def warmed() -> bool:
+        return any(
+            json.loads(ln).get("kind") == "warm"
+            for ln in ledger.read_text(encoding="utf-8").splitlines()
+            if ln.strip()
+        )
+
+    interrupt = _interrupt_once(warmed)
+    rc = main(["watch", "--web", "--web-host", "127.0.0.1", "--web-port", str(_free_port()),
+               "--interval", "0.05", "--home", str(archive_home)])
+    interrupt.join(5)
+
+    assert rc == 0
+    assert warmed()  # the pass ran to completion while the loop was serving
+    assert defer_construction() is True
 
 
 def test_watch_web_refuses_a_non_loopback_bind(archive_home, tmp_path, monkeypatch) -> None:
@@ -1276,94 +1309,6 @@ def test_status_self_update_blocked_is_shouted(capsys) -> None:
     assert "update:  BLOCKED: truth format 4 > this install reads 3" in out
 
 
-# ── eval: the search-health self-checkup report ──────────────────────────────
-
-
-def _eval_scores(n=40):
-    return {"n": n, "mrr": 0.42,
-            "success": {1: 0.30, 5: 0.55, 10: 0.62, 20: 0.70},
-            "recall": {1: 0.25, 5: 0.45, 10: 0.52, 20: 0.60},
-            "ndcg": {1: 0.20, 5: 0.40, 10: 0.48, 20: 0.55},
-            "per_shape": {"natural": {"n": n - 1, "mrr": 0.40},
-                          "code": {"n": 1, "mrr": 0.50}},
-            "latency_p50_ms": 1200.0}
-
-
-def test_report_eval_titles_frames_as_findability_not_precision(capsys) -> None:
-    rc = cli.report_eval({"threads": 5960, "protocol": "titles",
-                          "scores": _eval_scores()})
-    assert rc == 0
-    out = capsys.readouterr().out
-    assert "5,960 conversation threads" in out
-    assert "title recall" in out
-    assert "S@10: 0.62" in out
-    assert "R@10: 0.52" in out
-    assert "nDCG@10: 0.48" in out
-    assert "findable at all" in out          # the honest framing, not "proof"
-    assert "natural" in out and "code" in out  # per-shape breakdown
-
-
-def test_report_eval_from_log_frames_as_collapse_alarm(capsys) -> None:
-    rc = cli.report_eval({"threads": 10, "protocol": "from-log",
-                          "scores": _eval_scores(15)})
-    assert rc == 0
-    out = capsys.readouterr().out
-    assert "your searches" in out
-    assert "collapse is the real" in out
-
-
-def test_report_eval_metric_keys_survive_json_roundtrip(capsys) -> None:
-    """--json stringifies metric keys; the text path must still order them."""
-    scores = _eval_scores()
-    scores["success"] = {str(k): v for k, v in scores["success"].items()}
-    scores["recall"] = {str(k): v for k, v in scores["recall"].items()}
-    scores["ndcg"] = {str(k): v for k, v in scores["ndcg"].items()}
-    rc = cli.report_eval({"threads": 1, "protocol": "titles", "scores": scores})
-    assert rc == 0
-    out = capsys.readouterr().out
-    assert "S@1: 0.30   S@5: 0.55   S@10: 0.62   S@20: 0.70" in out
-    assert "R@1: 0.25   R@5: 0.45   R@10: 0.52   R@20: 0.60" in out
-
-
-def test_report_eval_titles_empty_points_at_import(capsys) -> None:
-    rc = cli.report_eval({"threads": 0, "protocol": "titles", "scores": {"n": 0}})
-    assert rc == 0
-    assert "Import some conversations" in capsys.readouterr().out
-
-
-def test_report_eval_from_log_empty_explains_the_trail_dependency(capsys) -> None:
-    rc = cli.report_eval({"threads": 5, "protocol": "from-log", "scores": {"n": 0}})
-    assert rc == 0
-    assert "past searches" in capsys.readouterr().out
-
-
-def test_report_eval_behavior_reports_rates(capsys) -> None:
-    b = {"n_searches": 100, "n_sessions": 20, "clicked": 17, "reformulated": 71,
-         "abandoned": 12, "click_rate": 0.17, "reformulation_rate": 0.71,
-         "abandonment_rate": 0.12, "reads_per_click": 1.9}
-    rc = cli.report_eval({"threads": 5960, "protocol": "behavior", "behavior": b})
-    assert rc == 0
-    out = capsys.readouterr().out
-    assert "click:       17%" in out
-    assert "Proxies, not verdicts" in out
-
-
-def test_report_eval_behavior_empty_is_explained(capsys) -> None:
-    b = {"n_searches": 0, "n_sessions": 0, "clicked": 0, "reformulated": 0,
-         "abandoned": 0, "click_rate": 0.0, "reformulation_rate": 0.0,
-         "abandonment_rate": 0.0, "reads_per_click": 0.0}
-    rc = cli.report_eval({"threads": 5960, "protocol": "behavior", "behavior": b})
-    assert rc == 0
-    assert "No searches recorded" in capsys.readouterr().out
-
-
-def test_report_eval_json_emits_the_raw_report(capsys) -> None:
-    report = {"threads": 3, "protocol": "titles", "scores": _eval_scores()}
-    rc = cli.report_eval(report, as_json=True)
-    assert rc == 0
-    assert json.loads(capsys.readouterr().out)["protocol"] == "titles"
-
-
 # ── coverage: source states, disabled/unwatched, skips, failure ──────────────
 
 
@@ -1641,44 +1586,6 @@ def test_phase_line_names_a_phase_that_is_slowing_down(capsys) -> None:
     assert "slowing" not in steady
 
 
-# ── archives: every known home, and what each is doing ───────────────────────
-
-
-def test_archives_reports_an_empty_registry(archive_home, monkeypatch, capsys) -> None:
-    # Opening an archive registers it, so the empty list is what an operator who
-    # turned registration off sees — not a state the verb can reach on its own.
-    monkeypatch.setenv("THREAD_ARCHIVE_REGISTRY", "0")
-    assert main(["archives", "--home", str(archive_home)]) == 0
-    assert "no archives registered yet" in capsys.readouterr().out
-
-
-def test_archives_marks_the_active_home_and_flags_a_missing_one(
-    archive_home, tmp_path, monkeypatch, capsys
-) -> None:
-    """The registry outlives the homes in it — an archive whose directory is gone
-    must still be listed, and said to be gone, rather than silently dropped."""
-    from thread_archive._ops import archives as reg
-    from thread_archive._ops import load_runs
-
-    monkeypatch.setenv("THREAD_ARCHIVE_REGISTRY", str(tmp_path / "reg.json"))
-    reg._last_registered.clear()
-    gone = tmp_path / "deleted-archive"
-    gone.mkdir()
-    reg.register(gone, force=True)
-    gone.rmdir()
-    (archive_home / load_runs.STATE_FILE).write_text(
-        json.dumps({"kind": "import", "status": "running", "pid": os.getpid()}),
-        encoding="utf-8",
-    )
-    reg.register(archive_home, force=True)
-
-    assert main(["archives", "--home", str(archive_home)]) == 0
-    out = capsys.readouterr().out
-    assert f"* {'arc':<20}" in out                      # active home, marked
-    assert "[import: running]" in out                   # its live load state
-    assert "deleted-archive" in out and "(missing)" in out
-
-
 # ── progress on a real terminal: the tty-only arm of the long verbs ──────────
 
 
@@ -1733,36 +1640,7 @@ def test_the_long_verbs_draw_progress_on_a_terminal_and_wipe_it(
     assert embedded.rstrip().endswith("embedded 0")
 
 
-# ── snapshot / migrate: the failure arms ─────────────────────────────────────
-
-
-def test_snapshot_reports_a_failed_build(archive_home, tmp_path, capsys) -> None:
-    # A destination the process cannot create: the OS error is the operator's
-    # answer, not a traceback.
-    import_cc_session(tmp_path, "snap")
-    locked = tmp_path / "read-only-parent"
-    locked.mkdir()
-    os.chmod(locked, 0o500)
-    try:
-        assert main(["snapshot", str(locked / "frozen"), "--home", str(archive_home)]) == 1
-    finally:
-        os.chmod(locked, 0o700)
-    assert "snapshot failed: [Errno 13] Permission denied" in capsys.readouterr().err
-
-
-def test_snapshot_that_fails_verification_warns_and_exits_1(
-    archive_home, tmp_path, capsys
-) -> None:
-    """A snapshot is built to be trusted by later runs, so one built from damaged
-    truth must not read as done — it says so and exits nonzero, over a real torn
-    truth line rather than a claimed one."""
-    import_cc_session(tmp_path, "snapc")
-    corrupt_event_line(one_thread_file(archive_home))
-
-    assert main(["snapshot", str(tmp_path / "frozen"), "--home", str(archive_home)]) == 1
-    cap = capsys.readouterr()
-    assert "WARNING: the built snapshot failed verification" in cap.err
-    assert "done:" in cap.out  # the dest is still named — it exists, it is just suspect
+# ── migrate: the failure arms ────────────────────────────────────────────────
 
 
 def test_migrate_reports_what_it_moved(tmp_path, capsys) -> None:
@@ -1798,18 +1676,6 @@ def test_migrate_reports_a_failure(tmp_path, capsys) -> None:
 
     assert main(["migrate", "--home", str(home)]) == 1
     assert "migration failed: Expecting property name" in capsys.readouterr().err
-
-
-# ── eval: an archive with nothing to sample ──────────────────────────────────
-
-
-def test_eval_titles_on_an_empty_archive_scores_nothing(archive_home, capsys) -> None:
-    # Day zero: no threads, so there are no cases and no scores — reported as an
-    # empty measurement rather than a division by zero.
-    assert main(["eval", "--home", str(archive_home)]) == 0
-    out = capsys.readouterr().out
-    assert "(0 conversation threads)" in out
-    assert "No titled conversation threads with enough content to score yet." in out
 
 
 # ── main() with no subcommand prints help ────────────────────────────────────

@@ -15,12 +15,20 @@ Each script's docstring — and each miner's module docstring — is its own ful
 manual (protocols, biases, caveats); this README is the map.
 
 The scoring core these scripts share — the case protocols (title sampling, log
-mining) and the MRR/success/true-recall/nDCG loop — lives in the package at
-`thread_archive._eval`, so the shipped `thread_archive eval` command (the operator's
-read-only self-checkup over their own archive) and this dev bench score off one
-code path. The bench is the *rest* of the ladder: the CI gate, the tuning loop,
-and the gold-mining tiers that answer "should we change ranking," none of which
-ship.
+mining) and the MRR/success/true-recall/nDCG loop — is `eval_core.py`, right here,
+so every harness scores off one code path. Nothing in this directory ships: an
+install carries no scoring surface, because a metric read without its protocol's
+limits beside it misleads, and those limits are what this manual is. What the
+product reports instead is whether search is *degraded*, which is actionable
+(`thread_archive status`, the viewer's health page).
+
+Four shared modules sit beside the harnesses, all of them lab-only for the same
+reason: `eval_core.py` (scoring), `snapshot.py` (freeze a corpus — also a command:
+`python search_lab/snapshot.py <dir>`), `gold_runs.py` + `mine_runs.py` (the run
+ledgers), and `retrieval_report.py` (latency and quality series off the ledgers,
+`python search_lab/retrieval_report.py`). The `_mine` miners in the package reach
+these by importing `search_lab.*` — they are repo-only too (the wheel excludes
+them), so the dependency never leaves a checkout.
 
 ## The quality ladder
 
@@ -80,7 +88,7 @@ archive (BEIR and the lab build throwaway homes and never touch it).
   under `~/.thread/archive/`; `thread_archive mine` alone lists them, `thread_archive
   mine <miner> --help` documents one, and `thread_archive mine all [N]` sweeps the
   ones a count alone can drive. All bind by `snapshot_id` to the frozen corpus
-  snapshot they run against (`thread_archive snapshot`; point `THREAD_ARCHIVE_HOME`
+  snapshot they run against (`python search_lab/snapshot.py <dir>`; point `THREAD_ARCHIVE_HOME`
   at it), so after the one-time spend `retrieval_eval.py --cases` scores them for
   free and refuses them once the snapshot's id no longer matches. Five miners,
   covering complementary failure modes:
@@ -263,7 +271,7 @@ the re-rank budget.
     confounds are structural rather than judged.
 
   Each case is bound by `snapshot_id` to the corpus snapshot it was mined
-  against (`thread_archive snapshot`; point `THREAD_ARCHIVE_HOME` at it), and
+  against (`python search_lab/snapshot.py <dir>`; point `THREAD_ARCHIVE_HOME` at it), and
   `retrieval_eval.py --cases` scores it over that snapshot — the freezing rule
   made mechanical. A file whose `snapshot_id` matches no snapshot on hand is
   stale: re-mine it, don't score it against a moved corpus.

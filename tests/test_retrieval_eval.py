@@ -450,7 +450,7 @@ def test_a_completed_run_reports_no_abort():
 
 
 def test_progress_bound_is_the_best_still_reachable():
-    from thread_archive._eval import EvalProgress
+    from search_lab.eval_core import EvalProgress
 
     p = EvalProgress(n=10, scored=4, sums={"mrr": 1.0}, query="q", case_rr=0.0)
     assert p.best_possible("mrr") == pytest.approx(0.7)  # 1.0 + 6 perfect, over 10

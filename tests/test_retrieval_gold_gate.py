@@ -225,7 +225,7 @@ def test_no_gold_files_skips_green(tmp_path, monkeypatch, capsys) -> None:
 
 def _progress(*, n, scored, mrr=0.0, success10=0.0, recall10=0.0, ndcg10=0.0,
               query="q", case_rr=1.0):
-    from thread_archive._eval import EvalProgress
+    from search_lab.eval_core import EvalProgress
 
     return EvalProgress(
         n=n, scored=scored,

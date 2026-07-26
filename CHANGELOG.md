@@ -2,6 +2,71 @@
 
 ## Unreleased
 
+- **The measurement surface is out of the product: `search_lab/` is where it
+  lives, and an install no longer carries any of it.** Four things went, and each
+  was an instrument wearing a product's clothes. The viewer's `/retrieval` page —
+  warm-vs-cold latency percentiles and a gold-run MRR series, sitting in a
+  stranger's primary navigation, and never in the README's supported-URL table.
+  The `eval` verb, which reported MRR/nDCG over your own archive: a number with no
+  baseline beside it isn't actionable, and the click-label protocol behind it is
+  censored against being read as a quality score in exactly the way a bare metric
+  invites. And `snapshot` + `archives`, which existed to serve the bench — frozen
+  corpus homes, role-tagged registry entries — while contradicting the README's own
+  *Not supported: more than one machine, and merging archives*. What an install
+  reports about search instead is whether it is **degraded**, which is a state you
+  can act on: the capability matrix on `status` and the health page, unchanged.
+
+  Six modules moved to `search_lab/`, where the harnesses that read them already
+  live: the scoring core (`eval_core.py`, was `_eval.py`), `snapshot.py`,
+  `speed.py`, `gold_runs.py`, `mine_runs.py`, and `retrieval_report.py`. The two
+  that were also commands kept one: `python search_lab/snapshot.py <dir>` freezes
+  a corpus, `python search_lab/retrieval_report.py` prints the series. `_ops/` is
+  now the durability kit and nothing else — backup, restore, drill, verify,
+  nightly, coverage, health — which is what its name claimed.
+
+  The **archive registry is deleted outright**, not moved: `~/.thread/archives.json`,
+  the auto-register on every open, `--set-role`, the `/api/archives` endpoint, and
+  the health page's "Archives on this machine" section. As a toe in the water for
+  multi-archive support it never got past listing — no merge, no federated search,
+  no selection — so it advertised a capability that wasn't there. The backup and
+  restore paths lose their `suppress_registration` guards with it (staging homes and
+  drill temps had to be kept *out* of a registry that no longer exists), and the
+  health page's load history now reads this archive's own `/api/loads` ledger, live
+  phase progress included.
+
+  One repo-wide consequence: the dependency-tier meta ratchet scans a product's
+  *shipped* modules, and it now reads the wheel's own exclude list to decide what
+  those are — so repo-only code (archive's `_mine`, lab's `experiments/`) may
+  import repo-only code. Propagated byte-identically to all nine products' copies,
+  as the lockstep test requires.
+
+- **`status` and the health page now say what the archive costs on disk, and how
+  much of that is rebuildable.** An archive grows several times larger than the
+  conversations in it — the SQLite projection routinely exceeds the JSONL it is
+  built from, the vector pack sits beside it, the source mirror and drift
+  quarantine keep provider files the provider itself has pruned, and migrations
+  and repairs leave payloads behind that nothing collects — and none of that was
+  visible anywhere in the product. "Why is this 30 GB" had no answer short of
+  `du`. Both surfaces now split the total four ways, which is what makes the
+  number answerable rather than alarming: truth (irreplaceable), index
+  (rebuildable with `reindex` + `embed`), retained raw sources (kept on purpose,
+  never auto-pruned), and everything else — with the largest entries named,
+  because an unlabelled remainder is exactly where a stale migration backup or a
+  bench cache hides. The walk is deliberately kept off `status`'s own API, which
+  the viewer polls every 30 seconds; the viewer reads it from `/api/disk` on a
+  five-minute cadence of its own, and a failed walk degrades that one section
+  instead of the page.
+
+- **The viewer's first search no longer pays the model load.** The watcher warms
+  the retrieval stack at startup when it cohosts the web viewer, the way the shared
+  MCP server already did for its clients. Before this, a new user's first search was
+  the one that loaded the torch models — 15–40 seconds behind a bare `searching…`,
+  with every search after it sub-second, so the whole cost landed on the one query
+  that forms someone's impression of the product. The window before the warm lands is
+  covered too: the process defers model construction to the warm pass, so a query
+  racing it serves lexical-only in milliseconds and the vector / re-rank arms rejoin
+  once the models are resident, rather than the query blocking on a load of its own.
+
 - **`evals/` is now `search_lab/`, and the old experiment runner is gone.**
   The directory is the search lab — the name it went by in prose while the
   directory said something vaguer. What blocked the rename was a `search_lab.py`
@@ -17,7 +82,7 @@
   invalidate tens of gigabytes of downloaded BEIR/LoCoMo corpora for nothing.
 
 - **The base install is lexical-only all the way down: Leiden moved behind an
-  extra.** `leidenalg` + `python-igraph` are the only dependencies with a narrow
+  extra.** `leidenalg` + `igraph` are the only dependencies with a narrow
   wheel matrix (no musllinux-aarch64 at all, a manylinux floor of 2.28), so they
   were the only reason `pip install thread-archive` could turn into a source
   build needing a C toolchain. They now live in a `leiden` extra that

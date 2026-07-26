@@ -1,4 +1,4 @@
-"""The search-quality scoring core (:mod:`thread_archive._eval`).
+"""The search-quality scoring core (``search_lab/eval_core.py``).
 
 The pure pieces — event pairing, the ranking-metric loop against a fake ranker, the
 behavioral rollup — are pinned in ``test_retrieval_eval.py`` (which loads the
@@ -12,7 +12,7 @@ from __future__ import annotations
 import json
 from datetime import datetime, timezone
 
-from thread_archive import _eval
+from search_lab import eval_core as _eval
 from thread_archive._retrieval import index_events
 from thread_archive._store import Event, Thread, get_session, init_db
 
@@ -72,26 +72,24 @@ def _seed_trail(session_name: str, pairs: list[tuple[str, str | None]],
     return sid
 
 
-def test_eval_verb_titles_and_from_log_through_the_cli(archive_home, capsys) -> None:
-    """cmd_eval's two ranking protocols end-to-end through the CLI: --titles
-    samples titled threads and scores them (the default); --from-log mines the
-    trail's search→read pairs. Both open the real archive and evaluate with the
-    model-free lexical stack — the dispatch the shipped `thread_archive eval` runs."""
-    from thread_archive import cli
-
+def test_both_ranking_protocols_score_end_to_end(archive_home) -> None:
+    """The two ranking protocols end to end over a real archive: `titles` samples
+    titled threads and scores them, `from-log` mines the trail's search→read pairs.
+    Both build cases from the live store and rank with the model-free lexical stack
+    — the path `search_lab/retrieval_eval.py --auto-titles` / `--from-log` drives."""
     init_db()
     tid = _seed_titled_thread("how does token auth work in this system")
     _seed_trail("agent-x", [("token auth question", tid)])
 
-    assert cli.main(["eval", "--titles", "5", "--json"]) == 0
-    titles = json.loads(capsys.readouterr().out)
-    assert titles["protocol"] == "titles"
-    assert titles["scores"]["n"] >= 1  # the titled thread became a scored case
+    titles = _eval.evaluate(
+        _eval.sample_title_cases(5, seed=7), limit=10, rerank=False,
+        content_type=None, exclude_content_types=_eval.EXCLUDE_META)
+    assert titles["n"] >= 1  # the titled thread became a scored case
 
-    assert cli.main(["eval", "--from-log", "5", "--json"]) == 0
-    from_log = json.loads(capsys.readouterr().out)
-    assert from_log["protocol"] == "from-log"
-    assert from_log["scores"]["n"] >= 1  # the trail's search→read pair became a case
+    from_log = _eval.evaluate(
+        _eval.mine_log_cases(5, seed=7), limit=10, rerank=False,
+        content_type=None, exclude_content_types=None)
+    assert from_log["n"] >= 1  # the trail's search→read pair became a case
 
 
 def test_sample_title_cases_uses_the_title_as_query(archive_home) -> None:

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 
-from thread_archive._ops import gold_runs
+from search_lab import gold_runs
 
 FILES = {
     "judged-cases.jsonl": {

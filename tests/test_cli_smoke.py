@@ -8,7 +8,7 @@ branches directly with the result shapes a real run can't produce.
 
 from __future__ import annotations
 
-import importlib
+import importlib.util
 import json
 import os
 import re
@@ -26,6 +26,11 @@ from thread_archive.cli import build_parser, main
 
 from .helpers import corrupt_event_line, import_cc_session, one_thread_file
 
+# `_mine` is repo-only — the wheel excludes it (pyproject
+# [tool.hatch.build.targets.wheel]), so an installed package has no miners to list.
+# That absence is itself covered, by test_mine_points_at_the_repo_when_the_package_is_absent.
+_HAS_MINE = importlib.util.find_spec("thread_archive._mine") is not None
+
 
 def test_help_runs(capsys: pytest.CaptureFixture[str]) -> None:
     with pytest.raises(SystemExit) as exc:
@@ -35,6 +40,7 @@ def test_help_runs(capsys: pytest.CaptureFixture[str]) -> None:
     assert "archive" in out
 
 
+@pytest.mark.skipif(not _HAS_MINE, reason="_mine is repo-only (excluded from the wheel)")
 def test_mine_lists_miners(capsys: pytest.CaptureFixture[str]) -> None:
     # Bare `mine` is the registry list view — no archive access, no token spend —
     # so it drives cmd_mine's dispatch into the `_mine` package end to end.
@@ -92,10 +98,10 @@ def test_all_subcommands_present() -> None:
     sub = next(a for a in parser._actions if hasattr(a, "choices") and a.choices)
     assert set(sub.choices) == {
         "setup", "search", "read",
-        "import", "import-export", "providers", "watch", "web", "reindex", "snapshot",
+        "import", "import-export", "providers", "watch", "web", "reindex",
         "migrate", "embed",
-        "status", "loads", "archives",
-        "eval", "mine", "backup", "verify", "repair", "restore-drill", "restore",
+        "status", "loads",
+        "mine", "backup", "verify", "repair", "restore-drill", "restore",
         "nightly", "coverage", "mirror", "daemon",
         "fix-import", "self-update",
     }
@@ -162,37 +168,6 @@ def test_embed_cli_runs_for_real_model_free(seeded, capsys) -> None:
     assert main(["embed", "--home", str(seeded)]) == 0
     out = capsys.readouterr().out
     assert "rebuild=False" in out and "embedded 0" in out
-
-
-def test_eval_behavior_cli_runs_over_a_real_home(seeded, capsys) -> None:
-    """The `eval` verb opens the real archive and reports; --behavior needs no model
-    arms, so it drives cmd_eval end-to-end (open, thread count, trail read) fast.
-    A seeded home has no thread_search trail, so the no-searches branch is exercised."""
-    assert main(["eval", "--behavior", "--home", str(seeded)]) == 0
-    out = capsys.readouterr().out
-    assert "Search health" in out
-    assert "No searches recorded" in out
-
-
-def test_snapshot_cli_builds_a_frozen_home(seeded, tmp_path, capsys) -> None:
-    """The `snapshot` verb copies truth, materializes the index, and reports —
-    the dest is a real, verified home the operator can point an eval at."""
-    dest = tmp_path / "frozen"
-    rc = main(["snapshot", str(dest), "--home", str(seeded)])
-    assert rc == 0
-    out = capsys.readouterr().out
-    assert "done:" in out and str(dest) in out
-    assert (dest / "truth" / "manifest.json").is_file()
-    assert (dest / "index.db").is_file()
-    assert (dest / "snapshot.json").is_file()
-
-    # A non-empty stranger dir is refused without --force, taken with it.
-    stranger = tmp_path / "stranger"
-    stranger.mkdir()
-    (stranger / "x").write_text("nope")
-    assert main(["snapshot", str(stranger), "--home", str(seeded)]) == 1
-    assert "snapshot refused" in capsys.readouterr().err
-    assert main(["snapshot", str(stranger), "--force", "--home", str(seeded)]) == 0
 
 
 def test_backup_cli_mirrors_the_real_truth(seeded, tmp_path, capsys) -> None:

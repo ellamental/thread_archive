@@ -37,6 +37,8 @@ from __future__ import annotations
 import ast
 import re
 import sys
+from fnmatch import fnmatch
+from functools import cache
 from importlib.metadata import packages_distributions, requires
 from pathlib import Path
 
@@ -105,8 +107,16 @@ def _modules_for(dist: str, installed: dict[str, list[str]]) -> set[str]:
     return shimmed or {dist.replace("-", "_")}
 
 
+@cache
 def _declared() -> tuple[set[str], set[str]]:
-    """(hard-importable modules, fail-soft-only modules) for this product."""
+    """(hard-importable modules, fail-soft-only modules) for this product.
+
+    Cached: the scan below is parametrized over every source file, and this reads
+    the pyproject plus ``packages_distributions()`` — a full walk of the venv's
+    installed metadata, ~0.1s — neither of which changes during a run. Uncached it
+    is recomputed per case and dominates the file's runtime. Callers only read the
+    returned sets.
+    """
     # Imported here, not at module scope: this file is byte-identical across
     # products, and isort sorts tomllib into a different block depending on whether
     # the product's requires-python floor predates its promotion to the stdlib.
@@ -132,7 +142,37 @@ def _declared() -> tuple[set[str], set[str]]:
     return hard, soft - hard
 
 
+@cache
+def _unshipped() -> tuple[str, ...]:
+    """Tree paths the build config keeps out of the wheel, relative to the product
+    root and spelled as they are in the pyproject.
+
+    Read from the build target rather than listed here, for the same reason the
+    dependency tiers are: a product that stops shipping part of its tree says so
+    once, where the wheel is built from, and this follows.
+    """
+    import tomllib
+
+    data = tomllib.loads(PYPROJECT.read_text(encoding="utf-8"))
+    wheel = (
+        data.get("tool", {}).get("hatch", {})
+        .get("build", {}).get("targets", {}).get("wheel", {})
+    )
+    return tuple(wheel.get("exclude", []))
+
+
+def _is_shipped(path: Path) -> bool:
+    """Does ``path`` reach a user's machine as part of the distribution?"""
+    rel = path.relative_to(PRODUCT_ROOT).as_posix()
+    return not any(
+        rel == pattern or rel.startswith(pattern.rstrip("/") + "/") or fnmatch(rel, pattern)
+        for pattern in _unshipped()
+    )
+
+
+@cache
 def _own_packages() -> set[str]:
+    """The product's own top-level packages — cached for the same reason as ``_declared``."""
     return {d.name for d in SRC.iterdir() if d.is_dir() and (d / "__init__.py").exists()}
 
 
@@ -200,8 +240,14 @@ def _source_files() -> list[Path]:
 
     Test trees are excluded even when they live under ``src/``: the invariant
     governs what the product *ships*, and test code may freely use the dev extra.
+    Anything the build config excludes from the wheel is out for the same reason —
+    it exists only in a checkout, where whatever it imports is exactly as present
+    as the module doing the importing.
     """
-    return sorted(p for p in SRC.rglob("*.py") if "tests" not in p.relative_to(SRC).parts)
+    return sorted(
+        p for p in SRC.rglob("*.py")
+        if "tests" not in p.relative_to(SRC).parts and _is_shipped(p)
+    )
 
 
 def test_the_scan_is_not_vacuous() -> None:

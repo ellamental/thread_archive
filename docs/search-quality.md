@@ -2,9 +2,13 @@
 
 How thread-archive measures its own retrieval, what the numbers say, and what
 they can and cannot certify. The instruments live in `search_lab/` (`search_lab/README.md`
-is the working manual — the how; this is the numbers). The shipped operator
-command is `thread_archive eval` — a read-only self-checkup over your own archive
-that ships to every install.
+is the working manual — the how; this is the numbers), and they stay there: an
+install ships no scoring surface. A metric with no baseline beside it is not
+information, and every protocol below carries limits that have to be read with it
+— so quality is measured deliberately, against a snapshot-bound baseline, by
+someone holding the protocol. What an install *does* report is whether search is
+degraded — the capability matrix on `thread_archive status` and the viewer's health
+page — which is a state you can act on.
 
 A caution before any number: most metrics below score **single searches in
 isolation**, and where the first right answer lands. That is not how agents use the
@@ -304,14 +308,14 @@ dropping them would bias every percentile toward the calls that happened to succ
 The archive's own tool-use trail powers two more instruments, each aimed at a limit
 of the gold files:
 
-- **Click labels (`--from-log`)** mine real `thread_search`→`thread_read` pairs from
+- **Click labels (`retrieval_eval.py --from-log`)** mine real `thread_search`→`thread_read` pairs from
   the trail: the gold is whatever thread the agent opened, a subset of what search
   surfaced *that day*. The labels are censored by the incumbent ranker — a change
   that surfaces different-better results scores as a loss — so this is an **alarm,
   not a baseline**: run it by hand to ask "did something collapse," never to credit
   a change. Its lasting value to the bench is as a **sampling frame** — real query
   shapes to seed the gold miner with. Nothing runs it on a cadence.
-- **Behavioral signals (`--behavior`)** report zero-label usage rates — for every
+- **Behavioral signals (`retrieval_eval.py --behavior`)** report zero-label usage rates — for every
   search, whether the agent opened a result, searched again, or walked away — rates
   that move only when something real moves.
 

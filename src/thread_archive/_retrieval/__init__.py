@@ -45,6 +45,7 @@ from .code import (
 )
 from .format import COUNT_FETCH_CAP, format_results
 from .fts import ensure_fts, fts_status, index_events, index_thread_meta, rebuild_fts, search_events
+from .model_slot import set_defer_construction
 from .params import DEFAULT as _DEFAULT_PARAMS
 from .params import SearchParams
 from .read import read_thread, read_thread_structured, resolve_thread_ref
@@ -269,6 +270,29 @@ def warm_models(embedder=None, reranker=None) -> None:
         )
     except Exception:  # noqa: BLE001 — telemetry is advisory; warming stays fail-soft
         logger.debug("warm_models: could not record the warm pass", exc_info=True)
+
+
+def start_warm_models() -> threading.Thread:
+    """Run :func:`warm_models` on a background thread and keep queries out of the cold
+    load meanwhile — what a long-running server does at startup, in one call.
+
+    Both halves are load-bearing. The thread moves the tens-of-seconds construction off
+    the request path so the models are resident by the time queries arrive. The
+    deferred-construction policy (:func:`.model_slot.set_defer_construction`) covers the
+    window before that lands: a query racing the warm serves lexical-only and fast
+    instead of blocking on a load it would otherwise start itself, and the vector /
+    re-rank arms rejoin the moment the models are resident. Without it the first query
+    still waits out the whole load and warming has only moved which thread pays.
+
+    Indexing is unaffected: the embed cohost loads its model through
+    :meth:`.embed.Embedder.warm`, which the policy does not gate.
+
+    Returns the thread — daemon, so it never holds up interpreter exit. Fail-soft
+    throughout, since :func:`warm_models` never raises."""
+    set_defer_construction(True)
+    thread = threading.Thread(target=warm_models, name="archive-warm-models", daemon=True)
+    thread.start()
+    return thread
 
 
 def retrieve_pool(

@@ -30,8 +30,9 @@ from pathlib import Path
 
 from sqlalchemy import text as sa_text
 
+from search_lab.eval_core import classify_tool, mine_log_cases
+
 from .. import _api as api
-from .._eval import classify_tool, mine_log_cases
 from .._retrieval.read import resolve_thread_ref
 from .._store import use_session
 from . import _framework as fw

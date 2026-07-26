@@ -388,30 +388,6 @@ def test_restore_drill_rebuilds_from_mirror_and_reports_ok(archive_home, tmp_pat
     assert res2["coverage"] < 0.98
 
 
-def test_restore_drill_keeps_its_temp_home_out_of_the_registry(
-    archive_home, tmp_path, monkeypatch
-):
-    # The drill home is workspace, not one of the user's archives — the registry
-    # must not advertise it (nor pick it up via the smoke pass's re-entrant opens).
-    from thread_archive._ops import archives
-
-    registry = tmp_path / "archives.json"
-    monkeypatch.setenv("THREAD_ARCHIVE_REGISTRY", str(registry))
-    archives._last_registered.clear()
-    import_cc_session(tmp_path)
-    dest = tmp_path / "mirror"
-    ta.backup(str(dest))
-
-    res = ta.restore_drill(str(dest))
-    assert res["ok"] is True, res
-    homes = [e["home"] for e in archives.read_registry()]
-    assert not any("restore-drill" in h for h in homes), homes
-    # The suppression is scoped: registration works again after the drill.
-    archives._last_registered.clear()
-    archives.register(archive_home, force=True)
-    assert str(archive_home) in [e["home"] for e in archives.read_registry()]
-
-
 def test_restore_drill_rejects_non_mirror(archive_home, tmp_path):
     res = ta.restore_drill(str(tmp_path / "nowhere"))
     assert res["ok"] is False

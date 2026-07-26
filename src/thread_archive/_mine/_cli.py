@@ -54,7 +54,7 @@ def list_miners_text(registry: list[fw.Miner]) -> str:
         "  ● = `thread_archive mine all [N]` runs it with target N (default 5);",
         "  ○ = run it directly (it needs an argument or sizes itself).",
         "  Each run spends real `claude` tokens against a frozen snapshot",
-        "  (`thread_archive snapshot <dir>`; point THREAD_ARCHIVE_HOME at it).",
+        "  (`python search_lab/snapshot.py <dir>`; point THREAD_ARCHIVE_HOME at it).",
         f"  At most {MAX_CONCURRENT_SESSIONS} agent sessions run at once; a `mine` "
         f"command spends at most {fw.MAX_SESSIONS_PER_RUN} in total",
         "  (a single miner's --target, or the whole `mine all` sweep, shares that).",
@@ -96,7 +96,7 @@ def _execute(miner: fw.Miner, args: argparse.Namespace,
     # breakdown) so the abstention and drop rates are a recorded timeseries, not a
     # number that lived only in the console line. Fail-soft inside record_run.
     if result.attempted:
-        from .._ops import mine_runs
+        from search_lab import mine_runs
 
         mine_runs.record_run(
             miner=miner.name, snapshot_id=snapshot_id, attempted=result.attempted,

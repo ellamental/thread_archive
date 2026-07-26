@@ -10,8 +10,8 @@ from __future__ import annotations
 import json
 from datetime import datetime, timedelta, timezone
 
-from thread_archive._ops import gold_runs, speed
-from thread_archive._ops import retrieval_report as rr
+from search_lab import gold_runs, speed
+from search_lab import retrieval_report as rr
 from thread_archive._retrieval.usage import LEDGER_FILE
 
 

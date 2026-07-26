@@ -318,12 +318,21 @@ def cmd_watch(args: argparse.Namespace) -> int:
     # with the watcher's writes (see store._base).
     httpd = None
     if args.web:
+        from ._retrieval import start_warm_models
         from ._web import serve_in_thread
 
         httpd = serve_in_thread(host=args.web_host, port=args.web_port)
         logging.getLogger("thread_archive._watcher").info(
             "cohosting web viewer on http://%s:%s", args.web_host, args.web_port
         )
+        # Warm the model stack for the viewer's searches, exactly as the shared MCP
+        # server does for its clients. Nobody typing into the search box knows a model
+        # is loading, so the tens-of-seconds cold load reads as a broken product on the
+        # first search anyone ever runs — and every search after it is sub-second, so
+        # the archive makes its worst impression on the one query that forms it. Only
+        # the cohosting process warms: the watcher's own indexing loads the embedder
+        # when it has work, and a headless watcher answers no queries.
+        start_warm_models()
 
     available = [w.source_name for w in watcher.available()]
     logging.getLogger("thread_archive._watcher").info(
@@ -489,35 +498,6 @@ def cmd_reindex(args: argparse.Namespace) -> int:
     return 0
 
 
-def cmd_snapshot(args: argparse.Namespace) -> int:
-    from . import _api as api
-
-    _self_throttle()  # a full copy + rebuild is background work — don't bog the machine
-    print(f"snapshotting {resolve_paths(args.home).home} → {args.dest} (throttled)")
-    try:
-        res = api.snapshot(
-            args.dest, home=args.home, vectors=args.vectors,
-            verify_result=args.verify, force=args.force,
-        )
-    except FileExistsError as e:
-        print(f"snapshot refused: {e}", file=sys.stderr)
-        return 1
-    except (RuntimeError, OSError) as e:
-        print(f"snapshot failed: {e}", file=sys.stderr)
-        return 1
-    m = res["manifest"]
-    c = m["counts"]
-    print(f"  threads {c['threads']:>9}")
-    print(f"  events  {c['events']:>9}")
-    print(f"  vectors {c['vectors']:>9}" + ("" if c["vectors"] else "   (lexical-only)"))
-    if m["verify_ok"] is False:
-        print("  WARNING: the built snapshot failed verification — inspect before relying on it",
-              file=sys.stderr)
-    print(f"done: {res['dest']}")
-    print(f"  point an eval at it with  THREAD_ARCHIVE_HOME={res['dest']}")
-    return 0 if m["verify_ok"] is not False else 1
-
-
 def cmd_migrate(args: argparse.Namespace) -> int:
     from . import _api as api
 
@@ -629,39 +609,6 @@ def _phase_line(ph: dict) -> str:
     if (counts := ph.get("counts")):
         bits.append("(" + " ".join(f"{k}={v:,}" for k, v in counts.items()) + ")")
     return "  ".join(bits)
-
-
-def cmd_archives(args: argparse.Namespace) -> int:
-    """List every known archive and what each one is doing; set/clear roles."""
-    from . import _api as api
-    from ._ops.archives import set_role
-
-    if args.set_role or args.clear_role:
-        ref, role = args.set_role if args.set_role else (args.clear_role, None)
-        try:
-            entry = set_role(ref, role)
-        except (KeyError, ValueError) as e:
-            print(f"error: {e}")
-            return 1
-        print(f"{entry.get('label', '?')}: role "
-              f"{'cleared' if role is None else f'= {role}'}")
-
-    rows = api.archives(home=args.home)
-    if not rows:
-        print("no archives registered yet")
-        return 0
-    for a in rows:
-        mark = "*" if a.get("active") else " "
-        gone = "" if a.get("exists") else "  (missing)"
-        size = a.get("index_bytes") or 0
-        load = a.get("load") or {}
-        state = ""
-        if load:
-            state = f"  [{load.get('kind', '?')}: {load.get('status', '?')}]"
-        role = f"  ({a['role']})" if a.get("role") else ""
-        print(f"{mark} {a.get('label', '?'):<20} {size / 1e9:6.2f} GB  "
-              f"{a.get('home', '?')}{role}{gone}{state}")
-    return 0
 
 
 def cmd_backup(args: argparse.Namespace) -> int:
@@ -1084,7 +1031,11 @@ def _age(iso: str) -> str:
 def cmd_status(args: argparse.Namespace) -> int:
     from . import _api as api
 
-    return report_status(api.status(home=args.home))
+    st = api.status(home=args.home)
+    # Merged in rather than folded into `status` itself: the walk is this
+    # command's to pay for, not the viewer's on every poll of the same API.
+    st["disk"] = api.disk_usage(home=args.home)
+    return report_status(st)
 
 
 def _report_libraries(rows: list[dict]) -> None:
@@ -1100,6 +1051,34 @@ def _report_libraries(rows: list[dict]) -> None:
     for row in rows:
         if row["state"] == "degraded":
             print(f"         DEGRADED — {row['capability'].lower()}: {row['detail']}")
+
+
+def _report_disk(d: dict) -> None:
+    """The ``disk:`` block: what the home costs, split by what a reader can do
+    about each part.
+
+    The split line is the whole point — a bare total says an archive is large
+    without saying whether that is the conversations or the projection over them.
+    The follow-up names the biggest entries that are *neither* truth nor index,
+    because those two are already accounted for by name above it and everything
+    else is an unlabelled pile that grows quietly: migration payloads, drift
+    quarantine, bench caches, logs.
+    """
+    from ._ops.disk import format_bytes as fmt
+
+    kinds = d.get("kinds") or {}
+    split = " · ".join((
+        f"truth {fmt(kinds.get('truth'))}",
+        f"index {fmt(kinds.get('index'))} (rebuildable)",
+        f"sources {fmt(kinds.get('sources'))}",
+        f"other {fmt(kinds.get('other'))}",
+    ))
+    print(f"disk:    {fmt(d.get('total_bytes'))} in {d.get('files', 0):,} files — {split}")
+    rest = [e for e in d.get("entries") or [] if e["kind"] not in ("truth", "index")][:3]
+    if rest:
+        print("         largest: " + " · ".join(f"{e['name']} {fmt(e['bytes'])}" for e in rest))
+    for path in d.get("external") or []:
+        print(f"         (outside the home: {path})")
 
 
 def report_status(st: dict) -> int:
@@ -1118,6 +1097,8 @@ def report_status(st: dict) -> int:
     print(f"code:    {st.get('code_files', 0)} files, {st.get('code_commits', 0)} "
           f"commits, {st.get('code_paths_indexed', 0)} touches"
           + (f" ({pending} events pending)" if pending else ""))
+    if st.get("disk"):
+        _report_disk(st["disk"])
     v, b = st.get("last_verify"), st.get("last_backup")
     d = st.get("last_restore_drill")
     if v and v["ok"]:
@@ -1316,156 +1297,16 @@ def report_mirror(r: dict) -> int:
     return 0 if r["ok"] else 1
 
 
-def cmd_eval(args: argparse.Namespace) -> int:
-    """Measure search quality on this archive — a read-only self-checkup.
-
-    Scores the search stack as installed (a lexical-only box measures lexical;
-    a box with the [embeddings] extra measures the fused pipeline) against
-    cases built from the operator's own data. Three protocols, no external
-    labels and nothing leaves the machine: `titles` (each thread's own title as
-    the query — works on day one), `from-log` (real thread_search→thread_read
-    pairs mined from the tool-use trail — meaningful once search has been used),
-    and `behavior` (zero-label click/reformulate/abandon rates). The deeper
-    tiers of the quality ladder (agent-mined gold cases, the experiment lab,
-    BEIR) stay in the dev bench under search_lab/ — they answer "should we change
-    ranking," not "does search work on my data."
-    """
-    from . import _api as api
-    from . import _eval
-    from ._store import use_session
-
-    api.open_archive(home=args.home)
-
-    with use_session() as s:
-        from sqlalchemy import text as sa_text
-
-        threads = s.execute(sa_text(
-            "SELECT count(*) FROM threads WHERE NOT exclude_from_search "
-            "AND thread_type = 'conversation'"
-        )).scalar_one()
-
-    report: dict = {"threads": threads}
-
-    if args.behavior:
-        with use_session() as s:
-            report["protocol"] = "behavior"
-            report["behavior"] = _eval.behavior_report(_eval._trail_events(s))
-        return report_eval(report, as_json=args.json)
-
-    if args.from_log is not None:
-        report["protocol"] = "from-log"
-        cases = _eval.mine_log_cases(args.from_log, args.seed)
-        exclude = None
-    else:
-        report["protocol"] = "titles"
-        cases = _eval.sample_title_cases(args.titles, args.seed)
-        exclude = _eval.EXCLUDE_META
-
-    if cases:
-        report["scores"] = _eval.evaluate(
-            cases, limit=args.limit, rerank=None, content_type=None,
-            exclude_content_types=exclude,
-        )
-    else:
-        report["scores"] = {"n": 0}
-    return report_eval(report, as_json=args.json)
-
-
-def report_eval(report: dict, *, as_json: bool = False) -> int:
-    """Print the search-health report for a ``cmd_eval`` result; return its exit code."""
-    if as_json:
-        import json
-
-        print(json.dumps(report, indent=2))
-        return 0
-
-    protocol = report["protocol"]
-    threads = report.get("threads")
-    header = "Search health — measured on your own archive"
-    if threads is not None:
-        header += f" ({threads:,} conversation threads)"
-    print(header)
-    print()
-
-    if protocol == "behavior":
-        b = report["behavior"]
-        if not b["n_searches"]:
-            print("No searches recorded in the tool-use trail yet.")
-            print("Behavioral signals appear once agents have run thread_search "
-                  "against this archive.")
-            return 0
-        print(f"Behavior — {b['n_searches']} searches across {b['n_sessions']} sessions")
-        print(f"  click:       {b['click_rate']:.0%}   (search led to opening a result)")
-        print(f"  reformulate: {b['reformulation_rate']:.0%}   (no open; searched again)")
-        print(f"  abandon:     {b['abandonment_rate']:.0%}   (no open; session ended)")
-        print(f"  reads/click: {b['reads_per_click']:.1f}")
-        print()
-        print("  Proxies, not verdicts: a click isn't proof of a good answer, and an")
-        print("  abandon isn't always a failure (the snippet may have sufficed). The")
-        print("  value is the trend over time, not any single rate.")
-        return 0
-
-    r = report["scores"]
-    if not r["n"]:
-        if protocol == "from-log":
-            print("No search→open pairs in the tool-use trail yet.")
-            print("This protocol scores against your own past searches, so it becomes")
-            print("meaningful after thread_search has been used across a few sessions.")
-            print("Run `thread_archive eval` (title recall) to check search in the meantime.")
-        else:
-            print("No titled conversation threads with enough content to score yet.")
-            print("Import some conversations first (`thread_archive import` / `thread_archive watch`).")
-        return 0
-
-    success = r["success"]
-    recall = r["recall"]
-    if protocol == "from-log":
-        print("Protocol: your searches — real thread_search→thread_read pairs from the trail")
-    else:
-        print("Protocol: title recall — each thread's own title used as the query")
-    print(f"  cases: {r['n']}   MRR: {r['mrr']:.2f}   "
-          + "   ".join(f"S@{k}: {success[k]:.2f}" for k in _eval_metric_ks(success)))
-    print("  recall: "
-          + "   ".join(f"R@{k}: {recall[k]:.2f}" for k in _eval_metric_ks(recall)))
-    if r.get("ndcg"):
-        ndcg = r["ndcg"]
-        print("  nDCG:   "
-              + "   ".join(f"nDCG@{k}: {ndcg[k]:.2f}" for k in _eval_metric_ks(ndcg)))
-    print(f"  latency p50: {r['latency_p50_ms']:.0f} ms")
-    if r.get("per_shape"):
-        print()
-        for shape, st in r["per_shape"].items():
-            print(f"  {shape:>15}: n={st['n']:<4} MRR={st['mrr']:.2f}")
-    print()
-    if protocol == "from-log":
-        print("  What this means: for each past search, does the thread you opened rank")
-        print("  in the top k now? These labels are shaped by what search already")
-        print("  surfaced — a strong score confirms recall held; a collapse is the real")
-        print("  signal that something broke.")
-    else:
-        print("  What this means: S@10 is the share of threads whose own content ranks")
-        print("  in the top 10 when you search their title. Titles share vocabulary with")
-        print("  their thread, so read this as \"are my threads findable at all\" — a")
-        print("  health check, not a precision score.")
-    return 0
-
-
-def _eval_metric_ks(metric: dict) -> list:
-    """Metric cutoffs in ascending order (dict keys survive JSON as strings)."""
-    return sorted(metric, key=lambda k: int(k))
-
-
 def cmd_mine(args: argparse.Namespace) -> int:
     """Mint snapshot-bound gold eval cases with the agent miners — the deep tier
     of the search-quality ladder (`search_lab/README.md`).
 
-    Unlike `eval` (a read-only self-checkup that ships to every install and spends
-    no tokens), `mine` drives headless `claude` agents against a frozen corpus
-    snapshot to produce graded relevance labels the cheaper protocols can't:
-    corpus-grounded golds from real queries, confound-dense topic benchmarks,
-    cheap in-pool rerank judgments, and generated findability cases. Bare `mine`
-    lists the miners; `mine <miner> --help` shows a miner's options; `mine all N`
-    sweeps the ones a count alone can drive.
+    `mine` drives headless `claude` agents against a frozen corpus snapshot to
+    produce graded relevance labels the cheaper protocols can't: corpus-grounded
+    golds from real queries, confound-dense topic benchmarks, cheap in-pool rerank
+    judgments, and generated findability cases. Bare `mine` lists the miners;
+    `mine <miner> --help` shows a miner's options; `mine all N` sweeps the ones a
+    count alone can drive.
 
     Development machinery, not product: the `_mine` package is excluded from the
     wheel (it only pays off beside the scoring bench and gold files under
@@ -1481,10 +1322,7 @@ def cmd_mine(args: argparse.Namespace) -> int:
             "The miners spend real tokens driving headless `claude` agents, and the\n"
             "cases they mint are only useful beside the scoring bench and gold files\n"
             "under search_lab/ — neither of which is part of an install. Run them from a\n"
-            "checkout: https://github.com/ellamental/thread_archive\n"
-            "\n"
-            "`thread_archive eval` is the self-checkup that does work here: it scores\n"
-            "search quality on your own archive, read-only, spending nothing.",
+            "checkout: https://github.com/ellamental/thread_archive",
             file=sys.stderr,
         )
         return 2
@@ -1754,28 +1592,6 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_reindex.set_defaults(func=cmd_reindex)
 
-    p_snapshot = sub.add_parser(
-        "snapshot",
-        help="freeze the corpus into a self-contained, immutable archive home "
-             "(a frozen THREAD_ARCHIVE_HOME for deterministic search/quality tests)",
-    )
-    _add_home_arg(p_snapshot)
-    p_snapshot.add_argument("dest", help="directory to write the frozen snapshot into")
-    p_snapshot.add_argument(
-        "--vectors", action="store_true",
-        help="also embed any events the copied sidecar cache lacks (default: "
-             "restore cached vectors only — the copied truth already carries them)",
-    )
-    p_snapshot.add_argument(
-        "--force", action="store_true",
-        help="snapshot into a non-empty destination that is not already a snapshot",
-    )
-    p_snapshot.add_argument(
-        "--no-verify", dest="verify", action="store_false",
-        help="skip verifying the built snapshot (truth == index)",
-    )
-    p_snapshot.set_defaults(func=cmd_snapshot, verify=True)
-
     p_migrate = sub.add_parser(
         "migrate", help="migrate older truth to the current format, reindex, and verify"
     )
@@ -1801,19 +1617,6 @@ def build_parser() -> argparse.ArgumentParser:
     _add_home_arg(p_loads)
     p_loads.add_argument("--limit", type=int, default=10, help="recent runs to show")
     p_loads.set_defaults(func=cmd_loads)
-
-    p_archives = sub.add_parser("archives", help="list known archives and their load state")
-    _add_home_arg(p_archives)
-    p_archives.add_argument(
-        "--set-role", nargs=2, metavar=("ARCHIVE", "ROLE"),
-        help="tag an archive (by label, id, or home path) with a descriptive role "
-             "such as live, benchmark, or snapshot — shown wherever archives are listed",
-    )
-    p_archives.add_argument(
-        "--clear-role", metavar="ARCHIVE",
-        help="remove the role tag from an archive (by label, id, or home path)",
-    )
-    p_archives.set_defaults(func=cmd_archives)
 
     p_coverage = sub.add_parser(
         "coverage",
@@ -1851,32 +1654,6 @@ def build_parser() -> argparse.ArgumentParser:
     p_status = sub.add_parser("status", help="archive health / paths / counts")
     _add_home_arg(p_status)
     p_status.set_defaults(func=cmd_status)
-
-    p_eval = sub.add_parser(
-        "eval",
-        help="measure search quality on your own archive (read-only self-checkup)",
-    )
-    _add_home_arg(p_eval)
-    eval_proto = p_eval.add_mutually_exclusive_group()
-    eval_proto.add_argument(
-        "--titles", type=int, metavar="N", default=200,
-        help="title-recall proxy: sample N titled threads, query each by its own "
-             "title, score whether its content ranks (the default; works day one)",
-    )
-    eval_proto.add_argument(
-        "--from-log", type=int, metavar="N", default=None,
-        help="score against your own usage: up to N real thread_search→thread_read "
-             "pairs mined from the tool-use trail (needs accumulated search history)",
-    )
-    eval_proto.add_argument(
-        "--behavior", action="store_true",
-        help="no ranking run: report click / reformulate / abandon rates per search",
-    )
-    p_eval.add_argument("--limit", type=int, default=20,
-                        help="results considered per query (recall ceiling)")
-    p_eval.add_argument("--seed", type=int, default=7, help="case sampling seed")
-    p_eval.add_argument("--json", action="store_true", help="emit the report as JSON")
-    p_eval.set_defaults(func=cmd_eval)
 
     # The dev bench's gold miners — mint snapshot-bound eval cases (the deep tier
     # of the quality ladder). No `help=`, deliberately: that is what keeps the verb
