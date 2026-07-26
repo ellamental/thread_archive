@@ -121,3 +121,38 @@ def test_unknown_stage_never_breaks_a_search() -> None:
     with _probe.install():
         _probe.record("no_such_ms", 0.0)
         _probe.flag("no_such_flag")
+
+
+def test_the_vector_arm_records_into_the_probe_from_its_own_thread(archive_home, monkeypatch) -> None:
+    """The two pool arms run concurrently, and the probe is context-local. A worker
+    started without a copied context would find no probe and drop every stage it
+    measured — the vector arm's whole sub-split, silently, in production only."""
+    import json
+    import threading
+
+    from thread_archive import _retrieval
+    from thread_archive._importers import import_session_incremental
+    from thread_archive._store import init_db
+
+    init_db()
+    f = archive_home / "p.jsonl"
+    f.write_text(json.dumps({
+        "type": "user", "uuid": "u1", "timestamp": "2026-01-02T10:00:00Z", "sessionId": "s",
+        "message": {"role": "user", "content": "the widget report"},
+    }) + "\n", encoding="utf-8")
+    import_session_incremental(f, "proj:p")
+
+    caller = threading.current_thread()
+    ran_on: list = []
+
+    def _arm(query, **kw):
+        ran_on.append(threading.current_thread())
+        _probe.flag("matrix_built")  # only lands if the probe crossed into this thread
+        return None
+
+    monkeypatch.setattr(_retrieval, "_semantic_hits", _arm)
+    with _probe.install() as probe:
+        _retrieval.search("widget", limit=3)
+
+    assert ran_on and ran_on[0] is not caller, "the vector arm did not leave the calling thread"
+    assert probe.matrix_built is True, "the arm thread could not see the installed probe"

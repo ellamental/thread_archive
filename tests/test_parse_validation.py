@@ -16,9 +16,11 @@ import logging
 from thread_archive._importers._events import log_parse_validation
 from thread_archive._importers._validation_ledger import (
     LEDGER_FILE,
+    VERSION_SIGHTING_LEAD,
     record_drift,
     summarize_drift,
 )
+from thread_archive._ops.coverage import DEGRADED_DRIFT_MIN
 
 _EVENTS_LOGGER = "thread_archive._importers._events"
 
@@ -215,7 +217,8 @@ def test_clean_import_writes_no_drift_record(archive_home):
         provider="claude", conversation_id="s1", batch_safe=True,
     )
     assert _drift_records(archive_home) == []
-    assert summarize_drift() == {"total": 0, "recent": 0, "recent_findings": 0,
+    assert summarize_drift() == {"total": 0, "recent": 0, "recent_substantive": 0,
+                                 "recent_substantive_findings": 0, "recent_findings": 0,
                                  "days": 7.0, "by_provider": {}}
 
 
@@ -237,6 +240,79 @@ def test_drift_surfaces_in_the_coverage_check(archive_home):
     r = check_coverage(watchers=[])
     drift = r["drift"]
     assert drift["by_provider"]["claude-code"].pop("since")  # volatile timestamp
-    assert drift == {"total": 1, "recent": 1, "recent_findings": 1, "days": 7.0,
-                     "by_provider": {"claude-code": {"recent": 1, "recent_findings": 1}}}
+    assert drift == {"total": 1, "recent": 1, "recent_substantive": 1,
+                     "recent_substantive_findings": 1, "recent_findings": 1, "days": 7.0,
+                     "by_provider": {"claude-code": {"recent": 1, "recent_substantive": 1,
+                                                     "recent_findings": 1}}}
     assert read_health()["coverage_last"]["drift_recent"] == 1
+
+
+# ── advisory records are trail, not evidence ──────────────────────────────────
+
+
+def _sighting(version: str) -> str:
+    return (
+        f"{VERSION_SIGHTING_LEAD} claude-code version '{version}' - format changes "
+        f"ride version bumps; if field/line-type warnings follow, this is the "
+        f"release that grew them (advisory)"
+    )
+
+
+def test_version_sightings_never_degrade_a_source(archive_home):
+    # A harness that ships a release most days trips the tripwire most days. Those
+    # are heads-ups, not findings: they stay in the trail, but they must not push a
+    # perfectly healthy parser over the degradation threshold or raise the warning.
+    from thread_archive._ops.coverage import check_coverage
+
+    for v in ("2.1.218", "2.1.219", "2.1.220", "2.1.221"):
+        record_drift("claude-code", f"proj:{v}", findings=[_sighting(v)],
+                     batch_safe=True, advisory=True)
+    r = check_coverage(watchers=[])
+    assert r["drift"]["recent"] == 4  # the trail keeps every record
+    assert r["drift"]["recent_substantive"] == 0
+    assert r["drift"]["by_provider"]["claude-code"]["since"] is None
+    assert r["degraded"] == {}
+    assert not [w for w in r["warnings"] if "format drift" in w]
+
+
+def test_real_drift_still_degrades_past_the_threshold(archive_home):
+    # The flip side: advisories must not mask the signal they precede.
+    from thread_archive._ops.coverage import check_coverage
+
+    for i in range(2):
+        record_drift("claude-code", f"proj:v{i}", findings=[_sighting(f"9.9.{i}")],
+                     batch_safe=True, advisory=True)
+    for i in range(DEGRADED_DRIFT_MIN):
+        record_drift("claude-code", f"proj:s{i}",
+                     findings=["Unmodeled source line field 'user.toolEndsTurn'"],
+                     batch_safe=True)
+    r = check_coverage(watchers=[])
+    assert r["drift"]["recent_substantive"] == DEGRADED_DRIFT_MIN
+    # The warning counts findings the same way it counts records — advisories out.
+    assert r["drift"]["recent_findings"] == DEGRADED_DRIFT_MIN + 2
+    assert r["drift"]["recent_substantive_findings"] == DEGRADED_DRIFT_MIN
+    assert r["degraded"]["claude-code"]["reason"] == "validation_drift"
+    # ``since`` dates the drift, not the advisory that happened to precede it.
+    assert r["degraded"]["claude-code"]["since"] == _drift_records(archive_home)[2]["at"]
+    assert [w for w in r["warnings"] if "format drift" in w]
+
+
+def test_unflagged_records_are_classified_by_their_findings(archive_home):
+    # The ledger is append-only and outlives any one writer, so a record carrying
+    # no ``advisory`` flag is read by what it says: all-sightings is advisory,
+    # anything else is drift.
+    path = archive_home / LEDGER_FILE
+    path.write_text("".join(
+        json.dumps({"at": "2026-07-23T13:02:10.676181+00:00", "provider": "claude-code",
+                    "source_id": f"proj:{i}", "batch_safe": True,
+                    "count": len(findings), "findings": findings}) + "\n"
+        for i, findings in enumerate([
+            [_sighting("2.1.218")],
+            [_sighting("2.1.219")],
+            [_sighting("2.1.220")],
+            [_sighting("2.1.221"), "Unknown content block type 'attachment'"],
+        ])
+    ), encoding="utf-8")
+    drift = summarize_drift(days=36500.0)
+    assert drift["recent"] == 4
+    assert drift["recent_substantive"] == 1  # only the mixed record counts

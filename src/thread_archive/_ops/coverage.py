@@ -385,10 +385,11 @@ def check_coverage(
     # recording without warning left them invisible to everything watching
     # coverage (nightly notify, ops digest). Warn, never red — a single benign
     # drift record must not fail the pipeline, but it must surface.
-    if drift["recent"]:
+    if drift["recent_substantive"]:
         warnings.append(
-            f"format drift: {drift['recent']} validation-drift record(s) "
-            f"({drift['recent_findings']} finding(s)) in the last {drift['days']:.0f}d "
+            f"format drift: {drift['recent_substantive']} validation-drift record(s) "
+            f"({drift['recent_substantive_findings']} finding(s)) in the last "
+            f"{drift['days']:.0f}d "
             "— a parser no longer fully understands a source's format; see the "
             "drift ledger"
         )
@@ -401,9 +402,12 @@ def check_coverage(
 
     # Per-source degradation verdicts: the machine-readable "this source's
     # import needs fixing" map. A coverage FAIL is degradation outright; below
-    # that, sustained ledger volume for one source is (thresholds above). One
-    # reason per source, strongest first — the verdict names the remedy, and
-    # the remedy (`thread_archive fix-import <source>`) is the same either way.
+    # that, sustained *substantive* ledger volume for one source is (thresholds
+    # above) — the routine records both ledgers take constantly (a version
+    # sighting, an empty session) are trail, not evidence, and a source must
+    # never degrade on them. One reason per source, strongest first — the
+    # verdict names the remedy, and the remedy
+    # (`thread_archive fix-import <source>`) is the same either way.
     # ``since`` is the best available drift-onset timestamp for that reason.
     degraded: dict[str, dict] = {}
     for name, entry in sources.items():
@@ -412,7 +416,7 @@ def check_coverage(
         elif entry.get("failed") == "stale_ingest":
             degraded[name] = {"reason": "stale_ingest", "since": entry["newest_event_at"]}
     for name, per in drift["by_provider"].items():
-        if name and name not in degraded and per["recent"] >= DEGRADED_DRIFT_MIN:
+        if name and name not in degraded and per["recent_substantive"] >= DEGRADED_DRIFT_MIN:
             degraded[name] = {"reason": "validation_drift", "since": per["since"]}
     for name, per in skips["by_source"].items():
         if (

@@ -22,17 +22,20 @@ from __future__ import annotations
 import json
 import logging
 import re
+import threading
+import time
+from collections import OrderedDict
 from dataclasses import dataclass, field
 from datetime import datetime
 from time import perf_counter
-from typing import Optional
+from typing import Any, Optional
 
 from sqlalchemy import delete, insert, select
 from sqlalchemy import text as sa_text
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session
 
-from .._store import Event, EventFts, use_session
+from .._store import Event, EventFts, get_engine, use_session
 from . import _probe
 from ._classify import canonical_time_bound, classify_query
 from ._extract import INDEXABLE_EVENT_TYPES, extract_fts_content
@@ -712,6 +715,19 @@ def search_events(
         # the meaningful terms (stopwords carry no retrieval signal). Explicit
         # boolean / quoted / pipe-OR / identifier queries asked for their own
         # semantics and are left alone.
+        #
+        # This tier is the single largest stage of a natural-language search, and
+        # both obvious ways to cheapen it cost recall the gold floors are holding.
+        # A union's cost is set by its commonest token — one corpus-wide word puts
+        # six figures of rows through bm25 — but that breadth *is* the recall: this
+        # is the pass that answers the vague and paraphrase shapes, where the strict
+        # pass matched almost nothing and bm25 over the whole union is what finds
+        # the answer. Ordering it by rowid instead runs 3–9× faster and drops
+        # findability and judged-cases below floor (the vague shape hardest);
+        # pruning the high-document-frequency terms out of the union is not
+        # order-preserving either — over the pool's own top 20 it changes 10–85% of
+        # the rows. A cheaper tier has to come from somewhere other than the shape
+        # of this MATCH.
         if (or_fallback and startswith is None and match_mode == "token"
                 and mode == "tsquery" and not is_boolean
                 and '"' not in (query or "") and len(hits) < limit):
@@ -813,6 +829,97 @@ def _set_scan_sql(select_cols: str, predicate: str, shared: list[str], *, group:
     return "SELECT " + select_cols + " FROM (" + inner + ")" + group
 
 
+#: Upper bound on how long a memoized exact-set answer is served (see
+#: :func:`_set_memo_get`). The watermark below catches appended rows outright, so
+#: this only bounds what a watermark cannot see — an in-place update, a redaction's
+#: deletes — and a minute is short against the cadence any of those run at.
+_SET_MEMO_TTL_S = 60.0
+
+#: Distinct exact-set answers kept. The set queries are per (query, scope), and the
+#: pattern this exists for is one caller walking one query's pages, so a handful
+#: covers it with room for a few interleaved callers. Each entry is at most one row
+#: per matched thread, which the corpus itself bounds.
+_SET_MEMO_MAX = 8
+
+_set_memo: "OrderedDict[tuple, tuple[float, Any]]" = OrderedDict()
+_set_memo_lock = threading.Lock()
+
+
+def _set_watermark(session: Optional[Session]) -> object:
+    """The index's append watermark — the FTS rowid high-water mark, which moves on
+    every indexed event. Part of the memo key, so ingest invalidates a memoized set
+    rather than the memo hiding rows that arrived after it. An unreadable watermark
+    returns a unique object, which can never equal a stored key: the memo misses and
+    the scan runs, which is the safe direction."""
+    try:
+        with use_session(session) as s:
+            return s.execute(sa_text("SELECT max(rowid) FROM event_search")).scalar()
+    except Exception:  # noqa: BLE001 — a memo probe must never break a search
+        logger.debug("exact-set memo: watermark probe failed", exc_info=True)
+        return object()
+
+
+def _set_memo_get(key: tuple) -> Any:
+    """A memoized exact-set answer for ``key``, or ``None``.
+
+    The exact-set scan is the one stage whose cost does not depend on the page
+    being asked for: ``group='browse'`` resolves the whole match set to decide
+    membership and totals, then slices one page out of it — so a caller walking
+    N pages pays the identical scan N times, and it is the largest stage in that
+    walk. Memoizing it is also what makes the walk *coherent*: pages are sold as
+    slices of one ordering, and a set re-resolved per page against a moving index
+    can drop a row a later page was counting on.
+    """
+    now = time.monotonic()
+    with _set_memo_lock:
+        entry = _set_memo.get(key)
+        if entry is None:
+            return None
+        stored_at, value = entry
+        if now - stored_at > _SET_MEMO_TTL_S:
+            del _set_memo[key]
+            return None
+        _set_memo.move_to_end(key)
+        return value
+
+
+def _set_memo_put(key: tuple, value: Any) -> None:
+    """Store ``value`` under ``key``, evicting least-recently-used past the cap."""
+    with _set_memo_lock:
+        _set_memo[key] = (time.monotonic(), value)
+        _set_memo.move_to_end(key)
+        while len(_set_memo) > _SET_MEMO_MAX:
+            _set_memo.popitem(last=False)
+
+
+def reset_set_memo() -> None:
+    """Drop every memoized exact-set answer. For where a stale set would be *wrong*
+    rather than merely dated — redaction (rows that must stop being counted) and
+    reindex — mirroring :func:`.vectors.reset_matrix_cache`."""
+    with _set_memo_lock:
+        _set_memo.clear()
+
+
+def _set_memo_key(
+    kind: str, where: str, params: dict, shared: list[str], shared_params: dict,
+    session: Optional[Session],
+) -> tuple:
+    """The memo key for one exact-set query: the SQL it would run, its bound values,
+    and the index it would run against.
+
+    Built from the resolved predicate and filters rather than from the caller's
+    arguments, so it names exactly what the answer depends on — two spellings of one
+    scope share an entry, and a scope field that reaches the SQL cannot be left out
+    of the key by omission. ``id(get_engine())`` scopes it to the open archive: a
+    process holding two homes (the ``use_engine`` seam) must not serve one's set as
+    the other's."""
+    return (
+        kind, id(get_engine()), where,
+        tuple(sorted(params.items())), tuple(shared), tuple(sorted(shared_params.items())),
+        _set_watermark(session),
+    )
+
+
 def matched_threads(
     query: str,
     *,
@@ -846,17 +953,27 @@ def matched_threads(
         return [], False
     where, params = predicate
     shared, shared_params = _shared_filters(**scope)
+    _t = perf_counter()
+    key = _set_memo_key("threads", where, params, shared, shared_params, session)
+    memo = _set_memo_get(key)
+    if memo is not None:
+        # Fresh dicts per hand-out: the rows travel into a caller that builds hits
+        # beside them, and a shared dict is one careless write away from a memoized
+        # answer that drifts from the query it answers.
+        _probe.record("set_ms", _t)
+        return [dict(r) for r in memo[0]], memo[1]
     sql = sa_text(_set_scan_sql(
         "thread_id, count(*) AS n_hits, max(event_id) AS event_id, "
         "max(occurred_at) AS last_match",
         where, shared, group=" GROUP BY thread_id ORDER BY last_match DESC",
     ))
-    _t = perf_counter()
     with use_session(session) as s:
         rows = s.execute(sql, {**shared_params, **params, "set_cap": SET_SCAN_CAP}).mappings().all()
     _probe.record("set_ms", _t)
     total_hits = sum(r["n_hits"] for r in rows)
-    return [dict(r) for r in rows], total_hits >= SET_SCAN_CAP
+    result = ([dict(r) for r in rows], total_hits >= SET_SCAN_CAP)
+    _set_memo_put(key, result)
+    return [dict(r) for r in result[0]], result[1]
 
 
 def count_matches(
@@ -885,14 +1002,21 @@ def count_matches(
         return 0, 0, False
     where, params = predicate
     shared, shared_params = _shared_filters(**scope)
+    _t = perf_counter()
+    key = _set_memo_key("count", where, params, shared, shared_params, session)
+    memo = _set_memo_get(key)
+    if memo is not None:
+        _probe.record("set_ms", _t)
+        return memo
     sql = sa_text(_set_scan_sql(
         "count(*) AS n_events, count(DISTINCT thread_id) AS n_threads", where, shared,
     ))
-    _t = perf_counter()
     with use_session(session) as s:
         row = s.execute(sql, {**shared_params, **params, "set_cap": SET_SCAN_CAP}).mappings().one()
     _probe.record("set_ms", _t)
-    return row["n_events"], row["n_threads"], row["n_events"] >= SET_SCAN_CAP
+    result = (row["n_events"], row["n_threads"], row["n_events"] >= SET_SCAN_CAP)
+    _set_memo_put(key, result)
+    return result
 
 
 def _write_doc(
@@ -1310,6 +1434,10 @@ def rebuild_fts(session: Optional[Session] = None) -> int:
         count = s.execute(sa_text("SELECT count(*) FROM event_search")).scalar() or 0
         if own:
             s.commit()
+    # A clear-and-refill re-mints the rowids, so the exact-set memo's watermark can
+    # land back where it started over a wholly different index. Drop the memo rather
+    # than trust a number that just stopped meaning what it meant.
+    reset_set_memo()
     logger.info("rebuild_fts: indexed %d documents", count)
     return int(count)
 

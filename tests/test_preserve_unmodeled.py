@@ -176,3 +176,5 @@ def test_version_tripwire_records_first_sighting_once(archive_home, tmp_path) ->
         if "First sighting of claude-code version '9.9.9-test'" in line
     ]
     assert len(sightings) == 1
+    # A release is a heads-up, not a finding — it must not count as drift volume.
+    assert json.loads(sightings[0])["advisory"] is True

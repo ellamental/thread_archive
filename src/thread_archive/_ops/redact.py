@@ -367,6 +367,7 @@ def _purge_vectors(s, d: Path, event_ids: list[int]) -> None:
                 con.commit()
         finally:
             con.close()
+    from .._retrieval.fts import reset_set_memo
     from .._retrieval.vectors import _bump_version, reset_matrix_cache
 
     # The matrix cache must not serve the dead rows. This process drops it outright
@@ -374,6 +375,10 @@ def _purge_vectors(s, d: Path, event_ids: list[int]) -> None:
     # store token move and re-probe within the cooldown.
     _bump_version()
     reset_matrix_cache()
+    # Same for the exact-set memo: a delete leaves the FTS append watermark where it
+    # was, so the memo's own freshness probe cannot see this — and a redacted event
+    # must stop being counted immediately, not when the entry ages out.
+    reset_set_memo()
 
 
 # ── redact ───────────────────────────────────────────────────────────────────

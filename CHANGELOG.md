@@ -2,6 +2,29 @@
 
 ## Unreleased
 
+- **The claude-code parser was marked degraded for shipping releases.** The
+  version tripwire records a first-sighted harness version to the validation-drift
+  ledger — deliberately, since format changes ride version bumps and the sighting
+  names the release when a field later drifts. But the coverage check counted
+  those advisories as drift volume, and Claude Code ships a release most days:
+  2.1.218, 2.1.219 and 2.1.220 landed inside a week, cleared the
+  three-records-in-seven-days threshold, and pinned the source as
+  `validation_drift` degraded with a parser that had nothing wrong with it. The
+  real findings the ledger held before — `user.toolEndsTurn`, `assistant.agentId`,
+  the `permission-mode` line type — had all been fixed already. The verdict was
+  self-sustaining: the tripwire refills the window faster than it drains, so the
+  source could never return to healthy, and every genuine drift arriving later
+  would land on a board that already read degraded. It also kept the drift-snapshot
+  quarantine armed against a non-problem.
+
+  Advisory records are now marked as such at the point of writing and held out of
+  `recent_substantive`, which is what the coverage warning and the degradation
+  verdict key on — the same split the capture-skip ledger already drew for routine
+  empty-session skips. The records stay in the trail and in `recent`; the ledger is
+  still the place to look for which release grew a field. A record carrying no flag
+  is classified by its findings, since the ledger is append-only and outlives any
+  one writer, and an unrecognized record reads as drift rather than as noise.
+
 - **The latency smoke test was built to fail at random.** It measures the corpus's
   eight *slowest* queries — cherry-picked from the baseline precisely because they
   are pathological — and then held the result against a ceiling of 1.5× the

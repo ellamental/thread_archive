@@ -300,3 +300,60 @@ def test_the_exact_set_honors_the_same_scope_as_the_pool(archive_home) -> None:
     scoped = search("widget", limit=2, group="browse", source=["nonesuch"])
     assert scoped.total_threads == 0
     assert list(scoped) == []
+
+
+# ── the exact-set memo ───────────────────────────────────────────────────────
+# The set scan does not depend on the page: a browse resolves the whole match set
+# to decide membership and totals, then slices one page out of it. Walking N pages
+# re-ran the identical scan N times, and it is the largest stage in that walk.
+def test_paging_a_browse_resolves_the_exact_set_once(archive_home, monkeypatch) -> None:
+    _seed_many(archive_home, 12)
+    from thread_archive._retrieval import fts
+
+    scans = []
+    real = fts._set_scan_sql
+    monkeypatch.setattr(fts, "_set_scan_sql", lambda *a, **k: scans.append(1) or real(*a, **k))
+
+    first = search("widget", limit=5, group="browse", page=1)
+    for page in (2, 3):
+        assert search("widget", limit=5, group="browse", page=page).total_threads == first.total_threads
+    assert len(scans) == 1, "later pages re-ran the set scan"
+
+
+def test_the_memoized_set_still_sees_newly_indexed_threads(archive_home) -> None:
+    """The memo keys on the index's append watermark, so a thread that arrives
+    between two searches is counted by the second — a stale set would drop it from
+    the page it legitimately ranks onto, not merely date the total."""
+    _seed_many(archive_home, 4)
+    before = search("widget", limit=10, group="browse").total_threads
+    f = archive_home / "late.jsonl"
+    _write_cc(f, [_cc_user("late1", "the widget report number 99", 5)])
+    import_session_incremental(f, "proj:late")
+    assert search("widget", limit=10, group="browse").total_threads == before + 1
+
+
+def test_resetting_the_memo_forces_a_fresh_scan(archive_home, monkeypatch) -> None:
+    """Redaction and reindex drop the memo outright: both change the set in ways
+    the append watermark cannot see."""
+    _seed_many(archive_home, 4)
+    from thread_archive._retrieval import fts
+
+    assert count_matches("widget", content_types=["user"])[0] == 4
+    scans = []
+    real = fts._set_scan_sql
+    monkeypatch.setattr(fts, "_set_scan_sql", lambda *a, **k: scans.append(1) or real(*a, **k))
+    count_matches("widget", content_types=["user"])
+    assert scans == []  # served from the memo
+    fts.reset_set_memo()
+    count_matches("widget", content_types=["user"])
+    assert len(scans) == 1
+
+
+def test_the_memo_does_not_hand_out_its_own_rows(archive_home) -> None:
+    """Rows travel into a caller that builds hits beside them; a shared dict is one
+    careless write away from a memoized answer drifting from its query."""
+    _seed_many(archive_home, 3)
+    first, _ = matched_threads("widget", content_types=["user"])
+    first[0]["n_hits"] = 999
+    second, _ = matched_threads("widget", content_types=["user"])
+    assert second[0]["n_hits"] == 1

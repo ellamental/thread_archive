@@ -4,9 +4,11 @@ Harness format changes ride version bumps — a Claude Code line carries the CLI
 version that wrote it — so the *first sighting* of a new version string is the
 earliest drift warning available: it fires before any field has drifted, and
 when one later does, it names the release that grew it. Each first sighting
-appends one advisory record to the validation-drift ledger (the same trail
+appends one record to the validation-drift ledger (the same trail
 ``thread_archive coverage`` and the nightly's escalation read) and is remembered here
-so it never fires twice.
+so it never fires twice. The record is flagged ``advisory``: a release is a
+heads-up, not a finding, so it shows in the trail without counting toward the
+drift volume that warns or degrades the source.
 
 State is ``{provider: {version: first_seen_iso}}``. Advisory and fail-soft
 throughout: a lost or raced state file costs at worst a duplicate ledger
@@ -23,7 +25,7 @@ import tempfile
 from datetime import datetime, timezone
 
 from .._config import resolve_paths
-from ._validation_ledger import record_drift
+from ._validation_ledger import VERSION_SIGHTING_LEAD, record_drift
 
 logger = logging.getLogger(__name__)
 
@@ -89,12 +91,13 @@ def note_new_versions(
             provider,
             source_id,
             findings=[
-                f"First sighting of {provider} version '{v}' - format changes "
+                f"{VERSION_SIGHTING_LEAD} {provider} version '{v}' - format changes "
                 f"ride version bumps; if field/line-type warnings follow, this "
                 f"is the release that grew them (advisory)"
                 for v in new
             ],
             batch_safe=batch_safe,
+            advisory=True,
         )
     except Exception:  # noqa: BLE001 — the tripwire must never break an import
         logger.exception("version tripwire failed for %s", provider)

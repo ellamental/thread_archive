@@ -342,3 +342,26 @@ def test_warm_models_defaults_to_the_process_models(archive_home) -> None:
     assert warm_models() is None
     assert embed.is_available() is False
     assert rerank.is_available() is False
+
+
+def test_warm_models_primes_search_before_it_builds_the_graph(archive_home, monkeypatch) -> None:
+    """Order is the whole point of the warm pass. The corpus graph is the longest
+    stage and the only one no search blocks on — the coherence re-rank serves what
+    is cached and leaves the ranking alone when nothing is — so building it first
+    would leave every query in that window paying full cold-search latency, which
+    is the cost this function exists to move off the request path."""
+    from thread_archive._retrieval import _embed_graph
+    from thread_archive import _api
+
+    order: list[str] = []
+    monkeypatch.setattr(_embed_graph, "coherence_gamma", lambda: 1.0)
+    monkeypatch.setattr(_embed_graph, "get", lambda **kw: order.append("graph"))
+    real_search = _api.search
+    monkeypatch.setattr(
+        _api, "search",
+        lambda *a, **k: (order.append("search"), real_search(*a, **k))[1],
+    )
+
+    _seed_one_thread(archive_home, "the launchd supervisor restarted the watcher daemon")
+    warm_models()
+    assert order == ["search", "graph"]

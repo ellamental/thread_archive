@@ -69,7 +69,7 @@ def _isolate_home(monkeypatch):
 @pytest.fixture(autouse=True)
 def _isolate_archive(tmp_path, monkeypatch):
     from thread_archive import _config as config
-    from thread_archive._retrieval import embed_graph, vectors
+    from thread_archive._retrieval import embed_graph, fts, vectors
     from thread_archive._store import _base
     from thread_archive._truth import jsonl_log
 
@@ -108,6 +108,7 @@ def _isolate_archive(tmp_path, monkeypatch):
     # cooldown).
     vectors.reset_matrix_cache()
     embed_graph.reset_cache()
+    fts.reset_set_memo()
     yield
     # Let any in-flight single-flight refresh finish before the engine closes: a daemon
     # refresh thread that outlives its test would touch a torn-down engine and leak a
@@ -119,6 +120,7 @@ def _isolate_archive(tmp_path, monkeypatch):
     _base.close_engine()
     vectors.reset_matrix_cache()
     embed_graph.reset_cache()
+    fts.reset_set_memo()
     # sqlite3 and subprocess objects can participate in cycles, delaying their
     # ResourceWarning until an unrelated later test. Collect at the isolation
     # boundary so a leaked resource fails the test that created it. Generation 0

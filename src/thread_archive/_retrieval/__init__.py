@@ -17,7 +17,9 @@ commits it produced, indexed structurally rather than as text.
 
 from __future__ import annotations
 
+import contextvars
 import logging
+import threading
 from datetime import datetime
 from time import perf_counter
 from typing import Optional
@@ -185,12 +187,18 @@ def warm_models(embedder=None, reranker=None) -> None:
     client's request timeout (see :mod:`thread_archive._mcp.server`, which calls this on a
     background thread at startup).
 
-    Two steps: load the models explicitly (works even with an empty store), then run one
-    throwaway conceptual search to fill the process-global caches the first real query
-    reuses (the vector matrix, the reranker's warmed inference path). ``embedder`` and
-    ``reranker`` are the models to prime (default: the process ones). Fail-soft
-    throughout: a missing ``[embeddings]`` extra, a load failure, or an unavailable store
-    just leaves search to cold-load lazily, exactly as before.
+    Three steps, ordered by what a request actually waits on: load the models
+    explicitly (works even with an empty store), run one throwaway conceptual search to
+    fill the process-global caches the first real query reuses (the vector matrix, the
+    reranker's warmed inference path), and only then build the corpus graph. The graph is
+    last because it is the one stage no search blocks on — the coherence re-rank serves
+    whatever is cached and returns the ranking unchanged when nothing is — while it is
+    also the longest (tens of seconds on a real corpus). Building it before the priming
+    search would leave the process paying full cold-search latency for that whole window,
+    which is precisely the cost this function exists to move off the request path.
+    ``embedder`` and ``reranker`` are the models to prime (default: the process ones).
+    Fail-soft throughout: a missing ``[embeddings]`` extra, a load failure, or an
+    unavailable store just leaves search to cold-load lazily, exactly as before.
 
     The pass times itself into the usage ledger. This is the startup cost the whole
     function exists to move off the request path, and moving a cost is not the same
@@ -224,19 +232,6 @@ def warm_models(embedder=None, reranker=None) -> None:
     # Scoped to :data:`DEFAULT_CONTENT_TYPES` so the matrix this primes is keyed the
     # same as the real queries reuse (the matrix cache is keyed by content-type scope;
     # a mismatched scope would prime a matrix the real query never touches).
-    # Build the corpus graph inline while we're already off the request path —
-    # the coherence re-rank serves from this cache and never builds during a
-    # search (a stale graph refreshes in the background; the FIRST build is
-    # the warm pass's job).
-    if _embed_graph.coherence_gamma() > 0.0:
-        _t = perf_counter()
-        try:
-            _embed_graph.get(block=True)
-        except Exception:  # noqa: BLE001 — warming is best-effort
-            failed.append("graph")
-            logger.debug("warm_models: corpus graph build skipped", exc_info=True)
-        stage_ms["graph_ms"] = (perf_counter() - _t) * 1000.0
-
     _t = perf_counter()
     try:
         from .. import _api as api
@@ -249,6 +244,20 @@ def warm_models(embedder=None, reranker=None) -> None:
         failed.append("search")
         logger.debug("warm_models: dummy warm search skipped", exc_info=True)
     stage_ms["search_ms"] = (perf_counter() - _t) * 1000.0
+
+    # Build the corpus graph inline while we're already off the request path — the
+    # coherence re-rank serves from this cache and never builds during a search (a
+    # stale graph refreshes in the background; the FIRST build is the warm pass's
+    # job). Last of the stages: a search runs correctly without it, so every second
+    # spent here before the steps above would be a second of cold search latency.
+    if _embed_graph.coherence_gamma() > 0.0:
+        _t = perf_counter()
+        try:
+            _embed_graph.get(block=True)
+        except Exception:  # noqa: BLE001 — warming is best-effort
+            failed.append("graph")
+            logger.debug("warm_models: corpus graph build skipped", exc_info=True)
+        stage_ms["graph_ms"] = (perf_counter() - _t) * 1000.0
 
     try:
         from . import usage as _usage
@@ -327,17 +336,69 @@ def retrieve_pool(
             # a completeness claim the cache can't back up).
             return Pool(cached, raw=max(len(cached), over))
 
+    # A tool_name scope also sits the vector arm out: tool docs aren't embedded
+    # (only user/text/title/summary are), so every semantic hit in a tool-scoped
+    # search would be a hit the filter should have excluded. A types scope sits
+    # it out too: vectors carry no thread-type filter, so its hits could leak
+    # threads the filter excludes.
+    #
+    # The two arms share only the query and the scope — neither reads the other's
+    # output — so they run **concurrently** and the pool waits on the slower of the
+    # two rather than on their sum. The overlap is real rather than bookkeeping:
+    # both arms spend nearly all their time inside code that releases the GIL
+    # (SQLite's C-level scan, the matvec over the mmapped pack, the embedder's
+    # inference), so two Python threads genuinely run at once here.
+    #
+    # The vector arm is the one that moves off the calling thread. It opens its own
+    # sessions, where the lexical arm may have been handed the *caller's* — and a
+    # Session belongs to the thread that owns it — so leaving the lexical arm in
+    # place is what keeps a supplied session on its owner's thread.
+    #
+    # A copied context, not a bare thread: the engine override (``use_engine``) and
+    # the timing probe both live in context variables, and a thread started without
+    # them would query the process-global store and record its stages nowhere. The
+    # two arms write disjoint probe stages, so sharing one probe across the pair
+    # needs no lock.
+    semantic_arm: dict = {}
+
+    def _vector_arm() -> None:
+        _t = perf_counter()
+        try:
+            semantic_arm["hits"] = _semantic_hits(
+                query, thread_id=thread_id, content_types=content_types,
+                exclude_content_types=exclude_content_types, since=since, until=until,
+                over=over, source=source, thread_ids=thread_ids, agents=agents,
+                path=path, embedder=embedder,
+            )
+        finally:
+            semantic_arm["ms"] = (perf_counter() - _t) * 1000.0
+
+    worker = None
+    if not (structural or tool_name or types):
+        worker = threading.Thread(
+            target=contextvars.copy_context().run, args=(_vector_arm,),
+            name="retrieval-vector-arm", daemon=True,
+        )
+        worker.start()
+
     _t0 = perf_counter()
-    lexical = search_events(
-        query, thread_id=thread_id, thread_ids=thread_ids, content_types=content_types,
-        exclude_content_types=exclude_content_types, limit=over,
-        since=since, until=until, tool_name=tool_name, source=source,
-        types=types, agents=agents, path=path,
-        startswith=startswith, oldest_first=oldest_first,
-        or_fallback=or_fallback, match_mode=match_mode, session=session,
-    )
-    if probe is not None:
-        probe.fts_ms += (perf_counter() - _t0) * 1000.0
+    try:
+        lexical = search_events(
+            query, thread_id=thread_id, thread_ids=thread_ids, content_types=content_types,
+            exclude_content_types=exclude_content_types, limit=over,
+            since=since, until=until, tool_name=tool_name, source=source,
+            types=types, agents=agents, path=path,
+            startswith=startswith, oldest_first=oldest_first,
+            or_fallback=or_fallback, match_mode=match_mode, session=session,
+        )
+    finally:
+        # Joined in a finally so a raising lexical arm still reaps its peer: an
+        # abandoned worker would go on holding a session and a matrix reference
+        # past the request that started it.
+        if probe is not None:
+            probe.fts_ms += (perf_counter() - _t0) * 1000.0
+        if worker is not None:
+            worker.join()
 
     # Stamp each lexical hit with where the arm itself placed it — bm25 standing
     # for a MATCH pass. FTS5 orders by bm25 but does not surface the score, and the
@@ -369,20 +430,12 @@ def retrieve_pool(
         if "_bm25" in _h:
             _h["_bm25"] = round(max(_h["_bm25"], 0.0) / _peak, 6) if _peak > 0 else 0.0
 
-    # A tool_name scope also sits the vector arm out: tool docs aren't embedded
-    # (only user/text/title/summary are), so every semantic hit in a tool-scoped
-    # search would be a hit the filter should have excluded. A types scope sits
-    # it out too: vectors carry no thread-type filter, so its hits could leak
-    # threads the filter excludes.
-    _t0 = perf_counter()
-    semantic = None if structural or tool_name or types else _semantic_hits(
-        query, thread_id=thread_id, content_types=content_types,
-        exclude_content_types=exclude_content_types, since=since, until=until,
-        over=over, source=source, thread_ids=thread_ids, agents=agents,
-        path=path, embedder=embedder,
-    )
-    if probe is not None:
-        probe.semantic_ms += (perf_counter() - _t0) * 1000.0
+    # The vector arm's result, joined above. Absent when the arm sat out, and also
+    # when it died in a way ``_semantic_hits`` could not swallow — both read as
+    # None, which is exactly the lexical-only fallback the fusion below expects.
+    semantic = semantic_arm.get("hits")
+    if probe is not None and "ms" in semantic_arm:
+        probe.semantic_ms += semantic_arm["ms"]
 
     # Fuse the arms into a wide pool (keeps _rrf agreement + _semantic provenance),
     # then dedup byte-identical hits before ranking.

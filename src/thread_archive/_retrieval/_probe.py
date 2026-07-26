@@ -1,10 +1,16 @@
 """Per-search stage-timing probe — opt-in, fail-soft, zero-cost when unused.
 
-A search's wall-clock splits across a few stages: the lexical FTS arm, the
-semantic vector arm, and the cross-encoder re-rank. The usage ledger records the
-*total* latency already; this probe lets it also record where that time went,
-without :func:`thread_archive._retrieval.search` growing a second return value or
-the timing points caring whether anyone is listening.
+A search's work splits across a few stages: the lexical FTS arm, the semantic
+vector arm, and the cross-encoder re-rank. The usage ledger records the *total*
+latency already; this probe lets it also record where that time went, without
+:func:`thread_archive._retrieval.search` growing a second return value or the
+timing points caring whether anyone is listening.
+
+Stage times are durations, not shares of the total. The two pool arms run
+concurrently, so a search's ``fts_ms`` and ``semantic_ms`` cover overlapping
+wall-clock and can sum past the latency the caller waited — which is the point of
+recording them apart: what the search waited on is the *slower* of the two, and
+only separate numbers say which one that was.
 
 The contract is a context-local slot: a caller that wants a breakdown installs a
 :class:`SearchProbe` (``with install() as probe:``) and reads it after; the

@@ -234,10 +234,10 @@ def _drift_alert() -> Optional[str]:
         drift = summarize_drift(days=1.0)
         skips = summarize_skips(days=1.0)
         parts = []
-        if drift["recent"]:
+        if drift["recent_substantive"]:
             parts.append(
-                f"{drift['recent']} validation-drift record(s) "
-                f"({drift['recent_findings']} finding(s))"
+                f"{drift['recent_substantive']} validation-drift record(s) "
+                f"({drift['recent_substantive_findings']} finding(s))"
             )
         if skips["recent_substantive"]:
             parts.append(
