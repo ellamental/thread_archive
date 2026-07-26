@@ -2,6 +2,24 @@
 
 ## Unreleased
 
+- **The latency smoke test was built to fail at random.** It measures the corpus's
+  eight *slowest* queries — cherry-picked from the baseline precisely because they
+  are pathological — and then held the result against a ceiling of 1.5× the
+  **corpus-wide** p95, a number summarizing all 138 queries including the fast ones.
+  The two numbers are incomparable, and not by a little: on a freshly recorded
+  baseline the bar comes out at 2326 ms while the slowest query in the smoke set
+  cost 2491 ms *on the very run that recorded it*. The ceiling sat 165 ms below the
+  baseline's own measurement, so the check was not merely noisy — it was
+  self-contradicting, failing unchanged code against a reference taken from that
+  same code. Two runs duly disagreed, one passing and one failing by 65%, and the
+  failing one cost an investigation into a ranking change measured at ~1% slower.
+
+  The ceiling now references the queries actually being measured — the slowest of
+  their own recorded timings, which is what a p95 over their samples approximates —
+  and falls back to the corpus-wide p95 only for a caller measuring the whole set.
+  Same instrument, same impatience (it is still a heuristic, not a sound bound); it
+  now fails on a change rather than on the weather.
+
 - **The ranker threw away both of its arms' scores and ranked on their rank.**
   The lexical arm's contribution was a positional proxy — a hit's reciprocal rank
   within the pool — on the stated reasoning that "FTS5 orders by bm25 but does not
@@ -29,6 +47,20 @@
   queries whose wording the lexical arm cannot match. Two of the seven floored files
   give a little back (frustration −0.047 recall@10, needle −0.019, each inside one
   case of that file's resolution); every floor holds.
+
+  The score costs about 1% of a search. It rides a SELECT-list column FTS5 already
+  computed for its sort, but "already computed" is not the same as free: measured per
+  pass over the corpus's eight pathological queries, adding it costs +158 ms across
+  them on the strict AND pass (+28% of that pass, which is cheap at ~70 ms/query) and
+  −67 ms on the broad OR fallback (−1.1%, the pass that dominates at ~790 ms/query) —
+  so ~20 ms on a ~1600 ms query. End-to-end agrees: alternating the configurations
+  inside one process gives median p50 1641 ms against 1610 ms.
+
+  Both halves of that need stating, because the obvious experiment cannot see the
+  first one. Scoring the shipped weights against zeroed weights holds the *code*
+  fixed — the column is still selected, the normalization still runs — so it prices
+  the weights and nothing else. Only removing the column from the SQL prices the
+  column.
 
 - **A thread's ranking ignored how much of it matched.** Every ranking signal
   scores one event, and grouping then represents a thread by its best one, so a

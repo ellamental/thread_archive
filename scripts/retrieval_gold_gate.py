@@ -392,7 +392,8 @@ def _latency_smoke(baseline, *, params, k: int, budget_ms, reps: int) -> str | N
     from thread_archive._ops import speed
 
     queries = speed.smoke_set(baseline, k)
-    ceiling = speed.ceiling_ms(baseline, budget_ms=budget_ms, factor=1.5)
+    ceiling = speed.ceiling_ms(baseline, budget_ms=budget_ms, factor=1.5,
+                               queries=queries)
     if not queries or ceiling is None:
         return None
     print(f"latency smoke: {len(queries)} slowest-at-baseline queries, "

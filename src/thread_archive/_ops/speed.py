@@ -161,15 +161,34 @@ def smoke_set(baseline: Optional[dict[str, Any]], k: int) -> list[str]:
 
 
 def ceiling_ms(baseline: Optional[dict[str, Any]], *, budget_ms: Optional[float],
-               factor: float) -> Optional[float]:
+               factor: float, queries: Optional[list[str]] = None) -> Optional[float]:
     """The p95 a smoke run must stay under. An explicit ``budget_ms`` is an
-    absolute acceptability bar; otherwise the ceiling is ``factor`` times the
-    baseline's total p95 — a relative "don't get materially slower" ratchet. None
-    when neither is available (no budget, no baseline): nothing to check against,
-    so the smoke test can only measure, not fail."""
+    absolute acceptability bar; otherwise the ceiling is ``factor`` times what the
+    *measured queries* cost at baseline — a relative "don't get materially slower"
+    ratchet. None when neither is available (no budget, no baseline): nothing to
+    check against, so the smoke test can only measure, not fail.
+
+    ``queries`` is the set about to be measured, and passing it is what keeps the
+    comparison honest. The smoke test does not run a representative sample — it
+    deliberately runs the corpus's slowest queries (:func:`smoke_set`), whose
+    timings sit in the far tail of the distribution the corpus-wide p95 summarizes.
+    Priced against that corpus-wide number the bar lands *below* what those queries
+    already cost when the baseline was recorded, so the check fails on ordinary
+    run-to-run variance and says nothing about the change under test. Referenced
+    instead to the slowest of their own recorded timings — the statistic a p95 over
+    their samples actually approximates — the ratchet measures what it claims to.
+    Without ``queries`` (or with none of them in the baseline) the corpus-wide p95
+    is the fallback, which is right for a caller measuring the whole set."""
     if budget_ms is not None:
         return budget_ms
-    if baseline and baseline.get("total", {}).get("p95"):
+    if not baseline:
+        return None
+    if queries:
+        by_query = baseline.get("by_query") or {}
+        marks = [by_query[q] for q in queries if q in by_query]
+        if marks:
+            return max(marks) * factor
+    if baseline.get("total", {}).get("p95"):
         return baseline["total"]["p95"] * factor
     return None
 

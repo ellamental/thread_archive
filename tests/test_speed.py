@@ -89,6 +89,32 @@ def test_ceiling_is_none_without_a_budget_or_baseline() -> None:
     assert speed.ceiling_ms({}, budget_ms=None, factor=1.5) is None
 
 
+def test_ceiling_prices_the_measured_queries_not_the_whole_corpus() -> None:
+    # The failure this guards: the smoke test measures the SLOWEST queries, whose
+    # timings sit far above the corpus-wide p95 that summarizes every query. Priced
+    # against that p95 the ceiling lands under what those queries already cost at
+    # baseline, so the check fails on ordinary variance rather than on a regression.
+    baseline = {
+        "total": {"p95": 1000.0},
+        "by_query": {"fast": 100.0, "mid": 400.0, "slow": 2000.0, "slowest": 2400.0},
+    }
+    smoke = speed.smoke_set(baseline, 2)
+    assert smoke == ["slowest", "slow"]
+    ceiling = speed.ceiling_ms(baseline, budget_ms=None, factor=1.5, queries=smoke)
+    # 1.5x the slowest measured query (3600), not 1.5x the corpus p95 (1500) — which
+    # would sit below the 2400ms that query cost on the baseline run itself.
+    assert ceiling == 3600.0
+    assert ceiling > baseline["by_query"]["slowest"]
+
+
+def test_ceiling_falls_back_to_the_corpus_p95_when_queries_are_unknown() -> None:
+    baseline = {"total": {"p95": 1000.0}, "by_query": {"a": 100.0}}
+    assert speed.ceiling_ms(baseline, budget_ms=None, factor=1.5, queries=None) == 1500.0
+    # A query set the baseline has never seen carries no reference of its own.
+    assert speed.ceiling_ms(baseline, budget_ms=None, factor=1.5,
+                            queries=["unseen"]) == 1500.0
+
+
 # --- measure() ---------------------------------------------------------------
 
 
