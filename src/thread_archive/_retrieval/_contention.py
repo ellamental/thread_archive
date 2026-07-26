@@ -11,9 +11,12 @@ This is deliberately a *sample of observable facts*, not an attempt at attributi
 Three signals, each cheap enough to take on every search:
 
 ``inflight``
-    Retrieval calls concurrently in flight **in this process**. The MCP server is
-    long-lived and serves a client that pipelines, so self-contention is real and
-    entirely invisible to a per-call timer.
+    The **peak** number of retrieval calls in flight **in this process** at any
+    moment during this one. The MCP server is long-lived and serves a client that
+    pipelines, so self-contention is real and entirely invisible to a per-call
+    timer. A peak rather than an instantaneous reading because a search runs for
+    seconds and its peers arrive throughout it: the count at any single instant —
+    the start most of all — routinely misses every one of them.
 
 ``refreshing``
     Background rebuilds running in this process — the vector matrix and the corpus
@@ -30,7 +33,11 @@ Three signals, each cheap enough to take on every search:
 
 Every field is omitted unless it says something (no in-flight peers, no refresh, a
 long-quiet WAL), so a search on an idle machine records nothing and the fields'
-presence carries the signal.
+presence carries the signal. That economy has a cost worth naming: an absent field
+means *nothing to report*, never *not measured*, and the two are only the same as
+long as every surface that records a search also enters the in-flight span. A
+surface that samples without entering it makes its own calls invisible to everyone
+else's peak, and the ledger then reads idle on a machine that was not.
 """
 
 from __future__ import annotations
@@ -50,24 +57,61 @@ _WAL_STALE_S = 60.0
 
 _INFLIGHT_LOCK = threading.Lock()
 _inflight = 0
+#: The spans currently in flight, so an arriving call can raise the peak of the
+#: calls already running. Bounded by real concurrency (a handful), and every entry
+#: is removed in a ``finally``.
+_SPANS: list["Span"] = []
+
+
+class Span:
+    """One call's in-flight span, carrying the **peak** concurrency it saw.
+
+    An instantaneous count taken when a search begins answers the wrong question.
+    A search runs for seconds; its peers arrive throughout, and the ones that
+    arrive *after* it started are exactly the ones a start-of-request sample can
+    never see. Recorded traffic bears this out — a ledger with plenty of provably
+    overlapping calls in which the instantaneous field had never once fired.
+
+    So the span carries a high-water mark instead: every call that enters bumps the
+    counter and raises the peak of everyone currently in flight, and each reads its
+    own peak on the way out. A search that started alone and finished in a crowd
+    reports the crowd.
+    """
+
+    __slots__ = ("peak",)
+
+    def __init__(self, peak: int) -> None:
+        self.peak = peak
 
 
 @contextmanager
-def in_flight() -> Iterator[None]:
-    """Count this call as in flight for its duration.
+def in_flight() -> Iterator[Span]:
+    """Count this call as in flight for its duration, yielding its :class:`Span`.
 
-    Wraps the retrieval work at the surface, so ``sample()`` taken inside sees the
-    caller itself included — a lone search reports ``1``, which is why the field is
-    only recorded above that.
+    Wraps the retrieval work at the surface, so the count includes the caller
+    itself — a lone search peaks at ``1``, which is why the field is only recorded
+    above that. Pass the span to :func:`sample` at the *end* of the work to fold
+    its peak into the record.
     """
     global _inflight
     with _INFLIGHT_LOCK:
         _inflight += 1
+        span = Span(_inflight)
+        # Everyone currently in flight now has one more peer than they did, and
+        # that is true of them whether or not they are the one arriving.
+        for other in _SPANS:
+            if _inflight > other.peak:
+                other.peak = _inflight
+        _SPANS.append(span)
     try:
-        yield
+        yield span
     finally:
         with _INFLIGHT_LOCK:
             _inflight -= 1
+            try:
+                _SPANS.remove(span)
+            except ValueError:  # never let bookkeeping break a search
+                pass
 
 
 def _wal_age_s() -> Optional[float]:
@@ -101,12 +145,33 @@ def _refreshing() -> list[str]:
     return busy
 
 
-def sample() -> dict[str, Any]:
-    """The contention facts worth recording, omitting the ones that say nothing."""
+def peak_inflight(span: Optional[Span]) -> dict[str, Any]:
+    """The concurrency field, read off a finished :func:`in_flight` span.
+
+    Split out from :func:`sample` because the two are taken at opposite ends of the
+    work and for opposite reasons. The sampled facts describe *what the machine was
+    doing when this call began* — a rebuild that finished mid-search still shaped
+    the search, and an end sample would report it absent. Concurrency is the other
+    way round: it is only known once the call is over, because the peers that make
+    a search slow include the ones that arrived while it ran.
+
+    Merge into the sampled record just before it is written."""
     rec: dict[str, Any] = {}
     try:
-        if _inflight > 1:
-            rec["inflight"] = _inflight
+        if span is not None and span.peak > 1:
+            rec["inflight"] = span.peak
+    except Exception:  # noqa: BLE001 — advisory; never break a search
+        logger.debug("could not read in-flight peak", exc_info=True)
+    return rec
+
+
+def sample() -> dict[str, Any]:
+    """The contention facts worth recording, omitting the ones that say nothing.
+
+    Taken at the *start* of the work; the concurrency field is not among them and
+    arrives separately from :func:`peak_inflight`."""
+    rec: dict[str, Any] = {}
+    try:
         busy = _refreshing()
         if busy:
             rec["refreshing"] = busy

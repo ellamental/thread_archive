@@ -1,9 +1,9 @@
 """Edge/error-branch coverage for the backup kit (``_ops``) and the truth log
-(``_truth``): verify, redact, backup, reindex/rebuild, the drain, and repair.
+(``_truth``): verify, backup, reindex/rebuild, the drain, and repair.
 
 These modules already carry the happy paths well; this file drives the remaining
-error and edge branches — missing/empty stores, crash-recovery corners, crypto
-lifecycle errors, mirror guards, and the drain's low-level handle plumbing —
+error and edge branches — missing/empty stores, crash-recovery corners,
+mirror guards, and the drain's low-level handle plumbing —
 asserting on real outcomes (raised errors, file state, returned counts).
 """
 
@@ -12,7 +12,6 @@ from __future__ import annotations
 import json
 import os
 import shutil
-import sqlite3
 import types
 
 import pytest
@@ -20,37 +19,16 @@ from sqlalchemy import text
 
 from thread_archive import _api as ta
 from thread_archive._ops import backup as bk
-from thread_archive._ops import redact as rd
 from thread_archive._store import get_session
 from thread_archive._truth import drain, jsonl_log, rebuild, scan_truth_counts
 
 from .helpers import (
     append_jsonl,
-    cc_assistant,
-    cc_user,
     corrupt_event_line,
     event_count,
     import_cc_session,
     one_thread_file,
-    write_jsonl,
 )
-
-SECRET = "xyzzy-hunter2-4a6772f0-super-secret"
-
-
-def _import_secret_session(tmp_path, name="sess"):
-    f = tmp_path / f"{name}.jsonl"
-    write_jsonl(f, [cc_user(name, content=f"my api key is {SECRET}"), cc_assistant(name)])
-    ta.import_path(f)
-    with get_session() as s:
-        u = s.execute(text(
-            "SELECT id, thread_id FROM events WHERE event_type = 'user_message_sent'"
-        )).first()
-        a = s.execute(text(
-            "SELECT id FROM events WHERE event_type != 'user_message_sent' "
-            "ORDER BY id LIMIT 1"
-        )).first()
-    return f, int(u[0]), u[1], int(a[0])
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -102,151 +80,6 @@ def test_verify_hashes_tolerates_unparseable_index_payload(archive_home, tmp_pat
     v = ta.verify(hashes=True)
     assert v["hashes"]["index"]["mismatched"] >= 1
     assert eid in v["hashes"]["index"]["mismatch_sample"]
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-# redact.py — error paths + edge branches
-# ══════════════════════════════════════════════════════════════════════════════
-def test_redact_missing_thread_raises(archive_home, tmp_path) -> None:
-    import_cc_session(tmp_path)
-    with pytest.raises(ValueError, match="not found"):
-        ta.redact(987654, [1])
-
-
-def test_redact_event_not_in_thread_raises(archive_home, tmp_path) -> None:
-    _, eid, tid, _ = _import_secret_session(tmp_path)
-    with pytest.raises(ValueError, match="events not in thread"):
-        ta.redact(tid, [eid, 999999])
-
-
-def test_unredact_unknown_key_raises(archive_home, tmp_path) -> None:
-    import_cc_session(tmp_path)
-    with pytest.raises(ValueError, match="no redaction record"):
-        ta.unredact("deadbeefdeadbeef")
-
-
-def test_show_key_unknown_raises(archive_home, tmp_path) -> None:
-    import_cc_session(tmp_path)
-    with pytest.raises(ValueError, match="not in the keyring"):
-        ta.redact_show_key("nope")
-
-
-def test_forget_key_unknown_raises(archive_home, tmp_path) -> None:
-    import_cc_session(tmp_path)
-    with pytest.raises(ValueError, match="not in the keyring"):
-        ta.redact_forget_key("nope")
-
-
-def test_restore_key_unknown_record_raises(archive_home, tmp_path) -> None:
-    import_cc_session(tmp_path)
-    import base64
-    with pytest.raises(ValueError, match="no redaction record"):
-        ta.redact_restore_key("nope", base64.b64encode(b"\x00" * 32).decode())
-
-
-def test_redact_passes_through_blank_and_unparseable_truth_lines(archive_home, tmp_path):
-    """The truth rewrite keeps unparseable and blank lines byte-exact — those are
-    repair's jurisdiction, not redaction's."""
-    _, eid, tid, _ = _import_secret_session(tmp_path)
-    tf = one_thread_file(archive_home)
-    jsonl_log.reset_handles()
-    with open(tf, "a", encoding="utf-8") as fh:
-        fh.write("\n")                       # blank line
-        fh.write("{not json at all\n")       # unparseable line
-
-    res = ta.redact(tid, [eid])
-    assert res["events_redacted"] == 1
-    # Both the blank and the garbage line survived the rewrite untouched.
-    raw = tf.read_text(encoding="utf-8")
-    assert "{not json at all" in raw
-    assert SECRET.encode() not in tf.read_bytes()
-
-
-def test_redact_scrubs_topic_message_snapshot(archive_home, tmp_path):
-    """When a topic_messages.jsonl snapshot exists, its quote line is rewritten
-    too (the citation-snapshot rewrite path)."""
-    _, eid, tid, _ = _import_secret_session(tmp_path)
-    from .kg_seed import add_topic_evidence, create_topic
-
-    topic = create_topic("Secrets", "t")["topic_id"]
-    add_topic_evidence(topic, eid, tid, f"my api key is {SECRET}")
-    ta.checkpoint()  # materialize truth/topic_messages.jsonl
-
-    snap = archive_home / "truth" / rd.TOPIC_MESSAGES_FILE
-    assert snap.exists() and SECRET.encode() in snap.read_bytes()
-
-    res = ta.redact(tid, [eid])
-    assert res["topic_quotes_scrubbed"] == 1
-    # The snapshot's quote is now the placeholder — no plaintext left in it.
-    assert SECRET.encode() not in snap.read_bytes()
-    assert "[redacted]" in snap.read_text(encoding="utf-8")
-
-
-def test_redact_partial_keeps_unrelated_title(archive_home, tmp_path):
-    """Redacting only the assistant turn leaves the (user-derived) title in place
-    and surfaces the keep-it note rather than scrubbing it."""
-    _, _uid, tid, aid = _import_secret_session(tmp_path)
-    res = ta.redact(tid, [aid])  # assistant event only; title derives from user msg
-    assert res["events_redacted"] == 1
-    assert res["thread_meta_scrubbed"] == []
-    assert any("kept" in n for n in res["notes"])
-    with get_session() as s:
-        title = s.execute(text("SELECT title FROM threads WHERE id = :t"), {"t": tid}).scalar()
-    assert title and "[redacted]" not in title
-
-
-def test_redact_purges_vector_sidecar(archive_home, tmp_path):
-    """Redaction deletes the event's embedding from both the live table and the
-    durable ``vectors.sqlite`` sidecar (an embedding of a secret is the secret)."""
-    _, eid, tid, _ = _import_secret_session(tmp_path)
-    d = archive_home / "truth"
-    vec = b"\x00" * (768 * 4)
-    with get_session() as s:
-        s.execute(text(
-            "CREATE TABLE IF NOT EXISTS event_vectors ("
-            "event_id INTEGER NOT NULL, content_type TEXT NOT NULL, "
-            "chunk INTEGER NOT NULL DEFAULT 0, dim INTEGER NOT NULL, "
-            "vec BLOB NOT NULL, PRIMARY KEY (event_id, content_type, chunk))"))
-        s.execute(text("INSERT INTO event_vectors (event_id, content_type, chunk, dim, vec) "
-                       "VALUES (:e, 'text', 0, 768, :v)"), {"e": eid, "v": vec})
-        s.commit()
-    # A sidecar carrying the same event's vector.
-    side = d / "vectors.sqlite"
-    con = sqlite3.connect(side)
-    con.execute("CREATE TABLE event_vectors (event_id INTEGER, content_type TEXT, "
-                "chunk INTEGER, dim INTEGER, vec BLOB)")
-    con.execute("INSERT INTO event_vectors VALUES (?, 'text', 0, 768, ?)", (eid, vec))
-    con.commit()
-    con.close()
-
-    ta.redact(tid, [eid])
-
-    with get_session() as s:
-        live = s.execute(text("SELECT count(*) FROM event_vectors WHERE event_id = :e"),
-                         {"e": eid}).scalar()
-    con = sqlite3.connect(side)
-    sidecar = con.execute("SELECT count(*) FROM event_vectors WHERE event_id = ?", (eid,)).fetchone()[0]
-    con.close()
-    assert live == 0 and sidecar == 0
-
-
-def test_redaction_statuses_skips_keyless_and_unmatched(archive_home, tmp_path):
-    """A record with no key_id is skipped, and an unredaction whose key has no
-    matching redaction row doesn't crash the status roll-up."""
-    import_cc_session(tmp_path)
-    log = archive_home / "truth" / rd.REDACTIONS_FILE
-    log.write_text(
-        json.dumps({"type": "redaction", "thread_id": 1, "event_ids": [1]}) + "\n"
-        + json.dumps({"type": "unredaction", "key_id": "ghost", "at": "2026-01-01T00:00:00Z"}) + "\n",
-        encoding="utf-8",
-    )
-    assert rd.redaction_statuses() == []
-
-
-def test_marker_key_id_non_dict_envelope():
-    assert rd._marker_key_id({"_redacted": "not-a-dict"}) is None
-    assert rd._marker_key_id({"content": "hi"}) is None
-    assert rd._marker_key_id({"_redacted": {"key_id": "abc"}}) == "abc"
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -930,34 +763,3 @@ def test_rebuild_truth_scans_kg_log_and_stray_and_empty_thread(archive_home, tmp
     # Every real content unit is in the store, so the pre-flight passes and re-emits.
     res = jsonl_log.rebuild_truth_from_store()
     assert res["events"] >= 1
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-# redact.py — whole-thread meta scrub + unredact restore
-# ══════════════════════════════════════════════════════════════════════════════
-def test_whole_thread_redact_scrubs_and_unredact_restores_title(archive_home, tmp_path):
-    """A whole-thread redaction scrubs the (content-derived) title; unredacting
-    restores the exact original title through the truth + index meta paths."""
-    _, _uid, tid, _aid = _import_secret_session(tmp_path)
-    with get_session() as s:
-        original_title = s.execute(text("SELECT title FROM threads WHERE id = :t"),
-                                   {"t": tid}).scalar()
-    assert SECRET in original_title  # the auto-title carries the secret
-
-    res = ta.redact(tid)  # whole thread → meta is derived content, scrubbed
-    assert "title" in res["thread_meta_scrubbed"]
-    with get_session() as s:
-        scrubbed = s.execute(text("SELECT title FROM threads WHERE id = :t"),
-                             {"t": tid}).scalar()
-    assert scrubbed == "[redacted]"
-
-    ta.unredact(res["key_id"])
-    with get_session() as s:
-        restored = s.execute(text("SELECT title FROM threads WHERE id = :t"),
-                             {"t": tid}).scalar()
-    assert restored == original_title
-    # The truth thread record was restored too, not just the index projection.
-    tf = one_thread_file(archive_home)
-    metas = [json.loads(ln) for ln in tf.read_text(encoding="utf-8").splitlines()
-             if json.loads(ln).get("type") == "thread"]
-    assert metas and metas[-1].get("title") == original_title

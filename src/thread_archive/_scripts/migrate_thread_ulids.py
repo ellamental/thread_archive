@@ -6,7 +6,7 @@ the thread's real start (first event's ``occurred_at``, else the thread row's
 record. Everything that references a thread id is mapped: event records,
 ``thread_links.jsonl`` / ``topic_messages.jsonl`` snapshots, ``kg_events.jsonl``
 (column, entity_id, and payload fields), ``import_state.jsonl``,
-``amendments.jsonl``, ``redactions.jsonl``, and ``source_metadata.branched_from``.
+``amendments.jsonl``, and ``source_metadata.branched_from``.
 
 Safety model — nothing is destroyed until the operator says so:
 
@@ -56,7 +56,6 @@ _OVERLAYS: dict[str, tuple[str, ...]] = {
     "topic_messages.jsonl": ("topic_id", "thread_id", "created_by_thread_id"),
     "import_state.jsonl": ("thread_id",),
     "amendments.jsonl": ("thread_id",),
-    "redactions.jsonl": ("thread_id",),
 }
 
 # kg_events payload keys that carry thread/topic ids (event ids stay integers).

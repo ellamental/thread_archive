@@ -582,18 +582,12 @@ def report_backup(res: dict) -> int:
     if res.get("bundle_error"):
         print(
             f"WARNING: recovery bundle sync failed ({res['bundle_error']}) — the "
-            "destination's .recovery/ (config, keyring, retained exports) is stale"
+            "destination's .recovery/ (config, retained exports) is stale"
         )
     elif "bundle_files" in res:
-        if res["keyring_in_bundle"]:
-            keyring = "keyring included"
-        elif res.get("keyring_opted_out"):
-            keyring = "keyring EXCLUDED — config opt-out"
-        else:
-            keyring = "no keyring at the home"
         print(
             f"recovery bundle: {res['bundle_files']} file(s) "
-            f"({res['bundle_copied']} copied, {res['bundle_deleted']} removed; {keyring})"
+            f"({res['bundle_copied']} copied, {res['bundle_deleted']} removed)"
         )
     if res.get("generation_created"):
         print(
@@ -640,7 +634,7 @@ def report_backup(res: dict) -> int:
     # (page-worthy) or a persistently additive backup accumulating stale records —
     # both need eyes, and the scheduled wrapper only notifies on a nonzero exit.
     # So does a failed bundle sync: a mirror whose .recovery/ has quietly stopped
-    # updating restores yesterday's keyring and config.
+    # updating restores yesterday's config and retained exports.
     return (
         0
         if res["verify_ok"] and not res["deletions_skipped"] and not res.get("bundle_error")
@@ -826,13 +820,11 @@ def report_restore_drill(res: dict) -> int:
     b = res.get("bundle")
     if b:
         if not b["present"]:
-            print("bundle: ABSENT — this mirror restores conversations only (no config/keyring/exports)")
+            print("bundle: ABSENT — this mirror restores conversations only (no config/exports)")
         else:
-            keys = "none" if b["keyring_keys"] is None else str(b["keyring_keys"])
             print(
                 f"bundle: config={'yes' if b['config'] else 'no'} "
-                f"keyring keys={keys} retained exports={b['retained_exports']}"
-                + (" (keyring UNREADABLE)" if b.get("keyring_unreadable") else "")
+                f"retained exports={b['retained_exports']}"
             )
     if res.get("drill_home"):
         print(f"drill home kept: {res['drill_home']}")
@@ -887,11 +879,7 @@ def report_restore(res: dict, *, to: str) -> int:
             )
     b = res.get("bundle")
     if b:
-        installed = [
-            name
-            for name, on in (("config", b.get("config")), ("keyring", b.get("keyring")))
-            if on
-        ]
+        installed = ["config"] if b.get("config") else []
         if b.get("retained_exports"):
             installed.append(f"{b['retained_exports']} retained export(s)")
         print(
@@ -979,90 +967,6 @@ def report_repair(res: dict) -> int:
         print("note: the repaired files shrank — the next `thread_archive backup` may need --allow-shrink")
     if not res["dry_run"]:
         print("run `thread_archive verify` to confirm the archive is clean")
-    return 0
-
-
-def cmd_redact(args: argparse.Namespace) -> int:
-    from . import _api as api
-
-    if args.list_:
-        return report_redactions(api.redactions(home=args.home))
-    if args.show_key:
-        print(api.redact_show_key(args.show_key, home=args.home))
-        print(
-            "escrow this somewhere off this machine, then `thread_archive redact "
-            f"--forget {args.show_key} --yes` removes it from the keyring",
-            file=sys.stderr,
-        )
-        return 0
-    if args.forget:
-        if not args.yes:
-            print(
-                "refusing: --forget removes the key — if it was never escrowed "
-                "(--show-key) the content is unrecoverable forever. Add --yes to proceed."
-            )
-            return 2
-        api.redact_forget_key(args.forget, home=args.home)
-        print(f"key {args.forget} removed from the keyring")
-        return 0
-    if args.restore_key:
-        kid, key_b64 = args.restore_key
-        api.redact_restore_key(kid, key_b64, home=args.home)
-        print(f"key {kid} restored to the keyring — `thread_archive unredact {kid}` will now work")
-        return 0
-    if args.thread is None:
-        print("usage: thread_archive redact <thread_id> [--events IDS] [--reason ...] "
-              "(or --list / --show-key / --forget / --restore-key)")
-        return 2
-    event_ids = [int(e) for e in args.events.split(",")] if args.events else None
-    # args.thread is a ref — ULID id, legacy integer alias, or provider session
-    # id — passed through raw; the API layer resolves it.
-    return report_redact(
-        api.redact(args.thread, event_ids, reason=args.reason, home=args.home)
-    )
-
-
-def report_redact(res: dict) -> int:
-    """Print the operator report for an ``_api.redact`` result; return its exit code."""
-    print(
-        f"redacted {res['events_redacted']} event(s) in thread {res['thread_id']}"
-        + (f" under key {res['key_id']}" if res.get("key_id") else "")
-    )
-    if res.get("topic_quotes_scrubbed") or res.get("kg_quotes_scrubbed"):
-        print(
-            f"scrubbed {res.get('topic_quotes_scrubbed', 0)} topic quote(s), "
-            f"{res.get('kg_quotes_scrubbed', 0)} kg quote(s)"
-        )
-    for note in res.get("notes", []):
-        print(f"note: {note}")
-    if res.get("key_id"):
-        print(f"reverse with `thread_archive unredact {res['key_id']}`; "
-              f"escrow with `thread_archive redact --show-key {res['key_id']}`")
-    return 0
-
-
-def report_redactions(rows: list[dict]) -> int:
-    """Print the redaction ledger (``thread_archive redact --list``); return its exit code."""
-    if not rows:
-        print("no redactions")
-        return 0
-    for r in rows:
-        scope = f"{len(r['event_ids'])} event(s)" if r["event_ids"] else "whole thread"
-        reason = f"  reason: {r['reason']}" if r.get("reason") else ""
-        print(
-            f"{r['key_id']}  thread {r['thread_id']}  {scope}  "
-            f"{r['status']}, key {r['key']}  {r.get('redacted_at', '?')}{reason}"
-        )
-    return 0
-
-
-def cmd_unredact(args: argparse.Namespace) -> int:
-    from . import _api as api
-
-    res = api.unredact(args.key_id, home=args.home)
-    print(f"restored {res['events_restored']} event(s) in thread {res['thread_id']}")
-    for note in res.get("notes", []):
-        print(f"note: {note}")
     return 0
 
 
@@ -1810,47 +1714,6 @@ def build_parser() -> argparse.ArgumentParser:
         help="report what would be quarantined/restored without touching anything",
     )
     p_repair.set_defaults(func=cmd_repair)
-
-    p_redact = sub.add_parser(
-        "redact",
-        help="crypto-shred events: content replaced by a marker everywhere it "
-             "lives, the original encrypted into truth/redactions.jsonl under a "
-             "revocable key in <home>/keyring.json",
-    )
-    _add_home_arg(p_redact)
-    p_redact.add_argument(
-        "thread", nargs="?",
-        help="thread ref: ULID id, legacy integer id, or provider session id",
-    )
-    p_redact.add_argument(
-        "--events", help="comma-separated event ids (default: the whole thread)"
-    )
-    p_redact.add_argument("--reason", help="recorded on the redaction record")
-    p_redact.add_argument(
-        "--list", dest="list_", action="store_true",
-        help="list redactions with their lifecycle state",
-    )
-    p_redact.add_argument(
-        "--show-key", metavar="KEY_ID",
-        help="print a key's base64 material for escrow off this machine",
-    )
-    p_redact.add_argument(
-        "--forget", metavar="KEY_ID",
-        help="remove a key from the keyring (with --yes); crypto-erasure if never escrowed",
-    )
-    p_redact.add_argument(
-        "--restore-key", nargs=2, metavar=("KEY_ID", "KEY_B64"),
-        help="put an escrowed key back so `thread_archive unredact` can use it",
-    )
-    p_redact.add_argument("--yes", action="store_true", help="confirm --forget")
-    p_redact.set_defaults(func=cmd_redact)
-
-    p_unredact = sub.add_parser(
-        "unredact", help="restore redacted events from their encrypted bundle"
-    )
-    _add_home_arg(p_unredact)
-    p_unredact.add_argument("key_id", help="the redaction's key id (see `thread_archive redact --list`)")
-    p_unredact.set_defaults(func=cmd_unredact)
 
     p_fix = sub.add_parser(
         "fix-import",

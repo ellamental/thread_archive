@@ -309,7 +309,7 @@ def _build_graph(key: int, token: object, knn: int, min_sim: float) -> Optional[
     # The authoritative build reads the live matrix directly (the pure builder),
     # not the search path's serve-stale cache — the graph must reflect the store
     # it just tokened, and this call is already gated by the graph token cache above.
-    _tok, ids, _ct_arr, mat, _doc_inv, _doc_rep, scope_rows = _build_matrix_entry(_CTS)
+    _tok, ids, _ct_arr, mat, _doc_inv, _doc_rep, scope_rows, _ts = _build_matrix_entry(_CTS)
     if len(ids) == 0:
         _CACHE[key] = (token, None)  # no vectors: don't re-probe until the store moves
         return None

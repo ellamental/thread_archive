@@ -4,10 +4,9 @@ mutating history.
 The truth log is append-only, but append-only does not mean the *values* are
 frozen — an edit is a new record, not a rewrite. The truth layer already has
 the reconcile half built in: loads are last-wins by event id (the reindex
-loader's ``INSERT OR REPLACE``, in file line order), ``scan_truth_counts``
-reports superseded same-id lines as expected history rather than drift, and
-redaction rewrites every line carrying a target id precisely because superseded
-copies persist. :func:`amend_event_payloads` is the sanctioned *writer* for
+loader's ``INSERT OR REPLACE``, in file line order), and ``scan_truth_counts``
+reports superseded same-id lines as expected history rather than drift.
+:func:`amend_event_payloads` is the sanctioned *writer* for
 that mechanism: it appends a full superseding event record (same id, same
 ``dedup_key``, same timestamps, amended payload) to the thread's truth file
 through the ordinary staged-drain seam — so the truth line is fsynced before
@@ -15,7 +14,7 @@ the index COMMIT it belongs to, and the drain's crash framing (intent journal,
 rollback) covers it like any import. The prior line remains in the file as the
 event's recorded history.
 
-Two invariants bound what an amendment may touch:
+One invariant bounds what an amendment may touch:
 
 * **Content is identity.** ``dedup_key`` embeds a hash of the payload's
   content fields (``_DEDUP_CONTENT_KEYS`` — text, content blocks, model, …);
@@ -23,14 +22,11 @@ Two invariants bound what an amendment may touch:
   amendment therefore may only merge keys *outside* that set (cost, token
   counts, provider annotations, …) — the merged payload re-hashes to the same
   key, so every gate stays green and a re-import of the source still matches.
-  Editing content fields is refused: that is redaction's jurisdiction (replace
-  everywhere + keyed bundle), not a merge.
-* **Redacted payloads are sealed.** A marker payload carries no fields to
-  merge into; amending one would bloat a record whose content is deliberately
-  elsewhere.
+  Editing content fields is refused: a merge is not the mechanism for changing
+  what an event says.
 
-Provenance rides ``truth/amendments.jsonl`` (append-only, beside
-``redactions.jsonl``): one record per amended event — the fields set, their
+Provenance rides ``truth/amendments.jsonl`` (append-only): one record per
+amended event — the fields set, their
 prior values, the reason, the timestamp. The truth line itself stays
 schema-clean (``rebuild_truth_from_store`` refuses unmapped fields), so the
 audit trail lives in the sidecar, and the before-values make any amendment
@@ -52,7 +48,6 @@ from .._truth.jsonl_log import (
     _fsync_dir,
     _json_default,
     append_event_row,
-    is_redacted_payload,
     log_dir,
     shared_ingest_lock,
 )
@@ -62,9 +57,8 @@ logger = logging.getLogger(__name__)
 AMENDMENTS_FILE = "amendments.jsonl"
 
 # Payload keys an amendment may never touch: the content-hash material behind
-# dedup_key (imported from the builder so the two sets cannot drift), plus the
-# redaction marker envelope.
-_PROTECTED_KEYS = frozenset(_DEDUP_CONTENT_KEYS) | {"_redacted"}
+# dedup_key, imported from the builder so the two sets cannot drift.
+_PROTECTED_KEYS = frozenset(_DEDUP_CONTENT_KEYS)
 _METRIC_KEYS = frozenset(
     {
         "input_tokens",
@@ -113,10 +107,8 @@ def check_patch(payload: object, patch: dict) -> str | None:
     if bad:
         return (
             f"patch touches content-identity field(s) {bad} — content edits change "
-            "the dedup_key hash and are redaction's jurisdiction, not amendment's"
+            "the dedup_key hash, which amendment may not do"
         )
-    if is_redacted_payload(payload):
-        return "payload is redacted — unredact first if this event needs amending"
     if not isinstance(payload, dict):
         return "payload is not an object"
     return None
@@ -131,7 +123,7 @@ def amend_event_payloads(
     to the payload; every other key is untouched. Keys whose stored value
     already equals the patch value are dropped from the patch; an event whose
     patch fully no-ops is skipped. Invalid targets (unknown event, thread
-    mismatch, redacted payload, content-field patch) raise ``ValueError`` —
+    mismatch, content-field patch) raise ``ValueError`` —
     the batch is validated per-thread before that thread commits, so a bad
     entry aborts its own thread's batch, never a previously committed one.
 

@@ -94,7 +94,7 @@ def test_all_subcommands_present() -> None:
         "migrate", "embed",
         "status", "loads", "archives",
         "eval", "mine", "backup", "verify", "repair", "restore-drill", "restore",
-        "nightly", "coverage", "mirror", "redact", "unredact", "daemon",
+        "nightly", "coverage", "mirror", "daemon",
         "fix-import", "self-update",
     }
 
@@ -387,63 +387,6 @@ def test_daemon_backup_install_requires_dest(capsys) -> None:
 def test_daemon_backup_rejects_bad_at() -> None:
     with pytest.raises(SystemExit):
         main(["daemon", "install", "--backup", "--dest", "/d", "--at", "9pm"])
-
-
-def _one_event_id(thread_id) -> int:
-    from sqlalchemy import select
-
-    from thread_archive._store import Event, get_session
-
-    with get_session() as sess:
-        return sess.execute(
-            select(Event.id).where(Event.thread_id == thread_id).order_by(Event.id)
-        ).scalars().first()
-
-
-def test_redact_key_lifecycle_over_a_real_thread(seeded, tmp_path, capsys) -> None:
-    """The whole crypto-shred lifecycle through the CLI over a real thread:
-    redact → list → escrow the key → refuse an unconfirmed forget → forget →
-    restore the escrowed key → unredact."""
-    result = import_cc_session(tmp_path, "redactme")
-    tid = result.thread_id
-    eid = _one_event_id(tid)
-    home = ["--home", str(seeded)]
-
-    assert main(["redact", str(tid), "--events", str(eid), "--reason", "pii", *home]) == 0
-    out = capsys.readouterr().out
-    assert f"redacted 1 event(s) in thread {tid} under key " in out
-    key_id = out.split("under key ")[1].split()[0]
-    assert f"unredact {key_id}" in out
-
-    assert main(["redact", "--list", *home]) == 0
-    listed = capsys.readouterr().out
-    assert f"{key_id}  thread {tid}  1 event(s)" in listed and "reason: pii" in listed
-
-    assert main(["redact", "--show-key", key_id, *home]) == 0
-    key_b64 = capsys.readouterr().out.splitlines()[0]
-
-    assert main(["redact", "--forget", key_id, *home]) == 2  # unconfirmed: refused
-    assert "refusing" in capsys.readouterr().out
-
-    assert main(["redact", "--forget", key_id, "--yes", *home]) == 0
-    assert f"key {key_id} removed" in capsys.readouterr().out
-    assert main(["redact", "--list", *home]) == 0
-    assert "key absent" in capsys.readouterr().out  # the keyring really lost it
-
-    assert main(["redact", "--restore-key", key_id, key_b64, *home]) == 0
-    assert f"key {key_id} restored" in capsys.readouterr().out
-
-    assert main(["unredact", key_id, *home]) == 0
-    assert f"restored 1 event(s) in thread {tid}" in capsys.readouterr().out
-
-
-def test_redact_cli_without_thread_prints_usage() -> None:
-    assert main(["redact"]) == 2
-
-
-def test_redact_list_is_empty_on_a_fresh_archive(seeded, capsys) -> None:
-    assert main(["redact", "--list", "--home", str(seeded)]) == 0
-    assert "no redactions" in capsys.readouterr().out
 
 
 def test_import_rejects_unknown_provider() -> None:

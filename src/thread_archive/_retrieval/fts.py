@@ -6,7 +6,7 @@ which is in turn derived from the events: the FTS table holds only the inverted
 index — column reads, snippets, and LIKE scans resolve through the shadow by
 rowid, so the corpus text is stored once, not twice. Shadow→index sync is
 trigger-based (``events_fts_ai``/``_ad``/``_au``): every writer — incremental
-import, thread-meta sync, redaction — writes the shadow alone and the triggers
+import, thread-meta sync — writes the shadow alone and the triggers
 mirror it, so the two surfaces can't drift. ``rebuild_fts`` re-derives the
 shadow from the events and retokenizes the index, and is the FTS half of
 ``reindex``; it is also the heal for an ``event_search`` that predates the
@@ -831,7 +831,7 @@ def _set_scan_sql(select_cols: str, predicate: str, shared: list[str], *, group:
 
 #: Upper bound on how long a memoized exact-set answer is served (see
 #: :func:`_set_memo_get`). The watermark below catches appended rows outright, so
-#: this only bounds what a watermark cannot see — an in-place update, a redaction's
+#: this only bounds what a watermark cannot see — an in-place update, a reindex's
 #: deletes — and a minute is short against the cadence any of those run at.
 _SET_MEMO_TTL_S = 60.0
 
@@ -910,8 +910,8 @@ def _set_memo_put(key: tuple, value: Any) -> None:
 
 def reset_set_memo() -> None:
     """Drop every memoized exact-set answer and its counters. For where a stale set
-    would be *wrong* rather than merely dated — redaction (rows that must stop being
-    counted) and reindex — mirroring :func:`.vectors.reset_matrix_cache`."""
+    would be *wrong* rather than merely dated — reindex (rows that must stop being
+    counted) — mirroring :func:`.vectors.reset_matrix_cache`."""
     global _set_memo_hits, _set_memo_misses
     with _set_memo_lock:
         _set_memo.clear()

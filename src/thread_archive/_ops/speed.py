@@ -53,17 +53,22 @@ LATENCY_BASELINE_FILE = "latency-baseline.json"
 #: probe — the wall-clock the caller feels — and **none of these sum to it**. The
 #: two pool arms run concurrently (see :func:`thread_archive._retrieval.retrieve_pool`),
 #: so read each as *how long that stage took*, never as a share of a whole: their sum
-#: exceeds the total whenever they overlap and falls short of it by the ranking
-#: arithmetic and enrichment nothing here measures.
+#: exceeds the total whenever they overlap.
 #:
 #: Each arm's sub-stages ride along after the three arm totals, so a bench reports
 #: the same split production does — a regression that lands entirely inside
 #: ``semantic_ms`` still says which half of it moved. They nest inside their arm
 #: rather than adding to it.
+#:
+#: The shape stages are the other half of a search — what happened to the pool once
+#: the arms had found it. They are what makes the report closeable: the arms scale
+#: with the corpus, these scale with the pool, and a bench that carried only the
+#: former would attribute a shape regression to whichever arm ran beside it.
 ARM_STAGES = ("fts_ms", "semantic_ms", "rerank_ms")
 SEMANTIC_SUBSTAGES = _probe.SEMANTIC_SUBSTAGES
 FTS_SUBSTAGES = _probe.FTS_SUBSTAGES
-STAGES = ARM_STAGES + SEMANTIC_SUBSTAGES + FTS_SUBSTAGES
+SHAPE_SUBSTAGES = _probe.SHAPE_SUBSTAGES
+STAGES = ARM_STAGES + SEMANTIC_SUBSTAGES + FTS_SUBSTAGES + SHAPE_SUBSTAGES
 
 
 def percentile(xs: list[float], q: float) -> float:

@@ -527,6 +527,7 @@ def thread_search(
     retrieval_ms: Optional[float] = None
     render_ms: Optional[float] = None
     context: dict = {}
+    span: Any = None
     started = time.monotonic()
     # Log in a finally so a raising search still leaves its usage record — a search
     # that failed slowly is the most important latency evidence there is, and it is
@@ -535,8 +536,10 @@ def thread_search(
         # Contention is sampled inside the in-flight span (so this call counts
         # itself) and at the *start* of the work: what the machine was doing when
         # this search began is what shaped its latency. Sampling after would report
-        # a background rebuild that finished during the search as absent.
-        with _contention.in_flight(), _probe.install() as probe:
+        # a background rebuild that finished during the search as absent. The
+        # concurrency peak is the exception and is folded in below, because the
+        # peers that slow a search include the ones that arrive while it runs.
+        with _contention.in_flight() as span, _probe.install() as probe:
             context = _contention.sample()
             hits = _run(content_types, extra_exclude=default_exclude)
 
@@ -549,6 +552,10 @@ def thread_search(
         # Usage ledger (fail-soft, ids + timings only — see _retrieval.usage): the
         # observed ground truth future retrieval evals are built from, carrying a
         # per-stage latency breakdown (which stage a slow search spent its time in).
+        # The concurrency peak lands here rather than beside the sample so that a
+        # search which *raised* still reports how busy the process was — the slow
+        # failures are the rows a contention question most needs.
+        context.update(_contention.peak_inflight(span))
         _usage.record_search(
             query,
             params={
@@ -674,8 +681,9 @@ def thread_read(
     started = time.monotonic()
     out: object = None
     context: dict = {}
+    span: Any = None
     try:
-        with _contention.in_flight():
+        with _contention.in_flight() as span:
             context = _contention.sample()
             out = api.read_thread(
                 thread_id,
@@ -692,6 +700,7 @@ def thread_read(
             )
         return out
     finally:
+        context.update(_contention.peak_inflight(span))
         _usage.record_read(
             thread_id,
             params={

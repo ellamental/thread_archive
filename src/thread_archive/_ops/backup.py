@@ -10,7 +10,7 @@ mirror in a throwaway home and prove it reads and searches.
 The destination is a *complete* restore set, not just the truth: each
 run also syncs the home's non-truth recovery material into a reserved
 ``<dest>/.recovery/`` subtree (:func:`_sync_recovery_bundle`) — ``config.json``,
-the redaction keyring (by default; see the function docstring), the retained
+the retained
 original exports under ``dumps/imported/``, and a reference snapshot of
 ``health.json`` + the operational ledgers. :func:`restore` installs the choices
 and recovery material into the recovered home; the history snapshots stay at the
@@ -32,7 +32,7 @@ import os
 from pathlib import Path
 from typing import Optional
 
-from .._config import ArchivePaths, load_config, resolve_paths
+from .._config import ArchivePaths, resolve_paths
 from .health import record_health, stamp_heartbeat
 from .verify import verify
 
@@ -52,12 +52,13 @@ _GEN_KEEP_RECENT = 7
 _GEN_KEEP_MONTHS = 6
 
 # The recovery bundle: the home's non-truth recovery material, synced beside the
-# truth mirror. Head-only by design — never snapshotted into generations — so a
-# key removed from the live keyring (crypto-erasure) leaves the backup on the
-# next run instead of persisting in dated snapshots. See _sync_recovery_bundle.
+# truth mirror. Head-only by design — never snapshotted into generations — so it
+# tracks the install's *current* state; a member deleted at the home leaves the
+# backup on the next run instead of persisting in dated snapshots. The
+# generations exist to recover the truth from bad writes, which this material is
+# not. See _sync_recovery_bundle.
 _RECOVERY_SUBDIR = ".recovery"
-# Home-level files that ride the bundle. keyring.json is handled separately
-# (config-gated; the canonical name lives in _ops.redact); health.json and the
+# Home-level files that ride the bundle. health.json and the
 # ledgers are reference snapshots — bundled so operational history survives disk
 # loss, but never installed by restore (a restored home must not claim the
 # source install's health history).
@@ -407,8 +408,8 @@ def _snapshot_generation(dest: Path) -> dict:
                 continue
             rel = sp.relative_to(dest)
             # The recovery bundle is head-only: a generation that retained a
-            # keyring copy would keep a forgotten (crypto-erased) key alive in
-            # dated snapshots for the whole retention window.
+            # copy would keep superseded install state alive in dated snapshots
+            # for the whole retention window.
             if rel.parts[0] in (_GENERATIONS_SUBDIR, _RECOVERY_SUBDIR):
                 continue
             gp = tmp / rel
@@ -454,20 +455,16 @@ def _snapshot_generation(dest: Path) -> dict:
     return out
 
 
-def _bundle_sources(paths: ArchivePaths, *, include_keyring: bool) -> dict[Path, Path]:
+def _bundle_sources(paths: ArchivePaths) -> dict[Path, Path]:
     """The recovery bundle's file map: bundle-relative path → source path, for
     every bundle member that exists at the home. Membership is explicit — the
     home also holds the index, locks, and logs, none of which belong in a
     restore set (the index rebuilds from truth; locks and logs are process
     state)."""
     from .._watcher.export_drop import IMPORTED_DIRNAME
-    from .redact import KEYRING_FILE
 
-    names = list(_BUNDLE_HOME_FILES)
-    if include_keyring:
-        names.append(KEYRING_FILE)
     out: dict[Path, Path] = {}
-    for name in names:
+    for name in _BUNDLE_HOME_FILES:
         sp = paths.home / name
         if sp.is_file():
             out[Path(name)] = sp
@@ -480,31 +477,22 @@ def _bundle_sources(paths: ArchivePaths, *, include_keyring: bool) -> dict[Path,
     return out
 
 
-def _sync_recovery_bundle(
-    paths: ArchivePaths, dest: Path, *, include_keyring: bool, delete: bool
-) -> dict:
+def _sync_recovery_bundle(paths: ArchivePaths, dest: Path, *, delete: bool) -> dict:
     """Sync the home's non-truth recovery material into ``<dest>/.recovery/`` —
     the difference between "the conversations survive" and "the install
-    survives": operator choices (``config.json``), the redaction keyring, the
+    survives": operator choices (``config.json``), the
     retained original exports (``dumps/imported/``, the lossless re-import
     source), and reference snapshots of ``health.json`` + the operational
     ledgers.
 
-    The keyring rides by default: without it, losing the disk crypto-erases
-    every active redaction — recoverability is what redaction's *redacted*
-    (vs *forgotten*) state promises. The cost is that the backup medium can
-    unredact its own ciphertext; ``{"backup": {"include_keyring": false}}`` in
-    ``config.json`` restores the ciphertext-only posture for anyone who wants
-    escrow to live elsewhere.
-
     A true head-only mirror of the file map: changed files are copied
     atomically, and (``delete``, same gate as the truth mirror's delete-sync)
     bundle files with no live counterpart are removed — that is the path by
-    which a forgotten key, a flipped ``include_keyring``, or a superseded
-    retained export actually leaves the backup. Never snapshotted into
-    generations (see :func:`_snapshot_generation`)."""
+    which a superseded retained export or a deleted config actually leaves the
+    backup. Never snapshotted into generations (see
+    :func:`_snapshot_generation`)."""
     rec_dir = dest / _RECOVERY_SUBDIR
-    sources = _bundle_sources(paths, include_keyring=include_keyring)
+    sources = _bundle_sources(paths)
     copied = deleted = 0
     for rel, sp in sources.items():
         dp = rec_dir / rel
@@ -533,11 +521,6 @@ def _sync_recovery_bundle(
         "bundle_files": len(sources),
         "bundle_copied": copied,
         "bundle_deleted": deleted,
-        # Distinct states the operator must be able to tell apart: bundled,
-        # opted out (a choice), or simply no keyring at the home (no active
-        # redaction has ever minted one — nothing to bundle).
-        "keyring_in_bundle": any(str(rel) == "keyring.json" for rel in sources),
-        "keyring_opted_out": not include_keyring,
     }
 
 
@@ -545,23 +528,13 @@ def _bundle_status(dest: Path) -> dict:
     """What the mirror's recovery bundle holds — presence and rough shape, so
     the restore drill can report whether a restore would get the install
     back, not just the conversations."""
-    import json
-
     rec = dest / _RECOVERY_SUBDIR
     out: dict = {
         "present": rec.is_dir(),
         "config": (rec / "config.json").is_file(),
         "health": (rec / "health.json").is_file(),
-        "keyring_keys": None,
         "retained_exports": 0,
     }
-    kp = rec / "keyring.json"
-    if kp.is_file():
-        try:
-            keys = json.loads(kp.read_text(encoding="utf-8")).get("keys", {})
-            out["keyring_keys"] = len(keys) if isinstance(keys, dict) else 0
-        except (OSError, ValueError):
-            out["keyring_unreadable"] = True
     imported = rec / "dumps" / "imported"
     if imported.is_dir():
         out["retained_exports"] = sum(1 for p in imported.rglob("*") if p.is_file())
@@ -569,25 +542,22 @@ def _bundle_status(dest: Path) -> dict:
 
 
 def _restore_bundle(dest: Path, home: Path) -> dict:
-    """Install the recovery bundle into a restored home: ``config.json``, the
-    keyring, and the retained exports — the operator's choices and the
+    """Install the recovery bundle into a restored home: ``config.json`` and
+    the retained exports — the operator's choices and the
     recovery material. The bundled health snapshot and ledgers deliberately
     stay at the mirror: they are the *source install's* operational history,
     reference material for forensics, not state the restored home may claim
     as its own. Fail-soft — a bundle that won't copy degrades to the pre-bundle
     restore (truth only), reported, never a failed restore."""
-    from .redact import KEYRING_FILE
-
     rec = dest / _RECOVERY_SUBDIR
-    out: dict = {"config": False, "keyring": False, "retained_exports": 0}
+    out: dict = {"config": False, "retained_exports": 0}
     if not rec.is_dir():
         return out
     try:
-        for name in ("config.json", KEYRING_FILE):
-            sp = rec / name
-            if sp.is_file():
-                _atomic_copy(sp, home / name, trim_to_newline=False)
-                out["keyring" if name == KEYRING_FILE else "config"] = True
+        sp = rec / "config.json"
+        if sp.is_file():
+            _atomic_copy(sp, home / "config.json", trim_to_newline=False)
+            out["config"] = True
         imported = rec / "dumps" / "imported"
         if imported.is_dir():
             for sp in imported.rglob("*"):
@@ -638,7 +608,7 @@ def backup(
     generation) actually restores.
 
     After the mirror, the run syncs the recovery bundle
-    (:func:`_sync_recovery_bundle`): config, keyring (config-gated), retained
+    (:func:`_sync_recovery_bundle`): config, retained
     exports, and health/ledger snapshots land under ``<dest>/.recovery/``, so
     the destination restores the *install*, not just the conversations. Bundle
     failure is reported (``bundle_error``, and it fails the health record's
@@ -700,11 +670,8 @@ def backup(
     # The recovery bundle, outside the truth locks: its members have their own
     # atomic writers, so a copy races to the old or the new file, never a torn
     # one. Same delete gate as the truth mirror — a sick source syncs additively.
-    include_keyring = bool(load_config(home).get("backup", {}).get("include_keyring", True))
     try:
-        result.update(
-            _sync_recovery_bundle(paths, dest_path, include_keyring=include_keyring, delete=delete)
-        )
+        result.update(_sync_recovery_bundle(paths, dest_path, delete=delete))
     except OSError as e:  # the bundle is protection for the install, not the truth mirror
         result["bundle_error"] = str(e)
         import logging
@@ -741,7 +708,6 @@ def backup(
         "verify_ok": verify_ok,
         "mirror_complete": result["mirror_complete"],
         "files_copied": result["files_copied"],
-        "keyring_in_bundle": result.get("keyring_in_bundle"),
     })
     stamp_heartbeat()
     return {
@@ -908,7 +874,7 @@ def restore(
     - **Publish.** With ``replace``, the existing home is moved aside to
       ``<home>.damaged-<stamp>`` — preserved, never deleted — then the staging
       home renames into place, and the mirror's recovery bundle is installed
-      (:func:`_restore_bundle`: config, keyring, retained exports — always
+      (:func:`_restore_bundle`: config, retained exports — always
       from the mirror head, generations carry no bundle). A post-publish
       reopen re-counts events as a final sanity check.
 
@@ -997,9 +963,8 @@ def restore(
             result["damaged_home"] = str(damaged)
         os.rename(staging, to_path)
         # Install the recovery bundle — always from the mirror HEAD, even when
-        # restoring a generation: the bundle is head-only by design (a dated
-        # keyring copy would defeat crypto-erasure), so the head's is the only
-        # and the current one.
+        # restoring a generation: the bundle is head-only by design, so the
+        # head's is the only and the current one.
         result["bundle"] = _restore_bundle(dest_path, to_path)
     except Exception as e:  # noqa: BLE001 — the report is the contract; never half-raise
         close()

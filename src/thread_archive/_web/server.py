@@ -738,8 +738,9 @@ class _Handler(BaseHTTPRequestHandler):
         # case: endpoints other than /api/search reach the engine too, and a probe
         # nobody fills costs a contextvar set and reports nothing.
         probe = None
+        span = None
         try:
-            with _metrics.serving(), _probe.install() as probe:
+            with _metrics.serving(), _contention.in_flight() as span, _probe.install() as probe:
                 status, ctype, body, headers = route("GET", parsed.path, parse_qs(parsed.query))
         except Exception:  # noqa: BLE001 — isolate per request; never kill the loop
             # Detail stays server-side: exception text can carry paths/SQL/query
@@ -756,8 +757,11 @@ class _Handler(BaseHTTPRequestHandler):
             # Sampled after the work, at the surface that served it — the same
             # place the MCP tools sample theirs. The viewer shares a process with
             # the watcher, so a background matrix or graph refresh here is
-            # competing with this very request.
-            context=_contention.sample(),
+            # competing with this very request. The request also *enters* the
+            # in-flight span rather than only reading it: the viewer serves its
+            # pages concurrently, and a surface that samples without entering makes
+            # its own load invisible to every peak, its own included.
+            context={**_contention.sample(), **_contention.peak_inflight(span)},
         )
         self.send_response(status)
         self.send_header("Content-Type", ctype)

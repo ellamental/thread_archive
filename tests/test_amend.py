@@ -106,20 +106,13 @@ def test_amend_appends_superseding_line_and_updates_index(archive_home) -> None:
         assert s.get(Event, eid).payload["cost"] == 0.0421
 
 
-def test_amend_refuses_content_fields_and_redacted(archive_home) -> None:
+def test_amend_refuses_content_fields_and_unknown_events(archive_home) -> None:
     _, tid = _import(archive_home)
     eid, _payload, _key = _completed_event(tid)
     with pytest.raises(ValueError, match="content-identity"):
         amend_event_payloads([(tid, eid, {"content_blocks": []})])
     with pytest.raises(ValueError, match="not in thread"):
         amend_event_payloads([(tid, eid + 999, {"cost": 1})])
-    with get_session() as s:
-        s.execute(update(Event).where(Event.id == eid).values(
-            payload={"_redacted": {"key_id": "k", "at": "t"}}
-        ))
-        s.commit()
-    with pytest.raises(ValueError, match="redacted"):
-        amend_event_payloads([(tid, eid, {"cost": 1})])
 
 
 def test_amend_noop_skips_without_truth_append(archive_home) -> None:

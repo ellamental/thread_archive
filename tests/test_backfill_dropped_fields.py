@@ -596,20 +596,6 @@ def test_plan_duplicate_fresh_key_counted_not_repatched(archive_home) -> None:
     assert len(plan.patches) == 1
 
 
-def test_plan_refuses_to_patch_a_redacted_payload(archive_home) -> None:
-    """A redaction marker carries no fields to merge into — amend's ``check_patch``
-    refuses, and the planner counts it instead of writing."""
-    tid = _seed_thread("codex", "c-redacted", [
-        {"event_type": "api_request_completed",
-         "payload": {"_redacted": {"reason": "pii"}}, "dedup_key": "k1"},
-    ])
-    plan = _plan(tid, "codex", [
-        _fresh_event("api_request_completed", {"cost": 0.5}, dedup_key="k1"),
-    ])
-    assert plan.stats["patch_refused"] == 1
-    assert plan.patches == []
-
-
 def test_plan_insert_keys_are_deduped_and_keyless_inserts_allowed(archive_home) -> None:
     """The insert phase borrows its turn's stored ids, plans one row per fresh
     dedup_key, and still inserts a fresh event that carries no key at all."""

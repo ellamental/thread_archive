@@ -142,9 +142,9 @@ _write_version = 0
 # a full base rebuild — only in a single-flight background thread. Continuous ingest
 # moves the token every few minutes; the old inline rebuild put that multi-second cost
 # on whichever query raced the new token, and, unguarded, let a burst of concurrent
-# queries all rebuild the same ~GB pack at once. Redaction can't wait out the cooldown,
-# so it calls ``reset_matrix_cache`` for immediate local effect (and scrubs the content
-# at the source) — a stale window only ever costs a ranking slot, never leaked content.
+# queries all rebuild the same ~GB pack at once. A writer that can't wait out the
+# cooldown calls ``reset_matrix_cache`` for immediate local effect — a stale window
+# only ever costs a ranking slot.
 _MATRIX_REFRESH_COOLDOWN_S = 60.0
 _MATRIX_REFRESH_LOCK = threading.Lock()
 _MATRIX_REFRESHING: set = set()
@@ -162,6 +162,13 @@ _PACK_STALE_AGE_S = 3600
 # packed only when the delta grows past this many rows, so the expensive rebuild
 # happens once per this-many new vectors, not once per new vector.
 _DELTA_MAX_ROWS = 20_000
+
+#: The positional arrays a complete base pack is made of. Named once because two
+#: places must agree on the set: the writer, and the reuse check that decides a pack
+#: is loadable. A pack missing any of them is not a broken pack to repair — it is an
+#: older one, and since a pack is derived and disposable the reuse check simply
+#: passes it over and the next build writes a complete one.
+_PACK_ARRAYS = ("mat", "ids", "cts", "ts")
 
 
 class _SplitMatrix:
@@ -209,47 +216,75 @@ def _pack_dir() -> Optional[Path]:
     return Path(db).parent / "vector-pack" if db else None
 
 
+def _occurred_array(values: list) -> np.ndarray:
+    """Pack ``occurred_at`` strings into a byte array a time scope can compare against.
+
+    Bytes, not epoch integers, and that is the correctness argument rather than a
+    convenience: the query this replaces compared the same column as SQLite TEXT,
+    which is a plain bytewise comparison, so comparing the same bytes in numpy gives
+    the same answer for every value the column can hold — including any that a
+    timestamp parser would reject or silently reinterpret. Width is taken from the
+    data (never fixed), because a value truncated to fit would compare as a prefix
+    of itself and quietly move rows across a scope boundary.
+
+    A row with no timestamp packs to empty, which sorts below every real value.
+    :func:`_time_rows` excludes those explicitly rather than letting the ordering
+    decide — an undated row is not in a time window, and empty bytes would otherwise
+    read as "before everything", i.e. inside every ``until``."""
+    return np.asarray([("" if v is None else str(v)).encode() for v in values], dtype="S")
+
+
 def _corpus_arrays(s) -> tuple:
-    """The full embedded corpus as arrays: (mat, ids, ct_codes, ct_names).
+    """The full embedded corpus as arrays: (mat, ids, ct_codes, occurred, ct_names).
     Deterministic order (the PK) so two rival pack builders of the same token
-    write byte-identical files."""
+    write byte-identical files.
+
+    LEFT JOIN, so the row space stays exactly ``event_vectors``: an inner join would
+    silently drop a vector whose event is missing, and the pack's arrays are all
+    positional — one short array would misalign every id from that row on."""
     ids: list[int] = []
     cts: list[str] = []
+    occ: list = []
     vecs: list[np.ndarray] = []
     result = s.execute(sa_text(
-        "SELECT event_id, content_type, vec FROM event_vectors "
-        "ORDER BY event_id, content_type, chunk"
+        "SELECT v.event_id, v.content_type, v.vec, e.occurred_at FROM event_vectors v "
+        "LEFT JOIN events e ON e.id = v.event_id "
+        "ORDER BY v.event_id, v.content_type, v.chunk"
     ))
     for r in result:
         ids.append(int(r[0]))
         cts.append(str(r[1]))
         vecs.append(np.frombuffer(r[2], dtype=np.float32))
+        occ.append(r[3])
     ct_names = sorted(set(cts))
     codes = {c: i for i, c in enumerate(ct_names)}
     mat = np.vstack(vecs) if vecs else np.empty((0, _DIM), dtype=np.float32)
     ids_arr = np.asarray(ids, dtype=np.int64)
     ct_codes = np.asarray([codes[c] for c in cts], dtype=np.int16)
-    return mat, ids_arr, ct_codes, ct_names
+    return mat, ids_arr, ct_codes, _occurred_array(occ), ct_names
 
 
 def _delta_arrays(s, watermark: int) -> tuple:
     """Vectors written since the base watermark (rowid > watermark), read live into
-    RAM: (mat, ids, ct_names_list). Small by construction — the delta is folded into a
-    fresh base once it passes :data:`_DELTA_MAX_ROWS` — so this is a cheap tail read,
-    never the ~GB base scan. Ordered by rowid (the KNN groups by doc key, not row
-    position, so order is for determinism, not correctness)."""
+    RAM: (mat, ids, occurred, ct_names_list). Small by construction — the delta is
+    folded into a fresh base once it passes :data:`_DELTA_MAX_ROWS` — so this is a
+    cheap tail read, never the ~GB base scan. Ordered by rowid (the KNN groups by doc
+    key, not row position, so order is for determinism, not correctness)."""
     ids: list[int] = []
     cts: list[str] = []
+    occ: list = []
     vecs: list[np.ndarray] = []
     for r in s.execute(sa_text(
-        "SELECT event_id, content_type, vec FROM event_vectors "
-        "WHERE rowid > :wm ORDER BY rowid"
+        "SELECT v.event_id, v.content_type, v.vec, e.occurred_at FROM event_vectors v "
+        "LEFT JOIN events e ON e.id = v.event_id "
+        "WHERE v.rowid > :wm ORDER BY v.rowid"
     ), {"wm": int(watermark)}):
         ids.append(int(r[0]))
         cts.append(str(r[1]))
         vecs.append(np.frombuffer(r[2], dtype=np.float32))
+        occ.append(r[3])
     mat = np.vstack(vecs) if vecs else np.empty((0, _DIM), dtype=np.float32)
-    return mat, np.asarray(ids, dtype=np.int64), cts
+    return mat, np.asarray(ids, dtype=np.int64), _occurred_array(occ), cts
 
 
 def _sweep_packs(d: Path, keep_tag: str) -> None:
@@ -267,12 +302,17 @@ def _sweep_packs(d: Path, keep_tag: str) -> None:
 
 
 def _mmap_base(d: Path, tag: str) -> tuple:
-    """mmap a base pack's files back in: (mat[mmap], ids, ct_codes, ct_names)."""
+    """mmap a base pack's files back in: (mat[mmap], ids, ct_codes, occurred, ct_names).
+
+    Only the vectors are mapped. The index arrays are small (tens of MB against the
+    matrix's ~GB) and every query touches all of them, so paging them lazily would buy
+    nothing and cost a fault per scope."""
     mat = np.load(d / f"mat-{tag}.npy", mmap_mode="r")
     ids_arr = np.load(d / f"ids-{tag}.npy")
     ct_codes = np.load(d / f"cts-{tag}.npy")
+    occurred = np.load(d / f"ts-{tag}.npy")
     ct_names = json.loads((d / f"meta-{tag}.json").read_text())["ct_names"]
-    return mat, ids_arr, ct_codes, ct_names
+    return mat, ids_arr, ct_codes, occurred, ct_names
 
 
 def _write_base(s, d: Path, base_token: tuple[int, int]) -> tuple:
@@ -281,12 +321,12 @@ def _write_base(s, d: Path, base_token: tuple[int, int]) -> tuple:
     via os.replace, so a reader never mixes arrays from two builds and rival builders
     of the same token write byte-identical content (deterministic PK order); whichever
     replace lands last changes nothing."""
-    mat, ids_arr, ct_codes, ct_names = _corpus_arrays(s)
+    mat, ids_arr, ct_codes, occurred, ct_names = _corpus_arrays(s)
     tag = f"{base_token[0]}-{base_token[1]}"
     d.mkdir(parents=True, exist_ok=True)
     pid = os.getpid()
-    paths = {k: d / f"{k}-{tag}.npy" for k in ("mat", "ids", "cts")}
-    for k, arr in (("mat", mat), ("ids", ids_arr), ("cts", ct_codes)):
+    paths = {k: d / f"{k}-{tag}.npy" for k in _PACK_ARRAYS}
+    for k, arr in (("mat", mat), ("ids", ids_arr), ("cts", ct_codes), ("ts", occurred)):
         tmp = d / f"{k}-{tag}.npy.tmp.{pid}"
         with open(tmp, "wb") as f:  # a handle: np.save must not append '.npy'
             np.save(f, arr)
@@ -304,7 +344,7 @@ def _reusable_base(s, d: Path, cur_count: int) -> Optional[tuple[int, int]]:
     every base row present (no delete at or below its watermark) and the new-rows delta
     within :data:`_DELTA_MAX_ROWS`. Returns its ``(base_count, watermark)`` or None to
     force a fresh base. Freshest = largest watermark = smallest delta. The clean-prefix
-    count check catches deletes below the watermark (redaction, a re-embed); an
+    count check catches deletes below the watermark (a re-embed); an
     in-place upsert that changes a base row without moving count or rowid is invalidated
     at its source (:func:`index_vectors` drops the pack metas)."""
     tags: list[tuple[int, int]] = []
@@ -314,7 +354,7 @@ def _reusable_base(s, d: Path, cur_count: int) -> Optional[tuple[int, int]]:
             bc, bw = int(bc_s), int(bw_s)
         except ValueError:  # a temp/foreign name that slipped the glob
             continue
-        if all((d / f"{k}-{bc}-{bw}.npy").exists() for k in ("mat", "ids", "cts")):
+        if all((d / f"{k}-{bc}-{bw}.npy").exists() for k in _PACK_ARRAYS):
             tags.append((bw, bc))
     for bw, bc in sorted(tags, reverse=True):  # largest watermark (smallest delta) first
         # Count only the tail above the watermark (bounded small for the freshest base),
@@ -344,20 +384,20 @@ def _ensure_pack(s, store_token: tuple[int, int]) -> tuple:
         return _corpus_arrays(s)  # non-file DSN: no disk base, full in-RAM arrays
     base = _reusable_base(s, d, cur_count)
     if base is None:
-        base_mat, base_ids, base_codes, base_names = _write_base(s, d, store_token)
+        base_mat, base_ids, base_codes, base_ts, base_names = _write_base(s, d, store_token)
         watermark = cur_max_rowid  # fresh base spans the whole snapshot → empty delta
     else:
         bc, bw = base
         try:
-            base_mat, base_ids, base_codes, base_names = _mmap_base(d, f"{bc}-{bw}")
+            base_mat, base_ids, base_codes, base_ts, base_names = _mmap_base(d, f"{bc}-{bw}")
         except FileNotFoundError:  # swept between selection and load — pack fresh
-            base_mat, base_ids, base_codes, base_names = _write_base(s, d, store_token)
+            base_mat, base_ids, base_codes, base_ts, base_names = _write_base(s, d, store_token)
             watermark = cur_max_rowid
         else:
             watermark = bw
-    delta_mat, delta_ids, delta_cts = _delta_arrays(s, watermark)
+    delta_mat, delta_ids, delta_ts, delta_cts = _delta_arrays(s, watermark)
     if delta_mat.shape[0] == 0:
-        return base_mat, base_ids, base_codes, base_names
+        return base_mat, base_ids, base_codes, base_ts, base_names
     # Unify the content-type coding across base and delta (a delta may carry a type the
     # base lacked, or vice versa), then stitch the two row spaces into one.
     names = sorted(set(base_names) | set(delta_cts))
@@ -371,7 +411,11 @@ def _ensure_pack(s, store_token: tuple[int, int]) -> tuple:
     mat = _SplitMatrix(base_mat, delta_mat)
     ids_all = np.concatenate([base_ids, delta_ids])
     ct_codes_all = np.concatenate([base_codes_u, delta_codes_u])
-    return mat, ids_all, ct_codes_all, names
+    # Concatenating byte arrays of different widths promotes to the wider one rather
+    # than truncating to the narrower, so a delta whose timestamps are shaped unlike
+    # the base's stitches in without any value changing.
+    ts_all = np.concatenate([base_ts, delta_ts])
+    return mat, ids_all, ct_codes_all, ts_all, names
 
 
 def is_available() -> bool:
@@ -780,10 +824,10 @@ def _build_matrix_entry(cts: tuple[str, ...]) -> tuple:
     so it is safe on the request thread (cold start) or a background refresh. The token,
     the base scan, and the delta read share one session snapshot, so the returned entry
     is self-consistent (no row in both halves, none in neither). Returns
-    ``(token, ids, ctypes, mat, doc_inverse, doc_rep, scope_rows)``."""
+    ``(token, ids, ctypes, mat, doc_inverse, doc_rep, scope_rows, occurred)``."""
     with get_session() as s:
         token = _validity_token(s)
-        mat, ids_all, ct_codes_all, ct_names = _ensure_pack(s, (token[1], token[2]))
+        mat, ids_all, ct_codes_all, ts_all, ct_names = _ensure_pack(s, (token[1], token[2]))
     # The scope is a row mask over the one shared pack: sims run over the full
     # matrix (the matvec streams mmap pages) and gather down to these rows.
     want = np.asarray(
@@ -791,6 +835,7 @@ def _build_matrix_entry(cts: tuple[str, ...]) -> tuple:
     )
     scope_rows = np.nonzero(np.isin(ct_codes_all, want))[0]
     ids_arr = ids_all[scope_rows]
+    ts_arr = ts_all[scope_rows]
     ctypes = [ct_names[c] for c in ct_codes_all[scope_rows]]
     ct_arr = np.asarray(ctypes, dtype=object)
     # Per-document grouping for the KNN's chunk max-pool: rows sharing an
@@ -805,7 +850,7 @@ def _build_matrix_entry(cts: tuple[str, ...]) -> tuple:
     else:
         doc_rep = np.empty(0, dtype=np.int64)
         doc_inverse = np.empty(0, dtype=np.int64)
-    return (token, ids_arr, ct_arr, mat, doc_inverse, doc_rep, scope_rows)
+    return (token, ids_arr, ct_arr, mat, doc_inverse, doc_rep, scope_rows, ts_arr)
 
 
 def _store_matrix_entry(key: tuple, entry: tuple) -> None:
@@ -882,13 +927,37 @@ def _load_matrix(cts: tuple[str, ...]):
 
 def reset_matrix_cache() -> None:
     """Drop the process-local matrix cache so the next search rebuilds from the live
-    store. For where a stale matrix would be *wrong*, not merely dated — redaction
-    (dead rows must not be served) and reindex."""
+    store. For where a stale matrix would be *wrong*, not merely dated — reindex
+    (dead rows must not be served)."""
     _MATRIX_CACHE.clear()
     _matrix_checked_at.clear()
 
 
-def _knn(qvec, cts: tuple[str, ...], cand: int, allowed_ids=None) -> list[tuple[int, str, float]]:
+def _time_rows(ts_arr, since: Optional[str], until: Optional[str]):
+    """Row positions inside a time window, straight off the pack's timestamps.
+
+    The scope this serves used to arrive as ``allowed_ids`` from a query over
+    ``events``, and that query was the single most expensive thing a time-scoped
+    search did — not because it was badly planned but because of what it had to
+    materialize: ``since='180d'`` selects 3.6M event ids to mask a pack holding
+    275k vectors, so 93% of the ids fetched name rows the matrix does not contain.
+    The pack already knows every row's date; the window is a comparison over an
+    array it has in hand, and it costs under a millisecond regardless of how wide
+    the window is.
+
+    Undated rows are excluded rather than ordered. They pack to empty bytes, which
+    sorts below every real timestamp — so an ``until`` bound would otherwise sweep
+    them all in on the grounds of being "before" it."""
+    ok = ts_arr != b""
+    if since:
+        ok &= ts_arr >= since.encode()
+    if until:
+        ok &= ts_arr <= until.encode()
+    return np.nonzero(ok)[0]
+
+
+def _knn(qvec, cts: tuple[str, ...], cand: int, allowed_ids=None,
+         since: Optional[str] = None, until: Optional[str] = None) -> list[tuple[int, str, float]]:
     """Brute-force cosine KNN over the cached matrix, **max-pooled per document
     before the top-k cut**: the matrix holds one row per chunk, and a doc's score
     is its best chunk's, so a long message matches on whichever slice is relevant.
@@ -897,13 +966,17 @@ def _knn(qvec, cts: tuple[str, ...], cand: int, allowed_ids=None) -> list[tuple[
     distinct documents. ``allowed_ids`` (an int64 ndarray) restricts candidates to
     those event ids *before* the top-k cut, so a scoped search (one thread, a time
     window) ranks within its scope instead of hoping the scope survives a
-    corpus-wide top-k."""
+    corpus-wide top-k.
+
+    ``since``/``until`` express a *purely* temporal scope, which the pack answers
+    itself (see :func:`_time_rows`) with no id list at all. They compose with
+    ``allowed_ids`` by intersection, so a caller that has both narrows by both."""
     # Split the matrix load off the arithmetic: serving a warm cached matrix is
     # free, while a cold one builds the pack inline (see :func:`_load_matrix`) and
     # reads the whole corpus off disk. Charging both to one number makes the
     # expensive case indistinguishable from a slow matvec.
     _t = time.perf_counter()
-    ids, ct_arr, mat, doc_inverse, doc_rep, scope_rows = _load_matrix(cts)
+    ids, ct_arr, mat, doc_inverse, doc_rep, scope_rows, ts_arr = _load_matrix(cts)
     _probe.record("matrix_ms", _t)
     n = len(ids)
     if n == 0:
@@ -916,8 +989,13 @@ def _knn(qvec, cts: tuple[str, ...], cand: int, allowed_ids=None) -> list[tuple[
         # scope-local exactly as before.
         sims = np.asarray(mat @ q, dtype=np.float32)[scope_rows]
         rows = np.arange(n)
+        if since or until:
+            rows = _time_rows(ts_arr, since, until)
+            if len(rows) == 0:
+                return []
         if allowed_ids is not None:
-            rows = np.nonzero(np.isin(ids, allowed_ids))[0]
+            keep = np.isin(ids[rows], allowed_ids)
+            rows = rows[keep]
             if len(rows) == 0:
                 return []
         # Max-pool chunk sims into per-doc scores (out-of-scope docs stay at -inf).
@@ -1015,13 +1093,17 @@ def search(
     if not qvec:
         return None
 
-    # A scoped search (one thread / time window / source) pre-masks the KNN to the
-    # in-scope event ids, so ranking happens *within* the scope — a corpus-wide
-    # top-k could miss the scope entirely. Unscoped searches skip the id query.
+    # A scoped search pre-masks the KNN so ranking happens *within* the scope — a
+    # corpus-wide top-k could miss the scope entirely. What differs between scopes is
+    # where the mask comes from: a thread, source or path scope needs facts only the
+    # database holds and pays an id query for them; a time bound rides the pack.
     if thread_ids is not None and not thread_ids:
         return []  # an empty id-set scope matches nothing
-    selective = (thread_id is not None or thread_ids is not None
-                 or since is not None or until is not None or bool(source)
+    # A time bound is *not* in this list, and that is the point: the pack carries every
+    # row's date, so a window is a comparison the KNN makes itself. Only the scopes
+    # that need facts the pack does not hold — which thread, which source, which code
+    # path — still cost an id query, and a search scoped by time alone now costs none.
+    selective = (thread_id is not None or thread_ids is not None or bool(source)
                  or bool(path) or agents == "only")
     allowed_ids = None
     if selective:
@@ -1049,12 +1131,10 @@ def search(
         # search cost what an unscoped one costs, and filter where it filters.
         if thread_id is None and thread_ids is None and agents == "only":
             awhere.append("e.thread_id IN (SELECT id FROM threads WHERE thread_type = 'system')")
-        if since:
-            awhere.append("e.occurred_at >= :since")
-            aparams["since"] = since
-        if until:
-            awhere.append("e.occurred_at <= :until")
-            aparams["until"] = until
+        # The time bound is deliberately not repeated here. The KNN applies it to
+        # every row it considers, so adding it would only narrow a list the KNN is
+        # about to narrow anyway — and narrowing it *here* is what costs seconds,
+        # since this is the query that has to walk ``events`` to do it.
         if source:
             ajoin += " JOIN threads t ON t.id = e.thread_id"
             awhere.append(_in_clause("t.source", source, "src", aparams, negate=False))
@@ -1077,7 +1157,7 @@ def search(
             return []
         allowed_ids = np.fromiter((r[0] for r in rows), dtype=np.int64, count=len(rows))
     cand = max(limit * 3, 100)
-    candidates = _knn(qvec, tuple(cts), cand, allowed_ids=allowed_ids)
+    candidates = _knn(qvec, tuple(cts), cand, allowed_ids=allowed_ids, since=since, until=until)
     if not candidates:
         return []
     sim_by: dict[tuple[int, str], float] = {(eid, ct): sim for eid, ct, sim in candidates}

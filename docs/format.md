@@ -66,7 +66,6 @@ truth/
   thread_links.jsonl     # snapshot: topic-graph edges (rebuildable from kg_events)
   topic_messages.jsonl   # snapshot: topic evidence   (rebuildable from kg_events)
   import_state.jsonl     # snapshot: importer cursors/watermarks
-  redactions.jsonl       # append-only redaction log (encrypted recovery bundles)
   vectors.sqlite         # derived embedding cache — NOT truth, safe to delete
 ```
 
@@ -110,14 +109,6 @@ archive — locally minted, so ids from two archives collide),
 `occurred_at`, `recorded_at`, `caused_by_event_id`, `correlation_id`,
 `dedup_key`.
 
-A redacted event's `payload` is the marker envelope
-`{"_redacted": {"key_id": ..., "at": ...}}` — the content is deliberately
-absent from the line (see redactions.jsonl below). Readers must treat a
-payload carrying the `_redacted` key as content-free: render a placeholder,
-skip content-hash validation against `dedup_key` (the key still names the
-*original* content — it is kept so re-import cannot resurrect the plaintext
-under a fresh id).
-
 **Blob refs.** Large binary content (a pasted screenshot's base64, a
 tool-result image, an attached document) is extracted out of payloads into the
 content-addressed `blobs/` directory. Wherever a payload dict carried
@@ -130,9 +121,7 @@ how such payloads re-hash against `dedup_key` (below). Blob files are truth —
 they ride every backup of the truth directory — and are immutable and shared
 (the same content pasted twice is one file). Historical payloads written before
 extraction may still carry inline base64 `data`; readers must accept both
-forms. A redacted event's blob files are deleted unless another live event
-references the same hash (see redactions.jsonl — the recovery bundle carries
-the content inline).
+forms.
 
 `dedup_key` is the event's timestamp-free natural identity,
 `{provider_message_id | c=<hash>}:{event_type}:{tool=…|blk=…|}:{content_hash}`
@@ -163,25 +152,6 @@ without a replay). One row object per line, no `type` wrapper:
   `observation_ids`, `created_at`, `updated_at`.
 - **topic_messages**: `id`, `topic_id`, `event_id`, `thread_id`, `quote`,
   `created_by_thread_id`, `actor`, `archived_at`, `created_at`.
-
-## redactions.jsonl
-
-Append-only redaction log — recorded history, never rewritten. Two record
-kinds:
-
-- **redaction**: `type: "redaction"`, `key_id` (hex, names the key),
-  `thread_id`, `event_ids`, `reason`, `redacted_at`, `alg`
-  (`"AES-256-GCM"`), `nonce` (base64), `ciphertext` (base64). The ciphertext
-  is the *recovery bundle* — the redacted event payloads, any citation quotes
-  that carried the content, and any thread-meta fields (title/summary) that
-  derived from it — AES-256-GCM-encrypted with `key_id` as associated data.
-- **unredaction**: `type: "unredaction"`, `key_id`, `at` — the redaction was
-  reversed (its content restored from the bundle).
-
-The keys live in `<home>/keyring.json`, deliberately **outside** the truth
-directory: a backup of truth mirrors ciphertext only. Deleting a key from the
-keyring (without escrow) is crypto-erasure — the bundle is permanently
-unreadable while the log keeps the redaction's shape as history.
 
 ## import_state.jsonl
 

@@ -45,11 +45,6 @@ threat model is correspondingly narrow, and these are its load-bearing walls:
   test suite in a fresh subprocess, which is the only path a patch has to going
   live. If you hand the scaffold to an agent, the samples are untrusted input
   to it, and its blast radius is whatever scope you grant it.
-- **Redaction is crypto-shredding.** `thread_archive redact` re-encrypts content
-  under a fresh per-redaction AES-256-GCM key in `<home>/keyring.json`;
-  destroy the key (or escrow it off-machine) for erasure. The provider's own
-  store keeps its original copy — redaction covers the archive, not the
-  source.
 
 ## The self-update mechanism
 

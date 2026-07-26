@@ -61,8 +61,6 @@ CLI_VERBS = {
     "coverage",
     "mirror",
     "repair",
-    "redact",
-    "unredact",
     "daemon",
     "fix-import",
     "self-update",

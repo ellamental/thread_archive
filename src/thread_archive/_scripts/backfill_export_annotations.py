@@ -331,12 +331,6 @@ def plan_thread(session, thread: Thread, messages: list) -> ThreadPlan:
                 "unpaired": False,
                 **_missing_field_patch(stored_payload, f.payload),
             }
-            problem = check_patch(stored_payload, patch)
-            if problem is not None:
-                logger.info("t%s e%s: pairing refused: %s", thread.id, stored.id, problem)
-                plan.stats["pairing_refused"] += 1
-                still_unmatched.append(f)
-                continue
             used.add(stored.id)
             planned_keys.add(new_key)
             plan.pairings.append({
@@ -400,10 +394,6 @@ def plan_thread(session, thread: Thread, messages: list) -> ThreadPlan:
                 "unpaired": False,
                 **_missing_field_patch(stored_payload, f.payload),
             }
-            if check_patch(stored_payload, patch) is not None:
-                plan.stats["pairing_refused"] += 1
-                remainder.append(f)
-                continue
             used.add(stored.id)
             planned_keys.add(new_key)
             plan.pairings.append({
@@ -555,7 +545,7 @@ _ROLLUP_KEYS = (
     "fresh", "persisted", "already_complete", "dup_fresh", "amend_refused",
     "amend_annotations", "amend_branch", "matched_content_tsfree",
     "pairs", "pairs_tsfree", "pairing_ambiguous",
-    "pairing_hash_mismatch", "pairing_key_collision", "pairing_refused",
+    "pairing_hash_mismatch", "pairing_key_collision",
     "api_summary_stale", "new_content_not_inserted",
 )
 
@@ -673,8 +663,7 @@ def main(argv: Optional[list[str]] = None) -> None:
     print(f"  tool pairs planned:         {totals.get('pairs', 0):,}  (ts-free: {totals.get('pairs_tsfree', 0):,})")
     print(f"    guard failures:           hash={totals.get('pairing_hash_mismatch', 0):,}"
           f" collision={totals.get('pairing_key_collision', 0):,}"
-          f" ambiguous={totals.get('pairing_ambiguous', 0):,}"
-          f" refused={totals.get('pairing_refused', 0):,}")
+          f" ambiguous={totals.get('pairing_ambiguous', 0):,}")
     print(f"  api summaries left stale:   {totals.get('api_summary_stale', 0):,}")
     print(f"  source_metadata folds:      {totals.get('meta_threads', 0):,} threads, {totals.get('meta_keys', 0):,} keys")
     print(f"  new content (not inserted): {totals.get('new_content_not_inserted', 0):,}")

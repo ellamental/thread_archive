@@ -769,3 +769,146 @@ def _thread_types(thread_ids) -> set:
             sa_text("SELECT thread_type FROM threads WHERE id IN ("
                     + ",".join(f"'{i}'" for i in ids) + ")")).fetchall()
     return {r[0] for r in rows}
+
+
+def _dated_events(stamps: list[str], tag: str = "a") -> list[int]:
+    """One event per timestamp, returning their ids in order. ``tag`` names the
+    carrying thread, so a test can call this twice without colliding."""
+    from datetime import datetime
+
+    from thread_archive._store import Event, Thread, get_session
+
+    ids: list[int] = []
+    with get_session() as s:
+        t = Thread(name=f"conv:dated-{tag}", title="dated", thread_type="conversation",
+                   source="cc", source_id=f"dated-{tag}")
+        s.add(t)
+        s.flush()
+        for i, stamp in enumerate(stamps):
+            e = Event(thread_id=t.id, stream_id=f"d{tag}{i}", event_type="user_message_sent",
+                      payload={"content": f"dated message {i}"},
+                      occurred_at=datetime.fromisoformat(stamp))
+            s.add(e)
+            s.flush()
+            ids.append(e.id)
+        s.commit()
+    return ids
+
+
+def test_a_time_window_is_read_off_the_pack_not_queried_from_events(archive_home) -> None:
+    """The scope query this replaces had to name every in-scope event id — millions of
+    them for a wide window, against a pack holding a fraction as many rows, because
+    most events carry no vector at all. The pack already knows each row's date, so the
+    window is a comparison over an array it holds. Same rows either way: that
+    equivalence is the whole claim, and it is what this pins."""
+    init_db()
+    vectors.ensure_index()
+    ids = _dated_events(["2026-01-01T10:00:00+00:00", "2026-03-01T10:00:00+00:00",
+                         "2026-06-01T10:00:00+00:00"])
+    a = _unit((0, 1.0))
+    vectors.index_vectors([(i, "user", a) for i in ids])
+
+    everything = [e for e, _, _ in vectors._knn(a.tolist(), ("user",), cand=10)]
+    assert everything == sorted(ids)
+
+    # The window cuts where the timestamps say, with no id list involved.
+    windowed = [e for e, _, _ in vectors._knn(a.tolist(), ("user",), cand=10,
+                                              since="2026-02-01T00:00:00+00:00")]
+    assert windowed == sorted(ids[1:])
+    both = [e for e, _, _ in vectors._knn(a.tolist(), ("user",), cand=10,
+                                          since="2026-02-01T00:00:00+00:00",
+                                          until="2026-04-01T00:00:00+00:00")]
+    assert both == [ids[1]]
+
+    # And it agrees with the id-mask path it replaced, which is the only thing that
+    # makes the substitution safe — the two narrow the same pool to the same rows.
+    masked = [e for e, _, _ in vectors._knn(
+        a.tolist(), ("user",), cand=10, allowed_ids=np.asarray(ids[1:], dtype=np.int64))]
+    assert masked == windowed
+
+    # Composed, they intersect rather than one winning.
+    narrowed = [e for e, _, _ in vectors._knn(
+        a.tolist(), ("user",), cand=10, since="2026-02-01T00:00:00+00:00",
+        allowed_ids=np.asarray([ids[0], ids[1]], dtype=np.int64))]
+    assert narrowed == [ids[1]]
+
+
+def test_an_undated_row_is_in_no_time_window_including_an_open_ended_one(
+    archive_home,
+) -> None:
+    """A vector whose event is missing packs to an empty timestamp, and empty bytes
+    sort below every real one. Ordering alone would therefore place it *before* any
+    ``until`` bound and sweep it into every open-ended window — so exclusion is
+    explicit. The id-query this replaces got the same answer for free: an event that
+    isn't in ``events`` was never in its result."""
+    init_db()
+    vectors.ensure_index()
+    dated = _dated_events(["2026-01-01T10:00:00+00:00"])
+    a = _unit((0, 1.0))
+    vectors.index_vectors([(dated[0], "user", a), (99_000_001, "user", a)])
+
+    # Unscoped, both rows are candidates — the pack does not care about dates.
+    assert len(vectors._knn(a.tolist(), ("user",), cand=10)) == 2
+    # An `until` far past every real stamp is the trap: the undated row must not ride
+    # in on being "before" it.
+    until_only = [e for e, _, _ in vectors._knn(a.tolist(), ("user",), cand=10,
+                                                until="2099-01-01T00:00:00+00:00")]
+    assert until_only == dated
+    since_only = [e for e, _, _ in vectors._knn(a.tolist(), ("user",), cand=10,
+                                                since="2020-01-01T00:00:00+00:00")]
+    assert since_only == dated
+
+
+def test_a_pack_without_timestamps_is_passed_over_rather_than_loaded(archive_home) -> None:
+    """A pack is derived and disposable, so an older one missing an array is not a
+    thing to repair or migrate — the reuse check simply declines it and the next build
+    writes a complete one. Without this the process would map an incomplete pack and
+    fail on a file that was never there."""
+    init_db()
+    vectors.ensure_index()
+    ids = _dated_events(["2026-01-01T10:00:00+00:00"])
+    a = _unit((0, 1.0))
+    vectors.index_vectors([(ids[0], "user", a)])
+    vectors._knn(a.tolist(), ("user",), cand=10)  # builds the pack
+
+    d = vectors._pack_dir()
+    stamps = list(d.glob("ts-*.npy"))
+    assert stamps, "a freshly written base carries its timestamps"
+
+    from thread_archive._store import get_session
+
+    with get_session() as s:
+        count = s.execute(
+            __import__("sqlalchemy").text("SELECT count(*) FROM event_vectors")).scalar()
+        assert vectors._reusable_base(s, d, count) is not None
+        for p in stamps:  # the shape of an older pack
+            p.unlink()
+        assert vectors._reusable_base(s, d, count) is None
+
+    # And the next load rebuilds rather than raising on the missing file.
+    vectors.reset_matrix_cache()
+    assert [e for e, _, _ in vectors._knn(a.tolist(), ("user",), cand=10)] == ids
+    assert list(d.glob("ts-*.npy"))
+
+
+def test_timestamps_survive_the_base_plus_delta_stitch(archive_home) -> None:
+    """The pack is a base plus an in-RAM tail of everything written since, and every
+    array has to be stitched across both halves. A timestamp array that covered only
+    the base would misalign against ids from the delta on — silently, and in a way
+    that would move rows across scope boundaries rather than raise."""
+    init_db()
+    vectors.ensure_index()
+    early = _dated_events(["2026-01-01T10:00:00+00:00"])
+    a = _unit((0, 1.0))
+    vectors.index_vectors([(early[0], "user", a)])
+    vectors._knn(a.tolist(), ("user",), cand=10)  # base written for the first row alone
+
+    late = _dated_events(["2026-09-01T10:00:00+00:00"], tag="b")
+    vectors.index_vectors([(late[0], "user", a)])
+    vectors.reset_matrix_cache()
+
+    # The late row lives in the delta; its date has to come along with it.
+    assert [e for e, _, _ in vectors._knn(a.tolist(), ("user",), cand=10,
+                                          since="2026-06-01T00:00:00+00:00")] == late
+    assert [e for e, _, _ in vectors._knn(a.tolist(), ("user",), cand=10,
+                                          until="2026-06-01T00:00:00+00:00")] == early

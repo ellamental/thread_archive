@@ -33,7 +33,6 @@ from sqlalchemy.orm import Session
 
 from .._store import Event, ImportState, Thread, use_session
 from .._truth.blobs import materialize
-from .._truth.layout import is_redacted_payload
 from ..provider import DEFAULT_VIEW, RenderPolicy
 from ._extract import _block_search_text
 
@@ -67,12 +66,7 @@ _SKIP_TYPES = frozenset({
 
 
 def _payload(ev: Event) -> dict:
-    p = ev.payload if isinstance(ev.payload, dict) else json.loads(ev.payload)
-    if is_redacted_payload(p):
-        # Redacted content renders as a visible placeholder, never a silent gap —
-        # the text keys cover every renderer that reads one.
-        return {"content": "[redacted]", "text": "[redacted]", **p}
-    return p
+    return ev.payload if isinstance(ev.payload, dict) else json.loads(ev.payload)
 
 
 def _unknown_payload_text(payload: dict) -> str:

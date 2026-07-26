@@ -167,13 +167,51 @@ def test_contention_sample_is_empty_on_an_idle_machine(archive_home) -> None:
 def test_in_flight_counts_the_caller_itself(archive_home) -> None:
     from thread_archive._retrieval import _contention
 
-    with _contention.in_flight():
+    with _contention.in_flight() as outer:
         # One call is not contention, so it stays out of the record...
-        assert "inflight" not in _contention.sample()
-        with _contention.in_flight():
+        assert "inflight" not in _contention.peak_inflight(outer)
+        with _contention.in_flight() as inner:
             # ...but a second concurrent call is exactly what the field is for.
-            assert _contention.sample()["inflight"] == 2
-    assert "inflight" not in _contention.sample()
+            assert _contention.peak_inflight(inner)["inflight"] == 2
+    # A span with no peers ever reports nothing, whenever it is read.
+    assert _contention.peak_inflight(None) == {}
+
+
+def test_a_peer_arriving_mid_call_still_counts_against_the_call_it_slowed(
+    archive_home,
+) -> None:
+    """The defect this field had for its whole life: sampled once at the start, it
+    could not see the peers that arrived during the seconds a search actually ran —
+    which is every peer that matters. Recorded traffic showed it: plenty of provably
+    overlapping calls, and the field had never fired once."""
+    from thread_archive._retrieval import _contention
+
+    with _contention.in_flight() as first:
+        # Nothing yet — this call started alone, and a start-of-work sample is
+        # exactly what would stop here and record an idle machine.
+        assert _contention.peak_inflight(first) == {}
+        with _contention.in_flight() as second:
+            pass
+        # The peer came and went entirely inside `first`. It is gone by the time
+        # `first` is read, and the high-water mark is what remembers it.
+        assert _contention.peak_inflight(first)["inflight"] == 2
+        # The peer's own span saw the same crowd, from the other side.
+        assert _contention.peak_inflight(second)["inflight"] == 2
+
+    # The counter unwinds: a span opened after the crowd has cleared sees none of it.
+    with _contention.in_flight() as later:
+        assert _contention.peak_inflight(later) == {}
+
+
+def test_concurrency_is_not_among_the_start_of_work_facts(archive_home) -> None:
+    # The two are taken at opposite ends for opposite reasons — a rebuild that
+    # finished mid-search still shaped it, while a peer that arrived mid-search is
+    # only knowable at the end. Keeping them in one call would force one of the two
+    # to be read at the wrong moment.
+    from thread_archive._retrieval import _contention
+
+    with _contention.in_flight(), _contention.in_flight():
+        assert "inflight" not in _contention.sample()
 
 
 def test_record_warm_names_the_startup_cost(archive_home) -> None:

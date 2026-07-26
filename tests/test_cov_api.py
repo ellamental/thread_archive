@@ -1,12 +1,12 @@
 """Dispatch coverage for the thin ``_api`` wrappers.
 
 The public library functions are one-line adapters over the private machinery —
-``import_path`` (line-stream vs DB-scanner vs unknown-provider), ``embed``,
-``watch`` (one-shot vs looping), and ``redactions``. Their real work is covered
+``import_path`` (line-stream vs DB-scanner vs unknown-provider), ``embed``, and
+``watch`` (one-shot vs looping). Their real work is covered
 by the machinery's own suites; these tests pin the adapter arms — the provider
 routing and the return-shape wrapping — by driving each arm end to end: a real
-SQLite store for the scanner shape, a real store of transcripts for the
-watcher, a real redaction for the redaction list.
+SQLite store for the scanner shape, and a real store of transcripts for the
+watcher.
 """
 
 from __future__ import annotations
@@ -293,20 +293,3 @@ def test_amend_and_amendments_round_trip_through_the_api(archive_home) -> None:
     assert [a["reason"] for a in trail] == ["cov"]
 
 
-def test_redactions_delegates(archive_home) -> None:
-    """The redaction list is the lifecycle view of the real redaction log."""
-    from thread_archive._ops.redact import redact_events
-
-    assert ta.redactions() == []
-    f = archive_home / "sess.jsonl"
-    _write_cc(f, [USER, ASSISTANT])
-    ta.import_path(f)
-    ta.checkpoint()
-
-    tid = ta.search("hello api")[0]["thread_id"]
-    key_id = redact_events(tid, None, reason="test")["key_id"]
-
-    rows = ta.redactions()
-    assert [r["key_id"] for r in rows] == [key_id]
-    assert rows[0]["status"] == "active" and rows[0]["key"] == "present"
-    assert rows[0]["thread_id"] == tid and rows[0]["reason"] == "test"

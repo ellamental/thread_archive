@@ -61,8 +61,8 @@ Why each write is amendment-legal (content identity never touched):
   the importers' ``_restage_thread`` seam so a reindex keeps the merge.
 
 Missing-only semantics throughout make re-runs no-ops. Any ambiguity — two
-content-anchor candidates, two structural candidates, a patch ``check_patch``
-refuses — is counted and skipped, never guessed at. ``--limit`` caps threads
+content-anchor candidates, two structural candidates — is counted and skipped,
+never guessed at. ``--limit`` caps threads
 examined *per source* (so a capped sweep still samples every source). Dry-run
 by default; ``--apply`` writes, with inserted event ids appended to the
 ``--backup`` JSONL (amended ids + before-values already live in
@@ -125,7 +125,7 @@ from .._importers.opencode import (
     _opencode_to_normalized,
     _parse_opencode_timestamp,
 )
-from .._ops.amend import _PROTECTED_KEYS, amend_event_payloads, check_patch
+from .._ops.amend import _PROTECTED_KEYS, amend_event_payloads
 from .._retrieval.fts import index_events
 from .._store import Event, ImportState, Thread, get_session
 from .._truth import write_events
@@ -694,10 +694,6 @@ def plan_thread(session, thread_id: str, source: str, fresh: list) -> ThreadPlan
         if not patch:
             stats["already_complete"] += 1
             continue
-        problem = check_patch(old, patch)
-        if problem is not None:
-            stats["patch_refused"] += 1
-            continue
         for k in patch:
             stats[f"field:{k}"] += 1
         patches.append((match.id, patch))
@@ -940,7 +936,7 @@ def main(
     for k in (
         "already_complete", "unmatched_fresh", "ambiguous", "struct_ambiguous",
         "content_drift_skipped", "insert_unanchored_skipped", "salvage_already",
-        "dup_fresh", "patch_refused", "no_thread", "plan_errors", "apply_errors",
+        "dup_fresh", "no_thread", "plan_errors", "apply_errors",
         "source_unavailable_or_empty",
     ):
         if totals.get(k):

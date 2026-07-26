@@ -17,7 +17,6 @@ Your agent calls `thread_search`, the right conversation comes back, and `thread
 - Full-text and semantic search with reranking, filterable by time, source, tool, and content type; an empty query browses recent activity.
 - Exposed over MCP (`thread_search`, `thread_read`), so Claude (or any MCP client) can search and read your entire history mid-conversation.
 - Search is the access layer over the archive, not the archive itself — an agent typically fires several searches, reformulates, and reads around a hit, and the archive underneath guarantees the conversation is *there* to find. Quality is measured against the archive's own logged usage — real queries, real follow-up reads — with a CI gate that alarms on collapse; the numbers, the protocol, and its limits live in [docs/search-quality.md](docs/search-quality.md), and `thread_archive eval` runs the same self-checkup read-only on your own archive.
-- Redaction with encrypted recovery bundles: scrub secrets from the archive without destroying them irrevocably.
 
 **Indexed by code, not just by words.** Every path your agents' tools named — each
 `Edit`, `Read`, `Write`, `apply_patch` header, and path-shaped shell argument, in
@@ -155,8 +154,8 @@ thread_archive embed             # embed user/text events still missing a vector
 thread_archive verify            # integrity check: truth parses + matches the index
 thread_archive repair            # quarantine damaged truth lines; restore committed content from the index
 thread_archive backup <dest>     # mirror the truth dir (hardlink generations under <dest>/.generations) +
-                          #   the recovery bundle under <dest>/.recovery (config, redaction keyring,
-                          #   retained exports, health/ledger snapshots)
+                          #   the recovery bundle under <dest>/.recovery (config, retained exports,
+                          #   health/ledger snapshots)
 thread_archive restore-drill <dest>  # prove the backup restores: rebuild an index from the mirror + smoke read/search
 thread_archive restore <mirror> --to <home>  # actually restore: staged rebuild + verify, then atomic publish
                           #   (--generation <stamp> picks a retained snapshot; --list-generations shows them)
@@ -167,9 +166,6 @@ thread_archive mirror            # mirror raw harness source stores into <home>/
 thread_archive eval              # search-quality self-checkup on your own archive (read-only; --from-log
                           #   scores real mined queries, --behavior reports usage rates — see
                           #   docs/search-quality.md)
-thread_archive redact <thread>   # crypto-shred events (--events for a subset): content out of truth, index,
-                          #   search, quotes; the original encrypted under a revocable per-redaction key
-thread_archive unredact <key_id> # restore a redaction from its encrypted bundle (key still in the keyring)
 thread_archive status            # archive health / counts / last verify + backup + drill + coverage outcomes
 thread_archive daemon <action>   # install/uninstall/restart/status a service agent (launchd on macOS,
                           #   systemd --user on Linux) — the always-on
@@ -288,7 +284,7 @@ on a release:
   ids are globally-unique ULIDs, so two archives never collide there; what a
   merge would still have to reconcile is the locally-minted **event id** space
   wired through the truth layer — the append-only event log, causality links,
-  redaction records — by remapping one archive's ids past the other's.
+  amendment records — by remapping one archive's ids past the other's.
   Mechanical, but unbuilt. *Moving* an archive to another machine is supported
   — carry the directory, or `thread_archive restore <mirror> --to <home>`;
   running two and reconciling them later is not.
@@ -369,8 +365,8 @@ neighbor leads and how thread-archive differs — lives in
 [docs/related.md](docs/related.md). The short version of the difference: most
 tools treat the harness's own files as the record and their index as a cache
 over it; archive treats preservation as the product — its own append-only truth
-log, backup with restore drills, reversible crypto-shredding redaction, and
-unmodeled provider fields preserved verbatim.
+log, backup with restore drills, and unmodeled provider fields preserved
+verbatim.
 
 ## License
 

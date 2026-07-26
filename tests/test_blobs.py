@@ -5,14 +5,12 @@ image/document content out of payloads into ``truth/blobs/`` — new truth
 carries refs, not megabytes of base64 — while staying *exactly invertible*, so
 dedup keys computed over the inline form at parse time keep validating (and
 deduplicating) the extracted form. Renderers show real file paths (MCP) and
-blob URLs (web); redaction shreds the files; historical inline payloads
-materialize lazily on read.
+blob URLs (web); historical inline payloads materialize lazily on read.
 """
 
 from __future__ import annotations
 
 import base64
-import json
 import os
 
 from sqlalchemy import text
@@ -168,49 +166,6 @@ def test_verify_hash_gate_and_reindex(tmp_path, archive_home):
         f.unlink()
     scan = _hash_scan_truth_dir(archive_home / "truth", None)
     assert scan["mismatched"] > 0
-
-
-# ── redaction ────────────────────────────────────────────────────────────────
-def test_redact_shreds_blob_and_unredact_restores(tmp_path, archive_home):
-    _import_image_session(tmp_path)
-    from thread_archive._ops import redact as rd
-
-    with get_session() as s:
-        tid = s.execute(text("SELECT DISTINCT thread_id FROM events")).scalar()
-    result = rd.redact_events(tid, None)  # whole thread
-    assert result["blobs_shredded"] == 1
-    assert _blob_files(archive_home) == []
-    # nothing under the home still holds the image bytes outside the ciphertext
-    holders = [p for p in archive_home.rglob("*")
-               if p.is_file() and PNG_B64[:64].encode() in p.read_bytes()]
-    assert holders == []
-
-    restored = rd.unredact(result["key_id"])
-    assert restored["events_restored"] > 0
-    # the bundle carried the content inline — the payload is whole again
-    with get_session() as s:
-        payloads = [json.loads(r[0]) if isinstance(r[0], str) else r[0]
-                    for r in s.execute(text("SELECT payload FROM events"))]
-    inline = [p for p in payloads if PNG_B64 in json.dumps(p)]
-    assert inline, "unredact must restore the image content"
-    # and the restored (inline) form still validates against its dedup key
-    from thread_archive._ops.verify import _hash_scan_truth_dir
-
-    assert _hash_scan_truth_dir(archive_home / "truth", None)["mismatched"] == 0
-
-
-def test_redact_keeps_blob_shared_with_live_thread(tmp_path, archive_home):
-    _import_image_session(tmp_path, "one")
-    _import_image_session(tmp_path, "two")  # same bytes, second thread
-    from thread_archive._ops import redact as rd
-
-    with get_session() as s:
-        tids = sorted(r[0] for r in s.execute(
-            text("SELECT DISTINCT thread_id FROM events")))
-    assert len(tids) == 2
-    result = rd.redact_events(tids[0], None)
-    assert result["blobs_shredded"] == 0  # thread two still references the hash
-    assert len(_blob_files(archive_home)) == 1
 
 
 # ── rendering ────────────────────────────────────────────────────────────────

@@ -952,12 +952,6 @@ def _hash_key_check(payload: object, dedup_key: str, *, d: "Path | None" = None)
 
     from thread_archive._thread_import.event_builder import compute_content_hash
 
-    from .layout import is_redacted_payload
-
-    if is_redacted_payload(payload):
-        # A redaction marker: the key's hash names content this line deliberately
-        # no longer carries (the encrypted original lives in redactions.jsonl).
-        return None
     if not _re.match(r"^[0-9a-f]{16}$", dedup_key.rsplit(":", 1)[-1]):
         return None
     if not isinstance(payload, dict):

@@ -50,22 +50,6 @@ def flat_max() -> int:
     """
     return int(os.environ.get("THREAD_ARCHIVE_SHARDFLAT_MAX", "16384"))
 
-# A redacted event payload: content replaced by a marker envelope
-# ``{"_redacted": {"key_id": ..., "at": ...}}``. The encrypted original lives on
-# the matching record in ``truth/redactions.jsonl``; the key in
-# ``<home>/keyring.json`` (outside the truth dir — the truth mirror and its
-# generations carry ciphertext only; the keyring rides the backup's head-only
-# ``.recovery`` bundle unless config opts out). See
-# :mod:`thread_archive._ops.redact`. Truth vocabulary, so readers (hash checks,
-# renderers) can recognize the shape without importing the redaction machinery.
-REDACTED_PAYLOAD_KEY = "_redacted"
-
-
-def is_redacted_payload(payload: object) -> bool:
-    """True when ``payload`` is a redaction marker envelope rather than content."""
-    return isinstance(payload, dict) and REDACTED_PAYLOAD_KEY in payload
-
-
 # ── config ──────────────────────────────────────────────────────────────────
 def log_dir() -> Path:
     """The JSONL truth directory for this archive instance (``<home>/truth``)."""

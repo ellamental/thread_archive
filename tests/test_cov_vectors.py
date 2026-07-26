@@ -905,7 +905,7 @@ def test_refresh_matrix_async_single_flight_suppresses_duplicate(archive_home) -
 
 def test_reset_matrix_cache_forces_live_rebuild(archive_home) -> None:
     """``reset_matrix_cache`` drops the cache so the next search rebuilds from the
-    live store — the promptness redaction relies on (never serving dead rows)."""
+    live store — the promptness reindex relies on (never serving dead rows)."""
     init_db()
     vectors.ensure_index()
     vectors.reset_matrix_cache()

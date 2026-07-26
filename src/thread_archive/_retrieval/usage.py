@@ -10,7 +10,7 @@ by thread id.
 
 Records hold query text, filter parameters, result *ids*, and the call's
 wall-clock latency (``duration_ms``) — never event content, snippets, or
-transcripts — so redaction never needs to touch this file, and a leaked ledger
+transcripts — so a leaked ledger
 names conversations without quoting them. Latency rides along because it is
 the one regression class result-quality evals can't see: a search that returns
 the right hits ever slower looks perfect until someone measures. The file

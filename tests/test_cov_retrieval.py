@@ -2,7 +2,7 @@
 
 Covers the uncovered edges of the non-vector retrieval cluster:
 
-  * ``read`` — redacted payloads, unknown-event surfacing, live-capture stream
+  * ``read`` — unknown-event surfacing, live-capture stream
     absorption (content_blocks / stitched deltas / arc-less orphans), result-block
     gluing, tool/result truncation, the summary TOC edges, focused-read budget
     retry, and the structured (web-viewer) renderer's toggles and marker types.
@@ -114,15 +114,6 @@ def test_unknown_payload_text_json_dump_and_circular() -> None:
 # ══════════════════════════════════════════════════════════════════════════════
 # read.py — string transcript rendering branches
 # ══════════════════════════════════════════════════════════════════════════════
-
-def test_redacted_payload_renders_placeholder(archive_home) -> None:
-    tid = _seed([
-        ("user_message_sent", {"content": "the question"}, 1),
-        ("text_complete", {"_redacted": True}, 2),
-    ])
-    out = read_thread(tid, mode="chat")
-    assert "[redacted]" in out
-
 
 def test_context_summary_and_model_change_render_in_full(archive_home) -> None:
     tid = _seed([

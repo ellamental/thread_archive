@@ -795,7 +795,7 @@ def test_backup_all_warnings_returns_1(capsys) -> None:
         "shrink_sample": ["a.jsonl"], "mirror_complete": True,
         "generation_created": "2026-07-15T00-00-00", "generations_kept": 7,
         "generations_pruned": 1, "generation_error": "snap failed",
-        "rehomed_twins_deleted": 4,
+        "rehomed_twins_deleted": 4, "renamed_twins_deleted": 2,
     }
     rc = cli.report_backup(res)
     assert rc == 1
@@ -804,6 +804,7 @@ def test_backup_all_warnings_returns_1(capsys) -> None:
     assert "WARNING: generation snapshot failed" in out
     assert "pre-backup verify FAILED" in out
     assert "rebalance twins: 4" in out
+    assert "migration twins: 2" in out
     assert "stale destination files kept" in out
     assert "SHRINK GUARD: 1" in out
 
@@ -817,25 +818,18 @@ def _backup_clean_base() -> dict:
 
 
 def test_backup_bundle_error_fails_the_run(capsys) -> None:
-    # A stale .recovery/ restores yesterday's keyring — a failed run, not a footnote.
+    # A stale .recovery/ restores yesterday's config — a failed run, not a footnote.
     res = {**_backup_clean_base(), "bundle_error": "smb down"}
     assert cli.report_backup(res) == 1
     assert "recovery bundle sync failed (smb down)" in capsys.readouterr().out
 
 
-def test_backup_bundle_keyring_included(capsys) -> None:
+def test_backup_bundle_counts_are_reported(capsys) -> None:
     res = {**_backup_clean_base(), "bundle_files": 3, "bundle_copied": 2,
-           "bundle_deleted": 1, "keyring_in_bundle": True}
+           "bundle_deleted": 1}
     assert cli.report_backup(res) == 0
     out = capsys.readouterr().out
-    assert "recovery bundle: 3 file(s) (2 copied, 1 removed; keyring included)" in out
-
-
-def test_backup_bundle_keyring_opted_out(capsys) -> None:
-    res = {**_backup_clean_base(), "bundle_files": 2, "bundle_copied": 0,
-           "bundle_deleted": 0, "keyring_in_bundle": False, "keyring_opted_out": True}
-    assert cli.report_backup(res) == 0
-    assert "keyring EXCLUDED — config opt-out" in capsys.readouterr().out
+    assert "recovery bundle: 3 file(s) (2 copied, 1 removed)" in out
 
 
 # ── verify: parse errors, fts, deep samples, hashes, backup error ─────────────
@@ -998,15 +992,13 @@ def test_restore_drill_bundle_absent(capsys) -> None:
     assert "bundle: ABSENT" in capsys.readouterr().out
 
 
-def test_restore_drill_bundle_present_unreadable_keyring(capsys) -> None:
+def test_restore_drill_bundle_present(capsys) -> None:
     res = {
         "ok": True, "seconds": 1.0,
-        "bundle": {"present": True, "config": True, "keyring_keys": None,
-                   "retained_exports": 2, "keyring_unreadable": True},
+        "bundle": {"present": True, "config": True, "retained_exports": 2},
     }
     assert cli.report_restore_drill(res) == 0
-    out = capsys.readouterr().out
-    assert "bundle: config=yes keyring keys=none retained exports=2 (keyring UNREADABLE)" in out
+    assert "bundle: config=yes retained exports=2" in capsys.readouterr().out
 
 
 # ── restore: skipped-smoke, damaged home, and failure branches ────────────────
@@ -1048,12 +1040,11 @@ def test_restore_failed_no_mirror_no_smoke_error(capsys) -> None:
 def test_restore_bundle_installed_with_error(capsys) -> None:
     res = {
         "ok": True, "seconds": 1.0,
-        "bundle": {"config": True, "keyring": True, "retained_exports": 2,
-                   "error": "keyring locked"},
+        "bundle": {"config": True, "retained_exports": 2, "error": "dest unreadable"},
     }
     assert cli.report_restore(res, to="/h/x") == 0
     out = capsys.readouterr().out
-    assert "bundle: installed config, keyring, 2 retained export(s) (ERROR: keyring locked)" in out
+    assert "bundle: installed config, 2 retained export(s) (ERROR: dest unreadable)" in out
 
 
 # ── nightly: full report, drill error ─────────────────────────────────────────
@@ -1144,74 +1135,6 @@ def test_repair_applied_with_samples(capsys) -> None:
     assert "restored from index: 4 event(s)" in out
     assert "the repaired files shrank" in out
     assert "run `thread_archive verify`" in out
-
-
-# ── redact: false branches (no key_id / no scrubbed) + whole-thread list ──────
-
-
-def test_redact_report_minimal_no_key(capsys) -> None:
-    """A redact result without a key_id / scrubbed counts / notes exercises the
-    skip branches of the summary block."""
-    rc = cli.report_redact({"events_redacted": 1, "thread_id": 2})
-    assert rc == 0
-    out = capsys.readouterr().out
-    assert "redacted 1 event(s) in thread 2" in out
-    assert "under key" not in out
-    assert "reverse with" not in out
-
-
-def test_redact_report_names_scrubbed_quotes_and_the_reversal(capsys) -> None:
-    """Topic citation quotes carrying the redacted content are scrubbed too, and the
-    summary names both that and the key the redaction reverses under."""
-    rc = cli.report_redact({
-        "events_redacted": 2, "thread_id": 7, "key_id": "k1",
-        "topic_quotes_scrubbed": 1, "kg_quotes_scrubbed": 0,
-        "notes": ["provider store keeps its plaintext"],
-    })
-    assert rc == 0
-    out = capsys.readouterr().out
-    assert "redacted 2 event(s) in thread 7 under key k1" in out
-    assert "scrubbed 1 topic quote(s), 0 kg quote(s)" in out
-    assert "note: provider store keeps its plaintext" in out
-    assert "unredact k1" in out
-
-
-def test_redact_restore_key_puts_the_key_back(archive_home, tmp_path, capsys) -> None:
-    """--restore-key reaches api.redact_restore_key: an escrowed key really
-    returns to the keyring, and the ledger says the redaction is reversible again."""
-    tid = import_cc_session(tmp_path, "escrow").thread_id
-    assert main(["redact", str(tid), "--home", str(archive_home)]) == 0
-    key_id = capsys.readouterr().out.split("under key ")[1].split()[0]
-
-    assert main(["redact", "--show-key", key_id, "--home", str(archive_home)]) == 0
-    key_b64 = capsys.readouterr().out.splitlines()[0]
-    assert main(["redact", "--forget", key_id, "--yes", "--home", str(archive_home)]) == 0
-    capsys.readouterr()
-
-    rc = main(["redact", "--restore-key", key_id, key_b64, "--home", str(archive_home)])
-    assert rc == 0
-    assert f"key {key_id} restored to the keyring" in capsys.readouterr().out
-    assert main(["redact", "--list", "--home", str(archive_home)]) == 0
-    assert "key present" in capsys.readouterr().out
-
-
-# ── unredact: notes branch ────────────────────────────────────────────────────
-
-
-def test_unredact_prints_notes(archive_home, tmp_path, capsys) -> None:
-    """`thread_archive unredact` restores the events and echoes the notes the operation
-    really produced — the caveats an operator must read after a restore."""
-    tid = import_cc_session(tmp_path, "notes").thread_id
-    assert main(["redact", str(tid), "--home", str(archive_home)]) == 0
-    redacted = capsys.readouterr().out
-    key_id = redacted.split("under key ")[1].split()[0]
-    n_events = int(redacted.split("redacted ")[1].split()[0])
-
-    rc = main(["unredact", key_id, "--home", str(archive_home)])
-    assert rc == 0
-    out = capsys.readouterr().out
-    assert f"restored {n_events} event(s) in thread {tid}" in out
-    assert "note: " in out
 
 
 # ── status: fully-populated ok + failed variants ─────────────────────────────
@@ -1699,6 +1622,23 @@ def test_loads_reports_a_stalled_load_and_the_run_history(archive_home, capsys) 
     assert "2026-07-21T04:00:00  embed    failed" in out
     assert "[encode 1h25m write 2m00s]" in out   # where the time actually went
     assert "(threads=12)" in out
+
+
+def test_phase_line_names_a_phase_that_is_slowing_down(capsys) -> None:
+    """A phase whose tail runs materially slower than its head is paying a cost that
+    grows with its own output — the mean rate beside it hides that, so the line says
+    it outright. Below the 1.5x threshold it stays quiet: ordinary jitter is noise."""
+    slowing = cli._phase_line({
+        "name": "embed", "elapsed_s": 600, "done": 900, "rate_per_s": 1.5,
+        "slowdown": 3.2, "trend_unit": "ev", "rate_first_s": 4.8, "rate_last_s": 1.5,
+    })
+    assert "slowing 3.2x (4.8 ev/s -> 1.5 ev/s)" in slowing
+
+    steady = cli._phase_line({
+        "name": "embed", "elapsed_s": 600, "done": 900, "rate_per_s": 1.5,
+        "slowdown": 1.1, "rate_first_s": 1.6, "rate_last_s": 1.5,
+    })
+    assert "slowing" not in steady
 
 
 # ── archives: every known home, and what each is doing ───────────────────────

@@ -68,7 +68,7 @@ policy.
 **How thread-archive differs.** Most tools here treat the harness's own files
 as the record and their index as a cache over it. Archive treats preservation
 as the product: its own append-only truth log, backup with restore drills and
-integrity verification, crypto-shredding redaction that stays reversible, and
+integrity verification, and
 unmodeled provider fields preserved verbatim so a format change costs fidelity
 instead of data. The retrieval stack is built to be read by an
 agent mid-conversation rather than browsed by a person. Where these projects

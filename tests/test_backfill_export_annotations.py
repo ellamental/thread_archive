@@ -652,17 +652,16 @@ def test_provider_id_disagreement_blocks_every_match(archive_home) -> None:
     assert "branch" not in user.payload, "a mismatched turn must not be amended"
 
 
-def test_redacted_payload_refuses_the_amendment(archive_home) -> None:
-    """Redaction leaves the row's dedup_key in place, so a fresh twin still finds it —
-    and the amend gate refuses to merge fields into a sealed marker."""
+def test_null_payload_refuses_the_amendment(archive_home) -> None:
+    """A row whose payload is NULL keeps its dedup_key, so a fresh twin still finds
+    it — and the amend gate refuses to merge fields into a non-object."""
     bundle, tid = _seed_claude(archive_home)
-    marker = {"_redacted": {"key_id": "k-1", "at": "2026-01-02T00:00:00Z"}}
-    eid = _set_payload(tid, "thinking_complete", lambda p: dict(marker))
+    eid = _set_payload(tid, "thinking_complete", lambda p: None)
 
     totals = mod.run(bundles=[bundle], apply=True)
     assert totals["amend_refused"] == 1
     with get_session() as s:
-        assert s.get(Event, eid).payload == marker
+        assert s.get(Event, eid).payload is None
 
 
 def test_annotations_merge_fills_only_the_absent_subkeys(archive_home) -> None:
@@ -731,34 +730,6 @@ def test_pairing_refuses_a_key_it_has_already_planned(archive_home) -> None:
     assert totals["pairs"] == 2  # one tool_use twin + the tool_result
     uses = [e for e in _events(tid) if e.event_type == "tool_use_complete"]
     assert [e.payload["tool_call_id"] for e in uses] == ["toolu_1", None]
-
-
-def test_pairing_refuses_a_payload_the_amend_gate_rejects(archive_home) -> None:
-    """``check_patch`` gates the pairing patch as it gates an amendment: a payload it
-    refuses keeps its blank tool id and its old key."""
-    bundle, tid = _seed_claude(archive_home)
-    _set_payload(tid, "tool_use_complete", lambda p: {**p, "_redacted": {"key_id": "k-1"}})
-
-    totals = mod.run(bundles=[bundle], apply=True)
-    # Refused twice over: by the anchored pass, then by the rescue offered the same twin.
-    assert totals["pairing_refused"] == 2
-    assert totals["pairs"] == 1  # the tool_result still pairs
-    use = _one(_events(tid), "tool_use_complete")
-    assert use.payload["tool_call_id"] is None and "blk=" in use.dedup_key
-
-
-def test_ts_free_pairing_refuses_a_payload_the_amend_gate_rejects(archive_home) -> None:
-    """The same gate on the rescue path: a drifted row the amend gate refuses is left
-    unpaired instead of being rescued onto a new key."""
-    bundle, tid = _seed_claude(archive_home)
-    _set_payload(tid, "tool_use_complete", lambda p: {**p, "_redacted": {"key_id": "k-1"}})
-    _unkey(tid, "tool_use_complete", drift_seconds=7)
-
-    totals = mod.run(bundles=[bundle], apply=True)
-    assert totals["pairing_refused"] == 1
-    assert totals.get("pairs_tsfree", 0) == 0
-    use = _one(_events(tid), "tool_use_complete")
-    assert use.payload["tool_call_id"] is None and use.dedup_key is None
 
 
 def test_ts_free_pairing_refuses_a_malformed_fresh_key(archive_home, monkeypatch) -> None:

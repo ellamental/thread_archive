@@ -113,7 +113,7 @@ def make_legacy_home(home: Path, *, with_unindexed: bool = True, with_kg: bool =
             _ev(301, 3, "unindexed thread", "2026-01-03T10:00:00+00:00"),
         ])
     _jl(threads / "stray.jsonl", [{"type": "note", "text": "not a thread file"}])
-    # overlays — amendments.jsonl deliberately absent, redactions.jsonl empty.
+    # overlays — amendments.jsonl deliberately absent.
     _jl(truth / "thread_links.jsonl", [
         {"id": 1, "source_thread_id": 1, "target_thread_id": 2, "link_type": "related",
          "strength": 1.0, "created_by": "auto", "created_by_thread_id": None,
@@ -130,7 +130,6 @@ def make_legacy_home(home: Path, *, with_unindexed: bool = True, with_kg: bool =
         {"id": 1, "source": "claude-code", "source_id": "proj:s1", "thread_id": 1,
          "last_line_count": 4, "last_file_size": 100},
     ])
-    (truth / "redactions.jsonl").write_text("", encoding="utf-8")
     if with_kg:
         _jl(truth / "kg_events.jsonl", [
             {"id": 1, "event_type": "test_noise", "entity_type": "topic",
@@ -282,7 +281,6 @@ def test_migration_rewrites_overlays_and_kg(migrated) -> None:
     assert tm["event_id"] == 101
     (ist,) = [json.loads(ln) for ln in (truth / "import_state.jsonl").read_text().splitlines()]
     assert ist["thread_id"] == u1
-    assert (truth / "redactions.jsonl").read_text() == ""
     assert not (truth / "amendments.jsonl").exists()
 
     kg = {r["id"]: r for r in
@@ -310,7 +308,7 @@ def test_migration_backup_and_manifest(migrated) -> None:
     assert old1[0]["id"] == 1                # pre-migration truth intact, integer ids
     assert (backup / "threads" / "stray.jsonl").exists()
     for name in ("thread_links.jsonl", "topic_messages.jsonl",
-                 "import_state.jsonl", "redactions.jsonl", "kg_events.jsonl"):
+                 "import_state.jsonl", "kg_events.jsonl"):
         assert (backup / name).exists(), name
 
     manifest = json.loads((home / "truth" / "manifest.json").read_text())

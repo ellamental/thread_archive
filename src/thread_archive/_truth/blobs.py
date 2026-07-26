@@ -40,11 +40,6 @@ Crash ordering: a blob file is fsynced into place before the payload
 referencing it is staged, so truth never references a blob that isn't durable.
 An orphaned blob (crash between the two) is harmless dead weight, not damage.
 
-Redaction (`_ops.redact`) treats blob content as payload content: the recovery
-bundle carries the reconstituted inline form (self-contained, restorable even
-without the blob file), and the blob file itself is deleted when no live event
-still references its hash.
-
 Out of scope for now: codex ``input_image`` data-URI *strings* (a string must
 stay a string, and rewriting it would need its own inverse) stay inline.
 """
@@ -254,27 +249,6 @@ def reconstitute_blobs(value: Any, *, d: Optional[Path] = None) -> tuple[Any, in
             out_list.append(new_v)
         return (out_list if changed else value), missing
     return value, 0
-
-
-def collect_blob_hashes(value: Any) -> set[str]:
-    """Every content hash the structure references or inlines: blob refs
-    contribute ``blob_hash`` directly; extractable inline base64 contributes the
-    hash of its decoded bytes (a lazily-materialized copy of inline content may
-    exist under that hash — redaction uses this to find every file to shred)."""
-    hashes: set[str] = set()
-    if isinstance(value, dict):
-        if is_blob_ref(value):
-            hashes.add(value["blob_hash"])
-        else:
-            raw = _extractable(value)
-            if raw is not None:
-                hashes.add(hashlib.sha256(raw).hexdigest())
-            for v in value.values():
-                hashes |= collect_blob_hashes(v)
-    elif isinstance(value, list):
-        for v in value:
-            hashes |= collect_blob_hashes(v)
-    return hashes
 
 
 def materialize(value: dict, *, d: Optional[Path] = None) -> Optional[Path]:

@@ -439,8 +439,8 @@ def write_events(session: Session, events: list[Event]) -> list[Event]:
 
     Base64 image/document content is extracted into the content-addressed blob
     store here (see :mod:`.blobs`), before the row reaches SQLite, FTS, or the
-    truth file — this seam carries exactly the imported batches (redact/amend
-    rewrites use their own paths and must not re-extract), so it is the one
+    truth file — this seam carries exactly the imported batches (amendment
+    rewrites use their own path and must not re-extract), so it is the one
     place that keeps new truth free of inline binary. The blob file is durable
     before the payload referencing it is staged."""
     from .blobs import extract_blobs

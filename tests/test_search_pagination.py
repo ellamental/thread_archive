@@ -333,8 +333,8 @@ def test_the_memoized_set_still_sees_newly_indexed_threads(archive_home) -> None
 
 
 def test_resetting_the_memo_forces_a_fresh_scan(archive_home) -> None:
-    """Redaction and reindex drop the memo outright: both change the set in ways
-    the append watermark cannot see."""
+    """Reindex drops the memo outright: it changes the set in ways the append
+    watermark cannot see."""
     from thread_archive._retrieval.fts import reset_set_memo, set_memo_stats
 
     _seed_many(archive_home, 4)

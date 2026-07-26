@@ -122,3 +122,26 @@ def test_unknown_stage_never_breaks_a_search() -> None:
         _probe.record("no_such_ms", 0.0)
         _probe.flag("no_such_flag")
 
+
+
+def test_shape_substages_ride_along_only_when_they_ran() -> None:
+    # The post-pool stages are per-shape: a ranked search never extends, a browse
+    # does. An explicit zero would read as "measured and instant" rather than "did
+    # not happen", which is the distinction the whole gated-record convention keeps.
+    probe = _probe.SearchProbe()
+    probe.fts_ms = 1.0
+    probe.rank_ms = 4.5
+    probe.enrich_ms = 0.25
+    rec = probe.as_record()
+    assert rec["rank_ms"] == 4.5 and rec["enrich_ms"] == 0.2
+    for name in ("coherence_ms", "group_ms", "extend_ms"):
+        assert name not in rec
+
+
+def test_shape_substages_are_a_disjoint_set_from_the_arms() -> None:
+    # They measure what happens to a pool, not how it was found — so a stage name
+    # landing in two groups would double-count it in any analysis over the ledger.
+    arms = set(_probe.SEMANTIC_SUBSTAGES) | set(_probe.FTS_SUBSTAGES)
+    assert not arms & set(_probe.SHAPE_SUBSTAGES)
+    for name in _probe.SHAPE_SUBSTAGES:
+        assert name in _probe.SearchProbe.__slots__

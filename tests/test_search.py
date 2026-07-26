@@ -618,3 +618,37 @@ def test_agents_invalid_value_raises(archive_home) -> None:
     _seed_corpus(archive_home)
     with pytest.raises(ValueError, match="agents"):
         search("authentication", agents="everyone")
+
+
+def test_the_browse_shape_bills_its_reconciliation_apart_from_its_fold(archive_home) -> None:
+    """A search's latency splits at the pool: how it was *found* (the arms) and what
+    then happened to it (the shape stages). The browse shape is the one that pays
+    both halves — it folds the pool by thread and then reconciles that fold against
+    the exact match set, two costs with unrelated scaling that a single number would
+    hide behind whichever one happened to dominate."""
+    init_db()
+    for i in range(6):
+        f = archive_home / f"b{i}.jsonl"
+        _write_cc(f, _cc_turn(f"u{i}", f"a{i}", f"the widget report {i}",
+                              f"acknowledged, widget {i}", i + 1))
+        import_session_incremental(f, f"proj:b{i}")
+
+    with _probe.install() as browse:
+        search("widget", limit=2, group="browse")
+    rec = browse.as_record()
+    # The reconciliation ran and is its own bucket — and it is the outer bound on
+    # the exact-set scan nested inside it, not a sibling of it.
+    assert browse.extend_ms > 0.0
+    assert browse.extend_ms >= browse.set_ms
+    # The fold is billed separately, so a slow reconciliation can never be read as
+    # a slow grouping pass.
+    assert "group_ms" in rec and rec["group_ms"] >= 0.0
+
+    # A ranked search never reconciles, so it records no extend at all rather than a
+    # zero that would read as "measured and instant".
+    with _probe.install() as ranked:
+        search("widget", limit=2)
+    assert ranked.extend_ms == 0.0
+    assert "extend_ms" not in ranked.as_record()
+    # It still ranks, which is the stage a grouping shape runs over the whole pool.
+    assert ranked.rank_ms > 0.0

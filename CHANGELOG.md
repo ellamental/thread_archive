@@ -2,6 +2,128 @@
 
 ## Unreleased
 
+- **A time-scoped search no longer queries `events` at all — the vector pack carries
+  its own dates.** With the redundant `agents` clause gone, what remained in the KNN
+  scope mask was the time bound itself, and it was still the largest thing a
+  `since`-scoped search did: measured on the live archive, `since='180d'` spent
+  ~1.05 s of a ~1.4 s search materializing event ids.
+
+  The mask was doing arithmetic on the wrong set. `since='180d'` selects **3.6M** ids
+  out of `events` to narrow a pack holding **275k** vectors — 93% of the ids fetched
+  name rows the matrix does not contain, and the cost scaled with the window
+  precisely because of the ones that were never candidates. The pack already knows
+  every row's date; it simply wasn't carrying it.
+
+  So it carries it now: a `ts` array beside `ids` and `cts`, written by the base
+  packer and stitched across the base+delta split like every other positional array.
+  A window becomes a comparison over an array already in hand — **flat ~14 ms
+  regardless of width**, against 94 ms at `7d` and 1117 ms at `180d`, with results
+  byte-identical to the id-mask path across every query and window checked. The
+  array costs 7.1 MB against the matrix's 845 MB, and `scope_ms` now reads 0.0 for a
+  purely time-scoped search. Thread, source and path scopes still pay an id query —
+  they need facts the pack does not hold — but the time clause is gone from that
+  query too, and dropping it turns out to matter far more than the redundancy
+  argument for it: a `source` scope carrying both clauses cost **~20 s** at every
+  window measured, against **~1.1 s** for the same scope with the time bound left to
+  the pack. It fetches three times as many ids and is eighteen times faster, because
+  the two clauses together drove a plan neither one does alone.
+
+  Two details that are load-bearing rather than incidental. The timestamps are
+  stored as **bytes, not epoch integers**: the query being replaced compared the
+  column as SQLite TEXT, which is a bytewise comparison, so comparing the same bytes
+  gives the same answer for every value the column can hold — no parser, and no
+  values a parser would reject or reinterpret. And a row with **no** timestamp is
+  excluded from a window explicitly, not by ordering: it packs to empty bytes, which
+  sort below every real stamp and would otherwise ride into every `until` bound on
+  the grounds of being "before" it.
+
+  Older packs simply lack the array. A pack is derived and disposable, so this is
+  not a migration: the reuse check gates on the files a complete pack has, declines
+  one that is missing any, and the next background build writes a whole one.
+
+- **Redaction is removed.** `redact` / `unredact`, the keyring, `truth/redactions.jsonl`,
+  the `_redacted` payload marker, and the `cryptography` dependency are all gone. The
+  feature promised a lot of surface — crypto-shredding across truth, index, FTS,
+  vectors, blobs, and citation quotes, with a three-state key lifecycle — and none of
+  it was ever used: no archive this shipped to had ever minted a key or written a
+  redaction record. What it cost was real, though: every reader carried marker-envelope
+  vocabulary, the hash gates had a skip arm, amendment had a sealed-payload arm, and
+  the backup's recovery bundle existed half to escrow keys.
+
+  Consequences worth knowing:
+
+  - The recovery bundle survives, minus the keyring: it carries `config.json`, the
+    retained exports, and the health/ledger snapshots. The `backup.include_keyring`
+    config key is gone, as are the `keyring_in_bundle` / `keyring_opted_out` result
+    fields. Head-only still holds, now for its own reason — the bundle tracks the
+    install's current state, so a member deleted at the home leaves the backup on
+    the next run instead of persisting in dated snapshots.
+  - `amend.check_patch` keeps the content-identity and non-object arms and loses the
+    sealed-marker one. That made three of its call sites unreachable — the two
+    pairing gates in the export-annotations backfill and the patch gate in the
+    dropped-fields backfill all coerce the stored payload to a dict and filter
+    content keys out of the patch before calling, so only a redaction marker could
+    ever have made them fire. Those gates and their `pairing_refused` /
+    `patch_refused` counters are removed rather than left as unreachable defense.
+  - `_truth.blobs.collect_blob_hashes` is removed: shredding was its only caller.
+  - `truth/redactions.jsonl` leaves the on-disk format spec. No migration — the file
+    was only ever created by a redaction, so no existing archive has one, and the
+    truth format version stays at 2.
+
+- **The stage probe now covers the half of a search that happens after the pool.**
+  The ledger attributed wall-clock to the two pool arms and the re-rank; everything
+  the pool was then *put through* — ranking, the coherence pass, the thread fold,
+  the browse shape's exact-set reconciliation, and the per-hit enrichments — was
+  unmeasured. On the recorded traffic that blind spot read as roughly half of all
+  search latency going somewhere nobody could name, which is exactly the condition
+  under which a latency investigation invents a cause.
+
+  `SHAPE_SUBSTAGES` (`rank_ms`, `coherence_ms`, `group_ms`, `extend_ms`,
+  `enrich_ms`) closes it. Unlike the arms — which run concurrently and so can sum
+  past the total — these run strictly in sequence and genuinely sum, to whatever a
+  search spent past its pool. The split matters because the two halves scale with
+  different things: an arm gets slower when the corpus or the index does, and these
+  get slower when the *pool* is large, which a caller controls through `over` and
+  `group`. `extend_ms` deliberately contains `set_ms` and the fold is billed apart
+  from the reconciliation, so a slow exact set can never be read as a slow grouping
+  pass. The bench (`_ops/speed.py`) reports the same stages production does.
+
+  Three things the ledger said and the reading was wrong about, now that the
+  stages are separable:
+
+  - **Concurrency is not a factor** — and the sensor that should have said so was
+    broken. Reconstructing call intervals from the ledger, 93% of recorded searches
+    overlapped no other retrieval call at all, and the ones that did overlap were
+    *faster* on average than the ones that didn't. But the `inflight` field had
+    never fired in the ledger's whole history, including on calls that provably
+    overlapped, for two independent reasons: it was sampled once at request start,
+    so every peer arriving during a seven-second search was invisible to it, and
+    the web surface sampled contention without ever entering the in-flight span, so
+    its own load counted for nobody. A field that reports all-clear by construction
+    is worse than no field, because an investigation reads it as evidence.
+
+    `in_flight()` now yields a `Span` carrying a **high-water mark**: an arriving
+    call raises the peak of everyone already running, and each reads its own peak
+    on the way out, so a search that started alone and finished in a crowd reports
+    the crowd. `peak_inflight(span)` is deliberately separate from `sample()` —
+    the two are taken at opposite ends of the work and for opposite reasons, since
+    a rebuild that finished mid-search still shaped it while a peer that arrived
+    mid-search is only knowable at the end. Both MCP surfaces fold the peak in from
+    their `finally`, so a search that *raised* still reports how busy the process
+    was; the web surface now enters the span as well as sampling it.
+  - **A concurrent writer is not a factor either.** Within one repeated query, a
+    search running against a WAL written seconds ago and one running against a
+    quiet database cost the same (mean exact-set scan 3.25 s against 3.45 s).
+  - **The worst rows in the ledger were a stale daemon, not a slow pipeline.** The
+    single largest attributed cost after the exact-set scan was hydration — 172 s,
+    concentrated almost entirely in one three-minute browse walk whose candidate
+    pool grew with page depth, reaching 33 000 candidates hydrated to serve 50 rows.
+    The pool was made page-independent hours *before* that walk; the process serving
+    it had never reloaded. Against current code the same walk holds a flat 244-row
+    pool and hydrates in ~10 ms. Restarting a daemon after an edit is not
+    housekeeping — it is the difference between measuring the system and measuring
+    its ghost.
+
 - **The gold miners no longer ship in the wheel.** `thread_archive._mine` is
   development machinery: the miners spend real tokens driving headless `claude`
   agents, and the cases they mint are only useful beside the scoring bench and
