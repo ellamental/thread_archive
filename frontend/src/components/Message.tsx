@@ -1,9 +1,10 @@
 import { useState } from 'react'
+import { AskUserQuestionView, askQuestions } from './AskQuestion'
 import { Markdown } from './Markdown'
 import { RawContext } from './RawMode'
 import { colorStyle, modelColor } from '../modelColor'
 import type { ModelColor } from '../modelColor'
-import type { Block, BlockImage, Message as Msg, MessageMeta } from '../api'
+import type { AskQuestion, Block, BlockImage, Message as Msg, MessageMeta } from '../api'
 
 function prettyInput(input: unknown): string {
   if (typeof input === 'string') return input
@@ -88,6 +89,11 @@ function BlockView({ block }: { block: Block }) {
         </details>
       )
     case 'tool_result':
+      // An answered question whose call block didn't survive into this message
+      // (a message split landed between them) still renders as the decision it is,
+      // off the answer's own copy of the questions.
+      if (block.answers)
+        return <AskUserQuestionView questions={block.questions ?? []} answers={block.answers} />
       return (
         <details className="tool">
           <summary>
@@ -207,22 +213,58 @@ function BlockView({ block }: { block: Block }) {
   }
 }
 
-// One renderable item: a regular block, or a run of consecutive hook_fired
-// markers merged into a single compact row — a hook can fire around every tool
-// call, and a chip row reads where a details-box per firing would drown the turn.
-type RenderItem = { kind: 'block'; block: Block } | { kind: 'hook_fires'; names: string[] }
+// One renderable item: a regular block, a run of consecutive hook_fired markers
+// merged into a single compact row (a hook can fire around every tool call, and a
+// chip row reads where a details-box per firing would drown the turn), or an
+// AskUserQuestion call folded together with the answer it got.
+type RenderItem =
+  | { kind: 'block'; block: Block }
+  | { kind: 'hook_fires'; names: string[] }
+  | { kind: 'ask'; questions: AskQuestion[]; answers?: Record<string, string>; dismissed: boolean }
+
+// The block that says how an AskUserQuestion call turned out — the next block
+// that isn't a hook marker, since hooks fire around the call without separating it
+// from its result.
+function outcomeIndex(blocks: Block[], from: number): number {
+  let i = from
+  while (i < blocks.length && blocks[i].type === 'hook_fired') i++
+  return i
+}
 
 function groupBlocks(blocks: Block[]): RenderItem[] {
   const items: RenderItem[] = []
-  for (const b of blocks) {
+  const folded = new Set<number>()
+  blocks.forEach((b, i) => {
+    if (folded.has(i)) return
     if (b.type === 'hook_fired') {
       const last = items[items.length - 1]
       if (last?.kind === 'hook_fires') last.names.push(b.hook_name)
       else items.push({ kind: 'hook_fires', names: [b.hook_name] })
-    } else {
-      items.push({ kind: 'block', block: b })
+      return
     }
-  }
+    if (b.type === 'tool_use' && b.name === 'AskUserQuestion') {
+      const questions = askQuestions(b.input)
+      if (questions) {
+        // Fold the outcome into the question card: the answer marks the option that
+        // won, and a denial reads as "dismissed" — either way the harness's prose
+        // recap of what was already rendered above is dropped, not shown twice.
+        const j = outcomeIndex(blocks, i + 1)
+        const outcome = blocks[j]
+        let answers: Record<string, string> | undefined
+        let dismissed = false
+        if (outcome?.type === 'tool_result' && outcome.answers) {
+          answers = outcome.answers
+          folded.add(j)
+        } else if (outcome?.type === 'tool_error' && outcome.denial_kind) {
+          dismissed = true
+          folded.add(j)
+        }
+        items.push({ kind: 'ask', questions, answers, dismissed })
+        return
+      }
+    }
+    items.push({ kind: 'block', block: b })
+  })
   return items
 }
 
@@ -380,6 +422,13 @@ export function Message({
         {groupBlocks(message.blocks).map((item, i) =>
           item.kind === 'hook_fires' ? (
             <HookFires key={i} names={item.names} />
+          ) : item.kind === 'ask' ? (
+            <AskUserQuestionView
+              key={i}
+              questions={item.questions}
+              answers={item.answers}
+              dismissed={item.dismissed}
+            />
           ) : (
             <BlockView key={i} block={item.block} />
           ),

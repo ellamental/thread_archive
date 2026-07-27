@@ -1,9 +1,9 @@
 """The mining run ledger (``search_lab/mine_runs.py``).
 
 The denominator behind a mined benchmark — how many units a run attempted, and
-the per-unit outcome breakdown (a judge's ``none-of-pool``, a generator's drop) —
-is what a recall-blind protocol must not lose to a green console line. These pin
-that it is recorded, read back newest-first, and stays fail-soft telemetry.
+the per-unit outcome breakdown (the units that yielded no usable query) — is what
+a benchmark must not lose to a green console line. These pin that it is recorded,
+read back newest-first, and stays fail-soft telemetry.
 """
 
 from __future__ import annotations
@@ -15,18 +15,19 @@ from search_lab import mine_runs
 
 def test_record_and_read_round_trips_newest_first(tmp_path) -> None:
     mine_runs.record_run(
-        miner="rerank", snapshot_id="snap-1", attempted=10, written=8, failed=2,
-        outcomes={"ok": 8, "none-of-pool": 2}, home=tmp_path)
+        miner="commit", snapshot_id="snap-1", attempted=10, written=8, failed=2,
+        outcomes={"ok": 8, "no-queries": 2}, home=tmp_path)
     mine_runs.record_run(
-        miner="querygen", snapshot_id="snap-1", attempted=5, written=3, failed=2,
-        outcomes={"ok": 3, "no-queries": 2}, home=tmp_path)
+        miner="commit", snapshot_id="snap-2", attempted=5, written=3, failed=2,
+        outcomes={"ok": 3, "agent-failed": 2}, home=tmp_path)
 
     runs = mine_runs.read_runs(tmp_path)
-    assert [r["miner"] for r in runs] == ["querygen", "rerank"]  # newest first
-    rerank = runs[1]
-    assert rerank["attempted"] == 10 and rerank["written"] == 8
-    assert rerank["outcomes"] == {"ok": 8, "none-of-pool": 2}
-    assert rerank["kind"] == "mine-run" and "commit" in rerank
+    assert [r["snapshot_id"] for r in runs] == ["snap-2", "snap-1"]  # newest first
+    older = runs[1]
+    assert older["miner"] == "commit"
+    assert older["attempted"] == 10 and older["written"] == 8
+    assert older["outcomes"] == {"ok": 8, "no-queries": 2}
+    assert older["kind"] == "mine-run" and "commit" in older
 
 
 def test_read_runs_limit_and_missing_ledger(tmp_path) -> None:

@@ -13,9 +13,9 @@ is for:
   harnesses are documented and run). The interpreter puts this directory on
   ``sys.path`` itself, so a harness reaches its siblings by bare import
   (``from eval_core import evaluate``).
-* **a module** — ``import search_lab.eval_core``, which is how the tests, the
-  gold gate under ``scripts/``, and the ``mine`` miners reach the shared cores
-  (:mod:`eval_core`, :mod:`snapshot`, :mod:`gold_runs`, :mod:`mine_runs`).
+* **a module** — ``import search_lab.eval_core``, which is how the tests and the
+  ``mine`` miners reach the shared cores
+  (:mod:`eval_core`, :mod:`snapshot`, :mod:`run_meta`, :mod:`mine_runs`).
   Importing the package runs this file, which puts the same two directories on
   the path, so the bare sibling imports inside the harnesses resolve here too.
 

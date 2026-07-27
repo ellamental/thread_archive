@@ -302,15 +302,6 @@ export interface BenchPoint {
   tuning: boolean
 }
 
-export interface QualityPoint {
-  at: string
-  commit: string | null
-  passed: boolean
-  mrr: number
-  ndcg: number
-  n: number
-}
-
 export interface RetrievalReport {
   home: string
   hours: number
@@ -319,10 +310,285 @@ export interface RetrievalReport {
   served: Served | null
   stages: Stages | null
   restarts: Restarts | null
-  /** Keyed by query set — `gold` and `observed` are different populations of
-   *  query and are never drawn as one line. */
+  /** Keyed by query set. Two query sets are two populations of query and are
+   *  never drawn as one line. */
   bench: Record<string, BenchPoint[]> | null
-  quality: { points: QualityPoint[]; latest: QualityPoint | null } | null
+}
+
+// --- the search lab's inventory --------------------------------------------
+// What the bench has to measure with, as opposed to what it measured. Every row
+// is read off the lab's own registries, so this describes the box rather than a
+// catalog somebody kept up to date.
+
+/** A walked subtree. `truncated` means the walk hit its file budget, so `bytes`
+ *  is a floor rather than the size — render it as such, never as the total. */
+export interface DirSize {
+  bytes?: number
+  files?: number
+  truncated?: boolean
+}
+
+/** A built corpus home. `built: false` is a real row — an unbuilt corpus is what
+ *  "available, not installed" looks like, and dropping it would make it
+ *  indistinguishable from a corpus nobody defined. */
+export interface CorpusHome extends DirSize {
+  label: string
+  path: string
+  built: boolean
+  snapshot_id: string | null
+  counts: { events?: number; threads?: number; vectors?: number; kg_events?: number }
+  embedding_space: string | null
+  created_at: string | null
+  /** Doc count off the harness's build marker, for homes that are built but never
+   *  stamped as a snapshot (the haystack corpora). */
+  build?: { docs: number | null; embedded: boolean }
+  /** Set on a root holding many small homes (one per question). */
+  homes?: number | null
+}
+
+export interface DatasetDownload extends DirSize {
+  path: string | null
+  present: boolean
+}
+
+export interface Dataset {
+  name: string
+  family: string
+  harness: string
+  download: DatasetDownload
+  homes: CorpusHome[]
+  /** Published baselines the harness already carries — the scale a measured
+   *  number is read against. Shape differs by family. */
+  reference: Record<string, unknown>
+  /** Benchmark rows that run on this dataset. */
+  on_bench: string[]
+  source?: string
+  license?: string
+  /** Where this corpus's miners write their case files, for the one corpus that
+   *  has miners. Nothing scores against them — see `Miner`. */
+  gold_dir?: string | null
+}
+
+export interface BenchRun {
+  at: string | null
+  elapsed_s: number | null
+  commit: string | null
+  code_id: string | null
+  measures: Record<string, number | null>
+}
+
+/** `missing` (no corpus on this box) outranks the rest: the row cannot run at
+ *  all, so calling it stale would suggest a re-run is what it needs. `fresh` is
+ *  the bench's own skip test — the ledger's numbers still describe what a run
+ *  right now would measure. */
+export type BenchState = 'missing' | 'fresh' | 'stale' | 'never-run'
+
+export interface Benchmark {
+  name: string
+  argv: string[]
+  corpus_home: string | null
+  corpus_id: string | null
+  corpus_built: boolean
+  build_hint: string
+  cost_min: number
+  est_min: number
+  fresh: boolean
+  state: BenchState
+  measure_keys: string[]
+  code_id: string
+  last: BenchRun | null
+}
+
+export interface MineRun {
+  at: string | null
+  snapshot_id: string | null
+  attempted: number | null
+  written: number | null
+  failed: number | null
+  outcomes: Record<string, number>
+  /** The run's funnel, one row per stage in order. Empty when the miner declares
+   *  no stages — which must read as "not recorded", never as "nothing dropped". */
+  funnel: FunnelRow[]
+  cost_usd?: number | null
+}
+
+/** One stage of a mining run: what it took in, what it passed on, and why the
+ *  difference. The reasons are what make a funnel worth drawing — a unit dropped
+ *  for broken provenance is a wrong label leaving the benchmark, and one dropped
+ *  for an uninformative commit is a hard case leaving it. Opposite directions,
+ *  and a single "dropped" count cannot tell them apart. */
+export interface FunnelRow {
+  stage: string
+  /** `agent` stages spend tokens, `free` ones do not — which is why the cheap
+   *  gates are ordered first, to narrow what the expensive ones are asked. */
+  kind: string
+  in: number
+  out: number
+  reasons: Record<string, number>
+  cost_usd?: number
+  seconds?: number
+}
+
+/** A stage a miner declares it will run, before any run has happened. */
+export interface MinerStage {
+  name: string
+  kind: string
+  summary: string
+}
+
+export interface Miner {
+  name: string
+  summary: string
+  measures: string
+  unit: string
+  cost: string
+  target_kind: string
+  target_help: string
+  default_target: number
+  /** What fixes this miner's labels — the artifact that decides the answer. */
+  gold_source: string
+  /** Whether no retrieval touched the labels. Failing it means a number scored
+   *  against them is an upper bound on itself; passing it is necessary for a
+   *  claim and nowhere near sufficient, since the query still had to be authored
+   *  from an artifact rather than asked by anyone. */
+  retrieval_free: boolean
+  runnable_in_all: boolean
+  cases_stem: string
+  /** The funnel this miner declares, with its own defaults applied. */
+  stages: MinerStage[]
+  runs: MineRun[]
+  runs_total: number
+}
+
+/** Nearest-rank percentiles, in milliseconds. Nearest-rank rather than
+ *  interpolated: at a few hundred queries the p99 is one sample either way, and
+ *  interpolating invents a latency no search actually took. */
+export interface Percentiles {
+  p50: number
+  p95: number
+  p99: number
+}
+
+/** What a run **cost**, as against what it scored.
+ *
+ *  Both come off the same searches, and only together say whether a
+ *  configuration that scores better is one worth shipping — a pass that lifts
+ *  nDCG and doubles p99 is a trade, not a win. Read as a lead rather than a
+ *  benchmark: one sample per query under whatever conditions the run had. */
+export interface RunPerformance {
+  /** Searches timed. */
+  queries?: number | null
+  /** Wall-clock of the scored loop — not the whole process. The difference
+   *  against the run's `elapsed_s` is setup: ingest, embed, model load. */
+  scoring_s?: number | null
+  qps?: number | null
+  mean_ms?: number | null
+  max_ms?: number | null
+  total?: Percentiles
+  /** Per-stage latency. The two pool arms run concurrently, so `fts_ms` and
+   *  `semantic_ms` cover overlapping wall-clock and can sum past the total; only
+   *  the shape stages sum. */
+  stages?: Record<string, Percentiles>
+  /** Searches that carried a stage breakdown. Below `queries` when a pool-cache
+   *  hit sat the arms out — those did no retrieval rather than doing it fast. */
+  staged?: number | null
+  /** Searches that paid a model load inside them — the cold-model tail. */
+  cold?: number | null
+  pool_p50?: number | null
+  corpus_docs?: number | null
+  arms?: string[] | null
+}
+
+/** One scored query, as the run recorded it.
+ *
+ *  The aggregate says the row scored 0.494; this says which queries it failed.
+ *  `rank` is the 1-based position of the first gold document, or null when none
+ *  came back at all — "ranked 40th" is a ranking problem and "never retrieved"
+ *  is a recall one, and a score of 0.0 reports them identically. */
+export interface QueryRow {
+  qid: string
+  query: string
+  latency_ms: number | null
+  rank: number | null
+  n_gold: number | null
+  found: number | null
+  measures: Record<string, number | null>
+  /** The stratum the harness knows this query by — a category, a difficulty
+   *  tier — so a failure reads as belonging to a kind. */
+  group?: string
+  /** Present only in a comparison: the same query at the other run. */
+  before?: { measures: Record<string, number | null>; rank: number | null; latency_ms: number | null }
+  /** Movement in the leading measure against the compared run. */
+  moved?: number
+}
+
+export interface RunQueries {
+  run_id: string
+  /** The run this was joined against, when the rows carry `before`/`moved`. */
+  compared_to: string | null
+  order: 'worst' | 'moved'
+  /** The metric these rows are read on — the first the harness listed. */
+  lead: string | null
+  total: number
+  /** Queries whose gold document never came back at all. */
+  misses: number
+  returned: number
+  rows: QueryRow[]
+}
+
+/** One row of the benchmark ledger — a run that happened, rather than the state
+ *  a row is in. Everything the run recorded, plus the three facts establishing it
+ *  takes the present: `id`, `on_bench`, `code_current`. */
+export interface BenchRunRecord {
+  /** Content hash of the record — a link's handle on it. The ledger is
+   *  append-only, so it survives the file growing underneath. */
+  id: string
+  at: string
+  row: string
+  status: 'ok' | 'failed' | 'skipped'
+  code_id: string | null
+  corpus_id: string | null
+  commit: string | null
+  elapsed_s: number | null
+  measures: Record<string, number | null>
+  argv: string[]
+  /** What the run cost. Absent on runs recorded before the harnesses reported
+   *  one, and on failures — which is a different thing from a run that was fast. */
+  performance?: RunPerformance | null
+  /** Whether this run's per-query detail is still on disk. The store is capped,
+   *  so an old run keeps its numbers and loses its detail. */
+  has_queries?: boolean
+  /** Historical: rows the ledger carries that the manifest no longer names. */
+  tier?: string | null
+  /** Whether this run's row is still a row the bench would run. */
+  on_bench: boolean
+  /** The newest successful run of its row — what the summary above reports. */
+  current: boolean
+  /** Whether it was measured under the ranking code now in the working tree.
+   *  null for a row off the bench: there is no current code id for a harness the
+   *  manifest no longer names, and false would invent one. */
+  code_current: boolean | null
+  measure_keys: string[]
+}
+
+export interface BenchRuns {
+  code_id: string
+  /** Records in the ledger, which `runs` may have been truncated from. */
+  total: number
+  returned: number
+  runs: BenchRunRecord[]
+}
+
+export interface LabInventory {
+  cache_root: string
+  cache: DirSize
+  /** The content hash of the ranking and scoring source as it sits in the working
+   *  tree. A row measured under a different one is stale by definition. */
+  code_id: string
+  families: Record<string, string>
+  benchmarks: Benchmark[]
+  datasets: Dataset[]
+  miners: Miner[]
 }
 
 // ── the drop zone (account-export upload) ───────────────────────────────────
@@ -443,12 +709,40 @@ export interface BlockImage {
   pointer?: string | null
 }
 
+// One choice the assistant offered in an AskUserQuestion call. `preview` (a
+// mockup, a diff, a code sketch) rides the call only — the recorded answer keeps
+// labels and descriptions.
+export interface AskOption {
+  label: string
+  description?: string
+  preview?: string
+}
+
+export interface AskQuestion {
+  question: string
+  header?: string
+  multiSelect?: boolean
+  options: AskOption[]
+}
+
 export type Block =
   | { type: 'text'; text: string; images?: BlockImage[] }
   | { type: 'thinking'; text: string }
   | { type: 'tool_use'; name: string; input: unknown }
-  | { type: 'tool_result'; output: string; truncated: boolean; images?: BlockImage[] }
-  | { type: 'tool_error'; error: string; images?: BlockImage[] }
+  // `answers`/`questions` appear on an AskUserQuestion result: the user's pick per
+  // question (by option label, or their own text when they wrote one) alongside the
+  // questions as recorded. The reader renders the pair as a decision, not as JSON.
+  | {
+      type: 'tool_result'
+      output: string
+      truncated: boolean
+      images?: BlockImage[]
+      answers?: Record<string, string>
+      questions?: AskQuestion[]
+    }
+  // `denial_kind` ('user-rejected', …) marks a tool that never ran because the
+  // user turned it down, as opposed to one that ran and failed.
+  | { type: 'tool_error'; error: string; images?: BlockImage[]; denial_kind?: string }
   | { type: 'context_summary'; text: string }
   // A hook that fired and injected content into the model's context (a
   // hook_additional_context attachment or a hook-context sidecar line):
@@ -778,4 +1072,23 @@ export const api = {
   // is invisible in a 14-day median for a week. A dev page: the report is the
   // search lab's, so an install without the lab answers 404 and the view says so.
   retrieval: (hours = 14 * 24) => getJSON<RetrievalReport>(`/api/retrieval?hours=${hours}`),
+  // What the bench has on hand: benchmark rows and whether each can run, the
+  // corpora on disk and what they hold, the miners and what they minted. A dev
+  // page like `retrieval` and for the same reason — the inventory is the search
+  // lab's, and an install has no lab to inventory, so it answers 404.
+  searchLab: () => getJSON<LabInventory>('/api/search-lab'),
+  // Every run the bench ever recorded here, newest first — the ledger, not the
+  // newest-per-row summary `searchLab` carries. Its own call because the
+  // inventory is a filesystem walk served from a cache, and a run that finished
+  // a second ago has to show up in the history now.
+  searchLabRuns: (row?: string) =>
+    getJSON<BenchRuns>('/api/search-lab/runs' + (row ? `?row=${encodeURIComponent(row)}` : '')),
+  // One run's per-query detail, worst first — or, with `vs`, the queries that
+  // moved against another run, biggest regression first. Off the run's own
+  // sidecar, so this costs one file open and the runs list costs none.
+  searchLabRunQueries: (id: string, vs?: string) =>
+    getJSON<RunQueries>(
+      `/api/search-lab/runs/${encodeURIComponent(id)}/queries` +
+        (vs ? `?vs=${encodeURIComponent(vs)}` : ''),
+    ),
 }

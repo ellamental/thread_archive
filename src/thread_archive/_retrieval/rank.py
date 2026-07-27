@@ -286,9 +286,11 @@ def group_by_thread(results: list[EventHit], *, fold_duplicates: bool = True) ->
       that row's ``_dup_thread_ids`` instead of repeating the content. A thread
       folded this way can still surface later on a distinct hit of its own.
 
-    ``fold_duplicates=False`` keeps the per-thread collapse but drops that second
-    fold, so **every** matched thread keeps a row — what a thread *list* owes its
-    reader, where a ranked result list owes its reader brevity.
+    ``fold_duplicates=False`` (the default for a search) keeps the per-thread
+    collapse and still *marks* the near-duplicates in ``_dup_thread_ids``, but
+    stops that second fold removing rows, so **every** matched thread keeps one.
+    Removing them answers "which threads mention this" with a smaller number than
+    the truth; marking them spends a result slot to stay honest about it.
 
     Ranked order in, ranked order out: a thread ranks where its best hit ranks.
     """
@@ -301,16 +303,22 @@ def group_by_thread(results: list[EventHit], *, fold_duplicates: bool = True) ->
         if rep is not None:
             rep["_thread_more"] = rep.get("_thread_more", 0) + 1
             continue
-        norm = _norm_content(r) if fold_duplicates else ""
+        norm = _norm_content(r)
         if norm:
             dup = by_content.get(norm)
             if dup is not None:
+                # The near-duplicate relation is recorded either way; only
+                # ``fold_duplicates`` decides whether it also removes the row.
+                # Marking without removing is what lets a reader see that two
+                # threads carry the same text while "which threads mention this"
+                # still counts both — an identical prompt is not identical work.
                 ids = dup.setdefault("_dup_thread_ids", [])
                 if tid not in ids:
                     ids.append(tid)
-                continue
+                if fold_duplicates:
+                    continue
         by_thread[tid] = r
-        if norm:
+        if norm and by_content.get(norm) is None:
             by_content[norm] = r
         out.append(r)
     return out

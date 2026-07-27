@@ -371,24 +371,58 @@ def test_unwire_reports_a_missing_cli(host, tmp_path) -> None:
 # ── the closing report ───────────────────────────────────────────────────────
 
 
-def test_the_report_names_the_archive_and_any_mirror_holding_a_copy(
+def test_the_closing_report_names_every_place_the_data_is(
     tmp_path, archive_home, host, capsys
 ) -> None:
+    """Deleting the home is not deleting the conversations, on most installs. The
+    report has to name each copy, or "untouched" is the last thing someone reads
+    before they believe one directory was all of it."""
     import_cc_session(tmp_path, "kept")
-    (archive_home / "health.json").write_text(
-        json.dumps({"backup_last": {"dest": "/Volumes/Backup/arc", "ok": True}}),
-        encoding="utf-8",
-    )
+    second = tmp_path / "second-mirror"
+    second.mkdir()
+    (archive_home / "health.json").write_text(json.dumps({
+        # Two destinations, recorded by different stages — the older one is
+        # exactly the copy someone has forgotten they have.
+        "backup_last": {"dest": "/Volumes/Backup/arc", "ok": True},
+        "backup_hashes_last": {"dest": str(second)},
+        "verify_last": {"ok": True},  # no dest: not a location
+    }), encoding="utf-8")
+    aside = archive_home.parent / f"{archive_home.name}.damaged-20260101T000000"
+    aside.mkdir()  # what `restore --replace` preserves
+    host.mkdir(parents=True, exist_ok=True)
+    (host / ".thread_archive").symlink_to(archive_home)
     _service.install_watcher(str(archive_home))
 
     assert main(["uninstall", "--home", str(archive_home), "--yes"]) == 0
 
     out = capsys.readouterr().out
-    assert "Kept — the archive itself" in out
-    assert "/Volumes/Backup/arc" in out  # deleting the home is not deleting the last copy
     assert "conversations, index, config, logs, exports" in out
+    assert str(archive_home) in out
+    assert "/Volumes/Backup/arc" in out and "not present right now" in out
+    assert str(second) in out
+    assert str(aside) in out
+    assert f"a symlink to {archive_home}" in out  # a second name, not a second copy
+    assert "Deleting any of it is yours to do" in out
+    # And how to be rid of the code — this suite runs from the clone it names.
+    assert "this install runs from the clone" in out
+    assert "thread_archive setup" in out
+
+
+def test_a_backup_scheduled_but_never_run_is_still_named(
+    archive_home, host, capsys
+) -> None:
+    """The agent's manifest is the only record of a nightly that has not fired
+    yet — and this run removes it, so the dest is read before that happens."""
+    _service.install_backup("/Volumes/Nightly/arc", str(archive_home))
+
+    assert main(["uninstall", "--home", str(archive_home), "--yes"]) == 0
+
+    assert "/Volumes/Nightly/arc" in capsys.readouterr().out
+    assert not _plist_path(BACKUP_LABEL).exists()
 
 
 def test_an_empty_home_reports_as_empty(archive_home, host, capsys) -> None:
     assert main(["uninstall", "--home", str(archive_home), "--yes"]) == 0
-    assert "empty — there are no conversations here" in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert f"{archive_home}  (empty)" in out
+    assert "a backup mirror" not in out

@@ -1,23 +1,18 @@
 """The gold-mining run ledger: ``<gold dir>/mine-runs.jsonl``.
 
 Every ``python -m search_lab.mine <miner>`` run mints gold cases, but what gives
-those cases meaning is the *denominator* — how many queries the judge abstained on,
-how many sampled threads yielded no fair query. That is exactly the number a
-recall-blind benchmark must not lose: a rerank judge's ``none-of-pool`` verdict is
-the one recall signal
-the in-pool protocol has, and a querygen generator's drop is a thread search
-couldn't be made findable. Score only the cases that *were* minted and the
-population is silently conditioned on "the judge/generator succeeded," which
-inflates the apparent quality.
+those cases meaning is the *denominator* — how many sampled units yielded no
+usable query at all. Score only the cases that *were* minted and the population
+is silently conditioned on "the agent succeeded," which inflates the apparent
+quality: a unit dropped because no fair query could be written for it is a unit
+the benchmark never asks search about.
 
 This ledger keeps the whole denominator: one append per run recording the miner,
 the corpus ``snapshot_id``, the code commit, how many units were attempted, how
-many cases were written, and the full outcome breakdown (``ok`` /
-``none-of-pool`` / ``no-grade-2`` / ``agent-failed`` / …). The abstention and drop
-*rates* are then a lookup over time, not a number that existed only in the moment
-the run printed it — the visibility half of "gate their rates separately from
-MRR/nDCG"; a floor on those rates can be calibrated from this timeseries once it
-has one.
+many cases were written, and the full outcome breakdown (``ok`` / ``no-queries``
+/ ``unparseable`` / ``agent-failed`` / …). The drop *rates* are then a lookup
+over time, not a number that existed only in the moment the run printed it; a
+floor on those rates can be calibrated from this timeseries once it has one.
 
 Append-only JSONL, advisory, fail-soft — a ledger write must never break the
 mining run it records. ``THREAD_ARCHIVE_MINE_RUNS_LOG=0`` disables it.
@@ -69,6 +64,8 @@ def record_run(
     failed: int,
     outcomes: dict[str, int],
     home: Optional[Path] = None,
+    funnel: Optional[list[dict[str, Any]]] = None,
+    cost_usd: Optional[float] = None,
 ) -> None:
     """Append one mining run to ``<gold dir>/mine-runs.jsonl``. ``attempted`` is the
     number of units the run drew (queries judged, threads sampled); ``written`` the
@@ -81,7 +78,7 @@ def record_run(
     telemetry can't break a mining run."""
     if not _enabled():
         return
-    from gold_runs import git_commit
+    from run_meta import git_commit
 
     record: dict[str, Any] = {
         "at": datetime.now(timezone.utc).isoformat(),
@@ -94,6 +91,14 @@ def record_run(
         "failed": failed,
         "outcomes": outcomes,
     }
+    # The funnel is where a unit died, stage by stage; ``outcomes`` above is only
+    # its terminal slice. Optional so a run by a miner that declares no stages
+    # records exactly what it used to, and a reader must treat its absence as "not
+    # recorded" rather than "nothing was dropped".
+    if funnel:
+        record["funnel"] = funnel
+    if cost_usd:
+        record["cost_usd"] = round(cost_usd, 4)
     try:
         path = (home or _gold_dir()) / LEDGER_FILE
         path.parent.mkdir(parents=True, exist_ok=True)

@@ -34,15 +34,7 @@ function report(over: Partial<RetrievalReport> = {}): RetrievalReport {
     },
     restarts: { n: 39, bucket: 'day', buckets: [{ at: '2026-07-26', n: 39 }], p50_ms: 22300, total_s: 1836 },
     bench: {
-      gold: [{ at: '2026-07-26T10:00:00Z', commit: 'abc', p50: 900, p95: 2000, p99: 3000, n_queries: 300, tuning: false }],
       observed: [{ at: '2026-07-26T19:00:00Z', commit: 'def', p50: 228, p95: 1412, p99: 2415, n_queries: 40, tuning: false }],
-    },
-    quality: {
-      points: [
-        { at: '2026-07-26T18:00:00Z', commit: 'abc', passed: true, mrr: 0.7451, ndcg: 0.6264, n: 317 },
-        { at: '2026-07-26T19:00:00Z', commit: 'def', passed: true, mrr: 0.7476, ndcg: 0.6264, n: 317 },
-      ],
-      latest: { at: '2026-07-26T19:00:00Z', commit: 'def', passed: true, mrr: 0.7476, ndcg: 0.6264, n: 317 },
     },
     ...over,
   }
@@ -99,11 +91,19 @@ it('renders the stage table with the slowest stage first', async () => {
 it('survives a section the server could not assemble', async () => {
   // Each ledger is read independently, so one unreadable file must not blank the
   // page — an operator view that vanishes when an input is missing is useless.
-  mswJson('/api/retrieval', report({ bench: null, quality: null }))
+  mswJson('/api/retrieval', report({ bench: null }))
   view()
   expect(await screen.findByText('228ms')).toBeInTheDocument()
   expect(screen.getByText(/No bench runs recorded/)).toBeInTheDocument()
-  expect(screen.getByText('No gold runs recorded.')).toBeInTheDocument()
+})
+
+it('says the page measures speed only, and why that is not a gap to fill', async () => {
+  // A latency-only page invites "so how is quality?" — and the answer is that no
+  // number about this corpus can be made honestly, not that one is pending.
+  mswJson('/api/retrieval', report())
+  view()
+  await screen.findByText('228ms')
+  expect(screen.getByText(/would have to be made by searching it/i)).toBeInTheDocument()
 })
 
 it('asks for a shorter window in hours, so a sub-day view is expressible', async () => {

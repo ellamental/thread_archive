@@ -4,7 +4,6 @@ import {
   type BenchPoint,
   type Bucket,
   type LatencyBand,
-  type QualityPoint,
   type RetrievalReport,
   type ServedBucket,
 } from '../api'
@@ -325,7 +324,6 @@ export function RetrievalView() {
   const stages = report.stages
   const restarts = report.restarts
   const bench = report.bench ?? {}
-  const quality = report.quality
   const topStage = stages?.stages?.[0]
 
   const benchSeries: Series[] = Object.entries(bench).map(([set, points], i) => ({
@@ -334,7 +332,6 @@ export function RetrievalView() {
     points: (points as BenchPoint[]).map((p, j) => ({ x: j, y: p.p50 })),
   }))
   const benchLen = Math.max(0, ...Object.values(bench).map((p) => p.length))
-  const qPoints: QualityPoint[] = quality?.points ?? []
 
   return (
     <div className="retrieval-page">
@@ -464,9 +461,9 @@ export function RetrievalView() {
         <h2>The bench</h2>
         <p className="muted">
           The same queries replayed under control — warm, pool cache off — so a change is
-          comparable across days in a way served latency is not. <code>gold</code> is the
-          curated case files, <code>observed</code> the queries agents actually ran; they are
-          different populations and never one line.
+          comparable across days in a way served latency is not. <code>observed</code> is
+          the queries agents actually ran, which is the only population measured here; a
+          second query set would be a second line, never averaged into this one.
         </p>
         {benchSeries.length ? (
           <>
@@ -478,40 +475,17 @@ export function RetrievalView() {
           </>
         ) : (
           <p className="muted">
-            No bench runs recorded. <code>evals/latency_replay.py</code> writes the observed
-            series; <code>retrieval_gold_gate.py --latency</code> writes the gold one.
+            No bench runs recorded. <code>search_lab/latency_replay.py</code> writes this
+            series.
           </p>
         )}
-      </section>
-
-      <section>
-        <h2>Still finding the right thing</h2>
-        <p className="muted">
-          Gold-gate scores per run. Latency without quality is half a verdict: most of the
-          cheap ways to make search faster are ways to make it worse. Tuning runs and
-          cache-scored runs are left out — they measure a candidate or a cache, not the
-          shipped pipeline.
+        <p className="muted small">
+          Speed only, and that is a limit rather than a gap: every cheap way to make search
+          faster is a way to make it worse, but the missing half is a quality number about
+          this archive, and a relevance label about this archive would have to be made by
+          searching it. The quality claims live on public benchmarks instead — the{' '}
+          <a href="/lab">search lab</a> lists them.
         </p>
-        {qPoints.length ? (
-          <>
-            <LineChart
-              height={130}
-              series={[
-                { label: 'MRR', color: WARM, points: qPoints.map((p, i) => ({ x: i, y: p.mrr * 1000 })) },
-                { label: 'nDCG@10', color: COLD, points: qPoints.map((p, i) => ({ x: i, y: p.ndcg * 1000 })) },
-              ]}
-              labels={qPoints.map((p) => day(p.at))}
-            />
-            <p className="muted small">
-              Plotted x1000 to share the chart's log scale. Latest:{' '}
-              <strong>MRR {quality?.latest?.mrr.toFixed(4)}</strong>, nDCG@10{' '}
-              {quality?.latest?.ndcg.toFixed(4)} over {quality?.latest?.n} cases
-              {quality?.latest?.passed === false && ' — below floor'}.
-            </p>
-          </>
-        ) : (
-          <p className="muted">No gold runs recorded.</p>
-        )}
       </section>
 
       {restarts && restarts.buckets.length > 0 && (

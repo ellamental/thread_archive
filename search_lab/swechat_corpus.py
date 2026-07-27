@@ -8,13 +8,16 @@ claude-code importer ingests them unchanged — this harness only orchestrates t
 build and derives the provenance linkage that ``python -m search_lab.mine commit``
 consumes.
 
-Why this corpus is worth a home of its own: every gold file mined from the
-operator's own archive is tuned against one corpus, by one author, over one set
-of repositories. Hold-out discipline *within* that corpus cannot see overfitting
-*to* it. SWE-chat is domain-matched (it is agent session logs, not the mismatched
-third-party IR corpora ``beir_eval`` / ``cdr_eval`` calibrate against) yet written
-by other people about other codebases, which makes a gold file mined here an
-independent hold-out in the axis that actually matters.
+Why this corpus is worth a home of its own: it ships **session ↔ commit
+provenance**, and that is what a gold label has to be fixed by. A label
+established by searching the corpus can only describe what the incumbent ranker
+already reaches; a commit is an artifact outside retrieval that says which
+session did the work, whatever search thinks. No other corpus on this bench
+carries that, so this is the only home the ``commit`` miner can run in. It is
+domain-matched besides — agent session logs, not the mismatched third-party IR
+corpora ``beir_eval`` / ``cdr_eval`` calibrate against — and written by other
+people about other codebases, so nothing here was authored by whoever tunes the
+ranker.
 
 Two phases, separable:
 
@@ -23,6 +26,11 @@ Two phases, separable:
   again. ``--vectors`` embeds (needed for the semantic arms; slow).
 - **linkage** — join the parquet tables into ``commit-linkage.jsonl``: one row per
   session whose commits are unambiguously its own.
+
+Both paths end by folding the code axis (:func:`fold_code_index`) before the
+stamp. Nothing else builds ``event_paths`` here — a corpus home has no watcher —
+and without it ``mine edited`` has no path projection to enumerate gold from, so
+the corpus would carry commit provenance and no completeness rung.
 
 Derived artifacts — the linkage and the golds mined from it — land in ``gold/``
 beside the download (see :func:`default_gold_dir`), not in the archive's private
@@ -37,8 +45,9 @@ their golds to.
   one: appearing in a solo checkpoint is what makes the commits attributable, and
   which checkpoint the dataset marks canonical is irrelevant to that.
 
-  The linkage file covers only the sessions the built home actually holds, so its
-  row count tracks the corpus budget below, not the dataset's eligible set.
+  The linkage file covers only the sessions the built home actually holds, so a
+  transcript the importer could not read takes its commits out of the linkage
+  too.
 
 Requires ``pyarrow`` (dev extra) to read the parquet tables; the transcripts
 themselves need nothing beyond the archive.
@@ -53,11 +62,9 @@ Usage::
 from __future__ import annotations
 
 import argparse
-import collections
 import functools
 import json
 import os
-import re
 import shutil
 import sys
 from pathlib import Path
@@ -113,6 +120,18 @@ def _require_pyarrow():
 
 # ── build ───────────────────────────────────────────────────────────────────
 
+#: ``type`` values Claude Code writes on a transcript's opening line. Most of
+#: these are preambles rather than turns — a session more often opens on a
+#: ``file-history-snapshot`` or a ``progress`` record than on a ``user`` one —
+#: and the preambles carry none of the session keys, so the vocabulary has to be
+#: able to identify the file on its own.
+CC_FIRST_LINE_TYPES = frozenset({
+    "user", "assistant", "system", "summary", "attachment", "progress",
+    "queue-operation", "permission-mode", "file-history-snapshot",
+    "custom-title", "ai-title", "pr-link",
+})
+
+
 def is_claude_code_transcript(path: Path) -> bool:
     """Whether a transcript is line-delimited Claude Code JSON, the one shape the
     shipped importer reads.
@@ -122,7 +141,14 @@ def is_claude_code_transcript(path: Path) -> bool:
     line fails to parse and the importer rejects the file after logging a parse
     error per line — 2.5 M of them across a full build. Cheaper and quieter to
     recognize the shape here. The check reads one line, and keys on the fields the
-    Claude Code parser needs rather than on the filename."""
+    Claude Code parser needs rather than on the filename.
+
+    A bare ``type`` key does not identify the harness. Codex writes line-delimited
+    JSON too, and its opening record is ``{"timestamp": …, "type": "session_meta",
+    "payload": {…}}`` — line-shaped, ``type``-bearing, and unreadable by the Claude
+    Code parser, which lifts it into a thread of about four events instead of the
+    several hundred a real session holds. So a record with no session key has to
+    name a ``type`` Claude Code actually writes."""
     try:
         with path.open(errors="replace") as f:
             for line in f:
@@ -130,88 +156,33 @@ def is_claude_code_transcript(path: Path) -> bool:
                     continue
                 rec = json.loads(line)
                 return isinstance(rec, dict) and (
-                    "sessionId" in rec or "parentUuid" in rec or "type" in rec)
+                    "sessionId" in rec or "parentUuid" in rec
+                    or rec.get("type") in CC_FIRST_LINE_TYPES)
     except (json.JSONDecodeError, OSError):
         return False
     return False
 
 
-#: Sessions kept per repository when a corpus budget is set. The miner grades at
-#: most MAX_PARTIAL + MAX_CONFOUND (6 + 12) siblings into a pool, so a repo needs
-#: only a few dozen members to give every gold a full-density confound set; past
-#: that, extra sessions from the same codebase buy nothing the pool can use and
-#: cost embedding time that another repo's confounds would use better.
-DEFAULT_PER_REPO = 40
-
-
-def choose_sessions(by_repo: dict[str, list[str]], linked: set[str], budget: int,
-                    per_repo: int) -> set[str]:
-    """The corpus selection itself, over plain data — which sessions a ``budget``
-    buys. :func:`select_corpus` is the parquet-reading wrapper.
-
-    Embedding is what bounds a corpus home (a full SWE-chat build is 249k
-    embeddable docs at ~10-16 chunks/s), so the corpus has to be smaller than the
-    download, and *what* gets dropped decides whether it still measures anything.
-    Two rules do the work:
-
-    - **Rank repos by commit-linked yield.** The budget should go where cases can
-      actually be mined, not to repos with no attributable commits.
-    - **Cap each repo, linked sessions first.** Session counts are power-law skewed
-      — SWE-chat's largest repo is 870 of 5851 sessions, so taking repos whole would
-      spend an entire modest budget inside one codebase and leave a benchmark that
-      measures search over a single project. Capping spreads the budget across many
-      repos while still leaving each gold far more siblings than its pool can hold.
-    """
-    ranked = sorted(by_repo.items(),
-                    key=lambda kv: -sum(1 for s in kv[1] if s in linked))
-    keep: set[str] = set()
-    for _repo, members in ranked:
-        if len(keep) >= budget:
-            break
-        # Linked sessions first: they are the ones that can become golds, and the
-        # rest of the repo is only there to be their confounds.
-        ordered = ([s for s in members if s in linked]
-                   + [s for s in members if s not in linked])
-        keep.update(ordered[:min(per_repo, budget - len(keep))])
-    return keep
-
-
-def select_corpus(data: Path, budget: int,
-                  per_repo: int = DEFAULT_PER_REPO) -> set[str] | None:
-    """Session ids for a corpus of about ``budget`` sessions, read from the parquet
-    tables and chosen by :func:`choose_sessions`. ``None`` when ``budget`` is 0 —
-    take everything."""
-    if not budget:
-        return None
-    pq = _require_pyarrow()
-    sessions = pq.read_table(data / "sessions.parquet",
-                             columns=["session_id", "repo_id"]).to_pylist()
-    by_repo: dict[str, list[str]] = {}
-    for s in sessions:
-        by_repo.setdefault(str(s["repo_id"]), []).append(str(s["session_id"]))
-    linked = {r["session_id"] for r in _linkage_eligible(data)}
-    return choose_sessions(by_repo, linked, budget, per_repo)
-
-
 def build_home(data: Path, home: Path, *, limit: int, vectors: bool,
-               fresh: bool, sessions: set[str] | None = None) -> int:
+               fresh: bool) -> int:
     """Ingest SWE-chat transcripts into ``home``, one thread per session. Returns
     the count imported. ``source_id`` is the session id (the transcript stem), which
     is what makes the linkage phase able to map a session to its thread.
 
-    The corpus this builds is **Claude Code only** — the other harnesses SWE-chat
-    collects (OpenCode, Codex, Gemini CLI, Cursor) ship transcript shapes the
-    line-stream importer can't read, and archive's OpenCode/Cursor importers are DB
-    scanners with no JSON-export path. That is a coverage bound on the resulting
-    benchmark, not a silent drop: the skipped count is reported."""
+    Every readable transcript is taken. The corpus is the download minus what the
+    line-stream importer cannot parse — OpenCode and most Gemini CLI sessions are
+    pretty-printed JSON objects, Cursor's are neither, and Codex's line-delimited
+    JSON is a different envelope the Claude Code parser mangles rather than reads
+    (see :func:`is_claude_code_transcript`). Archive's OpenCode and Cursor
+    importers are DB scanners with no JSON-export path, so those sessions have no
+    route in at all. That is the benchmark's one coverage bound and it is worth
+    roughly a sixth of the download; the skipped count is reported rather than
+    absorbed silently."""
     transcripts = sorted((data / "transcripts").glob("*.jsonl"))
     if not transcripts:
         raise SystemExit(f"no transcripts under {data / 'transcripts'}")
     if limit:
         transcripts = transcripts[:limit]
-
-    if sessions is not None:
-        transcripts = [p for p in transcripts if p.stem in sessions]
 
     usable = [p for p in transcripts if is_claude_code_transcript(p)]
     skipped = len(transcripts) - len(usable)
@@ -250,15 +221,38 @@ def build_home(data: Path, home: Path, *, limit: int, vectors: bool,
     return done
 
 
+def fold_code_index(home: Path) -> dict:
+    """Fold the code axis over this home, so ``event_paths`` describes it.
+
+    A live archive gets this from its watcher. A corpus home is built by a script
+    and has no watcher, so without an explicit fold the projection stays empty —
+    and an empty ``event_paths`` is not a degraded path axis but an absent one:
+    ``mine edited`` finds no path with two editing conversations and exits, and a
+    ``path``-scoped browse answers nothing.
+
+    Run on both build paths, including ``--linkage-only``, because it is the fold
+    that an already-built home is most likely to be missing. Idempotent — it is a
+    cursor projection, so a folded home costs one cursor read. It reads only the
+    event log, so the corpus fingerprint (a hash over ``events``) does not move and
+    golds already mined here stay valid."""
+    os.environ["THREAD_ARCHIVE_HOME"] = str(home)
+    print("folding the code axis (event_paths / event_commits)...")
+    result = api.code_index(home=str(home))
+    print(f"  code axis: {result['paths']} path row(s) over "
+          f"{result['distinct_paths']} distinct path(s), "
+          f"{result['commits']} commit row(s)")
+    return result
+
+
 def repo_groups(data: Path, sessions: set[str]) -> dict[str, list[str]]:
     """``{repo_id: [session_id, ...]}`` over the sessions actually ingested — the
-    grouping ``corpus_topics.py --groups`` turns into one topic per repository.
+    repository label ``swechat_bench.py`` tags each exported corpus row with.
 
-    A repository is the confound-dense subject the topic miner wants, established
-    by provenance rather than by a model: every session in it shares file names,
-    module names and domain vocabulary, so a query naming any of them has many
-    near-misses and one right answer. Unlike a grouping read off the embedding
-    graph, it owes nothing to the model the vector arm also ranks with."""
+    Membership is established by provenance rather than by a model: every session
+    in a repository shares file names, module names and domain vocabulary, so a
+    query naming any of them has many near-misses and one right answer. Unlike a
+    grouping read off the embedding graph, it owes nothing to the model the
+    vector arm also ranks with."""
     pq = _require_pyarrow()
     t = pq.read_table(data / "sessions.parquet",
                       columns=["session_id", "repo_id"]).to_pylist()
@@ -267,78 +261,6 @@ def repo_groups(data: Path, sessions: set[str]) -> dict[str, list[str]]:
         sid = str(row["session_id"])
         if sid in sessions:
             out.setdefault(str(row["repo_id"]), []).append(sid)
-    return out
-
-
-# Cross-cutting subjects, named by the class of file a session touched. Each
-# entry is (title, path predicate); a session joins a group when any of its
-# `files_touched` paths matches. Ordered widest-net last so the printed summary
-# reads from sharpest to broadest.
-FILE_CLASSES: list[tuple[str, "re.Pattern[str]"]] = [
-    ("CI workflow and pipeline config",
-     re.compile(r"(^|/)\.github/workflows/|(^|/)(\.gitlab-ci\.yml|azure-pipelines\.yml)$")),
-    ("Dependency and lockfile management",
-     re.compile(r"(^|/)(package(-lock)?\.json|pnpm-lock\.yaml|yarn\.lock|Cargo\.(toml|lock)"
-                r"|go\.(mod|sum)|requirements\.txt|pyproject\.toml|uv\.lock|Gemfile(\.lock)?"
-                r"|composer\.json)$")),
-    ("Styling and CSS",
-     re.compile(r"\.(css|scss|sass|less)$|tailwind\.config\.")),
-    ("Agent instruction files",
-     re.compile(r"(^|/)(CLAUDE|AGENTS|GEMINI)\.md$|(^|/)\.cursorrules$|(^|/)\.claude/")),
-    ("Test suites",
-     re.compile(r"(^|/)(tests?|__tests__|spec)/|[._](test|spec)\.[a-z]+$|_test\.go$")),
-]
-
-# A group this small can't support a survey; a group this dominated by one repo
-# is the repo topic again under another name.
-MIN_CLASS_MEMBERS = 20
-MAX_CLASS_REPO_SHARE = 0.5
-
-
-def file_class_groups(data: Path, sessions: set[str]) -> dict[str, list[str]]:
-    """``{subject: [session_id, ...]}`` grouped by the *class of file* a session
-    touched — the cross-cutting counterpart to :func:`repo_groups`.
-
-    A repository topic is confound-dense but trivially separable: each repo owns
-    its own file and module names, so nothing in one repo competes with a query
-    aimed at another. The subjects that cut *across* repos are the harder case,
-    and ``files_touched`` names them out of the dataset itself: sessions that
-    edited a workflow file were doing CI work whatever the project, and they
-    collide on `yaml`, `runner`, `job`, `matrix` regardless of repo.
-
-    Membership here is a proxy — touching a workflow file is not proof the
-    session was *about* CI — and it does not need to be exact, because it never
-    reaches the gold. The grouping only decides which subjects a survey agent is
-    pointed at; the graded pool comes from the labeler judging each thread
-    against the query's stated intent. Groups too small to survey, or so
-    dominated by a single repo that they restate :func:`repo_groups`, are
-    dropped.
-
-    Unlike the embedding communities ``corpus_topics.py --propose`` offers, this
-    reads a recorded fact about each session, so it shares no model with the
-    vector arm and cannot cluster on harness boilerplate."""
-    pq = _require_pyarrow()
-    rows = pq.read_table(data / "sessions.parquet",
-                         columns=["session_id", "repo_id", "files_touched"]).to_pylist()
-    hits: dict[str, list[str]] = {title: [] for title, _ in FILE_CLASSES}
-    repos: dict[str, collections.Counter] = {
-        title: collections.Counter() for title, _ in FILE_CLASSES}
-    for row in rows:
-        sid = str(row["session_id"])
-        if sid not in sessions:
-            continue
-        paths = _as_list(row.get("files_touched"))
-        for title, pattern in FILE_CLASSES:
-            if any(pattern.search(str(p)) for p in paths):
-                hits[title].append(sid)
-                repos[title][str(row["repo_id"])] += 1
-    out = {}
-    for title, members in hits.items():
-        if len(members) < MIN_CLASS_MEMBERS:
-            continue
-        if repos[title].most_common(1)[0][1] / len(members) > MAX_CLASS_REPO_SHARE:
-            continue
-        out[title] = members
     return out
 
 
@@ -469,17 +391,9 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--out", type=Path, default=None,
                     help=f"linkage file (default <gold-dir>/{commit_linked.LINKAGE_NAME})")
     ap.add_argument("--limit", type=int, default=0, metavar="N",
-                    help="ingest only the first N transcripts (0 = all)")
-    ap.add_argument("--max-sessions", type=int, default=0, metavar="N",
-                    help="cap the corpus near N sessions, spread across repos "
-                         "(repos ranked by commit-linked yield, each capped at "
-                         "--per-repo, linked sessions first). Embedding the full "
-                         "corpus is tens of hours; this is the knob that makes a "
-                         "build finish. 0 = all")
-    ap.add_argument("--per-repo", type=int, default=DEFAULT_PER_REPO, metavar="N",
-                    help=f"sessions kept per repo under a budget (default "
-                         f"{DEFAULT_PER_REPO}; the miner pools at most 18 "
-                         "confounds, so more buys nothing)")
+                    help="ingest only the first N transcripts (0 = all). A smoke "
+                         "test for the build itself — it truncates in filename "
+                         "order, so it yields no corpus worth measuring against")
     ap.add_argument("--vectors", action="store_true",
                     help="embed after ingest (needed for the semantic arms)")
     ap.add_argument("--fresh", action="store_true",
@@ -492,16 +406,13 @@ def main(argv: list[str] | None = None) -> int:
     eval_home.pin_arms(vectors=args.vectors)
 
     if not args.linkage_only:
-        keep = select_corpus(args.data, args.max_sessions, args.per_repo)
-        if keep is not None:
-            print(f"corpus budget {args.max_sessions}: keeping {len(keep)} session(s), "
-                  f"<={args.per_repo}/repo, ranked by commit-linked yield")
         build_home(args.data, home, limit=args.limit, vectors=args.vectors,
-                   fresh=args.fresh, sessions=keep)
+                   fresh=args.fresh)
 
     mapping = thread_ids_by_session(home)
     if not mapping:
         raise SystemExit(f"no ingested sessions in {home} — build it first")
+    fold_code_index(home)
     gold = (args.gold_dir or default_gold_dir(args.data)).expanduser()
     groups = repo_groups(args.data, set(mapping))
     groups_path = gold / "repo-groups.json"
@@ -509,11 +420,6 @@ def main(argv: list[str] | None = None) -> int:
     groups_path.write_text(json.dumps(groups, indent=1) + "\n")
     print(f"repo groups: {len(groups)} repo(s) over {sum(map(len, groups.values()))} "
           f"session(s) -> {groups_path}")
-
-    subjects = file_class_groups(args.data, set(mapping))
-    subjects_path = gold / "subject-groups.json"
-    subjects_path.write_text(json.dumps(subjects, indent=1) + "\n")
-    print(f"subject groups: {len(subjects)} cross-repo subject(s) -> {subjects_path}")
 
     rows = build_linkage(args.data, mapping)
     out = write_linkage(rows, (args.out or gold / commit_linked.LINKAGE_NAME).expanduser())

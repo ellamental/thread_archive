@@ -1,17 +1,16 @@
-"""How retrieval is doing, assembled from the three ledgers that record it.
+"""How retrieval is doing, assembled from the two ledgers that record it.
 
 A bench instrument, read deliberately::
 
     .venv/bin/python search_lab/retrieval_report.py --hours 336
 
-It reads latency and quality series and says nothing a user of the archive could
-act on, so it stays lab-side: a served-latency percentile is a fact about the
-machine and the model cache, and the quality series is scored against golds whose
-limits only someone holding the protocol can weigh. The viewer renders it at
-``/retrieval`` through ``thread_archive._dev``, which is a *dev* page — excluded
-from the wheel, 404 in an install — rather than a second home for these numbers.
+It reads latency series and says nothing a user of the archive could act on, so it
+stays lab-side: a served-latency percentile is a fact about the machine and the
+model cache, not about the archive. The viewer renders it at ``/retrieval``
+through ``thread_archive._dev``, which is a *dev* page — excluded from the wheel,
+404 in an install — rather than a second home for these numbers.
 
-Three files answer three different questions and none of them answers alone:
+Two files answer two different questions and neither answers alone:
 
 ``retrieval-usage.jsonl``
     What agents actually *got* — served latency, per stage, under whatever
@@ -23,13 +22,16 @@ Three files answer three different questions and none of them answers alone:
     set. Comparable across days in a way served latency is not, and consistently
     faster than it (see :func:`served`).
 
-``gold-runs.jsonl``
-    Whether it still finds the right thing. Latency without quality is half a
-    verdict: every one of the cheap ways to make search faster is a way to make it
-    worse, so the two series belong on one page.
+**Speed only, and that is a real limit rather than a gap to fill in later.** Every
+cheap way to make search faster is a way to make it worse, so a latency page alone
+is half a verdict — but the missing half is a quality number about *this* corpus,
+and nothing here can produce one honestly: a relevance label made on this archive
+would have to be made by searching this archive. The public benchmarks
+(``search_lab/benchmark.py``) are where the quality claims live, on corpora whose
+labels somebody else made.
 
-Three rules are baked in here rather than left to the caller, because getting any
-of them wrong produces a plausible chart that is simply false:
+Two rules are baked in here rather than left to the caller, because getting either
+wrong produces a plausible chart that is simply false:
 
 - **Probe queries are excluded.** A bench or a smoke test leaves one-character
   queries in the ledger; they return in ~1 ms and pull every percentile down.
@@ -37,10 +39,6 @@ of them wrong produces a plausible chart that is simply false:
   order of magnitude slower than its thousandth, and restarts are frequent, so a
   single daily median is mostly a measure of how often the daemon bounced.
   ``uptime_s`` is what makes the split possible and is absent on older rows.
-- **Query sets and pooled runs stay apart.** Latency over the gold files and over
-  the usage ledger are different populations; a gold run scored from persisted
-  pools measures the cache rather than the pipeline. Both are flagged in the rows
-  and both are honoured here.
 """
 
 from __future__ import annotations
@@ -278,8 +276,9 @@ def restarts(home: Path, *, hours: int = DEFAULT_HOURS,
 def bench(home: Path, *, limit: int = 40) -> dict[str, list[dict[str, Any]]]:
     """The controlled latency timeseries, split by query set.
 
-    Never merged: the gold files and the usage ledger are different populations of
-    query, so a p50 over one is not a point on the other's line."""
+    Never merged: two query sets are two different populations, so a p50 over one
+    is not a point on the other's line. Rows predating the field are grouped under
+    ``unknown`` rather than folded into a named set."""
     import speed
 
     series: dict[str, list[dict[str, Any]]] = defaultdict(list)
@@ -287,40 +286,13 @@ def bench(home: Path, *, limit: int = 40) -> dict[str, list[dict[str, Any]]]:
         total = r.get("total") or {}
         if not total.get("p50"):
             continue
-        series[r.get("query_set") or speed.GOLD_SET].append({
+        series[r.get("query_set") or "unknown"].append({
             "at": r.get("at"), "commit": r.get("commit"),
             "p50": total.get("p50"), "p95": total.get("p95"), "p99": total.get("p99"),
             "n_queries": r.get("n_queries"),
             "tuning": bool(r.get("overrides")),
         })
     return {k: v[-limit:] for k, v in series.items()}
-
-
-def quality(home: Path, *, limit: int = 40) -> dict[str, Any]:
-    """The gold timeseries — weighted MRR and nDCG per run, newest last.
-
-    Pooled runs are excluded outright rather than flagged: they score from
-    persisted candidate pools, which leaves the *scores* meaningful but makes them
-    a different measurement from the run beside them, and a line that silently
-    mixes the two is worse than a shorter line."""
-    import gold_runs
-
-    points = []
-    for r in _rows(home / gold_runs.LEDGER_FILE):
-        files = r.get("files") or {}
-        if not files or r.get("pool_cache") or r.get("overrides"):
-            continue
-        n = sum(f.get("n", 0) for f in files.values())
-        if not n:
-            continue
-        points.append({
-            "at": r.get("at"), "commit": r.get("commit"), "passed": r.get("passed"),
-            "mrr": round(sum(f.get("mrr", 0) * f.get("n", 0) for f in files.values()) / n, 4),
-            "ndcg": round(sum(f.get("ndcg10", 0) * f.get("n", 0) for f in files.values()) / n, 4),
-            "n": n,
-        })
-    latest = points[-1] if points else None
-    return {"points": points[-limit:], "latest": latest}
 
 
 def report(home: Optional[Path] = None, *, hours: int = DEFAULT_HOURS,
@@ -348,7 +320,6 @@ def report(home: Optional[Path] = None, *, hours: int = DEFAULT_HOURS,
     out["stages"] = section(stages, hours=hours)
     out["restarts"] = section(restarts, hours=hours, bucket=bucket)
     out["bench"] = section(bench)
-    out["quality"] = section(quality)
     return out
 
 
@@ -358,7 +329,7 @@ def main(argv: Optional[list[str]] = None) -> int:
 
     parser = argparse.ArgumentParser(
         prog="search_lab/retrieval_report.py",
-        description="Latency and quality series off the retrieval ledgers.")
+        description="Latency series off the retrieval ledgers.")
     parser.add_argument("--hours", type=int, default=DEFAULT_HOURS,
                         help=f"window to summarize (default {DEFAULT_HOURS})")
     parser.add_argument("--bucket", choices=(HOUR, DAY),

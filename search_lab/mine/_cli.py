@@ -8,7 +8,7 @@ in sync:
 - ``python -m search_lab.mine <miner> [args]`` — run one miner; ``--help`` shows its
   options.
 - ``python -m search_lab.mine all [N]`` — run every per-case miner that needs only a
-  count, with target N; miners that need an argument (topic) are skipped, named.
+  count, with target N; miners that need an argument are skipped, named.
 
 Every path guards the same two preconditions once — the ``claude`` CLI is on
 PATH, and the home is a frozen snapshot — because a miner that got half-run
@@ -37,14 +37,21 @@ def list_miners_text(registry: list[fw.Miner]) -> str:
     """The list view — one aligned row per miner, then a per-miner detail block."""
     from ._agent import MAX_CONCURRENT_SESSIONS
 
+    def target_of(m: fw.Miner) -> str:
+        return f"{m.unit}×N" if m.target_kind == "per-case" else "batch"
+
     name_w = max((len(m.name) for m in registry), default=4)
     meas_w = max((len(m.measures) for m in registry), default=8)
+    # Units vary in width ("query" against "linked session"), so the column is
+    # measured rather than guessed — a fixed pad turns the longest row into a
+    # ragged one and the table stops being scannable.
+    targ_w = max((len(target_of(m)) for m in registry), default=8)
     lines = ["Gold miners — mint snapshot-bound eval cases (python -m search_lab.mine <miner> ...)", ""]
     for m in registry:
-        target = f"{m.unit}×N" if m.target_kind == "per-case" else "batch"
         flag = "● mine all" if (m.runnable_in_all and m.target_kind == "per-case") else "○ direct"
         lines.append(
-            f"  {m.name:<{name_w}}  {m.measures:<{meas_w}}  {target:<8}  {flag}")
+            f"  {m.name:<{name_w}}  {m.measures:<{meas_w}}  "
+            f"{target_of(m):<{targ_w}}  {flag}")
     lines.append("")
     for m in registry:
         lines.append(f"  {m.name}: {m.summary}")
@@ -88,10 +95,16 @@ def _execute(miner: fw.Miner, args: argparse.Namespace,
     if target != requested:
         print(f"  (--target {requested} -> {target}: at most "
               f"{fw.MAX_SESSIONS_PER_RUN} sessions per run)")
+    plan = getattr(args, "plan", False)
     ctx = fw.MineContext(
         snapshot_id=snapshot_id, target=target,
-        model=args.model, jobs=jobs, tool_cmd=fw.tool_cmd(), args=args)
+        model=args.model, jobs=jobs, tool_cmd=fw.tool_cmd(), args=args, plan=plan)
     result = miner.run(ctx)
+    # A plan mined nothing, so there is nothing to record. A ledger row for it
+    # would enter the drop-rate timeseries as a run whose every unit "failed",
+    # which is the opposite of what a dry run means.
+    if plan:
+        return result
     # Persist the run's denominator (attempted / written / failed / outcome
     # breakdown) so the abstention and drop rates are a recorded timeseries, not a
     # number that lived only in the console line. Recorded beside the cases this
@@ -104,7 +117,9 @@ def _execute(miner: fw.Miner, args: argparse.Namespace,
         mine_runs.record_run(
             miner=miner.name, snapshot_id=snapshot_id, attempted=result.attempted,
             written=result.written, failed=result.failed, outcomes=result.outcomes,
-            home=result.cases_path.parent if result.cases_path else None)
+            home=result.cases_path.parent if result.cases_path else None,
+            funnel=result.funnel.rows() if result.funnel else None,
+            cost_usd=result.funnel.cost_usd if result.funnel else None)
     return result
 
 
@@ -167,6 +182,16 @@ def _run_all(registry: list[fw.Miner], argv: list[str], open_fn=_guarded_open) -
         why = ("needs an argument (run it directly)" if not m.runnable_in_all
                else f"{m.target_kind} miner")
         print(f"  skip {m.name}: {why}")
+
+    # Nothing to sweep is a real state, not an error: the registry admits only
+    # miners whose gold is fixed outside retrieval, and such a miner generally
+    # needs an argument (the provenance input) rather than a bare count. Say so
+    # and stop, rather than opening a snapshot to run zero miners and printing a
+    # sweep that reads as a successful one.
+    if not runnable:
+        print("nothing to sweep: no per-case miner runs on a count alone. "
+              "Run a miner directly.")
+        return 0
 
     snapshot_id = open_fn()
     total_written = total_failed = 0

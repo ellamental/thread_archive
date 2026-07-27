@@ -1,25 +1,22 @@
-"""The gold-mining framework and the two pool-free miners' pure logic.
+"""The gold-mining framework: the contract, the shared helpers, the CLI surface.
 
 The agents are operator-run and cost real tokens; covered here is everything
 around them — the registry contract every miner must satisfy, the shared helpers
 (gold validation, resume dedupe, output-path convention that keeps files
-discoverable by the gold gate), the CLI list/dispatch surface, and the parse /
-prompt / case-assembly logic of the rerank judge and the query generator.
+discoverable by the gold gate), and the CLI list/dispatch surface. A registered
+miner's own parse / prompt / case-assembly logic is tested beside that miner
+(``test_commit_mine_gold.py``).
 """
 
 from __future__ import annotations
 
-import importlib.util
 import pathlib
-import sys
 from pathlib import Path
 
 from search_lab.gold_files import NON_GOLD_MARKERS
 from search_lab.mine import (  # noqa: E402
     _cli,
     load_registry,
-    querygen,
-    rerank_judged,
 )
 from search_lab.mine import (  # noqa: E402
     _framework as fw,
@@ -27,21 +24,13 @@ from search_lab.mine import (  # noqa: E402
 
 REPO = Path(__file__).resolve().parent.parent
 
-# The gold gate's discovery filter — the miners must produce files it keeps and
-# sidecars it drops. Loaded by path (a script, not a package module).
-_SPEC = importlib.util.spec_from_file_location(
-    "retrieval_gold_gate", REPO / "scripts" / "retrieval_gold_gate.py")
-gate = importlib.util.module_from_spec(_SPEC)
-sys.modules["retrieval_gold_gate"] = gate
-_SPEC.loader.exec_module(gate)
-
 
 # ── registry contract ────────────────────────────────────────────────────────
 
 def test_registry_names_are_unique_and_populated():
     reg = load_registry()
     names = [m.name for m in reg]
-    assert names == ["query", "topic", "rerank", "querygen", "commit"]
+    assert names == ["commit", "edited", "pooled"]
     assert len(set(names)) == len(names)
 
 
@@ -53,12 +42,30 @@ def test_every_miner_declares_the_descriptor():
         assert isinstance(m.runnable_in_all, bool)
 
 
+def test_every_miner_names_what_fixes_its_gold():
+    """The registry's admission rule, stated at the point of definition: a miner
+    declares the artifact its labels come from, and whether retrieval touched
+    them. The fields cannot prove the claim — they force the author to make one,
+    which is where a circular protocol gets caught."""
+    for m in load_registry():
+        assert m.gold_source, f"{m.name} declares no gold_source"
+        assert isinstance(m.retrieval_free, bool)
+
+
+def test_the_registry_holds_gold_no_retrieval_touched():
+    """The strong rung has to stay populated. A bench whose every miner needs a
+    retrieved pool has no reading that is independent of the incumbent, however
+    carefully each pool is widened — so losing the last retrieval-free miner is a
+    change to what the bench can claim, not a change to its coverage."""
+    assert [m.name for m in load_registry() if m.retrieval_free]
+
+
 def test_every_miner_output_is_gold_discoverable_and_detail_is_not():
     """A miner's default case file must pass the gold gate's discovery filter (so
     the CI floor and the baseline sweep see it), and its detail sidecar must not
     (it is not a scorable gold file)."""
     for m in load_registry():
-        # topic embeds a slug; substitute a concrete one for the check.
+        # a stem may embed a slug; substitute a concrete one for the check.
         stem = m.cases_stem.replace("<token>", "alpha")
         case_name = f"{stem}.jsonl"
         detail_name = fw.detail_path_for(Path(case_name)).name
@@ -67,25 +74,18 @@ def test_every_miner_output_is_gold_discoverable_and_detail_is_not():
         assert any(mk in detail_name for mk in NON_GOLD_MARKERS), detail_name
 
 
-def test_miner_case_files_are_discovered_by_the_gate(tmp_path):
-    """End to end against the gate's own discovery: every miner's real default
+def test_miner_case_files_are_discovered_and_sidecars_are_not(tmp_path):
+    """End to end against the shared discovery rule: every miner's real default
     basename is kept, every detail sidecar is dropped."""
+    from search_lab.gold_files import discover
+
     for m in load_registry():
         stem = m.cases_stem.replace("<token>", "alpha")
         (tmp_path / f"{stem}.jsonl").write_text("{}\n")
         (tmp_path / fw.detail_path_for(Path(f"{stem}.jsonl")).name).write_text("{}\n")
-    found = {p.name for p in gate.discover_gold_files(tmp_path)}
-    assert found == {"judged-cases.jsonl", "topic-cases-alpha.jsonl",
-                     "rerank-cases.jsonl", "findability-cases.jsonl",
-                     "commit-cases.jsonl"}
-
-
-def test_only_topic_is_excluded_from_mine_all():
-    by_name = {m.name: m for m in load_registry()}
-    runnable = {n for n, m in by_name.items()
-                if m.runnable_in_all and m.target_kind == "per-case"}
-    assert runnable == {"query", "rerank", "querygen"}
-    assert by_name["topic"].runnable_in_all is False
+    found = {p.name for p in discover(tmp_path)}
+    assert found == {"commit-cases.jsonl", "edited-cases.jsonl",
+                     "pooled-cases.jsonl"}
 
 
 # ── shared helpers ───────────────────────────────────────────────────────────
@@ -99,7 +99,7 @@ def test_validate_gold_resolves_skips_sessions_and_dedupes():
 
 
 def test_mined_queries_and_gold_ids_read_existing(tmp_path):
-    f = tmp_path / "rerank-cases.jsonl"
+    f = tmp_path / "commit-cases.jsonl"
     f.write_text('{"query": "a", "gold": ["T1", "T2"]}\n'
                  'junk\n'
                  '{"query": "b", "gold": ["T2", "T3"]}\n')
@@ -110,10 +110,10 @@ def test_mined_queries_and_gold_ids_read_existing(tmp_path):
 
 
 def test_default_paths_stay_under_the_gold_dir_and_pair_a_detail(tmp_path):
-    p = fw.default_cases_path("rerank-cases")
-    assert p.name == "rerank-cases.jsonl"
+    p = fw.default_cases_path("commit-cases")
+    assert p.name == "commit-cases.jsonl"
     assert p.parent == fw.gold_dir()
-    assert fw.detail_path_for(p).name == "rerank-cases-detail.jsonl"
+    assert fw.detail_path_for(p).name == "commit-cases-detail.jsonl"
 
 
 def test_open_output_honors_an_override(tmp_path):
@@ -154,23 +154,30 @@ def test_clamp_sessions_caps_at_the_per_run_ceiling():
 
 
 def test_casewriter_stamps_miner_provenance(tmp_path):
-    cases = tmp_path / "rerank-cases.jsonl"
-    w = fw.CaseWriter("rerank", cases, fw.detail_path_for(cases))
+    cases = tmp_path / "commit-cases.jsonl"
+    w = fw.CaseWriter("commit", cases, fw.detail_path_for(cases))
     w.write_case({"query": "q", "gold": ["A"]})
     w.write_detail({"query": "q", "outcome": "ok"})
     import json
     row = json.loads(cases.read_text().splitlines()[0])
-    assert row["miner"] == "rerank"
+    assert row["miner"] == "commit"
     assert fw.detail_path_for(cases).exists()
 
 
 # ── CLI surface ──────────────────────────────────────────────────────────────
 
 def test_list_view_names_every_miner_and_marks_mine_all():
-    text = _cli.list_miners_text(load_registry())
-    for name in ("query", "topic", "rerank", "querygen"):
-        assert name in text
-    assert "● mine all" in text and "○ direct" in text
+    registry = load_registry()
+    text = _cli.list_miners_text(registry)
+    for m in registry:
+        assert m.name in text
+    # Every registered miner carries a run-mode marker on its row, and the legend
+    # explains both markers whichever ones the current registry happens to use.
+    for m in registry:
+        expected = ("● mine all" if m.runnable_in_all and m.target_kind == "per-case"
+                    else "○ direct")
+        assert expected in text
+    assert "● = " in text and "○ = " in text
 
 
 def test_dispatch_bare_lists(capsys):
@@ -194,77 +201,6 @@ def test_allocate_splits_the_sweep_budget_across_miners():
     # However wide the sweep, the total never passes the budget.
     assert sum(_allocate(1000, 4, 25)) == 25
     assert _allocate(5, 0, 25) == []  # nothing runnable
-
-
-# ── rerank judge: parse + prompt ─────────────────────────────────────────────
-
-def test_parse_rerank_keeps_only_pool_ids_and_valid_grades():
-    pool_ids = {"A", "B", "C"}
-    v = rerank_judged.parse_rerank(
-        'verdict: {"grades": {"A": 2, "B": 0, "C": 7, "D": 2}, '
-        '"none_answer": false, "rationale": "A answers"}', pool_ids)
-    # C's grade is out of range, D is not in the pool — both dropped.
-    assert v["grades"] == {"A": 2, "B": 0}
-    assert v["none"] is False
-
-
-def test_parse_rerank_flags_none_of_pool():
-    v = rerank_judged.parse_rerank(
-        '{"grades": {"A": 0, "B": 1}, "none_answer": true}', {"A", "B"})
-    assert v["none"] is True
-    assert 2 not in v["grades"].values()  # nothing answered
-
-
-def test_parse_rerank_rejects_bad_shapes():
-    assert rerank_judged.parse_rerank("no json", {"A"}) is None
-    assert rerank_judged.parse_rerank('{"none_answer": true}', {"A"}) is None  # no grades
-
-
-def test_rerank_prompt_lists_the_pool_inline():
-    pool = [{"thread_id": "T1", "title": "the answer", "snippet": "blue whale facts"}]
-    p = rerank_judged.build_prompt("largest animal", pool, "py tool")
-    assert "largest animal" in p
-    assert "T1" in p and "the answer" in p and "blue whale facts" in p
-
-
-# ── query generator: parse + prompt + case assembly ──────────────────────────
-
-def test_parse_queries_keeps_valid_tiers_and_dedupes():
-    v = querygen.parse_queries(
-        '{"queries": ['
-        '{"query": "exact phrase", "difficulty": "verbatim"}, '
-        '{"query": "in other words", "difficulty": "paraphrase"}, '
-        '{"query": "exact phrase", "difficulty": "vague"}, '   # dup query dropped
-        '{"query": "bad tier", "difficulty": "medium"}, '      # unknown tier dropped
-        '{"query": "", "difficulty": "vague"}], '              # empty query dropped
-        '"note": "one tier skipped"}')
-    assert [q["query"] for q in v["queries"]] == ["exact phrase", "in other words"]
-    assert v["queries"][0]["difficulty"] == "verbatim"
-    assert v["note"] == "one tier skipped"
-
-
-def test_parse_queries_keeps_at_most_one_query_per_tier():
-    # The ladder is one query per difficulty tier: a target that returns several
-    # at the same tier keeps only the first, so it can't outweigh single-case
-    # targets when the file is scored.
-    v = querygen.parse_queries(
-        '{"queries": ['
-        '{"query": "first vague", "difficulty": "vague"}, '
-        '{"query": "second vague", "difficulty": "vague"}, '
-        '{"query": "third vague", "difficulty": "vague"}, '
-        '{"query": "the verbatim one", "difficulty": "verbatim"}]}')
-    assert [(q["difficulty"], q["query"]) for q in v["queries"]] == [
-        ("vague", "first vague"), ("verbatim", "the verbatim one")]
-
-
-def test_parse_queries_empty_list_is_valid():
-    v = querygen.parse_queries('{"queries": [], "note": "too generic"}')
-    assert v["queries"] == []
-
-
-def test_parse_queries_rejects_bad_shapes():
-    assert querygen.parse_queries("junk") is None
-    assert querygen.parse_queries('{"note": "x"}') is None  # no queries key
 
 
 # ── mining provenance (finding 4) ────────────────────────────────────────────
@@ -296,53 +232,91 @@ def test_resolved_model_prefers_the_concrete_id_over_the_alias():
     assert _resolved_model({"num_turns": 3}) is None
 
 
-def test_gen_prompt_hands_over_the_thread_to_read():
-    p = querygen.build_prompt("01THREADID", "a real conversation", "py tool")
-    assert "01THREADID" in p and "a real conversation" in p
-    assert "read 01THREADID" in p
-    for tier in querygen.DIFFICULTIES:
-        assert tier in p
+# ── the pipeline spine ───────────────────────────────────────────────────────
+
+def _ctx():
+    import argparse
+
+    return fw.MineContext(snapshot_id="snap-1", target=3, model="opus", jobs=1,
+                          tool_cmd="py tool", args=argparse.Namespace())
 
 
-def test_cases_from_queries_binds_gold_and_carries_difficulty():
-    rows = querygen.cases_from_queries(
-        "T1", [{"query": "q1", "difficulty": "verbatim"},
-               {"query": "q2", "difficulty": "vague"}], "snap-1")
-    assert [r["query"] for r in rows] == ["q1", "q2"]
-    for r in rows:
-        assert r["gold"] == ["T1"] and r["grades"] == {"T1": 2}
-        assert r["sessions"] == [] and r["snapshot_id"] == "snap-1"
-        assert r["protocol"] == "query-gen"
-    assert rows[0]["difficulty"] == "verbatim" and rows[1]["difficulty"] == "vague"
+def test_template_sha_is_stable_per_template_and_prompt_sha_is_not():
+    """A rendered prompt embeds its unit, so it identifies one judgment; the
+    template is the half that says whether two cases share instructions."""
+    tpl = "author queries for {commit}"
+    assert fw.template_sha(tpl) == fw.template_sha(tpl)
+    assert fw.template_sha(tpl) != fw.template_sha(tpl + " but differently")
+    assert fw.prompt_sha(tpl.format(commit="a")) != fw.prompt_sha(tpl.format(commit="b"))
 
 
-def test_sample_threads_excludes_already_mined(archive_home):
-    """Random sampling with a skip set: a thread already represented in the file is
-    not re-mined, and only threads with enough content are eligible."""
-    from sqlalchemy import text as sa_text
+def test_run_stage_splits_kept_from_dropped_and_counts_every_reason():
+    stage = fw.Stage(name="gate", fn=lambda u, ctx: (
+        fw.Verdict(keep=u, reason="ok") if u % 2 == 0
+        else fw.Verdict(reason="odd")))
+    kept, stat = fw.run_stage(stage, [1, 2, 3, 4], _ctx())
+    assert kept == [2, 4]
+    assert stat.n_in == 4 and stat.n_out == 2 and stat.dropped == 2
+    assert stat.reasons == {"ok": 2, "odd": 2}
 
-    from thread_archive._store import Thread, get_session, init_db
 
-    init_db()
-    ids = []
-    eid = iter(range(1000))
-    with get_session() as s:
-        for n in range(3):
-            t = Thread(name=f"conv:{n}", title=f"a real conversation number {n}",
-                       thread_type="conversation", source="cc", source_id=f"c{n}")
-            s.add(t)
-            s.flush()
-            for i in range(3):  # enough user content to be eligible
-                s.execute(sa_text(
-                    "INSERT INTO events_fts (event_id, thread_id, event_type, "
-                    "content, content_type) VALUES (:e, :t, 'message', :c, 'user')"),
-                    {"e": next(eid), "t": t.id, "c": f"user turn {i} in {n}"})
-            ids.append(t.id)
-        s.commit()
+def test_run_stage_may_transform_the_unit_it_carries_forward():
+    stage = fw.Stage(name="enrich", fn=lambda u, ctx: fw.Verdict(keep={"n": u}))
+    kept, _ = fw.run_stage(stage, [1, 2], _ctx())
+    assert kept == [{"n": 1}, {"n": 2}]
 
-    sampled = querygen.sample_threads(10, seed=1, skip=set())
-    assert {t["thread_id"] for t in sampled} == set(ids)
 
-    skip_one = querygen.sample_threads(10, seed=1, skip={ids[0]})
-    assert ids[0] not in {t["thread_id"] for t in skip_one}
-    assert len(skip_one) == 2
+def test_a_stage_that_raises_drops_one_unit_rather_than_the_run():
+    """One malformed row out of a thousand is a data fact. A miner that dies on it
+    has spent everything before it for nothing."""
+    def boom(unit, ctx):
+        if unit == 2:
+            raise ValueError("bad row")
+        return fw.Verdict(keep=unit)
+
+    kept, stat = fw.run_stage(fw.Stage(name="s", fn=boom), [1, 2, 3], _ctx())
+    assert kept == [1, 3] and stat.reasons["stage-error"] == 1
+
+
+def test_run_stage_sums_agent_cost_and_reports_it_on_the_row():
+    stage = fw.Stage(name="author", kind="agent",
+                     fn=lambda u, ctx: fw.Verdict(keep=u, cost_usd=0.25))
+    _, stat = fw.run_stage(stage, [1, 2], _ctx())
+    assert stat.cost_usd == 0.5 and stat.as_row()["kind"] == "agent"
+    assert stat.as_row()["cost_usd"] == 0.5
+
+
+def test_run_stage_hands_every_verdict_to_the_observer_kept_or_not():
+    seen = []
+    stage = fw.Stage(name="s", fn=lambda u, ctx: (
+        fw.Verdict(keep=u) if u else fw.Verdict(reason="falsy")))
+    fw.run_stage(stage, [1, 0, 2], _ctx(),
+                 on_verdict=lambda st, unit, v: seen.append((unit, v.reason)))
+    assert seen == [(1, "ok"), (0, "falsy"), (2, "ok")]
+
+
+def test_run_stage_is_order_preserving_under_concurrency():
+    stage = fw.Stage(name="s", kind="agent", fn=lambda u, ctx: fw.Verdict(keep=u))
+    kept, stat = fw.run_stage(stage, list(range(20)), _ctx(), jobs=4)
+    assert kept == list(range(20)) and stat.n_out == 20
+
+
+def test_funnel_records_set_level_narrowing_beside_per_unit_stages():
+    """A supply read and a stratified draw have no per-unit verdict to give, and
+    they are still most of what a reader wants before any agent runs."""
+    f = fw.Funnel()
+    f.note("supply", n_in=1284, n_out=1149, reasons={"absent-from-snapshot": 135})
+    _, stat = fw.run_stage(
+        fw.Stage(name="author", kind="agent",
+                 fn=lambda u, ctx: fw.Verdict(keep=u, cost_usd=0.1)),
+        [1, 2], _ctx())
+    f.record(stat)
+    assert [r["stage"] for r in f.rows()] == ["supply", "author"]
+    assert f.cost_usd == 0.2
+    text = f.text()
+    assert "1284" in text and "absent-from-snapshot 135" in text
+    assert "$ author" in text          # agent stages are marked as spending
+
+
+def test_an_empty_funnel_says_so():
+    assert "no stages ran" in fw.Funnel().text()

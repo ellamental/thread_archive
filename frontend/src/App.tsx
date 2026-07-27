@@ -9,6 +9,8 @@ import { StatsView } from './components/StatsView'
 import { ModelStatsView } from './components/ModelStatsView'
 import { HealthView } from './components/HealthView'
 import { RetrievalView } from './components/RetrievalView'
+import { SearchLabView } from './components/SearchLabView'
+import { BenchRunView } from './components/BenchRunView'
 import { UploadView } from './components/UploadView'
 import { Landing } from './components/Landing'
 
@@ -85,9 +87,11 @@ export function App() {
             <Route path="/stats" element={<StatsView />} />
             <Route path="/stats/model/:model" element={<ModelStatsView />} />
             <Route path="/health" element={<HealthView />} />
-            {/* A dev page: reachable by URL always, advertised in the rail only
+            {/* Dev pages: reachable by URL always, advertised in the rail only
                 under `?dev=1` (see src/dev.ts). */}
             <Route path="/retrieval" element={<RetrievalView />} />
+            <Route path="/lab" element={<SearchLabView />} />
+            <Route path="/lab/run/:id" element={<BenchRunView />} />
             <Route path="/upload" element={<UploadView />} />
             <Route path="/archive/:id" element={<ThreadView />} />
           </Routes>

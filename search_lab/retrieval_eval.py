@@ -52,8 +52,9 @@ query-shape (so a lexical regression can't hide behind semantic wins).
 JSONL row at ~/.thread/archive/retrieval-trend.jsonl, turning point
 measurements into a time series. ``--probes-only`` skips the metric
 run entirely and exits after the ``--require-*`` arm-liveness probes — the CI
-gate's mode: the gate asserts the model arms are alive and leaves quality
-measurement to the snapshot-bound gold files.
+row's mode: it asserts the model arms are alive and claims nothing about quality,
+which is not a per-commit number (see ``search_lab/README.md`` → "What a number
+here is worth").
 
 Read-only. The title / log protocols run against the live archive:
 
@@ -67,7 +68,7 @@ refuses any case whose id does not match the home, so golds are never scored
 against a corpus that has changed under them (re-mine after a new snapshot):
 
     export THREAD_ARCHIVE_HOME=~/.thread/archive-snap
-    .venv/bin/python search_lab/retrieval_eval.py --cases ~/.thread/archive/judged-cases.jsonl
+    .venv/bin/python search_lab/retrieval_eval.py --cases ~/dev/swe-chat-data/gold/commit-cases.jsonl
 
 The cases are minted by the ``search_lab.mine`` miners (package
 ``search_lab/mine/``) — run ``python -m search_lab.mine`` to list them.
@@ -282,6 +283,11 @@ def main() -> None:
         "recall": {str(k): v for k, v in report["recall"].items()},
         "ndcg": {str(k): v for k, v in report["ndcg"].items()},
         "latency_p50_ms": report["latency_p50_ms"],
+        # The stage breakdown the run's own probes produced. It rides the trend
+        # ledger rather than only the console so a regression can be *located*
+        # after the fact — "MRR held and p95 doubled in the re-rank" is a finding
+        # a p50 alone cannot state.
+        "latency": report["latency"],
     })
 
     if args.json:
@@ -291,7 +297,20 @@ def main() -> None:
               + "   ".join(f"S@{k}: {v:.3f}" for k, v in report["success"].items()))
         print("   ".join(f"R@{k}: {v:.3f}" for k, v in report["recall"].items()))
         print("   ".join(f"nDCG@{k}: {v:.3f}" for k, v in report["ndcg"].items()))
-        print(f"latency p50: {report['latency_p50_ms']:.0f} ms")
+        lat = report["latency"]
+        print(f"latency p50: {lat['total']['p50']:.0f} ms   "
+              f"p95: {lat['total']['p95']:.0f} ms   p99: {lat['total']['p99']:.0f} ms")
+        if lat["stages"]:
+            # Arm totals overlap in wall-clock and do not sum to the total; the
+            # widest stage is the one that shaped the latency, so lead with it.
+            ranked = sorted(lat["stages"].items(),
+                            key=lambda kv: -kv[1]["p95"])[:6]
+            print("  stages (p50/p95 ms, arms overlap — not a partition):")
+            for name, d in ranked:
+                print(f"  {name:>15}: {d['p50']:7.1f} / {d['p95']:7.1f}")
+            if lat["cold"]:
+                print(f"  {'cold loads':>15}: {lat['cold']} of {lat['n']} searches "
+                      "paid a model load (their totals are not steady-state)")
         for shape, stats in report["per_shape"].items():
             print(f"  {shape:>15}: n={stats['n']:<4} MRR={stats['mrr']:.3f}")
 

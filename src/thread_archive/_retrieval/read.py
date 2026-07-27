@@ -294,6 +294,30 @@ def _web_binary(view: dict) -> dict:
     }
 
 
+def _ask_result(p: dict) -> dict:
+    """The structured half of an AskUserQuestion result, or ``{}``.
+
+    The harness records the user's picks twice: once as prose in ``output`` ("The
+    user answered: …=…") and once machine-readable under
+    ``annotations.structured_result`` — ``{questions, answers}``, where ``answers``
+    maps each question's text to the chosen option label (or, when the reader typed
+    their own, that free text). The structured copy is what lets the viewer render
+    the question as a decision with its outcome marked, so it rides the block.
+    Its ``questions`` copy drops option previews; the call block's ``input`` keeps
+    them, and a paired render should prefer that."""
+    ann = p.get("annotations")
+    sr = ann.get("structured_result") if isinstance(ann, dict) else None
+    if not isinstance(sr, dict):
+        return {}
+    answers, questions = sr.get("answers"), sr.get("questions")
+    if not isinstance(answers, dict) or not answers:
+        return {}
+    out: dict = {"answers": {k: v for k, v in answers.items() if isinstance(v, str)}}
+    if isinstance(questions, list):
+        out["questions"] = [q for q in questions if isinstance(q, dict)]
+    return out if out["answers"] else {}
+
+
 def resolve_thread_ref(s: Session, ref: int | str) -> Optional[str]:
     """Resolve a thread reference to the archive's ULID thread id.
 
@@ -1514,6 +1538,7 @@ def _structured_event(
         }
         if views:
             result["images"] = [_web_binary(v) for v in views]
+        result.update(_ask_result(p))
         return ("assistant", result)
     if et == "tool_execution_error":
         if not include_tools:
@@ -1522,6 +1547,13 @@ def _structured_event(
         error_block: dict = {"type": "tool_error", "error": err}
         if views:
             error_block["images"] = [_web_binary(v) for v in views]
+        denial = (p.get("annotations") or {}).get("tool_denial_kind") \
+            if isinstance(p.get("annotations"), dict) else None
+        if isinstance(denial, str) and denial:
+            # Why the tool never ran (``user-rejected``, …) — the viewer folds a
+            # denied AskUserQuestion into a "dismissed" answer rather than showing
+            # the harness's boilerplate refusal text.
+            error_block["denial_kind"] = denial
         return ("assistant", error_block)
     if et == "context_summary":
         att = _attachment_raw(p)

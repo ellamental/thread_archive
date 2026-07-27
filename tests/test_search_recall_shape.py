@@ -5,11 +5,14 @@ question that file's metrics cannot ask. MRR and success@k score *ordering* —
 which thread wins — and a ranker that returns one right answer per query
 satisfies them. The shapes here are the ones a ranked window can't serve:
 
-- **exhaustive** — "every thread that mentions X", where the answer set is
-  larger than any result window. Scored on the nonce-sentinel block, whose gold
-  is true by construction (see ``quality_corpus.SENTINEL``): corpus noise cannot
-  fuzz a term that exists nowhere else, so these assertions stay exact as the
-  corpus grows.
+- **exhaustive** — "every thread that mentions X". Scored on the nonce-sentinel
+  block, whose gold is true by construction (see ``quality_corpus.SENTINEL``):
+  corpus noise cannot fuzz a term that exists nowhere else, so these assertions
+  stay exact as the corpus grows. Note what is *not* the claim: a ranked call
+  sized past the answer reaches the same set (the pool follows ``limit``), and a
+  ranked result already reports ``total`` / ``pages`` / ``exhaustive``. The
+  enumerating shapes' distinct property is that they do not fold cross-thread
+  duplicates — see ``test_browse_does_not_fold_what_the_ranked_shape_folds``.
 - **chronological** — "the first / last time we discussed X", a question about
   dates that relevance order answers wrongly by construction. Scored on the
   dated series block, built so the earliest mention is the *weakest* match.
@@ -66,6 +69,62 @@ def test_ranked_window_cuts_the_set_but_does_not_corrupt_it(corpus) -> None:
     assert len(hits) == 20
     assert set(_names(hits, corpus)) <= set(SENTINEL_THREADS)
     assert len({h["thread_id"] for h in hits}) == 20
+
+
+def test_a_widened_ranked_window_reaches_the_whole_set(corpus) -> None:
+    """The cut above is the window, not a ceiling: the candidate pool resolves to
+    ``max(limit * 5, pool_floor)``, so widening ``limit`` past the answer's size
+    widens the pool with it and the ranked shape returns every match too.
+
+    Pinned because it is easy to lose: capping pool depth independently of
+    ``limit`` would leave threads unreachable at *any* window, turning "sized it
+    too small" into a silent recall ceiling with nothing to distinguish them."""
+    hits = search(SENTINEL, limit=SENTINEL_N + 26)
+    assert sorted(set(_names(hits, corpus))) == sorted(SENTINEL_THREADS)
+
+
+def test_a_cut_window_says_so_rather_than_looking_complete(corpus) -> None:
+    """A short window is a cut, not an ambiguity. The ranked result reports the
+    size of the match *set* beside the page, so "these are all of them" and
+    "these are 20 of 24" are distinguishable without a second query — which is
+    the whole reason a ranked search can be trusted to say when it is done."""
+    cut = search(SENTINEL, limit=20)
+    assert len(cut) == 20
+    assert cut.total_threads == SENTINEL_N
+    assert cut.pages == 2
+
+    whole = search(SENTINEL, limit=SENTINEL_N + 26)
+    assert len(whole) == SENTINEL_N
+    assert whole.total_threads == SENTINEL_N
+    assert whole.pages == 1
+
+
+def test_near_identical_threads_each_keep_a_row(corpus) -> None:
+    """The series threads mention the term in identical assistant text — an agent
+    fan-out's shape, one prompt spawned many ways. They are still eleven separate
+    conversations, so "which threads mention this" must count eleven: a fold that
+    *removes* rows answers a smaller number than the truth, and identical wording
+    is not identical work.
+
+    The near-duplicate relation is still reported — ``_dup_thread_ids`` marks the
+    rows that share content — it just no longer decides membership."""
+    hits = search(SERIES, limit=len(SERIES_ORDER) + 10)
+    assert sorted(_names(hits, corpus)) == sorted(SERIES_ORDER)
+    assert hits.total_threads == len(SERIES_ORDER)
+    assert any(h.get("_dup_thread_ids") for h in hits), (
+        "the duplicate relation must still be visible, just not enforced by deletion")
+
+
+def test_collapse_is_available_for_callers_that_want_brevity(corpus) -> None:
+    """``collapse=True`` restores the fold for a caller spending result slots on
+    distinct content rather than on completeness — and it annotates rather than
+    discards, so every collapsed thread is still named on the row that absorbed
+    it."""
+    folded = search(SERIES, limit=len(SERIES_ORDER) + 10, collapse=True)
+    assert len(folded) < len(SERIES_ORDER)
+    absorbed = {t for h in folded for t in (h.get("_dup_thread_ids") or [])}
+    assert len(folded) + len(absorbed) == len(SERIES_ORDER), (
+        "a collapsed thread must be named on the row that absorbed it, not dropped")
 
 
 def test_count_output_tallies_every_matching_thread(corpus) -> None:

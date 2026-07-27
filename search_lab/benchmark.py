@@ -1,17 +1,18 @@
 #!/usr/bin/env python3
 """Run the bench as a set — every instrument, one command, one recorded run.
 
-The lab's instruments each answer a different question, and a ranking change
-needs several of them: the gold gates say whether the change helped on
-corpus-grounded labels, the hold-out corpus says whether that survives on a
-corpus nobody tuned against, and the external benchmarks say whether the
-components are still competitive in general. Running them by hand means
-remembering a dozen invocations, their flags, and which of them a given change can
-even move — so in practice they get run once at the end, if at all.
+Every row here is a published-baseline yardstick: a public IR or conversational
+benchmark whose relevance labels were made by someone else, scored beside the
+number that dataset's own leaderboard reports. That is the whole set, and the
+limit is worth stating plainly — these say whether the retrieval components are
+competitive in general. None of them says whether search got better *on this
+archive*, because a label made here would have to be made by searching here.
 
-    python -m search_lab benchmark                    # the standard set
-    python -m search_lab benchmark --tier smoke       # the gold gates alone
-    python -m search_lab benchmark --list             # what a tier would run
+Running them by hand means remembering a dozen invocations and their flags, so in
+practice they get run once at the end, if at all.
+
+    python -m search_lab benchmark                    # the set
+    python -m search_lab benchmark --list             # what it would run
 
 **Built for the tuning loop.** Every row records what it measured against a
 content hash of the ranking code (``search_lab.bench_runs``), and a row whose
@@ -36,12 +37,9 @@ boundary makes that unrepresentable. Sequential rather than parallel because
 every row is measuring a shared machine — two rows at once measure each other's
 contention.
 
-This runner builds nothing itself. The external harnesses build their own corpus
-on first run — an ingest and, with ``--vectors``, an embed pass, which is where a
-row's cost estimate stops being a guide — and the gold rows simply fail when their
-snapshot is absent, naming the builder. That asymmetry is deliberate: a mined gold
-corpus is an operator artifact with hours of agent time in it, and a benchmark run
-must never quietly decide to remake one.
+This runner builds nothing itself. The harnesses build their own corpus on first
+run — an ingest and, with ``--vectors``, an embed pass, which is where a row's
+cost estimate stops being a guide.
 """
 
 from __future__ import annotations
@@ -64,30 +62,18 @@ import eval_home  # noqa: E402
 
 REPO = Path(__file__).resolve().parent.parent
 
-#: Tiers are nested: smoke ⊂ standard. The split is by what a run costs against
-#: what it can tell you — smoke is the pair of instruments that can credit a
-#: ranking change at all (~7 min warm), standard adds every external yardstick
-#: whose corpus is already built and embedded (~20 min warm). Warm is the ordinary
-#: case; a row whose corpus has never been built pays for building it once.
-TIERS = ("smoke", "standard")
-
 
 @dataclass
 class Row:
     """One benchmark invocation, and how to read what it produced."""
 
     name: str
-    tier: str
     argv: list[str]
     cost_min: int
     #: The built home whose ``snapshot.json`` identifies this row's corpus, when
     #: the corpus is one home. None for the per-question haystacks, which are
     #: hundreds of small homes — see ``bench_runs.is_fresh``.
     home: Path | None = None
-    #: Set for the gold-gate rows: their numbers come from the gate's own per-file
-    #: ledger in this directory rather than from a JSON report.
-    gold_dir: Path | None = None
-    needs_json_out: bool = True
     build_hint: str = ""
     measure_keys: tuple[str, ...] = field(default=("ndcg10",))
 
@@ -95,11 +81,10 @@ class Row:
         """This row's corpus fingerprint, read from the built home's snapshot
         manifest. None when the row has no single home, or the home is not built —
         the run itself is what will say so, loudly."""
-        target = self.snap if self.gold_dir is not None else self.home
-        if target is None:
+        if self.home is None:
             return None
         try:
-            return json.loads((target / "snapshot.json").read_text()).get("snapshot_id")
+            return json.loads((self.home / "snapshot.json").read_text()).get("snapshot_id")
         except (OSError, json.JSONDecodeError):
             return None
 
@@ -114,72 +99,6 @@ class Row:
             own = ()
         return bench_runs.code_id(own)
 
-    @property
-    def snap(self) -> Path | None:
-        """The snapshot a gold row scores over, taken from its own argv so the two
-        can never drift apart."""
-        if "--snap" not in self.argv:
-            return None
-        return Path(self.argv[self.argv.index("--snap") + 1]).expanduser()
-
-
-def _gold_rows() -> list[Row]:
-    """The two grounded-gold corpora: the operator's archive, and the SWE-chat
-    hold-out. These are the only rows that can credit an improvement, so they are
-    the whole of the smoke tier."""
-    archive_snap = Path(os.environ.get("THREAD_ARCHIVE_SNAP",
-                                       str(Path.home() / ".thread" / "archive-snap")))
-    archive_gold = Path(os.environ.get("THREAD_ARCHIVE_GOLD_DIR",
-                                       str(Path.home() / ".thread" / "archive")))
-    swe_home = eval_home.CACHE_ROOT / "homes" / "swe-chat"
-    swe_gold = Path.home() / "dev" / "swe-chat-data" / "gold"
-    gate = str(REPO / "scripts" / "retrieval_gold_gate.py")
-    return [
-        Row(name="gold-gate:archive", tier="smoke", cost_min=7,
-            argv=[gate, "--snap", str(archive_snap), "--gold-dir", str(archive_gold)],
-            gold_dir=archive_gold, needs_json_out=False,
-            build_hint="freeze a snapshot with `python search_lab/snapshot.py <dir>`",
-            measure_keys=("mrr", "success10", "recall10", "ndcg10")),
-        Row(name="gold-gate:swe-chat", tier="smoke", cost_min=6,
-            argv=[gate, "--snap", str(swe_home), "--gold-dir", str(swe_gold)],
-            gold_dir=swe_gold, needs_json_out=False,
-            build_hint="build it with `python search_lab/swechat_corpus.py`",
-            measure_keys=("mrr", "success10", "recall10", "ndcg10")),
-    ]
-
-
-def _external_rows() -> list[Row]:
-    """The published-baseline yardsticks — every corpus that is already built and
-    embedded."""
-    homes = eval_home.CACHE_ROOT / "homes"
-    beir = str(REPO / "search_lab" / "beir_eval.py")
-    cdr = str(REPO / "search_lab" / "cdr_eval.py")
-    hay = str(REPO / "search_lab" / "haystack_eval.py")
-    first_run = "the harness builds it on first run (ingest + embed, tens of minutes)"
-    return [
-        Row(name="beir:scifact[lexical]", tier="standard", cost_min=2,
-            argv=[beir, "--dataset", "scifact"],
-            home=homes / "scifact", build_hint=first_run,
-            measure_keys=("ndcg10", "mrr10", "recall10")),
-        Row(name="beir:scifact[vectors]", tier="standard", cost_min=5,
-            argv=[beir, "--dataset", "scifact", "--vectors"],
-            home=homes / "scifact", build_hint=first_run,
-            measure_keys=("ndcg10", "mrr10", "recall10")),
-        Row(name="cdr[vectors]", tier="standard", cost_min=20,
-            argv=[cdr, "--vectors"],
-            home=homes / "cdr", build_hint=first_run,
-            measure_keys=("ndcg10", "mrr10", "recall10")),
-        Row(name="locomo[lexical]", tier="standard", cost_min=5,
-            argv=[hay, "--dataset", "locomo"],
-            build_hint=first_run, measure_keys=("recall10", "ndcg10")),
-        Row(name="locomo[vectors]", tier="standard", cost_min=10,
-            argv=[hay, "--dataset", "locomo", "--vectors"],
-            build_hint=first_run, measure_keys=("recall10", "ndcg10")),
-        Row(name="longmemeval[lexical]", tier="standard", cost_min=15,
-            argv=[hay, "--dataset", "longmemeval"],
-            build_hint=first_run, measure_keys=("recall10", "ndcg10")),
-    ]
-
 
 def manifest() -> list[Row]:
     """Every row the bench knows, in run order.
@@ -188,17 +107,41 @@ def manifest() -> list[Row]:
     per-question corpora for a number whose published reference is measured on a
     different split of the dataset, so the cost buys no comparison. Run it by hand
     if that changes."""
-    return _gold_rows() + _external_rows()
+    homes = eval_home.CACHE_ROOT / "homes"
+    beir = str(REPO / "search_lab" / "beir_eval.py")
+    cdr = str(REPO / "search_lab" / "cdr_eval.py")
+    hay = str(REPO / "search_lab" / "haystack_eval.py")
+    first_run = "the harness builds it on first run (ingest + embed, tens of minutes)"
+    return [
+        Row(name="beir:scifact[lexical]", cost_min=2,
+            argv=[beir, "--dataset", "scifact"],
+            home=homes / "scifact", build_hint=first_run,
+            measure_keys=("ndcg10", "mrr10", "recall10")),
+        Row(name="beir:scifact[vectors]", cost_min=5,
+            argv=[beir, "--dataset", "scifact", "--vectors"],
+            home=homes / "scifact", build_hint=first_run,
+            measure_keys=("ndcg10", "mrr10", "recall10")),
+        Row(name="cdr[vectors]", cost_min=20,
+            argv=[cdr, "--vectors"],
+            home=homes / "cdr", build_hint=first_run,
+            measure_keys=("ndcg10", "mrr10", "recall10")),
+        Row(name="locomo[lexical]", cost_min=5,
+            argv=[hay, "--dataset", "locomo"],
+            build_hint=first_run, measure_keys=("recall10", "ndcg10")),
+        Row(name="locomo[vectors]", cost_min=10,
+            argv=[hay, "--dataset", "locomo", "--vectors"],
+            build_hint=first_run, measure_keys=("recall10", "ndcg10")),
+        Row(name="longmemeval[lexical]", cost_min=15,
+            argv=[hay, "--dataset", "longmemeval"],
+            build_hint=first_run, measure_keys=("recall10", "ndcg10")),
+    ]
 
 
-def select(rows: list[Row], *, tier: str, only: list[str]) -> list[Row]:
-    """The rows a tier runs, narrowed by ``--only`` substrings. Tiers are nested,
-    so ``standard`` includes ``smoke``."""
-    depth = TIERS.index(tier)
-    chosen = [r for r in rows if TIERS.index(r.tier) <= depth]
-    if only:
-        chosen = [r for r in chosen if any(frag in r.name for frag in only)]
-    return chosen
+def select(rows: list[Row], *, only: list[str]) -> list[Row]:
+    """The rows to run, narrowed by ``--only`` substrings."""
+    if not only:
+        return rows
+    return [r for r in rows if any(frag in r.name for frag in only)]
 
 
 # ── reading what a row produced ──────────────────────────────────────────────
@@ -231,31 +174,70 @@ def measures_from_report(payload: dict) -> dict:
     }
 
 
-def measures_from_gold_ledger(gold_dir: Path, *, since: str) -> dict:
-    """Pooled headline numbers from the gate's own per-file ledger.
+def per_query_from_report(payload: dict) -> list:
+    """Every scored query's own result, out of the same report.
 
-    The gate already records every file's metrics where the corpus lives; reading
-    them back beats parsing its printout, and it means the run-level row and the
-    per-file detail can never disagree. Pooling is case-weighted — files differ in
-    size by an order of magnitude, and a plain mean over files would let a 7-case
-    topic file outvote a 75-case protocol one."""
-    import gold_runs
+    Two shapes again: the external harnesses carry ``per_query`` in the shape
+    :func:`search_lab.eval_core.query_row` defines, and the in-house evaluator
+    carries ``per_case``, which predates it and holds the query, its reciprocal
+    rank and its latency but no gold accounting. Lifted rather than dropped —
+    a failed case with its query text is the most useful thing either harness
+    produces, and the older shape has most of it."""
+    rows = payload.get("per_query")
+    if isinstance(rows, list) and rows:
+        return rows
+    cases = payload.get("per_case")
+    if not isinstance(cases, list):
+        return []
+    out = []
+    for i, case in enumerate(cases):
+        if not isinstance(case, dict):
+            continue
+        rr = case.get("rr")
+        out.append({
+            "qid": str(i),
+            "query": case.get("query", ""),
+            "latency_ms": case.get("latency_ms"),
+            # The evaluator records a reciprocal rank, which is 1/rank — so the
+            # rank it came from is recoverable exactly, and 0 means not found.
+            "rank": round(1 / rr) if isinstance(rr, (int, float)) and rr else None,
+            "n_gold": None,
+            "found": None,
+            "measures": {"rr": rr},
+            **({"group": case["difficulty"]} if case.get("difficulty") else {}),
+        })
+    return out
 
-    for record in gold_runs.read_runs(gold_dir, limit=5):
-        if record.get("at", "") < since:
-            continue
-        files = record.get("files") or {}
-        total = sum(m.get("n", 0) for m in files.values())
-        if not total:
-            continue
-        pooled = {
-            metric: round(sum(m.get(metric, 0.0) * m.get("n", 0)
-                              for m in files.values()) / total, 4)
-            for metric in ("mrr", "success10", "recall10", "ndcg10")
-        }
-        return {**pooled, "n": total, "files": len(files),
-                "passed": record.get("passed")}
-    return {}
+
+def performance_from_report(payload: dict) -> dict:
+    """What the run cost, out of the same report the measures come from.
+
+    Kept beside ``measures`` rather than folded into it, because the two answer
+    different questions and a reader mixing them gets a wrong one: ``measures``
+    is what the row is *scored* on and moves against a published baseline, while
+    this is what the box did to produce them and moves with the machine. A p99
+    listed among the nDCGs reads as a result; listed here it reads as a cost.
+
+    Two report shapes. The external harnesses carry a ``performance`` block built
+    by :func:`search_lab.eval_core.performance`; the in-house evaluator predates
+    it and carries ``latency`` in the same shape minus the throughput fields, so
+    it is lifted rather than left behind — the rows it produced are the oldest
+    history in the ledger and dropping their profile would put a hole in exactly
+    the comparison the ledger exists for."""
+    block = payload.get("performance")
+    if isinstance(block, dict):
+        return block
+    latency = payload.get("latency")
+    if not isinstance(latency, dict):
+        return {}
+    return {
+        "queries": payload.get("n"),
+        "total": latency.get("total") or {},
+        "stages": latency.get("stages") or {},
+        "staged": latency.get("n"),
+        "cold": latency.get("cold"),
+        "pool_p50": latency.get("pool_p50"),
+    }
 
 
 # ── running ──────────────────────────────────────────────────────────────────
@@ -263,10 +245,10 @@ def measures_from_gold_ledger(gold_dir: Path, *, since: str) -> dict:
 def child_env() -> dict[str, str]:
     """The environment a row runs in.
 
-    ``THREAD_ARCHIVE_HOME`` is dropped: every row names its own corpus (the gold
-    rows by flag, the harnesses by building their own), and an inherited value
-    would either be ignored — making it a lie in the recorded row — or, worse,
-    quietly redirect one. The arm switches are dropped for the same reason: each
+    ``THREAD_ARCHIVE_HOME`` is dropped: every row names its own corpus by building
+    it, and an inherited value would either be ignored — making it a lie in the
+    recorded row — or, worse, quietly redirect one. The arm switches are dropped
+    for the same reason: each
     row's arms are part of what it is measuring, and a stray ``EMBED=off`` in the
     shell would silently turn a ``[vectors]`` row into a lexical one under a name
     that says otherwise."""
@@ -277,21 +259,17 @@ def child_env() -> dict[str, str]:
     return env
 
 
-def run_row(row: Row, *, tier: str, quiet: bool) -> dict:
+def run_row(row: Row, *, quiet: bool) -> dict:
     """Run one row to completion and record it. Returns the ledger record.
 
     The child's output is streamed through rather than captured: rows run for
     minutes each, and a set you cannot watch is a set you cannot interrupt when the
     first row already says what you needed to know."""
-    started = time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime())
     t0 = time.monotonic()
-    report_path: Path | None = None
-    argv = [sys.executable, *row.argv]
-    if row.needs_json_out:
-        fd, name = tempfile.mkstemp(prefix="bench-", suffix=".json")
-        os.close(fd)
-        report_path = Path(name)
-        argv += ["--json-out", str(report_path)]
+    fd, name = tempfile.mkstemp(prefix="bench-", suffix=".json")
+    os.close(fd)
+    report_path = Path(name)
+    argv = [sys.executable, *row.argv, "--json-out", str(report_path)]
 
     print(f"\n=== {row.name} (~{row.cost_min} min) ===", flush=True)
     proc = subprocess.Popen(argv, cwd=REPO, env=child_env(), text=True,
@@ -304,21 +282,27 @@ def run_row(row: Row, *, tier: str, quiet: bool) -> dict:
     elapsed = time.monotonic() - t0
 
     measures: dict = {}
-    if code == 0:
-        if row.gold_dir is not None:
-            measures = measures_from_gold_ledger(row.gold_dir, since=started)
-        elif report_path is not None and report_path.exists():
-            try:
-                measures = measures_from_report(json.loads(report_path.read_text()))
-            except (OSError, json.JSONDecodeError):
-                measures = {}
-    if report_path is not None:
-        report_path.unlink(missing_ok=True)
+    performance: dict = {}
+    per_query: list = []
+    if code == 0 and report_path.exists():
+        try:
+            payload = json.loads(report_path.read_text())
+            measures = measures_from_report(payload)
+            performance = performance_from_report(payload)
+            per_query = per_query_from_report(payload)
+        except (OSError, json.JSONDecodeError):
+            measures = {}
+    report_path.unlink(missing_ok=True)
 
     record = bench_runs.record_run(
         row=row.name, argv=row.argv, corpus_id=row.corpus_id(), measures=measures,
         elapsed_s=elapsed, status="ok" if code == 0 else "failed",
-        code=row.code_id(), tier=tier)
+        code=row.code_id(), performance=performance)
+    # The detail lands beside the ledger under the run's own id, so the run has
+    # to be recorded before it can be filed. A failure to store it is not a
+    # failure of the run — see ``bench_runs.write_queries``.
+    if per_query:
+        bench_runs.write_queries(bench_runs.run_id(record), per_query)
     if code != 0:
         print(f"  FAILED (exit {code})"
               + (f" — corpus may not be built: {row.build_hint}" if row.build_hint else ""),
@@ -381,8 +365,6 @@ def estimate(row: Row, prior: dict | None) -> float:
 
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
-    ap.add_argument("--tier", choices=TIERS, default="standard",
-                    help="how much to run; tiers nest (default: standard)")
     ap.add_argument("--only", action="append", default=[], metavar="FRAGMENT",
                     help="run just the rows whose name contains this (repeatable)")
     ap.add_argument("--force", action="store_true",
@@ -395,7 +377,7 @@ def main(argv: list[str] | None = None) -> int:
                     help="also write the summary as JSON")
     args = ap.parse_args(argv)
 
-    rows = select(manifest(), tier=args.tier, only=args.only)
+    rows = select(manifest(), only=args.only)
     if not rows:
         print("no rows selected")
         return 1
@@ -409,7 +391,7 @@ def main(argv: list[str] | None = None) -> int:
 
     budget = sum(estimate(row, prior) for row, prior, fresh in plan if not fresh)
     to_run = sum(1 for _, _, fresh in plan if not fresh)
-    print(f"bench: tier {args.tier}, {len(rows)} row(s), "
+    print(f"bench: {len(rows)} row(s), "
           f"{to_run} to run (~{budget:.0f} min), "
           f"{len(rows) - to_run} fresh   [code {bench_runs.code_id()}]")
     for row, prior, fresh in plan:
@@ -427,7 +409,7 @@ def main(argv: list[str] | None = None) -> int:
         if fresh:
             results.append((row, prior or {}, "fresh"))
             continue
-        record = run_row(row, tier=args.tier, quiet=args.quiet)
+        record = run_row(row, quiet=args.quiet)
         failures += record.get("status") != "ok"
         results.append((row, record, "ran"))
 
@@ -439,7 +421,7 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.json_out:
         args.json_out.write_text(json.dumps({
-            "tier": args.tier, "code_id": bench_runs.code_id(),
+            "code_id": bench_runs.code_id(),
             "rows": [{"row": r.name, "state": state, **rec}
                      for r, rec, state in results],
         }, indent=1) + "\n")

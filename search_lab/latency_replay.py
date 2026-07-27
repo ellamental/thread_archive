@@ -1,13 +1,13 @@
 """latency_replay — warm latency over the searches agents actually ran.
 
-The speed bench's other query set. ``retrieval_gold_gate.py --latency`` measures
-the gold files; this measures the usage ledger. They are different populations and
-the difference is the point: a gold case is *mined to be gradeable* — a query with
-a knowable right answer — and that selection quietly excludes most of what real
-traffic looks like. Measured on this archive, time-scoped asks, browse walks, and
-the sentence punctuation an agent writes with are all common in the ledger and
-near-absent from the golds, so a change to any of them scores flat on the gold
-latency pass while moving real searches by an order of magnitude.
+The speed bench's query set: what agents actually searched for, replayed from the
+usage ledger. That population is the point. Any curated query set — one mined to
+be gradeable, one written to exercise a feature — is selected for something, and
+the selection quietly excludes most of what real traffic looks like. Measured on
+this archive, time-scoped asks, browse walks, and the sentence punctuation an
+agent writes with are all common in the ledger and rare in anything hand-built, so
+a change to any of them reads flat on a curated pass while moving real searches by
+an order of magnitude.
 
 Real *calls*, not real query text. The parameters are part of the cost: a recorded
 ``group='browse', match='substring'`` ask replayed as bare text at the default
@@ -37,14 +37,14 @@ this corpus it measures ~1.1x the warm number, so the *page cache* is not where
 production loses its time; keep it for confirming that on a corpus that has grown,
 not as the default (one rep is one sample, and latency is a distribution).
 
-Runs against the **live archive** — deliberately, unlike the gold instruments,
-which bind to a frozen snapshot. These calls were served by production against
+Runs against the **live archive** — deliberately, unlike the benchmark harnesses,
+which bind to a frozen corpus. These calls were served by production against
 production's corpus, and the point is what they cost there. That has a cost worth
 naming: the corpus grows under the measurement, so a delta across weeks is
 confounded by ingest and only a same-day before/after is clean. ``--baseline``
 records the reference the next run diffs against; the timeseries lands in
-``<home>/latency-runs.jsonl`` tagged ``query_set=observed``, beside the gold rows
-and never averaged with them.
+``<home>/latency-runs.jsonl`` tagged ``query_set=observed``, never averaged with
+rows from another population.
 
 The cold-*start* tail is deliberately not measured here. A first search after a
 restart runs an order of magnitude slower (a cold embedder alone is measured at

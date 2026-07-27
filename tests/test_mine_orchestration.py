@@ -1,11 +1,13 @@
-"""Orchestration coverage for the miners — the agent-driving paths, exercised
-through their seams (a fake agent runner, a seeded corpus) so no real ``claude``
-is spawned and no tokens are spent.
+"""Orchestration coverage for the mining machinery — the agent-driving paths,
+exercised through their seams (a fake agent runner, a seeded corpus) so no real
+``claude`` is spawned and no tokens are spent.
 
-Every miner's ``run`` is driven end to end: sample → agent → validate → write a
-case file, with the agent replaced by a canned-reply stub. The corpus tool seam
-(``_corpus``) and the ``run_claude`` subprocess envelope are covered the same
-way — real search over a tiny seeded store, a fake subprocess runner.
+Covered here is everything a miner runs *through* rather than any one miner's
+own sampling: the ``run_claude`` subprocess envelope, the corpus tool seam
+(``_corpus``) against real search over a tiny seeded store, and the CLI run
+paths driven with a fake registry and a stub snapshot guard. A registered
+miner's own ``run`` is driven end to end beside that miner
+(``test_commit_mine_gold.py``).
 """
 
 from __future__ import annotations
@@ -21,10 +23,6 @@ from search_lab.mine import (  # noqa: E402
     _agent,
     _cli,
     _corpus,
-    query_mined,
-    querygen,
-    rerank_judged,
-    topic_mined,
 )
 from search_lab.mine import (  # noqa: E402
     _framework as fw,
@@ -54,30 +52,6 @@ def _seed_searchable(title: str, content: str, *, thread_type: str = "conversati
         tid = t.id
         s.commit()
     return tid
-
-
-def _seed_trail_query(query: str, gold_id: str) -> str:
-    """A conversation session that searched ``query`` then read ``gold_id`` — the
-    search→read pair the query/rerank samplers mine. Returns the session id."""
-    from thread_archive._store import Event, Thread, get_session
-
-    with get_session() as s:
-        sess = Thread(name=f"sess:{query}", thread_type="conversation",
-                      source="cc", source_id=f"sess:{query}")
-        s.add(sess)
-        s.flush()
-        sid = sess.id
-        clk = iter(range(10, 30))
-        s.add(Event(thread_id=sid, stream_id="t", event_type="tool_use_complete",
-                    payload={"tool_name": "mcp__thread-archive__thread_search",
-                             "input": {"query": query}},
-                    occurred_at=datetime(2026, 1, 2, 12, next(clk), tzinfo=timezone.utc)))
-        s.add(Event(thread_id=sid, stream_id="t", event_type="tool_use_complete",
-                    payload={"tool_name": "mcp__thread-archive__thread_read",
-                             "input": {"thread_id": gold_id}},
-                    occurred_at=datetime(2026, 1, 2, 12, next(clk), tzinfo=timezone.utc)))
-        s.commit()
-    return sid
 
 
 def _fake_agent(reply: str):
@@ -210,245 +184,6 @@ def test_corpus_tool_read_unknown_thread_errors(archive_home):
     init_db()
     with pytest.raises(SystemExit, match="unknown thread"):
         _corpus.main(["read", "nope-not-a-thread"])
-
-
-# ── query miner run() ────────────────────────────────────────────────────────
-
-def test_query_miner_run_writes_a_case(archive_home, tmp_path, capsys):
-    from thread_archive._store import init_db
-
-    init_db()
-    gold = _seed_searchable("capture restart", "the capture daemon restart loop fix")
-    _seed_trail_query("capture daemon restart", gold)
-
-    out = tmp_path / "judged-cases.jsonl"
-    reply = json.dumps({"gold": [gold], "grades": {gold: 2},
-                        "confidence": "high", "rationale": "it answers"})
-    ctx = _ctx(agent_run=_fake_agent(reply), queries=None, mined_after=None)
-    ctx.args.out = out
-    result = query_mined.MINER.run(ctx)
-
-    assert result.written == 1
-    row = json.loads(out.read_text().splitlines()[0])
-    assert row["gold"] == [gold] and row["miner"] == "query"
-    assert row["snapshot_id"] == "snap-1" and row["protocol"] == "agent-mined"
-
-
-def test_query_miner_run_records_agent_failure(archive_home, tmp_path):
-    from thread_archive._store import init_db
-
-    init_db()
-    gold = _seed_searchable("x thread", "some distinctive zebra content here")
-    _seed_trail_query("zebra content", gold)
-
-    out = tmp_path / "judged-cases.jsonl"
-    # Agent returns None (failed) → no case, one failure recorded.
-    ctx = _ctx(agent_run=lambda *a, **k: (None, {"error": "x"}),
-               queries=None, mined_after=None)
-    ctx.args.out = out
-    result = query_mined.MINER.run(ctx)
-    assert result.written == 0 and result.failed == 1
-    assert not out.exists() or out.read_text() == ""
-
-
-# ── rerank miner run() ───────────────────────────────────────────────────────
-
-def test_rerank_miner_run_judges_the_pool(archive_home, tmp_path):
-    from thread_archive._store import init_db
-
-    init_db()
-    gold = _seed_searchable("blue whale facts", "the blue whale is the largest animal")
-    _seed_trail_query("largest animal", gold)
-
-    out = tmp_path / "rerank-cases.jsonl"
-    reply = json.dumps({"grades": {gold: 2}, "none_answer": False,
-                        "rationale": "answers"})
-    ctx = _ctx(agent_run=_fake_agent(reply), pool=10, queries=None, mined_after=None)
-    ctx.args.out = out
-    result = rerank_judged.MINER.run(ctx)
-
-    assert result.written == 1
-    row = json.loads(out.read_text().splitlines()[0])
-    assert row["gold"] == [gold] and row["protocol"] == "rerank-judged"
-
-
-def test_rerank_miner_run_flags_none_of_pool(archive_home, tmp_path):
-    from thread_archive._store import init_db
-
-    init_db()
-    gold = _seed_searchable("unrelated", "a totally different octopus subject")
-    _seed_trail_query("octopus subject", gold)
-
-    out = tmp_path / "rerank-cases.jsonl"
-    reply = json.dumps({"grades": {gold: 0}, "none_answer": True})
-    ctx = _ctx(agent_run=_fake_agent(reply), pool=10, queries=None, mined_after=None)
-    ctx.args.out = out
-    result = rerank_judged.MINER.run(ctx)
-    assert result.written == 0
-    assert any("no answer in the pool" in n for n in result.notes)
-
-
-def test_rerank_run_tracks_outcomes_and_stamps_provenance(archive_home, tmp_path):
-    # The run carries its denominator (attempted + per-unit outcomes) for the
-    # mining ledger, and every minted case records the model that judged it, the
-    # prompt hash, and the miner commit — provenance so a re-mint is detectable.
-    from thread_archive._store import init_db
-
-    init_db()
-    gold = _seed_searchable("blue whale facts", "the blue whale is the largest animal")
-    _seed_trail_query("largest animal", gold)
-
-    out = tmp_path / "rerank-cases.jsonl"
-    reply = json.dumps({"grades": {gold: 2}, "none_answer": False, "rationale": "ok"})
-    ctx = _ctx(agent_run=_fake_agent(reply), pool=10, queries=None, mined_after=None)
-    ctx.args.out = out
-    result = rerank_judged.MINER.run(ctx)
-
-    assert result.attempted == 1 and result.outcomes == {"ok": 1}
-    row = json.loads(out.read_text().splitlines()[0])
-    assert row["judge_model"] == "opus"  # no resolved id in stats → requested alias
-    assert len(row["prompt_sha"]) == 12
-    assert "miner_commit" in row
-
-
-# ── querygen miner run() ─────────────────────────────────────────────────────
-
-def test_querygen_miner_run_generates_cases(archive_home, tmp_path):
-    from sqlalchemy import text as sa_text
-
-    from thread_archive._store import Thread, get_session, init_db
-
-    init_db()
-    with get_session() as s:
-        t = Thread(name="conv:gen", title="a real conversation to target",
-                   thread_type="conversation", source="cc", source_id="gen")
-        s.add(t)
-        s.flush()
-        tid = t.id
-        for i in range(3):
-            s.execute(sa_text(
-                "INSERT INTO events_fts (event_id, thread_id, event_type, content, "
-                "content_type) VALUES (:e, :t, 'message', :c, 'user')"),
-                {"e": 100 + i, "t": tid, "c": f"turn {i}"})
-        s.commit()
-
-    out = tmp_path / "findability-cases.jsonl"
-    reply = json.dumps({"queries": [
-        {"query": "the exact phrase", "difficulty": "verbatim"},
-        {"query": "a fuzzy memory of it", "difficulty": "vague"}], "note": None})
-    ctx = _ctx(agent_run=_fake_agent(reply))
-    ctx.args.out = out
-    result = querygen.MINER.run(ctx)
-
-    assert result.written == 2
-    rows = [json.loads(line) for line in out.read_text().splitlines()]
-    assert all(r["gold"] == [tid] for r in rows)
-    assert {r["difficulty"] for r in rows} == {"verbatim", "vague"}
-    # denominator for the ledger, and provenance on every generated case
-    assert result.attempted == 1 and result.outcomes == {"ok": 1}
-    assert all(r["gen_model"] == "opus" and len(r["prompt_sha"]) == 12
-               and "miner_commit" in r for r in rows)
-
-
-def test_querygen_miner_run_handles_untargetable_thread(archive_home, tmp_path):
-    from sqlalchemy import text as sa_text
-
-    from thread_archive._store import Thread, get_session, init_db
-
-    init_db()
-    with get_session() as s:
-        t = Thread(name="conv:thin", title="a thin generic conversation",
-                   thread_type="conversation", source="cc", source_id="thin")
-        s.add(t)
-        s.flush()
-        for i in range(3):
-            s.execute(sa_text(
-                "INSERT INTO events_fts (event_id, thread_id, event_type, content, "
-                "content_type) VALUES (:e, :t, 'message', :c, 'user')"),
-                {"e": 200 + i, "t": t.id, "c": f"turn {i}"})
-        s.commit()
-
-    out = tmp_path / "findability-cases.jsonl"
-    ctx = _ctx(agent_run=_fake_agent('{"queries": [], "note": "too generic"}'))
-    ctx.args.out = out
-    result = querygen.MINER.run(ctx)
-    assert result.written == 0 and result.failed == 1
-
-
-# ── topic miner run() (survey → labelers) ────────────────────────────────────
-
-def test_topic_miner_run_surveys_then_labels(archive_home, tmp_path):
-    from thread_archive._store import init_db
-
-    init_db()
-    gold = _seed_searchable("grief for a bot", "mourning a deleted AI companion")
-    # Seed the topic and cite the gold thread to it.
-    from thread_archive._store import Thread, get_session
-
-    with get_session() as s:
-        topic = Thread(name="topic:botgrief", title="bot grief", thread_type="topic",
-                       source="cc", source_id="topic:botgrief")
-        s.add(topic)
-        s.commit()
-
-    survey_reply = json.dumps({"facets": [], "angles": [
-        {"query": "grieving a deleted AI", "intent": "bot-death grief",
-         "confounds": ["human grief"],
-         "candidates": [{"thread_id": gold, "note": "explicit"}]}]})
-    label_reply = json.dumps({"grades": {gold: 2}, "reasons": {gold: "answers"}})
-
-    def agent(prompt, model, tool_cmd, **kw):
-        # The survey brief and the labeler brief carry distinct headers.
-        if "designing a search-quality benchmark" in prompt:
-            return survey_reply, {"num_turns": 1}
-        return label_reply, {"num_turns": 1}
-
-    out = tmp_path / "topic-cases-queue-drops.jsonl"
-    ctx = _ctx(agent_run=agent, topic="bot grief", max_queries=20)
-    ctx.args.out = out
-    result = topic_mined.MINER.run(ctx)
-
-    assert result.written == 1
-    row = json.loads(out.read_text().splitlines()[0])
-    assert row["gold"] == [gold] and row["protocol"] == "topic-mined"
-    assert row["query"] == "grieving a deleted AI"
-
-
-def test_topic_run_caps_labeler_fanout_at_the_ceiling(archive_home, tmp_path, capsys):
-    """A survey that authors far more angles than the per-run ceiling still spawns
-    at most MAX_SESSIONS_PER_RUN labelers, even when --max-queries is set higher."""
-    from thread_archive._store import Thread, get_session, init_db
-
-    init_db()
-    gold = _seed_searchable("target thread", "a distinctive narwhal discussion")
-    with get_session() as s:
-        s.add(Thread(name="topic:big", title="big topic", thread_type="topic",
-                     source="cc", source_id="topic:big"))
-        s.commit()
-
-    n_angles = fw.MAX_SESSIONS_PER_RUN + 8
-    survey_reply = json.dumps({"facets": [], "angles": [
-        {"query": f"angle number {i}", "intent": "x", "confounds": [],
-         "candidates": [{"thread_id": gold, "note": "n"}]}
-        for i in range(n_angles)]})
-    label_reply = json.dumps({"grades": {gold: 2}, "reasons": {gold: "ok"}})
-    calls = {"survey": 0, "label": 0}
-
-    def agent(prompt, model, tool_cmd, **kw):
-        if "designing a search-quality benchmark" in prompt:
-            calls["survey"] += 1
-            return survey_reply, {"num_turns": 1}
-        calls["label"] += 1
-        return label_reply, {"num_turns": 1}
-
-    out = tmp_path / "topic-cases-big-topic.jsonl"
-    ctx = _ctx(agent_run=agent, topic="big topic", max_queries=100)
-    ctx.args.out = out
-    result = topic_mined.MINER.run(ctx)
-
-    assert calls["label"] == fw.MAX_SESSIONS_PER_RUN  # not all n_angles
-    assert result.written == fw.MAX_SESSIONS_PER_RUN
-    assert f"capping to {fw.MAX_SESSIONS_PER_RUN}" in capsys.readouterr().out
 
 
 # ── CLI run paths (fake registry + stub snapshot guard) ──────────────────────
@@ -595,42 +330,5 @@ def test_module_main_routes_tool_and_list(archive_home, capsys):
     assert main([]) == 0  # no args → the registry list view
     listing = capsys.readouterr().out
     assert "Gold miners" in listing
-    for name in ("query", "topic", "rerank", "querygen", "commit"):
+    for name in ("commit",):
         assert name in listing
-
-
-# ── remaining small branches ─────────────────────────────────────────────────
-
-def test_read_query_list_parses_objects_bare_and_dedupes(tmp_path):
-    f = tmp_path / "seed.jsonl"
-    f.write_text('{"query": "alpha"}\n'
-                 'bravo\n'
-                 '\n'                       # blank skipped
-                 '{"query": "alpha"}\n'     # dup dropped
-                 'not-an-object-but-a-line\n')
-    assert query_mined.read_query_list(f) == ["alpha", "bravo", "not-an-object-but-a-line"]
-
-
-def test_parse_branches_reject_malformed_json():
-    assert rerank_judged.parse_rerank("{bad json", {"A"}) is None
-    assert rerank_judged.parse_rerank('{"grades": []}', {"A"}) is None  # grades not a dict
-    assert querygen.parse_queries("{bad json") is None
-    assert querygen.parse_queries('{"queries": "nope"}') is None  # queries not a list
-    assert topic_mined.parse_labels("{bad json") is None
-
-
-def test_query_miner_run_drops_when_no_valid_gold(archive_home, tmp_path):
-    from thread_archive._store import init_db
-
-    init_db()
-    gold = _seed_searchable("y thread", "a distinctive platypus discussion")
-    _seed_trail_query("platypus discussion", gold)
-
-    out = tmp_path / "judged-cases.jsonl"
-    # Agent parses fine but returns an empty gold set → no valid gold, dropped.
-    reply = json.dumps({"gold": [], "grades": {}, "confidence": "low",
-                        "rationale": "nothing fits"})
-    ctx = _ctx(agent_run=_fake_agent(reply), queries=None, mined_after=None)
-    ctx.args.out = out
-    result = query_mined.MINER.run(ctx)
-    assert result.written == 0 and result.failed == 1

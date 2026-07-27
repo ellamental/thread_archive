@@ -75,7 +75,10 @@ sys.path.insert(0, str(_HERE.parent / "src"))
 # however this file was loaded: as a script, by path, or as search_lab.X.
 sys.path.insert(0, str(_HERE))
 
+import eval_core  # noqa: E402
 import eval_home  # noqa: E402
+
+from thread_archive._retrieval import _probe  # noqa: E402
 
 _SPEC = importlib.util.spec_from_file_location("beir_eval", _HERE / "beir_eval.py")
 beir_eval = importlib.util.module_from_spec(_SPEC)
@@ -257,7 +260,8 @@ def eval_group(api, home: Path, corpus: dict[str, str], queries: list[dict],
     """Score every query over ``corpus``. Reuses a cached home when one is present
     (``cache`` on, no ``rebuild``, ready marker written), else builds fresh and —
     when caching — drops the marker so the next run reuses it. Returns
-    ``(rows, was_cache_hit)``. The engine is closed by the caller between groups."""
+    ``(rows, was_cache_hit, (latencies, stage_samples, per_query))``. The engine is
+    closed by the caller between groups."""
     ready = home / _READY
     if cache and not rebuild and ready.exists():
         os.environ["THREAD_ARCHIVE_HOME"] = str(home)
@@ -277,9 +281,28 @@ def eval_group(api, home: Path, corpus: dict[str, str], queries: list[dict],
 
     limit = max(ks) * 2
     results = []
+    # Timed per question, and per stage. This shape queries hundreds of tiny
+    # corpora rather than one large one, so its cost profile is the only place
+    # the fixed per-search overhead shows up separated from the index scan it
+    # usually hides behind — which is exactly what a per-question memory
+    # benchmark is measuring the retrieval side of.
+    latencies: list[float] = []
+    stage_samples: list[dict] = []
+    # Every question's own result. This shape is one question per corpus, so a
+    # failure here names a specific haystack the retrieval could not find the
+    # needle in — the most directly readable failure the bench produces.
+    per_query: list[dict] = []
     for q in queries:
-        hits = api.search(q["text"], limit=limit, content_types=["user"],
-                          group="none")
+        with _probe.install() as probe:
+            s0 = time.monotonic()
+            hits = api.search(q["text"], limit=limit, content_types=["user"],
+                              group="none")
+            elapsed = time.monotonic() - s0
+        latencies.append(elapsed)
+        if probe.ran:
+            sample = probe.as_record()
+            sample["total_ms"] = elapsed * 1000.0
+            stage_samples.append(sample)
         ranked, seen = [], set()
         for h in hits:
             d = doc_of_thread.get(str(h["thread_id"]))
@@ -288,8 +311,19 @@ def eval_group(api, home: Path, corpus: dict[str, str], queries: list[dict],
                 ranked.append(d)
         m = score_query(ranked, q["gold"], ks)
         m["category"] = q["category"]
+        gold = set(q["gold"])
+        top = ks[-1]
+        per_query.append(eval_core.query_row(
+            qid=q.get("qid", ""), query=q["text"], latency_s=elapsed,
+            n_gold=len(gold),
+            rank=next((i + 1 for i, d in enumerate(ranked) if d in gold), None),
+            found=sum(1 for d in ranked[:top] if d in gold),
+            group=q["category"],
+            measures={f"recall{top}": m["recall"][top],
+                      f"ndcg{top}": m["ndcg"][top],
+                      f"recall_all{top}": m["recall_all"][top]}))
         results.append(m)
-    return results, hit
+    return results, hit, (latencies, stage_samples, per_query)
 
 
 def _aggregate(rows: list[dict], ks: tuple[int, ...]) -> dict:
@@ -335,16 +369,22 @@ def run(args) -> int:
          f"(ks={ks}, vectors={args.vectors})")
 
     all_rows: list[dict] = []
+    latencies: list[float] = []
+    stage_samples: list[dict] = []
+    per_query: list[dict] = []
     n_hits = 0
     fingerprints: list[str] = []
     t0 = time.monotonic()
     for gi, (gid, corpus, queries) in enumerate(groups):
         fingerprints.append(_fingerprint(args.dataset, gid, corpus, args.vectors))
         home = cache_root / args.dataset / fingerprints[-1]
-        rows, hit = eval_group(api, home, corpus, queries,
-                               vectors=args.vectors, ks=ks,
-                               cache=cache, rebuild=args.rebuild)
+        rows, hit, (lat, stages, per_q) = eval_group(
+            api, home, corpus, queries, vectors=args.vectors, ks=ks,
+            cache=cache, rebuild=args.rebuild)
         all_rows += rows
+        latencies += lat
+        stage_samples += stages
+        per_query += per_q
         n_hits += hit
         api.close()
         if (gi + 1) % max(1, len(groups) // 10) == 0:
@@ -391,6 +431,14 @@ def run(args) -> int:
             # fingerprints, which is the same thing one level up.
             "corpus_id": corpus_id(fingerprints),
             "per_category": per_cat, "reference": ref,
+            "per_query": per_query,
+            # Wall-clock here spans corpus builds as well as searches — hundreds
+            # of homes get built or reused inside the loop — so `scoring_s` is
+            # the loop's whole elapsed time and `qps` is throughput over it, not
+            # a search rate. The latency percentiles below are search-only.
+            "performance": eval_core.performance(
+                latencies, stage_samples, scoring_s=time.monotonic() - t0,
+                corpus_docs=n_docs, arms=arms),
         }, indent=2, default=str) + "\n", encoding="utf-8")
         _log(f"wrote {args.json_out}")
 

@@ -91,7 +91,7 @@ def test_wheel_carries_no_measurement_surface(dist) -> None:
     names = zipfile.ZipFile(wheel).namelist()
     leaked = [n for n in names
               if "search_lab" in n or "/mine/" in n
-              or n.endswith(("_eval.py", "eval_core.py", "gold_runs.py",
+              or n.endswith(("_eval.py", "eval_core.py", "run_meta.py",
                              "mine_runs.py", "retrieval_report.py"))]
     assert not leaked, f"measurement surface leaked into the wheel: {leaked}"
 
@@ -322,6 +322,18 @@ def test_installed_cli_advertises_only_verbs_an_install_can_run(installed, tmp_p
     gone = _run(installed, ["thread_archive", "mine"], tmp_path)
     assert gone.returncode == 2
     assert "invalid choice" in gone.stderr and "Traceback" not in gone.stderr
+
+
+def test_installed_uninstall_points_at_the_package_it_came_from(installed, tmp_path) -> None:
+    # A wheel install has no clone to delete, so the way out is `pip uninstall` —
+    # and this lane is the only place that branch is real: the repo's own suite
+    # runs from a checkout, where the verb correctly names the clone instead.
+    r = _run(installed, ["thread_archive", "uninstall", "--yes"], tmp_path)
+    assert r.returncode == 0, r.stderr
+    assert "pip uninstall thread-archive" in r.stdout
+    assert "clone" not in r.stdout
+    # And it says where the conversations are before it says how to remove the code.
+    assert str(tmp_path / "archive") in r.stdout
 
 
 def test_installed_package_is_private_and_asset_complete(installed, tmp_path) -> None:

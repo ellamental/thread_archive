@@ -2,6 +2,9 @@ import type { Page, Route } from '@playwright/test'
 
 export const THREAD_ID = '01ARZ3NDEKTSV4RRFFQ69G5FAV'
 export const MODEL = 'claude-opus-4-8'
+/** The recorded benchmark run the browser suite opens — the reported pass of a
+ *  row still on the bench, which is the case carrying every section of the page. */
+export const RUN_ID = 'aa11bb22cc33'
 
 const now = '2026-07-20T12:00:00Z'
 const healthNow = new Date().toISOString()
@@ -47,13 +50,334 @@ const retrieval = {
   },
   restarts: { n: 3, bucket: 'day', buckets: [{ at: '2026-07-20', n: 3 }], p50_ms: 22300, total_s: 67 },
   bench: {
-    gold: [{ at: now, commit: 'abc1234', p50: 900, p95: 2000, p99: 3000, n_queries: 300, tuning: false }],
     observed: [{ at: now, commit: 'abc1234', p50: 228, p95: 1412, p99: 2415, n_queries: 40, tuning: false }],
   },
-  quality: {
-    points: [{ at: now, commit: 'abc1234', passed: true, mrr: 0.7476, ndcg: 0.6264, n: 317 }],
-    latest: { at: now, commit: 'abc1234', passed: true, mrr: 0.7476, ndcg: 0.6264, n: 317 },
+}
+
+// The lab page is an inventory, so the fixture's job is to carry one of every
+// *state* rather than a plausible bench: a benchmark row that can run and one
+// whose corpus is absent, a corpus built / merely downloaded / not here at all,
+// and a retrieval-free miner beside a pooled one. Every branch the page renders
+// is a branch a fixture with one uniform row would let ship broken.
+const searchLab = {
+  cache_root: '/Users/test/.cache/thread-evals',
+  cache: { bytes: 26_000_000_000, files: 84_000, truncated: false },
+  code_id: 'e60a586e0b84147c',
+  families: {
+    beir: 'public IR benchmarks — nDCG@10 beside published references',
+    'agent-sessions': 'real coding-agent sessions carrying commit provenance',
   },
+  benchmarks: [
+    {
+      name: 'beir:scifact[vectors]',
+      argv: ['search_lab/beir_eval.py'],
+      corpus_home: '/Users/test/.cache/thread-evals/homes/scifact',
+      corpus_id: '9b7bce6344de1ad8',
+      corpus_built: true,
+      build_hint: 'the harness builds it on first run (ingest + embed)',
+      cost_min: 5,
+      est_min: 1,
+      fresh: false,
+      state: 'stale',
+      measure_keys: ['ndcg10', 'mrr10'],
+      code_id: 'f13d940f36263c9d',
+      last: {
+        at: now,
+        elapsed_s: 59.3,
+        commit: 'abc1234',
+        code_id: 'd46b8e7f11223344',
+        measures: { ndcg10: 0.709, mrr10: 0.667 },
+      },
+    },
+    {
+      name: 'beir:nfcorpus[lexical]',
+      argv: ['search_lab/beir_eval.py'],
+      corpus_home: '/Users/test/.cache/thread-evals/homes/nfcorpus',
+      corpus_id: null,
+      corpus_built: false,
+      build_hint: 'the harness builds it on first run (ingest + embed)',
+      cost_min: 2,
+      est_min: 2,
+      fresh: false,
+      state: 'missing',
+      measure_keys: ['ndcg10'],
+      code_id: 'f13d940f36263c9d',
+      last: null,
+    },
+  ],
+  datasets: [
+    {
+      name: 'scifact',
+      family: 'beir',
+      harness: 'search_lab/beir_eval.py --dataset scifact',
+      download: { path: '/Users/test/.cache/thread-evals/scifact', present: true, bytes: 8_000_000 },
+      homes: [
+        {
+          label: 'corpus',
+          path: '/Users/test/.cache/thread-evals/homes/scifact',
+          built: true,
+          snapshot_id: '9b7bce6344de1ad8',
+          counts: { threads: 5183, vectors: 5848 },
+          embedding_space: 'local:nomic-ai/nomic-embed-text-v1.5',
+          created_at: now,
+          bytes: 92_300_000,
+          files: 5200,
+          truncated: false,
+          build: { docs: 5183, embedded: true },
+        },
+      ],
+      reference: { metric: 'nDCG@10', bm25: 0.665, dense: 0.68 },
+      on_bench: ['beir:scifact[lexical]'],
+    },
+    {
+      name: 'nfcorpus',
+      family: 'beir',
+      harness: 'search_lab/beir_eval.py --dataset nfcorpus',
+      download: { path: '/Users/test/.cache/thread-evals/nfcorpus', present: true, bytes: 6_000_000 },
+      homes: [
+        {
+          label: 'corpus',
+          path: '/Users/test/.cache/thread-evals/homes/nfcorpus',
+          built: false,
+          snapshot_id: null,
+          counts: {},
+          embedding_space: null,
+          created_at: null,
+        },
+      ],
+      reference: { metric: 'nDCG@10', bm25: 0.325, dense: 0.33 },
+      on_bench: ['beir:nfcorpus[lexical]'],
+    },
+    {
+      name: 'arguana',
+      family: 'beir',
+      harness: 'search_lab/beir_eval.py --dataset arguana',
+      download: { path: '/Users/test/.cache/thread-evals/arguana', present: false },
+      homes: [
+        {
+          label: 'corpus',
+          path: '/Users/test/.cache/thread-evals/homes/arguana',
+          built: false,
+          snapshot_id: null,
+          counts: {},
+          embedding_space: null,
+          created_at: null,
+        },
+      ],
+      reference: { metric: 'nDCG@10', bm25: 0.315, dense: 0.48 },
+      on_bench: [],
+    },
+    {
+      name: 'swe-chat',
+      family: 'agent-sessions',
+      harness: 'search_lab/swechat_corpus.py',
+      source: 'https://huggingface.co/datasets/SALT-NLP/SWE-chat',
+      license: 'ODC-BY',
+      download: { path: '/Users/test/dev/swe-chat-data/swe-chat', present: true, bytes: 1_000_000_000 },
+      homes: [
+        {
+          label: 'corpus',
+          path: '/Users/test/.cache/thread-evals/homes/swe-chat',
+          built: true,
+          snapshot_id: 'c4137bd4dc3cde98',
+          counts: { threads: 5124, vectors: 269_497 },
+          embedding_space: 'local:nomic-ai/nomic-embed-text-v1.5',
+          created_at: now,
+          bytes: 24_900_000_000,
+          files: 7373,
+          truncated: false,
+        },
+      ],
+      gold_dir: '/Users/test/gold',
+      reference: {},
+      on_bench: [],
+    },
+  ],
+  miners: [
+    {
+      name: 'commit',
+      summary: 'author queries from a commit; test the session that produced it',
+      measures: 'recall (provenance gold)',
+      unit: 'linked session',
+      cost: '1 agent / session',
+      target_kind: 'per-case',
+      target_help: 'commit-linked sessions to sample',
+      default_target: 5,
+      gold_source: 'commit provenance — no search runs during labeling',
+      retrieval_free: true,
+      runnable_in_all: false,
+      cases_stem: 'commit-cases',
+      runs: [
+        {
+          at: now,
+          snapshot_id: 'c4137bd4dc3cde98',
+          attempted: 25,
+          written: 75,
+          failed: 0,
+          outcomes: { ok: 25 },
+        },
+      ],
+      runs_total: 1,
+    },
+    {
+      name: 'pooled',
+      summary: 'grade a multi-system pool of results for a real query',
+      measures: 'relevance over real traffic',
+      unit: 'query',
+      cost: '1 agent / query',
+      target_kind: 'per-case',
+      target_help: 'queries to judge',
+      default_target: 5,
+      gold_source: 'multi-system pooled judgment',
+      retrieval_free: false,
+      runnable_in_all: true,
+      cases_stem: 'pooled-cases',
+      runs: [],
+      runs_total: 0,
+    },
+  ],
+}
+
+// The run ledger. Same rule as the inventory above: one of every *state*, since
+// this is the surface whose whole reason to exist is the runs a newest-per-row
+// summary drops. A reported pass, the superseded pass before it under different
+// code (so the delta column renders at all), and a failure of a row the manifest
+// no longer names — which is also the only case exercising a null `code_current`.
+const searchLabRuns = {
+  code_id: 'e60a586e0b84147c',
+  total: 3,
+  returned: 3,
+  runs: [
+    {
+      id: RUN_ID,
+      at: now,
+      row: 'beir:scifact[vectors]',
+      status: 'ok',
+      code_id: 'd46b8e7f11223344',
+      corpus_id: '9b7bce6344de1ad8',
+      commit: 'abc1234',
+      elapsed_s: 59.3,
+      measures: { n: 300, ndcg10: 0.709, mrr10: 0.667, recall100: 0.915, query_p50_ms: 172.9 },
+      argv: ['search_lab/beir_eval.py', '--dataset', 'scifact', '--vectors'],
+      performance: {
+        queries: 300,
+        scoring_s: 55,
+        qps: 5.45,
+        mean_ms: 183.3,
+        max_ms: 1060.8,
+        total: { p50: 170.7, p95: 296.9, p99: 377.2 },
+        stages: {
+          rank_ms: { p50: 118.8, p95: 237.9, p99: 309.4 },
+          fts_ms: { p50: 43.9, p95: 73.2, p99: 100 },
+          semantic_ms: { p50: 0.5, p95: 0.8, p99: 1.2 },
+        },
+        staged: 300,
+        cold: 0,
+        pool_p50: 1000,
+        corpus_docs: 5183,
+        arms: ['lexical', 'vectors'],
+      },
+      on_bench: true,
+      current: true,
+      code_current: true,
+      measure_keys: ['ndcg10', 'mrr10'],
+    },
+    {
+      id: 'dd44ee55ff66',
+      at: '2026-07-19T09:14:02Z',
+      row: 'beir:scifact[vectors]',
+      status: 'ok',
+      code_id: '11112222aaaabbbb',
+      corpus_id: '9b7bce6344de1ad8',
+      commit: 'def5678',
+      elapsed_s: 62.1,
+      measures: { n: 300, ndcg10: 0.681, mrr10: 0.64, recall100: 0.9, query_p50_ms: 180.4 },
+      argv: ['search_lab/beir_eval.py', '--dataset', 'scifact', '--vectors'],
+      // Slower everywhere at the earlier configuration, so the newer run has a
+      // movement in cost to show beside its movement in score.
+      performance: {
+        queries: 300,
+        scoring_s: 70,
+        qps: 4.29,
+        mean_ms: 230.1,
+        max_ms: 1400,
+        total: { p50: 210.4, p95: 350.2, p99: 480.6 },
+        stages: {
+          rank_ms: { p50: 150.2, p95: 280, p99: 400 },
+          fts_ms: { p50: 50.1, p95: 80, p99: 110 },
+          semantic_ms: { p50: 0.6, p95: 0.9, p99: 1.4 },
+        },
+        staged: 300,
+        cold: 1,
+        pool_p50: 1000,
+        corpus_docs: 5183,
+        arms: ['lexical', 'vectors'],
+      },
+      on_bench: true,
+      current: false,
+      code_current: false,
+      measure_keys: ['ndcg10', 'mrr10'],
+    },
+    {
+      id: '778899aabbcc',
+      at: '2026-07-18T22:02:11Z',
+      row: 'gold-gate:swe-chat',
+      status: 'failed',
+      code_id: '99998888ccccdddd',
+      corpus_id: null,
+      commit: 'def5678',
+      elapsed_s: 4.2,
+      measures: {},
+      argv: ['search_lab/retrieval_eval.py', '--gold', 'swe-chat'],
+      on_bench: false,
+      current: false,
+      code_current: null,
+      measure_keys: [],
+    },
+  ],
+}
+
+// One run's per-query detail. Three states the table has to tell apart, two of
+// which score identically: a gold document that never came back, one ranked too
+// deep to count, and one served well.
+const searchLabQueries = {
+  run_id: RUN_ID,
+  compared_to: null,
+  order: 'worst',
+  lead: 'ndcg10',
+  total: 3,
+  misses: 1,
+  returned: 3,
+  rows: [
+    {
+      qid: 'miss',
+      query: 'what did we decide about the retry budget',
+      latency_ms: 240.5,
+      rank: null,
+      n_gold: 2,
+      found: 0,
+      measures: { ndcg10: 0, mrr10: 0 },
+    },
+    {
+      qid: 'deep',
+      query: 'where does the pool cache get invalidated',
+      latency_ms: 180.1,
+      rank: 40,
+      n_gold: 1,
+      found: 0,
+      measures: { ndcg10: 0, mrr10: 0 },
+      group: 'multi-hop',
+    },
+    {
+      qid: 'ok',
+      query: 'how is the corpus fingerprinted',
+      latency_ms: 120,
+      rank: 1,
+      n_gold: 1,
+      found: 1,
+      measures: { ndcg10: 1, mrr10: 1 },
+    },
+  ],
 }
 
 const stats = {
@@ -377,6 +701,10 @@ export async function mockApi(page: Page): Promise<string[]> {
     if (path === '/api/stats') return json(route, stats)
     if (path === `/api/stats/model/${MODEL}`) return json(route, modelStats)
     if (path === '/api/retrieval') return json(route, retrieval)
+    if (path === '/api/search-lab') return json(route, searchLab)
+    if (path === '/api/search-lab/runs') return json(route, searchLabRuns)
+    if (/^\/api\/search-lab\/runs\/[^/]+\/queries$/.test(path))
+      return json(route, searchLabQueries)
 
     unhandled.push(`${route.request().method()} ${path}`)
     return json(route, { error: 'unhandled browser-test API request' }, 501)

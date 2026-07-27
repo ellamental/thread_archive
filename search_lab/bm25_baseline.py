@@ -2,7 +2,7 @@
 """Plain BM25 over the corpus — the reference a gold file's numbers are read against.
 
 A mined gold file scores the shipped stack and reports, say, MRR 0.55. On its own
-that number means nothing: it is not comparable across corpora (a 726-thread
+that number means nothing: it is not comparable across corpora (a 5k-thread
 corpus and a 40k-thread one are different problems), and the third-party
 yardsticks (``beir_eval`` / ``haystack_eval``) carry published BM25 references for
 *their* corpora, not for whatever corpus the golds were mined from. This harness

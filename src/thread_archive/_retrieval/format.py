@@ -64,7 +64,7 @@ def _scale(hits, unit: str) -> str:
     if pages and pages > 1:
         out += f" · page {page}/{pages}{mark}"
     if not exhaustive:
-        out += " · truncated (group='browse' enumerates every matched thread)"
+        out += " · truncated (a thread-granular search enumerates every match)"
     return out
 
 
@@ -287,11 +287,11 @@ def format_results(hits: list[EventHit], query: str, *, output: str | None = Non
     top = top_hit(hits)
     verdict = _search_quality(term_hit_count(_hit_text(top), terms), n_terms) if n_terms else None
 
-    # The thread-granular list shapes (search.group='browse'/'nested') count in
-    # threads; the ranked shapes count in rows.
+    # The thread-granular shapes count in threads; the hit-granular ones count in
+    # rows. The default search is thread-granular, so it counts threads.
     group = hits[0].get("_group")
     n_threads = len({h["thread_id"] for h in hits})
-    if group == "browse":
+    if group == "thread":
         header = f'{n_threads} thread(s) for "{query}"' + _scale(hits, "thread")
     elif group == "nested":
         header = (f'{len(hits)} result(s) in {n_threads} thread(s) for "{query}"'

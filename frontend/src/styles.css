@@ -55,7 +55,9 @@ aside {
 .rail-item .t { display: block; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .rail-item .m { color: var(--muted); font-size: 12px; }
 .rail-empty { padding: 16px; color: var(--muted); }
-.rail-nav { padding: 8px 12px; border-bottom: 1px solid var(--line); display: flex; gap: 6px; }
+/* Wraps: the rail is a fixed width and the dev links push the row past it, so
+   without this the last chip is clipped and paints over the page beside it. */
+.rail-nav { padding: 8px 12px; border-bottom: 1px solid var(--line); display: flex; flex-wrap: wrap; gap: 6px; }
 .rail-link {
   padding: 4px 10px; border-radius: 6px; font-size: 12px; color: var(--muted);
 }
@@ -363,6 +365,55 @@ h1.title { font-size: 19px; margin: 0 0 4px; }
   .hook-fire { background: #a98fe018; border-color: #a98fe038; }
 }
 
+/* AskUserQuestion: a decision put to the operator, shown open (never folded like
+   tool machinery) — the question, the options weighed, and the one that won. */
+.ask {
+  margin: 10px 0; padding: 10px 13px 4px; border-radius: 8px;
+  border: 1px solid var(--line); background: var(--bg);
+}
+.ask.answered { border-color: color-mix(in srgb, var(--accent) 45%, var(--line)); }
+.ask-head { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.ask-tag {
+  text-transform: uppercase; letter-spacing: .06em; font-size: 10px; color: var(--muted);
+}
+.ask.answered .ask-tag { color: var(--accent); }
+.ask-state { font-size: 11px; color: var(--muted); font-style: italic; }
+.ask-question { margin: 8px 0 12px; }
+.ask-question-head { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.ask-header {
+  padding: 1px 7px; border-radius: 5px; background: var(--badge);
+  font-size: 11px; font-weight: 600; color: var(--ink);
+}
+.ask-prompt { margin: 5px 0 8px; font-size: 14px; }
+.ask-options { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; }
+.ask-option {
+  padding: 7px 10px; border-radius: 7px; border: 1px solid var(--line);
+  background: var(--panel); color: var(--muted);
+}
+/* the option the operator took: accented, and the only one that reads at full ink */
+.ask-option.chosen {
+  border-color: var(--accent); background: var(--accent-soft); color: var(--ink);
+}
+.ask-option-label {
+  display: flex; gap: 6px; align-items: baseline; font-size: 13px; font-weight: 600;
+  color: var(--ink);
+}
+.ask-option:not(.chosen) .ask-option-label { font-weight: 500; color: var(--muted); }
+.ask-mark { color: var(--accent); font-size: 12px; }
+.ask-option-desc { margin-top: 3px; font-size: 12.5px; }
+/* the reader typed their own answer instead of taking an option */
+.ask-wrote-in {
+  display: flex; flex-wrap: wrap; gap: 6px; align-items: baseline;
+  margin-top: 6px; padding: 7px 10px; border-radius: 7px;
+  border: 1px solid var(--accent); background: var(--accent-soft); font-size: 13px;
+}
+.ask .tool.ask-preview { margin: 6px 0 0; background: var(--bg); }
+.ask .md > :first-child { margin-top: 0; }
+.ask .md > :last-child { margin-bottom: 0; }
+/* an option label is one line by contract — keep its markdown inline so a code
+   span sits in the label row instead of starting a block */
+.ask-option-label .md, .ask-option-label .md p { display: inline; }
+
 /* a standalone manual /model switch, rendered between message bubbles (no chrome) */
 .msg-divider { margin: 14px 0; }
 .msg-divider .model-switch { margin: 0; }
@@ -593,7 +644,7 @@ a.session-link:hover { color: var(--accent); }
 }
 /* The wide pages — dashboards and the import flow — share one measure. Kept ahead
    of the breakpoints below so their narrower padding wins on source order. */
-.health-page, .upload-page, .retrieval-page {
+.health-page, .upload-page, .retrieval-page, .lab-page {
   max-width: 1120px; margin: 0 auto; padding: 34px 38px 96px;
 }
 .health-hero {
@@ -968,7 +1019,7 @@ a.session-link:hover { color: var(--accent); }
   .wrap { padding-inline: 22px; }
   .home { padding-inline: 28px; }
   .recent-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  .health-page, .retrieval-page { padding-inline: 26px; }
+  .health-page, .retrieval-page, .lab-page { padding-inline: 26px; }
   .health-check-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 
@@ -1028,7 +1079,7 @@ a.session-link:hover { color: var(--accent); }
   .hit-nav { justify-content: space-between; }
   .msg { padding: 11px 13px; }
   .stat-tiles { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  .health-page, .retrieval-page { max-width: none; padding: 22px 16px 76px; }
+  .health-page, .retrieval-page, .lab-page { max-width: none; padding: 22px 16px 76px; }
   .health-hero { padding: 22px; }
   .health-check-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .health-detail-grid { grid-template-columns: 1fr; }
@@ -1071,3 +1122,169 @@ a.session-link:hover { color: var(--accent); }
 .rv-swatch.muted { height: 1px; opacity: .5; }
 .rv-legend .rv-muted-key { opacity: .65; }
 .rv-mark { stroke: var(--accent); stroke-width: 1; stroke-dasharray: 2 3; opacity: .5; }
+
+/* ---- search lab (dev) ---- */
+/* An inventory, not a dashboard: every value is categorical or a count, so the
+   page is tables and status pills with no charts to keep in scale. */
+.lab-page {
+  --lab-good: #27774a; --lab-good-bg: #edf8f1;
+  --lab-warn: #956413; --lab-warn-bg: #fff7e5;
+  --lab-bad: #b34233;  --lab-bad-bg: #fff0ed;
+  --lab-busy: #2f6296; --lab-busy-bg: #eaf1f9;
+}
+@media (prefers-color-scheme: dark) {
+  .lab-page {
+    --lab-good: #6bbd8c; --lab-good-bg: #1b2f24;
+    --lab-warn: #d4a556; --lab-warn-bg: #2f2718;
+    --lab-bad: #e0806f;  --lab-bad-bg: #331f1c;
+    --lab-busy: #8ab4e0; --lab-busy-bg: #1c2836;
+  }
+}
+.lab-page h1 { margin: 0; }
+.lab-page section { margin-top: 34px; }
+.lab-page section > h2 { font-size: 17px; margin: 0 0 6px; }
+.lab-h3 {
+  font-size: 12px; text-transform: uppercase; letter-spacing: .06em;
+  color: var(--muted); font-weight: 600; margin: 22px 0 4px;
+}
+/* A heading that is a filesystem path keeps its case: paths are case-sensitive,
+   so an upper-cased one names a directory that does not exist. */
+.lab-h3.path { text-transform: none; letter-spacing: 0; font-size: 13px; }
+.lab-family { margin-bottom: 8px; }
+/* Datasets are grouped one table per family, so the columns have to be fixed
+   rather than auto-sized: four tables that each size to their own longest cell
+   read as four unrelated tables stacked, and the eye cannot run down a column. */
+/* The min-width is what makes the fixed layout safe on a phone: without it the
+   percentages resolve against a 380px table and the columns collide instead of
+   the wrapper scrolling, which is what `overflow-x: auto` is there for. */
+.lab-dataset-table { table-layout: fixed; min-width: 720px; }
+.lab-dataset-table col.c-name { width: 27%; }
+.lab-dataset-table col.c-state { width: 11%; }
+.lab-dataset-table col.c-disk { width: 9%; }
+.lab-dataset-table col.c-holds { width: 23%; }
+.lab-dataset-table td:last-child, .lab-dataset-table td:nth-child(4) { white-space: normal; }
+.lab-sub { color: var(--muted); font-size: 11px; margin-top: 2px; white-space: normal; }
+/* Measures sit several to a cell; the label is dimmed so the numbers read first. */
+.lab-measures { display: inline-flex; gap: 12px; font-variant-numeric: tabular-nums; }
+
+.lab-pill {
+  display: inline-block; border-radius: 5px; padding: 1px 7px; font-size: 11px;
+  white-space: nowrap; background: var(--badge); color: var(--muted);
+}
+.lab-pill.good { background: var(--lab-good-bg); color: var(--lab-good); }
+.lab-pill.warn { background: var(--lab-warn-bg); color: var(--lab-warn); }
+.lab-pill.bad { background: var(--lab-bad-bg); color: var(--lab-bad); }
+.lab-pill.busy { background: var(--lab-busy-bg); color: var(--lab-busy); }
+
+.lab-miners { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 12px; }
+.lab-miner {
+  border: 1px solid var(--line); border-radius: 10px; background: var(--panel);
+  padding: 14px 16px;
+}
+.lab-miner header { display: flex; flex-wrap: wrap; gap: 8px; align-items: baseline; }
+.lab-miner header code { font-size: 14px; font-weight: 600; }
+.lab-miner > p { margin: 8px 0 10px; }
+.lab-facts { display: grid; grid-template-columns: auto 1fr; gap: 4px 12px; margin: 0; font-size: 12px; }
+.lab-facts dt {
+  color: var(--muted); text-transform: uppercase; letter-spacing: .05em;
+  font-size: 10px; padding-top: 2px;
+}
+.lab-facts dd { margin: 0; }
+
+/* ---- a miner's pipeline, declared and as it ran ---- */
+/* The declared stages read as a list because they are an ordering, and the
+   ordering is the design: free gates first so the paid ones are asked about
+   fewer units. */
+.mine-stages { list-style: none; margin: 0; padding: 0; display: grid; gap: 3px; }
+.mine-stages li { display: flex; flex-wrap: wrap; gap: 6px; align-items: baseline; }
+.mine-stages code { font-weight: 600; }
+
+.mine-funnel-title {
+  margin: 14px 0 8px; font-size: 11px; text-transform: uppercase;
+  letter-spacing: .05em; color: var(--muted); font-weight: 600;
+}
+.mine-funnel { list-style: none; margin: 0; padding: 0; display: grid; gap: 10px; }
+.mine-funnel-head { display: flex; flex-wrap: wrap; gap: 6px; align-items: baseline; }
+.mine-funnel-head code { font-size: 12px; font-weight: 600; }
+/* The track is the full width of what entered the funnel, so every bar is read
+   against the same denominator and the taper is the yield. A per-stage
+   denominator would draw every stage as near-full and hide the loss. */
+.mine-funnel-bar {
+  height: 8px; border-radius: 4px; background: var(--badge); overflow: hidden;
+}
+.mine-funnel-fill {
+  display: block; height: 100%; border-radius: 4px; background: var(--accent);
+}
+/* Spending stages are marked in the bar as well as the label: cost is the thing
+   a reader is scanning for, and it should be visible without reading. */
+.mine-funnel-fill.is-agent { background: var(--warn, #b8860b); }
+.mine-funnel-why { margin: 4px 0 0; }
+
+/* ---- the benchmark run ledger ---- */
+/* Every row is a link into the run, so the whole row lights on hover: the
+   affordance has to be the row, not just the cell the anchor happens to be in. */
+.lab-runs-table tbody tr:hover { background: var(--accent-soft); }
+.lab-runs-table tbody tr.active { background: var(--badge); }
+.lab-run-link { color: var(--accent); text-decoration: none; }
+.lab-run-link:hover { text-decoration: underline; }
+/* Chips filtering the ledger to one row. Real buttons — this narrows a table in
+   place rather than navigating, so an anchor would promise a page that isn't. */
+.lab-run-filter { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 12px; }
+.lab-run-filter .chip { background: var(--badge); color: var(--muted); }
+.lab-run-filter .chip:hover { color: var(--ink); }
+.lab-run-filter .chip.active { background: var(--accent-soft); color: var(--accent); }
+
+.lab-config { display: inline-flex; gap: 7px; align-items: baseline; }
+/* The configuration a run measured is the code in the working tree right now —
+   the one state under which its numbers still describe what a run today would
+   produce, so it is marked rather than left to a hash comparison by eye. */
+.lab-intree {
+  font-size: 10px; text-transform: uppercase; letter-spacing: .05em;
+  color: var(--lab-good); background: var(--lab-good-bg);
+  border-radius: 4px; padding: 1px 5px;
+}
+
+/* ---- one run ---- */
+.lab-back { margin: 0 0 10px; font-size: 12px; }
+.lab-back a { color: var(--muted); text-decoration: none; }
+.lab-back a:hover { color: var(--accent); }
+.lab-run-marks { display: inline-flex; flex-wrap: wrap; gap: 6px; }
+.lab-run-facts { grid-template-columns: max-content 1fr; gap: 8px 14px; font-size: 13px; }
+.lab-run-facts dd { max-width: 70ch; }
+.lab-aside { color: var(--muted); font-size: 11px; margin-left: 8px; }
+/* A stage's median against the run's median query. Not stacked and free to
+   overrun 100%: the pool arms run concurrently, so a stack would assert a
+   sequence the concurrency makes false. */
+.lab-bar {
+  display: block; width: 100%; min-width: 80px; height: 7px;
+  background: var(--badge); border-radius: 4px; overflow: hidden;
+}
+.lab-bar-fill { display: block; height: 100%; background: var(--accent); border-radius: 4px; }
+
+/* ---- per-query detail ---- */
+/* Fixed layout, because the query column is the one cell that wraps and a
+   `max-width` on it is ignored under auto layout — the text then runs out from
+   under its own column and across the numbers beside it. The min-width is what
+   keeps that safe on a phone: without it the percentage resolves against a
+   380px table and the columns collide instead of the wrapper scrolling. */
+.lab-query-table { table-layout: fixed; min-width: 860px; }
+.lab-query-table col.c-query { width: 38%; }
+/* The query is the only cell here read as prose, so it wraps; every column
+   beside it is a number that has to stay on one line. Qualified by the table,
+   because `.stat-table td` sets `nowrap` at a specificity a bare class loses
+   to — and losing it means the text runs across the columns beside it. */
+.stat-table td.lab-query-cell {
+  white-space: normal; word-break: break-word; vertical-align: top;
+}
+/* A gold document that came back, but deep. Not a failure — the run found it —
+   so it is dimmed rather than flagged, and it is still the number that says a
+   ranking change is what this query needs. */
+.lab-deep { color: var(--lab-warn); }
+.lab-page .stat-table td.bar-col { display: table-cell; vertical-align: middle; }
+/* The invocation, whole: a row runs in its own process, so this line is the
+   entire cause of the numbers above it and must never be elided to fit. */
+.lab-argv {
+  background: var(--badge); border-radius: 8px; padding: 10px 12px;
+  font-size: 12px; overflow-x: auto; white-space: pre-wrap; word-break: break-all;
+  margin: 0;
+}

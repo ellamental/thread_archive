@@ -2,6 +2,360 @@
 
 ## Unreleased
 
+- **The search lab shows every benchmark run, and what each one cost.**
+
+  The lab page reported one run per row — the newest success of each row still in
+  the manifest — which is the right answer to "what does the bench say now" and
+  silently dropped everything else the ledger held: the passes before the newest
+  (the history a delta is read against), the failures (a row that stopped being
+  runnable, rendered as a gap), and the rows that have since left the manifest,
+  whose numbers were still measured on this box. All of it is now on the page
+  under **Runs**, filterable by row, and every run opens at `/lab/run/<id>` —
+  addressed by a content hash of the record, so a link survives the ledger
+  growing under it.
+
+  A run's own page carries what a summary line cannot: every metric it recorded
+  rather than the row's headline set, the movement against the last *different*
+  configuration (mirroring the runner's own skip test, so page and terminal
+  agree), the code and corpus fingerprints the freshness test turns on, and the
+  exact invocation.
+
+  **Performance is recorded, not just scores.** A benchmark row already runs the
+  exact workload a latency measurement would run again, so reporting a median and
+  discarding the rest threw away a distribution and a per-stage profile that were
+  already paid for. Every harness now installs the retrieval probe around its
+  scored searches — free, the probe is a context-local slot — and reports p50/p95/
+  p99/mean/max, throughput, the per-stage breakdown, candidate-pool size, and the
+  cold-search count. `bench-runs.jsonl` keeps it beside `measures` rather than in
+  it: one is what the row is scored on, the other is what the box did to produce
+  it, and a p99 filed among the nDCGs reads as a result. The run page charts the
+  stage profile against the run's own median and reads each figure against the
+  previous configuration, so a pass that lifts nDCG by 0.004 and doubles the tail
+  is legible as the trade it is.
+
+  **Per-query detail is kept too.** The runner used to read the headline numbers
+  out of each harness's `--json-out` report and delete it, so which queries a run
+  got wrong was never recorded — the aggregate said a row scored 0.494 and
+  nothing said what it got wrong. Every harness now reports each scored query
+  with the rank its gold document landed at, how much of the gold it found, its
+  own metrics and its latency. The distinction that buys is `not found` against a
+  deep rank: both score 0.0 at k=10, one is a recall failure and the other a
+  ranking one, and they are fixed in different places.
+
+  Stored one file per run under `bench-queries/`, keyed by run id — not in the
+  ledger, which a bench pass would grow by about a megabyte while the runs list
+  reads it whole to render a table showing none of it. Capped at the most recent
+  runs, so an old run keeps its numbers and loses its detail, and the page says
+  which. The run page lists the worst-served queries first, and — given another
+  run whose detail is also still on disk — the queries that **moved** between the
+  two, biggest regression first. That last is the point: two configurations
+  differing by 0.004 in the mean have usually not moved a little on every query,
+  they moved a lot on a few, and no aggregate says which few and no re-run
+  recovers it once the earlier configuration is gone.
+
+- **`gold_stats.py` — a quality panel for the gold itself.** Every instrument in
+  this lab measured search; nothing measured the benchmark, so a case file's
+  defects were found by hand or not at all. Run against the retired 75-case
+  SWE-chat file it reproduces every one of them without being told what to look
+  for: 100% single-gold, all 75 grading a **pool of one document** (nDCG over those
+  is not measuring ordering), and the `vague` tier at **32% on one opening phrase**
+  where the other two tiers sit at 4% — the authoring prompt's worked example,
+  parroted. The template detector is opening-n-gram concentration scored per tier,
+  because a collapsed tier averaged against two healthy ones reads fine.
+
+  It also found a live design bug: `prompt_sha` cannot do the job its docstring
+  claims. It hashes the *rendered* prompt, which embeds the unit's own commit or
+  diff, so a 75-case file carries 75 distinct hashes and "were these minted under
+  the same instructions" is unanswerable. `template_sha` hashes the unrendered
+  template and is now stamped by all three miners; the panel flags a mixed file and
+  ignores the per-unit hashes.
+
+- **Miners are pipelines now, and `commit` is the first one built as one.**
+  `Stage` / `Verdict` / `run_stage` / `Funnel` in the mining framework;
+  `mine-runs.jsonl` records the stage-by-stage counts and per-stage cost alongside
+  the flat `outcomes` dict it already kept. A stage that raises drops its one unit
+  rather than ending a run that has already spent tokens, and `kind` splits free
+  stages from spending ones so the cheap gates can narrow what the expensive ones
+  are asked about.
+
+  `commit` declares **provenance → alignment → author**, and the ordering is the
+  design. `provenance` is free: it asks the tool-use trail whether the linked
+  session actually edited the files its commit changed, which on the SWE-chat
+  linkage refuses about a tenth of rows before any agent sees them. `alignment` is
+  the paid audit — one agent reads the commit *and* the session and answers two
+  independent questions, because they are two different drops: **misattributed**
+  (the session did not do this work — a wrong label leaving the benchmark) and
+  **untargetable-commit** (the linkage is fine but the message is `0.4.9` or
+  `Backpack` — a hard case leaving it). They move a number in opposite directions
+  and are never one counter. Only then does the blind author run.
+
+  The property the design rests on: the auditor reads the thread and **nothing it
+  found reaches the author**. The verdict is two booleans and a sentence, it lands
+  in the detail sidecar, and the authoring prompt is built from the unit alone — a
+  validator that handed its reasoning forward would be a vocabulary leak wearing a
+  QA badge. Asserted in the tests, not just intended. An empty `event_paths` makes
+  the free gate stand down rather than refuse everything: unmeasured is not
+  disproven. `--no-alignment` drops the paid gate, `--no-provenance-gate` the free
+  one, and the declared funnel changes with them so a run's record describes the
+  run that happened.
+
+- **`/lab` shows a miner's pipeline instead of only its brochure.** Each card
+  carries its declared stages (with the spending ones marked), and a recorded run
+  draws as a funnel: one bar per stage against the width of what entered, with
+  every drop reason named beneath it and cost attributed to the stage that incurred
+  it. The one chart on an otherwise categorical page, because a funnel is the shape
+  of a loss and a table of in/out pairs makes the reader do the subtraction that is
+  the whole point. A miner that declares no stages says so — "one opaque step … a
+  run records where units ended and never where they were lost" — rather than
+  rendering as a clean run in which nothing was dropped.
+
+- **Four fixes to the gold miners, found by reading them against the corpus they
+  are supposed to mine.**
+
+  **The commit miner's authoring agent could read the corpus.** Its central claim
+  is that no vocabulary leaks from the answer into the query, because the agent
+  works from a commit and never opens the thread — but it was handed the
+  snapshot-bound corpus seam and asked not to use it, where the `edited` miner
+  denies the tool outright. The retired run's sidecar suggests they mostly didn't
+  (2–4 turns each), which is luck, not a protocol. Now `corpus_access=False`, with
+  a test on the seam, and the turn cap drops to 4 since there is nothing left to
+  explore.
+
+  **The SWE-chat corpus never folded its code axis.** A corpus home is built by a
+  script and has no watcher, so `event_paths` sat at **zero rows** on a 5,124-session
+  corpus: `mine edited` could not find a single qualifying path, and a `path`-scoped
+  browse answered nothing. Both build paths now fold before stamping
+  (`--linkage-only` too, since an already-built home is the one most likely to be
+  missing it). The fold reads only the event log, so the corpus fingerprint does not
+  move and golds mined against the home stay valid.
+
+  **A multi-commit session's later diffs never reached the author.** The prompt
+  concatenated the unit's patches and truncated at 6,000 chars, so the first commit
+  ate the budget — 751 of 1,284 SWE-chat linkage rows exceed it, and in 104 of the
+  193 multi-commit rows the first diff alone fills it. The rest arrived as a commit
+  message with no change under it, and the agent authored queries for work it could
+  not see. The budget is now split across the commits, shortest served whole; a
+  clipped diff says so inline, and the count lands in the detail sidecar.
+
+  **The `intent` tier was measuring a template.** Both miners' prompts supplied a
+  worked example ("that session where we stopped the uploader retrying forever"),
+  and 11 of 25 mined `intent` queries opened with "that time we/the…" — one phrasing
+  with the subject swapped out. The tier is described by its shape now, with the
+  recall formula named as the thing not to reach for.
+
+- **Search stops hiding threads, and `group='browse'` is no longer a separate
+  shape.** Three changes that turn out to be one:
+
+  **Near-identical threads each keep a row.** A ranked search folded threads whose
+  matched content was identical-modulo-digits into one annotated row — the agent
+  fan-out case, one prompt spawned many ways. But eleven subagents behind one
+  prompt then go and do eleven different things, so folding answers "which threads
+  mention this" with a smaller number than the truth. Replayed over the usage
+  ledger the fold fired on **55% of real queries**, hiding 82 conversations across
+  60 of them. The near-duplicate relation is still reported (`_dup_thread_ids`); it
+  just no longer decides membership. `collapse=True` restores the fold for a caller
+  who would rather spend result slots on distinct content — measured over 40 real
+  queries, 23 now report more threads (+64) and none lost a distinct thread from
+  page one.
+
+  **A ranked search reaches past its pool.** Paging was already coherent (one pool
+  per `(query, limit)`, every page a slice of it) but bounded: threads past
+  `limit * 5` were unreachable at any page. The exact-set reconciliation that only
+  the browse shape ran now runs for the thread-granular shape whenever the pool
+  saturated — skipped when it came back short, which proves it already held
+  everything. +16–109 ms when it fires, nothing when it doesn't.
+
+  That reconciliation is **append-only** for a search. It also drops pool rows
+  absent from the literal match set, which is right for a list answering "which
+  threads contain this" and wrong for a search: those rows are the vector arm's
+  vocab-mismatch hits, the ones it exists to find. `drop_unmatched` keeps the
+  strict behaviour available; a search's set is "matched the query, or ranked as
+  relevant to it".
+
+  **`group='browse'` is an alias for the default.** It named a separate path that
+  enumerated the exact set while the ranked path could not; the ranked path does
+  that itself now, and two shapes meant two things to test for one behaviour. The
+  name still resolves rather than raising, so a caller carrying it keeps working.
+  `group` is now `{thread, nested, dup, none}` with `collapse` orthogonal to it,
+  and a thread-granular result's header counts threads rather than rows. The
+  compact browse rendering (thread columns, no message) is gone with the shape —
+  the default renders a snippet per thread.
+
+- **`AskUserQuestion` reads as a decision in the viewer, not a JSON blob.** A
+  question the assistant put to the operator is one of the highest-value things
+  in a transcript — it records a fork and which way it went — and it rendered as
+  a folded `TOOL CALL` full of pretty-printed JSON, with the answer arriving
+  separately as the harness's English recap ("The user answered: …=…").
+
+  The reader now folds the call and its outcome into one open card: the question,
+  every option it weighed with its description, the option that won accented, and
+  option previews folded into `.tool` details so the global collapse/expand still
+  reaches them. An answer the operator typed themselves (rather than taking an
+  option) shows as their own words; a rejected call reads as *dismissed* instead
+  of the harness's boilerplate refusal text.
+
+  The pairing needed the machine-readable half of the result, which the structured
+  reader was dropping: `tool_result` blocks now carry `answers` (question text →
+  the label taken, or the free text written) and the questions as recorded, from
+  `annotations.structured_result`; `tool_error` blocks carry `denial_kind`. Both
+  are additive and shape-checked, so a provider that records neither renders
+  exactly as before.
+
+- **The retrieval gold gate is gone, with the floors and the ledger it kept.**
+  `scripts/retrieval_gold_gate.py`, `search_lab/gold_runs.py`, the
+  `X.floor.json` sidecars, the `gold-gate:swe-chat` benchmark row (and with it the
+  `smoke` tier and the tier concept — every remaining row is a public benchmark),
+  the gold quality chart on `/retrieval`, and the minted-gold section on `/lab`.
+  The mined case files and the gate's ledgers moved to `~/dev/retired-gold/`; the
+  miners' own inputs stayed where they were.
+
+  The gate scored labels this archive produced and floored a ranking change
+  against them. Most of those labels were circular — established by searching the
+  corpus with the engine under test, which can only ever describe what the
+  incumbent already reaches — and the one protocol that escaped that bought label
+  independence by authoring its *query* from an artifact, so it scored queries
+  nobody asked. Neither supports "search improved" on this archive, and a green
+  floor sitting on a dashboard implies otherwise every time it is read. What
+  survives: the public benchmarks (`python -m search_lab benchmark`) for the
+  quality claim, `latency_replay.py` for speed over real traffic, and tier 0 for
+  damage. `search_lab/README.md` → "What a number here is worth" states the
+  conclusion; `docs/search-quality.md` keeps the commit-provenance numbers as the
+  finding that produced it.
+
+  The **miners stay** (`python -m search_lab.mine`), unwired from any score: a
+  mined case file is material for a hand-read experiment now, and nothing gates on
+  one. `search_lab/run_meta.py` holds the commit/config stamp every ledger shares,
+  which is all the gold ledger was still needed for.
+
+- **A search-lab page in the viewer (`/lab`).** What the bench has to measure
+  with, as opposed to what it measured: every benchmark row and whether it can
+  run here, every corpus a harness can build and whether it is downloaded / built
+  / neither, and every registered miner with what fixes its labels. Answering that
+  took reading four READMEs against a `du` and a `ls`, and the answer went stale
+  the moment a corpus was built.
+
+  `search_lab/inventory.py` assembles it off the same registries the harnesses
+  run from — `benchmark.manifest()`, the published-reference dicts the harnesses
+  carry, `mine.load_registry()`, the ledgers — so nothing here is a
+  second catalog to keep in sync, and it runs standalone as
+  `python search_lab/inventory.py`. It reaches the viewer through
+  `thread_archive._dev`, the way `/retrieval` does: excluded from the wheel, 404
+  in an install, because an install has no bench to inventory.
+
+- **Two new miners, aimed at the two holes the commit golds leave.** The bench
+  measured findability on one corpus of other people's code, with authored
+  queries and one right answer per case. `mine edited` and `mine pooled` attack
+  the two things that leaves out, and both target the **operator's own archive**,
+  which nothing scored.
+
+  `edited` is the **multi-answer** rung. Its unit is a file path and its gold is
+  every conversation that changed it, enumerated from `event_paths` — the same
+  projection behind the code-axis browse, built from `Edit`/`Write`/`apply_patch`
+  payloads at ingest. Nothing searched to assemble it, so a thread the stack
+  cannot surface is in the gold anyway, which is exactly the miss a retrieved pool
+  can never show. Touched-but-unchanged threads grade 1 and sibling-directory
+  editors 0, so the confound pool costs no tokens and no judge's reach bounds it.
+  The authoring agent sees the path and a sample of its diffs and runs with **no
+  tools at all** (`run_claude(corpus_access=False)`) — its protocol depends on
+  never reading a conversation, so it is denied the seam rather than asked to
+  avoid it. On this archive 3,116 paths currently qualify at 2–12 editors.
+
+  `pooled` is the only miner whose **queries are observed**. It takes them
+  verbatim from the usage ledger — ~4 words of keyword soup, against an authored
+  case's ~20 words of prose — and buys their labels with a TREC-style pool, since
+  a real query's answer set exists in no record: the union of `stack`, `bm25`, a
+  deep-`pool_floor` run, a density-only ranking, and a random draw, judged 2/1/0
+  in one pass. It does not clear the retrieval-free bar and says so. What it does
+  is make the pool's reach auditable — each case records which systems nominated
+  each answer, and on four sampled ledger queries `bm25` alone contributed up to
+  8 documents the fused stack never returned, `deep` 2–6 more. A single-system
+  pool would have missed those silently.
+
+  `Miner.retrieval_free` is the new descriptor carrying that split, and
+  `test_mine_framework.py` asserts both that every miner declares it and that the
+  strong rung stays populated — a bench where every miner needs a retrieved pool
+  has no reading independent of the incumbent, however carefully each pool is
+  widened. Neither miner has spent tokens yet: the protocols exist, the cases do
+  not, and `docs/search-quality.md` → "What is not measured" says so rather than
+  reading them as coverage.
+
+- **Quality runs now record the latency profile they were already paying for.**
+  `eval_core.evaluate` timed each case with a bare `time.monotonic()` and collapsed
+  the result to one `latency_p50_ms` per gold file. The per-stage probe that the
+  production search surface and `speed.py` both install
+  (`_retrieval._probe.SearchProbe`) was never installed on the scoring path, so a
+  run that executed exactly the workload a latency run would execute again kept a
+  single median of it. It now installs one per case and reports `latency`:
+  p50/p95/p99 for the total and for every stage that ran, the cold-load count, and
+  the median pool size — plus per-case `latency_ms`, so the slow cases can be
+  named. The trend ledger carries it, which makes it a timeseries rather than a
+  console line.
+
+  This does not replace `speed.py`, and the docstring says so where someone would
+  otherwise misread it: `speed.py` measures warm steady-state over `query × rep`
+  with the pool cache suspended, and controls the conditions a distribution needs
+  controlled. This is one sample per case under whatever the scoring run happened
+  to be sharing the machine with — a lead worth chasing, never a benchmark number.
+  Stage times are durations, not shares: the two pool arms run concurrently, so
+  their totals can sum past the wall-clock the caller waited.
+
+- **The SWE-chat corpus is the whole readable download, not a budgeted sample.**
+  The corpus was 726 sessions over 21 repositories and three separate places said
+  the transcript format was why. It was not: the format costs 921 of 5,851
+  sessions, and the other 4,203 were a `--max-sessions` budget that ranked
+  repositories by commit-linked yield and stopped when it ran out. The budget knob
+  is deleted — `choose_sessions`, `select_corpus`, `--max-sessions` and
+  `--per-repo` are gone and a build now takes every transcript it can parse, 5,124
+  of them over 189 repositories. `swechat_bench.py`'s exported `selection` and
+  `harness_bound` strings and `search_lab/README.md` said the corpus was Claude
+  Code only; they now name what is actually excluded and why.
+
+- **Codex transcripts no longer import as Claude Code.** `is_claude_code_transcript`
+  accepted any line-delimited record carrying a `type` key, and Codex's opening
+  `{"timestamp", "type": "session_meta", "payload"}` record satisfies that. All 213
+  Codex sessions were ingested by a parser that cannot read them, producing threads
+  of about four events against a real session's several hundred — empty documents
+  rather than a loud failure. A record with no `sessionId`/`parentUuid` must now
+  name a `type` Claude Code actually writes; the check reads the majority of
+  transcripts that open on a preamble (`file-history-snapshot`, `progress`,
+  `queue-operation`) exactly as before, and moves no Claude Code session.
+
+- **The circular gold protocols are gone, and the registry now refuses them.**
+  Four of the five miners established their labels by *searching the corpus with
+  the engine under test* — `rerank` graded a pool production search returned,
+  `query` and `topic` swept the snapshot with an agent's own reformulations, and
+  `querygen` fixed its gold first but wrote every query from the target thread it
+  had just read. A label produced that way describes what the incumbent ranker
+  already reaches: a thread the stack systematically cannot surface never enters
+  the gold, so it can never be counted as missing, and the resulting number is an
+  optimistic upper bound on itself by an amount nothing inside the protocol can
+  measure. `mine/{query_mined,topic_mined,rerank_judged,querygen}.py` are deleted,
+  as are `window_fill.py` (it scored only `topic` files) and `corpus_topics.py`
+  (it proposed topics for the topic miner); `swechat_corpus.py` no longer writes
+  `subject-groups.json`. The 24 retired case files and their sidecars moved out of
+  both gold dirs to `~/dev/retired-gold/`.
+
+  `mine commit` survives: gold from commit provenance, queries authored from a
+  diff the agent reads *instead of* the target thread. `Miner.gold_source` is a
+  new required descriptor field naming what fixes a miner's labels, and
+  `test_mine_framework.py` asserts every registered miner declares one — the
+  admission rule stated where a miner is defined rather than in prose someone has
+  to find.
+
+  What this costs is worth stating plainly. The bench is now 75 cases on one
+  corpus (SWE-chat, snapshot `c4137bd4…`), all single-gold, so it measures
+  findability and nothing about completeness. The operator's own archive has no
+  grounded measurement at all — it ships no session↔commit provenance, so the one
+  admissible miner cannot run against it — and `benchmark.py`'s `gold-gate:archive`
+  row is dropped rather than left to skip forever and read as coverage. The
+  shipped `SearchParams` defaults were tuned against the retired protocols; the
+  weights are unchanged, and `params.py` now says so at the top of its evidence
+  list, keeping each term's mechanism argument and dropping the per-file deltas
+  that are no longer re-derivable. `docs/search-quality.md` grew a "What is not
+  measured" section for the same reason. The tool-use trail's record of which
+  sessions edited a given file is the unmined signal that would close both the
+  archive-corpus and the completeness gaps.
+
 - **`thread_archive uninstall` — the way back off a machine.** Setup is the one
   part of the archive that acts outside the archive home, and until now nothing
   undid it as a whole: `daemon uninstall` took one agent, and the MCP wiring, the
@@ -11,9 +365,18 @@
   script.
 
   **It never touches the conversations.** Truth, index, source policy, logs,
-  exports and retained drops all stay; `search` and `read` keep answering from
-  them with nothing installed, and the closing report names the home (and any
-  backup mirror holding a copy) rather than offering to delete it. Two things it
+  exports and retained drops all stay, and `search` and `read` keep answering
+  from them with nothing installed. Instead of deleting anything the run *ends*
+  with the inventory: every place this archive's data still is — the home, a
+  truth dir or index pointed outside it, every backup destination any health
+  record names (not just the last one: a box that mirrors to two disks has a
+  forgotten copy on the one that ran least recently), a mirror scheduled but
+  never yet run, read off the backup agent's manifest before the removal takes
+  it, a home an earlier `restore --replace` set aside, and the
+  `~/.thread_archive` compat symlink, named as the second *name* it is rather
+  than a second copy — followed by how to finish: `pip uninstall
+  thread-archive`, or the clone to delete when the install runs from one. Two
+  things it
   deliberately refuses to take: an agent or client entry serving a *different*
   archive home — one label and one user-scope entry per user, so removing those
   would stop a second install's capture — and any MCP entry outside user scope,

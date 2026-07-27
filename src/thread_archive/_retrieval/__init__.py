@@ -489,6 +489,7 @@ def _extend_with_unranked_threads(
     oldest_first: bool,
     scope: dict,
     session: Optional[Session] = None,
+    drop_unmatched: bool = False,
 ) -> tuple[list[EventHit], bool]:
     """Reconcile a ranked page against the real match set, so a thread list
     enumerates exactly the threads that match. Returns ``(rows, capped)``.
@@ -501,11 +502,14 @@ def _extend_with_unranked_threads(
       from one that ended because the matches did. They are appended behind the
       ranked rows, ordered by their newest match, which is the only ordering that
       exists for rows no ranking pass ever scored.
-    - Threads *in* the pool but not in the set are dropped. The pool is federated:
-      the vector arm contributes semantic neighbours that need not contain the
-      query at all. Those are a relevance aid, not set membership — and since the
-      pool deepens with the requested page, letting them count would make the
-      total grow as a caller pages through it, which is worse than no total.
+    - Threads *in* the pool but not in the set are dropped **only under
+      ``drop_unmatched``**. The pool is federated: the vector arm contributes
+      semantic neighbours that need not contain the query at all. For a list that
+      answers "which threads contain this", those are a relevance aid rather than
+      set membership. For a *search*, they are the answer — dropping them would
+      delete exactly the vocab-mismatch hits the vector arm exists to find — so a
+      search reconciles by appending only, and its set is "matched the query, or
+      ranked as relevant to it".
 
     ``capped`` means the set scan itself stopped early
     (:data:`.fts.SET_SCAN_CAP`), so the enumeration is a floor and the dropping
@@ -521,9 +525,9 @@ def _extend_with_unranked_threads(
         query, match_mode=match_mode, startswith=startswith, session=session, **scope
     )
     if not rows:
-        return ([], capped) if not capped else (ranked, capped)
-    in_set = {r["thread_id"] for r in rows}
-    if not capped:
+        return ([], capped) if (drop_unmatched and not capped) else (ranked, capped)
+    if drop_unmatched and not capped:
+        in_set = {r["thread_id"] for r in rows}
         ranked = [r for r in ranked if r["thread_id"] in in_set]
     present = {r["thread_id"] for r in ranked}
     tail: list[EventHit] = []
@@ -582,6 +586,7 @@ def search(
     thread_ids: Optional[list[str]] = None,
     sort: Optional[str] = None,
     group: Optional[str] = None,
+    collapse: bool = False,
     output: Optional[str] = None,
     context_lines: int = 2,
     context_events: Optional[str] = None,
@@ -714,7 +719,14 @@ def search(
     if agents is not None and agents not in ("exclude", "include", "only"):
         raise ValueError("agents must be 'exclude', 'include', or 'only'")
     if group is not None and group not in ("thread", "browse", "nested", "dup", "none"):
-        raise ValueError("group must be 'thread', 'browse', 'nested', 'dup', or 'none'")
+        raise ValueError("group must be 'thread', 'nested', 'dup', or 'none'")
+    # 'browse' is the thread shape under an older name. It once named a separate
+    # code path that enumerated the exact match set while the ranked path could
+    # not; the ranked path does that itself now (the reconciliation below), and
+    # keeping two shapes meant two things to test for one behaviour. Accepted
+    # rather than rejected so a caller carrying the old name still works.
+    if group == "browse":
+        group = "thread"
     # 'oldest' is the only sort — relevance is the unnamed default. Rejected rather
     # than ignored because the plausible guesses ('newest', 'recent') are asks for a
     # *chronological* answer, and silently serving relevance order answers "when was
@@ -793,11 +805,11 @@ def search(
     # 'linkable' links every event). group='none' turns it off; group='dup'
     # keeps per-thread hits and folds only cross-thread duplicate content.
     #
-    # The list shapes ('browse'/'nested') are the exception to all of that: asking
-    # for one is an explicit request for a thread-granular view, so it outranks
-    # the shape-based suppressions above. Only output='count' still wins, via the
-    # is_count guard on the block that applies the fold.
-    listing = group in ("browse", "nested")
+    # The list shapes are the exception to all of that: asking for one is an
+    # explicit request for a thread-granular view, so it outranks the shape-based
+    # suppressions above. Only output='count' still wins, via the is_count guard
+    # on the block that applies the fold.
+    listing = group in ("thread", "nested")
     grouping = group != "none" and (
         listing or (not structural and thread_id is None and output is None)
     )
@@ -885,19 +897,36 @@ def search(
                 # Clusters before the cut, and caps itself by thread — so the cut
                 # can't slice a thread's cluster in half.
                 ranked = _rank.cluster_by_thread(ranked, max_threads=depth)
-            elif group == "browse":
-                ranked = _rank.group_by_thread(ranked, fold_duplicates=False)
-                # The fold and the reconciliation below have unrelated cost models —
-                # one scales with the pool, the other with the whole match set — so
-                # the group clock closes here and reopens past the extend rather
-                # than billing both to one number.
+            elif group == "dup":
+                ranked = _rank.fold_duplicate_threads(ranked)
+            else:
+                # ``collapse`` decides whether near-identical content from
+                # *different* threads folds into one annotated row. It defaults
+                # off: a fold that removes rows answers "which threads mention
+                # this" with a smaller number than the truth, and on real traffic
+                # it fires on the majority of queries — a thread doing different
+                # work behind an identical prompt is a different answer, however
+                # identical the matched message. ``_dup_thread_ids`` is attached
+                # either way, so the near-duplicate relation stays visible without
+                # being enforced by deletion.
+                ranked = _rank.group_by_thread(ranked, fold_duplicates=collapse)
+            # Reach. The pool orders the set; it does not decide membership. A pool
+            # that saturated cut threads off the bottom, and no window widening
+            # recovers them because the cut happened before ranking — so the exact
+            # match set supplies whatever the pool never reached. Skipped when the
+            # pool came back short, which proves it already held everything: the
+            # gate is a pure optimization, not a change of answer.
+            #
+            # Scoped to the one-row-per-thread shape, the only one whose rows are
+            # threads: 'dup' and 'none' hand back hits, and 'nested' hands back
+            # hits clustered under them, so appending a bare thread row to any of
+            # those would mix two row shapes in one list.
+            if grouping and group in (None, "thread") and not exhaustive:
+                # Unrelated cost models — the fold scales with the pool, this with
+                # the whole match set — so the group clock closes and reopens
+                # rather than billing both to one number.
                 _probe.record("group_ms", _t_group)
                 _t_extend = perf_counter()
-                # The exhaustive shape: the match set decides membership and the
-                # pool only orders it, whether or not the pool saturated.
-                # Unconditional because the reconciliation is what makes the set
-                # page-independent — gating it on saturation would mean a query's
-                # own totals shifted the moment it outgrew the pool.
                 ranked, capped = _extend_with_unranked_threads(
                     ranked, query, match_mode=match, startswith=startswith,
                     oldest_first=sort == "oldest", session=session,
@@ -913,10 +942,6 @@ def search(
                 _probe.record("extend_ms", _t_extend)
                 _t_group = perf_counter()
                 exhaustive = not capped
-            elif group == "dup":
-                ranked = _rank.fold_duplicate_threads(ranked)
-            else:
-                ranked = _rank.group_by_thread(ranked)
         _probe.record("group_ms", _t_group)
 
     # What this page is a page OF. The shaped row count is the honest total
@@ -938,15 +963,15 @@ def search(
     # Per-hit enrichments the renderer reads. A pure tally (count) needs none.
     _t_enrich = perf_counter()
     if not is_count:
-        if grouping and listing and group is not None:
-            # The list shapes render thread rows, so they need the thread columns.
-            # 'browse' shows no message at all, so its per-hit match window would
-            # be computed only to be discarded.
+        if grouping and group != "dup":
+            # One row per thread (or a thread's cluster), so the rows are threads
+            # and want the thread columns. Stamped even when the caller named no
+            # group, because the *shape* is what the renderer counts in — a header
+            # reading "12 result(s)" over twelve threads counts the right number
+            # in the wrong unit.
             for r in hits:
-                r["_group"] = group
+                r["_group"] = group or "thread"
             _enrich_thread_rows(hits, session=session)
-            if group == "browse":
-                context_lines, context_events = 0, None
         if context_lines > 0:
             for r in hits:
                 if r.get("full_content"):

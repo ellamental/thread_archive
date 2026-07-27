@@ -1,8 +1,7 @@
 """The retrieval page's data layer.
 
 These pin the three rules that make the difference between a chart and a plausible
-lie: probes excluded, cold and warm never averaged, query sets and pooled runs kept
-apart.
+lie: probes excluded, cold and warm never averaged, query sets kept apart.
 """
 
 from __future__ import annotations
@@ -10,8 +9,8 @@ from __future__ import annotations
 import json
 from datetime import datetime, timedelta, timezone
 
-from search_lab import gold_runs, speed
 from search_lab import retrieval_report as rr
+from search_lab import speed
 from thread_archive._retrieval.usage import LEDGER_FILE
 
 
@@ -109,26 +108,20 @@ def test_bench_series_never_merge_two_query_sets(archive_home) -> None:
                              n_queries=1, reps=1)
     speed.record_run(archive_home, snapshot_id=None, stats=stats)
     speed.record_run(archive_home, snapshot_id=None, stats=stats,
-                     query_set=speed.OBSERVED_SET)
+                     query_set="curated")
     series = rr.bench(archive_home)
-    assert set(series) == {speed.GOLD_SET, speed.OBSERVED_SET}
-    assert len(series[speed.GOLD_SET]) == 1 and len(series[speed.OBSERVED_SET]) == 1
+    assert set(series) == {speed.OBSERVED_SET, "curated"}
+    assert len(series[speed.OBSERVED_SET]) == 1 and len(series["curated"]) == 1
 
 
-def test_quality_drops_the_runs_that_measure_something_else(archive_home) -> None:
-    """A pooled run scores from persisted pools and a tuning run scores a candidate
-    configuration; both are real numbers about something other than the shipped
-    pipeline, and a line that mixes them in is worse than a shorter line."""
-    files = {"judged-cases.jsonl": {"n": 10, "mrr": 0.5, "ndcg10": 0.4}}
-    gold_runs.record_run(archive_home, snapshot_id="s", files=files, passed=True,
-                         config={}, commit="a")
-    gold_runs.record_run(archive_home, snapshot_id="s", files=files, passed=True,
-                         config={}, commit="b", pool_cache=True)
-    gold_runs.record_run(archive_home, snapshot_id="s", files=files, passed=True,
-                         config={}, commit="c", overrides={"rrf_k": 10})
-    out = rr.quality(archive_home)
-    assert [p["commit"] for p in out["points"]] == ["a"]
-    assert out["latest"]["mrr"] == 0.5
+def test_a_row_predating_the_query_set_field_is_not_folded_into_a_named_set(
+        archive_home) -> None:
+    # Guessing which population an unlabelled row measured is how two sets end up
+    # averaged into one line; `unknown` is the honest bucket.
+    (archive_home / speed.LATENCY_RUNS_FILE).write_text(json.dumps({
+        "kind": "latency-run", "at": "2026-07-01T00:00:00Z",
+        "total": {"p50": 900.0}}) + "\n")
+    assert set(rr.bench(archive_home)) == {"unknown"}
 
 
 def test_a_missing_ledger_yields_an_empty_section_not_a_failure(archive_home) -> None:
@@ -137,7 +130,6 @@ def test_a_missing_ledger_yields_an_empty_section_not_a_failure(archive_home) ->
     out = rr.report(archive_home)
     assert out["served"]["n"] == 0
     assert out["stages"]["stages"] == []
-    assert out["quality"]["points"] == []
     assert out["bench"] == {}
 
 
@@ -145,7 +137,7 @@ def test_report_carries_every_section(archive_home) -> None:
     _write(archive_home, [_search(200.0, uptime=900.0)])
     out = rr.report(archive_home, hours=7 * 24)
     assert out["hours"] == 7 * 24
-    for section in ("served", "stages", "restarts", "bench", "quality"):
+    for section in ("served", "stages", "restarts", "bench"):
         assert section in out
 
 

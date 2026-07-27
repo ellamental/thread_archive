@@ -1,11 +1,13 @@
 """Latency measurement for the retrieval pipeline — the speed half of tuning.
 
-The gold gate asks *does search still find the right thing*; this asks *how long
-does it take*, and the two answers come off the same query set so one change reads
-on both axes at once. That pairing is the point: the dominant quality lever (the
-cross-encoder re-rank) is also the dominant latency, so rebuilding quality means
-re-enabling the re-rank *within a latency budget* — a joint decision that needs
-both numbers side by side.
+Speed is the axis this lab can still measure honestly on its own corpus: a
+millisecond is a millisecond however the labels were made. That matters because
+the dominant quality lever (the cross-encoder re-rank) is also the dominant
+latency, so any quality work is a decision made *within a latency budget* — and
+this is the half of that decision the archive can measure for itself.
+
+The population is named on every measurement (:data:`OBSERVED_SET`), never
+assumed: a p50 is only comparable within one query set.
 
 Three things make measuring latency unlike scoring quality, and they shape this
 API:
@@ -47,23 +49,18 @@ from thread_archive._retrieval import _probe
 logger = logging.getLogger(__name__)
 
 LATENCY_RUNS_FILE = "latency-runs.jsonl"
-LATENCY_BASELINE_FILE = "latency-baseline.json"
 
-#: The query set a measurement ran over. Latency is only comparable within one:
-#: the gold files and the usage ledger are different populations of query, and a
-#: p50 taken over one says nothing about a p50 taken over the other — the golds are
-#: selected for being gradeable, the ledger for being real. Named on every run row
-#: and given its own baseline file, so the two timeseries cannot be read as one.
-GOLD_SET = "gold"
+#: The query set a measurement ran over. Latency is only comparable within one: a
+#: p50 taken over one population of query says nothing about a p50 taken over
+#: another, so every run row names its set and every set gets its own baseline
+#: file — one file would mean whichever set ran last defined the reference for
+#: both. :data:`OBSERVED_SET` is the searches agents actually ran
+#: (``latency_replay.py``), and it is the only set measured here.
 OBSERVED_SET = "observed"
 
 
 def baseline_file(query_set: str) -> str:
-    """The baseline filename for ``query_set``. The gold set holds the bare name,
-    which is the one every other reference to a latency baseline points at; every
-    other set is suffixed."""
-    if query_set == GOLD_SET:
-        return LATENCY_BASELINE_FILE
+    """The baseline filename for ``query_set``."""
     return f"latency-baseline-{query_set}.json"
 
 #: The stages the probe attributes wall-clock to. Total is measured outside the
@@ -171,7 +168,7 @@ def smoke_set(baseline: Optional[dict[str, Any]], k: int) -> list[str]:
     pathological cases, empirically rather than by guesswork.
 
     A latency regression shows worst on the queries already nearest the ceiling,
-    so running these first turns a pass over the whole gold set (hundreds of
+    so running these first turns a pass over the whole query set (hundreds of
     queries) into a handful, catching the common regression (a change that
     uniformly slows the pipeline, or worsens the already-heavy paths) in tens of
     seconds rather than minutes. Empty when
@@ -239,7 +236,7 @@ def measure(
     is measured. The pool cache is **suspended** throughout — the whole cost is
     the point, so it must not be skipped. ``search`` defaults to the production
     pipeline; a candidate configuration is passed as a closure over
-    ``search(params=...)`` (the same seam the gold gate's ``--set`` uses).
+    ``search(params=...)``.
     ``on_query(i, n)`` is an optional progress callback fired per query.
 
     Total latency is the wall-clock around each ``search`` call; the per-stage
@@ -288,7 +285,7 @@ def measure(
     return _summarize(samples, n_queries=len(queries), reps=reps)
 
 
-# --- the timeseries + baseline (mirrors search_lab/gold_runs.py) -------------
+# --- the timeseries + baseline ----------------------------------------------
 
 
 def _enabled() -> bool:
@@ -300,24 +297,23 @@ def _enabled() -> bool:
 def record_run(
     home: Path, *, snapshot_id: Optional[str], stats: LatencyStats,
     config: Optional[dict[str, Any]] = None, overrides: Optional[dict[str, Any]] = None,
-    query_set: str = GOLD_SET,
+    query_set: str = OBSERVED_SET,
 ) -> None:
-    """Append one latency measurement to ``<home>/latency-runs.jsonl`` — the
-    speed timeseries beside the quality one, so a latency regression is a lookup,
-    not a re-run of the old code. ``overrides`` flags a tuning run, ``query_set``
-    names the population measured (:data:`GOLD_SET` / :data:`OBSERVED_SET`) so rows
-    from the two never average together. Fail-soft."""
+    """Append one latency measurement to ``<home>/latency-runs.jsonl`` — the speed
+    timeseries, so a latency regression is a lookup, not a re-run of the old code.
+    ``overrides`` flags a tuning run, ``query_set`` names the population measured
+    so rows from different populations never average together. Fail-soft."""
     if not _enabled():
         return
-    import gold_runs
+    import run_meta
 
     record: dict[str, Any] = {
         "at": datetime.now(timezone.utc).isoformat(),
         "kind": "latency-run",
         "snapshot_id": snapshot_id,
-        "commit": gold_runs.git_commit(),
+        "commit": run_meta.git_commit(),
         "query_set": query_set,
-        "config": config if config is not None else gold_runs.active_config(),
+        "config": config if config is not None else run_meta.active_config(),
         **stats.as_record(),
     }
     if overrides:
@@ -332,21 +328,22 @@ def record_run(
 
 
 def write_baseline(home: Path, *, snapshot_id: Optional[str], stats: LatencyStats,
-                   query_set: str = GOLD_SET) -> None:
+                   query_set: str = OBSERVED_SET) -> None:
     """Overwrite ``query_set``'s baseline with the shipped config's warm
     distribution — the reference a ``--set`` run diffs against. Written only by a
-    full, unmodified run, for the same reason its quality twin is. Each query set
-    gets its own file (:func:`baseline_file`): one file would mean whichever set
-    ran last defined the reference for both."""
+    full, unmodified run: a run under overridden params describes a different
+    configuration, and would poison the reference for every run after. Each query
+    set gets its own file (:func:`baseline_file`): one file would mean whichever
+    set ran last defined the reference for both."""
     if not _enabled():
         return
     import json
 
-    import gold_runs
+    import run_meta
 
     blob = {
         "at": datetime.now(timezone.utc).isoformat(),
-        "snapshot_id": snapshot_id, "commit": gold_runs.git_commit(),
+        "snapshot_id": snapshot_id, "commit": run_meta.git_commit(),
         "query_set": query_set,
         **stats.as_record(include_by_query=True),
     }
@@ -360,11 +357,11 @@ def write_baseline(home: Path, *, snapshot_id: Optional[str], stats: LatencyStat
 
 
 def read_baseline(home: Path, *, snapshot_id: Optional[str] = None,
-                  query_set: str = GOLD_SET) -> Optional[dict[str, Any]]:
+                  query_set: str = OBSERVED_SET) -> Optional[dict[str, Any]]:
     """``query_set``'s recorded warm-latency baseline, or ``None``. A ``snapshot_id``
     mismatch reads as absent: latency over a different corpus (a different pool
-    size, a different vector count) is not a comparable reference. A file written
-    before the sets were named reads as the gold set, which is what it was."""
+    size, a different vector count) is not a comparable reference. So does a
+    baseline recorded over a different query set."""
     import json
 
     path = home / baseline_file(query_set)
@@ -374,6 +371,6 @@ def read_baseline(home: Path, *, snapshot_id: Optional[str] = None,
         return None
     if snapshot_id is not None and blob.get("snapshot_id") != snapshot_id:
         return None
-    if blob.get("query_set", GOLD_SET) != query_set:
+    if blob.get("query_set") != query_set:
         return None
     return blob

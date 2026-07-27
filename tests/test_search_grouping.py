@@ -147,9 +147,21 @@ def test_search_groups_one_row_per_thread(archive_home) -> None:
     assert not any(r.get("_thread_more") for r in ungrouped)
 
 
-def test_search_folds_forked_duplicate_content(archive_home) -> None:
+def test_search_marks_forked_duplicate_content_without_hiding_it(archive_home) -> None:
+    """A forked prompt produces two threads carrying identical text. They are two
+    conversations, so both keep a row and the duplicate relation is a *mark* —
+    hiding one would answer "which threads mention this" with 1 when it is 2."""
     _seed(archive_home)
     rows = search("flux capacitor")
+    assert len(rows) == 2
+    assert len(rows[0]["_dup_thread_ids"]) == 1
+
+
+def test_collapse_folds_forked_duplicate_content(archive_home) -> None:
+    """``collapse=True`` is the opt-in for a caller spending result slots on
+    distinct content: the fork folds into one annotated row."""
+    _seed(archive_home)
+    rows = search("flux capacitor", collapse=True)
     assert len(rows) == 1
     assert len(rows[0]["_dup_thread_ids"]) == 1
 
@@ -185,16 +197,17 @@ def test_search_rejects_unknown_group() -> None:
 # ── the thread-granular list shapes ───────────────────────────────────────────
 
 
-def test_group_by_thread_without_dup_fold_keeps_every_thread() -> None:
-    """A list exists to enumerate threads, so the cross-thread duplicate fold —
-    which would drop a forked thread off the list entirely — stands down."""
+def test_group_by_thread_without_dup_fold_marks_but_keeps_every_thread() -> None:
+    """Without the fold every matched thread keeps its row, and the near-duplicate
+    relation is still recorded — marking is what lets a reader see two threads
+    carry the same text while both still count."""
     hits = [_hit(1, 100, "calibrate the flux capacitor"),
             _hit(2, 200, "calibrate the  flux CAPACITOR"),
             _hit(3, 100, "a second hit in 100")]
     out = group_by_thread(hits, fold_duplicates=False)
     assert [h["thread_id"] for h in out] == [100, 200]
     assert out[0]["_thread_more"] == 1  # the per-thread collapse still runs
-    assert not any(h.get("_dup_thread_ids") for h in out)
+    assert out[0]["_dup_thread_ids"] == [200]
 
 
 def test_cluster_by_thread_groups_hits_and_restores_event_order() -> None:
@@ -214,26 +227,23 @@ def test_cluster_by_thread_caps_threads_and_hits_per_thread() -> None:
     assert out[0]["_thread_more"] == 4  # 7 hits, 3 shown, remainder folded onto the lead row
 
 
-def test_search_group_browse_lists_every_matched_thread(archive_home) -> None:
-    """The list shape enumerates threads — including the C/D fork that the ranked
-    shape collapses to one annotated row."""
+def test_browse_is_an_alias_for_the_default_thread_shape(archive_home) -> None:
+    """``group='browse'`` once named a separate enumerating path. The default
+    shape enumerates now, so the old name resolves to it rather than erroring —
+    a caller carrying it keeps working and gets the same rows."""
     _seed(archive_home)
-    rows = search("tachyon", group="browse")
-    assert [r["thread_id"] for r in rows] == [r["thread_id"] for r in search("tachyon")]
-
-    forked = search("flux capacitor", group="browse")
-    assert len(forked) == 2  # ranked shape folds these to 1 (see the test above)
-    assert not any(r.get("_dup_thread_ids") for r in forked)
+    for q in ("tachyon", "flux capacitor"):
+        assert ([r["thread_id"] for r in search(q, group="browse")]
+                == [r["thread_id"] for r in search(q)])
 
 
-def test_search_group_browse_carries_the_thread_row_columns(archive_home) -> None:
+def test_the_thread_shape_carries_the_thread_row_columns(archive_home) -> None:
     _seed(archive_home)
-    row = next(r for r in search("tachyon", group="browse") if r.get("_thread_more"))
-    assert row["_group"] == "browse"
+    row = next(r for r in search("tachyon") if r.get("_thread_more"))
+    assert row["_group"] == "thread"
     assert row["thread_source"] == "claude-code"
     assert row["n_events"] == 3
     assert row["_thread_more"] == 2  # 3 hits in the thread, one row
-    assert "context" not in row  # browse renders no message, so no match window is built
 
 
 def test_search_group_nested_clusters_every_hit_under_its_thread(archive_home) -> None:
@@ -261,22 +271,20 @@ def test_list_shapes_outrank_the_structural_suppressions(archive_home) -> None:
     asking for a list shape is explicit, so it wins."""
     _seed(archive_home)
     tid = search("tachyon", group="none")[0]["thread_id"]
-    assert len(search("tachyon", thread_id=tid, group="browse")) == 1
-    assert len(search("tachyon", sort="oldest", group="browse")) == 2
+    assert len(search("tachyon", thread_id=tid, group="thread")) == 1
+    assert len(search("tachyon", sort="oldest", group="thread")) == 2
 
     # count still wins: it tallies the whole unranked pool per thread already.
-    assert len(search("tachyon", group="browse", output="count")) == 4
+    assert len(search("tachyon", output="count")) == 4
 
 
-def test_format_thread_list_renders_rows_without_messages(archive_home) -> None:
+def test_format_counts_a_thread_granular_result_in_threads(archive_home) -> None:
+    """The default shape's rows are threads, so its header counts threads. A
+    header reading "4 result(s)" over two threads counts the right number in the
+    wrong unit, which is what sends a caller looking for two more conversations."""
     _seed(archive_home)
-    rendered = format_results(search("tachyon", group="browse"), "tachyon")
+    rendered = format_results(search("tachyon"), "tachyon")
     assert "2 thread(s) for \"tachyon\"" in rendered
-    assert "one row per matched thread, no messages" in rendered
-    assert "· claude-code · 3 ev · 3 hits ·" in rendered
-    # no snippets in this shape — the thread's other turns never appear (its first
-    # one does, but only because the importer titles the thread after it)
-    assert "tachyon flow reversed" not in rendered
 
 
 def test_format_nested_renders_thread_headers_over_their_hits(archive_home) -> None:

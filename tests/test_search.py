@@ -617,11 +617,11 @@ def test_agents_invalid_value_raises(archive_home) -> None:
         search("authentication", agents="everyone")
 
 
-def test_the_browse_shape_bills_its_reconciliation_apart_from_its_fold(archive_home) -> None:
+def test_a_saturated_search_bills_its_reconciliation_apart_from_its_fold(archive_home) -> None:
     """A search's latency splits at the pool: how it was *found* (the arms) and what
-    then happened to it (the shape stages). The browse shape is the one that pays
-    both halves — it folds the pool by thread and then reconciles that fold against
-    the exact match set, two costs with unrelated scaling that a single number would
+    then happened to it (the shape stages). A search whose pool saturated pays both
+    halves — it folds the pool by thread and then reconciles that fold against the
+    exact match set, two costs with unrelated scaling that a single number would
     hide behind whichever one happened to dominate."""
     init_db()
     for i in range(6):
@@ -630,8 +630,13 @@ def test_the_browse_shape_bills_its_reconciliation_apart_from_its_fold(archive_h
                               f"acknowledged, widget {i}", i + 1))
         import_session_incremental(f, f"proj:b{i}")
 
+    from thread_archive._retrieval import SearchParams
+
+    # A pool floor of 1 makes the pool `limit * 5` deep, which this corpus
+    # saturates — the state where the reconciliation has work to do.
+    saturating = SearchParams(pool_floor=1)
     with _probe.install() as browse:
-        search("widget", limit=2, group="browse")
+        search("widget", limit=2, params=saturating)
     rec = browse.as_record()
     # The reconciliation ran and is its own bucket — and it is the outer bound on
     # the exact-set scan nested inside it, not a sibling of it.
@@ -641,8 +646,9 @@ def test_the_browse_shape_bills_its_reconciliation_apart_from_its_fold(archive_h
     # a slow grouping pass.
     assert "group_ms" in rec and rec["group_ms"] >= 0.0
 
-    # A ranked search never reconciles, so it records no extend at all rather than a
-    # zero that would read as "measured and instant".
+    # A search whose pool held the whole match set has nothing to reconcile, so it
+    # records no extend at all rather than a zero that would read as "measured and
+    # instant".
     with _probe.install() as ranked:
         search("widget", limit=2)
     assert ranked.extend_ms == 0.0

@@ -568,29 +568,50 @@ def _list_threads(
     }
 
 
-def _search_lab_report():
-    """The retrieval report behind the ``/retrieval`` dev page, or None.
+#: Probed dev surfaces, by :mod:`.._dev` function name. ``False`` is the negative
+#: cache — distinct from a name that has not been asked for yet — so a page
+#: polling a dev endpoint pays the probe once rather than per request.
+_DEV_SURFACES: dict = {}
 
-    The report is the search lab's, not the product's — it reads the bench's gold
-    and latency ledgers alongside the served-usage one — and the lab ships in the
-    source tree, never in a wheel. So the viewer reaches it only through
-    :mod:`.._dev`, which is excluded from the wheel for the same reason: an
-    install has neither, this import fails, and the endpoint 404s.
 
-    Cached on the function so a page polling the endpoint pays the probe once.
-    ``False`` is the negative cache — distinct from ``None``-as-not-yet-asked.
+def _dev_surface(name: str):
+    """A dev page's data module out of :mod:`.._dev`, or None.
+
+    Both dev pages are fed by the search lab, not the product — the retrieval
+    report reads the bench's gold and latency ledgers, and the inventory reads the
+    bench's registries — and the lab ships in the source tree, never in a wheel.
+    So the viewer reaches them only through :mod:`.._dev`, which is excluded from
+    the wheel for the same reason: an install has neither, this import fails, and
+    the endpoint 404s.
     """
-    cached = getattr(_search_lab_report, "_cached", None)
-    if cached is not None:
-        return cached or None
+    if name in _DEV_SURFACES:
+        return _DEV_SURFACES[name] or None
     try:
-        from .._dev import retrieval_report
+        from .. import _dev
+
+        module = getattr(_dev, name)()
     except ImportError:  # an install: no dev tree, so no dev page
-        report = None
-    else:
-        report = retrieval_report()
-    _search_lab_report._cached = report or False  # type: ignore[attr-defined]
-    return report
+        module = None
+    _DEV_SURFACES[name] = module or False
+    return module
+
+
+#: How long an assembled inventory is served before it is walked again. The read
+#: is a filesystem walk over tens of GB of corpora, and what it describes changes
+#: on the timescale of a benchmark run — so a page that refreshes must not turn
+#: into a sweep per refresh, and a corpus built a minute ago still shows up while
+#: the operator is still looking at the page.
+_INVENTORY_TTL_S = 30.0
+
+
+def _inventory_payload(module):
+    """The bench inventory, assembled at most once per :data:`_INVENTORY_TTL_S`."""
+    cached = getattr(_inventory_payload, "_cached", None)
+    if cached is not None and time.time() - cached[0] < _INVENTORY_TTL_S:
+        return cached[1]
+    payload = module.inventory()
+    _inventory_payload._cached = (time.time(), payload)  # type: ignore[attr-defined]
+    return payload
 
 
 def _list_thread_types() -> list[dict]:
@@ -1050,7 +1071,7 @@ def route(
         # Read straight off the ledgers rather than the index — this is the one
         # view whose subject is the *search pipeline*, not the corpus, so it must
         # keep answering while a rebuild has the index unavailable.
-        report = _search_lab_report()
+        report = _dev_surface("retrieval_report")
         if report is None:
             return _text(404, "the retrieval report ships with the search lab, "
                               "which is in the source repo and not in an install")
@@ -1058,6 +1079,44 @@ def route(
         # same afternoon it lands, and a day is the coarsest thing they can say.
         return _ok(report.report(
             hours=_int(params, "hours", report.DEFAULT_HOURS, hi=365 * 24)))
+
+    if path == "/api/search-lab":
+        # What the bench has to measure with — benchmark rows, corpora, miners.
+        # Read off the lab's own registries and the cache root on disk, so it
+        # describes the box rather than the index, and answers during a rebuild.
+        module = _dev_surface("lab_inventory")
+        if module is None:
+            return _text(404, "the bench inventory ships with the search lab, "
+                              "which is in the source repo and not in an install")
+        return _ok(_inventory_payload(module))
+
+    if path == "/api/search-lab/runs":
+        # Every recorded benchmark run, not the newest per row. Deliberately
+        # outside the inventory's cache: that one is a walk over tens of GB held
+        # for minutes, and a run that just finished has to appear here now.
+        module = _dev_surface("lab_inventory")
+        if module is None:
+            return _text(404, "the benchmark ledger ships with the search lab, "
+                              "which is in the source repo and not in an install")
+        return _ok(module.runs(
+            row=_first(params, "row"),
+            limit=_int(params, "limit", module.RUNS_LIMIT, hi=100_000),
+        ))
+
+    if path.startswith("/api/search-lab/runs/") and path.endswith("/queries"):
+        # One run's per-query detail — which queries it failed, and (with `vs`)
+        # which ones moved against another run. Read from that run's own sidecar,
+        # so this costs one file open and the runs list above costs none.
+        module = _dev_surface("lab_inventory")
+        if module is None:
+            return _text(404, "the benchmark ledger ships with the search lab, "
+                              "which is in the source repo and not in an install")
+        run_id = path[len("/api/search-lab/runs/"):-len("/queries")]
+        return _ok(module.queries(
+            run_id,
+            vs=_first(params, "vs"),
+            limit=_int(params, "limit", module.QUERIES_LIMIT, hi=5_000),
+        ))
 
     # unmatched API path — don't fall through to the SPA shell
     if path.startswith("/api/"):

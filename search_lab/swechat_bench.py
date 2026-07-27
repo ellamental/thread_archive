@@ -67,8 +67,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 # two disagree, so the benchmark ships its own scorer (`bench/score.py`) and names
 # the gain function rather than deferring to whichever library a consumer has
 # installed. Exponential gain is the archive's own convention
-# (`search_lab.eval_core.ndcg_at_k`), which is what makes an exported number and a
-# gold-gate number the same measurement.
+# (`search_lab.eval_core.ndcg_at_k`), which is what makes an exported number and
+# an in-lab number the same measurement.
 MEASURES = ["RR(rel=2)", "Success(rel=2)@10", "R(rel=2)@10", "nDCG@10 (exponential gain)"]
 # Depth every run is truncated to. The metrics do not look past 20, but a run
 # carrying rank 35 would still score under RR where ours scores zero, so the
@@ -82,7 +82,10 @@ KS = (1, 5, 10, 20)
 # out — without it the baseline's run reads as its own exact reverse.
 _SCORE_SIGN = {"bm25": -1.0}
 
-_PREFIX = {"commit-linked": "cm", "query-gen": "qg", "topic-mined": "tp"}
+# Short, readable id prefixes per protocol. An unmapped protocol falls back to its
+# own first two characters, so an export never fails on a case shape this table
+# has not been taught — it just gets a less readable prefix.
+_PREFIX = {"commit-linked": "cm"}
 
 
 def query_id(case: dict) -> str:
@@ -106,7 +109,7 @@ def load_gold(gold_dir: Path) -> list[dict]:
     Globbed rather than listed: gold accumulates a file at a time (one per topic
     mined), and an export that needed editing to see a new file would fall behind
     the corpus it describes. Which files are cases — and which are the miner's
-    audit sidecars — is ``search_lab.gold_files``' call, shared with the gate."""
+    audit sidecars — is ``search_lab.gold_files``' call, shared with the miners."""
     from gold_files import discover
     cases = []
     for path in discover(gold_dir):
@@ -261,11 +264,15 @@ def export(gold_dir: Path, out: Path, *, data: Path) -> dict:
             "unit": "session",
             "documents": len(corpus),
             "repositories": len({r["repo"] for r in corpus}),
-            "selection": "Claude Code transcripts, up to 40 sessions per "
-                         "repository, repositories ranked by commit-linked yield",
-            "harness_bound": "Claude Code only — SWE-chat's OpenCode, Codex, "
-                             "Gemini CLI and Cursor transcripts are not ingestible "
-                             "by the line-stream importer and are out of scope",
+            "selection": "every SWE-chat transcript the line-stream importer can "
+                         "read; no sampling, no per-repository cap",
+            "harness_bound": "Claude Code sessions, and the sessions other "
+                             "harnesses wrote in Claude Code's line-delimited "
+                             "shape. Excluded: OpenCode and most Gemini CLI "
+                             "(pretty-printed JSON), Cursor, and Codex "
+                             "(line-delimited but a different envelope). Archive's "
+                             "OpenCode and Cursor importers are DB scanners with "
+                             "no JSON-export path, so those have no route in",
         },
         "queries": {"total": len(queries), "by_protocol": by_protocol},
         "scoring": {

@@ -373,15 +373,19 @@ def test_the_exact_set_honors_the_same_scope_as_the_pool(archive_home) -> None:
 # The set scan does not depend on the page: a browse resolves the whole match set
 # to decide membership and totals, then slices one page out of it. Walking N pages
 # re-ran the identical scan N times, and it is the largest stage in that walk.
-def test_paging_a_browse_resolves_the_exact_set_once(archive_home) -> None:
+def test_paging_a_reconciled_search_resolves_the_exact_set_once(archive_home) -> None:
+    from thread_archive._retrieval import SearchParams
     from thread_archive._retrieval.fts import reset_set_memo, set_memo_stats
 
     _seed_many(archive_home, 12)
     reset_set_memo()
-    first = search("widget", limit=5, group="browse", page=1)
+    # Saturate the pool so the exact-set reconciliation runs at all; it is the
+    # scan whose one-per-walk cost this test is about.
+    p = SearchParams(pool_floor=1)
+    first = search("widget", limit=2, params=p, page=1)
     assert set_memo_stats()["misses"] == 1  # page 1 pays the scan
     for page in (2, 3):
-        later = search("widget", limit=5, group="browse", page=page)
+        later = search("widget", limit=2, params=p, page=page)
         assert later.total_threads == first.total_threads
     stats = set_memo_stats()
     assert stats["hits"] == 2 and stats["misses"] == 1

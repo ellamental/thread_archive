@@ -1,33 +1,34 @@
-"""The benchmark runner: tier selection, freshness, and reading what a row produced.
+"""The benchmark runner: selection, freshness, and reading what a row produced.
 
 Running a row needs a built corpus and the model arms, which live on the
-operator's box — so what is exercised here is everything around that: which rows a
-tier selects, whether a recorded run still describes the current code, and the two
-report shapes a row's numbers arrive in. The freshness rule is the load-bearing
-one: skip too eagerly and the bench reports numbers from before the edit under
-review.
+operator's box — so what is exercised here is everything around that: which rows
+``--only`` selects, whether a recorded run still describes the current code, and
+the two report shapes a row's numbers arrive in. The freshness rule is the
+load-bearing one: skip too eagerly and the bench reports numbers from before the
+edit under review.
 """
 
 from __future__ import annotations
 
-import json
-
 from search_lab import bench_runs, benchmark
 
 
-def test_tiers_nest_so_standard_includes_smoke() -> None:
-    rows = benchmark.manifest()
-    smoke = {r.name for r in benchmark.select(rows, tier="smoke", only=[])}
-    standard = {r.name for r in benchmark.select(rows, tier="standard", only=[])}
-
-    assert smoke < standard
-    # Smoke is exactly the instruments that can credit a ranking change.
-    assert smoke == {"gold-gate:archive", "gold-gate:swe-chat"}
+def test_every_row_is_a_published_benchmark() -> None:
+    # The manifest is the whole of what this bench claims, and every row on it has
+    # to be a corpus somebody else labeled. A row scored against labels made here
+    # would be scored against what this ranker already finds.
+    harnesses = {r.argv[0].rsplit("/", 1)[-1] for r in benchmark.manifest()}
+    assert harnesses == {"beir_eval.py", "cdr_eval.py", "haystack_eval.py"}
 
 
 def test_only_narrows_by_name_fragment() -> None:
-    chosen = benchmark.select(benchmark.manifest(), tier="standard", only=["locomo"])
+    chosen = benchmark.select(benchmark.manifest(), only=["locomo"])
     assert chosen and all("locomo" in r.name for r in chosen)
+
+
+def test_no_selection_runs_the_whole_manifest() -> None:
+    rows = benchmark.manifest()
+    assert benchmark.select(rows, only=[]) == rows
 
 
 def test_every_row_has_a_stable_unique_name() -> None:
@@ -37,20 +38,17 @@ def test_every_row_has_a_stable_unique_name() -> None:
     assert len(names) == len(set(names))
 
 
-def test_gold_rows_take_their_corpus_id_from_the_snapshot_they_score(tmp_path) -> None:
-    snap = tmp_path / "snap"
-    snap.mkdir()
-    (snap / "snapshot.json").write_text('{"snapshot_id": "abcdef0123456789"}')
-    row = benchmark.Row(name="gold-gate:test", tier="smoke", cost_min=1,
-                        argv=["gate.py", "--snap", str(snap), "--gold-dir", str(tmp_path)],
-                        gold_dir=tmp_path, needs_json_out=False)
+def test_a_row_takes_its_corpus_id_from_its_built_home(tmp_path) -> None:
+    home = tmp_path / "home"
+    home.mkdir()
+    (home / "snapshot.json").write_text('{"snapshot_id": "abcdef0123456789"}')
+    row = benchmark.Row(name="beir:test", cost_min=1, argv=["beir.py"], home=home)
 
-    assert row.snap == snap
     assert row.corpus_id() == "abcdef0123456789"
 
 
 def test_a_corpus_that_is_not_built_has_no_id(tmp_path) -> None:
-    row = benchmark.Row(name="beir:test", tier="standard", cost_min=1,
+    row = benchmark.Row(name="beir:test", cost_min=1,
                         argv=["beir.py"], home=tmp_path / "never-built")
     assert row.corpus_id() is None
 
@@ -119,11 +117,148 @@ def test_a_failed_run_is_never_fresh() -> None:
     assert not bench_runs.is_fresh(record, corpus_id="aaaa")
 
 
+def test_a_report_carries_what_the_run_cost_beside_what_it_scored() -> None:
+    # Kept apart from `measures` on purpose: one is what the row is scored on and
+    # moves against a published baseline, the other is what the box did to produce
+    # it. A p99 listed among the nDCGs would read as a result.
+    payload = {
+        "n": 300, "ndcg10": 0.579,
+        "performance": {"queries": 300, "qps": 5.45,
+                        "total": {"p50": 170.7, "p95": 296.9, "p99": 377.2},
+                        "stages": {"rank_ms": {"p50": 118.8, "p95": 237.9, "p99": 309.4}}},
+    }
+    perf = benchmark.performance_from_report(payload)
+    assert perf["total"]["p99"] == 377.2
+    assert perf["stages"]["rank_ms"]["p50"] == 118.8
+    assert "p99" not in benchmark.measures_from_report(payload)
+
+
+def test_the_in_house_report_shape_still_yields_a_profile() -> None:
+    # The evaluator predates the shared block and reports `latency` instead. Its
+    # rows are the oldest history in the ledger, and dropping their profile would
+    # put a hole in exactly the comparison the ledger exists for.
+    perf = benchmark.performance_from_report({
+        "n": 75,
+        "latency": {"n": 70, "total": {"p50": 210.0, "p95": 900.0, "p99": 1200.0},
+                    "stages": {"fts_ms": {"p50": 40.0, "p95": 70.0, "p99": 90.0}},
+                    "cold": 1, "pool_p50": 800},
+    })
+    assert perf["total"]["p50"] == 210.0 and perf["queries"] == 75
+    assert perf["staged"] == 70 and perf["cold"] == 1
+
+
+def test_a_report_with_no_profile_yields_none_rather_than_empty_numbers() -> None:
+    # An absent profile and a run that was instant are different facts, and zeros
+    # would make the first unreadable as anything but the second.
+    assert benchmark.performance_from_report({"n": 5, "ndcg10": 0.5}) == {}
+
+
+def test_a_run_records_its_cost_and_omits_the_key_when_it_has_none(tmp_path) -> None:
+    bench_runs.record_run(row="a:row", argv=["x"], corpus_id=None, measures={},
+                          elapsed_s=90.0, status="ok", home=tmp_path,
+                          performance={"total": {"p50": 12.0}, "scoring_s": 30.0})
+    bench_runs.record_run(row="b:row", argv=["x"], corpus_id=None, measures={},
+                          elapsed_s=1.0, status="failed", home=tmp_path)
+
+    rows = {r["row"]: r for r in bench_runs.read_runs(tmp_path)}
+    assert rows["a:row"]["performance"]["total"]["p50"] == 12.0
+    # The scored loop is 30s of a 90s run: the rest is the corpus being built,
+    # which is most of a cold row's wall-clock and none of its search cost.
+    assert rows["a:row"]["elapsed_s"] - rows["a:row"]["performance"]["scoring_s"] == 60.0
+    assert "performance" not in rows["b:row"]
+
+
+def test_a_query_row_separates_a_deep_rank_from_a_miss() -> None:
+    """The distinction the per-query record exists for. A gold document ranked
+    40th is a ranking problem and one that never came back is a recall problem;
+    they are fixed in different places, and both score 0.0 at k=10."""
+    from search_lab import eval_core
+
+    deep = eval_core.query_row(qid=1, query="q", latency_s=0.2, rank=40, n_gold=1,
+                               found=0, measures={"ndcg10": 0.0})
+    miss = eval_core.query_row(qid=2, query="q", latency_s=0.2, rank=None, n_gold=1,
+                               found=0, measures={"ndcg10": 0.0})
+    assert deep["rank"] == 40 and miss["rank"] is None
+    assert deep["measures"] == miss["measures"], "the score cannot tell them apart"
+    assert deep["latency_ms"] == 200.0
+
+
+def test_a_query_row_caps_the_text_it_keeps() -> None:
+    # A conversational benchmark's "query" is a whole multi-turn context, and
+    # 1,583 of them uncapped would make the detail file the largest thing here.
+    from search_lab import eval_core
+
+    row = eval_core.query_row(qid=1, query="x " * 500, latency_s=0.0, rank=1,
+                              n_gold=1, found=1, measures={})
+    assert len(row["query"]) == eval_core.QUERY_TEXT_CAP + 1  # + the ellipsis
+    assert row["query"].endswith("…")
+
+
+def test_per_query_detail_is_stored_beside_the_ledger_and_read_back(tmp_path) -> None:
+    rows = [{"qid": "a", "query": "one", "rank": None, "measures": {"ndcg10": 0.0}}]
+    bench_runs.write_queries("abc123", rows, home=tmp_path)
+
+    assert bench_runs.read_queries("abc123", home=tmp_path) == rows
+    # A run with no detail is not an error: one from before the harnesses
+    # reported any, and one the cap has pruned, both read as "nothing here".
+    assert bench_runs.read_queries("nothere", home=tmp_path) == []
+
+
+def test_a_run_id_from_a_url_cannot_name_a_path(tmp_path) -> None:
+    # The id reaches the store from a URL segment. Hex-only, so no traversal and
+    # no absolute path can be spelled in it.
+    (tmp_path / "secret.json").write_text('["x"]', encoding="utf-8")
+    for hostile in ("../secret", "/etc/passwd", "..%2Fsecret", "a/b"):
+        assert bench_runs.read_queries(hostile, home=tmp_path) == []
+
+
+def test_the_detail_store_is_capped_and_drops_the_oldest_first(tmp_path) -> None:
+    # The aggregate history is small and kept forever; this is the bulky half,
+    # and it is worth keeping only while the configuration is one you are still
+    # deciding about.
+    import os
+    import time
+
+    for i in range(5):
+        bench_runs.write_queries(f"{i:012x}", [{"qid": str(i)}], home=tmp_path)
+        os.utime(bench_runs.queries_dir(tmp_path) / f"{i:012x}.json",
+                 (time.time() + i, time.time() + i))
+
+    bench_runs.prune_queries(home=tmp_path, keep=2)
+    kept = {p.stem for p in bench_runs.queries_dir(tmp_path).glob("*.json")}
+    assert kept == {f"{3:012x}", f"{4:012x}"}
+
+
+def test_per_query_lifts_both_report_shapes() -> None:
+    external = benchmark.per_query_from_report({
+        "per_query": [{"qid": "1", "query": "q", "rank": 3, "measures": {"ndcg10": 0.5}}]})
+    assert external[0]["rank"] == 3
+
+    # The in-house evaluator predates the shared shape and records a reciprocal
+    # rank; the rank it came from is recoverable exactly, and 0 means not found.
+    inhouse = benchmark.per_query_from_report({
+        "per_case": [{"query": "a", "rr": 0.25, "latency_ms": 12.0},
+                     {"query": "b", "rr": 0.0, "latency_ms": 9.0, "difficulty": "intent"}]})
+    assert [r["rank"] for r in inhouse] == [4, None]
+    assert inhouse[1]["group"] == "intent"
+
+    assert benchmark.per_query_from_report({"n": 3}) == []
+
+
+def test_a_run_id_is_a_hash_of_the_record_and_not_its_place_in_the_file() -> None:
+    # A link into the history has to survive the ledger growing under it, which a
+    # line number would not — the file is appended to on every bench pass.
+    a = {"at": "2026-07-27T03:43:13+00:00", "row": "beir:scifact[lexical]",
+         "status": "ok", "elapsed_s": 55.7}
+    assert bench_runs.run_id(a) == bench_runs.run_id(dict(reversed(list(a.items()))))
+    assert bench_runs.run_id(a) != bench_runs.run_id({**a, "elapsed_s": 55.8})
+
+
 def test_ledger_round_trips_and_reads_newest_first(tmp_path) -> None:
     for i in range(3):
         bench_runs.record_run(row="beir:test", argv=["x"], corpus_id=f"c{i}",
                               measures={"ndcg10": 0.5 + i / 100}, elapsed_s=1.0,
-                              status="ok", tier="standard", home=tmp_path)
+                              status="ok", home=tmp_path)
     bench_runs.record_run(row="other:test", argv=["y"], corpus_id="c9", measures={},
                           elapsed_s=1.0, status="failed", home=tmp_path)
 
@@ -152,34 +287,6 @@ def test_measures_from_a_per_question_haystack_report() -> None:
         "ndcg5": 0.5, "ndcg10": 0.55, "recall_all5": 0.2, "recall_all10": 0.3}
 
 
-def test_gold_measures_pool_by_case_count(tmp_path) -> None:
-    # Files differ in size by an order of magnitude; a plain mean over files would
-    # let a 7-case topic file outvote a 75-case protocol one.
-    (tmp_path / "gold-runs.jsonl").write_text(json.dumps({
-        "kind": "gold-run", "at": "2026-07-27T04:00:00+00:00", "passed": True,
-        "files": {
-            "a-cases.jsonl": {"n": 75, "mrr": 0.8, "success10": 1.0,
-                              "recall10": 0.9, "ndcg10": 0.7},
-            "b-cases.jsonl": {"n": 25, "mrr": 0.4, "success10": 0.6,
-                              "recall10": 0.5, "ndcg10": 0.3},
-        }}) + "\n")
-
-    got = benchmark.measures_from_gold_ledger(tmp_path, since="2026-07-27T03:00:00")
-    assert got["mrr"] == 0.7 and got["ndcg10"] == 0.6  # weighted 75:25, not 50:50
-    assert got["n"] == 100 and got["files"] == 2 and got["passed"] is True
-
-
-def test_gold_measures_ignore_a_ledger_row_older_than_this_run(tmp_path) -> None:
-    # A row that failed before writing would otherwise report the previous run's
-    # numbers as its own.
-    (tmp_path / "gold-runs.jsonl").write_text(json.dumps({
-        "kind": "gold-run", "at": "2026-07-26T01:00:00+00:00",
-        "files": {"a-cases.jsonl": {"n": 1, "mrr": 1.0}}}) + "\n")
-
-    assert benchmark.measures_from_gold_ledger(
-        tmp_path, since="2026-07-27T03:00:00") == {}
-
-
 def test_child_env_drops_the_home_and_arm_switches(monkeypatch) -> None:
     # Every row names its own corpus and its own arms; an inherited EMBED=off would
     # turn a [vectors] row into a lexical one under a name that says otherwise.
@@ -200,9 +307,9 @@ def test_a_rows_code_id_covers_its_own_harness() -> None:
     # row's code id is the shared ranking source plus the script it invokes.
     rows = {r.name: r for r in benchmark.manifest()}
     beir = rows["beir:scifact[lexical]"]
-    gate = rows["gold-gate:archive"]
+    hay = rows["locomo[lexical]"]
 
-    assert beir.code_id() != gate.code_id()
+    assert beir.code_id() != hay.code_id()
     assert beir.code_id() != bench_runs.code_id()
     assert beir.code_id() == bench_runs.code_id(("search_lab/beir_eval.py",))
 
@@ -235,7 +342,7 @@ def test_previous_configuration_skips_a_re_measured_identical_config(tmp_path) -
 def test_estimate_prefers_what_the_row_actually_took() -> None:
     # A row's cost is dominated by whether its corpus is already built, which the
     # manifest cannot know and the last run's elapsed time does.
-    row = benchmark.Row(name="r", tier="smoke", cost_min=20, argv=["x.py"])
+    row = benchmark.Row(name="r", cost_min=20, argv=["x.py"])
     assert benchmark.estimate(row, {"elapsed_s": 60.0}) == 1.0
     assert benchmark.estimate(row, None) == 20.0
     assert benchmark.estimate(row, {"elapsed_s": 0}) == 20.0

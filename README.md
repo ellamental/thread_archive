@@ -19,7 +19,7 @@ Your agent searches, reads around the hits, and comes back with what you decided
 - Full-text and semantic search, fused and re-ranked, filterable by time, source, tool, and content type; an empty query browses recent activity.
 - Exposed over MCP (`thread_search`, `thread_read`), so Claude (or any MCP client) can search and read your entire history mid-conversation.
 - The same two tools are CLI verbs — `thread_archive search "auth flow" --since 30d`, `thread_archive read <id>` — one implementation behind both, so what you get at a prompt is what your agent gets.
-- Search is the access layer over the archive, not the archive itself — an agent typically fires several searches, reformulates, and reads around a hit, and the archive underneath guarantees the conversation is *there* to find. Quality is measured against graded, corpus-grounded gold cases over a frozen snapshot — a deliberate run on a ranking change, not a CI row; what rides CI is a probe that the search arms still load at all. The numbers, the protocol, and its limits live in [docs/search-quality.md](docs/search-quality.md). Your install reports whether search is *degraded* (`thread_archive status`, the viewer's health page) rather than a score — a metric with no baseline beside it isn't something you can act on.
+- Search is the access layer over the archive, not the archive itself — an agent typically fires several searches, reformulates, and reads around a hit, and the archive underneath guarantees the conversation is *there* to find. Quality is measured against gold cases whose answers are fixed by commit provenance rather than by searching with the ranker under test, over a frozen snapshot — a deliberate run on a ranking change, not a CI row; what rides CI is a probe that the search arms still load at all. The numbers, the protocol, and its limits live in [docs/search-quality.md](docs/search-quality.md). Your install reports whether search is *degraded* (`thread_archive status`, the viewer's health page) rather than a score — a metric with no baseline beside it isn't something you can act on.
 
 **Indexed by code, not just by words.** Every path your agents' tools named — each
 `Edit`, `Read`, `Write`, `apply_patch` header, and path-shaped shell argument, in
@@ -152,11 +152,14 @@ machine — the service agents, the MCP wiring in your client, the family manife
 and monitor heartbeat, and setup's own record in `config.json` — and **never
 touches the archive**. Conversations, index, source choices, logs and exports
 stay where they are, and `search` / `read` keep answering from them with nothing
-installed; the run names the directory and stops there, because deleting an
-archive is yours to do. `--dry-run` reports what would go without changing
-anything, `--yes` skips the confirmation. An agent or client entry serving a
-*different* archive home is reported and left alone. The package itself goes with
-`pip uninstall thread-archive`, which the archive outlives.
+installed. It closes by naming **every place the data still is** — the home, a
+truth dir or index pointed outside it, every backup mirror any stage ever
+recorded (plus one scheduled but not yet run), a home an earlier `restore
+--replace` set aside, the `~/.thread_archive` compat symlink — and then how to
+finish: `pip uninstall thread-archive`, or the clone to delete when the install
+runs from one. Deleting any of the data is yours to do. `--dry-run` reports what
+would go without changing anything, `--yes` skips the confirmation. An agent or
+client entry serving a *different* archive home is reported and left alone.
 
 ## CLI
 
@@ -240,7 +243,7 @@ frontend/           # the viewer's React+Vite source (dev-only; builds into _web
 host/               # operator layer: Makefile over `thread_archive daemon`, family-manifest writer
 scripts/            # repo tooling (coverage gate, frontend-build check, license notices)
 search_lab/         # the search lab (never shipped): the scoring core, quality + calibration
-                      #   harnesses, the gold miners (mine/), corpus freezing, run
+                      #   harnesses, the gold miner (mine/), corpus freezing, run
                       #   ledgers — see search_lab/README.md
 tests/install/      # from-nothing install proofs: clean-container Docker + realistic
                       #   discovery-driven first run (~/.claude-style stores, macOS + Linux)

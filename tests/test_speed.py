@@ -215,26 +215,33 @@ def test_baseline_from_another_snapshot_is_not_served(archive_home) -> None:
 
 
 def test_each_query_set_keeps_its_own_baseline(archive_home) -> None:
-    """The gold files and the usage ledger are different populations of query — a
-    p50 over one is not a reference for the other. One file would mean whichever set
-    ran last defined the reference for both."""
-    gold = speed._summarize([_sample(700, query="g")], n_queries=1, reps=1)
+    """Two query sets are two populations — a p50 over one is not a reference for
+    the other. One file would mean whichever set ran last defined the reference for
+    both."""
     observed = speed._summarize([_sample(4000, query="o")], n_queries=1, reps=1)
-    speed.write_baseline(archive_home, snapshot_id=None, stats=gold)
-    speed.write_baseline(archive_home, snapshot_id=None, stats=observed,
-                         query_set=speed.OBSERVED_SET)
-    assert speed.read_baseline(archive_home)["by_query"] == {"g": 700.0}
+    curated = speed._summarize([_sample(700, query="g")], n_queries=1, reps=1)
+    speed.write_baseline(archive_home, snapshot_id=None, stats=observed)
+    speed.write_baseline(archive_home, snapshot_id=None, stats=curated,
+                         query_set="curated")
+    assert speed.read_baseline(archive_home)["by_query"] == {"o": 4000.0}
     assert speed.read_baseline(
-        archive_home, query_set=speed.OBSERVED_SET)["by_query"] == {"o": 4000.0}
+        archive_home, query_set="curated")["by_query"] == {"g": 700.0}
+
+
+def test_a_baseline_from_another_query_set_reads_as_absent(archive_home) -> None:
+    # Not a fallback: a reference over a different population would silently become
+    # the thing a run is diffed against.
+    speed.write_baseline(archive_home, snapshot_id=None, stats=_stats())
+    assert speed.read_baseline(archive_home, query_set="curated") is None
 
 
 def test_a_run_row_names_the_population_it_measured(archive_home) -> None:
     speed.record_run(archive_home, snapshot_id=None, stats=_stats())
     speed.record_run(archive_home, snapshot_id=None, stats=_stats(),
-                     query_set=speed.OBSERVED_SET)
+                     query_set="curated")
     rows = [__import__("json").loads(line) for line in
             (archive_home / speed.LATENCY_RUNS_FILE).read_text().splitlines()]
-    assert [r["query_set"] for r in rows] == [speed.GOLD_SET, speed.OBSERVED_SET]
+    assert [r["query_set"] for r in rows] == [speed.OBSERVED_SET, "curated"]
 
 
 def test_record_run_appends_and_flags_a_tuning_run(archive_home) -> None:

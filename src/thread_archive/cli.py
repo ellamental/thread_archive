@@ -117,6 +117,7 @@ def cmd_search(args: argparse.Namespace) -> int:
                 repo=args.repo,
                 sort=args.sort,
                 group=args.group,
+                collapse=args.collapse,
                 output=args.output,
                 context_lines=args.context_lines,
                 context_events=args.context_events,
@@ -1484,9 +1485,12 @@ def build_parser() -> argparse.ArgumentParser:
                           help="'oldest' for chronological order (when was this first "
                                "discussed); the default is relevance")
     p_search.add_argument("--group", default=None, metavar="MODE",
-                          help="how hits relate to threads: the default folds to one row per "
-                               "thread; 'none' is every hit, 'browse' lists matched threads, "
-                               "'nested' clusters hits under theirs")
+                          help="how hits relate to threads: the default is one row per "
+                               "matched thread; 'none' is every hit, 'dup' folds duplicate "
+                               "content, 'nested' clusters hits under their thread")
+    p_search.add_argument("--collapse", action="store_true",
+                          help="fold threads whose matched content is near-identical into "
+                               "one row (default: mark them, but keep every thread's row)")
     p_search.add_argument("--output", default=None, metavar="SHAPE",
                           help="'count' for a per-thread tally, 'linkable' for JSON event/thread ids")
     p_search.add_argument("--context-lines", type=int, default=2, metavar="N",

@@ -88,16 +88,18 @@ timeout = 1800
 name = "coverage-gate"
 argv = ["{repo}/.venv/bin/python", "{repo}/scripts/coverage_gate.py", "{repo}/coverage.json"]
 
-# Retrieval-arm gate: asserts the model arm of the search stack is alive.
+# Retrieval-arm liveness: asserts the model arm of the search stack loads.
 # Runs against THIS machine's live archive — read-only, and thread-ci runs
 # where the archive lives. --require-semantic asserts the embeddings arm
 # loads (a dead model silently degrades fused search to lexical — a direct
-# check catches it with zero queries). Deliberately NO metric run rides this row: click-label MRR
-# wears the shape of a quality score without being one (the golds are
-# censored by what the incumbent ranker surfaced), and per-commit quality
-# numbers invite exactly that misread. Quality is measured against the
-# snapshot-bound gold case files (search_lab/README.md → "Taking a baseline"),
-# scored deliberately, not per commit.
+# check catches it with zero queries).
+#
+# Deliberately NO metric run rides this row, and none is coming. A quality number
+# over labels this archive produced is an optimistic bound on itself — the labels
+# describe what the incumbent ranker already reaches — and it would wear the shape
+# of a score anyway. The quality claim lives on the public benchmarks
+# (`python -m search_lab benchmark`), run deliberately; see
+# search_lab/README.md → "What a number here is worth".
 [[suite]]
 name = "retrieval-gate"
 argv = ["{repo}/.venv/bin/python", "{repo}/search_lab/retrieval_eval.py",

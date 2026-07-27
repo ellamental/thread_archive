@@ -79,13 +79,24 @@ export function Sidebar({
           import
         </Link>
         {dev && (
-          <Link
-            className={'rail-link' + (pathname === '/retrieval' ? ' active' : '')}
-            to="/retrieval"
-            onClick={onClose}
-          >
-            retrieval
-          </Link>
+          <>
+            <Link
+              className={'rail-link' + (pathname === '/retrieval' ? ' active' : '')}
+              to="/retrieval"
+              onClick={onClose}
+            >
+              retrieval
+            </Link>
+            <Link
+              // A run's own page is still the lab, so the rail keeps its mark:
+              // an unlit nav on a page reached from it reads as having left.
+              className={'rail-link' + (pathname.startsWith('/lab') ? ' active' : '')}
+              to="/lab"
+              onClick={onClose}
+            >
+              lab
+            </Link>
+          </>
         )}
       </nav>
       <div className="rail-head">

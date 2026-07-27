@@ -50,16 +50,19 @@ def test_query_id_separates_the_same_question_asked_of_two_repos():
 
 
 def test_query_id_separates_protocols_and_carries_a_readable_prefix():
+    """A protocol in the prefix table gets its readable short form; one that is
+    not falls back to its own first two characters rather than failing, so an
+    export never breaks on a case shape the table has not been taught."""
     q = "retry backoff"
     commit = bench.query_id({"protocol": "commit-linked", "query": q})
-    topic = bench.query_id({"protocol": "topic-mined", "query": q})
-    assert commit != topic
-    assert commit.startswith("cm-") and topic.startswith("tp-")
+    other = bench.query_id({"protocol": "sample-linked", "query": q})
+    assert commit != other
+    assert commit.startswith("cm-") and other.startswith("sa-")
 
 
 def test_query_id_reads_topic_as_scope_when_there_is_no_repo():
-    a = {"protocol": "topic-mined", "topic": "alpha", "query": "q"}
-    b = {"protocol": "topic-mined", "topic": "beta", "query": "q"}
+    a = {"protocol": "commit-linked", "topic": "alpha", "query": "q"}
+    b = {"protocol": "commit-linked", "topic": "beta", "query": "q"}
     assert bench.query_id(a) != bench.query_id(b)
 
 
@@ -71,7 +74,7 @@ def _cases(path: Path, rows: list[dict]) -> None:
 
 def test_load_gold_globs_case_files_and_skips_detail_sidecars(tmp_path):
     _cases(tmp_path / "commit-cases.jsonl", [{"query": "a"}])
-    _cases(tmp_path / "topic-cases-o-r.jsonl", [{"query": "b"}])
+    _cases(tmp_path / "commit-cases-o-r.jsonl", [{"query": "b"}])
     _cases(tmp_path / "commit-cases-detail.jsonl", [{"query": "audit trail"}])
     _cases(tmp_path / "repo-groups.json", [{"query": "not a case file"}])
 
@@ -178,8 +181,8 @@ def test_export_grades_an_ungraded_gold_as_relevant(tmp_path, seeded):
     """Single-gold protocols ship no pool; the gold still has to reach the qrels
     as grade 2 or the case would score as having no relevant document at all."""
     ids, snapshot, gold = seeded
-    _cases(gold / "findability-cases.jsonl", [{
-        "query": "q", "protocol": "query-gen", "snapshot_id": snapshot,
+    _cases(gold / "commit-cases-b.jsonl", [{
+        "query": "q", "protocol": "commit-linked", "snapshot_id": snapshot,
         "gold": [ids["sess-a"]], "grades": {},
     }])
     out = tmp_path / "bench"
@@ -253,12 +256,12 @@ def test_export_separates_repository_topics_from_cross_cutting_subjects(
     and a subject's are not, so the two are different difficulties wearing one
     protocol name. A consumer that cannot split them scores a mixture."""
     ids, snapshot, gold = seeded
-    _cases(gold / "topic-cases-o-r.jsonl", [{
+    _cases(gold / "commit-cases-o-r.jsonl", [{
         "query": "q1", "protocol": "topic-mined", "topic": "o/r",
         "snapshot_id": snapshot, "gold": [ids["sess-a"]],
         "grades": {ids["sess-a"]: 2},
     }])
-    _cases(gold / "topic-cases-styling.jsonl", [{
+    _cases(gold / "commit-cases-styling.jsonl", [{
         "query": "q2", "protocol": "topic-mined", "topic": "Styling and CSS",
         "snapshot_id": snapshot, "gold": [ids["sess-b"]],
         "grades": {ids["sess-b"]: 2},

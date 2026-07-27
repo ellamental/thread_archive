@@ -213,6 +213,7 @@ def thread_search(
     repo: Optional[str] = None,
     sort: Optional[str] = None,
     group: Optional[str] = None,
+    collapse: bool = False,
     output: Optional[str] = None,
     context_lines: int = 2,
     context_events: Optional[str] = None,
@@ -269,18 +270,23 @@ def thread_search(
     ``group`` chooses how results relate to threads. Ranked results default to
     **one row per thread** — the thread's best hit, with its other hits folded
     into a ``+N more in thread`` note (drill in with a ``thread_id``-scoped
-    search) and duplicate content from other threads (forked sessions,
-    fleet-spawned copies of one prompt) folded into a ``= same content in
-    thread(s) …`` note. Pass ``group='none'`` for every hit as its own row.
+    search). ``limit`` counts threads, and **every matched thread gets a row**:
+    when the candidate pool cuts the set, the threads it never reached are
+    reconciled back in from the exact match set, so paging to the end reaches all
+    of them. Pass ``group='none'`` for every hit as its own row.
 
-    Two modes turn any search into a thread-granular **list** — the shape an
-    empty-query browse returns, over your query's matches:
-    ``group='browse'`` lists the matched *threads* only (one row each: title,
-    provider, size, when — no messages), and ``group='nested'`` keeps the
-    messages, clustered under their thread in event order. Both count ``limit``
-    in threads and list every matched thread; nested shows up to 5 hits per
-    thread, the rest folded into its header. Reach for browse to see *which
-    conversations* touched something, nested to read *what they said* about it
+    Threads carrying content near-identical to a row already on screen (forked
+    sessions, fleet-spawned copies of one prompt) are *marked* — a
+    ``= same content in thread(s) …`` note — but still get their own row: an
+    identical prompt does not mean identical work, and hiding those rows answers
+    "which threads mention this" with a smaller number than the truth. Pass
+    ``collapse=True`` to fold them into that note instead, when you would rather
+    spend result slots on distinct content than on completeness.
+
+    ``group='nested'`` keeps the messages, clustered under their thread in event
+    order — up to 5 hits per thread, the rest folded into its header. Reach for
+    the default to see *which conversations* touched something, nested to read
+    *what they said* about it
     with the thread structure intact.
 
     **The code axis.** Search finds where something was *discussed*; ``path`` and
@@ -323,8 +329,8 @@ def thread_search(
     unused). ``sort='oldest'`` returns matches chronologically (find when something
     was first discussed) instead of the default recency-biased ranking; it is the
     only sort, and any other value is an error. For the most *recent* mention,
-    enumerate the matches (``group='browse'``) and read the latest date off them —
-    there is no newest sort to ask for.
+    enumerate the matches and read the latest date off them — there is no newest
+    sort to ask for.
     ``context_lines`` (default 2; set 0 for the raw FTS snippet) replaces each
     snippet with a numbered ±N-line window around the match; ``context_events``
     ('N' / 'before:after' /
@@ -337,13 +343,14 @@ def thread_search(
     of one ordering, so walking them never repeats or skips a row, and a page past
     the end says so instead of looking like a query that matched nothing.
 
-    ``group='browse'`` is the shape that enumerates **completely**: its thread
-    list is resolved from the whole match set rather than cut from the ranked
-    candidate pool, so ``N of M`` is a real total and paging to the last page
-    reaches every matched thread. The other shapes rank a bounded pool, so they
-    report ``N of ≥M`` and say ``truncated`` — for "find me every thread that
-    mentions X", use ``group='browse'`` and page to the end. A ``+`` on a total
-    (``≥5000+``) means even the set scan stopped early, so it is a floor.
+    The thread list **enumerates completely**: membership comes from the whole
+    match set, not from the ranked candidate pool, so ``N of M`` is a real total
+    and paging to the last page reaches every matched thread — for "find me every
+    thread that mentions X", just page to the end. A ``+`` on a total (``≥5000+``)
+    means even the set scan stopped early, so it is a floor. The hit-granular
+    shapes (``group='none'``, ``'dup'``) rank a bounded pool and report
+    ``N of ≥M`` with ``truncated``, since a hit list has no set to reconcile
+    against.
 
     ``match`` picks what counts as a match. ``'token'`` (default) is the indexed
     search described above: it matches whole words, so ``p4`` finds ``p4`` and not
@@ -431,6 +438,7 @@ def thread_search(
             thread_ids=commit_threads,
             sort=sort,
             group=group,
+            collapse=collapse,
             output=output,
             context_lines=context_lines,
             context_events=context_events,

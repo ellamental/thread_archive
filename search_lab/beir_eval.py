@@ -62,7 +62,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 # however this file was loaded: as a script, by path, or as search_lab.X.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+import eval_core  # noqa: E402
 import eval_home  # noqa: E402
+
+from thread_archive._retrieval import _probe  # noqa: E402
 
 BEIR_URL ="https://public.ukp.informatik.tu-darmstadt.de/thakur/BEIR/datasets/{name}.zip"
 
@@ -339,6 +342,15 @@ def run(args) -> int:
     ks = (10, 100)
     agg = {"ndcg10": 0.0, "mrr10": 0.0, "recall": {k: 0.0 for k in ks}}
     latencies: list[float] = []
+    # The per-stage breakdown rides along for free: these are the same searches a
+    # latency run would pay for again, so scoring without recording it throws
+    # away a profile already produced. The probe is a context-local slot and a
+    # search nobody measures never checks it, so installing one costs nothing.
+    stage_samples: list[dict] = []
+    # Every query's own result, kept rather than only summed. The aggregate says
+    # this row scores 0.579; only this says which queries it failed and whether
+    # their answers were ranked badly or never retrieved at all.
+    per_query: list[dict] = []
 
     # Hold the ranker still before the first scored query, exactly as the gold
     # bench does: the coherence re-rank otherwise lands partway through and splits
@@ -347,16 +359,22 @@ def run(args) -> int:
 
     t0 = time.monotonic()
     for i, (qid, qtext) in enumerate(scorable):
-        s0 = time.monotonic()
-        # group='none': every ranked hit as its own row. A flat doc-retrieval
-        # benchmark must not fold cross-thread duplicate content (group='thread'
-        # would hide a distinct gold doc that shares text with another); dedup to
-        # one row per doc happens below, on doc_id.
-        hits = api.search(
-            qtext, limit=max(ks) * 2, content_types=["user"],
-            group="none",
-        )
-        latencies.append(time.monotonic() - s0)
+        with _probe.install() as probe:
+            s0 = time.monotonic()
+            # group='none': every ranked hit as its own row. A flat doc-retrieval
+            # benchmark must not fold cross-thread duplicate content (group='thread'
+            # would hide a distinct gold doc that shares text with another); dedup to
+            # one row per doc happens below, on doc_id.
+            hits = api.search(
+                qtext, limit=max(ks) * 2, content_types=["user"],
+                group="none",
+            )
+            elapsed = time.monotonic() - s0
+        latencies.append(elapsed)
+        if probe.ran:
+            sample = probe.as_record()
+            sample["total_ms"] = elapsed * 1000.0
+            stage_samples.append(sample)
         # Map thread hits back to BEIR doc ids, preserving rank order, deduped.
         ranked: list[str] = []
         seen: set[str] = set()
@@ -366,6 +384,13 @@ def run(args) -> int:
                 seen.add(d)
                 ranked.append(d)
         m = score_run(ranked, qrels[qid], ks)
+        rel = qrels[qid]
+        per_query.append(eval_core.query_row(
+            qid=qid, query=qtext, latency_s=elapsed, n_gold=len(rel),
+            rank=next((i + 1 for i, d in enumerate(ranked) if d in rel), None),
+            found=sum(1 for d in ranked[:10] if d in rel),
+            measures={"ndcg10": m["ndcg10"], "mrr10": m["mrr10"],
+                      "recall10": m["recall"][10], "recall100": m["recall"][100]}))
         agg["ndcg10"] += m["ndcg10"]
         agg["mrr10"] += m["mrr10"]
         for k in ks:
@@ -413,6 +438,10 @@ def run(args) -> int:
             "ndcg10": ndcg10, "mrr10": mrr10,
             "recall": {str(k): recall[k] for k in ks},
             "query_p50_ms": p50, "reference": ref,
+            "per_query": per_query,
+            "performance": eval_core.performance(
+                latencies, stage_samples, scoring_s=total_s,
+                corpus_docs=len(doc_of_thread), arms=arms),
         }, indent=2) + "\n", encoding="utf-8")
         _log(f"wrote {args.json_out}")
 

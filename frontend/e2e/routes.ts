@@ -1,6 +1,6 @@
 import type { Locator, Page } from '@playwright/test'
 
-import { MODEL, THREAD_ID } from './helpers'
+import { MODEL, RUN_ID, THREAD_ID } from './helpers'
 
 export interface SmokeRoute {
   path: string
@@ -44,6 +44,19 @@ export const ROUTES: SmokeRoute[] = [
     // always resolves, so it carries a browser case like every other route.
     path: '/retrieval',
     landmark: (page) => page.getByRole('heading', { name: 'Retrieval', level: 1 }),
+  },
+  {
+    // The other dev page — same rule: advertised only under `?dev=1`, always
+    // reachable by URL, so it carries a browser case.
+    path: '/lab',
+    landmark: (page) => page.getByRole('heading', { name: 'Search lab', level: 1 }),
+  },
+  {
+    // One recorded run off the lab's ledger — reached by clicking a row there,
+    // and addressable on its own so a configuration worth arguing about can be
+    // linked to rather than described.
+    path: `/lab/run/${RUN_ID}`,
+    landmark: (page) => page.getByRole('heading', { name: 'What it measured' }),
   },
   {
     path: '/upload',

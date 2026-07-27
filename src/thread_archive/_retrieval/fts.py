@@ -725,13 +725,12 @@ def search_events(
         # semantics and are left alone.
         #
         # This tier is the single largest stage of a natural-language search, and
-        # both obvious ways to cheapen it cost recall the gold floors are holding.
-        # A union's cost is set by its commonest token — one corpus-wide word puts
-        # six figures of rows through bm25 — but that breadth *is* the recall: this
-        # is the pass that answers the vague and paraphrase shapes, where the strict
-        # pass matched almost nothing and bm25 over the whole union is what finds
-        # the answer. Ordering it by rowid instead runs 3–9× faster and drops
-        # findability and judged-cases below floor (the vague shape hardest);
+        # both obvious ways to cheapen it cost recall. A union's cost is set by its
+        # commonest token — one corpus-wide word puts six figures of rows through
+        # bm25 — but that breadth *is* the recall: this is the pass that answers the
+        # vague and paraphrase shapes, where the strict pass matched almost nothing
+        # and bm25 over the whole union is what finds the answer. Ordering it by
+        # rowid instead runs 3–9× faster and costs recall on exactly those shapes;
         # pruning the high-document-frequency terms out of the union is not
         # order-preserving either — over the pool's own top 20 it changes 10–85% of
         # the rows. A cheaper tier has to come from somewhere other than the shape

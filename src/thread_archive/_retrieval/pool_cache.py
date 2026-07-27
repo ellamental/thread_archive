@@ -13,7 +13,7 @@ This module is the seam that stops paying it. The contract mirrors
 (``with install(cache):``) and :func:`thread_archive._retrieval.retrieve_pool`
 consults whatever is current. Nothing installed → :func:`current` is ``None`` and
 the check is one ``is None``, so the request path is untouched. Production never
-installs one; the gold gate and the eval bench do.
+installs one; the eval bench does.
 
 **The key is the whole correctness story.** :func:`key_for` names every input the
 pool depends on, ``rrf_k`` and the effective pool depth included. Omitting one
@@ -25,8 +25,9 @@ or the fusion belongs in the key.
 
 Two things the key deliberately cannot see, because they are ambient rather than
 arguments: **which corpus** is open, and **when**. The caller supplies
-``namespace`` for the first (the gold gate passes the snapshot's ``snapshot_id``,
-so a re-snapshot lands in a different namespace rather than serving stale hits).
+``namespace`` for the first (a snapshot-bound run passes the snapshot's
+``snapshot_id``, so a re-snapshot lands in a different namespace rather than
+serving stale hits).
 The second is unguarded — a cached pool is a point-in-time read of a mutable
 index, so a cache pointed at the *live* archive goes stale as events arrive.
 Frozen snapshots are what this is for.

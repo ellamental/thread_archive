@@ -17,9 +17,26 @@ first — is a different shape, and these two blocks are built for it:
 - the :data:`SENTINEL` block plants a nonce term in exactly :data:`SENTINEL_N`
   threads and nowhere else, so "which threads mention it" is true by
   construction no matter how much noise surrounds them, and ``SENTINEL_N`` sits
-  past the default result window so a ranked search *must* cut the set — only
-  the enumerating shapes (``group='browse'``, ``output='count'``) can return all
-  of it.
+  past the *default* result window (20) so the default-shaped ranked call cuts
+  the set.
+
+  The cut is the window, not a ceiling, and it is not an ambiguity either. The
+  candidate pool resolves to ``max(limit * 5, pool_floor)``, so a ranked call at
+  ``limit >= SENTINEL_N`` returns the whole set; and a ranked ``Results`` already
+  carries ``total`` / ``total_threads`` / ``pages`` / ``exhaustive``, so a caller
+  can tell "these are all of them" from "these are 20 of 24" without a second
+  query.
+
+  What the enumerating shapes actually own is the **duplicate fold**.
+  ``group='thread'`` collapses cross-thread duplicate content into one annotated
+  row (``_dup_thread_ids``) and reports the *post-fold* count as ``total``;
+  ``group='browse'`` resolves the exact match set and folds nothing, because a
+  list whose purpose is to enumerate threads must not drop one. The
+  :data:`SERIES` block is where that bites — its passing mentions share identical
+  assistant text, so the ranked shape reports 2 threads and browse reports 12.
+  Both are honest; they answer different questions. The sentinel threads carry
+  distinct subject vocabulary precisely so this block measures the window and not
+  the fold.
 - the :data:`SERIES` block mentions a second nonce term across
   ``len(SERIES_DATES)`` threads spread over a year, with the chronologically
   first mention deliberately the *weakest* lexical match — so a chronological

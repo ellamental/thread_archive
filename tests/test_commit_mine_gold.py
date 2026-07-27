@@ -169,6 +169,36 @@ def test_build_prompt_truncates_a_huge_diff():
     assert len(cm.build_prompt(unit)) < cm.MAX_PATCH_CHARS + 4000
 
 
+def test_split_budget_serves_short_diffs_whole_and_hands_back_the_surplus():
+    # 100 to share: the two short ones fit entire, the long one takes what is left
+    assert cm.split_budget([10, 20, 500], 100) == [10, 20, 70]
+    # nothing to trim — every diff fits
+    assert cm.split_budget([10, 20], 100) == [10, 20]
+    # nothing fits — the cut is even
+    assert cm.split_budget([500, 500], 100) == [50, 50]
+
+
+def test_build_prompt_shows_every_commits_diff_not_just_the_first():
+    # A first diff at the cap used to spend the whole budget, so a multi-commit
+    # session's later work reached the author as a message with no change under it.
+    unit = {"thread_id": "T1", "repo": "o/r", "files": [],
+            "commits": [{"sha": "a", "message": "first", "patch": "A" * 50_000},
+                        {"sha": "b", "message": "second", "patch": "B" * 40}]}
+    prompt = cm.build_prompt(unit)
+    assert "B" * 40 in prompt                       # the short second diff is whole
+    assert "diff truncated" in prompt               # and the clip is declared
+    body, clipped = cm.render_patches(unit["commits"])
+    assert clipped == 1 and len(body) < cm.MAX_PATCH_CHARS + 200
+
+
+def test_render_patches_tolerates_commits_with_no_diff():
+    commits = [{"sha": "a", "message": "m", "patch": ""},
+               {"sha": "b", "message": "m", "patch": "@@ -1 +1 @@"}]
+    body, clipped = cm.render_patches(commits)
+    assert body == "@@ -1 +1 @@" and clipped == 0
+    assert cm.render_patches([])[0] == ""
+
+
 # ── the miner's run path ─────────────────────────────────────────────────────
 
 def test_commit_miner_run_writes_cases(archive_home, tmp_path):
@@ -198,14 +228,26 @@ def test_commit_miner_run_writes_cases(archive_home, tmp_path):
          "commits": [{"sha": "xyz", "message": "withdrawn", "patch": "@@"}]},
     ])
     out = tmp_path / "commit-cases.jsonl"
-    reply = json.dumps({"queries": [
-        {"query": "where did we cap the upload retries", "difficulty": "intent"}]})
+    calls: list[dict] = []
+
+    def fake_agent(prompt, model, tool_cmd, **kwargs):
+        """Two agent stages, two different asks — dispatch on the prompt the way
+        the real ``claude`` would, so the run exercises the audit *and* the author
+        rather than feeding one reply to both."""
+        calls.append({"prompt": prompt, **kwargs})
+        if "auditing a benchmark" in prompt:
+            return json.dumps({"aligned": True, "targetable": True,
+                               "reason": "the session edits a.py and caps the retry loop"
+                               }), {"num_turns": 6, "cost_usd": 0.4}
+        return json.dumps({"queries": [
+            {"query": "where did we cap the upload retries",
+             "difficulty": "intent"}]}), {"num_turns": 1, "cost_usd": 0.1}
 
     ns = argparse.Namespace(model="opus", jobs=1, seed=7, out=out, target=1,
-                            linkage=linkage, per_repo=5)
+                            linkage=linkage, per_repo=5,
+                            provenance_gate=True, alignment=True)
     ctx = fw.MineContext(snapshot_id="snap-1", target=1, model="opus", jobs=1,
-                         tool_cmd="py tool", args=ns,
-                         agent_run=lambda *a, **k: (reply, {"num_turns": 1}))
+                         tool_cmd="py tool", args=ns, agent_run=fake_agent)
     result = cm.MINER.run(ctx)
 
     assert result.written == 1 and result.attempted == 1
@@ -215,7 +257,27 @@ def test_commit_miner_run_writes_cases(archive_home, tmp_path):
     assert row["grades"][row["gold"][0]] == 2
     assert "GONE" not in row["grades"]                 # stale row never sampled
     assert len(row["prompt_sha"]) == 12 and "miner_commit" in row
-    assert any("absent from this snapshot" in n for n in result.notes)
+    assert len(row["template_sha"]) == 12
+
+    audit, author = calls
+    # The auditor reads the session — that is its whole job — and the author is
+    # denied the corpus seam structurally rather than asked not to look.
+    assert audit["corpus_access"] is not False and gid in audit["prompt"]
+    assert author["corpus_access"] is False
+    assert gid not in author["prompt"] and sid not in author["prompt"]
+    # And nothing the auditor *found* is carried forward. This is the property the
+    # whole two-stage design rests on: a validator that handed its reasoning to the
+    # author would be a vocabulary leak wearing a QA badge.
+    assert "caps the retry loop" not in author["prompt"]
+
+    # The funnel is the run's record of where units went, stage by stage.
+    stages = [r["stage"] for r in result.funnel.rows()]
+    assert stages == ["linkage", "sample", "provenance", "alignment", "author"]
+    linkage_row = result.funnel.rows()[0]
+    assert linkage_row["in"] == 3 and linkage_row["out"] == 2
+    assert linkage_row["reasons"]["absent-from-snapshot"] == 1
+    assert result.funnel.cost_usd == 0.5           # audit + author, per unit
+    assert "funnel" in result.notes[0]
 
 
 def test_commit_miner_is_excluded_from_mine_all():
@@ -234,15 +296,51 @@ def test_commit_miner_is_registered():
 
 def _corpus_module():
     """``search_lab/swechat_corpus.py``, loaded by path (a script, not a package
-    module) — the same way test_mine_framework loads the gold gate."""
+    module)."""
     import importlib.util
-    from pathlib import Path
 
     path = Path(__file__).resolve().parents[1] / "search_lab" / "swechat_corpus.py"
     spec = importlib.util.spec_from_file_location("swechat_corpus", path)
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
     return mod
+
+
+def test_corpus_build_folds_the_code_axis(archive_home):
+    """A corpus home has no watcher, so nothing else ever builds ``event_paths``.
+    Left unfolded it is empty rather than merely stale, and ``mine edited`` finds
+    no path with two editing conversations on a corpus full of them."""
+    from sqlalchemy import text as sa_text
+
+    from thread_archive._store import Thread, get_session, init_db, use_session
+
+    sc = _corpus_module()
+    init_db()
+    with get_session() as s:
+        t = Thread(name="c:t", title="t", thread_type="conversation",
+                   source="claude-code", source_id="s1")
+        s.add(t)
+        s.flush()
+        tid = t.id
+        s.commit()
+    with use_session() as s:
+        s.execute(sa_text(
+            "INSERT INTO events (thread_id, stream_id, event_type, payload, "
+            "occurred_at) VALUES (:t, 's', 'tool_use_complete', :p, :at)"),
+            {"t": tid, "at": "2026-01-05T10:00:00Z",
+             "p": json.dumps({"tool_name": "Edit",
+                              "input": {"file_path": "/repo/src/up.py",
+                                        "new_string": "for _ in range(3)"}})})
+        s.commit()
+
+    result = sc.fold_code_index(archive_home)
+
+    assert result["paths"] >= 1
+    with use_session() as s:
+        rows = s.execute(sa_text("SELECT path FROM event_paths")).all()
+    assert "/repo/src/up.py" in {r[0] for r in rows}
+    # Idempotent: the second fold is a cursor read, not a rebuild.
+    assert sc.fold_code_index(archive_home)["paths"] == result["paths"]
 
 
 def test_transcript_detector_accepts_jsonl_and_rejects_pretty_printed(tmp_path):
@@ -268,36 +366,37 @@ def test_transcript_detector_accepts_jsonl_and_rejects_pretty_printed(tmp_path):
     assert not sc.is_claude_code_transcript(absent)
 
 
-def test_choose_sessions_caps_each_repo_and_prefers_linked():
-    """A budget must not land inside one codebase. SWE-chat's largest repo holds 870
-    of 5851 sessions, so taking repos whole would spend a modest budget on a single
-    project and leave a benchmark that measures search over that project."""
+def test_transcript_detector_rejects_other_harnesses_line_delimited_json(tmp_path):
+    """Line-delimited JSON with a ``type`` key is not enough to call a file Claude
+    Code's. Codex writes JSONL too, under a ``{timestamp, type, payload}`` envelope
+    the Claude Code parser does not read — accepting it imports a thread of about
+    four events where a real session holds several hundred, which is a corpus of
+    empty documents rather than a loud failure."""
     sc = _corpus_module()
-    by_repo = {"o/big": [f"B{i}" for i in range(500)]}
-    for r in range(5):
-        by_repo[f"o/s{r}"] = [f"S{r}_{i}" for i in range(20)]
-    # every small repo's first session is commit-linked; the big repo has none
-    linked = {f"S{r}_0" for r in range(5)}
 
-    keep = sc.choose_sessions(by_repo, linked, budget=100, per_repo=10)
-    assert len(keep) == 60                       # 6 repos, each held to the cap
-    for members in by_repo.values():
-        assert len(keep & set(members)) <= 10    # no repo exceeds the cap
-    assert linked <= keep                        # linked sessions kept first
+    codex = tmp_path / "codex.jsonl"
+    codex.write_text(json.dumps({
+        "timestamp": "2026-03-30T05:38:34.431Z", "type": "session_meta",
+        "payload": {"id": "019d3d40", "cwd": "/repo", "originator": "codex-tui"},
+    }) + "\n")
+    assert not sc.is_claude_code_transcript(codex)
+
+    copilot = tmp_path / "copilot.jsonl"
+    copilot.write_text(json.dumps({"type": "session.start"}) + "\n")
+    assert not sc.is_claude_code_transcript(copilot)
 
 
-def test_choose_sessions_spends_the_budget_on_the_richest_repos():
-    """Ranking is by commit-linked yield: a budget too small for every repo must go
-    where cases can actually be mined."""
+def test_transcript_detector_accepts_preamble_opening_lines(tmp_path):
+    """Most Claude Code transcripts do not open on a turn. A file-history snapshot
+    or a title record carries none of the session keys, so a rule that keyed only
+    on ``sessionId``/``parentUuid`` would reject the majority of the corpus."""
     sc = _corpus_module()
-    by_repo = {"rich": ["r1", "r2"], "poor": ["p1", "p2"]}
-    keep = sc.choose_sessions(by_repo, {"r1", "r2"}, budget=2, per_repo=10)
-    assert keep == {"r1", "r2"}
 
-
-def test_select_corpus_without_a_budget_takes_everything():
-    sc = _corpus_module()
-    assert sc.select_corpus(Path("/nowhere"), budget=0) is None
+    for opener in ("file-history-snapshot", "progress", "queue-operation",
+                   "permission-mode", "summary", "custom-title"):
+        path = tmp_path / f"{opener}.jsonl"
+        path.write_text(json.dumps({"type": opener}) + "\n")
+        assert sc.is_claude_code_transcript(path), opener
 
 
 def test_as_list_normalizes_json_string_columns():
@@ -308,3 +407,126 @@ def test_as_list_normalizes_json_string_columns():
     assert sc._as_list(["a"]) == ["a"]
     assert sc._as_list("") == [] and sc._as_list(None) == []
     assert sc._as_list("not json") == [] and sc._as_list('{"k": 1}') == []
+
+
+# ── the gates ────────────────────────────────────────────────────────────────
+
+def _ctx(**kw):
+    import argparse
+
+    from search_lab.mine import _framework as fw
+
+    ns = argparse.Namespace(provenance_gate=True, alignment=True, **kw)
+    return fw.MineContext(snapshot_id="s", target=1, model="opus", jobs=1,
+                          tool_cmd="py tool", args=ns)
+
+
+def test_commit_files_strips_the_name_status_prefix():
+    """SWE-chat stores files_changed as `git diff --name-status`, so every path
+    arrives behind a status letter and a tab."""
+    unit = {"commits": [{"files": ["M\tsrc/a.py", "D\tsrc/b.py", "  "]},
+                        {"files": ["A\tsrc/a.py"]}]}          # dupe collapses
+    assert cm.commit_files(unit) == ["src/a.py", "src/b.py"]
+
+
+def test_provenance_gate_refuses_a_session_that_never_touched_the_files(archive_home):
+    from sqlalchemy import text as sa_text
+
+    from search_lab.mine import _framework as fw
+    from thread_archive._store import Thread, get_session, init_db, use_session
+
+    init_db()
+    with get_session() as s:
+        t = Thread(name="c:t", title="t", thread_type="conversation",
+                   source="cc", source_id="s1")
+        s.add(t)
+        s.flush()
+        tid = t.id
+        s.commit()
+    with use_session() as s:
+        s.execute(sa_text(
+            "INSERT INTO event_paths (event_id, thread_id, path, basename, op, "
+            "tool_name, occurred_at) VALUES (1, :t, '/repo/src/a.py', 'a.py', "
+            "'edit', 'Edit', '2026-01-05T10:00:00Z')"), {"t": tid})
+        s.commit()
+
+    aligned = {"thread_id": tid, "commits": [{"files": ["M\tsrc/a.py"]}]}
+    assert fw.Verdict is not None
+    assert cm.stage_provenance(aligned, _ctx()).kept          # the trail agrees
+
+    elsewhere = {"thread_id": tid, "commits": [{"files": ["M\tsrc/z.py"]}]}
+    verdict = cm.stage_provenance(elsewhere, _ctx())
+    assert not verdict.kept and verdict.reason == "no-file-overlap"
+
+
+def test_provenance_gate_stands_down_when_the_corpus_has_no_projection(archive_home):
+    """An empty event_paths means unmeasured, not disproven. Refusing every unit
+    would report a corpus of pure misattribution, which is a spectacular way to be
+    wrong."""
+    from thread_archive._store import init_db
+
+    init_db()
+    unit = {"thread_id": "T1", "commits": [{"files": ["M\tsrc/a.py"]}]}
+    assert cm.stage_provenance(unit, _ctx()).kept
+
+
+def test_provenance_gate_can_be_turned_off(archive_home):
+    from thread_archive._store import init_db
+
+    init_db()
+    unit = {"thread_id": "T1", "commits": [{"files": ["M\tsrc/a.py"]}]}
+    ctx = _ctx()
+    ctx.args.provenance_gate = False
+    assert cm.stage_provenance(unit, ctx).kept
+
+
+def test_parse_alignment_requires_both_verdicts():
+    """A reply answering one question is not a verdict, and defaulting the other
+    would silently turn the audit into a rubber stamp."""
+    v = cm.parse_alignment('ok: {"aligned": true, "targetable": false, "reason": "wip"}')
+    assert v == {"aligned": True, "targetable": False, "reason": "wip"}
+    assert cm.parse_alignment('{"aligned": true}') is None
+    assert cm.parse_alignment('{"targetable": true}') is None
+    assert cm.parse_alignment('{"aligned": "yes", "targetable": true}') is None
+    assert cm.parse_alignment("no json") is None
+
+
+def test_alignment_gate_separates_a_broken_label_from_a_hard_one():
+    """The two drops move a benchmark in opposite directions — one removes a wrong
+    label, the other removes a hard case — so they are never one counter."""
+    unit = {"thread_id": "T1", "repo": "o/r",
+            "commits": [{"sha": "a", "message": "m", "patch": "@@", "files": []}]}
+
+    def replying(payload):
+        return lambda *a, **k: (json.dumps(payload), {"cost_usd": 0.3})
+
+    ctx = _ctx()
+    ctx.agent_run = replying({"aligned": False, "targetable": True, "reason": "r"})
+    assert cm.stage_alignment(unit, ctx).reason == "misattributed"
+
+    ctx.agent_run = replying({"aligned": True, "targetable": False, "reason": "r"})
+    assert cm.stage_alignment(unit, ctx).reason == "untargetable-commit"
+
+    ctx.agent_run = replying({"aligned": True, "targetable": True, "reason": "r"})
+    verdict = cm.stage_alignment(unit, ctx)
+    assert verdict.kept and verdict.reason == "ok" and verdict.cost_usd == 0.3
+
+
+def test_alignment_gate_records_a_failed_or_unparseable_audit_apart():
+    unit = {"thread_id": "T1", "repo": "o/r",
+            "commits": [{"sha": "a", "message": "m", "patch": "@@", "files": []}]}
+    ctx = _ctx()
+    ctx.agent_run = lambda *a, **k: (None, {"error": "timeout"})
+    assert cm.stage_alignment(unit, ctx).reason == "audit-failed"
+    ctx.agent_run = lambda *a, **k: ("hello", {})
+    assert cm.stage_alignment(unit, ctx).reason == "audit-unparseable"
+
+
+def test_no_alignment_drops_the_paid_gate_from_the_declared_funnel():
+    import argparse
+
+    full = cm.MINER.stages(argparse.Namespace(alignment=True))
+    assert [s.name for s in full] == ["provenance", "alignment", "author"]
+    assert [s.kind for s in full] == ["free", "agent", "agent"]
+    cheap = cm.MINER.stages(argparse.Namespace(alignment=False))
+    assert [s.name for s in cheap] == ["provenance", "author"]

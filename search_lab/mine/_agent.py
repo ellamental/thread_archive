@@ -1,9 +1,8 @@
 """The headless-agent seam — one ``claude`` turn-loop, shared by every miner.
 
 Neither this module nor its caller interprets the reply: a miner asks the agent
-for a particular JSON shape and parses whatever comes back, so the same runner
-drives the query miner's verdict, the topic survey/labeler, the rerank judge, and
-the query generator. Bash is allowed only for the snapshot-bound corpus seam
+for a particular JSON shape and parses whatever comes back, so one runner drives
+every miner whatever its prompt. Bash is allowed only for the snapshot-bound corpus seam
 (``mine/__main__.py tool ...``), so a mining agent can search and read the
 frozen corpus and nothing else.
 
@@ -24,9 +23,8 @@ import threading
 DEFAULT_MODEL = "opus"
 
 # One agent run explores with many tool calls; cap the loop and the wall clock so
-# a wedged agent costs a bounded amount and is scored as a failure. The deep
-# corpus-sweep miners (query, topic) want the full budget; the single-pass judge
-# (rerank) overrides to a smaller one.
+# a wedged agent costs a bounded amount and is scored as a failure. A miner whose
+# agent makes a single pass overrides these to something smaller.
 AGENT_MAX_TURNS = 60
 AGENT_TIMEOUT_S = 1500
 
@@ -64,6 +62,7 @@ def _resolved_model(envelope: dict) -> str | None:
 def run_claude(prompt: str, model: str, tool_cmd: str, *,
                max_turns: int = AGENT_MAX_TURNS,
                timeout: int = AGENT_TIMEOUT_S,
+               corpus_access: bool = True,
                runner=subprocess.run) -> tuple[str | None, dict]:
     """One headless agent turn-loop. Returns (final message text | None, stats).
     Bash is allowed only for ``tool_cmd`` (the snapshot-bound corpus access); any
@@ -73,7 +72,13 @@ def run_claude(prompt: str, model: str, tool_cmd: str, *,
     no more than :data:`MAX_CONCURRENT_SESSIONS` agents run at once across the
     process. ``runner`` is the subprocess seam (default the real
     ``subprocess.run``) — a test supplies a fake to exercise the envelope handling
-    without shelling ``claude``."""
+    without shelling ``claude``.
+
+    ``corpus_access=False`` hands the agent **no tools at all**. An authoring
+    agent whose protocol depends on never reading the corpus — one writing queries
+    from an artifact, where a peek at the answer would leak its vocabulary back
+    into the query — should be unable to search rather than asked not to. A
+    prompt is a request; an empty allowlist is a guarantee."""
     stats: dict = {}
     try:
         # Hold a slot only for the live subprocess — the JSON parse afterward is
@@ -83,7 +88,7 @@ def run_claude(prompt: str, model: str, tool_cmd: str, *,
             proc = runner(
                 ["claude", "-p", prompt, "--output-format", "json",
                  "--model", model, "--max-turns", str(max_turns),
-                 "--allowedTools", f"Bash({tool_cmd}:*)"],
+                 "--allowedTools", f"Bash({tool_cmd}:*)" if corpus_access else ""],
                 capture_output=True, text=True, timeout=timeout,
             )
         if proc.returncode != 0:

@@ -3,12 +3,10 @@
 The engine every harness that scores *gold cases* runs through: they build eval
 cases under one of the protocols below and hand them to :func:`evaluate`, which
 runs one MRR / success@k / recall@k / nDCG@k loop. One scoring path, so a number
-from the gold gate, a number from the BM25 reference, and a number from the
-exported SWE-chat benchmark all mean the same thing —
-``retrieval_eval``, ``bm25_baseline``, ``window_fill``, the miners, and
-``scripts/retrieval_gold_gate.py`` share it, and ``swechat_bench``'s published
-scorer reproduces its definitions (notably :func:`ndcg_at_k`'s exponential gain)
-in dependency-free form.
+from the BM25 reference and a number from the exported SWE-chat benchmark mean
+the same thing — ``retrieval_eval``, ``bm25_baseline`` and the miners share it,
+and ``swechat_bench``'s published scorer reproduces its definitions (notably
+:func:`ndcg_at_k`'s exponential gain) in dependency-free form.
 
 The external calibration harnesses (``beir_eval``, ``cdr_eval``,
 ``haystack_eval``) do **not** score through here, and shouldn't: their job is to
@@ -19,10 +17,10 @@ cases here, published benchmarks there. What they do share is the plumbing that
 decides *which stack* gets measured (``search_lab.eval_home``), so a number's
 configuration means the same thing on both sides even where its metric does not.
 
-Measurement, not product: quality numbers are read deliberately against a
-snapshot-bound baseline (``search_lab/README.md`` → "Taking a baseline"), by
-someone who knows what the golds are worth. An install ships no scoring surface
-at all.
+Measurement, not product: a number out of here is read by someone who knows what
+the cases it scored are worth, and no number produced on this archive's own
+corpus certifies that search is good (``search_lab/README.md`` → "What a number
+here is worth"). An install ships no scoring surface at all.
 
 Case protocols:
 
@@ -88,11 +86,12 @@ import re
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional
 
 from sqlalchemy import text as sa_text
 
 from thread_archive import _api as api
+from thread_archive._retrieval import _probe
 from thread_archive._retrieval.read import resolve_thread_ref
 from thread_archive._store import use_session
 
@@ -360,7 +359,7 @@ def load_case_file(path: Path) -> list[dict]:
             case["snapshot_id"] = row["snapshot_id"]
         # Stratifying metadata the miners stamp — carried through scoring so the
         # evaluator can report a findability file's difficulty tiers apart (an
-        # aggregate hides the vague-recall stratum that matters most) rather than
+        # aggregate hides the hardest stratum, which is the one that matters) rather than
         # discarding the labels the miner spent tokens to assign.
         for key in ("difficulty", "protocol", "target_thread"):
             if row.get(key) is not None:
@@ -402,13 +401,13 @@ class EvalProgress:
     """What an :func:`evaluate` run knows partway through — the state an
     ``early_stop`` predicate decides on.
 
-    ``sums`` holds running totals under the same names the gold gate's floors use
-    (``mrr``, ``success10``, ``recall10``, ``ndcg10``), each a per-case value in
+    ``sums`` holds running totals under the headline metric names (``mrr``,
+    ``success10``, ``recall10``, ``ndcg10``), each a per-case value in
     [0, 1] summed over the cases scored so far. That shape is what makes a *sound*
     early exit possible: every remaining case can contribute at most 1.0, so
     ``(sums[m] + (n - scored)) / n`` is the best final value still reachable, and
-    a predicate comparing it to a floor aborts only runs that could not have
-    passed. ``case_rr`` is the reciprocal rank of the case just scored — 0.0
+    a predicate comparing it to a threshold aborts only runs that could not have
+    reached it. ``case_rr`` is the reciprocal rank of the case just scored — 0.0
     meaning its gold never surfaced — for predicates that watch individual
     failures rather than the aggregate.
     """
@@ -488,15 +487,16 @@ def evaluate(cases: list[dict], *, limit: int, content_type,
         search = api.search
     per_shape: dict[str, list[float]] = {}
     # Per-difficulty-tier accumulators, populated only for cases that carry a
-    # ``difficulty`` (querygen findability). Each tier keeps the same four signals
-    # the gold-gate floors use, so a stratum can be reported — and floored — apart
-    # from the aggregate that would otherwise mask the weakest one.
+    # ``difficulty`` (a miner's query-difficulty ladder). Each tier keeps the same
+    # four headline signals, so a stratum can be reported apart from the aggregate
+    # that would otherwise mask the weakest one.
     per_difficulty: dict[str, dict[str, float]] = {}
     reciprocal_ranks: list[float] = []
     successes_at: dict[int, int] = {k: 0 for k in RECALL_KS}
     recall_at: dict[int, float] = {k: 0.0 for k in RECALL_KS}
     ndcg_at: dict[int, float] = {k: 0.0 for k in RECALL_KS}
     latencies: list[float] = []
+    stage_samples: list[dict] = []
     per_case: list[dict] = []
     aborted: str | None = None
 
@@ -507,14 +507,25 @@ def evaluate(cases: list[dict], *, limit: int, content_type,
         # stands in as binary relevance so nDCG is still defined and comparable.
         grades = case.get("grades") or {t: 1 for t in case["gold"]}
         pool_rels = [float(g) for g in grades.values()]
-        t0 = time.monotonic()
-        hits = search(
-            case["query"],
-            limit=limit + len(skip),
-            content_types=[content_type] if content_type else None,
-            exclude_content_types=exclude_content_types,
-        )
-        latencies.append(time.monotonic() - t0)
+        # The stage breakdown rides along for free: these are the same searches a
+        # latency run would pay for again, so a quality pass that recorded only a
+        # total would throw away the profile it already produced. The probe is a
+        # context-local slot and a search nobody measures never checks it, so
+        # installing one here costs the eval nothing it wasn't already spending.
+        with _probe.install() as probe:
+            t0 = time.monotonic()
+            hits = search(
+                case["query"],
+                limit=limit + len(skip),
+                content_types=[content_type] if content_type else None,
+                exclude_content_types=exclude_content_types,
+            )
+            elapsed = time.monotonic() - t0
+        latencies.append(elapsed)
+        if probe.ran:
+            stage_sample = probe.as_record()
+            stage_sample["total_ms"] = elapsed * 1000.0
+            stage_samples.append(stage_sample)
 
         rank = 0  # 0 = not found within limit
         gold_positions: dict[object, int] = {}
@@ -552,7 +563,8 @@ def evaluate(cases: list[dict], *, limit: int, content_type,
             bucket["success10"] += 1.0 if found10 else 0.0
             bucket["recall10"] += found10 / len(gold) if gold else 0.0
             bucket["ndcg10"] += ndcg_at_k(ranked_rels, pool_rels, 10)
-        case_row = {"query": case["query"], "rr": round(rr, 4)}
+        case_row = {"query": case["query"], "rr": round(rr, 4),
+                    "latency_ms": round(elapsed * 1000.0, 1)}
         if difficulty is not None:
             case_row["difficulty"] = difficulty
         per_case.append(case_row)
@@ -598,4 +610,143 @@ def evaluate(cases: list[dict], *, limit: int, content_type,
         "latency_p50_ms": (
             sorted(latencies)[len(latencies) // 2] * 1000 if latencies else 0.0
         ),
+        "latency": latency_profile(latencies, stage_samples),
+    }
+
+
+def percentiles(values: list[float]) -> dict[str, float]:
+    """``{p50, p95, p99}`` over ``values``, nearest-rank. Empty is all zeros.
+
+    Nearest-rank rather than interpolated because a gold file is tens of cases:
+    at n=75 the p99 is one sample either way, and interpolating between two of
+    them invents a number that no search actually took."""
+    if not values:
+        return {"p50": 0.0, "p95": 0.0, "p99": 0.0}
+    ordered = sorted(values)
+    def at(q: float) -> float:
+        idx = min(len(ordered) - 1, max(0, math.ceil(q * len(ordered)) - 1))
+        return round(ordered[idx], 1)
+    return {"p50": at(0.50), "p95": at(0.95), "p99": at(0.99)}
+
+
+def latency_profile(latencies: list[float],
+                    stage_samples: list[dict]) -> dict:
+    """Where a scoring run's time went, from the probes installed around its own
+    searches — the free half of a quality pass.
+
+    A quality run executes exactly the workload a latency run would execute again,
+    so recording only a median throws away a per-stage profile already paid for.
+    This is not a substitute for ``speed.py``: that measures warm steady-state over
+    ``query × rep`` with the pool cache suspended, and controls for the things a
+    distribution needs controlled. This is one sample per case under whatever
+    conditions the scoring run had, which makes it a *lead* — "the intent tier
+    spends its time in the re-rank" — not a benchmark number.
+
+    Stage times are durations, not shares: the two pool arms run concurrently, so
+    ``fts_ms`` and ``semantic_ms`` cover overlapping wall-clock and can sum past
+    the total. Only the shape stages sum. ``n`` is how many searches carried a
+    breakdown, which is below the case count when a pool-cache hit sat the arms
+    out — the cases that did no retrieval are excluded rather than averaged in as
+    fast ones."""
+    stages: dict[str, list[float]] = {}
+    for sample in stage_samples:
+        for name, value in sample.items():
+            if name.endswith("_ms") and name != "total_ms":
+                stages.setdefault(name, []).append(float(value))
+    return {
+        "n": len(stage_samples),
+        "total": percentiles([v * 1000.0 for v in latencies]),
+        "stages": {name: percentiles(vs)
+                   for name, vs in sorted(stages.items()) if any(vs)},
+        "cold": sum(1 for s in stage_samples if s.get("cold")),
+        "pool_p50": (sorted(p := [s.get("pool_size", 0) for s in stage_samples])
+                     [len(p) // 2] if stage_samples else 0),
+    }
+
+
+#: How much of a query's text a report keeps. Enough to recognise which query a
+#: row is, and short enough that a conversational benchmark — whose "query" is a
+#: whole multi-turn context — cannot make the per-query file the largest thing in
+#: the archive home.
+QUERY_TEXT_CAP = 240
+
+
+def query_row(*, qid: Any, query: str, latency_s: float, rank: Optional[int],
+              n_gold: int, found: int, measures: dict,
+              group: Optional[str] = None) -> dict:
+    """One scored query, in the shape every harness reports and the bench keeps.
+
+    The aggregate says a row scores 0.494. This says *which* queries it failed
+    and how badly, which is the only form of the result anybody can act on: an
+    nDCG that moved 0.02 is a number, and the eleven queries that stopped
+    retrieving their gold document at all are a bug with a shape.
+
+    ``rank`` is the 1-based position of the first gold document in the returned
+    ranking, or None when no gold document came back at all. That distinction is
+    the whole reason to keep this: "the answer was ranked 40th" is a ranking
+    problem and "the answer was never retrieved" is a recall one, they are fixed
+    in different places, and a score of 0.0 reports them identically.
+
+    ``group`` is whatever stratum the harness knows the query by — a LoCoMo
+    category, a miner's difficulty tier — so a failure can be read as belonging
+    to a kind rather than as one bad query."""
+    text = (query or "").strip().replace("\n", " ")
+    row = {
+        "qid": str(qid),
+        "query": text[:QUERY_TEXT_CAP] + ("…" if len(text) > QUERY_TEXT_CAP else ""),
+        "latency_ms": round(latency_s * 1000.0, 1),
+        "rank": rank,
+        "n_gold": n_gold,
+        "found": found,
+        "measures": {k: (round(v, 4) if isinstance(v, float) else v)
+                     for k, v in measures.items()},
+    }
+    if group is not None:
+        row["group"] = group
+    return row
+
+
+def performance(latencies: list[float], stage_samples: list[dict], *,
+                scoring_s: float, corpus_docs: Optional[int] = None,
+                arms: Optional[list[str]] = None) -> dict:
+    """What a benchmark run *cost*, beside what it scored — the shape every
+    harness's ``--json-out`` reports and the ledger keeps.
+
+    A benchmark row already runs the exact workload a latency measurement would
+    run again, so a report carrying only a median throws away a distribution and
+    a per-stage profile that were already paid for. Once it is in the ledger, a
+    tuning pass that lifts nDCG by 0.004 and doubles p99 is legible as the trade
+    it is, rather than as a win.
+
+    Read as a *lead*, not a benchmark: this is one sample per query under
+    whatever conditions the scoring run had — a shared machine, a cold model on
+    the first query, whatever else was running. ``speed.py`` is what controls for
+    those. What this answers is "did the shape of the cost change between these
+    two configurations", which no controlled run of only the newest one can.
+
+    ``scoring_s`` is the scored loop alone. The runner's own ``elapsed_s`` covers
+    the whole process, so the difference between them is what the row spent
+    getting ready — an ingest, an embed pass, a model load — which is most of a
+    cold row's wall-clock and none of its search cost."""
+    profile = latency_profile(latencies, stage_samples)
+    n = len(latencies)
+    ms = [v * 1000.0 for v in latencies]
+    return {
+        "queries": n,
+        "scoring_s": round(scoring_s, 1),
+        # Queries per second over the scored loop — the throughput a caller would
+        # actually see, so it includes whatever the loop did between searches.
+        "qps": round(n / scoring_s, 2) if scoring_s > 0 and n else None,
+        "mean_ms": round(sum(ms) / n, 1) if n else 0.0,
+        "max_ms": round(max(ms), 1) if n else 0.0,
+        "total": profile["total"],
+        "stages": profile["stages"],
+        # How many searches carried a stage breakdown. Below the query count when
+        # a pool-cache hit sat the arms out, and the gap is itself the signal —
+        # those searches did no retrieval rather than doing it instantly.
+        "staged": profile["n"],
+        "cold": profile["cold"],
+        "pool_p50": profile["pool_p50"],
+        "corpus_docs": corpus_docs,
+        "arms": list(arms) if arms else None,
     }

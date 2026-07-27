@@ -153,6 +153,76 @@ def test_retrieval_endpoint_serves_the_dev_report(archive_home):
     assert payload["hours"] > 0 and payload["bucket"] in ("hour", "day")
 
 
+def test_search_lab_endpoint_serves_the_bench_inventory(archive_home):
+    """The other dev page's source: what the bench has to measure with. Its rows
+    come off the lab's registries and the corpora on disk, so it answers on a box
+    where nothing has ever been built — an empty bench is a state, not an error."""
+    _seed(archive_home)
+    status, ctype, payload = _get("/api/search-lab")
+    assert status == 200 and ctype == "application/json"
+    assert payload["benchmarks"] and payload["miners"] and payload["datasets"]
+    assert {b["state"] for b in payload["benchmarks"]} <= {
+        "missing", "fresh", "stale", "never-run"}
+
+
+def test_the_run_ledger_is_its_own_route(archive_home):
+    """Every recorded benchmark run, rather than the newest of each row the
+    inventory carries. Its own route because it is a file read and the inventory
+    is a cached filesystem walk — a run that just finished has to appear here
+    now, and must not wait out the walk's cache to do it. An empty ledger is a
+    box nothing has run on, which is a state and not an error."""
+    _seed(archive_home)
+    status, ctype, payload = _get("/api/search-lab/runs")
+    assert status == 200 and ctype == "application/json"
+    assert set(payload) >= {"code_id", "total", "returned", "runs"}
+    assert payload["returned"] == len(payload["runs"]) <= payload["total"]
+    for run in payload["runs"]:
+        assert run["id"] and run["row"] and run["at"]
+        assert isinstance(run["on_bench"], bool)
+        assert run["code_current"] in (True, False, None)
+
+
+def test_a_runs_per_query_detail_is_its_own_route(archive_home):
+    """Off the run's own sidecar, so opening one run reads one file and the runs
+    list above reads none. A run with no detail kept answers empty rather than
+    404 — pruned by the cap, never recorded, and never run are all "nothing
+    here", and the page says so the same way for each."""
+    _seed(archive_home)
+    status, ctype, payload = _get("/api/search-lab/runs/deadbeef0000/queries")
+    assert status == 200 and ctype == "application/json"
+    assert set(payload) >= {"run_id", "order", "total", "misses", "rows"}
+    assert payload["rows"] == []
+
+
+def test_a_run_id_in_the_url_cannot_reach_out_of_the_store(archive_home):
+    """The id is a URL segment reaching a filename. The viewer is unauthenticated
+    and binds to localhost, so this is the request nobody gets to make."""
+    _seed(archive_home)
+    for hostile in ("..%2F..%2Fetc%2Fpasswd", "....%2F%2Fconfig", "index.db"):
+        status, _, payload = _get(f"/api/search-lab/runs/{hostile}/queries")
+        assert status == 200 and payload["rows"] == []
+
+
+def test_the_ledger_read_is_bounded(archive_home):
+    """The ledger is append-only and never pruned, and the viewer is
+    unauthenticated — so no request gets to ask for an unbounded read."""
+    _seed(archive_home)
+    _, _, payload = _get("/api/search-lab/runs", limit=1)
+    assert payload["returned"] <= 1
+
+
+def test_the_inventory_is_assembled_once_and_served_from_cache(archive_home):
+    """Assembling it walks the eval cache root — tens of GB across the built
+    corpora — so a page that refreshes must not turn into a filesystem sweep per
+    request. Identity, not equality: two equal payloads would also be two walks."""
+    from thread_archive._web.server import _dev_surface, _inventory_payload
+
+    _seed(archive_home)
+    module = _dev_surface("lab_inventory")
+    assert module is not None, "a checkout has the lab"
+    assert _inventory_payload(module) is _inventory_payload(module)
+
+
 def test_the_dev_page_is_a_source_tree_thing_only():
     """What makes an install answer 404 there is packaging, not a runtime check:
     ``_dev`` is excluded from the wheel, so the import behind the endpoint fails
