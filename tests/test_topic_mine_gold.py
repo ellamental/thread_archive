@@ -120,11 +120,23 @@ def test_survey_prompt_seeds_topic_and_members():
     assert "no target count" in p  # the agent decides how many angles
 
 
-# ── slugify ──────────────────────────────────────────────────────────────────
+# ── case_token ───────────────────────────────────────────────────────────────
 
-def test_slugify():
-    assert topic_mine.slugify("Anna's Auth / Rewrite!!") == "anna-s-auth-rewrite"
-    assert topic_mine.slugify("   ") == "topic"
+def test_case_token_carries_no_subject_and_is_stable():
+    t = {"id": "01KR3Q4M9DD2VCHP8JFAV4EEE5", "title": "a private subject"}
+    tok = topic_mine.case_token(t)
+    assert tok == topic_mine.case_token(dict(t))      # stable for the same topic
+    assert tok.isalnum() and len(tok) == 12
+    for word in ("private", "subject", "a-private-subject"):
+        assert word not in tok                        # the subject does not survive
+    # keyed on the topic id, so two topics sharing a title still separate
+    assert tok != topic_mine.case_token({"id": "01KKZJ2YJAZ0HPQCNZ4DSRSTRW",
+                                         "title": "a private subject"})
+
+
+def test_case_token_falls_back_without_an_id():
+    assert topic_mine.case_token({"title": "x"}) == topic_mine.case_token({"title": "x"})
+    assert topic_mine.case_token({}) == topic_mine.case_token({})
 
 
 # ── resolve_topic (over a seeded store) ──────────────────────────────────────

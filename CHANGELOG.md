@@ -1007,7 +1007,7 @@
   files (64 `querygen`, 21 `query`, 19 `rerank`, 213 `topic`). Topics were chosen
   for subject coverage and for sitting inside families of near-synonyms, where the
   hard negatives are real neighbouring conversations rather than synthesized ones —
-  the two family picks (`Cloth`, `Librarian System`) produced the widest margins.
+  the two family picks (both project-name topics) produced the widest margins.
   Selecting instead by how lexically separable a topic's title is does not predict
   anything and should not be used: across 21 topics the correlation with the stack's
   margin is −0.33, not significant, and it changed sign between batches.
@@ -1703,7 +1703,7 @@
   `fusion_heavy.py` (800) keep both sides of the optimum measurable.
 
 - The retrieval gold gate now gates **all seven** mined gold files.
-  `topic-cases-needle` and `topic-cases-context-compaction` were scored and printed
+  `topic-cases-398932b913e9` and `topic-cases-03769ec66804` were scored and printed
   on every run but carried no floor entry, so they could have regressed to zero
   without failing CI. Every floor is also recalibrated to the shipped ranking
   config on an explicit rule: scoring is deterministic — the same code over the same
@@ -1879,7 +1879,7 @@
   snapshot-bound gold files (snapshot `9519fc4518e13ee7`): aggregate success@10 0.909 → 0.945, true
   recall@10 0.708 → 0.746, nDCG@10 0.571 → 0.584, MRR 0.608 → 0.619, success@1 flat, no latency cost.
   Tuned on the query-mined `judged-cases`, confirmed on the held-out topic files (largest held-out
-  lift `topic-cases-needle` S@10 0.900 → 1.000, R@10 +0.083; neutral on frustration/topic-alpha; one
+  lift `topic-cases-398932b913e9` S@10 0.900 → 1.000, R@10 +0.083; neutral on the other two topic files; one
   noise-level dip on context-compaction R@10 −0.014). The gains land in top-10 reachability, not
   success@1 — the rank-1 lexical confounds hold, but more real answers reach the window agents scan.
 
@@ -1954,7 +1954,7 @@
   ungated until it gets a floor. Initial floors, a few points under the first baseline over snapshot
   `9519fc4518e13ee7`: judged-cases MRR/S@10/R@10/nDCG@10 floors 0.40/0.80/0.70/0.46 (measured
   0.441/0.857/0.762/0.511); topic-cases-alpha 0.58/0.85/0.78/0.58 (measured 0.683/1.000/0.836/0.642);
-  topic-cases-frustration 0.50/0.70/0.50/0.45 (measured 0.600/0.857/0.562/0.511).
+  topic-cases-781e23b9d3d5 0.50/0.70/0.50/0.45 (measured 0.600/0.857/0.562/0.511).
 
 - New `thread_archive snapshot <dest>` verb freezes the corpus into a self-contained, immutable archive home:
   it copies the JSONL truth (drain-consistent, under the truth-write lock) and materializes `index.db` beside it,

@@ -39,26 +39,29 @@ reported but ungated until a floor is added for them. At the shipped configurati
 (`fusion_weight=400`, `bm25_weight=100`, cross-encoder off), the floored files
 read:
 
-| gold file | miner | n | MRR | success@10 | recall@10 | nDCG@10 |
+| miner | files | n | MRR | success@10 | recall@10 | nDCG@10 |
 |---|---|---|---|---|---|---|
-| findability | `querygen` | 64 | 0.726 | 0.953 | 0.953 | 0.780 |
-| judged | `query` | 21 | 0.480 | 0.952 | 0.905 | 0.574 |
-| rerank-cases | `rerank` | 19 | 0.658 | 0.895 | 0.496 | 0.648 |
-| context-compaction | `topic` | 10 | 0.917 | 1.000 | 0.734 | 0.698 |
-| needle | `topic` | 10 | 0.750 | 0.900 | 0.523 | 0.599 |
-| topic-a | `topic` | 7 | 0.833 | 1.000 | 0.879 | 0.716 |
-| topic-b | `topic` | 7 | 0.552 | 0.857 | 0.510 | 0.497 |
+| `querygen` | 1 | 64 | 0.726 | 0.953 | 0.953 | 0.780 |
+| `query` | 1 | 21 | 0.480 | 0.952 | 0.905 | 0.574 |
+| `rerank` | 1 | 19 | 0.658 | 0.895 | 0.496 | 0.648 |
+| `topic` | 4 | 34 | 0.775 | 0.941 | 0.656 | 0.631 |
 
-Topic-mined files are named for the subject they were mined from, and those
-subjects belong to a private archive; the ones that would identify it read as
-`topic-a`, `topic-b` here. The gold corpus itself never leaves the operator's
-machine — this repo carries the mining and scoring machinery, not the cases.
+The `topic` row pools four files that individually spread wide — MRR 0.552–0.917,
+recall@10 0.510–0.879 — because a topic's difficulty is a property of the subject,
+and subjects differ. That spread is the interesting number, not any one file's.
+
+Rows are per *miner*, not per file, and deliberately: a gold file is named for the
+topic it was mined from, and those subjects belong to a private archive. Nothing
+here — or anywhere in this repo — names one. The gate discovers the corpus in the
+operator's gold dir and reads each file's floor from the sidecar beside it, so
+per-file numbers live in the run ledger on the machine that has the cases, and a
+newly mined topic changes no document.
 
 Pooled over all 25 files (317 cases) that reads recall@10 0.543 and nDCG@10 0.626.
 The two arm-magnitude terms below are what separate it from the rank-only ranking
 that scored 0.533 / 0.612; the gain concentrates in the query shapes the lexical
 arm cannot match (findability's vague stratum recall@10 0.850 → 0.900, paraphrase
-0.909 → 0.955) and `topic-b` and `needle` pay a case of it back.
+0.909 → 0.955) and two of the topic files pay a case of it back.
 
 Read the metrics apart: **success@k** asks whether any grade-2 answer ranks by k,
 **recall@k** measures the fraction of a case's *whole* grade-2 set that ranks,
@@ -202,7 +205,7 @@ production, and each candidate is another instance scored against them.
   holding the discriminating ones. 100 is a deliberate trade, not a free win: the
   query-shaped files gain (findability +.019 MRR / +.015 nDCG@10 with all three
   difficulty strata up, rerank-cases +.052 success@10) and the confound-dense topic
-  files pay in recall (topic-b −.048 recall@10, context-compaction −.033). Past
+  files pay in recall (two topic files, −.048 and −.033 recall@10). Past
   ~400 bm25's order overrides the density evidence those files lean on and they
   break their floors. The term matters most where fusion cannot reach: `_rrf` is
   computed only when the vector arm returns, so a lexical-only search — a

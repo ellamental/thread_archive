@@ -36,7 +36,7 @@ Read-only. Runs against whatever ``THREAD_ARCHIVE_HOME`` names::
 
     THREAD_ARCHIVE_HOME=~/.thread/archive-snap python search_lab/window_fill.py
     THREAD_ARCHIVE_HOME=~/.thread/archive-snap python search_lab/window_fill.py \\
-        --cases ~/.thread/archive/topic-cases-cloth.jsonl
+        --cases ~/.thread/archive/topic-cases-2e292234e4cf.jsonl
 """
 
 from __future__ import annotations

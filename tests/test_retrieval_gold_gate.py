@@ -54,56 +54,73 @@ def test_discover_missing_dir_is_empty(tmp_path) -> None:
     assert gate.discover_gold_files(tmp_path / "nope") == []
 
 
-def test_load_floors_reads_the_manifest_beside_the_corpus(tmp_path) -> None:
-    # Floors live with the gold cases, not in this repo: the private archive owns
-    # both the corpus and the names of its files.
-    (tmp_path / gate.FLOORS_FILENAME).write_text(json.dumps({
-        "topic-cases-alpha.jsonl": {
-            "mrr": 0.78, "success10": 0.85, "recall10": 0.78, "ndcg10": 0.59},
-        "findability-cases.jsonl": {
-            "mrr": 0.71, "success10": 0.93, "recall10": 0.93, "ndcg10": 0.76,
-            "by_difficulty": {"vague": {"recall10": 0.85}}},
-    }))
-    floors = gate.load_floors(tmp_path)
-    assert set(floors) == {"topic-cases-alpha.jsonl", "findability-cases.jsonl"}
-    assert floors["topic-cases-alpha.jsonl"]["mrr"] == 0.78
-    assert floors["findability-cases.jsonl"]["by_difficulty"] == {"vague": {"recall10": 0.85}}
+def _gold(dir_, name, *, snapshot="aaaaaaaaaaaaaaaa"):
+    p = dir_ / name
+    p.write_text(json.dumps({"query": "q", "gold": ["t1"], "snapshot_id": snapshot}) + "\n")
+    return p
 
 
-def test_load_floors_missing_or_junk_is_nothing_calibrated(tmp_path) -> None:
-    # Absent reads as an empty manifest — every file scored, none gated. It is
-    # --require that turns that into a failure, not the loader.
-    assert gate.load_floors(tmp_path) == {}
-    (tmp_path / gate.FLOORS_FILENAME).write_text("not json")
-    assert gate.load_floors(tmp_path) == {}
-    (tmp_path / gate.FLOORS_FILENAME).write_text('["a list, not an object"]')
-    assert gate.load_floors(tmp_path) == {}
+def test_read_floor_reads_the_sidecar_beside_the_gold_file(tmp_path) -> None:
+    # A gold file carries its own calibration, the way a test file carries its own
+    # assertions. Nothing lists gold files by name.
+    g = _gold(tmp_path, "topic-cases-alpha.jsonl")
+    gate.floor_path_for(g).write_text(json.dumps({
+        "mrr": 0.78, "success10": 0.85, "recall10": 0.78, "ndcg10": 0.59,
+        "by_difficulty": {"vague": {"recall10": 0.85}}}))
+    floor = gate.read_floor(g)
+    assert floor["mrr"] == 0.78
+    assert floor["by_difficulty"] == {"vague": {"recall10": 0.85}}
+    assert gate.floor_path_for(g).name == "topic-cases-alpha.floor.json"
 
 
-def test_load_floors_drops_unknown_metrics_and_bad_entries(tmp_path) -> None:
-    (tmp_path / gate.FLOORS_FILENAME).write_text(json.dumps({
-        "topic-cases-alpha.jsonl": {"mrr": 0.5, "bogus": 1.0, "ndcg10": "x"},
-        "topic-cases-beta.jsonl": "not a dict",
-        "topic-cases-gamma.jsonl": {"bogus": 1.0},
-    }))
-    floors = gate.load_floors(tmp_path)
-    assert floors == {"topic-cases-alpha.jsonl": {"mrr": 0.5}}
+def test_read_floor_missing_or_junk_is_uncalibrated(tmp_path) -> None:
+    # Uncalibrated is scored-but-ungated, never an error: a fixture must not wedge
+    # the gate. Absent, unparseable, and wrong-shaped all read the same.
+    g = _gold(tmp_path, "topic-cases-alpha.jsonl")
+    assert gate.read_floor(g) == {}
+    gate.floor_path_for(g).write_text("not json")
+    assert gate.read_floor(g) == {}
+    gate.floor_path_for(g).write_text('["a list, not an object"]')
+    assert gate.read_floor(g) == {}
 
 
-def test_every_floor_names_a_gold_shaped_file(tmp_path) -> None:
-    # A floor keyed to a name the discovery filter would reject can never fire —
-    # it would gate a file the gate never sees. The loaded manifest has to stay
-    # keyed to real gold basenames.
-    (tmp_path / gate.FLOORS_FILENAME).write_text(json.dumps({
-        "judged-cases.jsonl": {"mrr": 0.43, "success10": 0.90,
-                               "recall10": 0.85, "ndcg10": 0.52},
-        "topic-cases-alpha.jsonl": {"mrr": 0.78, "success10": 0.85,
-                                    "recall10": 0.78, "ndcg10": 0.59},
-    }))
+def test_read_floor_drops_unknown_metrics_and_bad_values(tmp_path) -> None:
+    g = _gold(tmp_path, "topic-cases-alpha.jsonl")
+    gate.floor_path_for(g).write_text(json.dumps(
+        {"mrr": 0.5, "bogus": 1.0, "ndcg10": "x"}))
+    assert gate.read_floor(g) == {"mrr": 0.5}
+
+
+def test_discover_floors_needs_no_manifest(tmp_path) -> None:
+    # The calibrated set falls out of discovery: a file with a sidecar is gated, a
+    # file without one is not, and there is no list to fall out of sync.
+    a = _gold(tmp_path, "topic-cases-alpha.jsonl")
+    _gold(tmp_path, "topic-cases-beta.jsonl")          # discovered, uncalibrated
+    gate.floor_path_for(a).write_text(json.dumps(
+        {"mrr": 0.4, "success10": 0.8, "recall10": 0.7, "ndcg10": 0.5}))
+    floors = gate.discover_floors(gate.discover_gold_files(tmp_path))
+    assert set(floors) == {"topic-cases-alpha.jsonl"}
+
+
+def test_floor_sidecars_are_not_themselves_discovered_as_gold(tmp_path) -> None:
+    # `.floor.json` must not match the `*cases*.jsonl` glob, or a sidecar would be
+    # scored as a fixture.
+    a = _gold(tmp_path, "topic-cases-alpha.jsonl")
+    gate.floor_path_for(a).write_text(json.dumps({"mrr": 0.4}))
+    assert [p.name for p in gate.discover_gold_files(tmp_path)] == [
+        "topic-cases-alpha.jsonl"]
+
+
+def test_every_discovered_floor_names_a_gold_shaped_file(tmp_path) -> None:
+    # A floor can only reach a file discovery would keep, since it is found *from*
+    # that file rather than declared against a name.
     markers = gate._NON_GOLD_MARKERS
-    for name, floor in gate.load_floors(tmp_path).items():
+    a = _gold(tmp_path, "topic-cases-alpha.jsonl")
+    gate.floor_path_for(a).write_text(json.dumps(
+        {"mrr": 0.4, "success10": 0.8, "recall10": 0.7, "ndcg10": 0.5}))
+    for name, floor in gate.discover_floors(gate.discover_gold_files(tmp_path)).items():
         assert name.endswith(".jsonl") and "cases" in name
-        assert not any(marker in name for marker in markers), name
+        assert not any(m in name for m in markers), name
         assert set(floor) <= {"mrr", "success10", "recall10", "ndcg10", "by_difficulty"}
 
 
@@ -198,14 +215,16 @@ def test_require_fails_on_missing_and_stale_calibrated_fixtures(tmp_path, monkey
     (snap / "snapshot.json").write_text('{"snapshot_id": "aaaaaaaaaaaaaaaa"}')
     gold = tmp_path / "gold"
     gold.mkdir()
-    (gold / gate.FLOORS_FILENAME).write_text(json.dumps({
-        "judged-cases.jsonl": {"mrr": 0.43, "success10": 0.90,
-                               "recall10": 0.85, "ndcg10": 0.52},
-        "findability-cases.jsonl": {"mrr": 0.71, "success10": 0.93,
-                                    "recall10": 0.93, "ndcg10": 0.76},
-    }))
     (gold / "judged-cases.jsonl").write_text(
         '{"query": "q", "gold": ["t1"], "snapshot_id": "bbbbbbbbbbbbbbbb"}\n')
+    (gold / "judged-cases.floor.json").write_text(json.dumps(
+        {"mrr": 0.43, "success10": 0.90, "recall10": 0.85, "ndcg10": 0.52}))
+    # findability is not on disk at all — the ledger is what remembers it was
+    # measured last run, so --require can still name it as missing.
+    (tmp_path / "gold-runs.jsonl").write_text(json.dumps({
+        "kind": "gold-run", "files": {
+            "judged-cases.jsonl": {"status": "scored"},
+            "findability-cases.jsonl": {"status": "scored"}}}) + "\n")
     monkeypatch.setenv("THREAD_ARCHIVE_SNAP", str(snap))
     monkeypatch.setenv("THREAD_ARCHIVE_GOLD_DIR", str(gold))
     monkeypatch.setenv("THREAD_ARCHIVE_HOME", str(tmp_path))
@@ -233,7 +252,7 @@ def test_require_fails_when_nothing_is_calibrated(tmp_path, monkeypatch, capsys)
     monkeypatch.delenv("THREAD_ARCHIVE_GOLD_GATE_MAINTENANCE", raising=False)
 
     assert gate.main(["--require"]) == 1
-    assert gate.FLOORS_FILENAME in capsys.readouterr().out
+    assert gate.FLOOR_SUFFIX in capsys.readouterr().out
 
 
 def test_no_require_still_skips_missing_fixtures_green(tmp_path, monkeypatch) -> None:

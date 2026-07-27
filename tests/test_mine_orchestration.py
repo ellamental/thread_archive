@@ -403,7 +403,7 @@ def test_topic_miner_run_surveys_then_labels(archive_home, tmp_path):
             return survey_reply, {"num_turns": 1}
         return label_reply, {"num_turns": 1}
 
-    out = tmp_path / "topic-cases-bot-grief.jsonl"
+    out = tmp_path / "topic-cases-queue-drops.jsonl"
     ctx = _ctx(agent_run=agent, topic="bot grief", max_queries=20)
     ctx.args.out = out
     result = topic_mined.MINER.run(ctx)

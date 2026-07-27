@@ -29,8 +29,8 @@ from __future__ import annotations
 
 import argparse
 import concurrent.futures
+import hashlib
 import json
-import re
 
 from thread_archive._knowledge import topic_get
 
@@ -222,11 +222,20 @@ def parse_labels(text: str) -> dict | None:
     return {"grades": grades, "gold": gold, "reasons": reasons}
 
 
-def slugify(name: str) -> str:
-    """A filesystem-safe slug for the output filename (lowercase, non-alphanumerics
-    to hyphens, collapsed)."""
-    s = re.sub(r"[^a-z0-9]+", "-", name.strip().lower()).strip("-")
-    return s or "topic"
+def case_token(topic: dict) -> str:
+    """The gold file's name-shaped handle for a topic — carrying none of its subject.
+
+    A topic title is what someone talks about, and a filename built from it travels
+    everywhere the file is named: a gate's config, a fixture, a docstring, a
+    published table. So the name is derived from the topic's own id instead, which
+    is already an opaque ULID. The mapping back is the archive's to hold, not the
+    filename's to advertise.
+
+    Stable for a given topic (the same topic re-mines onto its own file) and
+    collision-free in practice at this corpus size.
+    """
+    key = str(topic.get("id") or topic.get("title") or "topic")
+    return hashlib.sha256(key.encode("utf-8")).hexdigest()[:12]
 
 
 def resolve_topic(ref: str) -> dict:
@@ -360,8 +369,8 @@ class TopicMinedMiner(Miner):
     def run(self, ctx: MineContext) -> MineResult:
         args = ctx.args
         topic = resolve_topic(args.topic)
-        slug = slugify(topic.get("title") or args.topic)
-        default = fw.default_cases_path(CASES_STEM_TEMPLATE.format(slug=slug))
+        default = fw.default_cases_path(
+            CASES_STEM_TEMPLATE.format(slug=case_token(topic)))
         cases_path, detail_path = fw.open_output(args.out, default)
         already = fw.mined_queries(cases_path)
 
@@ -380,7 +389,7 @@ class TopicMinedMiner(Miner):
             print(f"survey authored {len(angles)} angles; capping to {cap}")
             angles = angles[:cap]
         for a in angles:
-            a["_topic"] = topic.get("title") or slug
+            a["_topic"] = topic.get("title") or args.topic
         if not angles:
             raise SystemExit("survey authored no unmined angles")
 

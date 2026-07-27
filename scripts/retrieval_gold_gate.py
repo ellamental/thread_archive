@@ -151,13 +151,12 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 DEFAULT_SNAP = Path.home() / ".thread" / "archive-snap"
 DEFAULT_GOLD_DIR = Path.home() / ".thread" / "archive"
 
-# The floors file's basename, resolved inside the gold dir.
-FLOORS_FILENAME = "gold-floors.json"
-
-# A floor entry is ``{basename: {mrr, success10, recall10, ndcg10}}``, optionally
-# with a ``by_difficulty`` sub-map for a file that carries difficulty tiers (see
-# ``check_floors``) — a per-stratum floor keeps an easy-verbatim aggregate from
-# masking a vague-recall collapse.
+# A floor sidecar sits beside the gold file it calibrates: `X.jsonl` is gated by
+# `X.floor.json`, holding `{mrr, success10, recall10, ndcg10}` and optionally a
+# `by_difficulty` sub-map (see ``check_floors``) — a per-stratum floor keeps an
+# easy-verbatim aggregate from masking a vague-recall collapse. Nothing anywhere
+# lists gold files by name: the gate discovers them, and each one carries its own
+# calibration, the way a test file carries its own assertions.
 #
 # Calibrating one: read the measured numbers the run prints and set each floor at
 # most ``1/n`` under its measured value, rounded down. What a file's shape implies
@@ -171,45 +170,76 @@ FLOORS_FILENAME = "gold-floors.json"
 #   success10 and nDCG10 as the load-bearing signals.
 FLOOR_METRICS = ("mrr", "success10", "recall10", "ndcg10")
 
+FLOOR_SUFFIX = ".floor.json"
 
-def load_floors(gold_dir: Path) -> dict[str, dict[str, float]]:
-    """The calibrated manifest, read from ``<gold_dir>/gold-floors.json``.
 
-    Absent or unreadable reads as *nothing calibrated* — an empty manifest, which
-    leaves every present gold file scored and reported but ungated. ``--require``
-    is what turns that into a failure; a plain run stays a skip, because a dev box
-    with no gold corpus is a normal state and must not wedge the commit gate red.
+def floor_path_for(gold: Path) -> Path:
+    """The floor sidecar beside a gold file: ``X.jsonl`` → ``X.floor.json``."""
+    return gold.with_suffix("").with_name(gold.stem + FLOOR_SUFFIX)
+
+
+def read_floor(gold: Path) -> dict[str, float]:
+    """One gold file's own floor, or ``{}`` when it carries none.
+
+    An uncalibrated file (newly mined, or deliberately ungated) is scored and
+    reported but never gated — the same contract a test file with no assertions
+    gets. Absent, unreadable, and malformed all read the same way: nothing to
+    enforce, rather than an error that would wedge the gate over a fixture.
     """
-    path = gold_dir / FLOORS_FILENAME
     try:
-        raw = json.loads(path.read_text(encoding="utf-8"))
+        raw = json.loads(floor_path_for(gold).read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return {}
     if not isinstance(raw, dict):
         return {}
-    floors: dict[str, dict[str, float]] = {}
-    for name, entry in raw.items():
-        if not isinstance(name, str) or not isinstance(entry, dict):
-            continue
-        floor = {k: float(v) for k, v in entry.items()
-                 if k in FLOOR_METRICS and isinstance(v, (int, float))}
-        by_diff = entry.get("by_difficulty")
-        if isinstance(by_diff, dict):
-            floor["by_difficulty"] = by_diff  # type: ignore[assignment]
-        if floor:
-            floors[name] = floor
-    return floors
+    floor = {k: float(v) for k, v in raw.items()
+             if k in FLOOR_METRICS and isinstance(v, (int, float))}
+    by_diff = raw.get("by_difficulty")
+    if isinstance(by_diff, dict):
+        floor["by_difficulty"] = by_diff  # type: ignore[assignment]
+    return floor
+
+
+def discover_floors(files: list[Path]) -> dict[str, dict[str, float]]:
+    """Every discovered gold file's floor, keyed by basename. Files with no
+    sidecar simply do not appear — there is no manifest to fall out of sync."""
+    return {p.name: f for p in files if (f := read_floor(p))}
+
+
+def last_measured_files(home: Path) -> set[str]:
+    """The gold files the most recent recorded run actually measured.
+
+    This is the gate's memory of what *should* be there, and it is a record rather
+    than a declaration: the ledger writes it every run, so a newly mined file joins
+    the expectation by being scored once and a retired one leaves by the operator
+    running without ``--require`` a single time. Empty history (a fresh box, a
+    disabled ledger) expects nothing, which keeps a first run from failing closed
+    against a past it never had.
+    """
+    try:
+        from search_lab import gold_runs
+        runs = gold_runs.read_runs(home, limit=1)
+    except Exception:
+        return set()
+    if not runs:
+        return set()
+    files = runs[0].get("files")
+    if not isinstance(files, dict):
+        return set()
+    return {n for n, m in files.items()
+            if isinstance(m, dict) and m.get("status") in (None, "scored")}
+
 
 # Sibling artifacts of the mining pipeline that share the "*cases*.jsonl" glob but
 # are not gold case files: per-case detail dumps, seed/candidate pools, and the
 # `.until-bak` rewrites. A gold file is `judged-cases.jsonl` or
-# `topic-cases-<slug>.jsonl`; everything else is filtered out by name.
+# `topic-cases-<token>.jsonl`; everything else is filtered out by name.
 _NON_GOLD_MARKERS = ("detail", "seed", "candidate", "accepted", "-bak")
 
 
 def discover_gold_files(gold_dir: Path) -> list[Path]:
     """Every gold case file in ``gold_dir`` — ``judged-cases.jsonl`` and
-    ``topic-cases-<slug>.jsonl`` — excluding the mining pipeline's sibling
+    ``topic-cases-<token>.jsonl`` — excluding the mining pipeline's sibling
     artifacts that happen to share the glob."""
     if not gold_dir.is_dir():
         return []
@@ -615,16 +645,19 @@ def main(argv: list[str] | None = None) -> int:
     # Route the production search at the frozen snapshot for the scoring below.
     os.environ["THREAD_ARCHIVE_HOME"] = str(snap)
 
-    floors = load_floors(gold_dir)
-
     files = discover_gold_files(gold_dir)
     if args.only:
         files = [p for p in files if any(frag in p.name for frag in args.only)]
+    floors = discover_floors(files)
+    # What the last run actually measured is this run's expectation — the ledger
+    # already records it, so nothing has to be maintained by hand. A file that was
+    # scored before and is gone now is the regression --require exists to catch.
+    previously = last_measured_files(home)
     if not files:
         if require:
-            expected = ", ".join(sorted(floors)) or f"none — no {FLOORS_FILENAME}"
+            expected = ", ".join(sorted(previously)) or "none — no prior run recorded"
             print(f"gold gate: no gold files in {gold_dir} — FAIL (--require; "
-                  f"expected {expected})")
+                  f"last run measured {expected})")
             return 1
         print(f"gold gate: no gold files in {gold_dir} — skipping")
         return 0
@@ -687,20 +720,21 @@ def main(argv: list[str] | None = None) -> int:
     # manifest check. A file never reaching "scored" (missing, stale, unreadable,
     # or aborted) is a fail-closed breach; unread here means "missing".
     disposition: dict[str, str] = {}
+    tracked = set(floors) | previously      # what --require will ask about
     for path in files:
         name = path.name
         try:
             row = _first_row(path)
         except (OSError, json.JSONDecodeError) as exc:
             print(f"  {name:34s} WARN — unreadable ({exc}); skipping", flush=True)
-            if name in floors:
+            if name in tracked:
                 disposition[name] = f"unreadable ({exc})"
             continue
         sid = row.get("snapshot_id") if row else None
         if sid != current:
             print(f"  {name:34s} SKIP — snapshot {sid} != {current} (stale / mid-re-mine)",
                   flush=True)
-            if name in floors:
+            if name in tracked:
                 disposition[name] = f"stale (snapshot {sid} != {current})"
             continue
 
@@ -744,7 +778,7 @@ def main(argv: list[str] | None = None) -> int:
             # neither reads as a comparable number later.
             partial = True
             measured[name]["scored"] = report["scored"]
-            if name in floors:
+            if name in tracked:
                 disposition[name] = f"aborted after {report['scored']}/{report['n']}"
             print(f"  {name:34s} ABORTED after {report['scored']}/{report['n']} — {aborted}",
                   flush=True)
@@ -782,13 +816,17 @@ def main(argv: list[str] | None = None) -> int:
     # fixture it is supposed to defend silently stopped being measured. Computed
     # before the ledger write so its `passed` flag reflects the failure.
     if require:
-        # An empty manifest under --require is itself the failure: a gate with
-        # nothing calibrated measures nothing and would otherwise read green.
+        # Nothing calibrated means nothing gated — a gate measuring nothing would
+        # otherwise read green.
         if not floors:
             breaches.append(
-                f"{FLOORS_FILENAME}: no calibrated floors in {gold_dir} — "
-                f"--require cannot verify a manifest that does not exist")
-        for expected in sorted(floors):
+                f"no calibrated gold files in {gold_dir} — every discovered file "
+                f"lacks a {FLOOR_SUFFIX} sidecar, so --require has nothing to verify")
+        # Two expectations, both discovered rather than declared: every calibrated
+        # file present now must have scored, and every file the last run measured
+        # must still be here. The second is what catches a fixture that quietly
+        # went away — the first cannot, since a deleted file carries no floor.
+        for expected in sorted(set(floors) | previously):
             if disposition.get(expected) != "scored":
                 why = disposition.get(expected, "missing (not present in gold dir)")
                 breaches.append(
