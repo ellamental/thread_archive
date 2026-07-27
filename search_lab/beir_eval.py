@@ -294,8 +294,7 @@ def run(args) -> int:
     qrels = load_qrels(data / "qrels" / "test.tsv")
     # Only queries with judgments in the test split are scorable.
     scorable = [(qid, queries[qid]) for qid in qrels if qid in queries and queries[qid]]
-    if args.max_queries:
-        scorable = scorable[: args.max_queries]
+    scorable = eval_core.sample_queries(scorable, args.sample, key=lambda q: q[0])
     _log(f"{args.dataset}: {len(qrels)} judged queries, scoring {len(scorable)}")
 
     # Cache bookkeeping lives beside the archive: a build marker (which corpus,
@@ -481,8 +480,8 @@ def main() -> int:
                     help="build + query the semantic arm with the real embedder (needs [embeddings])")
     ap.add_argument("--max-docs", type=int, default=None,
                     help="cap ingested corpus docs (smoke runs)")
-    ap.add_argument("--max-queries", type=int, default=None,
-                    help="cap scored queries (smoke runs)")
+    ap.add_argument("--sample", type=int, default=None,
+                    help="score a deterministic sample of this many queries instead of all (the quick tier; see search_lab.eval_core.sample_queries)")
     ap.add_argument("--home", default=None,
                     help="pin the archive home (default: a persistent per-dataset cache under --data-dir)")
     ap.add_argument("--rebuild", action="store_true",

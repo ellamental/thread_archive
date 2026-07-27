@@ -436,8 +436,10 @@ def run(args) -> int:
         if not path.exists():
             raise SystemExit(f"longmemeval file not found at {path}; download longmemeval_s_cleaned.json there")
         groups = list(longmemeval_groups(path))
-    if args.max_groups:
-        groups = groups[: args.max_groups]
+    # Sampling *corpora* rather than questions: this shape builds or opens one
+    # home per group, so cutting groups cuts the fixed per-corpus cost too, where
+    # cutting questions inside every group would leave it whole.
+    groups = eval_core.sample_queries(groups, args.sample, key=lambda g: g[0])
 
     # Per-corpus homes live under a root: a throwaway tmpdir when --fresh (no reuse),
     # else a persistent cache dir. Guard the root against overlapping the real
@@ -551,7 +553,8 @@ def main() -> int:
                     help="comma-separated cutoffs (default: locomo/beam 5,10,25,50; "
                          "longmemeval 5,10)")
     ap.add_argument("--vectors", action="store_true")
-    ap.add_argument("--max-groups", type=int, default=None, help="cap corpora (smoke runs)")
+    ap.add_argument("--sample", type=int, default=None,
+                    help="score a deterministic sample of this many corpora instead of all (the quick tier; see search_lab.eval_core.sample_queries)")
     ap.add_argument("--rebuild", action="store_true",
                     help="force fresh ingest+embed even when a cached home exists (refreshes it)")
     ap.add_argument("--fresh", action="store_true",

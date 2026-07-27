@@ -14,14 +14,23 @@ from pathlib import Path
 
 from search_lab import bench_runs, benchmark
 
+REPO = Path(__file__).resolve().parent.parent
+
 
 def test_every_row_is_a_published_benchmark() -> None:
     # The manifest is the whole of what this bench claims, and every row on it has
     # to be a corpus somebody else labeled. A row scored against labels made here
     # would be scored against what this ranker already finds.
     harnesses = {r.argv[0].rsplit("/", 1)[-1] for r in benchmark.manifest()}
-    assert harnesses == {"beir_eval.py", "cdr_eval.py", "haystack_eval.py",
+    assert harnesses <= {"beir_eval.py", "cdr_eval.py", "haystack_eval.py",
                          "mtrag_eval.py", "perltqa_eval.py"}
+
+
+def test_a_harness_can_exist_without_being_on_the_bench() -> None:
+    # `mtrag_eval.py` is held off the manifest on cost, not correctness, and stays
+    # runnable by hand. So the check above is a subset rather than an equality:
+    # the bench may carry fewer harnesses than the lab ships, never more.
+    assert (REPO / "search_lab" / "mtrag_eval.py").is_file()
 
 
 def test_every_row_names_a_harness_that_exists() -> None:
@@ -30,6 +39,49 @@ def test_every_row_names_a_harness_that_exists() -> None:
     # hash — so a broken row would also read as fresh.
     for row in benchmark.manifest():
         assert Path(row.argv[0]).is_file(), row.name
+
+
+def test_the_quick_tier_samples_only_the_rows_that_need_it() -> None:
+    # A row cheap enough to score whole keeps its name in both tiers, so its
+    # history stays one series. Splitting it would buy nothing and cost the
+    # comparison.
+    full = {r.name: r for r in benchmark.manifest()}
+    quick = {r.name: r for r in (r.quick() for r in benchmark.manifest())}
+
+    shared = set(full) & set(quick)
+    assert shared, "the cheap rows should be identical across tiers"
+    assert all(not full[name].quick_sample for name in shared)
+    assert all("~" in name for name in set(quick) - set(full))
+
+
+def test_a_sampled_row_passes_its_sample_size_and_renames_itself() -> None:
+    # The rename is what keeps a sampled measurement out of the full run's ledger
+    # series — the two are computed over different query sets and a delta between
+    # them would be meaningless.
+    row = benchmark.Row(name="x[vectors]", cost_min=10, argv=["h.py", "--vectors"],
+                        quick_sample=250)
+    quick = row.quick()
+
+    assert quick.name == "x[vectors]~250"
+    assert quick.argv == ["h.py", "--vectors", "--sample", "250"]
+    assert row.name == "x[vectors]", "the manifest row is not mutated"
+
+
+def test_a_quick_row_does_not_discount_its_build_cost() -> None:
+    # Sampling cuts query time and nothing else. A scaled-down estimate on a
+    # corpus that has never been built would promise minutes and deliver an
+    # overnight ingest-and-embed.
+    row = benchmark.Row(name="x[vectors]", cost_min=390, argv=["h.py"],
+                        quick_sample=100)
+    assert row.quick().cost_min == 390
+
+
+def test_the_quick_tier_still_covers_every_dataset() -> None:
+    # The point of the tier is a fast read on the *whole* bench. A quick pass that
+    # silently dropped datasets would report a narrower bench as the bench.
+    full = {r.dataset_name() for r in benchmark.manifest()}
+    quick = {r.dataset_name() for r in (r.quick() for r in benchmark.manifest())}
+    assert full == quick
 
 
 def test_only_narrows_by_name_fragment() -> None:

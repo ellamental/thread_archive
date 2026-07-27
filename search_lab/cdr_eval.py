@@ -176,8 +176,7 @@ def run(args) -> int:
 
     corpus, queries, qrels = load_cdr(repo)
     scorable = [(qid, queries[qid]) for qid in qrels if qid in queries and queries[qid]]
-    if args.max_queries:
-        scorable = scorable[: args.max_queries]
+    scorable = eval_core.sample_queries(scorable, args.sample, key=lambda q: q[0])
     _log(f"CDR: {len(qrels)} judged queries, {len(corpus)} conversations, "
          f"scoring {len(scorable)}")
 
@@ -344,8 +343,8 @@ def main() -> int:
                     help="build + query the semantic arm with the real embedder (needs [embeddings])")
     ap.add_argument("--max-docs", type=int, default=None,
                     help="cap ingested corpus docs (smoke runs)")
-    ap.add_argument("--max-queries", type=int, default=None,
-                    help="cap scored queries (smoke runs)")
+    ap.add_argument("--sample", type=int, default=None,
+                    help="score a deterministic sample of this many queries instead of all (the quick tier; see search_lab.eval_core.sample_queries)")
     ap.add_argument("--home", default=None,
                     help="pin the archive home (default: a persistent cache under --data-dir)")
     ap.add_argument("--rebuild", action="store_true",

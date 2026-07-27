@@ -39,17 +39,14 @@ weighting, not a gate — a biased-but-independent measurement beats a circular 
 
 ### On the bench now
 
-Ten datasets, and what each is on the bench *for* — a row that measures nothing
+Seven datasets, and what each is on the bench *for* — a row that measures nothing
 the others don't is a number without a question behind it.
 
 | benchmark | shape | task | labels | scoring | why it is here |
 |---|---|---|---|---|---|
 | BEIR scifact | shared corpus | scientific-claim IR, abstracts | human (TREC-grade) | nDCG@10 | the reference point — mid-length documents |
-| BEIR nfcorpus | shared corpus | short medical documents | human | nDCG@10 | the **short** end of the document-length bracket |
-| BEIR arguana | shared corpus | counterargument retrieval, long passages | human | nDCG@10 | the **long** end of the same bracket |
-| BEIR trec-covid | shared corpus | COVID literature IR | human, **deep** per-query pools | nDCG@10 | the only set whose recall@100 means anything; 50 queries |
+| BEIR nfcorpus | shared corpus | short medical documents | human | nDCG@10 | the **short** end of the document-length range |
 | CDR | shared corpus | conversational retrieval | human | nDCG@10 | conversational query shapes |
-| MTRAG | shared corpus ×4 | multi-turn RAG over four domains | human | nDCG@10 | **query shape** — one need as a terse last turn and as a rewrite |
 | LoCoMo | per-question haystack | multi-session dialog, turn-level | human | recall@k | turn-granularity memory |
 | LongMemEval-S | per-question haystack | long-history QA, session-level | human | recall@k | session-granularity memory |
 | BEAM | per-question haystack | long-conversation memory, message-level | human-validated | recall@k | **completeness** — multi-answer gold, and a length ladder |
@@ -58,6 +55,17 @@ the others don't is a number without a question behind it.
 Every one is deterministic in scoring. Two carry no published retrieval baseline
 (BEAM, PerLTQA) and say so in their own output rather than borrowing a number
 from a different task.
+
+### Built and runnable, held off the bench on cost
+
+Both have a working harness, downloaded data, and a place they would earn — they
+are off the default set because between them they are 537K documents and about 22
+hours of embedding, against roughly 4 for everything above.
+
+| benchmark | cost | what it would buy | how to run it |
+|---|---|---|---|
+| **MTRAG** | 366K passages, ~15 hr | the only external read on **query shape**: one information need as a terse context-dependent last turn (median 46 chars, the closest thing anywhere to the ~31-char queries the usage ledger records) and as a standalone human rewrite, with a published BM25/BGE/Elser baseline for each | `search_lab/mtrag_eval.py --queries lastturn --vectors`. One domain (`--domain govt`, 49.6K passages, ~2 hr) buys the lastturn-vs-rewrite comparison for a seventh of the embed, giving up comparability with the published 4-domain macro-average |
+| **BEIR trec-covid** | 171K docs, ~7 hr | the only set with deep enough per-query judgment pools to make a recall@100 mean something, and it buys that back with 50 queries — expensive once, near-free on every pass after | `search_lab/beir_eval.py --dataset trec-covid --vectors` |
 
 **LoCoMo carries a known label-quality problem.** An audit found 99 score-corrupting
 errors across 1,540 questions (6.4%) in the answer key — hallucinated facts,
@@ -74,6 +82,7 @@ references for 13 BEIR datasets; four are on the bench. Adding another is a
 
 | dataset | docs | embed | why it would be informative |
 |---|---|---|---|
+| `arguana` | 8.7K | ~19 min | counterargument retrieval over long passages. Cheap to build and **expensive to keep**: its 1,406 queries are each an entire document, so a pass costs over an hour of query time — the worst value-per-minute on the list, and why it is off the bench |
 | `scidocs` | 25.6K | ~1 hr | title+abstract, citation relevance — no *named* sensitivity, which is why it is not on the bench |
 | `fiqa` | 57.6K | ~2 hr | financial QA with conversational query shapes — but MTRAG ships the same FiQA corpus chunked to passages, so a row here would measure one corpus twice |
 | `quora` | 523K | ~19 hr | near-paraphrase duplicate detection. High lexical overlap, so it isolates the semantic arm — and its 10K queries make it the heaviest *recurring* row on the list, which is what keeps it off |

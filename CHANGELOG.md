@@ -2,8 +2,18 @@
 
 ## Unreleased
 
-- **The bench grew from four datasets to ten, chosen so each measures something
-  the others cannot.**
+- **The bench grew from four datasets to seven, chosen so each measures something
+  the others cannot — plus two built and held off on cost.**
+
+  `mtrag_eval.py` and BEIR `trec-covid` are complete, tested and runnable by
+  hand, but off the default set: 537K documents and roughly 22 hours of embedding
+  between them, against about 4 for everything on the bench. MTRAG is the only
+  external read on **query shape** — one information need as a terse
+  context-dependent last turn and as a standalone human rewrite, with a published
+  baseline for each — and `--domain govt` buys that comparison for a seventh of
+  the embed. trec-covid is the only set with deep enough per-query judgment pools
+  to make a recall@100 mean anything, and its 50 queries make it near-free once
+  built.
 
   Four datasets over one task shape — natural-language question against prose
   document — meant a disagreement between them was unreadable and a single row's
@@ -12,10 +22,10 @@
   artifact of the harness ingesting each document as a one-turn session. Six new
   datasets, each carrying a named question:
 
-  - **BEIR `nfcorpus` and `arguana`** bracket `scifact`'s abstracts at the short
-    and long ends of document length — the axis the bm25/density term is known to
-    be sensitive to, since density normalizes to a fixed window but is never
-    bounded. Three corpora at three lengths turn that mechanism from an inference
+  - **BEIR `nfcorpus`** sits below `scifact`'s abstracts on document length, and
+    MTRAG's 512-token passages above them — the axis the bm25/density term is
+    known to be sensitive to, since density normalizes to a fixed window but is
+    never bounded. Corpora at three lengths turn that mechanism from an inference
     drawn across unrelated corpora into a measurement.
   - **BEIR `trec-covid`** is the only set here with deep per-query judgment pools,
     which is what makes a recall@100 off it mean anything. 171K documents but only
@@ -54,13 +64,39 @@
   meant inventing the labels. It is now recorded as rejected, with the schema that
   says so, because nothing about the dataset card or the file listing reveals it.
 
-- **`arguana` scores under the protocol its published number was measured with.**
+- **The bench runs at two depths: a full set and a quick check.** Scoring every
+  judged query of ten datasets is a release-time bar, not something anyone re-runs
+  mid-change, so `--quick` scores a deterministic sample on the rows heavy enough
+  to need one and every query on the rest — the same ten datasets in minutes.
+
+  The sampler (`eval_core.sample_queries`) ranks by a hash of each query's own id,
+  which buys three properties a cap does not: identical runs score identically
+  (the freshness and delta machinery depends on that), the draw ignores file
+  order, and samples nest, so widening one adds queries rather than swapping them.
+  A hash rather than head-`n` because none of these query files are in random
+  order — MTRAG's are grouped by domain, PerLTQA's by person then memory type — and
+  head-`n` samples one stratum and reports it as the corpus. Not a subtle error:
+  PerLTQA's profile questions scored MRR@10 0.06 under a head-200 cap and 0.28
+  under a sample of the same size, because the cap took one person's whole profile
+  block. The three harnesses that already had a `--max-queries` cap were converted;
+  it is `--sample` everywhere now, and MTRAG splits its draw evenly across the four
+  domains so the macro-average stays balanced.
+
+  A sampled row records under its own name (`perltqa[lexical]~800`) and never
+  mixes into full-run history, because it is a different measurement rather than a
+  cheaper look at the same one. Resolution is 1/n, which the runner prints.
+
+- **`arguana` is off the bench, and `beir_eval` scores it correctly if it returns.**
   Every arguana query *is* a corpus document — the task is to find its
   counterargument — so the query retrieves itself at rank 1, that self-hit is never
   in the qrels, and counting it dropped roughly a full point of nDCG against the
   reference. `beir_eval.py` now excludes a hit whose document id equals the query
-  id, matching BEIR's own `ignore_identical_ids` default. No effect on datasets
+  id, matching BEIR's own `ignore_identical_ids` default; no effect on datasets
   whose queries and documents are disjoint, which is every other one on the bench.
+  It is off the bench for cost rather than correctness: 21 minutes to build and
+  over an hour of query time on *every* pass, because those 1,406 document-length
+  queries are slow to run. Cheap to build and expensive to keep is the worst trade
+  on the list.
 
 - **The benchmark plan prices a never-run row off measured throughput.** A cold
   pass over the full set is about a day of CPU, so `--list` is the decision, and

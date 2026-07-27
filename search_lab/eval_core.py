@@ -78,6 +78,7 @@ archive; the caller opens it (``_api.open_archive``) first.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import math
@@ -366,6 +367,49 @@ def load_case_file(path: Path) -> list[dict]:
                 case[key] = row[key]
         cases.append(case)
     return cases
+
+
+def sample_queries(items: list, n: Optional[int], key) -> list:
+    """A deterministic subset of ``n`` items, or all of them.
+
+    The bench runs at two depths — every query for a release, a sample for a
+    quick check — and the sample has to hold three properties or the fast tier is
+    worse than no tier at all.
+
+    **Deterministic.** Two runs of identical code over identical data must score
+    identically, or the whole freshness-and-delta machinery reports noise as
+    movement. So the choice is a hash of each item's own id, not a PRNG draw and
+    not a shuffle: no seed to thread through, no dependence on iteration order.
+
+    **Unbiased.** The obvious implementation — take the first ``n`` — is the wrong
+    one everywhere it matters here, because none of these query files are in
+    random order. MTRAG's are grouped by domain, PerLTQA's by person and then by
+    memory type, BEAM's by memory-ability category. Head-``n`` on any of them
+    samples one stratum and reports it as the corpus. Hashing the id spreads the
+    draw across whatever the ordering happened to encode.
+
+    **Nested.** Ranking by hash means the sample at ``n`` is a subset of the
+    sample at any larger ``n`` — so widening a quick check adds queries rather
+    than swapping them, and a row's history stays readable across a change of
+    depth.
+
+    ``key`` extracts an item's stable id. It must be the *dataset's* id rather
+    than a position, or the draw moves whenever the file does.
+
+    What this cannot fix is resolution: on ``n`` sampled queries a single query
+    moving from rank 1 to unfound shifts any of these metrics by at most ``1/n``,
+    so a quick tier at n=100 cannot read a delta finer than 0.01. That is a floor
+    on what the fast tier may be used to claim, not a reason to distrust it."""
+    if not n or n >= len(items):
+        return list(items)
+    ranked = sorted(
+        items,
+        key=lambda item: hashlib.sha256(str(key(item)).encode("utf-8")).hexdigest())
+    # Back into the caller's original order: the sample is *which* queries, never
+    # what sequence they run in, and a hash-ordered loop would report per-query
+    # detail in an order matching nothing in the source file.
+    chosen = {id(item) for item in ranked[:n]}
+    return [item for item in items if id(item) in chosen]
 
 
 def query_shape(q: str) -> str:

@@ -238,8 +238,7 @@ def run(args) -> int:
 
     corpus, type_of, bank_of = load_corpus(mem_path)
     queries = load_queries(qa_path, corpus, bank_of)
-    if args.max_queries:
-        queries = queries[: args.max_queries]
+    queries = eval_core.sample_queries(queries, args.sample, key=lambda q: q["qid"])
     _log(f"perltqa: {len(corpus)} memory units, {len(queries)} questions")
 
     marker_path = home / "perltqa_build.json"
@@ -401,8 +400,8 @@ def main() -> int:
                     help="build + query the semantic arm with the real embedder")
     ap.add_argument("--max-docs", type=int, default=None,
                     help="cap ingested memory units (smoke runs)")
-    ap.add_argument("--max-queries", type=int, default=None,
-                    help="cap scored questions (smoke runs)")
+    ap.add_argument("--sample", type=int, default=None,
+                    help="score a deterministic sample of this many questions instead of all (the quick tier; see search_lab.eval_core.sample_queries)")
     ap.add_argument("--rebuild", action="store_true",
                     help="discard the cached build and re-ingest")
     ap.add_argument("--fresh", action="store_true",

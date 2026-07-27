@@ -300,6 +300,15 @@ def run(args) -> int:
                 raise SystemExit(f"missing {path}")
         queries = load_queries(query_path)
         qrels = load_qrels(qrels_path)
+        # Sampled *per domain*, not across the pooled query set: the headline is a
+        # macro-average that weights every domain equally, so a draw that happened
+        # to take 90 clapnq queries and 10 govt ones would leave one quarter of
+        # the reported number resting on ten queries.
+        if args.sample:
+            per_domain_n = max(1, -(-args.sample // len(domains)))
+            keep = set(eval_core.sample_queries(
+                sorted(qrels), per_domain_n, key=lambda qid: qid))
+            qrels = {qid: rel for qid, rel in qrels.items() if qid in keep}
         _log(f"  {domain}: {len(qrels)} judged queries")
 
         home = eval_home.guard_home(
@@ -341,7 +350,7 @@ def run(args) -> int:
 
     arms = eval_home.arm_labels(vectors=args.vectors)
     ref = REFERENCE.get(args.queries, {})
-    comparable = args.domain == "all" and not args.max_docs
+    comparable = args.domain == "all" and not args.max_docs and not args.sample
     print()
     print(f"=== MTRAG {args.queries} — archive stack [{' + '.join(arms)}] ===")
     print(f"domains: {'+'.join(domains)}   queries scored: {macro['n']}   "
@@ -417,6 +426,10 @@ def main() -> int:
                     help="build + query the semantic arm with the real embedder")
     ap.add_argument("--max-docs", type=int, default=None,
                     help="cap ingested passages per domain (smoke runs)")
+    ap.add_argument("--sample", type=int, default=None,
+                    help="score a deterministic sample of this many queries "
+                         "instead of all, split evenly across the domains "
+                         "(the quick tier; see search_lab.eval_core.sample_queries)")
     ap.add_argument("--rebuild", action="store_true",
                     help="discard cached builds and re-ingest (+ re-embed with --vectors)")
     ap.add_argument("--fresh", action="store_true",

@@ -76,7 +76,7 @@ already measured at this configuration — see "Running the whole bench".)
 | 2 | CI arm-liveness probes (`retrieval_eval.py --probes-only`) | live archive | ~a minute (it loads both models) | every commit, via thread-ci |
 | 3 | `latency_replay.py` (speed over real traffic), `graph_eval.py`, `--behavior` | the live archive | minutes | evaluating a deliberate ranking change |
 | 3½ | `python -m search_lab.mine <miner>` to mint case files for a hand-read experiment | a frozen snapshot with the record that miner needs (commit provenance / a path projection / a usage ledger) | agent-minutes per mined case | investigating a specific suspicion, never to produce a headline number |
-| 4 | `python -m search_lab benchmark`; `pytest -m beir` | ten external IR / conversational-memory benchmarks | minutes once the corpora are built; about a day of CPU to build them all the first time | the quality claim — calibrating against published baselines |
+| 4 | `python -m search_lab benchmark`; `pytest -m beir` | seven external IR / conversational-memory benchmarks | minutes once the corpora are built; about a day of CPU to build them all the first time | the quality claim — calibrating against published baselines |
 
 Tiers 0–3 **detect damage**; tier 4 is the only one that supports a positive
 quality claim, and only about the components in general (see "What a number here
@@ -109,10 +109,44 @@ everywhere, coherence included), and the same warm-before-scoring rule.
 ## Running the whole bench
 
 ```
-python -m search_lab benchmark                  # the set
+python -m search_lab benchmark                  # the full set — the release bar
+python -m search_lab benchmark --quick          # the quick check — minutes
 python -m search_lab benchmark --only locomo    # just the rows whose name matches
 python -m search_lab benchmark --list           # the plan: what runs, what is fresh
 ```
+
+**Two depths, and they are for different questions.**
+
+The **full** set scores every judged query of every dataset. It is what a release
+is cut against and the only depth a quality claim may cite.
+
+The **quick** check (`--quick`) scores a deterministic sample on the rows heavy
+enough to need one and every query on the rest — same seven datasets, minutes
+instead of hours. What makes it trustworthy is the sampler
+(`eval_core.sample_queries`): the draw is a hash of each query's own id, so it is
+deterministic (two runs of identical code score identically, which the whole
+freshness-and-delta machinery depends on), independent of file order, and
+*nested* — widening a sample adds queries rather than swapping them.
+
+It has to be a hash rather than a head-`n` cap because none of these query files
+are in random order: MTRAG's are grouped by domain, PerLTQA's by person and then
+by memory type, BEAM's by memory-ability category. Head-`n` samples one stratum
+and reports it as the corpus, and it is not a subtle error — PerLTQA's profile
+questions score MRR@10 0.06 under a head-200 cap and 0.28 under a sample of the
+same size, because the cap took one person's entire profile block.
+
+Two rules follow, and the runner prints both:
+
+- **A sampled row is a different measurement**, not a cheaper look at the same
+  one, so it records under its own name (`perltqa[lexical]~800`) and never mixes
+  into the full run's history. Rows cheap enough to score whole keep one name and
+  one continuous series across both depths.
+- **Resolution is 1/n.** At a sample of 100 a row cannot read a delta finer than
+  0.01. Use the quick check to catch damage; re-run the full set before claiming
+  a change helped.
+
+Sampling cuts query time and nothing else — a corpus that has never been built
+pays the same ingest and embed either way.
 
 `benchmark.py` drives the published-baseline yardsticks as one recorded set, each
 row a separate process (the stack caches a corpus graph and a vector pack per
@@ -123,14 +157,22 @@ archive. The plan estimates each row from what it actually took last time, so th
 printed budget is measured rather than guessed; a row whose corpus has never been
 built pays for building it once.
 
-Ten datasets, in **cheapest-first order**. That ordering is deliberate: a cold
-pass is dominated by two rows whose corpora run to hundreds of thousands of
-documents (`trec-covid`, `mtrag`), and a set that ran them first would print
-nothing for hours. Within a dataset the lexical row precedes the vectors one,
-which is the same principle — the lexical row pays the ingest, and the vectors row
-adds only the embed pass on top of a corpus already built. A cold pass over
-everything is roughly a day of CPU on this box; every pass after it is minutes,
+Seven datasets, in **cheapest-first order**. That ordering is deliberate: a cold
+pass is dominated by whichever corpora have to be built, and a set that ran those
+first would print nothing for hours. Within a dataset the lexical row precedes the
+vectors one, which is the same principle — the lexical row pays the ingest, and the
+vectors row adds only the embed pass on top of a corpus already built. A cold pass
+over everything is a few hours of CPU on this box; every pass after it is minutes,
 because the corpora are cached and unchanged rows are fresh.
+
+Two more datasets have working harnesses and downloaded data but are **held off
+the default set on cost** — 537K documents and about 22 hours of embedding between
+them, against roughly 4 for everything on it. `mtrag_eval.py` is the only external
+read on **query shape** (one need as a terse last turn and as a standalone
+rewrite, published baseline for each; `--domain govt` buys that comparison for a
+seventh of the embed), and `beir_eval.py --dataset trec-covid` is the only set
+with deep enough judgment pools to make a recall@100 mean anything. Run either by
+hand.
 
 The estimates a never-run row shows are priced off this box's measured
 throughput — **ingest ~3,600 docs/min, embed ~450 docs/min** — rather than
@@ -324,11 +366,12 @@ archive (BEIR and the lab build throwaway homes and never touch it).
   baselines. They answer "are the components competitive in general?" — never
   archive-domain quality (third-party corpora that look nothing like an agent's
   own session log; read every number against that mismatch). Two shapes:
-  - **shared-corpus** — `beir_eval.py` (BEIR `scifact` / `nfcorpus` / `arguana` /
-    `trec-covid`), `cdr_eval.py` (NVIDIA ChatRAG's CDR), `mtrag_eval.py` (IBM's
-    multi-turn RAG benchmark over four document corpora) and `perltqa_eval.py`
-    (personal-memory unit retrieval) retrieve from one corpus, scored by nDCG@10
-    against BM25 / dense / best-of-N references.
+  - **shared-corpus** — `beir_eval.py` (BEIR `scifact` / `nfcorpus`),
+    `cdr_eval.py` (NVIDIA ChatRAG's CDR) and `perltqa_eval.py` (personal-memory
+    unit retrieval) retrieve from one corpus, scored by nDCG@10 against
+    BM25 / dense / best-of-N references. `mtrag_eval.py` (IBM's multi-turn RAG
+    benchmark over four document corpora) is the same shape, held off the default
+    set on cost.
   - **per-question haystack** — `haystack_eval.py`
     (`--dataset locomo|longmemeval|beam`): each question carries its own small
     conversation history, and the task is to pull the evidence turn(s)/session(s)
@@ -340,16 +383,11 @@ archive (BEIR and the lab build throwaway homes and never touch it).
   Four of these rows exist to measure something no other row does, and reading
   them as interchangeable third-party numbers wastes them:
 
-  - **document length.** `nfcorpus` (short) and `arguana` (long) bracket
+  - **document length.** `nfcorpus`'s short medical documents sit below
     `scifact`'s abstracts on purpose. The bm25/density term's strength scales
-    inversely with document length, and three corpora at three lengths is what
-    turns that from an inference into a measurement.
-  - **query shape.** `mtrag` ships one information need as a terse
-    context-dependent last turn (median 46 chars) and as a standalone human
-    rewrite (59), with a published baseline for each. The gap between those two
-    rows is the only external read on how much the stack leans on a well-formed
-    query — and `lastturn` is the closest thing on the bench to the ~31-char
-    queries the usage ledger actually records.
+    inversely with document length, so two corpora at two lengths is what turns
+    that from an inference across unrelated datasets into a measurement — and
+    MTRAG's 512-token passages are the third point when it is run.
   - **completeness.** `beam` is the multi-answer row: median 2–3 gold messages
     per question, up to 96, where everything else is effectively single-gold. Its
     `recall_all@k` is the one number here that asks whether a window holds
@@ -388,7 +426,7 @@ skipped and reported from the ledger, so the second pass costs only what an edit
 actually invalidated. That is the before-and-after pair a ranking change is judged
 on.
 
-**Read the set, not a row.** Ten datasets disagreeing is the useful part: a
+**Read the set, not a row.** Datasets disagreeing is the useful part: a
 deficit that holds across every corpus is an arm problem, one that tracks document
 length is the density-window scale mechanism, and one that shows up on a single
 corpus is an artifact of that corpus. No single row can tell those apart, which is

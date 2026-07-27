@@ -25,7 +25,83 @@ from pathlib import Path
 
 import pytest
 
-from search_lab import haystack_eval, mtrag_eval, perltqa_eval
+from search_lab import eval_core, haystack_eval, mtrag_eval, perltqa_eval
+
+# ── the quick tier's query sampler ───────────────────────────────────────────
+
+
+def test_sampling_is_deterministic() -> None:
+    # Two runs of identical code over identical data must score identically, or
+    # the freshness-and-delta machinery reports noise as movement.
+    items = [{"qid": f"q{i}"} for i in range(500)]
+    key = lambda q: q["qid"]  # noqa: E731
+
+    assert eval_core.sample_queries(items, 50, key) == \
+        eval_core.sample_queries(items, 50, key)
+
+
+def test_sampling_is_nested_as_it_widens() -> None:
+    # Widening a quick check should add queries rather than swap them, so a row's
+    # history stays readable across a change of depth.
+    items = [{"qid": f"q{i}"} for i in range(500)]
+    key = lambda q: q["qid"]  # noqa: E731
+    small = eval_core.sample_queries(items, 40, key)
+    large = eval_core.sample_queries(items, 120, key)
+
+    assert all(item in large for item in small)
+
+
+def test_sampling_ignores_input_order() -> None:
+    # The draw is keyed on the dataset's own ids, so re-ordering the source file
+    # cannot change which queries are scored.
+    items = [{"qid": f"q{i}"} for i in range(300)]
+    key = lambda q: q["qid"]  # noqa: E731
+    forward = eval_core.sample_queries(items, 30, key)
+    backward = eval_core.sample_queries(list(reversed(items)), 30, key)
+
+    assert {q["qid"] for q in forward} == {q["qid"] for q in backward}
+
+
+def test_sampling_spreads_across_a_grouped_file() -> None:
+    # The failure this exists to prevent: none of these query files are in random
+    # order. MTRAG's are grouped by domain, PerLTQA's by person then memory type.
+    # Head-n samples one stratum and reports it as the corpus.
+    items = [{"qid": f"{domain}-{i}", "domain": domain}
+             for domain in ("clapnq", "cloud", "fiqa", "govt")
+             for i in range(200)]
+    drawn = eval_core.sample_queries(items, 80, lambda q: q["qid"])
+    seen = {q["domain"] for q in drawn}
+
+    assert seen == {"clapnq", "cloud", "fiqa", "govt"}
+    head = {q["domain"] for q in items[:80]}
+    assert head == {"clapnq"}, "head-n would have sampled one domain"
+
+
+def test_sampling_preserves_the_callers_order() -> None:
+    # The sample is *which* queries, never what sequence they run in — a
+    # hash-ordered loop would report per-query detail in an order matching
+    # nothing in the source file.
+    items = [{"qid": f"q{i}"} for i in range(200)]
+    drawn = eval_core.sample_queries(items, 25, lambda q: q["qid"])
+
+    assert drawn == [item for item in items if item in drawn]
+
+
+def test_no_sample_size_keeps_every_query() -> None:
+    items = [{"qid": f"q{i}"} for i in range(10)]
+    key = lambda q: q["qid"]  # noqa: E731
+
+    assert eval_core.sample_queries(items, None, key) == items
+    assert eval_core.sample_queries(items, 0, key) == items
+    assert eval_core.sample_queries(items, 999, key) == items
+
+
+def test_sampling_handles_duplicate_payloads() -> None:
+    # Two queries can carry identical text; the sample must still be exactly n
+    # rather than collapsing them.
+    items = [{"qid": f"q{i}", "text": "same"} for i in range(100)]
+    assert len(eval_core.sample_queries(items, 30, lambda q: q["qid"])) == 30
+
 
 # ── MTRAG ────────────────────────────────────────────────────────────────────
 

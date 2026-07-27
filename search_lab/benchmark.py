@@ -51,7 +51,7 @@ import subprocess
 import sys
 import tempfile
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
@@ -84,12 +84,40 @@ class Row:
     #: the inventory page would list query forms where corpora belong.
     dataset: str = ""
 
+    #: Queries (or, for the per-question haystacks, corpora) the quick tier scores
+    #: instead of all of them. None means the row is already cheap enough to run
+    #: whole in both tiers — which is the better answer when it is true, because
+    #: then quick and full share one ledger series and one history.
+    quick_sample: int | None = None
+
     def dataset_name(self) -> str:
         """The corpus this row runs on, declared or read off the name."""
         if self.dataset:
             return self.dataset
         head = self.name.split("[", 1)[0]
         return head.split(":", 1)[1] if ":" in head else head
+
+    def quick(self) -> "Row":
+        """This row as the quick tier runs it.
+
+        A sampled row is **a different measurement**, not a cheaper look at the
+        same one — its metrics are computed over a subset and cannot be compared
+        to a full run's — so it gets its own name and therefore its own ledger
+        series and its own deltas. A row with no ``quick_sample`` is returned
+        unchanged, so the cheap rows keep one continuous history across both
+        tiers instead of being split for no gain.
+
+        ``cost_min`` is deliberately *not* discounted. Sampling cuts query time
+        and nothing else, so on a corpus that has never been built the quick tier
+        pays the same ingest-and-embed the full tier does — a scaled-down estimate
+        would promise minutes and deliver an overnight run. Once the row has run
+        once its measured elapsed replaces the guess anyway, and that number is
+        the one that shows what sampling actually saved."""
+        if not self.quick_sample:
+            return self
+        return replace(self,
+                       name=f"{self.name}~{self.quick_sample}",
+                       argv=[*self.argv, "--sample", str(self.quick_sample)])
 
     def corpus_id(self) -> str | None:
         """This row's corpus fingerprint, read from the built home's snapshot
@@ -117,29 +145,15 @@ class Row:
 def manifest() -> list[Row]:
     """Every row the bench knows, in run order.
 
-    Ten datasets, grouped by what each one is here to measure — the grouping is
+    Seven datasets, grouped by what each one is here to measure — the grouping is
     the point, because an undifferentiated row adds a number without adding a
     question anyone asked.
 
     **Document length.** The bm25/density term's effective strength scales
     inversely with document length (density normalizes to a fixed window but is
     never bounded), so a weight calibrated on one length regime can read flat on
-    another. ``nfcorpus`` (short medical) and ``arguana`` (long argument
-    passages) bracket scifact's abstracts deliberately, which turns that
-    mechanism from an inference drawn across unrelated corpora into a
-    measurement.
-
-    **Judgment depth.** ``trec-covid`` is the only set here with deep per-query
-    judgments, which is what makes its recall@100 mean something; it pays for
-    that with a 171K-document corpus and buys it back with 50 queries, so it is
-    expensive once and near-free on every pass after.
-
-    **Query shape.** ``mtrag`` ships the same information need as a terse
-    context-dependent last turn and as a standalone human rewrite, with a
-    published baseline for both. The gap between those two rows is the only
-    external read on how much the stack depends on a well-formed query — which
-    matters because the usage ledger says real traffic is ~4 words where every
-    authored query set here is a 20-word sentence.
+    another. ``nfcorpus``'s short medical documents sit deliberately below
+    ``scifact``'s abstracts.
 
     **Completeness.** Every other row is effectively single-gold and therefore
     scores findability alone. ``beam``'s median question needs 2–3 messages and
@@ -148,22 +162,38 @@ def manifest() -> list[Row]:
     three tiers are one conversation set at growing lengths, so the ladder reads
     degradation as history grows.
 
-    **Retrieval granularity.** ``perltqa`` retrieves a curated memory *unit*
-    rather than a turn or a session — the granularity an explicit memory store is
-    organised around.
+    **Retrieval granularity.** ``locomo`` retrieves a turn, ``longmemeval`` a
+    session, and ``perltqa`` a curated memory *unit* — three granularities of the
+    same underlying task, which is the axis a memory store is organised around.
 
-    Two deliberate absences. LongMemEval's ``--vectors`` pass would embed 470
-    per-question corpora for a number whose published reference is measured on a
-    different split, so the cost buys no comparison. And LongMemEval-**V2** is not
-    here at all despite being the closest published corpus to this one: its
-    questions carry an answer string and an evaluator, with no annotation of
-    which trajectory holds the answer, so scoring it as retrieval would mean
-    inventing the labels."""
+    **Conversational queries.** ``cdr``.
+
+    Absences, all of them deliberate:
+
+    - **``trec-covid`` and ``mtrag`` are held off on cost.** Between them they are
+      537K documents and about 22 hours of embedding, against roughly 4 for
+      everything above. Both harnesses stay runnable by hand — ``beir_eval.py
+      --dataset trec-covid`` and ``mtrag_eval.py`` — and both are worth returning
+      to: trec-covid is the only set with deep enough per-query judgments to make
+      a recall@100 mean anything, and MTRAG is the only external read on **query
+      shape**, shipping one information need as a terse last turn and as a
+      standalone rewrite with a published baseline for each. A single MTRAG domain
+      (``--domain govt``, 49.6K passages) buys that comparison for about a seventh
+      of the embed, at the cost of comparability with the published 4-domain
+      macro-average.
+    - **``arguana``** is cheap to build and expensive to keep: its 1,406 queries
+      are each a whole document, so a pass costs over an hour of query time.
+    - **LongMemEval's ``--vectors`` pass** would embed 470 per-question corpora for
+      a number whose published reference is measured on a different split, so the
+      cost buys no comparison.
+    - **LongMemEval-V2**, despite being the closest published corpus to this one:
+      its questions carry an answer string and an evaluator, with no annotation of
+      which trajectory holds the answer, so scoring it as retrieval would mean
+      inventing the labels."""
     homes = eval_home.CACHE_ROOT / "homes"
     beir = str(REPO / "search_lab" / "beir_eval.py")
     cdr = str(REPO / "search_lab" / "cdr_eval.py")
     hay = str(REPO / "search_lab" / "haystack_eval.py")
-    mtrag = str(REPO / "search_lab" / "mtrag_eval.py")
     perltqa = str(REPO / "search_lab" / "perltqa_eval.py")
     first_run = "the harness builds it on first run (ingest + embed, tens of minutes)"
     ir = ("ndcg10", "mrr10", "recall10")
@@ -175,32 +205,22 @@ def manifest() -> list[Row]:
     # made on. Every one of them is replaced by the row's own elapsed time as
     # soon as it has run once (see `estimate`), so they only ever have to be
     # right to the nearest hour.
-    def beam_rows(tier: str, lexical: int, vectors: int) -> list[Row]:
+    def beam_rows(tier: str, lexical: int, vectors: int,
+                  quick: int | None) -> list[Row]:
         return [
             Row(name=f"beam:{tier}[lexical]", cost_min=lexical, dataset="beam",
                 argv=[hay, "--dataset", "beam", "--beam-tier", tier],
-                build_hint=first_run, measure_keys=hay_keys),
+                build_hint=first_run, measure_keys=hay_keys, quick_sample=quick),
             Row(name=f"beam:{tier}[vectors]", cost_min=vectors, dataset="beam",
                 argv=[hay, "--dataset", "beam", "--beam-tier", tier, "--vectors"],
-                build_hint=first_run, measure_keys=hay_keys),
+                build_hint=first_run, measure_keys=hay_keys, quick_sample=quick),
         ]
 
-    def mtrag_rows(queries: str, lexical: int, vectors: int) -> list[Row]:
-        return [
-            Row(name=f"mtrag:{queries}[lexical]", cost_min=lexical, dataset="mtrag",
-                argv=[mtrag, "--queries", queries],
-                build_hint=first_run, measure_keys=ir),
-            Row(name=f"mtrag:{queries}[vectors]", cost_min=vectors, dataset="mtrag",
-                argv=[mtrag, "--queries", queries, "--vectors"],
-                build_hint=first_run, measure_keys=ir),
-        ]
-
-    # Ordered cheapest-first. A cold pass over this set is dominated by two rows
-    # whose corpora run to hundreds of thousands of documents (trec-covid,
-    # mtrag), and a set that runs them first is a set nobody watches to the end —
-    # every quick row would sit behind hours of embed before printing anything.
-    # Within a dataset the lexical row precedes the vectors one, which is also
-    # the cheap-first order: the lexical row pays the ingest and the vectors row
+    # Ordered cheapest-first: a cold pass is dominated by whichever corpora have
+    # to be built, and a set that runs those first is a set nobody watches to the
+    # end — every quick row would sit behind hours of embed before printing
+    # anything. Within a dataset the lexical row precedes the vectors one, which
+    # is the same principle: the lexical row pays the ingest and the vectors row
     # adds only the embed pass on top of the corpus already built.
     return [
         Row(name="beir:scifact[lexical]", cost_min=2,
@@ -215,12 +235,6 @@ def manifest() -> list[Row]:
         Row(name="beir:nfcorpus[vectors]", cost_min=3,
             argv=[beir, "--dataset", "nfcorpus", "--vectors"],
             home=homes / "nfcorpus", build_hint=first_run, measure_keys=ir),
-        Row(name="beir:arguana[lexical]", cost_min=5,
-            argv=[beir, "--dataset", "arguana"],
-            home=homes / "arguana", build_hint=first_run, measure_keys=ir),
-        Row(name="beir:arguana[vectors]", cost_min=25,
-            argv=[beir, "--dataset", "arguana", "--vectors"],
-            home=homes / "arguana", build_hint=first_run, measure_keys=ir),
         Row(name="locomo[lexical]", cost_min=5,
             argv=[hay, "--dataset", "locomo"],
             build_hint=first_run, measure_keys=hay_keys),
@@ -230,31 +244,19 @@ def manifest() -> list[Row]:
         Row(name="longmemeval[lexical]", cost_min=15,
             argv=[hay, "--dataset", "longmemeval"],
             build_hint=first_run, measure_keys=hay_keys),
-        *beam_rows("100K", 4, 16),
-        *beam_rows("500K", 12, 95),
+        *beam_rows("100K", 4, 16, quick=8),
+        *beam_rows("500K", 12, 95, quick=8),
         Row(name="perltqa[lexical]", cost_min=20,
             argv=[perltqa], home=homes / "perltqa", build_hint=first_run,
-            measure_keys=ir),
+            measure_keys=ir, quick_sample=800),
         Row(name="perltqa[vectors]", cost_min=40,
             argv=[perltqa, "--vectors"], home=homes / "perltqa",
-            build_hint=first_run, measure_keys=ir),
+            build_hint=first_run, measure_keys=ir, quick_sample=800),
         Row(name="cdr[vectors]", cost_min=20,
             argv=[cdr, "--vectors"],
-            home=homes / "cdr", build_hint=first_run, measure_keys=ir),
-        *beam_rows("1M", 22, 185),
-        Row(name="beir:trec-covid[lexical]", cost_min=50,
-            argv=[beir, "--dataset", "trec-covid"],
-            home=homes / "trec-covid", build_hint=first_run, measure_keys=ir),
-        Row(name="beir:trec-covid[vectors]", cost_min=390,
-            argv=[beir, "--dataset", "trec-covid", "--vectors"],
-            home=homes / "trec-covid", build_hint=first_run, measure_keys=ir),
-        # MTRAG last and heaviest: four corpora, 366K passages between them. The
-        # corpus is shared across query forms, so `rewrite` costs only its own
-        # query time once `lastturn` has built it — and both arms on both forms
-        # are what make the 2x2 readable (is the lexical-vs-fused gap the same
-        # under a terse query as under a well-formed one?).
-        *mtrag_rows("lastturn", 115, 830),
-        *mtrag_rows("rewrite", 15, 20),
+            home=homes / "cdr", build_hint=first_run, measure_keys=ir,
+            quick_sample=300),
+        *beam_rows("1M", 22, 185, quick=6),
     ]
 
 
@@ -488,6 +490,12 @@ def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     ap.add_argument("--only", action="append", default=[], metavar="FRAGMENT",
                     help="run just the rows whose name contains this (repeatable)")
+    ap.add_argument("--quick", action="store_true",
+                    help="the quick tier: score a deterministic query sample on "
+                         "the rows heavy enough to need one, every query on the "
+                         "rest. Minutes rather than hours, over the same ten "
+                         "datasets. Sampled rows are recorded under their own "
+                         "names (`row~N`), never mixed with full-run history")
     ap.add_argument("--force", action="store_true",
                     help="re-run rows the ledger says are already fresh")
     ap.add_argument("--list", action="store_true",
@@ -498,7 +506,12 @@ def main(argv: list[str] | None = None) -> int:
                     help="also write the summary as JSON")
     args = ap.parse_args(argv)
 
-    rows = select(manifest(), only=args.only)
+    # Tier first, then --only: the quick tier renames the rows it samples, and a
+    # fragment the caller typed should match what will actually run.
+    rows = manifest()
+    if args.quick:
+        rows = [row.quick() for row in rows]
+    rows = select(rows, only=args.only)
     if not rows:
         print("no rows selected")
         return 1
@@ -512,9 +525,17 @@ def main(argv: list[str] | None = None) -> int:
 
     budget = sum(estimate(row, prior) for row, prior, fresh in plan if not fresh)
     to_run = sum(1 for _, _, fresh in plan if not fresh)
-    print(f"bench: {len(rows)} row(s), "
+    sampled = sum(1 for row in rows if "~" in row.name)
+    print(f"bench{' [quick]' if args.quick else ''}: {len(rows)} row(s), "
           f"{to_run} to run (~{budget:.0f} min), "
           f"{len(rows) - to_run} fresh   [code {bench_runs.code_id()}]")
+    if args.quick:
+        print(f"  {sampled} row(s) sampled, {len(rows) - sampled} scored whole. "
+              f"A sampled row resolves deltas no finer than 1/n — read it as a "
+              f"smoke test, and re-run without --quick before claiming a change.")
+        if any(not fresh and not prior for _, prior, fresh in plan):
+            print("  Rows that have never run still pay the full ingest+embed: "
+                  "sampling cuts query time, not corpus building.")
     for row, prior, fresh in plan:
         when = (prior or {}).get("at", "")[:16]
         est = estimate(row, prior)
