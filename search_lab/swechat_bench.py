@@ -97,12 +97,11 @@ def load_gold(gold_dir: Path) -> list[dict]:
 
     Globbed rather than listed: gold accumulates a file at a time (one per topic
     mined), and an export that needed editing to see a new file would fall behind
-    the corpus it describes. ``*-detail.jsonl`` sidecars are the miner's audit
-    trail, not cases, and are skipped."""
+    the corpus it describes. Which files are cases — and which are the miner's
+    audit sidecars — is ``search_lab.gold_files``' call, shared with the gate."""
+    from gold_files import discover
     cases = []
-    for path in sorted(gold_dir.glob("*-cases*.jsonl")):
-        if path.name.endswith("-detail.jsonl"):
-            continue
+    for path in discover(gold_dir):
         for line in path.read_text().splitlines():
             if line.strip():
                 case = json.loads(line)

@@ -51,6 +51,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 # however this file was loaded: as a script, by path, or as search_lab.X.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+import gold_files  # noqa: E402
 from bm25_baseline import bm25_search  # noqa: E402
 from eval_core import warm_for_scoring  # noqa: E402
 from mine._framework import gold_dir  # noqa: E402
@@ -107,7 +108,7 @@ def main(argv: list[str] | None = None) -> int:
     args = ap.parse_args(argv)
 
     files = args.cases or sorted(
-        p for p in gold_dir().glob("topic-cases-*.jsonl") if "detail" not in p.name)
+        p for p in gold_files.discover(gold_dir()) if p.name.startswith("topic-cases-"))
     if not files:
         print("no case files found", file=sys.stderr)
         return 1

@@ -230,23 +230,17 @@ def last_measured_files(home: Path) -> set[str]:
             if isinstance(m, dict) and m.get("status") in (None, "scored")}
 
 
-# Sibling artifacts of the mining pipeline that share the "*cases*.jsonl" glob but
-# are not gold case files: per-case detail dumps, seed/candidate pools, and the
-# `.until-bak` rewrites. A gold file is `judged-cases.jsonl` or
-# `topic-cases-<token>.jsonl`; everything else is filtered out by name.
-_NON_GOLD_MARKERS = ("detail", "seed", "candidate", "accepted", "-bak")
-
-
 def discover_gold_files(gold_dir: Path) -> list[Path]:
-    """Every gold case file in ``gold_dir`` — ``judged-cases.jsonl`` and
-    ``topic-cases-<token>.jsonl`` — excluding the mining pipeline's sibling
-    artifacts that happen to share the glob."""
-    if not gold_dir.is_dir():
-        return []
-    return sorted(
-        p for p in gold_dir.glob("*cases*.jsonl")
-        if not any(marker in p.name for marker in _NON_GOLD_MARKERS)
-    )
+    """Every gold case file in ``gold_dir`` — the shared discovery rule in
+    ``search_lab.gold_files``, which the bench and the window-fill harness read
+    through too, so all three agree on what a fixture is."""
+    from search_lab.gold_files import discover
+    return discover(gold_dir)
+
+
+def _non_gold_markers() -> tuple[str, ...]:
+    from search_lab.gold_files import NON_GOLD_MARKERS
+    return NON_GOLD_MARKERS
 
 
 def _first_row(path: Path) -> dict | None:

@@ -50,7 +50,7 @@ MAX_ANGLES = 20
 # label prompt; the labeler expands past them with its own searches anyway.
 LABEL_CANDIDATE_CAP = 30
 
-CASES_STEM_TEMPLATE = "topic-cases-{slug}"
+CASES_STEM_TEMPLATE = "topic-cases-{token}"
 
 _METHOD = (
     "topic-driven: one survey agent searched the topic, decided the angles it "
@@ -356,7 +356,7 @@ class TopicMinedMiner(Miner):
     target_kind = "batch"
     target_help = "the survey decides how many angles; --max-queries caps it"
     runnable_in_all = False
-    cases_stem = "topic-cases-<slug>"
+    cases_stem = "topic-cases-<token>"
 
     def add_arguments(self, parser: argparse.ArgumentParser) -> None:
         parser.add_argument("--topic", required=True,
@@ -370,7 +370,7 @@ class TopicMinedMiner(Miner):
         args = ctx.args
         topic = resolve_topic(args.topic)
         default = fw.default_cases_path(
-            CASES_STEM_TEMPLATE.format(slug=case_token(topic)))
+            CASES_STEM_TEMPLATE.format(token=case_token(topic)))
         cases_path, detail_path = fw.open_output(args.out, default)
         already = fw.mined_queries(cases_path)
 

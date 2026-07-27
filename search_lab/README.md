@@ -101,7 +101,7 @@ archive (BEIR and the lab build throwaway homes and never touch it).
     agent decides how many *angles* the topic warrants and authors one query
     each with candidate threads; one labeler agent per angle verifies, expands,
     and grades a comprehensive pool (2=intended, 1=partial, 0=confound),
-    `topic-cases-<slug>.jsonl`. Confound ranking. Batch (needs `--topic`).
+    `topic-cases-<token>.jsonl`. Confound ranking. Batch (needs `--topic`).
   - **`rerank`** — the cheap rung: production search returns a deep pool per
     query, one judge grades it 2/1/0 in a single pass (`rerank-cases.jsonl`).
     Scores ordering *within what search retrieved* (nDCG is the sharp signal);
@@ -255,7 +255,7 @@ the re-rank budget.
     the originating session for intent, sweeps the frozen snapshot with its own
     reformulated searches, reads candidates, and writes a graded, corpus-grounded
     case. The recall-capable rung.
-  - `mine topic` (`topic-cases-<slug>.jsonl`): a survey agent searches a topic,
+  - `mine topic` (`topic-cases-<token>.jsonl`): a survey agent searches a topic,
     decides the angles it warrants, and authors one query per angle with the
     candidates it found; one labeler agent per angle builds on those and grades a
     pool over the snapshot. The confound-ranking rung.
@@ -359,7 +359,7 @@ that already worked, not a win — and it will not survive a hold-out.
   each miner's `--target` bounds them). Everything else on the bench is free.
 - Mined output quotes real usage — case files, detail sidecars, and ledgers live
   under `~/.thread/archive/` (`retrieval-trend.jsonl`, `judged-cases.jsonl`,
-  `topic-cases-<slug>.jsonl`, `rerank-cases.jsonl`, `findability-cases.jsonl`),
+  `topic-cases-<token>.jsonl`, `rerank-cases.jsonl`, `findability-cases.jsonl`),
   never in the repo. The synthetic corpus is the one exception: no real data, so
   it's checked in.
 - The fast tests guarding these harnesses live in `tests/`

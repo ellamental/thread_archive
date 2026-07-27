@@ -114,7 +114,7 @@ def test_floor_sidecars_are_not_themselves_discovered_as_gold(tmp_path) -> None:
 def test_every_discovered_floor_names_a_gold_shaped_file(tmp_path) -> None:
     # A floor can only reach a file discovery would keep, since it is found *from*
     # that file rather than declared against a name.
-    markers = gate._NON_GOLD_MARKERS
+    from search_lab.gold_files import NON_GOLD_MARKERS as markers
     a = _gold(tmp_path, "topic-cases-alpha.jsonl")
     gate.floor_path_for(a).write_text(json.dumps(
         {"mrr": 0.4, "success10": 0.8, "recall10": 0.7, "ndcg10": 0.5}))

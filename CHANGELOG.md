@@ -27,6 +27,20 @@
   all. It now shares the measure the health page and the import page use, at all
   three widths.
 
+- **The gold corpus is discovered, never named.** A gold file used to be named for
+  the topic it was mined from, so a private subject travelled into every place the
+  file was referenced. Mining now names a file by `case_token()` — a digest of the
+  topic's own id, which is already opaque — and the repo names no gold file at all.
+  Floors moved from a central manifest to a sidecar beside each file (`X.jsonl` is
+  gated by `X.floor.json`), so the calibrated set falls out of discovery with no
+  list to drift. `--require`'s fail-closed check reads the expectation from the run
+  ledger, which already recorded what the last run measured: a newly mined file
+  joins by being scored once, a retired one leaves after a single run without
+  `--require`. The published quality table reports per *miner* rather than per file.
+  One discovery rule now serves all three readers (`search_lab/gold_files.py`) —
+  the gate, the bench export, and the window-fill harness previously each had their
+  own glob, and the bench's skipped `X-detail.jsonl` while missing `X.detail.jsonl`.
+
 - **The gold corpus and its calibration both stay with the operator.** The case
   files were already outside this repo, but the gate's floor table was not, and
   its keys are gold filenames — which topic mining derives from the subject titles
