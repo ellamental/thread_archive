@@ -436,6 +436,59 @@ export interface MinerStage {
   summary: string
 }
 
+/** One miner's mining history, summed across every corpus it has run against. */
+export interface MinerTotals {
+  miner: string
+  runs: number
+  /** Units *drawn*, which is the denominator behind `written`. Scoring only what
+   *  was minted conditions the population on "the agent succeeded". */
+  attempted: number
+  written: number
+  failed: number
+  outcomes: Record<string, number>
+  cost_usd: number | null
+  datasets: string[]
+  last_at: string | null
+}
+
+/** One corpus's gold dir: what has been mined there, and what is waiting.
+ *
+ *  The mining ledger and the case files live in the gold dir a run wrote into —
+ *  public-corpus golds beside their download, the operator's under
+ *  `~/.thread/archive` — so this axis is a walk over gold dirs, not a group-by. */
+export interface DatasetMining {
+  dataset: string
+  path: string
+  exists: boolean
+  runs: number
+  cases: number
+  files: number
+  bytes: number
+  miners: string[]
+  outcomes: Record<string, number>
+  /** What this corpus offers a miner, counted from cheap sources only. */
+  supply: Record<string, number>
+  /** What this corpus has been refused for, by reason. Cases say what a corpus
+   *  could be asked; refusals say what it could not — and at scale several of the
+   *  reasons are findings about the dataset rather than about a run. */
+  refusals: Record<string, number>
+}
+
+export interface MiningSummary {
+  by_miner: MinerTotals[]
+  by_dataset: DatasetMining[]
+  totals: {
+    runs: number
+    cases: number
+    files: number
+    bytes: number
+    datasets_mined: number
+    cost_usd: number | null
+    first_at: string | null
+    last_at: string | null
+  }
+}
+
 export interface Miner {
   name: string
   summary: string
@@ -589,6 +642,7 @@ export interface LabInventory {
   benchmarks: Benchmark[]
   datasets: Dataset[]
   miners: Miner[]
+  mining: MiningSummary
 }
 
 // ── the drop zone (account-export upload) ───────────────────────────────────

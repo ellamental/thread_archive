@@ -41,6 +41,14 @@ def _thread(title: str, *, ttype: str = "conversation", excluded: bool = False) 
 
 _EVENT_ID = iter(range(1, 100_000))
 
+# Edit bodies with enough substance to clear the `substance` gate, which exists so
+# an author is never handed a filename and asked to write about work.
+_BODY = ("def retry_backoff(attempt: int) -> float:\n"
+         "    # cap the wait so an uploader cannot retry forever\n"
+         "    return min(BASE_DELAY * 2 ** attempt, MAX_DELAY)\n") * 2
+_BODY2 = ("MAX_DELAY = 30.0  # was unbounded; a stuck upload held the queue\n"
+          "BASE_DELAY = 0.5\n") * 4
+
 
 def _touch(thread_id: str, path: str, op: str, *, payload: dict | None = None,
            at: str = "2026-01-05T10:00:00Z") -> int:
@@ -299,24 +307,30 @@ def test_edited_miner_run_writes_multi_answer_cases(archive_home, tmp_path):
     e1, e2 = _thread("editor one"), _thread("editor two")
     reader, sibling = _thread("reader"), _thread("sibling")
     _touch(e1, "src/pkg/target.py", "edit",
-           payload={"tool_name": "Edit", "input": {"new_string": "retry harder"}})
-    _touch(e2, "src/pkg/target.py", "edit")
+           payload={"tool_name": "Edit", "input": {"new_string": _BODY}})
+    _touch(e2, "src/pkg/target.py", "edit",
+           payload={"tool_name": "Edit", "input": {"new_string": _BODY2}})
     _touch(reader, "src/pkg/target.py", "read")
     _touch(sibling, "src/pkg/other.py", "edit")
 
     out = tmp_path / "edited-cases.jsonl"
-    reply = json.dumps({"queries": [
-        {"query": "the retry backoff work", "difficulty": "intent"},
-        {"query": "src/pkg/target.py", "difficulty": "literal"}]})
-    seen: dict = {}
+    calls: list[dict] = []
 
     def fake_agent(prompt, model, tool_cmd, **kw):
-        seen.update(kw)
-        seen["prompt"] = prompt
-        return reply, {"num_turns": 1}
+        calls.append({"prompt": prompt, **kw})
+        if "auditing a benchmark" in prompt:
+            return json.dumps({"coherent": True, "targetable": True,
+                               "reason": "both sessions rework the retry loop"}), \
+                {"cost_usd": 0.5}
+        return json.dumps({"queries": [
+            {"query": "how this file decides when to give up retrying",
+             "difficulty": "intent"},
+            {"query": "retry_backoff in src/pkg/target.py",
+             "difficulty": "literal"}]}), {"num_turns": 1, "cost_usd": 0.1}
 
     ns = argparse.Namespace(model="opus", jobs=1, seed=7, out=out, target=1,
-                            min_sessions=2, max_sessions=12, per_dir=2)
+                            min_sessions=2, max_sessions=12, per_dir=2,
+                            coherence=True)
     ctx = fw.MineContext(snapshot_id="snap-1", target=1, model="opus", jobs=1,
                          tool_cmd="py tool", args=ns, agent_run=fake_agent)
     result = ep.MINER.run(ctx)
@@ -328,9 +342,17 @@ def test_edited_miner_run_writes_multi_answer_cases(archive_home, tmp_path):
         assert sorted(row["gold"]) == sorted([e1, e2])   # both editors, always
         assert row["grades"][reader] == 1 and row["grades"][sibling] == 0
         assert row["snapshot_id"] == "snap-1"
-    # The authoring agent is denied the corpus seam structurally, not by asking.
-    assert seen["corpus_access"] is False
-    assert "retry harder" in seen["prompt"]
+    audit, author = calls
+    # The auditor reads the editing conversations; the author is denied the seam
+    # structurally, and nothing the auditor concluded travels forward.
+    assert audit["corpus_access"] is True and e1 in audit["prompt"]
+    assert author["corpus_access"] is False
+    assert "retry_backoff" in author["prompt"]
+    assert "rework the retry loop" not in author["prompt"]
+
+    stages = [r["stage"] for r in result.funnel.rows()]
+    assert stages == ["supply", "sample", "substance", "coherence", "author",
+                      "verify"]
 
 
 def test_edited_miner_run_records_an_agent_failure(archive_home, tmp_path):
@@ -338,12 +360,15 @@ def test_edited_miner_run_records_an_agent_failure(archive_home, tmp_path):
 
     init_db()
     a, b = _thread("a"), _thread("b")
-    _touch(a, "src/x.py", "edit")
-    _touch(b, "src/x.py", "edit")
+    _touch(a, "src/x.py", "edit",
+           payload={"tool_name": "Edit", "input": {"new_string": _BODY}})
+    _touch(b, "src/x.py", "edit",
+           payload={"tool_name": "Edit", "input": {"new_string": _BODY2}})
 
     out = tmp_path / "edited-cases.jsonl"
     ns = argparse.Namespace(model="opus", jobs=1, seed=7, out=out, target=1,
-                            min_sessions=2, max_sessions=12, per_dir=2)
+                            min_sessions=2, max_sessions=12, per_dir=2,
+                            coherence=False)
     ctx = fw.MineContext(snapshot_id="s", target=1, model="opus", jobs=1,
                          tool_cmd="py tool", args=ns,
                          agent_run=lambda *a, **k: (None, {"error": "boom"}))
@@ -381,3 +406,105 @@ def test_edited_miner_is_registered_and_declares_retrieval_free_gold():
     (miner,) = [m for m in load_registry() if m.name == "edited"]
     assert miner.retrieval_free is True
     assert miner.gold_source and miner.runnable_in_all is False
+
+
+# ── the gates ────────────────────────────────────────────────────────────────
+
+def _ectx(**kw):
+    ns = argparse.Namespace(seed=7, min_sessions=2, coherence=True, **kw)
+    return fw.MineContext(snapshot_id="s", target=1, model="opus", jobs=1,
+                          tool_cmd="py tool", args=ns)
+
+
+def test_substance_gate_refuses_a_path_with_no_readable_change(archive_home):
+    """The author sees the path and its edit excerpts and nothing else, so a path
+    whose payloads carry no change body leaves it writing about a filename."""
+    from thread_archive._store import init_db
+
+    init_db()
+    a, b = _thread("a"), _thread("b")
+    _touch(a, "src/bare.py", "edit")        # no payload at all
+    _touch(b, "src/bare.py", "edit")
+    row = {"path": "src/bare.py", "n_sessions": 2}
+    assert ep.stage_substance(row, _ectx()).reason == "no-edit-text"
+
+
+def test_substance_gate_refuses_a_trivial_edit(archive_home):
+    from thread_archive._store import init_db
+
+    init_db()
+    a, b = _thread("a"), _thread("b")
+    for t in (a, b):
+        _touch(t, "src/tiny.py", "edit",
+               payload={"tool_name": "Edit", "input": {"new_string": "x = 1"}})
+    row = {"path": "src/tiny.py", "n_sessions": 2}
+    assert ep.stage_substance(row, _ectx()).reason == "trivial-edits"
+
+
+def test_substance_gate_admits_real_work_and_attaches_the_pool(archive_home):
+    from thread_archive._store import init_db
+
+    init_db()
+    a, b = _thread("a"), _thread("b")
+    _touch(a, "src/real.py", "edit",
+           payload={"tool_name": "Edit", "input": {"new_string": _BODY}})
+    _touch(b, "src/real.py", "edit",
+           payload={"tool_name": "Edit", "input": {"new_string": _BODY2}})
+    row = {"path": "src/real.py", "n_sessions": 2}
+    verdict = ep.stage_substance(row, _ectx())
+    assert verdict.kept and sorted(row["_grades"]) == sorted([a, b])
+    assert row["_excerpts"]
+
+
+def test_parse_audit_requires_both_verdicts():
+    assert ep.parse_audit('{"coherent": true, "targetable": true, "reason": "r"}') == \
+        {"coherent": True, "targetable": True, "reason": "r"}
+    assert ep.parse_audit('{"coherent": true}') is None
+    assert ep.parse_audit("nope") is None
+
+
+def test_coherence_gate_separates_an_incoherent_set_from_an_untargetable_file():
+    """Membership here is enumerated, so a *wrong* label is not the risk — an
+    incoherent one is. A path six sessions touched for six unrelated reasons has a
+    gold set nothing ties together, which is unanswerable by construction."""
+    row = {"path": "src/x.py", "_excerpts": ["body"], "_grades": {"T1": 2, "T2": 2}}
+    ctx = _ectx()
+
+    def replying(payload):
+        return lambda *a, **k: (json.dumps(payload), {"cost_usd": 0.2})
+
+    ctx.agent_run = replying({"coherent": False, "targetable": True, "reason": "r"})
+    assert ep.stage_coherence(row, ctx).reason == "incoherent-gold-set"
+    ctx.agent_run = replying({"coherent": True, "targetable": False, "reason": "r"})
+    assert ep.stage_coherence(row, ctx).reason == "untargetable-path"
+    ctx.agent_run = replying({"coherent": True, "targetable": True, "reason": "r"})
+    assert ep.stage_coherence(row, ctx).kept
+
+
+def test_verify_drops_the_offending_query_not_the_whole_path():
+    """A path yielding one good query and one templated one should contribute the
+    good one."""
+    row = {"path": "src/retry.py", "_excerpts": ["def retry_backoff(): pass"],
+           "_rows": [
+               {"query": "retry_backoff in src/retry.py", "difficulty": "literal"},
+               {"query": "that time we changed the waiting", "difficulty": "intent"}]}
+    ctx = _ectx()
+    ctx.seen_openings = {"that time we"}
+    verdict = ep.stage_verify(row, ctx)
+    assert verdict.kept and len(row["_rows"]) == 1
+    assert row["_rows"][0]["difficulty"] == "literal"
+    assert verdict.detail["rejected"][0]["why"] == "repeats-an-opening"
+
+
+def test_verify_drops_the_unit_when_every_query_fails():
+    row = {"path": "src/retry.py", "_excerpts": ["def retry_backoff(): pass"],
+           "_rows": [{"query": "the waiting stuff", "difficulty": "literal"}]}
+    assert ep.stage_verify(row, _ectx()).reason == "all-queries-rejected"
+
+
+def test_edited_declares_the_full_funnel_and_drops_the_paid_gate_on_request():
+    full = ep.MINER.stages(argparse.Namespace(coherence=True))
+    assert [s.name for s in full] == ["substance", "coherence", "author", "verify"]
+    assert [s.kind for s in full] == ["free", "agent", "agent", "free"]
+    cheap = ep.MINER.stages(argparse.Namespace(coherence=False))
+    assert [s.name for s in cheap] == ["substance", "author", "verify"]

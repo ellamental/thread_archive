@@ -76,7 +76,7 @@ already measured at this configuration — see "Running the whole bench".)
 | 2 | CI arm-liveness probes (`retrieval_eval.py --probes-only`) | live archive | ~a minute (it loads both models) | every commit, via thread-ci |
 | 3 | `latency_replay.py` (speed over real traffic), `graph_eval.py`, `--behavior` | the live archive | minutes | evaluating a deliberate ranking change |
 | 3½ | `python -m search_lab.mine <miner>` to mint case files for a hand-read experiment | a frozen snapshot with the record that miner needs (commit provenance / a path projection / a usage ledger) | agent-minutes per mined case | investigating a specific suspicion, never to produce a headline number |
-| 4 | `python -m search_lab benchmark`; `pytest -m beir` | external IR / conversational-memory benchmarks | tens of minutes (built homes cache for re-runs) | the quality claim — calibrating against published baselines |
+| 4 | `python -m search_lab benchmark`; `pytest -m beir` | ten external IR / conversational-memory benchmarks | minutes once the corpora are built; about a day of CPU to build them all the first time | the quality claim — calibrating against published baselines |
 
 Tiers 0–3 **detect damage**; tier 4 is the only one that supports a positive
 quality claim, and only about the components in general (see "What a number here
@@ -122,6 +122,20 @@ benchmark — there is no local-corpus row and no tier that credits a change on 
 archive. The plan estimates each row from what it actually took last time, so the
 printed budget is measured rather than guessed; a row whose corpus has never been
 built pays for building it once.
+
+Ten datasets, in **cheapest-first order**. That ordering is deliberate: a cold
+pass is dominated by two rows whose corpora run to hundreds of thousands of
+documents (`trec-covid`, `mtrag`), and a set that ran them first would print
+nothing for hours. Within a dataset the lexical row precedes the vectors one,
+which is the same principle — the lexical row pays the ingest, and the vectors row
+adds only the embed pass on top of a corpus already built. A cold pass over
+everything is roughly a day of CPU on this box; every pass after it is minutes,
+because the corpora are cached and unchanged rows are fresh.
+
+The estimates a never-run row shows are priced off this box's measured
+throughput — **ingest ~3,600 docs/min, embed ~450 docs/min** — rather than
+guessed, because the decision `--list` informs is whether to start something that
+runs overnight. Each is replaced by that row's own elapsed time once it has run.
 
 **It is built for the tuning loop.** Each row records its numbers against a
 content hash of the ranking code *as it sits in the working tree*, so a row whose
@@ -187,7 +201,32 @@ archive (BEIR and the lab build throwaway homes and never touch it).
 - **`python -m search_lab.mine`** — the label miners (`mine/`), the only
   tokens-spending instrument. They mint snapshot-bound eval `--cases` files;
   bare `mine` lists the registry, `mine <miner> --help`
-  documents one. Cases bind by `snapshot_id` to the frozen corpus
+  documents one.
+
+  **Every miner is a declared pipeline** — *supply → admit → produce → verify* —
+  and the funnel it runs is recorded per stage in `mine-runs.jsonl` and drawn on
+  `/lab`. Gates decide what is worth spending on, the free QA stage checks what came
+  back, and the two catch different failures: a sound unit still yields a bad query
+  often enough that the only prior control — asking the producing agent to grade
+  itself — declined zero times in 25. Stages declare `kind`, so **`mine <miner>
+  --plan`** runs every free stage for real, stops where the spend begins, and prints
+  the true funnel plus the agent sessions the rest would take. It writes nothing and
+  records no run.
+
+  **Refusals are saved, not just counted.** Each miner writes a `-rejects.jsonl`
+  beside its cases — one row per refused unit with its stage, reason, and the gate
+  that made the call. They are results: a pile of `misattributed` says a provenance
+  join is wrong, `untargetable-commit` at scale characterises a corpus's commit
+  hygiene, `none-of-pool` is the recall alarm. A paid gate's refusal is honoured on
+  later runs so it is never re-bought, and only while that gate's `gate_sha` is
+  unchanged — a reworded prompt re-opens everything it turned down. Free-stage
+  refusals are always recomputed, which is what lets a corpus that has changed be
+  seen as it is now. `gold_stats.py` reports them; `/lab` shows them per corpus.
+
+  Read a funnel by *where* units were lost, never by how many. The paid gates report
+  their refusals separately on purpose: `misattributed` is a wrong label leaving the
+  benchmark and `untargetable-commit` is a hard case leaving it, and they move a
+  number in opposite directions. Cases bind by `snapshot_id` to the frozen corpus
   snapshot they run against (`python search_lab/snapshot.py <dir>`; point
   `THREAD_ARCHIVE_HOME` at it), so after the one-time spend
   `retrieval_eval.py --cases` scores them for free and refuses them once the
@@ -224,7 +263,13 @@ archive (BEIR and the lab build throwaway homes and never touch it).
     cannot peek at a conversation. Touched-but-unchanged threads grade 1,
     sibling-directory editors 0 — a confound pool with no judge in it.
     `--min-sessions` / `--max-sessions` bound the gold set so a case is neither
-    single-answer nor larger than any window could hold. Needs a folded code
+    single-answer nor larger than any window could hold. Runs as
+    **substance → coherence → author → verify**: `substance` is free (are there
+    readable change bodies to author from at all); `coherence` is a paid audit
+    asking whether the editing conversations share a subject one query could target,
+    because membership here is *enumerated* so a wrong label is not the risk — an
+    incoherent gold set is, and a case built on one is unanswerable by construction.
+    `--no-coherence` skips it. Needs a folded code
     projection: a real archive's watcher keeps one, and a corpus home gets one from
     its builder (`swechat_corpus.py` folds before it stamps) — nothing else does,
     and unfolded the projection is empty rather than stale, so every path fails to
@@ -238,7 +283,12 @@ archive (BEIR and the lab build throwaway homes and never touch it).
     judged 2/1/0 in one pass. The union is merged round-robin so a cap trims every
     system's tail rather than one system's, and each case records which systems
     nominated each answer (`pool_contrib`), so the pool's reach is auditable
-    instead of asserted. The judge's `none-of-pool` verdict is the recall alarm.
+    instead of asserted. Runs as **pool → judge → verify**; assembling the union
+    spends no agent, so `--plan` answers "does this corpus return anything for the
+    queries agents asked" for free. The judge's `none-of-pool` verdict is the recall
+    alarm, and `undiscriminating` — a verdict that graded nearly the whole union
+    relevant, and so separates no ranker from any other — is a distinct disposition
+    from it.
     Needs a live archive's usage ledger for its query population.
 - **`swechat_corpus.py`** — builds the SWE-chat corpus home and its linkage file.
   [SWE-chat](https://huggingface.co/datasets/SALT-NLP/SWE-chat) is public
@@ -268,21 +318,51 @@ archive (BEIR and the lab build throwaway homes and never touch it).
   ranking signal? A damage check for the shipped coherence re-rank. Scored on
   log-mined click labels, so it is an alarm like `--from-log`, never evidence the
   re-rank helps.
-- **`beir_eval.py`** / **`cdr_eval.py`** / **`haystack_eval.py`** — the external
+- **`beir_eval.py`** / **`cdr_eval.py`** / **`mtrag_eval.py`** /
+  **`haystack_eval.py`** / **`perltqa_eval.py`** — the external
   yardsticks: the real pipeline over public benchmarks, beside their published
   baselines. They answer "are the components competitive in general?" — never
   archive-domain quality (third-party corpora that look nothing like an agent's
   own session log; read every number against that mismatch). Two shapes:
-  - **shared-corpus** — `beir_eval.py` (BEIR scifact, scientific-claim IR) and
-    `cdr_eval.py` (NVIDIA ChatRAG's CDR, conversational retrieval) retrieve from
-    one corpus, scored by nDCG@10 against BM25 / dense / best-of-N references.
+  - **shared-corpus** — `beir_eval.py` (BEIR `scifact` / `nfcorpus` / `arguana` /
+    `trec-covid`), `cdr_eval.py` (NVIDIA ChatRAG's CDR), `mtrag_eval.py` (IBM's
+    multi-turn RAG benchmark over four document corpora) and `perltqa_eval.py`
+    (personal-memory unit retrieval) retrieve from one corpus, scored by nDCG@10
+    against BM25 / dense / best-of-N references.
   - **per-question haystack** — `haystack_eval.py`
-    (`--dataset locomo|longmemeval`): each question carries its own small
+    (`--dataset locomo|longmemeval|beam`): each question carries its own small
     conversation history, and the task is to pull the evidence turn(s)/session(s)
     out of *it*. Builds a small archive per corpus — cached by content and reused
     across runs, so a re-run over an already-embedded corpus
     skips ingest+embed — scored by recall@k against the datasets' published recall
     baselines.
+
+  Four of these rows exist to measure something no other row does, and reading
+  them as interchangeable third-party numbers wastes them:
+
+  - **document length.** `nfcorpus` (short) and `arguana` (long) bracket
+    `scifact`'s abstracts on purpose. The bm25/density term's strength scales
+    inversely with document length, and three corpora at three lengths is what
+    turns that from an inference into a measurement.
+  - **query shape.** `mtrag` ships one information need as a terse
+    context-dependent last turn (median 46 chars) and as a standalone human
+    rewrite (59), with a published baseline for each. The gap between those two
+    rows is the only external read on how much the stack leans on a well-formed
+    query — and `lastturn` is the closest thing on the bench to the ~31-char
+    queries the usage ledger actually records.
+  - **completeness.** `beam` is the multi-answer row: median 2–3 gold messages
+    per question, up to 96, where everything else is effectively single-gold. Its
+    `recall_all@k` is the one number here that asks whether a window holds
+    *everything* bearing on a question rather than merely something. Its three
+    tiers are the same conversations at growing lengths, so they read as a
+    degradation ladder.
+  - **retrieval granularity.** `perltqa` retrieves a curated memory *unit* rather
+    than a turn or a session.
+
+  `beam` and `perltqa` carry no published retrieval baseline — BEAM's paper scores
+  end-to-end QA under a memory framework, and PerLTQA's retrieval subtask is not
+  reported in a form these runs reproduce — so both print that instead of a
+  borrowed number. `bm25_baseline.py` is what would give either a local reference.
 
   All three build under one root (`~/.cache/thread-evals`: `<root>/<dataset>` for
   a download, `<root>/homes/<name>` for a built corpus), so what the bench costs
@@ -307,6 +387,13 @@ number that dataset's leaderboard reports. A row unchanged since its last run is
 skipped and reported from the ledger, so the second pass costs only what an edit
 actually invalidated. That is the before-and-after pair a ranking change is judged
 on.
+
+**Read the set, not a row.** Ten datasets disagreeing is the useful part: a
+deficit that holds across every corpus is an arm problem, one that tracks document
+length is the density-window scale mechanism, and one that shows up on a single
+corpus is an artifact of that corpus. No single row can tell those apart, which is
+why the set is worth more than the sum of its numbers and why a change that lifts
+one corpus while sinking another must not be read off whichever row moved most.
 
 ```
 python -m search_lab benchmark --list      # what would run, what is fresh

@@ -7,6 +7,7 @@ import {
   type DirSize,
   type FunnelRow,
   type LabInventory,
+  type MiningSummary,
 } from '../api'
 import { Link } from 'react-router-dom'
 import { Pill, RunsTable } from './labRuns'
@@ -117,6 +118,147 @@ function Funnel({ rows }: { rows: FunnelRow[] }) {
         )
       })}
     </ol>
+  )
+}
+
+/** A run's outcome composition as one bar: what was admitted against what was
+ *  refused, and by which reason.
+ *
+ *  `ok` is drawn apart from everything else because the drops are the informative
+ *  half — a miner refusing a third of what it draws is either working well or
+ *  broken, and which one it is depends entirely on the reasons, never on the
+ *  count. Segments are ordered largest-first so the dominant refusal is the one
+ *  the eye lands on. */
+function OutcomeBar({ outcomes }: { outcomes: Record<string, number> }) {
+  const total = Object.values(outcomes).reduce((a, b) => a + b, 0)
+  if (!total) return <span className="muted small">—</span>
+  const ok = outcomes.ok ?? 0
+  const drops = Object.entries(outcomes)
+    .filter(([r]) => r !== 'ok')
+    .sort((a, b) => b[1] - a[1])
+  return (
+    <div className="outcome">
+      <div className="outcome-bar" role="img"
+           aria-label={`${ok} admitted of ${total} drawn`}>
+        {ok > 0 && <span className="seg is-ok" style={{ width: `${(ok / total) * 100}%` }} />}
+        {drops.map(([reason, n], i) => (
+          <span key={reason} className={`seg is-drop tone-${i % 3}`}
+                style={{ width: `${(n / total) * 100}%` }} title={`${reason} ${n}`} />
+        ))}
+      </div>
+      <p className="muted small outcome-why">
+        {ok > 0 && `ok ${ok}`}
+        {drops.length > 0 && (ok > 0 ? ' · ' : '')}
+        {drops.map(([reason, n]) => `${reason} ${n}`).join(' · ')}
+      </p>
+    </div>
+  )
+}
+
+/** Mining, cut two ways over the same runs.
+ *
+ *  By pipeline answers "is this miner working, and what does it refuse?"; by
+ *  dataset answers "which corpora have been labelled at all?", which on a bench
+ *  whose corpora each admit different miners is what decides what can be measured
+ *  next. The supply column is the one that makes an empty row mean something: a
+ *  corpus with 1,284 mineable units and no runs is not the same state as a corpus
+ *  with nothing to mine, and without it both render as a zero. */
+function MiningSection({ mining }: { mining: MiningSummary }) {
+  const t = mining.totals
+  const mined = mining.by_dataset.filter((d) => d.runs > 0).length
+  return (
+    <section>
+      <h2>Mining</h2>
+      <p className="muted">
+        Every miner is a declared pipeline — supply, then gates that decide what is
+        worth spending on, then a free QA pass over what came back. What a mined
+        number means depends on <em>where</em> units were lost, so the funnels below
+        are read by their drop reasons and never by a total: a unit refused because
+        its provenance does not hold up is a wrong label leaving the benchmark, and
+        one refused because its source material is uninformative is a hard case
+        leaving it. Those move a number in opposite directions.
+      </p>
+      <div className="stat-tiles">
+        <Tile value={count(t.runs)} label="mining runs"
+              sub={t.last_at ? `last ${day(t.last_at)}` : 'none recorded'} />
+        <Tile value={count(t.cases)} label="cases on disk"
+              sub={`${count(t.files)} file(s) · ${bytes({ bytes: t.bytes, files: 0, truncated: false })}`} />
+        <Tile value={`${mined}/${mining.by_dataset.length}`} label="corpora mined"
+              sub="gold dirs with a recorded run" />
+        <Tile value={t.cost_usd ? `$${t.cost_usd.toFixed(2)}` : '—'} label="spent"
+              sub="recorded per stage; older runs logged none" />
+      </div>
+
+      <h3>By pipeline</h3>
+      {mining.by_miner.length === 0 ? (
+        <p className="muted">No miner has run on this box.</p>
+      ) : (
+        <table className="stat-table mining-table" aria-label="mining by pipeline">
+          <thead>
+            <tr>
+              <th>miner</th><th className="num">runs</th><th className="num">drawn</th>
+              <th className="num">cases</th><th className="num">yield</th>
+              <th>admitted / refused</th><th>corpora</th>
+            </tr>
+          </thead>
+          <tbody>
+            {mining.by_miner.map((m) => (
+              <tr key={m.miner}>
+                <td><code>{m.miner}</code></td>
+                <td className="num">{count(m.runs)}</td>
+                <td className="num">{count(m.attempted)}</td>
+                <td className="num">{count(m.written)}</td>
+                <td className="num">
+                  {m.attempted ? (m.written / m.attempted).toFixed(1) : '—'}
+                </td>
+                <td><OutcomeBar outcomes={m.outcomes} /></td>
+                <td className="muted small">{m.datasets.join(', ') || '—'}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+
+      <h3>By dataset</h3>
+      <table className="stat-table mining-table" aria-label="mining by dataset">
+        <thead>
+          <tr>
+            <th>corpus</th><th className="num">runs</th><th className="num">cases</th>
+            <th>refused, and for what</th>
+            <th>waiting to be mined</th><th>miners run here</th>
+          </tr>
+        </thead>
+        <tbody>
+          {mining.by_dataset.map((d) => {
+            const supply = Object.entries(d.supply)
+            return (
+              <tr key={d.dataset}>
+                <td>
+                  <code>{d.dataset}</code>
+                  <div className="muted small">{d.path}</div>
+                </td>
+                <td className="num">{d.runs ? count(d.runs) : <span className="muted">—</span>}</td>
+                <td className="num">{d.cases ? count(d.cases) : <span className="muted">—</span>}</td>
+                <td className="muted small">
+                  {Object.keys(d.refusals).length === 0
+                    ? '—'
+                    : Object.entries(d.refusals)
+                        .sort((a, b) => b[1] - a[1])
+                        .map(([reason, n]) => `${reason} ${n}`)
+                        .join(' · ')}
+                </td>
+                <td className="muted small">
+                  {supply.length === 0
+                    ? 'not counted here — a supply that needs the corpus open is what `--plan` reports'
+                    : supply.map(([k, v]) => `${count(v)} ${k.replace(/_/g, ' ')}`).join(' · ')}
+                </td>
+                <td className="muted small">{d.miners.join(', ') || 'none'}</td>
+              </tr>
+            )
+          })}
+        </tbody>
+      </table>
+    </section>
   )
 }
 
@@ -498,6 +640,8 @@ export function SearchLabView() {
           </div>
         ))}
       </section>
+
+      <MiningSection mining={inv.mining} />
 
       <section>
         <h2>Miners</h2>

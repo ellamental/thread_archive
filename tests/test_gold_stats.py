@@ -226,3 +226,42 @@ def test_main_emits_json(tmp_path, capsys):
     p = _write(tmp_path, [_case("q")])
     assert gs.main([str(p), "--json"]) == 0
     assert json.loads(capsys.readouterr().out)["pool"]["single_gold"] == 1
+
+
+# ── refusals: the negative results ───────────────────────────────────────────
+
+def test_refusals_panel_reads_the_record_beside_the_cases(tmp_path):
+    """Cases say what a corpus could be asked; refusals say what it could not — and
+    at scale several of the reasons are findings about the dataset rather than the
+    run."""
+    cases = _write(tmp_path, [_case("q")])
+    (tmp_path / "commit-cases-rejects.jsonl").write_text("\n".join(json.dumps(r) for r in [
+        {"unit": "T1", "stage": "provenance", "reason": "no-file-overlap", "kind": "free"},
+        {"unit": "T2", "stage": "alignment", "reason": "misattributed", "kind": "agent"},
+        {"unit": "T3", "stage": "alignment", "reason": "misattributed", "kind": "agent"},
+        {"unit": "T4", "stage": "verify", "reason": "queries-rejected", "kind": "free",
+         "detail": {"rejected": [{"why": "literal-names-nothing"},
+                                 {"why": "repeats-an-opening"}]}},
+    ]) + "\n")
+    r = gs.refusals(cases)
+    assert r["total"] == 4 and r["units"] == 4
+    assert r["paid"] == 2                    # only the agent-stage refusals cost money
+    assert r["by_reason"]["misattributed"] == 2
+    assert r["by_stage"]["alignment"] == 2
+    # A kept unit can still have queries thrown out; that is a different event.
+    assert r["rejected_queries"] == {"literal-names-nothing": 1,
+                                     "repeats-an-opening": 1}
+
+
+def test_refusals_is_empty_when_nothing_was_refused(tmp_path):
+    assert gs.refusals(_write(tmp_path, [_case("q")])) == {}
+
+
+def test_report_carries_refusals_into_the_text_panel(tmp_path):
+    cases = _write(tmp_path, [_case("q")])
+    (tmp_path / "commit-cases-rejects.jsonl").write_text(json.dumps(
+        {"unit": "T2", "stage": "alignment", "reason": "misattributed",
+         "kind": "agent"}) + "\n")
+    text = gs.text_report(gs.report(cases))
+    assert "REFUSALS" in text and "misattributed 1" in text
+    assert "came from a paid gate" in text

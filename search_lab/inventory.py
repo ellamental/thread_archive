@@ -78,6 +78,12 @@ FAMILIES: dict[str, str] = {
            "the 16 embedding models the leaderboard evaluates",
     "haystack": "conversational memory, per question: each question carries its "
                 "own history and the task is to pull the evidence out of it",
+    "mtrag": "multi-turn RAG retrieval over four document corpora — the same "
+             "information need as a terse last turn and as a standalone rewrite, "
+             "nDCG@10 beside the published BM25 / BGE / Elser table for both",
+    "memory-units": "personal long-term memory retrieval, scored by memory-unit "
+                    "id — labels exist by construction (each question was "
+                    "authored from the unit it names), no published baseline",
     "agent-sessions": "real coding-agent sessions carrying commit provenance — "
                       "the corpus the miners label against",
 }
@@ -202,6 +208,8 @@ def _manifest(home: Path) -> dict[str, Any]:
 BUILD_MARKERS = (
     ("beir_build.json", "corpus_docs", "embedded"),
     ("haystack_corpus.json", "docs", "vectors"),
+    ("mtrag_build.json", "corpus_docs", "embedded"),
+    ("perltqa_build.json", "corpus_docs", "embedded"),
 )
 
 
@@ -585,8 +593,59 @@ def datasets(sizes: Sizes = None) -> list[dict[str, Any]]:
             "on_bench": on_bench.get(name, []),
         })
 
+    rows.append(_mtrag_dataset(cache_root, homes, on_bench, sizes))
+    rows.append(_perltqa_dataset(cache_root, homes, on_bench, sizes))
     rows.append(_swechat_dataset(homes, on_bench, sizes))
     return rows
+
+
+def _mtrag_dataset(cache_root: Path, homes: Path, on_bench: dict[str, list[str]],
+                   sizes: Sizes = None) -> dict[str, Any]:
+    """The only multi-corpus row on the page.
+
+    MTRAG retrieves from four separate corpora and reports the macro-average over
+    them, so it builds four homes and is only comparable to its published table
+    when all four are present — which makes "which of them are built" the fact a
+    reader needs, rather than one aggregate yes/no."""
+    from search_lab import mtrag_eval
+
+    download = cache_root / "mtrag"
+    return {
+        "name": "mtrag",
+        "family": "mtrag",
+        "harness": "search_lab/mtrag_eval.py",
+        "source": "https://github.com/IBM/mt-rag-benchmark",
+        "download": _download_row(
+            download, present=(download / "corpora").is_dir(), sizes=sizes),
+        "homes": [_home_row(homes / f"mtrag-{domain}", label=domain, sizes=sizes)
+                  for domain in mtrag_eval.DOMAINS],
+        "reference": {"metric": "nDCG@10 (4-domain macro)",
+                      **{f"{form}_{system}": value
+                         for form, systems in mtrag_eval.REFERENCE.items()
+                         for system, value in systems.items()}},
+        "on_bench": on_bench.get("mtrag", []),
+    }
+
+
+def _perltqa_dataset(cache_root: Path, homes: Path, on_bench: dict[str, list[str]],
+                     sizes: Sizes = None) -> dict[str, Any]:
+    """Personal long-term memory, retrieved by memory unit.
+
+    Its ``reference`` is deliberately empty: the paper reports a memory-retrieval
+    subtask but not in a form this run reproduces, and a borrowed number would
+    read as a comparison it is not."""
+    download = cache_root / "perltqa"
+    return {
+        "name": "perltqa",
+        "family": "memory-units",
+        "harness": "search_lab/perltqa_eval.py",
+        "source": "https://github.com/Elvin-Yiming-Du/PerLTQA",
+        "download": _download_row(
+            download, present=(download / "perltmem_en.json").is_file(), sizes=sizes),
+        "homes": [_home_row(homes / "perltqa", label="corpus", sizes=sizes)],
+        "reference": {},
+        "on_bench": on_bench.get("perltqa", []),
+    }
 
 
 def _swechat_dataset(homes: Path, on_bench: dict[str, list[str]],
@@ -622,16 +681,15 @@ def _swechat_dataset(homes: Path, on_bench: dict[str, list[str]],
 
 
 def _bench_index() -> dict[str, list[str]]:
-    """Dataset name → the benchmark rows that run on it, read off the manifest's
-    own row names (``beir:scifact[vectors]`` → ``scifact``). Derived rather than
-    declared so a row added to the manifest joins its dataset without an edit."""
+    """Dataset name → the benchmark rows that run on it, from each row's own
+    :meth:`~search_lab.benchmark.Row.dataset_name` — read off the row name
+    (``beir:scifact[vectors]`` → ``scifact``) unless the row declares it. So a row
+    added to the manifest joins its dataset without an edit here."""
     from search_lab import benchmark
 
     index: dict[str, list[str]] = {}
     for row in benchmark.manifest():
-        head = row.name.split("[", 1)[0]
-        key = head.split(":", 1)[1] if ":" in head else head
-        index.setdefault(key, []).append(row.name)
+        index.setdefault(row.dataset_name(), []).append(row.name)
     return index
 
 
@@ -647,7 +705,13 @@ def miners() -> list[dict[str, Any]]:
     fails it can only ever describe what the incumbent ranker already reaches."""
     from search_lab import mine, mine_runs
 
-    runs = mine_runs.read_runs()
+    # Every gold dir, not just the archive's: a run records itself beside the cases
+    # it wrote, so a miner that has only ever run against a public corpus would
+    # otherwise read as never run.
+    runs = [{**r, "dataset": entry["dataset"]}
+            for entry in gold_dirs()
+            for r in mine_runs.read_runs(Path(entry["path"]).expanduser())]
+    runs.sort(key=lambda r: r.get("at") or "", reverse=True)
     rows = []
     for miner in mine.load_registry():
         mine_ran = [r for r in runs if r.get("miner") == miner.name]
@@ -674,6 +738,7 @@ def miners() -> list[dict[str, Any]]:
                 "outcomes": r.get("outcomes") or {},
                 "funnel": r.get("funnel") or [],
                 "cost_usd": r.get("cost_usd"),
+                "dataset": r.get("dataset"),
             } for r in mine_ran[:5]],
             "runs_total": len(mine_ran),
         })
@@ -698,6 +763,214 @@ def declared_stages(miner) -> list[dict[str, Any]]:
         return []
 
 
+# ── mining: what has been mined, where, and how much of it there is ───────────
+#
+# The mining ledger and the case files live in **the gold dir a run wrote into**,
+# not in one central place — golds mined from a public corpus belong beside that
+# download, and the operator's belong under ~/.thread/archive. That is right for
+# provenance and it means a breakdown "by dataset" is not a group-by over one
+# table: it is a walk over every gold dir on the box. Reading only the archive's
+# would silently report a corpus that has never been mined as the whole picture.
+
+
+def gold_dirs() -> list[dict[str, Any]]:
+    """Every gold dir this box has, labelled by the corpus it belongs to.
+
+    The archive's own, plus one per dataset that declares a ``gold_dir``. Nothing
+    is discovered by globbing the filesystem: a directory that no dataset and no
+    archive claims is not a gold dir, it is a directory with some JSONL in it."""
+    from search_lab.mine._framework import gold_dir as archive_gold_dir
+
+    out = [{"dataset": "archive", "corpus": "the operator's own archive",
+            "path": str(archive_gold_dir())}]
+    for row in datasets():
+        path = row.get("gold_dir")
+        if path:
+            out.append({"dataset": row["name"], "corpus": row.get("harness") or "",
+                        "path": path})
+    return out
+
+
+def _case_file_row(path: Path) -> dict[str, Any]:
+    """One case file's shape, read by streaming it rather than parsing it whole.
+
+    Only the fields a summary needs — how many cases, how big the gold sets are,
+    which miner and which snapshot — because this runs inside the watcher and a
+    gold dir can hold fifty files. The deep panel is
+    ``search_lab/gold_stats.py``, which is a command and can afford to be slow."""
+    cases = 0
+    golds: list[int] = []
+    miners: set[str] = set()
+    snapshots: set[str] = set()
+    try:
+        with path.open(encoding="utf-8", errors="replace") as fh:
+            for line in fh:
+                if not line.strip():
+                    continue
+                try:
+                    row = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                cases += 1
+                golds.append(len(row.get("gold") or []))
+                if row.get("miner"):
+                    miners.add(str(row["miner"]))
+                if row.get("snapshot_id"):
+                    snapshots.add(str(row["snapshot_id"]))
+        size = path.stat().st_size
+    except OSError:
+        return {"name": path.name, "cases": 0, "unreadable": True}
+    golds.sort()
+    return {
+        "name": path.name, "cases": cases, "bytes": size,
+        "miners": sorted(miners), "snapshot_ids": sorted(snapshots),
+        "gold_min": golds[0] if golds else None,
+        "gold_median": golds[len(golds) // 2] if golds else None,
+        "gold_max": golds[-1] if golds else None,
+        # A file whose every case has one right answer measures findability and
+        # nothing about completeness, which is a property of the file worth seeing
+        # before anyone reads a number off it.
+        "single_gold": sum(1 for g in golds if g == 1),
+    }
+
+
+def mining(dirs: Optional[list[dict[str, Any]]] = None) -> dict[str, Any]:
+    """What mining has actually produced on this box, broken down two ways.
+
+    ``dirs`` is the gold-dir list to summarize, defaulting to :func:`gold_dirs`
+    — the seam a caller uses to summarize one corpus, and the one a test drives
+    with a directory it built itself.
+
+    **By pipeline** answers "is this miner working, and what does it refuse?" —
+    runs, units drawn, cases minted, the drop breakdown, spend. **By dataset**
+    answers "which corpora have been labelled at all?", which on a bench whose
+    corpora each admit different miners is the question that decides what can be
+    measured next. The same runs are counted both ways; the totals are the same
+    number cut along two axes, not two populations."""
+    from search_lab import gold_files, mine_runs
+
+    sources = gold_dirs() if dirs is None else dirs
+    walked: list[dict[str, Any]] = []
+    for entry in sources:
+        path = Path(entry["path"]).expanduser()
+        runs = mine_runs.read_runs(path)
+        files = [_case_file_row(p) for p in gold_files.discover(path)]
+        walked.append({
+            **entry,
+            "exists": path.is_dir(),
+            "runs": runs,
+            "files": files,
+            "cases": sum(f["cases"] for f in files),
+            "bytes": sum(f.get("bytes") or 0 for f in files),
+            "refusals": _refusals(path),
+        })
+
+    by_miner: dict[str, dict[str, Any]] = {}
+    by_dataset: list[dict[str, Any]] = []
+    for entry in walked:
+        outcomes: dict[str, int] = {}
+        for run in entry["runs"]:
+            miner = str(run.get("miner") or "?")
+            slot = by_miner.setdefault(miner, {
+                "miner": miner, "runs": 0, "attempted": 0, "written": 0,
+                "failed": 0, "outcomes": {}, "cost_usd": 0.0, "datasets": [],
+                "last_at": None})
+            slot["runs"] += 1
+            slot["attempted"] += int(run.get("attempted") or 0)
+            slot["written"] += int(run.get("written") or 0)
+            slot["failed"] += int(run.get("failed") or 0)
+            slot["cost_usd"] += float(run.get("cost_usd") or 0.0)
+            if entry["dataset"] not in slot["datasets"]:
+                slot["datasets"].append(entry["dataset"])
+            slot["last_at"] = max(filter(None, [slot["last_at"], run.get("at")]),
+                                  default=None)
+            for reason, n in (run.get("outcomes") or {}).items():
+                slot["outcomes"][reason] = slot["outcomes"].get(reason, 0) + n
+                outcomes[reason] = outcomes.get(reason, 0) + n
+        by_dataset.append({
+            "dataset": entry["dataset"], "path": entry["path"],
+            "exists": entry["exists"], "runs": len(entry["runs"]),
+            "cases": entry["cases"], "bytes": entry["bytes"],
+            "files": len(entry["files"]),
+            "miners": sorted({str(r.get("miner")) for r in entry["runs"]
+                              if r.get("miner")}),
+            "outcomes": outcomes,
+            "supply": _supply(entry),
+            "refusals": entry["refusals"],
+        })
+
+    for slot in by_miner.values():
+        slot["cost_usd"] = round(slot["cost_usd"], 2) or None
+    runs_all = [r for e in walked for r in e["runs"]]
+    stamps = sorted(r["at"] for r in runs_all if r.get("at"))
+    return {
+        "by_miner": sorted(by_miner.values(), key=lambda s: -s["runs"]),
+        "by_dataset": by_dataset,
+        "dirs": walked,
+        "totals": {
+            "runs": len(runs_all),
+            "cases": sum(e["cases"] for e in walked),
+            "files": sum(len(e["files"]) for e in walked),
+            "bytes": sum(e["bytes"] for e in walked),
+            "datasets_mined": sum(1 for e in walked if e["runs"]),
+            "cost_usd": round(sum(float(r.get("cost_usd") or 0) for r in runs_all), 2)
+                        or None,
+            "first_at": stamps[0] if stamps else None,
+            "last_at": stamps[-1] if stamps else None,
+        },
+    }
+
+
+def _refusals(path: Path) -> dict[str, int]:
+    """What this corpus has been refused for, by reason, across every refusals file
+    in its gold dir.
+
+    Cases say what a corpus could be asked; refusals say what it could not, and at
+    scale several of the reasons are findings about the *dataset* — a pile of
+    ``misattributed`` means a provenance join is wrong, not that a run went badly.
+    Counted here so the page can show it beside the cases rather than requiring
+    somebody to run ``gold_stats.py`` to learn a corpus refused most of itself."""
+    out: dict[str, int] = {}
+    for reject in sorted(path.glob("*-rejects.jsonl")):
+        try:
+            with reject.open(encoding="utf-8", errors="replace") as fh:
+                for line in fh:
+                    if not line.strip():
+                        continue
+                    try:
+                        reason = str(json.loads(line).get("reason") or "?")
+                    except json.JSONDecodeError:
+                        continue
+                    out[reason] = out.get(reason, 0) + 1
+        except OSError:
+            continue
+    return out
+
+
+def _supply(entry: dict[str, Any]) -> dict[str, Any]:
+    """What this corpus offers a miner, from the cheap sources only.
+
+    A line count of the linkage file and of the usage ledger — both plain files.
+    The path projection's supply would answer the same question for ``edited`` and
+    is deliberately absent: counting it means a ``GROUP BY`` over ``event_paths``
+    in a multi-gigabyte index, and this function runs inside the always-on watcher
+    on every page load. ``--plan`` is where that number belongs, because a command
+    can afford to open a corpus."""
+    path = Path(entry["path"]).expanduser()
+    out: dict[str, Any] = {}
+    linkage = path / "commit-linkage.jsonl"
+    if linkage.exists():
+        try:
+            # Streamed and explicitly closed. This runs on every page load inside
+            # the always-on watcher, so a handle left to the garbage collector is
+            # a slow leak in a process that never exits.
+            with linkage.open(encoding="utf-8", errors="replace") as fh:
+                out["commit_linked_sessions"] = sum(1 for line in fh if line.strip())
+        except OSError:
+            pass
+    return out
+
+
 # ── the whole thing ───────────────────────────────────────────────────────────
 
 def inventory() -> dict[str, Any]:
@@ -716,6 +989,7 @@ def inventory() -> dict[str, Any]:
         "benchmarks": benchmarks(),
         "datasets": datasets(sizes),
         "miners": miners(),
+        "mining": mining(),
     }
 
 

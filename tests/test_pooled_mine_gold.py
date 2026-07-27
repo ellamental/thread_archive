@@ -200,18 +200,30 @@ def test_prompt_lists_the_pool_and_offers_the_read_seam():
 
 # ── resume ───────────────────────────────────────────────────────────────────
 
-def test_abstained_queries_are_remembered_from_the_detail_sidecar(tmp_path):
-    """A none-of-pool query mints no case, so the case file cannot remember it —
-    without the sidecar a re-run would re-judge and re-abstain forever."""
-    d = tmp_path / "pooled-cases-detail.jsonl"
-    d.write_text("\n".join(json.dumps(r) for r in [
-        {"query": "nothing answers this", "outcome": "none-of-pool"},
-        {"query": "empty pool here", "outcome": "empty-pool"},
-        {"query": "this one worked", "outcome": "ok"},
-        {"query": "transient", "outcome": "agent-failed"},
+def test_a_none_of_pool_query_is_not_re_judged_under_the_same_judge(tmp_path):
+    """`none-of-pool` is the shape this matters most for: a judge already paid to
+    say the pool holds no answer must not be paid to say it again — and must be
+    asked again the moment the judging prompt changes."""
+    from search_lab.mine import _framework as fw
+
+    stages = pj.MINER.stages(argparse.Namespace())
+    gates = fw.paid_gates(stages)
+    sha = gates["judge"]
+    rejects = tmp_path / "pooled-cases-rejects.jsonl"
+    rejects.write_text("\n".join(json.dumps(r) for r in [
+        {"unit": "nothing answers this", "stage": "judge",
+         "reason": "none-of-pool", "gate_sha": sha},
+        {"unit": "judged under an older prompt", "stage": "judge",
+         "reason": "none-of-pool", "gate_sha": "0000deadbeef"},
+        {"unit": "an empty pool", "stage": "pool", "reason": "empty-pool",
+         "gate_sha": None},
     ]) + "\n")
-    assert pj._abstained(d) == {"nothing answers this", "empty pool here"}
-    assert pj._abstained(tmp_path / "absent.jsonl") == set()
+
+    remembered = fw.refused_units(rejects, gates)
+    assert remembered == {"nothing answers this"}
+    # A free stage's refusal is re-computed rather than honoured: it costs nothing,
+    # and recomputing is what lets a corpus that has changed be seen as it is now.
+    assert "an empty pool" not in remembered
 
 
 # ── the run path ─────────────────────────────────────────────────────────────
@@ -244,7 +256,7 @@ def test_pooled_miner_run_judges_a_real_pool(archive_home, tmp_path):
     init_db()
     answer = _seed_searchable("the lock thread",
                               "the watcher ingest lock serializes the writers")
-    _seed_searchable("unrelated", "a note about stylesheets and flexbox")
+    other = _seed_searchable("unrelated", "a note about stylesheets and flexbox")
     _ledger(archive_home, ["watcher ingest lock"])
 
     out = tmp_path / "pooled-cases.jsonl"
@@ -252,7 +264,10 @@ def test_pooled_miner_run_judges_a_real_pool(archive_home, tmp_path):
 
     def fake_judge(prompt, model, tool_cmd, **kw):
         captured["prompt"] = prompt
-        return json.dumps({"grades": {answer: 2}, "none_answer": False,
+        # A discriminating verdict: one answer, one rejection. A judge that
+        # graded the whole pool 2 would separate no ranker from any other, and the
+        # verify stage drops that case rather than counting it.
+        return json.dumps({"grades": {answer: 2, other: 0}, "none_answer": False,
                            "rationale": "it is the lock thread"}), {"num_turns": 3}
 
     ns = argparse.Namespace(model="opus", jobs=1, seed=7, out=out, target=1,
@@ -262,6 +277,8 @@ def test_pooled_miner_run_judges_a_real_pool(archive_home, tmp_path):
     result = pj.MINER.run(ctx)
 
     assert result.written == 1 and result.attempted == 1
+    assert [r["stage"] for r in result.funnel.rows()] == [
+        "ledger", "sample", "pool", "judge", "verify"]
     (row,) = [json.loads(line) for line in out.read_text().splitlines()]
     assert row["miner"] == "pooled" and row["query"] == "watcher ingest lock"
     assert row["gold"] == [answer] and row["snapshot_id"] == "snap-1"
@@ -324,3 +341,33 @@ def test_pooled_miner_is_registered_and_declares_its_pool_bias():
     # The honest declaration: this one's labels DID come through retrieval.
     assert miner.retrieval_free is False
     assert "pooled" in miner.gold_source and miner.runnable_in_all is False
+
+
+# ── the QA pass ──────────────────────────────────────────────────────────────
+
+def test_verify_drops_a_judgment_that_graded_everything_relevant():
+    """The judging prompt says a pool where everything is 2 is as useless as one
+    where everything is 0, and nothing checked that the judge listened. Such a
+    verdict scores every ranker identically — weight in the denominator, no
+    information."""
+    ctx = fw.MineContext(snapshot_id="s", target=1, model="opus", jobs=1,
+                         tool_cmd="py tool", args=argparse.Namespace())
+    everything = {"verdict": {"grades": {f"T{i}": 2 for i in range(5)}}}
+    assert pj.stage_verify(everything, ctx).reason == "undiscriminating"
+
+    discriminating = {"verdict": {"grades": {"T1": 2, "T2": 1, "T3": 0, "T4": 0}}}
+    verdict = pj.stage_verify(discriminating, ctx)
+    assert verdict.kept and verdict.detail["grade2_share"] == 0.25
+
+
+def test_undiscriminating_is_a_different_event_from_none_of_pool():
+    """One says the judge could not separate the pool; the other says the pool held
+    no answer. Collapsing them would lose the recall alarm."""
+    assert "none-of-pool" != "undiscriminating"
+    reasons = {s.name for s in pj.MINER.stages(argparse.Namespace())}
+    assert reasons == {"pool", "judge", "verify"}
+
+
+def test_pooled_pool_stage_is_free_so_a_plan_reaches_it():
+    stages = pj.MINER.stages(argparse.Namespace())
+    assert [s.kind for s in stages] == ["free", "agent", "free"]

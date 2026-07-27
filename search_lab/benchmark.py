@@ -76,6 +76,20 @@ class Row:
     home: Path | None = None
     build_hint: str = ""
     measure_keys: tuple[str, ...] = field(default=("ndcg10",))
+    #: Which dataset this row scores, when the name does not say. A row is
+    #: conventionally ``<dataset>[arms]`` or ``<family>:<dataset>[arms]``, and
+    #: :meth:`dataset_name` reads that — but a family whose rows vary along
+    #: something *other* than the dataset (``mtrag`` by query form, ``beam`` by
+    #: conversation length) would otherwise read as one dataset per variant, and
+    #: the inventory page would list query forms where corpora belong.
+    dataset: str = ""
+
+    def dataset_name(self) -> str:
+        """The corpus this row runs on, declared or read off the name."""
+        if self.dataset:
+            return self.dataset
+        head = self.name.split("[", 1)[0]
+        return head.split(":", 1)[1] if ":" in head else head
 
     def corpus_id(self) -> str | None:
         """This row's corpus fingerprint, read from the built home's snapshot
@@ -103,37 +117,144 @@ class Row:
 def manifest() -> list[Row]:
     """Every row the bench knows, in run order.
 
-    LongMemEval's ``--vectors`` pass is deliberately absent: it would embed 470
+    Ten datasets, grouped by what each one is here to measure — the grouping is
+    the point, because an undifferentiated row adds a number without adding a
+    question anyone asked.
+
+    **Document length.** The bm25/density term's effective strength scales
+    inversely with document length (density normalizes to a fixed window but is
+    never bounded), so a weight calibrated on one length regime can read flat on
+    another. ``nfcorpus`` (short medical) and ``arguana`` (long argument
+    passages) bracket scifact's abstracts deliberately, which turns that
+    mechanism from an inference drawn across unrelated corpora into a
+    measurement.
+
+    **Judgment depth.** ``trec-covid`` is the only set here with deep per-query
+    judgments, which is what makes its recall@100 mean something; it pays for
+    that with a 171K-document corpus and buys it back with 50 queries, so it is
+    expensive once and near-free on every pass after.
+
+    **Query shape.** ``mtrag`` ships the same information need as a terse
+    context-dependent last turn and as a standalone human rewrite, with a
+    published baseline for both. The gap between those two rows is the only
+    external read on how much the stack depends on a well-formed query — which
+    matters because the usage ledger says real traffic is ~4 words where every
+    authored query set here is a 20-word sentence.
+
+    **Completeness.** Every other row is effectively single-gold and therefore
+    scores findability alone. ``beam``'s median question needs 2–3 messages and
+    its worst needs 96, so ``recall_all@k`` there is the one number on the bench
+    that asks whether a window holds *everything* bearing on a question. Its
+    three tiers are one conversation set at growing lengths, so the ladder reads
+    degradation as history grows.
+
+    **Retrieval granularity.** ``perltqa`` retrieves a curated memory *unit*
+    rather than a turn or a session — the granularity an explicit memory store is
+    organised around.
+
+    Two deliberate absences. LongMemEval's ``--vectors`` pass would embed 470
     per-question corpora for a number whose published reference is measured on a
-    different split of the dataset, so the cost buys no comparison. Run it by hand
-    if that changes."""
+    different split, so the cost buys no comparison. And LongMemEval-**V2** is not
+    here at all despite being the closest published corpus to this one: its
+    questions carry an answer string and an evaluator, with no annotation of
+    which trajectory holds the answer, so scoring it as retrieval would mean
+    inventing the labels."""
     homes = eval_home.CACHE_ROOT / "homes"
     beir = str(REPO / "search_lab" / "beir_eval.py")
     cdr = str(REPO / "search_lab" / "cdr_eval.py")
     hay = str(REPO / "search_lab" / "haystack_eval.py")
+    mtrag = str(REPO / "search_lab" / "mtrag_eval.py")
+    perltqa = str(REPO / "search_lab" / "perltqa_eval.py")
     first_run = "the harness builds it on first run (ingest + embed, tens of minutes)"
+    ir = ("ndcg10", "mrr10", "recall10")
+    hay_keys = ("recall10", "recall_all10", "ndcg10")
+
+    # First-run estimates are priced off this box's measured throughput —
+    # ingest ~3,600 docs/min, embed ~452 docs/min — because a cold pass over this
+    # set is a decision about a whole day and the plan is what that decision gets
+    # made on. Every one of them is replaced by the row's own elapsed time as
+    # soon as it has run once (see `estimate`), so they only ever have to be
+    # right to the nearest hour.
+    def beam_rows(tier: str, lexical: int, vectors: int) -> list[Row]:
+        return [
+            Row(name=f"beam:{tier}[lexical]", cost_min=lexical, dataset="beam",
+                argv=[hay, "--dataset", "beam", "--beam-tier", tier],
+                build_hint=first_run, measure_keys=hay_keys),
+            Row(name=f"beam:{tier}[vectors]", cost_min=vectors, dataset="beam",
+                argv=[hay, "--dataset", "beam", "--beam-tier", tier, "--vectors"],
+                build_hint=first_run, measure_keys=hay_keys),
+        ]
+
+    def mtrag_rows(queries: str, lexical: int, vectors: int) -> list[Row]:
+        return [
+            Row(name=f"mtrag:{queries}[lexical]", cost_min=lexical, dataset="mtrag",
+                argv=[mtrag, "--queries", queries],
+                build_hint=first_run, measure_keys=ir),
+            Row(name=f"mtrag:{queries}[vectors]", cost_min=vectors, dataset="mtrag",
+                argv=[mtrag, "--queries", queries, "--vectors"],
+                build_hint=first_run, measure_keys=ir),
+        ]
+
+    # Ordered cheapest-first. A cold pass over this set is dominated by two rows
+    # whose corpora run to hundreds of thousands of documents (trec-covid,
+    # mtrag), and a set that runs them first is a set nobody watches to the end —
+    # every quick row would sit behind hours of embed before printing anything.
+    # Within a dataset the lexical row precedes the vectors one, which is also
+    # the cheap-first order: the lexical row pays the ingest and the vectors row
+    # adds only the embed pass on top of the corpus already built.
     return [
         Row(name="beir:scifact[lexical]", cost_min=2,
             argv=[beir, "--dataset", "scifact"],
-            home=homes / "scifact", build_hint=first_run,
-            measure_keys=("ndcg10", "mrr10", "recall10")),
+            home=homes / "scifact", build_hint=first_run, measure_keys=ir),
         Row(name="beir:scifact[vectors]", cost_min=5,
             argv=[beir, "--dataset", "scifact", "--vectors"],
-            home=homes / "scifact", build_hint=first_run,
-            measure_keys=("ndcg10", "mrr10", "recall10")),
-        Row(name="cdr[vectors]", cost_min=20,
-            argv=[cdr, "--vectors"],
-            home=homes / "cdr", build_hint=first_run,
-            measure_keys=("ndcg10", "mrr10", "recall10")),
+            home=homes / "scifact", build_hint=first_run, measure_keys=ir),
+        Row(name="beir:nfcorpus[lexical]", cost_min=2,
+            argv=[beir, "--dataset", "nfcorpus"],
+            home=homes / "nfcorpus", build_hint=first_run, measure_keys=ir),
+        Row(name="beir:nfcorpus[vectors]", cost_min=3,
+            argv=[beir, "--dataset", "nfcorpus", "--vectors"],
+            home=homes / "nfcorpus", build_hint=first_run, measure_keys=ir),
+        Row(name="beir:arguana[lexical]", cost_min=5,
+            argv=[beir, "--dataset", "arguana"],
+            home=homes / "arguana", build_hint=first_run, measure_keys=ir),
+        Row(name="beir:arguana[vectors]", cost_min=25,
+            argv=[beir, "--dataset", "arguana", "--vectors"],
+            home=homes / "arguana", build_hint=first_run, measure_keys=ir),
         Row(name="locomo[lexical]", cost_min=5,
             argv=[hay, "--dataset", "locomo"],
-            build_hint=first_run, measure_keys=("recall10", "ndcg10")),
+            build_hint=first_run, measure_keys=hay_keys),
         Row(name="locomo[vectors]", cost_min=10,
             argv=[hay, "--dataset", "locomo", "--vectors"],
-            build_hint=first_run, measure_keys=("recall10", "ndcg10")),
+            build_hint=first_run, measure_keys=hay_keys),
         Row(name="longmemeval[lexical]", cost_min=15,
             argv=[hay, "--dataset", "longmemeval"],
-            build_hint=first_run, measure_keys=("recall10", "ndcg10")),
+            build_hint=first_run, measure_keys=hay_keys),
+        *beam_rows("100K", 4, 16),
+        *beam_rows("500K", 12, 95),
+        Row(name="perltqa[lexical]", cost_min=20,
+            argv=[perltqa], home=homes / "perltqa", build_hint=first_run,
+            measure_keys=ir),
+        Row(name="perltqa[vectors]", cost_min=40,
+            argv=[perltqa, "--vectors"], home=homes / "perltqa",
+            build_hint=first_run, measure_keys=ir),
+        Row(name="cdr[vectors]", cost_min=20,
+            argv=[cdr, "--vectors"],
+            home=homes / "cdr", build_hint=first_run, measure_keys=ir),
+        *beam_rows("1M", 22, 185),
+        Row(name="beir:trec-covid[lexical]", cost_min=50,
+            argv=[beir, "--dataset", "trec-covid"],
+            home=homes / "trec-covid", build_hint=first_run, measure_keys=ir),
+        Row(name="beir:trec-covid[vectors]", cost_min=390,
+            argv=[beir, "--dataset", "trec-covid", "--vectors"],
+            home=homes / "trec-covid", build_hint=first_run, measure_keys=ir),
+        # MTRAG last and heaviest: four corpora, 366K passages between them. The
+        # corpus is shared across query forms, so `rewrite` costs only its own
+        # query time once `lastturn` has built it — and both arms on both forms
+        # are what make the 2x2 readable (is the lexical-vs-fused gap the same
+        # under a terse query as under a well-formed one?).
+        *mtrag_rows("lastturn", 115, 830),
+        *mtrag_rows("rewrite", 15, 20),
     ]
 
 

@@ -44,12 +44,15 @@ in the very threads that are the answer. The ``functional`` and ``intent`` tiers
 are instructed to diverge lexically for that reason, and the ``literal`` tier is
 frankly a smoke test — it names the path, and the path is indexed.
 
-Resume is by path: a re-run skips paths already represented in the file.
+Resume is by path *and by refusal*: a re-run skips paths already in the case file,
+and paths a paid gate already rejected, for as long as that gate is unchanged. The
+refusals land in a ``-rejects.jsonl`` beside the cases and are results in their own
+right — a corpus whose paths keep coming back ``incoherent-gold-set`` is telling you
+its edit history is churn rather than subjects.
 """
 
 from __future__ import annotations
 
-import concurrent.futures
 import json
 import posixpath
 import random
@@ -102,6 +105,22 @@ MAX_EXCERPT_CHARS = 700
 # exploration loop at all.
 GEN_MAX_TURNS = 4
 GEN_TIMEOUT_S = 300
+
+#: Total excerpt characters a path needs before it is worth authoring from. Below
+#: this the agent is working from a filename, and the query it writes is about a
+#: file rather than about work.
+MIN_EXCERPT_TOTAL = 200
+
+#: Editing conversations the coherence auditor is pointed at. It needs enough to
+#: judge whether they share a subject, not the whole gold set — the question is
+#: about the set's character, and reading twelve transcripts to answer it costs
+#: more than the case is worth.
+MAX_AUDIT_READS = 5
+
+# The coherence auditor reads several whole sessions, so it needs a real
+# exploration loop and a wall clock to match.
+AUDIT_MAX_TURNS = 30
+AUDIT_TIMEOUT_S = 900
 
 _PROMPT = """You are writing search queries for a conversation-archive \
 findability benchmark.
@@ -359,6 +378,177 @@ def cases_from_queries(row: dict, grades: dict[str, int], queries: list[dict],
     } for q in queries]
 
 
+_COHERENCE_PROMPT = """You are auditing a benchmark's labels before it is built.
+
+A benchmark case is about to be built around one source file. Its answer set is \
+EVERY archived conversation that edited that file — enumerated from the tool-use \
+trail, so the membership is a fact rather than a judgment. What is *not* a fact is \
+whether those conversations share a subject, and that is what you are checking.
+
+  path: {path}
+  conversations that edited it: {n_sessions}
+
+  sample of the edits made to this file:
+{excerpts}
+
+Read the editing conversations:
+
+{reads}
+
+Answer two separate questions.
+
+1. "coherent" — do these conversations share a subject a single search query \
+could reasonably ask for? They do not have to be the same task. They do have to be \
+recognisably about this file's concern. A file touched by six unrelated sessions \
+for six incidental reasons — a rename sweep, a lint pass, a dependency bump — is \
+NOT coherent, and a case built on it asks search to return an answer set that \
+nothing ties together.
+
+2. "targetable" — does this file have a distinctive enough subject to write a \
+query about at all? A lockfile, a changelog, a barrel `__init__` or a config \
+grab-bag is not targetable however coherent its editors were.
+
+A "no" on either is a useful answer, not a failure. A case admitted here becomes a \
+permanent multi-answer label nobody re-reads, and an incoherent one is unanswerable \
+by construction — it will score every ranker badly and teach nothing.
+
+Reply with ONLY this JSON object as your final message (no prose around it):
+
+{{"coherent": true|false, "targetable": true|false, \
+"reason": "<one line: the shared subject, or what is missing>"}}"""
+
+
+# ── the stages ──────────────────────────────────────────────────────────────
+
+def stage_substance(row: dict, ctx: MineContext) -> fw.Verdict:
+    """Free gate: is there anything to author *from*?
+
+    The authoring agent sees the path and its edit excerpts and nothing else, so a
+    path whose tool payloads carry no readable change body leaves it working from a
+    filename. That produces a query about a file rather than about work, which is
+    not what this miner claims to measure."""
+    excerpts = edit_excerpts(row["path"])
+    if not excerpts:
+        return fw.Verdict(reason="no-edit-text",
+                          detail={"note": "no readable change body in any payload"})
+    if sum(len(e) for e in excerpts) < MIN_EXCERPT_TOTAL:
+        return fw.Verdict(reason="trivial-edits",
+                          detail={"chars": sum(len(e) for e in excerpts)})
+    row["_excerpts"] = excerpts
+    grades = build_grades(row["path"], ctx.args.seed)
+    gold = [t for t, g in grades.items() if g == 2]
+    # The pool can shrink under the count that qualified the path when a thread is
+    # excluded from search between sampling and grading.
+    if len(gold) < ctx.args.min_sessions:
+        return fw.Verdict(reason="too-few-gold", detail={"gold": len(gold)})
+    row["_grades"] = grades
+    return fw.Verdict(keep=row, reason="ok",
+                      detail={"excerpts": len(excerpts), "gold": len(gold)})
+
+
+def stage_coherence(row: dict, ctx: MineContext) -> fw.Verdict:
+    """Paid gate: an agent reads the editing conversations and says whether they
+    share a subject one query could ask for.
+
+    The commit miner's audit asks whether a label is *correct*; membership here is
+    enumerated, so correctness is not in doubt and the risk is different. A path
+    edited by six sessions for six unrelated reasons yields a gold set nothing
+    ties together, and a case built on it is unanswerable by construction — it
+    scores every ranker badly and says nothing about any of them.
+
+    As in the commit miner, **what this agent reads never reaches the author.** Its
+    verdict is two booleans and a sentence, bound for the sidecar; the authoring
+    prompt is built from the path and its edit payloads alone."""
+    gold = sorted(t for t, g in row["_grades"].items() if g == 2)
+    reads = "\n".join(f"  {ctx.tool_cmd} read {tid}" for tid in gold[:MAX_AUDIT_READS])
+    prompt = _COHERENCE_PROMPT.format(
+        path=row["path"], n_sessions=len(gold), reads=reads,
+        excerpts="\n".join(f"    --- edit {i + 1} ---\n    "
+                           + text.replace("\n", "\n    ")
+                           for i, text in enumerate(row["_excerpts"])))
+    run = ctx.agent_run or run_claude
+    text, stats = run(prompt, ctx.model, ctx.tool_cmd, max_turns=AUDIT_MAX_TURNS,
+                      timeout=AUDIT_TIMEOUT_S, corpus_access=True)
+    cost = float((stats or {}).get("cost_usd") or 0.0)
+    if text is None:
+        return fw.Verdict(reason="audit-failed", cost_usd=cost, detail={"agent": stats})
+    verdict = parse_audit(text)
+    if verdict is None:
+        return fw.Verdict(reason="audit-unparseable", cost_usd=cost,
+                          detail={"agent": stats})
+    detail = {"agent": stats, **verdict,
+              "template_sha": fw.template_sha(_COHERENCE_PROMPT)}
+    if not verdict["coherent"]:
+        return fw.Verdict(reason="incoherent-gold-set", cost_usd=cost, detail=detail)
+    if not verdict["targetable"]:
+        return fw.Verdict(reason="untargetable-path", cost_usd=cost, detail=detail)
+    return fw.Verdict(keep=row, reason="ok", cost_usd=cost, detail=detail)
+
+
+def parse_audit(text: str) -> dict | None:
+    """The auditor's verdict, or None. Both booleans required — a reply answering
+    one question is not a verdict, and defaulting the other turns an audit into a
+    rubber stamp."""
+    start, end = text.find("{"), text.rfind("}")
+    if start < 0 or end <= start:
+        return None
+    try:
+        raw = json.loads(text[start:end + 1])
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(raw, dict):
+        return None
+    if not isinstance(raw.get("coherent"), bool) or not isinstance(
+            raw.get("targetable"), bool):
+        return None
+    reason = raw.get("reason")
+    return {"coherent": raw["coherent"], "targetable": raw["targetable"],
+            "reason": reason if isinstance(reason, str) else None}
+
+
+def stage_author(row: dict, ctx: MineContext) -> fw.Verdict:
+    """Paid stage: the blind author, holding no tools at all."""
+    prompt = build_prompt(row, row["_excerpts"])
+    run = ctx.agent_run or run_claude
+    reply, stats = run(prompt, ctx.model, ctx.tool_cmd, max_turns=GEN_MAX_TURNS,
+                       timeout=GEN_TIMEOUT_S, corpus_access=False)
+    cost = float((stats or {}).get("cost_usd") or 0.0)
+    detail = {"agent": stats, "prompt_sha": fw.prompt_sha(prompt)}
+    if reply is None:
+        return fw.Verdict(reason="agent-failed", cost_usd=cost, detail=detail)
+    parsed = parse_queries(reply)
+    if parsed is None:
+        return fw.Verdict(reason="unparseable", cost_usd=cost, detail=detail)
+    detail["note"] = parsed["note"]
+    if not parsed["queries"]:
+        return fw.Verdict(reason="no-queries", cost_usd=cost, detail=detail)
+    row["_rows"] = cases_from_queries(row, row["_grades"], parsed["queries"],
+                                      ctx.snapshot_id)
+    return fw.Verdict(keep=row, reason="ok", cost_usd=cost, detail=detail)
+
+
+def stage_verify(row: dict, ctx: MineContext) -> fw.Verdict:
+    """Free QA over what was produced — the same contract the commit miner's
+    verify enforces, over this miner's own source material."""
+    material = " ".join(row["_excerpts"]) + " " + row["path"]
+    kept, rejected = [], []
+    for case in row["_rows"]:
+        why = fw.tier_violation(case["query"], material, case["difficulty"])
+        if why is None and fw.repeats_an_opening(case["query"], ctx.seen_openings):
+            why = "repeats-an-opening"
+        if why:
+            rejected.append({"query": case["query"], "tier": case["difficulty"],
+                             "why": why})
+            continue
+        ctx.seen_openings.add(fw.opening_of(case["query"]))
+        kept.append(case)
+    detail = {"kept": len(kept), "rejected": rejected}
+    if not kept:
+        return fw.Verdict(reason="all-queries-rejected", detail=detail)
+    row["_rows"] = kept
+    return fw.Verdict(keep=row, reason="ok", detail=detail)
+
+
 # ── the miner ───────────────────────────────────────────────────────────────
 
 class EditedMiner(Miner):
@@ -395,16 +585,59 @@ class EditedMiner(Miner):
                             metavar="N",
                             help="most paths sampled from any one directory "
                                  f"(default {DEFAULT_PER_DIR})")
+        parser.add_argument("--no-coherence", dest="coherence",
+                            action="store_false",
+                            help="skip the paid audit that reads the editing "
+                                 "conversations and asks whether they share a "
+                                 "subject one query could target")
+
+    def stages(self, args) -> list[fw.Stage]:
+        """Free gates bracket the spend: cheap admission first so the paid stages
+        are asked about fewer paths, cheap QA last so nothing pays to check its own
+        output."""
+        out = [fw.Stage(name="substance", fn=stage_substance, kind="free",
+                        summary="the edits carry readable change bodies and the "
+                                "gold set still meets the floor")]
+        if getattr(args, "coherence", True):
+            out.append(fw.Stage(name="coherence", fn=stage_coherence, kind="agent",
+                                summary="the editing conversations share a subject "
+                                        "one query could ask for",
+                                gate_sha=fw.template_sha(_COHERENCE_PROMPT)))
+        out.append(fw.Stage(name="author", fn=stage_author, kind="agent",
+                            summary="blind authoring of the queries",
+                            gate_sha=fw.template_sha(_PROMPT)))
+        out.append(fw.Stage(name="verify", fn=stage_verify, kind="free",
+                            summary="each query honours its tier and is not the "
+                                    "file's house sentence again"))
+        return out
 
     def run(self, ctx: MineContext) -> MineResult:
         args = ctx.args
         cases_path, detail_path = fw.open_output(
             args.out, fw.default_cases_path(CASES_STEM))
-        already = mined_paths(cases_path)
+        funnel = fw.Funnel()
+
+        stages = self.stages(args)
+        rejects_path = fw.rejects_path_for(cases_path)
+        mined = mined_paths(cases_path)
+        # Refusals a paid gate already made are not re-bought, and are re-opened
+        # the moment that gate's prompt changes.
+        refused = fw.refused_units(rejects_path, fw.paid_gates(stages))
+        already = mined | refused
+        candidates = candidate_paths(min_sessions=args.min_sessions,
+                                     max_sessions=args.max_sessions)
+        unmined = [p for p in candidates if p["path"] not in already]
         rows = sample_paths(ctx.target, args.seed, already,
                             min_sessions=args.min_sessions,
                             max_sessions=args.max_sessions,
                             per_dir=args.per_dir)
+        funnel.note("supply", n_in=len(candidates), n_out=len(unmined),
+                    reasons={"already-mined": sum(
+                                 1 for p in candidates if p["path"] in mined),
+                             "already-refused": sum(
+                                 1 for p in candidates if p["path"] in refused)})
+        funnel.note("sample", n_in=len(unmined), n_out=len(rows),
+                    reasons={"not-drawn": len(unmined) - len(rows)})
         if not rows:
             raise SystemExit(
                 "no unmined paths with "
@@ -415,62 +648,69 @@ class EditedMiner(Miner):
                 "fold it once with `python -c \"from thread_archive import _api; "
                 "print(_api.code_index())\"` and try again.")
 
-        writer = fw.CaseWriter(self.name, cases_path, detail_path)
-        agent = ctx.agent_run or run_claude
+        print(f"mining {len(rows)} path(s) through {len(stages)} stage(s) with "
+              f"{ctx.model} agents (jobs={ctx.jobs}) against snapshot "
+              f"{ctx.snapshot_id} -> {cases_path}")
+
+        details: dict[str, dict] = {
+            r["path"]: {"path": r["path"], "n_sessions": r["n_sessions"],
+                        "at": now_iso(), "stages": {}}
+            for r in rows}
+
+        writer = fw.CaseWriter(self.name, cases_path, detail_path, rejects_path)
+
+        def observe(stage: fw.Stage, row: dict, verdict: fw.Verdict) -> None:
+            detail = details[row["path"]]
+            detail["stages"][stage.name] = {"reason": verdict.reason,
+                                            **(verdict.detail or {})}
+            detail["outcome"] = verdict.reason if not verdict.kept else "ok"
+            # A kept unit can still have had queries thrown out, and those are
+            # negative results as much as a refused unit is — the record of what an
+            # authoring agent produced that failed its own tier contract is exactly
+            # what a prompt gets tuned against.
+            tossed = (verdict.detail or {}).get("rejected")
+            if tossed and verdict.kept and not ctx.plan:
+                writer.write_reject({
+                    "unit": row["path"], "stage": stage.name,
+                    "reason": "queries-rejected", "gate_sha": stage.gate_sha,
+                    "kind": stage.kind, "snapshot_id": ctx.snapshot_id,
+                    "detail": {"rejected": tossed}})
+            if not verdict.kept and not ctx.plan:
+                writer.write_reject({
+                    "unit": row["path"], "stage": stage.name,
+                    "reason": verdict.reason, "gate_sha": stage.gate_sha,
+                    "kind": stage.kind, "snapshot_id": ctx.snapshot_id,
+                    "n_sessions": row.get("n_sessions"),
+                    "detail": verdict.detail or {}})
+
+        ctx.seen_openings |= fw.mined_openings(cases_path)
+        surviving = fw.run_pipeline(stages, rows, ctx, funnel=funnel,
+                                    on_verdict=observe)
+        if ctx.plan:
+            return fw.plan_result(funnel, stages, surviving, cases_path)
+        written = 0
+        for row in surviving:
+            for case in row["_rows"]:
+                writer.write_case(case)
+            written += len(row["_rows"])
+            print(f"  ✓ {row['path']}: {len(row['_rows'])} case(s), "
+                  f"{row['_rows'][0]['n_gold']} gold")
+        for detail in details.values():
+            writer.write_detail(detail)
+
         outcomes: dict[str, int] = {}
-        written = failed = 0
-
-        def mine_one(row: dict) -> tuple[dict, dict]:
-            grades = build_grades(row["path"], args.seed)
-            excerpts = edit_excerpts(row["path"])
-            prompt = build_prompt(row, excerpts)
-            reply, stats = agent(prompt, ctx.model, ctx.tool_cmd,
-                                 max_turns=GEN_MAX_TURNS, timeout=GEN_TIMEOUT_S,
-                                 corpus_access=False)
-            detail = {"path": row["path"], "n_sessions": row["n_sessions"],
-                      "n_excerpts": len(excerpts), "stats": stats,
-                      "prompt_sha": fw.prompt_sha(prompt), "at": now_iso()}
-            if reply is None:
-                detail["outcome"] = "agent-failed"
-                return detail, {}
-            parsed = parse_queries(reply)
-            if parsed is None:
-                detail["outcome"] = "unparseable"
-                return detail, {}
-            detail.update({"note": parsed["note"],
-                           "queries": [q["query"] for q in parsed["queries"]]})
-            if not parsed["queries"]:
-                detail["outcome"] = "no-queries"
-                return detail, {}
-            if len([g for g in grades.values() if g == 2]) < args.min_sessions:
-                # The pool can shrink under the count that qualified the path when
-                # a thread is excluded from search between sampling and grading.
-                detail["outcome"] = "too-few-gold"
-                return detail, {}
-            detail["outcome"] = "ok"
-            return detail, {"rows": cases_from_queries(
-                row, grades, parsed["queries"], ctx.snapshot_id)}
-
-        with concurrent.futures.ThreadPoolExecutor(max_workers=ctx.jobs) as pool:
-            for detail, result in pool.map(mine_one, rows):
-                outcomes[detail["outcome"]] = outcomes.get(detail["outcome"], 0) + 1
-                writer.write_detail(detail)
-                if not result:
-                    failed += 1
-                    print(f"  ✗ {detail['path']}: {detail['outcome']}")
-                    continue
-                for case in result["rows"]:
-                    writer.write_case(case)
-                written += len(result["rows"])
-                print(f"  ✓ {detail['path']}: {len(result['rows'])} case(s), "
-                      f"{result['rows'][0]['n_gold']} gold")
-
-        notes = []
+        for detail in details.values():
+            outcomes[detail["outcome"]] = outcomes.get(detail["outcome"], 0) + 1
+        notes = [f"funnel:\n{funnel.text(indent='    ')}"]
         if written:
             notes.append(f"gold sets: {_gold_spread(cases_path)}")
-        return MineResult(written=written, failed=failed, cases_path=cases_path,
-                          detail_path=detail_path, attempted=len(rows),
-                          outcomes=outcomes, notes=notes)
+        if funnel.cost_usd:
+            notes.append(f"spent ${funnel.cost_usd:.2f} "
+                         f"(${funnel.cost_usd / max(written, 1):.3f}/case)")
+        return MineResult(written=written, failed=len(rows) - len(surviving),
+                          cases_path=cases_path, detail_path=detail_path,
+                          attempted=len(rows), outcomes=outcomes, notes=notes,
+                          funnel=funnel)
 
 
 def mined_paths(path) -> set[str]:

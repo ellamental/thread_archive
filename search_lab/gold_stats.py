@@ -306,6 +306,49 @@ def coverage(cases: list[dict]) -> dict[str, Any]:
     return out
 
 
+def refusals(cases_path: Path) -> dict[str, Any]:
+    """What this corpus was *refused* for, from the record beside the cases.
+
+    The most under-read artifact a miner produces, and often the more informative
+    one. The cases say what a corpus could be asked; the refusals say what it could
+    not, and why — and several of the reasons are findings about the **dataset**
+    rather than about the run. ``misattributed`` at scale means a provenance join
+    is wrong; ``untargetable-commit`` at scale characterises the corpus's commit
+    hygiene; ``none-of-pool`` is the recall alarm; ``literal-names-nothing`` is the
+    authoring prompt failing its own contract.
+
+    Broken out by stage as well as reason, because where a unit died is what says
+    whether the benchmark got more correct or merely easier."""
+    rows = read_jsonl(_rejects_path(cases_path))
+    if not rows:
+        return {}
+    by_reason = Counter(str(r.get("reason")) for r in rows)
+    by_stage = Counter(str(r.get("stage")) for r in rows)
+    paid = sum(1 for r in rows if r.get("kind") == "agent")
+    # Rejected *queries* are sub-unit: a unit can be admitted with one of its
+    # queries thrown out, and that is a different event from the unit being refused.
+    tossed: Counter = Counter()
+    for row in rows:
+        for item in (row.get("detail") or {}).get("rejected") or []:
+            tossed[str(item.get("why"))] += 1
+    out: dict[str, Any] = {
+        "total": len(rows), "paid": paid,
+        "by_reason": dict(by_reason.most_common()),
+        "by_stage": dict(by_stage.most_common()),
+        "units": len({str(r.get("unit")) for r in rows if r.get("unit")}),
+    }
+    if tossed:
+        out["rejected_queries"] = dict(tossed.most_common())
+    return out
+
+
+def _rejects_path(cases_path: Path) -> Path:
+    """The refusals file beside a case file — the same rule the miners write by
+    (:func:`search_lab.mine._framework.rejects_path_for`), restated so this reads a
+    directory without importing the miner that filled it."""
+    return cases_path.with_name(cases_path.stem + "-rejects.jsonl")
+
+
 def leakage(cases: list[dict], *, limit: int = 200) -> dict[str, Any]:
     """How much of each query's vocabulary appears in the thread it is gold for.
 
@@ -361,6 +404,7 @@ def report(cases_path: Path, *, with_corpus: bool = False) -> dict[str, Any]:
         "pool": pool_shape(cases),
         "queries": query_shape(cases),
         "coverage": coverage(cases),
+        "refusals": refusals(cases_path),
     }
     if with_corpus:
         out["leakage"] = leakage(cases)
@@ -483,6 +527,21 @@ def text_report(data: dict[str, Any]) -> str:
         if len(cov.get("template_shas") or []) > 1:
             L.append(f"  ⚠ {len(cov['template_shas'])} authoring templates in one "
                      "file — these cases are not one population")
+
+    rf = data.get("refusals") or {}
+    if rf:
+        L += ["", "REFUSALS"]
+        L.append(f"  {rf['total']} refusal(s) over {rf['units']} unit(s); "
+                 f"{rf['paid']} came from a paid gate")
+        L.append("  by stage:  " + ", ".join(f"{k} {v}" for k, v in rf["by_stage"].items()))
+        L.append("  by reason: " + ", ".join(f"{k} {v}" for k, v in rf["by_reason"].items()))
+        if rf.get("rejected_queries"):
+            L.append("  queries thrown out by QA: "
+                     + ", ".join(f"{k} {v}" for k, v in rf["rejected_queries"].items()))
+        L.append("  read these as facts about the corpus, not swarf: a refusal rate "
+                 "is a\n  characterisation of the material, and which reason "
+                 "dominates says whether\n  the benchmark got more correct or "
+                 "merely easier.")
 
     lk = data.get("leakage")
     if lk:

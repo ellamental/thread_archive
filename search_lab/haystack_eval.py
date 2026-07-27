@@ -1,5 +1,5 @@
-"""Haystack retrieval eval — per-question conversational retrieval over LoCoMo and
-LongMemEval, scored against their published recall baselines.
+"""Haystack retrieval eval — per-question conversational retrieval over LoCoMo,
+LongMemEval and BEAM, scored against their published recall baselines.
 
 BEIR (``beir_eval.py``) and CDR (``cdr_eval.py``) both retrieve from one *shared*
 corpus. These two memory benchmarks are a different shape: **per-question haystack
@@ -18,7 +18,7 @@ These homes are workspace rather than archives — hundreds per run — so they 
 of the registry. ``haystack_corpus.py`` builds the complementary shape: the whole
 dataset as one registered ``benchmark`` home, to operate on rather than to score.
 
-Two datasets, one loop (``--dataset``):
+Three datasets, one loop (``--dataset``):
 
 - **locomo** — 10 multi-session conversations (Maharana et al., arXiv 2402.17753).
   Corpus = one conversation's ~588 turns (doc id = ``dia_id`` ``D<sess>:<turn>``);
@@ -32,6 +32,15 @@ Two datasets, one loop (``--dataset``):
   retrieval; ``_abs`` (abstention) questions are skipped, as the official eval
   does. Reference (on the -M split, so not directly comparable to -S): vanilla
   session Recall@10 = 0.710 BM25 / 0.823 Contriever.
+- **beam** — 20/35/35 conversations at the 100K/500K/1M token tiers
+  (``--beam-tier``), 360/630/630 questions across nine memory-ability categories.
+  Corpus = one conversation's messages, both roles (doc id = the message ``id``);
+  gold is the question's ``source_chat_ids``. Message-level retrieval, and the
+  **multi-answer** row on this bench: median 2–3 gold messages and up to 96, where
+  LoCoMo and LongMemEval sit near one. So recall@k here reads *completeness* — does
+  a window hold everything bearing on the question — which nothing else measures.
+  No published retrieval baseline: the paper scores end-to-end QA under a memory
+  framework, not the retrieval step.
 
 Metrics, overall and per question category: mean per-question **recall@k**
 (fraction of gold retrieved), **recall_all@k** (all gold in top-k — LongMemEval's
@@ -48,10 +57,14 @@ home. The datasets are fetched by the recon step, not this script:
     #   git clone https://github.com/snap-research/locomo ~/.cache/thread-evals/locomo/repo
     #   curl -L -o ~/.cache/thread-evals/longmemeval/data/longmemeval_s_cleaned.json \\
     #     https://huggingface.co/datasets/xiaowu0162/longmemeval-cleaned/resolve/main/longmemeval_s_cleaned.json
+    # beam ships as one parquet per tier:
+    #   curl -L -o ~/.cache/thread-evals/beam/100K.parquet \\
+    #     https://huggingface.co/datasets/Mohammadta/BEAM/resolve/main/data/100K-00000-of-00001.parquet
 
     .venv/bin/python search_lab/haystack_eval.py --dataset locomo
     .venv/bin/python search_lab/haystack_eval.py --dataset longmemeval
     .venv/bin/python search_lab/haystack_eval.py --dataset locomo --vectors
+    .venv/bin/python search_lab/haystack_eval.py --dataset beam --beam-tier 100K
 """
 
 from __future__ import annotations
@@ -126,6 +139,12 @@ def _fingerprint(dataset: str, gid: str, corpus: dict[str, str], vectors: bool) 
 # -M split (Table 9) — the -S split scored here has no published per-retriever
 # table, so treat these as ballpark, not a matched comparison.
 REFERENCE = {
+    # BEAM's paper reports end-to-end QA accuracy under a memory framework, not
+    # retrieval recall, so there is no baseline to print beside this row. Left
+    # empty rather than borrowed: a number from a different task is worse than no
+    # number, because it reads as a comparison. `bm25_baseline.py` is what would
+    # give this row a local reference if one is wanted.
+    "beam": {"metric": "no published retrieval baseline"},
     "locomo": {"metric": "DRAGON dialog Recall@k",
                "recall": {5: 0.567, 10: 0.662, 25: 0.767, 50: 0.827}},
     "longmemeval": {"metric": "session Recall@k (BM25 / Contriever, -M split)",
@@ -173,6 +192,67 @@ def locomo_groups(repo: Path):
                             "category": LOCOMO_CATEGORY.get(qa.get("category"), "?")})
         if corpus and queries:
             yield conv["sample_id"], corpus, queries
+
+
+def beam_groups(path: Path, tier: str):
+    """One group per conversation: corpus = every chat message (``id`` ->
+    ``role: content``), queries = the probing questions with their
+    ``source_chat_ids`` as gold.
+
+    The **multi-answer** shape on this bench. LoCoMo and LongMemEval are close to
+    single-gold; BEAM's median question needs 2–3 messages and its worst needs 96,
+    so recall@k here reads completeness — whether a window holds everything that
+    bears on the question — rather than findability. Roughly three quarters of the
+    questions carry more than one gold id.
+
+    Both roles are indexed. A quarter of the gold ids are assistant messages (the
+    answer to "what did I decide about X" often lives in the reply), so a
+    user-only corpus would put them out of reach and score the miss as a ranking
+    failure.
+
+    ``source_chat_ids`` arrives in three shapes: a flat id list, a dict of named
+    id lists (``temporal_reasoning`` splits ``first_event`` / ``second_event``),
+    and — for five questions across the 500K and 1M tiers — absent, which drops
+    the question rather than scoring it against an empty gold set. Ids are clipped
+    to those that resolve to a real message; on the shipped data none are lost.
+
+    The ``abstention`` category is skipped: its questions are deliberately
+    unanswerable from the conversation and carry no ``source_chat_ids``, so there
+    is nothing to retrieve."""
+    import ast
+
+    import pyarrow.parquet as pq
+
+    for row in pq.read_table(path).to_pylist():
+        flat = [m for session in row["chat"] for m in session]
+        corpus = {str(m["id"]): f"{m.get('role', '')}: {m.get('content', '')}".strip()
+                  for m in flat if m.get("content")}
+        try:
+            probing = ast.literal_eval(row["probing_questions"])
+        except (ValueError, SyntaxError):
+            continue
+        queries = []
+        for category, items in sorted(probing.items()):
+            if category == "abstention":
+                continue
+            for i, item in enumerate(items):
+                raw = item.get("source_chat_ids")
+                ids: list = []
+                if isinstance(raw, dict):
+                    for value in raw.values():
+                        ids += value if isinstance(value, list) else [value]
+                elif isinstance(raw, list):
+                    ids = raw
+                elif raw is not None:
+                    ids = [raw]
+                gold = {str(i) for i in ids if str(i) in corpus}
+                if not gold or not item.get("question"):
+                    continue
+                queries.append({"qid": f"{row['conversation_id']}_{category}_{i}",
+                                "text": item["question"], "gold": gold,
+                                "category": category})
+        if corpus and queries:
+            yield f"{tier}:{row['conversation_id']}", corpus, queries
 
 
 def longmemeval_groups(path: Path):
@@ -343,6 +423,14 @@ def run(args) -> int:
         if not src.exists():
             raise SystemExit(f"locomo data not found at {src}; clone snap-research/locomo there")
         groups = list(locomo_groups(repo))
+    elif args.dataset == "beam":
+        path = Path(args.beam_file or (_CACHE / "beam" / f"{args.beam_tier}.parquet")).expanduser()
+        if not path.exists():
+            raise SystemExit(
+                f"beam tier not found at {path}; fetch it from "
+                f"huggingface.co/datasets/Mohammadta/BEAM "
+                f"(data/{args.beam_tier}-00000-of-00001.parquet)")
+        groups = list(beam_groups(path, args.beam_tier))
     else:
         path = Path(args.longmemeval_file).expanduser()
         if not path.exists():
@@ -450,13 +538,18 @@ def run(args) -> int:
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--dataset", choices=["locomo", "longmemeval"], required=True)
+    ap.add_argument("--dataset", choices=["locomo", "longmemeval", "beam"], required=True)
     ap.add_argument("--locomo-repo", default=str(_CACHE / "locomo" / "repo"))
     ap.add_argument("--longmemeval-file",
                     default=str(_CACHE / "longmemeval" / "data" / "longmemeval_s_cleaned.json"))
+    ap.add_argument("--beam-tier", default="100K", choices=["100K", "500K", "1M"],
+                    help="BEAM conversation-length tier (default: 100K)")
+    ap.add_argument("--beam-file", default=None,
+                    help="explicit BEAM parquet path (default: <data-dir>/beam/<tier>.parquet)")
     ap.add_argument("--data-dir", default=str(_CACHE))
     ap.add_argument("--ks", default=None,
-                    help="comma-separated cutoffs (default: locomo 5,10,25,50; longmemeval 5,10)")
+                    help="comma-separated cutoffs (default: locomo/beam 5,10,25,50; "
+                         "longmemeval 5,10)")
     ap.add_argument("--vectors", action="store_true")
     ap.add_argument("--max-groups", type=int, default=None, help="cap corpora (smoke runs)")
     ap.add_argument("--rebuild", action="store_true",
@@ -466,7 +559,7 @@ def main() -> int:
     ap.add_argument("--json-out", default=None)
     args = ap.parse_args()
     if args.ks is None:
-        args.ks = "5,10,25,50" if args.dataset == "locomo" else "5,10"
+        args.ks = "5,10" if args.dataset == "longmemeval" else "5,10,25,50"
     return run(args)
 
 

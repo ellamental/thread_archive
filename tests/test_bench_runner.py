@@ -10,6 +10,8 @@ edit under review.
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from search_lab import bench_runs, benchmark
 
 
@@ -18,7 +20,16 @@ def test_every_row_is_a_published_benchmark() -> None:
     # to be a corpus somebody else labeled. A row scored against labels made here
     # would be scored against what this ranker already finds.
     harnesses = {r.argv[0].rsplit("/", 1)[-1] for r in benchmark.manifest()}
-    assert harnesses == {"beir_eval.py", "cdr_eval.py", "haystack_eval.py"}
+    assert harnesses == {"beir_eval.py", "cdr_eval.py", "haystack_eval.py",
+                         "mtrag_eval.py", "perltqa_eval.py"}
+
+
+def test_every_row_names_a_harness_that_exists() -> None:
+    # A row whose script has been renamed fails at run time with an exec error
+    # minutes into a set, and its `code_id` silently drops the harness from the
+    # hash — so a broken row would also read as fresh.
+    for row in benchmark.manifest():
+        assert Path(row.argv[0]).is_file(), row.name
 
 
 def test_only_narrows_by_name_fragment() -> None:

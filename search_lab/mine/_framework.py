@@ -31,6 +31,7 @@ import argparse
 import functools
 import hashlib
 import json
+import re
 import shutil
 import sys
 from dataclasses import dataclass, field
@@ -62,10 +63,26 @@ def detail_path_for(cases_path: Path) -> Path:
     return cases_path.with_name(cases_path.stem + "-detail.jsonl")
 
 
+def rejects_path_for(cases_path: Path) -> Path:
+    """The refusals file beside a case file.
+
+    **A refusal is a result, and it is often the more informative one.** The cases
+    say what a corpus could be asked; the refusals say what it could not, and why —
+    that sixty-eight linked sessions never touched the files their commit changed is
+    a finding about the dataset's provenance, not swarf from making a benchmark. Kept
+    as its own artifact rather than buried among the successes in the detail sidecar,
+    because the question "what does this corpus refuse" should not require reading
+    every row of a run log to answer.
+
+    The ``rejects`` marker keeps it out of case-file discovery — it is emphatically
+    not scorable gold — and beside the cases so a corpus stays one directory."""
+    return cases_path.with_name(cases_path.stem + "-rejects.jsonl")
+
+
 def open_output(out: Path | None, default: Path) -> tuple[Path, Path]:
     """Resolve a miner's (cases_path, detail_path), honoring an ``--out`` override,
-    and ensure the parent dir exists. The detail sidecar always derives from the
-    case file so the two travel together."""
+    and ensure the parent dir exists. The detail sidecar and the refusals file
+    always derive from the case file so all three travel together."""
     cases_path = out.expanduser() if out else default
     cases_path.parent.mkdir(parents=True, exist_ok=True)
     return cases_path, detail_path_for(cases_path)
@@ -150,6 +167,23 @@ def mined_queries(path: Path) -> set[str]:
                 out.add(json.loads(line)["query"])
             except (json.JSONDecodeError, KeyError):
                 continue
+    return out
+
+
+def mined_openings(path: Path) -> set[str]:
+    """Query openings already in a case file — the seed for the QA pass's
+    template check, so an append-cadence run is measured against the file it is
+    extending rather than only against itself."""
+    out: set[str] = set()
+    for line in (path.read_text().splitlines() if path.exists() else []):
+        if not line.strip():
+            continue
+        try:
+            query = json.loads(line).get("query")
+        except json.JSONDecodeError:
+            continue
+        if isinstance(query, str) and query.strip():
+            out.add(opening_of(query))
     return out
 
 
@@ -265,12 +299,22 @@ class Stage:
     corpus and cost nothing, ``agent`` stages spend tokens. A plan run executes
     every free stage and stops at the first agent one, which is only meaningful
     because the split is declared here — so put the cheap gate first and let it
-    narrow what the expensive one is asked about."""
+    narrow what the expensive one is asked about.
+
+    ``gate_sha`` identifies *the gate that made a refusal*, and it is what lets a
+    refusal be honoured on a later run instead of re-bought. A paid gate's verdict
+    is worth money and does not change on its own, so re-auditing a unit it already
+    refused is spending twice for the same answer. But a refusal is only binding
+    while the gate that made it is the same gate: fold the sha into the record, and
+    a reworded prompt re-opens every unit it rejected instead of freezing them out
+    of the corpus forever. An agent stage that sets none is simply never remembered.
+    """
 
     name: str
     fn: object                      # (unit, ctx) -> Verdict
     kind: str = "free"              # "free" (costs nothing) | "agent" (spends)
     summary: str = ""
+    gate_sha: str | None = None
 
 
 @dataclass
@@ -413,6 +457,18 @@ def run_pipeline(stages: list[Stage], units: list, ctx: "MineContext", *,
     return units
 
 
+def plan_result(funnel: Funnel, stages: list[Stage], units: list,
+                cases_path: Path) -> "MineResult":
+    """What a ``--plan`` run returns: the real funnel through the free stages, the
+    spend the rest would take, and nothing written."""
+    remaining = [s for s in stages if s.kind == "agent"]
+    notes = [f"plan only — nothing written to {cases_path}",
+             f"funnel:\n{funnel.text(indent='    ')}"]
+    notes += planned_spend(remaining, len(units)) or ["no agent stage would run"]
+    return MineResult(written=0, failed=0, cases_path=cases_path,
+                      attempted=0, funnel=funnel, notes=notes)
+
+
 def planned_spend(stages: list[Stage], n_units: int) -> list[str]:
     """The agent sessions a plan says the run would cost, per remaining stage.
 
@@ -427,6 +483,65 @@ def planned_spend(stages: list[Stage], n_units: int) -> list[str]:
             continue
         out.append(f"{stage.name}: up to {remaining} agent session(s)")
     return out
+
+
+# ── the QA pass ─────────────────────────────────────────────────────────────
+#
+# Gates admit a *unit*; this checks the *result*. They are different failures and
+# a pipeline needs both: a perfectly sound commit can still yield a query that
+# names none of what it claims to, or the twenty-fifth rewording of the same
+# sentence. Every authoring miner ends on a free stage built from these, because
+# the alternative — asking the producing agent to grade its own output — is what
+# the miners already did, and across 25 sampled units it declined exactly zero
+# times.
+
+#: A distinctive identifier: snake_case, camelCase, or a dotted filename. The
+#: token class the difficulty ladder is defined in terms of — ``literal`` promises
+#: to name one, the higher tiers promise not to — so it is what decides whether a
+#: tier label describes the query carrying it.
+IDENTIFIER = re.compile(r"\b(?:[a-z]+_[a-z0-9_]+|[a-z]+[A-Z][A-Za-z0-9]+"
+                        r"|[A-Za-z0-9_]+\.[a-z]{1,5})\b")
+
+#: How much of an opening two queries may share before the second reads as the
+#: first with the subject swapped. Three words is where a recall formula lives.
+OPENING_WORDS = 3
+
+
+def distinctive_identifiers(text: str) -> set[str]:
+    """Identifier-shaped tokens in a blob of source material."""
+    return {m.lower() for m in IDENTIFIER.findall(text or "")}
+
+
+def tier_violation(query: str, material: str, tier: str) -> str | None:
+    """Why this query fails the contract of the tier it claims, or None.
+
+    The ladder is only a ladder if the rungs differ, and nothing checked that they
+    did: on the retired SWE-chat file the ``literal`` tier — *defined* as naming
+    symbols from the diff — carried one in barely a third of its cases, so the
+    number reported for "the easy tier" was measuring something softer than its
+    own label. A tier is a claim about the query, and a claim can be checked."""
+    idents = distinctive_identifiers(material)
+    if not idents:
+        return None                       # nothing to name; the tier is unfalsifiable
+    named = {i for i in idents if i in query.lower()}
+    if tier == "literal" and not named:
+        return "literal-names-nothing"
+    if tier in ("functional", "intent") and named:
+        return f"{tier}-leaks-identifier"
+    return None
+
+
+def opening_of(query: str, words: int = OPENING_WORDS) -> str:
+    return " ".join(query.lower().split()[:words])
+
+
+def repeats_an_opening(query: str, seen: set[str]) -> bool:
+    """Whether this query opens exactly like one already in the file.
+
+    Cheap, and it is the failure that a per-case read cannot catch: each query is
+    individually plausible and the set of them is one sentence with the subject
+    swapped, which measures the authoring prompt rather than search."""
+    return opening_of(query) in seen
 
 
 def concurrent_futures():
@@ -458,6 +573,11 @@ class MineContext:
     # cases and record no ledger row. Not a simulation — the free stages really run,
     # so the funnel it prints is the true one up to the point money starts.
     plan: bool = False
+    # Query openings already represented, seeded from the case file being appended
+    # to and grown as the run mints more. Run-scoped rather than per-unit because a
+    # template is a property of the *file*: 25 units each authoring one plausible
+    # "that time we…" produce a collapsed benchmark and no single unit is at fault.
+    seen_openings: set = field(default_factory=set)
 
 
 @dataclass
@@ -488,15 +608,17 @@ class MineResult:
 
 
 class CaseWriter:
-    """Appends validated case rows and detail rows to the standard files, stamping
-    each case with its ``miner`` provenance. Miners build the domain fields of a
+    """Appends validated case rows, detail rows and refusals to the standard files,
+    stamping each with its ``miner`` provenance. Miners build the domain fields of a
     row (gold, grades, protocol, snapshot_id); the writer only guarantees the
     provenance stamp and the append discipline, so no miner forgets it."""
 
-    def __init__(self, miner: str, cases_path: Path, detail_path: Path):
+    def __init__(self, miner: str, cases_path: Path, detail_path: Path,
+                 rejects_path: Path | None = None):
         self.miner = miner
         self.cases_path = cases_path
         self.detail_path = detail_path
+        self.rejects_path = rejects_path or rejects_path_for(cases_path)
 
     def write_case(self, row: dict) -> None:
         row.setdefault("miner", self.miner)
@@ -506,6 +628,54 @@ class CaseWriter:
     def write_detail(self, row: dict) -> None:
         with self.detail_path.open("a") as f:
             f.write(json.dumps(row) + "\n")
+
+    def write_reject(self, row: dict) -> None:
+        row.setdefault("miner", self.miner)
+        row.setdefault("at", now_iso())
+        row.setdefault("miner_commit", miner_commit())
+        with self.rejects_path.open("a") as f:
+            f.write(json.dumps(row) + "\n")
+
+
+def read_rejects(path: Path) -> list[dict]:
+    """Every refusal recorded beside a case file, oldest first."""
+    out: list[dict] = []
+    for line in (path.read_text().splitlines() if path.exists() else []):
+        if not line.strip():
+            continue
+        try:
+            out.append(json.loads(line))
+        except json.JSONDecodeError:
+            continue
+    return out
+
+
+def refused_units(path: Path, gates: dict[str, str | None]) -> set[str]:
+    """Unit keys a *paid* gate already refused under the gate it is still running.
+
+    ``gates`` maps stage name to the ``gate_sha`` this run would use. A refusal is
+    honoured only when both match, so re-running skips what has already been paid
+    for, and changing a gate re-opens everything it rejected rather than leaving
+    those units condemned by a prompt nobody runs any more.
+
+    Free-stage refusals are deliberately not honoured. They cost nothing to redo,
+    and recomputing them is what lets a corpus that has *changed* — a projection
+    folded, a thread un-excluded — be seen as it is now rather than as it was."""
+    out: set[str] = set()
+    for row in read_rejects(path):
+        stage, unit = row.get("stage"), row.get("unit")
+        if not unit or stage not in gates:
+            continue
+        sha = gates[stage]
+        if sha and row.get("gate_sha") == sha:
+            out.add(str(unit))
+    return out
+
+
+def paid_gates(stages: list[Stage]) -> dict[str, str | None]:
+    """``{stage name: gate_sha}`` for the spending stages of a declared funnel —
+    the argument :func:`refused_units` reads."""
+    return {s.name: s.gate_sha for s in stages if s.kind == "agent"}
 
 
 class Miner:

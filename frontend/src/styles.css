@@ -1191,6 +1191,24 @@ a.session-link:hover { color: var(--accent); }
 }
 .lab-facts dd { margin: 0; }
 
+/* ---- mining, cut by pipeline and by dataset ---- */
+.mining-table td, .mining-table th { vertical-align: top; }
+.mining-table .num { text-align: right; font-variant-numeric: tabular-nums; }
+/* One bar per miner: admitted against refused. `ok` and the drops are different
+   colours because they answer different questions — the drops are the half worth
+   reading, and only their *reasons* say whether a refusal rate is health or rot. */
+.outcome { min-width: 180px; }
+.outcome-bar {
+  display: flex; height: 10px; border-radius: 5px; overflow: hidden;
+  background: var(--badge);
+}
+.outcome .seg { display: block; height: 100%; }
+.outcome .seg.is-ok { background: var(--accent); }
+.outcome .seg.is-drop.tone-0 { background: var(--warn, #b8860b); }
+.outcome .seg.is-drop.tone-1 { background: #c2703d; }
+.outcome .seg.is-drop.tone-2 { background: #9a6b8f; }
+.outcome-why { margin: 4px 0 0; }
+
 /* ---- a miner's pipeline, declared and as it ran ---- */
 /* The declared stages read as a list because they are an ordering, and the
    ordering is the design: free gates first so the paid ones are asked about

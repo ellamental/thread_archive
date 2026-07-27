@@ -10,6 +10,7 @@ miner's own parse / prompt / case-assembly logic is tested beside that miner
 
 from __future__ import annotations
 
+import json
 import pathlib
 from pathlib import Path
 
@@ -158,7 +159,6 @@ def test_casewriter_stamps_miner_provenance(tmp_path):
     w = fw.CaseWriter("commit", cases, fw.detail_path_for(cases))
     w.write_case({"query": "q", "gold": ["A"]})
     w.write_detail({"query": "q", "outcome": "ok"})
-    import json
     row = json.loads(cases.read_text().splitlines()[0])
     assert row["miner"] == "commit"
     assert fw.detail_path_for(cases).exists()
@@ -320,3 +320,162 @@ def test_funnel_records_set_level_narrowing_beside_per_unit_stages():
 
 def test_an_empty_funnel_says_so():
     assert "no stages ran" in fw.Funnel().text()
+
+
+# ── the QA primitives ────────────────────────────────────────────────────────
+
+def test_tier_violation_enforces_the_ladder_it_claims():
+    """A tier is a claim about the query, and nothing checked it: on the retired
+    SWE-chat file the `literal` tier — defined as naming symbols from the diff —
+    carried one in barely a third of its cases."""
+    material = "def retry_backoff(attempt): return uploader.py"
+    # literal must name something distinctive from the material
+    assert fw.tier_violation("cap retry_backoff", material, "literal") is None
+    assert fw.tier_violation("cap the waiting", material, "literal") == \
+        "literal-names-nothing"
+    # the higher tiers must not
+    assert fw.tier_violation("stop it retrying forever", material, "intent") is None
+    assert fw.tier_violation("the retry_backoff work", material, "functional") == \
+        "functional-leaks-identifier"
+
+
+def test_tier_violation_abstains_when_the_material_names_nothing():
+    """Material with no identifier-shaped token makes the contract unfalsifiable,
+    and a gate that fires on an unanswerable question is just a broken gate."""
+    assert fw.tier_violation("anything at all", "fix the thing", "literal") is None
+
+
+def test_repeats_an_opening_catches_the_file_house_sentence():
+    seen = {fw.opening_of("that time we broke the uploader")}
+    assert fw.repeats_an_opening("that time we changed the parser", seen)
+    assert not fw.repeats_an_opening("where the parser got changed", seen)
+
+
+def test_mined_openings_seeds_the_check_from_the_file_being_extended(tmp_path):
+    """A template is a property of the file, so an append run has to be measured
+    against what is already in it — not only against itself."""
+    p = tmp_path / "cases.jsonl"
+    p.write_text('{"query": "that time we broke it"}\nnot json\n{"no": "query"}\n')
+    assert fw.mined_openings(p) == {"that time we"}       # the opening, not the query
+    assert fw.mined_openings(tmp_path / "absent.jsonl") == set()
+
+
+# ── plan mode ────────────────────────────────────────────────────────────────
+
+def test_a_plan_runs_the_free_stages_and_stops_at_the_first_spending_one():
+    """Not a simulation: the free stages really run, so a plan's funnel is the true
+    funnel truncated exactly where money starts."""
+    ran: list[str] = []
+
+    def stage(name, kind):
+        def fn(unit, ctx):
+            ran.append(name)
+            return fw.Verdict(keep=unit)
+        return fw.Stage(name=name, fn=fn, kind=kind)
+
+    stages = [stage("cheap", "free"), stage("paid", "agent"), stage("qa", "free")]
+    ctx = _ctx()
+    ctx.plan = True
+    funnel = fw.Funnel()
+    left = fw.run_pipeline(stages, [1, 2, 3], ctx, funnel=funnel, echo=False)
+
+    assert ran == ["cheap", "cheap", "cheap"]        # only the free stage ran
+    assert [r["stage"] for r in funnel.rows()] == ["cheap"]
+    assert left == [1, 2, 3]
+
+
+def test_without_plan_every_stage_runs():
+    ran: list[str] = []
+    stages = [fw.Stage(name=n, kind=k,
+                       fn=lambda u, c, n=n: (ran.append(n), fw.Verdict(keep=u))[1])
+              for n, k in (("cheap", "free"), ("paid", "agent"))]
+    funnel = fw.Funnel()
+    fw.run_pipeline(stages, [1], _ctx(), funnel=funnel, echo=False)
+    assert ran == ["cheap", "paid"]
+    assert [r["stage"] for r in funnel.rows()] == ["cheap", "paid"]
+
+
+def test_plan_result_writes_nothing_and_prices_the_remaining_agent_stages():
+    from pathlib import Path
+
+    stages = [fw.Stage(name="cheap", fn=lambda u, c: fw.Verdict(keep=u)),
+              fw.Stage(name="audit", fn=lambda u, c: fw.Verdict(keep=u), kind="agent"),
+              fw.Stage(name="author", fn=lambda u, c: fw.Verdict(keep=u), kind="agent")]
+    funnel = fw.Funnel()
+    funnel.note("supply", n_in=100, n_out=12)
+    result = fw.plan_result(funnel, stages, [1, 2, 3], Path("/tmp/cases.jsonl"))
+
+    assert result.written == 0 and result.attempted == 0
+    assert any("plan only" in n for n in result.notes)
+    # Both spending stages are priced, in sessions rather than invented dollars.
+    assert any("audit: up to 3 agent session(s)" in n for n in result.notes)
+    assert any("author: up to 3 agent session(s)" in n for n in result.notes)
+
+
+def test_planned_spend_ignores_free_stages():
+    stages = [fw.Stage(name="free1", fn=None), fw.Stage(name="paid", fn=None, kind="agent")]
+    assert fw.planned_spend([s for s in stages if s.kind == "agent"], 5) == \
+        ["paid: up to 5 agent session(s)"]
+
+
+# ── refusals as a saved result ───────────────────────────────────────────────
+
+def test_rejects_file_sits_beside_the_cases_and_out_of_gold_discovery(tmp_path):
+    from search_lab import gold_files
+
+    cases = tmp_path / "commit-cases.jsonl"
+    rejects = fw.rejects_path_for(cases)
+    assert rejects.name == "commit-cases-rejects.jsonl"
+    rejects.write_text("{}\n")
+    # Emphatically not scorable gold: a refusal in a case file would be a case
+    # whose answer is "this should not have been asked".
+    assert gold_files.discover(tmp_path) == []
+
+
+def test_write_reject_stamps_provenance_the_caller_would_forget(tmp_path):
+    cases = tmp_path / "commit-cases.jsonl"
+    writer = fw.CaseWriter("commit", cases, fw.detail_path_for(cases))
+    writer.write_reject({"unit": "T1", "stage": "alignment",
+                         "reason": "misattributed"})
+    (row,) = fw.read_rejects(fw.rejects_path_for(cases))
+    assert row["miner"] == "commit" and row["at"]
+    assert row["reason"] == "misattributed"
+
+
+def test_a_paid_refusal_is_honoured_only_while_its_gate_is_unchanged(tmp_path):
+    """Re-auditing a unit a paid gate already refused is buying the same answer
+    twice. Condemning it under a prompt nobody runs any more is worse."""
+    path = tmp_path / "cases-rejects.jsonl"
+    path.write_text("\n".join(json.dumps(r) for r in [
+        {"unit": "A", "stage": "alignment", "reason": "misattributed",
+         "gate_sha": "aaaa1111"},
+        {"unit": "B", "stage": "alignment", "reason": "misattributed",
+         "gate_sha": "bbbb2222"},          # refused by an older prompt
+    ]) + "\n")
+    assert fw.refused_units(path, {"alignment": "aaaa1111"}) == {"A"}
+    # The gate moved: everything it rejected is asked again rather than frozen out.
+    assert fw.refused_units(path, {"alignment": "cccc3333"}) == set()
+
+
+def test_a_free_stages_refusal_is_never_honoured(tmp_path):
+    """It costs nothing to redo, and redoing it is what lets a corpus that has
+    changed — a projection folded, a thread un-excluded — be seen as it is now."""
+    path = tmp_path / "cases-rejects.jsonl"
+    path.write_text(json.dumps(
+        {"unit": "A", "stage": "provenance", "reason": "no-file-overlap",
+         "gate_sha": None}) + "\n")
+    assert fw.refused_units(path, {"provenance": None}) == set()
+
+
+def test_paid_gates_reads_only_the_spending_stages():
+    stages = [fw.Stage(name="cheap", fn=None, gate_sha="x"),
+              fw.Stage(name="audit", fn=None, kind="agent", gate_sha="abc"),
+              fw.Stage(name="author", fn=None, kind="agent")]
+    assert fw.paid_gates(stages) == {"audit": "abc", "author": None}
+
+
+def test_read_rejects_tolerates_a_torn_file(tmp_path):
+    path = tmp_path / "cases-rejects.jsonl"
+    path.write_text('{"unit": "A"}\ntorn\n\n{"unit": "B"}\n')
+    assert [r["unit"] for r in fw.read_rejects(path)] == ["A", "B"]
+    assert fw.read_rejects(tmp_path / "absent.jsonl") == []

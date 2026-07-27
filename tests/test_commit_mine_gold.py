@@ -272,7 +272,8 @@ def test_commit_miner_run_writes_cases(archive_home, tmp_path):
 
     # The funnel is the run's record of where units went, stage by stage.
     stages = [r["stage"] for r in result.funnel.rows()]
-    assert stages == ["linkage", "sample", "provenance", "alignment", "author"]
+    assert stages == ["linkage", "sample", "provenance", "alignment", "author",
+                      "verify"]
     linkage_row = result.funnel.rows()[0]
     assert linkage_row["in"] == 3 and linkage_row["out"] == 2
     assert linkage_row["reasons"]["absent-from-snapshot"] == 1
@@ -526,7 +527,9 @@ def test_no_alignment_drops_the_paid_gate_from_the_declared_funnel():
     import argparse
 
     full = cm.MINER.stages(argparse.Namespace(alignment=True))
-    assert [s.name for s in full] == ["provenance", "alignment", "author"]
-    assert [s.kind for s in full] == ["free", "agent", "agent"]
+    assert [s.name for s in full] == ["provenance", "alignment", "author", "verify"]
+    # Free gates bracket the spend: cheap admission first so the paid stages are
+    # asked about fewer units, cheap QA last so nothing pays to check its own work.
+    assert [s.kind for s in full] == ["free", "agent", "agent", "free"]
     cheap = cm.MINER.stages(argparse.Namespace(alignment=False))
-    assert [s.name for s in cheap] == ["provenance", "author"]
+    assert [s.name for s in cheap] == ["provenance", "author", "verify"]

@@ -45,14 +45,19 @@ five systems and a random draw turned up nothing worth grading is either an
 unanswerable query or a hole under the whole pool, and the rate is recorded in the
 mining ledger rather than left in a console line.
 
-Resume is by query text: a re-run skips queries already represented in the file.
+Resume is by query text *and by refusal*: a re-run skips queries already in the
+case file, and queries the judge already refused, for as long as the judging prompt
+is unchanged. That matters most for ``none-of-pool`` — a judge paid once to say the
+pool holds no answer must not be paid to say it again — and the refusals file is
+where that alarm accumulates into a rate rather than evaporating with the console
+line that reported it.
 """
 
 from __future__ import annotations
 
-import concurrent.futures
 import json
 import random
+from pathlib import Path
 
 from sqlalchemy import text as sa_text
 
@@ -87,6 +92,13 @@ DEEP_POOL_FLOOR = 1000
 # read the corpus.
 JUDGE_MAX_TURNS = 40
 JUDGE_TIMEOUT_S = 900
+
+#: Above this share of the judged union graded 2, the verdict has stopped
+#: discriminating: every ranker scores the same on it, so the case adds weight to
+#: the denominator and no information. Generous — a genuinely easy query can have
+#: several right answers — and it only catches the judge that said yes to nearly
+#: everything.
+MAX_GRADE2_SHARE = 0.8
 
 _PROMPT = """You are grading search results for a conversation-archive relevance \
 benchmark.
@@ -347,6 +359,76 @@ def unique_contributions(cases: list[dict]) -> dict[str, int]:
     return out
 
 
+# ── the stages ──────────────────────────────────────────────────────────────
+
+def stage_pool(query: str, ctx: MineContext) -> fw.Verdict:
+    """Free stage: assemble the multi-system union this query will be judged over.
+
+    Free in tokens, not in time — it runs five retrievers — but it spends no agent,
+    which is what decides where a ``--plan`` run stops. A query no system returns
+    anything for is dropped here rather than sent to a judge with an empty page."""
+    args = ctx.args
+    pools = system_pools(query, depth=args.depth, n_random=args.n_random,
+                         seed=args.seed)
+    ids, contrib = merge_pool(pools, args.pool_cap)
+    per_system = {k: len(v) for k, v in pools.items()}
+    if not ids:
+        return fw.Verdict(reason="empty-pool", detail={"per_system": per_system})
+    return fw.Verdict(keep={"query": query, "ids": ids, "contrib": contrib},
+                      reason="ok",
+                      detail={"pool_size": len(ids), "per_system": per_system})
+
+
+def stage_judge(unit: dict, ctx: MineContext) -> fw.Verdict:
+    """Paid stage: one judge grades the whole union 2/1/0.
+
+    ``none-of-pool`` is the recall alarm and stays its own disposition: a real
+    query for which five systems and a random draw turned up nothing worth grading
+    is either unanswerable or a hole under the entire pool, and collapsing it into
+    a generic failure would lose the only signal it carries."""
+    prompt = build_prompt(unit["query"], pool_rows(unit["ids"]), ctx.tool_cmd)
+    run = ctx.agent_run or run_claude
+    reply, stats = run(prompt, ctx.model, ctx.tool_cmd, max_turns=JUDGE_MAX_TURNS,
+                       timeout=JUDGE_TIMEOUT_S, corpus_access=True)
+    cost = float((stats or {}).get("cost_usd") or 0.0)
+    detail = {"agent": stats, "prompt_sha": fw.prompt_sha(prompt),
+              "template_sha": fw.template_sha(_PROMPT)}
+    if reply is None:
+        return fw.Verdict(reason="agent-failed", cost_usd=cost, detail=detail)
+    verdict = parse_grades(reply, set(unit["ids"]))
+    if verdict is None:
+        return fw.Verdict(reason="unparseable", cost_usd=cost, detail=detail)
+    detail.update({"none_answer": verdict["none"], "rationale": verdict["rationale"],
+                   "graded": len(verdict["grades"])})
+    case = case_from_verdict(unit["query"], verdict, unit["contrib"],
+                             ctx.snapshot_id)
+    if case is None:
+        return fw.Verdict(reason="none-of-pool", cost_usd=cost, detail=detail)
+    unit["case"] = case
+    unit["verdict"] = verdict
+    return fw.Verdict(keep=unit, reason="ok", cost_usd=cost, detail=detail)
+
+
+def stage_verify(unit: dict, ctx: MineContext) -> fw.Verdict:
+    """Free QA over the judgment: did it actually discriminate?
+
+    The judging prompt says a pool where everything is 2 is as useless as one where
+    everything is 0, and nothing checked that the judge listened. A verdict that
+    grades nearly the whole union relevant scores every ranker identically — it
+    cannot separate a good ordering from a bad one, so it adds a case to the
+    denominator and no information to the file. Dropped as ``undiscriminating``,
+    which is a judgment quality event and not a retrieval one, and so is never
+    confused with ``none-of-pool``."""
+    grades = unit["verdict"]["grades"]
+    if not grades:
+        return fw.Verdict(reason="undiscriminating", detail={"graded": 0})
+    top = sum(1 for g in grades.values() if g == 2) / len(grades)
+    detail = {"graded": len(grades), "grade2_share": round(top, 3)}
+    if top >= MAX_GRADE2_SHARE:
+        return fw.Verdict(reason="undiscriminating", detail=detail)
+    return fw.Verdict(keep=unit, reason="ok", detail=detail)
+
+
 # ── the miner ───────────────────────────────────────────────────────────────
 
 class PooledMiner(Miner):
@@ -379,18 +461,50 @@ class PooledMiner(Miner):
                             dest="n_random",
                             help="random threads mixed into the pool "
                                  f"(default {DEFAULT_RANDOM})")
-        parser.add_argument("--ledger-home", default=None, metavar="PATH",
+        parser.add_argument("--ledger-home", type=Path, default=None, metavar="PATH",
                             help="archive home to read the query population from "
-                                 "(default: the live archive). The corpus searched "
+                                 "(default: the snapshot being mined, which usually "
+                                 "carries no traffic — point this at the live archive "
+                                 "for a real query population). The corpus searched "
                                  "is always the snapshot, never this.")
+
+    def stages(self, args) -> list[fw.Stage]:
+        """Pool (free — five retrievers, no agent) → judge (paid) → verify (free).
+
+        The pool stage being free is what makes ``--plan`` worth running here: it
+        answers "does this corpus even return anything for the queries agents
+        asked" without spending a judge on the answer."""
+        return [
+            fw.Stage(name="pool", fn=stage_pool, kind="free",
+                     summary="the union of stack / bm25 / deep / lexical / random"),
+            fw.Stage(name="judge", fn=stage_judge, kind="agent",
+                     summary="one judge grades the whole union 2/1/0",
+                     gate_sha=fw.template_sha(_PROMPT)),
+            fw.Stage(name="verify", fn=stage_verify, kind="free",
+                     summary="the judgment discriminates rather than grading "
+                             "everything relevant"),
+        ]
 
     def run(self, ctx: MineContext) -> MineResult:
         args = ctx.args
         cases_path, detail_path = fw.open_output(
             args.out, fw.default_cases_path(CASES_STEM))
-        already = fw.mined_queries(cases_path) | _abstained(detail_path)
+        funnel = fw.Funnel()
+        stages = self.stages(args)
+        rejects_path = fw.rejects_path_for(cases_path)
+        # `none-of-pool` is the shape this most matters for: a judge already paid to
+        # say the pool holds no answer must not be paid to say it again.
+        already = fw.mined_queries(cases_path) | fw.refused_units(
+            rejects_path, fw.paid_gates(stages))
         home = args.ledger_home
+        population = ledger_queries(home)
+        unmined = [q for q in population if q not in already]
         queries = sample_queries(ctx.target, args.seed, already, home=home)
+        funnel.note("ledger", n_in=len(population), n_out=len(unmined),
+                    reasons={"already-mined-or-abstained":
+                             len(population) - len(unmined)})
+        funnel.note("sample", n_in=len(unmined), n_out=len(queries),
+                    reasons={"not-drawn": len(unmined) - len(queries)})
         if not queries:
             raise SystemExit(
                 "no unmined queries in the usage ledger. This miner's population "
@@ -398,60 +512,46 @@ class PooledMiner(Miner):
                 "searches (a young archive, or --ledger-home pointing somewhere "
                 "empty) leaves it nothing to mine.")
 
-        writer = fw.CaseWriter(self.name, cases_path, detail_path)
-        agent = ctx.agent_run or run_claude
-        outcomes: dict[str, int] = {}
-        written = failed = 0
+        print(f"mining {len(queries)} observed query/queries through "
+              f"{len(stages)} stage(s) with {ctx.model} agents (jobs={ctx.jobs}) "
+              f"against snapshot {ctx.snapshot_id} -> {cases_path}")
+
+        details: dict[str, dict] = {
+            q: {"query": q, "at": now_iso(), "stages": {}} for q in queries}
+
+        writer = fw.CaseWriter(self.name, cases_path, detail_path, rejects_path)
+
+        def observe(stage: fw.Stage, unit, verdict: fw.Verdict) -> None:
+            query = unit if isinstance(unit, str) else unit["query"]
+            detail = details[query]
+            detail["stages"][stage.name] = {"reason": verdict.reason,
+                                            **(verdict.detail or {})}
+            detail["outcome"] = verdict.reason if not verdict.kept else "ok"
+            if not verdict.kept and not ctx.plan:
+                writer.write_reject({
+                    "unit": query, "stage": stage.name, "reason": verdict.reason,
+                    "gate_sha": stage.gate_sha, "kind": stage.kind,
+                    "snapshot_id": ctx.snapshot_id, "detail": verdict.detail or {}})
+
+        surviving = fw.run_pipeline(stages, queries, ctx, funnel=funnel,
+                                    on_verdict=observe)
+        if ctx.plan:
+            return fw.plan_result(funnel, stages, surviving, cases_path)
         minted: list[dict] = []
+        for unit in surviving:
+            case = unit["case"]
+            writer.write_case(case)
+            minted.append(case)
+            details[unit["query"]]["pool_contrib"] = case["pool_contrib"]
+            print(f"  ✓ {unit['query'][:60]}: {case['n_gold']} gold "
+                  f"of {case['pool_size']} judged")
+        for detail in details.values():
+            writer.write_detail(detail)
 
-        def mine_one(query: str) -> tuple[dict, dict | None]:
-            pools = system_pools(query, depth=args.depth, n_random=args.n_random,
-                                 seed=args.seed)
-            ids, contrib = merge_pool(pools, args.pool_cap)
-            detail = {"query": query, "at": now_iso(),
-                      "pool_size": len(ids),
-                      "per_system": {k: len(v) for k, v in pools.items()}}
-            if not ids:
-                detail["outcome"] = "empty-pool"
-                return detail, None
-            prompt = build_prompt(query, pool_rows(ids), ctx.tool_cmd)
-            detail["prompt_sha"] = fw.prompt_sha(prompt)
-            reply, stats = agent(prompt, ctx.model, ctx.tool_cmd,
-                                 max_turns=JUDGE_MAX_TURNS, timeout=JUDGE_TIMEOUT_S)
-            detail["stats"] = stats
-            if reply is None:
-                detail["outcome"] = "agent-failed"
-                return detail, None
-            verdict = parse_grades(reply, set(ids))
-            if verdict is None:
-                detail["outcome"] = "unparseable"
-                return detail, None
-            detail.update({"none_answer": verdict["none"],
-                           "rationale": verdict["rationale"],
-                           "graded": len(verdict["grades"])})
-            case = case_from_verdict(query, verdict, contrib, ctx.snapshot_id)
-            if case is None:
-                detail["outcome"] = "none-of-pool"
-                return detail, None
-            detail["outcome"] = "ok"
-            detail["pool_contrib"] = case["pool_contrib"]
-            return detail, case
-
-        with concurrent.futures.ThreadPoolExecutor(max_workers=ctx.jobs) as pool:
-            for detail, case in pool.map(mine_one, queries):
-                outcomes[detail["outcome"]] = outcomes.get(detail["outcome"], 0) + 1
-                writer.write_detail(detail)
-                if case is None:
-                    failed += 1
-                    print(f"  ✗ {detail['query'][:60]}: {detail['outcome']}")
-                    continue
-                writer.write_case(case)
-                minted.append(case)
-                written += 1
-                print(f"  ✓ {detail['query'][:60]}: {case['n_gold']} gold "
-                      f"of {case['pool_size']} judged")
-
-        notes = []
+        outcomes: dict[str, int] = {}
+        for detail in details.values():
+            outcomes[detail["outcome"]] = outcomes.get(detail["outcome"], 0) + 1
+        notes = [f"funnel:\n{funnel.text(indent='    ')}"]
         none_rate = outcomes.get("none-of-pool", 0)
         if none_rate:
             notes.append(f"none-of-pool on {none_rate}/{len(queries)} — pool holds "
@@ -460,28 +560,12 @@ class PooledMiner(Miner):
         if unique:
             notes.append("sole-finder gold by system: "
                          + ", ".join(f"{k} {v}" for k, v in sorted(unique.items())))
-        return MineResult(written=written, failed=failed, cases_path=cases_path,
-                          detail_path=detail_path, attempted=len(queries),
-                          outcomes=outcomes, notes=notes)
-
-
-def _abstained(detail_path) -> set[str]:
-    """Queries a previous run judged and found nothing for. They mint no case, so
-    the case file cannot remember them — without this a re-run would re-judge and
-    re-abstain on the same queries forever."""
-    out: set[str] = set()
-    if not detail_path.exists():
-        return out
-    for line in detail_path.read_text().splitlines():
-        if not line.strip():
-            continue
-        try:
-            row = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-        if row.get("outcome") in ("none-of-pool", "empty-pool") and row.get("query"):
-            out.add(str(row["query"]))
-    return out
+        if funnel.cost_usd:
+            notes.append(f"spent ${funnel.cost_usd:.2f}")
+        return MineResult(written=len(minted), failed=len(queries) - len(minted),
+                          cases_path=cases_path, detail_path=detail_path,
+                          attempted=len(queries), outcomes=outcomes, notes=notes,
+                          funnel=funnel)
 
 
 MINER = PooledMiner()

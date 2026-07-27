@@ -2,6 +2,80 @@
 
 ## Unreleased
 
+- **The bench grew from four datasets to ten, chosen so each measures something
+  the others cannot.**
+
+  Four datasets over one task shape — natural-language question against prose
+  document — meant a disagreement between them was unreadable and a single row's
+  result was unattributable. `scifact`'s lexical arm sitting 0.086 below its BM25
+  reference could equally have been a weak arm, a peculiarity of scifact, or an
+  artifact of the harness ingesting each document as a one-turn session. Six new
+  datasets, each carrying a named question:
+
+  - **BEIR `nfcorpus` and `arguana`** bracket `scifact`'s abstracts at the short
+    and long ends of document length — the axis the bm25/density term is known to
+    be sensitive to, since density normalizes to a fixed window but is never
+    bounded. Three corpora at three lengths turn that mechanism from an inference
+    drawn across unrelated corpora into a measurement.
+  - **BEIR `trec-covid`** is the only set here with deep per-query judgment pools,
+    which is what makes a recall@100 off it mean anything. 171K documents but only
+    50 queries: expensive once, near-free on every pass after.
+  - **MTRAG** (`mtrag_eval.py`, IBM's multi-turn RAG benchmark, Apache-2.0) ships
+    the same information need as a terse context-dependent last turn and as a
+    standalone human rewrite, with a published BM25/BGE/Elser baseline for both.
+    The gap between those rows is the only external read on how much the stack
+    leans on a well-formed query — and its 46-character last turns are the closest
+    thing on the bench to the ~31-character queries the usage ledger records,
+    where every other query set is a 20-word authored sentence. Four domains,
+    366K passages, macro-averaged because that is the shape the published table
+    reports; a single-domain or capped run prints itself as not comparable rather
+    than beside a reference it does not match.
+  - **BEAM** (`--dataset beam`, three conversation-length tiers) is the
+    **multi-answer** row. Its median question needs 2–3 gold messages and its
+    worst needs 96, where everything else on the bench is effectively single-gold,
+    so its `recall_all@k` is the only number here that asks whether a window holds
+    *everything* bearing on a question rather than merely something —
+    completeness, which the bench previously did not measure at all. The tiers are
+    one conversation set at growing lengths, so they read as a degradation ladder.
+  - **PerLTQA** (`perltqa_eval.py`) retrieves a curated memory *unit* rather than
+    a turn or a session, and its labels exist by construction: each question was
+    authored from the unit it names.
+
+  BEAM and PerLTQA carry no published retrieval baseline — BEAM's paper scores
+  end-to-end QA under a memory framework, PerLTQA's retrieval subtask is not
+  reported in a reproducible form — and both print that rather than borrowing a
+  number from a different task.
+
+- **LongMemEval-V2 is not a retrieval benchmark, and the survey said it was.**
+  `docs/benchmarks.md` listed it as deterministically scored against "annotated
+  answer trajectories". It has none: `questions.jsonl` carries an answer string
+  and a string evaluator, and its haystacks are shared across every question in a
+  domain, so there is no per-question label to recover. Scoring it would have
+  meant inventing the labels. It is now recorded as rejected, with the schema that
+  says so, because nothing about the dataset card or the file listing reveals it.
+
+- **`arguana` scores under the protocol its published number was measured with.**
+  Every arguana query *is* a corpus document — the task is to find its
+  counterargument — so the query retrieves itself at rank 1, that self-hit is never
+  in the qrels, and counting it dropped roughly a full point of nDCG against the
+  reference. `beir_eval.py` now excludes a hit whose document id equals the query
+  id, matching BEIR's own `ignore_identical_ids` default. No effect on datasets
+  whose queries and documents are disjoint, which is every other one on the bench.
+
+- **The benchmark plan prices a never-run row off measured throughput.** A cold
+  pass over the full set is about a day of CPU, so `--list` is the decision, and
+  it was reporting guesses that were wrong by an order of magnitude on the big
+  rows. Estimates now come from this box's ingest (~3,600 docs/min) and embed
+  (~450 docs/min) rates, and the manifest runs cheapest-first so a cold pass
+  prints results within minutes instead of after hours of embedding.
+
+- **`mine pooled --ledger-home` reaches a query population again.** The flag
+  parsed as a bare string and every value crashed the run in `usage.read_calls`,
+  which left the miner with only its default — the snapshot's own ledger, and a
+  frozen corpus carries no traffic. The one miner whose queries are *observed*
+  could not reach an observed query. Now a `Path`, and its help says what the
+  default actually resolves to rather than claiming the live archive.
+
 - **The search lab shows every benchmark run, and what each one cost.**
 
   The lab page reported one run per row — the newest success of each row still in
@@ -69,6 +143,112 @@
   the same instructions" is unanswerable. `template_sha` hashes the unrendered
   template and is now stamped by all three miners; the panel flags a mixed file and
   ignores the per-unit hashes.
+
+- **Refusals are saved as results, not counted and thrown away.** Every miner now
+  writes a `-rejects.jsonl` beside its cases: one row per refused unit with the
+  stage, the reason, the gate that made the call and its verdict. The cases say
+  what a corpus could be asked; the refusals say what it could not, and several of
+  the reasons are findings about the **dataset** rather than about a run — a pile
+  of `misattributed` means a provenance join is wrong, `untargetable-commit` at
+  scale characterises a corpus's commit hygiene, and `none-of-pool` is the recall
+  alarm. Sub-unit refusals count too: a unit admitted with one of its queries
+  thrown out records what the authoring agent produced that failed its own tier
+  contract, which is exactly what a prompt gets tuned against.
+
+  This closed a money bug. Only `pooled` remembered its abstentions; `commit` and
+  `edited` resumed off the *case* file, which a refused unit never enters — so
+  every re-run re-paid the audit on units it had already rejected. A paid gate's
+  verdict is now honoured on later runs, **and only while the gate that made it is
+  unchanged**: the row carries the gate's `gate_sha`, so a reworded prompt re-opens
+  everything it turned down instead of condemning those units forever. Free-stage
+  refusals are deliberately never honoured — they cost nothing to redo, and redoing
+  them is what lets a corpus that has *changed* (a projection folded, a thread
+  un-excluded) be seen as it is now. `pooled`'s bespoke `_abstained` reader is gone
+  in favour of the shared mechanism, so there is one way this works.
+
+  `gold_stats.py` grew a REFUSALS panel and `/lab` a per-corpus column. Writing it
+  turned up that `rejects` was missing from `gold_files.NON_GOLD_MARKERS` — a
+  refusals file shares its stem with the cases, so a scorer would have picked it up
+  and asked search to answer questions a gate had already ruled unanswerable.
+
+- **`/lab` has a Mining section: the same runs cut by pipeline and by dataset.**
+  Run count, cases on disk, corpora mined, spend; then a per-miner row with units
+  drawn, cases minted, yield, and an admitted/refused bar whose segments are the
+  named drop reasons; then a per-corpus row with runs, cases, and **what is waiting
+  to be mined**.
+
+  The dataset axis needed a fix to exist at all. A run records itself in the gold
+  dir it wrote into — public-corpus golds beside their download, the operator's
+  under `~/.thread/archive` — and the inventory read only the archive's, so a miner
+  that had only ever run against a public corpus rendered as never run. It now
+  walks every gold dir a dataset or the archive claims (never by globbing: a
+  directory nobody claims is a directory with some JSONL in it).
+
+  The supply column is what makes an empty row mean something. A corpus with 1,284
+  mineable units and no runs is a completely different state from a corpus with
+  nothing to mine, and both were rendering as a zero. Supply is counted from cheap
+  file reads only — the path projection's would need a `GROUP BY` over
+  `event_paths` in a multi-gigabyte index, and this runs inside the always-on
+  watcher on every page load; `--plan` is where that number belongs, because a
+  command can afford to open a corpus. Writing the tests for it turned up a leaked
+  file handle in exactly that hot path.
+
+- **All three miners are pipelines, and every one ends in a QA pass.** The generic
+  shape is *supply → admit → produce → verify*: gates decide which units are worth
+  spending on, and a free QA stage checks what came back. Both are needed and they
+  catch different failures — a sound unit can still yield a query that names none
+  of what it claims to, or the file's house sentence for the twenty-fifth time.
+  Until now the only quality control was asking the producing agent to grade its
+  own output, which across 25 sampled units declined **zero** times.
+
+  `edited` declares **substance → coherence → author → verify**. `substance` is
+  free: a path whose tool payloads carry no readable change body leaves the author
+  writing about a filename. `coherence` is the paid audit, and its question is not
+  the commit miner's — membership here is *enumerated*, so a wrong label is not the
+  risk; an incoherent one is. A path six sessions touched for six unrelated reasons
+  has a gold set nothing ties together, and a case built on it is unanswerable by
+  construction: it scores every ranker badly and teaches nothing.
+
+  `pooled` declares **pool → judge → verify**. Assembling the five-system union
+  spends no agent, so a `--plan` run answers "does this corpus return anything at
+  all for the queries agents actually asked" for free. Its QA pass is
+  `undiscriminating`: the judging prompt has always said a pool where everything is
+  2 is as useless as one where everything is 0, and nothing checked that the judge
+  listened. Such a verdict scores every ranker identically — weight in the
+  denominator, no information. It stays a separate disposition from `none-of-pool`,
+  which is the recall alarm and means something else entirely.
+
+  The QA primitives are shared. `tier_violation` enforces the difficulty ladder as
+  a checkable claim rather than a label the authoring agent asserts — `literal` must
+  name a distinctive identifier from its source material, `functional` and `intent`
+  must not. On the retired SWE-chat file the `literal` tier carried one in barely a
+  third of its cases, so "the easy tier" was reporting on something softer than its
+  own name. `repeats_an_opening` catches the template, seeded from the case file
+  being appended to, because a template is a property of the *file*: 25 units each
+  authoring one plausible "that time we…" produce a collapsed benchmark with no
+  single unit at fault. A failing query is dropped from its unit rather than the
+  unit from the run — a session yielding one good query and one templated one should
+  contribute the good one.
+
+- **`--plan` prices a run before it spends.** Every free stage runs for real and
+  the run stops at the first spending one, so what it prints is not an estimate of
+  the funnel — it is the true funnel, truncated where the money starts. That works
+  only because `kind` is declared. Against the built SWE-chat corpus:
+
+  ```
+  linkage      1284 → 1284
+  sample       1284 → 8      −1276  (not-drawn 1276)
+  provenance      8 → 7      −1     (no-file-overlap 1)
+  — plan stops here: 7 unit(s) would enter 'alignment' and every stage after it
+  alignment: up to 7 agent session(s)
+  author: up to 7 agent session(s)
+  ```
+
+  Spend is quoted in agent sessions, not dollars: a session's price depends on what
+  the agent reads, and an invented dollar figure would get quoted back as measured.
+  A plan writes nothing and records no ledger row — a dry run entering the
+  drop-rate timeseries as a run whose every unit failed is the opposite of what it
+  means.
 
 - **Miners are pipelines now, and `commit` is the first one built as one.**
   `Stage` / `Verdict` / `run_stage` / `Funnel` in the mining framework;

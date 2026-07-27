@@ -180,10 +180,17 @@ def _session_lines(doc_id: str, text: str) -> list[dict]:
     ]
 
 
-def ingest_corpus(corpus_path: Path, work: Path, max_docs: int | None) -> dict[str, str]:
+def ingest_corpus(corpus_path: Path, work: Path, max_docs: int | None,
+                  label: str | None = None) -> dict[str, str]:
     """Import every corpus doc as its own thread. Returns ``{thread_id: doc_id}``
     with string thread-id keys (they survive a JSON round-trip to the cache, and
-    match ``str(hit['thread_id'])`` at scoring time regardless of the id's type)."""
+    match ``str(hit['thread_id'])`` at scoring time regardless of the id's type).
+
+    ``label`` names the corpus in the load ledger. It defaults to the dataset
+    directory a BEIR download lives in, which is the right answer only for that
+    layout — a harness whose corpora sit side by side in one directory
+    (``mtrag_eval``) passes its own, so ``thread_archive loads`` distinguishes a
+    stalled ``clapnq`` build from a stalled ``govt`` one."""
     import logging
 
     from thread_archive import _api as api
@@ -204,7 +211,8 @@ def ingest_corpus(corpus_path: Path, work: Path, max_docs: int | None) -> dict[s
     t0 = time.monotonic()
     # Tracked like any archive load: live progress/ETA to <home>/load-state.json,
     # a ledger row after — a corpus build is as visible as a real import.
-    with load_run("import", note=f"BEIR corpus build ({corpus_path.parent.name})") as run:
+    with load_run("import",
+                  note=f"corpus build ({label or corpus_path.parent.name})") as run:
         with run.phase("import", total=total) as ph:
             for doc_id, text in load_corpus(corpus_path):
                 # A distinct source path + id per doc: a reused path reads as the same
@@ -376,11 +384,19 @@ def run(args) -> int:
             sample["total_ms"] = elapsed * 1000.0
             stage_samples.append(sample)
         # Map thread hits back to BEIR doc ids, preserving rank order, deduped.
+        # A hit whose doc id *is* the query id is dropped, matching BEIR's own
+        # ``ignore_identical_ids`` default. On most datasets this never fires —
+        # queries and documents are disjoint id spaces. On arguana they are the
+        # same space: every query is itself a corpus document and the task is to
+        # find its counterargument, so the query retrieves itself at rank 1, that
+        # self-hit is never in the qrels, and scoring it as a miss would report a
+        # number a full point of nDCG below what the same ranking scores under the
+        # published protocol.
         ranked: list[str] = []
         seen: set[str] = set()
         for h in hits:
             d = doc_of_thread.get(str(h["thread_id"]))
-            if d is not None and d not in seen:
+            if d is not None and d not in seen and d != qid:
                 seen.add(d)
                 ranked.append(d)
         m = score_run(ranked, qrels[qid], ks)

@@ -39,12 +39,25 @@ weighting, not a gate — a biased-but-independent measurement beats a circular 
 
 ### On the bench now
 
-| benchmark | shape | task | labels | scoring | metric |
+Ten datasets, and what each is on the bench *for* — a row that measures nothing
+the others don't is a number without a question behind it.
+
+| benchmark | shape | task | labels | scoring | why it is here |
 |---|---|---|---|---|---|
-| BEIR scifact | shared corpus | scientific-claim IR | human (TREC-grade) | deterministic | nDCG@10 |
-| CDR | shared corpus | conversational retrieval | human | deterministic | nDCG@10 |
-| LoCoMo | per-question haystack | multi-session dialog, turn-level | human | deterministic | recall@k |
-| LongMemEval-S | per-question haystack | long-history QA, session-level | human | deterministic | recall@k |
+| BEIR scifact | shared corpus | scientific-claim IR, abstracts | human (TREC-grade) | nDCG@10 | the reference point — mid-length documents |
+| BEIR nfcorpus | shared corpus | short medical documents | human | nDCG@10 | the **short** end of the document-length bracket |
+| BEIR arguana | shared corpus | counterargument retrieval, long passages | human | nDCG@10 | the **long** end of the same bracket |
+| BEIR trec-covid | shared corpus | COVID literature IR | human, **deep** per-query pools | nDCG@10 | the only set whose recall@100 means anything; 50 queries |
+| CDR | shared corpus | conversational retrieval | human | nDCG@10 | conversational query shapes |
+| MTRAG | shared corpus ×4 | multi-turn RAG over four domains | human | nDCG@10 | **query shape** — one need as a terse last turn and as a rewrite |
+| LoCoMo | per-question haystack | multi-session dialog, turn-level | human | recall@k | turn-granularity memory |
+| LongMemEval-S | per-question haystack | long-history QA, session-level | human | recall@k | session-granularity memory |
+| BEAM | per-question haystack | long-conversation memory, message-level | human-validated | recall@k | **completeness** — multi-answer gold, and a length ladder |
+| PerLTQA | shared corpus | personal-memory unit retrieval | by construction | nDCG@10 / MRR@10 | memory-*unit* granularity |
+
+Every one is deterministic in scoring. Two carry no published retrieval baseline
+(BEAM, PerLTQA) and say so in their own output rather than borrowing a number
+from a different task.
 
 **LoCoMo carries a known label-quality problem.** An audit found 99 score-corrupting
 errors across 1,540 questions (6.4%) in the answer key — hallucinated facts,
@@ -55,43 +68,40 @@ floor of several points and never read a small delta on it.
 
 ### Free — `beir_eval.py` already supports these
 
-[beir_eval.py:74-90](../search_lab/beir_eval.py#L74-L90) carries published BM25 and
-dense references for 13 BEIR datasets; only scifact has been run. Adding one is a
-`--dataset` value and CPU time. The binding constraint is the embed pass: scifact's
-5.2K docs cost ~15 min, so budget **~350 docs/min**.
+[beir_eval.py](../search_lab/beir_eval.py) carries published BM25 and dense
+references for 13 BEIR datasets; four are on the bench. Adding another is a
+`--dataset` value and CPU time.
 
-| dataset | docs | embed | why it's informative here |
+| dataset | docs | embed | why it would be informative |
 |---|---|---|---|
-| `nfcorpus` | 3.6K | ~10 min | short medical docs — the short-document regime where the bm25 term goes out of scale |
-| `arguana` | 8.7K | ~25 min | long argument passages, counterargument retrieval — the opposite length regime |
-| `scidocs` | 25.6K | ~75 min | title+abstract, citation relevance |
-| `fiqa` | 57.6K | ~3 hr | financial QA — the only BEIR set with conversational query shapes |
-| `trec-covid` | 171K | ~8 hr | deep judgments per query, heavy |
-| `quora` | 523K | ~1 day | duplicate-question, near-paraphrase task |
-| `webis-touche2020` | 382K | ~18 hr | argument retrieval, notoriously BM25-favouring |
+| `scidocs` | 25.6K | ~1 hr | title+abstract, citation relevance — no *named* sensitivity, which is why it is not on the bench |
+| `fiqa` | 57.6K | ~2 hr | financial QA with conversational query shapes — but MTRAG ships the same FiQA corpus chunked to passages, so a row here would measure one corpus twice |
+| `quora` | 523K | ~19 hr | near-paraphrase duplicate detection. High lexical overlap, so it isolates the semantic arm — and its 10K queries make it the heaviest *recurring* row on the list, which is what keeps it off |
+| `webis-touche2020` | 382K | ~14 hr | argument retrieval, the most BM25-favouring set in BEIR (BM25 0.367 beats strong dense at 0.20) with only 49 queries |
 
 `fever` (5.4M), `hotpotqa` (5.2M), `climate-fever` (5.4M), `dbpedia-entity` (4.6M)
-and `nq` (2.7M) are out of reach on one box. Corpus sizes here are the published
-BEIR figures, not measured locally.
+and `nq` (2.7M) are out of reach on one box. Corpus sizes are the published BEIR
+figures; embed times are computed from this box's measured throughput below.
 
-`nfcorpus` + `arguana` are the pair worth running first: they bracket document
-length, which is the axis the bm25 term is known to be sensitive to, so they
-measure a *named* sensitivity rather than adding an undifferentiated row.
+**A lexical-only row skips the embed pass entirely**, and ingest runs about eight
+times faster than embedding. That reframes the two heavy BM25-favouring sets:
+`webis-touche2020` costs a couple of hours of ingest rather than fourteen of
+embed, and its 49 queries make it near-free to re-run. Since the lexical arm is
+the standing gap — scifact lexical trips the harness's own `BELOW BM25 —
+investigate` — that is the cheapest available test of whether the gap is real or
+a scifact artifact.
 
 ### One loader away
 
-Each of these needs a `*_groups()` generator in the shape of
-[haystack_eval.py:142-195](../search_lab/haystack_eval.py#L142-L195) plus a dispatch
-branch, or a HuggingFace fetch branch beside `beir_eval.py`'s UKP zip fetcher.
+Each of these needs a `*_groups()` generator in the shape of the loaders in
+[haystack_eval.py](../search_lab/haystack_eval.py) plus a dispatch branch, or a
+HuggingFace fetch branch beside `beir_eval.py`'s UKP zip fetcher.
 
 | benchmark | shape | labels | scoring | domain distance | note |
 |---|---|---|---|---|---|
-| **BRIGHT** | shared corpus | human | deterministic nDCG@10 | StackOverflow / LeetCode / Pony subsets are close | 1,384 queries, 12 subsets. Reasoning-intensive: best published nDCG@10 is ~24.3, so it has enormous headroom and won't saturate. `xlangai/BRIGHT` on HF |
-| **CoIR** | shared corpus | human | deterministic nDCG@10 | code text-shape, uncovered today | 10 datasets, **BEIR schema** — reads nearly unchanged. `codesearchnet`, `stackoverflow-qa`, `cosqa`, `apps`, `codefeedback-mt/-st`, `codetrans-dl/-contest`, `synthetic-text2sql`, `codesearchnet-ccr`. Apache-2.0, `CoIR-Retrieval` on HF |
-| **BEAM** | per-question haystack | human-validated | deterministic (`source_chat_ids`) | conversational, **has a coding split** | 100 conversations, 2,000 questions at 128K/500K/1M/10M token scales. CC BY-SA 4.0, `Mohammadta/BEAM` + `Mohammadta/BEAM-10M`. The 128K tier is cheap; 10M is not |
-| **CORE-Bench L2** | shared corpus | **provenance** (patch-aligned git diffs) | deterministic nDCG@10 | issue→edit localization over real repos | 5,061 queries / 632 repos. Labels come from SWE-bench-family diffs — no LLM, no ranker. Corpus is 9.38M chunks, so it needs repo-scoping to be runnable. `zhangfw123/CORE-Bench` |
-| **LongMemEval-V2** | per-question haystack | human-curated | deterministic (annotated answer trajectories) | **web-agent trajectories** — closest published thing to our corpus | 451 questions. Medium tier is up to 500 trajectories / 115M tokens. No published retrieval recall@k baselines, so it'd be an internal yardstick with no leaderboard beside it |
-| **PerLTQA** | per-question haystack | human | deterministic | personal-memory dialogue | 8,593 questions, 30 characters, explicit *Memory Retrieval* subtask so labels exist by construction. Small and cheap |
+| **BRIGHT** | shared corpus | human | deterministic nDCG@10 | passage retrieval, not conversation | 12 subsets, 1,384 queries total; `pony` is 7,894 docs / 112 queries, `stackoverflow` 107,081 / 117, `leetcode` 413,932 / 142. Reasoning-intensive: best published nDCG@10 ~24.3, so it has enormous headroom and cannot saturate. The counter-argument is that it is *designed* so retrieval-without-reasoning fails — the intended solution is LLM query expansion, which this stack does not do, so the likely outcome is a number pinned low that never moves, which credits improvement as poorly as a saturated row. Unknown until run once. `xlangai/BRIGHT` |
+| **CoIR** | shared corpus | human | deterministic nDCG@10 | **wrong task** | 10 datasets in BEIR schema, so it would read nearly unchanged (`cosqa` 20,604 docs, `stackoverflow-qa` 19,931, `apps` 8,765, `codetrans-contest` 1,008). But it retrieves *code given natural language*, where archive retrieves *conversations that contain code* — the document is a snippet, not a session discussing one. A good number here says the embedder is not confused by code tokens, which is narrower than it sounds. `CoIR-Retrieval`, Apache-2.0 |
+| **CORE-Bench L2** | shared corpus | **provenance** (patch-aligned git diffs) | deterministic nDCG@10 | issue→edit localization over real repos | 5,061 queries / 632 repos. Labels come from SWE-bench-family diffs — no LLM, no ranker; the best label provenance on this page. 9.38M chunks: **runnable lexical-only** (~43 hr of ingest, unattended, no scoping needed), out of reach with the semantic arm (~14 days of embed at this box's rate). Its 5,061 queries also make it heavy to re-run. `zhangfw123/CORE-Bench` |
 | **FreshStack** | shared corpus | **LLM-generated** nuggets (GPT-4o, ~90% precision) | deterministic (α-nDCG@10, Coverage@20, Recall@50) | StackOverflow + GitHub code/docs — close | 5 niche technical domains. Included in RTEB. Labels are LLM-authored, so it sits one tier below the human-labeled sets — but the *scoring* is deterministic and the domain is right |
 | **CORE-Bench L3** | shared corpus | LLM voting + agent traces | deterministic | broader-context retrieval | 2,580 queries, 106K labels. Same caveat as FreshStack — usable, but LLM-provenance |
 
@@ -100,7 +110,27 @@ benchmark: it aggregates public retrieval sets across legal / finance / code /
 medical with held-back private splits. Worth mining for candidates; the private
 splits are unavailable to us.
 
+### Rejected on inspection, not on paper
+
+**LongMemEval-V2 is not a retrieval benchmark.** It is the closest published
+corpus to this one — web-agent trajectories, which carry tool calls where every
+other conversational set is plain dialogue — and it still cannot go on the bench.
+`questions.jsonl` carries exactly `{id, domain, environment, question_type,
+question, image, answer, eval_function}`: an answer string and a string
+evaluator, with **no annotation of which trajectory holds the answer**. The
+haystacks are shared across all questions in a domain, so there is no per-question
+ordering to recover a label from either. Scoring it as retrieval would mean
+inventing the labels, which is the one thing this lab is built around not doing.
+Its QA task is real; it is simply a different task.
+
+Worth stating because it is not visible from the dataset card, the paper's
+framing, or the file listing — only from the schema.
+
 ### Right task, wrong corpus size
+
+MTRAG now covers most of what these were wanted for — multi-turn conversational
+retrieval with human qrels, at a corpus size that fits — so what follows is the
+residue rather than a gap.
 
 TREC CAsT / iKAT, QReCC, and TopiOCQA are the classic conversational-search sets
 and the closest thing in traditional IR to searching a conversation. They retrieve
@@ -175,8 +205,18 @@ by-searching protocol can match it on independence.
 
 ## Cost model
 
-- Embedding runs at **~350 docs/min** on this box (measured: BEIR scifact, 5.2K docs,
-  ~15 min). Multiply corpus size by that before committing to a row.
+- Two rates, and the ratio between them is what decides most of this page.
+  **Embedding runs at ~450 docs/min; ingest runs at ~3,600 docs/min** — both
+  measured on this box, ingest from a fresh nfcorpus build and embed from the
+  same run's vector pass. Ingest also *decays* as the FTS index grows (188/s at
+  the start of a 3K-document build, 102/s by the end), so treat its rate as an
+  optimistic ceiling on a large corpus and the embed rate as flat.
+- The 8× gap is the lever. A **lexical-only row pays no embed pass at all**, which
+  is what puts several corpora written off as multi-day embeds back within an
+  afternoon of ingest — and the lexical arm is where the standing gap is.
+- Embed throughput is the binding constraint on this whole page, and it is an
+  engineering number rather than a law: batching, or the local model daemon, would
+  move every estimate here.
 - Built corpora live under `~/.cache/thread-evals` (`<root>/<dataset>` for a
   download, `<root>/homes/<name>` for a built home), are large, and are entirely
   rebuildable — the whole tree is safe to delete.

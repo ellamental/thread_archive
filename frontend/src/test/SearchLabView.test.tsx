@@ -170,6 +170,36 @@ function inventory(over: Partial<LabInventory> = {}): LabInventory {
         runs_total: 0,
       },
     ],
+    mining: {
+      by_miner: [
+        {
+          miner: 'commit', runs: 3, attempted: 40, written: 96, failed: 9,
+          outcomes: { ok: 31, misattributed: 4, 'untargetable-commit': 3,
+                      'no-file-overlap': 2 },
+          cost_usd: 21.4, datasets: ['swe-chat'], last_at: '2026-07-27T10:00:00Z',
+        },
+      ],
+      by_dataset: [
+        {
+          dataset: 'archive', path: '/Users/test/.thread/archive', exists: true,
+          runs: 0, cases: 0, files: 0, bytes: 0, miners: [], outcomes: {},
+          supply: {}, refusals: {},
+        },
+        {
+          dataset: 'swe-chat', path: '/Users/test/dev/swe-chat-data/gold',
+          exists: true, runs: 3, cases: 96, files: 1, bytes: 240_000,
+          miners: ['commit'], outcomes: { ok: 31, misattributed: 4 },
+          supply: { commit_linked_sessions: 1284 },
+          refusals: { misattributed: 4, 'untargetable-commit': 3,
+                      'no-file-overlap': 2 },
+        },
+      ],
+      totals: {
+        runs: 3, cases: 96, files: 1, bytes: 240_000, datasets_mined: 1,
+        cost_usd: 21.4, first_at: '2026-07-24T22:32:29Z',
+        last_at: '2026-07-27T10:00:00Z',
+      },
+    },
     ...over,
   }
 }
@@ -543,4 +573,50 @@ it('says a miner without stages records where units ended, not where they were l
   // a clean run in which nothing was dropped.
   expect(miners.getByText(/one opaque step/)).toBeInTheDocument()
   expect(miners.getByText(/never where they were lost/)).toBeInTheDocument()
+})
+
+it('breaks mining down by pipeline and by dataset over the same runs', async () => {
+  mswJson('/api/search-lab', inventory())
+  view()
+
+  const heading = await screen.findByRole('heading', { name: 'Mining' })
+  const mining = within(heading.closest('section') as HTMLElement)
+
+  expect(mining.getByText('mining runs')).toBeInTheDocument()
+  expect(mining.getByText('cases on disk')).toBeInTheDocument()
+  expect(mining.getByText('1/2')).toBeInTheDocument()          // corpora mined
+  expect(mining.getByText('$21.40')).toBeInTheDocument()
+
+  // By pipeline: the refusals are named, never rolled into one "dropped" count,
+  // because they move a benchmark in opposite directions.
+  const byPipeline = within(mining.getByRole('table', { name: 'mining by pipeline' }))
+  expect(byPipeline.getByText(/misattributed 4/)).toBeInTheDocument()
+  expect(byPipeline.getByText(/untargetable-commit 3/)).toBeInTheDocument()
+  expect(byPipeline.getByText('2.4')).toBeInTheDocument()       // 96 cases / 40 drawn
+})
+
+it('shows unmined supply so an empty corpus row means something', async () => {
+  mswJson('/api/search-lab', inventory())
+  view()
+
+  const heading = await screen.findByRole('heading', { name: 'Mining' })
+  const mining = within(heading.closest('section') as HTMLElement)
+  // A corpus with 1,284 mineable units and no cases is not the same state as a
+  // corpus with nothing to mine, and both would otherwise render as a zero.
+  expect(mining.getByText(/1,284 commit linked sessions/)).toBeInTheDocument()
+  expect(mining.getByText(/a supply that needs the corpus open/)).toBeInTheDocument()
+})
+
+it('shows what each corpus was refused for, as a finding about the corpus', async () => {
+  mswJson('/api/search-lab', inventory())
+  view()
+
+  const heading = await screen.findByRole('heading', { name: 'Mining' })
+  const mining = within(heading.closest('section') as HTMLElement)
+  // Refusals are results. At scale `misattributed` says a provenance join is
+  // wrong — a fact about the dataset, not swarf from a run that went badly.
+  const byDataset = within(mining.getByRole('table', { name: 'mining by dataset' }))
+  expect(
+    byDataset.getByText(/misattributed 4 · untargetable-commit 3 · no-file-overlap 2/),
+  ).toBeInTheDocument()
 })

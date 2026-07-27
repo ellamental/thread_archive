@@ -38,7 +38,14 @@ vague query; file overlap is a heuristic for "related work", not a judgment. The
 gold-2 recall numbers are the trustworthy signal, and nDCG over the proxy pool is
 directional.
 
-Resume is by gold thread: a re-run skips sessions already represented in the file.
+Resume is by gold thread *and by refusal*: a re-run skips sessions already
+represented in the case file, and sessions a paid gate already rejected — re-buying
+a verdict that cost money and cannot have changed is waste. A refusal binds only
+while the gate that made it is unchanged, so a reworded audit re-opens everything
+it turned down (see :func:`~._framework.refused_units`). Every refusal is written to
+a ``-rejects.jsonl`` beside the cases: what a corpus is refused *for* is a finding
+about that corpus, and at scale ``misattributed`` says a provenance join is wrong
+while ``untargetable-commit`` says the commit hygiene is.
 """
 
 from __future__ import annotations
@@ -580,6 +587,36 @@ def stage_author(unit: dict, ctx: MineContext) -> fw.Verdict:
     return fw.Verdict(keep=unit, reason="ok", cost_usd=cost, detail=detail)
 
 
+def stage_verify(unit: dict, ctx: MineContext) -> fw.Verdict:
+    """Free QA over what was produced: does each query honour the tier it claims,
+    and is it a new phrasing rather than the file's house sentence again?
+
+    A query failing either is dropped from the unit, not the unit from the run — a
+    session that yielded a good ``literal`` and a templated ``intent`` should
+    contribute the one that holds. A unit left with nothing drops as
+    ``all-queries-rejected``, which is a different event from the author declining
+    to write any and is counted apart."""
+    material = " ".join(
+        (c.get("message") or "") + " " + (c.get("patch") or "")
+        for c in unit["commits"])
+    kept, rejected = [], []
+    for row in unit["_rows"]:
+        why = fw.tier_violation(row["query"], material, row["difficulty"])
+        if why is None and fw.repeats_an_opening(row["query"], ctx.seen_openings):
+            why = "repeats-an-opening"
+        if why:
+            rejected.append({"query": row["query"], "tier": row["difficulty"],
+                             "why": why})
+            continue
+        ctx.seen_openings.add(fw.opening_of(row["query"]))
+        kept.append(row)
+    detail = {"kept": len(kept), "rejected": rejected}
+    if not kept:
+        return fw.Verdict(reason="all-queries-rejected", detail=detail)
+    unit["_rows"] = kept
+    return fw.Verdict(keep=unit, reason="ok", detail=detail)
+
+
 # ── the miner ───────────────────────────────────────────────────────────────
 
 class CommitMiner(Miner):
@@ -625,9 +662,14 @@ class CommitMiner(Miner):
         if getattr(args, "alignment", True):
             out.append(fw.Stage(name="alignment", fn=stage_alignment, kind="agent",
                                 summary="commit and session are the same work, "
-                                        "and the commit is targetable"))
+                                        "and the commit is targetable",
+                                gate_sha=fw.template_sha(_ALIGNMENT_PROMPT)))
         out.append(fw.Stage(name="author", fn=stage_author, kind="agent",
-                            summary="blind authoring of the queries"))
+                            summary="blind authoring of the queries",
+                            gate_sha=fw.template_sha(_PROMPT)))
+        out.append(fw.Stage(name="verify", fn=stage_verify, kind="free",
+                            summary="each query honours its tier and is not the "
+                                    "file's house sentence again"))
         return out
 
     def run(self, ctx: MineContext) -> MineResult:
@@ -652,11 +694,21 @@ class CommitMiner(Miner):
         for row in resolved:
             by_repo.setdefault(row["repo"], []).append(row)
 
-        skip = fw.mined_gold_ids(cases_path)
+        stages = self.stages(args)
+        rejects_path = fw.rejects_path_for(cases_path)
+        mined = fw.mined_gold_ids(cases_path)
+        # A paid gate's refusal is worth money and does not change on its own, so a
+        # unit it already rejected is not re-bought — unless the gate itself moved,
+        # which re-opens it.
+        refused = fw.refused_units(rejects_path, fw.paid_gates(stages))
+        skip = mined | refused
         unmined = [r for r in resolved if r["thread_id"] not in skip]
         units = sample_units(resolved, ctx.target, args.seed, skip, args.per_repo)
         funnel.note("sample", n_in=len(resolved), n_out=len(units),
-                    reasons={"already-mined": len(resolved) - len(unmined),
+                    reasons={"already-mined": len(resolved) - len(unmined) - len(
+                                 [r for r in resolved if r["thread_id"] in refused]),
+                             "already-refused": len(
+                                 [r for r in resolved if r["thread_id"] in refused]),
                              "not-drawn": len(unmined) - len(units)})
         if not units:
             raise SystemExit("no unmined commit-linked sessions to author from")
@@ -664,7 +716,6 @@ class CommitMiner(Miner):
             unit["_grades"] = build_grades(unit, by_repo.get(unit["repo"], []),
                                            args.seed)
 
-        stages = self.stages(args)
         print(f"mining {len(units)} commit-linked session(s) through "
               f"{len(stages)} stage(s) with {ctx.model} agents (jobs={ctx.jobs}) "
               f"against snapshot {ctx.snapshot_id} -> {cases_path}")
@@ -683,24 +734,38 @@ class CommitMiner(Miner):
                              "stages": {}}
             for u in units}
 
+        writer = fw.CaseWriter(self.name, cases_path, detail_path, rejects_path)
+
         def observe(stage: fw.Stage, unit: dict, verdict: fw.Verdict) -> None:
             row = details[unit["thread_id"]]
             row["stages"][stage.name] = {"reason": verdict.reason,
                                          **(verdict.detail or {})}
             row["outcome"] = verdict.reason if not verdict.kept else "ok"
+            # A kept unit can still have had queries thrown out, and those are
+            # negative results as much as a refused unit is — the record of what an
+            # authoring agent produced that failed its own tier contract is exactly
+            # what a prompt gets tuned against.
+            tossed = (verdict.detail or {}).get("rejected")
+            if tossed and verdict.kept and not ctx.plan:
+                writer.write_reject({
+                    "unit": unit["thread_id"], "stage": stage.name,
+                    "reason": "queries-rejected", "gate_sha": stage.gate_sha,
+                    "kind": stage.kind, "snapshot_id": ctx.snapshot_id,
+                    "detail": {"rejected": tossed}})
+            if not verdict.kept and not ctx.plan:
+                writer.write_reject({
+                    "unit": unit["thread_id"], "stage": stage.name,
+                    "reason": verdict.reason, "gate_sha": stage.gate_sha,
+                    "kind": stage.kind, "snapshot_id": ctx.snapshot_id,
+                    "repo": unit["repo"],
+                    "commit_shas": [c.get("sha") for c in unit["commits"]],
+                    "detail": verdict.detail or {}})
 
-        surviving = units
-        for stage in stages:
-            jobs = ctx.jobs if stage.kind == "agent" else 1
-            surviving, stat = fw.run_stage(stage, surviving, ctx, jobs=jobs,
-                                           on_verdict=observe)
-            funnel.record(stat)
-            print(f"  {stage.name}: {stat.n_in} → {stat.n_out}"
-                  + (f"  (−{stat.dropped}: " + ", ".join(
-                      f"{r} {n}" for r, n in sorted(stat.reasons.items())
-                      if r != "ok") + ")" if stat.dropped else ""))
-
-        writer = fw.CaseWriter(self.name, cases_path, detail_path)
+        ctx.seen_openings |= fw.mined_openings(cases_path)
+        surviving = fw.run_pipeline(stages, units, ctx, funnel=funnel,
+                                    on_verdict=observe)
+        if ctx.plan:
+            return fw.plan_result(funnel, stages, surviving, cases_path)
         written = 0
         for unit in surviving:
             for row in unit["_rows"]:
