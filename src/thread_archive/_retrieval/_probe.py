@@ -99,35 +99,27 @@ class SearchProbe:
 
     Times accumulate (``+=``) so a widen retry — two engine passes under one
     installed probe — records the work as the caller felt it, summed; the scalar
-    facts (``did_rerank``, ``pool_size``) take the last pass's value, the one
+    fact (``pool_size``) takes the last pass's value, the one
     whose hits are returned. ``fts_passes`` is a tally rather than a state, so it
     sums alongside the times it explains.
 
-    The cold flags are per-arm and set where the load would actually be paid, not
-    sampled as one bit at entry: a model that is installed but never invoked (the
-    cross-encoder, whenever re-rank is off) is permanently "available and not
-    loaded", and folding that into a single flag pins it true forever and names
-    nothing. ``embed_cold`` is sampled at entry — the vector arm runs on every
+    ``embed_cold`` is sampled at entry — the vector arm runs on every
     non-structural query, so an unloaded embedder there means this search pays the
-    load — while ``rerank_cold`` is set at the re-rank itself, so an arm that sits
-    out contributes no cold signal at all.
+    load.
     """
 
     __slots__ = (
-        "fts_ms", "semantic_ms", "rerank_ms", "set_ms", "did_rerank", "pool_size",
-        "embed_cold", "rerank_cold", "matrix_built", "fts_passes",
+        "fts_ms", "semantic_ms", "set_ms", "pool_size",
+        "embed_cold", "matrix_built", "fts_passes",
         *SEMANTIC_SUBSTAGES, *FTS_SUBSTAGES, *SHAPE_SUBSTAGES,
     )
 
     def __init__(self) -> None:
         self.fts_ms = 0.0
         self.semantic_ms = 0.0
-        self.rerank_ms = 0.0
         self.set_ms = 0.0
-        self.did_rerank = False
         self.pool_size = 0
         self.embed_cold = False
-        self.rerank_cold = False
         self.matrix_built = False
         self.fts_passes = 0
         for name in (*SEMANTIC_SUBSTAGES, *FTS_SUBSTAGES, *SHAPE_SUBSTAGES):
@@ -143,15 +135,15 @@ class SearchProbe:
         didn't", so it can attach a breakdown to the former and leave the latter
         a two-field row. An untouched probe is not a search that took no time.
         """
-        return bool(self.fts_ms or self.semantic_ms or self.rerank_ms or self.set_ms
+        return bool(self.fts_ms or self.semantic_ms or self.set_ms
                     or self.pool_size)
 
     @property
     def cold(self) -> bool:
-        """Whether either model arm paid a load inside this search — the
+        """Whether the vector arm paid a model load inside this search — the
         cold-model tail, as one bit for the consumers that only need to separate
-        the regimes. Which arm it was rides along beside it."""
-        return self.embed_cold or self.rerank_cold
+        the regimes."""
+        return self.embed_cold
 
     def as_record(self) -> dict:
         """The ledger fields: per-stage milliseconds plus the scalar facts.
@@ -165,8 +157,6 @@ class SearchProbe:
         rec: dict = {
             "fts_ms": round(self.fts_ms, 1),
             "semantic_ms": round(self.semantic_ms, 1),
-            "rerank_ms": round(self.rerank_ms, 1),
-            "did_rerank": self.did_rerank,
             "pool_size": self.pool_size,
         }
         if self.fts_ms:
@@ -187,8 +177,6 @@ class SearchProbe:
             rec["cold"] = True
             if self.embed_cold:
                 rec["embed_cold"] = True
-            if self.rerank_cold:
-                rec["rerank_cold"] = True
         return rec
 
 

@@ -456,7 +456,7 @@ def warm_for_scoring() -> None:
         logger.debug("warm_for_scoring: corpus graph unavailable", exc_info=True)
 
 
-def evaluate(cases: list[dict], *, limit: int, rerank, content_type,
+def evaluate(cases: list[dict], *, limit: int, content_type,
              exclude_content_types: list[str] | None, search=None,
              early_stop=None) -> dict:
     """Score ``cases`` against a search function — MRR, success@k, recall@k,
@@ -513,7 +513,6 @@ def evaluate(cases: list[dict], *, limit: int, rerank, content_type,
             limit=limit + len(skip),
             content_types=[content_type] if content_type else None,
             exclude_content_types=exclude_content_types,
-            rerank=rerank,
         )
         latencies.append(time.monotonic() - t0)
 

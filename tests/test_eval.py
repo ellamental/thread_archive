@@ -82,12 +82,12 @@ def test_both_ranking_protocols_score_end_to_end(archive_home) -> None:
     _seed_trail("agent-x", [("token auth question", tid)])
 
     titles = _eval.evaluate(
-        _eval.sample_title_cases(5, seed=7), limit=10, rerank=False,
+        _eval.sample_title_cases(5, seed=7), limit=10,
         content_type=None, exclude_content_types=_eval.EXCLUDE_META)
     assert titles["n"] >= 1  # the titled thread became a scored case
 
     from_log = _eval.evaluate(
-        _eval.mine_log_cases(5, seed=7), limit=10, rerank=False,
+        _eval.mine_log_cases(5, seed=7), limit=10,
         content_type=None, exclude_content_types=None)
     assert from_log["n"] >= 1  # the trail's search→read pair became a case
 

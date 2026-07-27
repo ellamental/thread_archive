@@ -216,12 +216,11 @@ def thread_search(
     output: Optional[str] = None,
     context_lines: int = 2,
     context_events: Optional[str] = None,
-    rerank: Optional[bool] = None,
     match: Optional[str] = None,
     page: int = 1,
 ) -> str:
     """Search the local conversation archive (federated: lexical FTS5 + optional
-    semantic vectors → fusion → rank → optional cross-encoder re-rank).
+    semantic vectors → fusion → rank → community-coherence head re-rank).
 
     Read the match signal before trusting a result: the header carries
     ``quality=strong|partial|weak|semantic`` for the top hit, and each hit shows
@@ -236,7 +235,7 @@ def thread_search(
     threads. Each row carries the thread id (open it: ``thread_read``) and its
     newest event id (open at the tail: ``around_event``). A browse hides topic
     and system threads unless ``types``/``agents`` says otherwise; ranking
-    options (content_type, context, rerank) don't apply.
+    options (content_type, context) don't apply.
 
     The whole conversation is searched by default — user messages, thread titles,
     assistant text, its reasoning, and the tool calls that were run. What a tool
@@ -331,9 +330,7 @@ def thread_search(
     ('N' / 'before:after' /
     'before:after:types', e.g. '2' or '0:1:user') appends the neighbouring events.
     ``output='count'`` returns a per-thread tally (no snippets); ``output='linkable'``
-    returns JSON of event/thread ids. ``rerank`` forces the cross-encoder head
-    re-rank on/off (else auto-gated: conceptual queries whose top hit isn't
-    already a strong literal match, when the ``[embeddings]`` extra is installed).
+    returns JSON of event/thread ids.
 
     **Listing every match.** Results are a page, and the header says which:
     ``12 of 340 · page 1/29``. ``page=N`` (1-based) walks them. Pages are slices
@@ -437,7 +434,6 @@ def thread_search(
             output=output,
             context_lines=context_lines,
             context_events=context_events,
-            rerank=rerank,
             match=match or "token",
             page=page,
         )
@@ -492,7 +488,7 @@ def thread_search(
                 "types": types, "agents": agents, "path": path,
                 "path_ops": path_ops, "commit": commit,
                 "startswith": startswith, "sort": sort, "group": group,
-                "output": output, "rerank": rerank, "match": match, "page": page,
+                "output": output, "match": match, "page": page,
                 "surface": _served_by(),
             },
             hits=hits,

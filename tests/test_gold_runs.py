@@ -23,13 +23,13 @@ def _records(home):
 
 def test_record_and_read_round_trip(archive_home) -> None:
     gold_runs.record_run(archive_home, snapshot_id="snap123", files=FILES,
-                         passed=True, config={"params": {"rerank_pool": 12}}, commit="abc1234")
+                         passed=True, config={"params": {"pool_floor": 200}}, commit="abc1234")
     (rec,) = _records(archive_home)
     assert rec["kind"] == "gold-run"
     assert rec["snapshot_id"] == "snap123" and rec["commit"] == "abc1234"
     assert rec["passed"] is True
     assert rec["files"]["judged-cases.jsonl"]["mrr"] == 0.46
-    assert rec["config"]["params"]["rerank_pool"] == 12
+    assert rec["config"]["params"]["pool_floor"] == 200
     # read_runs returns newest-first
     runs = gold_runs.read_runs(archive_home)
     assert len(runs) == 1 and runs[0]["snapshot_id"] == "snap123"
@@ -79,12 +79,11 @@ def test_write_failure_is_fail_soft(archive_home) -> None:
 
 
 def test_active_config_captures_params_and_arm_state(archive_home, monkeypatch) -> None:
-    monkeypatch.setenv("THREAD_ARCHIVE_RERANK", "off")
     monkeypatch.delenv("THREAD_ARCHIVE_EMBED", raising=False)
     cfg = gold_runs.active_config()
     # The shipped defaults are captured — the "which config produced these" record.
-    assert cfg["params"]["rerank_pool"] == 12 and cfg["params"]["rerank_doc_chars"] == 768
-    assert cfg["rerank"] == "off" and cfg["embed"] == "on"
+    assert cfg["params"]["fusion_weight"] == 400.0 and cfg["params"]["pool_floor"] == 200
+    assert cfg["embed"] == "on"
 
 
 # --- the per-case baseline ---------------------------------------------------

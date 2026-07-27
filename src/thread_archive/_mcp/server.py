@@ -178,7 +178,7 @@ class ServePlan:
 
 def _parser() -> argparse.ArgumentParser:
     # stdio (default) is one server per client — every connecting agent spawns its own
-    # process, and this one loads the ~3 GB embedding + cross-encoder stack. --http instead
+    # process, and this one loads the embedding stack. --http instead
     # serves streamable-HTTP on one loopback port so every agent shares a single always-on
     # server (one model resident, not one per client); the LaunchAgent runs that mode and the
     # MCP client config points at the URL. Stdio stays the default so `claude mcp add …
@@ -246,7 +246,7 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
     """Serve, per ``argv`` (the process's command line by default). Blocks in the
     transport's run loop until the client disconnects or the process is stopped."""
     plan = plan_serve(argv)
-    # Warm the embedding + cross-encoder models at startup. The cold load is tens of
+    # Warm the embedding model at startup. The cold load is tens of
     # seconds; when it lands inside the first conceptual search it can exceed the client's
     # MCP request timeout (commonly 60s), which surfaces to the model as a failed tool call.
     if plan.warm:

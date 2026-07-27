@@ -53,10 +53,11 @@ run has already measured at this configuration — see "Running the whole bench"
 | tier | what runs | corpus | cost | when |
 |---|---|---|---|---|
 | 0 | `tests/test_search_quality.py` + `tests/test_search_recall_shape.py` + `tests/test_reality_mechanisms.py` (in every pytest run) | checked-in synthetic corpus (`tests/quality_corpus.py`), lexical stack | seconds | every change |
-| 1 | `pytest -m quality_models` | same corpus, real embedding + rerank models | minutes | touching the model arms |
-| 2 | CI `retrieval-gate` (arm-liveness probes) | live archive | seconds | every commit, via thread-ci |
-| 3 | `retrieval_gold_gate.py` (grounded regression floors), `retrieval_eval.py` by hand, `graph_eval.py`, `--behavior` | live archive + the golds' frozen snapshot | minutes | evaluating a deliberate ranking change |
-| 3½ | `retrieval_eval.py --cases` on agent-mined golds (`python -m search_lab.mine <miner>` to mint them) | a frozen corpus snapshot, corpus-grounded labels | seconds to score; agent-minutes per mined case | scoring against grounded labels; mining is an occasional cadence |
+| 1 | `pytest -m quality_models` | same corpus, real embedding model | minutes | touching the model arm |
+| 2 | CI `retrieval-gate` (arm-liveness probes) | live archive | ~a minute (it loads both models) | every commit, via thread-ci |
+| 3 | `retrieval_gold_gate.py` (grounded regression floors + the tuning loop), `retrieval_eval.py` by hand, `graph_eval.py`, `--behavior` | live archive + the golds' frozen snapshot | seconds to minutes | evaluating a deliberate ranking change |
+| 3¼ | `retrieval_gold_gate.py --snap … --gold-dir …` over the SWE-chat corpus | the domain-matched hold-out, its own snapshot | minutes | confirming a change that looked good on the archive's own golds |
+| 3½ | `python -m search_lab.mine <miner>` to mint fresh golds, then `--calibrate` to floor them | a frozen corpus snapshot, corpus-grounded labels | seconds to score; agent-minutes per mined case | when a file's snapshot goes stale |
 | 4 | `pytest -m beir`; `cdr_eval.py`, `haystack_eval.py --dataset …` by hand | external IR / conversational-memory benchmarks | tens of minutes (built homes cache for re-runs) | calibrating against published baselines |
 
 ## Running the whole bench
@@ -70,11 +71,10 @@ python -m search_lab benchmark --list       # the plan: what runs, what is fresh
 `benchmark.py` drives every instrument below as one recorded set, each row a
 separate process (the stack caches a corpus graph and a vector pack per engine,
 so a corpus must never be swapped underneath them mid-process) and one at a time
-(two rows at once measure each other's contention). Three nested tiers, warm:
+(two rows at once measure each other's contention). Two nested tiers, warm:
 **smoke** is the two gold gates — the only instruments that can credit a change —
 at ~7 min; **standard** adds every external yardstick whose corpus is already
-built, ~20 min; **full** adds the cross-encoder passes, hours, measuring an arm
-production ships with off. The plan estimates each row from what it actually took
+built, ~20 min. The plan estimates each row from what it actually took
 last time, so the printed budget is measured rather than guessed; a row whose
 corpus has never been built pays for building it once.
 
@@ -109,15 +109,22 @@ archive (BEIR and the lab build throwaway homes and never touch it).
   ordering of the whole 2/1/0 pool. `--probes-only` skips the metric run for
   the CI gate's arm-liveness checks. `graph_eval.py` scores the same log-mined
   cases off its miner (`mine_log_cases`).
-- **`window_fill.py`** — the product measure: how much of what is relevant comes
-  back in the window an agent reads, rather than where the first hit lands. Scores
+- **`window_fill.py`** — a hand-run two-ranker comparison on completeness, **not a
+  rung**: nothing gates it, nothing schedules it, and it writes no run ledger, so
+  its numbers cannot be re-derived the way every other instrument's can. Scores
   **window fill** (`hits@k / min(k, |gold|)` — ceiling-normalized, so it measures
   ranking rather than gold-set size) and **union coverage** (fire every query a
   topic file carries, union the windows, dedupe, and measure the share of the whole
   subject assembled — the fan-out workflow end to end), both against
   `bm25_baseline`'s plain BM25 over the same snapshot. Multi-answer `topic` files
   are the protocol with the resolution to measure it; single-gold files reduce it
-  to success@k. It drives `api.search` directly rather than going through
+  to success@k. **Read the margin, never the level.** The gold it scores against was
+  assembled by searching with the stack under test, so a thread the stack cannot
+  reach never enters it and never counts as missed — the absolute is an upper bound
+  on itself by an unknown margin, while a comparison survives because both rankers
+  face the same biased gold. Earning a level means gold fixed outside retrieval
+  (`commit`'s provenance labels, or the tool-use trail's record of which sessions
+  edited a file). It drives `api.search` directly rather than going through
   `eval_core.evaluate`, so it calls the warm-up itself — see the caution below.
 - **`latency_replay.py`** — the speed bench over the queries agents actually ran.
   Everything else here scores *curated* cases; this replays the usage ledger, which
@@ -216,7 +223,7 @@ archive (BEIR and the lab build throwaway homes and never touch it).
     (`--dataset locomo|longmemeval`): each question carries its own small
     conversation history, and the task is to pull the evidence turn(s)/session(s)
     out of *it*. Builds a small archive per corpus — cached by content and reused
-    across runs, so a re-run (or the rerank pass over an already-embedded corpus)
+    across runs, so a re-run over an already-embedded corpus
     skips ingest+embed — scored by recall@k against the datasets' published recall
     baselines.
 
@@ -283,8 +290,8 @@ python scripts/retrieval_gold_gate.py --cache --fail-early --set fusion_weight=5
   baseline, so an experiment can't be mistaken for the baseline moving.
 - `--cache` persists the candidate *pools* between processes. The arms and the
   fusion don't read ranking weights, so a second run at new weights re-scores
-  pools it already has — measured over the full gold set, 249 s → 76 s at a 100%
-  hit rate, with the scores identical to the digit. The cache keys on the
+  pools it already has — measured over the full gold set, a four-plus-minute run
+  drops to 85–105 s at a 100% hit rate, with the scores identical to the digit. The cache keys on the
   pool-shaping params (`rrf_k`, and `pool_floor` folded into the resolved depth),
   so sweeping *those* correctly misses rather than silently reading back the first
   value's pool. It is not small — the pools carry hit payloads, so a swept corpus
@@ -303,12 +310,14 @@ discipline below. Fast iteration is for killing bad ideas, not for promoting goo
 ones. The gate is the instrument for one knob at a time, against the floors that
 actually gate CI.
 
-**The speed axis — the same knob costs latency.** The dominant quality lever (the
-cross-encoder re-rank) is also the dominant latency, so a quality change is
-usually a latency change; `--latency [REPS]` measures both in one run:
+**The speed axis — a quality knob can cost latency.** Most of them don't: the
+ranking weights re-score a pool the arms already built, so a weight sweep is free
+on the clock. The exceptions are the knobs that change what gets *fetched* or
+*scored* — `pool_floor` above all, which sets how deep the arms reach before
+anything is ranked. `--latency [REPS]` measures both axes in one run:
 
 ```
-python scripts/retrieval_gold_gate.py --set rerank_auto=true --set rerank_pool=6 --latency 3 --fail-early
+python scripts/retrieval_gold_gate.py --set pool_floor=400 --latency 3 --fail-early
 ```
 
 - `--latency [REPS]` measures warm latency (default 3 timed reps/query, a warmup
@@ -340,8 +349,8 @@ python scripts/retrieval_gold_gate.py --set rerank_auto=true --set rerank_pool=6
 Read a latency delta the way you read a quality one: warm latency is a
 distribution, so the tail (p95/p99) is the number that bites a client timeout, and
 a few-ms move in p50 is noise. Stage attribution tells you *which* knob to reach
-for — if `rerank_ms` is flat and `fts_ms` grew, the pool knobs are the lever, not
-the re-rank budget.
+for — if `semantic_ms` is flat and `fts_ms` grew, the pool knobs are the lever,
+not the vector arm.
 
 - **Minted gold case files ARE the baseline.** The gate enumerates and scores
   them for the current-state read; for a challenger delta, score **every file
@@ -381,9 +390,8 @@ the re-rank budget.
   answerable — on nonce-term golds that are true by construction. The mechanism
   contracts (`tests/test_reality_mechanisms.py`) pin deterministic properties of the
   pipeline's machinery — content types are indexed at all, the MCP default
-  scope widens to tool/thinking content, reindex preserves what was findable,
-  the cross-encoder's gate/window/boundary code paths behave — not ranking
-  preferences; ranking quality belongs to the gold files.
+  scope widens to tool/thinking content, reindex preserves what was findable —
+  not ranking preferences; ranking quality belongs to the gold files.
 - **From-log numbers are alarms, not baselines.** The `--from-log` protocol
   mines click labels from the live trail: the gold is whatever thread the
   agent opened, which is a subset of what search surfaced *that day*. The

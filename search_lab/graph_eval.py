@@ -124,7 +124,7 @@ def main() -> int:
     for i, case in enumerate(cases):
         gold = set(case["gold"])
         skip = set(case.get("sessions", []))
-        hits = api.search(case["query"], limit=POOL + len(skip), rerank=False)
+        hits = api.search(case["query"], limit=POOL + len(skip))
         pool, seen = [], set()
         for h in hits:
             t = h["thread_id"]

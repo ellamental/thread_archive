@@ -74,7 +74,7 @@ the {n_shown} most-cited, as `thread_id  title`:
 Explore the whole frozen corpus (not just this topic) to understand the subject \
 and its look-alikes (run via Bash; read-only):
 
-  {tool} search "<query>" [--limit N] [--rerank on|off|auto]
+  {tool} search "<query>" [--limit N]
   {tool} read <thread_id> [--mode ends|chat|user|full|last] [--offset N] [--max-chars N]
 
 Your job:
@@ -120,7 +120,7 @@ and not exhaustive):
 
 Explore the corpus yourself (run via Bash; read-only):
 
-  {tool} search "<query>" [--limit N] [--rerank on|off|auto]
+  {tool} search "<query>" [--limit N]
   {tool} read <thread_id> [--mode ends|chat|user|full|last] [--offset N] [--max-chars N]
 
 Method:

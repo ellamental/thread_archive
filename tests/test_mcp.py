@@ -60,7 +60,7 @@ def test_mcp_registers_two_tools() -> None:
     search_props = by_name["thread_search"].inputSchema["properties"]
     assert "query" in search_props
     # the filters + shaping args wired through from the library layer are exposed
-    assert {"exclude_content_type", "source", "rerank", "startswith", "sort",
+    assert {"exclude_content_type", "source", "startswith", "sort",
             "output", "context_lines", "context_events"} <= set(search_props)
     read_props = by_name["thread_read"].inputSchema["properties"]
     assert "thread_id" in read_props
@@ -90,7 +90,7 @@ def test_mcp_tools_query_the_archive(archive_home) -> None:
 
 
 def test_mcp_search_new_filters(archive_home) -> None:
-    """exclude_content_type / source / rerank dispatch through the MCP wrapper."""
+    """exclude_content_type / source dispatch through the MCP wrapper."""
     f = archive_home / "sess.jsonl"
     _write_cc(f, [USER, ASSISTANT])
     ta.import_path(f)  # imports as source='claude-code'
@@ -101,8 +101,6 @@ def test_mcp_search_new_filters(archive_home) -> None:
     assert "hello mcp" not in thread_search("hello", source="chatgpt")
     # excluding the user content type drops the user-message hit
     assert "hello mcp" not in thread_search("hello", exclude_content_type="user")
-    # rerank=False is accepted (cross-encoder forced off) and still searches
-    assert "hello mcp" in thread_search("hello", rerank=False)
 
 
 def test_mcp_search_filters_by_tool_name_and_until(archive_home) -> None:

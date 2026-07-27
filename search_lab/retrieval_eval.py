@@ -77,7 +77,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import math
 import os
 import sys
 from pathlib import Path
@@ -108,37 +107,6 @@ from eval_core import (  # noqa: E402,F401
 
 from thread_archive import _api as api  # noqa: E402
 from thread_archive._store import use_session  # noqa: E402
-
-# The rerank liveness pair: a query, its answer, and a decoy no working
-# cross-encoder confuses with it. Deliberately trivial — the probe asserts the
-# model loads and discriminates at all, not that it ranks well (BEIR measures
-# that). Failing this pair means the rerank arm is dead or scrambled.
-PROBE_QUERY = "what is the largest animal on earth"
-PROBE_ANSWER = "The blue whale is the largest animal known to have ever existed."
-PROBE_DECOY = "Set the compiler's optimization flags before an incremental build."
-
-
-def rerank_probe(reranker) -> str | None:
-    """Prove the cross-encoder arm is alive: load the real model and score one
-    trivial pair. Returns a breach message, or None when the arm works.
-
-    ``is_available()`` alone can't carry this check — it is deliberately cheap
-    (never loads the model), so a corrupt model file or a broken torch install
-    still reports available and only degrades at call time, exactly the silent
-    production failure this probe exists to catch."""
-    if not reranker.is_available():
-        return ("rerank arm unavailable (switched off, [embeddings] extra "
-                "absent, or a prior load failed)")
-    scores = reranker.rerank_scores(PROBE_QUERY, [PROBE_ANSWER, PROBE_DECOY])
-    if scores is None:
-        return "rerank arm degraded at scoring time (model failed to load or predict)"
-    if len(scores) != 2 or not all(math.isfinite(s) for s in scores):
-        return f"rerank arm returned malformed scores: {scores!r}"
-    if scores[0] <= scores[1]:
-        return (f"rerank arm cannot discriminate the liveness pair "
-                f"(answer {scores[0]:.3f} <= decoy {scores[1]:.3f}) — "
-                f"model {reranker.name!r} is loaded but scrambled")
-    return None
 
 
 def _require_matching_snapshot(cases: list[dict], cases_path) -> None:
@@ -200,14 +168,9 @@ def main() -> None:
                     "~/.thread/archive/retrieval-trend.jsonl")
     ap.add_argument("--seed", type=int, default=7, help="case sampling seed")
     ap.add_argument("--limit", type=int, default=20, help="results per query (metric ceiling)")
-    ap.add_argument("--rerank", choices=["auto", "on", "off"], default="auto",
-                    help="cross-encoder head re-rank (default: the pipeline's auto-gate)")
     ap.add_argument("--lexical-only", action="store_true",
-                    help="evaluate the FTS arm alone (semantic + rerank arms off) — "
-                    "the search a core install without the [embeddings] extra gets. "
-                    "The CI gate instead runs the fused pipeline with --rerank off: "
-                    "the production path minus the cross-encoder, whose per-query "
-                    "inference would multiply the row's runtime")
+                    help="evaluate the FTS arm alone (semantic arm off) — "
+                    "the search a core install without the [embeddings] extra gets")
     ap.add_argument("--content-type", default=None,
                     help="restrict the searched scope to one content type")
     ap.add_argument("--include-meta", action="store_true",
@@ -225,13 +188,6 @@ def main() -> None:
                     "this, a dead embeddings model silently degrades the "
                     "'fused' pipeline under test to lexical-only and the "
                     "metrics measure the wrong stack")
-    ap.add_argument("--require-rerank", action="store_true",
-                    help="exit 1 unless the real cross-encoder loads and "
-                    "discriminates a trivial pair — the rerank analog of "
-                    "--require-semantic. Costs one model load; the metric run "
-                    "itself may still skip per-query rerank (--rerank off), "
-                    "so the gate proves the arm is alive without paying "
-                    "per-query inference")
     ap.add_argument("--json", action="store_true", help="emit the report as JSON")
     ap.add_argument("--dump-cases", type=Path, metavar="FILE", default=None,
                     help="also write the evaluated cases as JSONL (real usage "
@@ -248,15 +204,10 @@ def main() -> None:
     gate.add_argument("--min-ndcg10", type=float, default=None)
     args = ap.parse_args()
 
-    if args.lexical_only and args.require_rerank:
-        ap.error("--require-rerank contradicts --lexical-only "
-                 "(which switches the rerank arm off for this process)")
-
     if args.lexical_only:
-        # The product's own switch: both model arms report unavailable for the rest
+        # The product's own switch: the vector arm reports unavailable for the rest
         # of this process, so the measured pipeline is the one a lexical-only box runs.
         os.environ["THREAD_ARCHIVE_EMBED"] = "off"
-        os.environ["THREAD_ARCHIVE_RERANK"] = "off"
 
     api.open_archive()
 
@@ -295,17 +246,9 @@ def main() -> None:
             print("RETRIEVAL GATE BREACH: semantic arm unavailable "
                   "(embeddings model failed to load?)", file=sys.stderr)
             raise SystemExit(1)
-    if args.require_rerank:
-        from thread_archive._retrieval import rerank as rerank_mod
-
-        breach = rerank_probe(rerank_mod.default())
-        if breach:
-            print(f"RETRIEVAL GATE BREACH: {breach}", file=sys.stderr)
-            raise SystemExit(1)
     if args.probes_only:
-        if not (args.require_semantic or args.require_rerank):
-            ap.error("--probes-only without --require-semantic/--require-rerank "
-                     "checks nothing")
+        if not args.require_semantic:
+            ap.error("--probes-only without --require-semantic checks nothing")
         print("retrieval arm probes passed")
         return
     if args.auto_titles is not None:
@@ -325,16 +268,14 @@ def main() -> None:
     if args.dump_cases:
         args.dump_cases.write_text(
             "".join(json.dumps(c) + "\n" for c in cases))
-    rerank = None if args.rerank == "auto" else (args.rerank == "on")
-
-    report = evaluate(cases, limit=args.limit, rerank=rerank,
+    report = evaluate(cases, limit=args.limit,
                       content_type=args.content_type, exclude_content_types=exclude)
 
     protocol = ("auto-titles" if args.auto_titles is not None
                 else "from-log" if args.from_log is not None else "cases")
     append_trend({
         "protocol": protocol, "seed": args.seed, "limit": args.limit,
-        "rerank": args.rerank, "lexical_only": args.lexical_only,
+        "lexical_only": args.lexical_only,
         "mined_after": args.mined_after,
         "n": report["n"], "mrr": report["mrr"],
         "success": {str(k): v for k, v in report["success"].items()},

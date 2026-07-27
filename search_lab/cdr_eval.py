@@ -43,7 +43,7 @@ data itself ships in the cloned repo (no download).
     # add the semantic arm; add the auto-gated cross-encoder (the production stack).
     # the embed pass is cached, so the second reuses the first's vectors:
     .venv/bin/python search_lab/cdr_eval.py --vectors
-    .venv/bin/python search_lab/cdr_eval.py --vectors --rerank auto
+    .venv/bin/python search_lab/cdr_eval.py --vectors
 """
 
 from __future__ import annotations
@@ -169,7 +169,7 @@ def run(args) -> int:
     # Pin the home + arm switches BEFORE importing the package, so the store bakes
     # the right DSN and no model cold-loads unless asked.
     os.environ["THREAD_ARCHIVE_HOME"] = str(home)
-    rerank = eval_home.pin_arms(vectors=args.vectors, rerank=args.rerank)
+    eval_home.pin_arms(vectors=args.vectors)
 
     corpus, queries, qrels = load_cdr(repo)
     scorable = [(qid, queries[qid]) for qid in qrels if qid in queries and queries[qid]]
@@ -238,7 +238,7 @@ def run(args) -> int:
         # row; dedup to one row per conversation happens below, on corpus_id.
         hits = api.search(
             qtext, limit=max(ks) * 2, content_types=["user"],
-            group="none", rerank=rerank,
+            group="none",
         )
         latencies.append(time.monotonic() - s0)
         ranked: list[str] = []
@@ -267,7 +267,7 @@ def run(args) -> int:
     p50 = sorted(latencies)[n // 2] * 1000 if n else 0.0
     total_s = time.monotonic() - t0
 
-    arms = eval_home.arm_labels(vectors=args.vectors, rerank=rerank)
+    arms = eval_home.arm_labels(vectors=args.vectors)
     print()
     print(f"=== CDR — archive stack [{' + '.join(arms)}] ===")
     print(f"queries scored: {n}   corpus docs: {len(doc_of_thread)}   "
@@ -313,8 +313,6 @@ def main() -> int:
                          "shared with the other benchmarks)")
     ap.add_argument("--vectors", action="store_true",
                     help="build + query the semantic arm with the real embedder (needs [embeddings])")
-    ap.add_argument("--rerank", choices=["on", "off", "auto"], default="off",
-                    help="cross-encoder head re-rank: off (default), on (force, slow), or auto-gated")
     ap.add_argument("--max-docs", type=int, default=None,
                     help="cap ingested corpus docs (smoke runs)")
     ap.add_argument("--max-queries", type=int, default=None,

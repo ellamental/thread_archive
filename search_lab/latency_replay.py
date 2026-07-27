@@ -183,7 +183,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"  {stage:16s} {dist['p50']:8.1f} {dist['p95']:8.1f} {dist['p99']:8.1f} "
               f"{_delta(dist['p50'], base)}")
 
-    print(f"\n  pool p50 {stats.pool_p50:.0f} rows · rerank rate {stats.rerank_rate:.0%} "
+    print(f"\n  pool p50 {stats.pool_p50:.0f} rows "
           f"· {stats.n_samples} samples")
     for shape, d in stats.by_shape.items():
         print(f"  {shape:16s} {int(d['n']):5d} {d['p50']:8.1f} {d['p95']:8.1f}")

@@ -77,15 +77,12 @@ def top_hit(hits: list[EventHit]) -> EventHit:
     return hits[0]
 
 
-def _search_quality(top_hit_count: int, n_terms: int, did_rerank: bool):
-    """Verdict for the top hit → ``(quality, note)`` or None. Rerank wins (the order
-    is by-meaning, not keyword overlap); else zero overlap is ``weak``, at least
-    :func:`_rank.strong_match_floor` terms is ``strong``, in-between is ``partial``."""
+def _search_quality(top_hit_count: int, n_terms: int):
+    """Verdict for the top hit → ``(quality, note)`` or None. Zero overlap is
+    ``weak``, at least :func:`_rank.strong_match_floor` terms is ``strong``,
+    in-between is ``partial``."""
     if n_terms <= 0:
         return None
-    if did_rerank:
-        return ("semantic", "ranked by meaning, not keyword overlap — confirm the top hit "
-                            "actually answers the query before trusting it")
     if top_hit_count == 0:
         return ("weak", "no query term appears in the top hit — these are nearest-neighbour "
                         "guesses and the log may simply not contain this. Rephrase the concept "
@@ -288,8 +285,7 @@ def format_results(hits: list[EventHit], query: str, *, output: str | None = Non
     terms = query_terms(query)
     n_terms = len(terms)
     top = top_hit(hits)
-    did_rerank = bool(top.get("_did_rerank"))
-    verdict = _search_quality(term_hit_count(_hit_text(top), terms), n_terms, did_rerank) if n_terms else None
+    verdict = _search_quality(term_hit_count(_hit_text(top), terms), n_terms) if n_terms else None
 
     # The thread-granular list shapes (search.group='browse'/'nested') count in
     # threads; the ranked shapes count in rows.

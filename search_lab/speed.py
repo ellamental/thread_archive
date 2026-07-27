@@ -81,7 +81,7 @@ def baseline_file(query_set: str) -> str:
 #: the arms had found it. They are what makes the report closeable: the arms scale
 #: with the corpus, these scale with the pool, and a bench that carried only the
 #: former would attribute a shape regression to whichever arm ran beside it.
-ARM_STAGES = ("fts_ms", "semantic_ms", "rerank_ms")
+ARM_STAGES = ("fts_ms", "semantic_ms")
 SEMANTIC_SUBSTAGES = _probe.SEMANTIC_SUBSTAGES
 FTS_SUBSTAGES = _probe.FTS_SUBSTAGES
 SHAPE_SUBSTAGES = _probe.SHAPE_SUBSTAGES
@@ -106,9 +106,8 @@ def percentile(xs: list[float], q: float) -> float:
 class LatencyStats:
     """The warm-latency distribution of one configuration over one query set.
 
-    ``total`` and each stage carry ``{p50, p95, p99}`` milliseconds; ``rerank_rate``
-    is the fraction of searches that actually invoked the cross-encoder (the knob a
-    ``rerank_auto`` change moves), ``by_shape`` the p50/p95 of total latency split
+    ``total`` and each stage carry ``{p50, p95, p99}`` milliseconds; ``by_shape``
+    is the p50/p95 of total latency split
     by query shape (a code-identifier query and a conceptual one take different
     paths, and a mean over both describes neither)."""
 
@@ -117,7 +116,6 @@ class LatencyStats:
     n_samples: int
     total: dict[str, float]
     stages: dict[str, dict[str, float]]
-    rerank_rate: float
     pool_p50: float
     by_shape: dict[str, dict[str, float]] = field(default_factory=dict)
     #: Per-query p50 total latency — the raw material for the pathological-query
@@ -134,7 +132,6 @@ class LatencyStats:
             "total": {k: round(v, 1) for k, v in self.total.items()},
             "stages": {s: {k: round(v, 1) for k, v in d.items()}
                        for s, d in self.stages.items()},
-            "rerank_rate": round(self.rerank_rate, 3),
             "pool_p50": round(self.pool_p50, 1),
         }
         if include_by_query:
@@ -159,12 +156,10 @@ def _summarize(samples: list[dict], n_queries: int, reps: int) -> LatencyStats:
     for shape, xs in sorted(shapes.items()):
         by_shape[shape] = {"n": len(xs), "p50": percentile(xs, 0.50),
                            "p95": percentile(xs, 0.95)}
-    reranked = sum(1 for s in samples if s.get("did_rerank"))
     return LatencyStats(
         n_queries=n_queries, reps=reps, n_samples=len(samples),
         total=dist(totals),
         stages={stage: dist([s.get(stage, 0.0) for s in samples]) for stage in STAGES},
-        rerank_rate=reranked / len(samples) if samples else 0.0,
         pool_p50=percentile([float(s.get("pool_size", 0)) for s in samples], 0.50),
         by_shape=by_shape,
         by_query={q: percentile(xs, 0.50) for q, xs in per_query.items()},

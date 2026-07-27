@@ -17,15 +17,14 @@ machinery does not pay.
 
 Deliberately unfused and untuned. It reads the same FTS5 index the lexical arm
 reads, but none of the ranking above it — no density or phrase or recency
-weighting, no RRF, no coherence pass, no rerank. Query text becomes a bag of
+weighting, no RRF, no coherence pass. Query text becomes a bag of
 quoted terms OR'd together (the standard baseline reading), a thread scores as
 its best-matching chunk, and threads rank by that. Ties break arbitrarily, as
 they do in any BM25 run.
 
-The intermediate rungs need no code: ``retrieval_eval.py --lexical-only`` is the
-archive's own lexical arm (BM25 plus its weighting, no vector arm, no rerank),
-and ``--rerank off`` is the fused pipeline minus the cross-encoder. Together the
-four make an ablation ladder over one case file.
+The intermediate rung needs no code: ``retrieval_eval.py --lexical-only`` is the
+archive's own lexical arm — BM25 plus its weighting, no vector arm. Together the
+three make an ablation ladder over one case file.
 
 Read-only. Runs against whatever ``THREAD_ARCHIVE_HOME`` names, and refuses cases
 mined against a different corpus, exactly as the eval does::
@@ -65,12 +64,11 @@ def fts_query(text: str) -> str:
 
 
 def bm25_search(query: str, *, limit: int = 20, content_types=None,
-                exclude_content_types=None, rerank=None) -> list[dict]:
+                exclude_content_types=None) -> list[dict]:
     """Rank threads by SQLite's ``bm25()`` alone, best-matching chunk per thread.
 
     Signature-compatible with ``api.search`` so :func:`evaluate` can drive it in
-    the incumbent's place; ``rerank`` is accepted and ignored, which is the whole
-    point of the baseline. Scores are FTS5's own (more negative = better match),
+    the incumbent's place. Scores are FTS5's own (more negative = better match),
     carried through so a caller can inspect the ranking, and threads with no
     matching chunk simply do not appear."""
     match = fts_query(query)
@@ -124,7 +122,7 @@ def main(argv: list[str] | None = None) -> int:
     harness._require_matching_snapshot(cases, args.cases)
 
     report = evaluate(
-        cases, limit=args.limit, rerank=None, content_type=None,
+        cases, limit=args.limit, content_type=None,
         exclude_content_types=EXCLUDE_META if args.exclude_meta else None,
         search=bm25_search)
 

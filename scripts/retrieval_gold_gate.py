@@ -494,7 +494,7 @@ def _score(cases: list[dict], *, params=None, early_stop=None) -> dict:
     ``early_stop`` is the abort predicate."""
     from search_lab.eval_core import evaluate
 
-    return evaluate(cases, limit=20, rerank=None, content_type=None,
+    return evaluate(cases, limit=20, content_type=None,
                     exclude_content_types=None, search=_candidate_search(params),
                     early_stop=early_stop)
 
@@ -513,7 +513,7 @@ def _print_latency(stats, baseline) -> None:
     t = stats.total
     print(f"  total     p50 {t['p50']:6.0f}{delta(t['p50'], 'p50')}  "
           f"p95 {t['p95']:6.0f}{delta(t['p95'], 'p95')}  p99 {t['p99']:6.0f}ms   "
-          f"(rerank fired {stats.rerank_rate:.0%}, pool p50 {stats.pool_p50:.0f})", flush=True)
+          f"(pool p50 {stats.pool_p50:.0f})", flush=True)
     for stage in speed.STAGES:
         st = stats.stages[stage]
         # The vector arm's sub-stages nest inside semantic_ms rather than adding to
@@ -594,8 +594,8 @@ def _load(path: Path) -> list[dict]:
 def _apply_overrides(assignments: list[str]):
     """Build a ``SearchParams`` from ``field=value`` strings — the ``--set`` half
     of the tuning loop. Values are coerced to the dataclass field's declared type,
-    so ``--set fusion_weight=500`` yields a float and ``--set rerank_auto=true`` a
-    bool. An unknown field is an error rather than a silently ignored typo: a
+    so ``--set fusion_weight=500`` yields a float and ``--set pool_floor=300`` an
+    int. An unknown field is an error rather than a silently ignored typo: a
     mis-typed knob that scores identically to the baseline is indistinguishable
     from a knob that does nothing."""
     from thread_archive._retrieval import SearchParams
@@ -639,7 +639,8 @@ def _print_history(limit: int | None) -> int:
         return 0
     for run in runs:
         cfg = run.get("config", {}).get("params", {})
-        knobs = f"pool={cfg.get('rerank_pool', '?')} doc={cfg.get('rerank_doc_chars', '?')}"
+        knobs = (f"fusion={cfg.get('fusion_weight', '?')} "
+                 f"semantic={cfg.get('semantic_weight', '?')}")
         flag = "ok" if run.get("passed") else "BELOW FLOOR"
         print(f"{run['at'][:19]}  {run.get('commit') or '-':>10}  [{knobs}]  {flag}")
         for name, m in run.get("files", {}).items():

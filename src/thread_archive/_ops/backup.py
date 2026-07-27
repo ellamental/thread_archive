@@ -1025,7 +1025,7 @@ def _drill_smoke(home: str, *, expect_content: bool) -> dict:
         text = read_thread(tid, home=home, mode="chat", limit=20)
         out["read_ok"] = bool(text and text.strip())
         out["token"] = token
-        out["search_ok"] = bool(search(token, home=home, limit=5, rerank=False))
+        out["search_ok"] = bool(search(token, home=home, limit=5))
         out["ok"] = out["read_ok"] and out["search_ok"]
     except Exception as e:  # a crash in the read/search path IS the finding
         out["error"] = f"{type(e).__name__}: {e}"

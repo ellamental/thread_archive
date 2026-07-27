@@ -69,14 +69,14 @@ def test_duration_ms_recorded_when_given_and_omitted_when_not(archive_home) -> N
 
 def test_timings_merged_when_given_and_absent_when_not(archive_home) -> None:
     usage.record_search("q", params={}, hits=[],
-                        timings={"fts_ms": 12.3, "semantic_ms": 4.5, "rerank_ms": 0.0,
-                                 "did_rerank": True, "pool_size": 198, "cold": True})
+                        timings={"fts_ms": 12.3, "semantic_ms": 4.5,
+                                 "pool_size": 198, "cold": True})
     usage.record_search("q2", params={}, hits=[])
     with_t, without_t = _records(archive_home)
     assert with_t["fts_ms"] == 12.3 and with_t["semantic_ms"] == 4.5
-    assert with_t["did_rerank"] is True and with_t["pool_size"] == 198 and with_t["cold"] is True
+    assert with_t["pool_size"] == 198 and with_t["cold"] is True
     # A search with no probe breakdown records no stage fields (backward-compatible).
-    assert "fts_ms" not in without_t and "did_rerank" not in without_t
+    assert "fts_ms" not in without_t and "pool_size" not in without_t
 
 
 def test_mcp_search_records_stage_timings(archive_home) -> None:
@@ -87,10 +87,10 @@ def test_mcp_search_records_stage_timings(archive_home) -> None:
     thread_search("hello ledger", limit=5)
     (rec,) = _records(archive_home)
     # The probe's per-stage breakdown rides every real MCP search: the fields are
-    # present (a lexical-only box still records fts/rerank, semantic sits at 0).
-    for field in ("fts_ms", "semantic_ms", "rerank_ms", "did_rerank", "pool_size"):
+    # present (a lexical-only box still records fts, semantic sits at 0).
+    for field in ("fts_ms", "semantic_ms", "pool_size"):
         assert field in rec, field
-    assert rec["fts_ms"] >= 0.0 and isinstance(rec["did_rerank"], bool)
+    assert rec["fts_ms"] >= 0.0 and isinstance(rec["pool_size"], int)
     assert rec["duration_ms"] >= rec["fts_ms"]  # total covers the stage it contains
 
 
@@ -269,7 +269,7 @@ def test_concurrency_is_not_among_the_start_of_work_facts(archive_home) -> None:
 
 def test_record_warm_names_the_startup_cost(archive_home) -> None:
     usage.record_warm(duration_ms=21000.0,
-                      stages={"embed_ms": 20000.0, "rerank_ms": 400.0, "search_ms": 600.0},
+                      stages={"embed_ms": 20000.0, "search_ms": 600.0},
                       failed=["graph"])
     (rec,) = _records(archive_home)
     assert rec["kind"] == "warm"

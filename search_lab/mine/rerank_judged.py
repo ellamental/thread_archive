@@ -122,7 +122,7 @@ def retrieved_pool(query: str, sessions: set[str], pool_size: int) -> list[dict]
     """The production-search pool for a query over the snapshot, minus the
     originating sessions (which quote the query verbatim), capped to ``pool_size``.
     One row per thread — the ranked shape search already returns."""
-    hits = api.search(query, limit=pool_size + len(sessions), rerank=None)
+    hits = api.search(query, limit=pool_size + len(sessions))
     pool: list[dict] = []
     for h in hits:
         tid = h["thread_id"]

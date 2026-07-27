@@ -162,8 +162,7 @@ def main(argv: list[str] | None = None) -> int:
         args.home or Path(args.data_dir).expanduser() / "homes" / f"hay-{args.dataset}",
         what=f"{args.dataset} corpus home")
 
-    # No rerank arm here: this builds a corpus, it does not score one.
-    eval_home.pin_arms(vectors=args.vectors, rerank="off")
+    eval_home.pin_arms(vectors=args.vectors)
 
     corpus = collect(args.dataset, args)
     _log(f"{args.dataset}: {len(corpus)} docs -> {home}")

@@ -117,13 +117,12 @@ def search(
     output: Optional[str] = None,
     context_lines: int = 2,
     context_events: Optional[str] = None,
-    rerank: Optional[bool] = None,
     match: str = "token",
     page: int = 1,
     params=None,
 ) -> "list[EventHit]":
     """Federated search over conversation events (lexical FTS5 + optional semantic
-    vectors → RRF fusion → weighted rank → optional cross-encoder re-rank).
+    vectors → RRF fusion → weighted rank → community-coherence head re-rank).
     Returns enriched event-hit dicts. ``source`` restricts to threads of the named
     provider(s); ``topic_id`` restricts to a topic's member conversations
     (a compatibility scope over existing KG records);
@@ -134,9 +133,8 @@ def search(
     :func:`thread_archive._retrieval.browse.browse_threads`);
     ``startswith`` does a structural prefix scan; ``sort='oldest'``
     returns the pool chronologically; ``output`` ('count'/'linkable') and
-    ``context_lines`` / ``context_events`` shape what each hit carries; ``rerank``
-    forces the cross-encoder stage (else auto-gated to conceptual queries when the
-    ``[embeddings]`` extra is present); ``params`` is a
+    ``context_lines`` / ``context_events`` shape what each hit carries;
+    ``params`` is a
     :class:`thread_archive._retrieval.SearchParams` retrieval configuration
     (default: the shipped weights — the search-lab experiment seam). The ranked shape returns one row per
     thread, repeats folded into ``_thread_more`` / ``_dup_thread_ids``
@@ -182,7 +180,6 @@ def search(
         output=output,
         context_lines=context_lines,
         context_events=context_events,
-        rerank=rerank,
         match=match,
         page=page,
         params=params,
@@ -472,7 +469,6 @@ def libraries() -> list[dict]:
     meaningfully installed together.
 
     Import probes only; nothing here loads a model or builds an index."""
-    from ._retrieval import rerank
     from ._retrieval.community import engine as community_engine
     from ._retrieval.embed import importable
     from ._retrieval.embed import is_available as embed_available
@@ -509,18 +505,6 @@ def libraries() -> list[dict]:
                 if embed_available()
                 else "Search is lexical-only. Install the [embeddings] extra to add "
                      "the vector arm."
-            ),
-        },
-        {
-            "name": "cross-encoder reranker",
-            "tier": "extra",
-            "capability": "Re-ranking the retrieved pool",
-            "installed": importable("sentence_transformers"),
-            "state": "ok" if rerank.is_available() else "off",
-            "detail": (
-                "The top pool is re-scored by the cross-encoder."
-                if rerank.is_available()
-                else "Results keep their fusion order."
             ),
         },
     ]

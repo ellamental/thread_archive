@@ -886,7 +886,7 @@ def test_a_served_search_records_where_its_time_went(archive_home):
         if ln.strip()
     ]
     searched = [r for r in rows if r["path"] == "/api/search"][-1]
-    assert searched["fts_ms"] >= 0.0 and "did_rerank" in searched
+    assert searched["fts_ms"] >= 0.0 and "pool_size" in searched
     assert searched["pool_size"] > 0
     # Still endpoint-only: the breakdown says where time went, not what was typed.
     assert "query" not in searched and "q" not in searched

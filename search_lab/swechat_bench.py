@@ -348,7 +348,7 @@ def emit_run(bench: Path, out: Path, *, ranker: str, tag: str, depth: int) -> in
         # report unavailable and the coherence re-rank stands down, so what is
         # measured is the lexical-only deployment a core install runs — the same
         # arm pinning every other harness's `lexical` row means.
-        eval_home.pin_arms(vectors=False, rerank="off")
+        eval_home.pin_arms(vectors=False)
     api.open_archive()
 
     if ranker == "bm25":
@@ -365,7 +365,7 @@ def emit_run(bench: Path, out: Path, *, ranker: str, tag: str, depth: int) -> in
 
     def ranked(text: str) -> list[dict]:
         return search(text, limit=depth, content_types=None,
-                      exclude_content_types=None, rerank=None)
+                      exclude_content_types=None)
 
     lines, missing = run_lines(queries, ranked, to_session,
                                tag=tag, depth=depth,

@@ -2,14 +2,12 @@
 
 ``search`` runs the production pipeline: federate two arms — FTS5 **lexical** + an
 optional in-process **vector** (semantic) search — fuse them by reciprocal-rank
-fusion (``_rrf`` normalized to [0,1]), dedup, score with the weighted lexical
-**ranker** (density / phrase / recency / content-type / fusion — :mod:`.rank`),
-then optionally re-order the head with an in-process **cross-encoder** (:mod:`.rerank`)
-— gated twice: to conceptual multi-term query shapes (``should_rerank``), and away
-again when the ranked head is already a strong literal match (``head_is_strong``) —
-the re-rank pays its seconds only on the vocab-mismatch queries it was built for.
-With no ``[embeddings]`` extra the vector and
-cross-encoder arms sit out and search is lexical-only (still through the ranker).
+fusion (``_rrf`` normalized to [0,1]), dedup, score with the weighted
+**ranker** (density / phrase / recency / content-type / fusion / the two arm
+magnitudes — :mod:`.rank`), then re-order the head with the
+**community-coherence** signal (:mod:`.embed_graph`, on by default).
+With no ``[embeddings]`` extra the vector and coherence arms sit out and search is
+lexical-only (still through the ranker).
 ``read_thread`` reconstructs a conversation; ``rebuild_fts`` is the FTS half of reindex.
 :mod:`.code` is the other retrieval axis — the files a conversation touched and the
 commits it produced, indexed structurally rather than as text.
@@ -175,29 +173,27 @@ def _apply_coherence(ranked: list[EventHit], gamma: float | None = None) -> list
         return ranked
 
 
-# A throwaway conceptual query for the warm pass (run with rerank=True so the
-# cross-encoder head is exercised regardless of the gates).
-_WARM_QUERY = "warm up the retrieval vector index and reranker"
+# A throwaway conceptual query for the warm pass.
+_WARM_QUERY = "warm up the retrieval vector index"
 
 
-def warm_models(embedder=None, reranker=None) -> None:
+def warm_models(embedder=None) -> None:
     """Prime the whole retrieval pipeline on the caller's thread so the FIRST real search
     doesn't pay startup costs *inside* the request. Those costs — cold-loading the embedding
-    + cross-encoder models (tens of seconds), loading the vector matrix off disk, and the
-    first cross-encoder inference — otherwise land on the first query and can exceed an MCP
-    client's request timeout (see :mod:`thread_archive._mcp.server`, which calls this on a
-    background thread at startup).
+    model (tens of seconds) and loading the vector matrix off disk — otherwise land on the
+    first query and can exceed an MCP client's request timeout (see
+    :mod:`thread_archive._mcp.server`, which calls this on a background thread at startup).
 
-    Three steps, ordered by what a request actually waits on: load the models
+    Three steps, ordered by what a request actually waits on: load the model
     explicitly (works even with an empty store), run one throwaway conceptual search to
-    fill the process-global caches the first real query reuses (the vector matrix, the
-    reranker's warmed inference path), and only then build the corpus graph. The graph is
+    fill the process-global caches the first real query reuses (the vector matrix), and
+    only then build the corpus graph. The graph is
     last because it is the one stage no search blocks on — the coherence re-rank serves
     whatever is cached and returns the ranking unchanged when nothing is — while it is
     also the longest (tens of seconds on a real corpus). Building it before the priming
     search would leave the process paying full cold-search latency for that whole window,
     which is precisely the cost this function exists to move off the request path.
-    ``embedder`` and ``reranker`` are the models to prime (default: the process ones).
+    ``embedder`` is the model to prime (default: the process one).
     Fail-soft throughout: a missing ``[embeddings]`` extra, a load failure, or an
     unavailable store just leaves search to cold-load lazily, exactly as before.
 
@@ -214,12 +210,7 @@ def warm_models(embedder=None, reranker=None) -> None:
         from . import embed as _embed
 
         embedder = _embed.default()
-    if reranker is None:
-        from . import rerank as _rerank
-
-        reranker = _rerank.default()
-
-    for name, stage in (("embed", embedder), ("rerank", reranker)):
+    for name, stage in (("embed", embedder),):
         _t = perf_counter()
         try:
             stage.warm()
@@ -237,10 +228,8 @@ def warm_models(embedder=None, reranker=None) -> None:
     try:
         from .. import _api as api
 
-        # rerank=True: the point is priming the cross-encoder's inference path, so
-        # force it past the gates (a strong-headed warm hit would otherwise skip it).
         api.search(_WARM_QUERY, limit=1, content_types=DEFAULT_CONTENT_TYPES,
-                   exclude_content_types=list(DEFAULT_EXCLUDE_CONTENT_TYPES), rerank=True)
+                   exclude_content_types=list(DEFAULT_EXCLUDE_CONTENT_TYPES))
     except Exception:  # noqa: BLE001 — a store that isn't ready just warms the models, not the caches
         failed.append("search")
         logger.debug("warm_models: dummy warm search skipped", exc_info=True)
@@ -573,20 +562,6 @@ def _parse_stored_dt(value) -> Optional[datetime]:
     return dt.astimezone().replace(tzinfo=None) if dt.tzinfo is not None else dt
 
 
-def _do_rerank(query: str, terms: list[str], force: Optional[bool], reranker,
-               auto_enabled: bool) -> bool:
-    """The query-shape half of the re-rank gate. ``force`` (the ``rerank=`` arg)
-    overrides everything; otherwise the auto path runs only when ``auto_enabled``
-    (``params.rerank_auto``) — off by default, the cross-encoder being the
-    pipeline's dominant latency for ~no gold-file gain — and the query has the
-    conceptual multi-term shape *and* a reranker is available. The result-side
-    half — standing down on a strong lexical head — runs after ranking in
-    ``search``."""
-    if force is not None:
-        return force and reranker.is_available()
-    return auto_enabled and _rank.should_rerank(query, terms) and reranker.is_available()
-
-
 def search(
     query: str,
     *,
@@ -610,25 +585,20 @@ def search(
     output: Optional[str] = None,
     context_lines: int = 2,
     context_events: Optional[str] = None,
-    rerank: Optional[bool] = None,
     match: str = "token",
     page: int = 1,
     params: Optional[SearchParams] = None,
     embedder=None,
-    reranker=None,
     session: Optional[Session] = None,
 ) -> list[EventHit]:
     """Search over conversation events through the production pipeline: lexical FTS5
     + optional semantic vectors → RRF fusion → dedup → weighted lexical rank →
-    optional cross-encoder head re-rank. Returns event-hit dicts with the thread
+    community-coherence head re-rank. Returns event-hit dicts with the thread
     title enriched. ``since``/``until`` accept ISO timestamps or a relative ``<N>d``
     window; ``source`` restricts to threads of the named provider(s); ``topic_id``
     restricts to a topic's member conversations (threads cited under the topic or
-    linked to it); ``embedder`` and ``reranker`` are the models the semantic arm and
-    the head re-rank run on (default: the process ones); ``rerank`` forces the
-    cross-encoder stage on/off (else auto-gated:
-    conceptual multi-term shape AND a ranked head that isn't already a strong
-    literal match). ``params`` is the retrieval configuration
+    linked to it); ``embedder`` is the model the semantic arm runs on (default:
+    the process one). ``params`` is the retrieval configuration
     (:class:`.params.SearchParams` — every ranking weight and pool size;
     default: the shipped values), the seam the search lab scores candidate
     configurations through.
@@ -861,7 +831,6 @@ def search(
         embedder=embedder, session=session,
     )
 
-    did_rerank = False
     if is_count:
         ranked = fused  # whole match pool, unranked — the renderer tallies it
     elif sort == "oldest":
@@ -876,97 +845,25 @@ def search(
     else:
         # Weighted lexical rank. Grouping ranks the whole pool — folded rows must
         # backfill from ranked candidates past `limit`, and sorting the pool costs
-        # microseconds either way; otherwise rank just what the cut needs, with a
-        # wider head when a cross-encoder re-rank may re-order it.
-        if reranker is None:
-            from . import rerank as _rerank_mod
-
-            reranker = _rerank_mod.default()
-        do_rerank = _do_rerank(query, terms, rerank, reranker, p.rerank_auto)
-        if grouping:
-            rank_to = len(fused)
-        else:
-            rank_to = max(depth, p.rerank_pool) if do_rerank else depth
+        # microseconds either way; otherwise rank just what the cut needs.
+        rank_to = len(fused) if grouping else depth
         _t_rank = perf_counter()
         ranked = _rank.rank_search_results(fused, terms, rank_to, params=p)
         _probe.record("rank_ms", _t_rank)
-        # Result-side half of the gate: when the ranked head is a strong literal
-        # match the lexical order is trustworthy and the cross-encoder stands down
-        # — it exists for the vocab-mismatch case, and re-ranking a confident head
-        # costs seconds only to degrade it (see head_is_strong). The exception is a
-        # message head that merely echoes the query verbatim (a pasted, unanswered
-        # question): it does not earn the stand-down, so the cross-encoder gets to
-        # look for a differently-worded answer below it — but its verdict is trusted
-        # only when it rescues one (echo_head, applied after scoring below). An
-        # explicit rerank=True skips this check along with the shape gate.
-        echo_head = rerank is not True and _rank.head_is_query_echo(ranked, terms)
-        if do_rerank and rerank is not True and _rank.head_earns_standdown(ranked, terms):
-            do_rerank = False
-        # Cross-encoder head re-rank (gated, fail-soft): scores (query, content)
-        # jointly and floats the true target up. None → keep lexical order. Head
-        # only (RERANK_POOL): the cross-encoder's cost is per document, and past
-        # the head the lexical order is only backfill.
-        if do_rerank:
-            # The head is at least `limit` deep: a result that will be displayed
-            # must be one the cross-encoder actually scored, so a strong-but-sparse
-            # hit sitting at position `rerank_pool`+1 (a long answering doc the
-            # density scorer buries) is not permanently unreachable at the pool
-            # boundary. Normally limit ≤ rerank_pool, so the head is rerank_pool.
-            # Sized from limit and not from the page depth for the same reason the
-            # pool is: re-ranking a deeper head on page 2 would re-order page 1.
-            head_n = max(p.rerank_pool, limit)
-            head, tail = ranked[:head_n], ranked[head_n:]
-            # Score the match-centred window (plus a long doc's head/tail), not the
-            # doc head alone — a hit whose relevant text sits mid-message, or whose
-            # answer sits far past an incidental query term, would otherwise be
-            # scored on its intro.
-            # Sampled here rather than at entry: this is the point past which a
-            # cross-encoder load is definitely paid, so the flag names a real cost
-            # instead of an installed-but-idle model.
-            if probe is not None:
-                from . import rerank as _rerank_cold
-
-                probe.rerank_cold = (
-                    _rerank_cold.is_available() and not _rerank_cold.is_loaded()
-                )
-            _t0 = perf_counter()
-            reordered = reranker.rerank(
-                query, head,
-                get_text=lambda r: _rank.rerank_windows(
-                    r.get("full_content") or r.get("snippet") or "",
-                    terms, p.rerank_doc_chars,
-                ),
-            )
-            if probe is not None:
-                probe.rerank_ms += (perf_counter() - _t0) * 1000.0
-            if reordered is not None:
-                # An echo-licensed re-rank (the head was a strong verbatim query
-                # echo, not a weak head) is trusted only when it actually rescues a
-                # vocab-mismatch hit — a new top that is itself a strong lexical
-                # match means the cross-encoder merely reshuffled confident
-                # candidates, the degrade case the stand-down protects against.
-                if echo_head and _rank.head_is_strong(reordered[:1], terms):
-                    pass  # keep the trustworthy lexical order
-                else:
-                    ranked, did_rerank = reordered + tail, True
         # Community-coherence re-rank from the corpus-native embedding graph
         # (default on — measured recall lift at every depth on the log-mined
-        # protocol; see embed_graph). Only when the cross-encoder stood down:
-        # the two are alternative head-orderers, and running coherence under
-        # the re-rank reshuffles which candidates reach its scoring window —
-        # measured end-to-end, that stack loses the recall the arm alone buys.
-        if not did_rerank:
-            from . import embed as _embed
+        # protocol; see embed_graph).
+        from . import embed as _embed
 
-            # Coherence is a semantic-arm refinement built from event_vectors; with
-            # the embed arm off (a core install, or THREAD_ARCHIVE_EMBED=off) there
-            # are no vectors to build its graph from, so skip it rather than kick a
-            # build that probes a table that isn't there. The graph primitives stay
-            # embed-agnostic for tests and direct callers; only the search path gates.
-            if _embed.is_available():
-                _t_coh = perf_counter()
-                ranked = _apply_coherence(ranked, p.coherence_gamma)
-                _probe.record("coherence_ms", _t_coh)
+        # Coherence is a semantic-arm refinement built from event_vectors; with
+        # the embed arm off (a core install, or THREAD_ARCHIVE_EMBED=off) there
+        # are no vectors to build its graph from, so skip it rather than kick a
+        # build that probes a table that isn't there. The graph primitives stay
+        # embed-agnostic for tests and direct callers; only the search path gates.
+        if _embed.is_available():
+            _t_coh = perf_counter()
+            ranked = _apply_coherence(ranked, p.coherence_gamma)
+            _probe.record("coherence_ms", _t_coh)
 
     # A pool that came back short of what it asked for holds the WHOLE match set:
     # nothing was cut, so the shaped rows below are already the total and no extra
@@ -1060,15 +957,9 @@ def search(
             for r in hits:
                 if r["event_id"] in ctx_map:
                     r["context_events"] = ctx_map[r["event_id"]]
-        # The quality verdict (Feature: match-signal) turns on whether the
-        # cross-encoder actually ran, so carry it onto each hit for the renderer.
-        for r in hits:
-            r["_did_rerank"] = did_rerank
 
     _enrich_thread_titles(hits, session=session)
     _probe.record("enrich_ms", _t_enrich)
-    if probe is not None:
-        probe.did_rerank = did_rerank
     # The list shapes count in threads, so that is the number their pages divide;
     # every other shape counts in rows. A tally (output='count') is not a page of
     # anything — it already reports over the whole pool — so it carries no

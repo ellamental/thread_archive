@@ -9,13 +9,16 @@ corpus-wide structure the topic graph cannot see.
 
 **The coherence re-rank is the production consumer.** Within a ranked search
 pool, threads whose community carries more of the pool's top mass get a small
-additive boost (:func:`coherence_order`). On the log-mined click protocol
-(563 cases, full production pool) it lifts success at every depth past 1 —
-S@5 0.327→0.341, S@10 0.414→0.433, S@20 0.492→0.508 across gammas
-0.002–0.01 — with MRR flat: it consolidates the mid-list around the query's
-community, it does not move the top hit. The same signal computed from the
-topic graph loses on the identical cases, which is why the topic graph
-stays out of ranking. ``search_lab/graph_eval.py`` is the measurement harness.
+additive boost (:func:`coherence_order`). It is a light mid-list orderer, not a
+headline mover: on the log-mined click protocol (187 cases, full production
+pool) the shipped gamma lifts success and recall at depth while costing a
+little at rank 1 — baseline → 0.005: S@5 0.401→0.428, S@10 0.513→0.519,
+recall@10 0.417→0.426, S@1 0.203→0.193, MRR flat at 0.298. It consolidates the
+mid-list around the query's community; it does not improve the top hit. Those
+labels are click labels, censored by the incumbent ranker, so read the harness
+as a regression check rather than as evidence of a gain. The same signal
+computed from the topic graph loses on the identical cases, which is why the
+topic graph stays out of ranking. ``search_lab/graph_eval.py`` is the harness.
 
 ``THREAD_ARCHIVE_COHERENCE`` tunes it per process: unset/``on`` uses the
 default gamma, ``off``/``0`` disables, a float overrides gamma.
@@ -63,9 +66,10 @@ MIN_SIM = 0.55
 _BLOCK = 512
 
 # Coherence re-rank defaults: how many pool-head threads vote on community
-# mass, the RRF base constant, and the swept default gamma (middle of the
-# 0.002–0.01 range that lifted success at every depth on the log-mined eval;
-# 0.005 is the S@10 optimum).
+# mass, the RRF base constant, and the default gamma — the middle of the swept
+# 0.002–0.01 range, where the log-mined eval puts the S@5 and S@20 optima. The
+# sweep does not resolve one value: 0.01 reads better at S@10 and recall@10,
+# and the whole spread is a case or two on a 187-case protocol.
 TOP_MASS = 10
 RRF_K = 60
 COHERENCE_GAMMA = 0.005

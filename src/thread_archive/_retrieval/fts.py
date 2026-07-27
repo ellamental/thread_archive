@@ -88,8 +88,8 @@ _TRIGGERS = {
 # bm25 by default), but only ``ORDER BY rank`` engages FTS5's internal rank-sort
 # (xBestIndex flag; EXPLAIN shows ``INDEX ...:M`` with no temp B-tree), so the
 # SELECT list — snippet() above all — is evaluated for the LIMIT rows that come
-# out, not for every matching row going into an external sort. Over this ~1M-doc
-# index a broad OR query matches 200k–600k docs; the expression form pays a
+# out, not for every matching row going into an external sort. Over a corpus this
+# size (~800k docs) a broad OR query matches 200k–600k of them; the expression form pays a
 # per-match bm25()+snippet() sort (seconds), the rank form streams (~0.4s).
 _RANK_EXPR = "rank"
 
@@ -338,7 +338,7 @@ def _identifier_tokens(text_: str) -> list[str]:
 # passes to fill the pool — it is bounded to the most recent this-many rows by id.
 # The scan is recency-ordered already, so the cap keeps the newest within-token
 # matches and holds the worst case well under the latency budget instead of
-# walking the whole ~1M-doc corpus (~10s). id is the FTS rowid (append-ordered),
+# walking a corpus this size end to end (~800k docs, ~10s). id is the FTS rowid (append-ordered),
 # so a ``rowid >= max-cap`` floor is an indexed range, not a scan to find the cap.
 _LIKE_SCAN_CAP = 25000
 
@@ -568,7 +568,7 @@ def search_events(
 
     # Each pass is (match_where, match_params, order, use_match, fallback); shared
     # filters are appended to every pass. A fallback pass is a substring LIKE — a
-    # full-table scan (seconds over a ~1M-doc index; ``content`` has no index that
+    # full-table scan (seconds over an index this size; ``content`` has no index that
     # can serve an infix LIKE) — so it only runs when the MATCH pass ahead of it
     # left the candidate pool short: it exists to catch within-token substrings
     # MATCH can't see, and when the exact-token phrase already fills the pool

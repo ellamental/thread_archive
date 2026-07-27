@@ -67,7 +67,7 @@ def test_scifact_lexical_finds_golds(tmp_path) -> None:
     """The lexical arm alone must pull the gold docs into the pool (Recall@100),
     even where it orders the head worse than BM25 — the plumbing check. No torch,
     so this is the fast lane (~a few minutes, dominated by corpus ingest)."""
-    r = _run_eval(tmp_path, "--dataset", "scifact", "--rerank", "off", timeout=900)
+    r = _run_eval(tmp_path, "--dataset", "scifact", timeout=900)
     assert r["corpus_docs"] == 5183, "the full scifact corpus must ingest as distinct docs"
     assert r["recall"]["100"] >= 0.60, (
         f"lexical Recall@100 {r['recall']['100']:.3f} collapsed — golds are no "
@@ -76,16 +76,14 @@ def test_scifact_lexical_finds_golds(tmp_path) -> None:
 
 
 def test_scifact_full_stack_is_bm25_competitive(tmp_path) -> None:
-    """The full stack (lexical + vectors + auto-gated cross-encoder) must land
-    nDCG@10 in the BM25 ballpark — the semantic and re-rank arms recovering the
-    head ordering the lexical floor gets wrong. Loads torch and embeds the whole
-    corpus: the slow lane (~20 min on CPU)."""
-    r = _run_eval(tmp_path, "--dataset", "scifact", "--vectors", "--rerank", "auto",
-                  timeout=3600)
-    assert r["arms"] == ["lexical", "vectors", "rerank:auto"]
+    """The full stack (lexical + vectors) must land nDCG@10 in the BM25 ballpark —
+    the semantic arm recovering the head ordering the lexical floor gets wrong.
+    Loads torch and embeds the whole corpus: the slow lane (~20 min on CPU)."""
+    r = _run_eval(tmp_path, "--dataset", "scifact", "--vectors", timeout=3600)
+    assert r["arms"] == ["lexical", "vectors"]
     assert r["ndcg10"] >= 0.50, (
         f"full-stack nDCG@10 {r['ndcg10']:.3f} fell far below the BM25 reference "
-        f"({r['reference'].get('bm25')}) — a downstream arm (vectors/rerank) is "
+        f"({r['reference'].get('bm25')}) — the vector arm is "
         "likely dead, since the lexical floor alone scores ~0.31 here"
     )
     assert r["recall"]["100"] >= 0.78, (

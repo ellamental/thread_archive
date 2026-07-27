@@ -106,7 +106,7 @@ class PoolCache:
 
     Hits are handed out as fresh per-hit dicts. The pipeline downstream *mutates*
     the hits it ranks — ``thread_title``, ``_thread_more``, ``_dup_thread_ids``,
-    ``_did_rerank``, ``context`` all get written onto them — so a cache that
+    ``context`` all get written onto them — so a cache that
     returned its own dicts would let one configuration's grouping leak into the
     next one's scoring. The stored copy is never handed out.
 

@@ -19,15 +19,14 @@ def test_tiers_nest_so_standard_includes_smoke() -> None:
     rows = benchmark.manifest()
     smoke = {r.name for r in benchmark.select(rows, tier="smoke", only=[])}
     standard = {r.name for r in benchmark.select(rows, tier="standard", only=[])}
-    full = {r.name for r in benchmark.select(rows, tier="full", only=[])}
 
-    assert smoke < standard < full
+    assert smoke < standard
     # Smoke is exactly the instruments that can credit a ranking change.
     assert smoke == {"gold-gate:archive", "gold-gate:swe-chat"}
 
 
 def test_only_narrows_by_name_fragment() -> None:
-    chosen = benchmark.select(benchmark.manifest(), tier="full", only=["locomo"])
+    chosen = benchmark.select(benchmark.manifest(), tier="standard", only=["locomo"])
     assert chosen and all("locomo" in r.name for r in chosen)
 
 

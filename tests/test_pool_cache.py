@@ -70,8 +70,7 @@ def test_key_covers_every_pool_reaching_search_param() -> None:
         "bm25_weight", "bm25_score_weight", "semantic_weight",
         "thread_evidence_weight",
         "content_type_weights", "recency_half_life_hours",
-        "density_norm_chars", "rerank_auto", "rerank_pool", "rerank_doc_chars",
-        "coherence_gamma",
+        "density_norm_chars", "coherence_gamma",
     }
     # pool_floor reaches the key folded into `over`, which the caller resolves.
     keyed = {"rrf_k", "pool_floor"}
@@ -83,17 +82,17 @@ def test_key_covers_every_pool_reaching_search_param() -> None:
 
 def test_hits_are_insulated_from_caller_mutation() -> None:
     # The pipeline writes onto the hits it ranks (thread_title, _thread_more,
-    # _did_rerank, context). Handing out the stored dicts would leak one config's
-    # grouping into the next one's scoring.
+    # context). Handing out the stored dicts would leak one config's grouping
+    # into the next one's scoring.
     cache = pool_cache.PoolCache()
     cache.put(("k",), [_hit(1, "alpha")])
 
     first = cache.get(("k",))
-    first[0]["_did_rerank"] = True
+    first[0]["_thread_more"] = 3
     first[0]["thread_title"] = "mutated"
 
     second = cache.get(("k",))
-    assert "_did_rerank" not in second[0]
+    assert "_thread_more" not in second[0]
     assert "thread_title" not in second[0]
 
 

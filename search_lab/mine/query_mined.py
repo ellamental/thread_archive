@@ -83,7 +83,7 @@ wanted — the grounded gold set — by exploring the archive yourself.
 Tools (run via Bash; read-only; the corpus is a fixed snapshot — always pass \
 the flags exactly as shown):
 
-  {tool} search {skip} "<query>" [--limit N] [--rerank on|off|auto]
+  {tool} search {skip} "<query>" [--limit N]
   {tool} read <thread_id> [--mode ends|chat|user|full|last] \
 [--offset N] [--max-chars N]
 

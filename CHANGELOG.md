@@ -2,6 +2,29 @@
 
 ## Unreleased
 
+- **The cross-encoder re-rank is gone (2026-07-27).** `rerank.py`, the gate
+  (`should_rerank` / `head_is_strong` / `head_is_query_echo` /
+  `head_earns_standdown`), the MaxP windowing (`match_window` / `rerank_windows`),
+  the three `SearchParams` knobs, the `rerank=` argument on `search` / the MCP tool
+  / the CLI, the probe's `rerank_ms` / `did_rerank` / `rerank_cold` fields, the
+  lab's rerank arm and its three `+rerank` bench rows, and the `--require-rerank`
+  CI probe. `rerank_auto` shipped `False` and no caller anywhere in the tree passed
+  `rerank=True`, so the branch could not execute: what came out was a stage the
+  product paid for in surface area and never ran. The `full` bench tier held only
+  those three rows and went with them; `quality=semantic`, the renderer verdict
+  that fired only on a completed re-rank, went too. The archive gold gate and the
+  SWE-chat hold-out reproduce their pre-removal numbers to the digit, which is
+  what a dead branch's removal should look like.
+
+  **The evidence that argued the other way**, kept here because the arm is gone
+  from the bench that measured it: on LoCoMo turn-level dialog the cross-encoder
+  reached recall@10 **0.787** against the fused stack's 0.672 and the specialized
+  dense retriever DRAGON's 0.662, winning at every cutoff (@5 0.731 vs 0.567, @50
+  0.869 vs 0.827) and concentrated in the entity- and precise-term categories. Its
+  cost was the pipeline's dominant latency (2–4 s on a long conceptual query) for
+  ~no gold-file MRR on this corpus. A future stack that wants that recall on dialog
+  retrieval should re-derive it against a latency budget rather than restore this
+  code; the ledger rows behind those numbers are in `bench-runs.jsonl`.
 - **Swept the search lab's docs for claims that had stopped being true.** The lab
   had accumulated a layer of prose describing a system one or two refactors back,
   and the worst of it was load-bearing: `search_lab/latency_replay.py` imported

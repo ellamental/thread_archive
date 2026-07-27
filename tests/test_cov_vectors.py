@@ -1,13 +1,12 @@
 """Coverage-focused tests for the semantic-search layer: the vector store/KNN/
-search-fusion (:mod:`thread_archive._retrieval.vectors`), the in-process embed
-provider (:mod:`~.embed`), and the cross-encoder re-rank (:mod:`~.rerank`).
+search-fusion (:mod:`thread_archive._retrieval.vectors`) and the in-process embed
+provider (:mod:`~.embed`).
 
-The suite is pinned model-free by conftest (``$THREAD_ARCHIVE_EMBED`` /
-``$THREAD_ARCHIVE_RERANK`` set to ``off``), so nothing here can cold-load torch.
-Tests that need the machinery build their own :class:`~.embed.Embedder` /
-:class:`~.rerank.Reranker` around a scripted model, or hand one to the
-``embedder`` / ``reranker`` argument of the call under test — real product code
-over a stand-in model, never real weights.
+The suite is pinned model-free by conftest (``$THREAD_ARCHIVE_EMBED`` set to
+``off``), so nothing here can cold-load torch. Tests that need the machinery build
+their own :class:`~.embed.Embedder` around a scripted model, or hand one to the
+``embedder`` argument of the call under test — real product code over a stand-in
+model, never real weights.
 """
 
 from __future__ import annotations
@@ -23,7 +22,7 @@ import numpy as np
 import pytest
 from sqlalchemy import text as sa_text
 
-from thread_archive._retrieval import embed, rerank, vectors
+from thread_archive._retrieval import embed, vectors
 from thread_archive._retrieval.model_slot import ModelSlot
 from thread_archive._store import get_session, init_db
 from thread_archive._store._base import use_engine
@@ -66,19 +65,6 @@ class _ScriptedModel:
         assert show_progress_bar is False
         self.seen.append(list(prefixed))
         return np.ones((len(prefixed), self.width), dtype=self.dtype)
-
-
-class _ScriptedScorer:
-    """A stand-in for a loaded CrossEncoder: records the (query, doc) pairs it was
-    handed, and returns scripted scores."""
-
-    def __init__(self, scores) -> None:
-        self.scores, self.calls = list(scores), []
-
-    def predict(self, pairs, batch_size, show_progress_bar):
-        assert show_progress_bar is False
-        self.calls.append((list(pairs), batch_size))
-        return np.asarray(self.scores[:len(pairs)])
 
 
 class _FixedEmbedder:
@@ -140,19 +126,15 @@ def test_models_enabled_reads_its_switch_per_call(monkeypatch) -> None:
     assert embed.models_enabled("THREAD_ARCHIVE_RERANK") is False
 
 
-def test_the_model_free_pin_stands_both_arms_down() -> None:
+def test_the_model_free_pin_stands_the_arm_down() -> None:
     """conftest's pin is what keeps the whole suite off real torch weights — if it
     ever stops biting, every search-path test starts cold-loading models. Every
     module-level entry point must honor it, not just the availability probe: these
     are the calls that would otherwise reach a real loader."""
     assert embed.is_available() is False
-    assert rerank.is_available() is False
     assert embed.warm() is False
-    assert rerank.warm() is False
     assert embed.embed_query("anything") is None
     assert embed.embed_documents(["doc"]) is None
-    assert rerank.rerank_scores("anything", ["a doc"]) is None
-    assert rerank.rerank("anything", ["a doc"], get_text=lambda x: x) is None
 
 
 def test_importable_probes_without_importing() -> None:
@@ -183,16 +165,6 @@ def test_embed_device_override_else_the_real_probe(monkeypatch) -> None:
     assert embed._device() == "cuda:1"
     monkeypatch.delenv("THREAD_ARCHIVE_EMBED_DEVICE")
     assert embed._device() == embed.select_device(None, *embed.torch_accelerators())
-
-
-def test_rerank_device_precedence_then_the_real_probe(monkeypatch) -> None:
-    monkeypatch.setenv("THREAD_ARCHIVE_RERANK_DEVICE", "cuda:0")
-    monkeypatch.setenv("THREAD_ARCHIVE_EMBED_DEVICE", "cpu")
-    assert rerank._device() == "cuda:0"  # its own var wins
-    monkeypatch.delenv("THREAD_ARCHIVE_RERANK_DEVICE")
-    assert rerank._device() == "cpu"  # falls back to the shared embed device
-    monkeypatch.delenv("THREAD_ARCHIVE_EMBED_DEVICE")
-    assert rerank._device() == embed.select_device(None, *embed.torch_accelerators())
 
 
 # ── hub cache / offline pinning ───────────────────────────────────────────────
@@ -430,10 +402,9 @@ def test_build_model_pins_the_revision_and_trusts_remote_code(monkeypatch) -> No
 
 
 def test_embed_build_model_applies_the_accelerator_dtype(monkeypatch) -> None:
-    """The embedder must load at the same dtype policy as the cross-encoder. These
-    two paths diverged once — rerank applied fp16 and embed silently loaded fp32,
-    which is the difference between a cold corpus embedding in an hour and in
-    several — so pin that they now read one policy."""
+    """The accelerator dtype policy is what keeps a cold corpus embedding in an
+    hour rather than several — an fp32 load on an accelerator is the regression
+    this pins against."""
     torch = pytest.importorskip("torch")
     monkeypatch.setenv("THREAD_ARCHIVE_EMBED_DEVICE", "mps")
     made = []
@@ -566,123 +537,15 @@ def test_warm_reports_the_load_outcome(monkeypatch) -> None:
     _models_on(monkeypatch)
     assert embed.Embedder(model=_ScriptedModel()).warm() is True
     assert embed.Embedder(load=_boom).warm() is False
-    assert rerank.Reranker(model=_ScriptedScorer([1.0])).warm() is True
-    assert rerank.Reranker(load=_boom).warm() is False
 
 
-def test_default_embedder_and_reranker_are_process_wide(monkeypatch) -> None:
+def test_default_embedder_is_process_wide(monkeypatch) -> None:
     assert embed.default() is embed.default()
-    assert rerank.default() is rerank.default()
     _models_on(monkeypatch)
     # The module-level functions are the default instance's, not a second one.
     assert embed.is_available() is embed.default().is_available()
-    assert rerank.is_available() is rerank.default().is_available()
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-# rerank.py
-# ══════════════════════════════════════════════════════════════════════════════
-def test_rerank_model_name_follows_the_env(monkeypatch) -> None:
-    assert rerank.model_name() == rerank.DEFAULT_MODEL
-    monkeypatch.setenv("THREAD_ARCHIVE_RERANK_MODEL", "acme/ce")
-    assert rerank.model_name() == "acme/ce"
-    assert rerank.Reranker().name == "acme/ce"
-    assert rerank.Reranker("other/ce").name == "other/ce"
-
-
-def test_rerank_dtype_is_fp16_on_an_accelerator_fp32_on_cpu() -> None:
-    """fp16 doubles accelerator throughput at an ordering indistinguishable from
-    fp32; CPU stays fp32, where fp16 is emulated and slower. Asserted against the
-    real torch dtype, so a renamed attribute can't pass."""
-    torch = pytest.importorskip("torch")
-    assert rerank.dtype_kwargs("cpu") == {}
-    assert rerank.dtype_kwargs("mps") == {"torch_dtype": torch.float16}
-    assert rerank.dtype_kwargs("cuda:0") == {"torch_dtype": torch.float16}
-
-
-def test_rerank_build_model_passes_device_and_dtype(monkeypatch) -> None:
-    made = []
-
-    class RecordingCE:
-        def __init__(self, name, device=None, model_kwargs=None):
-            made.append((name, device, model_kwargs))
-
-    monkeypatch.setenv("THREAD_ARCHIVE_RERANK_DEVICE", "cpu")
-    assert isinstance(rerank.build_model(RecordingCE, "acme/ce"), RecordingCE)
-    assert made == [("acme/ce", "cpu", {})]
-
-
-def test_reranker_availability_sequence(monkeypatch) -> None:
-    _models_on(monkeypatch)
-    lent = rerank.Reranker(model=_ScriptedScorer([0.5]))
-    assert lent.is_available() is True
-    broken = rerank.Reranker(load=_boom)
-    assert broken.is_available() is True
-    assert broken.rerank_scores("q", ["a"]) is None  # the load fails…
-    assert broken.is_available() is False  # …and is cached
-    monkeypatch.setenv("THREAD_ARCHIVE_RERANK", "off")
-    assert lent.is_available() is False
-
-
-def test_off_switch_stops_the_reranker_before_any_load(monkeypatch) -> None:
-    monkeypatch.setenv("THREAD_ARCHIVE_RERANK", "off")
-    r = rerank.Reranker(load=lambda: pytest.fail("model load attempted"))
-    assert r.is_available() is False
-    assert r.warm() is False
-
-
-def test_rerank_scores_pairs_batches_and_floats(monkeypatch) -> None:
-    _models_on(monkeypatch)
-    scorer = _ScriptedScorer([0.2, 0.8])
-    out = rerank.Reranker(model=scorer).rerank_scores("q", ["doc a", "doc b"])
-    assert out == [0.2, 0.8]
-    assert all(isinstance(s, float) for s in out)
-    pairs, batch_size = scorer.calls[0]
-    assert pairs[0] == ["q", "doc a"]
-    assert batch_size == rerank._PREDICT_BATCH_SIZE
-
-
-def test_rerank_scores_caps_docs_and_handles_none_text(monkeypatch) -> None:
-    _models_on(monkeypatch)
-    scorer = _ScriptedScorer([1.0, 2.0])
-    long = "y" * (rerank.RERANK_DOC_CHARS + 100)
-    rerank.Reranker(model=scorer).rerank_scores("q", [long, None])
-    pairs, _ = scorer.calls[0]
-    assert len(pairs[0][1]) == rerank.RERANK_DOC_CHARS
-    assert pairs[1][1] == ""  # a None doc scores as empty, it doesn't blow up
-
-
-def test_rerank_scores_none_paths(monkeypatch) -> None:
-    _models_on(monkeypatch)
-    scorer = _ScriptedScorer([1.0])
-    r = rerank.Reranker(model=scorer)
-    assert r.rerank_scores("", ["a"]) is None  # empty query
-    assert r.rerank_scores("q", []) is None  # empty docs
-    assert scorer.calls == []  # neither reaches the model
-    assert rerank.Reranker(load=_boom).rerank_scores("q", ["a"]) is None  # no model
-
-
-def test_rerank_scores_swallows_a_predict_error(monkeypatch) -> None:
-    _models_on(monkeypatch)
-
-    class Boom:
-        def predict(self, *a, **k):
-            raise RuntimeError("boom")
-
-    assert rerank.Reranker(model=Boom()).rerank_scores("q", ["a"]) is None
-
-
-def test_rerank_reorders_and_fails_soft(monkeypatch) -> None:
-    _models_on(monkeypatch)
-    r = rerank.Reranker(model=_ScriptedScorer([0.1, 0.9, 0.5]))
-    assert r.rerank("q", ["A", "B", "C"], get_text=lambda x: x) == ["B", "C", "A"]
-    assert r.rerank("q", [], get_text=lambda x: x) is None
-    # An unloadable model means "keep the caller's order", not an exception.
-    assert rerank.Reranker(load=_boom).rerank("q", ["A"], get_text=lambda x: x) is None
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-# vectors.py — guards, store, KNN, sidecar, search
 # ══════════════════════════════════════════════════════════════════════════════
 class _OtherDialectEngine:
     """A store on a dialect the vector arm doesn't serve. Stated rather than dialled:

@@ -68,7 +68,7 @@ COLD_UPTIME_S = 120.0
 #: Stages worth charting, in pipeline order. The two arms run concurrently, so
 #: they do not sum to the total and are never drawn as a stacked share of one.
 STAGES = ("fts_ms", "semantic_ms", "match_ms", "scan_ms", "embed_ms", "scope_ms",
-          "matrix_ms", "knn_ms", "hydrate_ms", "set_ms", "rerank_ms", "rank_ms",
+          "matrix_ms", "knn_ms", "hydrate_ms", "set_ms", "rank_ms",
           "extend_ms", "enrich_ms", "render_ms")
 
 HOUR = "hour"

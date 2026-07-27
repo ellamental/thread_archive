@@ -245,7 +245,7 @@ def test_evaluate_never_passes_a_date_bound_to_search():
     cases = [{"query": "q1", "gold": ["A"], "snapshot_id": "abc123"},
              {"query": "q2", "gold": ["A"]}]
     report = retrieval_eval.evaluate(
-        cases, limit=10, rerank=None, content_type=None,
+        cases, limit=10, content_type=None,
         exclude_content_types=None, search=fake_search)
     assert report["mrr"] == 1.0
     for kw in seen:

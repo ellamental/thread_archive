@@ -119,7 +119,6 @@ def cmd_search(args: argparse.Namespace) -> int:
                 output=args.output,
                 context_lines=args.context_lines,
                 context_events=args.context_events,
-                rerank=args.rerank,
                 match=args.match,
                 page=args.page,
             )
@@ -337,8 +336,9 @@ def cmd_watch(args: argparse.Namespace) -> int:
         # Warm the model stack for the viewer's searches, exactly as the shared MCP
         # server does for its clients. Nobody typing into the search box knows a model
         # is loading, so the tens-of-seconds cold load reads as a broken product on the
-        # first search anyone ever runs — and every search after it is sub-second, so
-        # the archive makes its worst impression on the one query that forms it. Only
+        # first search anyone ever runs — where warm search is sub-second at the
+        # median, so the archive makes its worst impression on the one query that
+        # forms it, by an order of magnitude it never repeats. Only
         # the cohosting process warms: the watcher's own indexing loads the embedder
         # when it has work, and a headless watcher answers no queries.
         start_warm_models()
@@ -1457,11 +1457,6 @@ def build_parser() -> argparse.ArgumentParser:
     p_search.add_argument("--match", default=None, metavar="MODE",
                           help="'token' (default, indexed) or 'substring' (uncapped infix "
                                "scan — finds p4 inside mp4)")
-    rerank = p_search.add_mutually_exclusive_group()
-    rerank.add_argument("--rerank", dest="rerank", action="store_true", default=None,
-                        help="force the cross-encoder re-rank on (needs the [embeddings] extra)")
-    rerank.add_argument("--no-rerank", dest="rerank", action="store_false",
-                        help="force it off (the default auto-gates on the query's shape)")
     p_search.set_defaults(func=cmd_search)
 
     p_read = sub.add_parser(

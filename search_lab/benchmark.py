@@ -64,14 +64,12 @@ import eval_home  # noqa: E402
 
 REPO = Path(__file__).resolve().parent.parent
 
-#: Tiers are nested: smoke ⊂ standard ⊂ full. The split is by what a run costs
-#: against what it can tell you — smoke is the pair of instruments that can credit
-#: a ranking change at all (~7 min warm), standard adds every external yardstick
-#: whose corpus is already built and embedded (~20 min warm), and full adds the
-#: cross-encoder passes, which are the bench's dominant cost (~an hour on LoCoMo
-#: alone) and are measuring an arm production ships with off. Warm is the ordinary
+#: Tiers are nested: smoke ⊂ standard. The split is by what a run costs against
+#: what it can tell you — smoke is the pair of instruments that can credit a
+#: ranking change at all (~7 min warm), standard adds every external yardstick
+#: whose corpus is already built and embedded (~20 min warm). Warm is the ordinary
 #: case; a row whose corpus has never been built pays for building it once.
-TIERS = ("smoke", "standard", "full")
+TIERS = ("smoke", "standard")
 
 
 @dataclass
@@ -151,9 +149,8 @@ def _gold_rows() -> list[Row]:
 
 
 def _external_rows() -> list[Row]:
-    """The published-baseline yardsticks. Standard covers every corpus that is
-    already built and embedded; the cross-encoder passes are full-tier because
-    they cost hours and measure an arm the shipped stack keeps off."""
+    """The published-baseline yardsticks — every corpus that is already built and
+    embedded."""
     homes = eval_home.CACHE_ROOT / "homes"
     beir = str(REPO / "search_lab" / "beir_eval.py")
     cdr = str(REPO / "search_lab" / "cdr_eval.py")
@@ -180,17 +177,6 @@ def _external_rows() -> list[Row]:
             build_hint=first_run, measure_keys=("recall10", "ndcg10")),
         Row(name="longmemeval[lexical]", tier="standard", cost_min=15,
             argv=[hay, "--dataset", "longmemeval"],
-            build_hint=first_run, measure_keys=("recall10", "ndcg10")),
-        Row(name="beir:scifact[vectors+rerank]", tier="full", cost_min=15,
-            argv=[beir, "--dataset", "scifact", "--vectors", "--rerank", "on"],
-            home=homes / "scifact", build_hint=first_run,
-            measure_keys=("ndcg10", "mrr10", "recall10")),
-        Row(name="cdr[vectors+rerank]", tier="full", cost_min=60,
-            argv=[cdr, "--vectors", "--rerank", "on"],
-            home=homes / "cdr", build_hint=first_run,
-            measure_keys=("ndcg10", "mrr10", "recall10")),
-        Row(name="locomo[vectors+rerank]", tier="full", cost_min=60,
-            argv=[hay, "--dataset", "locomo", "--vectors", "--rerank", "on"],
             build_hint=first_run, measure_keys=("recall10", "ndcg10")),
     ]
 

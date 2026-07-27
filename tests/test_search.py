@@ -274,21 +274,18 @@ def test_quality_verdict_logic() -> None:
     assert term_hit_count("let's go now", ["go"]) == 1
     assert term_hit_count("auth auth auth", ["auth"]) == 1     # distinct count
 
-    assert _search_quality(0, 0, False) is None                # no terms → no verdict
-    assert _search_quality(9, 3, True)[0] == "semantic"        # rerank wins outright
-    assert _search_quality(0, 2, False)[0] == "weak"           # zero overlap
-    assert _search_quality(2, 3, False)[0] == "strong"         # ceil(2/3·3)=2
-    assert _search_quality(1, 3, False)[0] == "partial"
-    assert _search_quality(2, 2, False)[0] == "strong"
+    assert _search_quality(0, 0) is None                # no terms → no verdict
+    assert _search_quality(0, 2)[0] == "weak"           # zero overlap
+    assert _search_quality(2, 3)[0] == "strong"         # ceil(2/3·3)=2
+    assert _search_quality(1, 3)[0] == "partial"
+    assert _search_quality(2, 2)[0] == "strong"
 
 
 def test_quality_signal_rendered(archive_home) -> None:
     from thread_archive._retrieval import format_results
 
     _seed_corpus(archive_home)
-    # rerank=False forces the lexical verdict (a 2-term query auto-reranks to
-    # 'semantic' when the cross-encoder is installed).
-    strong = format_results(search("authentication login", rerank=False), "authentication login")
+    strong = format_results(search("authentication login"), "authentication login")
     assert "quality=strong" in strong and "2/2" in strong
 
     # 'authenticated' stems to the same root as 'authentication' (FTS5 porter), so

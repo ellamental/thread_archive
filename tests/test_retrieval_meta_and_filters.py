@@ -6,7 +6,6 @@ two-pass code/pipe-OR federation.
 - ``exclude_from_search`` actually drops a thread's hits (and its meta docs)
 - since/until bounds resolve to the store's canonical timestamp form
 - code-identifier / pipe-OR queries reach old hits through the MATCH pass
-- ``match_window`` centres the reranker's span on the match
 """
 
 from __future__ import annotations
@@ -18,7 +17,6 @@ from sqlalchemy import update
 from thread_archive._importers import import_session_incremental
 from thread_archive._retrieval import index_thread_meta, rebuild_fts, search
 from thread_archive._retrieval._classify import resolve_relative_date
-from thread_archive._retrieval.rank import match_window
 from thread_archive._store import Thread, init_db, use_session
 
 
@@ -152,12 +150,3 @@ def test_code_query_reaches_old_hits_past_recency_cap(archive_home) -> None:
 def test_pipe_or_uses_match_pass(archive_home) -> None:
     _seed(archive_home)
     assert search("importer | nonexistentzzz")
-
-
-def test_match_window_centres_on_match() -> None:
-    doc = ("intro filler. " * 50) + "the needle sits here" + (" trailing filler." * 50)
-    win = match_window(doc, ["needle"], 200)
-    assert "needle" in win and len(win) <= 200
-    # No match → head of doc; short docs pass through whole.
-    assert match_window(doc, ["absent"], 200) == doc[:200]
-    assert match_window("short", ["needle"], 200) == "short"

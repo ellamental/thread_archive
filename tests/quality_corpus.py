@@ -299,7 +299,7 @@ def load_eval_harness():
 
 
 def run_cases(name_to_id: dict[str, str], *, search=None, params=None,
-              limit: int = 10, rerank=None, cases=None) -> dict:
+              limit: int = 10, cases=None) -> dict:
     """Score a search callable against the case set. Default: the production
     pipeline as configured by the current process (the model arms honor the
     ``THREAD_ARCHIVE_EMBED`` / ``_RERANK`` switches, so the model-free suite
@@ -320,7 +320,7 @@ def run_cases(name_to_id: dict[str, str], *, search=None, params=None,
     resolved = [{"query": q, "gold": [name_to_id[g] for g in golds], "sessions": []}
                 for q, golds in (cases or CASES)]
     return harness.evaluate(
-        resolved, limit=limit, rerank=rerank, content_type=None,
+        resolved, limit=limit, content_type=None,
         exclude_content_types=None, search=search)
 
 

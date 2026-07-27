@@ -112,8 +112,8 @@ def nightly(
       the escalated pass on its next nightly instead of a month later.
     - **The drill is nightly.** The restore path is code and the code changes
       daily; a restore-path regression must surface the next morning, not up
-      to a month later. Roughly an hour of nice'd 4 a.m. work at current size
-      (the drill's full index rebuild dominates — ~50 min on the live archive).
+      to a month later. Roughly an hour of nice'd 4 a.m. work at current size,
+      the drill's full index rebuild dominating it.
     - **Failure notifies** (``notify_url``, lab's ``/api/notify`` shape) with
       the failed stage names. The "never ran at all" case is the monitor's to
       catch, from the staleness of the health.json records this writes.

@@ -26,8 +26,7 @@ class EventHit(TypedDict):
     fusion), ``_lex`` (the lexical arm's normalized reciprocal rank — bm25 for a
     MATCH pass), ``_bm25`` (that arm's own bm25 score, peak-normalized over the
     pool; absent on a hit no MATCH pass scored),
-    ``_rrf`` (normalized fusion score), ``_did_rerank`` (whether the
-    cross-encoder re-ordered the head — drives the renderer's quality verdict),
+    ``_rrf`` (normalized fusion score),
     ``context`` (±N-line window around the match), ``context_events``
     (neighbouring events, ``{"before": [...], "after": [...]}``), and the
     grouping annotations ``_thread_more`` (further hits in this thread folded
@@ -73,7 +72,6 @@ class EventHit(TypedDict):
     _lex: NotRequired[float]
     _bm25: NotRequired[float]
     _rrf: NotRequired[float]
-    _did_rerank: NotRequired[bool]
     _thread_more: NotRequired[int]
     _dup_thread_ids: NotRequired[list[str]]
     context: NotRequired[str]

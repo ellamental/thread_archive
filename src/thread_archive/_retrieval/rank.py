@@ -1,4 +1,4 @@
-"""Result ranking — the weighted lexical scorer + the cross-encoder gate.
+"""Result ranking — the weighted lexical scorer.
 
 The production ranker. The federation produces a pool; this turns it into an order:
 
@@ -8,14 +8,6 @@ The production ranker. The federation produces a pool; this turns it into an ord
      content length), **phrase proximity**, **recency**, **content-type** weight,
      and **cross-backend fusion** (the ``_rrf`` agreement score the vector arm
      contributes) — the same five knobs, at the same shipped weights, as prod.
-  3. :func:`should_rerank` gates the latency-bearing cross-encoder head re-rank
-     (:mod:`.rerank`) to *conceptual* multi-term queries — the vocab-mismatch ones
-     where the bi-encoder ranks the target mid-list. Keyword shapes (OR / quoted /
-     identifier-dominated / single-term) the lexical arm already nails are skipped.
-     :func:`head_is_strong` is the second, result-side half of that gate: once the
-     pool is ranked, a top hit that literally contains the query terms means the
-     lexical order is already trustworthy and the re-rank stands down (see
-     :func:`thread_archive._retrieval.search`).
 
 The weights come from :class:`.params.SearchParams` (see that module for the
 production values and their evidence); content-type from
@@ -53,11 +45,6 @@ _CONTENT_TYPE_WEIGHT = {
     "thinking": 0.3,
     "continuation_summary": 0.1,
 }
-
-# Cross-encoder re-rank pool at the shipped configuration — how many ranked
-# candidates feed the reranker before cutting to ``limit`` (rationale in
-# params.py). SearchParams.rerank_pool is the per-call override.
-RERANK_POOL = _DEFAULT_PARAMS.rerank_pool
 
 # Function words carry no relevance signal, so they're dropped from the *ranking*
 # term set (density, phrase, the K/N match-quality verdict) — otherwise "how did we
@@ -165,26 +152,6 @@ def search_terms(query: str) -> list[str]:
     return _drop_stopwords(_edge_stripped([t.lower() for t in q.split()]))
 
 
-_IDENTIFIER_RE = re.compile(r"[_]|::|(?<=\w)\.(?=\w)")
-
-
-def should_rerank(query: str, terms: list[str]) -> bool:
-    """Gate the cross-encoder re-rank to *conceptual* multi-term queries. Skip the
-    keyword shapes the lexical arm already nails: pipe-OR, quoted exact phrases,
-    identifier-dominated queries, and single-term queries. A query that merely
-    *mentions* an identifier inside a conceptual question ("why thread_search
-    misses old threads") still reranks — only when identifier terms make up half
-    or more of the terms is the lexical arm trusted outright. A false positive
-    only costs latency (the re-rank is fail-soft), never results."""
-    q = (query or "").strip()
-    if "|" in q or '"' in q:
-        return False
-    if len(terms) < 2:
-        return False
-    code_terms = sum(1 for t in terms if _IDENTIFIER_RE.search(t))
-    return code_terms * 2 < len(terms)
-
-
 # Common English inflectional suffixes an indexed word may carry past a ranking
 # term's stem — 'caches' for 'cache', 'tokens' for 'token', 'cached' for 'cache'.
 # A ranking term matches its word plus at most one of these, bounded by word
@@ -215,117 +182,9 @@ def term_hit_count(content: str, terms: list[str]) -> int:
 
 
 def strong_match_floor(n_terms: int) -> int:
-    """Term-hit floor for a *strong* lexical match: ⌈2/3·N⌉, min 1. The one
-    threshold shared by the renderer's ``quality=strong`` verdict and the
-    :func:`head_is_strong` re-rank skip — what the header calls trustworthy is
-    exactly what the pipeline trusts."""
+    """Term-hit floor for a *strong* lexical match: ⌈2/3·N⌉, min 1. What the
+    renderer's ``quality=strong`` verdict calls trustworthy."""
     return max(1, -(-2 * n_terms // 3))
-
-
-def head_is_strong(hits: list[EventHit], terms: list[str]) -> bool:
-    """Whether the top-ranked hit is a strong literal match for the query
-    (:func:`strong_match_floor` of the terms land in its content). A strong head
-    means the lexical ranking already found the target's vocabulary — the
-    cross-encoder exists for the *vocab-mismatch* case, and re-ranking a
-    confident lexical order costs seconds only to shuffle it (measured on the
-    title-query eval: forced re-rank drops MRR 0.55→0.48)."""
-    if not hits or not terms:
-        return False
-    text = hits[0].get("full_content") or hits[0].get("snippet") or ""
-    return term_hit_count(text, terms) >= strong_match_floor(len(terms))
-
-
-# Aboutness docs: a title/summary the query matches names what the thread
-# *is*, the trustworthy-order case the strong-head stand-down was measured on.
-ABOUTNESS_CONTENT_TYPES = frozenset({"title", "summary"})
-
-
-def head_is_query_echo(hits: list[EventHit], terms: list[str]) -> bool:
-    """Whether the strong ranked head is a *message* that echoes the whole query
-    verbatim as one contiguous phrase — a pasted prompt, a quoted ticket, a
-    restated-but-unanswered question. Such a head is as plausibly the question as
-    the answer, so (unlike a title/summary the query matches) it does not
-    by itself make the lexical order trustworthy: the cross-encoder is let run to
-    look for a differently-worded answer below it, but its verdict is trusted only
-    when it actually rescues one (see :func:`thread_archive._retrieval.search`)."""
-    if len(terms) < 2 or not head_is_strong(hits, terms):
-        return False
-    top = hits[0]
-    if (top.get("content_type") or "") in ABOUTNESS_CONTENT_TYPES:
-        return False
-    content = (top.get("full_content") or top.get("snippet") or "").lower()
-    return " ".join(terms) in content
-
-
-def head_earns_standdown(hits: list[EventHit], terms: list[str]) -> bool:
-    """Whether a strong ranked head should stand the cross-encoder down. A strong
-    head (:func:`head_is_strong`) normally means the lexical order is trustworthy,
-    so the re-rank stands down — except a verbatim query echo
-    (:func:`head_is_query_echo`), which earns no such trust."""
-    return head_is_strong(hits, terms) and not head_is_query_echo(hits, terms)
-
-
-def match_window(content: str, terms: list[str], chars: int) -> str:
-    """The ~``chars``-wide slice of ``content`` centred on the *densest* term
-    cluster — what a cross-encoder should score. Feeding it the doc *head*
-    mis-scores any hit whose relevant text sits mid-message, and centring on the
-    *earliest* term drifts to a stray incidental mention when the answering
-    passage — where the query terms actually gather — is further down. The window
-    is placed over the passage covering the most distinct query terms (ties →
-    earliest), plus a third of the window as lead-in. Head of the doc when nothing
-    matches (conceptual queries may share no literal term with the target)."""
-    if not content or len(content) <= chars:
-        return content
-    low = content.lower()
-    pos = _densest_cluster_pos(low, terms, chars)
-    if pos <= chars // 3:  # no match, or the cluster is already inside a head window
-        return content[:chars]
-    start = min(pos - chars // 3, len(content) - chars)
-    return content[start:start + chars]
-
-
-def _densest_cluster_pos(low: str, terms: list[str], chars: int) -> int:
-    """The start position of the ``chars``-wide window over ``low`` (already
-    lowercased) covering the most distinct ``terms`` — a two-pointer sweep over
-    every term occurrence. ``-1`` when nothing matches, so the caller falls back
-    to the doc head."""
-    occ = sorted(
-        (m.start(), t) for t in set(terms) for m in _term_pattern(t).finditer(low)
-    )
-    if not occ:
-        return -1
-    best_pos, best_cover = occ[0][0], 0
-    freq: dict[str, int] = {}
-    left = 0
-    for right_pos, right_term in occ:
-        freq[right_term] = freq.get(right_term, 0) + 1
-        while right_pos - occ[left][0] >= chars:
-            lt = occ[left][1]
-            freq[lt] -= 1
-            if not freq[lt]:
-                del freq[lt]
-            left += 1
-        if len(freq) > best_cover:
-            best_cover, best_pos = len(freq), occ[left][0]
-    return best_pos
-
-
-def rerank_windows(content: str, terms: list[str], chars: int) -> list[str]:
-    """The passages a cross-encoder should score for one hit — its relevance is
-    the best of them (MaxP). A doc that fits in ``chars`` is one passage. A longer
-    doc adds its head and tail alongside the match-centred window, so an answering
-    passage that sits far from the query terms — a resolution at the very end, or
-    a doc whose only near-query text is an incidental mention up top — is scored
-    rather than truncated away. Duplicates (a short-enough doc, an already-head
-    window) collapse."""
-    content = content or ""
-    if len(content) <= chars:
-        return [content]
-    out: list[str] = []
-    for w in (match_window(content, terms, chars), content[:chars], content[-chars:]):
-        if w and w not in out:
-            out.append(w)
-    return out
 
 
 def dedup_results(results: list[EventHit]) -> list[EventHit]:

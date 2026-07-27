@@ -15,7 +15,6 @@ def test_install_yields_a_fresh_probe_and_restores_on_exit() -> None:
     with _probe.install() as probe:
         assert _probe.current() is probe
         probe.fts_ms += 5.0
-        probe.did_rerank = True
     # Slot restored — the probe does not leak past its block.
     assert _probe.current() is None
 
@@ -32,14 +31,11 @@ def test_as_record_shape_and_cold_only_when_true() -> None:
     probe = _probe.SearchProbe()
     probe.fts_ms = 12.34
     probe.semantic_ms = 5.0
-    probe.rerank_ms = 100.06
-    probe.did_rerank = True
     probe.pool_size = 198
     rec = probe.as_record()
     # Both arms ran, so both sub-splits ride along (all zero here — nothing
     # recorded into them).
-    assert rec == {"fts_ms": 12.3, "semantic_ms": 5.0, "rerank_ms": 100.1,
-                   "did_rerank": True, "pool_size": 198,
+    assert rec == {"fts_ms": 12.3, "semantic_ms": 5.0, "pool_size": 198,
                    "match_ms": 0.0, "scan_ms": 0.0, "rescan_ms": 0.0,
                    "build_ms": 0.0, "fts_passes": 0,
                    "embed_ms": 0.0, "scope_ms": 0.0, "matrix_ms": 0.0,
@@ -49,7 +45,6 @@ def test_as_record_shape_and_cold_only_when_true() -> None:
     probe.embed_cold = True
     rec = probe.as_record()
     assert rec["cold"] is True and rec["embed_cold"] is True
-    assert "rerank_cold" not in rec
 
 
 def test_substages_are_gated_per_arm() -> None:
@@ -85,15 +80,6 @@ def test_bump_tallies_and_survives_an_unknown_counter() -> None:
         _probe.bump("fts_passes")
         _probe.bump("no_such_counter")
     assert probe.fts_passes == 2
-
-
-def test_cold_is_not_pinned_by_an_installed_but_idle_rerank_arm() -> None:
-    # The whole reason the flag is per-arm: a cross-encoder that is installed and
-    # never invoked must contribute no cold signal, or every search reads cold.
-    probe = _probe.SearchProbe()
-    assert probe.cold is False
-    probe.rerank_cold = True
-    assert probe.cold is True and probe.as_record()["rerank_cold"] is True
 
 
 def test_record_and_flag_are_noops_without_a_probe() -> None:

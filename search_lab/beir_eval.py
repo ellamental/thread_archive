@@ -14,7 +14,7 @@ the BEIR paper are printed alongside, so "not embarrassing" is judgeable at a
 glance.
 
 What it measures is the *components* — the FTS5/BM25 lexical arm, the weighted
-ranker, and (with ``--vectors`` / ``--rerank``) the semantic and cross-encoder
+ranker, and (with ``--vectors``) the semantic
 arms — on out-of-domain scientific/argument text that looks nothing like a
 conversation archive. A BM25-competitive lexical number means the lexical
 plumbing is sound; it says nothing about conversational-archive quality, which
@@ -36,7 +36,7 @@ built archive itself (the SQLite/FTS index *and* the embeddings). So the first
     # add the semantic arm; add the cross-encoder head re-rank (slow: loads torch).
     # the embed pass is cached, so the second of these reuses the first's vectors:
     .venv/bin/python search_lab/beir_eval.py --dataset scifact --vectors
-    .venv/bin/python search_lab/beir_eval.py --dataset scifact --vectors --rerank on
+    .venv/bin/python search_lab/beir_eval.py --dataset scifact --vectors
 
 nfcorpus (3.6k docs) and scifact (5.2k docs) are the standard small smoke sets.
 Larger sets work but the per-doc import and (with ``--vectors``) the embed pass
@@ -276,7 +276,7 @@ def run(args) -> int:
     # Pin the home + arm switches BEFORE importing the package, so the store bakes
     # the right DSN and no model cold-loads unless asked.
     os.environ["THREAD_ARCHIVE_HOME"] = str(home)
-    rerank = eval_home.pin_arms(vectors=args.vectors, rerank=args.rerank)
+    eval_home.pin_arms(vectors=args.vectors)
 
     data = fetch_dataset(args.dataset, cache_root)
     queries = load_queries(data / "queries.jsonl")
@@ -354,7 +354,7 @@ def run(args) -> int:
         # one row per doc happens below, on doc_id.
         hits = api.search(
             qtext, limit=max(ks) * 2, content_types=["user"],
-            group="none", rerank=rerank,
+            group="none",
         )
         latencies.append(time.monotonic() - s0)
         # Map thread hits back to BEIR doc ids, preserving rank order, deduped.
@@ -384,7 +384,7 @@ def run(args) -> int:
     p50 = sorted(latencies)[n // 2] * 1000 if n else 0.0
     total_s = time.monotonic() - t0
 
-    arms = eval_home.arm_labels(vectors=args.vectors, rerank=rerank)
+    arms = eval_home.arm_labels(vectors=args.vectors)
     ref = REFERENCE.get(args.dataset, {})
     print()
     print(f"=== BEIR {args.dataset} — archive stack [{' + '.join(arms)}] ===")
@@ -434,8 +434,6 @@ def main() -> int:
                          "(persistent; shared with the other benchmarks)")
     ap.add_argument("--vectors", action="store_true",
                     help="build + query the semantic arm with the real embedder (needs [embeddings])")
-    ap.add_argument("--rerank", choices=["on", "off", "auto"], default="off",
-                    help="cross-encoder head re-rank: off (default), on (force, slow), or auto-gated")
     ap.add_argument("--max-docs", type=int, default=None,
                     help="cap ingested corpus docs (smoke runs)")
     ap.add_argument("--max-queries", type=int, default=None,

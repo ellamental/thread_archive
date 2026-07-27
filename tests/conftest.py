@@ -7,15 +7,13 @@ every test is defaulted to a *throwaway* home so nothing can ever touch the real
 so an un-homed test would otherwise create the real default).
 
 The suite is also pinned **model-free** through the product's own switches
-(``$THREAD_ARCHIVE_EMBED`` / ``$THREAD_ARCHIVE_RERANK`` set to ``off``): no test
-can cold-load the torch models just because the venv happens to have the
-``[embeddings]`` extra installed. Without the pin, any ``search()`` whose query
-trips the rerank gate loads the real cross-encoder in-process — a 100-second
-stall — and search-path tests exercise different code depending on which extras
-are installed. Tests that cover the vector/rerank machinery opt back in per-test,
-either by clearing the switch and constructing an ``Embedder``/``Reranker`` around
-a scripted model, or by passing their own through the ``embedder`` / ``reranker``
-arguments (see ``test_vectors.py``, ``test_rerank.py``).
+(``$THREAD_ARCHIVE_EMBED`` set to ``off``): no test can cold-load the torch model
+just because the venv happens to have the ``[embeddings]`` extra installed.
+Without the pin, a search-path test would exercise different code depending on
+which extras are installed. Tests that cover the vector machinery opt back in
+per-test, either by clearing the switch and constructing an ``Embedder`` around a
+scripted model, or by passing their own through the ``embedder`` argument (see
+``test_vectors.py``).
 """
 
 from __future__ import annotations
@@ -85,10 +83,9 @@ def _isolate_archive(tmp_path, monkeypatch):
     # the engine mid-suite. Off; test_lazy_ingest.py exercises it with stubs.
     monkeypatch.setenv("THREAD_ARCHIVE_MCP_INGEST", "0")
     # Model-free suite: no real torch model may load, regardless of installed extras.
-    # The product's own off switches, so the pin runs through the same code an
+    # The product's own off switch, so the pin runs through the same code an
     # operator's `--lexical-only` does (read per call — set here, honored from here on).
     monkeypatch.setenv("THREAD_ARCHIVE_EMBED", "off")
-    monkeypatch.setenv("THREAD_ARCHIVE_RERANK", "off")
     # Coherence re-rank off suite-wide: its background graph-refresh thread
     # holds a pooled sqlite connection past the test that spawned it, and the
     # late GC fails an unrelated victim test. Its logic has dedicated

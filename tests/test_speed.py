@@ -24,10 +24,10 @@ def test_percentile_is_nearest_rank() -> None:
     assert speed.percentile([7.0], 0.99) == 7.0
 
 
-def _sample(total, *, fts=0.0, sem=0.0, rr=0.0, did=False, pool=200,
+def _sample(total, *, fts=0.0, sem=0.0, pool=200,
             shape="natural", query="q") -> dict:
-    return {"total_ms": total, "fts_ms": fts, "semantic_ms": sem, "rerank_ms": rr,
-            "did_rerank": did, "pool_size": pool, "shape": shape, "query": query}
+    return {"total_ms": total, "fts_ms": fts, "semantic_ms": sem,
+            "pool_size": pool, "shape": shape, "query": query}
 
 
 def test_summarize_builds_the_distribution() -> None:
@@ -38,15 +38,14 @@ def test_summarize_builds_the_distribution() -> None:
     assert stats.n_samples == 5
 
 
-def test_summarize_reports_rerank_rate_and_shapes() -> None:
+def test_summarize_reports_the_shape_split() -> None:
     samples = [
-        _sample(100, did=True, shape="natural", query="a"),
-        _sample(200, did=False, shape="natural", query="b"),
-        _sample(50, did=False, shape="code", query="c"),
-        _sample(60, did=False, shape="code", query="d"),
+        _sample(100, shape="natural", query="a"),
+        _sample(200, shape="natural", query="b"),
+        _sample(50, shape="code", query="c"),
+        _sample(60, shape="code", query="d"),
     ]
     stats = speed._summarize(samples, n_queries=4, reps=1)
-    assert stats.rerank_rate == 0.25
     assert stats.by_shape["code"]["n"] == 2
     assert stats.by_shape["natural"]["p95"] == 200.0
 
@@ -156,13 +155,11 @@ def test_measure_attributes_stage_times_from_the_probe() -> None:
         probe = _probe.current()
         probe.fts_ms += 40.0
         probe.semantic_ms += 60.0
-        probe.did_rerank = True
         return []
 
     stats = speed.measure(["q"], search=fake_search, reps=2, warmup=False)
     assert stats.stages["fts_ms"]["p50"] == 40.0
     assert stats.stages["semantic_ms"]["p50"] == 60.0
-    assert stats.rerank_rate == 1.0
 
 
 def test_measure_replays_the_arguments_a_call_was_made_with() -> None:
@@ -244,11 +241,11 @@ def test_record_run_appends_and_flags_a_tuning_run(archive_home) -> None:
     import json
 
     speed.record_run(archive_home, snapshot_id="s", stats=_stats(),
-                     overrides={"rerank_auto": True})
+                     overrides={"pool_floor": 300})
     rows = [json.loads(line) for line in
             (archive_home / speed.LATENCY_RUNS_FILE).read_text().splitlines()]
     assert rows[0]["kind"] == "latency-run"
-    assert rows[0]["overrides"] == {"rerank_auto": True}
+    assert rows[0]["overrides"] == {"pool_floor": 300}
     assert "by_query" not in rows[0]  # compact ledger row, not the baseline
 
 

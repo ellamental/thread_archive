@@ -72,25 +72,23 @@ def test_guard_defends_the_real_archive_home_by_default(monkeypatch) -> None:
 def test_pin_arms_stands_coherence_down_for_a_lexical_run(monkeypatch) -> None:
     # Coherence reads event_vectors; with embeddings off that table is never
     # populated, so leaving it on measures a stack with a swallowed exception in it.
-    for var in ("THREAD_ARCHIVE_EMBED", "THREAD_ARCHIVE_RERANK",
-                "THREAD_ARCHIVE_COHERENCE", "THREAD_ARCHIVE_NO_THROTTLE"):
+    for var in ("THREAD_ARCHIVE_EMBED", "THREAD_ARCHIVE_COHERENCE",
+                "THREAD_ARCHIVE_NO_THROTTLE"):
         monkeypatch.delenv(var, raising=False)
 
-    assert eval_home.pin_arms(vectors=False, rerank="off") is False
+    eval_home.pin_arms(vectors=False)
     import os
 
     assert os.environ["THREAD_ARCHIVE_EMBED"] == "off"
-    assert os.environ["THREAD_ARCHIVE_RERANK"] == "off"
     assert os.environ["THREAD_ARCHIVE_COHERENCE"] == "off"
     assert os.environ["THREAD_ARCHIVE_NO_THROTTLE"] == "1"
 
 
 def test_pin_arms_leaves_coherence_alone_when_the_vector_arm_is_on(monkeypatch) -> None:
-    for var in ("THREAD_ARCHIVE_EMBED", "THREAD_ARCHIVE_RERANK",
-                "THREAD_ARCHIVE_COHERENCE"):
+    for var in ("THREAD_ARCHIVE_EMBED", "THREAD_ARCHIVE_COHERENCE"):
         monkeypatch.delenv(var, raising=False)
 
-    assert eval_home.pin_arms(vectors=True, rerank="auto") is None
+    eval_home.pin_arms(vectors=True)
     import os
 
     assert os.environ["THREAD_ARCHIVE_EMBED"] == "on"
@@ -98,12 +96,8 @@ def test_pin_arms_leaves_coherence_alone_when_the_vector_arm_is_on(monkeypatch) 
 
 
 def test_arm_labels_name_the_configuration_that_ran() -> None:
-    assert eval_home.arm_labels(vectors=False, rerank=False) == ["lexical"]
-    assert eval_home.arm_labels(vectors=True, rerank=False) == ["lexical", "vectors"]
-    assert eval_home.arm_labels(vectors=True, rerank=True) == [
-        "lexical", "vectors", "rerank:on"]
-    assert eval_home.arm_labels(vectors=True, rerank=None) == [
-        "lexical", "vectors", "rerank:auto"]
+    assert eval_home.arm_labels(vectors=False) == ["lexical"]
+    assert eval_home.arm_labels(vectors=True) == ["lexical", "vectors"]
 
 
 def test_marker_stale_catches_a_capped_build_read_back_as_the_full_corpus() -> None:

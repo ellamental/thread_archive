@@ -7,12 +7,12 @@ retrieval** — each question carries its own small conversation history, and th
 task is to pull the evidence turn(s)/session(s) out of *that* history. So this
 harness builds a small archive per corpus, ingests just that corpus, runs the
 question(s) through the real ``api.search``, and scores the ranking. The archive
-engine is closed and reopened per corpus in one process; the embedding / rerank
+engine is closed and reopened per corpus in one process; the embedding
 models are process-level singletons, so they load once and persist across corpora.
 
 Each built corpus home is **cached** (keyed by content) and reused across runs, so
-a re-run — or the ``--rerank`` pass over an already-embedded ``--vectors`` corpus —
-skips ingest and embedding entirely (rerank is query-time, so it needs no rebuild).
+a re-run over an already-embedded ``--vectors`` corpus skips ingest and embedding
+entirely.
 ``--rebuild`` forces a fresh build; ``--fresh`` uses throwaway homes with no reuse.
 These homes are workspace rather than archives — hundreds per run — so they stay out
 of the registry. ``haystack_corpus.py`` builds the complementary shape: the whole
@@ -89,8 +89,7 @@ _CACHE = eval_home.CACHE_ROOT
 
 # A built+embedded corpus home is cached under ``<data-dir>/homes/<dataset>/<fp>``
 # and reused across runs. The fingerprint pins the dataset, the group, the corpus
-# *content*, and whether it carries vectors — but not rerank (a query-time step),
-# so a ``--vectors`` home serves ``--vectors --rerank`` without re-embedding. Bump
+# *content*, and whether it carries vectors. Bump
 # CACHE_VERSION to invalidate every cached home after a schema/harness change.
 CACHE_VERSION = "1"
 _READY = ".ready.json"
@@ -253,7 +252,7 @@ def _build_group(api, home: Path, corpus: dict[str, str], *, vectors: bool) -> d
 
 
 def eval_group(api, home: Path, corpus: dict[str, str], queries: list[dict],
-               *, vectors: bool, rerank, ks: tuple[int, ...],
+               *, vectors: bool, ks: tuple[int, ...],
                cache: bool, rebuild: bool) -> tuple[list[dict], bool]:
     """Score every query over ``corpus``. Reuses a cached home when one is present
     (``cache`` on, no ``rebuild``, ready marker written), else builds fresh and —
@@ -280,7 +279,7 @@ def eval_group(api, home: Path, corpus: dict[str, str], queries: list[dict],
     results = []
     for q in queries:
         hits = api.search(q["text"], limit=limit, content_types=["user"],
-                          group="none", rerank=rerank)
+                          group="none")
         ranked, seen = [], set()
         for h in hits:
             d = doc_of_thread.get(str(h["thread_id"]))
@@ -326,14 +325,14 @@ def run(args) -> int:
         else (Path(args.data_dir).expanduser() / "homes")
     cache_root = eval_home.guard_home(cache_root, what="eval home root")
 
-    rerank = eval_home.pin_arms(vectors=args.vectors, rerank=args.rerank)
+    eval_home.pin_arms(vectors=args.vectors)
 
     from thread_archive import _api as api
 
     n_q = sum(len(q) for _, _, q in groups)
     n_docs = sum(len(c) for _, c, _ in groups)
     _log(f"{args.dataset}: {len(groups)} corpora, {n_docs} docs, {n_q} queries "
-         f"(ks={ks}, vectors={args.vectors}, rerank={args.rerank})")
+         f"(ks={ks}, vectors={args.vectors})")
 
     all_rows: list[dict] = []
     n_hits = 0
@@ -343,7 +342,7 @@ def run(args) -> int:
         fingerprints.append(_fingerprint(args.dataset, gid, corpus, args.vectors))
         home = cache_root / args.dataset / fingerprints[-1]
         rows, hit = eval_group(api, home, corpus, queries,
-                               vectors=args.vectors, rerank=rerank, ks=ks,
+                               vectors=args.vectors, ks=ks,
                                cache=cache, rebuild=args.rebuild)
         all_rows += rows
         n_hits += hit
@@ -359,7 +358,7 @@ def run(args) -> int:
     cats = sorted({r["category"] for r in all_rows})
     per_cat = {c: _aggregate([r for r in all_rows if r["category"] == c], ks) for c in cats}
 
-    arms = eval_home.arm_labels(vectors=args.vectors, rerank=rerank)
+    arms = eval_home.arm_labels(vectors=args.vectors)
     ref = REFERENCE.get(args.dataset, {})
     print()
     print(f"=== {args.dataset} — archive stack [{' + '.join(arms)}] ===")
@@ -411,7 +410,6 @@ def main() -> int:
     ap.add_argument("--ks", default=None,
                     help="comma-separated cutoffs (default: locomo 5,10,25,50; longmemeval 5,10)")
     ap.add_argument("--vectors", action="store_true")
-    ap.add_argument("--rerank", choices=["on", "off", "auto"], default="off")
     ap.add_argument("--max-groups", type=int, default=None, help="cap corpora (smoke runs)")
     ap.add_argument("--rebuild", action="store_true",
                     help="force fresh ingest+embed even when a cached home exists (refreshes it)")

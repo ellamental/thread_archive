@@ -66,7 +66,7 @@ leiden = ["leidenalg>=0.10", "igraph>=0.11"]
 # Local semantic search (nomic-embed-text-v1.5 via sentence-transformers). Heavy;
 # the base install is lexical-only. einops is needed by nomic's trust_remote_code
 # model. torch is declared rather than left to arrive under sentence-transformers:
-# embed.py and rerank.py import it directly to pick the device and the fp16 dtype.
+# embed.py imports it directly to pick the device and the fp16 dtype.
 embeddings = [
     "sentence-transformers>=3.0", "einops>=0.7", "torch>=2.0",
     "thread-archive[leiden]",
@@ -179,7 +179,7 @@ markers = [
     "systemd: installs real systemd --user units and drives `systemctl --user`; gated behind THREAD_ARCHIVE_SYSTEMD_IT=1 (set in the CI `systemd` job) so it never runs — or clobbers a real setup — unless explicitly requested. Needs a live user systemd (a Linux box/VM, not the slim container).",
     "package: builds the wheel/sdist and installs into a throwaway venv; slow, selected explicitly with -m package",
     "beir: runs the BEIR retrieval-calibration harness (network download + torch + a full ingest); tens of minutes, selected explicitly with -m beir",
-    "quality_models: the synthetic search-quality corpus under the real embedding + rerank models (fused pipeline); minutes of model loads, selected explicitly with -m quality_models",
+    "quality_models: the synthetic search-quality corpus under the real embedding model (fused pipeline); minutes of model loads, selected explicitly with -m quality_models",
 ]
 filterwarnings = [
     "error::ResourceWarning",

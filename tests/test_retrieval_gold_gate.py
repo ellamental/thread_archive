@@ -393,11 +393,10 @@ def test_order_is_identity_without_a_baseline() -> None:
 
 def test_set_coerces_to_the_declared_field_type() -> None:
     params, overrides = gate._apply_overrides(
-        ["fusion_weight=500", "pool_floor=300", "rerank_auto=true"])
+        ["fusion_weight=500", "pool_floor=300"])
     assert params.fusion_weight == 500.0 and isinstance(params.fusion_weight, float)
     assert params.pool_floor == 300 and isinstance(params.pool_floor, int)
-    assert params.rerank_auto is True
-    assert overrides == {"fusion_weight": 500.0, "pool_floor": 300, "rerank_auto": True}
+    assert overrides == {"fusion_weight": 500.0, "pool_floor": 300}
 
 
 def test_set_leaves_untouched_fields_at_the_shipped_values() -> None:

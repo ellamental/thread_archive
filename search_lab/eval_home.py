@@ -77,39 +77,30 @@ def guard_home(home: Path | str, *, what: str = "corpus home",
     return path
 
 
-def pin_arms(*, vectors: bool, rerank: str) -> bool | None:
-    """Pin the retrieval arms for a benchmark process and return the ``rerank``
-    tri-state ``api.search`` takes (``True`` forced / ``False`` off / ``None``
-    auto-gated).
+def pin_arms(*, vectors: bool) -> None:
+    """Pin the retrieval arms for a benchmark process.
 
     Call before importing ``thread_archive``. Sets the throttle off (a benchmark
     build is the foreground work of the process, not background maintenance), the
-    embed and rerank switches from the requested arms, and — the one that is easy
-    to forget — coherence off whenever the semantic arm is off. The
-    community-coherence re-rank reads ``event_vectors``; with embeddings off that
-    table is never populated, so it degrades to a swallowed exception on every
-    conceptual query. A core lexical install has no coherence arm at all, so
-    pinning it off is what makes "lexical" mean the same stack in every harness
-    that reports one."""
+    embed switch from the requested arms, and — the one that is easy to forget —
+    coherence off whenever the semantic arm is off. The community-coherence
+    re-rank reads ``event_vectors``; with embeddings off that table is never
+    populated, so it degrades to a swallowed exception on every conceptual query.
+    A core lexical install has no coherence arm at all, so pinning it off is what
+    makes "lexical" mean the same stack in every harness that reports one."""
     os.environ["THREAD_ARCHIVE_NO_THROTTLE"] = "1"
     os.environ["THREAD_ARCHIVE_EMBED"] = "on" if vectors else "off"
-    os.environ["THREAD_ARCHIVE_RERANK"] = "off" if rerank == "off" else "on"
     if not vectors:
         os.environ["THREAD_ARCHIVE_COHERENCE"] = "off"
-    return {"on": True, "off": False, "auto": None}[rerank]
 
 
-def arm_labels(*, vectors: bool, rerank: bool | None) -> list[str]:
+def arm_labels(*, vectors: bool) -> list[str]:
     """The arms a run measured, as report labels — ``lexical`` always (the FTS
     arm is never off), then whichever model arms were pinned on. Shared so the
     header line of every external report names a configuration the same way."""
     arms = ["lexical"]
     if vectors:
         arms.append("vectors")
-    if rerank is True:
-        arms.append("rerank:on")
-    elif rerank is None:
-        arms.append("rerank:auto")
     return arms
 
 

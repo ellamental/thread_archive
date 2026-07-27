@@ -184,7 +184,7 @@ def _ranker(*thread_ids):
 def test_evaluate_rank_is_first_gold_hit():
     report = retrieval_eval.evaluate(
         [{"query": "q", "gold": [3, 5], "sessions": []}],
-        limit=20, rerank=False, content_type=None, exclude_content_types=None,
+        limit=20, content_type=None, exclude_content_types=None,
         search=_ranker(9, 5, 7))
     assert report["mrr"] == 0.5  # first gold (5) at rank 2
     assert report["success"][1] == 0.0
@@ -199,7 +199,7 @@ def test_evaluate_true_recall_averages_per_case_gold_coverage():
             {"query": "q1", "gold": ["A", "B"], "sessions": []},
             {"query": "q2", "gold": ["C"], "sessions": []},
         ],
-        limit=2, rerank=False, content_type=None, exclude_content_types=None,
+        limit=2, content_type=None, exclude_content_types=None,
         search=_ranker("A", "C"),
     )
     # q1 recovers 1/2 and q2 recovers 1/1: macro recall is (0.5 + 1.0) / 2.
@@ -212,7 +212,7 @@ def test_evaluate_skips_originating_session_hits():
     # otherwise outrank the real gold.
     report = retrieval_eval.evaluate(
         [{"query": "q", "gold": [5], "sessions": [42]}],
-        limit=20, rerank=False, content_type=None, exclude_content_types=None,
+        limit=20, content_type=None, exclude_content_types=None,
         search=_ranker(42, 5))
     assert report["mrr"] == 1.0
 
@@ -220,7 +220,7 @@ def test_evaluate_skips_originating_session_hits():
 def test_evaluate_miss_scores_zero():
     report = retrieval_eval.evaluate(
         [{"query": "q", "gold": [99], "sessions": []}],
-        limit=20, rerank=False, content_type=None, exclude_content_types=None,
+        limit=20, content_type=None, exclude_content_types=None,
         search=_ranker(1, 2, 3))
     assert report["mrr"] == 0.0
     assert all(v == 0.0 for v in report["success"].values())
@@ -231,7 +231,7 @@ def test_evaluate_respects_limit_after_skips():
     # Gold sits just past the limit once the session hit is skipped: no credit.
     report = retrieval_eval.evaluate(
         [{"query": "q", "gold": [99], "sessions": [42]}],
-        limit=2, rerank=False, content_type=None, exclude_content_types=None,
+        limit=2, content_type=None, exclude_content_types=None,
         search=_ranker(42, 1, 2, 99))
     assert report["mrr"] == 0.0
 
@@ -253,7 +253,7 @@ def test_evaluate_ndcg_rewards_the_whole_graded_pool():
     report = retrieval_eval.evaluate(
         [{"query": "q", "gold": ["A"], "sessions": [],
           "grades": {"A": 2, "B": 1, "C": 0}}],
-        limit=20, rerank=False, content_type=None, exclude_content_types=None,
+        limit=20, content_type=None, exclude_content_types=None,
         search=_ranker("C", "A", "B"))
     # DCG = 3/log2(3) + 1/log2(4); IDCG = 3/log2(2) + 1/log2(3).
     assert report["ndcg"][20] == pytest.approx(0.6590, abs=1e-4)
@@ -268,7 +268,7 @@ def test_evaluate_reports_per_difficulty_strata():
         [{"query": "verb", "gold": ["A"], "sessions": [], "difficulty": "verbatim"},
          {"query": "vag-hit", "gold": ["A"], "sessions": [], "difficulty": "vague"},
          {"query": "vag-miss", "gold": ["Z"], "sessions": [], "difficulty": "vague"}],
-        limit=20, rerank=False, content_type=None, exclude_content_types=None,
+        limit=20, content_type=None, exclude_content_types=None,
         search=_ranker("A", "B"))
     pd = report["per_difficulty"]
     assert set(pd) == {"verbatim", "vague"}  # no bucket for difficulty-less cases
@@ -282,7 +282,7 @@ def test_evaluate_reports_per_difficulty_strata():
 def test_evaluate_has_no_strata_without_difficulty_labels():
     report = retrieval_eval.evaluate(
         [{"query": "q", "gold": [5], "sessions": []}],
-        limit=20, rerank=False, content_type=None, exclude_content_types=None,
+        limit=20, content_type=None, exclude_content_types=None,
         search=_ranker(5))
     assert report["per_difficulty"] == {}
 
@@ -292,7 +292,7 @@ def test_evaluate_ndcg_falls_back_to_binary_without_a_pool():
     # the title/log protocols. Gold at rank 2 of a single-relevant pool.
     report = retrieval_eval.evaluate(
         [{"query": "q", "gold": [5], "sessions": []}],
-        limit=20, rerank=False, content_type=None, exclude_content_types=None,
+        limit=20, content_type=None, exclude_content_types=None,
         search=_ranker(9, 5, 3))
     assert report["ndcg"][20] == pytest.approx(1.0 / math.log2(3), abs=1e-4)
     assert report["ndcg"][1] == 0.0
@@ -307,13 +307,13 @@ def test_evaluate_passes_scope_exclusions_through():
 
     retrieval_eval.evaluate(
         [{"query": "q", "gold": [1], "sessions": []}],
-        limit=5, rerank=False, content_type=None,
+        limit=5, content_type=None,
         exclude_content_types=retrieval_eval.EXCLUDE_META, search=recording_search)
     assert seen["exclude_content_types"] == retrieval_eval.EXCLUDE_META
 
     retrieval_eval.evaluate(
         [{"query": "q", "gold": [1], "sessions": []}],
-        limit=5, rerank=False, content_type=None, exclude_content_types=None,
+        limit=5, content_type=None, exclude_content_types=None,
         search=recording_search)
     assert seen["exclude_content_types"] is None
 
@@ -330,7 +330,7 @@ def test_evaluate_scores_over_the_corpus_as_is_no_date_bound():
     cases = [{"query": "q", "gold": [1], "sessions": [], "snapshot_id": "abc123"},
              {"query": "q2", "gold": [2], "sessions": []}]
     retrieval_eval.evaluate(
-        cases, limit=5, rerank=False, content_type=None,
+        cases, limit=5, content_type=None,
         exclude_content_types=None, search=recording_search)
     for kw in calls:
         assert "until" not in kw and "snapshot_id" not in kw
@@ -339,69 +339,8 @@ def test_evaluate_scores_over_the_corpus_as_is_no_date_bound():
 def test_evaluate_defaults_to_the_archives_own_search():
     """No ``search`` given means the harness measures the shipped pipeline."""
     report = retrieval_eval.evaluate(
-        [], limit=5, rerank=False, content_type=None, exclude_content_types=None)
+        [], limit=5, content_type=None, exclude_content_types=None)
     assert report["n"] == 0
-
-
-# ── rerank_probe (the --require-rerank liveness check) ───────────────────────
-#
-# Driven through a real Reranker with the scorer injected at its constructor
-# seam, so the probe exercises the product's own availability gating and
-# fail-soft scoring — only the torch weights are stood in for.
-
-class _ScriptedScorer:
-    def __init__(self, scores):
-        self.scores = scores
-
-    def predict(self, pairs, batch_size, show_progress_bar):
-        return self.scores
-
-
-def _reranker(monkeypatch, scores):
-    from thread_archive._retrieval import rerank
-
-    monkeypatch.delenv("THREAD_ARCHIVE_RERANK", raising=False)
-    return rerank.Reranker(model=_ScriptedScorer(scores))
-
-
-def test_rerank_probe_passes_a_discriminating_model(monkeypatch):
-    assert retrieval_eval.rerank_probe(_reranker(monkeypatch, [0.9, 0.1])) is None
-
-
-def test_rerank_probe_breaches_when_arm_is_switched_off(monkeypatch):
-    from thread_archive._retrieval import rerank
-
-    monkeypatch.setenv("THREAD_ARCHIVE_RERANK", "off")
-    breach = retrieval_eval.rerank_probe(rerank.Reranker(model=_ScriptedScorer([0.9, 0.1])))
-    assert breach is not None and "unavailable" in breach
-
-
-def test_rerank_probe_breaches_when_the_model_cannot_load(monkeypatch):
-    from thread_archive._retrieval import rerank
-
-    monkeypatch.delenv("THREAD_ARCHIVE_RERANK", raising=False)
-
-    def unloadable():
-        raise RuntimeError("no weights on disk")
-
-    breach = retrieval_eval.rerank_probe(rerank.Reranker(load=unloadable))
-    assert breach is not None and "degraded" in breach
-
-
-def test_rerank_probe_breaches_on_a_scrambled_model(monkeypatch):
-    # Loaded, scoring, but ranks the decoy above the answer: the probe must
-    # treat "alive but wrong" as dead — that is the silent production failure.
-    breach = retrieval_eval.rerank_probe(_reranker(monkeypatch, [0.1, 0.9]))
-    assert breach is not None and "discriminate" in breach
-
-
-def test_rerank_probe_breaches_on_malformed_scores(monkeypatch):
-    breach = retrieval_eval.rerank_probe(_reranker(monkeypatch, [0.9]))
-    assert breach is not None and "malformed" in breach
-
-    breach = retrieval_eval.rerank_probe(
-        _reranker(monkeypatch, [float("nan"), 0.1]))
-    assert breach is not None and "malformed" in breach
 
 
 # --- early stop --------------------------------------------------------------
@@ -419,7 +358,7 @@ def test_early_stop_halts_the_run_and_says_why():
         return [{"thread_id": 0}]  # only case 0's gold ever ranks
 
     report = retrieval_eval.evaluate(
-        _cases(10), limit=20, rerank=False, content_type=None,
+        _cases(10), limit=20, content_type=None,
         exclude_content_types=None, search=counting_ranker,
         early_stop=lambda p: "enough" if p.scored == 3 else None)
     assert report["aborted"] == "enough"
@@ -432,7 +371,7 @@ def test_an_aborted_report_averages_over_the_full_case_set():
     # averages over a prefix — which would read as ordinary numbers while being
     # computed on different cases.
     report = retrieval_eval.evaluate(
-        _cases(10), limit=20, rerank=False, content_type=None,
+        _cases(10), limit=20, content_type=None,
         exclude_content_types=None, search=lambda q, **kw: [{"thread_id": 0}],
         early_stop=lambda p: "stop" if p.scored == 1 else None)
     assert report["n"] == 10
@@ -441,7 +380,7 @@ def test_an_aborted_report_averages_over_the_full_case_set():
 
 def test_a_completed_run_reports_no_abort():
     report = retrieval_eval.evaluate(
-        _cases(3), limit=20, rerank=False, content_type=None,
+        _cases(3), limit=20, content_type=None,
         exclude_content_types=None, search=lambda q, **kw: [{"thread_id": 0}],
         early_stop=lambda p: None)
     assert report["aborted"] is None
@@ -460,7 +399,7 @@ def test_progress_bound_is_the_best_still_reachable():
 
 def test_evaluate_still_reports_latency_when_aborted():
     report = retrieval_eval.evaluate(
-        _cases(10), limit=20, rerank=False, content_type=None,
+        _cases(10), limit=20, content_type=None,
         exclude_content_types=None, search=lambda q, **kw: [{"thread_id": 0}],
         early_stop=lambda p: "stop" if p.scored == 2 else None)
     assert report["latency_p50_ms"] >= 0.0

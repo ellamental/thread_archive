@@ -97,8 +97,6 @@ def active_config(params: Any = None) -> dict[str, Any]:
     # content_type_weights is a mapping-or-None; asdict keeps it JSON-safe already.
     env = os.environ.get
     config: dict[str, Any] = {"params": params}
-    config["rerank"] = "off" if env("THREAD_ARCHIVE_RERANK", "").strip().lower() in (
-        "0", "false", "no", "off") else "on"
     config["embed"] = "off" if env("THREAD_ARCHIVE_EMBED", "").strip().lower() in (
         "0", "false", "no", "off") else "on"
     coherence = env("THREAD_ARCHIVE_COHERENCE")

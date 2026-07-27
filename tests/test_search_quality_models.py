@@ -2,12 +2,12 @@
 
 The middle rung of the quality ladder (see docs/search-quality.md): the same
 checked-in corpus and cases as the tier-0 lexical eval in
-``test_search_quality.py``, but with the embeddings + cross-encoder arms live —
-the fused pipeline a full install runs. Deterministic corpus, real models:
-catches a model-arm change that reshuffles known-relevance cases, offline,
-without touching the live archive. Costs the torch model loads
-(minutes, downloads on first run), so it's an explicit lane: ``-m quality_models``,
-no CI row — run it by hand when touching the semantic/rerank stack.
+``test_search_quality.py``, but with the embeddings arm live — the fused
+pipeline a full install runs. Deterministic corpus, real models: catches a
+model-arm change that reshuffles known-relevance cases, offline, without touching
+the live archive. Costs the torch model load (minutes, downloads on first run),
+so it's an explicit lane: ``-m quality_models``, no CI row — run it by hand when
+touching the semantic stack.
 """
 
 from __future__ import annotations
@@ -65,7 +65,7 @@ def test_semantic_arm_bridges_a_vocabulary_gap(model_corpus) -> None:
         "zero-lexical-overlap paraphrase")
 
 
-def test_forced_rerank_does_not_break_a_solved_case(model_corpus) -> None:
-    """The cross-encoder, forced on, must keep an unambiguous case solved."""
-    ranked = top_threads("jwt authentication login flow", rerank=True)
+def test_the_fused_stack_keeps_a_solved_case_solved(model_corpus) -> None:
+    """The vector arm, live, must not displace an unambiguous lexical answer."""
+    ranked = top_threads("jwt authentication login flow")
     assert ranked[0] == model_corpus["auth"]

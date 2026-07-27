@@ -1,7 +1,7 @@
 """Mechanism contracts of the search pipeline, tested on synthetic corpora.
 
 Each test pins a deterministic contract of a shipped mechanism — an indexing
-capability, a scope rule, or a rerank code path — not a ranking preference.
+capability or a scope rule — not a ranking preference.
 The bar is "the agent can see it at all" (surfaces in the top ``RECALL_LIMIT``
 hits), because the failure mode guarded is a false "not found" against a
 conversation that is right there. Ranking *quality* is not asserted here: that
@@ -24,14 +24,6 @@ The contracts:
   that prompted it and by the call that ran it, with the output intact on read.
 - **semantic scopes rank inside the scope** — a lower-similarity in-provider
   hit must survive a flood of nearer vectors from excluded providers.
-- **a copied query is not an answered query** — a lexically strong but
-  explicitly unanswered head must not suppress the cross-encoder that can
-  recognize the differently worded answer below it.
-- **long-document reranking sees the relevant occurrence** — an early
-  incidental query term must not make the cross-encoder miss a later
-  answering passage.
-- **the reranker head includes the rescuable boundary** — a target immediately
-  beyond the fixed cross-encoder pool must not be permanently unreachable.
 """
 
 from __future__ import annotations
@@ -74,19 +66,6 @@ def _repeated_user_lines(name: str, day: int, text: str, count: int) -> list[dic
         }
         for i in range(count)
     ]
-
-
-class _MarkerScorer:
-    """Scripted cross-encoder: the document carrying ``marker`` is the answer."""
-
-    def __init__(self, marker: str) -> None:
-        self.marker = marker.lower()
-        self.pools: list[list[list[str]]] = []
-
-    def predict(self, pairs, batch_size, show_progress_bar):
-        pairs = list(pairs)
-        self.pools.append(pairs)
-        return [1.0 if self.marker in doc.lower() else 0.0 for _, doc in pairs]
 
 
 class _FixedQueryEmbedder:
@@ -201,7 +180,7 @@ def test_reindex_preserves_ranked_thread_placement(tmp_path) -> None:
     ))
 
     before = api.search(
-        query, limit=RECALL_LIMIT, content_types=["user"], rerank=False,
+        query, limit=RECALL_LIMIT, content_types=["user"],
     )
     before_threads = [h["thread_id"] for h in before]
     assert before_threads and before_threads[0] == focused
@@ -209,7 +188,7 @@ def test_reindex_preserves_ranked_thread_placement(tmp_path) -> None:
     rebuilt = api.reindex()
     assert rebuilt.get("ok", True) is not False
     after = api.search(
-        query, limit=RECALL_LIMIT, content_types=["user"], rerank=False,
+        query, limit=RECALL_LIMIT, content_types=["user"],
     )
     assert [h["thread_id"] for h in after] == before_threads
 
@@ -241,8 +220,8 @@ def test_partial_default_scope_hit_does_not_hide_assistant_answer(tmp_path) -> N
     ))
 
     # Control: the answer is searchable when assistant text is requested.
-    assert str(answer) in thread_search(query, content_type="text", rerank=False)
-    rendered = thread_search(query, rerank=False)
+    assert str(answer) in thread_search(query, content_type="text")
+    rendered = thread_search(query)
     assert str(answer) in rendered, (
         "one partial default-scope hit prevented widening to the exact assistant answer"
     )
@@ -266,12 +245,12 @@ def test_tool_output_is_unsearchable_but_still_readable(tmp_path) -> None:
         "FAILED tests/test_flange.py::test_stress - flange stress regression"))
 
     # not matchable — not under the default scope, and not even when named
-    assert str(thread) not in thread_search("flange stress regression", rerank=False)
+    assert str(thread) not in thread_search("flange stress regression")
     assert str(thread) not in thread_search(
-        "flange stress regression", content_type="tool_result", rerank=False)
+        "flange stress regression", content_type="tool_result")
     # still reachable: the question that prompted it, and the call that ran it
-    assert str(thread) in thread_search("did the parts suite run clean", rerank=False)
-    assert str(thread) in thread_search("run", content_type="tool", rerank=False)
+    assert str(thread) in thread_search("did the parts suite run clean")
+    assert str(thread) in thread_search("run", content_type="tool")
     # and the output itself is intact in the record
     assert "FAILED tests/test_flange.py::test_stress" in thread_read(
         str(thread), mode="full", tool_results=True)
@@ -286,8 +265,8 @@ def test_mcp_default_scope_reaches_thinking_answer(tmp_path) -> None:
         "the ziggurat allocator overflowed its arena boundary",
         "looks like a crash"))
     _import(tmp_path, "partial", _session_lines("partial", 2, "ziggurat status check", "ok"))
-    assert str(answer) in thread_search(query, content_type="thinking", rerank=False)
-    assert str(answer) in thread_search(query, rerank=False), (
+    assert str(answer) in thread_search(query, content_type="thinking")
+    assert str(answer) in thread_search(query), (
         "the reasoning that holds the answer is unreachable from the MCP default scope")
 
 
@@ -299,8 +278,8 @@ def test_tool_error_output_follows_the_same_rule(tmp_path) -> None:
         "err", 1, "why did the obsidian import blow up",
         "ERROR: constraint violation on column epoch_id", is_error=True))
 
-    assert str(thread) not in thread_search("epoch_id constraint violation", rerank=False)
-    assert str(thread) in thread_search("why did the obsidian import blow up", rerank=False)
+    assert str(thread) not in thread_search("epoch_id constraint violation")
+    assert str(thread) in thread_search("why did the obsidian import blow up")
     assert "constraint violation on column epoch_id" in thread_read(
         str(thread), mode="full", tool_results=True)
 
@@ -325,10 +304,10 @@ def test_summaries_stay_out_of_search_unless_named(tmp_path) -> None:
     index_thread_meta()
 
     # Control: the summary doc is indexed and reachable once named.
-    assert str(tid) in thread_search(query, content_type="summary", rerank=False)
+    assert str(tid) in thread_search(query, content_type="summary")
     # A dry default scope guarantees the widen fires here — and even the widened
     # everything-scope must not surface the summary-only vocabulary.
-    assert str(tid) not in thread_search(query, rerank=False), (
+    assert str(tid) not in thread_search(query), (
         "a stored summary leaked into a search that never asked for summaries")
 
 
@@ -377,115 +356,9 @@ def test_semantic_source_scope_ranks_inside_allowed_provider(
     monkeypatch.delenv("THREAD_ARCHIVE_EMBED", raising=False)
     hits = search(
         "phase-space recovery", limit=RECALL_LIMIT, content_types=["user"],
-        source=["cursor"], rerank=False,
+        source=["cursor"],
         embedder=_FixedQueryEmbedder(_vector(1.0)),
     )
 
     assert hits and hits[0]["thread_id"] == answer
     assert all(h["thread_id"] != noise for h in hits)
-
-
-# ── cross-encoder plumbing (scripted scorers; no model load) ─────────────────
-
-def test_answer_below_copied_query_still_reaches_reranker(
-    tmp_path, monkeypatch,
-) -> None:
-    from thread_archive._retrieval import SearchParams, rerank, search
-
-    query = "watcher disappearing root cause"
-    answer = _import(tmp_path, "causal-answer", _session_lines(
-        "causal-answer", 1,
-        "the watcher stopped after launchd dropped its KeepAlive lease",
-        "the lost KeepAlive lease was the causal failure",
-    ))
-    copied = _import(tmp_path, "copied-query", _session_lines(
-        "copied-query", 2,
-        "watcher disappearing root cause — copied question; no answer recorded",
-        "investigation not started",
-    ))
-
-    monkeypatch.delenv("THREAD_ARCHIVE_RERANK", raising=False)
-    scorer = _MarkerScorer("KeepAlive lease")
-    scripted = rerank.Reranker(model=scorer)
-    # Auto-re-rank ships off (latency); rerank_auto=True exercises the echo-head
-    # path this test is about (a copied query must still reach the cross-encoder).
-    hits = search(
-        query, limit=RECALL_LIMIT, content_types=["user"], reranker=scripted,
-        params=SearchParams(rerank_auto=True),
-    )
-
-    assert scorer.pools, "the strong copied query incorrectly suppressed reranking"
-    assert hits[0]["thread_id"] == answer
-    assert hits[0]["thread_id"] != copied
-
-
-def test_long_document_rerank_window_uses_answering_occurrence(
-    tmp_path, monkeypatch,
-) -> None:
-    from thread_archive._retrieval import rerank, search
-
-    query = "watcher restart failure explanation"
-    answer_text = (
-        "watcher mentioned incidentally. "
-        + ("unrelated preface material. " * 300)
-        + "restart failure explanation: the generation barrier rejected stale state"
-    )
-    answer = _import(tmp_path, "long-answer", _session_lines(
-        "long-answer", 1, answer_text, "the later passage contains the conclusion",
-    ))
-    copied = _import(tmp_path, "short-copy", _session_lines(
-        "short-copy", 2,
-        "watcher restart failure explanation — copied question with no conclusion",
-        "no analysis recorded",
-    ))
-
-    monkeypatch.delenv("THREAD_ARCHIVE_RERANK", raising=False)
-    scorer = _MarkerScorer("generation barrier")
-    scripted = rerank.Reranker(model=scorer)
-    hits = search(
-        query, limit=RECALL_LIMIT, content_types=["user"], rerank=True,
-        reranker=scripted,
-    )
-
-    assert scorer.pools
-    assert any(
-        "generation barrier" in doc.lower() for _, doc in scorer.pools[0]
-    ), "the reranker window stopped at an early incidental term"
-    assert hits[0]["thread_id"] == answer
-    assert hits[0]["thread_id"] != copied
-
-
-def test_relevant_hit_just_beyond_rerank_pool_can_be_rescued(
-    tmp_path, monkeypatch,
-) -> None:
-    from thread_archive._retrieval import rank, rerank, search
-
-    query = "orbital cache repair"
-    answer_text = (
-        query + " " + ("background diagnostic material " * 80)
-        + "generation semaphore is the verified resolution"
-    )
-    answer = _import(tmp_path, "rerank-boundary-answer", _session_lines(
-        "rerank-boundary-answer", 1, answer_text, "the semaphore fix was applied",
-    ))
-    for i in range(rank.RERANK_POOL):
-        _import(tmp_path, f"rerank-head-{i}", _session_lines(
-            f"rerank-head-{i}", 2,
-            f"{query} checklist candidate {i}; no resolution recorded",
-            "investigation pending",
-        ))
-
-    monkeypatch.delenv("THREAD_ARCHIVE_RERANK", raising=False)
-    scorer = _MarkerScorer("generation semaphore")
-    scripted = rerank.Reranker(model=scorer)
-    hits = search(
-        query, limit=rank.RERANK_POOL + 1, content_types=["user"], rerank=True,
-        reranker=scripted,
-    )
-
-    assert answer in {h["thread_id"] for h in hits}
-    assert scorer.pools
-    assert any(
-        "generation semaphore" in doc.lower() for _, doc in scorer.pools[0]
-    ), "the answer landed immediately beyond the fixed reranker head"
-    assert hits[0]["thread_id"] == answer

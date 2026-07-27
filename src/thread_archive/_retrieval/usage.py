@@ -170,8 +170,8 @@ def record_search(
     search that never reached the render.
 
     ``timings`` is the optional per-stage breakdown of ``duration_ms`` (the engine's
-    :class:`thread_archive._retrieval._probe.SearchProbe` record — the three arm
-    totals, the vector arm's sub-stages when it ran, ``did_rerank``, ``pool_size``,
+    :class:`thread_archive._retrieval._probe.SearchProbe` record — the arm
+    totals, the vector arm's sub-stages when it ran, ``pool_size``,
     and the cold/``matrix_built`` flags when they apply). Total latency alone can't
     see which stage regressed; this makes the ledger self-diagnosing — still ids and
     timings only, never content.
@@ -278,8 +278,8 @@ def record_warm(
     failed: Optional[list[str]] = None,
 ) -> None:
     """Record one :func:`thread_archive._retrieval.warm_models` pass — how long a
-    process took to become useful, split by stage (``embed_ms``, ``rerank_ms``,
-    ``graph_ms``, ``search_ms``).
+    process took to become useful, split by stage (``embed_ms``, ``graph_ms``,
+    ``search_ms``).
 
     A ``warm`` row is the counterpart to the cold flags on a search: those say a
     request paid a load, this says what the load costs when it is paid where it

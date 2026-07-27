@@ -26,8 +26,7 @@ def tool_search(args: argparse.Namespace) -> None:
     blind spots into the gold. Prints one JSON line per hit."""
     api.open_archive()
     skip = {s for s in (args.skip or "").split(",") if s and s != "-"}
-    rerank = None if args.rerank == "auto" else (args.rerank == "on")
-    hits = api.search(args.query, limit=args.limit + len(skip), rerank=rerank)
+    hits = api.search(args.query, limit=args.limit + len(skip))
     shown = 0
     for h in hits:
         if h["thread_id"] in skip:
@@ -65,7 +64,6 @@ def main(argv: list[str] | None = None) -> int:
     ts.add_argument("query")
     ts.add_argument("--skip", default="")
     ts.add_argument("--limit", type=int, default=50)
-    ts.add_argument("--rerank", choices=["auto", "on", "off"], default="auto")
 
     tr = sub.add_parser("read")
     tr.add_argument("thread_id")

@@ -489,8 +489,7 @@ def main(argv: list[str] | None = None) -> int:
     args = ap.parse_args(argv)
 
     home = eval_home.guard_home(args.home, what="SWE-chat corpus home")
-    # No rerank arm here: this builds a corpus, it does not score one.
-    eval_home.pin_arms(vectors=args.vectors, rerank="off")
+    eval_home.pin_arms(vectors=args.vectors)
 
     if not args.linkage_only:
         keep = select_corpus(args.data, args.max_sessions, args.per_repo)

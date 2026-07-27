@@ -325,7 +325,7 @@ def _quality_signal(hits: "list[EventHit]", query: str) -> Optional[dict]:
         return None
     for h in hits:
         h["term_hits"] = term_hit_count(h.get("full_content") or h.get("snippet") or "", terms)
-    verdict, note = _search_quality(hits[0]["term_hits"], len(terms), bool(hits[0].get("_did_rerank")))
+    verdict, note = _search_quality(hits[0]["term_hits"], len(terms))
     return {"verdict": verdict, "note": note, "n_terms": len(terms)}
 
 
