@@ -58,6 +58,7 @@ __all__ = [
     "agent_loaded",
     "agent_home",
     "restart_agent",
+    "uninstall_agent",
     "backup_agent_dest",
 ]
 
@@ -171,6 +172,12 @@ def agent_home(agent: str) -> Optional[str]:
 
 def restart_agent(agent: str) -> None:
     active_backend().restart(agent)
+
+
+def uninstall_agent(agent: str) -> None:
+    """Unschedule one agent by logical name — the whole-footprint counterpart to
+    the per-agent verbs above, for a caller sweeping the set."""
+    active_backend().uninstall(agent)
 
 
 def backup_agent_dest() -> Optional[str]:

@@ -69,6 +69,44 @@ class Machine:
 
         return _service.backup_agent_dest()
 
+    def agent_label(self, agent: str) -> str:
+        """This host's own id for one of the archive's agents — a launchd label,
+        a systemd unit — for a report that names what it is about to touch."""
+        from .. import _service
+
+        return _service.label(agent)
+
+    def agent_installed(self, agent: str) -> bool:
+        """Whether the agent's manifest is on this host, loaded or not.
+
+        The wider question than :meth:`watcher_running`: an agent whose manifest
+        is present but whose process is down is still scheduled, and is still
+        something an uninstall has to remove.
+        """
+        if not self.can_schedule:
+            return False
+        from .. import _service
+
+        try:
+            return _service.agent_installed(agent)
+        except OSError:  # pragma: no cover — service-manager binary missing
+            return False
+
+    def agent_home(self, agent: str) -> Optional[str]:
+        """The archive home the installed agent's manifest pins, or ``None`` when
+        it pins none (the default-home wiring) or can't be read."""
+        from .. import _service
+
+        try:
+            return _service.agent_home(agent)
+        except OSError:  # pragma: no cover — service-manager binary missing
+            return None
+
+    def agent_covers_home(self, agent: str, home: Optional[str] = None) -> bool:
+        """Whether the installed agent serves ``home`` — asked of the manifest,
+        not of a running process."""
+        return self._covers(self.agent_home(agent), home)
+
     # ── what this install has ────────────────────────────────────────────────
 
     def embeddings_installed(self) -> bool:
@@ -111,6 +149,13 @@ class Machine:
 
         _service.install_backup(dest, home)
 
+    def uninstall_agent(self, agent: str) -> None:
+        """Unschedule an agent and remove its manifest. Raises ``SystemExit``
+        with the reason when the service manager refuses."""
+        from .. import _service
+
+        _service.uninstall_agent(agent)
+
     def open_browser(
         self, url: str, *, opener: Callable[[str], bool] = webbrowser.open
     ) -> bool:
@@ -138,11 +183,18 @@ class Machine:
             agent_home = _service.agent_home(agent)
         except OSError:  # pragma: no cover — service-manager binary missing
             return False
-        # An agent with no home in its manifest runs against the *default* home —
-        # a scheduled process gets no shell env, and this process's
-        # $THREAD_ARCHIVE_HOME is not evidence (open_archive pins the currently-
-        # selected home there, so reading it would make every agent appear to
-        # cover whatever home is being asked about). Compare literal paths, not
-        # env-mediated resolution.
+        return self._covers(agent_home, home)
+
+    @staticmethod
+    def _covers(agent_home: Optional[str], home: Optional[str]) -> bool:
+        """Whether an agent pinning ``agent_home`` serves the archive at ``home``.
+
+        An agent with no home in its manifest runs against the *default* home — a
+        scheduled process gets no shell env, and this process's
+        ``$THREAD_ARCHIVE_HOME`` is not evidence (``open_archive`` pins the
+        currently-selected home there, so reading it would make every agent appear
+        to cover whatever home is being asked about). Compare literal paths, not
+        env-mediated resolution.
+        """
         agent_path = Path(agent_home).expanduser() if agent_home else default_home()
         return agent_path == resolve_paths(home).home

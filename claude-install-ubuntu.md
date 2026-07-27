@@ -156,8 +156,10 @@ Optional nightly backup (mirror → verify → restore drill) on a systemd timer
 systemctl --user list-timers thread-archive-backup.timer
 ```
 
-Apply a code edit later with `thread_archive daemon restart`; remove everything with
-`thread_archive daemon uninstall` (and `--backup` for the timer).
+Apply a code edit later with `thread_archive daemon restart`; take one agent back
+out with `thread_archive daemon uninstall` (and `--backup` for the timer), or the
+whole install — agents, MCP wiring, manifest — with `thread_archive uninstall`,
+which never touches the conversations.
 
 ## Done
 

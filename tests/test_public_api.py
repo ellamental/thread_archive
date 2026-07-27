@@ -45,6 +45,7 @@ PUBLIC_MODULES = {"cli", "provider"}
 # browser and returns nothing itself.
 CLI_VERBS = {
     "setup",
+    "uninstall",
     "search",
     "read",
     "import",

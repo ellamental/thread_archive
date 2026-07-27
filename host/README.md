@@ -129,7 +129,9 @@ make install-agent     # `thread_archive daemon install` + write the family mani
 make logs              # tail
 make status            # is it loaded? pid?
 make restart           # after a code edit
-make uninstall-agent
+make uninstall-agent   # the watcher agent alone
+make uninstall         # `thread_archive uninstall`: agents, MCP wiring, the manifest
+                       #   written above, the monitor heartbeat — never the conversations
 ```
 
 (For a standalone install, `thread_archive daemon install` alone is the whole

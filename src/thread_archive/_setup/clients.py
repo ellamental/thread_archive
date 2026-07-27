@@ -1,7 +1,8 @@
 """MCP client detection + wiring for the setup flow.
 
 Finds agent clients on this machine (currently: the ``claude`` CLI) and wires
-the archive's read server into them, or produces the JSON config block for
+the archive's read server into them — or back out again, when the archive is
+being removed from the machine — or produces the JSON config block for
 any other client. Commands are wired by **absolute path** to this
 environment's console scripts — the client's runtime PATH may not include the
 env that installed the package (a venv, a pipx/uv tool dir), and a bare name
@@ -92,23 +93,93 @@ def claude_server_report(
     project-scoped server still pending approval, and for an entry whose
     environment pins a different archive than the one just set up.
     """
-    try:
-        proc = _run([cli, "mcp", "get", server])
-    except (OSError, subprocess.TimeoutExpired):
+    text = _describe(cli, server)
+    if text is None:
         return False, None
-    if proc.returncode != 0:
-        return False, None
-    text = proc.stdout or ""
     if re.search(r"pending approval", text, re.IGNORECASE):
         return False, "the existing entry is still pending approval in claude"
     target = resolve_paths(home).home
-    m = re.search(rf"{ENV_HOME}=(\S+)", text)
-    entry_home = Path(m.group(1)).expanduser() if m else default_home()
+    entry_home = _entry_home(text)
     if entry_home != target:
         return False, (
             f"the existing entry serves {entry_home}, not this archive ({target})"
         )
     return True, None
+
+
+def _describe(cli: str, server: str) -> Optional[str]:
+    """``claude mcp get``'s description of ``server``, or ``None`` when there is
+    no such entry (or the probe itself failed)."""
+    try:
+        proc = _run([cli, "mcp", "get", server])
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    return proc.stdout or "" if proc.returncode == 0 else None
+
+
+def _entry_home(text: str) -> Path:
+    """The archive an entry serves: the home its environment pins, else the
+    default (an entry with no ``THREAD_ARCHIVE_HOME`` serves that one)."""
+    m = re.search(rf"{ENV_HOME}=(\S+)", text)
+    return Path(m.group(1)).expanduser() if m else default_home()
+
+
+def _entry_scope(text: str) -> Optional[str]:
+    """The scope holding an entry, lowercased (``user`` / ``project`` /
+    ``local``), or ``None`` when the description doesn't name one."""
+    m = re.search(r"^\s*Scope:\s*(\S+)", text, re.MULTILINE)
+    return m.group(1).lower() if m else None
+
+
+def claude_removable(
+    cli: str, home: Optional[str] = None, server: str = SEARCH_SERVER
+) -> tuple[bool, Optional[str]]:
+    """Whether claude holds an entry for this archive, and whether unwiring may
+    take it — ``(present, reason_to_leave_it)``.
+
+    ``(True, None)`` is setup's own wiring, there to be removed. ``(True,
+    reason)`` is an entry that exists but is not this archive's to touch, and
+    ``(False, None)`` is no entry at all.
+
+    Two things disqualify one. An entry serving a *different* archive home is
+    another install's. And an entry outside **user scope** is somebody else's
+    wiring — a project's lives in a checkout's ``.mcp.json``, a file the archive
+    does not own — where :func:`wire_claude` only ever writes user scope. A
+    description that names no scope is left alone for the same reason: an
+    uninstall that guesses wrong edits a repository.
+    """
+    text = _describe(cli, server)
+    if text is None:
+        return False, None
+    scope = _entry_scope(text)
+    if scope != "user":
+        named = f"{scope}-scope" if scope else "an unrecognized scope's"
+        return True, f"it is {named} wiring, not the user-scope entry setup writes"
+    target = resolve_paths(home).home
+    entry_home = _entry_home(text)
+    if entry_home != target:
+        return True, f"it serves {entry_home}, not this archive ({target})"
+    return True, None
+
+
+def unwire_claude(cli: str, server: str = SEARCH_SERVER) -> list[str]:
+    """Remove the archive's user-scope server entry from the claude CLI — the
+    exact inverse of :func:`wire_claude`.
+
+    Scoped to ``user`` for the same reason :func:`claude_removable` requires it:
+    that is the only scope setup writes, and a scopeless removal would reach into
+    whatever project config happened to hold an entry of the same name.
+
+    Returns error strings, empty on success.
+    """
+    try:
+        proc = _run([cli, "mcp", "remove", "--scope", "user", server])
+    except (OSError, subprocess.TimeoutExpired) as e:
+        return [f"{server}: {e}"]
+    if proc.returncode != 0:
+        detail = (proc.stderr or proc.stdout).strip().splitlines()
+        return [f"{server}: {detail[-1] if detail else 'claude mcp remove failed'}"]
+    return []
 
 
 def wire_claude(cli: str, home: Optional[str] = None) -> list[str]:

@@ -147,6 +147,17 @@ plus `thread_archive daemon restart`, not a plain `mv`. A clone updates by
 fast-forwarding to a release tag (`thread_archive self-update`); a pip install
 updates with `pip install -U thread-archive`.
 
+**Uninstall.** `thread_archive uninstall` takes back everything setup put on the
+machine — the service agents, the MCP wiring in your client, the family manifest
+and monitor heartbeat, and setup's own record in `config.json` — and **never
+touches the archive**. Conversations, index, source choices, logs and exports
+stay where they are, and `search` / `read` keep answering from them with nothing
+installed; the run names the directory and stops there, because deleting an
+archive is yours to do. `--dry-run` reports what would go without changing
+anything, `--yes` skips the confirmation. An agent or client entry serving a
+*different* archive home is reported and left alone. The package itself goes with
+`pip uninstall thread-archive`, which the archive outlives.
+
 ## CLI
 
 One namespaced command. **`thread_archive setup`** runs the wizard (discover →
@@ -185,6 +196,9 @@ thread_archive daemon <action>   # install/uninstall/restart/status a service ag
                           #   systemd --user on Linux) — the always-on
                           #   watcher (default), --mcp the shared server, --backup the nightly
                           #   pipeline (`daemon install --backup --dest <path> [--at HH:MM]`), or
+thread_archive uninstall         # remove this machine's archive machinery — agents, MCP wiring, manifest,
+                          #   heartbeat, install record; the conversations are never touched
+                          #   (--dry-run reports, --yes skips the confirmation)
 thread_archive self-update       # source clones only: fast-forward to the newest release tag — operator-
                           #   driven, nothing updates on its own (--check reports without applying;
                           #   a pip install updates with `pip install -U thread-archive`)
@@ -203,7 +217,9 @@ cohosted by `thread_archive watch --web`.
 src/thread_archive/
   _api.py           # internal coordination layer the CLI / MCP / web call into
   cli.py            # the `thread_archive` command — every verb, incl. `setup`
-  _setup/           # the wizard behind `thread_archive setup`: first-run setup + status
+  _setup/           # what the archive puts on a machine and takes back off it: the wizard
+                    #   behind `thread_archive setup` (first-run setup + status), and the
+                    #   `thread_archive uninstall` flow
   _config.py        # truth dir + index path resolution, config.json (source opt-outs)
   _store/           # SQLite store + schema
   _truth/           # JSONL truth log + reindex

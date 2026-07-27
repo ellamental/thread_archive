@@ -13,7 +13,8 @@ the service manager, cron, and operators use to run the private machinery —
 ingest (``import``, ``import-export``, ``watch``, ``embed``), the backup kit
 (``backup``, ``verify``, ``restore-drill``, ``restore``, ``reindex``,
 ``migrate``, ``repair``, ``status``, ``nightly``, ``coverage``), and the
-service-agent lifecycle (``daemon``). Search quality is not a verb here at all —
+service-agent lifecycle (``daemon`` for one agent, ``uninstall`` for the whole
+machine footprint). Search quality is not a verb here at all —
 the scoring surface is the repo-only ``search_lab/``, which no install carries.
 Those verbs
 may change without external notice, but they are *wired into* the service
@@ -1335,6 +1336,13 @@ def cmd_setup(args: argparse.Namespace) -> int:
     return run_setup(args)
 
 
+def cmd_uninstall(args: argparse.Namespace) -> int:
+    """The `thread_archive uninstall` front door — delegate to the removal flow."""
+    from ._setup.uninstall import run_uninstall
+
+    return run_uninstall(args)
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="thread_archive",
@@ -1363,6 +1371,38 @@ def build_parser() -> argparse.ArgumentParser:
                          help="schedule nightly backups to PATH without prompting")
     p_setup.add_argument("--skip-mcp", action="store_true", help="don't offer MCP wiring")
     p_setup.set_defaults(func=cmd_setup)
+
+    # The way back out: everything setup put on the machine, and nothing else.
+    p_uninstall = sub.add_parser(
+        "uninstall",
+        help="remove this machine's archive machinery — the service agents, the "
+             "MCP client wiring, the family manifest and monitor heartbeat, and "
+             "the install record; the conversations are never touched",
+        description=(
+            "Remove what setup installed on this machine: the always-on watcher,\n"
+            "the shared MCP server, the nightly backup, the MCP wiring in your\n"
+            "client, the family manifest, the monitor heartbeat, and setup's own\n"
+            "record in config.json.\n"
+            "\n"
+            "The archive itself is left alone — conversations, index, source\n"
+            "choices, logs, exports — and `search` / `read` keep answering from it\n"
+            "with nothing installed. Deleting it is yours to do; this names the\n"
+            "directory and stops there. An agent or client entry serving a\n"
+            "different archive home is reported and left where it is."
+        ),
+        epilog=(
+            "examples:\n"
+            "  thread_archive uninstall --dry-run   # what would go, changing nothing\n"
+            "  thread_archive uninstall --yes       # no prompt (agent/script mode)\n"
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    _add_home_arg(p_uninstall)
+    p_uninstall.add_argument("-y", "--yes", action="store_true",
+                             help="remove without confirming (agent/script mode)")
+    p_uninstall.add_argument("--dry-run", action="store_true",
+                             help="report what would be removed; change nothing")
+    p_uninstall.set_defaults(func=cmd_uninstall)
 
     # Retrieval. The flags mirror the thread_search / thread_read tool parameters;
     # the long-form contract for each (what a scope means, when to reach for it)

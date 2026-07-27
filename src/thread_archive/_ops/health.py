@@ -224,6 +224,21 @@ def pipeline_verdict(health: Optional[dict] = None) -> dict:
     }
 
 
+def heartbeat_path() -> Path:
+    """The family-monitor heartbeat this archive stamps.
+
+    ``~/.thread/logs`` is the thread family's shared heartbeat ground; the env
+    override exists so tests never touch the real box's beat. Resolved per call,
+    never frozen: it follows ``$HOME`` and the override the way every other
+    location in the product does.
+    """
+    hb_dir = Path(
+        os.environ.get("THREAD_ARCHIVE_HEARTBEAT_DIR")
+        or Path.home() / ".thread" / "logs"
+    )
+    return hb_dir / "archive-nightly.heartbeat"
+
+
 def stamp_heartbeat() -> None:
     """Publish the pipeline verdict to the family-monitor heartbeat.
 
@@ -250,17 +265,14 @@ def stamp_heartbeat() -> None:
     """
     from datetime import datetime, timezone
 
-    hb_dir = Path(
-        os.environ.get("THREAD_ARCHIVE_HEARTBEAT_DIR")
-        or Path.home() / ".thread" / "logs"
-    )
-    if not hb_dir.is_dir():
+    path = heartbeat_path()
+    if not path.parent.is_dir():
         return
     verdict = pipeline_verdict()
     if not verdict["ran"]:
         return
     try:
-        (hb_dir / "archive-nightly.heartbeat").write_text(
+        path.write_text(
             json.dumps({
                 "at": datetime.now(timezone.utc).isoformat(),
                 "nightly_at": verdict["nightly_at"],

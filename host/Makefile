@@ -10,7 +10,9 @@
 #   make install-agent     # (re)materialize the plist + (re)load the agent
 #   make restart           # reload after a code edit (the venv runs source directly)
 #   make logs
-#   make uninstall-agent
+#   make uninstall-agent   # the watcher agent alone
+#   make uninstall         # everything this machine carries (agents, MCP wiring,
+#                          #   manifest) — never the conversations
 #
 # The `thread_archive` console script comes from `pip install -e .` (or `.[embeddings]`)
 # into the repo venv. If $(ENTRY) is missing, install the package first.
@@ -28,7 +30,7 @@ LOG_DIR   := $(HOME)/.thread/archive/logs
 # shares and their remount/TCC machinery are an outer operator layer's
 # concern, not this repo's.
 
-.PHONY: all install-agent uninstall-agent restart logs status manifest
+.PHONY: all install-agent uninstall-agent uninstall restart logs status manifest
 
 all: install-agent
 
@@ -53,6 +55,13 @@ manifest:
 
 uninstall-agent:
 	$(ENTRY) daemon uninstall
+
+# The inverse of install-agent, and then some: the package's own removal verb
+# takes the agents, the MCP client wiring, the manifest written above, and the
+# monitor heartbeat. The archive itself is never touched — deleting that is the
+# operator's, on the directory the run names.
+uninstall:
+	$(ENTRY) uninstall
 
 # Code edits go live on a plain restart (the venv runs source directly).
 # Plist changes need a full reload — re-run `make install-agent` for those.

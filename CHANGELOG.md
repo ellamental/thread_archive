@@ -2,6 +2,26 @@
 
 ## Unreleased
 
+- **`thread_archive uninstall` — the way back off a machine.** Setup is the one
+  part of the archive that acts outside the archive home, and until now nothing
+  undid it as a whole: `daemon uninstall` took one agent, and the MCP wiring, the
+  family manifest, the monitor heartbeat and setup's own record in `config.json`
+  were left for someone to find by hand. The new verb removes exactly that set
+  and reports each piece, with `--dry-run` to see it first and `--yes` for a
+  script.
+
+  **It never touches the conversations.** Truth, index, source policy, logs,
+  exports and retained drops all stay; `search` and `read` keep answering from
+  them with nothing installed, and the closing report names the home (and any
+  backup mirror holding a copy) rather than offering to delete it. Two things it
+  deliberately refuses to take: an agent or client entry serving a *different*
+  archive home — one label and one user-scope entry per user, so removing those
+  would stop a second install's capture — and any MCP entry outside user scope,
+  since a project's lives in a checkout's `.mcp.json`, a file the archive does
+  not own. The source policy in `config.json` survives for the same reason it
+  survives a re-run of `setup`: an opt-out is a privacy choice, and a later
+  install must not silently re-enable what someone turned off.
+
 - **The cross-encoder re-rank is gone (2026-07-27).** `rerank.py`, the gate
   (`should_rerank` / `head_is_strong` / `head_is_query_echo` /
   `head_earns_standdown`), the MaxP windowing (`match_window` / `rerank_windows`),
