@@ -17,9 +17,11 @@ nobody ran.
 
 **A bench number is not a production number, and this prints both.** The bench
 measures warm steady-state with the pool cache off; production is whatever the
-serving process happened to be. Those diverged on this archive by ~7x while every
-bench read "fast", which is the failure mode the comparison exists to make
-un-ignorable. The ledger half comes straight from ``retrieval-usage.jsonl`` over
+serving process happened to be. On this archive they diverge by an order of
+magnitude — the run prints the live ratio — while every bench reads "fast", which
+is the failure mode the comparison exists to make un-ignorable. Restarts are what
+drive it: the ledger's own cold/settled split is printed beside the ratio, and the
+settled half tracks the bench. The ledger half comes straight from ``retrieval-usage.jsonl`` over
 the same window, so a run says both "what the pipeline costs" and "what agents got"
 — and when they disagree the gap is the finding, not a rounding error.
 
@@ -60,9 +62,13 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
+# The lab dir too, so bare sibling imports (speed, eval_core, …) resolve however
+# this file was loaded: as a script, by path, or as search_lab.X.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+import speed  # noqa: E402
 
 from thread_archive._config import resolve_paths  # noqa: E402
-from thread_archive._ops import speed  # noqa: E402
 from thread_archive._retrieval import usage  # noqa: E402
 
 #: Queries a bench or a smoke test left in the ledger rather than an agent asking

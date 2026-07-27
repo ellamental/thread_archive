@@ -29,9 +29,10 @@ consume the hold-out (``search_lab/README.md`` → "Hold-out discipline"). That
 discipline governs the human tuning loop — don't validate on the file you tuned
 against — and is orthogonal to scoring both files as regression floors.
 
-**Failing early.** A full pass is ~140 searches; scored to the end, every verdict
-costs the same whether the ranking is fine or catastrophically broken. Three
-mechanisms cut the failing case short, and they compose:
+**Failing early.** A full pass is one model-loaded search per gold case — hundreds
+of them, minutes of wall-clock; scored to the end, every verdict costs the same
+whether the ranking is fine or catastrophically broken. Three mechanisms cut the
+failing case short, and they compose:
 
 - ``--fail-early`` stops a file the moment its floor is *provably* out of reach —
   every unscored case counted as perfect still lands under the floor — and stops

@@ -262,8 +262,7 @@ def _trail_events(s, after: str | None = None) -> list[tuple[object, str, object
     ``system``) are excluded: their searches are recall-intent ("surface
     everything in vein X"), which has no single rankable gold, and their clicks
     are "open everything to collect it" — both poison for a ranking eval and the
-    behavioral proxies alike. This matches the corpus the ``eval`` CLI already
-    counts (``thread_type = 'conversation'``).
+    behavioral proxies alike.
 
     ``after`` (ISO date/datetime) keeps only trail events that occurred at or
     after it — the time-based holdout: cases mined strictly after a ranking

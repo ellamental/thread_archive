@@ -72,7 +72,7 @@ _CURRENT: contextvars.ContextVar[Optional["SearchProbe"]] = contextvars.ContextV
 )
 
 #: The vector arm's internal split, summing to roughly ``semantic_ms``. Named here
-#: so the ledger, the bench (:mod:`thread_archive._ops.speed`), and any analysis
+#: so the ledger, the bench (``search_lab/speed.py``), and any analysis
 #: over them agree on the set without restating it.
 SEMANTIC_SUBSTAGES = ("embed_ms", "scope_ms", "matrix_ms", "knn_ms", "hydrate_ms")
 

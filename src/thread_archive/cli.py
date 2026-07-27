@@ -12,9 +12,10 @@ notes and all. Their flags mirror the tool parameters one for one.
 the service manager, cron, and operators use to run the private machinery —
 ingest (``import``, ``import-export``, ``watch``, ``embed``), the backup kit
 (``backup``, ``verify``, ``restore-drill``, ``restore``, ``reindex``,
-``snapshot``, ``migrate``, ``repair``, ``status``, ``nightly``, ``coverage``),
-the search-quality self-checkup (``eval`` — read-only, scores retrieval on the
-operator's own data), and the service-agent lifecycle (``daemon``). Those verbs
+``migrate``, ``repair``, ``status``, ``nightly``, ``coverage``), and the
+service-agent lifecycle (``daemon``). Search quality is not a verb here at all —
+the scoring surface is the repo-only ``search_lab/``, which no install carries.
+Those verbs
 may change without external notice, but they are *wired into* the service
 manifests, lab's cron script, the /ci skill, and the monitor's heartbeat
 contract — renaming one means updating those in the same change

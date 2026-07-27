@@ -34,9 +34,11 @@ their golds to.
   attached attributes those commits to exactly one session, so the session that
   produced that code is known *structurally* — no retrieval, no judge. A session
   is taken through **any** solo checkpoint it appears in, not only its canonical
-  one (2132 sessions rather than 1366); appearing in a solo checkpoint is what
-  makes the commits attributable, and which checkpoint the dataset marks canonical
-  is irrelevant to that.
+  one: appearing in a solo checkpoint is what makes the commits attributable, and
+  which checkpoint the dataset marks canonical is irrelevant to that.
+
+  The linkage file covers only the sessions the built home actually holds, so its
+  row count tracks the corpus budget below, not the dataset's eligible set.
 
 Requires ``pyarrow`` (dev extra) to read the parquet tables; the transcripts
 themselves need nothing beyond the archive.
@@ -385,10 +387,11 @@ def _linkage_eligible(data: Path) -> list[dict]:
     commits = read("commits", ["checkpoint_pk", "commit_sha", "commit_message",
                                "files_changed", "patch", "is_agent_author",
                                "status"])
-    # Roughly half of SWE-chat's commit rows are ``commit_not_found``: the
+    # A large minority of SWE-chat's commit rows are ``commit_not_found``: the
     # session↔sha link survived but the commit itself was never retrieved, so
     # message and patch are empty. They carry no material to author a query from,
-    # so they are dropped here rather than becoming units with an empty diff.
+    # so they are dropped here rather than becoming units with an empty diff. The
+    # count is printed, because it bounds how many cases the corpus can yield.
     unretrieved = sum(1 for c in commits if c["status"] != "ok")
     commits = [c for c in commits if c["status"] == "ok"]
     sessions = read("sessions", ["session_id", "repo_id", "checkpoint_ids",
@@ -468,10 +471,11 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--limit", type=int, default=0, metavar="N",
                     help="ingest only the first N transcripts (0 = all)")
     ap.add_argument("--max-sessions", type=int, default=0, metavar="N",
-                    help="cap the corpus near N sessions, taken whole repo at a "
-                         "time (repos ranked by commit-linked yield). Embedding "
-                         "runs ~2 docs/s, so the full corpus is ~40 h; this is the "
-                         "knob that makes a build finish. 0 = all")
+                    help="cap the corpus near N sessions, spread across repos "
+                         "(repos ranked by commit-linked yield, each capped at "
+                         "--per-repo, linked sessions first). Embedding the full "
+                         "corpus is tens of hours; this is the knob that makes a "
+                         "build finish. 0 = all")
     ap.add_argument("--per-repo", type=int, default=DEFAULT_PER_REPO, metavar="N",
                     help=f"sessions kept per repo under a budget (default "
                          f"{DEFAULT_PER_REPO}; the miner pools at most 18 "

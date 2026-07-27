@@ -1,8 +1,10 @@
 """The gold-gate run ledger: ``<home>/gold-runs.jsonl``.
 
 The retrieval-quality gold gate (``scripts/retrieval_gold_gate.py``) scores the
-snapshot-bound gold files on every commit and checks each against a floor. The
-floor answers *did search break*; it throws the actual numbers away once printed.
+snapshot-bound gold files on a deliberate ranking change and checks each against a
+floor (CI carries arm-liveness probes only — see the ``retrieval-gate`` row in
+``ci.toml``). The floor answers *did search break*; it throws the actual numbers
+away once printed.
 This ledger keeps them: every gate run appends one record — per gold file's
 MRR / success@10 / recall@10 / nDCG@10 and p50 latency, the active
 :class:`~thread_archive._retrieval.params.SearchParams`, the model-arm switches,

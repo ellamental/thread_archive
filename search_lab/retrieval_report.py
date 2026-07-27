@@ -5,9 +5,11 @@ A bench instrument, read deliberately::
     .venv/bin/python search_lab/retrieval_report.py --hours 336
 
 It reads latency and quality series and says nothing a user of the archive could
-act on, so it stays here rather than on a page in the viewer: a served-latency
-percentile is a fact about the machine and the model cache, and the quality series
-is scored against golds whose limits only someone holding the protocol can weigh.
+act on, so it stays lab-side: a served-latency percentile is a fact about the
+machine and the model cache, and the quality series is scored against golds whose
+limits only someone holding the protocol can weigh. The viewer renders it at
+``/retrieval`` through ``thread_archive._dev``, which is a *dev* page — excluded
+from the wheel, 404 in an install — rather than a second home for these numbers.
 
 Three files answer three different questions and none of them answers alone:
 

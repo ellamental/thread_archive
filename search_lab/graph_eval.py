@@ -87,7 +87,8 @@ def score_case(order: list[str], gold: set, successes_at: dict,
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--cases", type=int, default=2000,
-                    help="max log-mined cases (default: all ~563)")
+                    help="max log-mined cases (the default is above the number "
+                         "the trail yields, so it scores all of them)")
     ap.add_argument("--seed", type=int, default=7)
     ap.add_argument("--json", action="store_true", dest="as_json")
     args = ap.parse_args()

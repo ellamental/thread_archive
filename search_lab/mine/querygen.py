@@ -246,7 +246,8 @@ class QueryGenMiner(Miner):
         if empty:
             # A sampled thread search couldn't be made findable — a recall signal
             # to keep in view, not just a per-thread ✗. Persisted as a rate on the
-            # mining ledger (see _ops.mine_runs) so the drop denominator survives.
+            # mining ledger (see search_lab/mine_runs.py) so the drop denominator
+            # survives.
             notes.append(f"{empty}/{len(threads)} thread(s) yielded no fair query "
                          "(findability drop — generation failed or judged untargetable)")
         return MineResult(written=written, failed=empty, cases_path=cases_path,

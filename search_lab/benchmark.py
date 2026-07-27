@@ -6,7 +6,7 @@ needs several of them: the gold gates say whether the change helped on
 corpus-grounded labels, the hold-out corpus says whether that survives on a
 corpus nobody tuned against, and the external benchmarks say whether the
 components are still competitive in general. Running them by hand means
-remembering six invocations, their flags, and which of them a given change can
+remembering a dozen invocations, their flags, and which of them a given change can
 even move — so in practice they get run once at the end, if at all.
 
     python -m search_lab benchmark                    # the standard set
@@ -25,9 +25,9 @@ tuning loop does not commit between passes.
 Each row prints its headline metrics beside the **delta against the last run at a
 different configuration** — not against the previous run, which during a tuning
 loop is usually the same configuration measured twice. That is the number a knob
-turn is judged on, and it is why this exists as a set rather than six commands:
-the deltas have to be read together, or a change that lifts one corpus while
-sinking another reads as a win.
+turn is judged on, and it is why this exists as a set rather than a list of
+commands: the deltas have to be read together, or a change that lifts one corpus
+while sinking another reads as a win.
 
 Rows run as **separate processes**, sequentially. The retrieval stack caches a
 corpus graph and a vector pack per engine, so swapping corpora inside one process

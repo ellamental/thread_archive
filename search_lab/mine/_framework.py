@@ -237,9 +237,9 @@ class MineResult:
     ``attempted`` (units drawn — queries judged, threads sampled) and ``outcomes``
     (the per-unit disposition breakdown, e.g. ``{"ok": 8, "none-of-pool": 2}``) are
     the denominator behind ``written``/``failed``: the CLI persists them to the
-    mining ledger (:mod:`thread_archive._ops.mine_runs`) so an abstention/drop rate
-    is a recorded timeseries, not a number that lived only in the run's console
-    line. A miner that leaves them at their defaults simply records no breakdown."""
+    mining ledger (:mod:`search_lab.mine_runs`) so an abstention/drop rate is a
+    recorded timeseries, not a number that lives only in the run's console line.
+    A miner that leaves them at their defaults simply records no breakdown."""
 
     written: int = 0
     failed: int = 0

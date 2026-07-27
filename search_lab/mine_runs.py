@@ -1,10 +1,10 @@
 """The gold-mining run ledger: ``<gold dir>/mine-runs.jsonl``.
 
-Every ``python -m search_lab.mine <miner>`` run mints gold cases, but the *denominator*
-that gives those cases meaning — how many queries the judge abstained on, how many
-sampled threads yielded no fair query — used to survive only in the per-run console
-line and the detail sidecar. That is exactly the number a recall-blind benchmark
-must not lose: a rerank judge's ``none-of-pool`` verdict is the one recall signal
+Every ``python -m search_lab.mine <miner>`` run mints gold cases, but what gives
+those cases meaning is the *denominator* — how many queries the judge abstained on,
+how many sampled threads yielded no fair query. That is exactly the number a
+recall-blind benchmark must not lose: a rerank judge's ``none-of-pool`` verdict is
+the one recall signal
 the in-pool protocol has, and a querygen generator's drop is a thread search
 couldn't be made findable. Score only the cases that *were* minted and the
 population is silently conditioned on "the judge/generator succeeded," which

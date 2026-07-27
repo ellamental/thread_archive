@@ -157,8 +157,8 @@ def _require_matching_snapshot(cases: list[dict], cases_path) -> None:
         raise SystemExit(
             f"--cases must run against the corpus snapshot the cases were mined "
             f"against, but THREAD_ARCHIVE_HOME is not a snapshot. Run "
-            f"`thread_archive snapshot <dir>` and point THREAD_ARCHIVE_HOME at it "
-            f"(the same snapshot {cases_path} was mined against)."
+            f"`python search_lab/snapshot.py <dir>` and point THREAD_ARCHIVE_HOME "
+            f"at it (the same snapshot {cases_path} was mined against)."
         )
     stale = sorted({c.get("snapshot_id") for c in cases} - {current})
     if stale:

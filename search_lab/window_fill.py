@@ -114,8 +114,8 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     api.open_archive()
-    # This scores through `api.search` rather than `_eval.evaluate`, so it warms
-    # explicitly rather than inheriting the scorer's warm-up.
+    # This scores through `api.search` rather than `eval_core.evaluate`, so it
+    # warms explicitly rather than inheriting the scorer's warm-up.
     warm_for_scoring()
 
     rows, tot = [], {"f2s": 0.0, "f2b": 0.0, "f1s": 0.0, "f1b": 0.0, "n": 0,

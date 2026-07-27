@@ -22,15 +22,17 @@ limits beside it misleads, and those limits are what this manual is. What the
 product reports instead is whether search is *degraded*, which is actionable
 (`thread_archive status`, the viewer's health page).
 
-Five shared modules sit beside the harnesses, all of them lab-only for the same
+Shared modules sit beside the harnesses, all of them lab-only for the same
 reason: `eval_core.py` (scoring), `eval_home.py` (which home a benchmark builds
 into, which arms it pins, whether a cached build still describes the corpus asked
 for), `snapshot.py` (freeze a corpus — also a command:
-`python search_lab/snapshot.py <dir>`), `gold_runs.py` + `mine_runs.py` (the run
-ledgers), and `retrieval_report.py` (latency and quality series off the ledgers,
-`python search_lab/retrieval_report.py`). The `_mine` miners in the package reach
-these by importing `search_lab.*` — they are repo-only too (the wheel excludes
-them), so the dependency never leaves a checkout.
+`python search_lab/snapshot.py <dir>`), `gold_files.py` (what counts as a gold
+file), `speed.py` (the latency measurement core), `gold_runs.py` + `mine_runs.py`
++ `bench_runs.py` (the run ledgers), and `retrieval_report.py` (latency and
+quality series off the ledgers, `python search_lab/retrieval_report.py`). The
+miners under `mine/` reach them by bare sibling import, and `scripts/retrieval_gold_gate.py`
+and the tests by `search_lab.*` — the dependency runs lab → package and never
+leaves a checkout.
 
 Two scoring cores, split at the corpus. Everything scoring *gold cases* runs
 through `eval_core.evaluate`; the external benchmarks implement their own
@@ -50,7 +52,7 @@ run has already measured at this configuration — see "Running the whole bench"
 
 | tier | what runs | corpus | cost | when |
 |---|---|---|---|---|
-| 0 | `tests/test_search_quality.py` (in every pytest run) | checked-in synthetic corpus (`tests/quality_corpus.py`), lexical stack | seconds | every change |
+| 0 | `tests/test_search_quality.py` + `tests/test_search_recall_shape.py` + `tests/test_reality_mechanisms.py` (in every pytest run) | checked-in synthetic corpus (`tests/quality_corpus.py`), lexical stack | seconds | every change |
 | 1 | `pytest -m quality_models` | same corpus, real embedding + rerank models | minutes | touching the model arms |
 | 2 | CI `retrieval-gate` (arm-liveness probes) | live archive | seconds | every commit, via thread-ci |
 | 3 | `retrieval_gold_gate.py` (grounded regression floors), `retrieval_eval.py` by hand, `graph_eval.py`, `--behavior` | live archive + the golds' frozen snapshot | minutes | evaluating a deliberate ranking change |
@@ -105,8 +107,8 @@ archive (BEIR and the lab build throwaway homes and never touch it).
   golds — the baseline instrument). Success asks whether any answer ranks;
   recall measures how much of the complete grade-2 set ranks; nDCG scores the
   ordering of the whole 2/1/0 pool. `--probes-only` skips the metric run for
-  the CI gate's arm-liveness checks. Every other live-archive instrument
-  reuses its miner (`mine_log_cases`).
+  the CI gate's arm-liveness checks. `graph_eval.py` scores the same log-mined
+  cases off its miner (`mine_log_cases`).
 - **`window_fill.py`** — the product measure: how much of what is relevant comes
   back in the window an agent reads, rather than where the first hit lands. Scores
   **window fill** (`hits@k / min(k, |gold|)` — ceiling-normalized, so it measures
@@ -115,8 +117,8 @@ archive (BEIR and the lab build throwaway homes and never touch it).
   subject assembled — the fan-out workflow end to end), both against
   `bm25_baseline`'s plain BM25 over the same snapshot. Multi-answer `topic` files
   are the protocol with the resolution to measure it; single-gold files reduce it
-  to success@k. It warms the models and corpus graph first, which the other
-  instruments do not — see the caution below.
+  to success@k. It drives `api.search` directly rather than going through
+  `eval_core.evaluate`, so it calls the warm-up itself — see the caution below.
 - **`latency_replay.py`** — the speed bench over the queries agents actually ran.
   Everything else here scores *curated* cases; this replays the usage ledger, which
   is a different population and the only one that answers "did this help **us**". A
@@ -181,10 +183,14 @@ archive (BEIR and the lab build throwaway homes and never touch it).
   hold-out**. Every other gold file is mined from one corpus by one author, so
   hold-out discipline *within* it cannot see overfitting *to* it — and unlike the
   external yardsticks below, SWE-chat is domain-matched (it is agent session logs,
-  not a mismatched third-party IR corpus). The built corpus is **Claude Code
-  only** (5144 of 5850 transcripts): the other harnesses SWE-chat collects ship
-  shapes the line-stream importer can't read, and archive's OpenCode/Cursor
-  importers are DB scanners with no JSON-export path.
+  not a mismatched third-party IR corpus). Two things bound what gets built. It is
+  **Claude Code only** — the other harnesses SWE-chat collects ship shapes the
+  line-stream importer can't read, and archive's OpenCode/Cursor importers are DB
+  scanners with no JSON-export path — and `--max-sessions` caps the corpus well
+  under the download, spreading the budget across repos (`--per-repo`, linked
+  sessions first) so it measures search over many codebases rather than one.
+  Embedding is what forces the cap; `docs/search-quality.md` carries the built
+  corpus's size and its scores.
 
   It is a gold corpus like the archive's own, and carries the same furniture:
   case files, a floor sidecar per file, and the run ledgers — all of them in
@@ -277,12 +283,13 @@ python scripts/retrieval_gold_gate.py --cache --fail-early --set fusion_weight=5
   baseline, so an experiment can't be mistaken for the baseline moving.
 - `--cache` persists the candidate *pools* between processes. The arms and the
   fusion don't read ranking weights, so a second run at new weights re-scores
-  pools it already has — measured over the full gold set, 132 s → 19 s, with the
-  scores identical to the digit. The cache keys on the pool-shaping params
-  (`rrf_k`, and `pool_floor` folded into the resolved depth), so sweeping *those*
-  correctly misses rather than silently reading back the first value's pool.
-  Sized for the real corpus: ~140 MB under `~/.thread/archive/gold-pool-cache/`,
-  namespaced by `snapshot_id` and safe to delete.
+  pools it already has — measured over the full gold set, 249 s → 76 s at a 100%
+  hit rate, with the scores identical to the digit. The cache keys on the
+  pool-shaping params (`rrf_k`, and `pool_floor` folded into the resolved depth),
+  so sweeping *those* correctly misses rather than silently reading back the first
+  value's pool. It is not small — the pools carry hit payloads, so a swept corpus
+  runs to gigabytes under `~/.thread/archive/gold-pool-cache/`, one file per
+  `snapshot_id` and safe to delete.
 - `--fail-early` stops as soon as a floor is provably out of reach — every
   unscored case counted as perfect still lands under it. Exact: it can only cut
   short a run that was going to fail. `--max-regressions N` adds the impatient
@@ -326,7 +333,7 @@ python scripts/retrieval_gold_gate.py --set rerank_auto=true --set rerank_pool=6
   path fails here in tens of seconds instead of after the full pass. Impatient and
   not sound (a change can turn a baseline-fast query into the new slow one), so it
   is a tuning shortcut, like `--max-regressions` on the quality side.
-- `thread_archive._ops.speed` records a `latency-runs.jsonl` timeseries and a
+- `search_lab/speed.py` records a `latency-runs.jsonl` timeseries and a
   `latency-baseline.json` (the smoke test's cherry-pick source), written on a
   clean full shipped run exactly as the quality baseline is.
 
@@ -365,11 +372,14 @@ the re-rank budget.
   `retrieval_eval.py --cases` scores it over that snapshot — the freezing rule
   made mechanical. A file whose `snapshot_id` matches no snapshot on hand is
   stale: re-mine it, don't score it against a moved corpus.
-- **Tier 0** is two shapes, both in every pytest run. The metric floors
+- **Tier 0** is three shapes, all in every pytest run. The metric floors
   (`tests/test_search_quality.py`) are near-saturated by
   design (MRR ≈ 1.0 on the synthetic corpus) — they can only fall: a
-  breakage detector, not an improvement meter. The mechanism contracts
-  (`tests/test_reality_mechanisms.py`) pin deterministic properties of the
+  breakage detector, not an improvement meter. The recall shapes
+  (`tests/test_search_recall_shape.py`) cover what the ordering metrics can't
+  score — every thread carrying a term is enumerable, first and last mention are
+  answerable — on nonce-term golds that are true by construction. The mechanism
+  contracts (`tests/test_reality_mechanisms.py`) pin deterministic properties of the
   pipeline's machinery — content types are indexed at all, the MCP default
   scope widens to tool/thinking content, reindex preserves what was findable,
   the cross-encoder's gate/window/boundary code paths behave — not ranking
@@ -389,7 +399,7 @@ the re-rank budget.
 
 - **A cold process would score a different number than a warm one**, which is why
   every scoring path builds the corpus graph before its first case
-  (`thread_archive._eval.warm_for_scoring`, called from `evaluate` and from the
+  (`search_lab.eval_core.warm_for_scoring`, called from `evaluate` and from the
   instruments that search directly). The coherence re-rank reads a graph built in
   the background and no-ops until it lands, so under a scoring loop the build
   arrives partway through and splits a run in two — cases before it ranked without

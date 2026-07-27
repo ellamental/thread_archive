@@ -2,6 +2,25 @@
 
 ## Unreleased
 
+- **Swept the search lab's docs for claims that had stopped being true.** The lab
+  had accumulated a layer of prose describing a system one or two refactors back,
+  and the worst of it was load-bearing: `search_lab/latency_replay.py` imported
+  `thread_archive._ops.speed`, a module that now lives at `search_lab/speed.py`,
+  so the instrument raised `ImportError` before it ran a single query. Four other
+  places pointed at the same dead `_ops.*` / `_eval.*` spellings, and
+  `retrieval_eval.py` told anyone who hit its snapshot check to run
+  `thread_archive snapshot`, a verb the CLI does not have (`cli.py`'s own module
+  docstring advertised it, and `eval`, alongside it). Also corrected: three
+  measured numbers the corpus had grown past — a full gold pass is 317 searches,
+  not ~140; the pool cache is gigabytes, not ~140 MB, and buys 249 s → 76 s rather
+  than 132 s → 19 s — and the SWE-chat linkage rationale, which credited a
+  canonical-vs-any-checkpoint distinction ("2132 sessions rather than 1366") that
+  measures identical either way. Three claims about the lab's own shape were
+  inverted: `search_lab/__init__.py` said nothing in the package imports the lab
+  (`_dev` does, to serve the `/retrieval` dev page), `retrieval_report.py` said it
+  stays off the viewer (that page is what it feeds), and `gold_runs.py` said the
+  gold gate runs on every commit (CI carries arm-liveness probes only — the gate
+  is a deliberate run).
 - **`python -m search_lab benchmark` runs the bench as a set.** Six instruments
   with their own flags, and no answer to "which of these can my change even
   move," meant in practice they got run once at the end or not at all. One

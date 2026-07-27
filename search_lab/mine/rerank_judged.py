@@ -249,7 +249,7 @@ class RerankJudgedMiner(Miner):
         none_of_pool = outcomes.get("none-of-pool", 0)
         if none_of_pool:
             # The one recall signal an in-pool judge has — persisted as a rate on
-            # the mining ledger, not just noted here (see _ops.mine_runs).
+            # the mining ledger, not just noted here (see search_lab/mine_runs.py).
             notes.append(f"{none_of_pool}/{len(cases)} query(s) had no answer in the "
                          "pool (recall-failure signal — search retrieved only near-misses)")
         return MineResult(written=ok, failed=failed, cases_path=cases_path,

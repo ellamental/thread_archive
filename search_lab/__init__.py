@@ -1,8 +1,10 @@
 """The search lab: quality, calibration, and latency harnesses over a real archive.
 
-Not part of the installed product. Nothing under ``src/thread_archive`` imports
-this directory — the dependency runs one way, lab → package, so an install has no
-path to the bench and the bench is free to reach into package privates.
+Not part of the installed product. The dependency runs lab → package, so the
+bench is free to reach into package privates. The one edge back is
+``thread_archive._dev``, which imports :mod:`retrieval_report` to serve the
+``/retrieval`` dev page — and ``_dev`` is itself excluded from the wheel and
+imported fail-softly, so an install still has no path to the bench.
 
 Two invocation styles, both supported, which is what the ``sys.path`` setup below
 is for:

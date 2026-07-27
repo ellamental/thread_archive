@@ -100,7 +100,7 @@ miner, and the four cover complementary failure modes:
 
 Scoring is deterministic — same code, same snapshot, same digits — so a movement is
 never noise. That holds because the scorer builds the corpus graph before its first
-case (`_eval.warm_for_scoring`): the coherence re-rank otherwise no-ops until a
+case (`search_lab/eval_core.py`'s `warm_for_scoring`): the coherence re-rank otherwise no-ops until a
 background build lands, which would split a run in two and move a file by roughly
 0.02 window fill. Resolution is otherwise `1/n` per file: one case going from rank 1 to
 unfound moves any metric by at most `1/n`, so anything smaller is a rank shuffle
@@ -465,12 +465,12 @@ click-label protocols are censored against being:
   the embedding and cross-encoder arms actually load, so a dead model can't silently
   degrade fused search to lexical while every row stays green. No metric run rides it.
 
-The grounded gold-file scoring is a **deliberate run, not a CI row** — its ~140
-model-loaded searches run at the edge of the 600 s runner cap, so it timed the sweep
-out under load. `retrieval_gold_gate.py` is where it lives now, doubling as the
-current-state read and the interactive tuning loop (`--set field=value` to score a
-candidate, `--cache` to persist candidate pools across processes for a ~7× re-run
-speedup, `--fail-early` to stop once a floor is provably unreachable, `--latency` for
+The grounded gold-file scoring is a **deliberate run, not a CI row** — one
+model-loaded search per case, 317 of them, minutes past the 600 s runner cap under
+load. `retrieval_gold_gate.py` is where it lives, doubling as the current-state
+read and the interactive tuning loop (`--set field=value` to score a candidate,
+`--cache` to persist candidate pools across processes — 249 s → 76 s over the full
+set — `--fail-early` to stop once a floor is provably unreachable, `--latency` for
 the speed axis).
 
 `python -m search_lab benchmark` runs tiers 3 and 4 as one recorded set and skips

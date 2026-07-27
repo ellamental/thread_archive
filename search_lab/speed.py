@@ -59,8 +59,9 @@ OBSERVED_SET = "observed"
 
 
 def baseline_file(query_set: str) -> str:
-    """The baseline filename for ``query_set``. The gold set keeps the bare name it
-    has always had — its baseline is the one every existing reference points at."""
+    """The baseline filename for ``query_set``. The gold set holds the bare name,
+    which is the one every other reference to a latency baseline points at; every
+    other set is suffixed."""
     if query_set == GOLD_SET:
         return LATENCY_BASELINE_FILE
     return f"latency-baseline-{query_set}.json"
@@ -175,9 +176,10 @@ def smoke_set(baseline: Optional[dict[str, Any]], k: int) -> list[str]:
     pathological cases, empirically rather than by guesswork.
 
     A latency regression shows worst on the queries already nearest the ceiling,
-    so running these first turns a full ~140-query pass into a ~10-query smoke
-    test that catches the common regression (a change that uniformly slows the
-    pipeline, or worsens the already-heavy paths) in tens of seconds. Empty when
+    so running these first turns a pass over the whole gold set (hundreds of
+    queries) into a handful, catching the common regression (a change that
+    uniformly slows the pipeline, or worsens the already-heavy paths) in tens of
+    seconds rather than minutes. Empty when
     no baseline has been recorded — nothing to cherry-pick from, so the smoke test
     simply doesn't run rather than guessing which queries are hard."""
     by_query = (baseline or {}).get("by_query") or {}
@@ -291,7 +293,7 @@ def measure(
     return _summarize(samples, n_queries=len(queries), reps=reps)
 
 
-# --- the timeseries + baseline (mirrors _ops.gold_runs) ----------------------
+# --- the timeseries + baseline (mirrors search_lab/gold_runs.py) -------------
 
 
 def _enabled() -> bool:

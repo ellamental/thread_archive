@@ -74,7 +74,7 @@ MEASURES = ["RR(rel=2)", "Success(rel=2)@10", "R(rel=2)@10", "nDCG@10 (exponenti
 # carrying rank 35 would still score under RR where ours scores zero, so the
 # depth is part of the contract rather than an implementation detail.
 RUN_DEPTH = 20
-# Cutoffs the reference scorer reports at, matching `_eval.RECALL_KS`.
+# Cutoffs the reference scorer reports at, matching `eval_core.RECALL_KS`.
 KS = (1, 5, 10, 20)
 # A TREC run's score column is higher-is-better, and a conforming scorer sorts by
 # it rather than trusting the rank column. FTS5's `bm25()` is the other way round
