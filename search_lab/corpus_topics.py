@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Materialize a corpus grouping as topics — the input the topic gold miner needs.
 
-``thread_archive mine topic`` starts from a **topic**: it hands a survey agent the
+``python -m search_lab.mine topic`` starts from a **topic**: it hands a survey agent the
 subject's member conversations and asks which angles are worth testing. That makes
 it the one miner an eval corpus cannot run out of the box — a freshly built corpus
 home has conversations and nothing else, and the topic graph an operator's archive

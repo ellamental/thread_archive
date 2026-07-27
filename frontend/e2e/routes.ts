@@ -40,6 +40,12 @@ export const ROUTES: SmokeRoute[] = [
     landmark: (page) => page.getByRole('heading', { name: 'Your archive is protected' }),
   },
   {
+    // A dev page: the rail only advertises it under `?dev=1`, but the route
+    // always resolves, so it carries a browser case like every other route.
+    path: '/retrieval',
+    landmark: (page) => page.getByRole('heading', { name: 'Retrieval', level: 1 }),
+  },
+  {
     path: '/upload',
     landmark: (page) => page.getByRole('heading', { name: 'Import an account export' }),
   },

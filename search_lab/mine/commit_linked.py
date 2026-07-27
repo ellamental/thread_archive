@@ -49,7 +49,8 @@ from pathlib import Path
 
 from sqlalchemy import text as sa_text
 
-from .._store import use_session
+from thread_archive._store import use_session
+
 from . import _framework as fw
 from ._agent import run_claude
 from ._framework import MineContext, Miner, MineResult, now_iso

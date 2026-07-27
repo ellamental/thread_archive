@@ -1,13 +1,13 @@
-"""``thread_archive mine`` — the operator front door to the gold miners.
+"""``python -m search_lab.mine`` — the operator front door to the gold miners.
 
 Three shapes, all driven off the registry so there is no second catalog to keep
 in sync:
 
-- ``thread_archive mine`` — the list view: every miner, what it measures, its
+- ``python -m search_lab.mine`` — the list view: every miner, what it measures, its
   unit and cost, and whether ``mine all`` can drive it.
-- ``thread_archive mine <miner> [args]`` — run one miner; ``--help`` shows its
+- ``python -m search_lab.mine <miner> [args]`` — run one miner; ``--help`` shows its
   options.
-- ``thread_archive mine all [N]`` — run every per-case miner that needs only a
+- ``python -m search_lab.mine all [N]`` — run every per-case miner that needs only a
   count, with target N; miners that need an argument (topic) are skipped, named.
 
 Every path guards the same two preconditions once — the ``claude`` CLI is on
@@ -26,7 +26,7 @@ from . import _framework as fw
 def _miner_parser(miner: fw.Miner) -> argparse.ArgumentParser:
     """A miner's full argument parser: the framework's common args plus the miner's
     own. Built the same way for the run path and for ``mine all``'s defaulting."""
-    p = argparse.ArgumentParser(prog=f"thread_archive mine {miner.name}",
+    p = argparse.ArgumentParser(prog=f"mine {miner.name}",
                                 description=miner.summary)
     fw.add_common_arguments(p, miner)
     miner.add_arguments(p)
@@ -39,7 +39,7 @@ def list_miners_text(registry: list[fw.Miner]) -> str:
 
     name_w = max((len(m.name) for m in registry), default=4)
     meas_w = max((len(m.measures) for m in registry), default=8)
-    lines = ["Gold miners — mint snapshot-bound eval cases (thread_archive mine <miner> ...)", ""]
+    lines = ["Gold miners — mint snapshot-bound eval cases (python -m search_lab.mine <miner> ...)", ""]
     for m in registry:
         target = f"{m.unit}×N" if m.target_kind == "per-case" else "batch"
         flag = "● mine all" if (m.runnable_in_all and m.target_kind == "per-case") else "○ direct"
@@ -51,14 +51,14 @@ def list_miners_text(registry: list[fw.Miner]) -> str:
         lines.append(f"      cost {m.cost}; target: {m.target_help}")
     lines += [
         "",
-        "  ● = `thread_archive mine all [N]` runs it with target N (default 5);",
+        "  ● = `python -m search_lab.mine all [N]` runs it with target N (default 5);",
         "  ○ = run it directly (it needs an argument or sizes itself).",
         "  Each run spends real `claude` tokens against a frozen snapshot",
         "  (`python search_lab/snapshot.py <dir>`; point THREAD_ARCHIVE_HOME at it).",
         f"  At most {MAX_CONCURRENT_SESSIONS} agent sessions run at once; a `mine` "
         f"command spends at most {fw.MAX_SESSIONS_PER_RUN} in total",
         "  (a single miner's --target, or the whole `mine all` sweep, shares that).",
-        "  `thread_archive mine <miner> --help` for a miner's own options.",
+        "  `python -m search_lab.mine <miner> --help` for a miner's own options.",
     ]
     return "\n".join(lines)
 
@@ -66,7 +66,7 @@ def list_miners_text(registry: list[fw.Miner]) -> str:
 def _guarded_open() -> str:
     """Open the archive, assert the preconditions, and return the snapshot id.
     Shared by the single-miner and ``all`` paths so both fail the same way."""
-    from .. import _api as api
+    from thread_archive import _api as api
 
     if not fw.claude_available():
         raise SystemExit("mining needs the `claude` CLI on PATH")
@@ -96,7 +96,7 @@ def _execute(miner: fw.Miner, args: argparse.Namespace,
     # breakdown) so the abstention and drop rates are a recorded timeseries, not a
     # number that lived only in the console line. Fail-soft inside record_run.
     if result.attempted:
-        from search_lab import mine_runs
+        from .. import mine_runs
 
         mine_runs.record_run(
             miner=miner.name, snapshot_id=snapshot_id, attempted=result.attempted,
@@ -134,7 +134,7 @@ def _run_all(registry: list[fw.Miner], argv: list[str], open_fn=_guarded_open) -
     *in total*: each miner gets target N, trimmed to an even share of the budget
     when N across the runnable miners would overspend it. ``open_fn`` is the
     precondition/snapshot seam (default :func:`_guarded_open`)."""
-    ap = argparse.ArgumentParser(prog="thread_archive mine all")
+    ap = argparse.ArgumentParser(prog="mine all")
     ap.add_argument("target", nargs="?", type=int, default=5,
                     help="per-miner target (default 5), trimmed to fit the "
                     f"{fw.MAX_SESSIONS_PER_RUN}-session sweep budget")

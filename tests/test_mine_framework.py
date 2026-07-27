@@ -10,24 +10,17 @@ prompt / case-assembly logic of the rerank judge and the query generator.
 from __future__ import annotations
 
 import importlib.util
+import pathlib
 import sys
 from pathlib import Path
 
-import pytest
-
-# ``_mine`` is repo-only — the wheel excludes it (pyproject
-# [tool.hatch.build.targets.wheel]), so an installed-package run has nothing to
-# import here. Gate before the imports so that run skips the module instead of
-# erroring at collection.
-pytest.importorskip("thread_archive._mine", reason="_mine is repo-only (excluded from the wheel)")
-
-from thread_archive._mine import (  # noqa: E402
+from search_lab.mine import (  # noqa: E402
     _cli,
     load_registry,
     querygen,
     rerank_judged,
 )
-from thread_archive._mine import (  # noqa: E402
+from search_lab.mine import (  # noqa: E402
     _framework as fw,
 )
 
@@ -129,12 +122,22 @@ def test_open_output_honors_an_override(tmp_path):
     assert cases.parent.is_dir()  # created
 
 
-def test_tool_cmd_is_the_module_seam():
-    assert fw.tool_cmd().endswith("-m thread_archive._mine tool")
+def test_tool_cmd_is_an_absolute_cwd_independent_seam():
+    """The agents run this through Bash from whatever directory their session
+    started in, and it is also their allowlist prefix — so it has to be the running
+    interpreter plus an absolute path to the entry point, and nothing else."""
+    import sys
+
+    cmd = fw.tool_cmd()
+    assert cmd.startswith(sys.executable + " ")
+    entry = pathlib.Path(cmd[len(sys.executable) + 1:-len(" tool")])
+    assert entry.is_absolute() and entry.is_file()
+    assert entry.parts[-3:] == ("search_lab", "mine", "__main__.py")
+    assert cmd.endswith(" tool")
 
 
 def test_clamp_jobs_caps_at_the_concurrency_ceiling():
-    from thread_archive._mine._agent import MAX_CONCURRENT_SESSIONS
+    from search_lab.mine._agent import MAX_CONCURRENT_SESSIONS
 
     assert fw.clamp_jobs(1) == 1
     assert fw.clamp_jobs(MAX_CONCURRENT_SESSIONS) == MAX_CONCURRENT_SESSIONS
@@ -180,7 +183,7 @@ def test_dispatch_unknown_miner_is_a_usage_error(capsys):
 
 
 def test_allocate_splits_the_sweep_budget_across_miners():
-    from thread_archive._mine._cli import _allocate
+    from search_lab.mine._cli import _allocate
 
     # Fits under budget: every miner gets its full target.
     assert _allocate(5, 3, 25) == [5, 5, 5]
@@ -280,7 +283,7 @@ def test_miner_commit_is_a_short_sha_or_none():
 
 
 def test_resolved_model_prefers_the_concrete_id_over_the_alias():
-    from thread_archive._mine._agent import _resolved_model
+    from search_lab.mine._agent import _resolved_model
 
     # The CLI reports the resolved id directly on newer versions …
     assert _resolved_model({"model": "claude-opus-4-8-20260101"}) == \

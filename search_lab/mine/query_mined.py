@@ -30,11 +30,11 @@ from pathlib import Path
 
 from sqlalchemy import text as sa_text
 
-from search_lab.eval_core import classify_tool, mine_log_cases
+from thread_archive import _api as api
+from thread_archive._retrieval.read import resolve_thread_ref
+from thread_archive._store import use_session
 
-from .. import _api as api
-from .._retrieval.read import resolve_thread_ref
-from .._store import use_session
+from ..eval_core import classify_tool, mine_log_cases
 from . import _framework as fw
 from ._agent import run_claude
 from ._framework import (  # re-exported for callers/tests that reach them here

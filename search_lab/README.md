@@ -1,11 +1,11 @@
 # search_lab/ — the search lab
 
-Everything that *scores* search quality lives here: the harness scripts and
-this manual. The tools that *mint* the graded
-gold cases those scorers run against — the agent miners — live in the tree as
-`thread_archive mine` (package `thread_archive._mine`), a repo-only command:
-the package is excluded from the wheel, so mining runs from a checkout beside
-this bench, never from a user's install. `thread_archive mine` alone lists them.
+Everything that measures search lives here — the harnesses that *score* quality,
+the miners that *mint* the graded gold cases they score against (`mine/`,
+`python -m search_lab.mine`), the scoring core both share, corpus freezing, and
+the run ledgers. Nothing in this directory is part of the product: an install
+carries no measurement surface at all, which is the boundary — the package
+preserves and retrieves, the lab measures how well.
 Day to day none of this runs by hand — tier 0 rides every pytest pass and the CI
 retrieval gate rides every commit. Come here when you're *changing ranking*: this
 directory is the whole scoring workbench, and the ladder below is the order to
@@ -41,7 +41,7 @@ Fastest tier first — climb until the evidence matches the stakes.
 | 1 | `pytest -m quality_models` | same corpus, real embedding + rerank models | minutes | touching the model arms |
 | 2 | CI `retrieval-gate` (arm-liveness probes) | live archive | seconds | every commit, via thread-ci |
 | 3 | `retrieval_gold_gate.py` (grounded regression floors), `retrieval_eval.py` by hand, `graph_eval.py`, `--behavior` | live archive + the golds' frozen snapshot | minutes | evaluating a deliberate ranking change |
-| 3½ | `retrieval_eval.py --cases` on agent-mined golds (`thread_archive mine <miner>` to mint them) | a frozen corpus snapshot, corpus-grounded labels | seconds to score; agent-minutes per mined case | scoring against grounded labels; mining is an occasional cadence |
+| 3½ | `retrieval_eval.py --cases` on agent-mined golds (`python -m search_lab.mine <miner>` to mint them) | a frozen corpus snapshot, corpus-grounded labels | seconds to score; agent-minutes per mined case | scoring against grounded labels; mining is an occasional cadence |
 | 4 | `pytest -m beir`; `cdr_eval.py`, `haystack_eval.py --dataset …` by hand | external IR / conversational-memory benchmarks | tens of minutes (built homes cache for re-runs) | calibrating against published baselines |
 
 ## The instruments
@@ -83,10 +83,10 @@ archive (BEIR and the lab build throwaway homes and never touch it).
   be — and read the gap as a fact about conditions, not about the code. Runs against
   the live archive, not a snapshot; `--baseline` sets the reference, and the
   timeseries is tagged `query_set=observed` so it never averages with the gold rows.
-- **`thread_archive mine`** — the gold miners (package `thread_archive._mine`),
-  the only tokens-spending tier. Each mints snapshot-bound eval `--cases` files
-  under `~/.thread/archive/`; `thread_archive mine` alone lists them, `thread_archive
-  mine <miner> --help` documents one, and `thread_archive mine all [N]` sweeps the
+- **`python -m search_lab.mine`** — the gold miners (`mine/`), the only
+  tokens-spending tier. Each mints snapshot-bound eval `--cases` files
+  under `~/.thread/archive/`; bare `mine` lists them, `mine <miner> --help`
+  documents one, and `mine all [N]` sweeps the
   ones a count alone can drive. All bind by `snapshot_id` to the frozen corpus
   snapshot they run against (`python search_lab/snapshot.py <dir>`; point `THREAD_ARCHIVE_HOME`
   at it), so after the one-time spend `retrieval_eval.py --cases` scores them for
@@ -355,7 +355,7 @@ that already worked, not a win — and it will not survive a hold-out.
 
 ## Cost and hygiene
 
-- The `thread_archive mine` miners spend real tokens (headless `claude` calls;
+- The `mine/` miners spend real tokens (headless `claude` calls;
   each miner's `--target` bounds them). Everything else on the bench is free.
 - Mined output quotes real usage — case files, detail sidecars, and ledgers live
   under `~/.thread/archive/` (`retrieval-trend.jsonl`, `judged-cases.jsonl`,

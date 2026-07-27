@@ -1713,3 +1713,28 @@ def test_status_prints_no_library_line_when_the_payload_carries_none(capsys) -> 
     """An older status payload (no ``libraries`` key) still renders."""
     assert cli.report_status(_status_base()) == 0
     assert "libs:" not in capsys.readouterr().out
+
+
+# ── `web`: the opener ────────────────────────────────────────────────────────
+# Driven with $BROWSER pointed at a no-op command, so these run the real
+# `webbrowser` path — the URL is genuinely handed off — without a window opening
+# on whoever is running the suite.
+
+def test_web_opens_the_viewer_url(monkeypatch, capsys) -> None:
+    monkeypatch.setenv("BROWSER", "true")
+    assert cli.main(["web"]) == 0
+    # No `?dev=` at all: a plain open must not restate a preference the viewer is
+    # already remembering, in either direction.
+    assert capsys.readouterr().out.strip() == "http://127.0.0.1:8787"
+
+
+def test_web_dev_asks_the_viewer_for_the_dev_pages(monkeypatch, capsys) -> None:
+    monkeypatch.setenv("BROWSER", "true")
+    assert cli.main(["web", "dev", "--port", "9999"]) == 0
+    assert capsys.readouterr().out.strip() == "http://127.0.0.1:9999/?dev=1"
+
+
+def test_web_no_dev_puts_them_away(monkeypatch, capsys) -> None:
+    monkeypatch.setenv("BROWSER", "true")
+    assert cli.main(["web", "--no-dev"]) == 0
+    assert capsys.readouterr().out.strip() == "http://127.0.0.1:8787/?dev=0"

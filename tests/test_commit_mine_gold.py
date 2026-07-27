@@ -15,13 +15,7 @@ from pathlib import Path
 
 import pytest
 
-# ``_mine`` is repo-only — the wheel excludes it (pyproject
-# [tool.hatch.build.targets.wheel]), so an installed-package run has nothing to
-# import here. Gate before the imports so that run skips the module instead of
-# erroring at collection.
-pytest.importorskip("thread_archive._mine", reason="_mine is repo-only (excluded from the wheel)")
-
-from thread_archive._mine import commit_linked as cm  # noqa: E402
+from search_lab.mine import commit_linked as cm  # noqa: E402
 
 # ── load_linkage ─────────────────────────────────────────────────────────────
 
@@ -54,7 +48,6 @@ def test_load_linkage_drops_incomplete_and_malformed_rows(tmp_path):
 
 
 def test_load_linkage_missing_file_is_a_pointed_error(tmp_path):
-    import pytest
 
     with pytest.raises(SystemExit, match="no linkage file"):
         cm.load_linkage(tmp_path / "absent.jsonl")
@@ -181,7 +174,7 @@ def test_build_prompt_truncates_a_huge_diff():
 def test_commit_miner_run_writes_cases(archive_home, tmp_path):
     import argparse
 
-    from thread_archive._mine import _framework as fw
+    from search_lab.mine import _framework as fw
     from thread_archive._store import Thread, get_session, init_db
 
     init_db()
@@ -232,7 +225,7 @@ def test_commit_miner_is_excluded_from_mine_all():
 
 
 def test_commit_miner_is_registered():
-    from thread_archive._mine import load_registry
+    from search_lab.mine import load_registry
 
     assert "commit" in {m.name for m in load_registry()}
 

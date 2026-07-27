@@ -1,6 +1,6 @@
 """The gold-mining run ledger: ``<gold dir>/mine-runs.jsonl``.
 
-Every ``thread_archive mine <miner>`` run mints gold cases, but the *denominator*
+Every ``python -m search_lab.mine <miner>`` run mints gold cases, but the *denominator*
 that gives those cases meaning — how many queries the judge abstained on, how many
 sampled threads yielded no fair query — used to survive only in the per-run console
 line and the detail sidecar. That is exactly the number a recall-blind benchmark
@@ -49,7 +49,7 @@ def _enabled() -> bool:
 def _gold_dir() -> Path:
     """The gold dir the mining pipeline writes cases into — where this ledger lands
     too, so the run record travels beside the golds it produced."""
-    from thread_archive._mine._framework import gold_dir
+    from .mine._framework import gold_dir
 
     return gold_dir()
 

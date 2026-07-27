@@ -4,7 +4,7 @@ Neither this module nor its caller interprets the reply: a miner asks the agent
 for a particular JSON shape and parses whatever comes back, so the same runner
 drives the query miner's verdict, the topic survey/labeler, the rerank judge, and
 the query generator. Bash is allowed only for the snapshot-bound corpus seam
-(``thread_archive._mine tool ...``), so a mining agent can search and read the
+(``mine/__main__.py tool ...``), so a mining agent can search and read the
 frozen corpus and nothing else.
 
 Every agent in the process passes through :func:`run_claude`, so this is also

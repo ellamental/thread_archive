@@ -28,7 +28,6 @@ it hands that viewer's URL to a browser and serves nothing itself.
 from __future__ import annotations
 
 import argparse
-import importlib.util
 import sys
 from typing import Optional
 
@@ -251,10 +250,19 @@ def cmd_web(args: argparse.Namespace) -> int:
 
     The viewer runs inside the always-on watcher process (``watch --web``), so
     there is one read URL over one SQLite engine and this verb only points at it.
+
+    ``web dev`` opens it with the dev pages advertised in the navigation — the
+    retrieval report, whose subject is the search pipeline rather than the
+    archive. The viewer remembers the choice, so this is a switch rather than a
+    different address to keep using; ``web --no-dev`` puts it back.
     """
     import webbrowser
 
     url = f"http://127.0.0.1:{args.port}"
+    if args.mode == "dev":
+        url += "/?dev=1"
+    elif args.no_dev:
+        url += "/?dev=0"
     print(url)
     webbrowser.open(url)
     return 0
@@ -1297,41 +1305,6 @@ def report_mirror(r: dict) -> int:
     return 0 if r["ok"] else 1
 
 
-def cmd_mine(args: argparse.Namespace) -> int:
-    """Mint snapshot-bound gold eval cases with the agent miners — the deep tier
-    of the search-quality ladder (`search_lab/README.md`).
-
-    `mine` drives headless `claude` agents against a frozen corpus snapshot to
-    produce graded relevance labels the cheaper protocols can't: corpus-grounded
-    golds from real queries, confound-dense topic benchmarks, cheap in-pool rerank
-    judgments, and generated findability cases. Bare `mine` lists the miners;
-    `mine <miner> --help` shows a miner's options; `mine all N` sweeps the ones a
-    count alone can drive.
-
-    Development machinery, not product: the `_mine` package is excluded from the
-    wheel (it only pays off beside the scoring bench and gold files under
-    `search_lab/`), so an install answers with a pointer to the repo instead of a
-    traceback. `find_spec`, not a caught ImportError, so a *broken* `_mine` still
-    raises its real error rather than being misreported as a missing one.
-
-    Delegates to the `_mine` package, whose registry owns the subcommand grammar.
-    """
-    if importlib.util.find_spec(f"{__package__}._mine") is None:
-        print(
-            "mine is development machinery and ships only in the source repo.\n"
-            "The miners spend real tokens driving headless `claude` agents, and the\n"
-            "cases they mint are only useful beside the scoring bench and gold files\n"
-            "under search_lab/ — neither of which is part of an install. Run them from a\n"
-            "checkout: https://github.com/ellamental/thread_archive",
-            file=sys.stderr,
-        )
-        return 2
-
-    from . import _mine
-
-    return _mine.dispatch(list(args.rest))
-
-
 def cmd_setup(args: argparse.Namespace) -> int:
     """The `thread_archive setup` front door — delegate to the wizard flow."""
     from ._setup.wizard import run_setup
@@ -1580,6 +1553,18 @@ def build_parser() -> argparse.ArgumentParser:
         "web", help="open the cohosted web viewer in a browser (the watcher serves it)"
     )
     p_web.add_argument("--port", type=int, default=8787, help="viewer port (default 8787)")
+    # `web dev` reads as a mode, not a flag, which is what it is — and leaves
+    # room for other dev pages to join the same switch. The default is None
+    # rather than False so a plain `web` opens the viewer without restating a
+    # preference the browser is already remembering.
+    p_web.add_argument(
+        "mode", nargs="?", choices=["dev"], default=None,
+        help="'dev' shows the dev pages (the retrieval report) in the navigation",
+    )
+    p_web.add_argument(
+        "--no-dev", dest="no_dev", action="store_true",
+        help="hide the dev pages again",
+    )
     p_web.set_defaults(func=cmd_web)
 
     p_reindex = sub.add_parser("reindex", help="rebuild index.db from the JSONL truth directory")
@@ -1654,18 +1639,6 @@ def build_parser() -> argparse.ArgumentParser:
     p_status = sub.add_parser("status", help="archive health / paths / counts")
     _add_home_arg(p_status)
     p_status.set_defaults(func=cmd_status)
-
-    # The dev bench's gold miners — mint snapshot-bound eval cases (the deep tier
-    # of the quality ladder). No `help=`, deliberately: that is what keeps the verb
-    # out of `--help`, since the package behind it is excluded from the wheel and
-    # only a checkout can run it (see cmd_mine). Registered unconditionally so the
-    # parser is identical in both environments. The subcommand grammar is the
-    # registry's, parsed lazily inside cmd_mine, so the heavy _mine imports never
-    # load for an unrelated command. REMAINDER hands the whole tail to that parser.
-    p_mine = sub.add_parser("mine")
-    p_mine.add_argument("rest", nargs=argparse.REMAINDER,
-                        help="<miner> [options] | all [N] | (empty to list)")
-    p_mine.set_defaults(func=cmd_mine)
 
     p_backup = sub.add_parser("backup", help="mirror the JSONL truth dir to a backup destination")
     _add_home_arg(p_backup)

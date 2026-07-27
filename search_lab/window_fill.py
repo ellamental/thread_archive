@@ -53,9 +53,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from bm25_baseline import bm25_search  # noqa: E402
 from eval_core import warm_for_scoring  # noqa: E402
+from mine._framework import gold_dir  # noqa: E402
 
 from thread_archive import _api as api  # noqa: E402
-from thread_archive._mine._framework import gold_dir  # noqa: E402
 
 
 def _fill(retrieved: list[str], gold: set[str], k: int) -> float:

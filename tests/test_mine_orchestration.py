@@ -17,13 +17,7 @@ from datetime import datetime, timezone
 
 import pytest
 
-# ``_mine`` is repo-only — the wheel excludes it (pyproject
-# [tool.hatch.build.targets.wheel]), so an installed-package run has nothing to
-# import here. Gate before the imports so that run skips the module instead of
-# erroring at collection.
-pytest.importorskip("thread_archive._mine", reason="_mine is repo-only (excluded from the wheel)")
-
-from thread_archive._mine import (  # noqa: E402
+from search_lab.mine import (  # noqa: E402
     _agent,
     _cli,
     _corpus,
@@ -32,10 +26,10 @@ from thread_archive._mine import (  # noqa: E402
     rerank_judged,
     topic_mined,
 )
-from thread_archive._mine import (  # noqa: E402
+from search_lab.mine import (  # noqa: E402
     _framework as fw,
 )
-from thread_archive._mine._agent import run_claude  # noqa: E402
+from search_lab.mine._agent import run_claude  # noqa: E402
 
 # ── seeding helpers ──────────────────────────────────────────────────────────
 
@@ -148,7 +142,7 @@ def test_run_claude_never_exceeds_the_concurrency_ceiling():
     the next acquires a slot; peak live count can never pass the ceiling."""
     import threading
 
-    from thread_archive._mine._agent import MAX_CONCURRENT_SESSIONS
+    from search_lab.mine._agent import MAX_CONCURRENT_SESSIONS
 
     live = peak = 0
     accounting = threading.Lock()
@@ -210,7 +204,6 @@ def test_corpus_tool_search_skip_and_empty(archive_home, capsys):
 
 
 def test_corpus_tool_read_unknown_thread_errors(archive_home):
-    import pytest
 
     from thread_archive._store import init_db
 
@@ -530,7 +523,7 @@ def test_dispatch_all_runs_percase_and_skips_batch(capsys):
 def test_dispatch_clamps_jobs_and_target(capsys):
     """A single miner run: an over-target and over-jobs request reach the miner
     already clamped, each with a printed notice."""
-    from thread_archive._mine._agent import MAX_CONCURRENT_SESSIONS
+    from search_lab.mine._agent import MAX_CONCURRENT_SESSIONS
 
     fake = _FakeMiner()
     rc = _cli.dispatch(["fake", "--target", "999", "--jobs", "50"],
@@ -545,7 +538,7 @@ def test_dispatch_clamps_jobs_and_target(capsys):
 def test_dispatch_all_shares_one_budget_across_miners(capsys):
     """The sweep spends at most MAX_SESSIONS_PER_RUN in total, split across its
     miners — not that many per miner — and clamps jobs to the concurrency ceiling."""
-    from thread_archive._mine._agent import MAX_CONCURRENT_SESSIONS
+    from search_lab.mine._agent import MAX_CONCURRENT_SESSIONS
 
     miners = [_FakeMiner() for _ in range(3)]
     for i, m in enumerate(miners):
@@ -573,7 +566,6 @@ def test_dispatch_all_honors_target_when_it_fits_the_budget(capsys):
 
 
 def test_guarded_open_requires_a_snapshot(archive_home):
-    import pytest
 
     from thread_archive._store import init_db
 
@@ -592,7 +584,7 @@ def test_require_snapshot_reads_the_manifest(archive_home):
 # ── the -m entry point ───────────────────────────────────────────────────────
 
 def test_module_main_routes_tool_and_list(archive_home, capsys):
-    from thread_archive._mine.__main__ import main
+    from search_lab.mine.__main__ import main
     from thread_archive._store import init_db
 
     init_db()
@@ -600,8 +592,11 @@ def test_module_main_routes_tool_and_list(archive_home, capsys):
     assert main(["tool", "search", "kangaroo"]) == 0
     assert tid in capsys.readouterr().out
 
-    assert main([]) == 0  # no args → the list view
-    assert "Gold miners" in capsys.readouterr().out
+    assert main([]) == 0  # no args → the registry list view
+    listing = capsys.readouterr().out
+    assert "Gold miners" in listing
+    for name in ("query", "topic", "rerank", "querygen", "commit"):
+        assert name in listing
 
 
 # ── remaining small branches ─────────────────────────────────────────────────

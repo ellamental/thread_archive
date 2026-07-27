@@ -143,6 +143,30 @@ def test_disk_endpoint(archive_home):
     assert "disk" not in _get("/api/status")[2]
 
 
+def test_retrieval_endpoint_serves_the_dev_report(archive_home):
+    """The dev page's source. Its subject is the search pipeline rather than the
+    corpus, so it reads the ledgers and answers whether or not the index is
+    usable — and it comes from the search lab, so a checkout has it."""
+    _seed(archive_home)
+    status, ctype, payload = _get("/api/retrieval")
+    assert status == 200 and ctype == "application/json"
+    assert payload["hours"] > 0 and payload["bucket"] in ("hour", "day")
+
+
+def test_the_dev_page_is_a_source_tree_thing_only():
+    """What makes an install answer 404 there is packaging, not a runtime check:
+    ``_dev`` is excluded from the wheel, so the import behind the endpoint fails
+    and the page is simply absent. Assert the exclusion itself — the guard in
+    the server is unreachable if this ever silently stops being true."""
+    import tomllib
+    from pathlib import Path
+
+    pyproject = Path(__file__).resolve().parents[1] / "pyproject.toml"
+    cfg = tomllib.loads(pyproject.read_text(encoding="utf-8"))
+    excluded = cfg["tool"]["hatch"]["build"]["targets"]["wheel"]["exclude"]
+    assert "src/thread_archive/_dev" in excluded
+
+
 def test_health_endpoint(archive_home):
     # Cheap liveness (the family manifest's health URL) — no index survey.
     _seed(archive_home)

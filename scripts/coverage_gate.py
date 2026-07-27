@@ -25,6 +25,11 @@ from pathlib import Path
 # package (top-level dir/module under src/thread_archive/) -> minimum percent
 FLOORS = {
     "_api": 90.0,  # thin dispatch layer over the private machinery
+    # The dev-only viewer surfaces (excluded from the wheel). One function that
+    # resolves the search lab off the repo root; the branch it cannot exercise
+    # here is the one that fires only where the lab is absent, which is exactly
+    # the tree this suite never runs in.
+    "_dev": 70.0,
     "_importers": 92.0,
     "_knowledge": 90.0,
     # The MCP transport shim: bind plan, cohosted ingest, tool registration. What
@@ -32,7 +37,6 @@ FLOORS = {
     # small remainder here is mostly `main()` — the blocking serve loop, proved by
     # real subprocesses in the package lane, where nothing is measured.
     "_mcp": 82.0,
-    "_mine": 85.0,  # gold miners; the agent-driving run paths covered via seams, not real claude
     "_ops": 90.0,  # the durability kit
     "_providers": 90.0,
     "_repair": 90.0,

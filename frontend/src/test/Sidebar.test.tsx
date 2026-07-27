@@ -1,7 +1,7 @@
 // The sidebar's search widget: the filters fold-out (available on every page,
 // since the sidebar is), arming filters for the next search, and applying a
 // filter change immediately when a search is already on screen.
-import { describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it } from 'vitest'
 import { render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom'
@@ -77,5 +77,23 @@ describe('Sidebar search filters', () => {
     await user.click(screen.getByRole('button', { name: /filters · 2/ }))
     await user.click(screen.getByRole('button', { name: 'clear filters' }))
     expect(screen.getByText('PAGE /search?q=hello')).toBeInTheDocument()
+  })
+})
+
+// The retrieval report is a maintainer's instrument, not something a person who
+// came to read their conversations has a use for — so the rail advertises it only
+// once someone asks for the dev pages (`thread_archive web dev`).
+describe('dev pages in the rail', () => {
+  afterEach(() => window.localStorage.clear())
+
+  it('keeps the retrieval report out of the navigation by default', () => {
+    renderAt('/')
+    expect(screen.queryByRole('link', { name: 'retrieval' })).not.toBeInTheDocument()
+  })
+
+  it('shows it once dev mode is on', () => {
+    window.localStorage.setItem('thread-archive:dev', '1')
+    renderAt('/')
+    expect(screen.getByRole('link', { name: 'retrieval' })).toHaveAttribute('href', '/retrieval')
   })
 })

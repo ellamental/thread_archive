@@ -567,6 +567,31 @@ def _list_threads(
     }
 
 
+def _search_lab_report():
+    """The retrieval report behind the ``/retrieval`` dev page, or None.
+
+    The report is the search lab's, not the product's — it reads the bench's gold
+    and latency ledgers alongside the served-usage one — and the lab ships in the
+    source tree, never in a wheel. So the viewer reaches it only through
+    :mod:`.._dev`, which is excluded from the wheel for the same reason: an
+    install has neither, this import fails, and the endpoint 404s.
+
+    Cached on the function so a page polling the endpoint pays the probe once.
+    ``False`` is the negative cache — distinct from ``None``-as-not-yet-asked.
+    """
+    cached = getattr(_search_lab_report, "_cached", None)
+    if cached is not None:
+        return cached or None
+    try:
+        from .._dev import retrieval_report
+    except ImportError:  # an install: no dev tree, so no dev page
+        report = None
+    else:
+        report = retrieval_report()
+    _search_lab_report._cached = report or False  # type: ignore[attr-defined]
+    return report
+
+
 def _list_thread_types() -> list[dict]:
     """Distinct thread types with counts, biggest first — the vocabulary for the
     all-threads page's type filter. Archived threads don't vote (they don't
@@ -995,6 +1020,19 @@ def route(
 
     if path == "/api/thread-types":
         return _ok({"types": _list_thread_types()})
+
+    if path == "/api/retrieval":
+        # Read straight off the ledgers rather than the index — this is the one
+        # view whose subject is the *search pipeline*, not the corpus, so it must
+        # keep answering while a rebuild has the index unavailable.
+        report = _search_lab_report()
+        if report is None:
+            return _text(404, "the retrieval report ships with the search lab, "
+                              "which is in the source repo and not in an install")
+        # Hours, not days: the short windows are where a regression shows up the
+        # same afternoon it lands, and a day is the coarsest thing they can say.
+        return _ok(report.report(
+            hours=_int(params, "hours", report.DEFAULT_HOURS, hi=365 * 24)))
 
     # unmatched API path — don't fall through to the SPA shell
     if path.startswith("/api/"):

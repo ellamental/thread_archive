@@ -83,22 +83,26 @@ def test_wheel_carries_the_whole_runtime(dist) -> None:
                for n in names)
 
 
-def test_wheel_omits_the_dev_only_gold_miners(dist) -> None:
-    # The miners are development machinery: they spend tokens on headless
-    # `claude` agents, and what they mint is only useful beside the scoring
-    # bench and gold files under search_lab/ — repo territory, not an install's.
+def test_wheel_carries_no_measurement_surface(dist) -> None:
+    # Everything that scores search — the miners, the scoring core, the harnesses,
+    # corpus freezing, the run ledgers — lives in search_lab/, which is repo
+    # territory. An install gets preservation and retrieval and no instruments.
     wheel, _ = dist
     names = zipfile.ZipFile(wheel).namelist()
-    leaked = [n for n in names if "_mine" in n]
-    assert not leaked, f"the dev-only miners leaked into the wheel: {leaked}"
+    leaked = [n for n in names
+              if "search_lab" in n or "/mine/" in n
+              or n.endswith(("_eval.py", "eval_core.py", "gold_runs.py",
+                             "mine_runs.py", "retrieval_report.py"))]
+    assert not leaked, f"measurement surface leaked into the wheel: {leaked}"
 
 
-def test_sdist_keeps_the_gold_miners(dist) -> None:
-    # The other half of the split: the sdist ships tests, and the mining tests
-    # import thread_archive._mine — dropping it there would ship a red suite.
+def test_sdist_keeps_the_search_lab(dist) -> None:
+    # The other half of the split: the sdist ships tests, and the quality tests
+    # import search_lab.* — dropping the lab there would ship a red suite.
     _, sdist = dist
     names = tarfile.open(sdist).getnames()
-    assert any("/src/thread_archive/_mine/" in n for n in names)
+    assert any("/search_lab/mine/_framework.py" in n for n in names)
+    assert any("/search_lab/eval_core.py" in n for n in names)
 
 
 def test_wheel_plants_no_public_top_level_packages(dist) -> None:
@@ -296,18 +300,28 @@ def test_installed_first_run_discovers_realistic_stores_and_searches(installed, 
     first_run.run(bin_dir=installed, home=tmp_path, keep=True)
 
 
-def test_installed_mine_points_at_the_repo_and_stays_off_the_front_door(installed, tmp_path) -> None:
-    # The miners are excluded from the wheel, so the verb must degrade to a
-    # pointer — not an ImportError traceback — and must not advertise itself in
-    # `--help`, where every listed verb is one an install can actually run.
-    r = _run(installed, ["thread_archive", "mine"], tmp_path)
-    assert r.returncode == 2, f"{r.stdout}\n{r.stderr}"
-    assert "development machinery" in r.stderr, r.stderr
-    assert "Traceback" not in r.stderr, r.stderr
-
+def test_installed_cli_advertises_only_verbs_an_install_can_run(installed, tmp_path) -> None:
+    # Every verb in `--help` must be one this wheel can actually execute, and every
+    # verb it executes must be listed: no hidden commands, and nothing advertised
+    # that degrades to a pointer at the repo. The measurement verbs are gone rather
+    # than hidden, so the two sets are now the same set.
     h = _run(installed, ["thread_archive", "--help"], tmp_path)
     assert h.returncode == 0, h.stderr
-    assert not re.search(r"^\s+mine\b", h.stdout, re.M), h.stdout
+    listed = set(re.findall(r"^\s{4}([a-z][a-z-]+)\b", h.stdout, re.M))
+    assert listed, h.stdout
+    for gone in ("mine", "eval", "snapshot", "archives"):
+        assert gone not in listed, f"{gone} is advertised but no longer exists"
+
+    for verb in sorted(listed):
+        r = _run(installed, ["thread_archive", verb, "--help"], tmp_path)
+        assert r.returncode == 0, f"{verb} --help failed: {r.stdout}\n{r.stderr}"
+        assert "Traceback" not in r.stderr, f"{verb}: {r.stderr}"
+
+    # And a removed verb is an argparse error, never an ImportError from a module
+    # the wheel no longer carries.
+    gone = _run(installed, ["thread_archive", "mine"], tmp_path)
+    assert gone.returncode == 2
+    assert "invalid choice" in gone.stderr and "Traceback" not in gone.stderr
 
 
 def test_installed_package_is_private_and_asset_complete(installed, tmp_path) -> None:

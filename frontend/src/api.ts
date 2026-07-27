@@ -199,6 +199,102 @@ export interface DiskUsage {
   external: string[]
 }
 
+// --- retrieval health -------------------------------------------------------
+// Latency is reported as percentiles, never as an average: the distribution has a
+// long tail (a cold process, a browse walk over a deep pool), and a mean over it
+// describes no search anyone actually ran.
+
+export interface LatencyBand {
+  n: number
+  p50: number
+  p90: number
+  p99?: number
+}
+
+/** How the window is sliced. `hour` for short windows, `day` beyond three days. */
+export type Bucket = 'hour' | 'day'
+
+/** One bucket of served searches. `at` is its UTC start — `2026-07-26` for a day,
+ *  `2026-07-26T14` for an hour. `warm`/`cold` are separate because a process's
+ *  first search runs an order of magnitude slower than its thousandth; `unknown`
+ *  is the window that predates the uptime field, kept apart rather than assumed.
+ *  A bucket with no searches carries only `at` and `n: 0` — the span is dense, so
+ *  a quiet stretch draws as a gap rather than closing up. */
+export interface ServedBucket {
+  at: string
+  n: number
+  warm?: LatencyBand
+  cold?: LatencyBand
+  unknown?: LatencyBand
+}
+
+export interface Served {
+  hours: number
+  bucket: Bucket
+  n: number
+  n_unknown_regime: number
+  buckets: ServedBucket[]
+  warm: LatencyBand
+  cold: LatencyBand
+}
+
+export interface StageRow {
+  stage: string
+  n: number
+  p50: number
+  p90: number
+}
+
+export interface Stages {
+  n: number
+  /** Rows whose process age is unknown — included, but not provably warm. */
+  n_unproven: number
+  stages: StageRow[]
+}
+
+/** Sparse, unlike `Served.buckets`: this is read as a table, and an empty row is
+ *  noise where an empty chart point is information. */
+export interface Restarts {
+  n: number
+  bucket: Bucket
+  buckets: { at: string; n: number }[]
+  p50_ms: number
+  total_s: number
+}
+
+export interface BenchPoint {
+  at: string
+  commit: string | null
+  p50: number
+  p95: number
+  p99: number
+  n_queries: number
+  tuning: boolean
+}
+
+export interface QualityPoint {
+  at: string
+  commit: string | null
+  passed: boolean
+  mrr: number
+  ndcg: number
+  n: number
+}
+
+export interface RetrievalReport {
+  home: string
+  hours: number
+  bucket: Bucket
+  at: string
+  served: Served | null
+  stages: Stages | null
+  restarts: Restarts | null
+  /** Keyed by query set — `gold` and `observed` are different populations of
+   *  query and are never drawn as one line. */
+  bench: Record<string, BenchPoint[]> | null
+  quality: { points: QualityPoint[]; latest: QualityPoint | null } | null
+}
+
 // ── the drop zone (account-export upload) ───────────────────────────────────
 // One bundle in `<home>/dumps/`. `bytes` is null for a directory (an export
 // unpacked by hand) — the server doesn't walk a tree to size it.
@@ -622,4 +718,10 @@ export const api = {
   // path tail, not a query param — the server decodes it back.
   modelStats: (model: string) =>
     getJSON<ModelStats>('/api/stats/model/' + encodeURIComponent(model)),
+  // How search itself is doing — read off the retrieval ledgers, not the index,
+  // so it keeps answering while a rebuild has the corpus unavailable. The window
+  // is hours because the useful ones are short: a regression that lands at noon
+  // is invisible in a 14-day median for a week. A dev page: the report is the
+  // search lab's, so an install without the lab answers 404 and the view says so.
+  retrieval: (hours = 14 * 24) => getJSON<RetrievalReport>(`/api/retrieval?hours=${hours}`),
 }

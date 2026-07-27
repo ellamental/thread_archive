@@ -69,8 +69,8 @@ against a corpus that has changed under them (re-mine after a new snapshot):
     export THREAD_ARCHIVE_HOME=~/.thread/archive-snap
     .venv/bin/python search_lab/retrieval_eval.py --cases ~/.thread/archive/judged-cases.jsonl
 
-The cases are minted by the ``thread_archive mine`` miners (package
-``thread_archive._mine``) — run ``thread_archive mine`` to list them.
+The cases are minted by the ``search_lab.mine`` miners (package
+``search_lab/mine/``) — run ``python -m search_lab.mine`` to list them.
 """
 
 from __future__ import annotations
@@ -165,7 +165,7 @@ def _require_matching_snapshot(cases: list[dict], cases_path) -> None:
         raise SystemExit(
             f"{cases_path} was mined against snapshot(s) {stale}, but the current "
             f"snapshot is {current} — the corpus has changed and these golds are "
-            f"stale. Re-mine against this snapshot with `thread_archive mine`."
+            f"stale. Re-mine against this snapshot with `python -m search_lab.mine`."
         )
 
 

@@ -22,7 +22,7 @@ against it. So two stages of agents manufacture the benchmark:
 
 This is a **batch** miner: the survey decides how many angles the topic warrants,
 so a run yields an unknown number of cases (bounded by ``--max-queries``, a safety
-cap, not a target). It needs a ``--topic``, so ``thread_archive mine all`` skips it.
+cap, not a target). It needs a ``--topic``, so ``python -m search_lab.mine all`` skips it.
 """
 
 from __future__ import annotations
@@ -32,7 +32,8 @@ import concurrent.futures
 import json
 import re
 
-from .._knowledge import topic_get
+from thread_archive._knowledge import topic_get
+
 from . import _framework as fw
 from ._agent import run_claude
 from ._framework import MineContext, Miner, MineResult, now_iso
@@ -234,7 +235,7 @@ def resolve_topic(ref: str) -> dict:
     or ambiguous name raises ``SystemExit`` naming the candidates."""
     from sqlalchemy import select
 
-    from .._store import Thread, use_session
+    from thread_archive._store import Thread, use_session
 
     with use_session() as s:
         t = s.get(Thread, ref)

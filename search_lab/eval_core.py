@@ -340,7 +340,7 @@ def load_case_file(path: Path) -> list[dict]:
         # int so a stray float grade can't skew the gain.
         if row.get("grades"):
             case["grades"] = {str(t): int(g) for t, g in row["grades"].items()}
-        # Agent-mined cases (the `thread_archive mine` miners) carry the content
+        # Agent-mined cases (the `search_lab.mine` miners) carry the content
         # fingerprint of the corpus snapshot they were mined against; the caller
         # (retrieval_eval.py --cases) refuses to score them against a home whose
         # snapshot_id differs, so a moved corpus invalidates rather than drifts.

@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { Link, useLocation, useParams } from 'react-router-dom'
 import { api, type ThreadListItem } from '../api'
+import { devMode } from '../dev'
 import { SearchBox } from './SearchBox'
 
 function fmtDate(iso: string | null): string {
@@ -25,6 +26,9 @@ export function Sidebar({
   const activeId = id ?? null
 
   const [threads, setThreads] = useState<ThreadListItem[] | null>(null)
+  // Read once per mount: the flag changes only by visiting a `?dev=` URL, which
+  // is a page load anyway.
+  const [dev] = useState(devMode)
 
   useEffect(() => {
     let live = true
@@ -74,6 +78,15 @@ export function Sidebar({
         >
           import
         </Link>
+        {dev && (
+          <Link
+            className={'rail-link' + (pathname === '/retrieval' ? ' active' : '')}
+            to="/retrieval"
+            onClick={onClose}
+          >
+            retrieval
+          </Link>
+        )}
       </nav>
       <div className="rail-head">
         <span>Recent</span>

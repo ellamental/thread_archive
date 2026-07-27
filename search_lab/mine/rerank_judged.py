@@ -25,9 +25,10 @@ import concurrent.futures
 import json
 from pathlib import Path
 
-from .. import _api as api
-from .._retrieval.read import resolve_thread_ref
-from .._store import use_session
+from thread_archive import _api as api
+from thread_archive._retrieval.read import resolve_thread_ref
+from thread_archive._store import use_session
+
 from . import _framework as fw
 from . import query_mined
 from ._agent import run_claude

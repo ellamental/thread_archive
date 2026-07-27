@@ -112,13 +112,11 @@ path = "src/thread_archive/__init__.py"
 # zero-dependency clean island, kept private (no public top-level package)
 # until its API is deliberately exposed.
 packages = ["src/thread_archive"]
-# The gold miners are development machinery, not product. They drive headless
-# `claude` sessions to grade cases, and they only pay off beside the scoring
-# bench and gold-case files under search_lab/ — which exist in the repo, not in an
-# install. So they stay in the sdist (whose tests cover them) and run from a
-# checkout, but never land in a user's site-packages; `thread_archive mine`
-# answers with a pointer to the repo when the package is absent (cli.cmd_mine).
-exclude = ["src/thread_archive/_mine"]
+# The dev-only viewer surfaces (the /retrieval report page) read the search lab,
+# which is a source-tree directory and not part of an install. Excluding them
+# keeps that dependency out of the wheel entirely: the shipped server imports
+# _dev fail-softly and answers 404 for the pages it backs.
+exclude = ["src/thread_archive/_dev"]
 # The web viewer ships pre-built: frontend/ (node, dev-only) builds into
 # _web/static/, which is committed and packaged so `pip install` needs no node.
 # Under the package dir and tracked, so hatchling includes it by default; declared
@@ -164,7 +162,18 @@ testpaths = ["tests"]
 # `pytest … | grep -E 'passed|failed'` check comes back empty, indistinguishable
 # from a command that never ran. Callers own their own quiet. tests/meta/
 # test_output_summary.py holds the line.
-addopts = "--strict-markers -m 'not package and not beir and not quality_models'"
+#
+# `-n auto` IS the default, deliberately: a bare `pytest` is what a contributor —
+# and every agent working in this repo — actually types, and serially this suite
+# is ~90s of near-uniform 25ms tests with no slow tail to carve off. Parallel it
+# is ~30s. `auto` rather than a number because the right width is the machine's,
+# not this file's (the ci.toml row pins its own count for its own reasons). It
+# pays off on a single file too — the import cost is what dominates a short run.
+# `--dist=loadfile` is load-bearing, not a tuning knob: isolation here is per-test,
+# but a file's tests still share the module-level fixtures they were written
+# against, so they must land on one worker. Escape hatch for interactive work:
+# `-n 0` restores a single in-process run (xdist swallows `--pdb` and `-s`).
+addopts = "--strict-markers -n auto --dist=loadfile -m 'not package and not beir and not quality_models'"
 markers = [
     "integration: opens real sockets or spawns real subprocesses; deselect (-m 'not integration') for a fully hermetic run, e.g. in a no-network sandbox",
     "systemd: installs real systemd --user units and drives `systemctl --user`; gated behind THREAD_ARCHIVE_SYSTEMD_IT=1 (set in the CI `systemd` job) so it never runs — or clobbers a real setup — unless explicitly requested. Needs a live user systemd (a Linux box/VM, not the slim container).",

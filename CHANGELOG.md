@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+- **The retrieval page is back, as a dev page.** The view that reports on the
+  search *pipeline* — served latency split by warm and cold regime, per-stage
+  costs, gold-run quality — went away with the search lab's extraction, but it is
+  the only place any of that is legible. It returns at `/retrieval`, reading the
+  lab's report rather than a copy of it, so the extraction stands. What changed is
+  its prominence: the navigation no longer advertises a maintainer's instrument to
+  someone who came to read their conversations. `thread_archive web dev` turns the
+  dev pages on and the viewer remembers the choice; `thread_archive web --no-dev`
+  puts them away. The route itself always resolves — hiding a page from the only
+  person who can reach a loopback viewer would be theatre — and since the report
+  lives in `search_lab/`, an install without the lab gets a `404` that names why
+  instead of an empty report pretending to be a measurement.
+
 - **The measurement surface is out of the product: `search_lab/` is where it
   lives, and an install no longer carries any of it.** Four things went, and each
   was an instrument wearing a product's clothes. The viewer's `/retrieval` page —
@@ -34,11 +47,25 @@
   health page's load history now reads this archive's own `/api/loads` ledger, live
   phase progress included.
 
+  **Mining moved with it: `thread_archive._mine` is now `search_lab/mine/`, and
+  the `mine` verb is gone from the CLI.** The miners drive headless `claude`
+  agents to mint the graded gold cases the lab's harnesses score against — their
+  output has never been useful anywhere but beside those harnesses, and they were
+  already excluded from the wheel, so the verb was a command that could only ever
+  print a pointer to the repo. Run them as `python -m search_lab.mine` (bare
+  lists, `<miner> --help` documents one, `all [N]` sweeps). The agents' corpus
+  seam is now an absolute path to `search_lab/mine/__main__.py` rather than
+  `-m thread_archive._mine`: it is also their Bash allowlist prefix, so it has to
+  resolve from whatever directory a session starts in, which `-m` on a
+  repo-root-relative package cannot. With mining out of the tree, `src/` holds no
+  bench code at all and the wheel needs no exclusions to say so.
+
   One repo-wide consequence: the dependency-tier meta ratchet scans a product's
   *shipped* modules, and it now reads the wheel's own exclude list to decide what
-  those are — so repo-only code (archive's `_mine`, lab's `experiments/`) may
-  import repo-only code. Propagated byte-identically to all nine products' copies,
-  as the lockstep test requires.
+  those are — so repo-only code may import repo-only code (which is what lets a
+  wheel-excluded package reach the lab; lab's own `experiments/` gains the same
+  latitude). Propagated byte-identically to all nine products' copies, as the
+  lockstep test requires.
 
 - **`status` and the health page now say what the archive costs on disk, and how
   much of that is rebuildable.** An archive grows several times larger than the

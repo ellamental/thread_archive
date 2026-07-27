@@ -7,9 +7,9 @@ the prompt's baked-in session skips, re-run dedupe — plus the eval-side contra
 a case carries the ``snapshot_id`` of the corpus it was mined against, and the
 eval binds to it.
 
-The miner lives in the package (``thread_archive._mine.query_mined``); the eval
-hub it feeds still lives on the bench (``search_lab/retrieval_eval.py``), loaded by
-path here for the snapshot-binding contract tests.
+The miner (``search_lab/mine/query_mined.py``) and the eval hub it feeds
+(``search_lab/retrieval_eval.py``) are both lab modules; the hub is loaded by path
+here for the snapshot-binding contract tests.
 """
 
 from __future__ import annotations
@@ -20,13 +20,7 @@ from pathlib import Path
 
 import pytest
 
-# ``_mine`` is repo-only — the wheel excludes it (pyproject
-# [tool.hatch.build.targets.wheel]), so an installed-package run has nothing to
-# import here. Gate before the imports so that run skips the module instead of
-# erroring at collection.
-pytest.importorskip("thread_archive._mine", reason="_mine is repo-only (excluded from the wheel)")
-
-from thread_archive._mine import query_mined as mine_gold  # noqa: E402
+from search_lab.mine import query_mined as mine_gold  # noqa: E402
 
 _LAB = Path(__file__).resolve().parent.parent / "search_lab"
 

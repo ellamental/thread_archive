@@ -5,7 +5,7 @@
 collection of real coding-agent sessions from open-source developers (ODC-BY;
 arXiv:2604.20779). Its transcripts are native Claude Code JSONL, so the shipped
 claude-code importer ingests them unchanged — this harness only orchestrates the
-build and derives the provenance linkage that ``thread_archive mine commit``
+build and derives the provenance linkage that ``python -m search_lab.mine commit``
 consumes.
 
 Why this corpus is worth a home of its own: every gold file mined from the
@@ -45,7 +45,7 @@ Usage::
 
     python search_lab/swechat_corpus.py --data ~/dev/swe-chat-data/swe-chat
     python search_lab/swechat_corpus.py --data ... --linkage-only   # reuse built home
-    THREAD_ARCHIVE_HOME=<home> thread_archive mine commit --target 10
+    THREAD_ARCHIVE_HOME=<home> python -m search_lab.mine commit --target 10
 """
 
 from __future__ import annotations
@@ -65,10 +65,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 # however this file was loaded: as a script, by path, or as search_lab.X.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+from mine import commit_linked  # noqa: E402
 from snapshot import stamp_snapshot  # noqa: E402
 
 from thread_archive import _api as api  # noqa: E402
-from thread_archive._mine import commit_linked  # noqa: E402
 from thread_archive._store import use_session  # noqa: E402
 
 DEFAULT_HOME = Path.home() / ".cache" / "thread-evals" / "homes" / "swe-chat"
@@ -531,7 +531,7 @@ def main(argv: list[str] | None = None) -> int:
     print(f"snapshot: {home} stamped {manifest['snapshot_id']} "
           f"({manifest['counts']['threads']} threads, "
           f"{manifest['counts']['vectors']} vectors)")
-    print(f"next: THREAD_ARCHIVE_HOME={home} thread_archive mine commit --target 10 \\\n"
+    print(f"next: THREAD_ARCHIVE_HOME={home} python -m search_lab.mine commit --target 10 \\\n"
           f"        --linkage {out} --out {gold / 'commit-cases.jsonl'}")
     return 0
 

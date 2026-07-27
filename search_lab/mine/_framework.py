@@ -7,19 +7,19 @@ agent tokens once to mint labels a cheaper protocol can't; the shapes differ
 (one starts from a real query, one from a topic, one reranks a retrieved pool,
 one generates queries for a known thread), but they all:
 
-- run against a frozen corpus **snapshot** (``thread_archive snapshot``), so the
-  golds bind to a corpus that can't change under them (``require_snapshot``);
+- run against a frozen corpus **snapshot** (``python search_lab/snapshot.py <dir>``),
+  so the golds bind to a corpus that can't change under them (``require_snapshot``);
 - shell their agents into one snapshot-bound corpus seam
-  (``python -m thread_archive._mine tool search|read`` — :func:`tool_cmd`);
+  (``… mine/__main__.py tool search|read`` — :func:`tool_cmd`);
 - append validated rows to a case file under the archive **gold dir**
   (``~/.thread/archive``), each row stamped with its ``miner`` and ``snapshot_id``
   provenance, plus a ``-detail`` sidecar carrying the agent's reasoning;
 - skip inputs already mined into that file, so re-running is an append cadence.
 
 A miner is a :class:`Miner` subclass exposing one module-level ``MINER`` instance;
-:func:`thread_archive._mine.load_registry` collects them. The ``Miner`` class
+:func:`search_lab.mine.load_registry` collects them. The ``Miner`` class
 attributes (``unit``, ``measures``, ``cost``, ``target_kind``) are what the
-``thread_archive mine`` list view reads, so the registry is the single source for
+``mine`` list view reads, so the registry is the single source for
 "which miners exist and what each measures" — there is no second catalog to keep
 in sync.
 """
@@ -80,7 +80,7 @@ def require_snapshot() -> str:
     archive. Mining must run against a frozen snapshot so every case binds to a
     corpus that can't grow underneath the measurement; the id travels in each row
     and the eval refuses to score cases whose id no longer matches the home."""
-    from search_lab.snapshot import read_snapshot_id
+    from ..snapshot import read_snapshot_id
 
     sid = read_snapshot_id()
     if sid is None:
@@ -95,14 +95,22 @@ def require_snapshot() -> str:
 
 def tool_cmd() -> str:
     """The command a mining agent shells into for snapshot-bound corpus access:
-    ``python -m thread_archive._mine tool search|read``. Uses ``-m`` on the running
-    interpreter (not a hardcoded repo path) so the agent resolves the package
-    through whatever environment launched the run; it inherits
-    ``THREAD_ARCHIVE_HOME`` (the snapshot) from that run's env."""
-    return f"{sys.executable} -m thread_archive._mine tool"
+    ``python <abs>/search_lab/mine/__main__.py tool search|read``.
+
+    The running interpreter (so the agent gets the environment that launched the
+    run) and an absolute script path (so it does not matter what directory the
+    agent's Bash session starts in — ``-m search_lab.mine`` would need the
+    checkout root on the path, which only holds when cwd happens to be it). It
+    inherits ``THREAD_ARCHIVE_HOME`` — the snapshot — from the run's env.
+
+    This string is also the agents' Bash allowlist prefix (``_agent.run_claude``),
+    so it must stay a plain command: no environment assignments in front of it.
+    """
+    entry = Path(__file__).resolve().parent / "__main__.py"
+    return f"{sys.executable} {entry} tool"
 
 
-# The most agent sessions one ``thread_archive mine`` command launches — a single
+# The most agent sessions one ``python -m search_lab.mine`` command launches — a single
 # miner's ``--target`` (or a topic survey's angle count), and the *total* a
 # ``mine all`` sweep spends across its miners. A spend guard so a fat-fingered
 # ``--target 500`` (or a wide sweep) runs bounded instead of running up a bill.
@@ -197,7 +205,7 @@ def miner_commit() -> str | None:
     straddle a commit). ``None`` outside a git checkout — best-effort provenance,
     never a hard dependency. Shares the one git-commit reader with the gold-run
     ledger so both ledgers name the code the same way."""
-    from search_lab.gold_runs import git_commit
+    from ..gold_runs import git_commit
 
     return git_commit()
 

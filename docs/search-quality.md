@@ -101,8 +101,8 @@ surfaces a better answer scores as a gain — not, as click labels do, as a loss
 The gold files are the promotion bar. To claim "search improved," score the
 challenger and the shipped configuration on **every file, each over its own
 snapshot, on both sides of the change**, and keep a hold-out: tune against one file
-while another stays untouched until the confirming run. The `thread_archive mine`
-command mints these files; `search_lab/README.md` → "Taking a baseline" is the full
+while another stays untouched until the confirming run. `python -m search_lab.mine`
+mints these files; `search_lab/README.md` → "Taking a baseline" is the full
 protocol.
 
 ## What the window holds
@@ -417,7 +417,7 @@ the evidence matches the stakes:
 | 1 | `pytest -m quality_models` | same corpus, real embedding + rerank models | minutes | touching the model arms |
 | 2 | CI `retrieval-gate` (arm-liveness probes) | live archive | ~a minute | every commit, via thread-ci |
 | 3 | `retrieval_gold_gate.py` (current-state read + tuning loop), `graph_eval.py` | live archive + the golds' frozen snapshot | seconds to minutes | evaluating a deliberate ranking change |
-| 3½ | `thread_archive mine <miner>` to mint fresh golds, then re-score | frozen snapshot, corpus-grounded labels | seconds to score; agent-minutes per mined case | when a file's snapshot goes stale |
+| 3½ | `python -m search_lab.mine <miner>` to mint fresh golds, then re-score | frozen snapshot, corpus-grounded labels | seconds to score; agent-minutes per mined case | when a file's snapshot goes stale |
 | 4 | `pytest -m beir`; `cdr_eval.py`, `haystack_eval.py --dataset …` | external IR / conversational-memory benchmarks | tens of minutes | calibrating against published baselines |
 
 The tunables all live in one object — `SearchParams` (`_retrieval/params.py`) — and a

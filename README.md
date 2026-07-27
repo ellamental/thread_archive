@@ -223,7 +223,8 @@ frontend/           # the viewer's React+Vite source (dev-only; builds into _web
 host/               # operator layer: Makefile over `thread_archive daemon`, family-manifest writer
 scripts/            # repo tooling (coverage gate, frontend-build check, license notices)
 search_lab/         # the search lab (never shipped): the scoring core, quality + calibration
-                      #   harnesses, corpus freezing, run ledgers — see search_lab/README.md
+                      #   harnesses, the gold miners (mine/), corpus freezing, run
+                      #   ledgers — see search_lab/README.md
 tests/install/      # from-nothing install proofs: clean-container Docker + realistic
                       #   discovery-driven first run (~/.claude-style stores, macOS + Linux)
 ```
@@ -339,6 +340,7 @@ concurrently with the watcher's writes, which WAL makes safe (`_store/_base.py`)
 No second daemon: the viewer exists where the persistent URL is.
 
 `thread_archive web` opens that URL in a browser. An opener, not a server.
+`thread_archive web dev` opens it with the dev pages showing (below).
 
 **The URLs are a supported interface.** Other programs link into the viewer —
 editor "open in archive" buttons, sibling consoles' navbars, health probes — so
@@ -360,6 +362,15 @@ Every page route has a real-browser case in `frontend/e2e/` — one Chromium
 navigation per route, asserting its landmark renders with no console errors and
 no unmocked fetch — and `route-coverage.spec.ts` keeps that a bijection, so a
 new route without a browser case reds the suite.
+
+**Dev pages** are the exception to the table above, and deliberately not part of
+its contract. `/retrieval` reports on the search *pipeline* — served latency by
+warm and cold regime, per-stage costs, gold-run quality — which is a maintainer's
+instrument rather than anything the archive is for, so the navigation only
+advertises it after `thread_archive web dev` (`web --no-dev` puts it back; the
+viewer remembers the choice). Its report comes from `search_lab/`, which lives in
+the source repo and not in an install, so a `pip install` serves a `404` there
+and the page says so.
 
 Everything under `/api/` other than those two backs the viewer's own bundle and
 is private — it changes with the frontend. So is the markup: the interface is

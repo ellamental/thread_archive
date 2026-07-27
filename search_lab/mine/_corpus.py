@@ -1,7 +1,7 @@
 """The mining agent's corpus access — production search + thread reads over the
 frozen snapshot the run is pointed at.
 
-Invoked as a subprocess by the mining agents (``python -m thread_archive._mine
+Invoked as a subprocess by the mining agents (``python -m search_lab.mine
 tool search|read ...``), never in-process, so the agent's Bash allowlist can be
 pinned to exactly this command. Read-only. The snapshot is whatever
 ``THREAD_ARCHIVE_HOME`` names — the run exports it before spawning agents, and
@@ -14,9 +14,9 @@ from __future__ import annotations
 import argparse
 import json
 
-from .. import _api as api
-from .._retrieval.read import resolve_thread_ref
-from .._store import use_session
+from thread_archive import _api as api
+from thread_archive._retrieval.read import resolve_thread_ref
+from thread_archive._store import use_session
 
 
 def tool_search(args: argparse.Namespace) -> None:
@@ -57,7 +57,7 @@ def tool_read(args: argparse.Namespace) -> None:
 
 
 def main(argv: list[str] | None = None) -> int:
-    ap = argparse.ArgumentParser(prog="thread_archive._mine tool",
+    ap = argparse.ArgumentParser(prog="mine tool",
                                  description="mining agent corpus access (snapshot, read-only)")
     sub = ap.add_subparsers(dest="tool_cmd", required=True)
 

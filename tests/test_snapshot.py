@@ -10,7 +10,6 @@ leaves the process pinned where it started.
 
 from __future__ import annotations
 
-import importlib.util
 import json
 import os
 
@@ -25,11 +24,6 @@ from search_lab.snapshot import (
 from thread_archive import _api as api
 
 from .helpers import corrupt_event_line, import_cc_session, one_thread_file
-
-# `_mine` is repo-only — the wheel excludes it (pyproject
-# [tool.hatch.build.targets.wheel]), so an installed package has no mining gate to
-# satisfy. Stamping itself is covered either way by the tests around it.
-_HAS_MINE = importlib.util.find_spec("thread_archive._mine") is not None
 
 
 @pytest.fixture
@@ -219,11 +213,10 @@ def test_stamp_leaves_the_process_pinned_where_it_started(seeded, tmp_path):
     assert active_dsn() == f"sqlite:///{seeded / 'index.db'}"
 
 
-@pytest.mark.skipif(not _HAS_MINE, reason="_mine is repo-only (excluded from the wheel)")
 def test_stamped_home_satisfies_the_mining_gate(seeded):
     """The point of stamping: `mine` refuses a home that is not a snapshot, and a
     stamped one passes with the id its cases will carry."""
-    from thread_archive._mine import _framework as fw
+    from search_lab.mine import _framework as fw
 
     with pytest.raises(SystemExit):
         fw.require_snapshot()
