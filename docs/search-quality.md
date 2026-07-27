@@ -85,10 +85,10 @@ miner, and the four cover complementary failure modes:
   Confound ranking, and the only protocol with enough answers per case to measure
   *completeness*: median grade-2 sets run from 3 on a narrow topic to 23 on a broad
   one, so **window fill** and **nDCG** are the reads and raw recall@k is bounded by
-  pool size. Topics that sit in a family of near-synonyms (`Cloth` beside
-  `Cloth testing`, `cloth UI`, `Cloth architecture`; `Librarian System` beside
-  `librarian process`, `librarian queue`) carry the hardest negatives, because the
-  confounds are real conversations rather than synthesized ones.
+  pool size. Topics that sit in a family of near-synonyms — a project's name
+  beside that project's testing, its UI, and its architecture; a subsystem beside
+  its process and its queue — carry the hardest negatives, because the confounds
+  are real conversations rather than synthesized ones.
 
 Scoring is deterministic — same code, same snapshot, same digits — so a movement is
 never noise. That holds because the scorer builds the corpus graph before its first

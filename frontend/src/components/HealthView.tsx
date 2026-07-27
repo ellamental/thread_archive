@@ -523,6 +523,14 @@ export function HealthView() {
       : overallTone === 'warn'
         ? 'Your archive needs attention'
         : 'Protection is incomplete'
+  // The lede has to agree with the headline: claiming a backup can restore reads
+  // as a contradiction on a page whose own queue says otherwise.
+  const overallLede =
+    overallTone === 'good'
+      ? 'Live evidence that conversations are arriving, truth is intact, and a backup can actually restore.'
+      : overallTone === 'warn'
+        ? 'The evidence below still holds, but the warnings weaken it — clear them to keep a restore trustworthy.'
+        : 'The chain from capture to restore has a gap, so the evidence below cannot be relied on yet. Start with the queue.'
   const providerRows = Object.entries(status.last_watch_pass?.sources || {})
   const libraries = status.libraries || []
   const backupTone = recordTone(status.last_backup, 36 * HOUR)
@@ -543,9 +551,7 @@ export function HealthView() {
         <div>
           <p className="eyebrow">Trust center</p>
           <h1>{overallTitle}</h1>
-          <p className="health-lede">
-            Live evidence that conversations are arriving, truth is intact, and a backup can actually restore.
-          </p>
+          <p className="health-lede">{overallLede}</p>
         </div>
         <div className={`health-orb ${overallTone}`} aria-hidden="true">
           {overallTone === 'good' ? '✓' : overallTone === 'warn' ? '!' : '×'}

@@ -198,6 +198,7 @@ it('turns operational evidence into a clear protected verdict', async () => {
   renderHealth(healthyStatus())
 
   expect(await screen.findByRole('heading', { name: 'Your archive is protected' })).toBeInTheDocument()
+  expect(screen.getByText(/a backup can actually restore/)).toBeInTheDocument()
   expect(screen.getByRole('heading', { name: 'Capture' })).toBeInTheDocument()
   expect(screen.getByText('Always-on capture is active with 9 completed passes.')).toBeInTheDocument()
   expect(screen.getByText('First-class')).toBeInTheDocument()
@@ -256,12 +257,21 @@ it('prioritizes unresolved protection gaps and gives executable remedies', async
 
   // The hero reads the queue: one protection gap outranks two lesser notices.
   expect(await screen.findByRole('heading', { name: 'Protection is incomplete' })).toBeInTheDocument()
+  expect(screen.getByText(/cannot be relied on yet/)).toBeInTheDocument()
   expect(screen.getByRole('heading', { name: '1 protection gap' })).toBeInTheDocument()
   expect(screen.getByText('Protection failed at backup')).toBeInTheDocument()
   expect(screen.getByText('Backup is on the same filesystem as the archive')).toBeInTheDocument()
   expect(screen.getByText('v0.9.2 is available')).toBeInTheDocument()
   expect(screen.getByText('thread_archive nightly /Volumes/backup/thread-archive')).toBeInTheDocument()
   expect(screen.getByText('thread_archive self-update')).toBeInTheDocument()
+})
+
+it('does not promise a working restore while the queue holds a warning', async () => {
+  renderHealth(healthyStatus(), loadedRuns(), { active: [notice()], silenced: [] })
+
+  expect(await screen.findByRole('heading', { name: 'Your archive needs attention' })).toBeInTheDocument()
+  expect(screen.getByText(/clear them to keep a restore trustworthy/)).toBeInTheDocument()
+  expect(screen.queryByText(/a backup can actually restore/)).not.toBeInTheDocument()
 })
 
 it('does not hide a provider parser failure inside an otherwise fresh pass', async () => {
