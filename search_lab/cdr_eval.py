@@ -60,6 +60,11 @@ from pathlib import Path
 
 _HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(_HERE.parent / "src"))
+# The lab dir too, so bare sibling imports (eval_home, eval_core, …) resolve
+# however this file was loaded: as a script, by path, or as search_lab.X.
+sys.path.insert(0, str(_HERE))
+
+import eval_home  # noqa: E402
 
 # Reuse beir_eval's generic, task-agnostic primitives so the two harnesses ingest
 # and score off one code path (the same reason the mining package imports the
@@ -81,7 +86,7 @@ _read_json = beir_eval._read_json
 # field?", the CDR analog of beir_eval's BM25 reference.
 BEST_MODEL_NDCG10 = 0.5036
 
-DEFAULT_REPO = Path.home() / ".cache" / "thread-evals" / "CDR-Benchmark"
+DEFAULT_REPO = eval_home.CACHE_ROOT / "CDR-Benchmark"
 # The test split's MTEB-shaped files inside the repo.
 _DATA_SUBPATH = Path("cdr_benchmark_data") / "test_dataset" / "data" / "test"
 
@@ -152,26 +157,19 @@ def run(args) -> int:
         )
 
     cache_root = Path(args.data_dir).expanduser()
-    default_home = Path.home() / ".thread" / "archive"
     if args.fresh:
         home = Path(tempfile.mkdtemp(prefix="cdr-archive-home-"))
     elif args.home:
         home = Path(args.home)
     else:
-        home = cache_root / "homes" / "cdr"
-    if home.resolve() == default_home.resolve():
-        raise SystemExit("refusing to run against the real archive home; pass a different --home")
+        home = cache_root / "homes" / eval_home.home_name("cdr",
+                                                          max_docs=args.max_docs)
+    home = eval_home.guard_home(home, what="CDR corpus home")
 
     # Pin the home + arm switches BEFORE importing the package, so the store bakes
     # the right DSN and no model cold-loads unless asked.
     os.environ["THREAD_ARCHIVE_HOME"] = str(home)
-    os.environ["THREAD_ARCHIVE_NO_THROTTLE"] = "1"
-    os.environ["THREAD_ARCHIVE_EMBED"] = "on" if args.vectors else "off"
-    os.environ["THREAD_ARCHIVE_RERANK"] = "off" if args.rerank == "off" else "on"
-    # Coherence re-rank reads event_vectors; absent with embeddings off, so pin it
-    # off for the lexical config (a core install has no coherence arm anyway).
-    if not args.vectors:
-        os.environ["THREAD_ARCHIVE_COHERENCE"] = "off"
+    rerank = eval_home.pin_arms(vectors=args.vectors, rerank=args.rerank)
 
     corpus, queries, qrels = load_cdr(repo)
     scorable = [(qid, queries[qid]) for qid in qrels if qid in queries and queries[qid]]
@@ -180,11 +178,14 @@ def run(args) -> int:
     _log(f"CDR: {len(qrels)} judged queries, {len(corpus)} conversations, "
          f"scoring {len(scorable)}")
 
+    # The marker carries every field that decides *what* was ingested, so a
+    # --max-docs smoke build can never read back as the full corpus.
     marker_path = home / "cdr_build.json"
     docmap_path = home / "cdr_docmap.json"
+    corpus_key = {"benchmark": "cdr", "max_docs": args.max_docs}
     marker = _read_json(marker_path)
     need_ingest = (
-        args.rebuild or marker is None or marker.get("benchmark") != "cdr"
+        args.rebuild or eval_home.marker_stale(marker, corpus_key)
         or not docmap_path.exists()
     )
     if need_ingest:
@@ -200,7 +201,7 @@ def run(args) -> int:
         work.mkdir(parents=True, exist_ok=True)
         doc_of_thread = ingest_corpus(corpus, work, args.max_docs)
         docmap_path.write_text(json.dumps(doc_of_thread), encoding="utf-8")
-        marker = {"benchmark": "cdr", "corpus_docs": len(doc_of_thread), "embedded": 0}
+        marker = {**corpus_key, "corpus_docs": len(doc_of_thread), "embedded": 0}
         marker_path.write_text(json.dumps(marker), encoding="utf-8")
     else:
         doc_of_thread = _read_json(docmap_path)
@@ -217,10 +218,14 @@ def run(args) -> int:
             marker["embedded"] = len(doc_of_thread)
             marker_path.write_text(json.dumps(marker), encoding="utf-8")
 
-    rerank = {"on": True, "off": False, "auto": None}[args.rerank]
     ks = (10, 100)
     agg = {"ndcg10": 0.0, "mrr10": 0.0, "recall": {k: 0.0 for k in ks}}
     latencies: list[float] = []
+
+    # Hold the ranker still before the first scored query, exactly as the gold
+    # bench does: the coherence re-rank otherwise lands partway through and splits
+    # a run into cases ranked with it and cases ranked without.
+    eval_home.warm()
 
     t0 = time.monotonic()
     for i, (qid, qtext) in enumerate(scorable):
@@ -254,14 +259,7 @@ def run(args) -> int:
     p50 = sorted(latencies)[n // 2] * 1000 if n else 0.0
     total_s = time.monotonic() - t0
 
-    arms = ["lexical"]
-    if args.vectors:
-        arms.append("vectors")
-    if rerank is True:
-        arms.append("rerank:on")
-    elif rerank is None:
-        arms.append("rerank:auto")
-
+    arms = eval_home.arm_labels(vectors=args.vectors, rerank=rerank)
     print()
     print(f"=== CDR — archive stack [{' + '.join(arms)}] ===")
     print(f"queries scored: {n}   corpus docs: {len(doc_of_thread)}   "
@@ -302,8 +300,9 @@ def main() -> int:
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--cdr-repo", default=str(DEFAULT_REPO),
                     help="cloned CDR-Benchmark repo (holds the test-split data)")
-    ap.add_argument("--data-dir", default="~/.cache/thread-evals",
-                    help="cache dir for the built archive homes (persistent)")
+    ap.add_argument("--data-dir", default=str(eval_home.CACHE_ROOT),
+                    help="cache dir for the built archive homes (persistent; "
+                         "shared with the other benchmarks)")
     ap.add_argument("--vectors", action="store_true",
                     help="build + query the semantic arm with the real embedder (needs [embeddings])")
     ap.add_argument("--rerank", choices=["on", "off", "auto"], default="off",

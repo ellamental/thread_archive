@@ -94,13 +94,17 @@ def _execute(miner: fw.Miner, args: argparse.Namespace,
     result = miner.run(ctx)
     # Persist the run's denominator (attempted / written / failed / outcome
     # breakdown) so the abstention and drop rates are a recorded timeseries, not a
-    # number that lived only in the console line. Fail-soft inside record_run.
+    # number that lived only in the console line. Recorded beside the cases this
+    # run actually wrote (`--out` can point at another corpus's gold dir), so the
+    # denominators never end up describing cases in a different directory.
+    # Fail-soft inside record_run.
     if result.attempted:
         from .. import mine_runs
 
         mine_runs.record_run(
             miner=miner.name, snapshot_id=snapshot_id, attempted=result.attempted,
-            written=result.written, failed=result.failed, outcomes=result.outcomes)
+            written=result.written, failed=result.failed, outcomes=result.outcomes,
+            home=result.cases_path.parent if result.cases_path else None)
     return result
 
 

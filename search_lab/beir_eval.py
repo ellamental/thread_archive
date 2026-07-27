@@ -20,13 +20,14 @@ conversation archive. A BM25-competitive lexical number means the lexical
 plumbing is sound; it says nothing about conversational-archive quality, which
 only the in-house harness can. Treat the two as complementary tiers.
 
-Never touches the real archive: it refuses the default ``~/.thread/archive`` and
-runs against its own home. Both halves of the cost are **cached** under
-``--data-dir`` (default ``~/.cache/thread-beir``): the downloaded dataset, and —
-keyed by dataset name — the built archive itself (the SQLite/FTS index *and* the
-embeddings). So the first ``--vectors`` run pays the ~15-min CPU embed once; every
-run after reuses it. ``--rebuild`` discards a cached build; ``--fresh`` opts out
-of caching entirely (throwaway home, deleted on exit).
+Never touches the real archive: ``search_lab.eval_home`` refuses any home that
+overlaps one. Both halves of the cost are **cached** under ``--data-dir``
+(default ``~/.cache/thread-evals``, the root every benchmark's downloads and homes
+share): the downloaded dataset, and — keyed by the corpus the run asked for — the
+built archive itself (the SQLite/FTS index *and* the embeddings). So the first
+``--vectors`` run pays the ~15-min CPU embed once; every run after reuses it.
+``--rebuild`` discards a cached build; ``--fresh`` opts out of caching entirely
+(throwaway home, deleted on exit).
 
     # fast lexical baseline (the always-on floor); ingests the corpus once, then cached:
     .venv/bin/python search_lab/beir_eval.py --dataset scifact
@@ -57,8 +58,13 @@ import zipfile
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
+# The lab dir too, so bare sibling imports (eval_home, eval_core, …) resolve
+# however this file was loaded: as a script, by path, or as search_lab.X.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-BEIR_URL = "https://public.ukp.informatik.tu-darmstadt.de/thakur/BEIR/datasets/{name}.zip"
+import eval_home  # noqa: E402
+
+BEIR_URL ="https://public.ukp.informatik.tu-darmstadt.de/thakur/BEIR/datasets/{name}.zip"
 
 # Published reference points (nDCG@10) so the archive number has a scale.
 # ``bm25`` is Anserini BM25 from the BEIR paper (Thakur et al., 2021, Table 2) —
@@ -254,26 +260,23 @@ def score_run(ranked_doc_ids: list[str], rel: dict[str, int], ks: tuple[int, ...
 
 def run(args) -> int:
     cache_root = Path(args.data_dir).expanduser()
-    default_home = Path.home() / ".thread" / "archive"
-    # The built archive is cached, keyed by dataset, so the (minutes-long) ingest
-    # and the (~15-min CPU) embed pass are paid once and reused. --fresh opts into
-    # a throwaway home deleted on exit; --home pins a location the caller manages;
-    # --rebuild discards a cached build and re-ingests.
+    # The built archive is cached, keyed by the corpus asked for, so the
+    # (minutes-long) ingest and the (~15-min CPU) embed pass are paid once and
+    # reused. --fresh opts into a throwaway home deleted on exit; --home pins a
+    # location the caller manages; --rebuild discards a cached build and re-ingests.
     if args.fresh:
         home = Path(tempfile.mkdtemp(prefix="beir-archive-home-"))
     elif args.home:
         home = Path(args.home)
     else:
-        home = cache_root / "homes" / args.dataset
-    if home.resolve() == default_home.resolve():
-        raise SystemExit("refusing to run against the real archive home; pass a different --home")
+        home = cache_root / "homes" / eval_home.home_name(args.dataset,
+                                                          max_docs=args.max_docs)
+    home = eval_home.guard_home(home, what="BEIR corpus home")
 
     # Pin the home + arm switches BEFORE importing the package, so the store bakes
     # the right DSN and no model cold-loads unless asked.
     os.environ["THREAD_ARCHIVE_HOME"] = str(home)
-    os.environ["THREAD_ARCHIVE_NO_THROTTLE"] = "1"
-    os.environ["THREAD_ARCHIVE_EMBED"] = "on" if args.vectors else "off"
-    os.environ["THREAD_ARCHIVE_RERANK"] = "off" if args.rerank == "off" else "on"
+    rerank = eval_home.pin_arms(vectors=args.vectors, rerank=args.rerank)
 
     data = fetch_dataset(args.dataset, cache_root)
     queries = load_queries(data / "queries.jsonl")
@@ -284,13 +287,16 @@ def run(args) -> int:
         scorable = scorable[: args.max_queries]
     _log(f"{args.dataset}: {len(qrels)} judged queries, scoring {len(scorable)}")
 
-    # Cache bookkeeping lives beside the archive: a build marker (what dataset,
+    # Cache bookkeeping lives beside the archive: a build marker (which corpus,
     # how many docs, how many embedded) and the thread_id→doc_id map scoring needs.
+    # The marker carries every field that decides *what* was ingested, so a
+    # --max-docs smoke build can never read back as the full corpus.
     marker_path = home / "beir_build.json"
     docmap_path = home / "beir_docmap.json"
+    corpus_key = {"dataset": args.dataset, "max_docs": args.max_docs}
     marker = _read_json(marker_path)
     need_ingest = (
-        args.rebuild or marker is None or marker.get("dataset") != args.dataset
+        args.rebuild or eval_home.marker_stale(marker, corpus_key)
         or not docmap_path.exists()
     )
 
@@ -307,7 +313,7 @@ def run(args) -> int:
         work.mkdir(parents=True, exist_ok=True)
         doc_of_thread = ingest_corpus(data / "corpus.jsonl", work, args.max_docs)
         docmap_path.write_text(json.dumps(doc_of_thread), encoding="utf-8")
-        marker = {"dataset": args.dataset, "corpus_docs": len(doc_of_thread), "embedded": 0}
+        marker = {**corpus_key, "corpus_docs": len(doc_of_thread), "embedded": 0}
         marker_path.write_text(json.dumps(marker), encoding="utf-8")
     else:
         doc_of_thread = _read_json(docmap_path)
@@ -326,10 +332,14 @@ def run(args) -> int:
             marker["embedded"] = len(doc_of_thread)
             marker_path.write_text(json.dumps(marker), encoding="utf-8")
 
-    rerank = {"on": True, "off": False, "auto": None}[args.rerank]
     ks = (10, 100)
     agg = {"ndcg10": 0.0, "mrr10": 0.0, "recall": {k: 0.0 for k in ks}}
     latencies: list[float] = []
+
+    # Hold the ranker still before the first scored query, exactly as the gold
+    # bench does: the coherence re-rank otherwise lands partway through and splits
+    # a run into cases ranked with it and cases ranked without.
+    eval_home.warm()
 
     t0 = time.monotonic()
     for i, (qid, qtext) in enumerate(scorable):
@@ -366,14 +376,7 @@ def run(args) -> int:
     p50 = sorted(latencies)[n // 2] * 1000 if n else 0.0
     total_s = time.monotonic() - t0
 
-    arms = ["lexical"]
-    if args.vectors:
-        arms.append("vectors")
-    if rerank is True:
-        arms.append("rerank:on")
-    elif rerank is None:
-        arms.append("rerank:auto")
-
+    arms = eval_home.arm_labels(vectors=args.vectors, rerank=rerank)
     ref = REFERENCE.get(args.dataset, {})
     print()
     print(f"=== BEIR {args.dataset} — archive stack [{' + '.join(arms)}] ===")
@@ -418,8 +421,9 @@ def main() -> int:
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--dataset", default="scifact",
                     help="BEIR dataset name (scifact, nfcorpus, arguana, scidocs, ...)")
-    ap.add_argument("--data-dir", default="~/.cache/thread-beir",
-                    help="cache dir for downloaded datasets AND built archive homes (persistent)")
+    ap.add_argument("--data-dir", default=str(eval_home.CACHE_ROOT),
+                    help="cache dir for downloaded datasets AND built archive homes "
+                         "(persistent; shared with the other benchmarks)")
     ap.add_argument("--vectors", action="store_true",
                     help="build + query the semantic arm with the real embedder (needs [embeddings])")
     ap.add_argument("--rerank", choices=["on", "off", "auto"], default="off",

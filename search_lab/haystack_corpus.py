@@ -46,6 +46,11 @@ from pathlib import Path
 
 _HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(_HERE.parent / "src"))
+# The lab dir too, so bare sibling imports (eval_home, eval_core, …) resolve
+# however this file was loaded: as a script, by path, or as search_lab.X.
+sys.path.insert(0, str(_HERE))
+
+import eval_home  # noqa: E402
 
 _SPEC = importlib.util.spec_from_file_location("haystack_eval", _HERE / "haystack_eval.py")
 haystack_eval = importlib.util.module_from_spec(_SPEC)
@@ -153,17 +158,12 @@ def main(argv: list[str] | None = None) -> int:
                     help="wipe the home and rebuild from scratch")
     args = ap.parse_args(argv)
 
-    home = (args.home or Path(args.data_dir).expanduser() / "homes"
-            / f"hay-{args.dataset}").expanduser().resolve()
-    real = Path(os.environ.get("THREAD_ARCHIVE_HOME")
-                or Path.home() / ".thread" / "archive").expanduser().resolve()
-    # The build wipes and rewrites this home; overlapping the real archive would
-    # destroy it. Same guard swechat_corpus and haystack_eval keep.
-    if home == real or real in home.parents or home in real.parents:
-        raise SystemExit(f"refusing: corpus home {home} overlaps the real archive {real}")
+    home = eval_home.guard_home(
+        args.home or Path(args.data_dir).expanduser() / "homes" / f"hay-{args.dataset}",
+        what=f"{args.dataset} corpus home")
 
-    os.environ["THREAD_ARCHIVE_NO_THROTTLE"] = "1"
-    os.environ["THREAD_ARCHIVE_EMBED"] = "on" if args.vectors else "off"
+    # No rerank arm here: this builds a corpus, it does not score one.
+    eval_home.pin_arms(vectors=args.vectors, rerank="off")
 
     corpus = collect(args.dataset, args)
     _log(f"{args.dataset}: {len(corpus)} docs -> {home}")

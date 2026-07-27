@@ -2,6 +2,49 @@
 
 ## Unreleased
 
+- **The search lab treats its three corpus families the same way.** The bench had
+  grown a private-archive path with real discipline and two side paths without it,
+  and the divergence was in the load-bearing places. Now one module
+  (`search_lab/eval_home.py`) decides what every harness had been deciding
+  separately: *which home is safe to build into* — the refusal now covers overlap
+  in both directions and protects whatever `THREAD_ARCHIVE_HOME` names, where
+  BEIR's and CDR's equality check would have let `--home ~/.thread` through to an
+  `rmtree`; *which arms are pinned* — `lexical` now means the same stack in every
+  harness, coherence stood down with the semantic arm it reads vectors from,
+  rather than three spellings of it; *whether a cached corpus still describes what
+  was asked for* — a `--max-docs` smoke build gets its own home, so it can neither
+  overwrite the full corpus nor read back as one; and *warming before the first
+  scored query*, which only the gold bench did, leaving every external number to
+  be split by whenever the background graph build happened to land. All benchmark
+  corpora now share one cache root (`~/.cache/thread-evals`).
+- **The SWE-chat hold-out is gated like the archive's own corpus.** It was
+  documented as the independent hold-out and plumbed as a side project: no floors,
+  no ledger, its mining denominators landing in the private gold dir describing
+  cases that were not there. Its 22 gold files now carry floor sidecars, its
+  ledgers live beside its cases, and the gate reaches it through `--snap` /
+  `--gold-dir` (env vars still work). A run is one `(snapshot, gold dir)` pair and
+  the second corpus is a second invocation — separate processes, because the stack
+  caches a corpus graph and a vector pack per engine and swapping homes under
+  those is how one corpus gets scored against another's structures.
+- **`--calibrate` writes a gold file's floor.** The rule — each metric at most
+  `1/n` under measured, one case of tolerance — was documented in three places and
+  implemented in none, so a freshly mined file stayed ungated until someone did
+  the arithmetic by hand. It runs only after a clean full pass of the shipped
+  configuration, and never lowers an existing floor: calibrating after a
+  regression cannot write the regression in as the new expectation.
+- **The gold and mining ledgers record the commit again.** `git_commit()` resolved
+  the repo root by a path depth that stopped being true when the module moved into
+  `search_lab/`, so it had been walking up past this checkout and recording
+  nothing. It now derives the root from the module's own location and verifies the
+  toplevel matches before trusting a SHA — archive is a nested repo, and a ledger
+  row naming another repository's HEAD is worse than one naming none.
+- **The exported SWE-chat benchmark says which nDCG it means.** The manifest
+  advertised its measures as reproducible under `ir_measures`/`trec_eval`; three
+  of the four are, but nDCG is not — the reference scorer uses exponential gain
+  and `trec_eval` uses linear, and every pool here carries the grade-1 rows that
+  make them disagree. The gain function is now named in the manifest and in the
+  scorer's own contract.
+
 - **Health notices can be silenced, and a silenced one is still counted.** The
   action queue had no answer to "yes, I know" — a warning about a backup that
   shares a disk on purpose, or an account export nobody is going to re-download

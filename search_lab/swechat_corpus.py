@@ -65,13 +65,14 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 # however this file was loaded: as a script, by path, or as search_lab.X.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+import eval_home  # noqa: E402
 from mine import commit_linked  # noqa: E402
 from snapshot import stamp_snapshot  # noqa: E402
 
 from thread_archive import _api as api  # noqa: E402
 from thread_archive._store import use_session  # noqa: E402
 
-DEFAULT_HOME = Path.home() / ".cache" / "thread-evals" / "homes" / "swe-chat"
+DEFAULT_HOME = eval_home.CACHE_ROOT / "homes" / "swe-chat"
 DEFAULT_DATA = Path.home() / "dev" / "swe-chat-data" / "swe-chat"
 
 
@@ -483,13 +484,9 @@ def main(argv: list[str] | None = None) -> int:
                     help="skip ingest; derive linkage from an already-built home")
     args = ap.parse_args(argv)
 
-    home = args.home.expanduser().resolve()
-    real = Path(os.environ.get("THREAD_ARCHIVE_HOME") or
-                Path.home() / ".thread" / "archive").expanduser().resolve()
-    # The build wipes and rewrites this home; overlapping the real archive would
-    # destroy it. Same guard haystack_eval keeps over its throwaway homes.
-    if home == real or real in home.parents or home in real.parents:
-        raise SystemExit(f"refusing: corpus home {home} overlaps the real archive {real}")
+    home = eval_home.guard_home(args.home, what="SWE-chat corpus home")
+    # No rerank arm here: this builds a corpus, it does not score one.
+    eval_home.pin_arms(vectors=args.vectors, rerank="off")
 
     if not args.linkage_only:
         keep = select_corpus(args.data, args.max_sessions, args.per_repo)

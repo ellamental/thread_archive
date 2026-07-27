@@ -49,19 +49,27 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
-import os
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-# Every metric this benchmark reports, as ir_measures expressions. MRR, success
-# and recall count only grade 2 (the mined gold) as relevant; grade 1 is a
-# near-miss the judge kept in the pool, and it earns partial credit in nDCG
-# alone. Anyone scoring with `ir_measures` or `trec_eval` gets our numbers by
-# asking for exactly these.
-MEASURES = ["RR(rel=2)", "Success(rel=2)@10", "R(rel=2)@10", "nDCG@10"]
+# Every metric this benchmark reports, named as the ir_measures expression that
+# defines it. MRR, success and recall count only grade 2 (the mined gold) as
+# relevant; grade 1 is a near-miss the judge kept in the pool, and it earns
+# partial credit in nDCG alone. The first three reproduce exactly under
+# `ir_measures` or `trec_eval`, which threshold at rel=2 the same way.
+#
+# nDCG does not, and the manifest says so: the reference scorer uses exponential
+# gain (`2**rel - 1`), where trec_eval's `ndcg` — and so pytrec_eval and
+# ir_measures on top of it — uses linear gain. On a pool holding grade-1 rows the
+# two disagree, so the benchmark ships its own scorer (`bench/score.py`) and names
+# the gain function rather than deferring to whichever library a consumer has
+# installed. Exponential gain is the archive's own convention
+# (`search_lab.eval_core.ndcg_at_k`), which is what makes an exported number and a
+# gold-gate number the same measurement.
+MEASURES = ["RR(rel=2)", "Success(rel=2)@10", "R(rel=2)@10", "nDCG@10 (exponential gain)"]
 # Depth every run is truncated to. The metrics do not look past 20, but a run
 # carrying rank 35 would still score under RR where ours scores zero, so the
 # depth is part of the contract rather than an implementation detail.
@@ -264,6 +272,9 @@ def export(gold_dir: Path, out: Path, *, data: Path) -> dict:
             "measures": MEASURES,
             "run_depth": RUN_DEPTH,
             "relevant_grade": 2,
+            "ndcg_gain": "exponential (2**rel - 1); trec_eval's ndcg uses linear "
+                         "gain and disagrees on pools holding grade 1",
+            "reference_scorer": "bench/score.py (stdlib only, ships with these files)",
             "note": "grade 1 is a near-miss: partial credit under nDCG, not "
                     "counted by RR / Success / R",
         },
@@ -321,6 +332,7 @@ def emit_run(bench: Path, out: Path, *, ranker: str, tag: str, depth: int) -> in
     hit. Those rows carry a rank-derived score, which is what the run format is
     entitled to claim — inventing a fused score would read as a comparable
     magnitude and be one only by accident."""
+    import eval_home
     from snapshot import read_snapshot_id
 
     from thread_archive import _api as api
@@ -332,16 +344,20 @@ def emit_run(bench: Path, out: Path, *, ranker: str, tag: str, depth: int) -> in
             f"but this home is {read_snapshot_id()}")
 
     if ranker == "lexical":
-        # The product's own switch, set before the archive opens: both model arms
-        # report unavailable, so what is measured is a lexical-only deployment.
-        os.environ["THREAD_ARCHIVE_EMBED"] = "off"
-        os.environ["THREAD_ARCHIVE_RERANK"] = "off"
+        # The product's own switches, set before the archive opens: both model arms
+        # report unavailable and the coherence re-rank stands down, so what is
+        # measured is the lexical-only deployment a core install runs — the same
+        # arm pinning every other harness's `lexical` row means.
+        eval_home.pin_arms(vectors=False, rerank="off")
     api.open_archive()
 
     if ranker == "bm25":
         from bm25_baseline import bm25_search as search
     else:
         search = api.search
+        # Hold the ranker still before the first query: the coherence re-rank
+        # otherwise lands partway through and splits a run in two.
+        eval_home.warm()
 
     to_session = session_map()
     queries = [json.loads(line) for line in (bench / "queries.jsonl").read_text().splitlines()

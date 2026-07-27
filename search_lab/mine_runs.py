@@ -20,10 +20,15 @@ MRR/nDCG"; a floor on those rates can be calibrated from this timeseries once it
 has one.
 
 Append-only JSONL, advisory, fail-soft — a ledger write must never break the
-mining run it records. ``THREAD_ARCHIVE_MINE_RUNS_LOG=0`` disables it. Lives at
-the gold dir (``~/.thread/archive``) beside the case files the run appends to and
-the other home-root ledgers, outside ``truth/`` — operational telemetry, not
-archive data; it records ids, counts, and outcomes, never case content.
+mining run it records. ``THREAD_ARCHIVE_MINE_RUNS_LOG=0`` disables it.
+
+The ledger lands **in the directory the run wrote its cases into**, which is what
+keeps a corpus whole: golds mined from the SWE-chat corpus live beside that
+download, and their denominators belong there too, not in the archive's private
+gold dir where they would describe cases that are not there. Reads default to the
+archive gold dir; pass ``home`` to read another corpus's. Either way the ledger
+sits outside ``truth/`` — operational telemetry, not archive data; it records ids,
+counts, and outcomes, never case content.
 """
 
 from __future__ import annotations
@@ -47,8 +52,9 @@ def _enabled() -> bool:
 
 
 def _gold_dir() -> Path:
-    """The gold dir the mining pipeline writes cases into — where this ledger lands
-    too, so the run record travels beside the golds it produced."""
+    """The archive's own gold dir — the fallback when a caller names no directory.
+    A miner writing elsewhere passes ``home`` so the run record travels beside the
+    golds it produced."""
     from .mine._framework import gold_dir
 
     return gold_dir()
@@ -69,8 +75,10 @@ def record_run(
     cases minted; ``failed`` the units that yielded none; ``outcomes`` the full
     per-unit disposition breakdown (its keys are miner-defined, e.g. ``ok`` /
     ``none-of-pool`` / ``no-grade-2`` / ``agent-failed`` / ``unparseable`` /
-    ``empty-pool`` / ``no-queries``). Fail-soft: any write error is logged and
-    swallowed so telemetry can't break a mining run."""
+    ``empty-pool`` / ``no-queries``). ``home`` is the directory the ledger lands
+    in — the miner passes the one it wrote its cases into, so a corpus keeps its
+    own denominators. Fail-soft: any write error is logged and swallowed so
+    telemetry can't break a mining run."""
     if not _enabled():
         return
     from gold_runs import git_commit

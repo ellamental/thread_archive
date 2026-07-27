@@ -220,8 +220,10 @@ def test_require_fails_on_missing_and_stale_calibrated_fixtures(tmp_path, monkey
     (gold / "judged-cases.floor.json").write_text(json.dumps(
         {"mrr": 0.43, "success10": 0.90, "recall10": 0.85, "ndcg10": 0.52}))
     # findability is not on disk at all — the ledger is what remembers it was
-    # measured last run, so --require can still name it as missing.
-    (tmp_path / "gold-runs.jsonl").write_text(json.dumps({
+    # measured last run, so --require can still name it as missing. The ledger sits
+    # in the gold dir, beside the cases it describes: THREAD_ARCHIVE_HOME points
+    # somewhere else entirely here, and the gate still finds the corpus's history.
+    (gold / "gold-runs.jsonl").write_text(json.dumps({
         "kind": "gold-run", "files": {
             "judged-cases.jsonl": {"status": "scored"},
             "findability-cases.jsonl": {"status": "scored"}}}) + "\n")
@@ -415,3 +417,70 @@ def test_set_rejects_an_unknown_field() -> None:
         gate._apply_overrides(["fusion_wieght=500"])
     with pytest.raises(SystemExit, match="field=value"):
         gate._apply_overrides(["fusion_weight"])
+
+
+def test_calibrated_floor_sits_one_case_under_measured() -> None:
+    # The documented rule: at most 1/n under measured, rounded down to two
+    # decimals — one case of tolerance, so one case may regress and two fail.
+    floor = gate.calibrated_floor(
+        {"n": 8, "mrr": 0.938, "success10": 1.0, "recall10": 0.878, "ndcg10": 0.776})
+    assert floor == {"mrr": 0.81, "success10": 0.87, "recall10": 0.75, "ndcg10": 0.65}
+    # A big file's resolution is finer, so its headroom is narrower.
+    tight = gate.calibrated_floor(
+        {"n": 75, "mrr": 0.819, "success10": 0.933, "recall10": 0.933, "ndcg10": 0.845})
+    assert tight == {"mrr": 0.8, "success10": 0.91, "recall10": 0.91, "ndcg10": 0.83}
+
+
+def test_calibrated_floor_covers_each_difficulty_stratum() -> None:
+    # A laddered file's aggregate can stay up while its hardest stratum collapses,
+    # so each tier is floored against its own n.
+    floor = gate.calibrated_floor({
+        "n": 75, "mrr": 0.819, "success10": 0.933, "recall10": 0.933, "ndcg10": 0.845,
+        "per_difficulty": {"vague": {"n": 25, "mrr": 0.803, "success10": 0.88},
+                           "verbatim": {"n": 25, "mrr": 0.948, "success10": 1.0}},
+    })
+    assert floor["by_difficulty"] == {"vague": {"mrr": 0.76, "success10": 0.84},
+                                      "verbatim": {"mrr": 0.9, "success10": 0.96}}
+
+
+def test_calibrated_floor_never_goes_negative_or_guesses_without_n() -> None:
+    assert gate.calibrated_floor({"n": 2, "mrr": 0.1}) == {"mrr": 0.0}
+    assert gate.calibrated_floor({"mrr": 0.9}) == {}
+
+
+def test_raised_keeps_the_higher_floor_per_metric_and_tier() -> None:
+    # The ratchet turns one way: a calibration pass over numbers that fell must not
+    # write the regression in as the new expectation.
+    current = {"mrr": 0.80, "success10": 0.90,
+               "by_difficulty": {"vague": {"mrr": 0.76, "success10": 0.84}}}
+    proposed = {"mrr": 0.85, "success10": 0.70,
+                "by_difficulty": {"vague": {"mrr": 0.70, "success10": 0.90}}}
+    assert gate.raised(current, proposed) == {
+        "mrr": 0.85, "success10": 0.90,
+        "by_difficulty": {"vague": {"mrr": 0.76, "success10": 0.90}}}
+
+
+def test_write_floors_mints_a_sidecar_and_will_not_lower_one(tmp_path) -> None:
+    gold = tmp_path / "fresh-cases.jsonl"
+    gold.write_text('{"query": "q", "gold": ["t1"]}\n')
+    held = tmp_path / "held-cases.jsonl"
+    held.write_text('{"query": "q", "gold": ["t1"]}\n')
+    gate.floor_path_for(held).write_text(json.dumps({"mrr": 0.90}))
+
+    lines = gate.write_floors([gold, held], {
+        "fresh-cases.jsonl": {"n": 8, "mrr": 0.938, "success10": 1.0,
+                              "recall10": 0.878, "ndcg10": 0.776},
+        "held-cases.jsonl": {"n": 8, "mrr": 0.500},
+    })
+
+    assert gate.read_floor(gold)["mrr"] == 0.81
+    assert gate.read_floor(held)["mrr"] == 0.90  # the run scored lower; floor holds
+    assert any("NEW floor" in line for line in lines)
+    assert any("unchanged" in line for line in lines)
+
+
+def test_write_floors_ignores_a_file_that_is_not_on_disk(tmp_path) -> None:
+    # The measured set names files by basename; one that vanished mid-run (another
+    # instance re-mining) must not resurrect as a bare sidecar with no gold beside it.
+    assert gate.write_floors([], {"gone-cases.jsonl": {"n": 8, "mrr": 0.9}}) == []
+    assert list(tmp_path.iterdir()) == []

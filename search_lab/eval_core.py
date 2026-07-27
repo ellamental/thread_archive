@@ -1,10 +1,23 @@
 """Search-quality measurement over the live archive — the scoring core.
 
-The reusable engine every harness in this directory scores through: they build
-eval *cases* under one of the protocols below and hand them to :func:`evaluate`,
-which runs one MRR / success@k / recall@k / nDCG@k loop. One scoring path, so a
-number from the gold gate and a number from a calibration run mean the same
-thing.
+The engine every harness that scores *gold cases* runs through: they build eval
+cases under one of the protocols below and hand them to :func:`evaluate`, which
+runs one MRR / success@k / recall@k / nDCG@k loop. One scoring path, so a number
+from the gold gate, a number from the BM25 reference, and a number from the
+exported SWE-chat benchmark all mean the same thing —
+``retrieval_eval``, ``bm25_baseline``, ``window_fill``, the miners, and
+``scripts/retrieval_gold_gate.py`` share it, and ``swechat_bench``'s published
+scorer reproduces its definitions (notably :func:`ndcg_at_k`'s exponential gain)
+in dependency-free form.
+
+The external calibration harnesses (``beir_eval``, ``cdr_eval``,
+``haystack_eval``) do **not** score through here, and shouldn't: their job is to
+land beside a published leaderboard, so each implements that leaderboard's own
+metric conventions — linear-gain nDCG, the field's standard — rather than this
+archive's. Two scoring cores, on purpose, with the boundary at the corpus: gold
+cases here, published benchmarks there. What they do share is the plumbing that
+decides *which stack* gets measured (``search_lab.eval_home``), so a number's
+configuration means the same thing on both sides even where its metric does not.
 
 Measurement, not product: quality numbers are read deliberately against a
 snapshot-bound baseline (``search_lab/README.md`` → "Taking a baseline"), by

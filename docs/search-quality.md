@@ -25,10 +25,15 @@ experience.
 
 The baseline is a set of **agent-mined gold case files** — graded, corpus-grounded
 relevance pools scored over a *frozen corpus snapshot*, so the number moves only
-when the ranking code moves. `scripts/retrieval_gold_gate.py` scores every file
-over its bound snapshot with the production ranker at the canonical `limit=20` and
-prints per-file metrics; each run also appends to a timeseries ledger
-(`~/.thread/archive/gold-runs.jsonl`).
+when the ranking code moves. `scripts/retrieval_gold_gate.py` scores one corpus
+per run — a `(snapshot, gold dir)` pair — with the production ranker at the
+canonical `limit=20`, prints per-file metrics, and appends to a timeseries ledger
+in the gold dir it scored (`gold-runs.jsonl`, beside the cases it describes).
+
+There are two such corpora, and a full read is both invocations: the archive's own
+(the section below) and the SWE-chat hold-out (`--snap`/`--gold-dir`, see "The
+hold-out corpus"). Golds bound to another snapshot skip rather than score, which
+is what keeps the two from being averaged into a number that describes neither.
 
 The gold dir holds 317 cases across 25 files: 64 `querygen`, 21 `query`, 19
 `rerank`, and 213 `topic` cases spanning 22 topics. Pooled, the `topic` files read
@@ -107,11 +112,48 @@ an *improvement*: its grade-2 labels were mined to be complete, so a change that
 surfaces a better answer scores as a gain — not, as click labels do, as a loss.
 
 The gold files are the promotion bar. To claim "search improved," score the
-challenger and the shipped configuration on **every file, each over its own
-snapshot, on both sides of the change**, and keep a hold-out: tune against one file
-while another stays untouched until the confirming run. `python -m search_lab.mine`
-mints these files; `search_lab/README.md` → "Taking a baseline" is the full
-protocol.
+challenger and the shipped configuration on **every file, over both corpora, on
+both sides of the change**, and keep a hold-out: tune against one file while
+another stays untouched until the confirming run. `python -m search_lab.mine`
+mints these files, `--calibrate` gives a freshly mined one its floor, and
+`search_lab/README.md` → "Taking a baseline" is the full protocol.
+
+## The hold-out corpus
+
+Every file above was mined from one archive, by one author, over one set of
+projects, and hold-out discipline *within* a corpus cannot see overfitting *to*
+it. The second corpus closes that: `search_lab/swechat_corpus.py` builds a home
+from [SWE-chat](https://huggingface.co/datasets/SALT-NLP/SWE-chat) — public
+Claude Code sessions, other people's code, ODC-BY — and the same miners mint golds
+against it. It is domain-matched (agent session logs, not a third-party IR corpus)
+and nothing is ever tuned against it, so it is the one corpus where a ranking
+change's direction is not an artifact of the tuning loop.
+
+It carries the same furniture as the archive's own — case files, a floor sidecar
+per file, a run ledger — under `gold/` beside the download, since none of it
+quotes the operator's conversations. On the 726-session corpus (snapshot
+`ed739bdf…`), 310 cases across 22 files: `commit` 75, `querygen` 75, `topic` 160
+over 20 repository and cross-cutting subjects.
+
+| miner | files | n | MRR | success@10 | recall@10 | nDCG@10 |
+|---|---|---|---|---|---|---|
+| `commit` | 1 | 75 | 0.569 | 0.747 | 0.747 | 0.550 |
+| `querygen` | 1 | 75 | 0.819 | 0.933 | 0.933 | 0.845 |
+| `topic` | 20 | 160 | 0.915 | 0.994 | 0.666 | 0.715 |
+
+Read these against the archive's numbers only as *directions*, never as levels:
+the corpora differ in selectivity (see "What the window holds"), and the same
+stack scores differently on each by construction. `commit` is the hardest rung
+anywhere on the bench and the most trustworthy — its labels come from commit
+provenance rather than from searching with the engine under test — and its
+difficulty ladder separates sharply: literal queries S@10 1.000, functional 0.680,
+intent 0.560. Naming what was *done* finds the session; naming *why* often does
+not, and that gap is not visible on any circular protocol.
+
+`search_lab/swechat_bench.py` exports the same golds onto the dataset's own
+session ids as a standalone benchmark (queries / qrels / corpus / manifest, plus a
+stdlib-only scorer), so the hold-out is reproducible by someone with no access to
+this archive.
 
 ## What the window holds
 
@@ -142,11 +184,13 @@ see it: a file can score 0.9 MRR while surfacing a quarter of what is relevant, 
 several do. No amount of reordering reaches it — only recall does.
 
 A fill number means nothing on its own, which is what the BM25 reference is for; it
-is also not comparable across corpora. The same stack *loses* the window on a
-homogeneous corpus of other people's coding sessions (`search_lab/swechat_corpus.py`
-builds it): there the gold is single-answer, so fill reduces to success@10, and the
-stack reaches 0.653 against BM25's 0.773 on commit-linked cases and 0.867 against
-0.933 on query-gen. **Selectivity** is the corpus property that predicts the
+is also not comparable across corpora. The same stack *loses* to plain BM25 on the
+homogeneous corpus of other people's coding sessions ("The hold-out corpus" above):
+its single-gold files reduce fill to success@10, and against
+`search_lab/bm25_baseline.py` on the same snapshot the stack reads 0.747 to BM25's
+0.813 on `commit` cases, and ties at 0.933 on `querygen` while ranking worse inside
+that reach (MRR 0.819 to 0.876, nDCG@10 0.845 to 0.890). **Selectivity** is the
+corpus property that predicts the
 direction — the share of the corpus a query's terms match at all. The archive sits
 near 50%, so lexical matching still filters and the arms above it have something to
 arbitrate; that corpus sits near 95%, where matching filters nothing, IDF-weighted
@@ -334,7 +378,12 @@ the retrieval *components* competitive against published baselines — is what t
 external benchmarks answer, each running the real pipeline over a third-party corpus.
 None of these corpora resemble an agent's own session log, so a strong number
 certifies the machinery, never archive-domain quality — read each against that
-mismatch.
+mismatch. Each also reports its own field's metric conventions rather than this
+archive's (linear-gain nDCG, where the gold files use exponential), which is the
+point of running them: a number is only a yardstick if it means what the
+leaderboard beside it means. What they share with the gold bench is the
+configuration under test — one arm-pinning path, so `lexical` names the same stack
+everywhere — and one cache root, `~/.cache/thread-evals`.
 
 | benchmark | task | metric | lexical | +vectors | +rerank | published ref |
 |---|---|---|---|---|---|---|
@@ -344,11 +393,13 @@ mismatch.
 | LongMemEval-S (`haystack_eval.py`) | long-history QA, session-level | recall@10 | 0.912 | — | — | 0.710 BM25 / 0.823 Contriever |
 
 On the shipped default (no cross-encoder) the fused stack lands at 97–99% of every
-comparable reference, and above the reference on LongMemEval-S. The suite doubles as
-a **held-out set** for ranking work: every
-weight is tuned against the archive's own mined gold files and nothing is tuned
-against these third-party corpora, so agreement between the two is what separates a
-real retrieval gain from a gold-file artifact. Score them after a defaults change.
+comparable reference, and above the reference on LongMemEval-S. Nothing is tuned
+against these corpora, so they are held out in the arithmetic sense — but they are
+out-of-domain, so a disagreement between them and the gold files is as easily a
+domain gap as an artifact (the `bm25_weight` split below is exactly that). The
+**domain-matched** hold-out is the SWE-chat corpus above: same task, same document
+shape, other people's code. Score both after a defaults change, and weigh a
+disagreement accordingly.
 
 On **LoCoMo**, with the cross-encoder **forced on** (which production does not do),
 recall@10 reaches 0.787 — above the specialized dense retriever DRAGON (0.662) at
@@ -425,7 +476,8 @@ the evidence matches the stakes:
 | 1 | `pytest -m quality_models` | same corpus, real embedding + rerank models | minutes | touching the model arms |
 | 2 | CI `retrieval-gate` (arm-liveness probes) | live archive | ~a minute | every commit, via thread-ci |
 | 3 | `retrieval_gold_gate.py` (current-state read + tuning loop), `graph_eval.py` | live archive + the golds' frozen snapshot | seconds to minutes | evaluating a deliberate ranking change |
-| 3½ | `python -m search_lab.mine <miner>` to mint fresh golds, then re-score | frozen snapshot, corpus-grounded labels | seconds to score; agent-minutes per mined case | when a file's snapshot goes stale |
+| 3¼ | `retrieval_gold_gate.py --snap … --gold-dir …` over the SWE-chat corpus | the domain-matched hold-out, its own snapshot | minutes | confirming a change that looked good on the archive's own golds |
+| 3½ | `python -m search_lab.mine <miner>` to mint fresh golds, then `--calibrate` to floor them | frozen snapshot, corpus-grounded labels | seconds to score; agent-minutes per mined case | when a file's snapshot goes stale |
 | 4 | `pytest -m beir`; `cdr_eval.py`, `haystack_eval.py --dataset …` | external IR / conversational-memory benchmarks | tens of minutes | calibrating against published baselines |
 
 The tunables all live in one object — `SearchParams` (`_retrieval/params.py`) — and a

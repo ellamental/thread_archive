@@ -71,6 +71,11 @@ from pathlib import Path
 
 _HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(_HERE.parent / "src"))
+# The lab dir too, so bare sibling imports (eval_home, eval_core, …) resolve
+# however this file was loaded: as a script, by path, or as search_lab.X.
+sys.path.insert(0, str(_HERE))
+
+import eval_home  # noqa: E402
 
 _SPEC = importlib.util.spec_from_file_location("beir_eval", _HERE / "beir_eval.py")
 beir_eval = importlib.util.module_from_spec(_SPEC)
@@ -80,7 +85,7 @@ _SPEC.loader.exec_module(beir_eval)
 _session_lines = beir_eval._session_lines
 _log = beir_eval._log
 
-_CACHE = Path.home() / ".cache" / "thread-evals"
+_CACHE = eval_home.CACHE_ROOT
 
 # A built+embedded corpus home is cached under ``<data-dir>/homes/<dataset>/<fp>``
 # and reused across runs. The fingerprint pins the dataset, the group, the corpus
@@ -256,6 +261,10 @@ def eval_group(api, home: Path, corpus: dict[str, str], queries: list[dict],
                                          "vectors": vectors}), encoding="utf-8")
         hit = False
 
+    # This home is the one just opened, so the graph cache is warmed (and the
+    # previous corpus's dropped) here rather than once for the run.
+    eval_home.warm(swapped_home=True)
+
     limit = max(ks) * 2
     results = []
     for q in queries:
@@ -304,21 +313,9 @@ def run(args) -> int:
     cache = not args.fresh
     cache_root = Path(tempfile.mkdtemp(prefix=f"hay-{args.dataset}-")) if args.fresh \
         else (Path(args.data_dir).expanduser() / "homes")
-    default_home = (Path.home() / ".thread" / "archive").resolve()
-    cr = cache_root.resolve()
-    if cr == default_home or default_home in cr.parents or cr in default_home.parents:
-        raise SystemExit(f"refusing: eval home root {cache_root} overlaps the real archive")
+    cache_root = eval_home.guard_home(cache_root, what="eval home root")
 
-    os.environ["THREAD_ARCHIVE_NO_THROTTLE"] = "1"
-    os.environ["THREAD_ARCHIVE_EMBED"] = "on" if args.vectors else "off"
-    os.environ["THREAD_ARCHIVE_RERANK"] = "off" if args.rerank == "off" else "on"
-    # The community-coherence re-rank reads event_vectors; with embeddings off that
-    # table never exists, so it throws (fail-soft) on every conceptual query. A
-    # core lexical install has no coherence arm at all — pin it off to match, and
-    # to keep the lexical measurement free of a swallowed per-query exception.
-    if not args.vectors:
-        os.environ["THREAD_ARCHIVE_COHERENCE"] = "off"
-    rerank = {"on": True, "off": False, "auto": None}[args.rerank]
+    rerank = eval_home.pin_arms(vectors=args.vectors, rerank=args.rerank)
 
     from thread_archive import _api as api
 
@@ -349,8 +346,7 @@ def run(args) -> int:
     cats = sorted({r["category"] for r in all_rows})
     per_cat = {c: _aggregate([r for r in all_rows if r["category"] == c], ks) for c in cats}
 
-    arms = ["lexical"] + (["vectors"] if args.vectors else []) \
-        + (["rerank:on"] if rerank is True else ["rerank:auto"] if rerank is None else [])
+    arms = eval_home.arm_labels(vectors=args.vectors, rerank=rerank)
     ref = REFERENCE.get(args.dataset, {})
     print()
     print(f"=== {args.dataset} — archive stack [{' + '.join(arms)}] ===")

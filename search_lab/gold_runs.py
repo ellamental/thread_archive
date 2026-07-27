@@ -44,20 +44,39 @@ def _enabled() -> bool:
 
 
 def _repo_root() -> Path:
-    """The archive repo root (src/thread_archive/_ops/gold_runs.py → up 3)."""
-    return Path(__file__).resolve().parents[3]
+    """The archive repo root — this file's directory (``search_lab/``) is its
+    child, so one level up.
+
+    Derived from ``__file__`` rather than the cwd because a gate run is launched
+    from anywhere, and it must name *this* checkout: archive is a nested repo, so
+    walking up from a wrong starting point finds a different repository's HEAD and
+    stamps the ledger with a commit that has nothing to do with the code that was
+    scored."""
+    return Path(__file__).resolve().parents[1]
 
 
 def git_commit() -> Optional[str]:
     """The short SHA of the code being gated, or ``None`` outside a git checkout.
-    Best-effort: a detached/absent repo records no commit rather than raising."""
+    Best-effort: a detached/absent repo records no commit rather than raising.
+
+    ``rev-parse --show-toplevel`` first: ``git -C <dir>`` walks *up* until it finds
+    a repository, so a checkout root that is somehow not one would silently answer
+    with an ancestor repo's HEAD. Confirming the toplevel is the checkout makes
+    that read as "no commit" instead of a wrong one — the ledger's whole value is
+    that a recorded number names the code that produced it."""
+    root = _repo_root()
     try:
-        out = subprocess.run(
-            ["git", "-C", str(_repo_root()), "rev-parse", "--short", "HEAD"],
-            capture_output=True, text=True, timeout=5, check=False,
-        )
-        sha = out.stdout.strip()
-        return sha or None
+        def _git(*argv: str) -> Optional[str]:
+            out = subprocess.run(
+                ["git", "-C", str(root), *argv],
+                capture_output=True, text=True, timeout=5, check=False,
+            )
+            return out.stdout.strip() or None
+
+        toplevel = _git("rev-parse", "--show-toplevel")
+        if toplevel is None or Path(toplevel).resolve() != root:
+            return None
+        return _git("rev-parse", "--short", "HEAD")
     except (OSError, subprocess.SubprocessError):
         return None
 

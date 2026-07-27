@@ -77,34 +77,53 @@ interactive loop, the full ~10-minute pass reserved for the confirm.
 
 Snapshot binding: each gold file is bound by ``snapshot_id`` to the corpus
 snapshot it was mined against; this gate scores over that snapshot
-(``THREAD_ARCHIVE_SNAP``, default ``~/.thread/archive-snap``). When the snapshot
-is absent, or a gold file's id no longer matches it (the corpus moved, the golds
-are mid-re-mine), the affected file is SKIPPED, not failed — a stale or missing
-fixture is an operator-maintenance state, not a code regression, and must not
-wedge the commit gate red. A file that is present and fresh but carries no floor
-entry is scored and reported but left ungated (newly mined, not yet calibrated):
-add its floor to the floors file to start gating it.
+(``--snap``, else ``THREAD_ARCHIVE_SNAP``, else ``~/.thread/archive-snap``). When
+the snapshot is absent, or a gold file's id no longer matches it (the corpus
+moved, the golds are mid-re-mine), the affected file is SKIPPED, not failed — a
+stale or missing fixture is an operator-maintenance state, not a code regression,
+and must not wedge the commit gate red. A file that is present and fresh but
+carries no floor sidecar is scored and reported but left ungated (newly mined,
+not yet calibrated): drop a sidecar beside it to start gating it.
 
-**Where the floors live.** The gold corpus is mined from a private archive, and
-its file names carry that archive's topic titles — so neither the cases nor the
-manifest naming them belongs in this repo. Floors load from
-``<gold_dir>/gold-floors.json``: a JSON object mapping gold basename to its four
-metric floors, sitting beside the cases it calibrates. The repo holds the
-mechanism; the corpus and the names of its files stay with the operator. A
-missing floors file means nothing is calibrated — every present file is scored
-and reported, none gated — which ``--require`` treats as the failure it is.
+**One corpus per run.** A run scores one ``(snapshot, gold dir)`` pair, and golds
+bound to any other snapshot skip. More than one mined corpus exists — the
+operator's archive, and the SWE-chat hold-out ``search_lab/swechat_corpus.py``
+builds — so covering both is two invocations, each landing its ledger and
+baseline in the gold dir it scored::
+
+    python scripts/retrieval_gold_gate.py
+    python scripts/retrieval_gold_gate.py \\
+        --snap ~/.cache/thread-evals/homes/swe-chat \\
+        --gold-dir ~/dev/swe-chat-data/gold
+
+Separate processes rather than one loop, deliberately: the retrieval stack caches
+a corpus graph and a vector pack per engine, and swapping homes underneath those
+inside a process is how one corpus ends up scored against another's cached
+structures. A process boundary makes that unrepresentable.
+
+**Where the floors live.** The gold corpus is mined from a private archive and
+stays with the operator; nothing in this repo names one of its files. Each gold
+file's floor rides beside it as an ``X.floor.json`` sidecar, found with the file
+it calibrates — so a newly mined file starts being gated by the act of dropping
+its sidecar, and there is no manifest here to fall out of sync with a corpus it
+cannot see. A gold dir where nothing carries a sidecar means nothing is
+calibrated — every present file is scored and reported, none gated — which
+``--require`` treats as the failure it is.
 
 **Failing closed.** The skip-don't-wedge default is right for a dev box that has
-no snapshot, but on a box that is *supposed* to measure — the CI lane — a silent
-skip is a gate that stopped measuring and still reads green. ``--require`` closes
-that: the calibrated manifest (every basename in the floors file) must be present,
-fresh, readable, and actually scored, and an absent snapshot, an empty gold dir,
-or any expected file missing / stale / unreadable / unscored is a **failure**, not
-a skip. A genuine maintenance window still needs to pass CI, so it takes an
-explicit, visible skip rather than looking like a pass: set
-``THREAD_ARCHIVE_GOLD_GATE_MAINTENANCE=<reason>`` and ``--require`` prints a loud
-``MAINTENANCE SKIP`` and exits 0. The reason is the audit trail — a skip nobody
-declared can't happen.
+no snapshot, but on a box that is *supposed* to measure — one where the corpus
+and the snapshot live, run to answer "is this shippable" — a silent skip is a
+gate that stopped measuring and still reads green. ``--require`` closes that:
+every file carrying a floor sidecar, plus every file the last recorded run
+measured, must be present, fresh, readable, and actually scored — and an absent
+snapshot, an empty gold dir, nothing calibrated at all, or any expected file
+missing / stale / unreadable / unscored is a **failure**, not a skip. Both halves
+of that expectation are discovered rather than declared: the sidecars come from
+the corpus, the prior set from the run ledger. A genuine maintenance window still
+has to come back green, so it takes an explicit, visible skip rather than looking
+like a pass: set ``THREAD_ARCHIVE_GOLD_GATE_MAINTENANCE=<reason>`` and
+``--require`` prints a loud ``MAINTENANCE SKIP`` and exits 0. The reason is the
+audit trail — a skip nobody declared can't happen.
 
 Usage: python scripts/retrieval_gold_gate.py [--require]
 Exit 0 when every calibrated floor holds (or, without ``--require``, its fixture
@@ -116,6 +135,7 @@ from __future__ import annotations
 
 import dataclasses
 import json
+import math
 import os
 import sys
 from pathlib import Path
@@ -198,6 +218,85 @@ def read_floor(gold: Path) -> dict[str, float]:
     if isinstance(by_diff, dict):
         floor["by_difficulty"] = by_diff  # type: ignore[assignment]
     return floor
+
+
+def calibrated_floor(metrics: dict) -> dict[str, float]:
+    """The floor a measured run implies for one file, by the documented rule: each
+    metric sits **at most ``1/n`` under** what it measured, rounded down to two
+    decimals.
+
+    ``1/n`` is the file's resolution — on ``n`` cases, one case falling from rank 1
+    to unfound moves any of these metrics by at most that — so the headroom is one
+    case of tolerance and no more: one case may regress, two fail the gate. It is
+    not slack for measurement noise, of which there is none (same code, same
+    snapshot, same digits).
+
+    A difficulty-laddered file also gets per-stratum floors under the same rule
+    against the stratum's own ``n``, which is what stops an easy-verbatim aggregate
+    from masking a vague-recall collapse."""
+    n = metrics.get("n") or 0
+    if not n:
+        return {}
+
+    def floor_of(value: float, cases: int) -> float:
+        return max(0.0, math.floor((value - 1.0 / cases) * 100) / 100)
+
+    floor: dict[str, float] = {m: floor_of(metrics[m], n) for m in FLOOR_METRICS
+                               if isinstance(metrics.get(m), (int, float))}
+    strata = {}
+    for tier, m in (metrics.get("per_difficulty") or {}).items():
+        tier_n = m.get("n") or 0
+        if tier_n:
+            strata[tier] = {"mrr": floor_of(m["mrr"], tier_n),
+                            "success10": floor_of(m["success10"], tier_n)}
+    if strata:
+        floor["by_difficulty"] = strata  # type: ignore[assignment]
+    return floor
+
+
+def raised(current: dict, proposed: dict) -> dict:
+    """``proposed`` merged over ``current``, keeping whichever value is higher.
+
+    The ratchet turns one way. A calibration pass over a run that scored *lower*
+    than the recorded floor must not quietly write the regression in as the new
+    expectation — that is the one thing a floor exists to prevent. So a metric only
+    ever moves up, and a file whose numbers fell keeps the floor it had (and keeps
+    failing, which is the point)."""
+    out = dict(current)
+    for key, value in proposed.items():
+        if key == "by_difficulty":
+            tiers = dict(current.get("by_difficulty") or {})
+            for tier, tier_floor in value.items():
+                tiers[tier] = raised(tiers.get(tier, {}), tier_floor)
+            out["by_difficulty"] = tiers
+        elif value > current.get(key, 0.0):
+            out[key] = value
+    return out
+
+
+def write_floors(files: list[Path], measured: dict[str, dict]) -> list[str]:
+    """Write a floor sidecar beside every scored gold file, at the calibrated
+    value, never below the one already there. Returns one line per file for the
+    operator, so a calibration pass says what it changed."""
+    written: list[str] = []
+    by_name = {p.name: p for p in files}
+    for name, metrics in measured.items():
+        path = by_name.get(name)
+        proposed = calibrated_floor(metrics)
+        if path is None or not proposed:
+            continue
+        current = read_floor(path)
+        merged = raised(current, proposed)
+        if merged == current:
+            written.append(f"  {name:34s} floor unchanged")
+            continue
+        floor_path_for(path).write_text(json.dumps(merged, indent=2) + "\n",
+                                        encoding="utf-8")
+        verb = "calibrated" if current else "NEW floor"
+        written.append(f"  {name:34s} {verb}: MRR {merged.get('mrr')} "
+                       f"S@10 {merged.get('success10')} R@10 {merged.get('recall10')} "
+                       f"nDCG@10 {merged.get('ndcg10')}")
+    return written
 
 
 def discover_floors(files: list[Path]) -> dict[str, dict[str, float]]:
@@ -591,6 +690,17 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--smoke-queries", type=int, default=8, metavar="K",
                     help="how many slowest-at-baseline queries the latency smoke test "
                     "runs before the full pass (with --latency --fail-early)")
+    ap.add_argument("--snap", type=Path, default=None, metavar="DIR",
+                    help="the frozen corpus snapshot to score over (default: "
+                    "$THREAD_ARCHIVE_SNAP, else ~/.thread/archive-snap)")
+    ap.add_argument("--gold-dir", type=Path, default=None, metavar="DIR",
+                    help="the gold corpus to score: its case files, their floor "
+                    "sidecars, and the ledgers this run writes (default: "
+                    "$THREAD_ARCHIVE_GOLD_DIR, else ~/.thread/archive)")
+    ap.add_argument("--calibrate", action="store_true",
+                    help="after a clean full run, write each scored file's floor "
+                    "sidecar at 1/n under what it measured — how a freshly mined "
+                    "file starts being gated. Never lowers an existing floor.")
     # None (a programmatic main() call — tests, importers) means "no CLI args", not
     # "read sys.argv" (which under pytest is the test runner's argv). The __main__
     # entry passes the real argv explicitly.
@@ -617,12 +727,15 @@ def main(argv: list[str] | None = None) -> int:
               f"(explicit operator skip; not a pass)")
         return 0
 
-    snap = Path(os.environ.get("THREAD_ARCHIVE_SNAP", str(DEFAULT_SNAP)))
-    gold_dir = Path(os.environ.get("THREAD_ARCHIVE_GOLD_DIR", str(DEFAULT_GOLD_DIR)))
-    # The real archive home, captured before the scoring override below repoints
-    # THREAD_ARCHIVE_HOME at the frozen snapshot — the run ledger lands here, beside
-    # the other home-root ledgers, not inside the snapshot fixture.
-    home = Path(os.environ.get("THREAD_ARCHIVE_HOME") or str(DEFAULT_GOLD_DIR))
+    snap = Path(args.snap or os.environ.get("THREAD_ARCHIVE_SNAP", str(DEFAULT_SNAP)))
+    gold_dir = Path(args.gold_dir
+                    or os.environ.get("THREAD_ARCHIVE_GOLD_DIR", str(DEFAULT_GOLD_DIR)))
+    # Ledgers, baselines and the pool cache land in the gold dir being scored, so a
+    # corpus keeps its cases, its floors and its recorded history in one directory
+    # (for the archive's own corpus that dir *is* the archive home, so nothing
+    # moves). Never inside the snapshot: that fixture is rebuilt and replaced, and
+    # the history has to outlive it.
+    home = gold_dir
 
     manifest = snap / "snapshot.json"
     if not manifest.is_file():
@@ -844,6 +957,19 @@ def main(argv: list[str] | None = None) -> int:
     clean_full_run = not overrides and not args.only and not partial and not breaches
     if per_case and clean_full_run:
         gold_runs.write_baseline(home, snapshot_id=current, files=per_case)
+
+    # Calibration writes the floors this run's numbers imply — the same clean-run
+    # rule as the baseline, and for the same reason: a floor derived from a tuning
+    # run, a subset, or a prefix would gate the shipped ranking against a
+    # measurement of something else.
+    if args.calibrate:
+        if not clean_full_run:
+            print("\ngold gate: --calibrate needs a clean full run of the shipped "
+                  "configuration (no --set, no --only, nothing aborted or breaching)")
+        else:
+            print("\ngold gate: calibrating floors at 1/n under measured")
+            for line in write_floors(files, measured):
+                print(line)
 
     # The speed half of the joint report: warm latency over the same queries the
     # quality pass covered (whole files, even where quality scored only a prefix),

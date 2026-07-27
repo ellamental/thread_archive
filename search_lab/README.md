@@ -22,13 +22,23 @@ limits beside it misleads, and those limits are what this manual is. What the
 product reports instead is whether search is *degraded*, which is actionable
 (`thread_archive status`, the viewer's health page).
 
-Four shared modules sit beside the harnesses, all of them lab-only for the same
-reason: `eval_core.py` (scoring), `snapshot.py` (freeze a corpus — also a command:
+Five shared modules sit beside the harnesses, all of them lab-only for the same
+reason: `eval_core.py` (scoring), `eval_home.py` (which home a benchmark builds
+into, which arms it pins, whether a cached build still describes the corpus asked
+for), `snapshot.py` (freeze a corpus — also a command:
 `python search_lab/snapshot.py <dir>`), `gold_runs.py` + `mine_runs.py` (the run
 ledgers), and `retrieval_report.py` (latency and quality series off the ledgers,
 `python search_lab/retrieval_report.py`). The `_mine` miners in the package reach
 these by importing `search_lab.*` — they are repo-only too (the wheel excludes
 them), so the dependency never leaves a checkout.
+
+Two scoring cores, split at the corpus. Everything scoring *gold cases* runs
+through `eval_core.evaluate`; the external benchmarks implement their own
+published metric conventions instead (linear-gain nDCG where this archive uses
+exponential), because the point of those runs is to land beside a leaderboard.
+What every harness shares regardless is `eval_home`: the same refusal to build
+anywhere near a real archive, the same arm pinning (so `lexical` names one stack
+everywhere, coherence included), and the same warm-before-scoring rule.
 
 ## The quality ladder
 
@@ -137,6 +147,16 @@ archive (BEIR and the lab build throwaway homes and never touch it).
   only** (5144 of 5850 transcripts): the other harnesses SWE-chat collects ship
   shapes the line-stream importer can't read, and archive's OpenCode/Cursor
   importers are DB scanners with no JSON-export path.
+
+  It is a gold corpus like the archive's own, and carries the same furniture:
+  case files, a floor sidecar per file, and the run ledgers — all of them in
+  `gold/` beside the download rather than in the private gold dir, because
+  nothing here quotes the operator's conversations. Scoring it is the gate's
+  second invocation (`--snap <corpus home> --gold-dir <that gold dir>`); the
+  numbers are not comparable to the archive's, and are not meant to be — its
+  value is the *direction* a ranking change moves on a corpus nobody tuned
+  against. `swechat_bench.py` exports the same golds as a standalone benchmark
+  anyone can run.
 - **`graph_eval.py`** — does the corpus-native embedding graph earn its
   ranking signal? Regression check for the shipped coherence re-rank, and the
   gate any new graph lever must pass.
@@ -156,6 +176,15 @@ archive (BEIR and the lab build throwaway homes and never touch it).
     skips ingest+embed — scored by recall@k against the datasets' published recall
     baselines.
 
+  All three build under one root (`~/.cache/thread-evals`: `<root>/<dataset>` for
+  a download, `<root>/homes/<name>` for a built corpus), so what the bench costs
+  in disk is one `du`. A build is cached by everything that decides what went into
+  it, and a `--max-docs` run gets its own home — a smoke corpus can neither read
+  back as the full one nor overwrite it. Their metrics are the field's, not this
+  archive's (see `eval_core.py` on the two scoring cores); their *configuration*
+  is shared, so `lexical` here is the same pinned stack `lexical` names anywhere
+  else on the bench.
+
 ## Taking a baseline (measure → change → measure)
 
 "Take a baseline" before touching ranking means capturing numbers that stay
@@ -164,15 +193,38 @@ the minted gold files can credit an improvement.** Everything else on the
 bench detects damage.
 
 **Start here — the one-command read.** `python scripts/retrieval_gold_gate.py`
-discovers every gold file, scores each over its bound snapshot with the
-production ranker (at the canonical `limit=20`), and prints per-file MRR /
-success@10 / recall@10 / nDCG@10. It is the CI regression gate, but the measured
+discovers every gold file in one gold dir, scores it over that corpus's snapshot
+with the production ranker (at the canonical `limit=20`), and prints per-file MRR
+/ success@10 / recall@10 / nDCG@10. It is the regression gate, but the measured
 numbers print on every run — floored files and freshly-mined ungated ones alike —
 so it doubles as the fastest, most consistent read of where the baseline sits
 right now, with no loop or aggregator to hand-roll (and no `limit` skew from
 doing so). Drop to the per-file `retrieval_eval.py --cases` instrument below only
 when you need the fuller metric set (success@1/5/20, recall@20, the natural-vs-code
 per-shape split).
+
+**One corpus per run**, so a full read is two: the archive's own, then the
+SWE-chat hold-out.
+
+```
+python scripts/retrieval_gold_gate.py
+python scripts/retrieval_gold_gate.py \
+    --snap ~/.cache/thread-evals/homes/swe-chat --gold-dir ~/dev/swe-chat-data/gold
+```
+
+Each writes its ledger and per-case baseline into the gold dir it scored, and a
+gold file bound to another snapshot skips rather than scoring — the two corpora
+can't be averaged into a number describing neither. Separate processes are
+deliberate: the stack caches a corpus graph and a vector pack per engine, and
+swapping homes underneath those inside one process is how a corpus gets scored
+against another's cached structures.
+
+**A newly mined file rides ungated until it has a floor**, and `--calibrate`
+writes one: after a clean full run of the shipped configuration it drops an
+`X.floor.json` beside every scored file at `1/n` under what it measured — the
+calibration rule made executable, the same rule the tables above quote. It never
+lowers an existing floor, so running it after a regression cannot write the
+regression in as the new expectation.
 
 **Iterating on a ranking knob — the gate is the loop.** The gate also scores a
 *candidate* configuration, which makes it the fastest way to find out whether an
@@ -248,8 +300,8 @@ the re-rank budget.
 
 - **Minted gold case files ARE the baseline.** The gate enumerates and scores
   them for the current-state read; for a challenger delta, score **every file
-  present, over its own snapshot, on both sides of the change** (a file minted by
-  a parallel instance an hour ago is part of the baseline too). The `thread_archive
+  present, in both gold dirs, on both sides of the change** (a file minted by a
+  parallel instance an hour ago is part of the baseline too). The `thread_archive
   mine` miners produce them, each yielding graded pools (nDCG, via `grades`):
   - `mine query` (`judged-cases.jsonl`): one `claude` agent per real query reads
     the originating session for intent, sweeps the frozen snapshot with its own
@@ -319,14 +371,18 @@ click-label protocols never run automatically: they are censored by the incumben
 so a per-commit click-MRR invites being misread as quality; scored as a one-way
 floor on a deliberate change, the grounded golds answer only "did it regress." The claim "search improved" still
 requires a gold-file delta scored on both sides of the change — every minted
-file, each over its own snapshot. Without those runs, report the change as
+file, in both gold dirs. Without those runs, report the change as
 unverified — not as an improvement.
 
 **Hold-out discipline.** A gold file tuned against repeatedly stops being a
-measurement and becomes a training set. Keep at least two independently mined
-files and tune against one while the other stays untouched until the
-confirming run (`--only` narrows the gate to the tune side); re-mine on a cadence
-when a file's snapshot goes stale.
+measurement and becomes a training set. Two layers hold that line. Within a
+corpus: keep at least two independently mined files and tune against one while the
+other stays untouched until the confirming run (`--only` narrows the gate to the
+tune side); re-mine on a cadence when a file's snapshot goes stale. Across
+corpora: the SWE-chat golds are the hold-out proper — a different corpus, a
+different author, a domain-matched task — and nothing is ever tuned against them.
+A gain that shows up on the archive's golds and not there is a gold-file artifact
+until something else explains it.
 
 **Read a delta in cases, not in points.** Scoring is deterministic — same code,
 same snapshot, same numbers to the digit — so a movement is never noise. But on a
@@ -357,21 +413,28 @@ that already worked, not a win — and it will not survive a hold-out.
 
 - The `mine/` miners spend real tokens (headless `claude` calls;
   each miner's `--target` bounds them). Everything else on the bench is free.
-- Mined output quotes real usage — case files, detail sidecars, and ledgers live
-  under `~/.thread/archive/` (`retrieval-trend.jsonl`, `judged-cases.jsonl`,
-  `topic-cases-<token>.jsonl`, `rerank-cases.jsonl`, `findability-cases.jsonl`),
-  never in the repo. The synthetic corpus is the one exception: no real data, so
-  it's checked in.
+- Mined output quotes real usage — case files, detail sidecars, floor sidecars and
+  ledgers live under `~/.thread/archive/` (`retrieval-trend.jsonl`,
+  `judged-cases.jsonl`, `topic-cases-<token>.jsonl`, `rerank-cases.jsonl`,
+  `findability-cases.jsonl`), never in the repo. Everything a run writes lands in
+  the gold dir it worked in, so the SWE-chat corpus's cases, floors and ledgers
+  stay beside that download — a corpus is one directory, and no ledger describes
+  cases that live somewhere else. The synthetic corpus is the one exception: no
+  real data, so it's checked in.
+- Built benchmark corpora live under one root, `~/.cache/thread-evals`:
+  `<root>/<dataset>` for a download, `<root>/homes/<name>` for a built home. They
+  are large (tens of GB with vectors) and entirely rebuildable, so that whole tree
+  is safe to delete when disk gets tight.
 - The fast tests guarding these harnesses live in `tests/`
   (`test_retrieval_eval.py`, `test_search_params.py`, `test_mine_framework.py`,
   `test_retrieval_mine_gold.py`, `test_topic_mine_gold.py`, `test_graph_eval.py`,
-  `test_beir_calibration.py`, `test_retrieval_gold_gate.py`) and run in every
-  pytest pass — the lab stays runnable even when nobody has tuned search in
-  months.
-- The gold gate (`scripts/retrieval_gold_gate.py`) scores the gold files over
-  their snapshot as a deliberate regression floor, run on a ranking change. It
-  runs where the archive and the snapshot live; on a box
+  `test_beir_calibration.py`, `test_eval_home.py`, `test_retrieval_gold_gate.py`)
+  and run in every pytest pass — the lab stays runnable even when nobody has tuned
+  search in months.
+- The gold gate (`scripts/retrieval_gold_gate.py`) scores a corpus's gold files
+  over its snapshot as a deliberate regression floor, run on a ranking change. It
+  runs where the corpus and the snapshot live; on a box
   without the snapshot, or while a gold file is mid-re-mine, the affected file is
-  skipped, not failed. Its floors are calibrated a few points under measured —
-  raise a floor when a shipped change lifts a number and holds; add a floor entry
-  for a newly minted file (it rides ungated until you do).
+  skipped, not failed. Floors sit at most one case (`1/n`) under measured —
+  `--calibrate` writes them at exactly that, and never lowers one; raise a floor
+  by re-calibrating after a shipped change lifts a number and holds.
