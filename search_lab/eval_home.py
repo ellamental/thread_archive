@@ -143,6 +143,32 @@ def marker_stale(marker: dict | None, want: dict) -> bool:
     return any(marker.get(key) != value for key, value in want.items())
 
 
+def stamp_corpus(home: Path, *, restamp: bool = False) -> str | None:
+    """Give a built benchmark corpus the same identity a mined corpus has, and
+    return it.
+
+    A benchmark home is born frozen — built from a fixed dataset, nothing appends
+    to it — so ``snapshot.stamp_snapshot`` writes the manifest in place without
+    copying anything. What that buys is a content fingerprint every recorded
+    number can bind to: a rebuilt or re-capped corpus takes a new id, so a run
+    measured against the old one reads as describing a different corpus instead of
+    being silently compared across the change.
+
+    ``restamp`` after an ingest; otherwise an existing id is returned untouched
+    (the fingerprint is a scan, cheap but not free). Fail-soft — a corpus without
+    an id still scores, it just cannot be told apart from its next rebuild."""
+    from snapshot import read_snapshot_id, stamp_snapshot
+
+    if not restamp:
+        existing = read_snapshot_id(str(home))
+        if existing:
+            return existing
+    try:
+        return stamp_snapshot(str(home))["snapshot_id"]
+    except Exception:  # noqa: BLE001 — an unidentified corpus beats a failed run
+        return None
+
+
 def warm(*, swapped_home: bool = False) -> None:
     """Build the corpus graph before the first scored query — see
     ``search_lab.eval_core.warm_for_scoring`` for why a scoring loop cannot leave

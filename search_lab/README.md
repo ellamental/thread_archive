@@ -45,6 +45,9 @@ everywhere, coherence included), and the same warm-before-scoring rule.
 Fastest tier first — climb until the evidence matches the stakes.
 (`docs/search-quality.md` tells the same story with the measured numbers.)
 
+(`python -m search_lab benchmark` climbs tiers 3 and 4 for you, skipping what a
+run has already measured at this configuration — see "Running the whole bench".)
+
 | tier | what runs | corpus | cost | when |
 |---|---|---|---|---|
 | 0 | `tests/test_search_quality.py` (in every pytest run) | checked-in synthetic corpus (`tests/quality_corpus.py`), lexical stack | seconds | every change |
@@ -53,6 +56,41 @@ Fastest tier first — climb until the evidence matches the stakes.
 | 3 | `retrieval_gold_gate.py` (grounded regression floors), `retrieval_eval.py` by hand, `graph_eval.py`, `--behavior` | live archive + the golds' frozen snapshot | minutes | evaluating a deliberate ranking change |
 | 3½ | `retrieval_eval.py --cases` on agent-mined golds (`python -m search_lab.mine <miner>` to mint them) | a frozen corpus snapshot, corpus-grounded labels | seconds to score; agent-minutes per mined case | scoring against grounded labels; mining is an occasional cadence |
 | 4 | `pytest -m beir`; `cdr_eval.py`, `haystack_eval.py --dataset …` by hand | external IR / conversational-memory benchmarks | tens of minutes (built homes cache for re-runs) | calibrating against published baselines |
+
+## Running the whole bench
+
+```
+python -m search_lab benchmark              # the standard set
+python -m search_lab benchmark --tier smoke # the two gold gates alone
+python -m search_lab benchmark --list       # the plan: what runs, what is fresh
+```
+
+`benchmark.py` drives every instrument below as one recorded set, each row a
+separate process (the stack caches a corpus graph and a vector pack per engine,
+so a corpus must never be swapped underneath them mid-process) and one at a time
+(two rows at once measure each other's contention). Three nested tiers, warm:
+**smoke** is the two gold gates — the only instruments that can credit a change —
+at ~7 min; **standard** adds every external yardstick whose corpus is already
+built, ~20 min; **full** adds the cross-encoder passes, hours, measuring an arm
+production ships with off. The plan estimates each row from what it actually took
+last time, so the printed budget is measured rather than guessed; a row whose
+corpus has never been built pays for building it once.
+
+**It is built for the tuning loop.** Each row records its numbers against a
+content hash of the ranking code *as it sits in the working tree*, so a row whose
+code and corpus are unchanged is **fresh**: skipped in milliseconds and reported
+from the ledger. Uncommitted edits count — a tuning pass never commits, and a
+commit-keyed cache would skip every row after the first edit and report pre-edit
+numbers. Move a `SearchParams` default and the whole set goes stale; touch the
+viewer and none of it does. Every row prints its delta against **the last run at a
+different configuration**, not the previous run, so re-running an unchanged
+configuration shows zero movement instead of hiding the comparison you wanted.
+
+The ledger is `~/.thread/archive/bench-runs.jsonl` (`bench_runs.py`) — run-level:
+row, corpus id, code id, commit, measures, elapsed. Per-file detail stays in each
+corpus's own `gold-runs.jsonl`. Nothing here *builds* a corpus: a row whose corpus
+is missing fails and names the builder, because an ingest-plus-embed is a decision
+about hours of CPU, not something a benchmark run should take on its own.
 
 ## The instruments
 

@@ -218,6 +218,10 @@ def run(args) -> int:
             marker["embedded"] = len(doc_of_thread)
             marker_path.write_text(json.dumps(marker), encoding="utf-8")
 
+    # The corpus's content fingerprint, so a recorded number binds to the corpus
+    # that produced it rather than to a directory name a rebuild reuses.
+    corpus_id = eval_home.stamp_corpus(home, restamp=need_ingest)
+
     ks = (10, 100)
     agg = {"ndcg10": 0.0, "mrr10": 0.0, "recall": {k: 0.0 for k in ks}}
     latencies: list[float] = []
@@ -249,8 +253,12 @@ def run(args) -> int:
         agg["mrr10"] += m["mrr10"]
         for k in ks:
             agg["recall"][k] += m["recall"][k]
-        if args.rerank != "off" and (i + 1) % 100 == 0:
-            _log(f"  scored {i + 1}/{len(scorable)} queries")
+        # Progress on every configuration, not only the slow one: 1583 queries is
+        # tens of minutes even lexically, and a row that prints nothing for that
+        # long is indistinguishable from a hung one.
+        if (i + 1) % 200 == 0:
+            _log(f"  scored {i + 1}/{len(scorable)} queries "
+                 f"({(i + 1) / (time.monotonic() - t0):.1f}/s)")
 
     n = len(scorable)
     ndcg10 = agg["ndcg10"] / n
@@ -280,7 +288,7 @@ def run(args) -> int:
     if args.json_out:
         Path(args.json_out).write_text(json.dumps({
             "benchmark": "cdr", "arms": arms, "n": n,
-            "corpus_docs": len(doc_of_thread),
+            "corpus_docs": len(doc_of_thread), "corpus_id": corpus_id,
             "ndcg10": ndcg10, "mrr10": mrr10,
             "recall": {str(k): recall[k] for k in ks},
             "query_p50_ms": p50, "reference_best_ndcg10": BEST_MODEL_NDCG10,

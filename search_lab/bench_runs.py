@@ -1,0 +1,208 @@
+"""The benchmark run ledger: ``~/.thread/archive/bench-runs.jsonl``.
+
+``python -m search_lab benchmark`` runs the bench as a set, and this is where a
+run lands: one row per benchmark, carrying what ran, over which corpus, against
+which retrieval code, what it measured, and how long it took. The per-harness
+ledgers keep the detail (``gold-runs.jsonl`` holds every gold file's metrics);
+this one is the *run level*, so "what did the bench say at this configuration"
+is a lookup rather than a re-run.
+
+It also decides what a re-run has to do. During a tuning loop the same set is run
+repeatedly with one knob moved between passes, and re-scoring rows that cannot
+have changed is the difference between a set you run every iteration and one you
+run at the end of the week. Each row records a ``code_id`` and a ``corpus_id``,
+and a row whose pair still matches is **fresh** — already measured, skipped
+instantly, its recorded numbers reported as if it had just run.
+
+``code_id`` is a content hash of the ranking code as it sits in the working tree,
+not the commit: a tuning loop edits ``SearchParams`` defaults and does not commit
+between passes, so a commit-keyed cache would skip every row after the first edit
+and report the old numbers. The commit is recorded too, but only as the human
+label for a row.
+
+Append-only JSONL, advisory, fail-soft — a ledger write must never break the run
+it records. ``THREAD_ARCHIVE_BENCH_RUNS_LOG=0`` disables it. Lives at the archive
+home root beside the other operator ledgers: the benchmark corpora are throwaway
+homes rebuilt on a whim, and this history has to outlive them.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import json
+import logging
+import os
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any, Optional
+
+logger = logging.getLogger(__name__)
+
+LEDGER_FILE = "bench-runs.jsonl"
+
+#: The source whose content defines a measurement's ``code_id``: the retrieval
+#: stack (every ranking knob and arm) and the scoring core the gold instruments
+#: run through. A change under either can move a number, so a row measured before
+#: it is not a row you may report after it.
+CODE_PATHS = ("src/thread_archive/_retrieval", "search_lab/eval_core.py")
+
+
+def _enabled() -> bool:
+    return os.environ.get("THREAD_ARCHIVE_BENCH_RUNS_LOG", "1").strip().lower() not in (
+        "0", "false", "no", "off",
+    )
+
+
+def _repo_root() -> Path:
+    """The archive checkout — this file's directory is its child."""
+    return Path(__file__).resolve().parents[1]
+
+
+def ledger_home() -> Path:
+    """The archive home root, ignoring ``THREAD_ARCHIVE_HOME``.
+
+    The benchmark harnesses pin that variable at their own throwaway corpus for
+    the length of a run, so honoring it here would scatter the history across the
+    homes it describes — and those get wiped and rebuilt."""
+    from thread_archive._config import default_home
+
+    return default_home()
+
+
+def hash_sources(root: Path, entries: tuple[str, ...]) -> str:
+    """A content hash of every ``.py`` under ``entries`` (files or directories,
+    relative to ``root``).
+
+    Path and content both feed the digest, in sorted order, so the id is stable
+    across checkouts and machines and moves with a rename as well as an edit. A
+    missing entry contributes nothing rather than raising — a partial checkout
+    should measure what it has, not refuse to record."""
+    h = hashlib.sha256()
+    files: list[Path] = []
+    for entry in entries:
+        path = root / entry
+        if path.is_dir():
+            files.extend(p for p in path.rglob("*.py"))
+        elif path.is_file():
+            files.append(path)
+    for path in sorted(files):
+        h.update(str(path.relative_to(root)).encode())
+        h.update(b"\x00")
+        h.update(path.read_bytes())
+        h.update(b"\x00")
+    return h.hexdigest()[:16]
+
+
+def code_id(extra: tuple[str, ...] = ()) -> str:
+    """The hash of the ranking and scoring source as it sits on disk *now*, plus
+    whatever ``extra`` paths a caller counts as its own code.
+
+    Uncommitted edits count, which is the whole point: the tuning loop's unit of
+    change is an edited default that is never committed between passes, and it has
+    to invalidate a recorded measurement exactly the way a commit would.
+
+    ``extra`` is how a benchmark row adds the harness that produced it, so editing
+    one harness invalidates its own rows and leaves the rest fresh. The shared set
+    stays narrow for the same reason: widen it to the whole lab and every edit
+    anywhere — a progress line, a docstring — would re-run the bench, which is a
+    cache nobody keeps."""
+    return hash_sources(_repo_root(), CODE_PATHS + extra)
+
+
+def record_run(
+    *,
+    row: str,
+    argv: list[str],
+    corpus_id: Optional[str],
+    measures: dict[str, Any],
+    elapsed_s: float,
+    status: str,
+    code: Optional[str] = None,
+    tier: Optional[str] = None,
+    home: Optional[Path] = None,
+) -> dict[str, Any]:
+    """Append one benchmark row's run and return the record.
+
+    ``status`` is ``ok`` / ``failed`` / ``skipped`` — a failure is recorded rather
+    than dropped, because "this row stopped being runnable at this configuration"
+    is exactly the kind of thing a silent gap hides. ``code`` is the row's own code
+    id (it knows which harness produced it); absent, the shared one is recorded.
+    Fail-soft: a write error is logged and swallowed."""
+    from gold_runs import git_commit
+
+    record: dict[str, Any] = {
+        "at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "kind": "bench-run",
+        "row": row,
+        "tier": tier,
+        "status": status,
+        "code_id": code or code_id(),
+        "corpus_id": corpus_id,
+        "commit": git_commit(),
+        "elapsed_s": round(elapsed_s, 1),
+        "measures": measures,
+        "argv": argv,
+    }
+    if not _enabled():
+        return record
+    try:
+        path = (home or ledger_home()) / LEDGER_FILE
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with open(path, "a", encoding="utf-8") as fh:
+            fh.write(json.dumps(record, separators=(",", ":")) + "\n")
+    except OSError:
+        logger.warning("could not record benchmark run", exc_info=True)
+    return record
+
+
+def read_runs(home: Optional[Path] = None, *, row: Optional[str] = None,
+              limit: Optional[int] = None) -> list[dict[str, Any]]:
+    """Recorded runs, newest first, optionally for one row. A missing or
+    unreadable ledger reads as empty (no history yet), never an error."""
+    path = (home or ledger_home()) / LEDGER_FILE
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return []
+    runs: list[dict[str, Any]] = []
+    for line in lines:
+        if not line.strip():
+            continue
+        try:
+            record = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if row is None or record.get("row") == row:
+            runs.append(record)
+    runs.reverse()
+    return runs[:limit] if limit is not None else runs
+
+
+def latest_ok(home: Optional[Path] = None, *, row: str) -> Optional[dict[str, Any]]:
+    """The most recent *successful* run of ``row``, or None.
+
+    Successful only: a failed row carries no numbers to report and nothing to
+    skip on, and treating it as the reference would make a broken row look fresh
+    forever."""
+    for record in read_runs(home, row=row):
+        if record.get("status") == "ok":
+            return record
+    return None
+
+
+def is_fresh(record: Optional[dict], *, corpus_id: Optional[str],
+             code: Optional[str] = None) -> bool:
+    """Whether a recorded run still describes what a run right now would measure.
+
+    Fresh means the code is unchanged *and* the corpus is the one that was
+    measured. ``code`` is the row's own code id, defaulting to the shared one.
+    ``corpus_id`` of None means the caller could not cheaply establish the corpus's
+    identity (the per-question haystacks build hundreds of small homes rather than
+    one), in which case the code hash decides alone — those corpora come from
+    immutable dataset files, so the risk it leaves open is a dataset re-download,
+    not an ordinary tuning pass."""
+    if not record or record.get("status") != "ok":
+        return False
+    if record.get("code_id") != (code or code_id()):
+        return False
+    return corpus_id is None or record.get("corpus_id") == corpus_id

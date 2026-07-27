@@ -2,6 +2,26 @@
 
 ## Unreleased
 
+- **`python -m search_lab benchmark` runs the bench as a set.** Six instruments
+  with their own flags, and no answer to "which of these can my change even
+  move," meant in practice they got run once at the end or not at all. One
+  command now drives them — three nested tiers (smoke: the two gold gates, ~7 min
+  warm; standard: every yardstick whose corpus is already built, ~20 min; full:
+  the cross-encoder passes, hours), each row a separate process, one at a time,
+  with a run-level ledger at `~/.thread/archive/bench-runs.jsonl` and a plan that
+  estimates each row from what it last took rather than from a guess.
+
+  It is built for the tuning loop rather than the release ritual. A row's numbers
+  are recorded against a content hash of the ranking code *as it sits in the
+  working tree*, so a row whose code and corpus are unchanged is skipped in
+  milliseconds and reported from the ledger: the first pass costs the set, every
+  pass after costs only what the edit invalidated. Uncommitted edits count —
+  keying on the commit would skip every row after the first tuning edit and report
+  pre-edit numbers as current. Each row prints its delta against the last run at a
+  *different* configuration, so measuring one configuration twice reads as
+  unchanged rather than as a knob that did nothing. Benchmark corpora are stamped
+  with the same content fingerprint mined corpora carry, which is what lets a
+  recorded number bind to the corpus that produced it across a rebuild.
 - **The search lab treats its three corpus families the same way.** The bench had
   grown a private-archive path with real discipline and two side paths without it,
   and the divergence was in the load-bearing places. Now one module

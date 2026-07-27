@@ -96,6 +96,17 @@ CACHE_VERSION = "1"
 _READY = ".ready.json"
 
 
+def corpus_id(fingerprints: list[str]) -> str:
+    """One identity for a whole per-question run: a digest over its corpora's
+    content fingerprints. The shared-corpus benchmarks stamp their single home;
+    this is the same binding for a shape that has hundreds of them."""
+    h = hashlib.sha256()
+    for fp in sorted(fingerprints):
+        h.update(fp.encode("utf-8"))
+        h.update(b"\x00")
+    return h.hexdigest()[:16]
+
+
 def _fingerprint(dataset: str, gid: str, corpus: dict[str, str], vectors: bool) -> str:
     h = hashlib.sha256()
     for part in (CACHE_VERSION, dataset, str(gid), "vec" if vectors else "lex"):
@@ -326,9 +337,11 @@ def run(args) -> int:
 
     all_rows: list[dict] = []
     n_hits = 0
+    fingerprints: list[str] = []
     t0 = time.monotonic()
     for gi, (gid, corpus, queries) in enumerate(groups):
-        home = cache_root / args.dataset / _fingerprint(args.dataset, gid, corpus, args.vectors)
+        fingerprints.append(_fingerprint(args.dataset, gid, corpus, args.vectors))
+        home = cache_root / args.dataset / fingerprints[-1]
         rows, hit = eval_group(api, home, corpus, queries,
                                vectors=args.vectors, rerank=rerank, ks=ks,
                                cache=cache, rebuild=args.rebuild)
@@ -374,6 +387,10 @@ def run(args) -> int:
         Path(args.json_out).write_text(json.dumps({
             "dataset": args.dataset, "arms": arms, "n_queries": overall["n"],
             "ks": list(ks), "overall": overall,
+            # This shape has no single corpus to stamp — it is hundreds of
+            # per-question homes — so its identity is the digest of their content
+            # fingerprints, which is the same thing one level up.
+            "corpus_id": corpus_id(fingerprints),
             "per_category": per_cat, "reference": ref,
         }, indent=2, default=str) + "\n", encoding="utf-8")
         _log(f"wrote {args.json_out}")

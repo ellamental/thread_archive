@@ -268,8 +268,8 @@ production, and each candidate is another instance scored against them.
   pipeline's dominant latency (2–4s on a long conceptual query, wide variance) and
   buys ~no gold-file MRR over the fused lexical+semantic+coherence stack, so the
   shipped search stays inside its latency budget without it. That verdict is
-  domain-bound, not general: on turn-level dialog retrieval the same arm is worth
-  +0.134 recall@10 over the same fused stack (External calibration), so it is
+  domain-bound, not general: on turn-level dialog retrieval the same arm reaches
+  well past the fused stack's recall@10 (External calibration), so it is
   dormant here, not dead. `rerank=True` still forces it (evals, and a
   quality-rebuild that must re-earn it within budget — a smaller model, a tighter
   pool); its `rerank_pool` (12) and `rerank_doc_chars` (768) knobs stay for that
@@ -387,13 +387,20 @@ everywhere — and one cache root, `~/.cache/thread-evals`.
 
 | benchmark | task | metric | lexical | +vectors | +rerank | published ref |
 |---|---|---|---|---|---|---|
-| BEIR scifact (`beir_eval.py`) | scientific-claim IR | nDCG@10 | 0.445 | 0.658 | — | 0.665 BM25 / 0.68 dense |
-| CDR (`cdr_eval.py`) | conversational retrieval | nDCG@10 | 0.230 | 0.492 | — | 0.504 best-of-16 |
-| LoCoMo (`haystack_eval.py`) | multi-session dialog, turn-level | recall@10 | 0.595 | 0.653 | **0.787** | 0.662 DRAGON |
-| LongMemEval-S (`haystack_eval.py`) | long-history QA, session-level | recall@10 | 0.912 | — | — | 0.710 BM25 / 0.823 Contriever |
+| BEIR scifact (`beir_eval.py`) | scientific-claim IR | nDCG@10 | 0.579 | 0.709 | — | 0.665 BM25 / 0.68 dense |
+| CDR (`cdr_eval.py`) | conversational retrieval | nDCG@10 | 0.230 | 0.494 | — | 0.504 best-of-16 |
+| LoCoMo (`haystack_eval.py`) | multi-session dialog, turn-level | recall@10 | 0.615 | 0.672 | **0.787** | 0.662 DRAGON |
+| LongMemEval-S (`haystack_eval.py`) | long-history QA, session-level | recall@10 | 0.941 | — | — | 0.710 BM25 / 0.823 Contriever |
 
-On the shipped default (no cross-encoder) the fused stack lands at 97–99% of every
-comparable reference, and above the reference on LongMemEval-S. Nothing is tuned
+`python -m search_lab benchmark` records every row of this table with the corpus
+and code that produced it (`~/.thread/archive/bench-runs.jsonl`), which is where
+these numbers come from. The two exceptions are the cross-encoder cells: the
+LoCoMo `+rerank` figure and the CDR/BEIR blanks are full-tier rows, measured at an
+earlier ranking configuration and re-measured by `--tier full`. Read them as the
+arm's demonstrated ceiling on that corpus rather than as a current reading.
+
+On the shipped default (no cross-encoder) the fused stack now meets or clears
+every comparable reference except CDR's, where it sits at 98%. Nothing is tuned
 against these corpora, so they are held out in the arithmetic sense — but they are
 out-of-domain, so a disagreement between them and the gold files is as easily a
 domain gap as an artifact (the `bm25_weight` split below is exactly that). The
@@ -405,25 +412,24 @@ On **LoCoMo**, with the cross-encoder **forced on** (which production does not d
 recall@10 reaches 0.787 — above the specialized dense retriever DRAGON (0.662) at
 every cutoff (@5 0.731 vs 0.567, @25 0.842 vs 0.767, @50 0.869 vs 0.827), helping
 most on the entity- and precise-term categories (single-hop 0.892, temporal 0.842)
-an agent's queries are made of. The arms are additive here: the re-rank is worth
-+0.134 recall@10 on top of fusion, where on the gold files it buys ~no MRR over that
-same fused stack. The cross-encoder's value is domain-bound, and turn-level dialog is
-where it pays — at a price, roughly an hour for this pass against a minute for the
-+vectors one over the identical corpus.
+an agent's queries are made of. The arms are additive here, where on the gold files
+the re-rank buys ~no MRR over the same fused stack. The cross-encoder's value is
+domain-bound, and turn-level dialog is where it pays — at a price, roughly an hour
+for this pass against a minute for the +vectors one over the identical corpus.
 
-On **CDR** the stack reaches 0.492 against the 0.504 best-of-16 reference, at
-recall@100 0.706. A weak number here is a ranking-weight symptom, not an
+On **CDR** the stack reaches 0.494 against the 0.504 best-of-16 reference, at
+recall@100 0.687. A weak number here is a ranking-weight symptom, not an
 embedder-size one: the same `nomic-embed-text` spans a nearly two-fold range on this
 benchmark under different ranking weights, so reach for the ranker before the model.
 
-**BEIR** is out-of-domain scientific IR, and the fused 0.658 sits inside the
-harness's own ±0.05 verdict band around BM25 ("in BM25 ballpark", −0.007), with
-recall@100 0.958. The **lexical arm is the standing gap**: at 0.445 it still trips
+**BEIR** is out-of-domain scientific IR, and the fused 0.709 sits above the BM25
+reference (+0.044, past the harness's own ±0.05 "in BM25 ballpark" band), with
+recall@100 0.962. The **lexical arm is the standing gap**: at 0.579 it still trips
 that same harness's `BELOW BM25 — investigate`, and closing it is a knob-turn away —
-`bm25_weight` near 2000 reaches the reference — that the gold files refuse, because
-past ~400 the topic files break their floors. The weight is set in domain and the
-benchmark is left disagreeing, which is the arrangement worth keeping: this suite is
-the alarm, not the objective.
+a much heavier `bm25_weight` reaches the reference — that the gold files refuse,
+because past ~400 the topic files break their floors. The weight is set in domain
+and the benchmark is left disagreeing, which is the arrangement worth keeping: this
+suite is the alarm, not the objective.
 
 The gap between these corpora is itself a finding. The bm25 term's effective
 strength scales **inversely with document length**, because density is normalized to
@@ -436,7 +442,7 @@ both move. Read a flat number on a short-document corpus as the term being out o
 scale there, not as the term doing nothing.
 
 **LongMemEval-S** is the easy split, scored over its 470 non-abstention questions —
-its references are measured on the harder -M split — so read 0.912 as ballpark, not
+its references are measured on the harder -M split — so read 0.941 as ballpark, not
 a matched win. This is calibration, not the product measure: none of it scores the
 archive on the agentic coding and design sessions it actually serves.
 
@@ -466,6 +472,11 @@ current-state read and the interactive tuning loop (`--set field=value` to score
 candidate, `--cache` to persist candidate pools across processes for a ~7× re-run
 speedup, `--fail-early` to stop once a floor is provably unreachable, `--latency` for
 the speed axis).
+
+`python -m search_lab benchmark` runs tiers 3 and 4 as one recorded set and skips
+whatever it has already measured at the current ranking code — the whole set on
+the first pass, only what an edit invalidated on every pass after. `--tier smoke`
+is the two gold gates alone.
 
 The instruments stack into a **quality ladder**, fastest tier first — climb until
 the evidence matches the stakes:
