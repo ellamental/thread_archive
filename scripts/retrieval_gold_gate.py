@@ -83,12 +83,21 @@ are mid-re-mine), the affected file is SKIPPED, not failed — a stale or missin
 fixture is an operator-maintenance state, not a code regression, and must not
 wedge the commit gate red. A file that is present and fresh but carries no floor
 entry is scored and reported but left ungated (newly mined, not yet calibrated):
-add its floor below to start gating it.
+add its floor to the floors file to start gating it.
+
+**Where the floors live.** The gold corpus is mined from a private archive, and
+its file names carry that archive's topic titles — so neither the cases nor the
+manifest naming them belongs in this repo. Floors load from
+``<gold_dir>/gold-floors.json``: a JSON object mapping gold basename to its four
+metric floors, sitting beside the cases it calibrates. The repo holds the
+mechanism; the corpus and the names of its files stay with the operator. A
+missing floors file means nothing is calibrated — every present file is scored
+and reported, none gated — which ``--require`` treats as the failure it is.
 
 **Failing closed.** The skip-don't-wedge default is right for a dev box that has
 no snapshot, but on a box that is *supposed* to measure — the CI lane — a silent
 skip is a gate that stopped measuring and still reads green. ``--require`` closes
-that: the calibrated manifest (every basename in :data:`FLOORS`) must be present,
+that: the calibrated manifest (every basename in the floors file) must be present,
 fresh, readable, and actually scored, and an absent snapshot, an empty gold dir,
 or any expected file missing / stale / unreadable / unscored is a **failure**, not
 a skip. A genuine maintenance window still needs to pass CI, so it takes an
@@ -139,49 +148,57 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 # limit of what the current ranking gives it", which is exactly what it should
 # mean — the metric to read before loosening anything is the measured number the
 # run prints, not the gap to the floor.
-FLOORS: dict[str, dict[str, float]] = {
-    "judged-cases.jsonl": {
-        "mrr": 0.43, "success10": 0.90, "recall10": 0.85, "ndcg10": 0.52,
-    },
-    "topic-cases-suicide.jsonl": {
-        "mrr": 0.78, "success10": 0.85, "recall10": 0.78, "ndcg10": 0.59,
-    },
-    "topic-cases-frustration.jsonl": {
-        "mrr": 0.50, "success10": 0.71, "recall10": 0.50, "ndcg10": 0.45,
-    },
-    "topic-cases-needle.jsonl": {
-        "mrr": 0.66, "success10": 0.80, "recall10": 0.44, "ndcg10": 0.50,
-    },
-    "topic-cases-context-compaction.jsonl": {
-        "mrr": 0.90, "success10": 0.90, "recall10": 0.65, "ndcg10": 0.59,
-    },
-    # querygen findability — one gold/case, so recall10 tracks success10 (recover
-    # the single target = surface it). The query is authored from the thread, so
-    # these are paraphrase-match cases: the lexical arm has the least purchase here
-    # and the fusion weight (params.fusion_weight) carries them, which makes this
-    # the file that moves first when cross-arm agreement is weighted wrong. Recall
-    # sits above what the cross-encoder reached; the head order is what still
-    # trails it.
-    #
-    # This file carries difficulty tiers (verbatim / paraphrase / vague); the gate
-    # scores and prints them apart, and a per-stratum floor goes under
-    # ``by_difficulty`` here (see ``check_floors``) to keep an easy-verbatim
-    # aggregate from masking a vague-recall collapse. Left unset until the tiers
-    # are re-mined one-per-thread — the current fixture over-weights a few threads
-    # with duplicate tiers, and a floor calibrated on that skew would bake it in.
-    "findability-cases.jsonl": {
-        "mrr": 0.71, "success10": 0.93, "recall10": 0.93, "ndcg10": 0.76,
-    },
-    # rerank in-pool judgments — many golds/case (avg ~14), so recall10 is
-    # structurally capped (can't fit ~14 golds in 10 slots) and floored low on
-    # purpose; success10 and nDCG10 are the load-bearing signals here.
-    "rerank-cases.jsonl": {
-        "mrr": 0.60, "success10": 0.84, "recall10": 0.44, "ndcg10": 0.60,
-    },
-}
-
 DEFAULT_SNAP = Path.home() / ".thread" / "archive-snap"
 DEFAULT_GOLD_DIR = Path.home() / ".thread" / "archive"
+
+# The floors file's basename, resolved inside the gold dir.
+FLOORS_FILENAME = "gold-floors.json"
+
+# A floor entry is ``{basename: {mrr, success10, recall10, ndcg10}}``, optionally
+# with a ``by_difficulty`` sub-map for a file that carries difficulty tiers (see
+# ``check_floors``) — a per-stratum floor keeps an easy-verbatim aggregate from
+# masking a vague-recall collapse.
+#
+# Calibrating one: read the measured numbers the run prints and set each floor at
+# most ``1/n`` under its measured value, rounded down. What a file's shape implies
+# is the thing to get right —
+#
+# - one gold per case (an authored query recovering a single target): recall10
+#   tracks success10, and the fusion weight carries these paraphrase-match cases,
+#   so they move first when cross-arm agreement is weighted wrong.
+# - many golds per case (in-pool judgments): recall10 is structurally capped —
+#   a dozen golds do not fit in ten slots — so floor it low on purpose and read
+#   success10 and nDCG10 as the load-bearing signals.
+FLOOR_METRICS = ("mrr", "success10", "recall10", "ndcg10")
+
+
+def load_floors(gold_dir: Path) -> dict[str, dict[str, float]]:
+    """The calibrated manifest, read from ``<gold_dir>/gold-floors.json``.
+
+    Absent or unreadable reads as *nothing calibrated* — an empty manifest, which
+    leaves every present gold file scored and reported but ungated. ``--require``
+    is what turns that into a failure; a plain run stays a skip, because a dev box
+    with no gold corpus is a normal state and must not wedge the commit gate red.
+    """
+    path = gold_dir / FLOORS_FILENAME
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    if not isinstance(raw, dict):
+        return {}
+    floors: dict[str, dict[str, float]] = {}
+    for name, entry in raw.items():
+        if not isinstance(name, str) or not isinstance(entry, dict):
+            continue
+        floor = {k: float(v) for k, v in entry.items()
+                 if k in FLOOR_METRICS and isinstance(v, (int, float))}
+        by_diff = entry.get("by_difficulty")
+        if isinstance(by_diff, dict):
+            floor["by_difficulty"] = by_diff  # type: ignore[assignment]
+        if floor:
+            floors[name] = floor
+    return floors
 
 # Sibling artifacts of the mining pipeline that share the "*cases*.jsonl" glob but
 # are not gold case files: per-case detail dumps, seed/candidate pools, and the
@@ -531,7 +548,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--only", action="append", default=[], metavar="NAME",
                     help="score just these gold files (substring match, repeatable)")
     ap.add_argument("--require", action="store_true",
-                    help="fail closed: every calibrated gold file (the FLOORS "
+                    help="fail closed: every calibrated gold file (the floors "
                     "manifest) must be present, fresh, and scored — an absent "
                     "snapshot or a missing/stale fixture is a failure, not a skip. "
                     "Set THREAD_ARCHIVE_GOLD_GATE_MAINTENANCE=<reason> for an "
@@ -598,13 +615,16 @@ def main(argv: list[str] | None = None) -> int:
     # Route the production search at the frozen snapshot for the scoring below.
     os.environ["THREAD_ARCHIVE_HOME"] = str(snap)
 
+    floors = load_floors(gold_dir)
+
     files = discover_gold_files(gold_dir)
     if args.only:
         files = [p for p in files if any(frag in p.name for frag in args.only)]
     if not files:
         if require:
+            expected = ", ".join(sorted(floors)) or f"none — no {FLOORS_FILENAME}"
             print(f"gold gate: no gold files in {gold_dir} — FAIL (--require; "
-                  f"expected {', '.join(sorted(FLOORS))})")
+                  f"expected {expected})")
             return 1
         print(f"gold gate: no gold files in {gold_dir} — skipping")
         return 0
@@ -663,7 +683,7 @@ def main(argv: list[str] | None = None) -> int:
     measured: dict[str, dict] = {}  # per-file metrics for the run ledger
     per_case: dict[str, dict[str, float]] = {}  # for the baseline file
     latency_queries: list[str] = []  # the query set the --latency pass measures over
-    # What happened to each calibrated (FLOORS) file — the input to the --require
+    # What happened to each calibrated file — the input to the --require
     # manifest check. A file never reaching "scored" (missing, stale, unreadable,
     # or aborted) is a fail-closed breach; unread here means "missing".
     disposition: dict[str, str] = {}
@@ -673,20 +693,20 @@ def main(argv: list[str] | None = None) -> int:
             row = _first_row(path)
         except (OSError, json.JSONDecodeError) as exc:
             print(f"  {name:34s} WARN — unreadable ({exc}); skipping", flush=True)
-            if name in FLOORS:
+            if name in floors:
                 disposition[name] = f"unreadable ({exc})"
             continue
         sid = row.get("snapshot_id") if row else None
         if sid != current:
             print(f"  {name:34s} SKIP — snapshot {sid} != {current} (stale / mid-re-mine)",
                   flush=True)
-            if name in FLOORS:
+            if name in floors:
                 disposition[name] = f"stale (snapshot {sid} != {current})"
             continue
 
         cases = _load(path)
         latency_queries.extend(c["query"] for c in cases)
-        floor = FLOORS.get(name)
+        floor = floors.get(name)
         watch = None
         if fail_early and floor:
             cases = _order_cases(cases, baseline.get(name, {}))
@@ -724,7 +744,7 @@ def main(argv: list[str] | None = None) -> int:
             # neither reads as a comparable number later.
             partial = True
             measured[name]["scored"] = report["scored"]
-            if name in FLOORS:
+            if name in floors:
                 disposition[name] = f"aborted after {report['scored']}/{report['n']}"
             print(f"  {name:34s} ABORTED after {report['scored']}/{report['n']} — {aborted}",
                   flush=True)
@@ -762,7 +782,13 @@ def main(argv: list[str] | None = None) -> int:
     # fixture it is supposed to defend silently stopped being measured. Computed
     # before the ledger write so its `passed` flag reflects the failure.
     if require:
-        for expected in sorted(FLOORS):
+        # An empty manifest under --require is itself the failure: a gate with
+        # nothing calibrated measures nothing and would otherwise read green.
+        if not floors:
+            breaches.append(
+                f"{FLOORS_FILENAME}: no calibrated floors in {gold_dir} — "
+                f"--require cannot verify a manifest that does not exist")
+        for expected in sorted(floors):
             if disposition.get(expected) != "scored":
                 why = disposition.get(expected, "missing (not present in gold dir)")
                 breaches.append(

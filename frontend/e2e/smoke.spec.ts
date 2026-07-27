@@ -207,3 +207,44 @@ test('an export dragged onto the import page uploads and is tracked to imported'
   expect(unhandled).toEqual([])
   expect(errors).toEqual([])
 })
+
+test('a silenced warning stays one click from being read and restored', async ({ page }) => {
+  const errors = monitorPage(page)
+  const unhandled = await mockApi(page)
+  // Registered after mockApi, so it wins: the silence store as the server keeps
+  // it, moved between the two lists by the writes the page issues.
+  const held = {
+    key: 'same-disk',
+    tone: 'warn',
+    title: 'Backup is on the same filesystem as the archive',
+    detail: 'Move the scheduled destination to another disk.',
+    command: 'thread_archive daemon install --backup --dest /Volumes/disk',
+    fingerprint: 'e2e',
+    silenced_at: new Date().toISOString(),
+  }
+  const board = { active: [] as unknown[], silenced: [held] }
+  await page.route(/\/api\/notices/, async (route) => {
+    const url = new URL(route.request().url())
+    if (url.pathname.endsWith('/unsilence')) {
+      board.active = [held]
+      board.silenced = []
+    }
+    await route.fulfill({ contentType: 'application/json', body: JSON.stringify(board) })
+  })
+
+  await page.goto('/health')
+  // Nothing is shouting, and the page still says what it is holding back.
+  await expect(page.getByRole('heading', { name: 'Nothing needs attention' })).toBeVisible()
+  const indicator = page.getByRole('button', { name: '1 silenced' })
+  await expect(indicator).toBeVisible()
+
+  await indicator.click()
+  await expect(page.getByText('Backup is on the same filesystem as the archive')).toBeVisible()
+  await page.getByRole('button', { name: 'Unsilence' }).click()
+
+  await expect(page.getByRole('heading', { name: '1 warning' })).toBeVisible()
+  await expect(page.getByRole('button', { name: '1 silenced' })).toHaveCount(0)
+
+  expect(unhandled).toEqual([])
+  expect(errors).toEqual([])
+})

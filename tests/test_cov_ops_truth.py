@@ -148,8 +148,8 @@ def test_split_superseded_twins_requires_mapped_successor_at_both_ends(tmp_path)
     (dest / "threads").mkdir(parents=True)
     jsonl_log._write_manifest(src, {"version": 2, "shard_depth": 0, "last_checkpoint_at": None})
 
-    ulid_ok = "01KF0HMW9M0X6M2N55AJKYGH0S"
-    ulid_gone = "01KF0HVJXGA9N0AGEGSVPNFM3D"
+    ulid_ok = "01FAKE00000000000000000001"
+    ulid_gone = "01FAKE00000000000000000002"
     (src / "threads" / f"{ulid_ok}.jsonl").write_text('{"type":"thread"}\n')
     (dest / "threads" / f"{ulid_ok}.jsonl").write_text('{"type":"thread"}\n')
     (tmp_path / ULID_MAPPING_FILE).write_text(

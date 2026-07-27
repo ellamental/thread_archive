@@ -76,7 +76,7 @@ it('uploads a chosen file under its own name, with the write guard header', asyn
   mswHandler(
     http.post('/api/upload', ({ request }) => {
       seen.name = new URL(request.url).searchParams.get('name')
-      seen.guard = request.headers.get('X-Archive-Upload')
+      seen.guard = request.headers.get('X-Archive-Write')
       return HttpResponse.json({
         name: 'claude-export.zip', kind: 'claude', label: 'claude.ai',
         bytes: 20, dumps_dir: DUMPS,

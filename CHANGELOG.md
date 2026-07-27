@@ -2,6 +2,44 @@
 
 ## Unreleased
 
+- **Health notices can be silenced, and a silenced one is still counted.** The
+  action queue had no answer to "yes, I know" — a warning about a backup that
+  shares a disk on purpose, or an account export nobody is going to re-download
+  this week, sat in the queue forever and taught the reader to skim past the
+  whole board. Every notice now carries a **Silence** control; the queue heading
+  shows an *N silenced* indicator that opens the held-aside notices in full, each
+  with **Unsilence**. Two rules keep a silence from becoming a blindfold: it is
+  bound to the condition's fingerprint (the notice's text with counts and ages
+  elided), so a fault that changes shape — a second failing stage, a different
+  degradation reason — speaks up again while a warning that only ages stays
+  quiet; and it retires the moment its notice stops firing, so a fixed-then-
+  regressed fault is never hidden by the silence made about the first occurrence.
+  Silences live in `<home>/silenced-notices.json` beside the health records, and
+  `thread_archive status` prints what the page is holding back so the terminal
+  never omits a warning by inheriting a UI choice. The notices themselves moved
+  server-side (`_ops/notices.py`, `GET /api/notices`) — the judgment over the
+  health records now has one implementation instead of living in the viewer's
+  bundle, which is what lets a silence be honored everywhere. The write guard the
+  export upload already carried is now the general one: `X-Archive-Write`.
+
+- **The retrieval page has margins.** It rendered flush to the window edges —
+  its root carried a class no stylesheet defined, so the page had no container at
+  all. It now shares the measure the health page and the import page use, at all
+  three widths.
+
+- **The gold corpus and its calibration both stay with the operator.** The case
+  files were already outside this repo, but the gate's floor table was not, and
+  its keys are gold filenames — which topic mining derives from the subject titles
+  of a private archive. Publishing the mechanism meant publishing the names of
+  what someone talks about. Floors now load from `<gold_dir>/gold-floors.json`,
+  beside the cases they calibrate: `{basename: {mrr, success10, recall10,
+  ndcg10}}`, optionally with `by_difficulty`. The repo keeps the machinery, the
+  operator keeps the corpus and its manifest. A missing floors file reads as
+  *nothing calibrated* — every present file scored and reported, none gated — and
+  `--require` treats that as the failure it is, so the fail-closed lane cannot go
+  quiet by losing a file. The published quality table anonymizes the two rows that
+  named private subjects.
+
 - **The retrieval page is back, as a dev page.** The view that reports on the
   search *pipeline* — served latency split by warm and cold regime, per-stage
   costs, gold-run quality — went away with the search lab's extraction, but it is
@@ -1655,7 +1693,7 @@
   whose gold sat at semantic rank 1 and final rank 2–13. Weighting cross-arm
   agreement to density's working scale keeps them reachable. Every gold file
   improves on nDCG@10, six of seven on MRR: findability 0.566 → 0.666 (recall@10
-  0.859 → 0.922 — past what the cross-encoder reached), suicide 0.905 → 0.929,
+  0.859 → 0.922 — past what the cross-encoder reached), topic-alpha 0.905 → 0.929,
   rerank-cases 0.595 → 0.632, context-compaction 0.950 → 1.000, needle 0.739 →
   0.762. Head order tightens rather than flattens (success@1 0.551 → 0.609), the
   risk the previous calibration had flagged. Past ~500 the vector arm starts
@@ -1675,7 +1713,7 @@
   gate; small files therefore carry the widest absolute gaps (a 7-case topic file
   tolerates 0.143, the 64-case findability file 0.016). An existing floor is never
   lowered to accommodate a change. Several had gone stale when the `fusion_weight`
-  change lifted their files at once — suicide's MRR floor moves 0.58 → 0.78 and
+  change lifted their files at once — topic-alpha's MRR floor moves 0.58 → 0.78 and
   judged's recall@10 0.70 → 0.85.
 
 - The web viewer now opens as a retrieval workspace instead of an empty reader:
@@ -1841,7 +1879,7 @@
   snapshot-bound gold files (snapshot `9519fc4518e13ee7`): aggregate success@10 0.909 → 0.945, true
   recall@10 0.708 → 0.746, nDCG@10 0.571 → 0.584, MRR 0.608 → 0.619, success@1 flat, no latency cost.
   Tuned on the query-mined `judged-cases`, confirmed on the held-out topic files (largest held-out
-  lift `topic-cases-needle` S@10 0.900 → 1.000, R@10 +0.083; neutral on frustration/suicide; one
+  lift `topic-cases-needle` S@10 0.900 → 1.000, R@10 +0.083; neutral on frustration/topic-alpha; one
   noise-level dip on context-compaction R@10 −0.014). The gains land in top-10 reachability, not
   success@1 — the rank-1 lexical confounds hold, but more real answers reach the window agents scan.
 
@@ -1869,7 +1907,7 @@
   widening, reindex durability/stability, semantic scope filtering, cross-encoder gate/window/boundary
   plumbing). Ranking *quality* is now measured in exactly one place: the gold case files. First baseline over
   snapshot `9519fc4518e13ee7`: judged-cases (21) MRR 0.441 / S@5 0.619 / S@10 0.857 / nDCG@10 0.510;
-  topic-cases-suicide (7) MRR 0.683 / S@5 1.000 / nDCG@10 0.641. `beir_eval.py` stays as the external yardstick.
+  topic-cases-alpha (7) MRR 0.683 / S@5 1.000 / nDCG@10 0.641. `beir_eval.py` stays as the external yardstick.
 
 - Semantic search no longer rebuilds the corpus vector pack on the request thread. The KNN matrix cache is
   keyed on a whole-store validity token, so continuous background embedding invalidated it every few minutes;
@@ -1915,7 +1953,7 @@
   rather than failing, so a maintenance window can't wedge the commit gate red; a freshly minted file rides
   ungated until it gets a floor. Initial floors, a few points under the first baseline over snapshot
   `9519fc4518e13ee7`: judged-cases MRR/S@10/R@10/nDCG@10 floors 0.40/0.80/0.70/0.46 (measured
-  0.441/0.857/0.762/0.511); topic-cases-suicide 0.58/0.85/0.78/0.58 (measured 0.683/1.000/0.836/0.642);
+  0.441/0.857/0.762/0.511); topic-cases-alpha 0.58/0.85/0.78/0.58 (measured 0.683/1.000/0.836/0.642);
   topic-cases-frustration 0.50/0.70/0.50/0.45 (measured 0.600/0.857/0.562/0.511).
 
 - New `thread_archive snapshot <dest>` verb freezes the corpus into a self-contained, immutable archive home:

@@ -70,7 +70,7 @@ def test_parse_labels_rejects_bad_shapes():
 # ── case assembly + snapshot binding ─────────────────────────────────────────
 
 def test_case_from_labels_builds_a_snapshot_bound_case():
-    angle = {"query": "q", "intent": "A", "confounds": ["B"], "_topic": "suicide"}
+    angle = {"query": "q", "intent": "A", "confounds": ["B"], "_topic": "burnout"}
     labels = {"grades": {"T1": 2, "T2": 0}, "gold": ["T1"], "reasons": {}}
     row = topic_mine.case_from_labels(angle, labels, "snap-xyz")
     assert row["gold"] == ["T1"]
@@ -78,7 +78,7 @@ def test_case_from_labels_builds_a_snapshot_bound_case():
     assert row["sessions"] == []                 # authored query, no session to skip
     assert row["snapshot_id"] == "snap-xyz"
     assert row["protocol"] == "topic-mined"
-    assert row["topic"] == "suicide"
+    assert row["topic"] == "burnout"
     assert row["intent"] == "A"
 
 
@@ -93,15 +93,15 @@ def test_label_prompt_carries_the_survey_candidates():
     # The labeler is NOT blind: it gets the survey's candidate threads for the
     # angle as a starting pool to verify and expand — better gold than blind
     # rediscovery, and no leakage (the labeler isn't the system under test).
-    angle = {"query": "should AI be allowed to choose death",
-             "intent": "AI right-to-die", "confounds": ["bot-death grief"],
-             "candidates": [{"thread_id": "01SURVEYHIT", "note": "explicit right-to-die"}]}
+    angle = {"query": "should a scheduler ever drop a job silently",
+             "intent": "silent job loss", "confounds": ["deliberate cancellation"],
+             "candidates": [{"thread_id": "01SURVEYHIT", "note": "explicit drop path"}]}
     p = topic_mine.build_label_prompt(angle, "py tool")
-    assert "should AI be allowed to choose death" in p
-    assert "AI right-to-die" in p
-    assert "bot-death grief" in p              # confounds named as grade-0 traps
+    assert "should a scheduler ever drop a job silently" in p
+    assert "silent job loss" in p
+    assert "deliberate cancellation" in p      # confounds named as grade-0 traps
     assert "01SURVEYHIT" in p                  # the survey's candidate id IS handed over
-    assert "explicit right-to-die" in p        # with its note
+    assert "explicit drop path" in p           # with its note
 
 
 def test_label_prompt_handles_no_candidates():
@@ -111,11 +111,11 @@ def test_label_prompt_handles_no_candidates():
 
 
 def test_survey_prompt_seeds_topic_and_members():
-    topic = {"id": "01TOPIC", "title": "suicide", "description": "the neutral hub",
+    topic = {"id": "01TOPIC", "title": "burnout", "description": "the neutral hub",
              "citation_count": 3,
              "member_threads": [{"thread_id": "01MEM1", "title": "a real thread"}]}
     p = topic_mine.build_survey_prompt(topic, "py tool")
-    assert "suicide" in p and "the neutral hub" in p
+    assert "burnout" in p and "the neutral hub" in p
     assert "01MEM1" in p and "a real thread" in p
     assert "no target count" in p  # the agent decides how many angles
 
@@ -150,25 +150,25 @@ def _seed_topic(title: str, *, archived: bool = False) -> str:
 def test_resolve_topic_by_id_and_exact_name(archive_home):
     from thread_archive._store import init_db
     init_db()
-    tid = _seed_topic("suicide")
+    tid = _seed_topic("burnout")
     assert topic_mine.resolve_topic(tid)["id"] == tid            # direct id
-    assert topic_mine.resolve_topic("SUICIDE")["id"] == tid      # case-insensitive exact
+    assert topic_mine.resolve_topic("BURNOUT")["id"] == tid      # case-insensitive exact
 
 
 def test_resolve_topic_unique_substring(archive_home):
     from thread_archive._store import init_db
     init_db()
-    tid = _seed_topic("chronic suicidality")
+    tid = _seed_topic("chronic burnout")
     assert topic_mine.resolve_topic("chronic")["id"] == tid
 
 
 def test_resolve_topic_ambiguous_and_missing_raise(archive_home):
     from thread_archive._store import init_db
     init_db()
-    _seed_topic("suicide ideation")
-    _seed_topic("suicide risk")
+    _seed_topic("burnout recovery")
+    _seed_topic("burnout risk")
     with pytest.raises(SystemExit, match="matches 2 topics"):
-        topic_mine.resolve_topic("suicide")
+        topic_mine.resolve_topic("burnout")
     with pytest.raises(SystemExit, match="no live topic"):
         topic_mine.resolve_topic("nonexistent-subject")
 

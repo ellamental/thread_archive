@@ -9,6 +9,7 @@ not in the unit suite. Those paths are covered by the CI row itself.
 from __future__ import annotations
 
 import importlib.util
+import json
 import sys
 from pathlib import Path
 
@@ -25,14 +26,14 @@ SPEC.loader.exec_module(gate)
 def test_discover_keeps_gold_files_and_drops_mining_siblings(tmp_path) -> None:
     for name in (
         "judged-cases.jsonl",
-        "topic-cases-suicide.jsonl",
-        "topic-cases-frustration.jsonl",
+        "topic-cases-alpha.jsonl",
+        "topic-cases-beta.jsonl",
         "rerank-cases.jsonl",
         "findability-cases.jsonl",
         "judged-cases-detail.jsonl",
         "rerank-cases-detail.jsonl",
         "findability-cases-detail.jsonl",
-        "topic-cases-suicide.detail.jsonl",
+        "topic-cases-alpha.detail.jsonl",
         "judged-seed.jsonl",
         "seed-candidates.jsonl",
         "judged-cases.jsonl.until-bak",
@@ -42,8 +43,8 @@ def test_discover_keeps_gold_files_and_drops_mining_siblings(tmp_path) -> None:
     found = {p.name for p in gate.discover_gold_files(tmp_path)}
     assert found == {
         "judged-cases.jsonl",
-        "topic-cases-suicide.jsonl",
-        "topic-cases-frustration.jsonl",
+        "topic-cases-alpha.jsonl",
+        "topic-cases-beta.jsonl",
         "rerank-cases.jsonl",
         "findability-cases.jsonl",
     }
@@ -53,15 +54,57 @@ def test_discover_missing_dir_is_empty(tmp_path) -> None:
     assert gate.discover_gold_files(tmp_path / "nope") == []
 
 
-def test_every_floor_names_a_gold_shaped_file() -> None:
+def test_load_floors_reads_the_manifest_beside_the_corpus(tmp_path) -> None:
+    # Floors live with the gold cases, not in this repo: the private archive owns
+    # both the corpus and the names of its files.
+    (tmp_path / gate.FLOORS_FILENAME).write_text(json.dumps({
+        "topic-cases-alpha.jsonl": {
+            "mrr": 0.78, "success10": 0.85, "recall10": 0.78, "ndcg10": 0.59},
+        "findability-cases.jsonl": {
+            "mrr": 0.71, "success10": 0.93, "recall10": 0.93, "ndcg10": 0.76,
+            "by_difficulty": {"vague": {"recall10": 0.85}}},
+    }))
+    floors = gate.load_floors(tmp_path)
+    assert set(floors) == {"topic-cases-alpha.jsonl", "findability-cases.jsonl"}
+    assert floors["topic-cases-alpha.jsonl"]["mrr"] == 0.78
+    assert floors["findability-cases.jsonl"]["by_difficulty"] == {"vague": {"recall10": 0.85}}
+
+
+def test_load_floors_missing_or_junk_is_nothing_calibrated(tmp_path) -> None:
+    # Absent reads as an empty manifest — every file scored, none gated. It is
+    # --require that turns that into a failure, not the loader.
+    assert gate.load_floors(tmp_path) == {}
+    (tmp_path / gate.FLOORS_FILENAME).write_text("not json")
+    assert gate.load_floors(tmp_path) == {}
+    (tmp_path / gate.FLOORS_FILENAME).write_text('["a list, not an object"]')
+    assert gate.load_floors(tmp_path) == {}
+
+
+def test_load_floors_drops_unknown_metrics_and_bad_entries(tmp_path) -> None:
+    (tmp_path / gate.FLOORS_FILENAME).write_text(json.dumps({
+        "topic-cases-alpha.jsonl": {"mrr": 0.5, "bogus": 1.0, "ndcg10": "x"},
+        "topic-cases-beta.jsonl": "not a dict",
+        "topic-cases-gamma.jsonl": {"bogus": 1.0},
+    }))
+    floors = gate.load_floors(tmp_path)
+    assert floors == {"topic-cases-alpha.jsonl": {"mrr": 0.5}}
+
+
+def test_every_floor_names_a_gold_shaped_file(tmp_path) -> None:
     # A floor keyed to a name the discovery filter would reject can never fire —
-    # it would gate a file the gate never sees. Keep floors keyed to real gold
-    # basenames.
+    # it would gate a file the gate never sees. The loaded manifest has to stay
+    # keyed to real gold basenames.
+    (tmp_path / gate.FLOORS_FILENAME).write_text(json.dumps({
+        "judged-cases.jsonl": {"mrr": 0.43, "success10": 0.90,
+                               "recall10": 0.85, "ndcg10": 0.52},
+        "topic-cases-alpha.jsonl": {"mrr": 0.78, "success10": 0.85,
+                                    "recall10": 0.78, "ndcg10": 0.59},
+    }))
     markers = gate._NON_GOLD_MARKERS
-    for name, floor in gate.FLOORS.items():
+    for name, floor in gate.load_floors(tmp_path).items():
         assert name.endswith(".jsonl") and "cases" in name
         assert not any(marker in name for marker in markers), name
-        assert set(floor) == {"mrr", "success10", "recall10", "ndcg10"}
+        assert set(floor) <= {"mrr", "success10", "recall10", "ndcg10", "by_difficulty"}
 
 
 def test_check_floors_flags_each_quality_signal() -> None:
@@ -155,6 +198,12 @@ def test_require_fails_on_missing_and_stale_calibrated_fixtures(tmp_path, monkey
     (snap / "snapshot.json").write_text('{"snapshot_id": "aaaaaaaaaaaaaaaa"}')
     gold = tmp_path / "gold"
     gold.mkdir()
+    (gold / gate.FLOORS_FILENAME).write_text(json.dumps({
+        "judged-cases.jsonl": {"mrr": 0.43, "success10": 0.90,
+                               "recall10": 0.85, "ndcg10": 0.52},
+        "findability-cases.jsonl": {"mrr": 0.71, "success10": 0.93,
+                                    "recall10": 0.93, "ndcg10": 0.76},
+    }))
     (gold / "judged-cases.jsonl").write_text(
         '{"query": "q", "gold": ["t1"], "snapshot_id": "bbbbbbbbbbbbbbbb"}\n')
     monkeypatch.setenv("THREAD_ARCHIVE_SNAP", str(snap))
@@ -166,6 +215,25 @@ def test_require_fails_on_missing_and_stale_calibrated_fixtures(tmp_path, monkey
     out = capsys.readouterr().out
     assert "judged-cases.jsonl" in out and "stale" in out
     assert "findability-cases.jsonl" in out and "missing" in out
+
+
+def test_require_fails_when_nothing_is_calibrated(tmp_path, monkeypatch, capsys) -> None:
+    # No floors manifest means nothing is gated. Under --require that is the
+    # failure itself: a gate measuring nothing would otherwise read green.
+    snap = tmp_path / "snap"
+    snap.mkdir()
+    (snap / "snapshot.json").write_text('{"snapshot_id": "aaaaaaaaaaaaaaaa"}')
+    gold = tmp_path / "gold"
+    gold.mkdir()
+    (gold / "judged-cases.jsonl").write_text(
+        '{"query": "q", "gold": ["t1"], "snapshot_id": "bbbbbbbbbbbbbbbb"}\n')
+    monkeypatch.setenv("THREAD_ARCHIVE_SNAP", str(snap))
+    monkeypatch.setenv("THREAD_ARCHIVE_GOLD_DIR", str(gold))
+    monkeypatch.setenv("THREAD_ARCHIVE_HOME", str(tmp_path))
+    monkeypatch.delenv("THREAD_ARCHIVE_GOLD_GATE_MAINTENANCE", raising=False)
+
+    assert gate.main(["--require"]) == 1
+    assert gate.FLOORS_FILENAME in capsys.readouterr().out
 
 
 def test_no_require_still_skips_missing_fixtures_green(tmp_path, monkeypatch) -> None:

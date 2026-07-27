@@ -308,8 +308,18 @@ export function RetrievalView() {
     }
   }, [report])
 
-  if (error) return <p className="error">Could not load retrieval health: {error}</p>
-  if (!report) return <p className="muted">Loading…</p>
+  if (error)
+    return (
+      <div className="retrieval-page">
+        <p className="error">Could not load retrieval health: {error}</p>
+      </div>
+    )
+  if (!report)
+    return (
+      <div className="retrieval-page">
+        <p className="muted">Loading…</p>
+      </div>
+    )
 
   const served = report.served
   const stages = report.stages
@@ -327,7 +337,7 @@ export function RetrievalView() {
   const qPoints: QualityPoint[] = quality?.points ?? []
 
   return (
-    <div className="stats-view">
+    <div className="retrieval-page">
       <header className="rv-head">
         <h1>Retrieval</h1>
         <label className="rv-range">

@@ -590,6 +590,10 @@ a.session-link:hover { color: var(--accent); }
   --health-bad-bg: #fff0ed;
   --health-busy: #2f6296;
   --health-busy-bg: #eaf1f9;
+}
+/* The wide pages — dashboards and the import flow — share one measure. Kept ahead
+   of the breakpoints below so their narrower padding wins on source order. */
+.health-page, .upload-page, .retrieval-page {
   max-width: 1120px; margin: 0 auto; padding: 34px 38px 96px;
 }
 .health-hero {
@@ -625,7 +629,7 @@ a.session-link:hover { color: var(--accent); }
 .health-section-meta { flex: none; color: var(--muted); font-size: 11px; }
 .health-notices { display: flex; flex-direction: column; gap: 8px; }
 .health-notice {
-  display: grid; grid-template-columns: 27px minmax(0, 1fr); gap: 10px;
+  display: grid; grid-template-columns: 27px minmax(0, 1fr) auto; gap: 10px;
   padding: 13px 15px; border: 1px solid var(--line); border-radius: 10px;
   background: var(--panel);
 }
@@ -641,6 +645,34 @@ a.session-link:hover { color: var(--accent); }
 .health-notice.good .health-notice-mark { color: var(--health-good); background: var(--health-good-bg); }
 .health-notice h3 { margin: 0 0 2px; font-size: 13px; }
 .health-notice p { margin: 0 0 7px; color: var(--muted); font-size: 12px; }
+.health-notice .health-notice-since { margin: 7px 0 0; font-size: 11px; }
+
+/* Silencing: available on every card, never louder than the notice it acts on.
+   The border keeps it hit-targetable at rest — an action that only appears on
+   hover is one a keyboard or a touch screen has to discover. */
+.health-silence {
+  flex: none; align-self: start; padding: 3px 9px; border-radius: 6px;
+  border: 1px solid var(--line); background: var(--bg);
+  color: var(--muted); font-size: 11px; white-space: nowrap;
+}
+.health-silence:hover:not(:disabled), .health-silence:focus-visible {
+  border-color: var(--accent); color: var(--accent);
+}
+.health-silence:disabled { opacity: .45; cursor: default; }
+/* A silenced card reads as set aside: same evidence, less voltage. */
+.health-notice.silenced { border-color: var(--line); opacity: .78; }
+.health-silenced-toggle {
+  flex: none; padding: 3px 10px; border-radius: 999px;
+  border: 1px solid var(--line); background: var(--badge);
+  color: var(--muted); font-size: 11px; white-space: nowrap;
+}
+.health-silenced-toggle:hover, .health-silenced-toggle:focus-visible,
+.health-silenced-toggle[aria-expanded="true"] { border-color: var(--accent); color: var(--accent); }
+/* The panel is its own region under the queue, not more queue — the rule and
+   the note are what keep a silenced card from reading as something still owed. */
+.health-silenced { margin-top: 16px; padding-top: 13px; border-top: 1px dashed var(--line); }
+.health-silenced-note { margin: 0 0 9px; color: var(--muted); font-size: 11px; }
+.health-silence-error { margin: 0 0 8px; color: var(--health-bad); font-size: 12px; }
 .health-command {
   display: inline-block; max-width: 100%; overflow-x: auto; padding: 3px 7px;
   border: 1px solid var(--line); border-radius: 6px; background: var(--bg);
@@ -936,7 +968,7 @@ a.session-link:hover { color: var(--accent); }
   .wrap { padding-inline: 22px; }
   .home { padding-inline: 28px; }
   .recent-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  .health-page { padding-inline: 26px; }
+  .health-page, .retrieval-page { padding-inline: 26px; }
   .health-check-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 
@@ -996,7 +1028,7 @@ a.session-link:hover { color: var(--accent); }
   .hit-nav { justify-content: space-between; }
   .msg { padding: 11px 13px; }
   .stat-tiles { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  .health-page { max-width: none; padding: 22px 16px 76px; }
+  .health-page, .retrieval-page { max-width: none; padding: 22px 16px 76px; }
   .health-hero { padding: 22px; }
   .health-check-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .health-detail-grid { grid-template-columns: 1fr; }
@@ -1016,6 +1048,9 @@ a.session-link:hover { color: var(--accent); }
   .health-check-grid { grid-template-columns: 1fr; }
   .health-check { min-height: 0; }
   .health-section-heading { align-items: start; flex-direction: column; gap: 4px; }
+  /* The silence control drops under the notice rather than squeezing its text. */
+  .health-notice { grid-template-columns: 27px minmax(0, 1fr); }
+  .health-silence { grid-column: 2; justify-self: start; }
 }
 
 /* ---- retrieval health ---- */

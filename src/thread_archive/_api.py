@@ -574,6 +574,41 @@ def status(*, home: Optional[str] = None) -> dict:
     }
 
 
+def _notice_inputs(home: Optional[str]) -> dict:
+    """What the notice builder judges: the freshness-bearing records plus the
+    library matrix. Deliberately not the whole of :func:`status` — the counts are
+    the expensive half and no notice reads them, so the action queue answers
+    without walking the index."""
+    return {**operational_records(home=home), "libraries": libraries()}
+
+
+def notices(*, home: Optional[str] = None) -> dict:
+    """The action queue — ``{"active": [...], "silenced": [...]}``.
+
+    Every condition the archive wants an operator to see, with the ones they have
+    silenced held aside rather than dropped (a hidden warning nobody can count is
+    worse than a loud one). See :mod:`._ops.notices` for what a silence is bound
+    to and when it retires itself."""
+    from ._ops.notices import notice_board
+
+    return notice_board(_notice_inputs(home))
+
+
+def silence_notice(key: str, *, home: Optional[str] = None) -> dict:
+    """Silence the currently-firing notice ``key``; returns the resulting board.
+    Raises ``KeyError`` when no notice by that key is firing."""
+    from ._ops.notices import silence
+
+    return silence(key, _notice_inputs(home))
+
+
+def unsilence_notice(key: str, *, home: Optional[str] = None) -> dict:
+    """Lift the silence on ``key`` (idempotent); returns the resulting board."""
+    from ._ops.notices import unsilence
+
+    return unsilence(key, _notice_inputs(home))
+
+
 def operational_records(*, home: Optional[str] = None) -> dict:
     """The freshness-bearing half of :func:`status`: the ``health.json`` records,
     the pipeline verdict, watcher liveness, the backup's same-device check, and

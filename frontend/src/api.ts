@@ -139,6 +139,36 @@ export interface PipelineVerdict {
   dest: string | null
 }
 
+// ── the action queue ────────────────────────────────────────────────────────
+/** One condition the archive is asking someone to act on, with its remedy.
+ *
+ *  Built by the server (`_ops/notices.py`), not here: the judgment over the
+ *  health records has one implementation, and a silence has to be honored by
+ *  every surface that shows notices, not just this page.
+ *
+ *  `tone` is what the notice asks for — 'bad' is a hole in the archive's
+ *  protection, 'warn' costs quality or durability margin, 'good' is available
+ *  maintenance. `key` addresses the notice for silencing; `silenced_at` is set
+ *  only on notices in the silenced list.
+ */
+export interface Notice {
+  key: string
+  tone: 'bad' | 'warn' | 'good'
+  title: string
+  detail: string
+  command: string | null
+  fingerprint: string
+  silenced_at?: string | null
+}
+
+/** The queue split by what the operator has put aside. A silenced notice is
+ *  still a live condition — it is listed, not dropped, so the count of hidden
+ *  warnings is always visible. */
+export interface NoticeBoard {
+  active: Notice[]
+  silenced: Notice[]
+}
+
 // ── archive loading ─────────────────────────────────────────────────────────
 // One phase of a load (import, truth, fts, embed, vector-cache): its wall time,
 // how far it got, and the named sub-timings that say where the time went.
@@ -618,13 +648,28 @@ async function getJSON<T>(url: string): Promise<T> {
 }
 
 /**
+ * POST with no body, answering JSON — the shape every write here but the export
+ * upload takes (the subject rides the query string).
+ *
+ * `X-Archive-Write` is the server's cross-site guard, not decoration: no HTML
+ * form can set a custom header, so sending one forces a preflight the server
+ * never answers, which is what keeps another page's form from writing at this
+ * port. Failures come back as the server's plain-text reason.
+ */
+async function postJSON<T>(url: string): Promise<T> {
+  const r = await fetch(url, { method: 'POST', headers: { 'X-Archive-Write': '1' } })
+  if (!r.ok) throw new Error((await r.text()).trim() || `request failed (${r.status})`)
+  return r.json() as Promise<T>
+}
+
+/**
  * POST one account-export ZIP to the drop zone, reporting upload progress.
  *
  * XHR rather than fetch: an account export is routinely gigabytes, and fetch
  * exposes no upload progress at all — a multi-minute send with no bar is
  * indistinguishable from a hung one.
  *
- * `X-Archive-Upload` is the server's cross-site guard, not decoration. No HTML
+ * `X-Archive-Write` is the server's cross-site guard, not decoration. No HTML
  * form can set a custom header, so sending one forces a preflight that the
  * server never answers — which is what keeps some other page's form from
  * posting at this port. Rejections come back as a plain-text reason to show.
@@ -636,7 +681,7 @@ export function uploadExport(
   return new Promise((resolve, reject) => {
     const request = new XMLHttpRequest()
     request.open('POST', '/api/upload?name=' + encodeURIComponent(file.name))
-    request.setRequestHeader('X-Archive-Upload', '1')
+    request.setRequestHeader('X-Archive-Write', '1')
     request.setRequestHeader('Content-Type', 'application/zip')
     if (onProgress) {
       request.upload.addEventListener('progress', (event) => {
@@ -662,6 +707,15 @@ export function uploadExport(
 
 export const api = {
   status: () => getJSON<Status>('/api/status'),
+  // The action queue, silences already applied. Separate from status(): it costs
+  // no index counting, and silencing one has to re-read the queue right away.
+  notices: () => getJSON<NoticeBoard>('/api/notices'),
+  // Both writes answer with the whole board, so the page never has to guess what
+  // the store now holds — it renders what the server just committed.
+  silenceNotice: (key: string) =>
+    postJSON<NoticeBoard>('/api/notices/silence?key=' + encodeURIComponent(key)),
+  unsilenceNotice: (key: string) =>
+    postJSON<NoticeBoard>('/api/notices/unsilence?key=' + encodeURIComponent(key)),
   // Live load progress and the run history. Cheap by construction (two small
   // files off the home, no index counting), so a page watching a running load
   // can poll it without competing with the load for the store.

@@ -1,9 +1,9 @@
 """Topic-mined gold labels — a topic's confounds turned into graded cases.
 
 The query miner starts from queries agents *really ran*; this one starts from a
-**topic** — a subject dense with near-misses (a large, confound-rich topic like
-"suicide": lived experience vs. bot-death grief vs. AI right-to-die vs.
-self-deprecation, all sharing vocabulary). A topic that hard is where ranking
+**topic** — a subject dense with near-misses (a large, confound-rich topic where
+first-hand experience, third-party reporting, the abstract debate, and figurative
+uses of the same words all share vocabulary). A topic that hard is where ranking
 earns or loses its keep, and the trail rarely supplies enough real queries
 against it. So two stages of agents manufacture the benchmark:
 

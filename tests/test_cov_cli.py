@@ -1715,6 +1715,26 @@ def test_status_prints_no_library_line_when_the_payload_carries_none(capsys) -> 
     assert "libs:" not in capsys.readouterr().out
 
 
+def test_status_names_what_the_health_page_is_holding_back(archive_home, capsys) -> None:
+    """A silence made in the viewer is a UI choice, and the terminal must not
+    inherit it silently — a report that omits a warning someone put aside is the
+    half-truth this whole surface exists to avoid."""
+    from thread_archive._ops.notices import silence
+
+    st = _status_base(backup_same_device=True)
+    silence("same-disk", st)
+
+    assert cli.report_status(st) == 0
+    out = capsys.readouterr().out
+    assert "silenced: 1 notice(s) held aside on the health page" in out
+    assert "Backup is on the same filesystem as the archive" in out
+
+
+def test_status_says_nothing_about_silences_when_there_are_none(capsys) -> None:
+    assert cli.report_status(_status_base(backup_same_device=True)) == 0
+    assert "silenced:" not in capsys.readouterr().out
+
+
 # ── `web`: the opener ────────────────────────────────────────────────────────
 # Driven with $BROWSER pointed at a no-op command, so these run the real
 # `webbrowser` path — the URL is genuinely handed off — without a window opening

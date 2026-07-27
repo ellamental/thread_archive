@@ -46,14 +46,19 @@ read:
 | rerank-cases | `rerank` | 19 | 0.658 | 0.895 | 0.496 | 0.648 |
 | context-compaction | `topic` | 10 | 0.917 | 1.000 | 0.734 | 0.698 |
 | needle | `topic` | 10 | 0.750 | 0.900 | 0.523 | 0.599 |
-| suicide | `topic` | 7 | 0.833 | 1.000 | 0.879 | 0.716 |
-| frustration | `topic` | 7 | 0.552 | 0.857 | 0.510 | 0.497 |
+| topic-a | `topic` | 7 | 0.833 | 1.000 | 0.879 | 0.716 |
+| topic-b | `topic` | 7 | 0.552 | 0.857 | 0.510 | 0.497 |
+
+Topic-mined files are named for the subject they were mined from, and those
+subjects belong to a private archive; the ones that would identify it read as
+`topic-a`, `topic-b` here. The gold corpus itself never leaves the operator's
+machine — this repo carries the mining and scoring machinery, not the cases.
 
 Pooled over all 25 files (317 cases) that reads recall@10 0.543 and nDCG@10 0.626.
 The two arm-magnitude terms below are what separate it from the rank-only ranking
 that scored 0.533 / 0.612; the gain concentrates in the query shapes the lexical
 arm cannot match (findability's vague stratum recall@10 0.850 → 0.900, paraphrase
-0.909 → 0.955) and `frustration` and `needle` pay a case of it back.
+0.909 → 0.955) and `topic-b` and `needle` pay a case of it back.
 
 Read the metrics apart: **success@k** asks whether any grade-2 answer ranks by k,
 **recall@k** measures the fraction of a case's *whole* grade-2 set that ranks,
@@ -197,7 +202,7 @@ production, and each candidate is another instance scored against them.
   holding the discriminating ones. 100 is a deliberate trade, not a free win: the
   query-shaped files gain (findability +.019 MRR / +.015 nDCG@10 with all three
   difficulty strata up, rerank-cases +.052 success@10) and the confound-dense topic
-  files pay in recall (frustration −.048 recall@10, context-compaction −.033). Past
+  files pay in recall (topic-b −.048 recall@10, context-compaction −.033). Past
   ~400 bm25's order overrides the density evidence those files lean on and they
   break their floors. The term matters most where fusion cannot reach: `_rrf` is
   computed only when the vector arm returns, so a lexical-only search — a

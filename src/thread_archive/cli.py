@@ -1199,7 +1199,29 @@ def report_status(st: dict) -> int:
         )
         for err in w.get("errors", [])[:3]:
             print(f"         {err}")
+    _report_silenced(st)
     return 0
+
+
+def _report_silenced(st: dict) -> None:
+    """Name what the health page is holding back, if anything.
+
+    A silence made in the viewer would otherwise be invisible here, and a
+    terminal that quietly omits a warning someone put aside is exactly the kind
+    of half-truth this report exists to avoid. Fail-soft: the silence store is a
+    convenience over the records printed above, so an unreadable one costs this
+    line and nothing else."""
+    try:
+        from ._ops.notices import notice_board
+
+        silenced = notice_board(st)["silenced"]
+    except Exception:  # noqa: BLE001 — a status report must always print
+        return
+    if not silenced:
+        return
+    print(f"silenced: {len(silenced)} notice(s) held aside on the health page")
+    for notice in silenced[:3]:
+        print(f"         {notice['title']}")
 
 
 def cmd_self_update(args: argparse.Namespace) -> int:

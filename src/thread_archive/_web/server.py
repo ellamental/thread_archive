@@ -10,10 +10,11 @@ cohost the viewer (one process, one engine) — that's how the read surface gets
 persistent URL with no extra daemon. ``thread_archive web`` opens that URL; it
 never starts a server of its own.
 
-One endpoint writes: ``POST /api/upload`` accepts an account-export ZIP into the
-drop zone the cohosting watcher already imports from. It carries its own
-cross-site guards (see :func:`_write_allowed`) on top of the Host check every
-request passes.
+A few endpoints write: ``POST /api/upload`` accepts an account-export ZIP into
+the drop zone the cohosting watcher already imports from, and ``POST
+/api/notices/{silence,unsilence}`` records which health notices the operator has
+put aside. They carry their own cross-site guards (see :func:`_write_allowed`)
+on top of the Host check every request passes.
 """
 
 from __future__ import annotations
@@ -89,7 +90,7 @@ def _host_allowed(host: Optional[str]) -> bool:
 # A header no cross-origin HTML form can set. Sending it forces the browser to
 # preflight the request, and this server answers no preflight — so a write can
 # only come from a page this server served. Required on every write.
-_UPLOAD_HEADER = "X-Archive-Upload"
+_WRITE_HEADER = "X-Archive-Write"
 
 
 def _origin_allowed(origin: Optional[str]) -> bool:
@@ -116,7 +117,7 @@ def _write_allowed(headers) -> bool:
     non-browser clients set freely. Under the deliberate non-loopback opt-in the
     origin is by definition not loopback, so only the header requirement holds —
     exposing the viewer is already the act that accepts that."""
-    if headers.get(_UPLOAD_HEADER) is None:
+    if headers.get(_WRITE_HEADER) is None:
         return False
     if os.environ.get(_NONLOCAL_OPTIN) == "1":
         return True
@@ -856,6 +857,23 @@ def route(
             if body is None:
                 return _text(400, "missing upload body")
             return _receive_drop(_first(params, "name") or "", body)
+        if path in ("/api/notices/silence", "/api/notices/unsilence"):
+            # The notice key rides the query string rather than a JSON body: the
+            # write guard is the header and Origin, not the content type, and
+            # keeping the one body-reading endpoint the one that needs a body
+            # (a multi-gigabyte export) leaves the router with nothing to parse.
+            key = _first(params, "key")
+            if not key:
+                return _text(400, "missing notice key")
+            try:
+                if path.endswith("/silence"):
+                    return _ok(api.silence_notice(key))
+                return _ok(api.unsilence_notice(key))
+            except KeyError:
+                # Silencing something that isn't firing would park a silence in
+                # the store waiting to hide a future occurrence — refuse, and say
+                # so, rather than accept a write with no condition behind it.
+                return _text(404, f"no active notice with key {key!r}")
         # Every other path is a read surface, so the method is what is wrong with
         # this request — not the address.
         return _text(405, "method not allowed")
@@ -872,6 +890,13 @@ def route(
 
     if path == "/api/status":
         return _ok(_status())
+
+    if path == "/api/notices":
+        # The action queue with silences applied. Its own endpoint rather than a
+        # field on /api/status: it is cheap (records + import probes, no index
+        # counting), and silencing one has to re-read it immediately — which must
+        # not mean re-running the survey behind status.
+        return _ok(api.notices())
 
     if path == "/api/loads":
         # Live load progress + recent runs. Cheap by construction — two small

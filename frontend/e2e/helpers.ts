@@ -228,6 +228,24 @@ export async function mockApi(page: Page): Promise<string[]> {
         backup_same_device: false,
       })
     }
+    if (path === '/api/notices') {
+      // The health page's action queue. One silenced warning: the browser suite
+      // is where the indicator and its panel are exercised as a real widget.
+      return json(route, {
+        active: [],
+        silenced: [
+          {
+            key: 'same-disk',
+            tone: 'warn',
+            title: 'Backup is on the same filesystem as the archive',
+            detail: 'Move the scheduled destination to another disk.',
+            command: 'thread_archive daemon install --backup --dest /Volumes/disk',
+            fingerprint: 'e2e',
+            silenced_at: healthNow,
+          },
+        ],
+      })
+    }
     if (path === '/api/loads') {
       // The load ledger behind the health page's history section. Nothing in
       // flight, one finished run — the state a settled archive is in.

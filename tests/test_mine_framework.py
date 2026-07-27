@@ -58,7 +58,7 @@ def test_every_miner_output_is_gold_discoverable_and_detail_is_not():
     (it is not a scorable gold file)."""
     for m in load_registry():
         # topic embeds a slug; substitute a concrete one for the check.
-        stem = m.cases_stem.replace("<slug>", "suicide")
+        stem = m.cases_stem.replace("<slug>", "alpha")
         case_name = f"{stem}.jsonl"
         detail_name = fw.detail_path_for(Path(case_name)).name
         assert "cases" in case_name
@@ -70,11 +70,11 @@ def test_miner_case_files_are_discovered_by_the_gate(tmp_path):
     """End to end against the gate's own discovery: every miner's real default
     basename is kept, every detail sidecar is dropped."""
     for m in load_registry():
-        stem = m.cases_stem.replace("<slug>", "suicide")
+        stem = m.cases_stem.replace("<slug>", "alpha")
         (tmp_path / f"{stem}.jsonl").write_text("{}\n")
         (tmp_path / fw.detail_path_for(Path(f"{stem}.jsonl")).name).write_text("{}\n")
     found = {p.name for p in gate.discover_gold_files(tmp_path)}
-    assert found == {"judged-cases.jsonl", "topic-cases-suicide.jsonl",
+    assert found == {"judged-cases.jsonl", "topic-cases-alpha.jsonl",
                      "rerank-cases.jsonl", "findability-cases.jsonl",
                      "commit-cases.jsonl"}
 

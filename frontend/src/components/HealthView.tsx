@@ -8,20 +8,14 @@ import {
   type LoadPhase,
   type LoadRun,
   type LoadStatus,
+  type Notice,
+  type NoticeBoard,
   type Status,
   type WatchSourceRecord,
 } from '../api'
 
 // 'busy' is work in flight — distinct from 'warn', which means someone must act.
 type Tone = 'good' | 'warn' | 'bad' | 'quiet' | 'busy'
-
-interface Notice {
-  key: string
-  tone: Exclude<Tone, 'quiet'>
-  title: string
-  detail: string
-  command?: string
-}
 
 const MINUTE = 60_000
 const HOUR = 60 * MINUTE
@@ -133,11 +127,6 @@ function PhaseChips({ phases }: { phases: LoadPhase[] }) {
   )
 }
 
-function shellArg(value: string): string {
-  if (/^[A-Za-z0-9_./:@%+=,-]+$/.test(value)) return value
-  return `'${value.replaceAll("'", "'\"'\"'")}'`
-}
-
 function recordTone(record: HealthRecord | null, staleAfter: number): Tone {
   if (!record) return 'bad'
   if (record.ok === false) return 'bad'
@@ -205,142 +194,52 @@ function sourceTone(source: WatchSourceRecord): Tone {
   return 'good'
 }
 
-function buildNotices(status: Status): Notice[] {
-  const notices: Notice[] = []
-  const dest = status.pipeline.dest || status.last_backup?.dest || status.last_nightly?.dest
-  const nightlyCommand = dest
-    ? `thread_archive nightly ${shellArg(dest)}`
-    : 'thread_archive setup'
-
-  if (!status.last_watch_pass) {
-    notices.push({
-      key: 'capture-missing',
-      tone: 'bad',
-      title: 'Capture has never reported a completed pass',
-      detail: 'Run one pass now. If it succeeds, install or restart the watcher so new conversations keep arriving.',
-      command: 'thread_archive watch --once',
-    })
-  } else if ((elapsed(status.last_watch_pass.at) ?? Infinity) > 15 * MINUTE) {
-    notices.push({
-      key: 'capture-stale',
-      tone: 'bad',
-      title: `Capture is stale — last check ${age(status.last_watch_pass.at)}`,
-      detail: 'A stalled watcher can leave recent conversations outside the archive.',
-      command: 'thread_archive watch --once',
-    })
-  }
-
-  if (status.last_watch_errors) {
-    notices.push({
-      key: 'watch-errors',
-      tone: 'bad',
-      title: 'A provider failed during capture',
-      detail: (status.last_watch_errors.errors || []).join(' · ') || 'The latest watcher run recorded provider errors.',
-      command: 'thread_archive status',
-    })
-  }
-
-  for (const [source, data] of Object.entries(status.last_watch_pass?.sources || {})) {
-    if (!data.errors && !data.parse_errors) continue
-    notices.push({
-      key: `source-${source}`,
-      tone: 'bad',
-      title: `${source} is not importing cleanly`,
-      detail: `${int(data.parse_errors)} parse errors and ${int(data.errors)} watcher errors since this capture process started.`,
-      command: `thread_archive fix-import ${shellArg(source)}`,
-    })
-  }
-
-  if (!status.pipeline.ran) {
-    notices.push({
-      key: 'nightly-missing',
-      tone: 'bad',
-      title: 'The protection pipeline has never completed',
-      detail: 'Backup, integrity verification, and a restore drill have not yet been proven together.',
-      command: nightlyCommand,
-    })
-  } else if (!status.pipeline.ok) {
-    notices.push({
-      key: 'nightly-failed',
-      tone: 'bad',
-      title: `Protection failed at ${status.pipeline.failed_stages.join(', ') || 'an unknown stage'}`,
-      detail: 'The pipeline verdict accounts for later successful reruns, so these failures are still unresolved.',
-      command: nightlyCommand,
-    })
-  } else if ((elapsed(status.pipeline.nightly_at) ?? Infinity) > 36 * HOUR) {
-    notices.push({
-      key: 'nightly-stale',
-      tone: 'bad',
-      title: `Protection is stale — last pipeline ${age(status.pipeline.nightly_at)}`,
-      detail: 'The scheduled backup and recovery proof may have stopped running.',
-      command: nightlyCommand,
-    })
-  }
-
-  if (status.backup_same_device === true) {
-    notices.push({
-      key: 'same-disk',
-      tone: 'warn',
-      title: 'Backup is on the same filesystem as the archive',
-      detail: 'This protects against index corruption and accidental deletion, but not loss of the disk. Move the scheduled destination to another disk.',
-      command: 'thread_archive daemon install --backup --dest /Volumes/<backup-disk>/thread-archive',
-    })
-  }
-
-  if (status.last_coverage && !status.last_coverage.ok) {
-    notices.push({
-      key: 'coverage-failed',
-      tone: 'bad',
-      title: 'Capture coverage has gaps',
-      detail: (status.last_coverage.failed || []).join(' · ') || 'The coverage audit found missing or degraded source data.',
-      command: 'thread_archive coverage',
-    })
-  }
-  for (const [index, warning] of (status.last_coverage?.warnings || []).entries()) {
-    notices.push({
-      key: `coverage-warning-${index}`,
-      tone: 'warn',
-      title: 'Coverage warning',
-      detail: warning,
-      command: 'thread_archive coverage',
-    })
-  }
-
-  // A feature running without the library that does it well is the one fault nothing
-  // else on this page can show: search keeps answering, so every other check stays
-  // green while ranking quality sits below the archive's own gated baseline. An
-  // absent library the install has no use for is 'off' and never lands here.
-  for (const library of status.libraries || []) {
-    if (library.state !== 'degraded') continue
-    notices.push({
-      key: `library-${library.name}`,
-      tone: 'warn',
-      title: `${library.name} is not installed`,
-      detail: `${library.capability} is degraded. ${library.detail}`,
-      command: "pip install 'thread-archive[all]'",
-    })
-  }
-
-  const update = status.last_self_update
-  if (update?.action === 'update') {
-    notices.push({
-      key: 'update',
-      tone: 'good',
-      title: `${update.tag || 'A new release'} is available`,
-      detail: update.reason || 'Applying updates is explicit.',
-      command: 'thread_archive self-update',
-    })
-  } else if (update && !update.ok) {
-    notices.push({
-      key: 'update-blocked',
-      tone: 'warn',
-      title: `Updates are ${update.action || 'blocked'}`,
-      detail: update.reason || 'The update check did not complete successfully.',
-      command: 'thread_archive self-update --check',
-    })
-  }
-
-  return notices
+/** One notice, with the control that puts it aside (or brings it back).
+ *
+ *  The action is a button on the card rather than a separate mode: deciding a
+ *  warning is understood is the same glance as reading it.
+ */
+function NoticeCard({
+  notice,
+  silenced,
+  busy,
+  onToggle,
+}: {
+  notice: Notice
+  silenced?: boolean
+  busy: boolean
+  onToggle: (key: string, silence: boolean) => void
+}) {
+  return (
+    <article className={`health-notice ${notice.tone}${silenced ? ' silenced' : ''}`}>
+      <span className="health-notice-mark" aria-hidden="true">
+        {notice.tone === 'bad' ? '×' : notice.tone === 'warn' ? '!' : '↑'}
+      </span>
+      <div className="health-notice-body">
+        <h3>{notice.title}</h3>
+        <p>{notice.detail}</p>
+        {notice.command && <Command>{notice.command}</Command>}
+        {silenced && notice.silenced_at && (
+          <p className="health-notice-since" title={dateTime(notice.silenced_at)}>
+            silenced {age(notice.silenced_at)}
+          </p>
+        )}
+      </div>
+      <button
+        type="button"
+        className="health-silence"
+        disabled={busy}
+        title={
+          silenced
+            ? 'Show this in the action queue again'
+            : 'Hide this until the condition changes or clears'
+        }
+        onClick={() => onToggle(notice.key, !silenced)}
+      >
+        {silenced ? 'Unsilence' : 'Silence'}
+      </button>
+    </article>
+  )
 }
 
 // How often this page re-reads. A load in flight is the one thing here that
@@ -468,6 +367,13 @@ export function HealthView() {
   const [error, setError] = useState<string | null>(null)
   const [loads, setLoads] = useState<LoadStatus | null>(null)
   const [disk, setDisk] = useState<DiskUsage | null>(null)
+  const [board, setBoard] = useState<NoticeBoard | null>(null)
+  const [showSilenced, setShowSilenced] = useState(false)
+  // The notice a silence/unsilence is in flight for, and the reason the last one
+  // failed. A write that didn't reach disk must say so: the poll below would
+  // otherwise quietly restore the card and read as a button that does nothing.
+  const [silencing, setSilencing] = useState<string | null>(null)
+  const [silenceError, setSilenceError] = useState<string | null>(null)
 
   // The status records are all read as ages ("last check 3m ago", stale past a
   // threshold), so a one-shot fetch would leave the page asserting a freshness
@@ -489,6 +395,34 @@ export function HealthView() {
         })
         .catch((e) => {
           if (!cancelled && !loaded) setError(String(e.message ?? e))
+        })
+        .finally(() => {
+          if (!cancelled) timer = setTimeout(tick, IDLE_POLL_MS)
+        })
+    }
+    tick()
+    return () => {
+      cancelled = true
+      clearTimeout(timer)
+    }
+  }, [])
+
+  // The action queue on the same idle cadence as the records behind it: a notice
+  // is a judgment about ages, so a queue that never re-read would keep asserting
+  // a verdict the page has already outgrown. Its own fetch because silencing
+  // rewrites it out of band, and because it costs no index survey.
+  useEffect(() => {
+    let cancelled = false
+    let timer: ReturnType<typeof setTimeout>
+    const tick = () => {
+      api
+        .notices()
+        .then((b) => {
+          if (!cancelled) setBoard(b)
+        })
+        .catch(() => {
+          // Keep the last good queue rather than blanking it — the checks below
+          // are unaffected, and an empty action queue reads as "all clear".
         })
         .finally(() => {
           if (!cancelled) timer = setTimeout(tick, IDLE_POLL_MS)
@@ -562,7 +496,20 @@ export function HealthView() {
   const live = loads?.current ?? null
   const livePhase = live ? currentPhase(live) : null
 
-  const notices = useMemo(() => (status ? buildNotices(status) : []), [status])
+  // Both writes answer with the board the server committed, so the queue never
+  // shows a state the store doesn't hold.
+  const toggleSilence = (key: string, silence: boolean) => {
+    setSilencing(key)
+    setSilenceError(null)
+    const call = silence ? api.silenceNotice(key) : api.unsilenceNotice(key)
+    call
+      .then(setBoard)
+      .catch((e) => setSilenceError(String(e.message ?? e)))
+      .finally(() => setSilencing(null))
+  }
+
+  const notices = board?.active || []
+  const silenced = board?.silenced || []
 
   if (error) return <div className="empty">health unavailable: {error}</div>
   if (!status) return <div className="empty">checking capture and recovery evidence…</div>
@@ -605,7 +552,7 @@ export function HealthView() {
         </div>
       </header>
 
-      {notices.length > 0 && (
+      {(notices.length > 0 || silenced.length > 0) && (
         <section className="health-actions" aria-labelledby="health-actions-heading">
           <div className="health-section-heading">
             <div>
@@ -615,24 +562,54 @@ export function HealthView() {
                   ? `${critical.length} protection ${critical.length === 1 ? 'gap' : 'gaps'}`
                   : warnings.length
                     ? `${warnings.length} ${warnings.length === 1 ? 'warning' : 'warnings'}`
-                    : 'Maintenance available'}
+                    : notices.length
+                      ? 'Maintenance available'
+                      : 'Nothing needs attention'}
               </h2>
             </div>
+            {/* The count is the honesty of the silencing: whatever is hidden is
+                still on the page, one click from being read and restored. */}
+            {silenced.length > 0 && (
+              <button
+                type="button"
+                className="health-silenced-toggle"
+                aria-expanded={showSilenced}
+                onClick={() => setShowSilenced((open) => !open)}
+              >
+                {silenced.length} silenced
+              </button>
+            )}
           </div>
+          {silenceError && <p className="health-silence-error">{silenceError}</p>}
           <div className="health-notices">
             {notices.map((notice) => (
-              <article className={`health-notice ${notice.tone}`} key={notice.key}>
-                <span className="health-notice-mark" aria-hidden="true">
-                  {notice.tone === 'bad' ? '×' : notice.tone === 'warn' ? '!' : '↑'}
-                </span>
-                <div>
-                  <h3>{notice.title}</h3>
-                  <p>{notice.detail}</p>
-                  {notice.command && <Command>{notice.command}</Command>}
-                </div>
-              </article>
+              <NoticeCard
+                key={notice.key}
+                notice={notice}
+                busy={silencing === notice.key}
+                onToggle={toggleSilence}
+              />
             ))}
           </div>
+          {showSilenced && silenced.length > 0 && (
+            <div className="health-silenced">
+              <p className="health-silenced-note">
+                Held aside by you. Each returns on its own if the condition changes or
+                clears and comes back.
+              </p>
+              <div className="health-notices">
+                {silenced.map((notice) => (
+                  <NoticeCard
+                    key={notice.key}
+                    notice={notice}
+                    silenced
+                    busy={silencing === notice.key}
+                    onToggle={toggleSilence}
+                  />
+                ))}
+              </div>
+            </div>
+          )}
         </section>
       )}
 

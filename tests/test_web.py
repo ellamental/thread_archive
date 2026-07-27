@@ -1262,16 +1262,16 @@ def test_write_needs_both_a_loopback_origin_and_the_custom_header():
     set a header that forces a preflight this server never answers."""
     from thread_archive._web import server
 
-    allowed = {"Origin": "http://127.0.0.1:8787", "X-Archive-Upload": "1"}
+    allowed = {"Origin": "http://127.0.0.1:8787", "X-Archive-Write": "1"}
     assert server._write_allowed(allowed)
-    assert server._write_allowed({"Origin": "http://localhost:8787", "X-Archive-Upload": "1"})
+    assert server._write_allowed({"Origin": "http://localhost:8787", "X-Archive-Write": "1"})
 
-    assert not server._write_allowed({"X-Archive-Upload": "1"})  # no Origin at all
+    assert not server._write_allowed({"X-Archive-Write": "1"})  # no Origin at all
     assert not server._write_allowed({"Origin": "http://127.0.0.1:8787"})  # no header
     assert not server._write_allowed(
-        {"Origin": "https://evil.example", "X-Archive-Upload": "1"}
+        {"Origin": "https://evil.example", "X-Archive-Write": "1"}
     )
-    assert not server._write_allowed({"Origin": "file://", "X-Archive-Upload": "1"})
+    assert not server._write_allowed({"Origin": "file://", "X-Archive-Write": "1"})
 
 
 def test_deliberate_exposure_still_needs_the_custom_header(monkeypatch):
@@ -1280,8 +1280,75 @@ def test_deliberate_exposure_still_needs_the_custom_header(monkeypatch):
     from thread_archive._web import server
 
     monkeypatch.setenv("THREAD_ARCHIVE_WEB_NONLOCAL", "1")
-    assert server._write_allowed({"Origin": "http://box.local:8787", "X-Archive-Upload": "1"})
+    assert server._write_allowed({"Origin": "http://box.local:8787", "X-Archive-Write": "1"})
     assert not server._write_allowed({"Origin": "http://box.local:8787"})
+
+
+# ---- the action queue and its silences -------------------------------------
+# The queue's own logic (what fires, what a silence is bound to) is pinned in
+# test_notices.py; these pin the surface the health page drives it through.
+def _silence(path, **params):
+    """Drive one notice write through the router — a POST with no body, the way
+    every write but the export upload arrives."""
+    qp = {k: [str(v)] for k, v in params.items()}
+    status, ctype, out, _ = route("POST", path, qp, None)
+    return status, (json.loads(out) if ctype.startswith("application/json") else out.decode())
+
+
+def _same_disk_warning(archive_home):
+    """Record a backup destination inside the home, which is the archive's own
+    same-filesystem warning — one real notice, no fixtures."""
+    from thread_archive._ops.health import record_health
+
+    ta.open_archive(str(archive_home))
+    record_health("backup_last", {"ok": True, "dest": str(archive_home / "mirror")})
+
+
+def test_notices_serves_the_action_queue(archive_home):
+    _same_disk_warning(archive_home)
+
+    status, _, body = _get("/api/notices")
+
+    assert status == 200
+    assert "same-disk" in [n["key"] for n in body["active"]]
+    assert body["silenced"] == []
+
+
+def test_silencing_and_restoring_a_notice_through_the_router(archive_home):
+    _same_disk_warning(archive_home)
+
+    status, board = _silence("/api/notices/silence", key="same-disk")
+    assert status == 200
+    # The write answers with the board it committed, so the page never renders a
+    # state the store doesn't hold. The bare home's own gaps keep firing: a
+    # silence takes one notice aside, not the queue.
+    assert "same-disk" not in [n["key"] for n in board["active"]]
+    assert board["active"]
+    assert [n["key"] for n in board["silenced"]] == ["same-disk"]
+    assert _get("/api/notices")[2]["silenced"][0]["silenced_at"]
+
+    status, board = _silence("/api/notices/unsilence", key="same-disk")
+    assert status == 200
+    assert "same-disk" in [n["key"] for n in board["active"]]
+    assert board["silenced"] == []
+
+
+def test_silencing_a_notice_that_is_not_firing_is_refused(archive_home):
+    status, message = _silence("/api/notices/silence", key="nightly-failed")
+
+    assert status == 404
+    assert "nightly-failed" in message
+
+
+def test_a_notice_write_without_a_key_is_a_bad_request(archive_home):
+    assert _silence("/api/notices/silence")[0] == 400
+
+
+def test_the_action_queue_is_not_writable_by_a_GET(archive_home):
+    _same_disk_warning(archive_home)
+
+    assert _get("/api/notices/silence", key="same-disk")[0] == 404
+    assert _get("/api/notices")[2]["silenced"] == []
 
 
 # ---- the drop-zone census the upload page polls ----------------------------
@@ -1328,7 +1395,7 @@ def test_upload_over_real_http(archive_home, tmp_path):
 
         request = urllib.request.Request(
             url, data=payload, method="POST",
-            headers={"Origin": f"http://127.0.0.1:{port}", "X-Archive-Upload": "1",
+            headers={"Origin": f"http://127.0.0.1:{port}", "X-Archive-Write": "1",
                      "Content-Type": "application/zip"},
         )
         with urllib.request.urlopen(request, timeout=10) as response:
@@ -1339,7 +1406,7 @@ def test_upload_over_real_http(archive_home, tmp_path):
         # reading the body, and the connection closed rather than left holding it.
         cross_site = urllib.request.Request(
             url, data=payload, method="POST",
-            headers={"Origin": "https://evil.example", "X-Archive-Upload": "1"},
+            headers={"Origin": "https://evil.example", "X-Archive-Write": "1"},
         )
         with pytest.raises(urllib.error.HTTPError) as excinfo:
             urllib.request.urlopen(cross_site, timeout=10)

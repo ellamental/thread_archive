@@ -207,7 +207,8 @@ src/thread_archive/
   _config.py        # truth dir + index path resolution, config.json (source opt-outs)
   _store/           # SQLite store + schema
   _truth/           # JSONL truth log + reindex
-  _ops/             # backup kit: backup/mirror + restore drill, verify tiers, nightly, health records
+  _ops/             # backup kit: backup/mirror + restore drill, verify tiers, nightly,
+                    #   health records, the action queue + its silences (notices.py)
   _importers/       # incremental import orchestration
   _retrieval/       # FTS5 + vector search, read reconstruction, the code axis (code.py)
   _knowledge/       # knowledge-layer data plane: KgEvent fold + SQL topic reads
