@@ -137,20 +137,15 @@ def _band(xs: list[float], *, p99: bool = False) -> dict[str, Any]:
 
 
 def _rows(path: Path) -> Iterator[dict]:
-    """Every JSON object in a ledger, skipping what cannot be parsed. A torn final
-    line is a concurrent append, not a corrupt file."""
-    try:
-        with open(path, encoding="utf-8") as fh:
-            for line in fh:
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    yield json.loads(line)
-                except ValueError:
-                    continue
-    except OSError:
-        return
+    """Every JSON object in a ledger, across every retained segment.
+
+    Segmentation is the ledger's, not this module's: a capped file rotates to a
+    stamped sibling and keeps it, so a window longer than the current segment
+    would otherwise read as an archive that had no traffic before its last
+    rotation — the exact shape of a slow-regression question."""
+    from thread_archive._ops import ledger
+
+    return ledger.iter_rows(path)
 
 
 def _searches(home: Path, *, hours: int) -> list[dict]:

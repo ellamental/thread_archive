@@ -497,3 +497,210 @@ def test_model_stats_tolerates_blank_timestamps(archive_home):
     assert d["by_month"] == []  # month-less session and compaction bucket nowhere
     assert d["overview"]["compactions"] == 1  # still counted per-thread
     assert d["top_sessions"][0]["at"] is None
+
+
+# ── the charts' sections: timeline, session sizes, rhythm ───────────────────────
+
+
+def _seed_dated(archive_home, rows):
+    """Insert threads + events at chosen timestamps.
+
+    ``rows`` is ``(thread_id, source, event_type, occurred_at, payload | None)``. A
+    payload of None writes a bare message event — the shape a source that records no
+    token usage produces, and the case the timeline must still be able to date.
+    """
+    ta.open_archive(str(archive_home))
+    from thread_archive._store import get_engine
+
+    with get_engine().begin() as c:
+        for tid, source, *_ in rows:
+            c.execute(
+                text(
+                    "INSERT OR IGNORE INTO threads (id, name, thread_type, source, archived) "
+                    "VALUES (:id, :name, 'conversation', :source, 0)"
+                ),
+                {"id": tid, "name": f"thread-{tid}", "source": source},
+            )
+        for j, (tid, _source, etype, ts, payload) in enumerate(rows):
+            c.execute(
+                text(
+                    "INSERT INTO events (thread_id, stream_id, event_type, payload, occurred_at) "
+                    "VALUES (:tid, :sid, :etype, :payload, :ts)"
+                ),
+                {"tid": tid, "sid": f"d{j}", "etype": etype,
+                 "payload": json.dumps(payload or {}), "ts": ts},
+            )
+
+
+def _usage(model, itok, otok):
+    return {"model": model, "input_tokens": itok, "output_tokens": otok, "thinking_tokens": 0}
+
+
+def test_timeline_axis_is_dense_across_quiet_months(archive_home):
+    """Months nobody used are drawn, not closed up: the gap is the data."""
+    _seed_dated(
+        archive_home,
+        [
+            (1, "chatgpt", "api_request_completed", "2026-01-04T10:00:00Z", _usage("m1", 100, 10)),
+            (2, "chatgpt", "api_request_completed", "2026-04-09T10:00:00Z", _usage("m1", 200, 20)),
+        ],
+    )
+    t = ta.stats()["timeline"]
+    assert t["months"] == ["2026-01", "2026-02", "2026-03", "2026-04"]
+    assert t["conversations"] == [1, 0, 0, 1]
+    assert t["tokens"] == [110, 0, 0, 220]
+
+
+def test_timeline_dates_a_source_that_records_no_tokens(archive_home):
+    """A web export carries messages and no usage at all. It has to appear on the
+    conversation axis anyway — dropping it erases the archive's early history."""
+    _seed_dated(
+        archive_home,
+        [
+            (1, "chatgpt", "message", "2024-03-02T10:00:00Z", None),
+            (2, "claude-code", "api_request_completed", "2024-04-02T10:00:00Z", _usage("m1", 500, 50)),
+        ],
+    )
+    t = ta.stats()["timeline"]
+    assert t["months"] == ["2024-03", "2024-04"]
+    assert t["conversations"] == [1, 1]
+    by_source = {s["key"]: s["values"] for s in t["conversations_by_source"]}
+    assert by_source["chatgpt"] == [1, 0]
+    assert by_source["claude-code"] == [0, 1]
+    # …while the token series knows only the month that actually spent any.
+    assert t["tokens"] == [0, 550]
+
+
+def test_timeline_buckets_conversations_by_start_and_tokens_by_request(archive_home):
+    """One session running across a month boundary starts once but spends in both."""
+    _seed_dated(
+        archive_home,
+        [
+            (1, "claude-code", "api_request_completed", "2026-01-30T10:00:00Z", _usage("m1", 100, 10)),
+            (1, "claude-code", "api_request_completed", "2026-02-02T10:00:00Z", _usage("m1", 300, 30)),
+        ],
+    )
+    t = ta.stats()["timeline"]
+    assert t["conversations"] == [1, 0]  # counted where it began
+    assert t["tokens"] == [110, 330]  # spent where each request happened
+
+
+def test_timeline_folds_the_tail_into_other(archive_home):
+    """Past the palette's slots the tail folds rather than minting more colors, and it
+    folds by total — never by a month's own ranking, which would repaint a series."""
+    from thread_archive._store._metrics import TIMELINE_SOURCES
+
+    n_sources = TIMELINE_SOURCES + 3
+    rows = []
+    for i in range(n_sources):
+        # Source i gets i+1 conversations, so the three smallest are the ones folded.
+        for j in range(i + 1):
+            rows.append(
+                (f"{i}-{j}", f"src{i:02d}", "api_request_completed",
+                 "2026-05-04T10:00:00Z", _usage("m1", 10, 1))
+            )
+    _seed_dated(archive_home, rows)
+    series = ta.stats()["timeline"]["conversations_by_source"]
+    biggest_first = [f"src{i:02d}" for i in range(n_sources - 1, n_sources - 1 - TIMELINE_SOURCES, -1)]
+    assert [s["key"] for s in series] == biggest_first + ["other"]
+    assert series[-1]["values"] == [1 + 2 + 3]  # the three smallest sources, summed
+
+
+def test_timeline_reports_conversations_it_cannot_date(archive_home):
+    """A thread with no events has no month. It stays in the overview count and is
+    reported here, so the chart's total can be seen not to match rather than quietly
+    disagreeing."""
+    _seed_dated(
+        archive_home,
+        [(1, "claude-code", "api_request_completed", "2026-05-04T10:00:00Z", _usage("m1", 10, 1))],
+    )
+    ta.open_archive(str(archive_home))
+    from thread_archive._store import get_engine
+
+    with get_engine().begin() as c:
+        c.execute(
+            text(
+                "INSERT INTO threads (id, name, thread_type, source, archived) "
+                "VALUES ('ghost', 'ghost', 'conversation', 'claude-code', 0)"
+            )
+        )
+    stats = ta.stats()
+    assert stats["overview"]["conversations"] == 2
+    assert sum(stats["timeline"]["conversations"]) == 1
+    assert stats["timeline"]["undated"] == 1
+
+
+def test_session_sizes_bin_by_magnitude_and_exclude_usage_less_sessions(archive_home):
+    _seed_dated(
+        archive_home,
+        [
+            (1, "claude-code", "api_request_completed", "2026-05-04T10:00:00Z", _usage("m1", 400, 100)),  # 500
+            (2, "claude-code", "api_request_completed", "2026-05-04T10:00:00Z", _usage("m1", 6000, 500)),  # 6.5k
+            (3, "claude-code", "api_request_completed", "2026-05-04T10:00:00Z", _usage("m1", 2_000_000, 1)),
+            (4, "chatgpt", "message", "2026-05-04T10:00:00Z", None),  # no usage at all
+        ],
+    )
+    sizes = ta.stats()["session_sizes"]
+    assert sizes["sessions"] == 3
+    assert sizes["without_tokens"] == 1  # counted, never binned as a zero-token session
+    counts = {(b["lo"], b["hi"]): b["count"] for b in sizes["buckets"]}
+    assert counts[(0, 1_000)] == 1
+    assert counts[(5_000, 10_000)] == 1
+    assert counts[(1_000_000, None)] == 1  # the top bucket is open-ended
+    assert sizes["median"] == 6500
+
+
+def test_rhythm_is_a_monday_first_weekday_hour_grid(archive_home):
+    """Local time, because 'when do I work' is only meaningful in the operator's own
+    frame — so the grid is asserted by its totals, not by a cell a test machine's
+    timezone would move."""
+    _seed_dated(
+        archive_home,
+        [
+            (1, "claude-code", "api_request_completed", "2026-05-04T15:00:00Z", _usage("m1", 10, 1)),
+            (2, "claude-code", "api_request_completed", "2026-05-06T15:00:00Z", _usage("m1", 10, 1)),
+            (3, "chatgpt", "message", "2026-05-07T15:00:00Z", None),
+        ],
+    )
+    r = ta.stats()["rhythm"]
+    assert len(r["grid"]) == 7 and all(len(row) == 24 for row in r["grid"])
+    assert r["total"] == 3
+    assert r["max"] == 1
+    assert sum(sum(row) for row in r["grid"]) == r["total"]
+
+
+def test_empty_archive_has_empty_chart_sections(archive_home):
+    ta.open_archive(str(archive_home))
+    _status, payload = _get("/api/stats")
+    assert payload["timeline"]["months"] == []
+    assert payload["timeline"]["conversations_by_source"] == []
+    assert payload["session_sizes"]["sessions"] == 0
+    assert payload["rhythm"]["total"] == 0
+    assert payload["rhythm"]["max"] == 0
+
+
+def test_thread_activity_accumulates_across_incremental_folds(archive_home):
+    """The bounds are min/max against what is already stored, so a later poll widens the
+    span rather than replacing it — and re-folding cannot move it."""
+    _seed_dated(
+        archive_home,
+        [(1, "claude-code", "api_request_completed", "2026-03-10T10:00:00Z", _usage("m1", 10, 1))],
+    )
+    assert ta.stats()["timeline"]["months"] == ["2026-03"]
+
+    _seed_dated(
+        archive_home,
+        [(1, "claude-code", "api_request_completed", "2026-05-10T10:00:00Z", _usage("m1", 10, 1))],
+    )
+    t = ta.stats()["timeline"]
+    assert t["months"] == ["2026-03", "2026-04", "2026-05"]
+    assert t["conversations"] == [1, 0, 0]  # still one session, still dated where it began
+
+    ta.open_archive(str(archive_home))
+    from thread_archive._store import get_engine
+
+    with get_engine().begin() as c:
+        first, last = c.execute(
+            text("SELECT first_at, last_at FROM thread_activity WHERE thread_id = '1'")
+        ).first()
+    assert first.startswith("2026-03-10") and last.startswith("2026-05-10")

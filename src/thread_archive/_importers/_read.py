@@ -23,6 +23,8 @@ import logging
 from pathlib import Path
 from typing import Any
 
+from . import _probe
+
 logger = logging.getLogger(__name__)
 
 
@@ -50,7 +52,10 @@ def sanitize_payload(obj: Any) -> Any:
 
 def read_source_bytes(session_path: Path) -> bytes:
     """The transcript's raw bytes — the one read the importers do per poll."""
-    return Path(session_path).read_bytes()
+    with _probe.timed("read_ms"):
+        data = Path(session_path).read_bytes()
+    _probe.count("bytes", len(data))
+    return data
 
 
 def parse_session_lines_counted(data: bytes, name: str = "<transcript>") -> tuple[list[dict], int]:
@@ -68,17 +73,73 @@ def parse_session_lines_counted(data: bytes, name: str = "<transcript>") -> tupl
     """
     lines: list[dict] = []
     parse_errors = 0
-    text = data.decode("utf-8", errors="replace")
-    for line_num, line in enumerate(io.StringIO(text, newline=None), 1):
-        if line.strip():
-            try:
-                lines.append(sanitize_payload(json.loads(line)))
-            except json.JSONDecodeError as e:
-                parse_errors += 1
-                logger.warning("%s:%d — JSON parse error: %s", name, line_num, e)
+    with _probe.timed("parse_ms"):
+        text = data.decode("utf-8", errors="replace")
+        for line_num, line in enumerate(io.StringIO(text, newline=None), 1):
+            if line.strip():
+                try:
+                    lines.append(sanitize_payload(json.loads(line)))
+                except json.JSONDecodeError as e:
+                    parse_errors += 1
+                    logger.warning("%s:%d — JSON parse error: %s", name, line_num, e)
     if parse_errors:
         logger.warning("%s: %d lines skipped due to parse errors", name, parse_errors)
+    _probe.count("lines", len(lines))
     return lines, parse_errors
+
+
+class LazyLines:
+    """A transcript's parsed lines, parsed on first use.
+
+    An importer has to read a source's *bytes* before it can say anything — the
+    watermark's proof covers the whole file (:mod:`._cursor`). It does not have to
+    **parse** them: the parse is only needed once that proof says the file changed
+    under the cursor, and the common answer is that it didn't.
+
+    Parsing eagerly makes that answer expensive. Every poll of every file whose
+    fingerprint moved pays a full JSON pass over the whole transcript, and the
+    worst case is the first poll after a restart, where the in-memory fingerprint
+    cache is empty and *every* file in the archive is read and parsed to establish
+    that almost none of them changed. Measured on this archive that is ~3M lines
+    parsed to produce a handful of events, and it is the single largest line item
+    in ingest. Deferred, an unchanged file costs a read and a digest and nothing
+    else.
+
+    ``transform`` post-processes the parsed lines for a provider whose importer
+    works over a normalized shape rather than the raw ones (cowork), so its
+    normalization is deferred with the parse rather than pinning it eager.
+
+    :attr:`parse_errors` is zero until the parse actually happens, which is the
+    honest reading: lines that were never parsed were never dropped. It also stops
+    an unchanged file from re-reporting the same dropped lines on every poll — a
+    cumulative counter that a restart storm inflates without any new loss.
+    """
+
+    __slots__ = ("_data", "_name", "_transform", "_lines", "_parse_errors")
+
+    def __init__(self, data: bytes, name: str = "<transcript>", transform=None) -> None:
+        self._data = data
+        self._name = name
+        self._transform = transform
+        self._lines: Any = None
+        self._parse_errors = 0
+
+    def get(self) -> list[dict]:
+        """The parsed lines, parsing on the first call and caching after."""
+        if self._lines is None:
+            lines, self._parse_errors = parse_session_lines_counted(self._data, self._name)
+            self._lines = self._transform(lines) if self._transform is not None else lines
+        return self._lines
+
+    @property
+    def parse_errors(self) -> int:
+        """Lines dropped as unparseable — 0 until :meth:`get` has run."""
+        return self._parse_errors
+
+    @property
+    def parsed(self) -> bool:
+        """Whether the parse was actually needed on this pass."""
+        return self._lines is not None
 
 
 def parse_session_lines(data: bytes, name: str = "<transcript>") -> list[dict]:

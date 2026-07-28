@@ -417,6 +417,34 @@ def test_verify_backup_fails_on_effective_count_drop(archive_home, tmp_path) -> 
     assert ta.verify(backup=str(dest))["backup"]["ok"] is True
 
 
+def test_verify_backup_fails_on_a_mirror_above_the_live_truth(archive_home, tmp_path) -> None:
+    """A mirror holding more than the truth is holding content the archive let
+    go of — a renamed file's twin, a deletion the mirror never applied. The
+    surplus is what a restore rebuilds from, so it fails while the mirror can
+    still be pruned rather than surfacing later as an unexplained shrink."""
+    import_cc_session(tmp_path, name="one")
+    import_cc_session(tmp_path, name="two")
+    dest = tmp_path / "mirror"
+    ta.backup(str(dest))
+    assert ta.verify(backup=str(dest))["backup"]["ok"] is True
+
+    # The pre-rename name left behind: the same events under a second stem,
+    # which is two threads to a scan and two conflicting parents to a reindex.
+    twin = next((dest / "threads").rglob("*.jsonl"))
+    twin.with_name("legacy-42.jsonl").write_bytes(twin.read_bytes())
+
+    v = ta.verify(backup=str(dest))
+    assert v["backup"]["ok"] is False
+    assert "backup" in v["failed_components"]
+    excess = v["backup"]["coverage_excess"]
+    assert excess["coverage"] > excess["ceiling"]
+    assert excess["mirror_effective"] > excess["live_effective"]
+
+    # Unlike the shrink guard, this one is not absorbed by recording a new
+    # baseline: the surplus is still there on the next look, and so is the red.
+    assert ta.verify(backup=str(dest))["backup"]["ok"] is False
+
+
 def test_verify_hashes_covers_backup_mirror(archive_home, tmp_path):
     import_cc_session(tmp_path)
     dest = tmp_path / "mirror"

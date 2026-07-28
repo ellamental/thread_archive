@@ -156,7 +156,9 @@ test('stats drills into a model and back through real browser navigation', async
   const unhandled = await mockApi(page)
 
   await page.goto('/stats')
-  await page.getByRole('link', { name: MODEL }).click()
+  // The model is linked from its timeline panel and again from the table below it; the
+  // panel comes first and both go to the same place.
+  await page.getByRole('link', { name: MODEL }).first().click()
   await expect(page).toHaveURL(new RegExp(`/stats/model/${MODEL}$`))
   await expect(page.getByRole('heading', { name: MODEL })).toBeVisible()
 

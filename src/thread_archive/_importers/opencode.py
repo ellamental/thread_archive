@@ -40,6 +40,7 @@ from thread_archive._thread_import import DefaultEventBuilder
 from thread_archive._thread_import.timestamps import parse_timestamp
 
 from .._store import ImportState, get_session
+from . import _probe
 from ._events import assemble_events
 from ._result import DbScanResult
 from ._state import (
@@ -161,11 +162,13 @@ def import_opencode_from_payload(
     session=None,
 ) -> OpenCodeImportResult:
     """Import one OpenCode session (atomic per-session transaction when no session)."""
+    _probe.count("items")
     if session is not None:
         return _run_opencode(session, session_id, session_data, messages, parts_by_message)
     with get_session() as s:
         result = _run_opencode(s, session_id, session_data, messages, parts_by_message)
-        s.commit()
+        with _probe.timed("commit_ms"):
+            s.commit()
         return result
 
 

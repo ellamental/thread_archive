@@ -33,7 +33,8 @@ from thread_archive._thread_import import DefaultEventBuilder
 from thread_archive._thread_import.parsers.claude_code import ClaudeCodeParser
 
 from .._store import Thread, get_session
-from ._read import parse_session_lines_counted, read_source_bytes
+from . import _probe
+from ._read import LazyLines, read_source_bytes
 from ._result import IncrementalImportResult
 from ._state import _restage_thread
 from .claude_code import _import_cc
@@ -127,24 +128,42 @@ def import_cowork_session_incremental(
     # The cursor proves its append against the raw file bytes; the lines it cursors are
     # the normalized ones (a 1:1 map over the parsed lines, so the counts stay aligned).
     source_bytes = read_source_bytes(audit_path)
-    # A bare-scalar JSONL line parses to a non-dict; skip it so `.get()` can't crash.
-    parsed, parse_errors = parse_session_lines_counted(source_bytes, audit_path.name)
-    lines = [_normalize_cowork_line(ln) for ln in parsed if isinstance(ln, dict)]
+    # Parsed (and normalized) on first use, not here: the watermark below resolves
+    # from the bytes, and an unchanged audit log never needs either. A bare-scalar
+    # JSONL line parses to a non-dict; skip it so `.get()` can't crash.
+    lines = LazyLines(
+        source_bytes, audit_path.name,
+        transform=lambda parsed: [
+            _normalize_cowork_line(ln) for ln in parsed if isinstance(ln, dict)
+        ],
+    )
     title = _read_cowork_title(Path(metadata_path)) if metadata_path is not None else None
 
-    stats = _session_stats(lines)
+    def _finish(s, result: IncrementalImportResult) -> IncrementalImportResult:
+        """Fold the session aggregates and the parse count onto one import.
+
+        Both are gated on the parse having happened. The stats derive from the
+        audit lines, so an unchanged file recomputes the same ones and
+        :func:`_merge_session_stats` no-ops on them anyway — forcing the parse to
+        rediscover that would spend the whole saving this laziness exists for."""
+        if lines.parsed:
+            _merge_session_stats(s, result.thread_id, _session_stats(lines.get()))
+            if lines.parse_errors:
+                result = replace(result, parse_errors=lines.parse_errors)
+        return result
+
+    _probe.count("items")
     if session is not None:
-        result = _import_cc(
+        # Caller-owned transaction: their commit, their timing.
+        return _finish(session, _import_cc(
             session, source_id, lines, source_bytes, parser, builder,
             source=SOURCE, title_override=title,
-        )
-        _merge_session_stats(session, result.thread_id, stats)
-        return replace(result, parse_errors=parse_errors) if parse_errors else result
+        ))
     with get_session() as s:
-        result = _import_cc(
+        result = _finish(s, _import_cc(
             s, source_id, lines, source_bytes, parser, builder,
             source=SOURCE, title_override=title,
-        )
-        _merge_session_stats(s, result.thread_id, stats)
-        s.commit()
-        return replace(result, parse_errors=parse_errors) if parse_errors else result
+        ))
+        with _probe.timed("commit_ms"):
+            s.commit()
+        return result

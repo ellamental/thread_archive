@@ -34,6 +34,7 @@ from .._importers import (
     import_opencode_db,
     import_session_incremental,
 )
+from . import fingerprints
 from .base import SourceDiscovery, SourceWatcher, WatchResult, fingerprint_poll
 from .paths import app_data_dir
 
@@ -86,7 +87,11 @@ class FileSessionWatcher(SourceWatcher):
 
     def __init__(self) -> None:
         # Per-file (mtime_ns, size) fingerprints, pruned each poll to files on disk.
+        # Loaded from disk on the first poll (see :mod:`.fingerprints`) so a restart
+        # doesn't re-read the whole archive to rediscover what it already knew;
+        # deferred to the poll because the archive home isn't resolvable here.
         self._seen: dict[str, tuple[int, int]] = {}
+        self._seen_loaded = False
 
     def iter_files(self) -> Iterator[tuple[Path, str]]:
         raise NotImplementedError
@@ -131,11 +136,18 @@ class FileSessionWatcher(SourceWatcher):
         return WatchResult(sources_checked=1, errors=[msg])
 
     def poll(self, on_item: Optional[Callable[[WatchResult], None]] = None) -> WatchResult:
-        return fingerprint_poll(
+        if not self._seen_loaded:
+            self._seen.update(fingerprints.load(self.source_name))
+            self._seen_loaded = True
+        result = fingerprint_poll(
             self.iter_files(), self._seen,
             probe=self._probe, work=self._work, on_error=self._import_error,
             on_item=on_item,
         )
+        # Throttled inside; the map is a few hundred KB and the loop polls every
+        # few seconds, so saving per poll would cost more than the reads it saves.
+        fingerprints.save(self.source_name, self._seen)
+        return result
 
 
 class ClaudeCodeWatcher(FileSessionWatcher):

@@ -35,7 +35,7 @@ threat model is correspondingly narrow, and these are its load-bearing walls:
   `THREAD_ARCHIVE_MCP_INGEST=1` is a separate, explicit process-level opt-in to
   local catch-up ingestion; setup-generated stdio entries set it when the
   always-on watcher is skipped. The shared MCP LaunchAgent pins it off unless
-  installed with `thread-archive daemon install --mcp --mcp-ingest`; leave it off when
+  installed with `thread-archive service install --mcp --mcp-ingest`; leave it off when
   the watcher owns ingestion.
 - **Source privacy policy fails closed.** An absent `config.json` is the normal
   pre-setup default, but an existing file that cannot be read, parsed, or
@@ -46,7 +46,7 @@ threat model is correspondingly narrow, and these are its load-bearing walls:
   came from models, tools, and web content. An agent consuming
   `thread_search` output should treat it like any other retrieved document:
   data, not instructions. The archive never executes archived content itself.
-- **`thread-archive fix-import` collects your transcripts into a scaffold.** It copies
+- **`thread-archive source fix` collects your transcripts into a scaffold.** It copies
   real drifted source files into `<home>/plugins/<provider>/samples/` so the
   fix can be diagnosed against them — private conversation content, sitting in
   a directory you will likely point an agent at. Archive itself runs no agent

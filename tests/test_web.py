@@ -127,6 +127,27 @@ def test_status_endpoint(archive_home):
     assert payload["backup_same_device"] is None
 
 
+def test_status_dates_each_source_by_its_own_last_import(archive_home):
+    """The provider table's age column. The watcher's counters are cumulative
+    since the capture process started, so a provider quiet for a month and one
+    quiet since the last restart look identical there; the import watermark is
+    what separates them, per source.
+
+    The stamp must come back UTC-labelled — SQLite hands it back naive, and a
+    reader that takes a naive stamp as local time ages every source by the
+    machine's offset from UTC."""
+    from datetime import datetime, timezone
+
+    _seed(archive_home)
+    _seed_codex(archive_home)
+    stamps = _get("/api/status")[2]["source_last_import"]
+
+    assert set(stamps) == {"claude-code", "codex"}
+    at = datetime.fromisoformat(stamps["codex"])
+    assert at.tzinfo is not None
+    assert abs((datetime.now(timezone.utc) - at).total_seconds()) < 300
+
+
 def test_disk_endpoint(archive_home):
     """The storage section's source. Separate from /api/status because it walks
     the home — the health page polls status every 30s and this every 5 minutes."""

@@ -1,9 +1,12 @@
 """What a recorded measurement was taken *of* — the code and the configuration.
 
-Every ledger in the lab (``bench-runs.jsonl``, ``latency-runs.jsonl``,
-``bench-runs.jsonl``) stamps its rows with the same two facts, and they belong in
-one place: a number whose commit and ``SearchParams`` are recorded is auditable,
-and one whose aren't is a value that existed only in the moment it printed.
+Every ledger in the lab stamps its rows with the same two facts, and they belong
+in one place: a number whose commit and ``SearchParams`` are recorded is
+auditable, and one whose aren't is a value that existed only in the moment it
+printed. The ledgers sit where their subject does — ``bench-runs.jsonl`` in the
+lab's state root (its rows measure public benchmark corpora) and
+``latency-runs.jsonl`` in the archive home (its rows measure searches over that
+archive, replayed from its own usage ledger).
 
 Both are best-effort. A ledger stamp must never be the thing that breaks the run
 it is recording, so an absent git checkout records no commit rather than raising.

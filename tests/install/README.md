@@ -20,8 +20,8 @@ complementary proofs, sharing one synthetic corpus (`make_fixtures.py`):
 
 | lane | what | where | trigger |
 |------|------|-------|---------|
-| `install` (`ci.toml`) | clean Docker container: full unit suite + `e2e_check.py` + `first_run.py` | Linux (container) | every archive commit, via thread-ci |
-| `package` (`ci.toml` / GitHub Actions) | build the wheel, install into a clean venv, run the CLI lifecycle incl. `first_run.py` | **macOS** (thread-ci) and **Linux** (GitHub Actions `package` job) | every commit |
+| `install` (`ci.toml`) | clean Docker container: full unit suite + `e2e_check.py` + `first_run.py` | Linux (container) | every archive commit, on the maintainer's local CI |
+| `package` (`ci.toml` / GitHub Actions) | build the wheel, install into a clean venv, run the CLI lifecycle incl. `first_run.py` | **macOS** (maintainer's local CI) and **Linux** (GitHub Actions `package` job) | every commit |
 
 So `first_run.py` — the realistic discovery-driven proof — runs on both OSes: inside a
 clean Linux container (the `install` lane) and against a clean wheel-only venv on macOS and

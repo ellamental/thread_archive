@@ -72,10 +72,12 @@ _WINDOW = 250_000
 #: rather than silently credited to everyone who ever edited it.
 _HISTORY_WALK = 500
 
-#: Files per commit whose contributors are resolved. A bulk checkpoint commit can
-#: carry hundreds of paths and each is a query; the commit's own file count travels
-#: in the result, so a truncated pass is visible rather than implied.
-_COMMIT_FILE_CAP = 300
+#: Paths bound into one ``IN (...)`` lookup. A commit's files are resolved in
+#: batches grouped by their authorship floor, so a checkpoint commit carrying
+#: thousands of paths costs a handful of queries rather than one per file. Kept
+#: well under SQLite's 999-variable default so a batch is never the thing that
+#: fails.
+_PATH_BATCH = 400
 
 #: How many distinct paths a result samples. A repo-wide pattern matches hundreds
 #: of files per thread and the caller wants the *sessions*; the true count rides
@@ -659,34 +661,54 @@ def blame_commit(
 
         ceiling = resolve_relative_date(facts["committed_at"])
         floors, capped = _previous_touch(facts["sha"], facts["repo"], facts["files"])
-        contributors: dict[str, dict] = {}
-        for rel in facts["files"][:_COMMIT_FILE_CAP]:
+        # Every file is resolved, never a prefix of them: a contributor is as likely
+        # to be in a checkpoint commit's last hundred paths as its first, and a
+        # truncated pass reports those sessions as absent rather than as unexamined.
+        # Files sharing a floor share a window, and a commit's files were mostly last
+        # committed together — so grouping by floor turns a query per file into a
+        # query per distinct floor, which is what makes resolving all of them cheap.
+        by_floor: dict[Optional[str], list[str]] = {}
+        rel_of: dict[str, str] = {}
+        for rel in facts["files"]:
             absolute = normalize_path(rel, facts["repo"])
-            if not absolute:
+            if not absolute or absolute in rel_of:
                 continue
-            params: dict = {"p": absolute, "hi": ceiling}
+            rel_of[absolute] = rel
             floor = floors.get(rel)
-            window = ""
-            if floor:
-                params["lo"] = resolve_relative_date(floor)
-                window = " AND p.occurred_at > :lo"
-            for tid, title, source, op, n, last_at, last_event in s.execute(sa_text(
-                "SELECT p.thread_id, t.title, t.source, p.op, count(*) AS n, "
-                "       max(p.occurred_at) AS last_at, max(p.event_id) AS last_event "
-                "FROM event_paths p JOIN threads t ON t.id = p.thread_id "
-                "WHERE p.path = :p AND p.occurred_at <= :hi" + window
-                + "  AND p.op IN ('edit', 'write', 'delete') AND t.thread_type != 'system' "
-                "GROUP BY p.thread_id, p.op"
-            ), params).all():
-                entry = contributors.setdefault(tid, {
-                    "thread_id": tid, "title": title, "source": source,
-                    "matched_files": set(), "ops": {}, "last": last_at,
-                    "event_id": last_event, "committed": False,
-                })
-                entry["matched_files"].add(rel)
-                entry["ops"][op] = entry["ops"].get(op, 0) + int(n)
-                if (last_at or "") > (entry["last"] or ""):
-                    entry["last"], entry["event_id"] = last_at, last_event
+            by_floor.setdefault(
+                resolve_relative_date(floor) if floor else None, []).append(absolute)
+
+        contributors: dict[str, dict] = {}
+        for floor, paths in by_floor.items():
+            for start in range(0, len(paths), _PATH_BATCH):
+                batch = paths[start:start + _PATH_BATCH]
+                params: dict = {f"p{i}": p for i, p in enumerate(batch)}
+                params["hi"] = ceiling
+                window = ""
+                if floor:
+                    params["lo"] = floor
+                    window = " AND p.occurred_at > :lo"
+                for path, tid, title, source, op, n, last_at, last_event in s.execute(
+                    sa_text(
+                        "SELECT p.path, p.thread_id, t.title, t.source, p.op, "
+                        "       count(*) AS n, max(p.occurred_at) AS last_at, "
+                        "       max(p.event_id) AS last_event "
+                        "FROM event_paths p JOIN threads t ON t.id = p.thread_id "
+                        "WHERE p.path IN (" + ", ".join(f":p{i}" for i in range(len(batch)))
+                        + ") AND p.occurred_at <= :hi" + window
+                        + "  AND p.op IN ('edit', 'write', 'delete') "
+                        "  AND t.thread_type != 'system' "
+                        "GROUP BY p.path, p.thread_id, p.op"
+                    ), params).all():
+                    entry = contributors.setdefault(tid, {
+                        "thread_id": tid, "title": title, "source": source,
+                        "matched_files": set(), "ops": {}, "last": last_at,
+                        "event_id": last_event, "committed": False,
+                    })
+                    entry["matched_files"].add(rel_of[path])
+                    entry["ops"][op] = entry["ops"].get(op, 0) + int(n)
+                    if (last_at or "") > (entry["last"] or ""):
+                        entry["last"], entry["event_id"] = last_at, last_event
         # The session that ran the commit belongs in the list whether or not it
         # edited anything — it may have committed another session's work, which is
         # exactly the case that made "the committer is the author" wrong.

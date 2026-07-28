@@ -47,7 +47,7 @@ Metrics, overall and per question category: mean per-question **recall@k**
 strict metric), and **nDCG@k** (binary relevance). Read recall@k against the
 references above.
 
-Not the real archive, and not Ella's domain: these are third-party conversation
+Not the real archive, and not its domain: these are third-party conversation
 corpora that look nothing like an agent's own session log — a strong number
 certifies the stack retrieves conversational evidence competitively in general,
 the same complementary-tier caveat BEIR and CDR carry. Refuses the real archive

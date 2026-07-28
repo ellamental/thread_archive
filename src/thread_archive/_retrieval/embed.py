@@ -368,3 +368,40 @@ def embed_query(text: str) -> Optional[list[float]]:
 def embed_documents(texts: list[str]) -> Optional[list[list[float]]]:
     """Embed indexed content with the process embedder. None on any failure."""
     return _DEFAULT.embed_documents(texts)
+
+
+def release_accelerator_cache() -> bool:
+    """Hand the torch allocator's cached-but-free accelerator blocks back to the OS.
+
+    Torch's MPS/CUDA allocators keep every block they ever hand out, so a process's
+    accelerator footprint becomes the high-water mark of its largest encode and stays
+    there for the life of the process. On Apple Silicon that memory is unified and
+    *dirty anonymous* — the kind the kernel can only relieve by swapping, not by
+    dropping clean pages — which makes an embed drain's peak, not its steady state,
+    what the host pays for until something gives it back. Measured on a 512-doc
+    drain: 5411 MB held, 526 MB of it actually live.
+
+    Call after a bulk document drain, never on the query path. Releasing costs the
+    next encode a re-acquire, which is negligible once per drain and wasteful once
+    per search.
+
+    Returns whether an allocator was released. Never raises: reclaiming memory is an
+    optimization, and a drain that embedded correctly has done its job either way.
+    """
+    # No torch in sys.modules means nothing ever built an allocator to drain, and
+    # importing it here purely to ask would cost more than it could return.
+    if "torch" not in sys.modules:
+        return False
+    try:
+        import torch
+
+        if torch.backends.mps.is_available():
+            torch.mps.empty_cache()
+        elif torch.cuda.is_available():
+            torch.cuda.empty_cache()
+        else:
+            return False
+        return True
+    except Exception:  # noqa: BLE001 — advisory; never break an indexing pass
+        logger.debug("embed: could not release the accelerator cache", exc_info=True)
+        return False

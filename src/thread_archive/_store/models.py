@@ -510,6 +510,11 @@ class RequestMetric(Base):
     thread_id: Mapped[str] = mapped_column(Text, primary_key=True)
     request_key: Mapped[str] = mapped_column(Text, primary_key=True)
     model: Mapped[str] = mapped_column(Text, nullable=False, default="", server_default="")
+    # The request's own calendar month, 'YYYY-MM' (UTC), off its ``occurred_at``. Kept
+    # here rather than derived at read time because that would mean re-JSON-scanning the
+    # event log — the cost this ledger exists to pay once. Null only for a row folded
+    # before the column existed, which the projection version then rebuilds.
+    month: Mapped[str | None] = mapped_column(Text, nullable=True, default=None)
     input_tokens: Mapped[int] = mapped_column(BigInteger, default=0, server_default=text("0"))
     cache_read_tokens: Mapped[int] = mapped_column(
         BigInteger, default=0, server_default=text("0")
@@ -520,7 +525,38 @@ class RequestMetric(Base):
     # what keeps "no cost recorded" distinguishable from a genuine $0 once summed.
     cost: Mapped[float | None] = mapped_column(REAL, nullable=True, default=None)
 
-    __table_args__ = (Index("idx_request_metrics_thread_model", "thread_id", "model"),)
+    __table_args__ = (
+        Index("idx_request_metrics_thread_model", "thread_id", "model"),
+        Index("idx_request_metrics_month", "month"),
+    )
+
+
+class ThreadActivity(Base):
+    """When each thread was live: the first and last ``occurred_at`` across all its
+    events, whatever their type.
+
+    The stats page's time axis. ``threads.inserted_at`` cannot serve it — that is when
+    the archive *ingested* a conversation, so every provider export ever imported
+    collapses onto its import day and three years of history reads as one spike. The
+    event timestamps are the conversation's own clock, and this table is where they
+    become cheap to ask for: surveying ``MIN/MAX(occurred_at)`` per thread is a full
+    scan of a multi-GB log, far too slow per request.
+
+    Folded over *every* event type, not just ``api_request_completed`` — a source that
+    records no token usage at all (a web export) still has messages, and dropping those
+    threads would silently erase the archive's whole early history from the timeline.
+
+    A disposable projection of the event log, like the metrics tables beside it, and
+    rebuilt by the same cursor.
+    """
+
+    __tablename__ = "thread_activity"
+
+    thread_id: Mapped[str] = mapped_column(Text, primary_key=True)
+    first_at: Mapped[str] = mapped_column(Text, nullable=False)
+    last_at: Mapped[str] = mapped_column(Text, nullable=False)
+
+    __table_args__ = (Index("idx_thread_activity_first", "first_at"),)
 
 
 class MetricsCursor(Base):
@@ -570,8 +606,13 @@ class KgEvent(Base):
     entity_type: Mapped[str] = mapped_column(Text)
     entity_id: Mapped[str | None] = mapped_column(Text, default=None)
     payload: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
+    # Who performed the mutation, as the writing layer names itself ('gardener',
+    # a skill, an agent harness, a backfill script). Archive authors none of these
+    # records and cannot infer an identity for one that arrives without a name, so
+    # the default states that rather than guessing a writer — matching the
+    # ``unknown`` the ``topic_messages.actor`` projection below already carries.
     actor: Mapped[str] = mapped_column(
-        Text, default="librarian", server_default=text_default("librarian")
+        Text, default="unknown", server_default=text_default("unknown")
     )
     actor_thread_id: Mapped[str | None] = mapped_column(Text, nullable=True)
     caused_by_event_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)

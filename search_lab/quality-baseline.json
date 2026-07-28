@@ -1,0 +1,109 @@
+{
+ "accepted_at": "2026-07-28T17:47:48+00:00",
+ "rows": {
+  "beir:scifact[lexical]": {
+   "at": "2026-07-27T23:34:21+00:00",
+   "commit": "57846b2",
+   "code_id": "c26d4eddb4132587",
+   "n": 300,
+   "measures": {
+    "ndcg10": 0.5793,
+    "mrr10": 0.5249,
+    "recall10": 0.7731
+   },
+   "corpus_id": "9b7bce6344de1ad8"
+  },
+  "beir:scifact[vectors]": {
+   "at": "2026-07-27T23:35:27+00:00",
+   "commit": "57846b2",
+   "code_id": "c26d4eddb4132587",
+   "n": 300,
+   "measures": {
+    "ndcg10": 0.7093,
+    "mrr10": 0.6666,
+    "recall10": 0.8584
+   },
+   "corpus_id": "9b7bce6344de1ad8"
+  },
+  "beir:nfcorpus[lexical]": {
+   "at": "2026-07-27T23:35:39+00:00",
+   "commit": "57846b2",
+   "code_id": "c26d4eddb4132587",
+   "n": 323,
+   "measures": {
+    "ndcg10": 0.2911,
+    "mrr10": 0.4767,
+    "recall10": 0.1463
+   },
+   "corpus_id": "7eaef10c4fed3432"
+  },
+  "beir:nfcorpus[vectors]": {
+   "at": "2026-07-27T23:37:58+00:00",
+   "commit": "57846b2",
+   "code_id": "c26d4eddb4132587",
+   "n": 323,
+   "measures": {
+    "ndcg10": 0.3558,
+    "mrr10": 0.5702,
+    "recall10": 0.1728
+   },
+   "corpus_id": "7eaef10c4fed3432"
+  },
+  "locomo[lexical]": {
+   "at": "2026-07-27T23:38:15+00:00",
+   "commit": "57846b2",
+   "code_id": "23a8376abb3b76e0",
+   "n": 1981,
+   "measures": {
+    "recall10": 0.6146,
+    "recall_all10": 0.5709,
+    "ndcg10": 0.4851
+   }
+  },
+  "locomo[vectors]": {
+   "at": "2026-07-27T23:39:18+00:00",
+   "commit": "57846b2",
+   "code_id": "23a8376abb3b76e0",
+   "n": 1981,
+   "measures": {
+    "recall10": 0.6716,
+    "recall_all10": 0.6219,
+    "ndcg10": 0.5213
+   }
+  },
+  "longmemeval[lexical]": {
+   "at": "2026-07-27T23:39:25+00:00",
+   "commit": "57846b2",
+   "code_id": "23a8376abb3b76e0",
+   "n": 470,
+   "measures": {
+    "recall10": 0.9406,
+    "recall_all10": 0.8915,
+    "ndcg10": 0.8801
+   }
+  },
+  "beam:100K[lexical]": {
+   "at": "2026-07-27T23:45:45+00:00",
+   "commit": "57846b2",
+   "code_id": "23a8376abb3b76e0",
+   "n": 354,
+   "measures": {
+    "recall10": 0.5272,
+    "recall_all10": 0.435,
+    "ndcg10": 0.4555
+   }
+  },
+  "cdr[vectors]": {
+   "at": "2026-07-27T20:41:26+00:00",
+   "commit": "65a5812",
+   "code_id": "c314497bd154903a",
+   "n": 1583,
+   "measures": {
+    "ndcg10": 0.4936,
+    "mrr10": 0.7418,
+    "recall10": 0.2667
+   },
+   "corpus_id": "e18f79d806af6ecc"
+  }
+ }
+}

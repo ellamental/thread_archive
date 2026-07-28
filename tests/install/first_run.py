@@ -18,7 +18,7 @@ failure.
     python tests/install/first_run.py --keep     # leave the fake home for inspection
 
 The ``package`` pytest lane calls :func:`run` against a clean wheel-only venv (macOS via
-thread-ci, Linux via GitHub Actions); the Docker install lane runs this as a script inside
+the maintainer's local CI, Linux via GitHub Actions); the Docker install lane runs this as a script inside
 a clean container. One corpus, one code path, both OSes.
 """
 

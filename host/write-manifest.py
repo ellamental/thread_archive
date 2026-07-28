@@ -60,6 +60,9 @@ def build_manifest(*, home: str | None = None, web: bool = True) -> tuple[Path, 
     if web:
         manifest["console"] = {"url": WEB_BASE}
         manifest["health"] = {"url": f"{WEB_BASE}/api/health"}
+    # The librarian server ships in the separate thread-librarian package (topic
+    # curation over this archive's data plane), so it is listed conditionally —
+    # the existence filter below drops it on an install that doesn't have it.
     mcp = [
         {"name": "thread-archive", "command": str(REPO_ROOT / ".venv" / "bin" / "archive-mcp")},
         {

@@ -21,6 +21,7 @@ from __future__ import annotations
 import logging
 import uuid
 from datetime import datetime
+from time import perf_counter
 from typing import Iterable, Optional
 
 from sqlalchemy import func, select
@@ -32,6 +33,7 @@ from thread_archive._thread_import.parsers.validators import validate_messages
 
 from .._store import Event
 from .._truth import write_events
+from . import _probe
 from ._validation_ledger import record_drift
 from ._versions import note_new_versions
 
@@ -156,8 +158,10 @@ def assemble_events(
     prev_occurred_at: Optional[datetime] = base_prev_ts
     # Seed from the thread's open turn so an assistant reply that arrives in a later
     # poll than its user line joins that turn instead of stranding itself in a new one.
-    current_stream_id: Optional[str] = _last_stream_id(session, thread_id)
+    with _probe.timed("dedup_ms"):
+        current_stream_id: Optional[str] = _last_stream_id(session, thread_id)
 
+    _t_build = perf_counter()
     built: list[tuple[str, list]] = []
     for msg in messages:
         role = msg.get("role", "")
@@ -188,10 +192,12 @@ def assemble_events(
             # inherits a monotonic time (never a silent now()).
             prev_occurred_at = events[-1].occurred_at
         built.append((role, events))
+    _probe.record("build_ms", _t_build)
 
-    seen = _existing_dedup_keys(
-        session, thread_id, {te.dedup_key for _, evs in built for te in evs if te.dedup_key}
-    )
+    with _probe.timed("dedup_ms"):
+        seen = _existing_dedup_keys(
+            session, thread_id, {te.dedup_key for _, evs in built for te in evs if te.dedup_key}
+        )
     batch: list[Event] = []
     skip_until_next_user = False
 
@@ -200,17 +206,20 @@ def assemble_events(
         # whose anchor (content + timestamp) is already in the thread.
         if cross_pass_dedup:
             if role == "user":
-                skip_until_next_user = _message_already_present(
-                    session, thread_id, _anchor_event(events, "user_message_sent")
-                )
+                with _probe.timed("dedup_ms"):
+                    skip_until_next_user = _message_already_present(
+                        session, thread_id, _anchor_event(events, "user_message_sent")
+                    )
                 if skip_until_next_user:
                     continue
             elif role == "assistant":
                 if skip_until_next_user:
                     continue
-                if _message_already_present(
-                    session, thread_id, _anchor_event(events, "api_request_completed")
-                ):
+                with _probe.timed("dedup_ms"):
+                    present = _message_already_present(
+                        session, thread_id, _anchor_event(events, "api_request_completed")
+                    )
+                if present:
                     continue
 
         for te in events:
@@ -221,13 +230,16 @@ def assemble_events(
             batch.append(_to_event(thread_id, te))
 
     if batch:
-        write_events(session, batch)
+        with _probe.timed("write_ms"):
+            write_events(session, batch)
         # Index the new events into the FTS surface in the same transaction, so
         # search stays current without a full rebuild and FTS commits atomically
         # with the events + truth log.
         from .._retrieval.fts import index_events
 
-        index_events(session, batch)
+        with _probe.timed("fts_ms"):
+            index_events(session, batch)
+    _probe.count("events", len(batch))
     return len(batch), last_uuid
 
 
@@ -333,12 +345,14 @@ def import_lines(
         "provider": "claude-code",
         "sessions": [{"session_id": "incremental", "project": "incremental", "lines": lines}],
     }
-    messages = parser.parse_export(session_data)
-    preserve_unmodeled_fields(messages, provider=source)
-    log_parse_validation(
-        messages,
-        provider=source,
-        conversation_id=source_id or "incremental",
-        batch_safe=True,
-    )
+    with _probe.timed("normalize_ms"):
+        messages = parser.parse_export(session_data)
+    with _probe.timed("validate_ms"):
+        preserve_unmodeled_fields(messages, provider=source)
+        log_parse_validation(
+            messages,
+            provider=source,
+            conversation_id=source_id or "incremental",
+            batch_safe=True,
+        )
     return assemble_events(session, thread_id, messages, builder, cross_pass_dedup=cross_pass_dedup)

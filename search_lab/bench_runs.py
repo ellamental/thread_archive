@@ -1,4 +1,4 @@
-"""The benchmark run ledger: ``~/.thread/archive/bench-runs.jsonl``.
+"""The benchmark run ledger: ``~/.local/state/thread-search-lab/bench-runs.jsonl``.
 
 ``python -m search_lab benchmark`` runs the bench as a set, and this is where a
 run lands: one row per benchmark, carrying what ran, over which corpus, against
@@ -20,9 +20,15 @@ and report the old numbers. The commit is recorded too, but only as the human
 label for a row.
 
 Append-only JSONL, advisory, fail-soft — a ledger write must never break the run
-it records. ``THREAD_ARCHIVE_BENCH_RUNS_LOG=0`` disables it. Lives at the archive
-home root beside the other operator ledgers: the benchmark corpora are throwaway
-homes rebuilt on a whim, and this history has to outlive them.
+it records. ``THREAD_ARCHIVE_BENCH_RUNS_LOG=0`` disables it.
+
+Lives in the lab's own state root (``eval_home.state_root``), which is neither
+the archive home nor the corpus cache. Not the archive home because nothing on
+this bench measures the archive — every row scores a throwaway corpus built from
+a public dataset, so an install's directory has no business holding it. Not the
+corpus cache because that tree is documented as safe to delete, and these rows
+are the one part of a bench pass that cannot be rebuilt: the code and corpus a
+row measured are gone the moment either changes.
 """
 
 from __future__ import annotations
@@ -58,14 +64,16 @@ def _repo_root() -> Path:
 
 
 def ledger_home() -> Path:
-    """The archive home root, ignoring ``THREAD_ARCHIVE_HOME``.
+    """The lab's state root — where this history lives.
 
-    The benchmark harnesses pin that variable at their own throwaway corpus for
-    the length of a run, so honoring it here would scatter the history across the
-    homes it describes — and those get wiped and rebuilt."""
-    from thread_archive._config import default_home
+    Deliberately blind to ``THREAD_ARCHIVE_HOME``: the harnesses pin that at
+    their own throwaway corpus for the length of a run, so honoring it would
+    scatter the history across the very homes it describes, and those get wiped
+    and rebuilt. A ledger location has to be a fact about the box, not about
+    whichever corpus is mounted."""
+    from eval_home import state_root
 
-    return default_home()
+    return state_root()
 
 
 def hash_sources(root: Path, entries: tuple[str, ...]) -> str:

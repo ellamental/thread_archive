@@ -357,6 +357,31 @@ const stats = {
       conversations: 1,
     },
   ],
+  timeline: {
+    months: ['2026-05', '2026-06', '2026-07'],
+    undated: 0,
+    conversations: [0, 1, 0],
+    tokens: [0, 1500, 0],
+    cost: [null, null, null],
+    conversations_by_source: [{ key: 'claude-code', values: [0, 1, 0] }],
+    tokens_by_model: [{ key: MODEL, values: [0, 1500, 0] }],
+  },
+  session_sizes: {
+    buckets: [
+      { lo: 0, hi: 1000, count: 0 },
+      { lo: 1000, hi: 5000, count: 1 },
+      { lo: 5000, hi: null, count: 0 },
+    ],
+    sessions: 1,
+    without_tokens: 0,
+    median: 1500,
+    p90: 1500,
+  },
+  rhythm: {
+    grid: Array.from({ length: 7 }, (_, d) => Array.from({ length: 24 }, (_, h) => (d === 0 && h === 12 ? 1 : 0))),
+    max: 1,
+    total: 1,
+  },
 }
 
 const modelStats = {
@@ -475,6 +500,7 @@ export async function mockApi(page: Page): Promise<string[]> {
         },
         last_source_mirror: { at: healthNow, ok: true, copied: 1, files: 2, bytes_out: 1024, errors: 0 },
         last_self_update: { at: healthNow, ok: true, action: 'up-to-date', current: '0.9.1' },
+        source_last_import: { 'claude-code': healthNow },
         pipeline: {
           ran: true,
           ok: true,

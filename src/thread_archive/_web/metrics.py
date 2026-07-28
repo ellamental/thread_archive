@@ -35,7 +35,6 @@ metrics write must never break the request it describes.
 
 from __future__ import annotations
 
-import json
 import logging
 import os
 import threading
@@ -44,6 +43,7 @@ from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, Iterator, Optional
 
 from .._config import resolve_paths
+from .._ops import ledger as _ledger
 
 if TYPE_CHECKING:  # the probe is duck-typed at runtime — no import cost per request
     from .._retrieval._probe import SearchProbe
@@ -75,13 +75,14 @@ def serving() -> Iterator[None]:
 
 
 def max_bytes() -> int:
-    """Size at which the ledger rotates to ``.jsonl.1`` (8 MB by default).
+    """Size at which the ledger rotates to a new segment (8 MB by default).
 
-    Smaller than the retrieval ledger's cap: these rows are small and a browsing
-    session makes a great many of them, and unlike search usage they have no second
-    life as eval material — the recent distribution is the whole value.
+    Smaller than the retrieval ledger's cap because these rows are small and a
+    browsing session makes a great many of them — it bounds what one read walks,
+    not how much history is kept. Rotation retains every segment
+    (:mod:`.._ops.ledger`).
     """
-    return int(os.environ.get("THREAD_ARCHIVE_WEB_METRICS_MAX_BYTES") or 8 * 1024 * 1024)
+    return _ledger.env_max_bytes("THREAD_ARCHIVE_WEB_METRICS_MAX_BYTES", 8 * 1024 * 1024)
 
 
 def _enabled() -> bool:
@@ -130,13 +131,6 @@ def record_request(
     if context:
         record["context"] = context
     try:
-        p = resolve_paths().home / LEDGER_FILE
-        try:
-            if p.stat().st_size >= max_bytes():
-                p.replace(p.with_suffix(".jsonl.1"))
-        except FileNotFoundError:
-            pass
-        with open(p, "a", encoding="utf-8") as fh:
-            fh.write(json.dumps(record, separators=(",", ":")) + "\n")
-    except OSError:
+        _ledger.append(resolve_paths().home / LEDGER_FILE, record, max_bytes=max_bytes())
+    except Exception:  # noqa: BLE001 — telemetry must never break the request
         logger.warning("could not record web request metrics", exc_info=True)

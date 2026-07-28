@@ -19,7 +19,7 @@ Your agent searches, reads around the hits, and comes back with what you decided
 - Full-text and semantic search, fused and re-ranked, filterable by time, source, tool, and content type; an empty query browses recent activity.
 - Exposed over MCP (`thread_search`, `thread_read`), so Claude (or any MCP client) can search and read your entire history mid-conversation.
 - The same two tools are CLI verbs — `thread-archive search "auth flow" --since 30d`, `thread-archive read <id>` — one implementation behind both, so what you get at a prompt is what your agent gets.
-- Search is the access layer over the archive, not the archive itself — an agent typically fires several searches, reformulates, and reads around a hit, and the archive underneath guarantees the conversation is *there* to find. Quality is measured against public benchmarks somebody else labeled, read beside the baseline their own leaderboard publishes — a deliberate run on a ranking change, not a CI row; what rides CI is a probe that the search arms still load at all. No protocol that labels this archive's own corpus certifies that search is good, and nothing gates on one. The numbers, the protocol, and its limits live in [docs/search-quality.md](docs/search-quality.md). Your install reports whether search is *degraded* (`thread-archive status`, the viewer's health page) rather than a score — a metric with no baseline beside it isn't something you can act on.
+- Search is the access layer over the archive, not the archive itself — an agent typically fires several searches, reformulates, and reads around a hit, and the archive underneath guarantees the conversation is *there* to find. Quality is measured against public benchmarks somebody else labeled, read beside the baseline their own leaderboard publishes — a deliberate run on a ranking change, and a gate at release time that holds those numbers to a checked-in bar, but not a CI row; what rides CI is a probe that the search arms still load at all. No protocol that labels this archive's own corpus certifies that search is good, and nothing gates on one. The numbers, the protocol, and its limits live in [docs/search-quality.md](docs/search-quality.md). Your install reports whether search is *degraded* (`thread-archive status`, the viewer's health page) rather than a score — a metric with no baseline beside it isn't something you can act on.
 
 **Indexed by code, not just by words.** Every path your agents' tools named — each
 `Edit`, `Read`, `Write`, `apply_patch` header, and path-shaped shell argument, in
@@ -54,7 +54,7 @@ existing archive and rebuilds with `reindex`.
 
 **No hosted backend. No cloud. No subscription to lose your history to.** A background watcher keeps it current; every process — the MCP server, the web viewer, the daemons — runs locally, on your machine.
 
-**Dev tooling for one well-provisioned workstation.** macOS and Linux are the supported platforms — the always-on daemons are launchd LaunchAgents on macOS and systemd `--user` units on Linux (both lanes CI-tested; macOS has the most mileage) — and the archive is single-user, single-machine. It assumes workstation-class headroom, too: optional semantic search keeps a multi-GB torch model resident, a normal cost on the machine this is for.
+**Dev tooling for one well-provisioned workstation.** macOS and Linux are the supported platforms — the always-on daemons are launchd LaunchAgents on macOS and systemd `--user` units on Linux (public CI runs the Linux lane; the launchd lifecycle is verified on the maintainer's own machine, which is also where the product has the most mileage) — and the archive is single-user, single-machine. It assumes workstation-class headroom, too: optional semantic search keeps a multi-GB torch model resident, a normal cost on the machine this is for.
 
 ## How it works
 
@@ -363,9 +363,13 @@ on a release:
   running two and reconciling them later is not.
 - **Anything but macOS and Linux.** The always-on pieces — watcher, scheduled
   backup, shared MCP server — are launchd LaunchAgents on macOS and systemd
-  `--user` units on Linux, and public CI exercises both (the Linux lane against
-  a real user systemd). macOS has the most mileage. Windows is not supported,
-  and no other platform exists here.
+  `--user` units on Linux. Public CI runs on Linux, including the systemd
+  lifecycle against a real user manager. The launchd lifecycle is not something
+  a hosted macOS runner can exercise — it drives the `gui/<uid>` domain, which
+  needs a login session no hosted runner has — so it is verified on the
+  maintainer's machine instead: macOS has the most mileage in daily use and the
+  least in public CI. Windows is not supported, and no other platform exists
+  here.
 - **More than one user.** No accounts, no authentication, no per-user scoping.
   The web viewer binds to `127.0.0.1` and assumes whoever reaches it owns
   everything in the archive.

@@ -272,8 +272,8 @@ def test_self_throttle_really_renices_the_process() -> None:
         )
 
     # Relative to this process's own niceness, not a fixed number: nice is
-    # inherited, so the launcher sets the floor — thread-ci runs its suites at
-    # nice 10, and 19 is the kernel's ceiling.
+    # inherited, so the launcher sets the floor — the CI sweeper runs its suites
+    # at nice 10, and 19 is the kernel's ceiling.
     base = os.nice(0)
 
     throttled = run(THREAD_ARCHIVE_NO_THROTTLE="")
@@ -980,6 +980,30 @@ def test_verify_backup_hashes_clean(capsys) -> None:
     out = capsys.readouterr().out
     assert "backup hashes: checked=2 mismatched=0" in out
     assert "mismatch sample" not in out  # clean → no sample line
+
+
+def test_verify_backup_surplus(capsys) -> None:
+    """A mirror above the live truth names the surplus, not just a red verdict."""
+    res = {
+        "ok": False,
+        "failed_components": ["backup"],
+        "truth": {"threads": 1, "events": 2, "events_effective": 2,
+                  "duplicate_id_lines": 0, "duplicate_content_lines": 0, "parse_errors": 0},
+        "index": {"threads": 1, "events": 2, "kg_events": 0,
+                  "quick_check": "ok", "check": "quick_check"},
+        "drift": {"threads": 0, "events": 0, "kg_events": 0},
+        "fts": {"shadow_rows": 2, "fts5_rows": 2, "orphan_rows": 0},
+        "backup": {
+            "dest": "/mirror", "coverage": 2.0,
+            "scan": {"threads": 2, "events_effective": 4, "parse_errors": 0},
+            "coverage_excess": {"coverage": 2.0, "ceiling": 1.02,
+                                "mirror_effective": 4, "live_effective": 2},
+        },
+    }
+    assert cli.report_verify(res, backup="/mirror") == 1
+    out = capsys.readouterr().out
+    assert "MIRROR HOLDS MORE THAN THE TRUTH: 4 effective events against the live 2" in out
+    assert "FAILED: backup" in out
 
 
 # ── restore-drill: report + failure branches ─────────────────────────────────

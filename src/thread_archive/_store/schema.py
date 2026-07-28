@@ -40,6 +40,7 @@ logger = logging.getLogger(__name__)
 _ADDED_COLUMNS: dict[str, dict[str, str]] = {
     "import_state": {"last_content_hash": "TEXT"},
     "thread_metrics": {"cache_read_tokens": "INTEGER NOT NULL DEFAULT 0"},
+    "request_metrics": {"month": "TEXT"},
     "metrics_cursor": {"projection_version": "INTEGER NOT NULL DEFAULT 0"},
     # The external-content FTS index reads occurred_at from the shadow, so the
     # column must exist before ensure_fts can build the current-shape table.

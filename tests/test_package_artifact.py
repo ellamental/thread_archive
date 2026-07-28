@@ -288,8 +288,8 @@ def test_installed_mcp_search_and_read_over_imported_data(installed, tmp_path) -
 # OS-correct app-data dir for Cursor/Cowork), discovered and ingested by the
 # installed `thread-archive watch --once` with no hand-fed paths, then reindexed
 # and searched back. Runs against the clean wheel-only venv, so it doubles as the
-# cross-OS install proof this `package` lane runs on both macOS (thread-ci) and
-# Linux (GitHub Actions). The logic lives in tests/install/first_run.py, shared
+# cross-OS install proof this `package` lane runs on both macOS (the maintainer's
+# local CI) and Linux (GitHub Actions). The logic lives in tests/install/first_run.py, shared
 # with the clean-container Docker install lane.
 
 def test_installed_first_run_discovers_realistic_stores_and_searches(installed, tmp_path) -> None:

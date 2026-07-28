@@ -19,6 +19,7 @@ from thread_archive._thread_import import DefaultEventBuilder
 from thread_archive._thread_import.timestamps import parse_timestamp_iso
 
 from .._store import ImportState, get_session
+from . import _probe
 from ._events import assemble_events
 from ._result import DbScanResult
 from ._state import (
@@ -185,11 +186,13 @@ def import_cursor_from_payload(
     *, composer_id: str, composer_data: dict[str, Any], bubbles: dict[str, Any], session=None
 ) -> CursorImportResult:
     """Import one Cursor composer (atomic per-composer transaction when no session)."""
+    _probe.count("items")
     if session is not None:
         return _run_cursor(session, composer_id, composer_data, bubbles)
     with get_session() as s:
         result = _run_cursor(s, composer_id, composer_data, bubbles)
-        s.commit()
+        with _probe.timed("commit_ms"):
+            s.commit()
         return result
 
 

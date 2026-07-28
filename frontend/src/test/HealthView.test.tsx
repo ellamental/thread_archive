@@ -37,6 +37,7 @@ function healthyStatus(): Status {
       at,
       pid: 42,
       passes: 9,
+      started_at: new Date(Date.now() - 25 * 60_000).toISOString(),
       sources: {
         'claude-code': { checked: 5, items: 2, events: 20, lines: 30, parse_errors: 0, errors: 0 },
         codex: { checked: 2, items: 1, events: 4, lines: 6, parse_errors: 0, errors: 0 },
@@ -45,6 +46,7 @@ function healthyStatus(): Status {
     last_coverage: { at, ok: true, sources_checked: 2, failed: [], warnings: [], skips_recent: 0, drift_recent: 0 },
     last_source_mirror: { at, ok: true, copied: 3, files: 12, bytes_out: 4096, errors: 0 },
     last_self_update: { at, ok: true, action: 'up-to-date', current: '0.9.1', reason: 'newest tag is installed' },
+    source_last_import: { 'claude-code': at, codex: new Date(Date.now() - 3 * 86_400_000).toISOString() },
     pipeline: {
       ran: true,
       ok: true,
@@ -292,6 +294,37 @@ it('does not hide a provider parser failure inside an otherwise fresh pass', asy
   expect(screen.getByText('thread-archive fix-import codex')).toBeInTheDocument()
   // The provider table degrades on its own evidence, not on the notice.
   expect(screen.getByText('Degraded')).toBeInTheDocument()
+})
+
+it('says how much time the provider counters cover, so small numbers are not lost history', async () => {
+  renderHealth(healthyStatus())
+
+  // The tally belongs to the capture process, not the archive: read without its
+  // window, 20 events under a years-old archive looks like a hole.
+  expect(await screen.findByText('counters cover the last 25m')).toBeInTheDocument()
+  expect(screen.getByText(/start over when it restarts/)).toBeInTheDocument()
+})
+
+it('dates every provider by its own last import, hover-precise', async () => {
+  const status = healthyStatus()
+  // A polled provider the archive has never imported from. Its counters are
+  // indistinguishable from a busy source that happened to import nothing since
+  // the capture process restarted — only the import stamp tells them apart.
+  status.last_watch_pass!.sources!.cursor =
+    { checked: 9, items: 0, events: 0, lines: 0, parse_errors: 0, errors: 0 }
+  renderHealth(status)
+
+  await screen.findByRole('heading', { name: 'Providers observed by the watcher' })
+  const row = (name: string) => within(screen.getByRole('cell', { name }).closest('tr')!)
+  expect(row('claude-code').getByText('just now')).toBeInTheDocument()
+
+  // Hover carries the absolute time the relative age rounds away.
+  const stale = row('codex').getByText('3d ago')
+  const year = String(new Date(status.source_last_import.codex).getFullYear())
+  expect(stale).toHaveAttribute('title', expect.stringContaining(year))
+
+  const never = row('cursor').getByText('never')
+  expect(never).toHaveAttribute('title', 'Never recorded')
 })
 
 // ---- silencing -------------------------------------------------------------

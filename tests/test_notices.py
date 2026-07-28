@@ -118,6 +118,24 @@ def test_an_available_release_asks_without_alarming():
     assert [(n["key"], n["tone"]) for n in notices] == [("update", "good")]
 
 
+def test_a_disabled_updater_raises_nothing_it_cannot_refresh():
+    """Switching the updater off freezes its last record, so a verdict from
+    before the switch would sit in the queue forever asking for action on a
+    mechanism that is not running. Both the block and the available-release
+    notice go quiet — an update you are not taking is not maintenance you owe."""
+    blocked = {"at": None, "ok": False, "action": "blocked",
+               "reason": "working tree not clean — local work in play"}
+    available = {"at": None, "ok": True, "action": "update", "tag": "v0.9.2",
+                 "reason": "past soak window"}
+
+    for record in (blocked, available):
+        assert build_notices(_records(
+            last_self_update=record, update_enabled=False,
+        )) == []
+        # Unset means on: an install that never touched the key still hears it.
+        assert _keys(build_notices(_records(last_self_update=record)))
+
+
 def test_a_partial_status_raises_only_what_it_can_see():
     """A half-configured install (no records at all) must read as unproven, not
     crash the page that is supposed to tell someone it is unproven."""
@@ -288,3 +306,23 @@ def test_the_api_builds_the_board_from_the_live_records(archive_home):
     assert key in _keys(ta.notices()["silenced"])
 
     assert key in _keys(ta.unsilence_notice(key)["active"])
+
+
+def test_config_turning_the_updater_off_reaches_the_board(archive_home):
+    """End to end over a real home: the ``update.enabled`` flag an operator sets
+    in ``config.json`` is what decides whether a stale update verdict is served."""
+    from thread_archive._config import load_config, save_config
+
+    ta.open_archive(str(archive_home))
+    record_health("self_update_last", {
+        "ok": False, "action": "blocked", "current": "0.0.6",
+        "reason": "working tree not clean — local work in play",
+    })
+
+    assert "update-blocked" in _keys(ta.notices()["active"])
+
+    cfg = load_config()
+    cfg["update"] = {"enabled": False}
+    save_config(cfg)
+
+    assert "update-blocked" not in _keys(ta.notices()["active"])

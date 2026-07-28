@@ -43,6 +43,7 @@ from thread_archive._thread_import.parsers.claude_code import ClaudeCodeParser
 from thread_archive._thread_import.timestamps import parse_timestamp_iso
 
 from .._store import get_session
+from . import _probe
 from ._events import assemble_events, log_parse_validation, preserve_unmodeled_fields
 from ._result import DbScanResult
 from ._state import (
@@ -360,11 +361,13 @@ def import_claude_science_frame(
     """Import one frame's transcript (atomic per-frame transaction when no session)."""
     parser = parser or ClaudeCodeParser()
     builder = builder or DefaultEventBuilder()
+    _probe.count("items")
     if session is not None:
         return _run_frame(session, org_uuid, frame, message_rows, parser, builder)
     with get_session() as s:
         result = _run_frame(s, org_uuid, frame, message_rows, parser, builder)
-        s.commit()
+        with _probe.timed("commit_ms"):
+            s.commit()
         return result
 
 

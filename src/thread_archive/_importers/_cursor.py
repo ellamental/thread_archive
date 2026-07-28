@@ -40,12 +40,16 @@ from dataclasses import dataclass
 from typing import Optional
 
 from .._store import ImportState
+from . import _probe
 
 logger = logging.getLogger(__name__)
 
 
-def content_digest(data: bytes) -> str:
-    """The watermark's proof-of-content: sha256 of the bytes the cursor covers."""
+def content_digest(data) -> str:
+    """The watermark's proof-of-content: sha256 of the bytes the cursor covers.
+
+    Takes any buffer, so a caller proving a *prefix* can hand a memoryview rather
+    than a copy of it."""
     return hashlib.sha256(data).hexdigest()
 
 
@@ -68,6 +72,13 @@ def resolve_source_cursor(
     state: Optional[ImportState], data: bytes, *, source: str, source_id: str
 ) -> SourceCursor:
     """Resolve where this poll should resume in ``data`` (see the module docstring)."""
+    with _probe.timed("cursor_ms"):
+        return _resolve(state, data, source=source, source_id=source_id)
+
+
+def _resolve(
+    state: Optional[ImportState], data: bytes, *, source: str, source_id: str
+) -> SourceCursor:
     size = len(data)
     digest = content_digest(data)
 
@@ -90,7 +101,10 @@ def resolve_source_cursor(
         return SourceCursor(start_line, digest, unchanged=True)
     if size < last_size:
         return _rewind(source, source_id, f"source shrank ({last_size} → {size} bytes)", digest)
-    if content_digest(data[:last_size]) != state.last_content_hash:
+    # A memoryview, not a slice: `data[:last_size]` would copy the whole prefix —
+    # a second allocation the size of the transcript, on every poll of every file
+    # that grew. hashlib reads the buffer directly, so the copy buys nothing.
+    if content_digest(memoryview(data)[:last_size]) != state.last_content_hash:
         return _rewind(source, source_id, "content under the cursor changed", digest)
     return SourceCursor(start_line, digest)
 

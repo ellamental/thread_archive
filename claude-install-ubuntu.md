@@ -87,7 +87,7 @@ ls -l "$REPO/.venv/bin/archive-mcp"   # sanity-check the command path exists
 in the systemd watcher/backup units (step 6) and in self-update — is baked into
 the machine, not tracked in the repo. A plain `mv` of the clone dead-ends the
 MCP wiring, the daemon, and self-update at once. To relocate it, move the
-directory, then re-run the MCP wiring above and `thread-archive daemon restart`
+directory, then re-run the MCP wiring above and `thread-archive service restart`
 (or, cleanest, re-clone at the new path and reinstall). Tell the human this
 before they pick where the clone lives.
 
@@ -99,11 +99,11 @@ An empty archive has nothing to search. Two ways to get conversations in:
   On Ubuntu these live under `~/.claude`, `~/.codex`, `~/.config/Cursor`,
   `~/.config/Code`, `~/.local/share/opencode`, etc. — archive finds them per-OS.
   ```bash
-  .venv/bin/thread-archive watch --once     # one pass; or `thread-archive daemon install` for always-on (step 6)
+  .venv/bin/thread-archive watch --once     # one pass; or `thread-archive service install` for always-on (step 6)
   ```
 - **Import an export or transcript** the human points you at:
   ```bash
-  .venv/bin/thread-archive import <path> --provider <name>   # `thread-archive providers` lists them
+  .venv/bin/thread-archive source import <path> --provider <name>   # `thread-archive source list` lists them
   ```
 
 Then confirm it landed:
@@ -112,8 +112,8 @@ Then confirm it landed:
 .venv/bin/thread-archive status            # threads / events / indexed counts
 ```
 
-The SQLite index is built during import; `thread-archive reindex` rebuilds it losslessly
-from the JSONL truth if it ever looks wrong.
+The SQLite index is built during import; `thread-archive index rebuild` rebuilds it
+losslessly from the JSONL truth if it ever looks wrong.
 
 ## 5. Restart Claude Code to load the new config
 
@@ -129,9 +129,9 @@ upgrade. The `thread-archive` setup wizard offers this too; either path works:
 
 ```bash
 .venv/bin/thread-archive setup           # wizard: offers the watcher + nightly backup
-# — or the daemon directly —
-.venv/bin/thread-archive daemon install         # installs & starts thread-archive-watcher.service
-.venv/bin/thread-archive daemon status          # ActiveState/SubState/PID, or "not loaded"
+# — or the service agent directly —
+.venv/bin/thread-archive service install        # installs & starts thread-archive-watcher.service
+.venv/bin/thread-archive service status         # ActiveState/SubState/PID, or "not loaded"
 ```
 
 Install enables **linger** (`loginctl enable-linger`) so the watcher keeps running
@@ -152,12 +152,12 @@ tail -F ~/.thread/archive/logs/watcher-stdout.log ~/.thread/archive/logs/watcher
 Optional nightly backup (mirror → verify → restore drill) on a systemd timer:
 
 ```bash
-.venv/bin/thread-archive daemon install --backup --dest /path/to/backups
+.venv/bin/thread-archive service install --backup --dest /path/to/backups
 systemctl --user list-timers thread-archive-backup.timer
 ```
 
-Apply a code edit later with `thread-archive daemon restart`; take one agent back
-out with `thread-archive daemon uninstall` (and `--backup` for the timer), or the
+Apply a code edit later with `thread-archive service restart`; take one agent back
+out with `thread-archive service uninstall` (and `--backup` for the timer), or the
 whole install — agents, MCP wiring, manifest — with `thread-archive uninstall`,
 which never touches the conversations.
 

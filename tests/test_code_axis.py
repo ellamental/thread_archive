@@ -591,7 +591,7 @@ def _repo_with_commit(tmp_path, files, message, repo=None, when=None):
         run("config", "user.name", "t")
     for name, body in files.items():
         (repo / name).write_text(body)
-        run("add", name)
+    run("add", *files)  # one call: a checkpoint-sized fixture is hundreds of paths
     run("commit", "-qm", message)
     sha = subprocess.run(["git", "-C", str(repo), "rev-parse", "HEAD"],
                          capture_output=True, text=True, check=True).stdout.strip()
@@ -732,8 +732,8 @@ def test_a_file_added_by_the_commit_has_no_floor(archive_home, tmp_path):
 
 @pytest.mark.skipif(not _git_available(), reason="git not installed")
 def test_a_commit_nobody_committed_still_resolves_its_contributors(archive_home, tmp_path):
-    """Ella's case, and every repo where a human commits: no session ran the
-    command, so 'who committed it' is nobody and the contributors are the answer."""
+    """Every repo where a human commits: no session ran the command, so 'who
+    committed it' is nobody and the contributors are the answer."""
     repo, sha = _repo_with_commit(tmp_path, {"rank.py": "x\n"}, "checkpoint")
     ta.open_archive()
     tid = _seed_editor(repo, "did the work", "rank.py", day=2)
@@ -748,6 +748,61 @@ def test_a_commit_nobody_committed_still_resolves_its_contributors(archive_home,
     note = _commit_note(result)
     assert "1 contributing session(s)" in note
     assert "committed outside any session" in note
+
+
+@pytest.mark.skipif(not _git_available(), reason="git not installed")
+def test_a_bulk_commit_resolves_every_file_not_a_prefix(archive_home, tmp_path):
+    """A checkpoint commit carries hundreds of paths, and the session that did the
+    work is as likely to be in the last hundred as the first. Resolving a prefix
+    reports the rest of the contributors as absent rather than as unexamined —
+    indistinguishable, to the caller, from a commit nobody worked on."""
+    files = {f"f{i:04d}.py": "x\n" for i in range(400)}
+    repo, sha = _repo_with_commit(tmp_path, files, "checkpoint")
+
+    ta.open_archive()
+    tail = _seed_editor(repo, "worked on the tail", "f0399.py", day=2)
+    code.refresh_code_index()
+
+    result = code.blame_commit(sha, repo=str(repo))
+    by_id = {t["thread_id"]: t for t in result["threads"]}
+    assert tail in by_id
+    assert by_id[tail]["matched_files"] == ["f0399.py"]
+    # Coverage counts against the whole commit, and the whole commit was examined.
+    assert by_id[tail]["coverage"] == round(1 / len(files), 3)
+
+
+@pytest.mark.skipif(not _git_available(), reason="git not installed")
+def test_files_are_grouped_by_floor_without_losing_per_file_attribution(
+    archive_home, tmp_path
+):
+    """Batching the lookup groups files that share an authorship floor. The rows
+    still have to come back per file: a session's matched_files and op tallies are
+    what its share of the commit is computed from."""
+    repo, _first = _repo_with_commit(tmp_path, {"a.py": "one\n", "b.py": "one\n"},
+                                     "first", when="2026-01-10T12:00:00+00:00")
+    repo, sha = _repo_with_commit(tmp_path, {"a.py": "two\n", "b.py": "two\n",
+                                             "c.py": "new\n"},
+                                  "second", repo=repo, when="2026-01-20T12:00:00+00:00")
+
+    ta.open_archive()
+    with get_session() as s:
+        t = Thread(name="n:both", title="edited both", source="claude-code",
+                   source_id="both", source_metadata={"cwd": str(repo)})
+        s.add(t)
+        s.flush()
+        _tool_event(s, t, "Edit", {"file_path": "a.py", "old_string": "x"}, day=1)
+        _tool_event(s, t, "Edit", {"file_path": "b.py", "old_string": "x"}, day=2)
+        _tool_event(s, t, "Write", {"file_path": "c.py", "content": "x"}, day=3)
+        tid = t.id
+        s.commit()
+    code.refresh_code_index()
+    _stamp_touches(tid, "2026-01-15 00:00:00.000000")
+
+    thread = code.blame_commit(sha, repo=str(repo))["threads"][0]
+    assert thread["thread_id"] == tid
+    assert thread["matched_files"] == ["a.py", "b.py", "c.py"]
+    assert thread["ops"] == {"edit": 2, "write": 1}
+    assert thread["coverage"] == 1.0
 
 
 @pytest.mark.skipif(not _git_available(), reason="git not installed")

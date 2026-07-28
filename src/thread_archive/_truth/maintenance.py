@@ -15,6 +15,7 @@ import shutil
 import time
 from datetime import datetime
 from pathlib import Path
+from time import perf_counter
 from typing import Optional
 
 from sqlalchemy import select
@@ -60,6 +61,25 @@ _SWEEP_INTERVAL_S = 30.0
 # Keyed by truth dir: a process that switches homes must not inherit another
 # home's cadence. Monotonic, so a wall-clock jump can't stall a sweep.
 _last_swept: dict[str, float] = {}
+
+# Where the last checkpoint in this process spent its time; read through
+# :func:`last_timings`. Rebound rather than mutated in place, so a reader always
+# sees one complete pass's numbers instead of a half-updated dict.
+_last_timings: dict[str, float] = {}
+
+
+def last_timings() -> dict[str, float]:
+    """Where the last :func:`checkpoint` in this process spent its time, in
+    milliseconds per sub-step (``lock_ms``, ``snapshot_ms``, ``import_state_ms``,
+    ``rebalance_ms``, ``threads_ms``, ``manifest_ms``).
+
+    Read through a function rather than returned from :func:`checkpoint` because
+    that returns *counts* and every caller in the tree consumes that shape; only
+    the watcher reports timings, and it asks immediately after its own call.
+    Sub-steps the last call skipped are absent rather than zero — the interval
+    gates mean a typical maintenance checkpoint runs three of the six, and zeros
+    would read as work that was instant rather than work that was deferred."""
+    return dict(_last_timings)
 
 
 def _due(d: Path, component: str, *, interval: Optional[float] = None) -> bool:
@@ -140,21 +160,45 @@ def checkpoint(*, snapshots: bool = True) -> dict:
 
     Self-locking: the truth appends + manifest watermark advance here must never
     race a reindex, so the shared ingest lock is taken *inside* — a caller
-    already holding it shared just nests (flock SH + SH coexist)."""
+    already holding it shared just nests (flock SH + SH coexist).
+
+    Timed into :data:`last_timings` as it goes. A checkpoint is four unrelated
+    pieces of work behind one number — waiting for the lock, writing snapshots,
+    rebalancing shards, and the changed-thread backstop — and which of them a slow
+    checkpoint spent its time in decides whether the answer is a tune, a schedule
+    change, or a contention problem somewhere else entirely. The lock wait is the
+    sharpest of the four: it is time this call spent doing nothing at all, charged
+    to it by whichever process held the lock."""
+    global _last_timings
+    timings: dict[str, float] = {}
+    lock_started = perf_counter()
     with shared_ingest_lock():
-        return _checkpoint_locked(snapshots=snapshots)
+        timings["lock_ms"] = (perf_counter() - lock_started) * 1000.0
+        try:
+            return _checkpoint_locked(snapshots=snapshots, timings=timings)
+        finally:
+            # Even on a raise: a checkpoint that failed slowly is the pass most
+            # worth having the split for.
+            _last_timings = {k: round(v, 1) for k, v in timings.items()}
 
 
-def _checkpoint_locked(*, snapshots: bool = True) -> dict:
+def _checkpoint_locked(*, snapshots: bool = True,
+                       timings: Optional[dict] = None) -> dict:
+    t: dict = timings if timings is not None else {}
+
+    def _mark(name: str, started: float) -> None:
+        t[name] = t.get(name, 0.0) + (perf_counter() - started) * 1000.0
+
     d = log_dir()
     require_current_format(d)
     (d / THREADS_SUBDIR).mkdir(parents=True, exist_ok=True)
     m = _read_manifest(d)
-    counts: dict = (
-        {name: _write_snapshot(d, name, model) for name, model in _CROSS_THREAD.items()}
-        if snapshots
-        else {}
-    )
+    counts: dict = {}
+    if snapshots:
+        _t = perf_counter()
+        counts = {name: _write_snapshot(d, name, model)
+                  for name, model in _CROSS_THREAD.items()}
+        _mark("snapshot_ms", _t)
     # Source-import watermarks: operational state, snapshotted so a reindex of a
     # lost/deleted index (where there is no previous index to carry them from)
     # still restores cursors instead of adopting active sources at EOF. A stale
@@ -164,16 +208,21 @@ def _checkpoint_locked(*, snapshots: bool = True) -> dict:
     # rides the maintenance cadence too, on the sweep interval (the rewrite is
     # O(rows): one row per source, and a source-per-file importer has many).
     if snapshots or _due(d, "import_state"):
+        _t = perf_counter()
         counts["import_state"] = _write_snapshot(d, "import_state", ImportState)
+        _mark("import_state_ms", _t)
     # Rebalance BEFORE the thread-metadata backstop, so the backstop appends at the
     # post-rebalance depth and can never manufacture a flat twin of a just-moved file.
     # Deferring the sweep only delays the threshold; the depth written below still
     # comes from the manifest, so paths stay correct on the calls that skip it.
-    depth = (
-        _maybe_rebalance(d, int(m.get("shard_depth", 0)))
-        if snapshots or _due(d, "rebalance")
-        else int(m.get("shard_depth", 0))
-    )
+    # `_due` marks the component run, so it is asked exactly once — and only the
+    # branch that actually sweeps is charged for one.
+    if snapshots or _due(d, "rebalance"):
+        _t = perf_counter()
+        depth = _maybe_rebalance(d, int(m.get("shard_depth", 0)))
+        _mark("rebalance_ms", _t)
+    else:
+        depth = int(m.get("shard_depth", 0))
     # Re-read the manifest: a concurrent sweep (ours skips when the rebalance lock is
     # held) may have advanced shard_depth — never write a stale depth back over it.
     m = _read_manifest(d)
@@ -186,7 +235,9 @@ def _checkpoint_locked(*, snapshots: bool = True) -> dict:
     # runs are the primary seam's job — every in-tree metadata writer also stages
     # its record inline (``record_thread``); this pass is only the backstop.
     checkpoint_started_at = _now_iso()
+    _t = perf_counter()
     counts["threads_updated"] = checkpoint_changed_threads(d, depth, m.get("last_checkpoint_at"))
+    _mark("threads_ms", _t)
     # Locked read-modify-write: the backstop pass takes time, and the manifest
     # is shared state (shard depth from a concurrent sweep, a verify run's
     # hashes baseline). Mutating only this checkpoint's own keys under the
@@ -196,7 +247,9 @@ def _checkpoint_locked(*, snapshots: bool = True) -> dict:
         m["shard_depth"] = max(depth, int(m.get("shard_depth", 0)))
         m["last_checkpoint_at"] = checkpoint_started_at
 
+    _t = perf_counter()
     update_manifest(d, _stamp)
+    _mark("manifest_ms", _t)
     logger.info("jsonl_log checkpoint(snapshots=%s): %s", snapshots, counts)
     return counts
 

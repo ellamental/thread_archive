@@ -83,7 +83,7 @@ def _user_line(extras: Optional[Dict[str, Any]] = None,
 def test_assistant_extras_land_on_api_request_completed() -> None:
     extras = {
         "effort": "xhigh",
-        "attributionMcpServer": "thread-lab",
+        "attributionMcpServer": "example-mcp",
         "attributionMcpTool": "backend_read",
         "attributionSkill": "db-query",
         "requestId": "req_123",
@@ -95,7 +95,7 @@ def test_assistant_extras_land_on_api_request_completed() -> None:
     ann = msg["provider_data"]["annotations"]
     assert ann == {
         "effort": "xhigh",
-        "attribution_mcp_server": "thread-lab",
+        "attribution_mcp_server": "example-mcp",
         "attribution_mcp_tool": "backend_read",
         "attribution_skill": "db-query",
         "request_id": "req_123",
@@ -140,7 +140,7 @@ def test_assistant_annotations_do_not_change_dedup_key() -> None:
 def test_user_extras_land_on_user_message_sent() -> None:
     extras = {
         "toolDenialKind": "prompt",
-        "mcpMeta": {"server": "thread-lab"},
+        "mcpMeta": {"server": "example-mcp"},
         "permissionMode": "acceptEdits",
         "origin": "cli",
         "promptSource": "terminal",
@@ -152,7 +152,7 @@ def test_user_extras_land_on_user_message_sent() -> None:
     ann = msg["provider_data"]["annotations"]
     assert ann == {
         "tool_denial_kind": "prompt",
-        "mcp_meta": {"server": "thread-lab"},
+        "mcp_meta": {"server": "example-mcp"},
         "permission_mode": "acceptEdits",
         "origin": "cli",
         "prompt_source": "terminal",

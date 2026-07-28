@@ -1,19 +1,15 @@
 # Releasing thread-archive
 
-Distribution is the package registry: `pip install thread-archive` (the
-README's Install section), with the git clone as the from-source/development
-path. A release is therefore both an upload and a pointer: compress the
-changelog, bump the version, one release commit, an annotated tag pushed to
-GitHub, and the wheel + sdist published to PyPI. The tag is what a source
-clone pins and fast-forwards to; the registry version is what a packaged
-install takes; both are what `thread-archive status` / bug reports correlate
-against — so the tag and the upload carry the same version, always.
+Distribution is the git clone: an editable install from a checkout, or
+`pip install "git+<repo-url>@vX.Y.Z"`. A release is therefore a pointer:
+compress the changelog, bump the version, one release commit, and an annotated
+tag pushed to GitHub. The tag is what a clone pins and fast-forwards to, and
+what `thread-archive status` / bug reports correlate against.
 
-**Publishing is the point of no return.** A packaged consumer gets the release
-when they run `pip install -U thread-archive`; a source clone when they run
-`thread-archive self-update` (`--check` is how either sees one exists). That
-is a delay, not a safety net: the release is offered to everyone the moment
-it is published, and the preflight below is the only gate between a bad
+**Pushing the tag is the point of no return.** A clone gets the release when it
+runs `thread-archive self-update` (`--check` is how it sees one exists). That
+is a delay, not a safety net: the release is offered to every install the
+moment the tag lands, and the preflight below is the only gate between a bad
 release and the first operator who reaches for it. This machine's clone runs
 ahead of consumers, so a bad release should hurt here first.
 
@@ -37,11 +33,26 @@ tags), and branch protection on `main`.
 - The package lane green: `.venv/bin/pytest -m package --no-cov
   tests/test_package_artifact.py` — builds the wheel + sdist with
   `python -m build`, proves their contents, installs the wheel into a clean
-  venv, and runs the real entry points. Even without a registry this is the
-  gate that proves a fresh-clone install actually works (files present,
+  venv, and runs the real entry points. Nothing is uploaded anywhere; this is
+  the gate that proves a fresh-clone install actually works (files present,
   console scripts wired), rather than only the long-lived editable install.
 - GitHub CI green on `main` (ruff, mypy, coverage floor, the pytest suite on
   the 3.12 floor and 3.14, frontend checks, and the same package lane).
+- The search-quality gate green: `python -m search_lab gate --run`. The bench's
+  numbers against the accepted ones in `search_lab/quality-baseline.json` —
+  public benchmarks whose labels somebody else made, so a breach is real
+  evidence the retrieval components got worse. `--run` measures whatever the
+  code has invalidated first: rows unchanged since their last run are fresh and
+  cost milliseconds, a ranking edit re-runs the set (a few hours cold). A row
+  last measured at other code fails as **stale** rather than passing on old
+  numbers — shipping an unmeasured ranking change under a green gate is the
+  failure this exists to prevent. See `search_lab/README.md` for the tiers below
+  it and what each one licenses.
+
+  A breach is a decision, not a formality. Either it is a regression — fix or
+  revert — or it is a deliberate trade, accepted with
+  `python -m search_lab gate --update`, which puts the movement in the release
+  diff where a reader can see what was given up.
 - If `frontend/` changed since the last release, the committed
   `_web/static/` bundle must be current: `cd frontend && npm run build`,
   and the regenerated static assets committed with the change that caused
@@ -65,7 +76,7 @@ and narration included. Releasing rewrites them for readers of the release:
 
 ## 3. Version bump
 
-Pick the number (semver; pre-1.0, breaking changes bump the minor). Edit
+Pick the number (semver; pre-0.1.0, all/breaking changes bump the minor). Edit
 `__version__` in `src/thread_archive/__init__.py`. If the truth-directory
 layout changed incompatibly, the format version in `docs/format.md` moves on
 its own rules — that is a separate, deliberate decision, not part of the
@@ -79,43 +90,25 @@ One commit containing exactly the changelog compression and the version bump:
 Release X.Y.Z: compress changelog, bump version
 ```
 
-Then an annotated tag on it, and push both:
+Then an annotated tag on it, and push both. The push is the ship:
 
 ```bash
 git tag -a vX.Y.Z -m "thread-archive X.Y.Z — <one-line theme of the release>"
 git push origin main vX.Y.Z
 ```
 
-## 5. Build + publish to PyPI
+## 5. Verify from the outside
 
-From the release commit, build fresh artifacts and upload them:
-
-```bash
-rm -rf dist/
-.venv/bin/python -m build
-.venv/bin/python -m twine upload dist/*
-```
-
-The package lane in preflight already proved these artifacts' contents and a
-clean-venv install; this step only reproduces them from the tagged commit and
-ships them. Credentials are the operator's (a PyPI token scoped to this
-project) — nothing in the repo or CI holds them.
-
-## 6. Verify from the outside
-
-Prove the release installs from the registry, not just from this checkout's
+Prove the release installs from the tag, not just from this checkout's
 long-lived venv:
 
 ```bash
 python3 -m venv /tmp/ta-verify
-/tmp/ta-verify/bin/pip install thread-archive==X.Y.Z
+/tmp/ta-verify/bin/pip install "git+ssh://git@github.com/ellamental/thread_archive.git@vX.Y.Z"
 /tmp/ta-verify/bin/thread-archive --help
 ```
 
-(`pip install "git+https://github.com/ellamental/thread_archive.git@vX.Y.Z"`
-is the same check for the source lane.)
-
-## 7. Roll the local deployment
+## 6. Roll the local deployment
 
 The daemons on this machine run from the clone's editable install, so being
 on the release commit *is* the deployment — with two follow-throughs:
@@ -128,17 +121,15 @@ on the release commit *is* the deployment — with two follow-throughs:
 
 ## Yanking a bad release
 
-Yank it from the registry and delete the bad tag as soon as possible:
+Delete the bad tag as soon as possible:
 
 ```bash
-# on PyPI: yank version X.Y.Z (project settings, or `twine` cannot — use the web UI)
 git push origin :refs/tags/vX.Y.Z     # delete the remote tag
 ```
 
-A yank stops new resolvers from picking the version (an explicit `==X.Y.Z` pin
-can still fetch it); the tag deletion removes it from future self-update
-checks. Neither heals an install whose operator already applied it, or removes
-a tag a check already fetched locally. Always follow with the real fix:
+That removes the version from future self-update checks. It does not heal an
+install whose operator already applied it, nor remove a tag a check already
+fetched locally. Always follow with the real fix:
 
 ```bash
 # fix, then release vX.Y.(Z+1) normally

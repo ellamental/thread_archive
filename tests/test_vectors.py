@@ -9,6 +9,9 @@ query paths run over a stand-in model rather than real weights.
 
 from __future__ import annotations
 
+import subprocess
+import sys
+
 import numpy as np
 import pytest
 
@@ -912,3 +915,48 @@ def test_timestamps_survive_the_base_plus_delta_stitch(archive_home) -> None:
                                           since="2026-06-01T00:00:00+00:00")] == late
     assert [e for e, _, _ in vectors._knn(a.tolist(), ("user",), cand=10,
                                           until="2026-06-01T00:00:00+00:00")] == early
+
+
+def test_release_accelerator_cache_never_imports_torch_to_find_none() -> None:
+    """The drain's memory release must cost nothing on a lexical-only install.
+
+    A clean child is the honest environment: in-process, some earlier test has almost
+    certainly imported torch already, so the branch this covers — no allocator was
+    ever built — is unreachable without a fresh interpreter. Importing torch merely
+    to discover there is nothing to release would cost far more than it could return,
+    so the helper reports False off ``sys.modules`` and leaves it unimported.
+    """
+    proc = subprocess.run(
+        [sys.executable, "-c",
+         "import sys;"
+         "from thread_archive._retrieval.embed import release_accelerator_cache as r;"
+         "print(r(), 'torch' in sys.modules)"],
+        capture_output=True, text=True, timeout=120,
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert proc.stdout.split() == ["False", "False"]
+
+
+def test_drain_releases_without_disturbing_its_count(archive_home) -> None:
+    """The release runs in a ``finally``, so it sits on the drain's return path — a
+    raise or a changed return there would corrupt every caller's embedded count. The
+    idle pass matters as much as the working one: the watcher cohost drains every few
+    seconds and mostly finds nothing, so a caught-up pass must stay free."""
+    class _CountingEmbedder(_FixedEmbedder):
+        calls = 0
+
+        def embed_documents(self, texts):
+            self.calls += 1
+            return super().embed_documents(texts)
+
+    init_db()
+    _seed_thread(archive_home, "vector drain release")
+    vectors.ensure_index()
+    emb = _CountingEmbedder()
+
+    assert vectors.index_events_local(embedder=emb) > 0
+    assert emb.calls > 0
+    # Caught up: nothing to embed, so the drain neither encodes nor releases.
+    before = emb.calls
+    assert vectors.index_events_local(embedder=emb) == 0
+    assert emb.calls == before

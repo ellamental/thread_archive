@@ -22,6 +22,7 @@ import logging
 import time
 from typing import Optional
 
+from .._importers import _probe as _ingest_probe
 from .base import SourceWatcher, WatchResult
 from .sources import enabled_watchers
 
@@ -128,7 +129,25 @@ class Watcher:
         except Exception:  # noqa: BLE001 — advisory; the loop must survive
             logger.exception("watch: could not record poll errors in health.json")
 
-    def _bump_source(self, name: str, r: WatchResult, ms: float = 0.0) -> None:
+    def _record_ingest(self, source: str, probe, pass_ms: float, r: WatchResult) -> None:
+        """Append this source's poll to the ingest ledger, with its stage split.
+
+        Fail-soft and quiet: a pass that imported nothing writes no row (see
+        :mod:`.ingest_log`), so the cost on the common empty poll is one
+        attribute read."""
+        try:
+            from .._config import resolve_paths
+            from . import ingest_log
+
+            ingest_log.record_pass(
+                source, home=resolve_paths().home, probe=probe, pass_ms=pass_ms,
+                result=r, lag_s=self._lag_s,
+            )
+        except Exception:  # noqa: BLE001 — advisory; the loop must survive
+            logger.debug("watch: could not record ingest pass", exc_info=True)
+
+    def _bump_source(self, name: str, r: WatchResult, ms: float = 0.0,
+                     import_ms: float = 0.0) -> None:
         """Fold one watcher's poll result — and the wall time it took — into the
         per-source running totals.
 
@@ -136,10 +155,17 @@ class Watcher:
         answers is cumulative: which source the loop actually spends its time in. A
         source polled 1.5M times for nothing and a source polled twice expensively
         are indistinguishable by counts alone, and only one of them is worth
-        making cheaper."""
+        making cheaper.
+
+        ``import_ms`` is the part of that time an import actually ran, summed from
+        the pass's stage probe. The remainder — ``ms`` minus this — is the loop
+        looking for work: directory walks and fingerprint stats over every target,
+        paid on every poll whether or not anything changed. On a source with
+        thousands of files and a handful of daily changes that remainder is nearly
+        all of it, and the two numbers have entirely different fixes."""
         t = self._source_totals.setdefault(name, {
             "checked": 0, "items": 0, "events": 0,
-            "lines": 0, "parse_errors": 0, "errors": 0, "ms": 0,
+            "lines": 0, "parse_errors": 0, "errors": 0, "ms": 0, "import_ms": 0,
         })
         t["checked"] += r.sources_checked
         t["items"] += r.items_imported
@@ -148,6 +174,7 @@ class Watcher:
         t["parse_errors"] += r.parse_errors
         t["errors"] += len(r.errors)
         t["ms"] = int(t.get("ms", 0) + ms)
+        t["import_ms"] = int(t.get("import_ms", 0) + import_ms)
 
     def _sample_lag(self) -> None:
         """Sample ingest lag: how far behind real time the newest ingested event is.
@@ -266,20 +293,26 @@ class Watcher:
         pass_started = time.monotonic()
         for w in self.watchers:
             source_started = time.monotonic()
-            try:
-                if not w.is_available():
-                    continue
-                # Only thread the progress callback when tracking — the continuous
-                # path calls poll() with its historical signature, so a source
-                # (a plugin, a test stub) that hasn't adopted on_item still works.
-                r = w.poll(on_item=on_item) if on_item is not None else w.poll()
-            except Exception as e:  # noqa: BLE001 — a broken source must not stop the loop
-                logger.warning("%s: poll error: %s", w.source_name, e)
-                r = WatchResult(errors=[f"{w.source_name}: poll error: {e}"])
+            # One probe per source rather than one per pass: the stage split is only
+            # actionable when it names the source that paid it, and a shared probe
+            # would blend a DB scan's dedup cost into a file source's parse cost.
+            with _ingest_probe.install() as probe:
+                try:
+                    if not w.is_available():
+                        continue
+                    # Only thread the progress callback when tracking — the continuous
+                    # path calls poll() with its historical signature, so a source
+                    # (a plugin, a test stub) that hasn't adopted on_item still works.
+                    r = w.poll(on_item=on_item) if on_item is not None else w.poll()
+                except Exception as e:  # noqa: BLE001 — a broken source must not stop the loop
+                    logger.warning("%s: poll error: %s", w.source_name, e)
+                    r = WatchResult(errors=[f"{w.source_name}: poll error: {e}"])
+            source_ms = (time.monotonic() - source_started) * 1000.0
             # A source that raised still gets charged its time — one that is slow to
             # fail is a real cost of the loop. (An unavailable source `continue`s
             # above and is charged nothing, which is what it costs.)
-            self._bump_source(w.source_name, r, (time.monotonic() - source_started) * 1000.0)
+            self._bump_source(w.source_name, r, source_ms, probe.total_ms())
+            self._record_ingest(w.source_name, probe, source_ms, r)
             total = total + r
 
         self._pass_ms = (time.monotonic() - pass_started) * 1000.0
@@ -335,10 +368,14 @@ class Watcher:
         surface only as the poll loop mysteriously slowing down."""
         from .._retrieval.fts import index_thread_meta
         from .._truth import checkpoint
+        from .._truth.maintenance import last_timings
 
         started = time.monotonic()
         counts = checkpoint(snapshots=False)
         checkpoint_ms = (time.monotonic() - started) * 1000.0
+        # The checkpoint's own split (lock wait, snapshots, rebalance, backstop),
+        # read from the pass that just ran on this thread.
+        checkpoint_split = last_timings()
         # Sync title/summary search docs (diff-based — unchanged threads write
         # nothing). Catches both fresh imports and out-of-band summary writes.
         meta_started = time.monotonic()
@@ -365,19 +402,32 @@ class Watcher:
             folded = {"done": None}
         code_ms = (time.monotonic() - code_started) * 1000.0
         logger.info("watch: maintenance %s", counts)
+        timings = {
+            "ms": checkpoint_ms + meta_ms + code_ms,
+            "checkpoint_ms": checkpoint_ms,
+            "thread_meta_ms": meta_ms,
+            "code_ms": code_ms,
+            **checkpoint_split,
+        }
         try:
             from .._ops.health import record_health
 
             record_health("watch_maintain_last", {
-                "ms": round(checkpoint_ms + meta_ms + code_ms, 1),
-                "checkpoint_ms": round(checkpoint_ms, 1),
-                "thread_meta_ms": round(meta_ms, 1),
-                "code_ms": round(code_ms, 1),
+                **{k: round(v, 1) for k, v in timings.items()},
                 "code_backfilling": folded.get("done") is False,
                 "counts": {k: v for k, v in counts.items() if isinstance(v, int)},
             })
         except Exception:  # noqa: BLE001 — advisory; the loop must survive
             logger.debug("watch: could not record maintenance timing", exc_info=True)
+        try:
+            from .._config import resolve_paths
+            from . import ingest_log
+
+            ingest_log.record_maintenance(
+                home=resolve_paths().home, timings=timings, counts=counts,
+            )
+        except Exception:  # noqa: BLE001 — advisory; the loop must survive
+            logger.debug("watch: could not record maintenance pass", exc_info=True)
         return counts
 
     def _embed_due(self, now: float, last_embed: float) -> bool:
@@ -465,6 +515,20 @@ class Watcher:
             record_health("watch_embed_last", rec)
         except Exception:  # noqa: BLE001 — advisory; the loop must survive
             logger.debug("watch: could not record embed pass", exc_info=True)
+        try:
+            from .._config import resolve_paths
+            from . import ingest_log
+
+            ingest_log.record_embed(
+                home=resolve_paths().home,
+                embedded=embedded,
+                elapsed_ms=elapsed_ms,
+                detail_ms=phase.detail_ms(),
+                pending=phase.total or 0,
+                capped=bool(phase.total and phase.total >= self.embed_batch),
+            )
+        except Exception:  # noqa: BLE001 — advisory; the loop must survive
+            logger.debug("watch: could not record embed drain", exc_info=True)
 
     def _newest_vector_age_s(self) -> Optional[float]:
         """How old the newest embedded event is — the vector arm's freshness.

@@ -719,6 +719,31 @@ def _fmt_duration(seconds: Optional[float]) -> str:
     return f"{s}s"
 
 
+def _fmt_ms(ms: Optional[float]) -> str:
+    """``820ms`` / ``13.2s`` / ``2m10s`` — always carrying its unit.
+
+    A bare number in a milliseconds column is read as whatever unit the reader
+    expects, and these span four orders of magnitude in one table."""
+    if ms is None:
+        return "?"
+    if ms < 1000:
+        return f"{ms:.0f}ms"
+    if ms < 60_000:
+        return f"{ms / 1000:.1f}s"
+    return _fmt_duration(ms / 1000.0)
+
+
+def _fmt_bytes(n: Optional[int]) -> str:
+    """``4.0 MB`` / ``912 KB`` / ``0 B`` — a size in the unit that reads."""
+    if n is None:
+        return "?"
+    if n >= 1_000_000:
+        return f"{n / 1e6:.1f} MB"
+    if n >= 1000:
+        return f"{n / 1e3:.0f} KB"
+    return f"{n} B"
+
+
 def _progress_line(snap: dict) -> None:
     """Rewrite one console line with the run's current phase, progress, and ETA."""
     phases = snap.get("phases") or []
@@ -777,6 +802,44 @@ def cmd_loads(args: argparse.Namespace) -> int:
               f"{_fmt_duration(r.get('duration_s'))}")
         for ph in r.get("phases") or []:
             print("      " + _phase_line(ph))
+    return 0
+
+
+def cmd_ingest(args: argparse.Namespace) -> int:
+    """Show what ingest cost over a window: per source, and per stage."""
+    from ._config import resolve_paths
+    from ._watcher import ingest_log
+
+    res = ingest_log.summarize(resolve_paths(args.home).home, hours=args.hours)
+    sources = res["sources"]
+    if not sources and not res["maintenance"]["passes"]:
+        print(f"no ingest recorded in the last {res['hours']}h")
+        return 0
+
+    print(f"ingest, last {res['hours']}h")
+    if sources:
+        print(f"\n  {'source':<16} {'passes':>7} {'items':>7} {'events':>8} "
+              f"{'p50':>9} {'p95':>9} {'total':>8}")
+        for name, s in sources.items():
+            print(f"  {name:<16} {s['passes']:>7,} {s['items']:>7,} {s['events']:>8,} "
+                  f"{_fmt_ms(s['pass_p50_ms']):>9} {_fmt_ms(s['pass_p95_ms']):>9} "
+                  f"{_fmt_duration(s['total_s']):>8}")
+            if s["errors"]:
+                print(f"  {'':<16} {s['errors']} errors")
+    if res["stages"]:
+        # Ranked by total time, not by worst case: a stage that is never
+        # individually slow can still be where the window went.
+        print("\n  where the time went:")
+        for stage, ms in list(res["stages"].items())[:12]:
+            print(f"    {stage:<18} {_fmt_ms(ms):>9}")
+    m, e = res["maintenance"], res["embed"]
+    if m["passes"]:
+        print(f"\n  maintenance      {m['passes']:>7,} passes  "
+              f"{_fmt_duration(m['total_s'])} total  p95 {_fmt_ms(m['p95_ms'])}")
+    if e["passes"]:
+        print(f"  embed            {e['passes']:>7,} passes  "
+              f"{_fmt_duration(e['total_s'])} total  {e['embedded']:,} vectors")
+    print(f"\n  ledger retains {_fmt_bytes(res['retained_bytes'])}")
     return 0
 
 
@@ -992,6 +1055,14 @@ def report_verify(
                 f"effective={bs['events_effective']} parse_errors={bs['parse_errors']} "
                 f"coverage={b['coverage']:.4f}"
             )
+            if "coverage_excess" in b:
+                ce = b["coverage_excess"]
+                print(
+                    f"       MIRROR HOLDS MORE THAN THE TRUTH: {ce['mirror_effective']} "
+                    f"effective events against the live {ce['live_effective']} — content "
+                    "the archive let go of is still mirrored (a renamed file's twin, an "
+                    "unapplied deletion), and a restore would rebuild from it"
+                )
             if "effective_drop" in b:
                 ed = b["effective_drop"]
                 print(
@@ -1271,6 +1342,23 @@ def _report_disk(d: dict) -> None:
         print(f"         (outside the home: {path})")
 
 
+def _report_graph(st: dict) -> None:
+    """The ``graph:`` line — whether a restart has a corpus graph to rank with.
+
+    Worth its own line because its absence is invisible from the outside: a process
+    without the graph still answers every search, just in a different order, and
+    nothing in the result says which one you got. Silent on an archive with nothing
+    embedded, where there is no graph to have and none to miss.
+    """
+    d = st.get("graph_cache") or {}
+    if not d.get("present"):
+        if st.get("vectors_indexed"):
+            print("graph:   none persisted — a restart re-ranks until it rebuilds")
+        return
+    print(f"graph:   {d.get('threads', 0):,} threads, {d.get('edges', 0):,} edges "
+          f"({d.get('engine')}, built {_age(d.get('built_at'))})")
+
+
 def report_status(st: dict) -> int:
     """Print the operator report for an ``_api.status`` result; return its exit code."""
     print(f"home:    {st['home']}")
@@ -1287,6 +1375,7 @@ def report_status(st: dict) -> int:
     print(f"code:    {st.get('code_files', 0)} files, {st.get('code_commits', 0)} "
           f"commits, {st.get('code_paths_indexed', 0)} touches"
           + (f" ({pending} events pending)" if pending else ""))
+    _report_graph(st)
     if st.get("disk"):
         _report_disk(st["disk"])
     v, b = st.get("last_verify"), st.get("last_backup")
@@ -1880,6 +1969,13 @@ def build_parser() -> argparse.ArgumentParser:
     _add_home_arg(p_loads)
     p_loads.add_argument("--limit", type=int, default=10, help="recent runs to show")
     p_loads.set_defaults(func=cmd_loads)
+
+    p_ingest = g_source.add_parser(
+        "ingest", help="what ingest cost: per source and per stage, over a window")
+    _add_home_arg(p_ingest)
+    p_ingest.add_argument("--hours", type=int, default=24,
+                          help="window to summarize (default: 24)")
+    p_ingest.set_defaults(func=cmd_ingest)
 
     p_self_update = sub.add_parser(
         "self-update",

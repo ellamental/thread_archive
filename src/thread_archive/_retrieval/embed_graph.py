@@ -30,6 +30,13 @@ community prior) and refreshes in a background single-flight thread;
 until the first build lands it returns ``None`` and the coherence boost
 no-ops. ``get(block=True)`` builds inline (eval, warm pass, tests).
 
+**The cache outlives the process** (:mod:`.graph_cache`). Held only in memory, it
+starts empty at every restart, and until the first build lands the re-rank stands
+down — so the same query returns a different order for the first several seconds
+of a process, with nothing in the output to say so. A restart now serves the
+persisted graph immediately (stale, refreshing behind it, exactly as a long-lived
+process does) and skips the rebuild outright when the store has not moved.
+
 Reads only the vector pack (via :mod:`.vectors`' matrix cache — mmap, shared,
 validity-tokened) and the ``events``/``threads`` tables. ``reset_cache``
 drops the cache (reindex calls it via the vectors reset path).
@@ -141,8 +148,47 @@ _checked_at: dict = {}  # {engine id: monotonic ts of the last staleness probe}
 
 
 def reset_cache() -> None:
+    """Drop this process's graph cache. Memory only — the persisted copy is keyed
+    by the store's own token and invalidated at its source
+    (:func:`.graph_cache.drop`), so dropping it here would throw away a valid
+    cache that costs a rebuild to recreate."""
     _CACHE.clear()
     _checked_at.clear()
+
+
+def _cache_params(knn: int, min_sim: float) -> dict:
+    """The build's shape, recorded with a persisted graph and required to match
+    before one is served. Everything that changes the partition for an unchanged
+    corpus belongs here — including the community engine, since Leiden and the
+    Louvain fallback disagree on some regions and each other's graphs are not
+    interchangeable."""
+    from . import graph_cache
+    from .community import engine
+
+    return {
+        "format": graph_cache.FORMAT,
+        "knn": int(knn),
+        "min_sim": float(min_sim),
+        "engine": engine(),
+        "cts": list(_CTS),
+    }
+
+
+def _disk_entry(knn: int = KNN, min_sim: float = MIN_SIM) -> Optional[tuple]:
+    """The persisted graph as a cache entry ``(token, graph)``, or None.
+
+    The stored tag carries only the token's cross-process half; the in-process
+    write counter is re-read live, so a process that has written vectors since
+    startup sees the entry as stale (its own writes may have changed rows the
+    tag cannot see) while a pure reader sees it as current.
+    """
+    from . import graph_cache, vectors
+
+    hit = graph_cache.load(_cache_params(knn, min_sim))
+    if hit is None:
+        return None
+    (count, rowid), graph = hit
+    return ((vectors._write_version, count, rowid), graph)
 
 
 def coherence_gamma(env: str | None = None) -> float:
@@ -213,8 +259,15 @@ def get(*, block: bool = False) -> Optional[CorpusGraph]:
     key = id(get_engine())
     cached = _CACHE.get(key)
     if cached is None:
-        _refresh_async(key)  # nothing to serve yet — get the first build going
-        return None
+        # Nothing in memory: the first touch of a fresh process. A persisted graph
+        # is served without waiting for its token to be checked — serving stale is
+        # already this function's contract, and the alternative on offer is not a
+        # fresher graph but none at all.
+        cached = _disk_entry()
+        if cached is None:
+            _refresh_async(key)  # nothing to serve yet — get the first build going
+            return None
+        _CACHE[key] = cached
     now = time.monotonic()
     if now - _checked_at.get(key, 0.0) >= _REFRESH_COOLDOWN_S:
         _checked_at[key] = now
@@ -284,6 +337,14 @@ def build(knn: int = KNN, min_sim: float = MIN_SIM) -> Optional[CorpusGraph]:
         cached = _CACHE.get(key)
         if cached is not None and cached[0] == token:
             return cached[1]
+        # Some earlier process already built this exact token and wrote it down.
+        # Required to match here (unlike `get`, which serves stale): this is the
+        # authoritative path, and callers of `build` are asking for the graph of
+        # the store as it stands.
+        entry = _disk_entry(knn, min_sim)
+        if entry is not None and entry[0] == token:
+            _CACHE[key] = entry
+            return entry[1]
         with _BUILD_GUARD:
             _BUILDING.add(key)
         try:
@@ -379,6 +440,9 @@ def _build_graph(key: int, token: object, knn: int, min_sim: float) -> Optional[
         edges=g.number_of_edges(),
     )
     _CACHE[key] = (token, graph)
+    from . import graph_cache
+
+    graph_cache.save(token, graph, _cache_params(knn, min_sim))
     logger.info(
         "embed_graph: %d threads, %d edges, %d communities",
         len(graph.thread_ids), graph.edges, len(graph.members),

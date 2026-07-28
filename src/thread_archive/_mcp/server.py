@@ -131,7 +131,8 @@ class IngestThrottle:
 INGEST = IngestThrottle()
 
 
-def _served(fn: Callable[..., str]) -> Callable[..., str]:
+def _served(fn: Callable[..., str], throttle: Optional["IngestThrottle"] = None
+            ) -> Callable[..., str]:
     """Wrap a :mod:`thread_archive._tools` function as this server serves it:
     a throttled catch-up ingest kick, then the tool itself.
 
@@ -141,14 +142,91 @@ def _served(fn: Callable[..., str]) -> Callable[..., str]:
     docstring across, and those are exactly what FastMCP builds the tool's schema
     and description from: the contract an agent reads is the one written beside
     the code that answers it.
+
+    The wrapper times itself. Every latency number this product records is taken
+    *inside* the tool, so the whole serving layer — this wrapper, the ingest kick
+    it fires, and whatever FastMCP does around the call — has never appeared in
+    any of them. That gap is not assumed to be zero: the kick is throttled rather
+    than free, and an agent that pipelines calls pays whatever the layer costs on
+    every one. :func:`~thread_archive._tools.call_span` hands out what the tool
+    measured of itself, so the difference against this wrapper's own clock is the
+    overhead, isolated. Recorded only when it is worth a row (see
+    :func:`_record_serve`).
+
+    ``throttle`` is the catch-up gate, defaulting to the process-wide
+    :data:`INGEST`. It is a parameter because the gate holds its state on the
+    instance rather than in module globals (see :class:`IngestThrottle`), so a
+    caller wanting an independent one — a second server in-process, a test
+    measuring what a kick costs — supplies it rather than reaching for the global.
     """
+    gate = throttle if throttle is not None else INGEST
 
     @functools.wraps(fn)
     def tool(*args: object, **kwargs: object) -> str:
-        INGEST.maybe_catch_up()
-        return fn(*args, **kwargs)
+        started = time.monotonic()
+        kick_started = time.monotonic()
+        gate.maybe_catch_up()
+        kick_ms = (time.monotonic() - kick_started) * 1000.0
+        failed = False
+        span: dict = {}  # bound before the try, so the finally can always read it
+        try:
+            with _tools.call_span() as span:
+                return fn(*args, **kwargs)
+        except BaseException:
+            failed = True
+            raise
+        finally:
+            _record_serve(
+                getattr(fn, "__name__", "tool"),
+                served_ms=(time.monotonic() - started) * 1000.0,
+                kick_ms=kick_ms,
+                tool_ms=span.get("tool_ms"),
+                failed=failed,
+            )
 
     return tool
+
+
+#: Overhead below this is the cost of a function call and a throttle check, and a
+#: row per search saying so would be the largest thing in the ledger. Above it,
+#: something in the serving layer actually took time and the row is the only place
+#: that would ever show.
+_SERVE_OVERHEAD_FLOOR_MS = 5.0
+
+
+def _record_serve(tool_name: str, *, served_ms: float, kick_ms: float,
+                  tool_ms: Optional[float], failed: bool) -> None:
+    """Record what this server's serving layer cost on top of the tool, when that
+    is more than noise. Fail-soft — telemetry never breaks a served call.
+
+    ``overhead_ms`` is the honest subtraction: what the wrapper waited, less what
+    the tool measured of itself. The floor applies to failures as well as
+    successes — a raising tool still publishes its own timing on the way out, so a
+    fast failure is as measurable, and as uninteresting, as a fast success. It is
+    the tool's ``search``/``read`` row that records the failure; this one exists
+    only to say the *layer around it* took time."""
+    try:
+        if tool_ms is None:
+            return  # nothing measured the inside, so there is no overhead to name
+        overhead = served_ms - tool_ms
+        if overhead < _SERVE_OVERHEAD_FLOOR_MS:
+            return
+        from .._retrieval import usage as _usage
+
+        record: dict[str, object] = {
+            "kind": "serve",
+            "tool": tool_name,
+            "served_ms": round(served_ms, 1),
+            "tool_ms": round(tool_ms, 1),
+            "overhead_ms": round(overhead, 1),
+        }
+        if kick_ms >= 1.0:
+            record["kick_ms"] = round(kick_ms, 1)
+        if failed:
+            record["failed"] = True
+        _usage.record_serve(record)
+    except Exception:  # noqa: BLE001 — advisory; a served call must not fail for it
+        logger.debug("could not record serving overhead", exc_info=True)
 
 
 thread_search = mcp.tool()(_served(_tools.thread_search))

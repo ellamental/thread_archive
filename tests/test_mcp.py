@@ -42,13 +42,19 @@ def _ledger(archive_home) -> list[dict]:
     the ledger logs the parameters the search *actually* ran with, so it is where
     a bound that never reached the engine is observable without reaching inside
     the call.
+
+    Call rows only. The ledger also carries rows about the serving layer around a
+    call, which appear only when that layer crosses its reporting floor — a fact
+    about how loaded the machine is, not about the call, and reading them here
+    would make a positional assertion depend on the box.
     """
     from thread_archive._retrieval import usage
 
     path = archive_home / usage.LEDGER_FILE
     if not path.exists():
         return []
-    return [json.loads(ln) for ln in path.read_text(encoding="utf-8").splitlines() if ln.strip()]
+    rows = [json.loads(ln) for ln in path.read_text(encoding="utf-8").splitlines() if ln.strip()]
+    return [r for r in rows if r.get("kind") in ("search", "read")]
 
 
 def test_mcp_registers_two_tools() -> None:

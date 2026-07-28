@@ -21,7 +21,7 @@ CDR relevance is binary (a query's relevant-doc list), and a query carries ~20
 relevant conversations on average, so Recall@10 is bounded well under 1 by
 construction — nDCG@10 is the number to read.
 
-The domain still isn't Ella's archive: CDR queries are product-insight analytics
+The domain still isn't the real archive: CDR queries are product-insight analytics
 ("assistant explains cloud computing concepts", "user expresses frustration"),
 not an agent re-finding its own past session. So a strong CDR number certifies
 the stack is competitive at conversational retrieval *in general*; only the

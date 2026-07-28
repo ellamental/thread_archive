@@ -37,6 +37,7 @@ from thread_archive._thread_import.parsers.claude import ClaudeParser
 from thread_archive._thread_import.timestamps import parse_timestamp
 
 from .._store import get_session
+from . import _probe
 from ._events import assemble_events, log_parse_validation, preserve_unmodeled_fields
 from ._state import (
     create_thread,
@@ -491,6 +492,7 @@ def _import_one(
         result.skipped += 1
         return result
     try:
+        _probe.count("items")
         with get_session() as s:
             existing = get_thread_by_source(s, source, source_id)
             if existing and not force:
@@ -518,11 +520,13 @@ def _import_one(
                 if is_new_thread:
                     # Row AND staged truth record — no ghost threads/<id>.jsonl on commit.
                     discard_new_thread(s, thread_id)
-                s.commit()
+                with _probe.timed("commit_ms"):
+                    s.commit()
                 result.skipped += 1
             else:
                 set_thread_models_from_events(s, thread_id)
-                s.commit()
+                with _probe.timed("commit_ms"):
+                    s.commit()
                 # Counted only once the commit has landed. A conversation whose
                 # commit fails is errored, never imported: these totals are the
                 # operator's report on what was preserved, so counting ahead of

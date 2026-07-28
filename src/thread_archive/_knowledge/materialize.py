@@ -97,7 +97,7 @@ def _link_created(session, p: dict, ev) -> None:
         session.add(row)
     row.strength = float(p.get("strength", 1.0))
     row.evidence = p.get("evidence")
-    row.created_by = p.get("created_by") or getattr(ev, "actor", "librarian")
+    row.created_by = p.get("created_by") or getattr(ev, "actor", "unknown")
     row.created_by_thread_id = getattr(ev, "actor_thread_id", None)
     row.updated_at = ev.occurred_at
 
@@ -135,7 +135,7 @@ def _evidence_added(session, p: dict, ev) -> None:
         session.add(row)
     row.thread_id = cited.thread_id if cited is not None else p["thread_id"]
     row.quote = p.get("quote", "")
-    row.actor = p.get("actor") or getattr(ev, "actor", "librarian")
+    row.actor = p.get("actor") or getattr(ev, "actor", "unknown")
     row.created_by_thread_id = getattr(ev, "actor_thread_id", None)
     row.archived_at = None
 

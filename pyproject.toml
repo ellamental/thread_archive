@@ -91,7 +91,7 @@ Changelog = "https://github.com/ellamental/thread_archive/blob/main/CHANGELOG.md
 [project.scripts]
 # The single front door — setup wizard AND every operator verb, one namespaced
 # command. `thread-archive setup` runs first-run discovery/import/wiring; the
-# other verbs (watch, status, backup, verify, nightly, daemon, …) are the
+# other verbs (watch, status, backup, index verify, service, …) are the
 # operator seam that launchd/cron/scripts drive.
 #
 # `thread-archive` is the command: it matches the distribution name, the MCP
@@ -159,6 +159,17 @@ testpaths = ["tests"]
 # minutes-to-tens-of-minutes, not seconds. Run them with `-m package` /
 # `-m beir` / `-m quality_models`; `package` has a ci.toml row, the other two
 # are invoke-by-hand lanes (no CI row) — calibration, not gates.
+#
+# The search-quality release gate is not a lane here at all. Its subject is this
+# box's recorded bench history, and the suite is sandboxed off every machine
+# location by design — conftest redirects $HOME and drops the XDG vars, which is
+# what makes the lab's state root resolve into a tmpdir here exactly as the
+# archive home does. That is the isolation working, not a gap to route around, so
+# the gate runs as a command (`python -m search_lab gate`) from the release
+# preflight — the same shape as ci.toml's `retrieval-gate` row, for the same
+# reason. What *is* pinned here is the baseline's integrity —
+# tests/test_search_gate.py, every pass — because an orphaned baseline row
+# silently gates nothing.
 #
 # No `-q` here, deliberately: pytest's verbosity is cumulative, so an addopts
 # `-q` plus the `-q` every caller habitually types (the README's own line, the

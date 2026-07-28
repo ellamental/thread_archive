@@ -1,7 +1,7 @@
 """BEIR calibration harness — run archive's retrieval stack over a public IR
 benchmark and compare to published numbers.
 
-The in-house harness (``retrieval_eval.py``) answers *is search over Ella's
+The in-house harness (``retrieval_eval.py``) answers *is search over the real
 archive good* — mined query logs, labeled cases, behavioral signals. This one
 answers the different, external question: *are the components embarrassing?* It
 loads a standard BEIR dataset (a fixed corpus + queries + human relevance

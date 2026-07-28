@@ -21,6 +21,9 @@ export interface Status {
   last_coverage: CoverageRecord | null
   last_source_mirror: SourceMirrorRecord | null
   last_self_update: SelfUpdateRecord | null
+  // When each provider last had anything imported, all-time — unlike the watch
+  // pass's counters, which reset with the capture process.
+  source_last_import: Record<string, string>
   pipeline: PipelineVerdict
   watch_process_alive: boolean
   backup_same_device: boolean | null
@@ -803,10 +806,53 @@ export interface StatsModel {
   conversations: number
 }
 
+// One stacked/faceted band of a monthly chart: `key` is a source or model name (or
+// 'other', the folded tail), `values` runs parallel to `timeline.months`.
+export interface StatsSeries {
+  key: string
+  values: number[]
+}
+
+// The month axis is dense — every calendar month between the first and the last, quiet
+// ones included. Conversations bucket by the month a session *started*; tokens by the
+// month each *request* happened, so a session spanning a boundary spends in both.
+export interface StatsTimeline {
+  months: string[] // 'YYYY-MM'
+  // Conversations with no events at all, and so no date — excluded from the series
+  // above, reported so the chart's total can be seen not to match the overview tile.
+  undated: number
+  conversations: number[]
+  tokens: number[]
+  cost: Array<number | null>
+  conversations_by_source: StatsSeries[]
+  tokens_by_model: StatsSeries[]
+}
+
+// Sessions that recorded no token usage at all are not binned as zero — they are
+// counted in `without_tokens` instead, so the histogram doesn't grow a spike of tiny
+// sessions that never happened. `hi` is null on the open-ended top bucket.
+export interface StatsSessionSizes {
+  buckets: Array<{ lo: number; hi: number | null; count: number }>
+  sessions: number
+  without_tokens: number
+  median: number | null
+  p90: number | null
+}
+
+// When sessions start, weekday × hour in the server's local time; rows are Monday-first.
+export interface StatsRhythm {
+  grid: number[][]
+  max: number
+  total: number
+}
+
 export interface Stats {
   overview: StatsOverview
   by_source: StatsSource[]
   by_model: StatsModel[]
+  timeline: StatsTimeline
+  session_sizes: StatsSessionSizes
+  rhythm: StatsRhythm
 }
 
 // ── per-model drill-down (/stats/model/:model) ──────────────────────────────

@@ -509,6 +509,13 @@ def index_vectors(records) -> int:
         if d is not None:
             for stray in d.glob("meta-*.json"):
                 stray.unlink(missing_ok=True)
+        # The corpus graph is built from these same vectors and named by the same
+        # token, so it is stale for the same reason and invisible for the same
+        # reason. Dropped here rather than aged out: it is served across processes,
+        # where nothing else can know these rows moved.
+        from . import graph_cache
+
+        graph_cache.drop()
     return len(rows)
 
 
@@ -658,14 +665,25 @@ def index_events_local(
         batch, batch_chunks = [], 0
         return True
 
-    for eid, ct, content in pending:
-        chunks = _chunk(content)
-        batch.append((eid, ct, chunks))
-        batch_chunks += len(chunks)
-        if batch_chunks >= batch_size and not _flush():
-            return total
-    _flush()
-    return total
+    try:
+        for eid, ct, content in pending:
+            chunks = _chunk(content)
+            batch.append((eid, ct, chunks))
+            batch_chunks += len(chunks)
+            if batch_chunks >= batch_size and not _flush():
+                return total
+        _flush()
+        return total
+    finally:
+        # A drain leaves the torch allocator holding its peak batch, and on a
+        # unified-memory box that peak is dirty anonymous memory the host can only
+        # relieve by swapping. Released here rather than per ``_flush`` so the drain
+        # pays one re-acquire instead of one per batch, and only when something was
+        # actually embedded — the cohost's idle passes must stay free.
+        if total:
+            from .embed import release_accelerator_cache
+
+            release_accelerator_cache()
 
 
 @contextmanager

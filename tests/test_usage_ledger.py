@@ -20,6 +20,19 @@ def _write_cc(path, lines):
 
 
 def _records(home):
+    """The call rows — what this file is about.
+
+    ``serve`` rows are dropped: they describe the MCP layer *around* a call rather
+    than the call, and they appear only when that layer crosses its reporting
+    floor, which is a property of how loaded the machine is. Reading them here
+    would make every row-count assertion depend on the box. They have their own
+    file (``test_serve_overhead.py``). Filtering by kind is what every real
+    consumer of this ledger does anyway — ``warm`` rows have always been mixed in
+    the same way."""
+    return [r for r in _all_records(home) if r.get("kind") != "serve"]
+
+
+def _all_records(home):
     path = home / usage.LEDGER_FILE
     if not path.exists():
         return []
@@ -119,7 +132,7 @@ def test_a_raising_search_is_still_recorded_with_the_time_it_burned(archive_home
     # engine offers, and it raises from inside the timed span.
     with pytest.raises(ValueError):
         thread_search("hello ledger", limit=5, sort="newest")
-    (rec,) = _records(archive_home)
+    (rec,) = [r for r in _records(archive_home) if r["kind"] == "search"]
     # The failure is the point: dropping slow errors biases every percentile
     # computed off this file toward the searches that happened to succeed.
     assert rec["failed"] is True
@@ -284,17 +297,23 @@ def test_usage_log_disabled_by_env(archive_home, monkeypatch) -> None:
     assert _records(archive_home) == []
 
 
-def test_usage_log_rotates_at_cap(archive_home, monkeypatch) -> None:
+def test_usage_log_rotates_at_cap_without_losing_history(archive_home, monkeypatch) -> None:
+    from thread_archive._ops import ledger
+
     monkeypatch.setenv("THREAD_ARCHIVE_USAGE_MAX_BYTES", "200")
     for i in range(20):
         usage.record_read(i)
-    rotated = archive_home / "retrieval-usage.jsonl.1"
-    assert rotated.exists()
-    # the live file restarted and both files hold parseable records
+
+    path = archive_home / usage.LEDGER_FILE
+    segments = ledger.segments(path)
+    assert len(segments) > 1, "the cap must actually have rotated"
+    # The live file restarted, and nothing that was written is gone: the cap
+    # bounds what one read walks, never what the archive remembers.
     live = _records(archive_home)
-    old = [json.loads(ln) for ln in rotated.read_text(encoding="utf-8").splitlines()]
-    assert live and old
-    assert all(r["kind"] == "read" for r in live + old)
+    everything = list(ledger.iter_rows(path))
+    assert live and len(everything) == 20
+    assert [r["thread_id"] for r in everything] == list(range(20))
+    assert all(r["kind"] == "read" for r in everything)
 
 
 def test_usage_write_failure_is_fail_soft(archive_home) -> None:

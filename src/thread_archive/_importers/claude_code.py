@@ -27,10 +27,11 @@ from thread_archive._thread_import.parsers.claude_code import ClaudeCodeParser
 
 from .._config import resolve_paths
 from .._store import Thread, get_session
+from . import _probe
 from ._continuation import resolve_continuation_thread
 from ._cursor import resolve_source_cursor
 from ._events import import_lines
-from ._read import parse_session_lines_counted, read_source_bytes
+from ._read import LazyLines, read_source_bytes
 from ._result import IncrementalImportResult
 from ._sidecar import import_sidecar_lines, read_sidecar_lines
 from ._skip_ledger import record_skip
@@ -136,7 +137,7 @@ def _cc_origin_metadata(all_lines: list[dict], source_id: str, *, session=None, 
 def _import_cc(
     session,
     source_id: str,
-    all_lines: list[dict],
+    lines: LazyLines,
     source_bytes: bytes,
     parser: ClaudeCodeParser,
     builder: DefaultEventBuilder,
@@ -144,6 +145,12 @@ def _import_cc(
     source: str = SOURCE,
     title_override: Optional[str] = None,
 ) -> IncrementalImportResult:
+    """Import one Claude-Code-shaped transcript against its watermark.
+
+    ``lines`` is a :class:`~._read.LazyLines` rather than a parsed list because the
+    watermark is resolved from the file's *bytes*: the unchanged case below returns
+    without ever needing the parse, and that case is the overwhelming majority of
+    polls. Nothing after that point may assume the parse has not happened."""
     import_state = get_import_state(session, source, source_id)
     cursor = resolve_source_cursor(import_state, source_bytes, source=source, source_id=source_id)
     current_file_size = len(source_bytes)
@@ -151,6 +158,7 @@ def _import_cc(
     if cursor.unchanged and import_state:
         # Byte-identical to the last import. Stamp the digest if this watermark predates
         # it, so the next poll's append proof has something to check against.
+        # Returns before touching ``lines``: an unchanged file is never parsed.
         import_state.last_content_hash = cursor.content_hash
         return IncrementalImportResult(
             lines_processed=0,
@@ -160,6 +168,7 @@ def _import_cc(
             last_message_uuid=import_state.last_message_uuid,
         )
 
+    all_lines = lines.get()  # the file changed under the cursor: now the parse is owed
     total_lines = len(all_lines)
     start_line = cursor.start_line
     if start_line >= total_lines:
@@ -317,11 +326,11 @@ def import_session_incremental(
     parser = parser or ClaudeCodeParser()
     builder = builder or DefaultEventBuilder()
     source_bytes = read_source_bytes(session_path)
-    all_lines, parse_errors = parse_session_lines_counted(source_bytes, session_path.name)
+    lines = LazyLines(source_bytes, session_path.name)
     sidecar_lines = read_sidecar_lines(session_path)
 
     def _run(s) -> IncrementalImportResult:
-        result = _import_cc(s, source_id, all_lines, source_bytes, parser, builder, source=source)
+        result = _import_cc(s, source_id, lines, source_bytes, parser, builder, source=source)
         # The hook-context sidecar has its own line-count cursor, independent of the
         # session file's size watermark — so a grown sidecar imports even when the
         # main file is unchanged (and _import_cc returned early).
@@ -329,16 +338,22 @@ def import_session_incremental(
             n = import_sidecar_lines(s, result.thread_id, source_id, sidecar_lines)
             if n:
                 result = replace(result, events_created=result.events_created + n)
-        if parse_errors:
-            result = replace(result, parse_errors=parse_errors)
+        # Zero unless the parse actually ran: an unchanged file drops no lines, and
+        # re-reporting the previous import's drops on every poll would inflate the
+        # watcher's cumulative loss counter without any new loss.
+        if lines.parse_errors:
+            result = replace(result, parse_errors=lines.parse_errors)
         return result
 
+    _probe.count("items")
     if session is not None:
+        # Caller-owned transaction: their commit, their timing.
         return _run(session)
 
     with get_session() as s:
         result = _run(s)
-        s.commit()
+        with _probe.timed("commit_ms"):
+            s.commit()
         return result
 
 

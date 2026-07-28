@@ -51,8 +51,8 @@ from .read import read_thread, read_thread_structured, resolve_thread_ref
 logger = logging.getLogger(__name__)
 
 #: The content scope a search runs in when its caller names none: everything the
-#: index holds except derived thread summaries, which are the librarian's text
-#: rather than the record and so stay opt-in.
+#: index holds except derived thread summaries, which are derived text rather
+#: than the record and so stay opt-in.
 #:
 #: Defined here rather than at the agent surface because two callers must agree on
 #: it: the surface, and :func:`warm_models` — the vector matrix caches per
@@ -248,6 +248,16 @@ def warm_models(embedder=None) -> None:
             failed.append("graph")
             logger.debug("warm_models: corpus graph build skipped", exc_info=True)
         stage_ms["graph_ms"] = (perf_counter() - _t) * 1000.0
+
+    # The priming search ran a real encode, so the torch allocator is now holding that
+    # batch's peak — and on a unified-memory box that peak is dirty anonymous memory.
+    # A restart is exactly when the host can least afford it: several daemons warm at
+    # once, each parking a multi-GB high-water mark it will not need again until a
+    # query arrives. Hand it back at the end of the pass; the first real search
+    # re-acquires what it needs.
+    from .embed import release_accelerator_cache
+
+    release_accelerator_cache()
 
     try:
         from . import usage as _usage

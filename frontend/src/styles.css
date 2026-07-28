@@ -629,6 +629,133 @@ a.session-link { color: inherit; text-decoration: none; }
 a.session-link:hover { color: var(--accent); }
 .stat-table td.session-cell { max-width: 340px; overflow: hidden; text-overflow: ellipsis; }
 
+/* Puts a long table's tail back. Reads as a control rather than a row, so it can't be
+   mistaken for the data continuing. */
+.show-more {
+  margin-top: 8px; padding: 5px 11px; font-size: 12px; color: var(--muted);
+  border: 1px solid var(--line); border-radius: 7px; background: var(--panel);
+}
+.show-more:hover { color: var(--accent); border-color: var(--accent); }
+.show-more:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+/* ---- charts (stats page) ---- */
+/* Categorical slots for the *source* series, plus the recessive gray the folded tail
+   takes. These four values are a checked set, not a preference: every pair among them
+   clears the separation floors under protanopia, deuteranopia and normal vision, in both
+   schemes, against .chart-card's panel — see chartColor.ts for why the bar is every pair
+   rather than only neighbouring slots, and why that caps the palette at three hues.
+   Changing a value, or adding a fourth hue, breaks the set. Aqua on the light panel and
+   the gray on the dark one fall under 3:1, which is why every chart using them ships a
+   legend and a table carrying the same numbers.
+   --seq-* is the heatmap's single-hue magnitude ramp, palest = nearest zero. */
+:root {
+  --cat-1: #2a78d6; --cat-2: #eb6834; --cat-3: #1baf7a;
+  --cat-other: #6b6b66;
+  --seq-0: #f1f0ec; --seq-1: #cde2fb; --seq-2: #9ec5f4; --seq-3: #6da7ec;
+  --seq-4: #3987e5; --seq-5: #256abf; --seq-6: #104281;
+}
+@media (prefers-color-scheme: dark) {
+  /* The dark column is these hues re-stepped for the near-black panel, not the light
+     values lightened, and checked as its own set. The gray separates downward here — a
+     lighter one collides with the dark aqua and would also be the loudest thing on the
+     panel, which is backwards for a tail. */
+  :root {
+    --cat-1: #3987e5; --cat-2: #d95926; --cat-3: #199e70;
+    --cat-other: #686660;
+    --seq-0: #232329; --seq-1: #12345f; --seq-2: #184f95; --seq-3: #1c5cab;
+    --seq-4: #2a78d6; --seq-5: #5598e7; --seq-6: #9ec5f4;
+  }
+}
+
+.chart-card {
+  border: 1px solid var(--line); border-radius: 10px; background: var(--panel);
+  padding: 14px 16px 10px; margin-bottom: 10px;
+}
+.chart-title { font-size: 12px; font-weight: 500; color: var(--muted); margin: 0 0 6px; }
+.chart-plot { position: relative; }
+.chart-svg { width: 100%; height: auto; display: block; overflow: visible; }
+/* Solid hairlines, one step off the surface: a grid is scaffolding, and dashing it
+   makes it read as a threshold the data is being compared against. */
+.chart-grid { stroke: var(--line); stroke-width: 1; }
+.chart-axis-line { stroke: var(--line); stroke-width: 1; }
+.chart-axis { fill: var(--muted); font-size: 10px; font-variant-numeric: tabular-nums; }
+.chart-axis-title { fill: var(--muted); font-size: 10px; }
+.chart-value { fill: var(--muted); font-size: 10px; font-variant-numeric: tabular-nums; }
+.chart-marker { stroke: var(--ink); stroke-width: 1; opacity: .35; }
+.chart-fill { transition: opacity .1s ease; }
+.chart-fill.accent { fill: var(--accent); }
+
+.chart-legend {
+  display: flex; flex-wrap: wrap; gap: 6px 16px; margin: 0 0 10px; padding: 0;
+  list-style: none; font-size: 12px; color: var(--muted);
+}
+.chart-legend li { display: flex; align-items: center; gap: 6px; }
+.chart-swatch { flex: none; width: 10px; height: 10px; border-radius: 3px; }
+
+.chart-tip {
+  position: absolute; top: 0; z-index: 2; pointer-events: none;
+  min-width: 150px; max-width: 240px; padding: 8px 10px;
+  border: 1px solid var(--line); border-radius: 8px; background: var(--panel);
+  box-shadow: 0 4px 14px rgb(0 0 0 / .1); font-size: 12px;
+}
+.chart-tip.left { transform: translateX(10px); }
+.chart-tip.right { transform: translateX(-10px); }
+.chart-tip-head {
+  display: flex; justify-content: space-between; gap: 12px; font-weight: 600;
+  padding-bottom: 5px; margin-bottom: 5px; border-bottom: 1px solid var(--line);
+}
+.chart-tip-head span { font-weight: 400; color: var(--muted); font-variant-numeric: tabular-nums; }
+.chart-tip-row { display: flex; align-items: center; gap: 7px; padding: 1px 0; }
+.chart-tip-key { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.chart-tip-val { color: var(--muted); font-variant-numeric: tabular-nums; }
+
+/* Small multiples: one panel per model, shared y scale. */
+.chart-facets { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 10px; }
+.chart-facet {
+  margin: 0; padding: 10px 12px 8px; min-width: 0;
+  border: 1px solid var(--line); border-radius: 10px; background: var(--panel);
+}
+.chart-facet figcaption {
+  display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  min-width: 0; margin-bottom: 6px;
+}
+.chart-facet figcaption > :first-child { min-width: 0; overflow: hidden; }
+.chart-facet .model-tag { display: inline-block; max-width: 100%; overflow: hidden; text-overflow: ellipsis; }
+.chart-facet-name { font-size: 12px; color: var(--muted); }
+.chart-facet-total { flex: none; font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; }
+/* preserveAspectRatio="none" stretches the trace to the panel; the marks are areas and
+   a 2px line, so there is no circle for the non-uniform scale to distort. */
+.chart-facet-svg { width: 100%; height: 46px; display: block; }
+.chart-facet-fill { fill: hsl(var(--mc-h) calc(60% + var(--mc-s, 0) * 1%) 50% / .16); }
+.chart-facet-line {
+  stroke: hsl(var(--mc-h) calc(60% + var(--mc-s, 0) * 1%) 46%);
+  stroke-width: 2; stroke-linejoin: round; stroke-linecap: round;
+  vector-effect: non-scaling-stroke;
+}
+.chart-facet-peak { margin-top: 5px; font-size: 11px; color: var(--muted); font-variant-numeric: tabular-nums; }
+/* The panels share one x axis, stated once beneath them rather than drawn eight times. */
+.chart-span { margin: 8px 2px 0; font-size: 11px; color: var(--muted); }
+
+/* The rhythm grid is a real table — headers and per-cell counts — so the shading is a
+   second reading of the numbers rather than the only one. */
+.chart-heat-wrap { overflow-x: auto; }
+/* Fixed layout with a full-width table so the 24 hour columns divide the card evenly;
+   the day column is sized off its own content. */
+.chart-heat { width: 100%; min-width: 460px; table-layout: fixed; border-collapse: collapse; font-size: 10px; color: var(--muted); }
+.chart-heat th { font-weight: 400; padding: 0 0 3px; text-align: center; font-variant-numeric: tabular-nums; }
+.chart-heat th[scope='row'] { width: 36px; text-align: right; padding: 0 8px 0 0; }
+.chart-heat td { padding: 1px; }
+.chart-cell { display: block; width: 100%; height: 17px; border-radius: 3px; }
+.chart-scale { display: flex; align-items: center; gap: 3px; margin-top: 10px; font-size: 11px; color: var(--muted); }
+.chart-scale .chart-cell { width: 16px; min-width: 16px; }
+.chart-scale span:first-child { margin-right: 4px; }
+.chart-scale span:last-child { margin-left: 4px; font-variant-numeric: tabular-nums; }
+
+.sr-only {
+  position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+  overflow: hidden; clip-path: inset(50%); white-space: nowrap;
+}
+
 /* ---- health / trust center ---- */
 /* The status-tone palette. Shared with the import page, which reports the same
    four states over a different subject (a drop waiting, imported, quarantined). */
@@ -925,6 +1052,10 @@ a.session-link:hover { color: var(--accent); }
 
 @media (prefers-color-scheme: dark) {
   .stat-bar-fill.model { background: hsl(var(--mc-h) var(--mc-sat) 60%); }
+  /* Lift every model hue against the near-black panel, matching the model-tag rules. */
+  .chart-facet-fill { fill: hsl(var(--mc-h) calc(64% + var(--mc-s, 0) * 1%) 62% / .2); }
+  .chart-facet-line { stroke: hsl(var(--mc-h) calc(64% + var(--mc-s, 0) * 1%) 62%); }
+  .chart-tip { box-shadow: 0 4px 16px rgb(0 0 0 / .45); }
   a.model-link .model-tag:hover {
     background: hsl(var(--mc-h) var(--mc-sat) 60% / .26);
     border-color: hsl(var(--mc-h) var(--mc-sat) 60% / .75);

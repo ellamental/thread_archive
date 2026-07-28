@@ -16,6 +16,15 @@ from typing import Any, Optional
 from .._config import resolve_paths
 from .health import read_health, record_health, stamp_heartbeat
 
+# How far above the live truth a mirror's effective count may sit before the
+# backup check calls it a fault (see :func:`_verify_backup`). The mirror is a
+# point-in-time copy of a store that only grows, so it should never hold *more*
+# than the live truth holds; the tolerance covers the one benign way it can — a
+# backup landing new events while the verify's live scan is already bounded to
+# its watermark. Mirrored at the restore drill's 0.98 coverage floor: the same
+# 2% either side of parity.
+_MIRROR_COVERAGE_CEILING = 1.02
+
 
 def verify(
     *,
@@ -101,7 +110,9 @@ def verify(
     content between looks (the drill's coverage floor only catches drops ≥2%; a
     slow leak needs the run-over-run diff). A lower count than the *live* truth
     is expected staleness (the mirror ages between runs) and is reported as
-    ``coverage`` for trending. Combined with ``hashes``, the mirror gets the
+    ``coverage`` for trending; a *higher* one is not staleness but content the
+    live truth no longer has, and fails ``ok`` past ``_MIRROR_COVERAGE_CEILING``.
+    Combined with ``hashes``, the mirror gets the
     content-level hash scan too — an unchanged destination file is never
     re-copied, so rot at rest is otherwise invisible forever. A mirror mismatch
     count above the previous run's for the same destination (or any mismatch on
@@ -476,6 +487,17 @@ def _verify_backup(dest: Path, live_truth: dict) -> dict:
     ratio against the live truth (``coverage``) quantifies staleness — it should
     hover near 1.0 and only ever *rise* between backup runs.
 
+    Coverage is bounded on both sides. Below 1.0 is ordinary staleness — the
+    mirror ages between backups — but the truth only grows, so a mirror holding
+    *more* than the live truth is holding content the archive has let go of:
+    files a rename left behind, a deletion the mirror never applied. That
+    surplus does not merely sit there — it is what a restore would rebuild
+    from, and duplicate thread files under two names collapse into conflicting
+    rows the reindex refuses to publish. So ``coverage`` above
+    ``_MIRROR_COVERAGE_CEILING`` fails the check, naming the surplus in
+    ``coverage_excess`` while the mirror is still restorable, rather than
+    leaving it to surface as an unexplained shrink once the mirror is pruned.
+
     A mirror that *shrank* fails too: each run records the mirror's effective
     count in health (``backup_scan_last``), and a count below the previous run's
     for the same destination means the backup lost content between looks —
@@ -500,6 +522,14 @@ def _verify_backup(dest: Path, live_truth: dict) -> dict:
         "scan": scan,
         "coverage": round(scan["events_effective"] / live_effective, 6),
     }
+    if out["coverage"] > _MIRROR_COVERAGE_CEILING:
+        out["ok"] = False
+        out["coverage_excess"] = {
+            "coverage": out["coverage"],
+            "ceiling": _MIRROR_COVERAGE_CEILING,
+            "mirror_effective": scan["events_effective"],
+            "live_effective": live_truth["events_effective"],
+        }
     if prev_effective is not None and scan["events_effective"] < int(prev_effective):
         out["ok"] = False
         out["effective_drop"] = {

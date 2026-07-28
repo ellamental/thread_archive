@@ -62,13 +62,17 @@ already measured at this configuration — see "Running the whole bench".)
 |---|---|---|---|---|
 | 0 | `tests/test_search_quality.py` + `tests/test_search_recall_shape.py` + `tests/test_reality_mechanisms.py` (in every pytest run) | checked-in synthetic corpus (`tests/quality_corpus.py`), lexical stack | seconds | every change |
 | 1 | `pytest -m quality_models` | same corpus, real embedding model | minutes | touching the model arm |
-| 2 | CI arm-liveness probes (`retrieval_eval.py --probes-only`) | live archive | ~a minute (it loads both models) | every commit, via thread-ci |
+| 2 | CI arm-liveness probes (`retrieval_eval.py --probes-only`) | live archive | ~a minute (it loads both models) | every commit, on the maintainer's local CI |
 | 3 | `latency_replay.py` (speed over real traffic), `--behavior` | the live archive | minutes | evaluating a deliberate ranking change |
 | 4 | `python -m search_lab benchmark`; `pytest -m beir` | seven external IR / conversational-memory benchmarks | minutes once the corpora are built; about a day of CPU to build them all the first time | the quality claim — calibrating against published baselines |
+| gate | `python -m search_lab gate --run` | tier 4's recorded numbers vs the checked-in accepted ones | whatever tier 4 costs, plus milliseconds | cutting a release |
 
 Tiers 0–3 **detect damage**; tier 4 is the only one that supports a positive
 quality claim, and only about the components in general (see "What a number here
 is worth").
+
+The gate is not a tier — it is a *decision* over tier 4's output, and it is the
+one thing here that can fail a release on ranking. See "The release gate" below.
 
 The MRR/success/true-recall/nDCG loop is `eval_core.evaluate`, right here. Exactly
 one caller scores through it — the tier-0 synthetic corpus, whose labels are nonce
@@ -176,9 +180,13 @@ viewer and none of it does. Every row prints its delta against **the last run at
 different configuration**, not the previous run, so re-running an unchanged
 configuration shows zero movement instead of hiding the comparison you wanted.
 
-The ledger is `~/.thread/archive/bench-runs.jsonl` (`bench_runs.py`) — run-level:
-row, corpus id, code id, commit, measures, elapsed. Per-query detail stays in each
-harness's own `--json-out` report. Nothing here *builds* a corpus: a row whose
+The ledger is `~/.local/state/thread-search-lab/bench-runs.jsonl` (`bench_runs.py`)
+— run-level: row, corpus id, code id, commit, measures, elapsed. Per-query detail
+stays in each harness's own `--json-out` report. It sits in the lab's own state
+root for two reasons: nothing on this bench measures the archive, so the product's
+home has no business holding its numbers; and the corpus cache is documented as
+safe to delete, while a measurement history is the one part of a bench pass that
+cannot be rebuilt. Nothing here *builds* a corpus: a row whose
 corpus is missing fails and names the builder, because an ingest-plus-embed is a
 decision about hours of CPU, not something a benchmark run should take on its own.
 
@@ -273,6 +281,68 @@ number that dataset's leaderboard reports. A row unchanged since its last run is
 skipped and reported from the ledger, so the second pass costs only what an edit
 actually invalidated. That is the before-and-after pair a ranking change is judged
 on.
+
+## The release gate
+
+`benchmark` measures; `gate` decides whether what it measured is releasable.
+
+```
+python -m search_lab gate --run          # measure what is stale, then compare
+python -m search_lab gate --update       # accept the current numbers as the bar
+python -m search_lab gate --allow-stale  # read the ledger mid-tuning, not a release check
+```
+
+The two are split because they answer different questions. The bench prints each
+row against **the last run at a different configuration** — the number a knob
+turn is read on, and a moving reference by construction. A release needs the
+other thing: a fixed set of accepted numbers that a change has to clear, which
+moves only when somebody decides it should. Those live in
+`search_lab/quality-baseline.json` — checked in, unlike everything else this lab
+writes, because the ledger is per-box and a release cut from any checkout has to
+be gated against the same bar. It is a record of a decision, not a measurement,
+which is why nothing writes it automatically.
+
+Four states fail, and the distinction between them is the point — each names a
+different fix:
+
+- **regressed** — a measure fell past its band. Fix, revert, or accept.
+- **stale** — last measured at other code. Not knowing is indistinguishable from
+  having regressed, and a green gate over an unmeasured ranking change is the
+  failure the whole thing exists to prevent. `--run` is the fix.
+- **missing** — never measured on this box, usually an unbuilt corpus.
+- **corpus-changed** — scored a different query count or a different snapshot.
+  Not a worse measurement of the same thing; a measurement of something else.
+
+A manifest row with no accepted numbers is **ungated** — reported, never fatal.
+Which corpora a box has built is a fact about the box, and a gate demanding all
+sixteen rows would be unrunnable anywhere but the machine that built them.
+
+**The band is two cases wide, in the row's own units.** Scoring is deterministic,
+so it is not there for noise — it is there because a row of `n` queries cannot
+express a movement finer than `1/n`, and anything under that is rank shuffling
+inside cases that already worked. Points are not comparable across rows: 0.01 is
+three cases on scifact and twenty on LoCoMo. A row can override its band
+explicitly (`"tolerance"` on its entry, row-wide or per-measure) where its corpus
+has a documented weakness.
+
+That band is deliberately tight enough that a real trade — a change that lifts
+five rows and costs one — trips it. The gate's job is to make that a decision
+somebody makes, with the movement visible in the diff, rather than one that
+happens.
+
+**What a green gate licenses** is exactly what tier 4 licenses and no more: the
+retrieval components did not get worse on corpora somebody else labeled. It is
+not a claim about this archive — see "What a number here is worth". The gate
+raises the stakes of the measurement; it does not change what the measurement is.
+
+The baseline's *integrity* is pinned in the fast suite (`tests/test_search_gate.py`,
+every pytest pass): every baselined row is still a row the bench runs, every entry
+carries its provenance and scored size, every gated measure is one its row
+actually reports. An orphaned entry gates nothing while reading as though it does,
+and a release is far too late to discover that. The live gate is not a pytest
+lane: its subject is this box's recorded history, and the suite is sandboxed off
+every machine location by design (`tests/meta/test_isolation.py`). It runs as a
+command, the same shape ci.toml's `retrieval-gate` row already takes.
 
 **Read the set, not a row.** Datasets disagreeing is the useful part: a
 deficit that holds across every corpus is an arm problem, one that tracks document
@@ -373,18 +443,25 @@ rank shuffling within cases that already worked, not a win.
    winner into `_retrieval/params.py` defaults with its evidence in the docstring,
    and let tier 0/2 ratchet the new shape. If the benchmarks are flat, you have no
    result — say so rather than reaching for a local number to fill the gap.
+5. Move the bar: `python -m search_lab gate --update`. A promoted change that
+   leaves the baseline where it was means the next change is measured against a
+   number nobody stands behind any more, and a row that gave ground in the trade
+   stays permanently one breach from red.
 
 ## Cost and hygiene
 
 - Nothing on this bench spends tokens. Every instrument here is CPU and disk.
-- The synthetic tier-0 corpus is checked in — no real data in it. Nothing else
-  the bench reads or writes belongs in the repo.
+- Two things the bench touches are checked in, and both are records of a decision
+  rather than measurements: the synthetic tier-0 corpus (no real data in it) and
+  `quality-baseline.json`, the numbers a release is gated on. Nothing else the
+  bench reads or writes belongs in the repo — the ledgers are per-box and the
+  corpora are rebuildable.
 - Built benchmark corpora live under one root, `~/.cache/thread-evals`:
   `<root>/<dataset>` for a download, `<root>/homes/<name>` for a built home. They
   are large (tens of GB with vectors) and entirely rebuildable, so that whole tree
   is safe to delete when disk gets tight.
 - The fast tests guarding these harnesses live in `tests/`
   (`test_retrieval_eval.py`, `test_search_params.py`, `test_eval.py`,
-  `test_beir_calibration.py`, `test_eval_home.py`, `test_bench_runner.py`)
-  and run in every pytest pass — the lab stays runnable even when nobody has tuned
-  search in months.
+  `test_beir_calibration.py`, `test_eval_home.py`, `test_bench_runner.py`,
+  `test_search_gate.py`) and run in every pytest pass — the lab stays runnable
+  even when nobody has tuned search in months.

@@ -401,13 +401,11 @@ class LoadRun:
             return
         record = {"at": _now(), "kind": "load-run",
                   "duration_s": round(time.monotonic() - self._t0, 3), **self.snapshot()}
-        try:
-            path = ledger_path(self.home)
-            path.parent.mkdir(parents=True, exist_ok=True)
-            with open(path, "a", encoding="utf-8") as f:
-                f.write(json.dumps(record) + "\n")
-        except OSError as e:
-            logger.debug("load telemetry: ledger append failed (%s)", e)
+        from . import ledger as _ledger
+
+        _ledger.append(ledger_path(self.home), record,
+                       max_bytes=_ledger.env_max_bytes(
+                           "THREAD_ARCHIVE_LOAD_MAX_BYTES", 16 * 1024 * 1024))
 
 
 @contextmanager
@@ -462,19 +460,14 @@ def read_state(home: Optional[Path] = None, *, alive=_pid_alive) -> dict:
 
 
 def read_runs(limit: int = 20, home: Optional[Path] = None) -> list[dict]:
-    """The most recent finished load runs, newest first."""
-    try:
-        lines = ledger_path(home).read_text(encoding="utf-8").splitlines()
-    except OSError:
-        return []
+    """The most recent finished load runs, newest first — across every retained
+    segment, so a rotation shortens no history."""
+    from . import ledger as _ledger
+
     out: list[dict] = []
-    for ln in reversed(lines):
+    for row in _ledger.iter_rows(ledger_path(home), newest_first=True):
         if len(out) >= limit:
             break
-        try:
-            row = json.loads(ln)
-        except ValueError:
-            continue
         if isinstance(row, dict):
             out.append(row)
     return out

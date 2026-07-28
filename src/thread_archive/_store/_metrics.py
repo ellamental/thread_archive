@@ -22,6 +22,12 @@ Deriving them from ``events`` instead counts a repeated response once per row.
 accumulator, and re-deriving a thread is idempotent — which is what lets a refresh
 rebuild just the threads the window touched instead of the whole table.
 
+:class:`ThreadActivity` rides the same window for the stats page's time axis: the first
+and last ``occurred_at`` per thread, over *every* event type rather than just the usage
+events, so a source that logs no tokens still appears on the timeline. It accumulates
+(min/max against what is stored) rather than re-deriving, which is safe because both
+bounds are idempotent under a repeated fold.
+
 Correctness rests on the event log being append-only with monotonic ids: folding
 ``through < id <= upto`` and advancing the cursor to ``upto`` visits each event
 exactly once. Two things violate that, and both resolve to the same rebuild — a
@@ -55,7 +61,7 @@ _refresh_lock = threading.Lock()
 # The shape of the projection. Bump it whenever a change to the fold makes sums
 # produced by the old definition incomparable with new ones; a cursor carrying an
 # older version has its projections discarded and rebuilt rather than added to.
-PROJECTION_VERSION = 1
+PROJECTION_VERSION = 2
 
 # The provider request a row belongs to. Claude Code repeats one response's usage
 # object across several transcript rows; every other source keys on the event id,
@@ -88,12 +94,13 @@ _TOUCHED = """
 _FOLD_REQUESTS_SQL = text(
     f"""
     INSERT INTO request_metrics (
-        thread_id, request_key, model,
+        thread_id, request_key, month, model,
         input_tokens, cache_read_tokens, output_tokens, thinking_tokens, cost
     )
     SELECT
         e.thread_id,
         {_REQUEST_KEY} AS request_key,
+        MIN(strftime('%Y-%m', e.occurred_at)) AS month,
         COALESCE(MAX(COALESCE(json_extract(e.payload, '$.model'), '')), '') AS model,
         COALESCE(MAX(
             CASE
@@ -126,6 +133,13 @@ _FOLD_REQUESTS_SQL = text(
     GROUP BY e.thread_id, request_key
     ON CONFLICT(thread_id, request_key) DO UPDATE SET
         model = excluded.model,
+        -- The earliest month any row of this request was stamped with. A duplicate
+        -- arriving in a later poll carries the same timestamp, so this only matters
+        -- for a request straddling a month boundary: it lands where it started.
+        month = MIN(
+            COALESCE(request_metrics.month, excluded.month),
+            COALESCE(excluded.month, request_metrics.month)
+        ),
         input_tokens = MAX(request_metrics.input_tokens, excluded.input_tokens),
         cache_read_tokens = MAX(
             request_metrics.cache_read_tokens, excluded.cache_read_tokens
@@ -174,6 +188,26 @@ _REBUILD_TOUCHED_SQL = text(
 )
 
 
+# When each thread was live, folded over every event type — the stats page's time axis.
+# Unlike the sums above this is a genuine accumulator (min/max against what's already
+# there), which is safe because both are idempotent: re-folding a window that was already
+# folded cannot move an existing bound. The scan is over the id range alone — no
+# ``event_type`` filter and no JSON — because a source that logs no usage still has to
+# appear on the timeline.
+_FOLD_ACTIVITY_SQL = text(
+    """
+    INSERT INTO thread_activity (thread_id, first_at, last_at)
+    SELECT e.thread_id, MIN(e.occurred_at), MAX(e.occurred_at)
+    FROM events e
+    WHERE e.id > :through AND e.id <= :upto
+    GROUP BY e.thread_id
+    ON CONFLICT(thread_id) DO UPDATE SET
+        first_at = MIN(thread_activity.first_at, excluded.first_at),
+        last_at = MAX(thread_activity.last_at, excluded.last_at)
+    """
+)
+
+
 def invalidate_metrics(conn) -> None:  # noqa: ANN001 — Connection or Session, both execute()
     """Discard both projections and rewind the cursor so the next refresh rebuilds
     from the event log.
@@ -183,6 +217,7 @@ def invalidate_metrics(conn) -> None:  # noqa: ANN001 — Connection or Session,
     """
     conn.execute(text("DELETE FROM thread_metrics"))
     conn.execute(text("DELETE FROM request_metrics"))
+    conn.execute(text("DELETE FROM thread_activity"))
     conn.execute(
         text(
             "INSERT OR IGNORE INTO metrics_cursor "
@@ -200,7 +235,8 @@ def invalidate_metrics(conn) -> None:  # noqa: ANN001 — Connection or Session,
 
 
 def refresh_metrics(engine: Engine | None = None) -> None:
-    """Bring :class:`ThreadMetrics` up to date with the event log.
+    """Bring :class:`ThreadMetrics` and :class:`ThreadActivity` up to date with the
+    event log.
 
     Idempotent and cheap when already current (an indexed ``MAX(id)`` read, then a
     no-op). The first call on a fresh cache — and the call after a reindex — pays the
@@ -240,6 +276,7 @@ def refresh_metrics(engine: Engine | None = None) -> None:
         conn.execute(_FOLD_REQUESTS_SQL, params)
         conn.execute(_CLEAR_TOUCHED_SQL, params)
         conn.execute(_REBUILD_TOUCHED_SQL, params)
+        conn.execute(_FOLD_ACTIVITY_SQL, params)
         conn.execute(
             text(
                 "UPDATE metrics_cursor "
@@ -256,12 +293,256 @@ def _avg(total: float, n: int) -> float | None:
     return total / n if n else None
 
 
+def _month_range(months: list[str]) -> list[str]:
+    """Every calendar month from the earliest to the latest seen, gaps included.
+
+    A month nobody used is data — it is the quiet stretch a chart should draw as a gap
+    in the run rather than close up. Plotting only the months that appear would slide
+    2024's scattered sessions up against 2026's and make a three-year ramp look steady.
+    """
+    if not months:
+        return []
+    lo, hi = min(months), max(months)
+    y, m = int(lo[:4]), int(lo[5:7])
+    out: list[str] = []
+    while (stamp := f"{y:04d}-{m:02d}") <= hi:
+        out.append(stamp)
+        y, m = (y + 1, 1) if m == 12 else (y, m + 1)
+    return out
+
+
+def _top_series(
+    totals: dict[str, float], per_month: dict[str, dict[str, int]], months: list[str], keep: int
+) -> list[dict]:
+    """The ``keep`` biggest keys as dense per-month series, everything else summed into
+    one ``other``.
+
+    A stacked chart can only carry so many colors before neighboring bands stop being
+    tellable apart, so the tail folds rather than minting more hues. The fold is by
+    *total*, never by a month's own ranking — a series has to keep one color across the
+    whole axis or the chart restates rank as identity.
+    """
+    ranked = sorted(totals, key=lambda k: -totals[k])
+    head, tail = ranked[:keep], ranked[keep:]
+    series = [
+        {"key": k, "values": [int(per_month.get(m, {}).get(k, 0)) for m in months]} for k in head
+    ]
+    if tail:
+        series.append(
+            {
+                "key": "other",
+                "values": [
+                    int(sum(per_month.get(m, {}).get(k, 0) for k in tail)) for m in months
+                ],
+            }
+        )
+    return series
+
+
+# How many bands each monthly chart carries before the tail folds into "other".
+# Sources are stacked, so the cap is the size of the viewer's categorical palette — three
+# hues plus a gray for the tail, which is as far as a stack can go and keep every pair
+# distinguishable to a colorblind reader (see the viewer's chartColor.ts). Models are
+# drawn as one panel each and take their color from the model itself, so identity comes
+# from the label and the cap is only about how many panels fit on a screen.
+TIMELINE_SOURCES = 3
+TIMELINE_MODELS = 7
+
+# Upper edges of the per-session token histogram, in tokens. Roughly log-spaced: session
+# size spans four orders of magnitude, so linear bins would put everything in one bar.
+# The open-ended top bucket catches the tail above the last edge.
+SESSION_SIZE_EDGES: tuple[int, ...] = (1_000, 5_000, 10_000, 50_000, 100_000, 500_000, 1_000_000)
+
+
+def _collect_timeline(s) -> dict:  # noqa: ANN001 — Session
+    """The archive's activity month by month: conversations started (split by source)
+    and tokens spent (split by model), over a dense month axis.
+
+    Two different clocks, deliberately, because the two questions have different
+    denominators. Conversations bucket by when the *session* started
+    (``thread_activity.first_at``), which is the only figure a source recording no token
+    usage can contribute to at all. Tokens bucket by when each *request* happened
+    (``request_metrics.month``), so a session running across a month boundary spends in
+    both. They are drawn as separate charts; nothing here puts them on one axis.
+    """
+    conv_month: dict[str, dict[str, int]] = {}
+    conv_totals: dict[str, float] = {}
+    tok_month: dict[str, dict[str, int]] = {}
+    tok_totals: dict[str, float] = {}
+    month_totals: dict[str, dict] = {}
+
+    for month, source, n in s.execute(
+        text(
+            """
+            SELECT strftime('%Y-%m', a.first_at) AS month,
+                   COALESCE(t.source, '') AS source,
+                   COUNT(*)
+            FROM thread_activity a
+            JOIN threads t ON t.id = a.thread_id
+            WHERE t.thread_type = 'conversation' AND t.archived = 0
+            GROUP BY month, source
+            """
+        )
+    ).all():
+        if not month:
+            continue
+        conv_month.setdefault(month, {})[source or "(unknown)"] = int(n)
+        conv_totals[source or "(unknown)"] = conv_totals.get(source or "(unknown)", 0) + int(n)
+        month_totals.setdefault(month, {"conversations": 0, "tokens": 0, "cost": 0.0, "cost_requests": 0})
+        month_totals[month]["conversations"] += int(n)
+
+    # Placeholder models are filtered below rather than in SQL: they are dropped from the
+    # per-model split but still counted in the month's total, so the query has to return
+    # them.
+    for month, model, tokens, cost, cost_requests in s.execute(
+        text(
+            """
+            SELECT r.month,
+                   r.model,
+                   SUM(r.input_tokens + r.output_tokens) AS tokens,
+                   SUM(COALESCE(r.cost, 0)) AS cost,
+                   COUNT(r.cost) AS cost_requests
+            FROM request_metrics r
+            JOIN threads t ON t.id = r.thread_id
+            WHERE t.thread_type = 'conversation' AND t.archived = 0
+              AND r.month IS NOT NULL
+            GROUP BY r.month, r.model
+            """
+        )
+    ).all():
+        bucket = month_totals.setdefault(
+            month, {"conversations": 0, "tokens": 0, "cost": 0.0, "cost_requests": 0}
+        )
+        bucket["tokens"] += int(tokens or 0)
+        bucket["cost"] += float(cost or 0.0)
+        bucket["cost_requests"] += int(cost_requests or 0)
+        # Placeholder model ids are dropped from the *split* but not from the month's
+        # total, so the stack's bands can sum to less than the line above them without
+        # either number being wrong.
+        if model in NON_MODELS:
+            continue
+        tok_month.setdefault(month, {})[model] = int(tokens or 0)
+        tok_totals[model] = tok_totals.get(model, 0) + int(tokens or 0)
+
+    # Conversations the timeline cannot place: a thread whose events are all gone (or
+    # that never had any) has no first_at and so no month. Reported rather than dropped,
+    # so the chart's total can be seen not to match the overview tile without either
+    # being wrong.
+    dated = sum(sum(by.values()) for by in conv_month.values())
+    total = s.execute(
+        text("SELECT COUNT(*) FROM threads WHERE thread_type = 'conversation' AND archived = 0")
+    ).scalar() or 0
+
+    months = _month_range(list(month_totals))
+    return {
+        "months": months,
+        "undated": max(int(total) - dated, 0),
+        "conversations": [month_totals.get(m, {}).get("conversations", 0) for m in months],
+        "tokens": [month_totals.get(m, {}).get("tokens", 0) for m in months],
+        "cost": [
+            month_totals[m]["cost"] if month_totals.get(m, {}).get("cost_requests") else None
+            for m in months
+        ],
+        "conversations_by_source": _top_series(
+            conv_totals, conv_month, months, TIMELINE_SOURCES
+        ),
+        "tokens_by_model": _top_series(tok_totals, tok_month, months, TIMELINE_MODELS),
+    }
+
+
+def _collect_session_sizes(s) -> dict:  # noqa: ANN001 — Session
+    """How big a session gets, as a histogram over :data:`SESSION_SIZE_EDGES` plus the
+    median and p90 of the same population.
+
+    Only sessions that recorded token usage are in it — a web export contributes no
+    size, and binning it as "0 tokens" would invent a spike of tiny sessions that never
+    happened. The count of what was left out ships alongside so the chart can say so.
+    """
+    sizes = [
+        int(n or 0)
+        for (n,) in s.execute(
+            text(
+                """
+                SELECT SUM(m.input_tokens + m.output_tokens) AS tokens
+                FROM thread_metrics m
+                JOIN threads t ON t.id = m.thread_id
+                WHERE t.thread_type = 'conversation' AND t.archived = 0
+                GROUP BY m.thread_id
+                """
+            )
+        ).all()
+    ]
+    sizes = sorted(n for n in sizes if n > 0)
+    counted = s.execute(
+        text(
+            "SELECT COUNT(*) FROM threads WHERE thread_type = 'conversation' AND archived = 0"
+        )
+    ).scalar() or 0
+
+    # ``hi`` is None on the last bucket alone — the tail is open-ended, since there is no
+    # size a session cannot exceed.
+    buckets: list[dict[str, int | None]] = [
+        {"lo": 0 if i == 0 else SESSION_SIZE_EDGES[i - 1], "hi": hi, "count": 0}
+        for i, hi in enumerate(SESSION_SIZE_EDGES)
+    ]
+    buckets.append({"lo": SESSION_SIZE_EDGES[-1], "hi": None, "count": 0})
+    for n in sizes:
+        for b in buckets:
+            hi = b["hi"]
+            if hi is None or n <= hi:
+                b["count"] = (b["count"] or 0) + 1
+                break
+
+    return {
+        "buckets": buckets,
+        "sessions": len(sizes),
+        "without_tokens": max(int(counted) - len(sizes), 0),
+        "median": _median(sizes),
+        "p90": float(sizes[min(int(len(sizes) * 0.9), len(sizes) - 1)]) if sizes else None,
+    }
+
+
+def _collect_rhythm(s) -> dict:  # noqa: ANN001 — Session
+    """When conversations start, as a weekday × hour grid — the archive's working week.
+
+    Counted off ``thread_activity.first_at`` in the **server's local time**, which is the
+    only frame in which "3pm" means anything to the operator reading it. Rows are
+    Monday-first (SQLite's ``%w`` is Sunday-first, so the index is rotated).
+    """
+    grid = [[0] * 24 for _ in range(7)]
+    for dow, hour, n in s.execute(
+        text(
+            """
+            SELECT CAST(strftime('%w', a.first_at, 'localtime') AS INTEGER) AS dow,
+                   CAST(strftime('%H', a.first_at, 'localtime') AS INTEGER) AS hour,
+                   COUNT(*)
+            FROM thread_activity a
+            JOIN threads t ON t.id = a.thread_id
+            WHERE t.thread_type = 'conversation' AND t.archived = 0
+            GROUP BY dow, hour
+            """
+        )
+    ).all():
+        if dow is None or hour is None:
+            continue
+        grid[(int(dow) + 6) % 7][int(hour)] += int(n)  # Sunday-first → Monday-first
+    return {
+        "grid": grid,
+        "max": max((max(row) for row in grid), default=0),
+        "total": sum(sum(row) for row in grid),
+    }
+
+
 def collect_stats(*, model_limit: int | None = None) -> dict:
     """Compute the stats payload from the (freshly refreshed) rollup + threads table.
 
-    Everything here aggregates the compact ``thread_metrics`` table (one row per
-    thread-model) joined to ``threads``, so it stays fast regardless of event volume;
-    the join also drops any rollup row orphaned by a since-deleted thread.
+    Six sections: ``overview`` totals, ``by_source`` / ``by_model`` tables, a monthly
+    ``timeline`` (conversations by source, tokens by model), a ``session_sizes``
+    histogram, and the weekday × hour ``rhythm`` of session starts.
+
+    Everything here aggregates the compact rollup tables (one row per thread-model, per
+    request, per thread) joined to ``threads``, so it stays fast regardless of event
+    volume; the join also drops any rollup row orphaned by a since-deleted thread.
     """
     refresh_metrics()
 
@@ -345,6 +626,10 @@ def collect_stats(*, model_limit: int | None = None) -> dict:
 
         span = s.execute(text("SELECT MIN(occurred_at), MAX(occurred_at) FROM events")).first()
 
+        timeline = _collect_timeline(s)
+        session_sizes = _collect_session_sizes(s)
+        rhythm = _collect_rhythm(s)
+
     by_source = []
     for source, convos in sorted(conv_by_source.items(), key=lambda kv: -kv[1]):
         m = metric_by_source.get(source, {})
@@ -398,7 +683,14 @@ def collect_stats(*, model_limit: int | None = None) -> dict:
         "last_at": span[1] if span else None,
     }
 
-    return {"overview": overview, "by_source": by_source, "by_model": by_model}
+    return {
+        "overview": overview,
+        "by_source": by_source,
+        "by_model": by_model,
+        "timeline": timeline,
+        "session_sizes": session_sizes,
+        "rhythm": rhythm,
+    }
 
 
 def _median(sorted_vals: list[int]) -> float | None:

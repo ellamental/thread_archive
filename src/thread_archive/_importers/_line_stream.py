@@ -16,8 +16,9 @@ from pathlib import Path
 from typing import Any, Callable, Optional
 
 from .._store import get_session
+from . import _probe
 from ._cursor import resolve_source_cursor
-from ._read import parse_session_lines_counted, read_source_bytes
+from ._read import LazyLines, read_source_bytes
 from ._result import IncrementalImportResult
 from ._skip_ledger import record_skip
 from ._state import (
@@ -38,7 +39,7 @@ def _run(
     source: str,
     source_id: str,
     session_path: Path,
-    all_lines: list[dict],
+    lines: "LazyLines",
     source_bytes: bytes,
     prepare,
     has_importable_content,
@@ -57,6 +58,9 @@ def _run(
             0, 0, import_state.thread_id or "", False, import_state.last_message_uuid
         )
 
+    # The file changed under the cursor, so the parse is owed. Everything above
+    # returned without it — which is what makes an unchanged poll cheap.
+    all_lines = lines.get()
     total_lines = len(all_lines)
     start_line = cursor.start_line
     if start_line >= total_lines:
@@ -183,13 +187,13 @@ def import_line_stream_session(
         raise FileNotFoundError(not_found_msg)
 
     source_bytes = read_source_bytes(session_path)
-    all_lines, parse_errors = parse_session_lines_counted(source_bytes, session_path.name)
+    lines = LazyLines(source_bytes, session_path.name)
 
     kwargs = dict(
         source=source,
         source_id=source_id,
         session_path=session_path,
-        all_lines=all_lines,
+        lines=lines,
         source_bytes=source_bytes,
         prepare=prepare,
         has_importable_content=has_importable_content,
@@ -198,12 +202,17 @@ def import_line_stream_session(
         make_source_metadata=make_source_metadata,
     )
 
+    _probe.count("items")
     if session is not None:
-        return replace(_run(session, **kwargs), parse_errors=parse_errors)
+        # The caller owns the transaction, so the commit this import rides on is
+        # theirs to time — charging it here would bill this file for a batch.
+        return replace(_run(session, **kwargs), parse_errors=lines.parse_errors)
     with get_session() as s:
         result = _run(s, **kwargs)
-        s.commit()
-        return replace(result, parse_errors=parse_errors)
+        with _probe.timed("commit_ms"):
+            s.commit()
+        # Zero unless the parse ran: an unchanged file dropped nothing this poll.
+        return replace(result, parse_errors=lines.parse_errors)
 
 
 def line_stream_importer(

@@ -216,6 +216,57 @@ def test_a_report_with_no_profile_yields_none_rather_than_empty_numbers() -> Non
     assert benchmark.performance_from_report({"n": 5, "ndcg10": 0.5}) == {}
 
 
+# ── where the history lives ──────────────────────────────────────────────────
+# Nothing on this bench measures the archive: every row scores a throwaway corpus
+# built from a public dataset. The ledger location is what makes that a fact about
+# the code rather than a claim in a docstring.
+
+
+def test_the_ledger_does_not_live_in_the_archive_home() -> None:
+    """Checked with ``guard_home`` — the same overlap rule that stops a corpus
+    build from wiping the archive, in either direction. Equality is only its
+    narrowest case: a ledger at ``~/.thread`` is not equal to ``~/.thread/archive``
+    and still puts bench history inside the product's state."""
+    from search_lab import eval_home
+
+    eval_home.guard_home(bench_runs.ledger_home(), what="bench ledger")
+
+
+def test_the_ledger_does_not_live_in_the_deletable_corpus_cache() -> None:
+    """The corpora are documented as safe to delete when disk gets tight; a run
+    history is the one part of a bench pass that cannot be rebuilt, because the
+    code and corpus a row measured are gone the moment either changes."""
+    from search_lab import eval_home
+
+    ledger = bench_runs.ledger_home().expanduser().resolve()
+    cache = eval_home.CACHE_ROOT.expanduser().resolve()
+    assert ledger != cache and cache not in ledger.parents
+
+
+def test_the_ledger_ignores_the_home_a_running_benchmark_pins() -> None:
+    """Every harness points ``THREAD_ARCHIVE_HOME`` at its own throwaway corpus
+    for the length of a run. Honoring it would scatter the history across the very
+    homes it describes — and those get wiped and rebuilt."""
+    import os
+
+    before = bench_runs.ledger_home()
+    os.environ["THREAD_ARCHIVE_HOME"] = "/tmp/some-benchmark-corpus"
+    try:
+        assert bench_runs.ledger_home() == before
+    finally:
+        os.environ.pop("THREAD_ARCHIVE_HOME", None)
+
+
+def test_the_lab_state_root_follows_an_explicit_xdg_redirect(monkeypatch) -> None:
+    """Read at call time, so a box that places its state elsewhere is obeyed —
+    and so the suite's own sandbox reaches it the same way it reaches every other
+    machine location."""
+    from search_lab import eval_home
+
+    monkeypatch.setenv("XDG_STATE_HOME", "/tmp/xdg-state")
+    assert eval_home.state_root() == Path("/tmp/xdg-state/thread-search-lab")
+
+
 def test_a_run_records_its_cost_and_omits_the_key_when_it_has_none(tmp_path) -> None:
     bench_runs.record_run(row="a:row", argv=["x"], corpus_id=None, measures={},
                           elapsed_s=90.0, status="ok", home=tmp_path,

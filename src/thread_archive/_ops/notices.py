@@ -252,7 +252,14 @@ def build_notices(records: dict) -> list[dict]:
             "pip install 'thread-archive[all]'",
         ))
 
+    # A disabled updater raises nothing. Its last record is a fact that stops
+    # being refreshed the moment it is switched off, so the queue would hold a
+    # verdict frozen at whatever the final check saw — and ask the operator to
+    # act on a mechanism they turned off. Both notices go, not just the block:
+    # an available release is not maintenance you owe if you are not updating.
     update = records.get("last_self_update") or {}
+    if records.get("update_enabled") is False:
+        update = {}
     if update.get("action") == "update":
         out.append(_notice(
             "update", "good",

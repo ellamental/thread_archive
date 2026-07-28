@@ -1,6 +1,6 @@
 # Fix a drifted provider import
 
-This directory is a patch scaffold for a thread_archive provider whose import
+This directory is a patch scaffold for a thread-archive provider whose import
 has drifted: the provider changed its on-disk transcript format, and the
 archive's parser no longer fully understands it. The job is the parse logic;
 everything else — where files go, how the fix is verified, how it goes live —
@@ -12,7 +12,7 @@ written to be handed to one.
 ## Ground rules
 
 - **Work only inside this directory.** The one exception: running `archive`
-  commands named in this protocol. Never edit the thread_archive source tree —
+  commands named in this protocol. Never edit the thread-archive source tree —
   a patched core breaks the user's self-update path permanently; an override
   plugin here does not.
 - **Never weaken the pre-wired tests.** They are the exit bar. In particular
@@ -50,7 +50,7 @@ written to be handed to one.
 5. **Iterate until green:** `python -m pytest . -q`. The suite must pass with
    your fixtures importing events, no validation findings, and no dedup
    duplication on re-import.
-6. **Activate:** run `thread_archive fix-import <provider> --activate`. This re-runs
+6. **Activate:** run `thread-archive source fix <provider> --activate`. This re-runs
    the suite in a fresh subprocess, enables the override in config.json, and
    re-imports everything the broken parser consumed (ledgered files, plus
    quarantine snapshots whose originals were pruned). If activation refuses,

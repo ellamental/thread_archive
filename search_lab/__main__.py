@@ -1,10 +1,12 @@
 """``python -m search_lab <command>`` — the lab's front door.
 
-One command, because one thing in here is a *set* rather than a single
-instrument and is worth invoking by name:
+Two commands, because two things in here are about the bench *as a set* rather
+than a single instrument, and are worth invoking by name:
 
 * ``benchmark`` — run the bench as a set, skipping what is already measured at
   this configuration (:mod:`search_lab.benchmark`).
+* ``gate`` — decide whether what it measured is releasable, against the frozen
+  accepted numbers (:mod:`search_lab.quality_gate`).
 
 Every other harness stays a script (``python search_lab/retrieval_eval.py``),
 which is how they are documented and how they are run: one instrument, its own
@@ -15,7 +17,7 @@ from __future__ import annotations
 
 import sys
 
-COMMANDS = ("benchmark",)
+COMMANDS = ("benchmark", "gate")
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -29,6 +31,10 @@ def main(argv: list[str] | None = None) -> int:
         from search_lab import benchmark
 
         return benchmark.main(rest)
+    if command == "gate":
+        from search_lab import quality_gate
+
+        return quality_gate.main(rest)
     print(f"unknown command {command!r}; expected one of {', '.join(COMMANDS)}",
           file=sys.stderr)
     return 1

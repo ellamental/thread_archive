@@ -532,6 +532,7 @@ def status(*, home: Optional[str] = None) -> dict:
             select(func.count()).select_from(Thread).where(Thread.thread_type == "topic")
         ).scalar() or 0
         links = s.execute(select(func.count()).select_from(ThreadLink)).scalar() or 0
+    from ._retrieval import graph_cache
     from ._retrieval.code import code_index_status
     from ._retrieval.vectors import get_status as _vec_status
 
@@ -546,6 +547,9 @@ def status(*, home: Optional[str] = None) -> dict:
         "links": int(links),
         "fts_indexed": fts_status()["indexed"],
         "vectors_indexed": _vec_status().get("indexed", 0),
+        # Whether a restart has a corpus graph to rank with, or will re-rank until
+        # it rebuilds one. Read off disk, never built here — the build is seconds.
+        "graph_cache": graph_cache.describe(),
         "code_paths_indexed": code["paths"],
         "code_files": code["distinct_paths"],
         "code_commits": code["commits"],
@@ -595,16 +599,57 @@ def unsilence_notice(key: str, *, home: Optional[str] = None) -> dict:
     return unsilence(key, _notice_inputs(home))
 
 
+def _source_last_import() -> dict:
+    """``{source: ISO-8601 UTC}`` — when each provider last had anything imported.
+
+    The watcher's per-source counters are cumulative since the *capture process*
+    started, so they cannot answer this: a provider that has imported nothing
+    since the last daemon restart and one that has been dark for a month both
+    report zero items. The import watermarks carry the stamp across restarts —
+    every cursor advance bumps ``import_state.last_import_at`` — so the newest
+    watermark per source is the last time that provider fed the archive.
+
+    One grouped scan of ``import_state`` (a row per session, not per event).
+    Fail-soft: advisory, and a status read must not fail on it.
+    """
+    from datetime import timezone
+
+    from sqlalchemy import func, select
+
+    from ._store import ImportState, get_session
+
+    try:
+        with get_session() as s:
+            rows = s.execute(
+                select(ImportState.source, func.max(ImportState.last_import_at))
+                .group_by(ImportState.source)
+            ).all()
+    except Exception:  # noqa: BLE001 — advisory; status must still answer
+        return {}
+    out: dict[str, str] = {}
+    for source, last in rows:
+        if not source or last is None:
+            continue
+        # The stamp is written aware-UTC but SQLite round-trips it naive, and a
+        # naive value IS UTC. Labelling it here is what keeps a reader from
+        # aging it by the machine's offset from UTC.
+        if last.tzinfo is None:
+            last = last.replace(tzinfo=timezone.utc)
+        out[str(source)] = last.isoformat()
+    return out
+
+
 def operational_records(*, home: Optional[str] = None) -> dict:
     """The freshness-bearing half of :func:`status`: the ``health.json`` records,
-    the pipeline verdict, watcher liveness, the backup's same-device check, and
-    the load state.
+    the pipeline verdict, watcher liveness, the backup's same-device check, the
+    per-source import stamps, and the load state.
 
     Split out because every field here is judged against *now* — a reader asks
     "how long since capture last checked in?" and answers red past a threshold.
-    Costed to be read fresh on every request (a JSON file, a manifest, two
-    stats, one ``kill(pid, 0)``) so it never has to ride a cache: served from a
-    snapshot even minutes old, a live watcher's last pass reads as a stall.
+    Costed to be read fresh on every request (two JSON files, a manifest, two
+    stats, one ``kill(pid, 0)``, one grouped read of the import watermarks) so
+    it never has to ride a cache: served from a snapshot even minutes old, a
+    live watcher's last pass reads as a stall.
     """
     paths = open_archive(home)
     from ._truth.jsonl_log import _read_manifest
@@ -648,11 +693,24 @@ def operational_records(*, home: Optional[str] = None) -> dict:
         "last_coverage": health.get("coverage_last"),
         "last_source_mirror": health.get("source_mirror_last"),
         "last_self_update": health.get("self_update_last"),
+        "update_enabled": _update_enabled(home),
+        "source_last_import": _source_last_import(),
         "pipeline": pipeline_verdict(health),
         "watch_process_alive": watch_process_alive,
         "backup_same_device": backup_same_device,
         "load": _load_state(paths.home),
     }
+
+
+def _update_enabled(home: Optional[str]) -> bool:
+    """Whether the self-updater is turned on for this install (``update.enabled``
+    in ``config.json``). Unset means on: an operator who never touched the key
+    still wants to hear that an update is waiting or that a check is failing.
+    An unreadable config reads as on for the same reason — a broken file must
+    not be a way to go quiet."""
+    from ._update import update_config
+
+    return update_config(home).get("enabled", True) is not False
 
 
 def _load_state(home: Path) -> dict:
@@ -693,7 +751,10 @@ def disk_usage(*, home: Optional[str] = None, top: int = 12) -> dict:
 def stats(*, home: Optional[str] = None, model_limit: Optional[int] = None) -> dict:
     """Token/cost analytics for the viewer's stats page: an ``overview`` (totals +
     activity span), ``by_source`` (conversations, tokens, and — where a pay-per-token
-    source recorded it — cost, per provider), and ``by_model`` (the busiest models).
+    source recorded it — cost, per provider), ``by_model`` (the busiest models), a
+    monthly ``timeline`` (conversations by source, tokens by model, over a dense month
+    axis), a ``session_sizes`` histogram, and the weekday × hour ``rhythm`` of when
+    sessions start.
 
     Cost is only present for sources that record it (the pay-per-token harnesses, e.g.
     sources); subscription tools log tokens but no dollar figure, so their cost comes back

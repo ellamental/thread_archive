@@ -27,22 +27,22 @@ is paid on purpose, against the cold flags that mark a request unlucky enough to
 pay it inside the call.
 
 Append-only JSONL, advisory, fail-soft — a ledger write must never break the
-retrieval call it describes. ``THREAD_ARCHIVE_USAGE_LOG=0`` disables it. The
-file self-rotates: at ``max_bytes()`` the current file is renamed to
-``retrieval-usage.jsonl.1`` (replacing any previous rotation) and a fresh file
-starts — bounded disk, and at observed agent volumes the window still spans
-months.
+retrieval call it describes. ``THREAD_ARCHIVE_USAGE_LOG=0`` disables it. At
+``max_bytes()`` the file rotates to a stamped segment and a fresh one starts;
+every segment is retained and every reader here walks all of them
+(:mod:`.._ops.ledger`), so the eval population is the whole history rather than
+whatever fit in the current file.
 """
 
 from __future__ import annotations
 
-import json
 import logging
 import os
 from datetime import datetime, timezone
 from typing import Any, Optional
 
 from .._config import resolve_paths
+from .._ops import ledger as _ledger
 
 logger = logging.getLogger(__name__)
 
@@ -52,13 +52,13 @@ _MAX_RESULT_IDS = 20  # per-search result ids retained — enough to judge rank 
 
 
 def max_bytes() -> int:
-    """Size at which the ledger rotates to ``.jsonl.1`` (32 MB by default).
+    """Size at which the ledger rotates to a new segment (32 MB by default).
 
     Read per call from ``THREAD_ARCHIVE_USAGE_MAX_BYTES``, like ``_enabled()``
     beside it: a constant would answer once at import and ignore any later word
     on it.
     """
-    return int(os.environ.get("THREAD_ARCHIVE_USAGE_MAX_BYTES") or 32 * 1024 * 1024)
+    return _ledger.env_max_bytes("THREAD_ARCHIVE_USAGE_MAX_BYTES", 32 * 1024 * 1024)
 
 
 def _enabled() -> bool:
@@ -70,15 +70,8 @@ def _enabled() -> bool:
 def _append(record: dict) -> None:
     """Append one record, rotating first when the file is at cap. Fail-soft."""
     try:
-        path = resolve_paths().home / LEDGER_FILE
-        try:
-            if path.stat().st_size >= max_bytes():
-                path.replace(path.with_suffix(".jsonl.1"))
-        except FileNotFoundError:
-            pass
-        with open(path, "a", encoding="utf-8") as fh:
-            fh.write(json.dumps(record, separators=(",", ":")) + "\n")
-    except OSError:
+        _ledger.append(resolve_paths().home / LEDGER_FILE, record, max_bytes=max_bytes())
+    except Exception:  # noqa: BLE001 — telemetry must never break a retrieval call
         logger.warning("could not record retrieval usage", exc_info=True)
 
 
@@ -117,19 +110,9 @@ def read_calls(
     nothing to replay is not an error, it is a young archive."""
     path = (resolve_paths(home).home if home is None else home) / LEDGER_FILE
     seen: dict[tuple, dict] = {}
-    try:
-        with open(path, encoding="utf-8") as fh:
-            rows = fh.readlines()
-    except OSError:
-        return []
-    for line in reversed(rows):
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            rec = json.loads(line)
-        except ValueError:
-            continue  # a torn final line from a concurrent append is not a failure
+    # Across every retained segment, newest first — a rotation must not truncate
+    # the observed distribution a replay is built from.
+    for rec in _ledger.iter_rows(path, newest_first=True):
         if rec.get("kind") != "search":
             continue
         query = rec.get("query")
@@ -269,6 +252,20 @@ def record_read(
     if context:
         record.update(context)
     _append(record)
+
+
+def record_serve(record: dict[str, Any]) -> None:
+    """Record one ``serve`` row: what a serving surface cost around a tool call.
+
+    The surface builds the row (it is the only party that knows what its own layer
+    is made of) and this stamps it and appends, so the ledger keeps one writer and
+    one rotation policy. A ``serve`` row is the outside of a call whose inside is
+    the ``search`` or ``read`` row written microseconds earlier — the pair is what
+    separates a slow pipeline from a slow front door, which no single number
+    can."""
+    if not _enabled():
+        return
+    _append({"at": datetime.now(timezone.utc).isoformat(), **record})
 
 
 def record_warm(

@@ -18,6 +18,15 @@ the numbers that showed it. What survives as a quality claim is the external
 calibration further down: public corpora, other people's labels, read beside a
 published baseline.
 
+That external calibration is the one thing here that *does* gate, and only at a
+release: `python -m search_lab gate` holds the benchmark set to a frozen,
+checked-in set of accepted numbers, so a change that costs recall on somebody
+else's labels has to be fixed or deliberately accepted before it ships. Read what
+it certifies narrowly — the retrieval components did not get worse in general, on
+corpora that look nothing like an agent's session log. It is not the
+archive-domain claim the paragraph above rules out, and no amount of tightening
+it would make it one.
+
 A caution before any number: everything below scores **single searches in
 isolation**, and where the first right answer lands. That is not how agents use
 the tool. An agent fires several searches carrying terms that surround what it
@@ -324,8 +333,9 @@ so `lexical` names the same stack everywhere — and one cache root,
 | LongMemEval-S (`haystack_eval.py`) | long-history QA, session-level | recall@10 | 0.941 | — | 0.710 BM25 / 0.823 Contriever |
 
 `python -m search_lab benchmark` records every row of this table with the corpus
-and code that produced it (`~/.thread/archive/bench-runs.jsonl`), which is where
-these numbers come from.
+and code that produced it (`~/.local/state/thread-search-lab/bench-runs.jsonl` —
+the lab's own state, not the archive's: nothing on this bench measures the
+archive), which is where these numbers come from.
 
 On the shipped default the fused stack meets or clears every comparable reference
 except CDR's, where it sits at 98%. Nothing is tuned against these corpora, so they
@@ -394,7 +404,7 @@ positive claim:
 |---|---|---|---|---|
 | 0 | `tests/test_search_quality.py` + `tests/test_search_recall_shape.py` + `tests/test_reality_mechanisms.py` (every pytest run) | checked-in synthetic corpus, lexical stack | seconds | every change |
 | 1 | `pytest -m quality_models` | same corpus, real embedding model | minutes | touching the model arm |
-| 2 | CI arm-liveness probes (`retrieval_eval.py --probes-only`) | live archive | ~a minute | every commit, via thread-ci |
+| 2 | CI arm-liveness probes (`retrieval_eval.py --probes-only`) | live archive | ~a minute | every commit, on the maintainer's local CI |
 | 3 | `latency_replay.py` (speed over real traffic), `--behavior` | the live archive | minutes | evaluating a deliberate ranking change |
 | 4 | `python -m search_lab benchmark`; `pytest -m beir` | external IR / conversational-memory benchmarks | tens of minutes | the quality claim — calibrating against published baselines |
 

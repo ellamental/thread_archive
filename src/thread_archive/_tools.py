@@ -64,6 +64,47 @@ def _served_by() -> Optional[str]:
     return None if surface == "mcp" else surface
 
 
+# What the tool itself measured on this call, for a surface that wraps it and
+# wants to know its own overhead. A mutable slot the tool fills on its way out and
+# the wrapper reads after — see :func:`call_span`.
+_CALL_MS: ContextVar[Optional[dict]] = ContextVar("thread_archive_call_ms", default=None)
+
+
+@contextmanager
+def call_span() -> Iterator[dict]:
+    """Collect what the tool call inside this block measured of itself.
+
+    A surface that wraps a tool — the MCP server, which kicks a catch-up ingest
+    first and hands the result to a transport afterwards — can time its own call
+    easily enough, but that number alone cannot say whether a slow call was slow
+    *in retrieval* or slow in everything around it. The tool already computes
+    exactly that (the retrieval and render halves it puts in the usage ledger);
+    this is how it gets handed outward, without the tool learning who is calling
+    or growing a second return value.
+
+    Yields a dict the block fills with ``tool_ms`` — read it after. Empty when the
+    call raised before it measured anything, which is itself the answer: the time
+    went somewhere other than the work."""
+    slot: dict = {}
+    token = _CALL_MS.set(slot)
+    try:
+        yield slot
+    finally:
+        _CALL_MS.reset(token)
+
+
+def _publish_call_ms(ms: float) -> None:
+    """Hand this call's measured wall time to an enclosing :func:`call_span`, if
+    any. Fail-soft and a no-op when nobody is listening."""
+    slot = _CALL_MS.get()
+    if slot is None:
+        return
+    try:
+        slot["tool_ms"] = round(slot.get("tool_ms", 0.0) + ms, 1)
+    except Exception:  # noqa: BLE001 — advisory; never break a tool call
+        pass
+
+
 def _resolve_ref(ref: int | str) -> Optional[str]:
     """Resolve a thread ref — a ULID thread id, a legacy integer alias, or
     a provider session id — to the archive's ULID thread id; None when nothing
@@ -85,8 +126,8 @@ def _resolve_ref(ref: int | str) -> Optional[str]:
 # (see :data:`._retrieval._extract.UNINDEXED_CONTENT_TYPES`) — the one exclusion
 # that measured better rather than merely cheaper.
 #
-# Stored thread summaries stay opt-in: they are derived text (the librarian writes
-# them over the archive), not the record, so a search should not answer from them
+# Stored thread summaries stay opt-in: they are derived text (a curation tool
+# writes them over the archive), not the record, so a search should not answer from them
 # unless asked — content_type='summary' targets them, content_type='all' includes
 # them.
 #
@@ -242,7 +283,7 @@ def thread_search(
     handed **back** is not searchable at all: tool output is preserved in full and
     replays in ``thread_read``, but it is deliberately left out of the index, where
     it buried real answers under grep dumps and re-read files. Stored thread
-    summaries (librarian-derived text, not the record) are the one opt-in scope:
+    summaries (derived text, not the record) are the one opt-in scope:
     pass ``content_type='summary'`` to target them or ``content_type='all'`` to
     fold them in; a specific ``content_type`` (user/text/thinking/tool/title/...)
     narrows to one.
@@ -501,6 +542,10 @@ def thread_search(
             timings=probe.as_record() if probe is not None else None,
             context=context,
         )
+        # Published last, so the tool's own ledger write is charged to the tool. An
+        # enclosing surface subtracts this from its clock to name its overhead, and
+        # a telemetry append it does not perform must not land in that difference.
+        _publish_call_ms((time.monotonic() - started) * 1000.0)
 
 
 def thread_read(
@@ -630,3 +675,6 @@ def thread_read(
             failed=sys.exc_info()[0] is not None,
             context=context,
         )
+        # Last, for the same reason as in thread_search: the tool owns the cost of
+        # recording itself.
+        _publish_call_ms((time.monotonic() - started) * 1000.0)

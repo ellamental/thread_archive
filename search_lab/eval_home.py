@@ -33,6 +33,33 @@ from pathlib import Path
 #: benchmark, so ``du`` on a single directory answers what the bench costs.
 CACHE_ROOT = Path.home() / ".cache" / "thread-evals"
 
+
+def state_root() -> Path:
+    """Where the lab keeps what it must not lose — the run ledgers.
+
+    Separate from :data:`CACHE_ROOT` because the two have opposite lifetimes.
+    The corpora are derived: tens of GB, entirely rebuildable, and the whole tree
+    is documented as safe to delete when disk gets tight. A measurement history
+    is not rebuildable at all — the code and corpus that produced a row are gone
+    the moment either changes — so it cannot share a directory whose stated
+    contract is "delete this".
+
+    Separate from the **archive home** for the more basic reason: nothing the
+    bench measures is the archive. Every row scores a throwaway corpus built from
+    a public dataset, so its history is the lab's own state, and writing it into
+    the product's home would make an install's directory hold measurements of
+    corpora it has never seen. It also keeps the whole quality stack readable
+    without touching ``~/.thread``, which is what lets the suite stay sandboxed
+    away from the operator's archive without cutting the bench off from its own
+    records.
+
+    Honors ``XDG_STATE_HOME`` — the base-dir spec's slot for exactly this
+    (persistent, not portable, not precious enough for the data dir), and read at
+    call time so a caller that redirects it is obeyed."""
+    base = os.environ.get("XDG_STATE_HOME")
+    return (Path(base) if base else Path.home() / ".local" / "state") / "thread-search-lab"
+
+
 #: The archive home nothing here may build into, wipe, or overlap.
 DEFAULT_ARCHIVE_HOME = Path.home() / ".thread" / "archive"
 

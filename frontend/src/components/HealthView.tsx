@@ -36,6 +36,17 @@ function age(iso?: string | null): string {
   return `${Math.floor(ms / DAY)}d ago`
 }
 
+// How long a stretch of time is, in `age`'s buckets but without its 'ago' framing —
+// for the reader who needs the length of a window, not the age of a moment.
+function spanSince(iso?: string | null): string {
+  const ms = elapsed(iso)
+  if (ms == null) return 'unknown'
+  if (ms < MINUTE) return 'minute'
+  if (ms < HOUR) return `${Math.floor(ms / MINUTE)}m`
+  if (ms < DAY) return `${Math.floor(ms / HOUR)}h`
+  return `${Math.floor(ms / DAY)}d`
+}
+
 function dateTime(iso?: string | null): string {
   if (!iso) return 'Never recorded'
   const d = new Date(iso)
@@ -748,8 +759,21 @@ export function HealthView() {
             <p className="eyebrow">Capture coverage</p>
             <h2 id="providers-heading">Providers observed by the watcher</h2>
           </div>
-          <span className="health-section-meta" title={dateTime(status.last_watch_pass?.at)}>
-            checked {age(status.last_watch_pass?.at)}
+          <span className="health-section-meta">
+            <span title={dateTime(status.last_watch_pass?.at)}>
+              checked {age(status.last_watch_pass?.at)}
+            </span>
+            {/* The counters below are the capture process's own tally, so a restart
+                puts them back to zero. Without the epoch stated next to them, small
+                numbers under a years-old archive read as lost history. */}
+            {status.last_watch_pass?.started_at && (
+              <>
+                {' · '}
+                <span title={dateTime(status.last_watch_pass.started_at)}>
+                  counters cover the last {spanSince(status.last_watch_pass.started_at)}
+                </span>
+              </>
+            )}
           </span>
         </div>
         {providerRows.length ? (
@@ -759,6 +783,7 @@ export function HealthView() {
                 <tr>
                   <th>Provider</th>
                   <th>Support</th>
+                  <th>Last import</th>
                   <th className="num">Sources checked</th>
                   <th className="num">Items imported</th>
                   <th className="num">Events captured</th>
@@ -769,10 +794,12 @@ export function HealthView() {
               <tbody>
                 {providerRows.map(([source, data]) => {
                   const tone = sourceTone(data)
+                  const lastImport = status.source_last_import?.[source]
                   return (
                     <tr key={source}>
                       <td className="health-provider">{source}</td>
                       <td>{supportTier(source)}</td>
+                      <td title={dateTime(lastImport)}>{age(lastImport)}</td>
                       <td className="num">{int(data.checked)}</td>
                       <td className="num">{int(data.items)}</td>
                       <td className="num">{int(data.events)}</td>
@@ -788,7 +815,7 @@ export function HealthView() {
           <div className="health-empty-card">No available provider stores were observed in the latest pass.</div>
         )}
         <p className="health-footnote">
-          Counters are cumulative since the current capture process started. Claude Code is the supported first-class source; other harnesses are best-effort and retain raw evidence for repair.
+          Counters are the capture process's own tally and start over when it restarts — they are not archive totals. Last import is all-time, read off the source's import watermark. Claude Code is the supported first-class source; other harnesses are best-effort and retain raw evidence for repair.
         </p>
       </section>
 
