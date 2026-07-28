@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Development moves to the `dev` branch; `main` now holds one snapshot commit per release, with the tags clones follow.
+
 ## 0.0.8 — 2026-07-28
 
 - PyPI is a supported install (`pip install thread-archive`): a `v*` release tag publishes the wheel + sdist via

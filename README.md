@@ -1,6 +1,6 @@
 # thread-archive
 
-[![CI](https://github.com/ellamental/thread_archive/actions/workflows/ci.yml/badge.svg)](https://github.com/ellamental/thread_archive/actions/workflows/ci.yml)
+[![CI](https://github.com/ellamental/thread_archive/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/ellamental/thread_archive/actions/workflows/ci.yml?query=branch%3Amain)
 [![Python](https://img.shields.io/badge/python-3.12%2B-blue)](https://github.com/ellamental/thread_archive)
 [![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Linux-black)](https://github.com/ellamental/thread_archive)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](https://github.com/ellamental/thread_archive/blob/main/LICENSE)

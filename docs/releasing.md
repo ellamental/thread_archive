@@ -3,8 +3,9 @@
 Distribution is the git clone (an editable install from a checkout, or
 `pip install "git+<repo-url>@vX.Y.Z"`) and PyPI
 (`pip install thread-archive`). A release is a pointer: compress the
-changelog, bump the version, one release commit, and an annotated tag pushed
-to GitHub. The tag is what a clone pins and fast-forwards to, what
+changelog, bump the version, one release commit on `dev`, a snapshot of it
+on `main`, and an annotated tag pushed to GitHub. The tag is what a clone
+pins and fast-forwards to, what
 `thread-archive status` / bug reports correlate against — and what triggers
 the PyPI upload (`.github/workflows/publish.yml`, via Trusted Publishing).
 
@@ -19,6 +20,18 @@ The version's single source of truth is `__version__` in
 `src/thread_archive/__init__.py`; pyproject declares `version` dynamic and
 hatch reads it from there. Nothing else carries the number.
 
+## Branches: dev develops, main is the release chain
+
+Development lives on `dev` — the local clone sits there, every change lands
+there, CI runs there. `main` is the repo's public face and holds only the
+release chain: one commit per version, tree-identical to `dev` at the cut,
+its message the version's changelog. What a visitor sees on GitHub — README,
+CI badge, browsable code — is therefore always the latest release, and
+`pip install git+…@main` means something. Release tags point at `main`'s
+commits, so a clone parked on `main` fast-forwards cleanly from tag to tag.
+`main` is written only by step 4 below; nothing ever merges from `main`
+back into `dev`.
+
 ## 0. The repo is release infrastructure — keep it hardened
 
 Release tags are executable software offered to every installed clone, and a
@@ -27,7 +40,7 @@ repo's protections are therefore part of the release mechanism, not optional
 hygiene. The standing
 requirements: two-factor auth on every account that can push, a tag protection
 rule covering `v*` (nobody but the release path can create or move release
-tags), and branch protection on `main`.
+tags), and branch protection on `main` and `dev`.
 
 ## 1. Preflight — the tree must already be releasable
 
@@ -38,7 +51,7 @@ tags), and branch protection on `main`.
   venv, and runs the real entry points. Nothing is uploaded anywhere; this is
   the gate that proves a fresh-clone install actually works (files present,
   console scripts wired), rather than only the long-lived editable install.
-- GitHub CI green on `main` (ruff, mypy, coverage floor, the pytest suite on
+- GitHub CI green on `dev` (ruff, mypy, coverage floor, the pytest suite on
   the 3.12 floor and 3.14, frontend checks, and the same package lane).
 - The search-quality gate green: `python -m search_lab gate --run`. The bench's
   numbers against the accepted ones in `search_lab/quality-baseline.json` —
@@ -84,19 +97,35 @@ layout changed incompatibly, the format version in `docs/format.md` moves on
 its own rules — that is a separate, deliberate decision, not part of the
 package bump.
 
-## 4. Release commit + tag
+## 4. Release commit, snapshot to main, tag
 
-One commit containing exactly the changelog compression and the version bump:
+One commit on `dev` containing exactly the changelog compression and the
+version bump:
 
 ```
 Release X.Y.Z: compress changelog, bump version
 ```
 
-Then an annotated tag on it, and push both. The push is the ship:
+Then write `main`'s release commit. Not a merge — long-lived branches pin
+their merge base at the fork point, so repeated squash merges replay old
+diffs and eventually conflict. `commit-tree` sidesteps the merge machinery
+entirely: it writes a commit whose tree is bit-identical to `dev`'s tip,
+parented on the previous release, carrying the version's changelog section
+as its message:
 
 ```bash
-git tag -a vX.Y.Z -m "thread-archive X.Y.Z — <one-line theme of the release>"
-git push origin main vX.Y.Z
+sha=$(git commit-tree 'dev^{tree}' -p main \
+        -m "Release X.Y.Z" -m "<the X.Y.Z section of CHANGELOG.md, verbatim>")
+git update-ref refs/heads/main "$sha"
+```
+
+The annotated tag goes on the `main` commit — clones park on `main`, and a
+tag must descend from their checkout for `self-update`'s fast-forward to
+work. The push is the ship:
+
+```bash
+git tag -a vX.Y.Z -m "thread-archive X.Y.Z — <one-line theme of the release>" "$sha"
+git push origin dev main vX.Y.Z
 ```
 
 The tag push also triggers the Publish workflow, which builds the wheel +
@@ -127,8 +156,9 @@ a minute or two):
 
 ## 6. Roll the local deployment
 
-The daemons on this machine run from the clone's editable install, so being
-on the release commit *is* the deployment — with two follow-throughs:
+The daemons on this machine run from the clone's editable install on `dev`,
+so being on `dev`'s release commit *is* the deployment — with two
+follow-throughs:
 
 - If dependencies or entry points changed, re-run `.venv/bin/pip install -e .`
   (editable installs pick up code automatically, not metadata).
@@ -162,7 +192,8 @@ the archive, which is why applying one requires an explicit flag.
 ## Who runs this
 
 The agent, end to end — preflight, changelog compression, version bump,
-release commit, tag, push, verification, and rolling the local deployment.
-The release commit + tag are part of the release process the agent is
-executing (an explicit exception to any standing no-commit convention in the
-operator's environment). Asking for release means asking for all of it.
+release commit, the `main` snapshot, tag, push, verification, and rolling
+the local deployment. The release commit, snapshot, and tag are part of the
+release process the agent is executing (an explicit exception to any
+standing no-commit convention in the operator's environment). Asking for
+release means asking for all of it.

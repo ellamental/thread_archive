@@ -12,9 +12,11 @@
 
 name: CI
 
+# dev is where development lands; main only moves at release (one snapshot
+# commit per version — docs/releasing.md), so the README badge pins main.
 on:
   push:
-    branches: [main]
+    branches: [main, dev]
   pull_request:
 
 # A newer push to the same branch/PR supersedes an in-flight run.
