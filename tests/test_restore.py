@@ -1,4 +1,4 @@
-"""``thread-archive restore`` — the productized recovery path: preflight refusals,
+"""``thread-archive backup restore`` — the productized recovery path: preflight refusals,
 staged rebuild + verification, atomic publication with the damaged home set
 aside, and generation selection. The drill proves a mirror restores; these
 prove the restore itself is safe to point at a real home.

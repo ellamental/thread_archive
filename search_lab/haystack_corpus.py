@@ -9,7 +9,7 @@ archive — the corpus lands as hundreds of fingerprint-named micro homes, none 
 which is a thing you can open, search, or point a second stack at.
 
 This builds the other thing: the whole dataset as **one ordinary archive home**,
-a sibling of ``homes/cdr`` and ``homes/swe-chat``. What that buys is a benchmark
+a sibling of ``homes/cdr``. What that buys is a benchmark
 corpus you can *operate* — open it in the viewer, run ``thread_search`` against
 it, watch its load in the health page, compare its index against the real
 archive's. The per-question homes stay unregistered workspace; this one registers

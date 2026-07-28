@@ -5,7 +5,7 @@
 content the moment it lands — no external service feeds the archive, and nothing
 has to be migrated in after the fact.
 
-The LaunchAgent itself is installed by the package — `thread-archive daemon install`
+The LaunchAgent itself is installed by the package — `thread-archive service install`
 (`src/thread_archive/_service/launchd.py` generates and loads the plist; no
 template here). This directory is the **operator layer on top**: the Makefile wraps the
 daemon verb and additionally writes the thread-family manifest
@@ -42,7 +42,7 @@ no-op. Thread identity is `(source, source_id)` and re-reads are idempotent on
 each event's `dedup_key`, so re-importing an already-seen file adds nothing.
 
 An installed provider plugin adds its own row to this set and rides the same
-loop — `thread-archive providers` lists what is actually registered on this machine.
+loop — `thread-archive source list` lists what is actually registered on this machine.
 
 **Steering recovery (`cc-exthost`).** Mid-turn steering messages typed into the
 Claude Code VS Code extension *while the model is streaming* reach the model but are
@@ -86,7 +86,7 @@ the `[embeddings]` extra, and a failure is logged, never fatal. `--no-embed` dis
 it. One process keeps both index arms current — no second daemon.
 
 For a one-shot catch-up (e.g. after a long gap or a fresh `[embeddings]` install),
-`thread-archive embed` fills the whole vector gap immediately; `thread-archive embed --rebuild`
+`thread-archive index embed` fills the whole vector gap immediately; `thread-archive index embed --rebuild`
 re-embeds everything.
 
 ## Using the archive MCP from Claude Science (a *Local command* connector + grants)
@@ -125,7 +125,7 @@ Science connector + grants, needing no code here.
 
 ```bash
 cd host
-make install-agent     # `thread-archive daemon install` + write the family manifest
+make install-agent     # `thread-archive service install` + write the family manifest
 make logs              # tail
 make status            # is it loaded? pid?
 make restart           # after a code edit
@@ -134,7 +134,7 @@ make uninstall         # `thread-archive uninstall`: agents, MCP wiring, the man
                        #   written above, the monitor heartbeat — never the conversations
 ```
 
-(For a standalone install, `thread-archive daemon install` alone is the whole
+(For a standalone install, `thread-archive service install` alone is the whole
 install — the Makefile's only addition is the family manifest.)
 
 Requires the `thread_archive` console script in the repo venv (`pip install -e .` at the

@@ -503,7 +503,7 @@ class Watcher:
         — or a source watermark moved — since the last maintenance pass.
 
         Each pass runs under the *shared* reindex lock (see
-        :func:`.._truth.try_shared_ingest_lock`): while ``thread-archive reindex`` holds it
+        :func:`.._truth.try_shared_ingest_lock`): while ``thread-archive index rebuild`` holds it
         exclusive for its build-and-swap, the pass is skipped entirely — poll,
         maintenance, and embed all write to the truth and/or the index, and a write
         landing mid-rebuild would silently miss the swapped-in index. Sources replay

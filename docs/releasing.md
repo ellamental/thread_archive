@@ -122,7 +122,7 @@ on the release commit *is* the deployment — with two follow-throughs:
 
 - If dependencies or entry points changed, re-run `.venv/bin/pip install -e .`
   (editable installs pick up code automatically, not metadata).
-- Restart whatever loaded the old code: `thread-archive daemon restart` for the
+- Restart whatever loaded the old code: `thread-archive service restart` for the
   watcher/backup agents; MCP clients pick up the new server on their next
   session.
 

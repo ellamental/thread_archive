@@ -5,7 +5,7 @@ This documents the on-disk format of the archive's truth directory
 directory is the **only authoritative store**: `index.db` (its sibling in the
 archive home) is a pure SQLite projection of it, and `vectors.sqlite` (inside
 the truth dir) is a derived embedding cache — both are rebuildable, neither is
-truth. A `cp`/`rsync` of the truth directory *is* the backup; `thread-archive reindex`
+truth. A `cp`/`rsync` of the truth directory *is* the backup; `thread-archive index rebuild`
 reconstructs everything else from it.
 
 The format is one half of the package's public API — the other half is the
@@ -28,7 +28,7 @@ lexicographic id order is chronological order and ids are globally unique. A thr
 carries it as `legacy_id`, a permanent alias resolvable everywhere a thread
 ref is accepted. Shard buckets are derived from the sha256 of the id string
 (byte *i* names the level-*i* bucket directory), not from the id's numeric
-value. Version-1 archives are migrated with `thread-archive migrate`; it rewrites the
+value. Version-1 archives are migrated with `thread-archive index migrate`; it rewrites the
 truth under the reindex lock, rebuilds `index.db`, and verifies the result
 before returning success.
 
@@ -41,7 +41,7 @@ before returning success.
 - A reader that finds a version **newer** than it supports must refuse the
   archive rather than guess (`thread-archive` raises `TruthFormatError`).
 - A writer that finds a version **older** than it emits must refuse to mutate
-  the archive until it has been migrated. Reads and `thread-archive reindex` remain
+  the archive until it has been migrated. Reads and `thread-archive index rebuild` remain
   available for diagnosis and recovery.
 - A missing or corrupt manifest infers v1 from integer-named thread files and
   otherwise uses the current version; shard depth is inferred from the layout.

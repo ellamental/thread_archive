@@ -51,7 +51,7 @@ _BASE = {
 _DESC = {
     "watcher": "thread-archive watcher (live ingest + cohosted web viewer)",
     "mcp": "thread-archive shared MCP server (streamable HTTP)",
-    "backup": "thread-archive nightly backup (mirror + verify + restore drill)",
+    "backup": "thread-archive backup nightly (mirror + verify + restore drill)",
 }
 # The agents whose primary, user-facing unit is a timer (armed, not resident).
 _SCHEDULED = frozenset({"backup"})
@@ -234,7 +234,7 @@ def _install(spec: AgentSpec) -> Path:
         (d / fname).write_text(text, encoding="utf-8")
     if not _enable_linger():
         print(
-            "thread-archive daemon: could not enable linger — the agent stops at logout "
+            "thread-archive service: could not enable linger — the agent stops at logout "
             f"until you run `sudo loginctl enable-linger {os.environ.get('USER', '$USER')}`.",
             file=sys.stderr,
         )
@@ -244,7 +244,7 @@ def _install(spec: AgentSpec) -> Path:
     result = _systemctl("restart", primary)
     if result.returncode != 0:
         raise SystemExit(
-            f"thread-archive daemon: systemctl restart {primary} failed: {result.stderr.strip()}"
+            f"thread-archive service: systemctl restart {primary} failed: {result.stderr.strip()}"
         )
     return d / primary
 
@@ -262,7 +262,7 @@ def _restart(agent: str) -> None:
     result = _systemctl("restart", primary)
     if result.returncode != 0:
         raise SystemExit(
-            f"thread-archive daemon: systemctl restart {primary} failed: {result.stderr.strip()}"
+            f"thread-archive service: systemctl restart {primary} failed: {result.stderr.strip()}"
         )
 
 

@@ -1,82 +1,41 @@
-"""Retrieval eval harness — measure search quality so ranking changes are measurable.
+"""Retrieval instruments over the live archive: the arm probes and the behavior report.
 
-Three case protocols, one scoring loop:
+Neither produces a relevance label, and that is the point. **No protocol that
+labels this archive's own corpus can certify that search is good** — labels made
+by searching are circular, and labels fixed against a record outside search come
+with queries nobody asked (``docs/search-quality.md`` → "The admission rule").
+Quality claims live on the public benchmarks (``python -m search_lab benchmark``);
+what runs here answers narrower questions that have honest answers.
 
-``--auto-titles N`` is a zero-label proxy: sample N titled conversation
-threads, use each *title* as the query, and score whether the thread's own
-content ranks. Thread-meta docs (title/summary) are excluded from the searched
-scope so the eval never matches the query against itself. Cheap and stable, but
-titles are LLM distillations of the thread they name, so vocabulary overlap is
-built in — treat the numbers as a regression ratchet, not real-world quality.
+``--probes-only`` runs no metric pass at all: it asserts the model arms are alive
+and exits. This is the CI row's mode, and the reason it exists is that a dead
+embeddings model silently degrades the fused pipeline to lexical-only — a
+degradation invisible in any number that does not check for it, and one a direct
+probe catches at zero queries::
 
-``--from-log N`` scores against real usage: the archive's own tool-use trail
-holds every ``thread_search`` call agents have made (the query) and the
-``thread_read`` calls that followed in the same session (the click). Each
-search paired with its subsequent reads is a relevance judgment made by the
-searcher at the moment of searching — real query vocabulary, multi-gold, no
-labels. Pairing rules: a read labels the most recent prior search in its
-session; reads of threads the agent had already opened before searching don't
-count (it knew them without the search); the originating session is skipped
-during ranking (it quotes the query verbatim). Read refs in the trail come in
-every shape the read tool accepts — legacy integer ids, ULIDs, provider
-session ids — and are canonicalized through the same resolver the tool uses;
-reads that resolve to nothing are dropped. A click is the pick from what
-past search surfaced, not a corpus-wide judgment: golds are incumbent-shaped,
-so credit for surfacing relevant threads past search never reached is
-invisible here, and a clicked thread wasn't necessarily satisfying (opened is
-not answered). Every cross-stack comparison on these labels favors whatever
-resembles the system that generated the log — including the comparison a
-regression gate makes. The one reading the bias can't fake: the golds are
-(mostly) relevant threads, so a *collapse* against them means something real
-broke. Treat the metric as a collapse alarm — a modest drop under a
-deliberately reshaped ranker may be divergence from the incumbent's shape,
-not regression; no number from this protocol certifies improvement.
+    .venv/bin/python search_lab/retrieval_eval.py --probes-only --require-semantic
 
-``--cases FILE`` evaluates a JSONL file of ``{"query": ..., "gold": [ids]}``
-rows (optional ``"grades"``: a ``thread id -> 0|1|2`` candidate pool nDCG
-scores against — grade the whole pool, not one golden result; optional
-``"sessions"``: thread ids to skip while ranking) — the hook for hand-labeled
-or generated query sets. Mined and labeled case files contain real usage; keep
-them out of the repo.
+``--behavior`` runs no ranking at all: it reports zero-label behavioral signals
+from the whole tool-use trail — per search, did the agent click a result,
+reformulate, or abandon? Proxies, not judgments; their value is the trend, and a
+single run's rates say nothing on their own. ``--after`` bounds the window and
+``--trend-out`` appends the run as one JSONL row::
 
-``--behavior`` runs no ranking at all: it reports zero-label behavioral
-signals from the whole trail — per search, did the agent click a result,
-reformulate, or abandon? Proxies, not judgments; their value is the trend.
+    .venv/bin/python search_lab/retrieval_eval.py --behavior --after 2026-06-01
 
-Reports MRR, success@1/5/10/20 (whether any gold ranks), true
-recall@1/5/10/20 (the fraction of every case's gold set retrieved), and, when
-a case file carries a graded pool, nDCG@1/5/10/20 (graded), overall and per
-query-shape (so a lexical regression can't hide behind semantic wins).
-``--mined-after`` restricts the log protocols to trail events after a date
-(the time-based holdout); ``--trend-out`` appends any run's report as one
-JSONL row at ~/.thread/archive/retrieval-trend.jsonl, turning point
-measurements into a time series. ``--probes-only`` skips the metric
-run entirely and exits after the ``--require-*`` arm-liveness probes — the CI
-row's mode: it asserts the model arms are alive and claims nothing about quality,
-which is not a per-commit number (see ``search_lab/README.md`` → "What a number
-here is worth").
+Read-only against the live archive.
 
-Read-only. The title / log protocols run against the live archive:
-
-    .venv/bin/python search_lab/retrieval_eval.py --auto-titles 200
-    .venv/bin/python search_lab/retrieval_eval.py --from-log 500
-
-The agent-mined ``--cases`` protocol runs against the frozen corpus snapshot the
-cases were mined against — point ``THREAD_ARCHIVE_HOME`` at that snapshot. Each
-case carries the snapshot's content fingerprint (``snapshot_id``); the run
-refuses any case whose id does not match the home, so golds are never scored
-against a corpus that has changed under them:
-
-    export THREAD_ARCHIVE_HOME=~/.thread/archive-snap
-    .venv/bin/python search_lab/retrieval_eval.py --cases ~/dev/swe-chat-data/gold/commit-cases.jsonl
-
+The scoring loop itself (:func:`eval_core.evaluate`) is re-exported here because
+the tier-0 synthetic corpus scores through it (``tests/quality_corpus.py``). Its
+labels are true by construction — nonce terms in a checked-in corpus — which is
+what keeps it clear of the admission rule, and it detects damage rather than
+crediting improvement.
 """
 
 from __future__ import annotations
 
 import argparse
 import json
-import os
 import sys
 from pathlib import Path
 
@@ -85,9 +44,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 # however this file was loaded: as a script, by path, or as search_lab.X.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-# The scoring engine (eval_core) re-exported at module scope, because the sibling
-# harnesses (graph_eval) and the tests that load this file by path reach these
-# names as attributes on it.
+# The scoring engine (eval_core) re-exported at module scope, because the tier-0
+# corpus loads this file by path and reaches these names as attributes on it.
 from eval_core import (  # noqa: E402,F401
     EXCLUDE_META,
     RECALL_KS,
@@ -95,118 +53,37 @@ from eval_core import (  # noqa: E402,F401
     behavior_report,
     classify_tool,
     evaluate,
-    load_case_file,
-    mine_log_cases,
     ndcg_at_k,
     pair_log_events,
     query_shape,
     resolve_read_refs,
-    sample_title_cases,
 )
 
 from thread_archive import _api as api  # noqa: E402
 from thread_archive._store import use_session  # noqa: E402
 
 
-def _require_matching_snapshot(cases: list[dict], cases_path) -> None:
-    """Refuse to score a case file unless the home is the snapshot it was written
-    against. Each case carries the corpus's content fingerprint; the run exits
-    rather than scoring golds against a corpus that has moved under them.
-
-    The current home must be a snapshot (``snapshot.json`` with a ``snapshot_id``)
-    and every case's id must match it. A mismatch means the snapshot changed since
-    the file was written. Cases with no ``snapshot_id`` are pre-binding (old
-    format) and count as a mismatch."""
-    from snapshot import read_snapshot_id
-
-    current = read_snapshot_id()
-    if current is None:
-        raise SystemExit(
-            f"--cases must run against the corpus snapshot the cases were written "
-            f"against, but THREAD_ARCHIVE_HOME is not a snapshot. Run "
-            f"`python search_lab/snapshot.py <dir>` and point THREAD_ARCHIVE_HOME "
-            f"at it (the same snapshot {cases_path} was written against)."
-        )
-    stale = sorted({c.get("snapshot_id") for c in cases} - {current})
-    if stale:
-        raise SystemExit(
-            f"{cases_path} was written against snapshot(s) {stale}, but the "
-            f"current snapshot is {current} — the corpus has changed and these "
-            f"golds are stale."
-        )
-
-
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    proto = ap.add_mutually_exclusive_group(required=True)
-    proto.add_argument("--auto-titles", type=int, metavar="N",
-                       help="sample N thread titles as queries (proxy protocol)")
-    proto.add_argument("--from-log", type=int, metavar="N",
-                       help="draw up to N real search->read cases from the "
-                       "archive's own tool-use trail (click protocol)")
-    proto.add_argument("--cases", type=Path, metavar="FILE",
-                       help="evaluate a JSONL case file: "
-                       '{"query", "gold": [thread ids], "sessions": [...], '
-                       '"grades": {id: 0|1|2}} — grades enable nDCG')
-    proto.add_argument("--probes-only", action="store_true",
-                       help="no metric run: exit after the --require-* arm "
-                       "probes (the CI gate's mode)")
-    proto.add_argument("--behavior", action="store_true",
-                       help="no ranking run at all: report zero-label "
-                       "behavioral signals from the whole trail — click rate, "
-                       "reformulation rate, abandonment rate per search")
-    ap.add_argument("--mined-after", metavar="ISO", default=None,
-                    help="--from-log/--behavior: only trail events at or after "
-                    "this date — the time-based holdout (cases mined after a "
-                    "ranking change shipped carry less of the old incumbent's "
-                    "shape)")
+    mode = ap.add_mutually_exclusive_group(required=True)
+    mode.add_argument("--probes-only", action="store_true",
+                      help="assert the model arms are alive and exit (the CI "
+                      "gate's mode) — claims nothing about quality")
+    mode.add_argument("--behavior", action="store_true",
+                      help="no ranking run at all: report zero-label "
+                      "behavioral signals from the whole trail — click rate, "
+                      "reformulation rate, abandonment rate per search")
+    ap.add_argument("--after", metavar="ISO", default=None,
+                    help="--behavior: only trail events at or after this date")
     ap.add_argument("--trend-out", type=Path, metavar="FILE", default=None,
                     help="append this run's report as one JSONL row (~ ok) — "
-                    "the time series that turns a snapshot number into a "
-                    "trend; the CI gate row points it at "
-                    "~/.thread/archive/retrieval-trend.jsonl")
-    ap.add_argument("--seed", type=int, default=7, help="case sampling seed")
-    ap.add_argument("--limit", type=int, default=20, help="results per query (metric ceiling)")
-    ap.add_argument("--lexical-only", action="store_true",
-                    help="evaluate the FTS arm alone (semantic arm off) — "
-                    "the search a core install without the [embeddings] extra gets")
-    ap.add_argument("--content-type", default=None,
-                    help="restrict the searched scope to one content type")
-    ap.add_argument("--include-meta", action="store_true",
-                    help="auto-titles only: leave title/summary docs in the "
-                    "searched scope (the log protocol always searches them — "
-                    "its queries aren't derived from any document)")
-    ap.add_argument("--exclude-content-type", action="append", default=None,
-                    metavar="TYPE",
-                    help="drop a content type from the searched scope "
-                    "(repeatable; overrides the protocol's default exclusions "
-                    "— e.g. --exclude-content-type summary measures a scope "
-                    "without stored summaries)")
+                    "the time series that turns a point measurement into a trend")
     ap.add_argument("--require-semantic", action="store_true",
                     help="exit 1 if the semantic arm is unavailable — without "
                     "this, a dead embeddings model silently degrades the "
-                    "'fused' pipeline under test to lexical-only and the "
-                    "metrics measure the wrong stack")
+                    "'fused' pipeline to lexical-only and nothing says so")
     ap.add_argument("--json", action="store_true", help="emit the report as JSON")
-    ap.add_argument("--dump-cases", type=Path, metavar="FILE", default=None,
-                    help="also write the evaluated cases as JSONL (real usage "
-                    "data — keep it out of the repo)")
-    gate = ap.add_argument_group(
-        "gate", "regression floors — any breach exits 1 (the CI rows set these; "
-        "floors are a ratchet calibrated under measured values, not a target)"
-    )
-    gate.add_argument("--min-mrr", type=float, default=None)
-    gate.add_argument("--min-success10", type=float, default=None)
-    gate.add_argument("--min-success20", type=float, default=None)
-    gate.add_argument("--min-recall10", type=float, default=None)
-    gate.add_argument("--min-recall20", type=float, default=None)
-    gate.add_argument("--min-ndcg10", type=float, default=None)
     args = ap.parse_args()
-
-    if args.lexical_only:
-        # The product's own switch: the vector arm reports unavailable for the rest
-        # of this process, so the measured pipeline is the one a lexical-only box runs.
-        os.environ["THREAD_ARCHIVE_EMBED"] = "off"
 
     api.open_archive()
 
@@ -224,7 +101,7 @@ def main() -> None:
 
     if args.behavior:
         with use_session() as s:
-            report = behavior_report(_trail_events(s, args.mined_after))
+            report = behavior_report(_trail_events(s, args.after))
         if args.json:
             print(json.dumps(report, indent=2))
         else:
@@ -234,8 +111,7 @@ def main() -> None:
                   f"reformulate: {report['reformulation_rate']:.3f}   "
                   f"abandon: {report['abandonment_rate']:.3f}   "
                   f"reads/click: {report['reads_per_click']:.2f}")
-        append_trend({"protocol": "behavior",
-                      "mined_after": args.mined_after, **report})
+        append_trend({"protocol": "behavior", "after": args.after, **report})
         return
 
     if args.require_semantic:
@@ -245,92 +121,9 @@ def main() -> None:
             print("RETRIEVAL GATE BREACH: semantic arm unavailable "
                   "(embeddings model failed to load?)", file=sys.stderr)
             raise SystemExit(1)
-    if args.probes_only:
-        if not args.require_semantic:
-            ap.error("--probes-only without --require-semantic checks nothing")
-        print("retrieval arm probes passed")
-        return
-    if args.auto_titles is not None:
-        cases = sample_title_cases(args.auto_titles, args.seed)
-        exclude = None if args.include_meta else EXCLUDE_META
-    elif args.from_log is not None:
-        cases = mine_log_cases(args.from_log, args.seed, args.mined_after)
-        exclude = None
-    else:
-        cases = load_case_file(args.cases)
-        exclude = None
-        _require_matching_snapshot(cases, args.cases)
-    if args.exclude_content_type:
-        exclude = args.exclude_content_type
-    if not cases:
-        raise SystemExit("no eval cases")
-    if args.dump_cases:
-        args.dump_cases.write_text(
-            "".join(json.dumps(c) + "\n" for c in cases))
-    report = evaluate(cases, limit=args.limit,
-                      content_type=args.content_type, exclude_content_types=exclude)
-
-    protocol = ("auto-titles" if args.auto_titles is not None
-                else "from-log" if args.from_log is not None else "cases")
-    append_trend({
-        "protocol": protocol, "seed": args.seed, "limit": args.limit,
-        "lexical_only": args.lexical_only,
-        "mined_after": args.mined_after,
-        "n": report["n"], "mrr": report["mrr"],
-        "success": {str(k): v for k, v in report["success"].items()},
-        "recall": {str(k): v for k, v in report["recall"].items()},
-        "ndcg": {str(k): v for k, v in report["ndcg"].items()},
-        "latency_p50_ms": report["latency_p50_ms"],
-        # The stage breakdown the run's own probes produced. It rides the trend
-        # ledger rather than only the console so a regression can be *located*
-        # after the fact — "MRR held and p95 doubled in the re-rank" is a finding
-        # a p50 alone cannot state.
-        "latency": report["latency"],
-    })
-
-    if args.json:
-        print(json.dumps(report, indent=2))
-    else:
-        print(f"cases: {report['n']}   MRR: {report['mrr']:.3f}   "
-              + "   ".join(f"S@{k}: {v:.3f}" for k, v in report["success"].items()))
-        print("   ".join(f"R@{k}: {v:.3f}" for k, v in report["recall"].items()))
-        print("   ".join(f"nDCG@{k}: {v:.3f}" for k, v in report["ndcg"].items()))
-        lat = report["latency"]
-        print(f"latency p50: {lat['total']['p50']:.0f} ms   "
-              f"p95: {lat['total']['p95']:.0f} ms   p99: {lat['total']['p99']:.0f} ms")
-        if lat["stages"]:
-            # Arm totals overlap in wall-clock and do not sum to the total; the
-            # widest stage is the one that shaped the latency, so lead with it.
-            ranked = sorted(lat["stages"].items(),
-                            key=lambda kv: -kv[1]["p95"])[:6]
-            print("  stages (p50/p95 ms, arms overlap — not a partition):")
-            for name, d in ranked:
-                print(f"  {name:>15}: {d['p50']:7.1f} / {d['p95']:7.1f}")
-            if lat["cold"]:
-                print(f"  {'cold loads':>15}: {lat['cold']} of {lat['n']} searches "
-                      "paid a model load (their totals are not steady-state)")
-        for shape, stats in report["per_shape"].items():
-            print(f"  {shape:>15}: n={stats['n']:<4} MRR={stats['mrr']:.3f}")
-
-    breaches = []
-    if args.min_mrr is not None and report["mrr"] < args.min_mrr:
-        breaches.append(f"MRR {report['mrr']:.3f} < floor {args.min_mrr}")
-    if args.min_success10 is not None and report["success"][10] < args.min_success10:
-        breaches.append(
-            f"success@10 {report['success'][10]:.3f} < floor {args.min_success10}")
-    if args.min_success20 is not None and report["success"][20] < args.min_success20:
-        breaches.append(
-            f"success@20 {report['success'][20]:.3f} < floor {args.min_success20}")
-    if args.min_recall10 is not None and report["recall"][10] < args.min_recall10:
-        breaches.append(f"recall@10 {report['recall'][10]:.3f} < floor {args.min_recall10}")
-    if args.min_recall20 is not None and report["recall"][20] < args.min_recall20:
-        breaches.append(f"recall@20 {report['recall'][20]:.3f} < floor {args.min_recall20}")
-    if args.min_ndcg10 is not None and report["ndcg"][10] < args.min_ndcg10:
-        breaches.append(f"nDCG@10 {report['ndcg'][10]:.3f} < floor {args.min_ndcg10}")
-    if breaches:
-        for b in breaches:
-            print(f"RETRIEVAL GATE BREACH: {b}", file=sys.stderr)
-        raise SystemExit(1)
+    if not args.require_semantic:
+        ap.error("--probes-only without --require-semantic checks nothing")
+    print("retrieval arm probes passed")
 
 
 if __name__ == "__main__":

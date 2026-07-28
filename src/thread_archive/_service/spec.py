@@ -111,7 +111,7 @@ def entry_path(name: str = "archive") -> Path:
     if found:
         return Path(found)
     raise SystemExit(
-        f"thread-archive daemon: cannot find the `{name}` console script next to "
+        f"thread-archive service: cannot find the `{name}` console script next to "
         f"{sys.executable} or on PATH — is the package installed in this environment?"
     )
 
@@ -191,11 +191,14 @@ def backup_spec(
     minute: int = BACKUP_DEFAULT_MINUTE,
     notify_url: Optional[str] = None,
 ) -> AgentSpec:
-    """The nightly backup pipeline: ``thread-archive nightly <dest>`` on a daily
-    schedule — mirror the JSONL truth to ``dest`` → integrity verify → restore
-    drill, as one scheduled command. ``dest`` must be a path the scheduler can
-    reach unattended at the fire time."""
-    argv = [str(entry), "nightly", dest]
+    """The nightly backup pipeline: ``thread-archive backup nightly <dest>`` on a
+    daily schedule — mirror the JSONL truth to ``dest`` → integrity verify →
+    restore drill, as one scheduled command. ``dest`` must be a path the
+    scheduler can reach unattended at the fire time."""
+    # ``dest`` follows ``nightly`` either way, which is what the installed-agent
+    # readers key off — so a manifest written before the command grew groups
+    # still parses, and this one still parses under the pre-group spelling.
+    argv = [str(entry), "backup", "nightly", dest]
     if notify_url:
         argv += ["--notify-url", notify_url]
     return AgentSpec(

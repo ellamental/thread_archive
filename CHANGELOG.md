@@ -2,6 +2,96 @@
 
 ## Unreleased
 
+- **The CLI has a tree instead of 25 flat verbs.** `--help` had become a wall:
+  one column listing every verb the product has, with no signal that `search`
+  and `read` are what you type all day and `restore-drill` is what you type
+  twice a year. The tree is frequency at the top, nouns for groups —
+  `search` / `read` / `web` / `watch` / `status` / `setup` / `service` /
+  `self-update` / `uninstall` stay flat, and everything that acts *on* something
+  moved under it:
+
+  | was | is |
+  | --- | --- |
+  | `providers` | `source list` |
+  | `import` | `source import` |
+  | `import-export` | `source import-account` |
+  | `mirror` `coverage` `loads` | `source mirror` / `coverage` / `loads` |
+  | `fix-import` | `source fix` |
+  | `reindex` | `index rebuild` |
+  | `migrate` `embed` `verify` `repair` | `index migrate` / `embed` / `verify` / `repair` |
+  | `backup <dest>` | `backup run <dest>` |
+  | `nightly` | `backup nightly` |
+  | `restore-drill` | `backup drill` |
+  | `restore` | `backup restore` |
+  | `daemon <action>` | `service <action>` |
+
+  `import-export` is now `import-account` because the old name was a garden
+  path — it read as "import↔export", not "import an account export". `watch`
+  stayed flat: it is a mode of the program, the always-on process the service
+  manager runs, not an operation on a noun.
+
+  `--help` is sectioned (retrieval / ingest / upkeep / this machine) and renders
+  each group's actions inline, so the whole map is one screen and nobody has to
+  guess where a verb went.
+
+  **Every pre-group spelling still resolves.** They are bound straight into the
+  dispatch map, so they run and are listed nowhere — not in `--help`, not in the
+  invalid-choice message a typo gets. This is not a deprecation on a clock: the
+  installed launchd/systemd manifests carry `watch` and `nightly <dest>`, and a
+  rename that strands a running agent is not a rename. Newly written manifests
+  use the grouped spelling (`backup nightly <dest>`), which the installed-agent
+  readers parse either way since `dest` still follows `nightly`.
+
+- **The dev panels are off unless the operator turns them on, and the shipped
+  viewer no longer routes them at all.** `/retrieval` and `/lab` were reachable
+  in any install: the rail advertised them only under `?dev=1`, but the routes
+  always resolved, so a `pip install` shipped a lab interface anyone could
+  navigate to — the pages then 404'd on data they could never have, which is a
+  worse answer than not being there.
+
+  The switch is now one line in the home's `config.json` — `"dev_panels": true`,
+  which `thread-archive web dev` writes and `web --no-dev` clears. The server
+  stamps that answer onto every shell it serves (a meta tag: the CSP forbids
+  inline script, and a fetch would decide the route table a paint late), and App
+  mounts the three dev routes only when it is there. Without the line those
+  addresses route nowhere. Read per request, so flipping it lands on the next
+  page load with nothing to restart.
+
+  The pages stay in the bundle, and the source tree keeps them: `npm run dev`
+  stamps the same tag, and the browser suite's build takes it from
+  `ARCHIVE_DEV_PANELS=1`. The old `?dev=1` URL switch and the `localStorage` key
+  behind it are gone — a client-side toggle over pages a shipped viewer should
+  not have was the bug, not the mechanism for fixing it.
+
+- **Every locally-produced relevance label is gone, and the lab now says so
+  outright.** Deleted: `gold_files.py`, `gold_stats.py`, `bm25_baseline.py`,
+  `swechat_bench.py`, `swechat_corpus.py`, `graph_eval.py`, the
+  `retrieval_eval.py` scoring protocols (`--cases`, `--from-log`,
+  `--auto-titles`), and the `eval_core` builders behind them
+  (`sample_title_cases`, `mine_log_cases`, `load_case_file`). With the miners
+  removed in the previous entry, that is the whole apparatus.
+
+  The three protocols failed in two distinct ways and neither was fixable. Labels
+  the ranker helped assemble — a judged pool, a click log — describe what that
+  ranker already reaches, so a blind spot can never score as a miss. Labels fixed
+  by a record outside search escape that, and then the *query* has to be authored
+  from the same artifact: a 20-word sentence written to have a knowable answer,
+  against the ~4-word keyword soup the usage ledger actually records. The
+  provenance protocol was the best of them and plain BM25 beat the fused stack on
+  its cases. Keeping the machinery meant maintaining a benchmark that could not
+  license a claim.
+
+  What is left produces no labels: the tier-0 synthetic corpus (nonce terms, true
+  by construction, near-saturated so it can only fall), `--probes-only` arm
+  liveness on CI, `--behavior` trail rates, `latency_replay.py` over real traffic,
+  and the seven public benchmarks. `eval_core.evaluate` survives as tier 0's
+  scoring loop and has exactly one caller. The quality claim is
+  `python -m search_lab benchmark` and nothing else.
+
+  `docs/search-quality.md` keeps the finding the retired protocol produced —
+  queries naming *what* was done find the session, queries naming *why* often
+  don't — as a lead rather than a rate.
+
 - **The command is `thread-archive`.** It now matches the distribution name, the
   MCP server name, and the spelling every other CLI on a shell uses; the
   underscore was the one thing a user typed daily that didn't. `--help`, error

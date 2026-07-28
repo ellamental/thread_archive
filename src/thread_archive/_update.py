@@ -313,7 +313,7 @@ def _default_restart() -> None:
 
 
 def _default_retire(home: Optional[str], tag: str) -> None:
-    """Disable unpinned ``thread-archive fix-import`` override patches built against a
+    """Disable unpinned ``thread-archive source fix`` override patches built against a
     core older than ``tag`` — patches are temporary bridges to the next release
     by default, and pinned ones opt out (see :mod:`._repair.retire`)."""
     from ._repair import retire_patches

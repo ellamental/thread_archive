@@ -1,7 +1,7 @@
 """The macOS (launchd) service backend.
 
 Renders an :class:`~.spec.AgentSpec` into a LaunchAgent plist and drives the
-agent's lifecycle through ``launchctl`` under ``gui/$(id -u)``. ``thread-archive daemon
+agent's lifecycle through ``launchctl`` under ``gui/$(id -u)``. ``thread-archive service
 install`` materializes a plist from inside the package — pointing at the
 installed console script, wherever this Python environment put it — and loads it.
 No repo checkout, no Makefile, no sed: this is the "upgrade to always-fresh" step
@@ -51,7 +51,7 @@ _LABELS = {"watcher": WATCHER_LABEL, "mcp": MCP_LABEL, "backup": BACKUP_LABEL}
 
 def _require_darwin() -> None:
     if sys.platform != "darwin":
-        raise SystemExit("thread-archive daemon: launchd management is macOS-only")
+        raise SystemExit("thread-archive service: launchd management is macOS-only")
 
 
 def _launchd_path(bin_dir: Path) -> str:
@@ -180,7 +180,7 @@ def _install_agent(label: str, plist_dict: dict, log_dir: Path) -> Path:
     result = _launchctl("bootstrap", domain, str(plist))
     if result.returncode != 0:
         raise SystemExit(
-            f"thread-archive daemon: launchctl bootstrap failed: {result.stderr.strip()}"
+            f"thread-archive service: launchctl bootstrap failed: {result.stderr.strip()}"
         )
     return plist
 
@@ -198,7 +198,7 @@ def _restart_agent(label: str) -> None:
     result = _launchctl("kickstart", "-k", f"gui/{_uid()}/{label}")
     if result.returncode != 0:
         raise SystemExit(
-            f"thread-archive daemon: launchctl kickstart failed: {result.stderr.strip()}"
+            f"thread-archive service: launchctl kickstart failed: {result.stderr.strip()}"
         )
 
 

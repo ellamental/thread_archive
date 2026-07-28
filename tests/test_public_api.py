@@ -19,9 +19,15 @@ import inspect
 from pathlib import Path
 
 import thread_archive
-from thread_archive import _tools
+from thread_archive import _tools, cli
 from thread_archive._web import route
-from thread_archive.cli import build_parser
+from thread_archive.cli import (
+    _LEGACY_VERBS,
+    _SECTIONS,
+    _normalize,
+    _subcommands_of,
+    build_parser,
+)
 
 # The full advertised Python surface: the version, nothing else. Adding a name
 # here is an API commitment — it must survive until a deliberate deprecation.
@@ -35,42 +41,31 @@ PUBLIC_API = ["__version__"]
 # checkout and is never shipped.
 PUBLIC_MODULES = {"cli", "provider"}
 
-# Most of the CLI is private tooling, but its verbs are wired into the LaunchAgent
-# plists, lab's cron script, the /ci skill, and the monitor's heartbeat
-# contract — this pin makes renaming one a deliberate act that updates those
-# in the same change, not a compatibility promise to anyone external.
+# The command tree: each listed root command mapped to the actions under it
+# (empty for a leaf). Most of the CLI is private tooling, but its verbs are wired
+# into the LaunchAgent plists, lab's cron script, the /ci skill, and the
+# monitor's heartbeat contract — this pin makes renaming one a deliberate act
+# that updates those in the same change, not a compatibility promise to anyone
+# external.
 # `search` and `read` are the exception: they are the retrieval tools with a
 # terminal in front of them (one implementation in thread_archive/_tools.py,
 # served over MCP and here), so they carry the same public promise the tools do
 # and there is nothing to keep out. What stays out is a *second implementation* —
 # `web` is an opener, not a read surface: it hands the cohosted viewer's URL to a
 # browser and returns nothing itself.
-CLI_VERBS = {
-    "setup",
-    "uninstall",
-    "search",
-    "read",
-    "import",
-    "import-export",
-    "providers",
-    "watch",
-    "web",
-    "embed",
-    "reindex",
-    "migrate",
-    "status",
-    "loads",
-    "backup",
-    "verify",
-    "restore-drill",
-    "restore",
-    "nightly",
-    "coverage",
-    "mirror",
-    "repair",
-    "daemon",
-    "fix-import",
-    "self-update",
+CLI_TREE = {
+    "search": set(),
+    "read": set(),
+    "web": set(),
+    "watch": set(),
+    "source": {"list", "import", "import-account", "mirror", "coverage", "loads", "fix"},
+    "index": {"rebuild", "migrate", "embed", "verify", "repair"},
+    "backup": {"run", "nightly", "drill", "restore"},
+    "status": set(),
+    "setup": set(),
+    "service": {"install", "uninstall", "restart", "status"},
+    "self-update": set(),
+    "uninstall": set(),
 }
 
 
@@ -99,11 +94,51 @@ def test_no_function_reexports_on_the_package() -> None:
     assert not leaked, leaked
 
 
-def test_cli_verbs_are_exactly_the_pinned_set() -> None:
-    sub = next(
+def _root() -> argparse._SubParsersAction:
+    return next(
         a for a in build_parser()._actions if isinstance(a, argparse._SubParsersAction)
     )
-    assert set(sub.choices) == CLI_VERBS
+
+
+def test_cli_tree_is_exactly_the_pinned_shape() -> None:
+    sub = _root()
+    # Iterating the root map yields only the listed commands — the legacy
+    # spellings resolve but are deliberately not part of the surface.
+    assert set(sub.choices) == set(CLI_TREE)
+    for name, actions in CLI_TREE.items():
+        assert set(_subcommands_of(sub.choices[name])) == actions, name
+
+
+def test_every_command_appears_in_exactly_one_help_section() -> None:
+    """`--help` is the discovery surface: a command missing from a section is a
+    command nobody finds. Pins both directions, so adding one to the tree
+    without placing it reds here rather than going quietly unlisted."""
+    listed = [name for _, names in _SECTIONS for name in names]
+    assert len(listed) == len(set(listed))
+    assert set(listed) == set(CLI_TREE)
+
+
+def test_pre_group_spellings_still_resolve() -> None:
+    """The renames must not strand a machine already running the old verbs — the
+    installed service manifests, operator scripts, shell history. Each legacy
+    spelling must reach the *same parser object* its grouped path reaches."""
+    parser, sub = build_parser(), _root()
+    for old, path in _LEGACY_VERBS.items():
+        target = sub.choices[path[0]]
+        for step in path[1:]:
+            nested = next(
+                a for a in target._actions if isinstance(a, argparse._SubParsersAction)
+            )
+            target = nested.choices[step]
+        assert sub.choices[old] is target, old
+        assert old in sub.choices  # resolves…
+        assert old not in set(sub.choices)  # …but is listed nowhere
+
+    # `backup <dest>` is the one that can't be an alias — `backup` is a group
+    # name now — so the rewrite that keeps it working is exercised end to end.
+    assert parser.parse_args(_normalize(["backup", "/d"])).func is cli.cmd_backup
+    assert parser.parse_args(_normalize(["backup", "--home", "/h", "/d"])).dest == "/d"
+    assert parser.parse_args(_normalize(["backup", "nightly", "/d"])).func is cli.cmd_nightly
 
 
 def test_committed_web_endpoints_are_served(archive_home) -> None:

@@ -1,6 +1,6 @@
 """Patch retirement: override patches are temporary by default.
 
-An ``thread-archive fix-import`` patch exists to bridge the gap until a core release
+A ``thread-archive source fix`` patch exists to bridge the gap until a core release
 fixes the same drift properly. Left active past that release it would shadow
 the proper fix forever — plugin-shadows-builtin is permanent by design, which
 is the *pin* case, not the default. So self-update retires them: any release
@@ -10,8 +10,8 @@ in config.json — the seam discovery already honors), with a ledger note.
 Deliberately no cleverness about whether the release actually fixed that
 provider's drift — that can't be known cheaply. If the drift persists past the
 release, the degradation notice simply re-fires and the user re-runs
-``thread-archive fix-import``; the loop self-corrects with no intelligence required.
-Pinning (``thread-archive fix-import <provider> --pin``) is the explicit opt-out for
+``thread-archive source fix``; the loop self-corrects with no intelligence required.
+Pinning (``thread-archive source fix <provider> --pin``) is the explicit opt-out for
 "I always want mine": a pinned patch survives every update until unpinned.
 
 Retirement disables, never deletes: the patch directory and its fixtures stay,
@@ -99,7 +99,7 @@ def retire_patches(home: Optional[str] = None, *, target: str) -> list[str]:
             logger.info(
                 "patch retirement: %s override disabled (built against %s; core now %s). "
                 "If its drift persists, the degradation notice re-fires and "
-                "`thread-archive fix-import %s` rebuilds it against the new core.",
+                "`thread-archive source fix %s` rebuilds it against the new core.",
                 name, providers[name]["patch"].get("built_against"), target, name,
             )
     return retired

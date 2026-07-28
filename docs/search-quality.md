@@ -62,91 +62,36 @@ answer is not shaped like one an agent types.** That is the second failure, it h
 no fix inside this constraint, and it is why the strong rung produces material for
 an experiment rather than a score.
 
-## What the commit-provenance protocol showed
+## Why no local protocol survived
 
-Retired as a standard, kept as a finding. This was the most defensible local
-protocol on the bench — labels fixed outside retrieval, a domain-matched corpus,
-nothing ever tuned against it — and its numbers are the clearest evidence for the
-conclusion at the top of this page. The case file it produced now lives in
-`~/dev/retired-gold/`.
+Two were built and both are gone. The reasoning above is why, and the numbers are
+worth stating once because they are the evidence for it.
 
-The corpus was frozen to a snapshot so a number moved only when the ranking code
-moved, and it was scored with the production ranker at the canonical `limit=20`.
+The strongest was commit-provenance: on a public corpus of 5,124 agent sessions
+shipping session↔commit linkage, an agent read only a commit — message and diff —
+and authored queries for it, and the linked session was the answer. No search ran
+during labelling and the author never saw the target thread, so the labels cleared
+circularity outright. It still could not license a claim, for two reasons that had
+nothing to do with execution:
 
-The corpus is [SWE-chat](https://huggingface.co/datasets/SALT-NLP/SWE-chat) —
-public Claude Code sessions, other people's code, ODC-BY, built by
-`search_lab/swechat_corpus.py`. It is the only corpus on this bench that ships
-session ↔ commit provenance, which is what a label has to be fixed by. It is
-domain-matched (agent session logs, not a third-party IR corpus) and nothing is
-ever tuned against it.
+- **The queries were nobody's.** Authored from a commit to have a knowable answer,
+  they ran a 20-word median against the ~4-word keyword soup the usage ledger
+  actually records, with none of the scope, browse or pagination parameters real
+  calls carry. A number over queries nobody asked is not evidence about the
+  searches anyone runs.
+- **Plain BM25 beat the fused stack on them** — 0.563 MRR against 0.514. Whatever
+  that measured, it was not the machinery earning its place.
 
-The protocol read a *linkage file* pairing each session with the commits it
-demonstrably authored; one agent read only the commit — message and diff — and
-authored queries for it; the linked session was the answer. No search runs during
-labeling, and since the agent never reads the target thread there is no
-vocabulary leakage either: the query is written from an artifact outside the
-corpus, which is also how a person searches ("where did we change the retry
-backoff") — from the work they remember, not from the conversation they are
-trying to find.
+The one useful thing it said was a *shape*, and it survives as a lead rather than a
+rate: queries naming what was done found the session (success@10 0.92 on
+identifier-bearing queries) and queries naming why it was done often did not (0.32
+on intent-shaped ones). That gap is invisible to any protocol whose labels came
+from retrieval, since a circular pool cannot contain the answers the ranker misses.
 
-On the 5,124-session corpus (snapshot `c4137bd4…`), 75 cases:
-
-| n | MRR | success@10 | recall@10 | nDCG@10 |
-|---|---|---|---|---|
-| 75 | 0.514 | 0.627 | 0.627 | 0.465 |
-
-Single-gold cases, so recall@10 and success@10 coincide and read as raw
-findability. The difficulty ladder is the sharp part, and it separates hard:
-
-| tier | success@10 |
-|---|---|
-| literal (names identifiers from the diff) | 0.920 |
-| functional (what the change does, no distinctive identifiers) | 0.640 |
-| intent (the goal, from memory, weeks later) | 0.320 |
-
-**Naming what was done finds the session; naming why often does not.** That gap
-is the most useful thing this protocol said, and it is not visible on any protocol
-whose labels came from retrieval — a circular pool cannot contain the answers the
-ranker misses, so it cannot show the miss. Read it as a lead about the intent
-shape, not as a measured rate: the queries were authored from commits, so how
-often *agents* ask that way is not something these cases can say.
-
-**Plain BM25 beats this on the same cases** — 0.563 MRR and 0.773 success@10,
-ahead at every tier but `intent`. The fused stack is behind a bag-of-words
-baseline on the one corpus here whose labels nothing searched for, which is the
-number to argue with before any other on this page. `bm25_baseline.py` is the
-reference these are read against and it is currently above them.
-
-Grades 1 and 0 in the pool are structural proxies, not verified labels: sibling
-sessions in the same repository grade themselves by file overlap (overlapping 1,
-disjoint 0), so the confound pool costs no tokens. Only the 2 is a strong claim.
-Read the gold-2 recall numbers as the trustworthy signal and nDCG over the proxy
-pool as directional.
-
-**Selectivity** — the share of the corpus a query's terms match at all — is the
-corpus property that predicts the BM25 gap above: this corpus sits near 95%,
-where lexical matching filters nothing, IDF-weighted ranking is the only signal
-left, and the arms above it have nothing to arbitrate. An archive of mixed
-conversational material sits far lower, where the extra machinery has something
-to do. That is an explanation and not an excuse, and until the `edited` and
-`pooled` files below carry cases it stays a hypothesis this bench cannot test —
-because the corpus where it would matter is the one nothing has scored yet.
-
-Scoring is deterministic — same code, same snapshot, same digits — so a movement
-is never noise. That holds because the scorer builds the corpus graph before its
-first case (`search_lab/eval_core.py`'s `warm_for_scoring`): the coherence
-re-rank otherwise no-ops until a background build lands, which would split a run
-in two. Resolution is `1/n`: one case going from rank 1 to unfound moves any
-metric by at most 0.013 on this file, so anything smaller is a rank shuffle
-within cases that already worked.
-
-None of that licenses "search improved" — see the top of this page for why, and
-`search_lab/README.md` → "Taking a baseline" for what does.
-`search_lab/swechat_bench.py` exports these cases onto the dataset's own session
-ids as a standalone benchmark (queries / qrels / corpus / manifest, plus a
-stdlib-only scorer), so the protocol and its limits are reproducible by someone
-with no access to this machine — which is the right way for a retired standard to
-survive.
+The weaker rung — judging a pool that retrieval assembled — buys observed queries
+at the cost of the bound, and was never worth the tokens. One finding from probing
+it: over sampled ledger queries, **`bm25` alone contributes documents the fused
+stack never returned**, so a single-system pool would silently miss them.
 
 ## What is not measured
 
@@ -154,41 +99,34 @@ Naming the holes, because a bench this narrow is easy to over-read. They are
 holes, not plans: nothing here is waiting on a protocol that was designed and not
 yet run.
 
-- **The operator's own archive.** No file scores it. It carries no session ↔
-  commit provenance, so the one protocol whose labels were fixed outside search
-  could never have run against it, and the corpus that *was* scored is other
-  people's code in other people's repos. Every archive-domain claim rests on the
-  synthetic tier-0 corpus (which proves only that nothing broke) and on inference
-  from a corpus with very different selectivity.
-- **Completeness.** Every scored case has exactly one right answer, so the bench
-  reads *findability* and nothing about whether a window holds the several threads
-  that bear on a subject — which is what the fan-out workflow actually needs. The
-  external `beam` row is the only multi-answer measurement on this bench, and it
-  is not archive-domain.
+- **The operator's own archive.** Nothing scores it, and per the admission rule
+  nothing can. Every archive-domain claim rests on the synthetic tier-0 corpus —
+  which proves only that nothing broke — and on inference from external corpora
+  with very different selectivity (this archive's terms match ~95% of a
+  provenance corpus but far less of mixed conversational material, and that is
+  exactly where the machinery above the lexical arm has something to arbitrate).
+- **Completeness.** The bench reads *findability* — where the first right answer
+  lands — and says nothing about whether a window holds the several threads
+  bearing on a subject, which is what the fan-out workflow actually needs. The
+  external `beam` row is the only multi-answer measurement here, and it is not
+  archive-domain.
 - **Whether the shipped weights are right.** They were arrived at against
   protocols that no longer qualify, and the numbers that justified them are not
-  re-derivable. `_retrieval/params.py` states this at the top of its evidence
-  list: the mechanism arguments for each term stand, the per-file deltas do not.
-  The defaults are what ships and what every candidate is scored against — not a
+  re-derivable. `_retrieval/params.py` says so at the top of its evidence list:
+  the mechanism argument for each term stands, the per-file deltas do not. The
+  defaults are what ships and what every candidate is scored against — not a
   configuration this bench has confirmed.
-- **Anything a real query looks like.** The gold fixed circularity; it did not
-  fix realism, and on surface form it is *further* from observed traffic than
-  what it replaced. Against the usage ledger's 298 recorded searches:
+- **The shapes real queries actually take.** The usage ledger records what agents
+  ask, and it looks nothing like any query set anyone would author:
 
-  | | gold | observed |
+  | | authored | observed |
   |---|---|---|
   | query length, median | 20 words / 122 chars | 4 words / 31 chars |
   | shape | grammatical descriptive sentence | bag of terms (`watcher ingest lock`) |
   | carries a scope/shape param | 0% | 43% (`content_type` 37%, `group=browse` 35%, `match` 31%) |
   | paginates | 0% | 49% |
-  | uses an operator (`OR`, quotes, `|`) | 0 of 75 | 8 |
+  | uses an operator (`OR`, quotes, `|`) | 0% | ~11% |
   | subject | "find the session that made this code change" | infra debugging, ontology work, personal and emotional material |
-
-  The `intent` tier — the rung meant to model recall-from-memory, and the most
-  informative one, since `literal` is close to a smoke test — is 21 of 25 cases
-  opening with the same "that session where…" template. That is one phrasing with
-  25 fillers, not 25 samples of how anyone searches. The ladder varies the
-  *phrasing of one authoring process*; it does not span query shapes.
 
   Two consequences. The **browse and scoped code paths are unmeasured entirely** —
   a third of real searches, and `group='browse'` is a different retrieval shape,
@@ -196,20 +134,11 @@ yet run.
   hold for 4-word ones: density normalizes matched terms against a fixed
   `density_norm_chars` window, and the OR-fallback tier in `fts.py` fires when the
   strict all-terms pass comes up short — far likelier on a long query than a
-  three-token one. So the two populations exercise different parts of the
-  pipeline.
+  three-token one. The two populations exercise different parts of the pipeline.
 
-  Closing this would mean labelling the observed queries, whose answer sets exist
-  in no record — so the labels would have to be judged over a pool retrieval
-  assembled, which is the weak rung. A probe of that shape is worth one finding:
-  over four sampled ledger queries, **`bm25` alone contributes up to 8 documents
-  the fused stack never returned**. Whatever grades them, a single-system pool
-  would have silently missed those.
-
-- **Bench latency over a representative query set.** The warm-latency figures
-  below come from the gold queries, which is the same 75-query population above.
-  `latency_replay.py` over the usage ledger is the instrument that does not have
-  this problem.
+  `latency_replay.py` is the one instrument whose population is the observed one.
+  It measures speed, not quality — which is the honest half of this gap, and the
+  only half that has an instrument.
 
 ## The stack, and what each layer buys
 
@@ -249,9 +178,8 @@ survive the admission rule.
   density's blind spot: density is IDF-blind and length-normalized, so it weighs a
   corpus-common term exactly like the rare one that discriminates and then divides
   by length — a short doc holding a few common query words outranks the long doc
-  holding the discriminating ones. The commit golds credit it: +.011 MRR / +.007
-  nDCG@10 / +.003 recall@10 against `bm25_weight=0`. Where it has no substitute is
-  the search fusion cannot reach: `_rrf` is computed only when the vector arm
+  holding the discriminating ones. Where it has no substitute is the search fusion
+  cannot reach: `_rrf` is computed only when the vector arm
   returns, so a lexical-only search — a `tool_name` or `types` scope, a structural
   query, an archive with no embeddings — would otherwise rank on density alone.
 - **Community-coherence re-rank** — a corpus-native embedding graph (thread
@@ -259,12 +187,10 @@ survive the admission rule.
   conversation a node) partitions into communities; within a ranked pool, threads
   whose community carries more of the pool's top mass get a small boost
   (`score = 1/(60+rank) + γ·community_mass`, shipped γ=0.005). On by default, and
-  the smallest lever here. `search_lab/graph_eval.py` scores it over log-mined
-  click labels (187 cases): S@5 0.401 → 0.428, S@10 0.513 → 0.519, recall@10 0.417
-  → 0.426, S@1 0.203 → 0.193, MRR flat. **Those labels are censored by the
-  incumbent** — the gold is whatever thread an agent opened, out of what search
-  surfaced that day — so that harness is a regression check and the gate any new
-  graph lever must pass, never evidence the re-rank helps.
+  the smallest lever here — and **unmeasured**: it was only ever scored against
+  click labels the incumbent ranker censored, which cannot credit it. What is left
+  is the mechanism argument and the external rows, which include it in the shipped
+  stack they score.
 
 The model arm has an off switch — `THREAD_ARCHIVE_EMBED=off` pins a process to
 the lexical core without uninstalling the extra, for a box that wants search cheap
@@ -364,37 +290,31 @@ succeed.
 
 ## Zero-label instruments
 
-The archive's own tool-use trail powers two hand-run instruments. **Neither mints
-gold** — the admission rule is about labels a benchmark is scored against, and
-these produce no case files.
+The archive's own tool-use trail powers one hand-run instrument, and it mints
+nothing: **`retrieval_eval.py --behavior`** reports usage rates — for every search,
+whether the agent opened a result, searched again, or walked away. No labels at
+all, so nothing censors them; rates that move only when something real moves. Read
+the trend, never a single run.
 
-- **Click labels (`retrieval_eval.py --from-log`)** mine real
-  `thread_search`→`thread_read` pairs from the trail: the gold is whatever thread
-  the agent opened, a subset of what search surfaced *that day*. Censored by the
-  incumbent ranker in exactly the way the admission rule describes — a change that
-  surfaces different-better results scores as a loss — so this is an **alarm, not a
-  baseline**: run it by hand to ask "did something collapse," never to credit a
-  change, and never cite a from-log delta as evidence. Its lasting value is as a
-  **sampling frame**: real query shapes to draw a population from. Nothing runs it on a
-  cadence.
-- **Behavioral signals (`retrieval_eval.py --behavior`)** report zero-label usage
-  rates — for every search, whether the agent opened a result, searched again, or
-  walked away. No labels at all, so nothing censors them; rates that move only when
-  something real moves.
+The trail also holds every `thread_search`→`thread_read` pair, and scoring against
+those is the obvious next idea. It doesn't work: the thread an agent opened is a
+pick from what *that day's ranker* surfaced, so the labels are censored in exactly
+the way the admission rule describes and a change that surfaces different-better
+results scores as a loss. What the trail is genuinely good for is the query
+*population* — `latency_replay.py` replays real calls, parameters included.
 
 ## External calibration
 
-The commit golds score the archive's machinery on one corpus. The complementary
-question — are the retrieval *components* competitive against published baselines
-— is what three external benchmarks answer, each running the real pipeline over a
-third-party corpus. None of these corpora resemble an agent's own session log, so
-a strong number certifies the machinery, never archive-domain quality — read each
-against that mismatch. Each also reports its own field's metric conventions rather
-than this archive's (linear-gain nDCG, where the gold files use exponential), which
-is the point of running them: a number is only a yardstick if it means what the
-leaderboard beside it means. What they share with the gold bench is the
-configuration under test — one arm-pinning path, so `lexical` names the same stack
-everywhere — and one cache root, `~/.cache/thread-evals`.
+This is the whole quality claim. Are the retrieval *components* competitive
+against published baselines? Each row runs the real pipeline over a third-party
+corpus somebody else labeled. None of those corpora resemble an agent's own
+session log, so a strong number certifies the machinery, never archive-domain
+quality — read each against that mismatch. Each reports its own field's metric
+conventions (linear-gain nDCG) rather than this archive's, which is the point of
+running them: a number is only a yardstick if it means what the leaderboard beside
+it means. What they share is the configuration under test — one arm-pinning path,
+so `lexical` names the same stack everywhere — and one cache root,
+`~/.cache/thread-evals`.
 
 | benchmark | task | metric | lexical | +vectors | published ref |
 |---|---|---|---|---|---|
@@ -410,8 +330,7 @@ these numbers come from.
 On the shipped default the fused stack meets or clears every comparable reference
 except CDR's, where it sits at 98%. Nothing is tuned against these corpora, so they
 are held out in the arithmetic sense — but they are out-of-domain, so a
-disagreement between them and the commit golds is as easily a domain gap as an
-artifact.
+disagreement between two rows is as easily a domain gap as an artifact.
 
 On **CDR** the stack reaches 0.494 against the 0.504 best-of-16 reference, at
 recall@100 0.687. A weak number here is a ranking-weight symptom, not an
@@ -476,13 +395,12 @@ positive claim:
 | 0 | `tests/test_search_quality.py` + `tests/test_search_recall_shape.py` + `tests/test_reality_mechanisms.py` (every pytest run) | checked-in synthetic corpus, lexical stack | seconds | every change |
 | 1 | `pytest -m quality_models` | same corpus, real embedding model | minutes | touching the model arm |
 | 2 | CI arm-liveness probes (`retrieval_eval.py --probes-only`) | live archive | ~a minute | every commit, via thread-ci |
-| 3 | `latency_replay.py` (speed over real traffic), `graph_eval.py`, `--behavior` | the live archive | minutes | evaluating a deliberate ranking change |
+| 3 | `latency_replay.py` (speed over real traffic), `--behavior` | the live archive | minutes | evaluating a deliberate ranking change |
 | 4 | `python -m search_lab benchmark`; `pytest -m beir` | external IR / conversational-memory benchmarks | tens of minutes | the quality claim — calibrating against published baselines |
 
 The tunables all live in one object — `SearchParams` (`_retrieval/params.py`) — and
 a candidate configuration is another instance of it, passed through
-`search(params=...)` and scored against the incumbent on identical cases. The gold
-gate drives that seam one knob at a time; `tests/test_search_params.py` keeps it
-open. A direction that looks good on the synthetic corpus is only a direction — the
-gold-file delta says "on provenance-grounded labels, it measures better," and only
-the second can promote a change.
+`search(params=...)` and scored against the incumbent on identical cases;
+`tests/test_search_params.py` keeps that seam open. A direction that looks good on
+the synthetic corpus is only a direction — it says nothing broke. Only a benchmark
+delta can promote a change.

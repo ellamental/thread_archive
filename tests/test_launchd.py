@@ -49,7 +49,9 @@ def test_watcher_plist_home_and_web_options() -> None:
 def test_backup_plist_shape() -> None:
     p = backup_plist(ENTRY, LOG_DIR, "/Volumes/Backup/arc")
     assert p["Label"] == BACKUP_LABEL
-    assert p["ProgramArguments"] == [str(ENTRY), "nightly", "/Volumes/Backup/arc"]
+    assert p["ProgramArguments"] == [
+        str(ENTRY), "backup", "nightly", "/Volumes/Backup/arc"
+    ]
     # A scheduled one-shot, not a resident agent: fire daily, don't RunAtLoad.
     assert p["StartCalendarInterval"] == {"Hour": 4, "Minute": 0}
     assert p["RunAtLoad"] is False

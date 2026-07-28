@@ -457,7 +457,7 @@ def test_providers_marks_disabled_and_followers_off(archive_home, capsys) -> Non
 
 
 def test_import_export_imports_a_real_export(archive_home, tmp_path, capsys) -> None:
-    """`thread-archive import-export` unpacks a real claude.ai export ZIP into the
+    """`thread-archive source import-account` unpacks a real claude.ai export ZIP into the
     archive, and --force reaches the importer: a second pass skips what is
     already there unless it is told to reimport."""
     conv = {
@@ -713,7 +713,7 @@ def test_daemon_backup_install_passes_notify_url(tmp_path, monkeypatch, stub_bin
     assert "nightly at 04:00" in capsys.readouterr().out
     plist = _written_plist(BACKUP_LABEL)
     assert plist["ProgramArguments"][1:] == [
-        "nightly", "/vol/bak", "--notify-url", "http://n"
+        "backup", "nightly", "/vol/bak", "--notify-url", "http://n"
     ]
     assert plist["StartCalendarInterval"] == {"Hour": 4, "Minute": 0}
 
@@ -1167,7 +1167,7 @@ def test_repair_applied_with_samples(capsys) -> None:
     assert "ledger: /home/quarantine.jsonl" in out
     assert "restored from index: 4 event(s)" in out
     assert "the repaired files shrank" in out
-    assert "run `thread-archive verify`" in out
+    assert "run `thread-archive index verify`" in out
 
 
 # ── status: fully-populated ok + failed variants ─────────────────────────────
@@ -1376,8 +1376,8 @@ def test_coverage_report_names_degraded_and_quarantined(capsys) -> None:
     }
     assert cli.report_coverage(result) == 0
     out = capsys.readouterr().out
-    assert "degraded: grok (went_dark since 2026-07-10) — remedy: thread-archive fix-import grok" in out
-    assert "degraded: chatgpt (capture_skips) — remedy: thread-archive fix-import chatgpt" in out
+    assert "degraded: grok (went_dark since 2026-07-10) — remedy: thread-archive source fix grok" in out
+    assert "degraded: chatgpt (capture_skips) — remedy: thread-archive source fix chatgpt" in out
     assert "quarantined: cursor raw store snapshot → gen-3" in out
     assert "OK" in out
 
@@ -1450,7 +1450,7 @@ def _mirror_provider(**over) -> dict:
 
 
 def test_mirror_cli_sweeps_the_real_sources(archive_home, capsys) -> None:
-    """`thread-archive mirror` runs the real raw-store sweep into <home>/source-mirror.
+    """`thread-archive source mirror` runs the real raw-store sweep into <home>/source-mirror.
     Nothing is on disk to mirror in a throwaway home, so the run is green and
     the root it names is the one it created."""
     rc = main(["mirror", "--home", str(archive_home)])
@@ -1740,21 +1740,50 @@ def test_status_says_nothing_about_silences_when_there_are_none(capsys) -> None:
 # `webbrowser` path — the URL is genuinely handed off — without a window opening
 # on whoever is running the suite.
 
-def test_web_opens_the_viewer_url(monkeypatch, capsys) -> None:
+def test_web_opens_the_viewer_url(monkeypatch, capsys, archive_home) -> None:
     monkeypatch.setenv("BROWSER", "true")
     assert cli.main(["web"]) == 0
-    # No `?dev=` at all: a plain open must not restate a preference the viewer is
-    # already remembering, in either direction.
+    # The URL and nothing else: a plain open states no preference, and writes
+    # none — the config it would write to is the operator's standing answer.
     assert capsys.readouterr().out.strip() == "http://127.0.0.1:8787"
+    assert not (archive_home / "config.json").exists()
 
 
-def test_web_dev_asks_the_viewer_for_the_dev_pages(monkeypatch, capsys) -> None:
+def test_web_dev_turns_the_dev_panels_on(monkeypatch, capsys, archive_home) -> None:
+    """The switch is a line in the config, not a URL: the server reads it for
+    every shell it serves, so the choice outlives this browser and this tab."""
+    from thread_archive._config import load_config
+
     monkeypatch.setenv("BROWSER", "true")
     assert cli.main(["web", "dev", "--port", "9999"]) == 0
-    assert capsys.readouterr().out.strip() == "http://127.0.0.1:9999/?dev=1"
+    assert load_config(home=archive_home)["dev_panels"] is True
+    out = capsys.readouterr().out
+    assert "dev panels on" in out
+    assert out.strip().endswith("http://127.0.0.1:9999")
 
 
-def test_web_no_dev_puts_them_away(monkeypatch, capsys) -> None:
+def test_web_no_dev_puts_them_away(monkeypatch, capsys, archive_home) -> None:
+    from thread_archive._config import load_config, save_config
+
     monkeypatch.setenv("BROWSER", "true")
+    save_config({"dev_panels": True, "sources": {"claude-code": {"enabled": False}}},
+                home=archive_home)
     assert cli.main(["web", "--no-dev"]) == 0
-    assert capsys.readouterr().out.strip() == "http://127.0.0.1:8787/?dev=0"
+    cfg = load_config(home=archive_home)
+    assert cfg["dev_panels"] is False
+    # The switch edits one line; everything else the operator has decided stays.
+    assert cfg["sources"] == {"claude-code": {"enabled": False}}
+    assert "dev panels off" in capsys.readouterr().out
+
+
+def test_web_refuses_to_write_over_a_config_it_could_not_read(
+    monkeypatch, capsys, archive_home
+) -> None:
+    """A config too broken to parse may still hold a source policy someone is
+    relying on. Rewriting it from an empty dict to flip one flag would drop
+    that, so the switch declines and says which file to repair."""
+    monkeypatch.setenv("BROWSER", "true")
+    (archive_home / "config.json").write_text("{not json", encoding="utf-8")
+    assert cli.main(["web", "dev"]) == 1
+    assert (archive_home / "config.json").read_text(encoding="utf-8") == "{not json"
+    assert "could not be read" in capsys.readouterr().err

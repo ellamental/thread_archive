@@ -95,7 +95,7 @@ ls -l "$REPO/.venv/bin/archive-mcp"
 in the watcher/backup service units (step below) and in self-update — is baked
 into the machine, not tracked in the repo. A plain `mv` of the clone dead-ends
 the MCP wiring, the daemon, and self-update at once. To relocate it, move the
-directory, then re-run the MCP wiring above and `thread-archive daemon restart`
+directory, then re-run the MCP wiring above and `thread-archive service restart`
 (or, cleanest, re-clone at the new path and reinstall). Tell the human this
 before they pick where the clone lives.
 
@@ -116,7 +116,7 @@ An empty archive has nothing to search. Two ways to get conversations in:
 
 - **Watch local AI-tool stores** (Claude Code, Cursor, Codex, … on this machine):
   ```bash
-  .venv/bin/thread-archive watch --once     # one pass; or `thread-archive daemon install` for always-on
+  .venv/bin/thread-archive watch --once     # one pass; or `thread-archive service install` for always-on
   ```
   (`.mcp.json.example` explicitly sets `THREAD_ARCHIVE_MCP_INGEST=1`, so even
   without either, that configured `archive-mcp` cohosts a lazy catch-up pass at
@@ -124,7 +124,7 @@ An empty archive has nothing to search. Two ways to get conversations in:
   read-only.)
 - **Import an export or transcript** the human points you at:
   ```bash
-  .venv/bin/thread-archive import <path> --provider <name>   # `thread-archive providers` lists them: claude-code, codex, grok, antigravity, cloth, cowork, claude-science, cursor, opencode, …
+  .venv/bin/thread-archive source import <path> --provider <name>   # `thread-archive source list` lists them: claude-code, codex, grok, antigravity, cloth, cowork, claude-science, cursor, opencode, …
   ```
 
 Then confirm it landed:
@@ -138,7 +138,7 @@ Then confirm it landed:
 terminal — same implementation, so a hit here is a hit over MCP once Claude
 Code is restarted with the config below.)
 
-The SQLite index is built during import; if it ever looks wrong, `thread-archive reindex`
+The SQLite index is built during import; if it ever looks wrong, `thread-archive index rebuild`
 rebuilds it losslessly from the JSONL truth.
 
 ## 5. Restart Claude Code to load the new config

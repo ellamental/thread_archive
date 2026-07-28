@@ -604,7 +604,7 @@ def backup(
     Before the mirror touches anything, the destination's current state is
     preserved as a hardlink generation under ``<dest>/.generations/``
     (:func:`_snapshot_generation`) — the recovery margin for destruction the
-    in-run guards can't see. ``thread-archive restore-drill`` proves the mirror (or a
+    in-run guards can't see. ``thread-archive backup drill`` proves the mirror (or a
     generation) actually restores.
 
     After the mirror, the run syncs the recovery bundle
@@ -736,7 +736,7 @@ def restore_drill(
     supposed to protect), and a smoke pass (:func:`_drill_smoke`) proved the
     rebuilt archive actually *reads and searches*, not just materializes.
     Heavy (a full index build) — sized for the nightly 04:00 window, where
-    ``thread-archive nightly`` runs it after every backup.
+    ``thread-archive backup nightly`` runs it after every backup.
 
     The drill home is a temp directory (``keep_home=True`` keeps it for
     inspection, e.g. to point a reader at the restored index); the live archive

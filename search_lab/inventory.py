@@ -35,9 +35,9 @@ measurement surface, so it has no bench to inventory.
 Two costs are bounded on purpose, because this runs inside the always-on
 watcher process:
 
-- **Disk sizes are a capped walk.** The SWE-chat home alone is ~25 GB across a
-  quarter-million files, and the per-question haystack roots are hundreds of
-  small homes. :func:`dir_bytes` stops at a file budget and says so
+- **Disk sizes are a capped walk.** A built home runs to gigabytes across
+  hundreds of thousands of files, and the per-question haystack roots are
+  hundreds of small homes. :func:`dir_bytes` stops at a file budget and says so
   (``truncated``), so a page load can never turn into a filesystem sweep.
 - **Corpus counts come from the snapshot manifest**, not from the index — a
   built home records its own event/thread/vector counts when it is stamped, and
@@ -79,13 +79,10 @@ FAMILIES: dict[str, str] = {
     "memory-units": "personal long-term memory retrieval, scored by memory-unit "
                     "id — labels exist by construction (each question was "
                     "authored from the unit it names), no published baseline",
-    "agent-sessions": "real coding-agent sessions carrying commit provenance — "
-                      "domain-matched to what this archive holds, and written by "
-                      "other people about other codebases",
 }
 
 #: How many files a size walk will stat before it gives up and reports a partial
-#: number. Generous enough that every corpus but SWE-chat completes; small enough
+#: number. Generous enough that every corpus on the bench completes; small enough
 #: that a page load stays under a second on a cold cache.
 WALK_BUDGET = 60_000
 
@@ -97,7 +94,7 @@ def dir_bytes(path: Path, *, budget: int = WALK_BUDGET) -> dict[str, Any]:
 
     Returns ``{"bytes", "files", "truncated"}``. ``truncated`` is the honest
     signal that the number is a floor rather than the size: a partial sum
-    reported as a total would understate a 25 GB corpus by whatever the walk
+    reported as a total would understate a large corpus by whatever the walk
     missed, and there is no way to tell from the number itself."""
     total = 0
     seen = 0
@@ -141,8 +138,8 @@ def size_index(cache_root: Path) -> dict[str, dict[str, Any]]:
     """Sizes for the eval cache root and each dataset / home under it, in one pass.
 
     Every row on the page wants a size, and the roots overlap — the cache total
-    contains ``homes/``, which contains a 25 GB corpus. Walked independently, the
-    big subtree gets walked twice and the page load doubles for a number nobody
+    contains ``homes/``, which contains every built corpus. Walked independently,
+    a big subtree gets walked twice and the page load doubles for a number nobody
     reads twice. So the walk happens once per subtree here and the totals are
     summed rather than re-derived, which also guarantees the parts add up to the
     whole shown above them."""
@@ -180,8 +177,8 @@ def size_index(cache_root: Path) -> dict[str, dict[str, Any]]:
 
 def _sized(path: Path, index: Optional[dict[str, dict[str, Any]]]) -> dict[str, Any]:
     """A path's size, off the one-pass index when it is in it. A path outside the
-    cache root — the SWE-chat download lives beside the operator's checkout — is
-    walked on its own."""
+    cache root — a download kept beside the operator's checkout — is walked on its
+    own."""
     if index is not None and str(path) in index:
         return index[str(path)]
     return dir_bytes(path)
@@ -547,9 +544,9 @@ def datasets(sizes: Sizes = None) -> list[dict[str, Any]]:
 
     Four families, and the shape of a row differs by what the family builds: BEIR
     and CDR each build one home, the haystacks build a registered corpus *and* a
-    root of per-question micro-homes, SWE-chat builds one home beside a gold dir.
-    Which benchmark rows a dataset feeds is filled in from the manifest, so the
-    two lists on the page agree by construction."""
+    root of per-question micro-homes. Which benchmark rows a dataset feeds is
+    filled in from the manifest, so the two lists on the page agree by
+    construction."""
     from search_lab import cdr_eval, eval_home, haystack_eval
 
     cache_root = eval_home.CACHE_ROOT
@@ -591,7 +588,6 @@ def datasets(sizes: Sizes = None) -> list[dict[str, Any]]:
 
     rows.append(_mtrag_dataset(cache_root, homes, on_bench, sizes))
     rows.append(_perltqa_dataset(cache_root, homes, on_bench, sizes))
-    rows.append(_swechat_dataset(homes, on_bench, sizes))
     return rows
 
 
@@ -641,35 +637,6 @@ def _perltqa_dataset(cache_root: Path, homes: Path, on_bench: dict[str, list[str
         "homes": [_home_row(homes / "perltqa", label="corpus", sizes=sizes)],
         "reference": {},
         "on_bench": on_bench.get("perltqa", []),
-    }
-
-
-def _swechat_dataset(homes: Path, on_bench: dict[str, list[str]],
-                     sizes: Sizes = None) -> dict[str, Any]:
-    """The public agent-session corpus.
-
-    Its download path and home come from ``swechat_corpus``; that module opens the
-    package, so it is imported here rather than at module scope and a failure
-    degrades to the paths being unknown rather than to no inventory at all."""
-    try:
-        from search_lab import swechat_corpus
-
-        home = swechat_corpus.DEFAULT_HOME
-        data = swechat_corpus.DEFAULT_DATA
-    except Exception:  # noqa: BLE001 — an unreadable builder is one absent path
-        home, data = homes / "swe-chat", None
-    return {
-        "name": "swe-chat",
-        "family": "agent-sessions",
-        "harness": "search_lab/swechat_corpus.py",
-        "source": "https://huggingface.co/datasets/SALT-NLP/SWE-chat",
-        "license": "ODC-BY",
-        "download": _download_row(data, present=bool(data and data.is_dir()),
-                                  sizes=sizes)
-        if data else {"path": None, "present": False},
-        "homes": [_home_row(home, label="corpus", sizes=sizes)],
-        "reference": {},
-        "on_bench": on_bench.get("swe-chat", []),
     }
 
 

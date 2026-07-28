@@ -53,14 +53,14 @@ from .maintenance import _write_snapshot
 
 logger = logging.getLogger(__name__)
 
-# ── integrity scan (the primitive behind `thread-archive verify`) ───────────────────
+# ── integrity scan (the primitive behind `thread-archive index verify`) ───────────────────
 def scan_truth_counts(
     *, event_id_max: int | None = None, thread_id_max: str | None = None,
     kg_event_id_max: int | None = None, truth_dir: Path | None = None,
 ) -> dict:
     """Count threads + event lines across the truth directory — the per-thread
     files *and* the topic-graph event log (``kg_events.jsonl``) — tallying any JSON
-    parse errors. The integrity primitive behind ``thread-archive verify``: a clean
+    parse errors. The integrity primitive behind ``thread-archive index verify``: a clean
     archive has these match the SQLite projection's thread/event/kg-event counts
     (the JSONL ⊇ SQLite invariant) with zero parse errors.
 
@@ -93,7 +93,7 @@ def scan_truth_counts(
     false-alarming.
 
     ``truth_dir`` scans an explicit directory instead of the live archive's —
-    the primitive behind the backup-side check (``thread-archive verify --backup``)."""
+    the primitive behind the backup-side check (``thread-archive index verify --backup``)."""
     d = truth_dir if truth_dir is not None else log_dir()
     threads_dir = d / THREADS_SUBDIR
     n_events = n_effective = 0
@@ -138,7 +138,7 @@ def scan_truth_counts(
             continue
         kg_ids.add(int(kg_id))
     # Same split reindex reports: a torn tail (the file's final non-empty line —
-    # the residue of a crash mid-append, waiting for `thread-archive repair`) vs. interior
+    # the residue of a crash mid-append, waiting for `thread-archive index repair`) vs. interior
     # damage (a fragment later appends isolated, or corruption of a formerly-good
     # line — repair quarantines it and restores any committed event it shadowed).
     torn, interior = _classify_parse_errors(parse_error_locs)
@@ -1198,7 +1198,7 @@ def rebuild_truth_from_store(*, force: bool = False) -> dict:
                 raise RuntimeError(
                     f"rebuild_truth_from_store: the store lacks {missing} event(s) "
                     f"the truth holds (sample: {sample}) — re-emitting would destroy "
-                    "truth content the index lacks. Run `thread-archive reindex` first "
+                    "truth content the index lacks. Run `thread-archive index rebuild` first "
                     "(or pass force=True if the shrink is intended)."
                 )
             if dropped:
@@ -1215,8 +1215,8 @@ def rebuild_truth_from_store(*, force: bool = False) -> dict:
                     f"rebuild_truth_from_store: {failing} store payload(s) fail their "
                     f"own dedup-key content hash (sample: {bad_sample}) — re-emitting "
                     "would promote suspect index content over the existing truth. "
-                    "Investigate with `thread-archive verify --hashes` and repair the index "
-                    "(`thread-archive reindex`) first, or pass force=True if the payloads are "
+                    "Investigate with `thread-archive index verify --hashes` and repair the index "
+                    "(`thread-archive index rebuild`) first, or pass force=True if the payloads are "
                     "known-good (an in-place repair that didn't recompute its keys)."
                 )
             diverging, div_sample = _unkeyed_store_rows_diverging_from_truth(d)
@@ -1226,8 +1226,8 @@ def rebuild_truth_from_store(*, force: bool = False) -> dict:
                     f"disagree with their truth line (sample: {div_sample}) — those rows "
                     "carry no key hash to self-validate, so the truth line is their only "
                     "redundant copy and re-emitting would destroy it. Investigate with "
-                    "`thread-archive verify --hashes` (the `cross` counts) and repair the "
-                    "index (`thread-archive reindex`) first, or pass force=True if the "
+                    "`thread-archive index verify --hashes` (the `cross` counts) and repair the "
+                    "index (`thread-archive index rebuild`) first, or pass force=True if the "
                     "store's copy is known-good."
                 )
         return _rebuild_truth_from_store_locked(d)

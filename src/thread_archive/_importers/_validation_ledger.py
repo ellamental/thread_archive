@@ -6,7 +6,7 @@ drifting?" needs a durable, queryable trail. Every import whose parsed messages
 tripped a validator appends one record here: the provider, the source id, and the
 findings (a block type or role the parser has gone blind to, a missing field).
 :func:`summarize_drift` gives the capture-coverage check its recent-volume line, so
-drift shows up in ``thread-archive coverage`` and the nightly's coverage stage rather than
+drift shows up in ``thread-archive source coverage`` and the nightly's coverage stage rather than
 only in daemon logs.
 
 Not every record is evidence of drift. The version tripwire

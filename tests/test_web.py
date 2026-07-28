@@ -223,6 +223,48 @@ def test_the_inventory_is_assembled_once_and_served_from_cache(archive_home):
     assert _inventory_payload(module) is _inventory_payload(module)
 
 
+def test_the_served_shell_carries_no_dev_panels_by_default(archive_home):
+    """The pages ship in the bundle; what puts them in an app is this stamp. No
+    config line, no stamp — so a viewer nobody asked reaches none of them, and
+    the routes are simply absent rather than hidden behind a link."""
+    _seed(archive_home)
+    status, ctype, body = _get("/lab")
+    assert status == 200 and ctype.startswith("text/html")
+    shell = body.decode()
+    assert "thread-archive-dev-panels" not in shell
+    assert "<head>" in shell, "the stamp has an anchor to land on"
+
+
+def test_the_config_line_stamps_the_shell(archive_home):
+    """``"dev_panels": true`` is the whole switch (``thread-archive web dev``
+    writes it). Read per request, so flipping it lands on the next page load
+    rather than at the next restart of the watcher serving this."""
+    from thread_archive._config import load_config, save_config
+
+    _seed(archive_home)
+    save_config({"dev_panels": True}, home=archive_home)
+    assert '<meta name="thread-archive-dev-panels" content="1">' in _get("/lab")[2].decode()
+
+    save_config({"dev_panels": False}, home=archive_home)
+    assert "thread-archive-dev-panels" not in _get("/lab")[2].decode()
+    assert load_config(home=archive_home)["dev_panels"] is False
+
+
+def test_a_config_that_only_looks_true_leaves_the_panels_off(archive_home):
+    """The switch is a JSON ``true``, not truthiness: a viewer that showed the
+    dev panels because the key held the string ``"false"`` would be a switch
+    that only looks like one. A config too broken to parse fails closed too."""
+    from thread_archive._config import save_config
+
+    _seed(archive_home)
+    for value in ("true", "false", 1, None):
+        save_config({"dev_panels": value}, home=archive_home)
+        assert "thread-archive-dev-panels" not in _get("/")[2].decode()
+
+    (archive_home / "config.json").write_text("{not json", encoding="utf-8")
+    assert "thread-archive-dev-panels" not in _get("/")[2].decode()
+
+
 def test_the_dev_page_is_a_source_tree_thing_only():
     """What makes an install answer 404 there is packaging, not a runtime check:
     ``_dev`` is excluded from the wheel, so the import behind the endpoint fails

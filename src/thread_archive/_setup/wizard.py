@@ -428,7 +428,7 @@ def _offer_watcher(
         machine.install_watcher(args.home)
     except SystemExit as e:
         _say(f"  Could not install the watcher: {e}")
-        _say("  Opted-in MCP catch-up still covers freshness; `thread-archive daemon install` to retry.")
+        _say("  Opted-in MCP catch-up still covers freshness; `thread-archive service install` to retry.")
         return "failed"
     _say("  Installed — always-on, restarts on failure, web viewer at http://127.0.0.1:8787.")
     return machine.service_kind or "scheduled"
@@ -465,8 +465,8 @@ def _offer_backup(args: argparse.Namespace, interactive: bool, machine: Machine)
     if not machine.can_schedule:
         _say("Backups: a scheduled nightly backup needs a supported service manager")
         _say("  (launchd on macOS, systemd on Linux) — none detected on this host.")
-        _say("  Back up by hand anytime with `thread-archive backup <dest>` (a copy of truth/ IS")
-        _say("  the backup), or point your own scheduler at `thread-archive nightly <dest>`.")
+        _say("  Back up by hand anytime with `thread-archive backup run <dest>` (a copy of truth/ IS")
+        _say("  the backup), or point your own scheduler at `thread-archive backup nightly <dest>`.")
         return {"status": "unavailable"}
 
     # An already-loaded backup agent is left untouched — this is what keeps the
@@ -486,7 +486,7 @@ def _offer_backup(args: argparse.Namespace, interactive: bool, machine: Machine)
         interactive=interactive,
     )
     if not dest:
-        _say("  Skipped — back up anytime with `thread-archive backup <dest>`; "
+        _say("  Skipped — back up anytime with `thread-archive backup run <dest>`; "
              "`thread-archive setup` to revisit.")
         return {"status": "skipped"}
     dest_path = Path(dest).expanduser()
@@ -496,8 +496,8 @@ def _offer_backup(args: argparse.Namespace, interactive: bool, machine: Machine)
         machine.install_backup(str(dest_path), args.home)
     except SystemExit as e:
         _say(f"  Could not schedule backup: {e}")
-        _say("  Back up by hand with `thread-archive backup <dest>`, or "
-             "`thread-archive daemon install --backup --dest <path>` to retry.")
+        _say("  Back up by hand with `thread-archive backup run <dest>`, or "
+             "`thread-archive service install --backup --dest <path>` to retry.")
         return {"status": "failed"}
     _say(f"  Scheduled — nightly at 04:00 → {dest_path}: backup, verify, restore drill.")
     _say("  `thread-archive status` shows the last run's result.")
@@ -613,7 +613,7 @@ def print_status(args: argparse.Namespace, *, machine: Optional[Machine] = None)
     _say(f"  archive:  {convs:,} conversations{topics_part} · {st['events']:,} events · {st['fts_indexed']:,} indexed")
     # What it costs to keep, split so the number is answerable: an archive is
     # mostly not its conversations, and the biggest part of it is usually the
-    # projection `thread-archive reindex` can rebuild.
+    # projection `thread-archive index rebuild` can rebuild.
     from .._ops.disk import format_bytes as _bytes
 
     disk = api.disk_usage(home=args.home)
@@ -649,7 +649,7 @@ def print_status(args: argparse.Namespace, *, machine: Optional[Machine] = None)
                  + (f" → {dest}" if dest else ""))
         else:
             _say("  schedule: no nightly backup — `thread-archive setup` offers it "
-                 "(or `thread-archive daemon install --backup --dest <path>`)")
+                 "(or `thread-archive service install --backup --dest <path>`)")
     _say()
     _say("  search/read: the archive-mcp tools · web viewer: http://127.0.0.1:8787 (with the watcher)")
     _say("  re-run setup: thread-archive setup · operator CLI: thread-archive --help")

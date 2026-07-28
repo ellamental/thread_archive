@@ -1,4 +1,4 @@
-"""Truth-file damage: crash-torn tails, all-or-nothing drains, and ``thread-archive repair``.
+"""Truth-file damage: crash-torn tails, all-or-nothing drains, and ``thread-archive index repair``.
 
 * A torn truth tail (crash mid-append) is newline-repaired before the next
   append, so the fragment can't consume a later valid event.
@@ -6,7 +6,7 @@
   touched files back to their pre-drain size, so a failed batch leaves no
   partial records for reindex to resurrect.
 * ``scan_truth_counts`` classifies parse errors (torn tail vs interior).
-* ``thread-archive repair`` quarantines unparseable lines (bytes preserved in the
+* ``thread-archive index repair`` quarantines unparseable lines (bytes preserved in the
   ledger) and restores the committed events they shadowed from the index — a
   red ``verify`` goes green again. Repair is idempotent, previews with
   ``dry_run``, and heals index ⊃ truth drift up to a fully deleted thread file.

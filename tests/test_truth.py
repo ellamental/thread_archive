@@ -256,7 +256,7 @@ def _author_thread_with_events(name: str, texts: list[str]) -> int:
 def test_reindex_tolerates_torn_truth_line(archive_home) -> None:
     """A torn/truncated line in the truth (a crash mid-append) must not kill reindex —
     the recovery primitive recovers everything parseable and reports the skip count,
-    the same tolerance `thread-archive verify` already has."""
+    the same tolerance `thread-archive index verify` already has."""
     init_db()
     tid = _author_thread_with_events("torn", ["hi", "yo"])
 

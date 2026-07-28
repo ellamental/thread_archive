@@ -4,7 +4,7 @@ When coverage marks a source degraded — its importer consuming content without
 producing events, or its parser flagging sustained validation drift — the raw
 source files are the only recoverable record, and providers prune them on their
 own schedule (Claude Code keeps roughly 30 days). The fix comes later, at the
-user's cadence (``thread-archive fix-import``), so preservation cannot wait for it:
+user's cadence (``thread-archive source fix``), so preservation cannot wait for it:
 this module copies the store's recently-active files into
 ``<home>/dumps/drift/<source>/<stamp>/``, where a late fix's re-import can
 still reach them however long the fix takes.

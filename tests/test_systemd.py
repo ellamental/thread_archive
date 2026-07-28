@@ -128,7 +128,7 @@ def test_backup_units_shape() -> None:
     assert set(units) == {"thread-archive-backup.service", "thread-archive-backup.timer"}
     svc = units["thread-archive-backup.service"]
     assert "Type=oneshot" in svc
-    assert "ExecStart=/opt/venv/bin/thread-archive nightly /vol/bak" in svc
+    assert "ExecStart=/opt/venv/bin/thread-archive backup nightly /vol/bak" in svc
     # I/O-bound and not latency-sensitive: nice'd and idle I/O.
     assert "Nice=10" in svc
     assert "IOSchedulingClass=idle" in svc
@@ -148,7 +148,7 @@ def test_backup_units_options() -> None:
         notify_url="http://127.0.0.1:8002/api/notify",
     )
     svc = units["thread-archive-backup.service"]
-    assert "ExecStart=/opt/venv/bin/thread-archive nightly /vol/bak --notify-url http://127.0.0.1:8002/api/notify" in svc
+    assert "ExecStart=/opt/venv/bin/thread-archive backup nightly /vol/bak --notify-url http://127.0.0.1:8002/api/notify" in svc
     assert "Environment=THREAD_ARCHIVE_HOME=/data/arc" in svc
     assert "OnCalendar=*-*-* 02:30:00" in units["thread-archive-backup.timer"]
 

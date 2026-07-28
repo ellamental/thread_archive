@@ -41,14 +41,15 @@ export const ROUTES: SmokeRoute[] = [
     landmark: (page) => page.getByRole('heading', { name: 'Your archive is protected' }),
   },
   {
-    // A dev page: the rail only advertises it under `?dev=1`, but the route
-    // always resolves, so it carries a browser case like every other route.
+    // A dev panel: it exists only for a viewer whose operator asked for the
+    // panels, which is what this suite's build stamps into the shell (see
+    // playwright.config.ts). Off, the route does not resolve at all — that case
+    // is App's, in the vitest suite, since there is nothing here to navigate to.
     path: '/retrieval',
     landmark: (page) => page.getByRole('heading', { name: 'Retrieval', level: 1 }),
   },
   {
-    // The other dev page — same rule: advertised only under `?dev=1`, always
-    // reachable by URL, so it carries a browser case.
+    // The other dev panel — same rule, same stamp.
     path: '/lab',
     landmark: (page) => page.getByRole('heading', { name: 'Search lab', level: 1 }),
   },

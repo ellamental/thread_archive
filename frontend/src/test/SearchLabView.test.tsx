@@ -12,7 +12,6 @@ function inventory(over: Partial<LabInventory> = {}): LabInventory {
     code_id: 'e60a586e0b84147c',
     families: {
       beir: 'public IR benchmarks',
-      'agent-sessions': 'real coding-agent sessions carrying commit provenance',
     },
     benchmarks: [
       {
@@ -90,26 +89,6 @@ function inventory(over: Partial<LabInventory> = {}): LabInventory {
           },
         ],
         reference: { metric: 'nDCG@10', bm25: 0.315, dense: 0.48 },
-        on_bench: [],
-      },
-      {
-        name: 'swe-chat',
-        family: 'agent-sessions',
-        harness: 'search_lab/swechat_corpus.py',
-        download: { path: '/swe-chat-data', present: true, bytes: 1_000_000_000 },
-        homes: [
-          {
-            label: 'corpus',
-            path: '/homes/swe-chat',
-            built: true,
-            snapshot_id: 'c4137bd4',
-            counts: { threads: 5124, vectors: 269_497 },
-            embedding_space: 'local:nomic',
-            created_at: '2026-07-25T07:10:34Z',
-            bytes: 24_900_000_000,
-          },
-        ],
-        reference: {},
         on_bench: [],
       },
     ],
@@ -237,7 +216,7 @@ export function ledger(over: Partial<BenchRuns> = {}): BenchRuns {
       id: 'cccc55556666',
       has_queries: false,
       at: '2026-07-26T20:02:11+00:00',
-      row: 'gold-gate:swe-chat',
+      row: 'beir:scifact[lexical+rerank]',
       status: 'failed',
       measures: {},
       measure_keys: [],
@@ -371,7 +350,7 @@ it('keeps runs of a row that has left the bench, and says it has', async () => {
   const runs = within(await waitFor(runsTable))
   // Its numbers were measured on this box and have nowhere else to be read; the
   // manifest no longer names it, so the page cannot let it read as current.
-  expect(runs.getByText('gold-gate:swe-chat')).toBeInTheDocument()
+  expect(runs.getByText('beir:scifact[lexical+rerank]')).toBeInTheDocument()
   expect(runs.getByText(/no longer a row on the bench/)).toBeInTheDocument()
 })
 
@@ -404,7 +383,7 @@ it('narrows the ledger to one row', async () => {
   view()
 
   const section = within(await waitFor(runsSection))
-  await userEvent.click(section.getByRole('button', { name: 'gold-gate:swe-chat' }))
+  await userEvent.click(section.getByRole('button', { name: 'beir:scifact[lexical+rerank]' }))
   // Scoped, the table drops the row column entirely — repeating one name down
   // every line of a table already showing that row says nothing.
   const runs = within(runsTable())

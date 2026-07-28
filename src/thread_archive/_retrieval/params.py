@@ -43,10 +43,6 @@ benchmarks (``search_lab/README.md`` → "Taking a baseline").
   ``density_norm_chars``), weighing a corpus-common term exactly like the rare
   one that discriminates and then dividing by length, so a short doc carrying a
   few common query words outranks the long doc carrying the discriminating ones.
-  The SWE-chat hold-out credits the term — +.011 MRR / +.007 nDCG@10 / +.003
-  recall@10 pooled, and up on the provenance-labeled ``commit`` file specifically
-  — and nothing is tuned against that corpus, so that is the measurement here
-  that stands.
   Where it has no substitute is the search ``_rrf`` cannot reach. Fusion runs only when the
   vector arm returns, so a **lexical-only** search — a ``tool_name`` or ``types``
   scope, a structural query, an archive with no embeddings — would otherwise rank

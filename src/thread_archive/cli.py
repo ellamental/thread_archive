@@ -1,5 +1,21 @@
 """The ``archive`` command — a thin CLI over the :mod:`thread_archive._api` surface.
 
+The tree is **frequency at the top, nouns for groups**. What gets typed
+constantly stays flat; everything else acts *on* something — a source, the
+index, a backup, a service agent — and lives under that noun::
+
+    search read web watch status setup uninstall self-update
+    source   list import import-account mirror coverage loads fix
+    index    rebuild embed migrate verify repair
+    backup   run nightly drill restore
+    service  install uninstall restart status
+
+``watch`` is flat because it is a mode of the program — the always-on process
+the service manager runs — rather than an operation on a noun. Every pre-group
+spelling still resolves (``_LEGACY_VERBS``, and ``backup <dest>`` via
+:func:`_normalize`): the installed service manifests carry them, and a rename
+that strands a running agent is not a rename.
+
 Two kinds of verb live here.
 
 **Retrieval — ``search`` and ``read`` — is supported surface.** They are the
@@ -8,19 +24,14 @@ implementation (:mod:`thread_archive._tools`), served to agents over MCP and to
 a person here, so what you get at a prompt is what the agent would have gotten,
 notes and all. Their flags mirror the tool parameters one for one.
 
-**Every other verb is private operational tooling.** They are the process seam
-the service manager, cron, and operators use to run the private machinery —
-ingest (``import``, ``import-export``, ``watch``, ``embed``), the backup kit
-(``backup``, ``verify``, ``restore-drill``, ``restore``, ``reindex``,
-``migrate``, ``repair``, ``status``, ``nightly``, ``coverage``), and the
-service-agent lifecycle (``daemon`` for one agent, ``uninstall`` for the whole
-machine footprint). Search quality is not a verb here at all —
-the scoring surface is the repo-only ``search_lab/``, which no install carries.
-Those verbs
-may change without external notice, but they are *wired into* the service
-manifests, lab's cron script, the /ci skill, and the monitor's heartbeat
-contract — renaming one means updating those in the same change
-(``tests/test_public_api.py`` pins the set so the change is deliberate).
+**Every other verb is private operational tooling** — the process seam the
+service manager, cron, and operators use to run the private machinery. Search
+quality is not a verb here at all: the scoring surface is the repo-only
+``search_lab/``, which no install carries. Those verbs may change without
+external notice, but they are *wired into* the service manifests, lab's cron
+script, the /ci skill, and the monitor's heartbeat contract — renaming one means
+updating those in the same change (``tests/test_public_api.py`` pins the tree so
+the change is deliberate).
 
 The web viewer is the same archive through a browser, cohosted by the always-on
 watcher (``thread-archive watch --web``); ``web`` is not a third read surface —
@@ -45,15 +56,172 @@ def _add_home_arg(p: argparse.ArgumentParser) -> None:
     )
 
 
+# ── the command tree ─────────────────────────────────────────────────────────
+
+# How the top-level listing is sectioned. Every name registered on the root
+# parser must appear in exactly one section — a verb absent from here is absent
+# from `--help`, which test_public_api reds on. The blurbs are not repeated:
+# they are read back off the parsers themselves in _render_commands.
+_SECTIONS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("retrieval", ("search", "read", "web")),
+    ("ingest", ("watch", "source")),
+    ("upkeep", ("index", "backup", "status")),
+    ("this machine", ("setup", "service", "self-update", "uninstall")),
+)
+
+# Pre-group spellings, mapped to where their verb lives now. These resolve but
+# are listed nowhere: the point is that a machine already running them — the
+# launchd/systemd manifests, an operator's shell history, lab's cron script —
+# keeps running them, not that there are two documented ways to type a verb.
+# `backup` is the one that can't live here (it is a group name now); its old
+# `backup <dest>` form is handled in _normalize.
+_LEGACY_VERBS: dict[str, tuple[str, ...]] = {
+    "providers": ("source", "list"),
+    "import": ("source", "import"),
+    "import-export": ("source", "import-account"),
+    "mirror": ("source", "mirror"),
+    "coverage": ("source", "coverage"),
+    "loads": ("source", "loads"),
+    "fix-import": ("source", "fix"),
+    "reindex": ("index", "rebuild"),
+    "migrate": ("index", "migrate"),
+    "embed": ("index", "embed"),
+    "verify": ("index", "verify"),
+    "repair": ("index", "repair"),
+    "nightly": ("backup", "nightly"),
+    "restore-drill": ("backup", "drill"),
+    "restore": ("backup", "restore"),
+    "daemon": ("service",),
+}
+
+# The actions of the `backup` group, for _normalize's legacy check.
+_BACKUP_ACTIONS = frozenset({"run", "nightly", "drill", "restore", "-h", "--help"})
+
+_EPILOG = (
+    "`search` and `read` are the archive-mcp tools at a terminal — same\n"
+    "implementation, same results. The web viewer is the third door, cohosted by\n"
+    "`thread-archive watch --web` (`thread-archive web` opens it).\n"
+)
+
+
+class _Dispatch(dict):
+    """The root command map: every name resolves, only the listed ones enumerate.
+
+    argparse reads one dict for both jobs — ``__contains__`` decides whether a
+    command is valid, iteration builds the "choose from …" line a typo gets. The
+    legacy spellings have to pass the first and stay out of the second, or the
+    surface this tree exists to shrink grows back inside every error message.
+    Iteration is the only thing hidden: lookup, ``keys()``, and ``len()`` all
+    still see the whole map.
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.hidden: set[str] = set()
+
+    def __iter__(self):
+        return (k for k in super().__iter__() if k not in self.hidden)
+
+
+def _subcommands_of(p: argparse.ArgumentParser) -> list[str]:
+    """The names one level under ``p``, in registration order (empty for a leaf).
+
+    Two shapes count as "has actions": a nested subparsers action (the noun
+    groups), and a positional literally named ``action`` with fixed choices
+    (``service``, whose four lifecycle verbs share one flag set and so are
+    cheaper as choices than as four parsers).
+    """
+    for a in p._actions:
+        if isinstance(a, argparse._SubParsersAction):
+            return list(a.choices)
+        if a.dest == "action" and a.choices:
+            return list(a.choices)
+    return []
+
+
+def _group(
+    sub: argparse._SubParsersAction, name: str, help: str
+) -> argparse._SubParsersAction:
+    """Register a noun in the tree and return the subparsers its verbs hang off.
+
+    A bare group prints its own help rather than erroring: `thread-archive
+    index` is a person asking what is under `index`, and answering that is
+    strictly better than exit 2.
+    """
+    p = sub.add_parser(name, help=help, description=help[:1].upper() + help[1:] + ".")
+    p.set_defaults(func=lambda _args, _p=p: _p.print_help() or 0)
+    return p.add_subparsers(dest="subcommand", metavar="<action>")
+
+
+def _wire_legacy_aliases(sub: argparse._SubParsersAction, dispatch: _Dispatch) -> None:
+    """Bind each pre-group spelling straight into the root dispatch map.
+
+    Into ``_name_parser_map`` and not through ``add_parser``, because that map
+    is what resolves a command while ``_choices_actions`` is what `--help`
+    prints — writing only the first is exactly "works, isn't advertised". The
+    aliased parser keeps its grouped ``prog``, so an error from `thread-archive
+    reindex` names `thread-archive index rebuild` and teaches the new spelling.
+    """
+    for old, path in _LEGACY_VERBS.items():
+        target = sub.choices[path[0]]
+        for step in path[1:]:
+            target = next(
+                a for a in target._actions if isinstance(a, argparse._SubParsersAction)
+            ).choices[step]
+        dispatch[old] = target
+        dispatch.hidden.add(old)
+
+
+def _render_commands(sub: argparse._SubParsersAction) -> str:
+    """The sectioned top-level listing, built from the parsers it describes.
+
+    argparse's own listing is suppressed (``help=SUPPRESS`` on the subparsers
+    action) — one flat column of every verb was the thing this tree exists to
+    fix. Groups show their actions on a continuation line, so the whole map is
+    one screen of `--help` and nobody has to guess that `reindex` became
+    `index rebuild`.
+    """
+    import textwrap
+
+    blurbs = {a.dest: (a.help or "") for a in sub._choices_actions}
+    pad = max(len(n) for _, names in _SECTIONS for n in names)
+    lead = 4 + pad + 2
+    out = ["commands:"]
+    for title, names in _SECTIONS:
+        out.append(f"  {title}:")
+        for name in names:
+            wrapped = textwrap.wrap(blurbs.get(name, ""), 96 - lead) or [""]
+            out.append(f"    {name:<{pad}}  {wrapped[0]}")
+            out.extend(" " * lead + line for line in wrapped[1:])
+            actions = _subcommands_of(sub.choices[name])
+            if actions:
+                out.append(" " * lead + "· ".join(a + " " for a in actions).strip())
+        out.append("")
+    return "\n".join(out)
+
+
+def _normalize(argv: list[str]) -> list[str]:
+    """Rewrite the one legacy spelling an alias can't carry: ``backup <dest>``.
+
+    ``backup`` became a group, so it cannot also be an alias for the verb inside
+    it. Anything following it that isn't one of the group's own actions is the
+    old positional destination — including a leading ``--home X``, which is why
+    this tests the token rather than requiring it to be non-flag.
+    """
+    if argv[:1] == ["backup"] and len(argv) > 1 and argv[1] not in _BACKUP_ACTIONS:
+        return ["backup", "run", *argv[1:]]
+    return argv
+
+
 def _parse_hhmm(s: str) -> tuple[int, int]:
     """Parse an ``HH:MM`` schedule string into ``(hour, minute)``."""
     try:
         hh, mm = s.split(":")
         h, m = int(hh), int(mm)
     except (ValueError, AttributeError):
-        raise SystemExit(f"thread-archive daemon: --at must be HH:MM (got {s!r})")
+        raise SystemExit(f"thread-archive service: --at must be HH:MM (got {s!r})")
     if not (0 <= h < 24 and 0 <= m < 60):
-        raise SystemExit(f"thread-archive daemon: --at must be HH:MM (got {s!r})")
+        raise SystemExit(f"thread-archive service: --at must be HH:MM (got {s!r})")
     return h, m
 
 
@@ -170,7 +338,7 @@ def cmd_import(args: argparse.Namespace) -> int:
     if provider not in line_streams and provider not in scanners:
         known = ", ".join(sorted({**line_streams, **scanners}))
         raise SystemExit(
-            f"thread-archive import: unknown provider '{provider}' (known: {known})"
+            f"thread-archive source import: unknown provider '{provider}' (known: {known})"
         )
 
     result = api.import_path(args.path, home=args.home, provider=provider)  # checkpoints internally
@@ -252,18 +420,30 @@ def cmd_web(args: argparse.Namespace) -> int:
     The viewer runs inside the always-on watcher process (``watch --web``), so
     there is one read URL over one SQLite engine and this verb only points at it.
 
-    ``web dev`` opens it with the dev pages advertised in the navigation — the
-    retrieval report, whose subject is the search pipeline rather than the
-    archive. The viewer remembers the choice, so this is a switch rather than a
-    different address to keep using; ``web --no-dev`` puts it back.
+    ``web dev`` turns the dev panels on before opening it — the retrieval report
+    and the search lab, whose subject is the search pipeline rather than the
+    archive. That is a line in ``config.json`` (``"dev_panels": true``) which the
+    server stamps onto every shell it serves, so the choice outlives the browser
+    and the watcher both; ``web --no-dev`` puts it back. Nothing restarts: the
+    next page load reads the new line.
     """
     import webbrowser
 
+    from ._config import config_path, dev_panels, load_config, save_config
+
+    if args.mode == "dev" or args.no_dev:
+        cfg = load_config(args.home)
+        if not cfg.valid:
+            # Writing over a config we could not parse would discard whatever it
+            # holds — including a source policy someone is relying on.
+            print(f"{config_path(args.home)} could not be read; repair it first",
+                  file=sys.stderr)
+            return 1
+        cfg["dev_panels"] = args.mode == "dev"
+        path = save_config(cfg, args.home)
+        print(f"dev panels {'on' if dev_panels(cfg) else 'off'} ({path})")
+
     url = f"http://127.0.0.1:{args.port}"
-    if args.mode == "dev":
-        url += "/?dev=1"
-    elif args.no_dev:
-        url += "/?dev=0"
     print(url)
     webbrowser.open(url)
     return 0
@@ -410,7 +590,7 @@ def cmd_daemon(args: argparse.Namespace) -> int:
         if args.action == "install":
             if not args.dest:
                 print(
-                    "thread-archive daemon install --backup needs --dest <path>",
+                    "thread-archive service install --backup needs --dest <path>",
                     file=sys.stderr,
                 )
                 return 2
@@ -437,8 +617,8 @@ def cmd_daemon(args: argparse.Namespace) -> int:
     if args.action == "install":
         path = _service.install_watcher(args.home, web=args.web, web_port=args.web_port)
         print(f"installed {_service.label('watcher')} ({path})")
-        print("the watcher is always-on (starts at login); `thread-archive daemon status` to check,")
-        print("`thread-archive daemon restart` to apply a code edit.")
+        print("the watcher is always-on (starts at login); `thread-archive service status` to check,")
+        print("`thread-archive service restart` to apply a code edit.")
         if args.web:
             print(f"web viewer: http://127.0.0.1:{args.web_port}")
     elif args.action == "uninstall":
@@ -484,7 +664,7 @@ def cmd_fix_import(args: argparse.Namespace) -> int:
     print(target)
     print(
         f"read {target}/PROTOCOL.md, write the fix, then "
-        f"`thread-archive fix-import {args.provider} --activate`"
+        f"`thread-archive source fix {args.provider} --activate`"
     )
     return 0
 
@@ -655,7 +835,7 @@ def report_backup(res: dict) -> int:
     if not res["verify_ok"]:
         print(
             "WARNING: pre-backup verify FAILED — the source truth has integrity "
-            "problems; mirror ran additively (no deletions). Run `thread-archive verify`."
+            "problems; mirror ran additively (no deletions). Run `thread-archive index verify`."
         )
     if res.get("rehomed_twins_deleted"):
         print(
@@ -723,7 +903,7 @@ def report_verify(
     if t["parse_errors"]:
         print(
             f"       torn tails={t['parse_errors_torn_tail']} "
-            f"interior={t['parse_errors_interior']} — `thread-archive repair` quarantines "
+            f"interior={t['parse_errors_interior']} — `thread-archive index repair` quarantines "
             "these and restores any committed content they shadow"
         )
         print(f"       parse error sample: {t['parse_error_sample']}")
@@ -740,7 +920,7 @@ def report_verify(
     if fts["shadow_rows"] != fts["fts5_rows"] or fts["orphan_rows"]:
         print(
             f"fts:   shadow={fts['shadow_rows']} fts5={fts['fts5_rows']} "
-            f"orphans={fts['orphan_rows']} — `thread-archive reindex` rebuilds the search surface"
+            f"orphans={fts['orphan_rows']} — `thread-archive index rebuild` rebuilds the search surface"
         )
     if deep:
         dp = res["deep"]
@@ -1019,9 +1199,9 @@ def report_repair(res: dict) -> int:
         f"{res['thread_records_restored']} thread record(s)"
     )
     if not res["dry_run"] and res["fragments_quarantined"]:
-        print("note: the repaired files shrank — the next `thread-archive backup` may need --allow-shrink")
+        print("note: the repaired files shrank — the next `thread-archive backup run` may need --allow-shrink")
     if not res["dry_run"]:
-        print("run `thread-archive verify` to confirm the archive is clean")
+        print("run `thread-archive index verify` to confirm the archive is clean")
     return 0
 
 
@@ -1285,7 +1465,7 @@ def report_coverage(r: dict) -> int:
         since = f" since {str(v.get('since'))[:10]}" if v.get("since") else ""
         print(
             f"degraded: {name} ({v.get('reason')}{since}) — "
-            f"remedy: thread-archive fix-import {name}"
+            f"remedy: thread-archive source fix {name}"
         )
     for name, gen in sorted((r.get("drift_snapshots") or {}).items()):
         print(f"quarantined: {name} raw store snapshot → {gen}")
@@ -1347,19 +1527,41 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="thread-archive",
         description="Serverless-native local archive for AI conversations (JSONL truth + SQLite index).",
-        epilog="`search` and `read` are the archive-mcp tools at a terminal — same "
-               "implementation, same results. The web viewer is the third door, "
-               "cohosted by `thread-archive watch --web` (`thread-archive web` opens it).",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument("--version", action="version", version=f"thread-archive {__version__}")
-    sub = parser.add_subparsers(dest="command", metavar="<command>")
+    # SUPPRESS drops argparse's flat choices listing; _render_commands puts the
+    # sectioned one in the epilog once every parser below is registered.
+    sub = parser.add_subparsers(dest="command", metavar="<command>", help=argparse.SUPPRESS)
+    # One dict backs both resolution and the invalid-choice listing; swap in the
+    # one that can keep the legacy spellings out of the second (see _Dispatch).
+    dispatch = _Dispatch()
+    sub._name_parser_map = sub.choices = dispatch
+
+    # The noun groups. Their verbs are registered against these below, beside
+    # the flat verbs they used to sit with — see the module docstring for the
+    # shape of the tree and where each pre-group spelling went.
+    g_source = _group(
+        sub, "source",
+        "the provider stores this machine has: what they are, importing them, "
+        "and repairing one that drifted",
+    )
+    g_index = _group(
+        sub, "index",
+        "the derived layer over the truth log — rebuildable, verifiable, repairable",
+    )
+    g_backup = _group(
+        sub, "backup",
+        "durability: the mirror, the scheduled pipeline, the drill, the restore",
+    )
 
     # The human front door: first-run discovery → consent → import → watcher /
     # backup / MCP wiring. Delegates to the wizard (_setup.wizard.run_setup).
     p_setup = sub.add_parser(
         "setup",
-        help="first-run setup: discover local AI-tool stores, import with consent, "
-             "then offer the watcher, nightly backup, and MCP wiring",
+        help="first-run setup: discover this machine's stores, import, wire it up",
+        description="First-run setup: discover local AI-tool stores, import with "
+                    "consent, then offer the watcher, nightly backup, and MCP wiring.",
     )
     _add_home_arg(p_setup)
     p_setup.add_argument("-y", "--yes", action="store_true",
@@ -1375,9 +1577,8 @@ def build_parser() -> argparse.ArgumentParser:
     # The way back out: everything setup put on the machine, and nothing else.
     p_uninstall = sub.add_parser(
         "uninstall",
-        help="remove this machine's archive machinery — the service agents, the "
-             "MCP client wiring, the family manifest and monitor heartbeat, and "
-             "the install record; the conversations are never touched",
+        help="remove this machine's archive machinery; the conversations are "
+             "never touched",
         description=(
             "Remove what setup installed on this machine: the always-on watcher,\n"
             "the shared MCP server, the nightly backup, the MCP wiring in your\n"
@@ -1558,7 +1759,14 @@ def build_parser() -> argparse.ArgumentParser:
                              "--mode ends (default 1)")
     p_read.set_defaults(func=cmd_read)
 
-    p_import = sub.add_parser("import", help="import a transcript or provider store")
+    p_providers = g_source.add_parser("list", help="list registered providers (built-in + plugins)")
+    _add_home_arg(p_providers)
+    p_providers.add_argument(
+        "--all", action="store_true", help="include archive's own machinery sources"
+    )
+    p_providers.set_defaults(func=cmd_providers)
+
+    p_import = g_source.add_parser("import", help="import a transcript or provider store")
     _add_home_arg(p_import)
     p_import.add_argument("path", help="a provider's session transcript, or its whole store")
     # Not an argparse `choices`: the provider set depends on --home (a plugin can be
@@ -1567,19 +1775,12 @@ def build_parser() -> argparse.ArgumentParser:
     p_import.add_argument(
         "--provider",
         default=None,
-        help="source provider (default: claude-code; `thread-archive providers` lists them)",
+        help="source provider (default: claude-code; `thread-archive source list` lists them)",
     )
     p_import.set_defaults(func=cmd_import)
 
-    p_providers = sub.add_parser("providers", help="list registered providers (built-in + plugins)")
-    _add_home_arg(p_providers)
-    p_providers.add_argument(
-        "--all", action="store_true", help="include archive's own machinery sources"
-    )
-    p_providers.set_defaults(func=cmd_providers)
-
-    p_import_export = sub.add_parser(
-        "import-export",
+    p_import_export = g_source.add_parser(
+        "import-account",
         help="import a downloaded claude.ai / ChatGPT / xAI account export (ZIP or dir)",
     )
     _add_home_arg(p_import_export)
@@ -1611,21 +1812,24 @@ def build_parser() -> argparse.ArgumentParser:
         "web", help="open the cohosted web viewer in a browser (the watcher serves it)"
     )
     p_web.add_argument("--port", type=int, default=8787, help="viewer port (default 8787)")
+    # The switch is written to the archive's own config, so this verb needs to
+    # know which home it is opening.
+    _add_home_arg(p_web)
     # `web dev` reads as a mode, not a flag, which is what it is — and leaves
     # room for other dev pages to join the same switch. The default is None
     # rather than False so a plain `web` opens the viewer without restating a
-    # preference the browser is already remembering.
+    # preference already written down.
     p_web.add_argument(
         "mode", nargs="?", choices=["dev"], default=None,
-        help="'dev' shows the dev pages (the retrieval report) in the navigation",
+        help="'dev' turns on the dev panels (retrieval report, search lab)",
     )
     p_web.add_argument(
         "--no-dev", dest="no_dev", action="store_true",
-        help="hide the dev pages again",
+        help="turn the dev panels back off",
     )
     p_web.set_defaults(func=cmd_web)
 
-    p_reindex = sub.add_parser("reindex", help="rebuild index.db from the JSONL truth directory")
+    p_reindex = g_index.add_parser("rebuild", help="rebuild index.db from the JSONL truth directory")
     _add_home_arg(p_reindex)
     p_reindex.add_argument("--vectors", action="store_true", help="also rebuild local vectors")
     p_reindex.add_argument(
@@ -1635,8 +1839,8 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_reindex.set_defaults(func=cmd_reindex)
 
-    p_migrate = sub.add_parser(
-        "migrate", help="migrate older truth to the current format, reindex, and verify"
+    p_migrate = g_index.add_parser(
+        "migrate", help="migrate older truth to the current format, rebuild, and verify"
     )
     _add_home_arg(p_migrate)
     p_migrate.add_argument(
@@ -1645,7 +1849,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_migrate.set_defaults(func=cmd_migrate)
 
-    p_embed = sub.add_parser("embed", help="embed user/text events missing a vector (incremental catch-up)")
+    p_embed = g_index.add_parser("embed", help="embed user/text events missing a vector (incremental catch-up)")
     _add_home_arg(p_embed)
     p_embed.add_argument("--rebuild", action="store_true", help="re-embed everything, not just the gap")
     p_embed.add_argument("--limit", type=int, default=None, help="cap events embedded this run")
@@ -1655,31 +1859,33 @@ def build_parser() -> argparse.ArgumentParser:
                          help="suppress the live progress line")
     p_embed.set_defaults(func=cmd_embed)
 
-    p_loads = sub.add_parser(
-        "loads", help="load progress: the in-flight load and recent runs, by phase")
-    _add_home_arg(p_loads)
-    p_loads.add_argument("--limit", type=int, default=10, help="recent runs to show")
-    p_loads.set_defaults(func=cmd_loads)
+    p_mirror = g_source.add_parser(
+        "mirror",
+        help="mirror the raw harness stores into <home>/source-mirror",
+        description="Mirror raw harness source stores into <home>/source-mirror — "
+                    "verbatim, gzip; nothing ever deleted.",
+    )
+    _add_home_arg(p_mirror)
+    p_mirror.set_defaults(func=cmd_mirror)
 
-    p_coverage = sub.add_parser(
+    p_coverage = g_source.add_parser(
         "coverage",
         help="capture-coverage check: source stores reconciled against the archive",
     )
     _add_home_arg(p_coverage)
     p_coverage.set_defaults(func=cmd_coverage)
 
-    p_mirror = sub.add_parser(
-        "mirror",
-        help="mirror raw harness source stores into <home>/source-mirror "
-        "(verbatim, gzip; nothing ever deleted)",
-    )
-    _add_home_arg(p_mirror)
-    p_mirror.set_defaults(func=cmd_mirror)
+    p_loads = g_source.add_parser(
+        "loads", help="load progress: the in-flight load and recent runs, by phase")
+    _add_home_arg(p_loads)
+    p_loads.add_argument("--limit", type=int, default=10, help="recent runs to show")
+    p_loads.set_defaults(func=cmd_loads)
 
     p_self_update = sub.add_parser(
         "self-update",
-        help="update this clone to the newest released tag "
-             "(fetch, checkout, reinstall, restart the daemons)",
+        help="update this clone to the newest released tag",
+        description="Update this clone to the newest released tag: fetch, checkout, "
+                    "reinstall, restart the service agents.",
     )
     _add_home_arg(p_self_update)
     p_self_update.add_argument(
@@ -1698,7 +1904,7 @@ def build_parser() -> argparse.ArgumentParser:
     _add_home_arg(p_status)
     p_status.set_defaults(func=cmd_status)
 
-    p_backup = sub.add_parser("backup", help="mirror the JSONL truth dir to a backup destination")
+    p_backup = g_backup.add_parser("run", help="mirror the JSONL truth dir to a backup destination")
     _add_home_arg(p_backup)
     p_backup.add_argument("dest", help="backup destination dir")
     p_backup.add_argument(
@@ -1712,7 +1918,30 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_backup.set_defaults(func=cmd_backup)
 
-    p_verify = sub.add_parser("verify", help="integrity check: truth parses + matches the index")
+    p_nightly = g_backup.add_parser(
+        "nightly",
+        help="the scheduled pipeline: run → verify → drill",
+        description="The scheduled pipeline: backup → verify (age-gated deep/hashes "
+                    "escalation) → restore drill, with per-stage health records.",
+    )
+    _add_home_arg(p_nightly)
+    p_nightly.add_argument("dest", help="backup destination dir")
+    p_nightly.add_argument(
+        "--notify-url", default=None, metavar="URL",
+        help="POST {title, message} here when any stage fails "
+             "(lab's /api/notify shape); silence still needs a staleness watcher",
+    )
+    p_nightly.add_argument(
+        "--allow-shrink", action="store_true",
+        help="pass through to the backup stage (after a deliberate truth re-emit)",
+    )
+    p_nightly.add_argument(
+        "--no-drill", dest="drill", action="store_false",
+        help="skip the restore drill stage",
+    )
+    p_nightly.set_defaults(func=cmd_nightly)
+
+    p_verify = g_index.add_parser("verify", help="integrity check: truth parses + matches the index")
     _add_home_arg(p_verify)
     p_verify.add_argument(
         "--deep", action="store_true",
@@ -1731,10 +1960,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_verify.set_defaults(func=cmd_verify)
 
-    p_drill = sub.add_parser(
-        "restore-drill",
-        help="prove a backup restores: rebuild a full index from the mirror in "
-             "a throwaway home and compare counts",
+    p_drill = g_backup.add_parser(
+        "drill",
+        help="prove a backup restores, without restoring it",
+        description="Prove a backup restores: rebuild a full index from the mirror "
+                    "in a throwaway home and compare counts.",
     )
     _add_home_arg(p_drill)
     p_drill.add_argument("dest", help="backup mirror to restore from")
@@ -1744,10 +1974,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_drill.set_defaults(func=cmd_restore_drill)
 
-    p_restore = sub.add_parser(
+    p_restore = g_backup.add_parser(
         "restore",
-        help="restore a real archive home from a backup mirror: staged rebuild, "
-             "verify, then atomic publish (the drill proves; this restores)",
+        help="restore a real archive home from a backup mirror",
+        description="Restore a real archive home from a backup mirror: staged "
+                    "rebuild, verify, then atomic publish. The drill proves; this "
+                    "restores.",
     )
     p_restore.add_argument("dest", help="backup mirror to restore from")
     p_restore.add_argument("--to", default=None, metavar="HOME",
@@ -1770,32 +2002,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_restore.set_defaults(func=cmd_restore)
 
-    p_nightly = sub.add_parser(
-        "nightly",
-        help="scheduled pipeline: backup → verify (age-gated deep/hashes "
-             "escalation) → restore drill, with per-stage health records",
-    )
-    _add_home_arg(p_nightly)
-    p_nightly.add_argument("dest", help="backup destination dir")
-    p_nightly.add_argument(
-        "--notify-url", default=None, metavar="URL",
-        help="POST {title, message} here when any stage fails "
-             "(lab's /api/notify shape); silence still needs a staleness watcher",
-    )
-    p_nightly.add_argument(
-        "--allow-shrink", action="store_true",
-        help="pass through to the backup stage (after a deliberate truth re-emit)",
-    )
-    p_nightly.add_argument(
-        "--no-drill", dest="drill", action="store_false",
-        help="skip the restore drill stage",
-    )
-    p_nightly.set_defaults(func=cmd_nightly)
-
-    p_repair = sub.add_parser(
+    p_repair = g_index.add_parser(
         "repair",
-        help="quarantine unparseable truth lines and restore committed content "
-             "the truth lacks from the index",
+        help="quarantine damaged truth lines; restore what the index still holds",
+        description="Quarantine unparseable truth lines and restore committed "
+                    "content the truth lacks from the index.",
     )
     _add_home_arg(p_repair)
     p_repair.add_argument(
@@ -1804,18 +2015,19 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_repair.set_defaults(func=cmd_repair)
 
-    p_fix = sub.add_parser(
-        "fix-import",
-        help="repair a drifted provider import on this machine: scaffold an "
-             "override patch under <home>/plugins/ (module, tests, samples, "
-             "evidence, protocol) for you or your own agent to write the parse "
-             "fix in, then gate it through tests, activation, and a "
-             "ledger-driven re-import with --activate. Patches retire on the "
-             "next self-update unless pinned",
+    p_fix = g_source.add_parser(
+        "fix",
+        help="repair a drifted provider import on this machine",
+        description="Repair a drifted provider import on this machine: scaffold an "
+                    "override patch under <home>/plugins/ (module, tests, samples, "
+                    "evidence, protocol) for you or your own agent to write the parse "
+                    "fix in, then gate it through tests, activation, and a "
+                    "ledger-driven re-import with --activate. Patches retire on the "
+                    "next self-update unless pinned.",
     )
     _add_home_arg(p_fix)
     p_fix.add_argument(
-        "provider", help="the drifted provider (`thread-archive providers` lists them)"
+        "provider", help="the drifted provider (`thread-archive source list` lists them)"
     )
     p_fix.add_argument(
         "--activate", action="store_true",
@@ -1838,16 +2050,23 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_fix.set_defaults(func=cmd_fix_import)
 
+    # The four lifecycle verbs share one flag set, so they are `action` choices
+    # rather than four parsers — but they read and complete like any other
+    # group's actions, and `_subcommands_of` lists them as such.
     p_daemon = sub.add_parser(
-        "daemon",
-        help="manage the archive service agents (launchd on macOS, systemd on "
-             "Linux): the watcher (the upgrade from lazy MCP-cohosted ingest to "
-             "always-fresh), or with --mcp the shared MCP server (one HTTP server "
-             "for all clients), --backup the scheduled nightly backup pipeline",
+        "service",
+        help="the archive service agents: the watcher, the shared MCP server, the "
+             "nightly backup",
+        description="Manage the archive service agents (launchd on macOS, systemd on "
+                    "Linux): the watcher (the upgrade from lazy MCP-cohosted ingest to "
+                    "always-fresh), or with --mcp the shared MCP server (one HTTP "
+                    "server for all clients), --backup the scheduled nightly backup "
+                    "pipeline.",
     )
     _add_home_arg(p_daemon)
+    # Optional so a bare `service` prints its actions, the way the noun groups do.
     p_daemon.add_argument(
-        "action", choices=["install", "uninstall", "restart", "status"],
+        "action", nargs="?", choices=["install", "uninstall", "restart", "status"],
         help="install writes the service manifest (pointing at this environment's "
              "console script) and (re)loads the agent; restart applies a code edit "
              "to the running agent",
@@ -1859,7 +2078,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_daemon.add_argument(
         "--backup", action="store_true",
         help="target the nightly-backup agent: the scheduled backup → verify → "
-             "restore-drill pipeline (`thread-archive nightly`)",
+             "restore-drill pipeline (`thread-archive backup nightly`)",
     )
     p_daemon.add_argument(
         "--dest", default=None, metavar="PATH",
@@ -1895,14 +2114,18 @@ def build_parser() -> argparse.ArgumentParser:
         help="--mcp install only: explicitly let the shared MCP process run local "
              "catch-up ingest (off by default; unnecessary when the watcher runs)",
     )
-    p_daemon.set_defaults(func=cmd_daemon)
+    p_daemon.set_defaults(
+        func=lambda a, _p=p_daemon: cmd_daemon(a) if a.action else (_p.print_help() or 0)
+    )
 
+    _wire_legacy_aliases(sub, dispatch)
+    parser.epilog = _render_commands(sub) + "\n" + _EPILOG
     return parser
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
-    args = parser.parse_args(argv)
+    args = parser.parse_args(_normalize(list(sys.argv[1:] if argv is None else argv)))
     if not getattr(args, "command", None):
         parser.print_help()
         return 0

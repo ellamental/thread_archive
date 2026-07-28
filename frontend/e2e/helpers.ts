@@ -65,7 +65,6 @@ const searchLab = {
   code_id: 'e60a586e0b84147c',
   families: {
     beir: 'public IR benchmarks — nDCG@10 beside published references',
-    'agent-sessions': 'real coding-agent sessions carrying commit provenance',
   },
   benchmarks: [
     {
@@ -167,30 +166,6 @@ const searchLab = {
       reference: { metric: 'nDCG@10', bm25: 0.315, dense: 0.48 },
       on_bench: [],
     },
-    {
-      name: 'swe-chat',
-      family: 'agent-sessions',
-      harness: 'search_lab/swechat_corpus.py',
-      source: 'https://huggingface.co/datasets/SALT-NLP/SWE-chat',
-      license: 'ODC-BY',
-      download: { path: '/Users/test/dev/swe-chat-data/swe-chat', present: true, bytes: 1_000_000_000 },
-      homes: [
-        {
-          label: 'corpus',
-          path: '/Users/test/.cache/thread-evals/homes/swe-chat',
-          built: true,
-          snapshot_id: 'c4137bd4dc3cde98',
-          counts: { threads: 5124, vectors: 269_497 },
-          embedding_space: 'local:nomic-ai/nomic-embed-text-v1.5',
-          created_at: now,
-          bytes: 24_900_000_000,
-          files: 7373,
-          truncated: false,
-        },
-      ],
-      reference: {},
-      on_bench: [],
-    },
   ],
 }
 
@@ -277,14 +252,14 @@ const searchLabRuns = {
     {
       id: '778899aabbcc',
       at: '2026-07-18T22:02:11Z',
-      row: 'gold-gate:swe-chat',
+      row: 'beir:scifact[lexical+rerank]',
       status: 'failed',
       code_id: '99998888ccccdddd',
       corpus_id: null,
       commit: 'def5678',
       elapsed_s: 4.2,
       measures: {},
-      argv: ['search_lab/retrieval_eval.py', '--gold', 'swe-chat'],
+      argv: ['search_lab/beir_eval.py', '--dataset', 'scifact', '--rerank'],
       on_bench: false,
       current: false,
       code_current: null,

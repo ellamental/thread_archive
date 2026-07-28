@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
 import { Routes, Route, useLocation } from 'react-router-dom'
+import { devPanels } from './dev'
 import { Sidebar } from './components/Sidebar'
 import { StatusBar } from './components/StatusBar'
 import { SearchView } from './components/SearchView'
@@ -17,6 +18,9 @@ import { Landing } from './components/Landing'
 export function App() {
   const [sidebarOpen, setSidebarOpen] = useState(false)
   const { pathname } = useLocation()
+  // Read once per mount: the served shell decides it, so it cannot change
+  // without a page load.
+  const [dev] = useState(devPanels)
 
   const focusSearch = useCallback(() => {
     const visibleSearch = (selector: string) =>
@@ -87,11 +91,16 @@ export function App() {
             <Route path="/stats" element={<StatsView />} />
             <Route path="/stats/model/:model" element={<ModelStatsView />} />
             <Route path="/health" element={<HealthView />} />
-            {/* Dev pages: reachable by URL always, advertised in the rail only
-                under `?dev=1` (see src/dev.ts). */}
-            <Route path="/retrieval" element={<RetrievalView />} />
-            <Route path="/lab" element={<SearchLabView />} />
-            <Route path="/lab/run/:id" element={<BenchRunView />} />
+            {/* Dev panels: in the bundle always, mounted only for a viewer whose
+                operator asked for them (see src/dev.ts). Without that, these
+                addresses route nowhere, like any other path the app lacks. */}
+            {dev && (
+              <>
+                <Route path="/retrieval" element={<RetrievalView />} />
+                <Route path="/lab" element={<SearchLabView />} />
+                <Route path="/lab/run/:id" element={<BenchRunView />} />
+              </>
+            )}
             <Route path="/upload" element={<UploadView />} />
             <Route path="/archive/:id" element={<ThreadView />} />
           </Routes>

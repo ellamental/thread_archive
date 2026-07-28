@@ -40,11 +40,11 @@ def verify(
     index carries the full declared schema (:func:`_verify_schema` — ``create_all``
     never retrofits columns/indexes/constraints onto existing tables, so an
     under-enforced index must be seen and reindexed). A negative event
-    drift (truth > index) is the *safe* direction — ``thread-archive reindex`` rebuilds
+    drift (truth > index) is the *safe* direction — ``thread-archive index rebuild`` rebuilds
     the index from truth; a positive drift (index > truth) or any parse error is a
     real integrity problem. Parse errors split into ``parse_errors_torn_tail``
     (the residue of a crash mid-append) and ``parse_errors_interior``; either kind
-    is cleared by ``thread-archive repair``, which quarantines the damaged lines and
+    is cleared by ``thread-archive index repair``, which quarantines the damaged lines and
     restores any committed content they shadowed from the index.
 
     **A red verify names its cause and keeps its evidence.** The result carries
@@ -115,7 +115,7 @@ def verify(
     On the ``hashes`` cadence this upgrades to the full ``integrity_check``,
     which also verifies b-tree index content against the tables (the only check
     that catches a corrupted index silently returning wrong query results).
-    The index is rebuildable, so a failure here means ``thread-archive reindex``, not
+    The index is rebuildable, so a failure here means ``thread-archive index rebuild``, not
     data loss — but it must be *seen*.
 
     The shallow comparison is watermark-bounded on both sides too (ids at or
@@ -355,7 +355,7 @@ def verify(
     # `deep` / `hashes` / `backup` are the run's TIER, not decoration: they are
     # what `_stage_recovered` compares against the tier of a verify that failed,
     # so a basic pass can never retire a deep-tier red. `backup` records whether
-    # the mirror was parse-scanned — the check a bare `thread-archive verify` skips.
+    # the mirror was parse-scanned — the check a bare `thread-archive index verify` skips.
     record_health("verify_last", {
         "ok": bool(result["ok"]),
         "deep": bool(deep),
@@ -780,7 +780,7 @@ def _verify_deep(watermark: int) -> dict:
     mismatch fail. Indexable events with no shadow row are re-extracted: one whose
     payload yields no searchable text legitimately has no row (reported as
     ``empty_extract_events``); one whose extraction yields text today is silently
-    unfindable (``unindexed_events``) and fails — ``thread-archive reindex`` rebuilds the
+    unfindable (``unindexed_events``) and fails — ``thread-archive index rebuild`` rebuilds the
     surface.
 
     Thread *metadata* parity (title/description/summary between the winning truth
@@ -970,7 +970,7 @@ def _verify_deep(watermark: int) -> dict:
         # events with no shadow row — is re-extracted event by event to split the
         # legitimately-empty (a payload that yields no searchable text has no row
         # by design) from the genuinely unindexed (extraction yields text today,
-        # so the event is silently unfindable — real drift; `thread-archive reindex`
+        # so the event is silently unfindable — real drift; `thread-archive index rebuild`
         # rebuilds the surface). The gap set is small on a healthy archive, so
         # re-extracting only it stays cheap where re-extracting the corpus isn't.
         fts_orphans = fts_shadow_rows = fts5_rows = fts_empty_extract = 0

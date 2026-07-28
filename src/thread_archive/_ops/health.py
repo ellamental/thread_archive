@@ -5,7 +5,7 @@ signal that tells a dead scheduled job apart from a healthy one. Deliberately
 OUTSIDE the truth dir: this is install-local operational state, so the truth
 mirror doesn't carry it and the backup can't dirty the tree it is mirroring. A
 reference snapshot rides the backup's ``.recovery`` bundle so the history
-survives the loss of the home, but ``thread-archive restore`` never installs it — a
+survives the loss of the home, but ``thread-archive backup restore`` never installs it — a
 restored home must not claim the source install's health history.
 
 The verdict half (:func:`pipeline_verdict` / :func:`stamp_heartbeat`) turns those

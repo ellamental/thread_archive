@@ -1,79 +1,45 @@
-"""Search-quality measurement over the live archive — the scoring core.
+"""Search-quality measurement — the scoring core and the trail diagnostics.
 
-The engine every harness that scores *gold cases* runs through: they build eval
-cases under one of the protocols below and hand them to :func:`evaluate`, which
-runs one MRR / success@k / recall@k / nDCG@k loop. One scoring path, so a number
-from the BM25 reference and a number from the exported SWE-chat benchmark mean
-the same thing — ``retrieval_eval`` and ``bm25_baseline`` share it,
-and ``swechat_bench``'s published scorer reproduces its definitions (notably
-:func:`ndcg_at_k`'s exponential gain) in dependency-free form.
+Two unrelated jobs share this module because they share a corpus and a session
+handle, not because they compose.
+
+**The scoring loop.** :func:`evaluate` runs one MRR / success@k / recall@k /
+nDCG@k pass over cases a caller supplies as ``{"query", "gold": [thread ids]}``
+rows. Exactly one caller supplies them: the **tier-0 synthetic corpus**
+(``tests/quality_corpus.py``), whose labels are nonce terms planted in a
+checked-in corpus and therefore true by construction. That is what keeps it clear
+of the admission rule — and what bounds it. Tier 0 is near-saturated by design
+(MRR ≈ 1.0), so it can only fall: a breakage detector, never an improvement
+meter. **Nothing scores this archive's real corpus through here, and nothing
+should** — see ``docs/search-quality.md`` → "The admission rule".
 
 The external calibration harnesses (``beir_eval``, ``cdr_eval``,
-``haystack_eval``) do **not** score through here, and shouldn't: their job is to
-land beside a published leaderboard, so each implements that leaderboard's own
-metric conventions — linear-gain nDCG, the field's standard — rather than this
-archive's. Two scoring cores, on purpose, with the boundary at the corpus: gold
-cases here, published benchmarks there. What they do share is the plumbing that
-decides *which stack* gets measured (``search_lab.eval_home``), so a number's
-configuration means the same thing on both sides even where its metric does not.
+``haystack_eval``, ``mtrag_eval``, ``perltqa_eval``) do **not** score through
+here, and shouldn't: their job is to land beside a published leaderboard, so each
+implements that leaderboard's own metric conventions — linear-gain nDCG, the
+field's standard — rather than this archive's exponential gain. Two scoring
+cores, on purpose, with the boundary at the corpus. What they do share is the
+plumbing deciding *which stack* gets measured (``search_lab.eval_home``), plus
+the sampling and per-query reporting below (:func:`sample_queries`,
+:func:`query_row`, :func:`performance`), so a number's configuration means the
+same thing on both sides even where its metric does not.
 
-Measurement, not product: a number out of here is read by someone who knows what
-the cases it scored are worth, and no number produced on this archive's own
-corpus certifies that search is good (``search_lab/README.md`` → "What a number
-here is worth"). An install ships no scoring surface at all.
+**The trail diagnostics.** :func:`behavior_report` runs no ranking at all: per
+search in the tool-use trail, did the agent click a result, reformulate, or
+abandon? Zero-label behavioral proxies, not judgments; their value is the trend.
+Only top-level conversation sessions count — subagent retrieval fleets and
+collection sweeps (archived as ``system``) issue recall-intent queries whose
+"clicks" are *read everything*, which is not the same act (see
+:func:`_trail_events`). A read attributes to the most recent prior search in its
+session, and reads of threads the agent had already opened don't count.
 
-Case protocols:
+Deliberately absent: any builder that turns this archive into graded cases. The
+clicks :func:`pair_log_events` attributes are a record of what the incumbent
+ranker surfaced, so scoring against them measures agreement with the ranker under
+test. They feed the behavior rates and nothing else.
 
-``sample_title_cases`` is the zero-label proxy: sample titled conversation
-threads, use each *title* as the query, and score whether the thread's own
-content ranks. Thread-meta docs (title/summary) are excluded from the searched
-scope so the eval never matches the query against itself. Cheap, stable, and
-needs nothing but titled threads — so it works on day one of an import. But
-titles are LLM distillations of the thread they name, so vocabulary overlap is
-built in: read the numbers as "are my threads findable at all," a regression
-ratchet, not a precision score.
-
-``mine_log_cases`` scores against real usage: the archive's own tool-use trail
-holds every ``thread_search`` call agents have made (the query) and the
-``thread_read`` calls that followed in the same session (the click). Each
-search paired with its subsequent reads is a relevance judgment the searcher
-made at the moment of searching — real query vocabulary, multi-gold, no
-labels. Only top-level conversation sessions count: subagent retrieval fleets
-and collection sweeps (archived as ``system``) issue recall-intent queries —
-"surface everything in vein X" — which have no single rankable target and whose
-clicks are "read everything," so they're excluded (see :func:`_trail_events`).
-Pairing rules: a read labels the most recent prior search in its
-session; reads of threads the agent had already opened before searching don't
-count; the originating session is skipped during ranking (it quotes the query
-verbatim). A click is the pick from what past search surfaced, not a
-corpus-wide judgment — golds are incumbent-shaped, so a modest movement is
-divergence from the old ranking's shape as much as regression. What the bias
-can't fake: the golds are relevant threads, so a *collapse* against them means
-something real broke. Treat it as a collapse alarm. Needs an accumulated trail,
-so it only becomes meaningful after search has been used for a while.
-
-``load_case_file`` reads a JSONL file of ``{"query", "gold": [ids]}`` rows
-(optional ``"grades"``: a ``thread id -> 0|1|2`` relevance pool — the ranked
-candidate pool a graded metric scores against, not just the one best answer;
-optional ``"sessions"``: thread ids to skip while ranking; optional
-``"snapshot_id"``: the content fingerprint of the corpus snapshot the golds were
-mined against) — the hook for hand-labeled or agent-mined query sets. The
-``snapshot_id`` is the eval's staleness guard: ``retrieval_eval.py --cases``
-runs over that same snapshot and refuses cases whose id no longer matches, so
-golds can't be scored against a corpus that has changed under them.
-
-``behavior_report`` runs no ranking at all: per search, did the agent click a
-result, reformulate, or abandon? Zero-label behavioral proxies, not judgments;
-their value is the trend.
-
-The scorer, :func:`evaluate`, reports MRR, success@1/5/10/20 (did any grade-2
-``gold`` thread rank by k?), true recall@1/5/10/20 (what fraction of every
-case's grade-2 gold set ranked by k?), and nDCG@1/5/10/20 (graded, over the
-``grades`` pool — so a ranking is rewarded for ordering grade-2 above grade-1
-above grade-0, not just for surfacing one right answer; a case with no pool
-falls back to binary relevance so the metric stays defined for the title and
-log protocols). Reports overall and per query-shape. Read-only against the
-archive; the caller opens it (``_api.open_archive``) first.
+Measurement, not product: an install ships no scoring surface at all. Read-only
+against the archive; the caller opens it (``_api.open_archive``) first.
 """
 
 from __future__ import annotations
@@ -82,11 +48,9 @@ import hashlib
 import json
 import logging
 import math
-import random
 import re
 import time
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Any, Optional
 
 from sqlalchemy import text as sa_text
@@ -94,15 +58,14 @@ from sqlalchemy import text as sa_text
 from thread_archive import _api as api
 from thread_archive._retrieval import _probe
 from thread_archive._retrieval.read import resolve_thread_ref
-from thread_archive._store import use_session
 
 logger = logging.getLogger(__name__)
 
 RECALL_KS = (1, 5, 10, 20)
 
-# Meta docs are excluded from every title-protocol search: the query IS the
-# title, so a self-match would saturate the metrics. The log protocol searches
-# the production scope — its queries aren't derived from any document.
+# Thread-meta docs. A case whose query was derived from a thread's own title or
+# summary would match itself, so a caller scoring such cases passes these as
+# `exclude_content_types`; the tier-0 corpus does not need it.
 EXCLUDE_META = ["title", "summary"]
 
 # Tool families whose thread ids live in this archive's id space: the archive's
@@ -117,21 +80,6 @@ def classify_tool(name: str | None) -> str | None:
     """'search' / 'read' for a thread-archive-family tool name, else None."""
     m = _TOOL_RE.search(name or "")
     return m.group(1) if m else None
-
-
-def sample_title_cases(n: int, seed: int) -> list[dict]:
-    """Titled conversation threads with enough user content to be findable."""
-    with use_session() as s:
-        rows = s.execute(sa_text(
-            "SELECT t.id, t.title FROM threads t "
-            "WHERE t.thread_type = 'conversation' AND NOT t.exclude_from_search "
-            "AND t.title IS NOT NULL AND length(t.title) >= 12 "
-            "AND (SELECT count(*) FROM events_fts f WHERE f.thread_id = t.id "
-            "     AND f.content_type = 'user') >= 3"
-        )).all()
-    rows = list(rows)  # .all() types as an immutable Sequence; shuffle needs a MutableSequence
-    random.Random(seed).shuffle(rows)
-    return [{"query": title, "gold": [tid], "sessions": []} for tid, title in rows[:n]]
 
 
 def resolve_read_refs(
@@ -305,68 +253,6 @@ def _trail_events(s, after: str | None = None) -> list[tuple[object, str, object
         return memo[key]
 
     return resolve_read_refs(events, _resolve)
-
-
-def mine_log_cases(n: int, seed: int, after: str | None = None) -> list[dict]:
-    """Real search->read pairs from the archive's own tool-use trail (top-level
-    conversation sessions only — subagent fleets excluded, see
-    :func:`_trail_events`)."""
-    with use_session() as s:
-        cases = pair_log_events(_trail_events(s, after))
-
-        # Keep only golds that are live, searchable threads; merge duplicate
-        # queries (same query issued in several sessions) into one multi-gold,
-        # multi-session case.
-        live = {
-            tid for (tid,) in s.execute(sa_text(
-                "SELECT id FROM threads WHERE NOT exclude_from_search"
-            )).all()
-        }
-    merged: dict[str, dict] = {}
-    for c in cases:
-        gold = [t for t in c["gold"] if t in live]
-        if not gold:
-            continue
-        m = merged.setdefault(c["query"], {"query": c["query"], "gold": set(),
-                                           "sessions": set()})
-        m["gold"].update(gold)
-        m["sessions"].update(c["sessions"])
-    final = [{"query": m["query"], "gold": sorted(m["gold"]),
-              "sessions": sorted(m["sessions"])} for m in merged.values()]
-    final.sort(key=lambda c: c["query"])
-    random.Random(seed).shuffle(final)
-    return final[:n]
-
-
-def load_case_file(path: Path) -> list[dict]:
-    cases = []
-    for line in path.read_text().splitlines():
-        if not line.strip():
-            continue
-        row = json.loads(line)
-        case = {"query": row["query"], "gold": list(row["gold"]),
-                "sessions": list(row.get("sessions", []))}
-        # The graded candidate pool (thread id -> 0|1|2), when the case carries
-        # one: nDCG scores the whole pool, not just the grade-2 gold. Keys kept
-        # as strings to match the thread ids search returns; values coerced to
-        # int so a stray float grade can't skew the gain.
-        if row.get("grades"):
-            case["grades"] = {str(t): int(g) for t, g in row["grades"].items()}
-        # A case file carries the content fingerprint of the corpus snapshot it
-        # was written against; the caller (retrieval_eval.py --cases) refuses to
-        # score it against a home whose snapshot_id differs, so a moved corpus
-        # invalidates rather than drifts.
-        if row.get("snapshot_id"):
-            case["snapshot_id"] = row["snapshot_id"]
-        # Stratifying metadata a case file stamps — carried through scoring so the
-        # evaluator can report a findability file's difficulty tiers apart (an
-        # aggregate hides the hardest stratum, which is the one that matters) rather than
-        # discarding the labels the file was built to carry.
-        for key in ("difficulty", "protocol", "target_thread"):
-            if row.get(key) is not None:
-                case[key] = row[key]
-        cases.append(case)
-    return cases
 
 
 def sample_queries(items: list, n: Optional[int], key) -> list:

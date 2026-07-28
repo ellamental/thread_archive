@@ -81,19 +81,29 @@ describe('Sidebar search filters', () => {
 })
 
 // The retrieval report is a maintainer's instrument, not something a person who
-// came to read their conversations has a use for — so the rail advertises it only
-// once someone asks for the dev pages (`thread-archive web dev`).
-describe('dev pages in the rail', () => {
-  afterEach(() => window.localStorage.clear())
+// came to read their conversations has a use for — so the rail names it only for
+// a viewer whose operator asked for the dev panels (`thread-archive web dev`,
+// which stamps the served shell).
+describe('dev panels in the rail', () => {
+  afterEach(() => {
+    document.head
+      .querySelectorAll('meta[name="thread-archive-dev-panels"]')
+      .forEach((m) => m.remove())
+  })
 
   it('keeps the retrieval report out of the navigation by default', () => {
     renderAt('/')
     expect(screen.queryByRole('link', { name: 'retrieval' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('link', { name: 'lab' })).not.toBeInTheDocument()
   })
 
-  it('shows it once dev mode is on', () => {
-    window.localStorage.setItem('thread-archive:dev', '1')
+  it('names both panels once the shell says the operator asked for them', () => {
+    const meta = document.createElement('meta')
+    meta.setAttribute('name', 'thread-archive-dev-panels')
+    meta.setAttribute('content', '1')
+    document.head.appendChild(meta)
     renderAt('/')
     expect(screen.getByRole('link', { name: 'retrieval' })).toHaveAttribute('href', '/retrieval')
+    expect(screen.getByRole('link', { name: 'lab' })).toHaveAttribute('href', '/lab')
   })
 })

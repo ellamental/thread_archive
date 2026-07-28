@@ -248,7 +248,7 @@ def _drift_alert() -> Optional[str]:
         return (
             "format drift active: " + " and ".join(parts) + " in the last 24h "
             "— a parser no longer fully understands a source's format; "
-            "see `thread-archive coverage` and the ledgers in ~/.thread/archive/"
+            "see `thread-archive source coverage` and the ledgers in ~/.thread/archive/"
         )
     except Exception:  # noqa: BLE001
         return None

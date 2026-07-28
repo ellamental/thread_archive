@@ -646,7 +646,7 @@ class _StubSource(SourceWatcher):
 
 @contextmanager
 def _reindex_holds_the_lock():
-    """A real exclusive hold on ``<home>/.reindex.lock`` — what ``thread-archive reindex``
+    """A real exclusive hold on ``<home>/.reindex.lock`` — what ``thread-archive index rebuild``
     takes across its build-and-swap. A distinct fd is a distinct flock owner even
     in one process, so the loop's shared non-blocking acquire genuinely fails
     against it."""

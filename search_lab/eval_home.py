@@ -1,8 +1,8 @@
 """Shared plumbing for the harnesses that build a corpus home of their own.
 
 Every calibration harness here (``beir_eval``, ``cdr_eval``, ``haystack_eval``)
-and every corpus builder (``haystack_corpus``, ``swechat_corpus``) does the same
-four things before it can measure anything: pick a home that is *not* the
+and the ``haystack_corpus`` builder do the same four things before they can
+measure anything: pick a home that is *not* the
 operator's archive, pin the arm switches so the stack under test is the one being
 claimed, name the arms it ended up with, and decide whether a cached build still
 describes the corpus asked for. Each of those has exactly one right answer and

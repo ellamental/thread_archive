@@ -452,9 +452,21 @@ def _write_backup_plist(tmp_path, monkeypatch, args: list[str]) -> None:
 
 
 def test_backup_agent_dest_reads_nightly_arg(tmp_path, monkeypatch) -> None:
+    # The pre-group argv, which agents installed before the CLI grew groups
+    # still carry on disk. `dest` follows `nightly` in both shapes, which is
+    # exactly why the reader keys off that and not a fixed position.
     _darwin(monkeypatch)
     _write_backup_plist(tmp_path, monkeypatch,
                         ["/env/bin/thread-archive", "nightly", "/Volumes/B/arc"])
+    assert _launchd.backup_agent_dest() == "/Volumes/B/arc"
+
+
+def test_backup_agent_dest_reads_grouped_nightly_arg(tmp_path, monkeypatch) -> None:
+    _darwin(monkeypatch)
+    _write_backup_plist(
+        tmp_path, monkeypatch,
+        ["/env/bin/thread-archive", "backup", "nightly", "/Volumes/B/arc"],
+    )
     assert _launchd.backup_agent_dest() == "/Volumes/B/arc"
 
 

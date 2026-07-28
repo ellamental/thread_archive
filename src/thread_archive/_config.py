@@ -9,7 +9,7 @@ A single archive lives under one *home* directory:
         kg_events.jsonl   # append-only topic-graph event log (topics / links / citations)
         thread_links.jsonl    # cross-thread overlay (topic-graph edges, folded from kg_events)
         topic_messages.jsonl  # cross-thread overlay (topic evidence, folded from kg_events)
-      index.db            # SQLite projection, rebuildable from truth/ via `thread-archive reindex`
+      index.db            # SQLite projection, rebuildable from truth/ via `thread-archive index rebuild`
       dumps/              # drop zone: account exports dropped here are auto-imported
       config.json         # operator choices (source opt-outs, setup state); absent = all defaults
 
@@ -203,3 +203,20 @@ def source_enabled(cfg: dict, source_name: str) -> bool:
         return False
     enabled = entry.get("enabled", True)
     return enabled if isinstance(enabled, bool) else False
+
+
+def dev_panels(cfg: dict) -> bool:
+    """Whether the viewer shows its dev panels.
+
+    Those are the pages whose subject is the machinery rather than the archive —
+    the retrieval report and the search lab. They are a maintainer's instruments,
+    so a viewer has them only when its operator asks: ``"dev_panels": true`` in
+    ``config.json``, and nothing else. The bundle carries the pages either way;
+    this is what mounts them (see :mod:`thread_archive._web.server`).
+
+    Strict ``True``, not truthiness — a viewer that showed them because the key
+    held the string ``"false"`` would be a switch that only looks like one.
+    """
+    if not getattr(cfg, "valid", True):
+        return False
+    return cfg.get("dev_panels") is True

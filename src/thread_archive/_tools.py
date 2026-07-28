@@ -186,7 +186,7 @@ def _degradation_notices() -> str:
                 f"note: {source} import is degraded ({phrase}"
                 + (f" since {since}" if since else "")
                 + f") — recent {source} content may be missing from results. "
-                f"remedy: thread-archive fix-import {source}"
+                f"remedy: thread-archive source fix {source}"
             )
         return "\n".join(lines) + "\n"
     except Exception:  # noqa: BLE001 — advisory; retrieval must not care

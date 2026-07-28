@@ -63,9 +63,9 @@ def test_each_fault_names_its_remedy():
     assert by_key["nightly-failed"]["tone"] == "bad"
     assert "backup, verify" in by_key["nightly-failed"]["title"]
     # A destination with a space is pasted, not retyped — the command quotes it.
-    assert by_key["nightly-failed"]["command"] == "thread-archive nightly '/Volumes/back up/arc'"
+    assert by_key["nightly-failed"]["command"] == "thread-archive backup nightly '/Volumes/back up/arc'"
     assert by_key["same-disk"]["tone"] == "warn"
-    assert by_key["same-disk"]["command"].startswith("thread-archive daemon install")
+    assert by_key["same-disk"]["command"].startswith("thread-archive service install")
 
 
 def test_a_provider_failing_inside_a_fresh_pass_is_not_hidden_by_it():
@@ -79,7 +79,7 @@ def test_a_provider_failing_inside_a_fresh_pass_is_not_hidden_by_it():
     }))
 
     assert _keys(notices) == ["source-codex"]
-    assert notices[0]["command"] == "thread-archive fix-import codex"
+    assert notices[0]["command"] == "thread-archive source fix codex"
     assert "3 parse errors" in notices[0]["detail"]
 
 

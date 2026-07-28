@@ -269,7 +269,7 @@ def test_mcp_search_prepends_degradation_notice(archive_home) -> None:
     out = thread_search("hello")
     assert out.startswith("note: claude-code import is degraded")
     assert "since 2026-07-12" in out
-    assert "thread-archive fix-import claude-code" in out
+    assert "thread-archive source fix claude-code" in out
     assert "hello mcp" in out  # the notice prepends; results still render
 
     # a healthy verdict clears it

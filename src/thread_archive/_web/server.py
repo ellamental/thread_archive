@@ -217,6 +217,33 @@ def _serve_file(p: Path, *, headers: Optional[dict] = None) -> Response:
     return 200, ctype, p.read_bytes(), headers or {}
 
 
+#: Stamped into the served shell when the operator has asked for the dev panels.
+#: The bundle ships them like every other page; this tag is the whole difference
+#: between a viewer that mounts their routes and one that does not — see
+#: ``frontend/src/dev.ts``, which reads it, and :func:`.._config.dev_panels`.
+_DEV_PANELS_META = b'\n    <meta name="thread-archive-dev-panels" content="1">'
+
+
+def _serve_shell() -> Response:
+    """The SPA shell, carrying the operator's dev-panel choice.
+
+    A meta tag rather than an inline script or a JSON endpoint. Inline script is
+    out because the CSP forbids it, and an endpoint is out because the answer is
+    needed at the first render: a route table that arrives a fetch later would
+    flash a page the viewer does not have.
+
+    The config is read per request — it is one small JSON file, and the point of
+    a switch in a file is that flipping it shows up on the next page load rather
+    than at the next restart of the watcher hosting this.
+    """
+    from .._config import dev_panels, load_config
+
+    status, ctype, body, headers = _serve_file(STATIC_DIR / "index.html")
+    if status == 200 and dev_panels(load_config()):
+        body = body.replace(b"<head>", b"<head>" + _DEV_PANELS_META, 1)
+    return status, ctype, body, headers
+
+
 def _first(params: dict, key: str) -> Optional[str]:
     v = params.get(key, [None])[0]
     return v if v else None
@@ -1136,7 +1163,7 @@ def route(
             return _serve_file(candidate, headers=cache)
 
     # ---- SPA fallback: every other path renders the app shell (client routing) ----
-    return _serve_file(STATIC_DIR / "index.html")
+    return _serve_shell()
 
 
 # ---------------------------------------------------------------------------

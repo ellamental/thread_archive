@@ -26,7 +26,7 @@ def test_v2_writer_refuses_v1_truth_before_mutating_it(archive_home, tmp_path) -
         d, {"version": 1, "shard_depth": 0, "last_checkpoint_at": None}
     )
 
-    with pytest.raises(jsonl_log.TruthMigrationRequired, match="thread-archive migrate"):
+    with pytest.raises(jsonl_log.TruthMigrationRequired, match="thread-archive index migrate"):
         import_cc_session(tmp_path)
 
     assert not list((d / "threads").rglob("*.jsonl"))

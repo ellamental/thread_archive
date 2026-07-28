@@ -45,9 +45,10 @@ archive". The honest local instruments are speed (`latency_replay.py`, over the
 searches agents actually ran) and the tier-0 synthetic floors, which detect damage
 rather than credit improvement.
 
-Instruments that produce *no labels* are a separate category: `--from-log` and
-`--behavior` below are diagnostics, fenced as alarms, never cited as evidence a
-change helped.
+So nothing in this directory labels this archive. What runs against it produces
+*no labels at all*: `--behavior` reports zero-label trail rates, `latency_replay.py`
+measures speed, and the CI probe asserts the arms load. They are diagnostics, and
+none is ever cited as evidence a change helped.
 
 ## The quality ladder
 
@@ -62,21 +63,20 @@ already measured at this configuration — see "Running the whole bench".)
 | 0 | `tests/test_search_quality.py` + `tests/test_search_recall_shape.py` + `tests/test_reality_mechanisms.py` (in every pytest run) | checked-in synthetic corpus (`tests/quality_corpus.py`), lexical stack | seconds | every change |
 | 1 | `pytest -m quality_models` | same corpus, real embedding model | minutes | touching the model arm |
 | 2 | CI arm-liveness probes (`retrieval_eval.py --probes-only`) | live archive | ~a minute (it loads both models) | every commit, via thread-ci |
-| 3 | `latency_replay.py` (speed over real traffic), `graph_eval.py`, `--behavior` | the live archive | minutes | evaluating a deliberate ranking change |
+| 3 | `latency_replay.py` (speed over real traffic), `--behavior` | the live archive | minutes | evaluating a deliberate ranking change |
 | 4 | `python -m search_lab benchmark`; `pytest -m beir` | seven external IR / conversational-memory benchmarks | minutes once the corpora are built; about a day of CPU to build them all the first time | the quality claim — calibrating against published baselines |
 
 Tiers 0–3 **detect damage**; tier 4 is the only one that supports a positive
 quality claim, and only about the components in general (see "What a number here
 is worth").
 
-The scoring core these harnesses share — the case protocols and the
-MRR/success/true-recall/nDCG loop — is `eval_core.py`, right here, so every
-harness scores off one code path. Shared modules sit beside the harnesses, all of
+The MRR/success/true-recall/nDCG loop is `eval_core.evaluate`, right here. Exactly
+one caller scores through it — the tier-0 synthetic corpus, whose labels are nonce
+terms true by construction. Shared modules sit beside the harnesses, all of
 them lab-only for the same reason: `eval_core.py` (scoring), `eval_home.py` (which
 home a benchmark builds into, which arms it pins, whether a cached build still
 describes the corpus asked for), `snapshot.py` (freeze a corpus — also a command:
-`python search_lab/snapshot.py <dir>`), `gold_files.py` (what counts as a case
-file), `speed.py` (the latency measurement core), `run_meta.py` (the commit and
+`python search_lab/snapshot.py <dir>`), `speed.py` (the latency measurement core), `run_meta.py` (the commit and
 configuration every ledger stamps its rows with), `bench_runs.py` (the run
 ledger), `retrieval_report.py` (the latency series off the ledgers,
 `python search_lab/retrieval_report.py`), and `inventory.py` (what is on this box
@@ -85,8 +85,8 @@ and the viewer's `/lab` dev page). The harnesses reach them by bare sibling impo
 and the tests by `search_lab.*` — the dependency runs lab → package and never
 leaves a checkout.
 
-Two scoring cores, split at the corpus. Everything scoring *case files* runs
-through `eval_core.evaluate`; the external benchmarks implement their own
+Two scoring cores, split at the corpus. Tier 0 runs through `eval_core.evaluate`;
+the external benchmarks implement their own
 published metric conventions instead (linear-gain nDCG where this archive uses
 exponential), because the point of those runs is to land beside a leaderboard.
 What every harness shares regardless is `eval_home`: the same refusal to build
@@ -187,21 +187,13 @@ decision about hours of CPU, not something a benchmark run should take on its ow
 All run from the repo root with the repo venv, all read-only against the
 archive (BEIR and the lab build throwaway homes and never touch it).
 
-- **`retrieval_eval.py`** — the hub. Scores search with MRR / success@k /
-  true recall@k / nDCG@k under
-  three case protocols: `--auto-titles` (zero-label proxy), `--from-log`
-  (real search→read pairs mined from the archive's own tool-use trail —
-  collapse alarm only), `--cases` (a snapshot-bound case file — the baseline
-  instrument). Success asks whether any answer ranks;
-  recall measures how much of the complete grade-2 set ranks; nDCG scores the
-  ordering of the whole 2/1/0 pool. `--probes-only` skips the metric run for
-  the CI row's arm-liveness checks. `graph_eval.py` scores the same log-drawn
-  cases off `eval_core.mine_log_cases`.
-- **`bm25_baseline.py`** — plain BM25 over a snapshot, the reference a case-file
-  number is read against. A score in isolation means nothing; the question a
-  baseline answers is whether the machinery above the lexical arm is earning its
-  place on this corpus. On the SWE-chat cases it currently answers *no* — see
-  `docs/search-quality.md`.
+- **`retrieval_eval.py`** — the two instruments that run against the live archive,
+  neither of which produces a label. `--probes-only --require-semantic` asserts the
+  model arms load and exits — the CI row's mode, and the check that catches a dead
+  embeddings model silently degrading the fused stack to lexical-only. `--behavior`
+  reports zero-label trail rates per search (clicked / reformulated / abandoned);
+  read the trend, never a single run. It also re-exports `eval_core.evaluate`,
+  which is how the tier-0 corpus scores.
 - **`latency_replay.py`** — the speed bench over the queries agents actually ran,
   and the one local instrument whose population is real. Any curated query set is
   selected for something, and that selection excludes most of what real traffic
@@ -216,44 +208,6 @@ archive (BEIR and the lab build throwaway homes and never touch it).
   the live archive, not a snapshot; `--baseline` sets the reference, and the
   timeseries is tagged `query_set=observed` so it never averages with rows from
   another population.
-- **`gold_stats.py`** — what is actually *in* a case file
-  (`python search_lab/gold_stats.py <cases.jsonl>`, `--json`, `--corpus`). Every
-  other instrument here measures search; this one measures the benchmark, which is
-  the question nothing else asks. A file can be internally fine and measure almost
-  nothing — every case single-gold, every graded pool one document, every query in
-  a tier the same sentence with the subject swapped, every case from one repo — and
-  none of that shows up in a score. Three panels: gold-set and graded-pool sizes,
-  the query distribution (length, and opening-n-gram concentration per tier, which
-  is the template detector), and coverage concentration. Run it on a file before
-  citing a number off it.
-- **`swechat_corpus.py`** — builds the SWE-chat corpus home and its linkage file.
-  [SWE-chat](https://huggingface.co/datasets/SALT-NLP/SWE-chat) is public
-  agent-session data (ODC-BY, arXiv:2604.20779) whose transcripts are native
-  Claude Code JSONL, so the shipped importer ingests them unchanged. It is the
-  corpus the bench runs on for two reasons. It **ships session ↔ commit
-  provenance**, which is what a label has to be fixed by, and no other corpus here
-  does. And it is an **independent hold-out**: domain-matched (agent session logs,
-  not a mismatched third-party IR corpus) yet written by other people about other
-  codebases, so nothing on it was authored by whoever tunes the ranker. The build
-  also folds the code axis before it stamps the snapshot — a corpus home has no
-  watcher and nothing else would, and an unfolded `event_paths` leaves `edited` with
-  no path to qualify. The build
-  takes every transcript it can read; one thing bounds it, the **transcript
-  shape**. OpenCode and most Gemini CLI sessions are pretty-printed JSON, Cursor's
-  are neither, and Codex's are line-delimited under a different envelope — all
-  unreadable by the line-stream importer, and archive's OpenCode/Cursor importers
-  are DB scanners with no JSON-export path. That costs about a sixth of the
-  download and is the benchmark's coverage bound; `docs/search-quality.md` carries
-  the built corpus's size and its scores.
-
-  Its gold dir — the linkage file and any case files — lives in `gold/` beside the
-  download rather than under `~/.thread/archive`, because nothing here quotes the
-  operator's conversations. `swechat_bench.py` exports a case file as a standalone
-  benchmark anyone can run.
-- **`graph_eval.py`** — does the corpus-native embedding graph earn its
-  ranking signal? A damage check for the shipped coherence re-rank. Scored on
-  log-mined click labels, so it is an alarm like `--from-log`, never evidence the
-  re-rank helps.
 - **`beir_eval.py`** / **`cdr_eval.py`** / **`mtrag_eval.py`** /
   **`haystack_eval.py`** / **`perltqa_eval.py`** — the external
   yardsticks: the real pipeline over public benchmarks, beside their published
@@ -294,7 +248,7 @@ archive (BEIR and the lab build throwaway homes and never touch it).
   `beam` and `perltqa` carry no published retrieval baseline — BEAM's paper scores
   end-to-end QA under a memory framework, and PerLTQA's retrieval subtask is not
   reported in a form these runs reproduce — so both print that instead of a
-  borrowed number. `bm25_baseline.py` is what would give either a local reference.
+  borrowed number.
 
   All three build under one root (`~/.cache/thread-evals`: `<root>/<dataset>` for
   a download, `<root>/homes/<name>` for a built corpus), so what the bench costs
@@ -372,23 +326,13 @@ knobs are the lever, not the vector arm.
   deterministic properties of the pipeline's machinery — content types are indexed
   at all, the MCP default scope widens to tool/thinking content, reindex preserves
   what was findable — not ranking preferences.
-- **From-log numbers are alarms, not baselines.** The `--from-log` protocol mines
-  click labels from the live trail: the label is whatever thread the agent opened,
-  which is a subset of what search surfaced *that day*. The labels are censored by
-  the incumbent ranker, so a change that surfaces different-better results scores
-  as a loss, and a high score mostly means "ranks like the ranker that took the
-  clicks." Nothing runs it on a cadence — a per-commit click-MRR invites being read
-  as a quality score. Run it by hand for one question only — *did something
-  collapse* — and never cite a from-log delta as evidence a change helped. The
-  trail's lasting value to this bench is as a **sampling frame**: real query shapes
-  to draw a query population from, not a labeler.
-- **Case files are for hand-read experiments.** `retrieval_eval.py --cases` scores
-  a graded case file over the snapshot it names. Read the per-case detail when you
-  are investigating a specific suspicion — *does the intent stratum collapse under
-  this weight?* — and stop there. It does not roll up into a headline number,
-  nothing floors it, and no change is credited by it (see "What a number here is
-  worth"). A file whose `snapshot_id` matches no snapshot on hand is stale; don't
-  score it against a moved corpus.
+- **The trail is a sampling frame, not a labeler.** Every `thread_search` an agent
+  ran and every `thread_read` that followed is in the archive's own tool-use trail,
+  and it is tempting to score against those pairs. Don't: the thread an agent
+  opened is a pick from what *that day's ranker* surfaced, so a change that
+  surfaces different-better results scores as a loss and a high score means "ranks
+  like the incumbent." What the trail is genuinely good for is the query
+  *population* — `latency_replay.py` replays it, and `--behavior` reports its rates.
 
 - **A cold process would score a different number than a warm one**, which is why
   every scoring path builds the corpus graph before its first case
@@ -425,28 +369,22 @@ rank shuffling within cases that already worked, not a win.
 3. Make the change, then re-run both. The benchmark rows re-run automatically —
    editing a `SearchParams` default moves the code hash every row is keyed on, so
    nothing reports pre-edit numbers.
-4. Promote once the benchmark delta holds and latency has not regressed, with
-   `--from-log` read as an alarm only. Fold the winner into
-   `_retrieval/params.py` defaults with its evidence in the docstring, and let
-   tier 0/2 ratchet the new shape. If the benchmarks are flat and only a case
-   file moved, you have a lead worth investigating — not a result.
+4. Promote once the benchmark delta holds and latency has not regressed. Fold the
+   winner into `_retrieval/params.py` defaults with its evidence in the docstring,
+   and let tier 0/2 ratchet the new shape. If the benchmarks are flat, you have no
+   result — say so rather than reaching for a local number to fill the gap.
 
 ## Cost and hygiene
 
 - Nothing on this bench spends tokens. Every instrument here is CPU and disk.
-- Everything a run writes lands in the gold dir it worked in, so a corpus is one
-  directory and no ledger describes cases that live somewhere else. A case file
-  that quotes an operator's real conversations belongs under `~/.thread/archive`
-  and never in the repo; the SWE-chat corpus's cases and ledgers sit beside that
-  public download. The synthetic corpus is the one exception: no real data, so
-  it's checked in.
+- The synthetic tier-0 corpus is checked in — no real data in it. Nothing else
+  the bench reads or writes belongs in the repo.
 - Built benchmark corpora live under one root, `~/.cache/thread-evals`:
   `<root>/<dataset>` for a download, `<root>/homes/<name>` for a built home. They
   are large (tens of GB with vectors) and entirely rebuildable, so that whole tree
   is safe to delete when disk gets tight.
 - The fast tests guarding these harnesses live in `tests/`
-  (`test_retrieval_eval.py`, `test_search_params.py`, `test_graph_eval.py`,
-  `test_gold_stats.py`, `test_beir_calibration.py`, `test_eval_home.py`,
-  `test_bench_runner.py`)
+  (`test_retrieval_eval.py`, `test_search_params.py`, `test_eval.py`,
+  `test_beir_calibration.py`, `test_eval_home.py`, `test_bench_runner.py`)
   and run in every pytest pass — the lab stays runnable even when nobody has tuned
   search in months.

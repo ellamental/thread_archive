@@ -1,13 +1,39 @@
 /// <reference types="vitest/config" />
-import { defineConfig } from 'vite'
+import { defineConfig, type Plugin } from 'vite'
 import react from '@vitejs/plugin-react'
+
+/**
+ * Stamps the shell with the dev-panel marker `src/dev.ts` reads.
+ *
+ * In the shipped viewer that stamp comes from the server, off the operator's
+ * config line, so a production build must not carry it — the whole point is
+ * that an install has no dev panels. Two places want it anyway: `npm run dev`,
+ * where working on those pages is the reason the dev server is up, and the
+ * browser suite's build (`ARCHIVE_DEV_PANELS=1`, set by playwright.config.ts),
+ * which drives them through a real production bundle.
+ */
+function devPanelsMeta(): Plugin {
+  return {
+    name: 'thread-archive:dev-panels-meta',
+    transformIndexHtml(_html, ctx) {
+      const on = ctx.server != null || process.env.ARCHIVE_DEV_PANELS === '1'
+      return on
+        ? [{
+            tag: 'meta',
+            attrs: { name: 'thread-archive-dev-panels', content: '1' },
+            injectTo: 'head' as const,
+          }]
+        : []
+    },
+  }
+}
 
 // The viewer is served by the watcher's cohosted stdlib server (`archive watch
 // --web`) from the package's static dir, so we build straight into it. `base: '/'`
 // because the server mounts at root and the SPA owns client routes (/search,
 // /archive/:id).
 export default defineConfig({
-  plugins: [react()],
+  plugins: [react(), devPanelsMeta()],
   base: '/',
   build: {
     outDir: '../src/thread_archive/_web/static',

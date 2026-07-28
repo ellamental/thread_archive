@@ -40,7 +40,7 @@ def _patch_entry(cfg: dict, provider_name: str) -> dict:
     if not isinstance(entry, dict) or not isinstance(entry.get("patch"), dict):
         raise ActivationError(
             f"no fix-import patch is registered for {provider_name!r} — "
-            f"run `thread-archive fix-import {provider_name}` first"
+            f"run `thread-archive source fix {provider_name}` first"
         )
     return entry
 

@@ -75,8 +75,8 @@ embeddings = [
 # rather than a considered subset. Runtime only — `dev` and `testing` are bench
 # and plugin-author tooling, not features, so they stay out.
 all = ["thread-archive[embeddings]", "thread-archive[leiden]"]
-# pyarrow: search_lab/swechat_corpus.py reads the SWE-chat parquet tables to derive
-# its session↔commit linkage. Bench-only — no product code imports it.
+# pyarrow: search_lab/haystack_eval.py reads the BEAM parquet shards. Bench-only —
+# no product code imports it.
 # hypothesis: generated queries against the never-raise contract (tests/test_search_fuzz.py).
 dev = ["pytest>=8.0", "pytest-cov>=5.0", "pytest-xdist>=3.6", "pytest-timeout>=2.3", "ruff>=0.6", "mypy>=1.11", "build>=1.2", "pyarrow>=17.0", "hypothesis>=6.100"]
 # What a provider plugin needs to test itself against the archive: the golden
