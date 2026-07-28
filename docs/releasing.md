@@ -1,10 +1,12 @@
 # Releasing thread-archive
 
-Distribution is the git clone: an editable install from a checkout, or
-`pip install "git+<repo-url>@vX.Y.Z"`. A release is therefore a pointer:
-compress the changelog, bump the version, one release commit, and an annotated
-tag pushed to GitHub. The tag is what a clone pins and fast-forwards to, and
-what `thread-archive status` / bug reports correlate against.
+Distribution is the git clone (an editable install from a checkout, or
+`pip install "git+<repo-url>@vX.Y.Z"`) and PyPI
+(`pip install thread-archive`). A release is a pointer: compress the
+changelog, bump the version, one release commit, and an annotated tag pushed
+to GitHub. The tag is what a clone pins and fast-forwards to, what
+`thread-archive status` / bug reports correlate against — and what triggers
+the PyPI upload (`.github/workflows/publish.yml`, via Trusted Publishing).
 
 **Pushing the tag is the point of no return.** A clone gets the release when it
 runs `thread-archive self-update` (`--check` is how it sees one exists). That
@@ -97,6 +99,13 @@ git tag -a vX.Y.Z -m "thread-archive X.Y.Z — <one-line theme of the release>"
 git push origin main vX.Y.Z
 ```
 
+The tag push also triggers the Publish workflow, which builds the wheel +
+sdist on the runner and uploads them to PyPI via Trusted Publishing (no
+tokens; PyPI trusts the repo/workflow/environment tuple configured under the
+project's Publishing settings on pypi.org). Watch the run — a publish failure
+means the tag exists but PyPI lags it, and the fix is a fixed vX.Y.(Z+1),
+since PyPI refuses re-uploads of a once-seen version even after deletion.
+
 ## 5. Verify from the outside
 
 Prove the release installs from the tag, not just from this checkout's
@@ -105,6 +114,14 @@ long-lived venv:
 ```bash
 python3 -m venv /tmp/ta-verify
 /tmp/ta-verify/bin/pip install "git+ssh://git@github.com/ellamental/thread_archive.git@vX.Y.Z"
+/tmp/ta-verify/bin/thread-archive --help
+```
+
+And once the Publish run is green, from PyPI (the index can lag the upload by
+a minute or two):
+
+```bash
+/tmp/ta-verify/bin/pip install --force-reinstall "thread-archive==X.Y.Z"
 /tmp/ta-verify/bin/thread-archive --help
 ```
 
@@ -129,7 +146,10 @@ git push origin :refs/tags/vX.Y.Z     # delete the remote tag
 
 That removes the version from future self-update checks. It does not heal an
 install whose operator already applied it, nor remove a tag a check already
-fetched locally. Always follow with the real fix:
+fetched locally. On PyPI, yank the release (project → release → Options →
+Yank): resolvers stop picking it for fresh installs, but a `==X.Y.Z` pin still
+gets it, and the version number is burned — PyPI never accepts a re-upload of
+it. Always follow with the real fix:
 
 ```bash
 # fix, then release vX.Y.(Z+1) normally

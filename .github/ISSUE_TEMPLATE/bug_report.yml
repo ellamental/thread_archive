@@ -1,0 +1,109 @@
+name: Bug report
+description: Something is broken, or an import degraded after a provider changed its format.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Bug reports are genuinely welcome — especially **import drift**, where a
+        provider changed its on-disk format and conversations stopped landing
+        whole. Archive is built to make that locally repairable, and a report
+        with the diagnostic output below is usually enough to name the fix.
+
+        **Not here:** security vulnerabilities go through
+        [SECURITY.md](https://github.com/ellamental/thread_archive/blob/main/SECURITY.md),
+        privately, not the issue tracker.
+
+        **Your conversations are private.** Nothing below asks for archived
+        content, and the diagnostic commands print counts and paths rather than
+        message text. Redact anything in a path you'd rather not publish.
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What you did, what you expected, and what you got instead.
+      placeholder: |
+        Ran `thread-archive search "auth flow"` and got no hits for a session I
+        know is in the archive — the viewer shows it at :8787.
+    validations:
+      required: true
+
+  - type: textarea
+    id: status
+    attributes:
+      label: "`thread-archive status`"
+      description: >
+        The health summary — install shape, archive size, watcher and index
+        state. Paste the whole thing; the degraded/stale lines are often the
+        answer on their own.
+      render: text
+    validations:
+      required: false
+
+  - type: textarea
+    id: source-coverage
+    attributes:
+      label: "`thread-archive source coverage`"
+      description: >
+        Per-provider modeling coverage. This is the one that identifies import
+        drift — a field a provider started emitting that archive preserves but
+        doesn't yet model shows up here as a coverage drop.
+      render: text
+    validations:
+      required: false
+
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: "`thread-archive --version`, or the release tag / commit if you run from a clone."
+      placeholder: "0.0.7"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: install
+    attributes:
+      label: How it's installed
+      options:
+        - pip / uv install
+        - git clone with an editable venv
+        - other
+    validations:
+      required: true
+
+  - type: input
+    id: platform
+    attributes:
+      label: Platform
+      description: OS and version, plus the Python you installed under.
+      placeholder: "macOS 15.5, Python 3.13"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: extras
+    attributes:
+      label: Search arms installed
+      description: >
+        The base install is lexical-only. `[embeddings]` adds semantic search
+        and the corpus-graph ranking stack — which arms are live changes what a
+        ranking bug can even be.
+      options:
+        - base (lexical only)
+        - "[embeddings]"
+        - "[all]"
+        - not sure
+    validations:
+      required: false
+
+  - type: textarea
+    id: anything-else
+    attributes:
+      label: Anything else
+      description: >
+        Logs, a traceback, which provider's transcripts are involved, whether it
+        started after an update. Drag in files if that's easier.
+    validations:
+      required: false

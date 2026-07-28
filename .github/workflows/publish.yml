@@ -1,0 +1,54 @@
+# PyPI publish, driven by the release tag. The tag push (docs/releasing.md §4)
+# is already the ship; this workflow makes PyPI one of the places it ships to.
+#
+# Auth is PyPI Trusted Publishing (OIDC): PyPI trusts this repo + workflow +
+# environment tuple directly, so no API token exists to leak or rotate. The
+# `pypi` environment is part of that trust anchor — PyPI verifies it, so it
+# must exist in the repo settings and match the publisher config on PyPI.
+#
+# Build and publish are separate jobs on purpose: the publish job holds the
+# OIDC `id-token: write` grant, so nothing that builds or runs project code
+# runs inside it — the artifacts cross over as a passed artifact, nothing else.
+
+name: Publish
+
+on:
+  push:
+    tags: ["v*"]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Build wheel + sdist
+        run: |
+          pip install build
+          python -m build
+
+      # The deep artifact checks (contents, clean-venv install, real entry
+      # points) are the `package` lane in CI, which has already run on the
+      # release commit by the time the tag lands (preflight requires it).
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+      - uses: pypa/gh-action-pypi-publish@release/v1

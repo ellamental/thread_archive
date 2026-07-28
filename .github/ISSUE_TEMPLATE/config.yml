@@ -1,0 +1,10 @@
+# Blank issues stay on: CONTRIBUTING invites open-ended ideas and design
+# discussion, and a bug form is the wrong shape for those.
+blank_issues_enabled: true
+contact_links:
+  - name: Security vulnerability
+    url: https://github.com/ellamental/thread_archive/security/advisories/new
+    about: Report privately through a GitHub security advisory — never as a public issue.
+  - name: How to contribute
+    url: https://github.com/ellamental/thread_archive/blob/main/CONTRIBUTING.md
+    about: Bug reports and ideas are welcome; code PRs aren't merged, and providers extend via the plugin API.

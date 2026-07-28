@@ -116,6 +116,13 @@
   numbers, failing a regression, an unmeasured ranking change, or a corpus that moved under a baselined row. The
   bench ledger moves out of the archive home to `~/.local/state/thread-search-lab/` — nothing it measures is the
   archive, so the whole quality stack now reads no archive state at all.
+- **The README reads correctly off GitHub, and bug reports arrive with their diagnostics attached.** The five
+  remaining relative links (LICENSE, SECURITY.md, and the three `docs/` pages) resolve against the repository
+  rather than the rendering page, so they survive on a package index where there is no surrounding tree to
+  resolve into. An issue form asks for `thread-archive status` and `thread-archive source coverage` up front —
+  the two outputs that usually identify import drift on their own — plus version, install shape, platform, and
+  which search arms are installed; its config routes security reports to a private advisory and leaves blank
+  issues open for the design discussion CONTRIBUTING invites.
 
 ## 0.0.7 — 2026-07-27
 

@@ -3,7 +3,7 @@
 [![CI](https://github.com/ellamental/thread_archive/actions/workflows/ci.yml/badge.svg)](https://github.com/ellamental/thread_archive/actions/workflows/ci.yml)
 [![Python](https://img.shields.io/badge/python-3.12%2B-blue)](https://github.com/ellamental/thread_archive)
 [![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Linux-black)](https://github.com/ellamental/thread_archive)
-[![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
+[![License: MIT](https://img.shields.io/badge/license-MIT-green)](https://github.com/ellamental/thread_archive/blob/main/LICENSE)
 
 **Thread Archive is a local-first archive for the AI agents that work on your machine — built by Claude Code, for Claude Code.** Preservation is the product: every session your agent harnesses record lands in one durable, append-only archive you own, on your own disk — kept safe past harness rotation, provider format drift, and index corruption, and served back to your agents over MCP. Claude Code is the supported, first-class source; the other harnesses it reads — Codex, Cursor, OpenCode, Grok, and friends — are best-effort and community-maintainable (see *When an import drifts*). Web chats (claude.ai, ChatGPT, xAI) import too, from account exports you download by hand and drop on the viewer's upload page; the live, self-feeding path is the agent tooling.
 
@@ -19,7 +19,7 @@ Your agent searches, reads around the hits, and comes back with what you decided
 - Full-text and semantic search, fused and re-ranked, filterable by time, source, tool, and content type; an empty query browses recent activity.
 - Exposed over MCP (`thread_search`, `thread_read`), so Claude (or any MCP client) can search and read your entire history mid-conversation.
 - The same two tools are CLI verbs — `thread-archive search "auth flow" --since 30d`, `thread-archive read <id>` — one implementation behind both, so what you get at a prompt is what your agent gets.
-- Search is the access layer over the archive, not the archive itself — an agent typically fires several searches, reformulates, and reads around a hit, and the archive underneath guarantees the conversation is *there* to find. Quality is measured against public benchmarks somebody else labeled, read beside the baseline their own leaderboard publishes — a deliberate run on a ranking change, and a gate at release time that holds those numbers to a checked-in bar, but not a CI row; what rides CI is a probe that the search arms still load at all. No protocol that labels this archive's own corpus certifies that search is good, and nothing gates on one. The numbers, the protocol, and its limits live in [docs/search-quality.md](docs/search-quality.md). Your install reports whether search is *degraded* (`thread-archive status`, the viewer's health page) rather than a score — a metric with no baseline beside it isn't something you can act on.
+- Search is the access layer over the archive, not the archive itself — an agent typically fires several searches, reformulates, and reads around a hit, and the archive underneath guarantees the conversation is *there* to find. Quality is measured against public benchmarks somebody else labeled, read beside the baseline their own leaderboard publishes — a deliberate run on a ranking change, and a gate at release time that holds those numbers to a checked-in bar, but not a CI row; what rides CI is a probe that the search arms still load at all. No protocol that labels this archive's own corpus certifies that search is good, and nothing gates on one. The numbers, the protocol, and its limits live in [docs/search-quality.md](https://github.com/ellamental/thread_archive/blob/main/docs/search-quality.md). Your install reports whether search is *degraded* (`thread-archive status`, the viewer's health page) rather than a score — a metric with no baseline beside it isn't something you can act on.
 
 **Indexed by code, not just by words.** Every path your agents' tools named — each
 `Edit`, `Read`, `Write`, `apply_patch` header, and path-shaped shell argument, in
@@ -291,7 +291,8 @@ The public API is exactly four things:
   is plain SQLite; the truth directory is documented JSONL) rides on this
   contract.
 - **the provider plugin API** — `thread_archive.provider` and its `parse` /
-  `testing` submodules, documented in [docs/providers.md](docs/providers.md).
+  `testing` submodules, documented in
+  [docs/providers.md](https://github.com/ellamental/thread_archive/blob/main/docs/providers.md).
   A provider maintained outside this repo is written against it and cannot
   follow the private tree's churn, so these names keep working.
 - **the web viewer's URLs** — the local UI at `http://127.0.0.1:8787`
@@ -335,7 +336,8 @@ answer is a support tier plus a repair loop, not a promise nobody can keep:
   written to be handed to an agent), leaving one job open: the parse logic.
   Archive runs no agent itself — you work the scaffold, or point yours at it
   under whatever scope you choose, remembering that the samples are transcript
-  data an agent should treat as untrusted input (see [SECURITY.md](SECURITY.md)).
+  data an agent should treat as untrusted input (see
+  [SECURITY.md](https://github.com/ellamental/thread_archive/blob/main/SECURITY.md)).
   Activation is deterministic — the scaffold's tests must pass in a fresh
   subprocess (including a dedup re-import guard) before the override is enabled
   and the ledger-driven re-import recovers the gap.
@@ -498,7 +500,8 @@ of the work in it is good — session-search neighbors (CASS, ctx, deja-vu,
 episodic-memory, synty, and more), agent memory layers (mem0, Letta, Zep), and
 the prior art outside AI (notmuch). The annotated survey — including where each
 neighbor leads and how thread-archive differs — lives in
-[docs/related.md](docs/related.md). The short version of the difference: most
+[docs/related.md](https://github.com/ellamental/thread_archive/blob/main/docs/related.md).
+The short version of the difference: most
 tools treat the harness's own files as the record and their index as a cache
 over it; archive treats preservation as the product — its own append-only truth
 log, backup with restore drills, and unmodeled provider fields preserved
