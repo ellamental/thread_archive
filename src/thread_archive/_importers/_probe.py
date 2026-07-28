@@ -127,7 +127,8 @@ class IngestProbe:
         A poll that fingerprint-skipped every target did no work — which is not
         the same as work that took no time, and the ledger must not record it as
         an import that cost nothing."""
-        return bool(self.items or self.events or any(getattr(self, s) for s in STAGES))
+        return bool(getattr(self, "items") or getattr(self, "events")
+                    or any(getattr(self, s) for s in STAGES))
 
     def total_ms(self) -> float:
         """The stages summed. They run in sequence, so this is the import's own

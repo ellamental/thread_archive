@@ -80,7 +80,7 @@ def segments(path: Path) -> list[Path]:
     which readers treat as an empty history rather than an error: a young archive
     has nothing to say, and that is not a failure to say it."""
     path = Path(path)
-    out: list[tuple[tuple[int, Any], Path]] = []
+    out: list[tuple[tuple[int, Any, int], Path]] = []
     try:
         for sibling in path.parent.iterdir():
             if not sibling.name.startswith(path.name + "."):

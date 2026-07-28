@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- The base dependency pins `mcp<2`: mcp 2.0 removes `mcp.server.fastmcp`, the API the server is written
+  against, so an unpinned fresh install broke `archive-mcp` at import (caught by the package lane's clean-venv
+  MCP session tests). Five mypy errors that landed with the telemetry/ledger work are fixed alongside.
+
+- Publishing to PyPI: a `v*` tag push now also uploads the wheel + sdist to PyPI via Trusted Publishing
+  (`.github/workflows/publish.yml`); `pip install thread-archive` becomes a supported install path.
+
 - **The corpus graph survives a restart, so search ranks the same on both sides of one.** The graph the coherence
   re-rank orders by was a process-local cache: every restart started empty, and until a build landed the re-rank
   stood down. The cost was never the point — the build is off the request path by construction, and a search runs

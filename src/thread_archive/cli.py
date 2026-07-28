@@ -1276,9 +1276,11 @@ def report_repair(res: dict) -> int:
     return 0
 
 
-def _age(iso: str) -> str:
+def _age(iso: str | None) -> str:
     from datetime import datetime, timezone
 
+    if iso is None:
+        return "?"
     try:
         dt = datetime.fromisoformat(iso)
     except (TypeError, ValueError):

@@ -128,7 +128,8 @@ def save(source: str, seen: dict[str, tuple[int, int]], home=None, *,
     try:
         path = _path(home)
         doc = _read(home)
-        sources: dict[str, Any] = doc.get("sources") if isinstance(doc.get("sources"), dict) else {}
+        raw = doc.get("sources")
+        sources: dict[str, Any] = raw if isinstance(raw, dict) else {}
         sources[source] = {k: [v[0], v[1]] for k, v in seen.items()}
         payload = {"verified_at": datetime.now(timezone.utc).isoformat(), "sources": sources}
         path.parent.mkdir(parents=True, exist_ok=True)

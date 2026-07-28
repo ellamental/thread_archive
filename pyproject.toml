@@ -44,7 +44,9 @@ dependencies = [
     "sqlalchemy>=2.0",
     "numpy>=1.26",
     "networkx>=3.2",  # kNN graph container + the seeded Louvain engine
-    "mcp>=1.0",
+    # <2: the server is written against the 1.x FastMCP API; mcp 2.0 removes
+    # mcp.server.fastmcp, so an unpinned resolve breaks archive-mcp at import.
+    "mcp>=1.0,<2",
 ]
 
 [project.optional-dependencies]
