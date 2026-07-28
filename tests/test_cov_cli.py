@@ -1811,3 +1811,82 @@ def test_web_refuses_to_write_over_a_config_it_could_not_read(
     assert cli.main(["web", "dev"]) == 1
     assert (archive_home / "config.json").read_text(encoding="utf-8") == "{not json"
     assert "could not be read" in capsys.readouterr().err
+
+
+# ── `source ingest`: the ingest-cost report ──────────────────────────────────
+
+
+def test_source_ingest_on_an_archive_that_recorded_nothing(archive_home, capsys) -> None:
+    assert cli.main(["source", "ingest"]) == 0
+    assert "no ingest recorded in the last 24h" in capsys.readouterr().out
+
+
+def test_source_ingest_reports_sources_stages_and_upkeep(archive_home, capsys) -> None:
+    """The report over a seeded ledger: a source table with percentiles, the
+    stage ranking, the maintenance/embed lines beside (not inside) the source
+    totals, and the retained-bytes footer."""
+    from thread_archive._importers import _probe
+    from thread_archive._watcher import ingest_log
+    from thread_archive._watcher.base import WatchResult
+
+    for pass_ms in (40.0, 90_000.0):  # one quick pass, one that formats as minutes
+        with _probe.install() as probe:
+            _probe.count("items", 2)
+            _probe.count("events", 24)
+            _probe.count("bytes", 4_000_000)
+            with _probe.timed("parse_ms"):
+                pass
+        ingest_log.record_pass(
+            "claude-code", home=archive_home, probe=probe, pass_ms=pass_ms,
+            result=WatchResult(events_created=24, errors=["boom"]))
+    ingest_log.record_maintenance(
+        home=archive_home,
+        timings={"ms": 700.0, "lock_ms": 300.0, "snapshot_ms": 90.0},
+        counts={"threads": 3})
+    ingest_log.record_embed(home=archive_home, embedded=16, elapsed_ms=500.0,
+                            detail_ms={"encode_ms": 400.0})
+
+    assert cli.main(["source", "ingest", "--hours", "24"]) == 0
+    out = capsys.readouterr().out
+    assert "ingest, last 24h" in out
+    assert "claude-code" in out
+    assert "2 errors" in out
+    assert "where the time went:" in out
+    assert "lock_ms" in out
+    assert "maintenance" in out and "embed" in out
+    assert "16 vectors" in out
+    assert "ledger retains" in out
+
+
+# ── report formatters: the branches the seeded reports do not reach ──────────
+
+
+def test_duration_ms_and_bytes_formatters_carry_their_units() -> None:
+    from thread_archive.cli import _fmt_bytes, _fmt_ms
+
+    assert _fmt_ms(None) == "?"
+    assert _fmt_ms(820.0) == "820ms"
+    assert _fmt_ms(13_200.0) == "13.2s"
+    assert _fmt_ms(130_000.0) == "2m10s"
+    assert _fmt_bytes(None) == "?"
+    assert _fmt_bytes(4_000_000) == "4.0 MB"
+    assert _fmt_bytes(912_000) == "912 KB"
+    assert _fmt_bytes(0) == "0 B"
+
+
+def test_report_disk_names_content_outside_the_home(capsys) -> None:
+    cli._report_disk({
+        "total_bytes": 1000, "files": 2, "kinds": {},
+        "entries": [{"kind": "logs", "name": "logs", "bytes": 700}],
+        "external": ["/elsewhere/backups"],
+    })
+    out = capsys.readouterr().out
+    assert "largest: logs" in out
+    assert "(outside the home: /elsewhere/backups)" in out
+
+
+def test_report_silenced_stays_quiet_over_an_unreadable_silence_store(capsys) -> None:
+    """The silence store is a convenience over the records printed above it, so
+    a status report must survive one it cannot read."""
+    cli._report_silenced(None)  # notice_board(None) cannot even .get
+    assert capsys.readouterr().out == ""

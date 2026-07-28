@@ -138,3 +138,50 @@ def test_stamp_age_reports_when_the_corpus_was_last_observed(archive_home) -> No
     fingerprints.save("claude-code", {"/a": (1, 2)}, force=True)
     age = fingerprints.stamp_age_s()
     assert age is not None and 0 <= age < 60
+
+
+def test_an_unparseable_ttl_falls_back_to_the_default(monkeypatch) -> None:
+    monkeypatch.setenv("THREAD_ARCHIVE_FINGERPRINT_TTL_S", "soon")
+    assert fingerprints.reverify_after_s() == 6 * 3600.0
+
+
+def test_a_stamp_past_the_window_yields_no_fingerprints(archive_home) -> None:
+    from datetime import datetime, timedelta, timezone
+
+    stale = (datetime.now(timezone.utc) - timedelta(hours=7)).isoformat()
+    (archive_home / fingerprints.STATE_FILE).write_text(json.dumps({
+        "verified_at": stale, "sources": {"claude-code": {"/a": [1, 2]}},
+    }), encoding="utf-8")
+    assert fingerprints.load("claude-code") == {}
+
+
+def test_a_stamp_from_the_future_yields_no_fingerprints(archive_home) -> None:
+    """A clock that moved backwards: the observation cannot be aged, so re-verify."""
+    from datetime import datetime, timedelta, timezone
+
+    ahead = (datetime.now(timezone.utc) + timedelta(hours=1)).isoformat()
+    (archive_home / fingerprints.STATE_FILE).write_text(json.dumps({
+        "verified_at": ahead, "sources": {"claude-code": {"/a": [1, 2]}},
+    }), encoding="utf-8")
+    assert fingerprints.load("claude-code") == {}
+
+
+def test_an_unparseable_stamp_degrades_to_a_full_scan(archive_home) -> None:
+    (archive_home / fingerprints.STATE_FILE).write_text(json.dumps({
+        "verified_at": "not-a-date", "sources": {"claude-code": {"/a": [1, 2]}},
+    }), encoding="utf-8")
+    assert fingerprints.load("claude-code") == {}
+    assert fingerprints.stamp_age_s() is None
+
+
+def test_a_failed_save_reports_false_and_never_raises(archive_home) -> None:
+    # The state file's name is occupied by a non-empty directory, so the atomic
+    # replace cannot land. The loop must shrug, not die.
+    blocked = archive_home / fingerprints.STATE_FILE
+    (blocked / "occupied").mkdir(parents=True)
+    assert fingerprints.save("claude-code", {"/a": (1, 2)}, force=True) is False
+
+
+def test_clear_is_a_no_op_when_nothing_was_persisted(archive_home) -> None:
+    fingerprints.clear()
+    assert fingerprints.load("claude-code") == {}

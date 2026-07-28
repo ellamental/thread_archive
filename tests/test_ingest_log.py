@@ -161,3 +161,67 @@ def test_summarize_on_an_archive_that_has_ingested_nothing(tmp_path) -> None:
     res = ingest_log.summarize(tmp_path, hours=24)
     assert res["sources"] == {} and res["stages"] == {}
     assert res["retained_bytes"] == 0
+
+
+def test_parse_errors_and_lag_ride_along_on_the_row(tmp_path) -> None:
+    """Both mark the pass's timings as describing degraded work: lines the import
+    dropped, and how far behind the loop was running when it started."""
+    with _probe.install() as probe:
+        _probe.count("items", 1)
+    ingest_log.record_pass("claude-code", home=tmp_path, probe=probe, pass_ms=10.0,
+                           result=WatchResult(parse_errors=3), lag_s=42.5)
+    (row,) = _rows(tmp_path)
+    assert row["parse_errors"] == 3
+    assert row["lag_s"] == 42.5
+    assert "errors" not in row, "zero clean-import errors is absence, not a 0"
+
+
+def test_summarize_accumulates_maintenance_sub_timings_as_stages(tmp_path) -> None:
+    ingest_log.record_maintenance(
+        home=tmp_path,
+        timings={"ms": 900.0, "lock_ms": 250.0, "snapshot_ms": 100.0},
+        counts={"threads": 5, "note": "not-an-int"})
+    ingest_log.record_maintenance(
+        home=tmp_path, timings={"ms": 100.0, "lock_ms": 50.0}, counts={})
+    res = ingest_log.summarize(tmp_path, hours=24)
+    assert res["stages"]["lock_ms"] == 300.0
+    assert res["stages"]["snapshot_ms"] == 100.0
+    assert res["maintenance"]["passes"] == 2
+
+
+def test_summarize_skips_rows_of_a_kind_it_does_not_know(tmp_path) -> None:
+    """A future writer adding a row kind must not corrupt today's summary."""
+    from datetime import datetime, timezone
+
+    ledger.append(tmp_path / ingest_log.LEDGER_FILE,
+                  {"at": datetime.now(timezone.utc).isoformat(),
+                   "kind": "retrieval", "ms": 5000.0},
+                  max_bytes=ingest_log.max_bytes())
+    res = ingest_log.summarize(tmp_path, hours=24)
+    assert res["sources"] == {} and res["stages"] == {}
+
+
+def test_recorders_never_raise_when_the_ledger_cannot_be_written(tmp_path) -> None:
+    """Advisory telemetry: a broken ledger must not break the pass it describes."""
+    blocked = tmp_path / "not-a-dir"
+    blocked.write_text("", encoding="utf-8")  # home/<ledger> now cannot exist
+    ingest_log.record_maintenance(home=blocked, timings={"ms": 1.0}, counts={})
+    ingest_log.record_embed(home=blocked, embedded=1, elapsed_ms=1.0, detail_ms={})
+    with _probe.install() as probe:
+        _probe.count("items", 1)
+    ingest_log.record_pass("codex", home=blocked, probe=probe, pass_ms=1.0)
+
+
+def test_disabling_the_ledger_silences_every_recorder(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("THREAD_ARCHIVE_INGEST_LOG", "0")
+    with _probe.install() as probe:
+        _probe.count("items", 1)
+    ingest_log.record_pass("codex", home=tmp_path, probe=probe, pass_ms=1.0)
+    ingest_log.record_maintenance(home=tmp_path, timings={"ms": 1.0}, counts={})
+    ingest_log.record_embed(home=tmp_path, embedded=1, elapsed_ms=1.0, detail_ms={})
+    assert _rows(tmp_path) == []
+
+
+def test_an_embed_pass_that_did_and_found_nothing_writes_no_row(tmp_path) -> None:
+    ingest_log.record_embed(home=tmp_path, embedded=0, elapsed_ms=3.0, detail_ms={})
+    assert _rows(tmp_path) == []
