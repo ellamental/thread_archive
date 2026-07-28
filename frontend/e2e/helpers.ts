@@ -211,6 +211,7 @@ const searchLabRuns = {
       on_bench: true,
       current: true,
       code_current: true,
+      has_queries: true,
       measure_keys: ['ndcg10', 'mrr10'],
     },
     {
@@ -247,6 +248,7 @@ const searchLabRuns = {
       on_bench: true,
       current: false,
       code_current: false,
+      has_queries: true,
       measure_keys: ['ndcg10', 'mrr10'],
     },
     {
@@ -263,6 +265,9 @@ const searchLabRuns = {
       on_bench: false,
       current: false,
       code_current: null,
+      // The capped store's other state: a run that keeps its numbers and has
+      // lost its detail, which is what the drill-in has to be able to say.
+      has_queries: false,
       measure_keys: [],
     },
   ],

@@ -9,14 +9,15 @@
   ``group='dup'`` keeps per-thread hits while folding cross-thread duplicates
 - ``format_results`` renders the fold annotations
 
-and the thread-granular **list** shapes, which turn a keyword search into what
+and the thread-granular **list** shape, which turns a keyword search into what
 an empty query already returns:
 
-- ``group='browse'`` — the matched threads, one row each, no messages
 - ``group='nested'`` — every hit, clustered under its thread in event order
-  (``rank.cluster_by_thread``), capped by thread and per thread
-- both enumerate every matched thread (no cross-thread duplicate fold) and both
-  outrank the shape-based suppressions, since asking for one is explicit
+  (``rank.cluster_by_thread``), capped by thread and per thread. It enumerates
+  every matched thread (no cross-thread duplicate fold) and outranks the
+  shape-based suppressions, since asking for it is explicit
+- ``group='browse'`` is the default thread shape under an older name, accepted
+  so a caller carrying it keeps working
 """
 
 from __future__ import annotations

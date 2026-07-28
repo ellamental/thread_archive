@@ -187,33 +187,6 @@ def _format_browse(hits: list[EventHit]) -> str:
     return "\n".join(lines)
 
 
-def _thread_row(h: EventHit) -> str:
-    """One thread-list line: ``[thread/event] title · source · N ev · when``. The
-    event is the thread's *match* anchor, so the row opens where the query landed."""
-    ts = h.get("occurred_at")
-    when = ts.strftime("%Y-%m-%d %H:%M") if isinstance(ts, datetime) else str(ts or "")[:16]
-    hits_in = (h.get("_thread_more") or 0) + 1
-    tally = f" · {hits_in} hits" if hits_in > 1 else ""
-    return (
-        f"[{h['thread_id']}/{h['event_id']}] {h.get('thread_title') or '(untitled)'} · "
-        f"{h.get('thread_source') or '?'} · {h.get('n_events', 0)} ev{tally} · {when}"
-    )
-
-
-def _format_thread_list(hits: list[EventHit], lines: list[str]) -> str:
-    """group='browse': the matched **threads**, one row each, no messages.
-    ``lines`` is the shared prelude (header, quality note, subjects)."""
-    lines = lines + [
-        "  grouped: one row per matched thread, no messages — group='nested' keeps them, "
-        "group='none' for every hit flat",
-        "  open one: thread_read(thread_id) · at the match: "
-        "thread_read(thread_id, around_event=event_id)",
-        "",
-    ]
-    lines.extend(_thread_row(h) for h in hits)
-    return "\n".join(lines)
-
-
 def _format_nested(hits: list[EventHit], lines: list[str], terms: list[str]) -> str:
     """group='nested': every match, clustered under the thread it came from.
     Hits arrive already clustered and in event order (rank.cluster_by_thread), so
@@ -309,8 +282,6 @@ def format_results(hits: list[EventHit], query: str, *, output: str | None = Non
     if subj_line:  # the topic graph as orientation: what subjects these hits cluster under
         prelude.append(subj_line)
 
-    if group == "browse":
-        return _format_thread_list(hits, prelude)
     if group == "nested":
         return _format_nested(hits, prelude, terms)
 
@@ -319,15 +290,13 @@ def format_results(hits: list[EventHit], query: str, *, output: str | None = Non
         lines.append(f"  note: {verdict[1]}")
     if any(h.get("_thread_more") or h.get("_dup_thread_ids") for h in hits):
         lines.append("  grouped: one row per thread — repeats fold into '+N more in thread' / "
-                     "'= same content'; group='browse' for a thread list, group='nested' to keep "
-                     "every hit under its thread, group='none' for every hit flat")
+                     "'= same content'; group='nested' to keep every hit under its thread, "
+                     "group='none' for every hit flat")
     if subj_line:
         lines.append(subj_line)
     lines.append("  open a hit: thread_read(thread_id, around_event=event_id)")
     if subj_line:
-        lines.append(
-            "  open a subject: thread_read(topic_id) · drill in: thread_search(query, topic_id=…)"
-        )
+        lines.append("  open a subject: thread_read(topic_id)")
     lines.append("")
 
     for h in hits:

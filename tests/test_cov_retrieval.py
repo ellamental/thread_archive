@@ -12,6 +12,11 @@ Covers the uncovered edges of the non-vector retrieval cluster:
     unknown-kind JSON dump (truncation + non-serialisable fallback).
   * ``fts`` — hit-dict timestamp normalisation, filter clauses, the twin gate and
     delta stitching, meta-doc anchoring edges, orphan-call rebuild, and status.
+  * ``rank`` — the recency curve's unreadable-stamp and default-clock edges, the
+    term-hit guard, thread evidence (off at the shipped weight, so nothing else
+    reaches it), and the three phrase-proximity tiers.
+  * ``format`` — snippet-vs-context fallback on the flat and nested shapes, the
+    context-events neighbourhood, and the linkable shape's optional keys.
 
 Events are seeded directly (no importer) so the rendering/indexing contract is
 tested independently of any provider parser.
@@ -20,7 +25,7 @@ tested independently of any provider parser.
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from thread_archive._providers._codex_render import (
     codex_kind,
@@ -35,6 +40,7 @@ from thread_archive._retrieval._extract import (
     _to_str,
     extract_fts_content,
 )
+from thread_archive._retrieval.format import format_results
 from thread_archive._retrieval.fts import (
     _cached_twin_texts,
     _gate_arc_tuples,
@@ -44,6 +50,12 @@ from thread_archive._retrieval.fts import (
     rebuild_fts,
     search_events,
     stitch_delta_tuples,
+)
+from thread_archive._retrieval.params import SearchParams
+from thread_archive._retrieval.rank import (
+    recency_score,
+    score_features,
+    term_hit_count,
 )
 from thread_archive._retrieval.read import (
     _fmt_hm,
@@ -778,3 +790,162 @@ def test_rebuild_indexes_orphan_delta_calls(archive_home) -> None:
     assert count >= 1
     hits = search("prose survives")
     assert any("orphaned assistant prose survives" in (h["full_content"] or "") for h in hits)
+
+
+def test_recency_score_is_zero_for_a_timestamp_it_cannot_read() -> None:
+    """The scorer runs over whatever the index holds, and a hit's ``occurred_at``
+    is only as good as the parser that wrote it. An unreadable stamp has to score
+    as *no recency signal* rather than raise: one malformed row would otherwise
+    take down every search whose pool happened to contain it."""
+    assert recency_score("") == 0
+    assert recency_score(None) == 0
+    assert recency_score("last Tuesday") == 0
+    assert recency_score("2026-13-45T99:99:99Z") == 0
+
+
+def test_recency_score_reads_the_clock_and_the_offset_itself() -> None:
+    # occurred_at is stored naive-UTC, so a tz-aware value has to be converted
+    # rather than compared across kinds — the diff would otherwise raise, and a
+    # naive-local `now` would skew every event's age by the local UTC offset.
+    now_aware = datetime.now(timezone.utc)
+    # Called without `now`: the default path samples the process clock, which is
+    # the way every real search calls it. An event landing this instant sits at
+    # the top of the 1–20 band (19 rather than 20 — the score truncates, and the
+    # elapsed microseconds are already decay).
+    assert recency_score(now_aware) == 19
+    # Same instant written as a naive-UTC string scores identically — which is
+    # the whole point of converting rather than comparing across kinds.
+    assert recency_score(now_aware.replace(tzinfo=None).isoformat()) == 19
+    # And age decays: one half-life back is half the score, floored at 1.
+    old = now_aware.replace(tzinfo=None) - timedelta(hours=72)
+    assert 1 <= recency_score(old, half_life_hours=72.0) < 20
+
+
+def test_term_hit_count_needs_both_a_term_and_something_to_match() -> None:
+    assert term_hit_count("", ["retry"]) == 0
+    assert term_hit_count("the retry budget", []) == 0
+    # Each term counts once however often it appears, and never inside a longer
+    # unrelated word.
+    assert term_hit_count("retry retry retry", ["retry"]) == 1
+    assert term_hit_count("the author wrote", ["auth"]) == 0
+
+
+def test_thread_evidence_counts_distinct_matches_not_repetitions() -> None:
+    """The signal is how much of a thread matched, and the fold is what makes it
+    meaningful: a thread emitting twenty copies of one status line counts once,
+    because the corpus's routine floods are exactly what a raw count would reward
+    most. Off at the shipped weight, so nothing else exercises the branch."""
+    now = datetime(2026, 7, 27, 12, 0, 0)
+    hits = [
+        # One thread saying the same thing three times (modulo digits, which the
+        # near-duplicate identity folds) — one distinct piece of evidence.
+        {"thread_id": "flood", "full_content": "retry budget exhausted after 1 attempts",
+         "occurred_at": now, "content_type": "text"},
+        {"thread_id": "flood", "full_content": "retry budget exhausted after 2 attempts",
+         "occurred_at": now, "content_type": "text"},
+        {"thread_id": "flood", "full_content": "retry budget exhausted after 3 attempts",
+         "occurred_at": now, "content_type": "text"},
+        # A thread that returns to the subject in genuinely different words.
+        {"thread_id": "real", "full_content": "the retry budget is per-request",
+         "occurred_at": now, "content_type": "text"},
+        {"thread_id": "real", "full_content": "we lowered the retry budget to two",
+         "occurred_at": now, "content_type": "text"},
+    ]
+    params = SearchParams(thread_evidence_weight=1.0)
+    feats = score_features(hits, ["retry", "budget"], params=params, now=now)
+    evidence = [f[7] for f in feats]
+    # The flooding thread folds to one distinct match and scores no evidence at
+    # all; the thread with two genuinely different matches carries the peak.
+    assert evidence[0] == evidence[1] == evidence[2] == 0.0
+    assert evidence[3] == evidence[4] == 1.0
+    # And with the signal off (the shipped default) nobody pays for the scan.
+    off = score_features(hits, ["retry", "budget"], now=now)
+    assert [f[7] for f in off] == [0.0] * 5
+
+
+def test_phrase_proximity_falls_off_with_the_span_between_terms() -> None:
+    """Three tiers, because adjacency and 'same paragraph' are different claims:
+    the exact phrase, terms within 100 characters, and terms within 300."""
+    now = datetime(2026, 7, 27, 12, 0, 0)
+
+    def phrase(content: str) -> float:
+        hit = [{"thread_id": "t", "full_content": content, "occurred_at": now,
+                "content_type": "text"}]
+        return score_features(hit, ["retry", "budget"], now=now)[0][1]
+
+    assert phrase("the retry budget was raised") == 3.0
+    assert phrase("retry" + " x" * 20 + " budget") == 2.0
+    # Between 100 and 300 characters apart: still one discussion, weakly.
+    assert phrase("retry" + " x" * 90 + " budget") == 1.0
+    # Past 300 the co-occurrence stops being evidence of anything.
+    assert phrase("retry" + " x" * 200 + " budget") == 0.0
+
+
+def _render_hit(**over) -> dict:
+    """One ranked hit, with only the columns the renderer reads."""
+    hit = {
+        "event_id": 1, "thread_id": "t1", "event_type": "user_message_sent",
+        "content_type": "text", "thread_title": "the retry budget",
+        "thread_source": "claude-code", "n_events": 3, "occurred_at": _dt(0),
+        "snippet": "the retry budget is per-request", "full_content": "the retry budget is per-request",
+        "_group": "thread",
+    }
+    hit.update(over)
+    return hit
+
+
+def test_a_hit_renders_its_snippet_when_no_context_was_asked_for() -> None:
+    # context_lines replaces the snippet with a numbered block; without it the
+    # one-line snippet is all a row has to say what it matched.
+    rendered = format_results([_render_hit()], "retry budget")
+    assert "    the retry budget is per-request" in rendered
+    with_context = format_results(
+        [_render_hit(context="  1 | line one\n  2 | line two")], "retry budget")
+    assert "line two" in with_context
+    assert "    the retry budget is per-request" not in with_context
+    # Whitespace in a snippet is collapsed — a transcript's newlines would
+    # otherwise break one row across several.
+    assert "  x   y" not in format_results([_render_hit(snippet="  x \n\n y ")], "retry")
+
+
+def test_nested_rows_fall_back_to_the_snippet_the_same_way() -> None:
+    hits = [
+        _render_hit(_group="nested", event_id=1, context="  1 | from the context block"),
+        _render_hit(_group="nested", event_id=2, context=None,
+                    snippet="from the snippet instead"),
+    ]
+    rendered = format_results(hits, "retry budget")
+    assert "from the context block" in rendered
+    assert "from the snippet instead" in rendered
+
+
+def test_context_events_render_on_both_sides_of_the_hit() -> None:
+    """``context_events`` is the conversational neighbourhood a hit landed in —
+    what was said just before and just after. It renders under the row, labelled
+    by side, so a match is readable without opening the thread."""
+    hit = _render_hit(context_events={
+        "before": [{"content": "what should the retry budget be?", "content_type": "text"}],
+        "after": [{"content": "two, and we log the third", "content_type": "text"}],
+    })
+    rendered = format_results([hit], "retry budget")
+    assert "(before · text) what should the retry budget be?" in rendered
+    assert "(after · text) two, and we log the third" in rendered
+    # Bodies are clipped and whitespace-collapsed, so one long neighbour cannot
+    # push the rows it surrounds off the screen.
+    long_hit = _render_hit(context_events={"before": [
+        {"content": "x" * 400, "content_type": "text"}]})
+    assert "x" * 200 in format_results([long_hit], "retry")
+    assert "x" * 250 not in format_results([long_hit], "retry")
+
+
+def test_linkable_output_carries_context_events_only_when_they_were_asked_for() -> None:
+    # The linkable shape is consumed by programs, so an absent key and an empty
+    # one are different answers: the key appears only when the search fetched it.
+    plain = json.loads(format_results([_render_hit()], "retry", output="linkable"))
+    assert "context_events" not in plain[0]
+    assert plain[0]["event_id"] == 1 and plain[0]["thread_id"] == "t1"
+
+    ctx = {"before": [{"content": "before text", "content_type": "text"}], "after": []}
+    withctx = json.loads(
+        format_results([_render_hit(context_events=ctx)], "retry", output="linkable"))
+    assert withctx[0]["context_events"] == ctx
