@@ -6,12 +6,12 @@ path. A release is therefore both an upload and a pointer: compress the
 changelog, bump the version, one release commit, an annotated tag pushed to
 GitHub, and the wheel + sdist published to PyPI. The tag is what a source
 clone pins and fast-forwards to; the registry version is what a packaged
-install takes; both are what `thread_archive status` / bug reports correlate
+install takes; both are what `thread-archive status` / bug reports correlate
 against — so the tag and the upload carry the same version, always.
 
 **Publishing is the point of no return.** A packaged consumer gets the release
 when they run `pip install -U thread-archive`; a source clone when they run
-`thread_archive self-update` (`--check` is how either sees one exists). That
+`thread-archive self-update` (`--check` is how either sees one exists). That
 is a delay, not a safety net: the release is offered to everyone the moment
 it is published, and the preflight below is the only gate between a bad
 release and the first operator who reaches for it. This machine's clone runs
@@ -109,7 +109,7 @@ long-lived venv:
 ```bash
 python3 -m venv /tmp/ta-verify
 /tmp/ta-verify/bin/pip install thread-archive==X.Y.Z
-/tmp/ta-verify/bin/thread_archive --help
+/tmp/ta-verify/bin/thread-archive --help
 ```
 
 (`pip install "git+https://github.com/ellamental/thread_archive.git@vX.Y.Z"`
@@ -122,7 +122,7 @@ on the release commit *is* the deployment — with two follow-throughs:
 
 - If dependencies or entry points changed, re-run `.venv/bin/pip install -e .`
   (editable installs pick up code automatically, not metadata).
-- Restart whatever loaded the old code: `thread_archive daemon restart` for the
+- Restart whatever loaded the old code: `thread-archive daemon restart` for the
   watcher/backup agents; MCP clients pick up the new server on their next
   session.
 

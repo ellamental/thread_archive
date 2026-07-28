@@ -213,16 +213,13 @@ def test_stamp_leaves_the_process_pinned_where_it_started(seeded, tmp_path):
     assert active_dsn() == f"sqlite:///{seeded / 'index.db'}"
 
 
-def test_stamped_home_satisfies_the_mining_gate(seeded):
-    """The point of stamping: `mine` refuses a home that is not a snapshot, and a
-    stamped one passes with the id its cases will carry."""
-    from search_lab.mine import _framework as fw
-
-    with pytest.raises(SystemExit):
-        fw.require_snapshot()
+def test_a_home_reads_back_the_id_its_cases_will_carry(seeded):
+    """The point of stamping: an unstamped home has no id to bind a case file to,
+    and a stamped one reads back the id its cases carry."""
+    assert snap.read_snapshot_id() is None
 
     sid = snap.stamp_snapshot(str(seeded))["snapshot_id"]
-    assert fw.require_snapshot() == sid
+    assert snap.read_snapshot_id() == sid
 
 
 def test_re_stamping_tracks_a_rebuilt_corpus(seeded, tmp_path):

@@ -1,4 +1,4 @@
-"""Taking the archive off a machine — the flow behind ``thread_archive uninstall``.
+"""Taking the archive off a machine — the flow behind ``thread-archive uninstall``.
 
 The inverse of :mod:`.wizard`, and only of the wizard. Setup is the one part of
 the archive that acts on the machine *outside* the archive home: it schedules
@@ -8,7 +8,7 @@ exactly that set, so the machine stops running an archive.
 
 **The conversations are never touched.** The truth log, the index, the source
 policy in ``config.json``, the logs, the drop zone and the retained exports all
-stay where they are, and ``thread_archive search`` / ``thread_archive read``
+stay where they are, and ``thread-archive search`` / ``thread-archive read``
 keep answering from them with nothing installed. Deleting an archive is a
 deletion; it is the operator's to perform, on a directory this command names, and
 it is not something a word like "uninstall" gets to do on their behalf.
@@ -316,7 +316,7 @@ def _report_finish(home: Optional[str], blocked: list[Item]) -> None:
         _say("  the code:   pip uninstall thread-archive  (the archive above outlives it)")
     for item in blocked:
         _say(f"  {item.label}: left in place — {item.blocked}")
-    _say("  to return:  thread_archive setup, any time — it picks the archive above "
+    _say("  to return:  thread-archive setup, any time — it picks the archive above "
          "up as it is.")
 
 
@@ -343,7 +343,7 @@ def run_uninstall(
     # run is recorded nowhere except the agent this run is about to take away.
     scheduled_dest = (machine.backup_dest(),)
 
-    _say("thread_archive uninstall — remove the archive's machinery from this machine.")
+    _say("thread-archive uninstall — remove the archive's machinery from this machine.")
     _say("  Your conversations are not touched.")
     _say()
     items = survey(args.home, machine=machine)
@@ -369,7 +369,7 @@ def run_uninstall(
         # refusal to act, so it exits nonzero: a script that meant to uninstall
         # must not read "nothing happened" as success.
         _say("No terminal to confirm in — nothing was removed.")
-        _say("  `thread_archive uninstall --yes` removes the items above without asking.")
+        _say("  `thread-archive uninstall --yes` removes the items above without asking.")
         return 2
     answer = ask(
         f"Remove the {len(targets)} item(s) above?\n"
@@ -393,7 +393,7 @@ def run_uninstall(
     if failed:
         _say(f"Uninstall incomplete — {failed} item(s) could not be removed "
              "(the rest are gone).")
-        _say("  `thread_archive uninstall` again once the reason above is cleared.")
+        _say("  `thread-archive uninstall` again once the reason above is cleared.")
         return 1
     _say("Uninstalled. Nothing on this machine captures new conversations now.")
     _say()

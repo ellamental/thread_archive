@@ -1,4 +1,4 @@
-"""The nightly protection pipeline (`thread_archive nightly`) and its instrumentation:
+"""The nightly protection pipeline (`thread-archive nightly`) and its instrumentation:
 every stage runs (no short-circuit), each outcome lands in health.json, the
 family-monitor heartbeat is stamped whatever the outcome, escalation is
 age-gated not calendar-gated, failure notifies with stage names, the backup
@@ -256,7 +256,7 @@ def test_verdict_retires_a_verify_reproven_at_equal_tier():
 
 def test_verdict_keeps_a_deep_failure_a_basic_verify_cannot_speak_to():
     # The false-green this whole mechanism has to refuse: the nightly's deep +
-    # hashes + mirror-scan verify failed; a bare `thread_archive verify` passed after
+    # hashes + mirror-scan verify failed; a bare `thread-archive verify` passed after
     # it. The cheap run tested none of the tiers that broke.
     health = {
         "nightly_last": _nightly_rec(["verify"], deep=True, hashes=True),

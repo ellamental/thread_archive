@@ -84,15 +84,15 @@ def test_wheel_carries_the_whole_runtime(dist) -> None:
 
 
 def test_wheel_carries_no_measurement_surface(dist) -> None:
-    # Everything that scores search — the miners, the scoring core, the harnesses,
-    # corpus freezing, the run ledgers — lives in search_lab/, which is repo
-    # territory. An install gets preservation and retrieval and no instruments.
+    # Everything that scores search — the scoring core, the harnesses, corpus
+    # freezing, the run ledgers — lives in search_lab/, which is repo territory.
+    # An install gets preservation and retrieval and no instruments.
     wheel, _ = dist
     names = zipfile.ZipFile(wheel).namelist()
     leaked = [n for n in names
-              if "search_lab" in n or "/mine/" in n
+              if "search_lab" in n
               or n.endswith(("_eval.py", "eval_core.py", "run_meta.py",
-                             "mine_runs.py", "retrieval_report.py"))]
+                             "retrieval_report.py"))]
     assert not leaked, f"measurement surface leaked into the wheel: {leaked}"
 
 
@@ -101,8 +101,8 @@ def test_sdist_keeps_the_search_lab(dist) -> None:
     # import search_lab.* — dropping the lab there would ship a red suite.
     _, sdist = dist
     names = tarfile.open(sdist).getnames()
-    assert any("/search_lab/mine/_framework.py" in n for n in names)
     assert any("/search_lab/eval_core.py" in n for n in names)
+    assert any("/search_lab/benchmark.py" in n for n in names)
 
 
 def test_wheel_plants_no_public_top_level_packages(dist) -> None:
@@ -286,7 +286,7 @@ def test_installed_mcp_search_and_read_over_imported_data(installed, tmp_path) -
 # path a new user's first run actually takes: a fake $HOME with every harness's
 # store in its REAL default location (~/.claude/projects, ~/.codex/sessions, the
 # OS-correct app-data dir for Cursor/Cowork), discovered and ingested by the
-# installed `thread_archive watch --once` with no hand-fed paths, then reindexed
+# installed `thread-archive watch --once` with no hand-fed paths, then reindexed
 # and searched back. Runs against the clean wheel-only venv, so it doubles as the
 # cross-OS install proof this `package` lane runs on both macOS (thread-ci) and
 # Linux (GitHub Actions). The logic lives in tests/install/first_run.py, shared

@@ -1,4 +1,4 @@
-"""``thread_archive uninstall``: what it takes off the machine, and what it must
+"""``thread-archive uninstall``: what it takes off the machine, and what it must
 never touch.
 
 Driven against the **real** removal machinery — the real launchd backend writing
@@ -405,7 +405,7 @@ def test_the_closing_report_names_every_place_the_data_is(
     assert "Deleting any of it is yours to do" in out
     # And how to be rid of the code — this suite runs from the clone it names.
     assert "this install runs from the clone" in out
-    assert "thread_archive setup" in out
+    assert "thread-archive setup" in out
 
 
 def test_a_backup_scheduled_but_never_run_is_still_named(

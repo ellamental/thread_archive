@@ -5,7 +5,7 @@ on an **Ubuntu** machine. The human cloned the repo and asked you to install it.
 Follow these steps in order. Run the commands; don't just describe them. Stop and
 ask the human only at the one marked decision point.
 
-The end state: the `thread_archive` CLI works, the read MCP server is wired into this
+The end state: the `thread-archive` CLI works, the read MCP server is wired into this
 project's `.mcp.json`, the archive is populated, and (optionally) an always-on
 watcher is scheduled via **systemd**.
 
@@ -62,7 +62,7 @@ one name. A lexical-only install needs none of it.
 ## 2. Verify the install
 
 ```bash
-.venv/bin/thread_archive --version
+.venv/bin/thread-archive --version
 .venv/bin/pip install -e '.[dev]'   # pytest ships in the dev extra, not the base install
 .venv/bin/pytest tests/ -q          # must be green before you go further
 ```
@@ -87,7 +87,7 @@ ls -l "$REPO/.venv/bin/archive-mcp"   # sanity-check the command path exists
 in the systemd watcher/backup units (step 6) and in self-update — is baked into
 the machine, not tracked in the repo. A plain `mv` of the clone dead-ends the
 MCP wiring, the daemon, and self-update at once. To relocate it, move the
-directory, then re-run the MCP wiring above and `thread_archive daemon restart`
+directory, then re-run the MCP wiring above and `thread-archive daemon restart`
 (or, cleanest, re-clone at the new path and reinstall). Tell the human this
 before they pick where the clone lives.
 
@@ -99,20 +99,20 @@ An empty archive has nothing to search. Two ways to get conversations in:
   On Ubuntu these live under `~/.claude`, `~/.codex`, `~/.config/Cursor`,
   `~/.config/Code`, `~/.local/share/opencode`, etc. — archive finds them per-OS.
   ```bash
-  .venv/bin/thread_archive watch --once     # one pass; or `thread_archive daemon install` for always-on (step 6)
+  .venv/bin/thread-archive watch --once     # one pass; or `thread-archive daemon install` for always-on (step 6)
   ```
 - **Import an export or transcript** the human points you at:
   ```bash
-  .venv/bin/thread_archive import <path> --provider <name>   # `thread_archive providers` lists them
+  .venv/bin/thread-archive import <path> --provider <name>   # `thread-archive providers` lists them
   ```
 
 Then confirm it landed:
 
 ```bash
-.venv/bin/thread_archive status            # threads / events / indexed counts
+.venv/bin/thread-archive status            # threads / events / indexed counts
 ```
 
-The SQLite index is built during import; `thread_archive reindex` rebuilds it losslessly
+The SQLite index is built during import; `thread-archive reindex` rebuilds it losslessly
 from the JSONL truth if it ever looks wrong.
 
 ## 5. Restart Claude Code to load the new config
@@ -123,15 +123,15 @@ session in this directory**, then confirm the `thread-archive` tools
 
 ## 6. Always-on: the systemd watcher (+ optional nightly backup)
 
-`thread_archive watch --once` is a single pass. For the live, self-feeding archive,
+`thread-archive watch --once` is a single pass. For the live, self-feeding archive,
 schedule the watcher as a **systemd user service** — the productized always-fresh
-upgrade. The `thread_archive` setup wizard offers this too; either path works:
+upgrade. The `thread-archive` setup wizard offers this too; either path works:
 
 ```bash
-.venv/bin/thread_archive setup           # wizard: offers the watcher + nightly backup
+.venv/bin/thread-archive setup           # wizard: offers the watcher + nightly backup
 # — or the daemon directly —
-.venv/bin/thread_archive daemon install         # installs & starts thread-archive-watcher.service
-.venv/bin/thread_archive daemon status          # ActiveState/SubState/PID, or "not loaded"
+.venv/bin/thread-archive daemon install         # installs & starts thread-archive-watcher.service
+.venv/bin/thread-archive daemon status          # ActiveState/SubState/PID, or "not loaded"
 ```
 
 Install enables **linger** (`loginctl enable-linger`) so the watcher keeps running
@@ -152,17 +152,17 @@ tail -F ~/.thread/archive/logs/watcher-stdout.log ~/.thread/archive/logs/watcher
 Optional nightly backup (mirror → verify → restore drill) on a systemd timer:
 
 ```bash
-.venv/bin/thread_archive daemon install --backup --dest /path/to/backups
+.venv/bin/thread-archive daemon install --backup --dest /path/to/backups
 systemctl --user list-timers thread-archive-backup.timer
 ```
 
-Apply a code edit later with `thread_archive daemon restart`; take one agent back
-out with `thread_archive daemon uninstall` (and `--backup` for the timer), or the
-whole install — agents, MCP wiring, manifest — with `thread_archive uninstall`,
+Apply a code edit later with `thread-archive daemon restart`; take one agent back
+out with `thread-archive daemon uninstall` (and `--backup` for the timer), or the
+whole install — agents, MCP wiring, manifest — with `thread-archive uninstall`,
 which never touches the conversations.
 
 ## Done
 
 Report to the human: install verified (tests green), `.mcp.json` written, archive
-populated (give the `thread_archive status` counts), and — if you did step 6 — the
+populated (give the `thread-archive status` counts), and — if you did step 6 — the
 watcher active under `systemctl --user`.

@@ -16,7 +16,7 @@ from thread_archive._service.launchd import (
     watcher_plist,
 )
 
-ENTRY = Path("/opt/venv/bin/thread_archive")
+ENTRY = Path("/opt/venv/bin/thread-archive")
 LOG_DIR = Path("/data/arc/logs")
 
 

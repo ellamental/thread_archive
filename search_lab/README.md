@@ -1,15 +1,14 @@
 # search_lab/ — the search lab
 
 Everything that measures search lives here — the harnesses that *score* quality,
-the miners that *mint* graded case files (`mine/`, `python -m search_lab.mine`),
-the scoring core both share, corpus freezing, and the run ledgers. Nothing in this
+the scoring core they share, corpus freezing, and the run ledgers. Nothing in this
 directory is part of the product: an install carries no measurement surface at
 all, which is the boundary — the package preserves and retrieves, the lab measures
 how well. Come here when you're *changing ranking*: this directory is the whole
 scoring workbench, and the ladder below is the order to climb it.
 
-Each script's docstring — and each miner's module docstring — is its own full
-manual (protocols, biases, caveats); this README is the map.
+Each script's docstring is its own full manual (protocols, biases, caveats); this
+README is the map.
 
 ## What a number here is worth
 
@@ -33,12 +32,10 @@ Two independent failures put it there, and a protocol has to clear both:
    a knowable answer is not shaped like one an agent types, and a number over
    queries nobody asked is not evidence about the searches anyone runs.
 
-Clearing (1) and failing (2) is where the retrieval-free miners sit, which is why
-their output is material for a hand-read experiment and never a score. Underneath
-both is a hard constraint: **a real query and a complete answer set are not
-recoverable from the same record.** Nobody ever enumerated the answers to
+Underneath both is a hard constraint: **a real query and a complete answer set are
+not recoverable from the same record.** Nobody ever enumerated the answers to
 `watcher ingest lock`; the only trace is what search returned and what the agent
-opened.
+opened. No label-production scheme escapes that, which is why none runs here.
 
 So the quality claims this lab does make live on **public benchmarks** — corpora
 somebody else labeled, read beside the baseline their own leaderboard publishes
@@ -47,15 +44,6 @@ components competitive in general?", never "did search get better on this
 archive". The honest local instruments are speed (`latency_replay.py`, over the
 searches agents actually ran) and the tier-0 synthetic floors, which detect damage
 rather than credit improvement.
-
-The miners still declare where their labels come from — `gold_source` and
-`retrieval_free` in `mine/__init__.py` — because that declaration is what makes
-the ceiling on a mined case file legible:
-
-| rung | labels fixed by | queries | miners |
-|---|---|---|---|
-| `retrieval_free=True` | a record outside the search stack | authored from an artifact | `commit`, `edited` |
-| `retrieval_free=False` | judgment over a union of independent systems | **observed** — real traffic | `pooled` |
 
 Instruments that produce *no labels* are a separate category: `--from-log` and
 `--behavior` below are diagnostics, fenced as alarms, never cited as evidence a
@@ -75,7 +63,6 @@ already measured at this configuration — see "Running the whole bench".)
 | 1 | `pytest -m quality_models` | same corpus, real embedding model | minutes | touching the model arm |
 | 2 | CI arm-liveness probes (`retrieval_eval.py --probes-only`) | live archive | ~a minute (it loads both models) | every commit, via thread-ci |
 | 3 | `latency_replay.py` (speed over real traffic), `graph_eval.py`, `--behavior` | the live archive | minutes | evaluating a deliberate ranking change |
-| 3½ | `python -m search_lab.mine <miner>` to mint case files for a hand-read experiment | a frozen snapshot with the record that miner needs (commit provenance / a path projection / a usage ledger) | agent-minutes per mined case | investigating a specific suspicion, never to produce a headline number |
 | 4 | `python -m search_lab benchmark`; `pytest -m beir` | seven external IR / conversational-memory benchmarks | minutes once the corpora are built; about a day of CPU to build them all the first time | the quality claim — calibrating against published baselines |
 
 Tiers 0–3 **detect damage**; tier 4 is the only one that supports a positive
@@ -90,13 +77,13 @@ home a benchmark builds into, which arms it pins, whether a cached build still
 describes the corpus asked for), `snapshot.py` (freeze a corpus — also a command:
 `python search_lab/snapshot.py <dir>`), `gold_files.py` (what counts as a case
 file), `speed.py` (the latency measurement core), `run_meta.py` (the commit and
-configuration every ledger stamps its rows with), `mine_runs.py` +
-`bench_runs.py` (the run ledgers), `retrieval_report.py` (the latency series off
-the ledgers, `python search_lab/retrieval_report.py`), and `inventory.py` (what is
-on this box — which rows can run, which corpora are built, which miners exist;
-`python search_lab/inventory.py`, and the viewer's `/lab` dev page). The miners
-under `mine/` reach them by bare sibling import and the tests by `search_lab.*` —
-the dependency runs lab → package and never leaves a checkout.
+configuration every ledger stamps its rows with), `bench_runs.py` (the run
+ledger), `retrieval_report.py` (the latency series off the ledgers,
+`python search_lab/retrieval_report.py`), and `inventory.py` (what is on this box
+— which rows can run and which corpora are built; `python search_lab/inventory.py`,
+and the viewer's `/lab` dev page). The harnesses reach them by bare sibling import
+and the tests by `search_lab.*` — the dependency runs lab → package and never
+leaves a checkout.
 
 Two scoring cores, split at the corpus. Everything scoring *case files* runs
 through `eval_core.evaluate`; the external benchmarks implement their own
@@ -208,8 +195,8 @@ archive (BEIR and the lab build throwaway homes and never touch it).
   instrument). Success asks whether any answer ranks;
   recall measures how much of the complete grade-2 set ranks; nDCG scores the
   ordering of the whole 2/1/0 pool. `--probes-only` skips the metric run for
-  the CI row's arm-liveness checks. `graph_eval.py` scores the same log-mined
-  cases off its miner (`mine_log_cases`).
+  the CI row's arm-liveness checks. `graph_eval.py` scores the same log-drawn
+  cases off `eval_core.mine_log_cases`.
 - **`bm25_baseline.py`** — plain BM25 over a snapshot, the reference a case-file
   number is read against. A score in isolation means nothing; the question a
   baseline answers is whether the machinery above the lexical arm is earning its
@@ -229,109 +216,16 @@ archive (BEIR and the lab build throwaway homes and never touch it).
   the live archive, not a snapshot; `--baseline` sets the reference, and the
   timeseries is tagged `query_set=observed` so it never averages with rows from
   another population.
-- **`gold_stats.py`** — what is actually *in* a mined case file
+- **`gold_stats.py`** — what is actually *in* a case file
   (`python search_lab/gold_stats.py <cases.jsonl>`, `--json`, `--corpus`). Every
   other instrument here measures search; this one measures the benchmark, which is
   the question nothing else asks. A file can be internally fine and measure almost
   nothing — every case single-gold, every graded pool one document, every query in
   a tier the same sentence with the subject swapped, every case from one repo — and
-  none of that shows up in a score. Four panels: yield and cost off the mining
-  ledger and detail sidecar, gold-set and graded-pool sizes, the query distribution
-  (length, and opening-n-gram concentration per tier, which is the template
-  detector), and coverage concentration. Run it on a file before citing a number
-  off it.
-- **`python -m search_lab.mine`** — the label miners (`mine/`), the only
-  tokens-spending instrument. They mint snapshot-bound eval `--cases` files;
-  bare `mine` lists the registry, `mine <miner> --help`
-  documents one.
-
-  **Every miner is a declared pipeline** — *supply → admit → produce → verify* —
-  and the funnel it runs is recorded per stage in `mine-runs.jsonl` and drawn on
-  `/lab`. Gates decide what is worth spending on, the free QA stage checks what came
-  back, and the two catch different failures: a sound unit still yields a bad query
-  often enough that the only prior control — asking the producing agent to grade
-  itself — declined zero times in 25. Stages declare `kind`, so **`mine <miner>
-  --plan`** runs every free stage for real, stops where the spend begins, and prints
-  the true funnel plus the agent sessions the rest would take. It writes nothing and
-  records no run.
-
-  **Refusals are saved, not just counted.** Each miner writes a `-rejects.jsonl`
-  beside its cases — one row per refused unit with its stage, reason, and the gate
-  that made the call. They are results: a pile of `misattributed` says a provenance
-  join is wrong, `untargetable-commit` at scale characterises a corpus's commit
-  hygiene, `none-of-pool` is the recall alarm. A paid gate's refusal is honoured on
-  later runs so it is never re-bought, and only while that gate's `gate_sha` is
-  unchanged — a reworded prompt re-opens everything it turned down. Free-stage
-  refusals are always recomputed, which is what lets a corpus that has changed be
-  seen as it is now. `gold_stats.py` reports them; `/lab` shows them per corpus.
-
-  Read a funnel by *where* units were lost, never by how many. The paid gates report
-  their refusals separately on purpose: `misattributed` is a wrong label leaving the
-  benchmark and `untargetable-commit` is a hard case leaving it, and they move a
-  number in opposite directions. Cases bind by `snapshot_id` to the frozen corpus
-  snapshot they run against (`python search_lab/snapshot.py <dir>`; point
-  `THREAD_ARCHIVE_HOME` at it), so after the one-time spend
-  `retrieval_eval.py --cases` scores them for free and refuses them once the
-  snapshot's id no longer matches. Three miners, covering complementary blind
-  spots — and no two of them can run on the same corpus, because each needs a
-  different record the corpus either has or doesn't:
-  - **`commit`** — *findability, provenance gold* (`retrieval_free`). A *linkage
-    file* pairs each session with the commits it demonstrably authored; one agent
-    reads only the commit (message + diff) and authors difficulty-laddered queries
-    for it (`literal` / `functional` / `intent`); the linked session is the answer
-    (`commit-cases.jsonl`). No search runs during labeling, and since the agent
-    never reads the target thread there is no vocabulary leakage either — the query
-    is written from an artifact outside the corpus, which is also how a person
-    searches. Sibling sessions in the same repo grade themselves structurally
-    (overlapping files 1, disjoint 0), so the confound pool costs no tokens and no
-    judge's reach bounds it. Needs a corpus that ships session↔commit provenance —
-    `search_lab/swechat_corpus.py` builds one from SWE-chat. Grades 1/0 are
-    structural proxies; only the 2 is grounded. Single-gold, so it measures
-    findability and no completeness. Runs as a declared funnel —
-    **provenance → alignment → author**, cheapest gate first. `provenance` is free:
-    it asks the tool-use trail whether the session actually edited the files its
-    commit changed. `alignment` is a paid audit that reads the commit *and* the
-    session, answering `misattributed` (the session did not do this work) and
-    `untargetable-commit` (the linkage holds but the message is unusable material)
-    apart, because those move a benchmark in opposite directions. Only then does
-    the blind author run, and nothing the auditor found reaches it.
-    `--no-alignment` skips the paid gate; `--no-provenance-gate` the free one.
-  - **`edited`** — *completeness, trail-enumerated gold* (`retrieval_free`). The
-    **multi-answer** rung, and the one that scores the operator's own archive. The
-    unit is a file path and the gold is every conversation that changed it,
-    enumerated from `event_paths` (the projection behind the code-axis browse), so
-    a thread search cannot surface is in the gold anyway. One agent writes queries
-    from the path and a sample of its *edits*, run with no tools at all so it
-    cannot peek at a conversation. Touched-but-unchanged threads grade 1,
-    sibling-directory editors 0 — a confound pool with no judge in it.
-    `--min-sessions` / `--max-sessions` bound the gold set so a case is neither
-    single-answer nor larger than any window could hold. Runs as
-    **substance → coherence → author → verify**: `substance` is free (are there
-    readable change bodies to author from at all); `coherence` is a paid audit
-    asking whether the editing conversations share a subject one query could target,
-    because membership here is *enumerated* so a wrong label is not the risk — an
-    incoherent gold set is, and a case built on one is unanswerable by construction.
-    `--no-coherence` skips it. Needs a folded code
-    projection: a real archive's watcher keeps one, and a corpus home gets one from
-    its builder (`swechat_corpus.py` folds before it stamps) — nothing else does,
-    and unfolded the projection is empty rather than stale, so every path fails to
-    qualify.
-  - **`pooled`** — *relevance over real traffic, pooled labels* (not
-    `retrieval_free`, and says so). The only miner whose **queries are observed**:
-    it takes them verbatim from the usage ledger, where a query runs ~4 words of
-    keyword soup against an authored case's ~20 words of prose. Their answers exist
-    in no record, so it buys labels with a TREC-style pool — the union of `stack`,
-    `bm25`, a deep-`pool_floor` run, a density-only ranking, and a random draw,
-    judged 2/1/0 in one pass. The union is merged round-robin so a cap trims every
-    system's tail rather than one system's, and each case records which systems
-    nominated each answer (`pool_contrib`), so the pool's reach is auditable
-    instead of asserted. Runs as **pool → judge → verify**; assembling the union
-    spends no agent, so `--plan` answers "does this corpus return anything for the
-    queries agents asked" for free. The judge's `none-of-pool` verdict is the recall
-    alarm, and `undiscriminating` — a verdict that graded nearly the whole union
-    relevant, and so separates no ranker from any other — is a distinct disposition
-    from it.
-    Needs a live archive's usage ledger for its query population.
+  none of that shows up in a score. Three panels: gold-set and graded-pool sizes,
+  the query distribution (length, and opening-n-gram concentration per tier, which
+  is the template detector), and coverage concentration. Run it on a file before
+  citing a number off it.
 - **`swechat_corpus.py`** — builds the SWE-chat corpus home and its linkage file.
   [SWE-chat](https://huggingface.co/datasets/SALT-NLP/SWE-chat) is public
   agent-session data (ODC-BY, arXiv:2604.20779) whose transcripts are native
@@ -352,10 +246,10 @@ archive (BEIR and the lab build throwaway homes and never touch it).
   download and is the benchmark's coverage bound; `docs/search-quality.md` carries
   the built corpus's size and its scores.
 
-  Its gold dir — miner inputs, case files, the mining ledger — lives in `gold/`
-  beside the download rather than under `~/.thread/archive`, because nothing here
-  quotes the operator's conversations. `swechat_bench.py` exports mined cases as a
-  standalone benchmark anyone can run.
+  Its gold dir — the linkage file and any case files — lives in `gold/` beside the
+  download rather than under `~/.thread/archive`, because nothing here quotes the
+  operator's conversations. `swechat_bench.py` exports a case file as a standalone
+  benchmark anyone can run.
 - **`graph_eval.py`** — does the corpus-native embedding graph earn its
   ranking signal? A damage check for the shipped coherence re-rank. Scored on
   log-mined click labels, so it is an alarm like `--from-log`, never evidence the
@@ -487,15 +381,14 @@ knobs are the lever, not the vector arm.
   as a quality score. Run it by hand for one question only — *did something
   collapse* — and never cite a from-log delta as evidence a change helped. The
   trail's lasting value to this bench is as a **sampling frame**: real query shapes
-  to seed a miner with, not a labeler.
-- **Mined case files are for hand-read experiments.** `python -m search_lab.mine
-  <miner>` mints graded cases against a frozen snapshot, and
-  `retrieval_eval.py --cases` scores one over the snapshot it names. Read the
-  per-case detail when you are investigating a specific suspicion — *does the
-  intent stratum collapse under this weight?* — and stop there. It does not roll up
-  into a headline number, nothing floors it, and no change is credited by it (see
-  "What a number here is worth"). A file whose `snapshot_id` matches no snapshot on
-  hand is stale: re-mine it, don't score it against a moved corpus.
+  to draw a query population from, not a labeler.
+- **Case files are for hand-read experiments.** `retrieval_eval.py --cases` scores
+  a graded case file over the snapshot it names. Read the per-case detail when you
+  are investigating a specific suspicion — *does the intent stratum collapse under
+  this weight?* — and stop there. It does not roll up into a headline number,
+  nothing floors it, and no change is credited by it (see "What a number here is
+  worth"). A file whose `snapshot_id` matches no snapshot on hand is stale; don't
+  score it against a moved corpus.
 
 - **A cold process would score a different number than a warm one**, which is why
   every scoring path builds the corpus graph before its first case
@@ -535,29 +428,25 @@ rank shuffling within cases that already worked, not a win.
 4. Promote once the benchmark delta holds and latency has not regressed, with
    `--from-log` read as an alarm only. Fold the winner into
    `_retrieval/params.py` defaults with its evidence in the docstring, and let
-   tier 0/2 ratchet the new shape. If the benchmarks are flat and only a mined
-   case file moved, you have a lead worth investigating — not a result.
+   tier 0/2 ratchet the new shape. If the benchmarks are flat and only a case
+   file moved, you have a lead worth investigating — not a result.
 
 ## Cost and hygiene
 
-- The `mine/` miners spend real tokens (headless `claude` calls;
-  `--target` bounds them). Everything else on the bench is free. A miner's cost
-  scales with its unit: `commit` and `edited` run one short authoring agent per
-  case with a small prompt, where `pooled` runs a judge that reads candidates, so
-  a `pooled` case costs several times what an authored one does.
+- Nothing on this bench spends tokens. Every instrument here is CPU and disk.
 - Everything a run writes lands in the gold dir it worked in, so a corpus is one
-  directory and no ledger describes cases that live somewhere else. Mined output
+  directory and no ledger describes cases that live somewhere else. A case file
   that quotes an operator's real conversations belongs under `~/.thread/archive`
-  and never in the repo; the SWE-chat corpus's cases, floors and ledgers sit
-  beside that public download. The synthetic corpus is the one exception: no real
-  data, so it's checked in.
+  and never in the repo; the SWE-chat corpus's cases and ledgers sit beside that
+  public download. The synthetic corpus is the one exception: no real data, so
+  it's checked in.
 - Built benchmark corpora live under one root, `~/.cache/thread-evals`:
   `<root>/<dataset>` for a download, `<root>/homes/<name>` for a built home. They
   are large (tens of GB with vectors) and entirely rebuildable, so that whole tree
   is safe to delete when disk gets tight.
 - The fast tests guarding these harnesses live in `tests/`
-  (`test_retrieval_eval.py`, `test_search_params.py`, `test_mine_framework.py`,
-  `test_mine_orchestration.py`, `test_commit_mine_gold.py`, `test_graph_eval.py`,
-  `test_beir_calibration.py`, `test_eval_home.py`, `test_bench_runner.py`)
+  (`test_retrieval_eval.py`, `test_search_params.py`, `test_graph_eval.py`,
+  `test_gold_stats.py`, `test_beir_calibration.py`, `test_eval_home.py`,
+  `test_bench_runner.py`)
   and run in every pytest pass — the lab stays runnable even when nobody has tuned
   search in months.

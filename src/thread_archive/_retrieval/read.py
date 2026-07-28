@@ -959,13 +959,6 @@ def _topic_read_message(thread: Thread, *, session: Optional[Session] = None) ->
     return "\n".join(lines)
 
 
-# The reserved thread_read ref for the topic hierarchy. The tree itself is a
-# view, not a thread; the ref is kept only so a pasted 'topics'
-# gets a pointed answer instead of resolving as a thread lookup that
-# confusingly finds nothing.
-TOPIC_TREE_REF = "topics"
-
-
 # Feature flag for the stored-summary read kinds (summary='short'/'indexed').
 # On by default; set THREAD_ARCHIVE_STORED_SUMMARIES=0 (or false/no/off) to disable —
 # those kinds then return a disabled notice, and everything else is unchanged.
@@ -1247,10 +1240,6 @@ def read_thread(
     back-compat alias for ``mode`` (True→user, False→full); ``mode`` wins. Returns a
     message string if absent.
     """
-    if isinstance(thread_id, str) and thread_id.strip().lower() == TOPIC_TREE_REF:
-        return ("The topic tree is a view, not a thread. A topic "
-                "*id* still reads here as the topic's page.")
-
     summary_kind = _resolve_summary_kind(summary)
     if summary_kind == "?":
         return (

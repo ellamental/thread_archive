@@ -7,7 +7,7 @@ This module automates exactly that, off the annotated release tags
 through its package manager instead — ``pip install -U thread-archive`` — and
 this module reports it as such rather than touching anything.
 
-**The operator drives it.** ``thread_archive self-update`` is the whole
+**The operator drives it.** ``thread-archive self-update`` is the whole
 mechanism: nothing polls for releases, nothing applies one on its own, and no
 configuration turns unattended apply on. ``--check`` plans and reports without
 changing the clone. Guardrails on the explicit operation, on a machine that
@@ -25,15 +25,15 @@ holds someone's entire conversation history:
   that bumps ``TRUTH_FORMAT_VERSION`` makes rollback a hard stop the moment
   the new code touches the store. The tag's declared format version is read
   out of the tag itself (``git grep``); if it is newer than ours — or cannot
-  be determined — the update requires ``thread_archive self-update
+  be determined — the update requires ``thread-archive self-update
   --allow-format-bump``.
 - **Verify, then roll back.** After checkout + reinstall, the new code must
-  pass a smoke check (``thread_archive status`` under the new install). On failure
+  pass a smoke check (``thread-archive status`` under the new install). On failure
   the previous commit is checked out and reinstalled — the archive keeps
   running the code that worked.
 
 The outcome of each run is stamped in ``health.json``, which is what
-``thread_archive status`` and the web viewer's health panel report. Config
+``thread-archive status`` and the web viewer's health panel report. Config
 rides ``config.json``::
 
     {"update": {"remote": "origin"}}
@@ -217,7 +217,7 @@ def plan_update(
         return UpdatePlan(
             "blocked",
             f"{tag} declares truth-format version {fmt} > local {local_fmt} — "
-            "a one-way door; run `thread_archive self-update --allow-format-bump` deliberately",
+            "a one-way door; run `thread-archive self-update --allow-format-bump` deliberately",
             version, tag=tag, current_format=local_fmt, target_format=fmt,
         )
     r = _git(repo, "merge-base", "--is-ancestor", "HEAD", tag)
@@ -248,7 +248,7 @@ def _default_reinstall(repo: Path) -> None:
 
 def _default_smoke(home: Optional[str]) -> None:
     """The new install must stand up and read the archive: the console script
-    exists, the package imports, the store opens. `thread_archive status` is exactly
+    exists, the package imports, the store opens. `thread-archive status` is exactly
     that, end to end, in a fresh process running the new code."""
     import os
 
@@ -262,7 +262,7 @@ def _default_smoke(home: Optional[str]) -> None:
     )
     if r.returncode != 0:
         raise RuntimeError(
-            f"`thread_archive status` under the new install failed: {r.stderr.strip()[-500:]}"
+            f"`thread-archive status` under the new install failed: {r.stderr.strip()[-500:]}"
         )
 
 
@@ -313,7 +313,7 @@ def _default_restart() -> None:
 
 
 def _default_retire(home: Optional[str], tag: str) -> None:
-    """Disable unpinned ``thread_archive fix-import`` override patches built against a
+    """Disable unpinned ``thread-archive fix-import`` override patches built against a
     core older than ``tag`` — patches are temporary bridges to the next release
     by default, and pinned ones opt out (see :mod:`._repair.retire`)."""
     from ._repair import retire_patches
@@ -426,7 +426,7 @@ def self_update(
     retire: Optional[Callable[[Optional[str], str], None]] = None,
 ) -> dict:
     """One full check-and-maybe-apply, recorded in ``health.json`` (the record
-    behind the ``thread_archive status`` line and the viewer's health panel).
+    behind the ``thread-archive status`` line and the viewer's health panel).
     ``check_only`` plans and reports without changing the installed
     checkout."""
     repo = install_repo()

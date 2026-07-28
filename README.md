@@ -18,8 +18,8 @@ Your agent searches, reads around the hits, and comes back with what you decided
 **Searchable by you — and by your AI.**
 - Full-text and semantic search, fused and re-ranked, filterable by time, source, tool, and content type; an empty query browses recent activity.
 - Exposed over MCP (`thread_search`, `thread_read`), so Claude (or any MCP client) can search and read your entire history mid-conversation.
-- The same two tools are CLI verbs — `thread_archive search "auth flow" --since 30d`, `thread_archive read <id>` — one implementation behind both, so what you get at a prompt is what your agent gets.
-- Search is the access layer over the archive, not the archive itself — an agent typically fires several searches, reformulates, and reads around a hit, and the archive underneath guarantees the conversation is *there* to find. Quality is measured against gold cases whose answers are fixed by commit provenance rather than by searching with the ranker under test, over a frozen snapshot — a deliberate run on a ranking change, not a CI row; what rides CI is a probe that the search arms still load at all. The numbers, the protocol, and its limits live in [docs/search-quality.md](docs/search-quality.md). Your install reports whether search is *degraded* (`thread_archive status`, the viewer's health page) rather than a score — a metric with no baseline beside it isn't something you can act on.
+- The same two tools are CLI verbs — `thread-archive search "auth flow" --since 30d`, `thread-archive read <id>` — one implementation behind both, so what you get at a prompt is what your agent gets.
+- Search is the access layer over the archive, not the archive itself — an agent typically fires several searches, reformulates, and reads around a hit, and the archive underneath guarantees the conversation is *there* to find. Quality is measured against public benchmarks somebody else labeled, read beside the baseline their own leaderboard publishes — a deliberate run on a ranking change, not a CI row; what rides CI is a probe that the search arms still load at all. No protocol that labels this archive's own corpus certifies that search is good, and nothing gates on one. The numbers, the protocol, and its limits live in [docs/search-quality.md](docs/search-quality.md). Your install reports whether search is *degraded* (`thread-archive status`, the viewer's health page) rather than a score — a metric with no baseline beside it isn't something you can act on.
 
 **Indexed by code, not just by words.** Every path your agents' tools named — each
 `Edit`, `Read`, `Write`, `apply_patch` header, and path-shaped shell argument, in
@@ -50,7 +50,7 @@ existing archive and rebuilds with `reindex`.
 - Crash-safe writes with intent journaling, fsync discipline, and automatic recovery. Your history survives power loss, killed processes, and corrupted indexes.
 - Built-in backup, integrity verification, and restore drills: recovers from corruption or an errant delete, and the nightly pipeline checks that the backup actually restores. The archive is ordinary files on disk — whatever backs up the rest of your data covers it the same way.
 
-**Fixes itself where it broke.** A provider's transcript format drifts on the provider's schedule, not a maintainer's. Archive makes that drift loud and locally repairable: drift ledgers and a nightly coverage check catch the degradation, the raw source files are quarantined before the provider prunes them, the in-session search notice names the remedy, and `thread_archive fix-import <provider>` scaffolds an override patch — module, tests, evidence, real samples, and the repair protocol — so the fix gets written on the machine that has the samples, by you or by an agent you hand the scaffold to. The patch goes live only when its scaffolded test suite passes in a fresh subprocess, then re-import recovers everything consumed during the gap. The supported provider's worst case is *preserved but partially modeled until fixed* — and the fix doesn't wait on a release.
+**Fixes itself where it broke.** A provider's transcript format drifts on the provider's schedule, not a maintainer's. Archive makes that drift loud and locally repairable: drift ledgers and a nightly coverage check catch the degradation, the raw source files are quarantined before the provider prunes them, the in-session search notice names the remedy, and `thread-archive fix-import <provider>` scaffolds an override patch — module, tests, evidence, real samples, and the repair protocol — so the fix gets written on the machine that has the samples, by you or by an agent you hand the scaffold to. The patch goes live only when its scaffolded test suite passes in a fresh subprocess, then re-import recovers everything consumed during the gap. The supported provider's worst case is *preserved but partially modeled until fixed* — and the fix doesn't wait on a release.
 
 **No hosted backend. No cloud. No subscription to lose your history to.** A background watcher keeps it current; every process — the MCP server, the web viewer, the daemons — runs locally, on your machine.
 
@@ -73,7 +73,7 @@ Python ≥ 3.12, macOS or Linux:
 
 ```bash
 pip install thread-archive        # or: uv tool install thread-archive
-thread_archive setup
+thread-archive setup
 ```
 
 **`setup` is the onboarding.** On first run it discovers this machine's
@@ -89,10 +89,10 @@ choice is skippable and persists in `<home>/config.json`; a disabled source
 stays disabled across every ingest path — and across later runs of `setup`,
 which only changes a source's policy where you state a new one (the edit
 selection). The end state is a populated, searchable archive served over MCP,
-plus the `thread_archive` operator CLI and the pre-built web viewer (no node at
-any point). `thread_archive status` shows status; `thread_archive setup`
+plus the `thread-archive` operator CLI and the pre-built web viewer (no node at
+any point). `thread-archive status` shows status; `thread-archive setup`
 revisits the choices. Non-interactive (agents,
-scripts): `thread_archive setup --yes` accepts every default — without `--yes`,
+scripts): `thread-archive setup --yes` accepts every default — without `--yes`,
 a non-TTY run only prints guidance and never ingests, and neither shape opens a
 browser.
 
@@ -103,13 +103,13 @@ since that signal is computed over the vectors. `[all]` is every runtime feature
 under one name; the base install is lexical-only and pulls no C extension beyond
 what `numpy` and `mcp` already need.
 
-**Without the wizard.** The same pieces by hand: `thread_archive watch --once`
-runs one ingest pass over this machine's stores (or `thread_archive import
+**Without the wizard.** The same pieces by hand: `thread-archive watch --once`
+runs one ingest pass over this machine's stores (or `thread-archive import
 <path> --provider <name>` brings in a single transcript or store),
-`thread_archive status` confirms it landed, `thread_archive daemon install`
+`thread-archive status` confirms it landed, `thread-archive daemon install`
 upgrades to the always-on watcher, and the JSON block under [MCP](#mcp) wires
 the server into any client — `archive-mcp` lands on the same PATH as
-`thread_archive`. Restart the client so it loads the server.
+`thread-archive`. Restart the client so it loads the server.
 
 Skipped the watcher? Still covered: setup-generated MCP entries explicitly set
 `THREAD_ARCHIVE_MCP_INGEST=1`, opting `archive-mcp` into **lazy catch-up
@@ -117,7 +117,7 @@ ingest**. A background pass at startup and (throttled) around tool calls imports
 whatever landed in your local AI-tool stores since the last pass. A bare
 `archive-mcp` invocation without that setting is fully read-only. On a fresh
 archive give the first pass a minute to chew before expecting search hits; the
-watcher install (`thread_archive setup`, or `thread_archive daemon install`) is the
+watcher install (`thread-archive setup`, or `thread-archive daemon install`) is the
 always-fresh upgrade. With the daemon installed, opted-in MCP passes degrade to
 no-op lock probes — exactly one process ingests at a time, however many clients
 are open.
@@ -143,11 +143,11 @@ instead — same flow, systemd for the always-on pieces.
 
 A clone's absolute path is baked into its `.mcp.json` wiring and any service
 units installed from it, so relocating the clone means re-running that wiring
-plus `thread_archive daemon restart`, not a plain `mv`. A clone updates by
-fast-forwarding to a release tag (`thread_archive self-update`); a pip install
+plus `thread-archive daemon restart`, not a plain `mv`. A clone updates by
+fast-forwarding to a release tag (`thread-archive self-update`); a pip install
 updates with `pip install -U thread-archive`.
 
-**Uninstall.** `thread_archive uninstall` takes back everything setup put on the
+**Uninstall.** `thread-archive uninstall` takes back everything setup put on the
 machine — the service agents, the MCP wiring in your client, the family manifest
 and monitor heartbeat, and setup's own record in `config.json` — and **never
 touches the archive**. Conversations, index, source choices, logs and exports
@@ -163,46 +163,46 @@ client entry serving a *different* archive home is reported and left alone.
 
 ## CLI
 
-One namespaced command. **`thread_archive setup`** runs the wizard (discover →
-consent → import → watcher → backup → MCP wiring); **`thread_archive status`**
+One namespaced command. **`thread-archive setup`** runs the wizard (discover →
+consent → import → watcher → backup → MCP wiring); **`thread-archive status`**
 is the status view. **`search`** and **`read`** are retrieval — the MCP tools at
 a terminal. The operator verbs are their siblings:
 
 ```bash
-thread_archive search [query]    # the thread_search tool: filters by time, source, tool, content type,
+thread-archive search [query]    # the thread_search tool: filters by time, source, tool, content type,
                           #   file (--path) or commit; no query browses recent threads;
                           #   --group browse lists matched threads, --output linkable emits JSON
-thread_archive read <id>         # the thread_read tool: replay a thread (--mode user|chat|full|last|ends,
+thread-archive read <id>         # the thread_read tool: replay a thread (--mode user|chat|full|last|ends,
                           #   --summary files, --around-event <id> to open a search hit);
                           #   takes a ULID, a legacy integer id, or a provider session uuid
-thread_archive import <path>     # import a transcript / provider store
-thread_archive providers         # list registered providers (built-in + installed plugins)
-thread_archive watch             # watch local AI-tool stores and import incrementally
-thread_archive reindex           # rebuild index.db from the JSONL truth directory
-thread_archive migrate           # migrate older truth, then reindex and verify
-thread_archive embed             # embed user/text events still missing a vector (incremental catch-up;
+thread-archive import <path>     # import a transcript / provider store
+thread-archive providers         # list registered providers (built-in + installed plugins)
+thread-archive watch             # watch local AI-tool stores and import incrementally
+thread-archive reindex           # rebuild index.db from the JSONL truth directory
+thread-archive migrate           # migrate older truth, then reindex and verify
+thread-archive embed             # embed user/text events still missing a vector (incremental catch-up;
                           #   --rebuild re-embeds everything)
-thread_archive verify            # integrity check: truth parses + matches the index
-thread_archive repair            # quarantine damaged truth lines; restore committed content from the index
-thread_archive backup <dest>     # mirror the truth dir (hardlink generations under <dest>/.generations) +
+thread-archive verify            # integrity check: truth parses + matches the index
+thread-archive repair            # quarantine damaged truth lines; restore committed content from the index
+thread-archive backup <dest>     # mirror the truth dir (hardlink generations under <dest>/.generations) +
                           #   the recovery bundle under <dest>/.recovery (config, retained exports,
                           #   health/ledger snapshots)
-thread_archive restore-drill <dest>  # prove the backup restores: rebuild an index from the mirror + smoke read/search
-thread_archive restore <mirror> --to <home>  # actually restore: staged rebuild + verify, then atomic publish
+thread-archive restore-drill <dest>  # prove the backup restores: rebuild an index from the mirror + smoke read/search
+thread-archive restore <mirror> --to <home>  # actually restore: staged rebuild + verify, then atomic publish
                           #   (--generation <stamp> picks a retained snapshot; --list-generations shows them)
-thread_archive nightly <dest>    # the scheduled pipeline: backup → verify (age-gated escalation) → restore drill → coverage
-thread_archive coverage          # capture-coverage check: source stores reconciled against the archive
-thread_archive mirror            # mirror raw harness source stores into <home>/source-mirror
+thread-archive nightly <dest>    # the scheduled pipeline: backup → verify (age-gated escalation) → restore drill → coverage
+thread-archive coverage          # capture-coverage check: source stores reconciled against the archive
+thread-archive mirror            # mirror raw harness source stores into <home>/source-mirror
                           #   (verbatim, gzip; nothing ever deleted)
-thread_archive status            # archive health / counts / last verify + backup + drill + coverage outcomes
-thread_archive daemon <action>   # install/uninstall/restart/status a service agent (launchd on macOS,
+thread-archive status            # archive health / counts / last verify + backup + drill + coverage outcomes
+thread-archive daemon <action>   # install/uninstall/restart/status a service agent (launchd on macOS,
                           #   systemd --user on Linux) — the always-on
                           #   watcher (default), --mcp the shared server, --backup the nightly
                           #   pipeline (`daemon install --backup --dest <path> [--at HH:MM]`), or
-thread_archive uninstall         # remove this machine's archive machinery — agents, MCP wiring, manifest,
+thread-archive uninstall         # remove this machine's archive machinery — agents, MCP wiring, manifest,
                           #   heartbeat, install record; the conversations are never touched
                           #   (--dry-run reports, --yes skips the confirmation)
-thread_archive self-update       # source clones only: fast-forward to the newest release tag — operator-
+thread-archive self-update       # source clones only: fast-forward to the newest release tag — operator-
                           #   driven, nothing updates on its own (--check reports without applying;
                           #   a pip install updates with `pip install -U thread-archive`)
 ```
@@ -212,17 +212,17 @@ thread_archive self-update       # source clones only: fast-forward to the newes
 mid-conversation return the same answer. Everything else in the CLI is private
 operational tooling (see Stability below): the process seam the service agents,
 cron, and operators use. The third door onto the same archive is the web viewer,
-cohosted by `thread_archive watch --web`.
+cohosted by `thread-archive watch --web`.
 
 ## Layout
 
 ```text
 src/thread_archive/
   _api.py           # internal coordination layer the CLI / MCP / web call into
-  cli.py            # the `thread_archive` command — every verb, incl. `setup`
+  cli.py            # the `thread-archive` command — every verb, incl. `setup`
   _setup/           # what the archive puts on a machine and takes back off it: the wizard
-                    #   behind `thread_archive setup` (first-run setup + status), and the
-                    #   `thread_archive uninstall` flow
+                    #   behind `thread-archive setup` (first-run setup + status), and the
+                    #   `thread-archive uninstall` flow
   _config.py        # truth dir + index path resolution, config.json (source opt-outs)
   _store/           # SQLite store + schema
   _truth/           # JSONL truth log + reindex
@@ -230,21 +230,23 @@ src/thread_archive/
                     #   health records, the action queue + its silences (notices.py)
   _importers/       # incremental import orchestration
   _retrieval/       # FTS5 + vector search, read reconstruction, the code axis (code.py)
-  _knowledge/       # knowledge-layer data plane: KgEvent fold + SQL topic reads
+  _knowledge/       # storage seam for the truth format's extension region — an
+                    #   external knowledge layer's records, stored and backed up
+                    #   here, written and specified elsewhere (docs/format.md)
   _watcher/         # local-source watcher (self-feeding ingest)
   _mcp/             # the library-native read MCP server
   _web/             # the viewer: stdlib server + built bundle (cohosted by `watch --web`)
-  _service/         # `thread_archive daemon`: the watcher / MCP / nightly-backup agents behind a
+  _service/         # `thread-archive daemon`: the watcher / MCP / nightly-backup agents behind a
                       #   platform registry — launchd (macOS) and systemd --user (Linux) backends
   _thread_import/   # vendored provider parsers (a clean, dependency-free island)
   _providers/       # the provider registry: built-in descriptors + plugin discovery
   provider/         # PUBLIC: the plugin API a third-party provider is written against
 frontend/           # the viewer's React+Vite source (dev-only; builds into _web/static/)
-host/               # operator layer: Makefile over `thread_archive daemon`, family-manifest writer
+host/               # operator layer: Makefile over `thread-archive daemon`, family-manifest writer
 scripts/            # repo tooling (coverage gate, frontend-build check, license notices)
 search_lab/         # the search lab (never shipped): the scoring core, quality + calibration
-                      #   harnesses, the gold miner (mine/), corpus freezing, run
-                      #   ledgers — see search_lab/README.md
+                      #   harnesses, corpus freezing, run ledgers — see
+                      #   search_lab/README.md
 tests/install/      # from-nothing install proofs: clean-container Docker + realistic
                       #   discovery-driven first run (~/.claude-style stores, macOS + Linux)
 ```
@@ -254,8 +256,8 @@ tests/install/      # from-nothing install proofs: clean-container Docker + real
 The public API is exactly four things:
 
 - **the retrieval tools** — `thread_search` and `thread_read`, served to agents
-  by `archive-mcp` and to a person by the `thread_archive search` /
-  `thread_archive read` verbs. One implementation, two front doors: their
+  by `archive-mcp` and to a person by the `thread-archive search` /
+  `thread-archive read` verbs. One implementation, two front doors: their
   parameters, defaults, and output are the same contract either way;
 - **the on-disk truth format** — versioned by `manifest.json`'s `version` and
   specified in [docs/format.md](https://github.com/ellamental/thread_archive/blob/main/docs/format.md).
@@ -274,7 +276,7 @@ The public API is exactly four things:
   from outside the repo, so they keep working.
 
 Everything else is private support machinery and may change without notice:
-the rest of the `thread_archive` CLI, the viewer's bundle and markup, and every
+the rest of the `thread-archive` CLI, the viewer's bundle and markup, and every
 other Python module. More surface gets exposed
 deliberately as it matures. `tests/test_public_api.py` ratchets the boundary,
 with the viewer's page routes pinned in `frontend/e2e/route-coverage.spec.ts`
@@ -296,14 +298,14 @@ answer is a support tier plus a repair loop, not a promise nobody can keep:
   modeled until fixed. Everything else is best-effort: same machinery where it
   reaches, community-maintainable via the plugin API.
 - **Drift is loud.** The skip and validation ledgers plus the nightly coverage
-  check produce per-source *degradation verdicts* (`thread_archive coverage` prints
+  check produce per-source *degradation verdicts* (`thread-archive coverage` prints
   them; the MCP search notice prepends a one-liner naming the remedy the next
   time you search, which is the moment you care).
 - **Preservation doesn't wait for the fix.** A degraded source's recently
   active raw files are snapshotted into `dumps/drift/<source>/` — bounded,
   incremental, never auto-deleted — so a fix that comes months later can still
   recover everything the provider has since pruned.
-- **The user's own agent writes the fix.** `thread_archive fix-import <provider>`
+- **The user's own agent writes the fix.** `thread-archive fix-import <provider>`
   scaffolds an override patch under `<home>/plugins/` (module, tests, collected
   samples, drift evidence, per-provider quirk notes, and a `PROTOCOL.md`
   written to be handed to an agent), leaving one job open: the parse logic.
@@ -315,9 +317,9 @@ answer is a support tier plus a repair loop, not a promise nobody can keep:
   and the ledger-driven re-import recovers the gap.
 - **Patches are temporary by default.** The next self-update retires them (a
   core release is the proper fix's vehicle; if drift persists, the notice
-  re-fires and the fix re-runs against the new core). `thread_archive fix-import
+  re-fires and the fix re-runs against the new core). `thread-archive fix-import
   <provider> --pin` keeps yours forever. Every lifecycle step is audited in
-  `patch-log.jsonl`, and `thread_archive providers` shows `patched` / `patched
+  `patch-log.jsonl`, and `thread-archive providers` shows `patched` / `patched
   (pinned)` state.
 
 ## Not supported
@@ -333,7 +335,7 @@ on a release:
   wired through the truth layer — the append-only event log, causality links,
   amendment records — by remapping one archive's ids past the other's.
   Mechanical, but unbuilt. *Moving* an archive to another machine is supported
-  — carry the directory, or `thread_archive restore <mirror> --to <home>`;
+  — carry the directory, or `thread-archive restore <mirror> --to <home>`;
   running two and reconciling them later is not.
 - **Anything but macOS and Linux.** The always-on pieces — watcher, scheduled
   backup, shared MCP server — are launchd LaunchAgents on macOS and systemd
@@ -345,22 +347,22 @@ on a release:
   everything in the archive.
 - **Live capture of web chats.** claude.ai, ChatGPT, and xAI arrive from account
   exports you download by hand — drop the ZIP on the viewer's `/upload` page (or
-  into `<home>/dumps/`, or run `thread_archive import-export`). The self-feeding
+  into `<home>/dumps/`, or run `thread-archive import-export`). The self-feeding
   path is the local agent harnesses.
 - **Driving a conversation.** The archive preserves and retrieves. It never
   writes back to a harness store and never sends a message.
 
 ## Web viewer
 
-The always-on watcher cohosts a local search + reader UI: `thread_archive watch --web`
+The always-on watcher cohosts a local search + reader UI: `thread-archive watch --web`
 (the shipped watcher service passes it) serves at `http://127.0.0.1:8787` — a stdlib
 HTTP server handing out a pre-built React bundle plus a few JSON endpoints, in
 the watcher's *own* process. One process, one SQLite engine — the viewer reads
 concurrently with the watcher's writes, which WAL makes safe (`_store/_base.py`).
 No second daemon: the viewer exists where the persistent URL is.
 
-`thread_archive web` opens that URL in a browser. An opener, not a server.
-`thread_archive web dev` opens it with the dev pages showing (below).
+`thread-archive web` opens that URL in a browser. An opener, not a server.
+`thread-archive web dev` opens it with the dev pages showing (below).
 
 **The URLs are a supported interface.** Other programs link into the viewer —
 editor "open in archive" buttons, sibling consoles' navbars, health probes — so
@@ -385,9 +387,9 @@ new route without a browser case reds the suite.
 
 **Dev pages** are the exception to the table above, and deliberately not part of
 its contract. `/retrieval` reports on the search *pipeline* — served latency by
-warm and cold regime, per-stage costs, gold-run quality — which is a maintainer's
+warm and cold regime, per-stage costs — which is a maintainer's
 instrument rather than anything the archive is for, so the navigation only
-advertises it after `thread_archive web dev` (`web --no-dev` puts it back; the
+advertises it after `thread-archive web dev` (`web --no-dev` puts it back; the
 viewer remembers the choice). Its report comes from `search_lab/`, which lives in
 the source repo and not in an install, so a `pip install` serves a `404` there
 and the page says so.
@@ -448,7 +450,7 @@ config with catch-up enabled:
 ```
 
 The shared HTTP server daemon is read-only by default too. Install it with
-`thread_archive daemon install --mcp --mcp-ingest` only when it should own catch-up;
+`thread-archive daemon install --mcp --mcp-ingest` only when it should own catch-up;
 leave the flag off when the watcher already owns ingestion.
 
 ## Similar and related projects

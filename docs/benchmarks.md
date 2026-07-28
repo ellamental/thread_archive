@@ -5,15 +5,17 @@ each piece is in, and what it would cost to put on the bench. `search_lab/README
 is the manual for the instruments that exist; this is the survey of what could
 feed them.
 
-Two things are worth as much of as we can get:
+One thing is worth as much of as we can get: **turnkey benchmarks with
+deterministic scoring** — a corpus, queries, and relevance labels somebody else
+produced, scored by id-match rather than by an LLM's opinion. Those labels are the
+only ones on this bench that no ranker of ours chose, which is the whole reason a
+number off them means anything.
 
-- **Turnkey benchmarks with deterministic scoring** — a corpus, queries, and
-  relevance labels somebody else produced, scored by id-match rather than by an
-  LLM's opinion. These are the only labels on the bench that no ranker of ours
-  chose.
-- **Corpora shaped like agent sessions** — Claude Code / Codex / Cursor
-  transcripts. These carry no labels, so each needs a mining pass; what makes one
-  worth mining is the **signal** it ships that can fix gold outside retrieval.
+Corpora shaped like agent sessions — Claude Code / Codex / Cursor transcripts —
+are the domain match, and they carry no labels. Producing labels for them locally
+is not on the table: see `docs/search-quality.md` → "The admission rule" for why
+every scheme for doing so either grades the ranker with itself or asks questions
+nobody asked.
 
 ## The two axes that decide whether a benchmark is worth anything
 
@@ -35,7 +37,7 @@ A benchmark is useful here if it is **deterministic in scoring** and at least
 partially independent in **provenance**. Domain match is the third axis and it is a
 weighting, not a gate — a biased-but-independent measurement beats a circular one.
 
-## Part 1 — Turnkey benchmarks
+## Turnkey benchmarks
 
 ### On the bench now
 
@@ -116,7 +118,7 @@ HuggingFace fetch branch beside `beir_eval.py`'s UKP zip fetcher.
 
 **RTEB** (the MTEB leaderboard's retrieval section) is a source rather than a
 benchmark: it aggregates public retrieval sets across legal / finance / code /
-medical with held-back private splits. Worth mining for candidates; the private
+medical with held-back private splits. Worth trawling for candidates; the private
 splits are unavailable to us.
 
 ### Rejected on inspection, not on paper
@@ -148,70 +150,6 @@ Subsampling to the qrels pool makes them runnable but breaks comparability with 
 published numbers, which is the only reason to run them. Skip unless someone wants
 a pooled-corpus variant with the caveat stated in the output.
 
-## Part 2 — Corpora to mine
-
-No labels ship with these. What decides whether one is worth the mining spend is the
-**signal** available to fix gold outside retrieval, because a corpus mined by
-searching with our own stack reproduces the circularity on new data and buys
-nothing.
-
-Signals, best first:
-
-- **`git` commit linkage** — the session lives in (or is linked to) a repo, so a
-  commit fixes which session did the work. No search runs during labeling and the
-  labeler never reads the target thread, so there's no vocabulary leakage either.
-- **file-edit provenance** — the trajectory records which files a session touched,
-  which yields multi-answer gold sets no ranker had a hand in choosing.
-- **task/issue linkage** — the session resolves a known issue, which supplies a
-  natural query.
-- **none** — labels would have to come from an agent searching the corpus.
-  Circular; don't bother.
-
-| corpus | sessions | harnesses | shape | mining signals | status |
-|---|---|---|---|---|---|
-| **SWE-chat** | ~6,000 / 200+ repos | Claude Code (85%), OpenCode, Gemini CLI, Cursor, Factory Droid | native Claude Code JSONL for the CC share | **commit linkage with line-level authorship**, file edits, issue text | fully ingested — 5,124 sessions / 189 repos, no cap; Claude-Code-shaped only |
-| **SpecStory** | 14,789 (2,588 CLI) / 1,441 repos | IDE + CLI agents | timestamped Markdown under `.specstory/history/` **committed into the repo** | **commit linkage free from `git log`** over the history dir; file edits | needs a Markdown importer + a license filter |
-| **CORE-Bench L2 source repos** | 632 repos | n/a — PR/diff data, not sessions | git diffs | patch-aligned labels, already extracted | usable as a benchmark directly (Part 1) |
-| **SWE-rebench / SWE-Hero OpenHands trajectories** | 34K (SWE-Hero) | OpenHands scaffold | agent step traces, JSONL | issue linkage, file edits; **synthetic** (Qwen3-Coder-generated, not human-driven) | large but model-generated — session *shape* without real user intent |
-| **CLI trajectory analysis** (`xz-Sean/cli_trajectory_analysis`) | 1,794 runs / 63K steps | MiniSWE, OpenHands, Terminus2 × 7 models | annotated trajectories, CC BY 4.0 | task linkage (Terminal-Bench), success/failure labels | small; benchmark-task-driven rather than real usage |
-| **trace-commons/agent-traces** | ~30 | Claude Code, Codex, Pi, Cursor, OpenCode | **native JSONL** + Parquet, donated from public repos | public-repo certification → commit linkage possible | seed-scale. Native format means our importer reads it unchanged — worth watching, not worth mining yet |
-| **cfahlgren1/agent-sessions-list** | 20 (4 MB) | Claude Code, Codex, Hermes, Factory/Droid, Pi | native session traces | none stated | seed-scale, same note |
-| **WildChat-1M** | 1.04M conversations | ChatGPT (not agentic) | chat turns, ODC-BY | none | conversation-shaped at scale, but no tool use, no repo, no agentic structure |
-| **LMSYS-Chat-1M** | 1M conversations / 25 models | chat arena | chat turns | none | non-commercial terms only; same shape objection as WildChat |
-
-### The cheapest real win is already downloaded
-
-The embed-budget cap is gone: archive now ingests every readable SWE-chat
-transcript, 5,124 sessions over 189 repositories, and the bench runs on all of it.
-What is still untouched is **~900 sessions across four other harnesses** — OpenCode
-(624), Gemini CLI (56), Cursor (19) and Codex (213) — each costing an importer or
-an export path, and each buying the one thing this page cannot otherwise get:
-cross-harness generalization, which nothing currently measures.
-
-The bigger constraint moved with the cap. The corpus is now 5,124 documents and the
-query set is 75, all single-gold, all from one protocol. More corpus does not fix
-that; more *labels* do, and the only ungrounded-by-search signal left in the
-download is the commit linkage, which already yields 1,284 attributable sessions
-against the 75 currently mined.
-
-### The signal nobody else has
-
-Archive's own tool-use trail records which sessions edited which file. That is
-**file-edit provenance over our own corpus**: multi-answer gold sets, in domain,
-that no ranker selected. No external corpus can match it on domain, and no mined-
-by-searching protocol can match it on independence.
-
-### Rejected, with reasons
-
-- **TraceLab** (UW SyFI, 8,058 sessions / 665K steps, Claude + Codex) — deliberately
-  excludes prompt text, tool inputs, and file paths. It is a workload/telemetry
-  dataset. There is nothing to search.
-- **MemoryAgentBench, EvoMemBench, StreamMemBench, PersonaMem, DialSim, PERMA** —
-  score the *answer* via LLM judge, not the *retrieval*. No evidence-id labels means
-  no qrels, so nothing drops into this bench without inventing labels first.
-- **MSC / ConversationChronicles** — multi-session dialogue, but the session
-  structure is persona continuity rather than evidence location; no retrieval gold.
-
 ## Cost model
 
 - Two rates, and the ratio between them is what decides most of this page.
@@ -232,5 +170,3 @@ by-searching protocol can match it on independence.
 - `python -m search_lab benchmark`'s standard tier is the set whose corpus is
   already built. Every row added here grows it; the plan estimator prices each row
   from what it actually took last time, so `--list` is the honest budget.
-- A mining pass spends tokens per case; a turnkey benchmark spends none. That is
-  the whole difference between Part 1 and Part 2 on the ledger.

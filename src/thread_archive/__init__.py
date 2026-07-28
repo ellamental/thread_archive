@@ -6,8 +6,8 @@ path, no server backends.
 The public API is exactly four things:
 
 * the retrieval tools — ``thread_search`` and ``thread_read``, served to agents
-  by ``archive-mcp`` and to a person by the ``thread_archive search`` /
-  ``thread_archive read`` verbs (one implementation behind both),
+  by ``archive-mcp`` and to a person by the ``thread-archive search`` /
+  ``thread-archive read`` verbs (one implementation behind both),
 * the on-disk truth format (``docs/format.md``, versioned by
   ``manifest.json``'s ``version``) — the durability promise: data written by
   one release stays readable by the next. Read-only access to the documented

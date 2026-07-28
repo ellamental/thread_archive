@@ -82,7 +82,7 @@ describe('Sidebar search filters', () => {
 
 // The retrieval report is a maintainer's instrument, not something a person who
 // came to read their conversations has a use for — so the rail advertises it only
-// once someone asks for the dev pages (`thread_archive web dev`).
+// once someone asks for the dev pages (`thread-archive web dev`).
 describe('dev pages in the rail', () => {
   afterEach(() => window.localStorage.clear())
 

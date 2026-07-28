@@ -5,8 +5,8 @@ search for and which results they go on to read. This ledger captures that
 real task — every ``thread_search`` and ``thread_read`` the tools serve, over
 MCP or from the CLI verbs — so evals (and the knowledge-layer verdict) can be
 built from observed behaviour instead of intuition: it is the sampling frame of
-real query shapes the gold miner draws from. A read joins to the searches before
-it by thread id. A ``surface`` field marks the calls that came from a terminal;
+real query shapes, and the population ``latency_replay.py`` measures speed over. A
+read joins to the searches before it by thread id. A ``surface`` field marks the calls that came from a terminal;
 its absence means MCP, the population these records have always described.
 
 Records hold query text, filter parameters, result *ids*, and the call's
@@ -101,11 +101,11 @@ def read_calls(
     """The searches agents actually ran, newest first, as ``(query, kwargs)``.
 
     The observed distribution, which is a different population from any curated
-    case file and the only one that answers "did this change help *us*". Gold cases
-    are mined to be gradeable — a query with a knowable right answer — and that
-    selection quietly excludes most of what the shapes a change touches look like:
-    over this ledger, time-scoped asks, browse walks, and the sentence punctuation
-    an agent writes with are all common in traffic and near-absent from the golds.
+    case file. A case file is built to be gradeable — a query with a knowable right
+    answer — and that selection quietly excludes most of the shapes a change
+    touches: over this ledger, time-scoped asks, browse walks, and the sentence
+    punctuation an agent writes with are all common in traffic and near-absent from
+    any curated set.
 
     Deduped on the whole call, not the query text: the same words asked at page 1
     and at page 30 are two workloads and the second is the expensive one, while a

@@ -2,7 +2,7 @@
 
 The harness (``search_lab/retrieval_eval.py``) runs against the live archive (the
 CI retrieval-gate row runs its ``--probes-only`` mode); what needs test
-coverage is the logic that turns raw data into scores — the log-miner's
+coverage is the logic that turns raw data into scores — the log reader's
 tool-name classifier and search->read pairing rules, and the multi-gold /
 session-skip scoring loop.
 """

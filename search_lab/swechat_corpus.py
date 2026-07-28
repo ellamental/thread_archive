@@ -5,15 +5,14 @@
 collection of real coding-agent sessions from open-source developers (ODC-BY;
 arXiv:2604.20779). Its transcripts are native Claude Code JSONL, so the shipped
 claude-code importer ingests them unchanged — this harness only orchestrates the
-build and derives the provenance linkage that ``python -m search_lab.mine commit``
-consumes.
+build and derives the session↔commit provenance linkage.
 
 Why this corpus is worth a home of its own: it ships **session ↔ commit
 provenance**, and that is what a gold label has to be fixed by. A label
 established by searching the corpus can only describe what the incumbent ranker
 already reaches; a commit is an artifact outside retrieval that says which
 session did the work, whatever search thinks. No other corpus on this bench
-carries that, so this is the only home the ``commit`` miner can run in. It is
+carries that, and it is what a provenance-fixed label needs. It is
 domain-matched besides — agent session logs, not the mismatched third-party IR
 corpora ``beir_eval`` / ``cdr_eval`` calibrate against — and written by other
 people about other codebases, so nothing here was authored by whoever tunes the
@@ -56,7 +55,6 @@ Usage::
 
     python search_lab/swechat_corpus.py --data ~/dev/swe-chat-data/swe-chat
     python search_lab/swechat_corpus.py --data ... --linkage-only   # reuse built home
-    THREAD_ARCHIVE_HOME=<home> python -m search_lab.mine commit --target 10
 """
 
 from __future__ import annotations
@@ -75,11 +73,14 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import eval_home  # noqa: E402
-from mine import commit_linked  # noqa: E402
 from snapshot import stamp_snapshot  # noqa: E402
 
 from thread_archive import _api as api  # noqa: E402
 from thread_archive._store import use_session  # noqa: E402
+
+#: The linkage file this build writes into the gold dir: one row per session,
+#: naming the commits that session demonstrably authored.
+LINKAGE_NAME = "commit-linkage.jsonl"
 
 DEFAULT_HOME = eval_home.CACHE_ROOT / "homes" / "swe-chat"
 DEFAULT_DATA = Path.home() / "dev" / "swe-chat-data" / "swe-chat"
@@ -389,7 +390,7 @@ def main(argv: list[str] | None = None) -> int:
                     help="where this corpus's derived artifacts land "
                          "(default: gold/ beside the download)")
     ap.add_argument("--out", type=Path, default=None,
-                    help=f"linkage file (default <gold-dir>/{commit_linked.LINKAGE_NAME})")
+                    help=f"linkage file (default <gold-dir>/{LINKAGE_NAME})")
     ap.add_argument("--limit", type=int, default=0, metavar="N",
                     help="ingest only the first N transcripts (0 = all). A smoke "
                          "test for the build itself — it truncates in filename "
@@ -422,14 +423,14 @@ def main(argv: list[str] | None = None) -> int:
           f"session(s) -> {groups_path}")
 
     rows = build_linkage(args.data, mapping)
-    out = write_linkage(rows, (args.out or gold / commit_linked.LINKAGE_NAME).expanduser())
+    out = write_linkage(rows, (args.out or gold / LINKAGE_NAME).expanduser())
 
     repos = len({r["repo"] for r in rows})
     print(f"linkage: {len(rows)} session(s) with attributable commits across "
           f"{repos} repo(s) -> {out}")
 
     # The home is the snapshot: it is built from a fixed download and nothing
-    # appends to it, so it needs the manifest mining binds against, not a copy of
+    # appends to it, so it needs the manifest a case file binds against, not a copy of
     # itself. Stamped last, once the corpus is final — the id is a content
     # fingerprint, so a rebuild takes a new one and the previous run's golds read
     # as stale instead of scoring against a corpus that changed underneath them.
@@ -437,8 +438,7 @@ def main(argv: list[str] | None = None) -> int:
     print(f"snapshot: {home} stamped {manifest['snapshot_id']} "
           f"({manifest['counts']['threads']} threads, "
           f"{manifest['counts']['vectors']} vectors)")
-    print(f"next: THREAD_ARCHIVE_HOME={home} python -m search_lab.mine commit --target 10 \\\n"
-          f"        --linkage {out} --out {gold / 'commit-cases.jsonl'}")
+    print(f"linkage: {out}")
     return 0
 
 

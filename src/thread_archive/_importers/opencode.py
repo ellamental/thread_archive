@@ -144,7 +144,7 @@ def import_opencode_db(db_path) -> DbScanResult:
         except Exception as e:  # noqa: BLE001 — one bad session must not stop the scan
             # Counted and carried out to the watcher, not just logged: a scan that
             # reports only "nothing new" makes a failed session indistinguishable from
-            # an unchanged one, and `thread_archive status` stays green while content is
+            # an unchanged one, and `thread-archive status` stays green while content is
             # missing. The session's watermark never advanced, so it retries.
             logger.exception("import_opencode_db: session %s failed; skipping", session_id[:12])
             summary.failed += 1

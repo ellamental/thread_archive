@@ -167,24 +167,6 @@ def test_a_dataset_row_carries_the_published_reference_it_is_read_against() -> N
     assert scifact["reference"]["bm25"] > 0
 
 
-# ── miners ───────────────────────────────────────────────────────────────────
-
-def test_the_miner_list_is_the_registry() -> None:
-    from search_lab import mine
-
-    assert [m["name"] for m in inventory.miners()] == [
-        m.name for m in mine.load_registry()]
-
-
-def test_a_miner_reports_what_fixed_its_gold() -> None:
-    # The field that decides what a number scored against these labels may be
-    # claimed to mean — a miner with no declared source is one that never thought
-    # about the admission rule.
-    for miner in inventory.miners():
-        assert miner["gold_source"], f"{miner['name']} declares no gold source"
-        assert isinstance(miner["retrieval_free"], bool)
-
-
 # ── the run ledger ───────────────────────────────────────────────────────────
 
 def _ledger(home, records: list[dict]) -> None:
@@ -398,7 +380,7 @@ def test_the_payload_is_json_serializable_and_carries_every_section() -> None:
     # 500 rather than a page.
     payload = inventory.inventory()
     assert set(payload) >= {"cache_root", "cache", "code_id", "families",
-                            "benchmarks", "datasets", "miners"}
+                            "benchmarks", "datasets"}
     json.dumps(payload)
 
 
@@ -407,92 +389,3 @@ def test_the_payload_carries_no_scored_case_files() -> None:
     # case counts beside them reads as a measurement surface, which is exactly the
     # claim nothing on this archive's own corpus can make.
     assert "gold" not in inventory.inventory()
-
-
-# ── mining: the two breakdowns ───────────────────────────────────────────────
-
-def test_gold_dirs_includes_the_archive_and_every_dataset_that_declares_one():
-    from search_lab import inventory
-
-    dirs = inventory.gold_dirs()
-    assert dirs[0]["dataset"] == "archive"
-    # A dataset's gold dir is claimed by the dataset, never found by globbing: a
-    # directory nobody claims is a directory with some JSONL in it.
-    assert "swe-chat" in {d["dataset"] for d in dirs}
-
-
-def test_case_file_row_reads_shape_without_parsing_the_file_whole(tmp_path):
-    import json as _json
-
-    from search_lab import inventory
-
-    p = tmp_path / "commit-cases.jsonl"
-    p.write_text("\n".join(_json.dumps(r) for r in [
-        {"query": "a", "gold": ["T1"], "miner": "commit", "snapshot_id": "s1"},
-        {"query": "b", "gold": ["T1", "T2", "T3"], "miner": "commit",
-         "snapshot_id": "s1"},
-    ]) + "\ntorn line\n")
-    row = inventory._case_file_row(p)
-    assert row["cases"] == 2 and row["miners"] == ["commit"]
-    assert row["gold_min"] == 1 and row["gold_max"] == 3
-    # A file of single-gold cases measures findability and no completeness, which
-    # is worth seeing before anyone reads a number off it.
-    assert row["single_gold"] == 1
-    assert row["snapshot_ids"] == ["s1"]
-
-
-def test_case_file_row_survives_an_unreadable_file(tmp_path):
-    from search_lab import inventory
-
-    row = inventory._case_file_row(tmp_path / "gone-cases.jsonl")
-    assert row["cases"] == 0 and row["unreadable"] is True
-
-
-def test_mining_cuts_the_same_runs_by_pipeline_and_by_dataset(tmp_path):
-    import json as _json
-
-    from search_lab import inventory
-
-    home = tmp_path / "gold"
-    home.mkdir()
-    (home / "mine-runs.jsonl").write_text("\n".join(_json.dumps(r) for r in [
-        {"kind": "mine-run", "at": "2026-07-01T00:00:00Z", "miner": "commit",
-         "attempted": 10, "written": 22, "failed": 3,
-         "outcomes": {"ok": 7, "misattributed": 3}, "cost_usd": 4.0},
-        {"kind": "mine-run", "at": "2026-07-02T00:00:00Z", "miner": "commit",
-         "attempted": 5, "written": 9, "failed": 1,
-         "outcomes": {"ok": 4, "no-file-overlap": 1}, "cost_usd": 2.0},
-    ]) + "\n")
-    (home / "commit-cases.jsonl").write_text(
-        _json.dumps({"query": "q", "gold": ["T1"], "miner": "commit"}) + "\n")
-
-    m = inventory.mining([
-        {"dataset": "demo", "corpus": "a test corpus", "path": str(home)}])
-
-    (miner,) = m["by_miner"]
-    assert miner["runs"] == 2 and miner["attempted"] == 15 and miner["written"] == 31
-    # Outcomes accumulate across runs, each reason kept apart.
-    assert miner["outcomes"] == {"ok": 11, "misattributed": 3, "no-file-overlap": 1}
-    assert miner["cost_usd"] == 6.0 and miner["datasets"] == ["demo"]
-
-    (dataset,) = m["by_dataset"]
-    assert dataset["runs"] == 2 and dataset["cases"] == 1 and dataset["files"] == 1
-    assert dataset["miners"] == ["commit"]
-
-    # The same runs, cut two ways — one population, not two.
-    assert m["totals"]["runs"] == 2 == sum(s["runs"] for s in m["by_miner"])
-    assert m["totals"]["cases"] == 1
-
-
-def test_mining_reports_a_corpus_with_supply_and_no_runs(tmp_path):
-    """The state that would otherwise render as a zero identical to 'nothing to
-    mine': a corpus with 1,284 mineable units nobody has spent on."""
-    from search_lab import inventory
-
-    home = tmp_path / "gold"
-    home.mkdir()
-    (home / "commit-linkage.jsonl").write_text('{"thread_id": "T"}\n' * 3)
-    (row,) = inventory.mining([
-        {"dataset": "swe-chat", "corpus": "", "path": str(home)}])["by_dataset"]
-    assert row["runs"] == 0 and row["cases"] == 0
-    assert row["supply"] == {"commit_linked_sessions": 3}

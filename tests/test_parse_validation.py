@@ -228,7 +228,7 @@ def test_record_drift_empty_findings_is_a_noop(archive_home):
 
 
 def test_drift_surfaces_in_the_coverage_check(archive_home):
-    # The whole point of the ledger: drift shows up in `thread_archive coverage` / the
+    # The whole point of the ledger: drift shows up in `thread-archive coverage` / the
     # nightly, not just in daemon logs.
     from thread_archive._ops.coverage import check_coverage
     from thread_archive._ops.health import read_health

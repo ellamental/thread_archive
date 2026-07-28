@@ -1,4 +1,4 @@
-"""Retrieval at a terminal: `thread_archive search` and `thread_archive read`.
+"""Retrieval at a terminal: `thread-archive search` and `thread-archive read`.
 
 These verbs are the supported half of the CLI — the MCP tools with a shell in
 front of them (thread_archive/_tools.py is the one implementation). So what is

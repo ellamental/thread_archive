@@ -269,7 +269,7 @@ def test_mcp_search_prepends_degradation_notice(archive_home) -> None:
     out = thread_search("hello")
     assert out.startswith("note: claude-code import is degraded")
     assert "since 2026-07-12" in out
-    assert "thread_archive fix-import claude-code" in out
+    assert "thread-archive fix-import claude-code" in out
     assert "hello mcp" in out  # the notice prepends; results still render
 
     # a healthy verdict clears it
@@ -493,9 +493,9 @@ def test_http_server_serves_the_shared_streamable_transport(archive_home) -> Non
             proc.stdout.close()
 
 
-def test_mcp_search_resolves_thread_and_topic_refs(archive_home) -> None:
-    """thread_id / topic_id accept any ref shape and resolve up front; a ref
-    matching nothing says so instead of silently returning zero hits."""
+def test_mcp_search_resolves_thread_refs(archive_home) -> None:
+    """thread_id accepts any ref shape and resolves up front; a ref matching
+    nothing says so instead of silently returning zero hits."""
     f = archive_home / "sess.jsonl"
     _write_cc(f, [USER, ASSISTANT])
     ta.import_path(f)
@@ -506,11 +506,6 @@ def test_mcp_search_resolves_thread_and_topic_refs(archive_home) -> None:
     # legacy-shaped ref that matches nothing → explicit not-found, not empty results
     missing = thread_search("hello", thread_id="999999999")
     assert "thread 999999999 not found" in missing
-    # topic_id resolves through the same ref machinery
-    resolved = thread_search("hello", topic_id=tid)
-    assert "not found" not in resolved
-    missing_topic = thread_search("hello", topic_id="999999999")
-    assert "topic 999999999 not found" in missing_topic
 
 
 def test_throttle_skips_when_a_pass_is_in_flight(monkeypatch) -> None:

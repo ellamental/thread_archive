@@ -5,9 +5,9 @@ The whole read surface the UI needs already exists as the plain Python library
 skin over it — no ranking/fusion logic is duplicated here. :func:`route` is a pure
 ``(method, path, params, body) -> (status, content_type, body, headers)`` function
 so tests drive it without opening a socket. :func:`serve_in_thread` runs it in a
-background daemon thread so the always-on ``thread_archive watch --web`` process can
+background daemon thread so the always-on ``thread-archive watch --web`` process can
 cohost the viewer (one process, one engine) — that's how the read surface gets a
-persistent URL with no extra daemon. ``thread_archive web`` opens that URL; it
+persistent URL with no extra daemon. ``thread-archive web`` opens that URL; it
 never starts a server of its own.
 
 A few endpoints write: ``POST /api/upload`` accepts an account-export ZIP into
@@ -578,8 +578,8 @@ def _dev_surface(name: str):
     """A dev page's data module out of :mod:`.._dev`, or None.
 
     Both dev pages are fed by the search lab, not the product — the retrieval
-    report reads the bench's gold and latency ledgers, and the inventory reads the
-    bench's registries — and the lab ships in the source tree, never in a wheel.
+    report reads the bench's latency ledgers, and the inventory reads the bench's
+    registries — and the lab ships in the source tree, never in a wheel.
     So the viewer reaches them only through :mod:`.._dev`, which is excluded from
     the wheel for the same reason: an install has neither, this import fails, and
     the endpoint 404s.
@@ -1081,7 +1081,7 @@ def route(
             hours=_int(params, "hours", report.DEFAULT_HOURS, hi=365 * 24)))
 
     if path == "/api/search-lab":
-        # What the bench has to measure with — benchmark rows, corpora, miners.
+        # What the bench has to measure with — benchmark rows and corpora.
         # Read off the lab's own registries and the cache root on disk, so it
         # describes the box rather than the index, and answers during a rebuild.
         module = _dev_surface("lab_inventory")
@@ -1274,7 +1274,7 @@ class _ArchiveHTTPServer(ThreadingHTTPServer):
 def serve_in_thread(*, host: str = "127.0.0.1", port: int = 8787) -> ThreadingHTTPServer:
     """Start the viewer on a background daemon thread and return the server.
 
-    For ``thread_archive watch --web``: the always-on watcher process cohosts the read
+    For ``thread-archive watch --web``: the always-on watcher process cohosts the read
     surface so there's a persistent URL without a second daemon. Assumes the caller
     already opened the archive (the watcher does). The thread is a daemon, so it dies
     with the process; for a clean stop the caller calls ``shutdown()`` then

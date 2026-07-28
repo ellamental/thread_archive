@@ -2,7 +2,7 @@
 behind both front doors.
 
 Retrieval is served two ways: as MCP tools (:mod:`.._mcp.server`, what an agent
-calls mid-conversation) and as the ``thread_archive search`` / ``thread_archive
+calls mid-conversation) and as the ``thread-archive search`` / ``thread_archive
 read`` CLI verbs (what a person types at a terminal). Both call the functions
 here, so there is one contract rather than two that drift: the same default
 scope, the same ref resolution, the same degradation notice, the same rendered
@@ -65,7 +65,7 @@ def _served_by() -> Optional[str]:
 
 
 def _resolve_ref(ref: int | str) -> Optional[str]:
-    """Resolve a thread/topic ref — a ULID thread id, a legacy integer alias, or
+    """Resolve a thread ref — a ULID thread id, a legacy integer alias, or
     a provider session id — to the archive's ULID thread id; None when nothing
     matches. See :func:`thread_archive._retrieval.read.resolve_thread_ref`."""
     from ._retrieval.read import resolve_thread_ref
@@ -99,7 +99,7 @@ def _commit_note(scope: dict) -> str:
     """What a ``commit=`` scope resolved to, as the note printed above the results.
 
     Every other scope filters by one fixed relation — ``path`` means "touched this
-    file", ``topic_id`` means "cited under this topic". This one is a *set* of
+    file", ``thread_id`` means "inside this conversation". This one is a *set* of
     contributing sessions assembled from an authorship window, so the note carries
     what the rows cannot: how much of the commit each accounts for, which of them
     actually ran it, and the fact that file overlap is evidence rather than proof.
@@ -186,7 +186,7 @@ def _degradation_notices() -> str:
                 f"note: {source} import is degraded ({phrase}"
                 + (f" since {since}" if since else "")
                 + f") — recent {source} content may be missing from results. "
-                f"remedy: thread_archive fix-import {source}"
+                f"remedy: thread-archive fix-import {source}"
             )
         return "\n".join(lines) + "\n"
     except Exception:  # noqa: BLE001 — advisory; retrieval must not care
@@ -197,7 +197,6 @@ def thread_search(
     query: str,
     limit: int = 10,
     thread_id: Optional[int | str] = None,
-    topic_id: Optional[int | str] = None,
     content_type: Optional[str] = None,
     exclude_content_type: Optional[str] = None,
     since: Optional[str] = None,
@@ -234,8 +233,8 @@ def thread_search(
     yesterday" is ``query='', since='1d'``; "recent cursor sessions" is
     ``query='', source='cursor'``; ``sort='oldest'`` flips to the earliest
     threads. Each row carries the thread id (open it: ``thread_read``) and its
-    newest event id (open at the tail: ``around_event``). A browse hides topic
-    and system threads unless ``types``/``agents`` says otherwise; ranking
+    newest event id (open at the tail: ``around_event``). A browse hides
+    non-conversation threads unless ``types``/``agents`` says otherwise; ranking
     options (content_type, context) don't apply.
 
     The whole conversation is searched by default — user messages, thread titles,
@@ -250,22 +249,21 @@ def thread_search(
 
     Query grammar: natural language, "quoted phrases", boolean AND/OR/NOT,
     pipe-OR (a|b), and code identifiers (get_session, a.b.c). Filter by
-    ``thread_id`` or ``topic_id`` (a topic's member conversations) —
-    both accept a ULID thread id, a legacy integer alias, or a provider session
-    id, the same ref shapes ``thread_read`` takes —
+    ``thread_id`` — a ULID thread id, a legacy integer alias, or a provider
+    session id, the same ref shapes ``thread_read`` takes —
     ``content_type`` (default: everything but derived summaries; 'all' folds
     those in too),
     ``exclude_content_type`` (comma-separated types to drop), ``tool_name``,
     ``source`` (comma-separated providers, e.g. 'claude-code,cursor'),
     ``types`` (comma-separated ``thread_type`` values — 'conversation',
-    'topic', 'system'), and a ``since``/``until`` window (ISO timestamp or '7d').
+    'system'), and a ``since``/``until`` window (ISO timestamp or '7d').
 
     Agent-run threads — subagent / machinery sessions (🤖-titled) — are
     **excluded by default**: a swarm echoes its spawning prompt verbatim, and
     those copies would drown the conversation that asked. Pass
     ``agents='include'`` to search them alongside conversations, or
     ``agents='only'`` for just them ("what did my subagents do"). An explicit
-    ``thread_id``/``topic_id`` scope always reaches them.
+    ``thread_id`` scope always reaches them.
 
     ``group`` chooses how results relate to threads. Ranked results default to
     **one row per thread** — the thread's best hit, with its other hits folded
@@ -382,12 +380,6 @@ def thread_search(
             return (f"thread {thread_id} not found — thread_id takes a ULID thread id, "
                     f"a legacy integer id, or a provider session id")
         thread_id = resolved
-    if topic_id is not None:
-        resolved = _resolve_ref(topic_id)
-        if resolved is None:
-            return (f"topic {topic_id} not found — topic_id takes a topic's ULID id "
-                    f"or its legacy integer id")
-        topic_id = resolved
     # Default scope is the whole conversation minus derived summaries; an explicit
     # type targets one, and content_type='all' drops even the summary exclusion
     # (see the constants).
@@ -404,7 +396,7 @@ def thread_search(
     type_list = [t.strip() for t in types.split(",") if t.strip()] if types else None
     op_list = [o.strip() for o in path_ops.split(",") if o.strip()] if path_ops else None
 
-    # An ordinary thread scope, like topic_id — but resolved here rather than in the
+    # An ordinary thread scope — but resolved here rather than in the
     # engine, because the miss has to explain itself: a sha in no session and no
     # known repo scopes to nothing, and bare zero rows would read as "no session
     # touched this commit" when the truth is "that sha was never found". This is the
@@ -423,7 +415,6 @@ def thread_search(
             query,
             limit=limit,
             thread_id=thread_id,
-            topic_id=topic_id,
             content_types=cts,
             exclude_content_types=[*(exclude or []), *extra_exclude] or None,
             since=since,
@@ -489,7 +480,7 @@ def thread_search(
         _usage.record_search(
             query,
             params={
-                "limit": limit, "thread_id": thread_id, "topic_id": topic_id,
+                "limit": limit, "thread_id": thread_id,
                 "content_type": content_type,
                 "exclude_content_type": exclude_content_type, "since": since,
                 "until": until, "tool_name": tool_name, "source": source,
@@ -529,16 +520,12 @@ def thread_read(
 
     ``thread_id`` accepts three ref shapes, distinguished by form alone: the
     archive's own **ULID** thread id (26-char Crockford base32 — what search
-    results and topic pages carry); an all-digit **legacy integer id** (a
+    results carry); an all-digit **legacy integer id** (a
     permanent alias — integer ids pasted in old conversations keep resolving);
     or a provider **session uuid** (the id a tool like claude-code / cursor /
     codex knows the conversation by — its ``source_id``, newest match wins).
     Any of the three can be passed straight through without looking the ULID up
     first.
-
-    A **topic id** (from a topic link in an old conversation) reads as the
-    topic's page instead of a transcript — a render of existing
-    topic-graph records; retrieval only ever reads them.
 
     ``mode`` picks the view: 'user' (default) = only the USER messages — the real
     signal of what a thread was about and what was wanted, far cheaper than the

@@ -2,7 +2,7 @@
 
 The public API is exactly four things: the retrieval tools
 (``thread_search`` / ``thread_read`` — served to agents by ``archive-mcp`` and
-to a person by the ``thread_archive search`` / ``thread_archive read`` verbs),
+to a person by the ``thread-archive search`` / ``thread-archive read`` verbs),
 the on-disk truth format (docs/format.md), the provider plugin API
 (``thread_archive.provider``, docs/providers.md), and the web viewer's URLs
 (README → "Web viewer"). Everything else — the rest of the
@@ -15,9 +15,11 @@ a naming accident.
 from __future__ import annotations
 
 import argparse
+import inspect
 from pathlib import Path
 
 import thread_archive
+from thread_archive import _tools
 from thread_archive._web import route
 from thread_archive.cli import build_parser
 
@@ -115,6 +117,29 @@ def test_committed_web_endpoints_are_served(archive_home) -> None:
     assert route("GET", "/api/not-a-real-endpoint", {})[0] == 404  # the fallthrough
     for path in PUBLIC_WEB_ENDPOINTS:
         assert route("GET", path, {})[0] != 404, path
+
+
+def test_retrieval_tools_expose_no_extension_region_surface() -> None:
+    """The extension region (docs/format.md) is storage, not product.
+
+    ``archive-mcp`` generates its tool schema from these signatures and
+    docstrings, so a parameter or a paragraph here is shipped to every install
+    — including the overwhelming majority that have no knowledge layer writing
+    the region and so can never make it return anything. Reaching the graph is
+    the writing layer's own tools' job; keeping the seam private is what lets
+    that layer own its vocabulary without a format bump.
+    """
+    for tool in (_tools.thread_search, _tools.thread_read):
+        params = inspect.signature(tool).parameters
+        assert "topic_id" not in params, tool.__name__
+        assert "topic" not in (tool.__doc__ or "").lower(), tool.__name__
+
+    verbs = next(
+        a for a in build_parser()._actions if isinstance(a, argparse._SubParsersAction)
+    ).choices
+    for verb in ("search", "read"):
+        flags = {o for a in verbs[verb]._actions for o in a.option_strings}
+        assert "--topic-id" not in flags, verb
 
 
 def test_no_unsanctioned_public_modules() -> None:

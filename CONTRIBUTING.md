@@ -13,14 +13,14 @@ What does help:
 
 - **Bug reports are genuinely welcome** — especially import drift (a provider
   changed its on-disk format and something degraded). Open an issue with the
-  `thread_archive coverage` / `thread_archive status` output if you have it.
+  `thread-archive coverage` / `thread-archive status` output if you have it.
 - **Ideas and design suggestions**: open an issue and talk it through. If
   something substantial comes out of it, it gets written here, with the
   discussion as input.
 - **Provider support is the sanctioned extension point.** A new or fixed
   provider doesn't need a PR at all: the plugin API
   ([docs/providers.md](docs/providers.md)) lets you write and maintain a
-  provider in your own repo, and `thread_archive fix-import` scaffolds a local
+  provider in your own repo, and `thread-archive fix-import` scaffolds a local
   repair when a built-in one drifts.
 - **Fork it.** MIT license, no CLA, genuinely encouraged — if you want to take
   it somewhere we wouldn't, that's the right vehicle, not a patch queue.

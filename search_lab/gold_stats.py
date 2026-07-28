@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""What is actually in a mined case file — the gold's own quality panel.
+"""What is actually in a case file — the gold's own quality panel.
 
 A bench instrument, read deliberately::
 
@@ -7,22 +7,13 @@ A bench instrument, read deliberately::
     .venv/bin/python search_lab/gold_stats.py <cases.jsonl> --json
 
 Every other module in this lab measures *search*. This one measures the
-**benchmark**, which is a different question and the one nothing answered: a
-mined file is agent output, and agent output is not gold because a miner wrote it
-there. A case file can be internally fine and still measure almost nothing —
-every case single-gold, every query the same sentence with the subject swapped,
-every case drawn from one repo — and none of that is visible in a score. It is
-visible here.
+**benchmark**, which is a different question and the one nothing answered: a case
+file can be internally fine and still measure almost nothing — every case
+single-gold, every query the same sentence with the subject swapped, every case
+drawn from one repo — and none of that is visible in a score. It is visible here.
 
-Four panels, and each exists because a specific failure was found by hand and
+Three panels, and each exists because a specific failure was found by hand and
 should never have needed to be:
-
-:func:`yield_and_cost`
-    What the run spent and what it dropped, off the mining ledger
-    (:mod:`search_lab.mine_runs`) and the detail sidecar. Cases minted over units
-    drawn is the yield; the drop breakdown is the denominator that says whether
-    the file is a sample of the corpus or a sample of what one agent felt able to
-    write about.
 
 :func:`pool_shape`
     Gold-set and graded-pool sizes. A file of single-gold cases measures
@@ -32,10 +23,9 @@ should never have needed to be:
 
 :func:`query_shape`
     The distribution the queries are drawn from: length, and how concentrated
-    their openings are. **This is the panel that catches a template.** An
-    authoring agent handed one worked example will parrot it, and a file of 25
-    queries opening "that time we…" is one phrasing with 25 fillers rather than 25
-    samples of how anyone searches — which inflates nothing and invalidates
+    their openings are. **This is the panel that catches a template.** A file of
+    25 queries opening "that time we…" is one phrasing with 25 fillers rather than
+    25 samples of how anyone searches — which inflates nothing and invalidates
     everything, silently, because each individual query looks fine.
 
 :func:`coverage`
@@ -46,7 +36,7 @@ should never have needed to be:
 
 Panels needing the corpus (lexical leakage between a query and its gold) are
 skipped when no archive is open rather than failing — this runs against a file on
-disk, and a file outlives the home it was mined from.
+disk, and a file outlives the corpus it was written against.
 
 Reads only. It never rewrites a case file: a benchmark that edits itself in
 response to its own quality panel is not a benchmark.
@@ -82,9 +72,9 @@ WORD = re.compile(r"[a-z0-9_]{3,}")
 # ── loading ─────────────────────────────────────────────────────────────────
 
 def read_jsonl(path: Path) -> list[dict]:
-    """Rows of a JSONL file, skipping blanks and junk. A half-written mining run
-    leaves a torn last line, and refusing to read the other 300 cases over it would
-    make the panel useless exactly when something has gone wrong."""
+    """Rows of a JSONL file, skipping blanks and junk. A half-written file leaves a
+    torn last line, and refusing to read the other 300 cases over it would make the
+    panel useless exactly when something has gone wrong."""
     if not path.exists():
         return []
     out: list[dict] = []
@@ -95,13 +85,6 @@ def read_jsonl(path: Path) -> list[dict]:
             except json.JSONDecodeError:
                 continue
     return out
-
-
-def detail_path_for(cases_path: Path) -> Path:
-    """The reasoning sidecar beside a case file — the same rule the miners write
-    by (:func:`search_lab.mine._framework.detail_path_for`), restated here so this
-    instrument reads a file without importing the miner that wrote it."""
-    return cases_path.with_name(cases_path.stem + "-detail.jsonl")
 
 
 # ── small statistics ────────────────────────────────────────────────────────
@@ -147,52 +130,6 @@ def tokens(text: str) -> set[str]:
 
 
 # ── panels ──────────────────────────────────────────────────────────────────
-
-def yield_and_cost(cases: list[dict], details: list[dict],
-                   runs: list[dict]) -> dict[str, Any]:
-    """What the file cost and what it dropped.
-
-    Yield is cases per unit *drawn*, not per unit that succeeded: a miner that
-    silently discards two thirds of its sample is not producing a sample of the
-    corpus, and only the denominator shows it. Cost comes off the detail sidecar's
-    per-agent records, so it is what was actually billed rather than an estimate
-    from a price list."""
-    out: dict[str, Any] = {"cases": len(cases)}
-    costs = [_agent_cost(d) for d in details]
-    costs = [c for c in costs if c]
-    if costs:
-        out["cost_usd"] = {"total": round(sum(costs), 2),
-                           "per_unit": round(sum(costs) / len(costs), 3),
-                           "per_case": round(sum(costs) / len(cases), 3)
-                           if cases else None}
-    outcomes = Counter(d["outcome"] for d in details if d.get("outcome"))
-    if outcomes:
-        out["outcomes"] = dict(outcomes.most_common())
-        drawn = sum(outcomes.values())
-        out["units_drawn"] = drawn
-        out["cases_per_unit"] = round(len(cases) / drawn, 2) if drawn else None
-        out["drop_rate"] = round(1 - outcomes.get("ok", 0) / drawn, 3) if drawn else None
-    mine_runs = [r for r in runs if r.get("kind") == "mine-run"]
-    if mine_runs:
-        out["runs"] = len(mine_runs)
-        # The funnel is the newest run's, not a sum: stage counts across runs with
-        # different targets do not add into anything meaningful.
-        newest = mine_runs[0]
-        if newest.get("funnel"):
-            out["funnel"] = newest["funnel"]
-            out["funnel_at"] = newest.get("at")
-    return out
-
-
-def _agent_cost(detail: dict) -> float:
-    """The dollar cost recorded on one detail row, whichever key the miner used
-    (``agent`` for the commit miner, ``stats`` for the others)."""
-    for key in ("agent", "stats"):
-        block = detail.get(key)
-        if isinstance(block, dict) and block.get("cost_usd"):
-            return float(block["cost_usd"])
-    return 0.0
-
 
 def pool_shape(cases: list[dict]) -> dict[str, Any]:
     """Gold-set and graded-pool sizes — whether the file can measure completeness,
@@ -306,56 +243,13 @@ def coverage(cases: list[dict]) -> dict[str, Any]:
     return out
 
 
-def refusals(cases_path: Path) -> dict[str, Any]:
-    """What this corpus was *refused* for, from the record beside the cases.
-
-    The most under-read artifact a miner produces, and often the more informative
-    one. The cases say what a corpus could be asked; the refusals say what it could
-    not, and why — and several of the reasons are findings about the **dataset**
-    rather than about the run. ``misattributed`` at scale means a provenance join
-    is wrong; ``untargetable-commit`` at scale characterises the corpus's commit
-    hygiene; ``none-of-pool`` is the recall alarm; ``literal-names-nothing`` is the
-    authoring prompt failing its own contract.
-
-    Broken out by stage as well as reason, because where a unit died is what says
-    whether the benchmark got more correct or merely easier."""
-    rows = read_jsonl(_rejects_path(cases_path))
-    if not rows:
-        return {}
-    by_reason = Counter(str(r.get("reason")) for r in rows)
-    by_stage = Counter(str(r.get("stage")) for r in rows)
-    paid = sum(1 for r in rows if r.get("kind") == "agent")
-    # Rejected *queries* are sub-unit: a unit can be admitted with one of its
-    # queries thrown out, and that is a different event from the unit being refused.
-    tossed: Counter = Counter()
-    for row in rows:
-        for item in (row.get("detail") or {}).get("rejected") or []:
-            tossed[str(item.get("why"))] += 1
-    out: dict[str, Any] = {
-        "total": len(rows), "paid": paid,
-        "by_reason": dict(by_reason.most_common()),
-        "by_stage": dict(by_stage.most_common()),
-        "units": len({str(r.get("unit")) for r in rows if r.get("unit")}),
-    }
-    if tossed:
-        out["rejected_queries"] = dict(tossed.most_common())
-    return out
-
-
-def _rejects_path(cases_path: Path) -> Path:
-    """The refusals file beside a case file — the same rule the miners write by
-    (:func:`search_lab.mine._framework.rejects_path_for`), restated so this reads a
-    directory without importing the miner that filled it."""
-    return cases_path.with_name(cases_path.stem + "-rejects.jsonl")
-
-
 def leakage(cases: list[dict], *, limit: int = 200) -> dict[str, Any]:
     """How much of each query's vocabulary appears in the thread it is gold for.
 
-    The retrieval-free miners' claim is that the query was authored from an
-    artifact outside the corpus, so a query should *not* read like its answer. High
-    overlap means either the author saw the thread or the artifact quotes it, and
-    either way the case is easier than the protocol says. Needs an open archive;
+    A case file's claim is that the query was authored from an artifact outside
+    the corpus, so a query should *not* read like its answer. High overlap means
+    either the author saw the thread or the artifact quotes it, and either way the
+    case is easier than the protocol says. Needs an open archive;
     returns a note instead of failing when there is none."""
     try:
         from sqlalchemy import text as sa_text
@@ -395,27 +289,16 @@ def report(cases_path: Path, *, with_corpus: bool = False) -> dict[str, Any]:
     """Every panel for one case file, assembled. Panels that cannot run report a
     ``skipped`` note rather than raising, so a partial answer is still an answer."""
     cases = read_jsonl(cases_path)
-    details = read_jsonl(detail_path_for(cases_path))
-    runs = _ledger(cases_path.parent)
     out: dict[str, Any] = {
         "file": str(cases_path),
-        "miners": sorted({str(c["miner"]) for c in cases if c.get("miner")}),
-        "yield": yield_and_cost(cases, details, runs),
+        "cases": len(cases),
         "pool": pool_shape(cases),
         "queries": query_shape(cases),
         "coverage": coverage(cases),
-        "refusals": refusals(cases_path),
     }
     if with_corpus:
         out["leakage"] = leakage(cases)
     return out
-
-
-def _ledger(home: Path) -> list[dict]:
-    """The mining ledger beside a case file, newest first. Read directly rather
-    than through :mod:`search_lab.mine_runs` so this instrument keeps working on a
-    corpus directory copied off the machine that mined it."""
-    return list(reversed(read_jsonl(home / "mine-runs.jsonl")))
 
 
 #: When an opening distribution reads as a template rather than a sample. Either
@@ -448,31 +331,7 @@ def text_report(data: dict[str, Any]) -> str:
     """The panel as a readable block. Every number carries what it is read against
     — a bare concentration figure means nothing without knowing that 1.0 is spread
     and 0 is a single value."""
-    L: list[str] = [f"gold stats — {data['file']}"]
-    if data.get("miners"):
-        L.append(f"  miner: {', '.join(data['miners'])}")
-
-    y = data.get("yield") or {}
-    L += ["", "YIELD & COST"]
-    L.append(f"  cases {y.get('cases', 0)}"
-             + (f" from {y['units_drawn']} unit(s) drawn "
-                f"({y['cases_per_unit']} case/unit, drop rate {y['drop_rate']})"
-                if y.get("units_drawn") else ""))
-    if y.get("cost_usd"):
-        c = y["cost_usd"]
-        L.append(f"  spent ${c['total']} — ${c['per_unit']}/unit, ${c['per_case']}/case")
-    if y.get("outcomes"):
-        L.append("  outcomes: " + ", ".join(f"{k} {v}" for k, v in y["outcomes"].items()))
-    if y.get("funnel"):
-        L.append(f"  funnel (newest run, {y.get('funnel_at', '?')}):")
-        for row in y["funnel"]:
-            why = ", ".join(f"{k} {v}" for k, v in (row.get("reasons") or {}).items()
-                            if k != "ok")
-            L.append(f"    {'$' if row.get('kind') == 'agent' else ' '} "
-                     f"{row['stage']:<18} {row['in']:>5} → {row['out']:<5}"
-                     + (f"  ({why})" if why else ""))
-    else:
-        L.append("  funnel: not recorded (miner declares no stages)")
+    L: list[str] = [f"gold stats — {data['file']}", f"  {data.get('cases', 0)} case(s)"]
 
     p = data.get("pool") or {}
     L += ["", "POOL"]
@@ -528,21 +387,6 @@ def text_report(data: dict[str, Any]) -> str:
             L.append(f"  ⚠ {len(cov['template_shas'])} authoring templates in one "
                      "file — these cases are not one population")
 
-    rf = data.get("refusals") or {}
-    if rf:
-        L += ["", "REFUSALS"]
-        L.append(f"  {rf['total']} refusal(s) over {rf['units']} unit(s); "
-                 f"{rf['paid']} came from a paid gate")
-        L.append("  by stage:  " + ", ".join(f"{k} {v}" for k, v in rf["by_stage"].items()))
-        L.append("  by reason: " + ", ".join(f"{k} {v}" for k, v in rf["by_reason"].items()))
-        if rf.get("rejected_queries"):
-            L.append("  queries thrown out by QA: "
-                     + ", ".join(f"{k} {v}" for k, v in rf["rejected_queries"].items()))
-        L.append("  read these as facts about the corpus, not swarf: a refusal rate "
-                 "is a\n  characterisation of the material, and which reason "
-                 "dominates says whether\n  the benchmark got more correct or "
-                 "merely easier.")
-
     lk = data.get("leakage")
     if lk:
         L += ["", "LEAKAGE"]
@@ -557,7 +401,7 @@ def text_report(data: dict[str, Any]) -> str:
 
 def main(argv: Optional[list[str]] = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
-    ap.add_argument("cases", type=Path, help="a mined case file (*cases*.jsonl)")
+    ap.add_argument("cases", type=Path, help="a case file (*cases*.jsonl)")
     ap.add_argument("--json", action="store_true", dest="as_json",
                     help="emit the panel as JSON")
     ap.add_argument("--corpus", action="store_true",

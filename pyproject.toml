@@ -75,8 +75,8 @@ embeddings = [
 # rather than a considered subset. Runtime only — `dev` and `testing` are bench
 # and plugin-author tooling, not features, so they stay out.
 all = ["thread-archive[embeddings]", "thread-archive[leiden]"]
-# pyarrow: search_lab/swechat_corpus.py reads the SWE-chat parquet tables to derive the
-# commit miner's session↔commit linkage. Bench-only — no product code imports it.
+# pyarrow: search_lab/swechat_corpus.py reads the SWE-chat parquet tables to derive
+# its session↔commit linkage. Bench-only — no product code imports it.
 # hypothesis: generated queries against the never-raise contract (tests/test_search_fuzz.py).
 dev = ["pytest>=8.0", "pytest-cov>=5.0", "pytest-xdist>=3.6", "pytest-timeout>=2.3", "ruff>=0.6", "mypy>=1.11", "build>=1.2", "pyarrow>=17.0", "hypothesis>=6.100"]
 # What a provider plugin needs to test itself against the archive: the golden
@@ -90,12 +90,17 @@ Changelog = "https://github.com/ellamental/thread_archive/blob/main/CHANGELOG.md
 
 [project.scripts]
 # The single front door — setup wizard AND every operator verb, one namespaced
-# command. `thread_archive setup` runs first-run discovery/import/wiring; the
+# command. `thread-archive setup` runs first-run discovery/import/wiring; the
 # other verbs (watch, status, backup, verify, nightly, daemon, …) are the
-# operator seam that launchd/cron/scripts drive. Both spellings so
-# `pip install thread-archive` and docs that say thread_archive land together.
-thread_archive = "thread_archive.cli:main"
+# operator seam that launchd/cron/scripts drive.
+#
+# `thread-archive` is the command: it matches the distribution name, the MCP
+# server name, and the shell convention every other CLI on the box follows. The
+# underscore spelling stays installed as an alias — service units, shell history
+# and scripts written against it keep working — but nothing documents it, and
+# newly written units resolve the hyphen (`_service.spec.entry_path`).
 thread-archive = "thread_archive.cli:main"
+thread_archive = "thread_archive.cli:main"
 # The MCP server keeps its own console script — it's what MCP clients point at.
 archive-mcp = "thread_archive._mcp.server:main"
 

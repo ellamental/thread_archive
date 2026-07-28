@@ -1,12 +1,10 @@
 """``python -m search_lab <command>`` — the lab's front door.
 
-Two commands, because two things in here are *sets* rather than single
-instruments and both are worth invoking by name:
+One command, because one thing in here is a *set* rather than a single
+instrument and is worth invoking by name:
 
 * ``benchmark`` — run the bench as a set, skipping what is already measured at
   this configuration (:mod:`search_lab.benchmark`).
-* ``mine`` — the gold miners, the only tokens-spending tier
-  (:mod:`search_lab.mine`).
 
 Every other harness stays a script (``python search_lab/retrieval_eval.py``),
 which is how they are documented and how they are run: one instrument, its own
@@ -17,7 +15,7 @@ from __future__ import annotations
 
 import sys
 
-COMMANDS = ("benchmark", "mine")
+COMMANDS = ("benchmark",)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -31,10 +29,6 @@ def main(argv: list[str] | None = None) -> int:
         from search_lab import benchmark
 
         return benchmark.main(rest)
-    if command == "mine":
-        from search_lab.mine.__main__ import main as mine_main
-
-        return mine_main(rest)
     print(f"unknown command {command!r}; expected one of {', '.join(COMMANDS)}",
           file=sys.stderr)
     return 1

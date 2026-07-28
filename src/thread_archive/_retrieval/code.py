@@ -246,7 +246,7 @@ def rebuild_code_index(session: Optional[Session] = None) -> dict:
 
 
 def code_index_status(session: Optional[Session] = None) -> dict:
-    """Counts + freshness for ``thread_archive status`` and ``verify``."""
+    """Counts + freshness for ``thread-archive status`` and ``verify``."""
     with use_session(session) as s:
         through, version = _read_cursor(s)
         paths = s.execute(sa_text("SELECT count(*) FROM event_paths")).scalar() or 0

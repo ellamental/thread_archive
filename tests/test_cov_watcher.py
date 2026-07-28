@@ -646,7 +646,7 @@ class _StubSource(SourceWatcher):
 
 @contextmanager
 def _reindex_holds_the_lock():
-    """A real exclusive hold on ``<home>/.reindex.lock`` — what ``thread_archive reindex``
+    """A real exclusive hold on ``<home>/.reindex.lock`` — what ``thread-archive reindex``
     takes across its build-and-swap. A distinct fd is a distinct flock owner even
     in one process, so the loop's shared non-blocking acquire genuinely fails
     against it."""
@@ -754,7 +754,7 @@ def test_record_pass_swallows_recording_failure(archive_home, monkeypatch, caplo
 
 def test_clean_pass_clears_stale_watch_errors(archive_home) -> None:
     """A prior run's watch_errors_last persists in health.json across restarts.
-    The first clean pass of a fresh daemon must retire it, so `thread_archive status`
+    The first clean pass of a fresh daemon must retire it, so `thread-archive status`
     doesn't report a red the daemon already ran past."""
     from thread_archive import _api as ta
 

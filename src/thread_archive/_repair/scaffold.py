@@ -21,7 +21,7 @@ Layout under ``<home>/plugins/<provider>/``::
     patch.json            the patch descriptor (mirrors config.json's entry)
 
 The fix module and tests are generated only when absent — re-running
-``thread_archive fix-import`` refreshes evidence, samples, quirks, and the protocol
+``thread-archive fix-import`` refreshes evidence, samples, quirks, and the protocol
 around an in-progress fix without discarding it. Everything the scaffold writes stays
 outside the archive's git clone: the self-updater's clean-tree requirement is
 untouched by any number of patches.
@@ -64,7 +64,7 @@ def module_name(provider_name: str) -> str:
 
 # ── generated file templates ─────────────────────────────────────────────────
 
-_MODULE_TEMPLATE = '''"""Override patch for the {name} provider — scaffolded by `thread_archive fix-import`.
+_MODULE_TEMPLATE = '''"""Override patch for the {name} provider — scaffolded by `thread-archive fix-import`.
 
 Shadows the built-in {name} provider (declared under "providers" in the archive
 home's config.json). Start from the built-in descriptor and replace only what
@@ -115,7 +115,7 @@ pytest_plugins = ["thread_archive.provider.testing"]
 
 _TEST_HEADER = '''"""Verification harness for the {name} patch — green here is the exit bar.
 
-Pre-wired by `thread_archive fix-import`; activation re-runs it and refuses a red
+Pre-wired by `thread-archive fix-import`; activation re-runs it and refuses a red
 suite. Add tests freely; never weaken or remove the generated ones. Fixtures
 are yours to derive: minimal, obfuscated files under fixtures/, built from the
 real drifted files in samples/ (structure and keys intact, free text replaced
@@ -449,7 +449,7 @@ def _write_protocol(provider_name: str, target_dir: Path) -> None:
         f"{base.rstrip()}\n\n## This scaffold\n\n"
         f"- provider: `{provider_name}`\n"
         f"- exit bar: `python -m pytest . -q` green, then "
-        f"`thread_archive fix-import {provider_name} --activate` succeeding\n",
+        f"`thread-archive fix-import {provider_name} --activate` succeeding\n",
         encoding="utf-8",
     )
 
@@ -484,7 +484,7 @@ def scaffold(provider_name: str, home: Optional[str] = None) -> Path:
     provider = get_provider(provider_name, home=home)
     if provider is None:
         raise ValueError(
-            f"unknown provider {provider_name!r} — `thread_archive providers` lists them"
+            f"unknown provider {provider_name!r} — `thread-archive providers` lists them"
         )
     if provider.mechanism:
         raise ValueError(

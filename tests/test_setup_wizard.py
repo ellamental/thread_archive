@@ -286,7 +286,7 @@ def test_edit_to_zero_disables_every_source(archive_home, monkeypatch, capsys) -
 
 # ── re-running setup over answers already given ───────────────────────────────
 #
-# An opt-out is the operator's standing answer, and `thread_archive setup` is
+# An opt-out is the operator's standing answer, and `thread-archive setup` is
 # meant to be re-run (it is how every choice is revisited). So a later run may
 # only change the source policy where the operator states a new one — the edit
 # pass. Anything else leaves it alone: a re-run that silently re-enables a
@@ -424,7 +424,7 @@ def test_bare_rerun_lands_on_status(archive_home, capsys) -> None:
     assert wizard.main([]) == 0
     out = capsys.readouterr().out
     assert "thread_archive — status" in out  # the status header, not the setup flow
-    assert "thread_archive setup" in out  # the re-entry hint
+    assert "thread-archive setup" in out  # the re-entry hint
 
 
 def test_status_command(archive_home, capsys) -> None:
@@ -438,7 +438,7 @@ def test_status_command(archive_home, capsys) -> None:
 
 
 def test_status_command_dispatches_from_main(archive_home, capsys) -> None:
-    # `thread_archive status` on this host, whatever kind it is: the flow builds
+    # `thread-archive status` on this host, whatever kind it is: the flow builds
     # its own Machine and the status view renders.
     assert wizard.main(["status"]) == 0
     out = capsys.readouterr().out

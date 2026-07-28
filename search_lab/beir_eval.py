@@ -189,7 +189,7 @@ def ingest_corpus(corpus_path: Path, work: Path, max_docs: int | None,
     ``label`` names the corpus in the load ledger. It defaults to the dataset
     directory a BEIR download lives in, which is the right answer only for that
     layout — a harness whose corpora sit side by side in one directory
-    (``mtrag_eval``) passes its own, so ``thread_archive loads`` distinguishes a
+    (``mtrag_eval``) passes its own, so ``thread-archive loads`` distinguishes a
     stalled ``clapnq`` build from a stalled ``govt`` one."""
     import logging
 

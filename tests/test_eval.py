@@ -3,7 +3,7 @@
 The pure pieces — event pairing, the ranking-metric loop against a fake ranker, the
 behavioral rollup — are pinned in ``test_retrieval_eval.py`` (which loads the
 dev bench that re-exports this module). This file covers the DB-backed case
-*builders* that need a real store: the title-recall sampler and the trail miner
+*builders* that need a real store: the title-recall sampler and the trail reader
 behind ``thread_archive eval``.
 """
 
@@ -45,7 +45,7 @@ def _seed_trail(session_name: str, pairs: list[tuple[str, str | None]],
     Each pair emits a ``thread_search`` tool_use followed by a ``thread_read``
     (when ``read_ref`` is not None), in order — the shape ``_trail_events`` mines.
     ``thread_type`` defaults to a top-level conversation; pass ``"system"`` to
-    stand in for a subagent fleet/sweep session (which mining must exclude).
+    stand in for a subagent fleet/sweep session (which case-drawing must exclude).
     """
     with get_session() as s:
         sess = Thread(name=f"sess:{session_name}", thread_type=thread_type,

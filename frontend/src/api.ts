@@ -364,9 +364,6 @@ export interface Dataset {
   on_bench: string[]
   source?: string
   license?: string
-  /** Where this corpus's miners write their case files, for the one corpus that
-   *  has miners. Nothing scores against them — see `Miner`. */
-  gold_dir?: string | null
 }
 
 export interface BenchRun {
@@ -397,120 +394,6 @@ export interface Benchmark {
   measure_keys: string[]
   code_id: string
   last: BenchRun | null
-}
-
-export interface MineRun {
-  at: string | null
-  snapshot_id: string | null
-  attempted: number | null
-  written: number | null
-  failed: number | null
-  outcomes: Record<string, number>
-  /** The run's funnel, one row per stage in order. Empty when the miner declares
-   *  no stages — which must read as "not recorded", never as "nothing dropped". */
-  funnel: FunnelRow[]
-  cost_usd?: number | null
-}
-
-/** One stage of a mining run: what it took in, what it passed on, and why the
- *  difference. The reasons are what make a funnel worth drawing — a unit dropped
- *  for broken provenance is a wrong label leaving the benchmark, and one dropped
- *  for an uninformative commit is a hard case leaving it. Opposite directions,
- *  and a single "dropped" count cannot tell them apart. */
-export interface FunnelRow {
-  stage: string
-  /** `agent` stages spend tokens, `free` ones do not — which is why the cheap
-   *  gates are ordered first, to narrow what the expensive ones are asked. */
-  kind: string
-  in: number
-  out: number
-  reasons: Record<string, number>
-  cost_usd?: number
-  seconds?: number
-}
-
-/** A stage a miner declares it will run, before any run has happened. */
-export interface MinerStage {
-  name: string
-  kind: string
-  summary: string
-}
-
-/** One miner's mining history, summed across every corpus it has run against. */
-export interface MinerTotals {
-  miner: string
-  runs: number
-  /** Units *drawn*, which is the denominator behind `written`. Scoring only what
-   *  was minted conditions the population on "the agent succeeded". */
-  attempted: number
-  written: number
-  failed: number
-  outcomes: Record<string, number>
-  cost_usd: number | null
-  datasets: string[]
-  last_at: string | null
-}
-
-/** One corpus's gold dir: what has been mined there, and what is waiting.
- *
- *  The mining ledger and the case files live in the gold dir a run wrote into —
- *  public-corpus golds beside their download, the operator's under
- *  `~/.thread/archive` — so this axis is a walk over gold dirs, not a group-by. */
-export interface DatasetMining {
-  dataset: string
-  path: string
-  exists: boolean
-  runs: number
-  cases: number
-  files: number
-  bytes: number
-  miners: string[]
-  outcomes: Record<string, number>
-  /** What this corpus offers a miner, counted from cheap sources only. */
-  supply: Record<string, number>
-  /** What this corpus has been refused for, by reason. Cases say what a corpus
-   *  could be asked; refusals say what it could not — and at scale several of the
-   *  reasons are findings about the dataset rather than about a run. */
-  refusals: Record<string, number>
-}
-
-export interface MiningSummary {
-  by_miner: MinerTotals[]
-  by_dataset: DatasetMining[]
-  totals: {
-    runs: number
-    cases: number
-    files: number
-    bytes: number
-    datasets_mined: number
-    cost_usd: number | null
-    first_at: string | null
-    last_at: string | null
-  }
-}
-
-export interface Miner {
-  name: string
-  summary: string
-  measures: string
-  unit: string
-  cost: string
-  target_kind: string
-  target_help: string
-  default_target: number
-  /** What fixes this miner's labels — the artifact that decides the answer. */
-  gold_source: string
-  /** Whether no retrieval touched the labels. Failing it means a number scored
-   *  against them is an upper bound on itself; passing it is necessary for a
-   *  claim and nowhere near sufficient, since the query still had to be authored
-   *  from an artifact rather than asked by anyone. */
-  retrieval_free: boolean
-  runnable_in_all: boolean
-  cases_stem: string
-  /** The funnel this miner declares, with its own defaults applied. */
-  stages: MinerStage[]
-  runs: MineRun[]
-  runs_total: number
 }
 
 /** Nearest-rank percentiles, in milliseconds. Nearest-rank rather than
@@ -641,8 +524,6 @@ export interface LabInventory {
   families: Record<string, string>
   benchmarks: Benchmark[]
   datasets: Dataset[]
-  miners: Miner[]
-  mining: MiningSummary
 }
 
 // ── the drop zone (account-export upload) ───────────────────────────────────
@@ -1126,10 +1007,10 @@ export const api = {
   // is invisible in a 14-day median for a week. A dev page: the report is the
   // search lab's, so an install without the lab answers 404 and the view says so.
   retrieval: (hours = 14 * 24) => getJSON<RetrievalReport>(`/api/retrieval?hours=${hours}`),
-  // What the bench has on hand: benchmark rows and whether each can run, the
-  // corpora on disk and what they hold, the miners and what they minted. A dev
-  // page like `retrieval` and for the same reason — the inventory is the search
-  // lab's, and an install has no lab to inventory, so it answers 404.
+  // What the bench has on hand: benchmark rows and whether each can run, and the
+  // corpora on disk and what they hold. A dev page like `retrieval` and for the
+  // same reason — the inventory is the search lab's, and an install has no lab to
+  // inventory, so it answers 404.
   searchLab: () => getJSON<LabInventory>('/api/search-lab'),
   // Every run the bench ever recorded here, newest first — the ledger, not the
   // newest-per-row summary `searchLab` carries. Its own call because the

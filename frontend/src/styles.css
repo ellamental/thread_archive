@@ -1176,67 +1176,14 @@ a.session-link:hover { color: var(--accent); }
 .lab-pill.bad { background: var(--lab-bad-bg); color: var(--lab-bad); }
 .lab-pill.busy { background: var(--lab-busy-bg); color: var(--lab-busy); }
 
-.lab-miners { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 12px; }
-.lab-miner {
-  border: 1px solid var(--line); border-radius: 10px; background: var(--panel);
-  padding: 14px 16px;
-}
-.lab-miner header { display: flex; flex-wrap: wrap; gap: 8px; align-items: baseline; }
-.lab-miner header code { font-size: 14px; font-weight: 600; }
-.lab-miner > p { margin: 8px 0 10px; }
+/* A label/value grid: the run detail's facts, and anything else stating what a
+   thing *is* rather than what it measured. `.lab-run-facts` widens it. */
 .lab-facts { display: grid; grid-template-columns: auto 1fr; gap: 4px 12px; margin: 0; font-size: 12px; }
 .lab-facts dt {
   color: var(--muted); text-transform: uppercase; letter-spacing: .05em;
   font-size: 10px; padding-top: 2px;
 }
 .lab-facts dd { margin: 0; }
-
-/* ---- mining, cut by pipeline and by dataset ---- */
-.mining-table td, .mining-table th { vertical-align: top; }
-.mining-table .num { text-align: right; font-variant-numeric: tabular-nums; }
-/* One bar per miner: admitted against refused. `ok` and the drops are different
-   colours because they answer different questions — the drops are the half worth
-   reading, and only their *reasons* say whether a refusal rate is health or rot. */
-.outcome { min-width: 180px; }
-.outcome-bar {
-  display: flex; height: 10px; border-radius: 5px; overflow: hidden;
-  background: var(--badge);
-}
-.outcome .seg { display: block; height: 100%; }
-.outcome .seg.is-ok { background: var(--accent); }
-.outcome .seg.is-drop.tone-0 { background: var(--warn, #b8860b); }
-.outcome .seg.is-drop.tone-1 { background: #c2703d; }
-.outcome .seg.is-drop.tone-2 { background: #9a6b8f; }
-.outcome-why { margin: 4px 0 0; }
-
-/* ---- a miner's pipeline, declared and as it ran ---- */
-/* The declared stages read as a list because they are an ordering, and the
-   ordering is the design: free gates first so the paid ones are asked about
-   fewer units. */
-.mine-stages { list-style: none; margin: 0; padding: 0; display: grid; gap: 3px; }
-.mine-stages li { display: flex; flex-wrap: wrap; gap: 6px; align-items: baseline; }
-.mine-stages code { font-weight: 600; }
-
-.mine-funnel-title {
-  margin: 14px 0 8px; font-size: 11px; text-transform: uppercase;
-  letter-spacing: .05em; color: var(--muted); font-weight: 600;
-}
-.mine-funnel { list-style: none; margin: 0; padding: 0; display: grid; gap: 10px; }
-.mine-funnel-head { display: flex; flex-wrap: wrap; gap: 6px; align-items: baseline; }
-.mine-funnel-head code { font-size: 12px; font-weight: 600; }
-/* The track is the full width of what entered the funnel, so every bar is read
-   against the same denominator and the taper is the yield. A per-stage
-   denominator would draw every stage as near-full and hide the loss. */
-.mine-funnel-bar {
-  height: 8px; border-radius: 4px; background: var(--badge); overflow: hidden;
-}
-.mine-funnel-fill {
-  display: block; height: 100%; border-radius: 4px; background: var(--accent);
-}
-/* Spending stages are marked in the bar as well as the label: cost is the thing
-   a reader is scanning for, and it should be visible without reading. */
-.mine-funnel-fill.is-agent { background: var(--warn, #b8860b); }
-.mine-funnel-why { margin: 4px 0 0; }
 
 /* ---- the benchmark run ledger ---- */
 /* Every row is a link into the run, so the whole row lights on hover: the

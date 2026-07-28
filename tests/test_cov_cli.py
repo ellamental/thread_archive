@@ -387,13 +387,13 @@ def test_import_unknown_provider_direct_call() -> None:
 
 
 def test_setup_verb_dispatches_to_wizard(tmp_path, capsys) -> None:
-    """`thread_archive setup` routes cli.cmd_setup → wizard.run_setup. Under
+    """`thread-archive setup` routes cli.cmd_setup → wizard.run_setup. Under
     capsys stdout is not a TTY, so the no-``--yes`` run takes the guidance-only
     branch: no host scan, no home scaffolded, exit 0 — enough to cover the
     dispatch seam the packaged front door depends on."""
     rc = cli.main(["setup", "--home", str(tmp_path / "arc")])
     assert rc == 0
-    assert "thread_archive setup" in capsys.readouterr().out
+    assert "thread-archive setup" in capsys.readouterr().out
 
 
 # ── providers ─────────────────────────────────────────────────────────────────
@@ -457,7 +457,7 @@ def test_providers_marks_disabled_and_followers_off(archive_home, capsys) -> Non
 
 
 def test_import_export_imports_a_real_export(archive_home, tmp_path, capsys) -> None:
-    """`thread_archive import-export` unpacks a real claude.ai export ZIP into the
+    """`thread-archive import-export` unpacks a real claude.ai export ZIP into the
     archive, and --force reaches the importer: a second pass skips what is
     already there unless it is told to reimport."""
     conv = {
@@ -1167,7 +1167,7 @@ def test_repair_applied_with_samples(capsys) -> None:
     assert "ledger: /home/quarantine.jsonl" in out
     assert "restored from index: 4 event(s)" in out
     assert "the repaired files shrank" in out
-    assert "run `thread_archive verify`" in out
+    assert "run `thread-archive verify`" in out
 
 
 # ── status: fully-populated ok + failed variants ─────────────────────────────
@@ -1294,7 +1294,7 @@ def test_status_self_update_available_names_explicit_apply(capsys) -> None:
     assert cli.report_status(st) == 0
     out = capsys.readouterr().out
     assert "update:  v0.9.1 available" in out
-    assert "run `thread_archive self-update` to apply" in out
+    assert "run `thread-archive self-update` to apply" in out
 
 
 def test_status_self_update_blocked_is_shouted(capsys) -> None:
@@ -1376,8 +1376,8 @@ def test_coverage_report_names_degraded_and_quarantined(capsys) -> None:
     }
     assert cli.report_coverage(result) == 0
     out = capsys.readouterr().out
-    assert "degraded: grok (went_dark since 2026-07-10) — remedy: thread_archive fix-import grok" in out
-    assert "degraded: chatgpt (capture_skips) — remedy: thread_archive fix-import chatgpt" in out
+    assert "degraded: grok (went_dark since 2026-07-10) — remedy: thread-archive fix-import grok" in out
+    assert "degraded: chatgpt (capture_skips) — remedy: thread-archive fix-import chatgpt" in out
     assert "quarantined: cursor raw store snapshot → gen-3" in out
     assert "OK" in out
 
@@ -1409,7 +1409,7 @@ def test_self_update_check_reports_available(capsys) -> None:
     assert rc == 0
     out = capsys.readouterr().out
     assert "self-update: v0.9.1 available (v0.9.1 is the newest release tag)" in out
-    assert "run `thread_archive self-update` to apply" in out
+    assert "run `thread-archive self-update` to apply" in out
 
 
 def test_self_update_up_to_date(capsys) -> None:
@@ -1450,7 +1450,7 @@ def _mirror_provider(**over) -> dict:
 
 
 def test_mirror_cli_sweeps_the_real_sources(archive_home, capsys) -> None:
-    """`thread_archive mirror` runs the real raw-store sweep into <home>/source-mirror.
+    """`thread-archive mirror` runs the real raw-store sweep into <home>/source-mirror.
     Nothing is on disk to mirror in a throwaway home, so the run is green and
     the root it names is the one it created."""
     rc = main(["mirror", "--home", str(archive_home)])

@@ -1,7 +1,7 @@
 # Installing thread-archive from source (instructions for Claude)
 
 This is the **from-source** install. The packaged path is
-`pip install thread-archive && thread_archive setup` and needs no agent; this
+`pip install thread-archive && thread-archive setup` and needs no agent; this
 doc is for running from a clone — development, or changes not yet released.
 
 You are an instance of Claude Code, running inside a fresh clone of `thread-archive`.
@@ -9,7 +9,7 @@ The human cloned the repo and asked you to install it. Follow these steps in ord
 Run the commands; don't just describe them. Stop and ask the human only at the one
 marked decision point.
 
-The end state: the `thread_archive` CLI works, the read MCP server is wired into this project's
+The end state: the `thread-archive` CLI works, the read MCP server is wired into this project's
 `.mcp.json`, and the conversation archive is populated.
 
 ---
@@ -65,7 +65,7 @@ corpus graph to partition and wants none of it.
 ## 2. Verify the install
 
 ```bash
-.venv/bin/thread_archive --version
+.venv/bin/thread-archive --version
 .venv/bin/pip install -e '.[dev]'   # pytest ships in the dev extra, not the base install
 .venv/bin/pytest tests/ -q          # must be green before you go further
 ```
@@ -95,7 +95,7 @@ ls -l "$REPO/.venv/bin/archive-mcp"
 in the watcher/backup service units (step below) and in self-update — is baked
 into the machine, not tracked in the repo. A plain `mv` of the clone dead-ends
 the MCP wiring, the daemon, and self-update at once. To relocate it, move the
-directory, then re-run the MCP wiring above and `thread_archive daemon restart`
+directory, then re-run the MCP wiring above and `thread-archive daemon restart`
 (or, cleanest, re-clone at the new path and reinstall). Tell the human this
 before they pick where the clone lives.
 
@@ -116,7 +116,7 @@ An empty archive has nothing to search. Two ways to get conversations in:
 
 - **Watch local AI-tool stores** (Claude Code, Cursor, Codex, … on this machine):
   ```bash
-  .venv/bin/thread_archive watch --once     # one pass; or `thread_archive daemon install` for always-on
+  .venv/bin/thread-archive watch --once     # one pass; or `thread-archive daemon install` for always-on
   ```
   (`.mcp.json.example` explicitly sets `THREAD_ARCHIVE_MCP_INGEST=1`, so even
   without either, that configured `archive-mcp` cohosts a lazy catch-up pass at
@@ -124,21 +124,21 @@ An empty archive has nothing to search. Two ways to get conversations in:
   read-only.)
 - **Import an export or transcript** the human points you at:
   ```bash
-  .venv/bin/thread_archive import <path> --provider <name>   # `thread_archive providers` lists them: claude-code, codex, grok, antigravity, cloth, cowork, claude-science, cursor, opencode, …
+  .venv/bin/thread-archive import <path> --provider <name>   # `thread-archive providers` lists them: claude-code, codex, grok, antigravity, cloth, cowork, claude-science, cursor, opencode, …
   ```
 
 Then confirm it landed:
 
 ```bash
-.venv/bin/thread_archive status                    # threads / events / indexed counts
-.venv/bin/thread_archive search "<something you discussed>"   # retrieval, right now
+.venv/bin/thread-archive status                    # threads / events / indexed counts
+.venv/bin/thread-archive search "<something you discussed>"   # retrieval, right now
 ```
 
 (`search` and `read` are the `thread_search` / `thread_read` tools at a
 terminal — same implementation, so a hit here is a hit over MCP once Claude
 Code is restarted with the config below.)
 
-The SQLite index is built during import; if it ever looks wrong, `thread_archive reindex`
+The SQLite index is built during import; if it ever looks wrong, `thread-archive reindex`
 rebuilds it losslessly from the JSONL truth.
 
 ## 5. Restart Claude Code to load the new config
@@ -150,6 +150,6 @@ in this directory**, then confirm the server connected (the `thread-archive` too
 ## Done
 
 Report to the human: install verified (tests green), `.mcp.json` written, and the
-archive populated (give the `thread_archive status` counts). Also point them at
-`.venv/bin/thread_archive setup` for the always-on upgrades this flow doesn't cover:
+archive populated (give the `thread-archive status` counts). Also point them at
+`.venv/bin/thread-archive setup` for the always-on upgrades this flow doesn't cover:
 the watcher LaunchAgent and the nightly backup pipeline.

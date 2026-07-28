@@ -1,4 +1,4 @@
-"""Coverage for the mined-gold quality panel.
+"""Coverage for the case-file quality panel.
 
 The panel exists to catch failures that are invisible in a score — a file of
 single-gold cases, a graded pool of one document, an authoring template parroted
@@ -165,56 +165,25 @@ def test_coverage_flags_cases_bound_to_different_corpora():
     assert "not all bound to the same corpus" in text
 
 
-# ── yield & cost ────────────────────────────────────────────────────────────
-
-def test_yield_reads_cost_from_either_sidecar_shape():
-    """The commit miner records its agent block as `agent`, the others as `stats`;
-    the panel reads a file it did not write, so it accepts both."""
-    details = [{"outcome": "ok", "agent": {"cost_usd": 0.20}},
-               {"outcome": "no-queries", "stats": {"cost_usd": 0.10}}]
-    y = gs.yield_and_cost([_case("q")], details, [])
-    assert y["cost_usd"]["total"] == 0.3
-    assert y["units_drawn"] == 2 and y["drop_rate"] == 0.5
-    assert y["cases_per_unit"] == 0.5
-
-
-def test_yield_surfaces_the_newest_runs_funnel():
-    runs = [{"kind": "mine-run", "at": "2026-07-27T00:00:00Z",
-             "funnel": [{"stage": "supply", "kind": "free", "in": 100, "out": 40,
-                         "reasons": {"absent": 60}}]},
-            {"kind": "mine-run", "at": "2026-07-01T00:00:00Z", "funnel": []}]
-    y = gs.yield_and_cost([], [], runs)
-    assert y["funnel"][0]["stage"] == "supply" and y["runs"] == 2
-    assert "supply" in gs.text_report({"file": "x", "yield": y})
-
-
-def test_a_run_with_no_funnel_says_so_rather_than_implying_none_were_dropped():
-    text = gs.text_report({"file": "x", "yield": {"cases": 3}})
-    assert "funnel: not recorded" in text
-
-
 # ── the assembled report ────────────────────────────────────────────────────
 
 def test_report_assembles_every_panel_from_a_file(tmp_path):
     cases = _write(tmp_path, [
-        _case("where did we cap the retries", difficulty="intent", miner="commit",
+        _case("where did we cap the retries", difficulty="intent",
               repo="o/r", template_sha="t1"),
-        _case("retry_backoff in uploader.py", difficulty="literal", miner="commit",
+        _case("retry_backoff in uploader.py", difficulty="literal",
               repo="o/r", template_sha="t1"),
     ])
-    gs.detail_path_for(cases).write_text(
-        json.dumps({"outcome": "ok", "agent": {"cost_usd": 0.5}}) + "\n")
     data = gs.report(cases)
-    assert data["miners"] == ["commit"]
+    assert data["cases"] == 2
     assert data["pool"]["single_gold"] == 2
-    assert data["yield"]["cost_usd"]["total"] == 0.5
     assert data["queries"]["by_tier"].keys() == {"intent", "literal"}
     assert "gold stats" in gs.text_report(data)
 
 
 def test_report_of_an_empty_file_does_not_crash(tmp_path):
     data = gs.report(_write(tmp_path, []))
-    assert data["yield"]["cases"] == 0
+    assert data["cases"] == 0
     assert isinstance(gs.text_report(data), str)
 
 
@@ -226,42 +195,3 @@ def test_main_emits_json(tmp_path, capsys):
     p = _write(tmp_path, [_case("q")])
     assert gs.main([str(p), "--json"]) == 0
     assert json.loads(capsys.readouterr().out)["pool"]["single_gold"] == 1
-
-
-# ── refusals: the negative results ───────────────────────────────────────────
-
-def test_refusals_panel_reads_the_record_beside_the_cases(tmp_path):
-    """Cases say what a corpus could be asked; refusals say what it could not — and
-    at scale several of the reasons are findings about the dataset rather than the
-    run."""
-    cases = _write(tmp_path, [_case("q")])
-    (tmp_path / "commit-cases-rejects.jsonl").write_text("\n".join(json.dumps(r) for r in [
-        {"unit": "T1", "stage": "provenance", "reason": "no-file-overlap", "kind": "free"},
-        {"unit": "T2", "stage": "alignment", "reason": "misattributed", "kind": "agent"},
-        {"unit": "T3", "stage": "alignment", "reason": "misattributed", "kind": "agent"},
-        {"unit": "T4", "stage": "verify", "reason": "queries-rejected", "kind": "free",
-         "detail": {"rejected": [{"why": "literal-names-nothing"},
-                                 {"why": "repeats-an-opening"}]}},
-    ]) + "\n")
-    r = gs.refusals(cases)
-    assert r["total"] == 4 and r["units"] == 4
-    assert r["paid"] == 2                    # only the agent-stage refusals cost money
-    assert r["by_reason"]["misattributed"] == 2
-    assert r["by_stage"]["alignment"] == 2
-    # A kept unit can still have queries thrown out; that is a different event.
-    assert r["rejected_queries"] == {"literal-names-nothing": 1,
-                                     "repeats-an-opening": 1}
-
-
-def test_refusals_is_empty_when_nothing_was_refused(tmp_path):
-    assert gs.refusals(_write(tmp_path, [_case("q")])) == {}
-
-
-def test_report_carries_refusals_into_the_text_panel(tmp_path):
-    cases = _write(tmp_path, [_case("q")])
-    (tmp_path / "commit-cases-rejects.jsonl").write_text(json.dumps(
-        {"unit": "T2", "stage": "alignment", "reason": "misattributed",
-         "kind": "agent"}) + "\n")
-    text = gs.text_report(gs.report(cases))
-    assert "REFUSALS" in text and "misattributed 1" in text
-    assert "came from a paid gate" in text

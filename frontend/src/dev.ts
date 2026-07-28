@@ -8,7 +8,7 @@
 // hiding a page from the only person who can reach it would be theatre. The gate
 // is over *prominence* — whether the rail advertises it.
 //
-// Turned on by visiting with `?dev=1` (`thread_archive web dev` opens exactly
+// Turned on by visiting with `?dev=1` (`thread-archive web dev` opens exactly
 // that), off with `?dev=0`, and remembered in localStorage so the choice
 // survives navigation and reloads rather than living in every URL.
 

@@ -1,7 +1,7 @@
 """What a recorded measurement was taken *of* — the code and the configuration.
 
 Every ledger in the lab (``bench-runs.jsonl``, ``latency-runs.jsonl``,
-``mine-runs.jsonl``) stamps its rows with the same two facts, and they belong in
+``bench-runs.jsonl``) stamps its rows with the same two facts, and they belong in
 one place: a number whose commit and ``SearchParams`` are recorded is auditable,
 and one whose aren't is a value that existed only in the moment it printed.
 

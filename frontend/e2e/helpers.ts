@@ -56,9 +56,9 @@ const retrieval = {
 
 // The lab page is an inventory, so the fixture's job is to carry one of every
 // *state* rather than a plausible bench: a benchmark row that can run and one
-// whose corpus is absent, a corpus built / merely downloaded / not here at all,
-// and a retrieval-free miner beside a pooled one. Every branch the page renders
-// is a branch a fixture with one uniform row would let ship broken.
+// whose corpus is absent, and a corpus built / merely downloaded / not here at
+// all. Every branch the page renders is a branch a fixture with one uniform row
+// would let ship broken.
 const searchLab = {
   cache_root: '/Users/test/.cache/thread-evals',
   cache: { bytes: 26_000_000_000, files: 84_000, truncated: false },
@@ -188,52 +188,8 @@ const searchLab = {
           truncated: false,
         },
       ],
-      gold_dir: '/Users/test/gold',
       reference: {},
       on_bench: [],
-    },
-  ],
-  miners: [
-    {
-      name: 'commit',
-      summary: 'author queries from a commit; test the session that produced it',
-      measures: 'recall (provenance gold)',
-      unit: 'linked session',
-      cost: '1 agent / session',
-      target_kind: 'per-case',
-      target_help: 'commit-linked sessions to sample',
-      default_target: 5,
-      gold_source: 'commit provenance — no search runs during labeling',
-      retrieval_free: true,
-      runnable_in_all: false,
-      cases_stem: 'commit-cases',
-      runs: [
-        {
-          at: now,
-          snapshot_id: 'c4137bd4dc3cde98',
-          attempted: 25,
-          written: 75,
-          failed: 0,
-          outcomes: { ok: 25 },
-        },
-      ],
-      runs_total: 1,
-    },
-    {
-      name: 'pooled',
-      summary: 'grade a multi-system pool of results for a real query',
-      measures: 'relevance over real traffic',
-      unit: 'query',
-      cost: '1 agent / query',
-      target_kind: 'per-case',
-      target_help: 'queries to judge',
-      default_target: 5,
-      gold_source: 'multi-system pooled judgment',
-      retrieval_free: false,
-      runnable_in_all: true,
-      cases_stem: 'pooled-cases',
-      runs: [],
-      runs_total: 0,
     },
   ],
 }
@@ -563,7 +519,7 @@ export async function mockApi(page: Page): Promise<string[]> {
             tone: 'warn',
             title: 'Backup is on the same filesystem as the archive',
             detail: 'Move the scheduled destination to another disk.',
-            command: 'thread_archive daemon install --backup --dest /Volumes/disk',
+            command: 'thread-archive daemon install --backup --dest /Volumes/disk',
             fingerprint: 'e2e',
             silenced_at: healthNow,
           },

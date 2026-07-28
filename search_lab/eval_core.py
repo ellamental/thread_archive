@@ -4,7 +4,7 @@ The engine every harness that scores *gold cases* runs through: they build eval
 cases under one of the protocols below and hand them to :func:`evaluate`, which
 runs one MRR / success@k / recall@k / nDCG@k loop. One scoring path, so a number
 from the BM25 reference and a number from the exported SWE-chat benchmark mean
-the same thing — ``retrieval_eval``, ``bm25_baseline`` and the miners share it,
+the same thing — ``retrieval_eval`` and ``bm25_baseline`` share it,
 and ``swechat_bench``'s published scorer reproduces its definitions (notably
 :func:`ndcg_at_k`'s exponential gain) in dependency-free form.
 
@@ -352,16 +352,16 @@ def load_case_file(path: Path) -> list[dict]:
         # int so a stray float grade can't skew the gain.
         if row.get("grades"):
             case["grades"] = {str(t): int(g) for t, g in row["grades"].items()}
-        # Agent-mined cases (the `search_lab.mine` miners) carry the content
-        # fingerprint of the corpus snapshot they were mined against; the caller
-        # (retrieval_eval.py --cases) refuses to score them against a home whose
-        # snapshot_id differs, so a moved corpus invalidates rather than drifts.
+        # A case file carries the content fingerprint of the corpus snapshot it
+        # was written against; the caller (retrieval_eval.py --cases) refuses to
+        # score it against a home whose snapshot_id differs, so a moved corpus
+        # invalidates rather than drifts.
         if row.get("snapshot_id"):
             case["snapshot_id"] = row["snapshot_id"]
-        # Stratifying metadata the miners stamp — carried through scoring so the
+        # Stratifying metadata a case file stamps — carried through scoring so the
         # evaluator can report a findability file's difficulty tiers apart (an
         # aggregate hides the hardest stratum, which is the one that matters) rather than
-        # discarding the labels the miner spent tokens to assign.
+        # discarding the labels the file was built to carry.
         for key in ("difficulty", "protocol", "target_thread"):
             if row.get(key) is not None:
                 case[key] = row[key]
@@ -531,7 +531,7 @@ def evaluate(cases: list[dict], *, limit: int, content_type,
         search = api.search
     per_shape: dict[str, list[float]] = {}
     # Per-difficulty-tier accumulators, populated only for cases that carry a
-    # ``difficulty`` (a miner's query-difficulty ladder). Each tier keeps the same
+    # ``difficulty`` (a case file's query-difficulty ladder). Each tier keeps the same
     # four headline signals, so a stratum can be reported apart from the aggregate
     # that would otherwise mask the weakest one.
     per_difficulty: dict[str, dict[str, float]] = {}
@@ -732,7 +732,7 @@ def query_row(*, qid: Any, query: str, latency_s: float, rank: Optional[int],
     in different places, and a score of 0.0 reports them identically.
 
     ``group`` is whatever stratum the harness knows the query by — a LoCoMo
-    category, a miner's difficulty tier — so a failure can be read as belonging
+    category, a difficulty tier — so a failure can be read as belonging
     to a kind rather than as one bad query."""
     text = (query or "").strip().replace("\n", " ")
     row = {

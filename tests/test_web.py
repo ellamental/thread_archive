@@ -160,7 +160,7 @@ def test_search_lab_endpoint_serves_the_bench_inventory(archive_home):
     _seed(archive_home)
     status, ctype, payload = _get("/api/search-lab")
     assert status == 200 and ctype == "application/json"
-    assert payload["benchmarks"] and payload["miners"] and payload["datasets"]
+    assert payload["benchmarks"] and payload["datasets"]
     assert {b["state"] for b in payload["benchmarks"]} <= {
         "missing", "fresh", "stale", "never-run"}
 

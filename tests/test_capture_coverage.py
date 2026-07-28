@@ -1,5 +1,5 @@
 """Capture blind-spot detection: parse-error surfacing, the capture-skip ledger,
-the watch-pass heartbeat, and the source↔thread_archive coverage check.
+the watch-pass heartbeat, and the source↔thread-archive coverage check.
 
 These guard the *silent* capture failure modes — content consumed without a
 trace (soft format drift), sources gone dark without an error, and a wedged
@@ -511,7 +511,7 @@ def test_out_of_band_coverage_run_retires_nightly_stage(archive_home):
 def test_coverage_failed_sources_carry_degraded_verdicts(archive_home, tmp_path):
     """A coverage FAIL is a degradation verdict outright, persisted (with its
     reason and onset) into health.json's compact record — the state the MCP
-    search notice and `thread_archive fix-import` key on."""
+    search notice and `thread-archive fix-import` key on."""
     import_cc_session(tmp_path, "degv")
     r = check_coverage(
         watchers=[StubWatcher("claude-code", latest=time.time())], min_history=1

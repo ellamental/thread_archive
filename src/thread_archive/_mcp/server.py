@@ -3,7 +3,7 @@
 Exposes ``thread_search`` + ``thread_read`` as MCP tools. The tools themselves —
 signatures, docstrings (which are the tool schema and description), and every
 line of retrieval behaviour — live in :mod:`thread_archive._tools`, shared with
-the ``thread_archive search`` / ``thread_archive read`` CLI verbs so the two
+the ``thread-archive search`` / ``thread-archive read`` CLI verbs so the two
 front doors cannot drift. This module is the MCP half: the transport, the bind
 plan, and the cohosted catch-up ingest. No web framework, no HTTP, no route
 layer — it dispatches straight to the library functions in-process.

@@ -5,13 +5,13 @@ This documents the on-disk format of the archive's truth directory
 directory is the **only authoritative store**: `index.db` (its sibling in the
 archive home) is a pure SQLite projection of it, and `vectors.sqlite` (inside
 the truth dir) is a derived embedding cache — both are rebuildable, neither is
-truth. A `cp`/`rsync` of the truth directory *is* the backup; `thread_archive reindex`
+truth. A `cp`/`rsync` of the truth directory *is* the backup; `thread-archive reindex`
 reconstructs everything else from it.
 
 The format is one half of the package's public API — the other half is the
 retrieval tools (`thread_search` / `thread_read`, served over MCP and as the
-`thread_archive search` / `thread_archive read` verbs); everything else,
-the rest of the `thread_archive` CLI included, is private support machinery. This document is
+`thread-archive search` / `thread-archive read` verbs); everything else,
+the rest of the `thread-archive` CLI included, is private support machinery. This document is
 the durability promise: data written by one release must stay readable by
 the next. The CLI's backup verbs (`backup`, `verify`, `restore-drill`,
 `reindex`, `repair`) are the private enforcement machinery behind that
@@ -28,7 +28,7 @@ lexicographic id order is chronological order and ids are globally unique. A thr
 carries it as `legacy_id`, a permanent alias resolvable everywhere a thread
 ref is accepted. Shard buckets are derived from the sha256 of the id string
 (byte *i* names the level-*i* bucket directory), not from the id's numeric
-value. Version-1 archives are migrated with `thread_archive migrate`; it rewrites the
+value. Version-1 archives are migrated with `thread-archive migrate`; it rewrites the
 truth under the reindex lock, rebuilds `index.db`, and verifies the result
 before returning success.
 
@@ -39,9 +39,9 @@ before returning success.
   *re-emit* truth carrying fields its own models don't map, so an older binary
   never lossily rewrites newer truth).
 - A reader that finds a version **newer** than it supports must refuse the
-  archive rather than guess (`thread_archive` raises `TruthFormatError`).
+  archive rather than guess (`thread-archive` raises `TruthFormatError`).
 - A writer that finds a version **older** than it emits must refuse to mutate
-  the archive until it has been migrated. Reads and `thread_archive reindex` remain
+  the archive until it has been migrated. Reads and `thread-archive reindex` remain
   available for diagnosis and recovery.
 - A missing or corrupt manifest infers v1 from integer-named thread files and
   otherwise uses the current version; shard depth is inferred from the layout.
@@ -57,18 +57,20 @@ Every `.jsonl` file is UTF-8, one JSON object per line, non-ASCII kept literal
 ```text
 truth/
   manifest.json          # format version, shard depth, checkpoint watermark
-  threads/               # one file per thread (conversation or topic)
+  threads/               # one file per conversation
     <id>.jsonl           #   shard_depth 0 (flat)
     <hh>/<id>.jsonl      #   shard_depth 1: hh = sha256(id)[0:2] (lowercase hex)
     <hh>/<hh>/<id>.jsonl #   shard_depth 2: sha256(id)[0:2], then sha256(id)[2:4]
   blobs/                 # content-addressed binary content (images, documents)
     <hh>/<sha256><ext>   #   hh = first two hex chars; ext from media type (.png, .pdf, .bin)
-  kg_events.jsonl        # append-only topic-graph event log
-  thread_links.jsonl     # snapshot: topic-graph edges (rebuildable from kg_events)
-  topic_messages.jsonl   # snapshot: topic evidence   (rebuildable from kg_events)
   import_state.jsonl     # snapshot: importer cursors/watermarks
   vectors.sqlite         # derived embedding cache — NOT truth, safe to delete
 ```
+
+An archive may also carry `kg_events.jsonl`, `thread_links.jsonl`, and
+`topic_messages.jsonl` — the extension region, written by an external
+knowledge layer and specified nowhere in this document. See
+[Extension region](#extension-region).
 
 ## manifest.json
 
@@ -86,7 +88,7 @@ Writers preserve keys they don't own; readers ignore keys they don't know.
 
 ## threads/<id>.jsonl
 
-One conversation (or topic — topics are threads) per file: a
+One conversation per file: a
 `{"type": "thread", ...}` metadata record followed by one
 `{"type": "event", ...}` line per event, in event order. Both record kinds may
 repeat; for the thread record and for events sharing an `id`, the **latest
@@ -95,12 +97,16 @@ belong to commits (truth ⊇ index, always).
 
 **Thread record** — `type: "thread"` plus the thread's fields: `id` (ULID
 string), `legacy_id` (int or absent — the pre-ULID integer id, kept as a
-permanent alias), `name` (unique slug), `title`, `thread_type` (`"conversation"` | `"topic"`),
-`description`, `search_description`, `summary`, `indexed_summary`, `source`
-(provider, e.g. `"claude-code"`), `source_id`, `source_metadata` (object),
-`thought_count`, `user_id`, `experiment_id`, `archived` (bool),
-`exclude_from_search` (bool), `workspace`, `topic_kind`,
+permanent alias), `name` (unique slug), `title`, `thread_type`
+(`"conversation"` — an imported transcript; `"system"` — archive's own
+bookkeeping threads), `description`, `search_description`, `summary`,
+`indexed_summary`, `source` (provider, e.g. `"claude-code"`), `source_id`,
+`source_metadata` (object), `thought_count`, `user_id`, `experiment_id`,
+`archived` (bool), `exclude_from_search` (bool), `workspace`,
 `epistemological_type`, `inserted_at`, `updated_at`.
+
+Readers must tolerate a `thread_type` they don't know and fields not listed
+here — the extension region below mints both.
 
 **Event record** — `type: "event"` plus: `id` (int, unique across the
 archive — locally minted, so ids from two archives collide),
@@ -132,28 +138,6 @@ payload against its key means reconstituting `data` from the blob files first.
 It is bare (never thread-prefixed); uniqueness is enforced per
 `(thread_id, dedup_key)`. `null` on pre-dedup history and non-imported events.
 
-## kg_events.jsonl
-
-Append-only topic-graph event log, `type: "kg_event"` records: `id`, `event_type`
-(e.g. `topic.created`, `link.added`, `evidence.added`, tombstones like
-`link.removed`), `entity_type` (`topic` | `link` | `topic_message`),
-`entity_id` (natural key string), `payload` (object), `actor`,
-`actor_thread_id`, `caused_by_event_id`, `correlation_id`, `occurred_at`,
-`recorded_at`. This log is the source of truth for the topic graph; replaying it in
-`id` order rebuilds the two snapshot files below.
-
-## thread_links.jsonl / topic_messages.jsonl
-
-Cross-thread overlays, written as whole-file snapshots at checkpoint (they are
-projections of `kg_events.jsonl`, kept as files so a truth-only copy restores
-without a replay). One row object per line, no `type` wrapper:
-
-- **thread_links**: `id`, `source_thread_id`, `target_thread_id`, `link_type`,
-  `strength`, `created_by`, `created_by_thread_id`, `evidence`,
-  `observation_ids`, `created_at`, `updated_at`.
-- **topic_messages**: `id`, `topic_id`, `event_id`, `thread_id`, `quote`,
-  `created_by_thread_id`, `actor`, `archived_at`, `created_at`.
-
 ## import_state.jsonl
 
 Snapshot of importer cursors, one row per `(source, source_id)`: `id`,
@@ -162,3 +146,35 @@ Snapshot of importer cursors, one row per `(source, source_id)`: `id`,
 imported lines are still the file's first lines), `last_message_uuid`,
 `last_import_at`, `created_at`. Losing this file loses no content — the next
 watcher pass re-imports and `dedup_key` collapses the duplicates.
+
+## Extension region
+
+Everything above is the durability promise. This section is the opposite: a
+region of the truth directory the archive stores, backs up, verifies and
+restores like anything else, but whose *contents* it neither writes nor
+specifies.
+
+`kg_events.jsonl` and its two projection snapshots (`thread_links.jsonl`,
+`topic_messages.jsonl`) hold a knowledge graph over the archive — topics,
+edges between threads, cited evidence. **No part of thread-archive creates
+them.** They exist only where an external knowledge layer is installed, and
+that layer owns their schema, their vocabulary, and their compatibility.
+The archive's side is storage mechanics: append a record, fold it into the
+projection, hand back SQL reads, keep it in the backup.
+
+So, for a reader building against this format:
+
+- The files are usually absent, and an archive without them is complete. Do
+  not require them.
+- Their record shapes are **not** covered by the version contract at the top
+  of this page. They can change without a format bump, because the layer that
+  writes them is not this package.
+- A `thread_type` outside the documented set, or a thread field this page
+  doesn't list, may come from here. Tolerate both (the general rule anyway).
+- The retrieval tools take no parameter that reaches them, and search results
+  never include them. The one contact point is a courtesy: `thread_read` given
+  a thread the region minted renders what the region knows about it, rather
+  than reporting an empty conversation.
+
+The storage-side seam is `thread_archive._knowledge` — private, versioned with
+the rest of the private tree, and documented in its own module docstring.

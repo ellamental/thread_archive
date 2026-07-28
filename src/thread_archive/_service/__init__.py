@@ -90,7 +90,7 @@ def _log_dir(home: Optional[str]) -> Path:
 def install_watcher(
     home: Optional[str] = None, *, web: bool = True, web_port: int = 8787
 ) -> Path:
-    entry = entry_path("thread_archive")
+    entry = entry_path("thread-archive")
     spec = watcher_spec(entry, _log_dir(home), home=home, web=web, web_port=web_port)
     return active_backend().install(spec)
 
@@ -139,7 +139,7 @@ def install_backup(
     minute: int = 0,
     notify_url: Optional[str] = None,
 ) -> Path:
-    entry = entry_path("thread_archive")
+    entry = entry_path("thread-archive")
     spec = backup_spec(
         entry, _log_dir(home), dest, home=home, hour=hour, minute=minute, notify_url=notify_url
     )

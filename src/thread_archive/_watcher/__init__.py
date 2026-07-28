@@ -5,7 +5,7 @@ directly. Which watchers run comes from the provider registry, so a plugin's
 source joins the same loop as a built-in one; alongside them ride a drop-folder
 watcher for account exports left in ``<home>/dumps/`` and a recovery pass over
 Claude Code's VS Code host log. Every watcher self-gates on ``is_available()``,
-so all of them share the one ``thread_archive watch`` loop and an absent store simply
+so all of them share the one ``thread-archive watch`` loop and an absent store simply
 costs nothing.
 """
 

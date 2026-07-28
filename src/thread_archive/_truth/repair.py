@@ -1,6 +1,6 @@
 """Truth repair: quarantine unparseable lines, restore committed rows the truth lacks.
 
-The sanctioned path from a red ``thread_archive verify`` back to green. An unparseable
+The sanctioned path from a red ``thread-archive verify`` back to green. An unparseable
 line in a truth file is one of two things: the torn final append of a crash
 (never committed — the line's fsync never completed, so the COMMIT that follows
 it in the write seam never ran), or a damaged formerly-good line. Either way the
@@ -33,7 +33,7 @@ truth append + commit, so the tree is quiescent — and resolves any crashed
 drain's intent first, so a torn tail the drain rollback would remove isn't
 quarantined as damage. Idempotent: a clean truth repairs to zero actions.
 
-After a repair that excised fragments, the next ``thread_archive backup`` may need
+After a repair that excised fragments, the next ``thread-archive backup`` may need
 ``--allow-shrink``: the rewrite shrinks the repaired file, and the mirror's
 shrink guard (correctly) flags shrinking truth files.
 """

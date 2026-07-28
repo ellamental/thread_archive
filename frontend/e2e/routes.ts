@@ -20,6 +20,7 @@ export const PUBLIC_ROUTES: readonly string[] = [
   '/stats',
   '/stats/model/:model',
   '/health',
+  '/upload',
   '/archive/:id',
 ]
 

@@ -43,15 +43,15 @@ from .ulid import mint_ulid
 class Thread(Base):
     """An imported conversation, or a topic.
 
-    ``thread_type`` has three live kinds: 'conversation' (a chat session — the
-    default, what importers create), 'system' (a subagent/machinery run — captured,
-    but out of default search and browse; retrieval's ``agents``/``types`` controls
-    reach it), and 'topic' (a
-    knowledge node in the topic graph; see :mod:`thread_archive._knowledge`).
-    Legacy imports carry other type strings (canvas, patch, outliner, …); readers
-    treat the column as an open vocabulary. Modeling a topic *as* a thread is
-    deliberate, not leftover polymorphism: it gives topics thread ids, so the graph's
-    edges and citations reference a single id space.
+    ``thread_type`` has two kinds this package creates: 'conversation' (a chat
+    session — the default, what importers create) and 'system' (a
+    subagent/machinery run — captured, but out of default search and browse;
+    retrieval's ``agents``/``types`` controls reach it). Legacy imports carry
+    other type strings (canvas, patch, outliner, …), and the truth format's
+    extension region mints its own ('topic' — see
+    :mod:`thread_archive._knowledge`); readers treat the column as an open
+    vocabulary. An extension modeling its nodes *as* threads is why: it puts
+    them in one id space with the conversations they reference.
 
     ``id`` is a ULID (26-char Crockford base32; see :mod:`.ulid`) minted at
     creation — lexicographic order is start-time order, and ids are globally

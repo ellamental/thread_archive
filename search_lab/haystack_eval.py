@@ -314,7 +314,7 @@ def _build_group(api, home: Path, corpus: dict[str, str], *, vectors: bool) -> d
     work.mkdir(parents=True, exist_ok=True)
     # Tracked like any archive load (progress lands in this home's
     # load-state.json/ledger — the home is unregistered, but a stalled or slow
-    # build is still inspectable via `thread_archive loads --home <home>`).
+    # build is still inspectable via `thread-archive loads --home <home>`).
     from thread_archive._ops.load_runs import load_run
 
     doc_of_thread: dict[str, str] = {}

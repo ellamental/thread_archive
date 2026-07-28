@@ -1,4 +1,4 @@
-"""``thread_archive fix-import`` — user-run repair of a drifted provider import.
+"""``thread-archive fix-import`` — user-run repair of a drifted provider import.
 
 The archive's parsers rot on the provider's schedule, not the maintainer's: a
 harness update changes its transcript format and the importer soft-degrades

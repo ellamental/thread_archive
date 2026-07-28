@@ -21,7 +21,7 @@ import pytest
 
 from thread_archive._service import systemd
 
-ENTRY = Path("/opt/venv/bin/thread_archive")
+ENTRY = Path("/opt/venv/bin/thread-archive")
 ENTRY_MCP = Path("/opt/venv/bin/archive-mcp")
 LOG_DIR = Path("/data/arc/logs")
 
@@ -71,7 +71,7 @@ def test_watcher_unit_shape() -> None:
     assert set(units) == {"thread-archive-watcher.service"}
     text = units["thread-archive-watcher.service"]
     assert "Type=simple" in text
-    assert "ExecStart=/opt/venv/bin/thread_archive watch --web --web-port 8787" in text
+    assert "ExecStart=/opt/venv/bin/thread-archive watch --web --web-port 8787" in text
     # Restart-on-abnormal-exit, and never latch into a permanent 'failed'.
     assert "Restart=on-failure" in text
     assert "StartLimitIntervalSec=0" in text
@@ -128,7 +128,7 @@ def test_backup_units_shape() -> None:
     assert set(units) == {"thread-archive-backup.service", "thread-archive-backup.timer"}
     svc = units["thread-archive-backup.service"]
     assert "Type=oneshot" in svc
-    assert "ExecStart=/opt/venv/bin/thread_archive nightly /vol/bak" in svc
+    assert "ExecStart=/opt/venv/bin/thread-archive nightly /vol/bak" in svc
     # I/O-bound and not latency-sensitive: nice'd and idle I/O.
     assert "Nice=10" in svc
     assert "IOSchedulingClass=idle" in svc
@@ -148,7 +148,7 @@ def test_backup_units_options() -> None:
         notify_url="http://127.0.0.1:8002/api/notify",
     )
     svc = units["thread-archive-backup.service"]
-    assert "ExecStart=/opt/venv/bin/thread_archive nightly /vol/bak --notify-url http://127.0.0.1:8002/api/notify" in svc
+    assert "ExecStart=/opt/venv/bin/thread-archive nightly /vol/bak --notify-url http://127.0.0.1:8002/api/notify" in svc
     assert "Environment=THREAD_ARCHIVE_HOME=/data/arc" in svc
     assert "OnCalendar=*-*-* 02:30:00" in units["thread-archive-backup.timer"]
 

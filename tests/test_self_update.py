@@ -308,7 +308,7 @@ def test_default_reinstall_translates_a_pip_failure(tmp_path: Path) -> None:
 @pytest.mark.integration
 def test_default_smoke_passes_on_a_real_home_and_fails_on_a_broken_one(
         tmp_path: Path) -> None:
-    """The smoke check is `thread_archive status` in a fresh process under the venv's
+    """The smoke check is `thread-archive status` in a fresh process under the venv's
     real `thread_archive` entry point: green against a working home, a RuntimeError
     carrying the CLI's stderr when the home can't hold an archive."""
     home = tmp_path / "home"
@@ -317,7 +317,7 @@ def test_default_smoke_passes_on_a_real_home_and_fails_on_a_broken_one(
 
     broken = tmp_path / "not-a-dir"
     broken.write_text("a file where the home should be", encoding="utf-8")
-    with pytest.raises(RuntimeError, match="`thread_archive status` under the new install"):
+    with pytest.raises(RuntimeError, match="`thread-archive status` under the new install"):
         _update._default_smoke(str(broken))
 
 

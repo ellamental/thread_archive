@@ -137,7 +137,7 @@ def test_topic_tree_read(archive_home) -> None:
     assert {c["id"] for c in tree["roots"][0]["children"]} == {child, grandchild}
     assert lone not in {c["id"] for c in tree["roots"][0]["children"]}
 
-    # The reserved 'topics' ref is a pointer, not a page — the tree is a
-    # view. Case/space-insensitive, and it beats uuid resolution.
-    assert "topic tree" in read_thread("topics")
-    assert "topic tree" in read_thread(" Topics ")
+    # The hierarchy read is storage mechanics for the extension region's owner
+    # to render — archive's own read tool reserves no ref for it, so 'topics'
+    # is an ordinary thread lookup that finds nothing.
+    assert "not found" in read_thread("topics")

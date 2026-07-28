@@ -145,7 +145,7 @@ def build_notices(records: dict) -> list[dict]:
     backup = records.get("last_backup") or {}
     nightly_record = records.get("last_nightly") or {}
     dest = pipeline.get("dest") or backup.get("dest") or nightly_record.get("dest")
-    nightly_command = f"thread_archive nightly {_shell_arg(str(dest))}" if dest else "thread_archive setup"
+    nightly_command = f"thread-archive nightly {_shell_arg(str(dest))}" if dest else "thread-archive setup"
 
     watch_pass = records.get("last_watch_pass")
     if not watch_pass:
@@ -154,14 +154,14 @@ def build_notices(records: dict) -> list[dict]:
             "Capture has never reported a completed pass",
             "Run one pass now. If it succeeds, install or restart the watcher so new "
             "conversations keep arriving.",
-            "thread_archive watch --once",
+            "thread-archive watch --once",
         ))
     elif (_elapsed(watch_pass.get("at")) or float("inf")) > _CAPTURE_STALE_S:
         out.append(_notice(
             "capture-stale", "bad",
             f"Capture is stale — last check {_age(watch_pass.get('at'))}",
             "A stalled watcher can leave recent conversations outside the archive.",
-            "thread_archive watch --once",
+            "thread-archive watch --once",
         ))
 
     watch_errors = records.get("last_watch_errors")
@@ -171,7 +171,7 @@ def build_notices(records: dict) -> list[dict]:
             "A provider failed during capture",
             " · ".join(watch_errors.get("errors") or [])
             or "The latest watcher run recorded provider errors.",
-            "thread_archive status",
+            "thread-archive status",
         ))
 
     for source, data in ((watch_pass or {}).get("sources") or {}).items():
@@ -182,7 +182,7 @@ def build_notices(records: dict) -> list[dict]:
             f"{source} is not importing cleanly",
             f"{_count(data.get('parse_errors'))} parse errors and "
             f"{_count(data.get('errors'))} watcher errors since this capture process started.",
-            f"thread_archive fix-import {_shell_arg(str(source))}",
+            f"thread-archive fix-import {_shell_arg(str(source))}",
         ))
 
     if not pipeline.get("ran"):
@@ -215,7 +215,7 @@ def build_notices(records: dict) -> list[dict]:
             "Backup is on the same filesystem as the archive",
             "This protects against index corruption and accidental deletion, but not "
             "loss of the disk. Move the scheduled destination to another disk.",
-            "thread_archive daemon install --backup --dest /Volumes/<backup-disk>/thread-archive",
+            "thread-archive daemon install --backup --dest /Volumes/<backup-disk>/thread-archive",
         ))
 
     coverage = records.get("last_coverage") or {}
@@ -225,7 +225,7 @@ def build_notices(records: dict) -> list[dict]:
             "Capture coverage has gaps",
             " · ".join(coverage.get("failed") or [])
             or "The coverage audit found missing or degraded source data.",
-            "thread_archive coverage",
+            "thread-archive coverage",
         ))
     for warning in coverage.get("warnings") or []:
         # Keyed on the warning's subject (its text up to the first colon — the
@@ -234,7 +234,7 @@ def build_notices(records: dict) -> list[dict]:
         subject = _slug(str(warning).split(":", 1)[0]) or "coverage"
         out.append(_notice(
             f"coverage-warning-{subject}", "warn",
-            "Coverage warning", str(warning), "thread_archive coverage",
+            "Coverage warning", str(warning), "thread-archive coverage",
         ))
 
     # A feature running without the library that does it well is the one fault
@@ -258,14 +258,14 @@ def build_notices(records: dict) -> list[dict]:
             "update", "good",
             f"{update.get('tag') or 'A new release'} is available",
             str(update.get("reason") or "Applying updates is explicit."),
-            "thread_archive self-update",
+            "thread-archive self-update",
         ))
     elif update and not update.get("ok"):
         out.append(_notice(
             "update-blocked", "warn",
             f"Updates are {update.get('action') or 'blocked'}",
             str(update.get("reason") or "The update check did not complete successfully."),
-            "thread_archive self-update --check",
+            "thread-archive self-update --check",
         ))
 
     return _uniquify(out)

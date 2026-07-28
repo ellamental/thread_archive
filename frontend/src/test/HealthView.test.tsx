@@ -138,7 +138,7 @@ function notice(overrides: Partial<Notice> = {}): Notice {
     tone: 'warn',
     title: 'Backup is on the same filesystem as the archive',
     detail: 'This protects against index corruption, but not loss of the disk.',
-    command: 'thread_archive daemon install --backup --dest /Volumes/disk/thread-archive',
+    command: 'thread-archive daemon install --backup --dest /Volumes/disk/thread-archive',
     fingerprint: 'abc123',
     ...overrides,
   }
@@ -241,7 +241,7 @@ it('prioritizes unresolved protection gaps and gives executable remedies', async
         tone: 'bad',
         title: 'Protection failed at backup',
         detail: 'The pipeline verdict accounts for later successful reruns.',
-        command: 'thread_archive nightly /Volumes/backup/thread-archive',
+        command: 'thread-archive nightly /Volumes/backup/thread-archive',
       }),
       notice(),
       notice({
@@ -249,7 +249,7 @@ it('prioritizes unresolved protection gaps and gives executable remedies', async
         tone: 'good',
         title: 'v0.9.2 is available',
         detail: 'past soak window',
-        command: 'thread_archive self-update',
+        command: 'thread-archive self-update',
       }),
     ],
     silenced: [],
@@ -262,8 +262,8 @@ it('prioritizes unresolved protection gaps and gives executable remedies', async
   expect(screen.getByText('Protection failed at backup')).toBeInTheDocument()
   expect(screen.getByText('Backup is on the same filesystem as the archive')).toBeInTheDocument()
   expect(screen.getByText('v0.9.2 is available')).toBeInTheDocument()
-  expect(screen.getByText('thread_archive nightly /Volumes/backup/thread-archive')).toBeInTheDocument()
-  expect(screen.getByText('thread_archive self-update')).toBeInTheDocument()
+  expect(screen.getByText('thread-archive nightly /Volumes/backup/thread-archive')).toBeInTheDocument()
+  expect(screen.getByText('thread-archive self-update')).toBeInTheDocument()
 })
 
 it('does not promise a working restore while the queue holds a warning', async () => {
@@ -283,13 +283,13 @@ it('does not hide a provider parser failure inside an otherwise fresh pass', asy
       tone: 'bad',
       title: 'codex is not importing cleanly',
       detail: '3 parse errors and 0 watcher errors since this capture process started.',
-      command: 'thread_archive fix-import codex',
+      command: 'thread-archive fix-import codex',
     })],
     silenced: [],
   })
 
   expect(await screen.findByText('codex is not importing cleanly')).toBeInTheDocument()
-  expect(screen.getByText('thread_archive fix-import codex')).toBeInTheDocument()
+  expect(screen.getByText('thread-archive fix-import codex')).toBeInTheDocument()
   // The provider table degrades on its own evidence, not on the notice.
   expect(screen.getByText('Degraded')).toBeInTheDocument()
 })

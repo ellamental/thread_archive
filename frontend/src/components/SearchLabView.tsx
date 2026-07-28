@@ -5,21 +5,18 @@ import {
   type BenchRuns,
   type Dataset,
   type DirSize,
-  type FunnelRow,
   type LabInventory,
-  type MiningSummary,
 } from '../api'
 import { Link } from 'react-router-dom'
 import { Pill, RunsTable } from './labRuns'
 
 // What the bench has to measure with. Every other view here is about the corpus
 // or the pipeline reading it; this one is about the instruments — which benchmark
-// rows can run on this box right now, which corpora are on disk, which miners
-// exist.
+// rows can run on this box right now, and which corpora are on disk.
 //
 // Tables rather than charts, because nothing on this page is a series: it is an
 // inventory, and the questions it answers ("can this row run?", "is that corpus
-// built?", "what fixed those labels?") are categorical.
+// built?") are categorical.
 
 /** Bytes, or `—`. A truncated walk prints as a floor: the number is real but the
  *  total is larger by however much the walk did not reach, and `≥` is the only
@@ -66,200 +63,6 @@ const BENCH_STATE: Record<string, { label: string; tone: string; note: string }>
   },
   'never-run': { label: 'never run', tone: 'busy', note: 'corpus is built, no run recorded' },
   missing: { label: 'no corpus', tone: 'bad', note: 'the corpus is not on this box' },
-}
-
-/** A mining run's funnel, drawn.
- *
- *  The one chart on this page, and it earns the exception: a funnel is the shape
- *  of a *loss*, and a table of in/out pairs makes the reader do the subtraction
- *  that is the entire point. Each bar is a stage's survivors as a share of what
- *  entered the funnel, so the taper is the yield and the gaps are where units
- *  went.
- *
- *  Drop reasons are listed rather than colour-coded because they are not ordinal
- *  and there are usually two or three: a unit dropped as `misattributed` is a
- *  wrong label leaving the benchmark, and one dropped as `untargetable-commit` is
- *  a hard case leaving it. Reading those as one "dropped" number is the mistake
- *  this whole view exists to prevent. */
-function Funnel({ rows }: { rows: FunnelRow[] }) {
-  const start = rows[0]?.in ?? 0
-  if (!start) return null
-  return (
-    <ol className="mine-funnel" aria-label="mining funnel">
-      {rows.map((row) => {
-        const drops = Object.entries(row.reasons).filter(([r]) => r !== 'ok')
-        return (
-          <li key={row.stage}>
-            <div className="mine-funnel-head">
-              <code>{row.stage}</code>
-              {row.kind === 'agent' && (
-                <Pill tone="warn" title="this stage spends tokens">
-                  agent
-                </Pill>
-              )}
-              <span className="muted small">
-                {count(row.in)} → {count(row.out)}
-                {row.in > row.out && ` (−${row.in - row.out})`}
-                {row.cost_usd ? ` · $${row.cost_usd.toFixed(2)}` : ''}
-              </span>
-            </div>
-            <div className="mine-funnel-bar" aria-hidden="true">
-              <span
-                className={`mine-funnel-fill${row.kind === 'agent' ? ' is-agent' : ''}`}
-                style={{ width: `${Math.max((row.out / start) * 100, 0.5)}%` }}
-              />
-            </div>
-            {drops.length > 0 && (
-              <p className="muted small mine-funnel-why">
-                {drops.map(([reason, n]) => `${reason} ${n}`).join(' · ')}
-              </p>
-            )}
-          </li>
-        )
-      })}
-    </ol>
-  )
-}
-
-/** A run's outcome composition as one bar: what was admitted against what was
- *  refused, and by which reason.
- *
- *  `ok` is drawn apart from everything else because the drops are the informative
- *  half — a miner refusing a third of what it draws is either working well or
- *  broken, and which one it is depends entirely on the reasons, never on the
- *  count. Segments are ordered largest-first so the dominant refusal is the one
- *  the eye lands on. */
-function OutcomeBar({ outcomes }: { outcomes: Record<string, number> }) {
-  const total = Object.values(outcomes).reduce((a, b) => a + b, 0)
-  if (!total) return <span className="muted small">—</span>
-  const ok = outcomes.ok ?? 0
-  const drops = Object.entries(outcomes)
-    .filter(([r]) => r !== 'ok')
-    .sort((a, b) => b[1] - a[1])
-  return (
-    <div className="outcome">
-      <div className="outcome-bar" role="img"
-           aria-label={`${ok} admitted of ${total} drawn`}>
-        {ok > 0 && <span className="seg is-ok" style={{ width: `${(ok / total) * 100}%` }} />}
-        {drops.map(([reason, n], i) => (
-          <span key={reason} className={`seg is-drop tone-${i % 3}`}
-                style={{ width: `${(n / total) * 100}%` }} title={`${reason} ${n}`} />
-        ))}
-      </div>
-      <p className="muted small outcome-why">
-        {ok > 0 && `ok ${ok}`}
-        {drops.length > 0 && (ok > 0 ? ' · ' : '')}
-        {drops.map(([reason, n]) => `${reason} ${n}`).join(' · ')}
-      </p>
-    </div>
-  )
-}
-
-/** Mining, cut two ways over the same runs.
- *
- *  By pipeline answers "is this miner working, and what does it refuse?"; by
- *  dataset answers "which corpora have been labelled at all?", which on a bench
- *  whose corpora each admit different miners is what decides what can be measured
- *  next. The supply column is the one that makes an empty row mean something: a
- *  corpus with 1,284 mineable units and no runs is not the same state as a corpus
- *  with nothing to mine, and without it both render as a zero. */
-function MiningSection({ mining }: { mining: MiningSummary }) {
-  const t = mining.totals
-  const mined = mining.by_dataset.filter((d) => d.runs > 0).length
-  return (
-    <section>
-      <h2>Mining</h2>
-      <p className="muted">
-        Every miner is a declared pipeline — supply, then gates that decide what is
-        worth spending on, then a free QA pass over what came back. What a mined
-        number means depends on <em>where</em> units were lost, so the funnels below
-        are read by their drop reasons and never by a total: a unit refused because
-        its provenance does not hold up is a wrong label leaving the benchmark, and
-        one refused because its source material is uninformative is a hard case
-        leaving it. Those move a number in opposite directions.
-      </p>
-      <div className="stat-tiles">
-        <Tile value={count(t.runs)} label="mining runs"
-              sub={t.last_at ? `last ${day(t.last_at)}` : 'none recorded'} />
-        <Tile value={count(t.cases)} label="cases on disk"
-              sub={`${count(t.files)} file(s) · ${bytes({ bytes: t.bytes, files: 0, truncated: false })}`} />
-        <Tile value={`${mined}/${mining.by_dataset.length}`} label="corpora mined"
-              sub="gold dirs with a recorded run" />
-        <Tile value={t.cost_usd ? `$${t.cost_usd.toFixed(2)}` : '—'} label="spent"
-              sub="recorded per stage; older runs logged none" />
-      </div>
-
-      <h3>By pipeline</h3>
-      {mining.by_miner.length === 0 ? (
-        <p className="muted">No miner has run on this box.</p>
-      ) : (
-        <table className="stat-table mining-table" aria-label="mining by pipeline">
-          <thead>
-            <tr>
-              <th>miner</th><th className="num">runs</th><th className="num">drawn</th>
-              <th className="num">cases</th><th className="num">yield</th>
-              <th>admitted / refused</th><th>corpora</th>
-            </tr>
-          </thead>
-          <tbody>
-            {mining.by_miner.map((m) => (
-              <tr key={m.miner}>
-                <td><code>{m.miner}</code></td>
-                <td className="num">{count(m.runs)}</td>
-                <td className="num">{count(m.attempted)}</td>
-                <td className="num">{count(m.written)}</td>
-                <td className="num">
-                  {m.attempted ? (m.written / m.attempted).toFixed(1) : '—'}
-                </td>
-                <td><OutcomeBar outcomes={m.outcomes} /></td>
-                <td className="muted small">{m.datasets.join(', ') || '—'}</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      )}
-
-      <h3>By dataset</h3>
-      <table className="stat-table mining-table" aria-label="mining by dataset">
-        <thead>
-          <tr>
-            <th>corpus</th><th className="num">runs</th><th className="num">cases</th>
-            <th>refused, and for what</th>
-            <th>waiting to be mined</th><th>miners run here</th>
-          </tr>
-        </thead>
-        <tbody>
-          {mining.by_dataset.map((d) => {
-            const supply = Object.entries(d.supply)
-            return (
-              <tr key={d.dataset}>
-                <td>
-                  <code>{d.dataset}</code>
-                  <div className="muted small">{d.path}</div>
-                </td>
-                <td className="num">{d.runs ? count(d.runs) : <span className="muted">—</span>}</td>
-                <td className="num">{d.cases ? count(d.cases) : <span className="muted">—</span>}</td>
-                <td className="muted small">
-                  {Object.keys(d.refusals).length === 0
-                    ? '—'
-                    : Object.entries(d.refusals)
-                        .sort((a, b) => b[1] - a[1])
-                        .map(([reason, n]) => `${reason} ${n}`)
-                        .join(' · ')}
-                </td>
-                <td className="muted small">
-                  {supply.length === 0
-                    ? 'not counted here — a supply that needs the corpus open is what `--plan` reports'
-                    : supply.map(([k, v]) => `${count(v)} ${k.replace(/_/g, ' ')}`).join(' · ')}
-                </td>
-                <td className="muted small">{d.miners.join(', ') || 'none'}</td>
-              </tr>
-            )
-          })}
-        </tbody>
-      </table>
-    </section>
-  )
 }
 
 function Tile({ value, label, sub }: { value: string; label: string; sub?: string }) {
@@ -532,11 +335,6 @@ export function SearchLabView() {
         />
         <Tile value={bytes(inv.cache)} label="on disk" sub={inv.cache_root} />
         <Tile
-          value={String(inv.miners.length)}
-          label="label miners"
-          sub="registered · nothing scores against their output"
-        />
-        <Tile
           value={ledger ? String(ledger.total) : '—'}
           label="runs recorded"
           sub={
@@ -639,97 +437,6 @@ export function SearchLabView() {
             <DatasetTable rows={rows} />
           </div>
         ))}
-      </section>
-
-      <MiningSection mining={inv.mining} />
-
-      <section>
-        <h2>Miners</h2>
-        <p className="muted">
-          The only tokens-spending instrument: a miner drives headless agents against
-          a frozen snapshot and mints graded relevance labels the cheaper protocols
-          cannot produce. What each one's labels are <em>fixed by</em> is the field to
-          read first — a label established by searching the corpus with the engine
-          under test can only describe what that engine already reaches, so a
-          systematic blind spot can never score as a miss.
-        </p>
-        <p className="muted small">
-          Nothing gates on what these produce, and nothing should. Even the
-          retrieval-free miners author their <em>query</em> from an artifact rather
-          than observing one someone asked, so a case file is material for a
-          deliberate, hand-read experiment — never a number a change can be credited
-          against.
-        </p>
-        <div className="lab-miners">
-          {inv.miners.map((m) => (
-            <article key={m.name} className="lab-miner">
-              <header>
-                <code>{m.name}</code>
-                <Pill tone={m.retrieval_free ? 'good' : 'warn'}>
-                  {m.retrieval_free ? 'retrieval-free labels' : 'pooled labels'}
-                </Pill>
-                <span className="muted small">{m.measures}</span>
-              </header>
-              <p>{m.summary}</p>
-              <dl className="lab-facts">
-                <dt>labels fixed by</dt>
-                <dd>{m.gold_source}</dd>
-                <dt>cost</dt>
-                <dd>{m.cost}</dd>
-                <dt>invoked</dt>
-                <dd>
-                  <code>
-                    python -m search_lab.mine {m.name}
-                    {m.target_kind === 'per-case' ? ` --target ${m.default_target}` : ''}
-                  </code>
-                  {!m.runnable_in_all && ' — needs an argument, so `mine all` skips it'}
-                </dd>
-                <dt>runs</dt>
-                <dd>
-                  {m.runs_total === 0 ? (
-                    <span className="muted">never run here</span>
-                  ) : (
-                    `${m.runs_total} recorded, last ${day(m.runs[0]?.at)} — ${count(
-                      m.runs[0]?.written,
-                    )} case(s) from ${count(m.runs[0]?.attempted)} ${m.unit}(s)`
-                  )}
-                </dd>
-                <dt>pipeline</dt>
-                <dd>
-                  {m.stages.length === 0 ? (
-                    <span className="muted">
-                      one opaque step — this miner declares no stages, so a run
-                      records where units ended and never where they were lost
-                    </span>
-                  ) : (
-                    <ul className="mine-stages">
-                      {m.stages.map((s) => (
-                        <li key={s.name}>
-                          <code>{s.name}</code>
-                          {s.kind === 'agent' && <Pill tone="warn">agent</Pill>}
-                          <span className="muted small">{s.summary}</span>
-                        </li>
-                      ))}
-                    </ul>
-                  )}
-                </dd>
-              </dl>
-              {m.runs[0]?.funnel?.length ? (
-                <>
-                  <h4 className="mine-funnel-title">
-                    last run’s funnel <span className="muted small">{day(m.runs[0].at)}</span>
-                  </h4>
-                  <Funnel rows={m.runs[0].funnel} />
-                </>
-              ) : m.stages.length > 0 && m.runs_total > 0 ? (
-                <p className="muted small">
-                  The recorded runs predate this miner’s stages, so no funnel was
-                  captured — the next run records one.
-                </p>
-              ) : null}
-            </article>
-          ))}
-        </div>
       </section>
 
     </div>

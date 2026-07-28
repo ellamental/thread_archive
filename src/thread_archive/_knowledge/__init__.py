@@ -1,19 +1,22 @@
-"""The knowledge layer's data plane — the topic-graph records under the archive.
+"""Storage mechanics for the truth format's extension region (docs/format.md).
 
-The archive owns the knowledge graph's **data**, nothing more:
+An external knowledge layer keeps a topic graph over this archive. Its records
+live in the truth directory so they are backed up, verified and restored with
+everything else — and that storage is the whole of archive's involvement. This
+package does not create topics, does not curate them, and ships no product
+surface over them: no retrieval-tool parameter reaches the graph, and an
+archive without it is complete.
 
-* every graph mutation is an append-only ``KgEvent`` in the truth log, folded
-  by :mod:`.materialize` into the ``thread_links`` / ``topic_messages``
-  projections;
-* :mod:`.read` serves the SQL-only topic reads (one topic's page, its
-  citations, the thread set behind search's ``topic_id`` scope, the part-of
-  hierarchy) and owns the hierarchy vocabulary.
+What lives here is therefore only what storage requires:
 
-The archive neither writes nor analyzes these records: an external write layer
-(if present) writes through the truth log (appending ``KgEvent`` rows the
-same way :mod:`.materialize` folds them), and any graph analytics live with
-that consumer. The graph is empty (all queries return empty) until topics +
-links exist; the core archive works without them.
+* :mod:`.materialize` folds an appended ``KgEvent`` into the ``thread_links`` /
+  ``topic_messages`` projections, so a truth-only restore rebuilds them;
+* :mod:`.read` serves SQL reads back out (a node's page and citations, the
+  member thread set, the part-of hierarchy) for the writing layer to render.
+
+The writing layer owns the schema, the vocabulary and the compatibility of
+these records; none of it is covered by the truth format's version contract.
+Every query here returns empty until that layer exists.
 """
 
 from __future__ import annotations

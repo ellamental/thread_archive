@@ -23,7 +23,7 @@ measurement — which is exactly what a regression gate and a scored bench
 want. The number moves only when the *code* moves, never because the live
 archive gained threads. It also removes the need for the ``until`` date bound
 the mined-gold eval otherwise carries: a gold mined against the snapshot can't
-be outranked by a thread that landed after mining, because no such thread
+be outranked by a thread that landed after the file was written, because no such thread
 exists in the frozen corpus.
 
 Some corpora are born frozen — an eval harness builds a home from a fixed
@@ -270,7 +270,7 @@ def stamp_snapshot(home: Optional[str] = None, *, force: bool = False) -> dict:
     home an eval harness builds from a fixed dataset is born frozen — nothing
     appends to it — so the copy buys nothing and the only thing missing is the
     identity a mined case binds to. This writes that identity in place, under the
-    same manifest contract, so ``mine`` and ``retrieval_eval --cases`` accept the
+    same manifest contract, so ``retrieval_eval --cases`` accepts the
     home and their golds still bind to a corpus that cannot move under them.
 
     Re-stamping is the cadence after a rebuild: the id is a content fingerprint, so

@@ -373,7 +373,7 @@ def realistic_layout(home) -> dict:
 
     Web exports (claude.ai / ChatGPT) have no live store — they are account exports a
     user drops in by hand — so they are written to their own directories and returned
-    under ``exports`` for the caller to feed to ``thread_archive import-export``.
+    under ``exports`` for the caller to feed to ``thread-archive import-export``.
 
     Returns ``{markers, exports, min_threads}``.
     """
@@ -412,7 +412,7 @@ def realistic_layout(home) -> dict:
     (cowork_org / "local_cw1.json").write_text(
         json.dumps({"title": "Cowork install session"}), encoding="utf-8")
 
-    # web exports — dropped in by hand; fed to `thread_archive import-export`
+    # web exports — dropped in by hand; fed to `thread-archive import-export`
     exports_root = home / "downloads"
     chatgpt_dir = exports_root / "chatgpt-export"
     claude_dir = exports_root / "claude-export"

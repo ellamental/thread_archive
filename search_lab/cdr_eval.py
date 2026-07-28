@@ -70,7 +70,7 @@ import eval_home  # noqa: E402
 from thread_archive._retrieval import _probe  # noqa: E402
 
 # Reuse beir_eval's generic, task-agnostic primitives so the two harnesses ingest
-# and score off one code path (the same reason the mining package imports the
+# and score off one code path (the same reason the other harnesses import the
 # shared scoring engine): `_session_lines` (a doc as a one-turn session), `score_run`
 # (standard IR metrics for one ranking), and `dcg`. Loaded by path — search_lab/ is a
 # script dir, not an importable package.

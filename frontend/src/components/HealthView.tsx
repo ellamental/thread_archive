@@ -351,8 +351,8 @@ function StorageSection({ disk }: { disk: DiskUsage | null }) {
             </p>
           )}
           <p className="health-footnote">
-            {bytes(disk.rebuildable_bytes)} of this is index, which <code>thread_archive reindex</code>{' '}
-            and <code>thread_archive embed</code> rebuild from truth. Raw sources and the drift
+            {bytes(disk.rebuildable_bytes)} of this is index, which <code>thread-archive reindex</code>{' '}
+            and <code>thread-archive embed</code> rebuild from truth. Raw sources and the drift
             quarantine are kept on purpose — they outlive what the harnesses delete — so pruning
             them is a decision the archive leaves to you.
           </p>
@@ -806,7 +806,7 @@ export function HealthView() {
             <div><dt>Recent skips</dt><dd>{int(status.last_coverage?.skips_recent)}</dd></div>
             <div><dt>Recent drift</dt><dd>{int(status.last_coverage?.drift_recent)}</dd></div>
           </dl>
-          <Command>thread_archive coverage</Command>
+          <Command>thread-archive coverage</Command>
         </section>
 
         <section className="health-detail" aria-labelledby="mirror-heading">
@@ -880,7 +880,7 @@ export function HealthView() {
             <div><dt>Available</dt><dd>{status.last_self_update?.tag || '—'}</dd></div>
             <div><dt>Last check</dt><dd title={dateTime(status.last_self_update?.at)}>{age(status.last_self_update?.at)}</dd></div>
           </dl>
-          <Command>thread_archive self-update --check</Command>
+          <Command>thread-archive self-update --check</Command>
         </section>
       </div>
     </div>

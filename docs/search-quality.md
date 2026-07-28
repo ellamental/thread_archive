@@ -6,7 +6,7 @@ they can and cannot certify. The instruments live in `search_lab/`
 and they stay there: an install ships no scoring surface. A metric with no
 baseline beside it is not information, and every protocol below carries limits
 that have to be read with it. What an install *does* report is whether search is
-degraded — the capability matrix on `thread_archive status` and the viewer's
+degraded — the capability matrix on `thread-archive status` and the viewer's
 health page — which is a state you can act on.
 
 **The headline finding is a negative one, and it governs the rest of this page:
@@ -30,10 +30,7 @@ of relevant material — and **nothing on this bench measures that.** See
 
 **A gold label may not be established by searching the corpus with the engine
 under test — and where that is impossible, the pool it came from must be wider
-than one system.** This is the rule the miner registry enforces
-(`search_lab/mine/__init__.py`); every miner declares a `gold_source` naming the
-artifact its answers come from and a `retrieval_free` flag saying whether
-retrieval touched them.
+than one system.** No protocol in this lab clears it, which is why none runs.
 
 An agent that sweeps the corpus with the production ranker to assemble a relevance
 pool produces labels that describe *what that ranker already reaches*. A thread
@@ -49,10 +46,10 @@ answer set from the same record.** A real query's answers were never enumerated 
 anyone — the only trace is what search returned and what the agent opened, which is
 the censored click label. So the two rungs trade against each other:
 
-| rung | labels | queries | miners |
-|---|---|---|---|
-| `retrieval_free=True` | fixed by a record outside the search stack | authored from an artifact | `commit`, `edited` |
-| `retrieval_free=False` | judged over a union of independent systems | **observed** — real traffic | `pooled` |
+| rung | labels | queries |
+|---|---|---|
+| strong | fixed by a record outside the search stack | authored from an artifact |
+| weak | judged over a union of independent systems | **observed** — real traffic |
 
 Neither rung clears the bar on its own. The weak rung is not "circular anyway" —
 pooling several independent retrievers plus a random draw bounds the bias at *what
@@ -71,8 +68,7 @@ Retired as a standard, kept as a finding. This was the most defensible local
 protocol on the bench — labels fixed outside retrieval, a domain-matched corpus,
 nothing ever tuned against it — and its numbers are the clearest evidence for the
 conclusion at the top of this page. The case file it produced now lives in
-`~/dev/retired-gold/`; `python -m search_lab.mine commit` still mints more, for
-reading by hand.
+`~/dev/retired-gold/`.
 
 The corpus was frozen to a snapshot so a number moved only when the ranking code
 moved, and it was scored with the production ranker at the canonical `limit=20`.
@@ -84,9 +80,9 @@ session ↔ commit provenance, which is what a label has to be fixed by. It is
 domain-matched (agent session logs, not a third-party IR corpus) and nothing is
 ever tuned against it.
 
-`mine commit` reads a *linkage file* pairing each session with the commits it
-demonstrably authored; one agent reads only the commit — message and diff — and
-authors queries for it; the linked session is the answer. No search runs during
+The protocol read a *linkage file* pairing each session with the commits it
+demonstrably authored; one agent read only the commit — message and diff — and
+authored queries for it; the linked session was the answer. No search runs during
 labeling, and since the agent never reads the target thread there is no
 vocabulary leakage either: the query is written from an artifact outside the
 corpus, which is also how a person searches ("where did we change the retry
@@ -154,23 +150,21 @@ survive.
 
 ## What is not measured
 
-Naming the holes, because a bench this narrow is easy to over-read. **Two of the
-four now have a miner and no mined cases** — the protocol exists, the tokens have
-not been spent, and until they are these stay holes rather than plans.
+Naming the holes, because a bench this narrow is easy to over-read. They are
+holes, not plans: nothing here is waiting on a protocol that was designed and not
+yet run.
 
-- **The operator's own archive.** No file scores it yet. It carries no session ↔
-  commit provenance, so `commit` cannot run against it, and the corpus that *is*
-  scored is other people's code in other people's repos. Every archive-domain
-  claim rests on the synthetic tier-0 corpus (which proves only that nothing
-  broke) and on inference from a corpus with very different selectivity. Both new
-  miners target this corpus: `edited` off its path projection (3,116 paths
-  currently qualify) and `pooled` off its usage ledger (157 distinct queries).
+- **The operator's own archive.** No file scores it. It carries no session ↔
+  commit provenance, so the one protocol whose labels were fixed outside search
+  could never have run against it, and the corpus that *was* scored is other
+  people's code in other people's repos. Every archive-domain claim rests on the
+  synthetic tier-0 corpus (which proves only that nothing broke) and on inference
+  from a corpus with very different selectivity.
 - **Completeness.** Every scored case has exactly one right answer, so the bench
   reads *findability* and nothing about whether a window holds the several threads
-  that bear on a subject — which is what the fan-out workflow actually needs.
-  `mine edited` is the answer to this one: the sessions that edited a given file
-  are a multi-answer set no ranker chose, enumerated from the trail, and its cases
-  carry a `n_gold` of 2–12 by construction.
+  that bear on a subject — which is what the fan-out workflow actually needs. The
+  external `beam` row is the only multi-answer measurement on this bench, and it
+  is not archive-domain.
 - **Whether the shipped weights are right.** They were arrived at against
   protocols that no longer qualify, and the numbers that justified them are not
   re-derivable. `_retrieval/params.py` states this at the top of its evidence
@@ -205,14 +199,12 @@ not been spent, and until they are these stay holes rather than plans.
   three-token one. So the two populations exercise different parts of the
   pipeline.
 
-  `mine pooled` is the miner aimed at this, and the only one that can be: it takes
-  the observed queries verbatim and buys their labels with a pooled judgment,
-  because a real query's answer set exists in no record. It cannot reach the
-  `retrieval_free` rung and does not claim to. What it can do is make the pool's
-  reach auditable — on four sampled ledger queries the four retrievers plus a
-  random draw collapse 44 nominations into a union of 23–26, and **`bm25` alone
-  contributes up to 8 documents the fused stack never returned**, with `deep`
-  adding 2–6 more. A single-system pool would have silently missed those.
+  Closing this would mean labelling the observed queries, whose answer sets exist
+  in no record — so the labels would have to be judged over a pool retrieval
+  assembled, which is the weak rung. A probe of that shape is worth one finding:
+  over four sampled ledger queries, **`bm25` alone contributes up to 8 documents
+  the fused stack never returned**. Whatever grades them, a single-system pool
+  would have silently missed those.
 
 - **Bench latency over a representative query set.** The warm-latency figures
   below come from the gold queries, which is the same 75-query population above.
@@ -383,7 +375,7 @@ these produce no case files.
   surfaces different-better results scores as a loss — so this is an **alarm, not a
   baseline**: run it by hand to ask "did something collapse," never to credit a
   change, and never cite a from-log delta as evidence. Its lasting value is as a
-  **sampling frame**: real query shapes to seed a miner with. Nothing runs it on a
+  **sampling frame**: real query shapes to draw a population from. Nothing runs it on a
   cadence.
 - **Behavioral signals (`retrieval_eval.py --behavior`)** report zero-label usage
   rates — for every search, whether the agent opened a result, searched again, or
@@ -485,7 +477,6 @@ positive claim:
 | 1 | `pytest -m quality_models` | same corpus, real embedding model | minutes | touching the model arm |
 | 2 | CI arm-liveness probes (`retrieval_eval.py --probes-only`) | live archive | ~a minute | every commit, via thread-ci |
 | 3 | `latency_replay.py` (speed over real traffic), `graph_eval.py`, `--behavior` | the live archive | minutes | evaluating a deliberate ranking change |
-| 3½ | `python -m search_lab.mine <miner>` to mint cases for a hand-read experiment | a frozen snapshot; `commit` needs commit provenance, `edited` a path projection, `pooled` a usage ledger | agent-minutes per mined case | investigating a specific suspicion — never for a headline number |
 | 4 | `python -m search_lab benchmark`; `pytest -m beir` | external IR / conversational-memory benchmarks | tens of minutes | the quality claim — calibrating against published baselines |
 
 The tunables all live in one object — `SearchParams` (`_retrieval/params.py`) — and

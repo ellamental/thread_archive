@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Turn mined gold into a benchmark other people can run.
 
-The miners write cases keyed by **our** thread ids — ULIDs this archive minted at
+A case file is keyed by **our** thread ids — ULIDs this archive minted at
 ingest, which name nothing in anyone else's copy of SWE-chat. That is the single
 thing standing between the gold under ``swe-chat-data/gold/`` and a benchmark: the
 queries are good, the judgments are good, the identifiers are local. This rewrites
@@ -21,7 +21,7 @@ benchmark is made of, none of which mention this archive:
 
 Ids are content-addressed (``sha256`` over protocol, scope and query text), so
 re-exporting the same case yields the same ``query_id`` and runs stay comparable
-across regenerations. Re-mining a *different* query mints a different id, which
+across regenerations. A *different* query takes a different id, which
 is the honest behaviour — it is a different query.
 
 ``run`` is the other half: it drives a ranker over ``queries.jsonl`` and writes a
@@ -96,7 +96,7 @@ def query_id(case: dict) -> str:
     because the same question can be asked of two repositories and mean two
     different things — without it those collide into one id and one of the two
     judgment sets is silently lost."""
-    protocol = case.get("protocol") or case.get("miner") or "unknown"
+    protocol = case.get("protocol") or "unknown"
     scope = case.get("topic") or case.get("repo") or ""
     digest = hashlib.sha256(
         f"{protocol}\n{scope}\n{case['query']}".encode()).hexdigest()[:10]
@@ -108,8 +108,8 @@ def load_gold(gold_dir: Path) -> list[dict]:
 
     Globbed rather than listed: gold accumulates a file at a time (one per topic
     mined), and an export that needed editing to see a new file would fall behind
-    the corpus it describes. Which files are cases — and which are the miner's
-    audit sidecars — is ``search_lab.gold_files``' call, shared with the miners."""
+    the corpus it describes. Which files are cases — and which are audit
+    sidecars beside them — is ``search_lab.gold_files``' call."""
     from gold_files import discover
     cases = []
     for path in discover(gold_dir):
@@ -217,7 +217,7 @@ def export(gold_dir: Path, out: Path, *, data: Path) -> dict:
             # are not, so they are different difficulties wearing one protocol
             # name and a consumer has to be able to split them.
             "topic_kind": None,
-            # What the miner meant by the query, where it wrote one down. This is
+            # What the case meant by the query, where it wrote one down. This is
             # the relevance criterion, published so a judgment can be argued with
             # — it is not part of the query, and a system that reads it is
             # searching with information the benchmark does not grant.

@@ -230,7 +230,7 @@ def test_status_survives_a_dead_watch_pid_and_a_vanished_backup_dest(
 
 
 def test_load_status_reports_the_live_state_and_the_history(archive_home) -> None:
-    """The library view of a load in flight — what ``thread_archive loads`` and
+    """The library view of a load in flight — what ``thread-archive loads`` and
     ``GET /api/loads`` both read."""
     from thread_archive._ops import load_runs
 

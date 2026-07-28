@@ -23,7 +23,7 @@ contract — renaming one means updating those in the same change
 (``tests/test_public_api.py`` pins the set so the change is deliberate).
 
 The web viewer is the same archive through a browser, cohosted by the always-on
-watcher (``thread_archive watch --web``); ``web`` is not a third read surface —
+watcher (``thread-archive watch --web``); ``web`` is not a third read surface —
 it hands that viewer's URL to a browser and serves nothing itself.
 """
 
@@ -51,9 +51,9 @@ def _parse_hhmm(s: str) -> tuple[int, int]:
         hh, mm = s.split(":")
         h, m = int(hh), int(mm)
     except (ValueError, AttributeError):
-        raise SystemExit(f"thread_archive daemon: --at must be HH:MM (got {s!r})")
+        raise SystemExit(f"thread-archive daemon: --at must be HH:MM (got {s!r})")
     if not (0 <= h < 24 and 0 <= m < 60):
-        raise SystemExit(f"thread_archive daemon: --at must be HH:MM (got {s!r})")
+        raise SystemExit(f"thread-archive daemon: --at must be HH:MM (got {s!r})")
     return h, m
 
 
@@ -85,7 +85,7 @@ def _self_throttle() -> None:
 
 
 def cmd_search(args: argparse.Namespace) -> int:
-    """``thread_archive search`` — the ``thread_search`` tool, rendered to stdout.
+    """``thread-archive search`` — the ``thread_search`` tool, rendered to stdout.
 
     Every flag is passed through unchanged: the clamping, the default scope, the
     degradation notice, and the usage-ledger record are the tool's, so a query
@@ -101,7 +101,6 @@ def cmd_search(args: argparse.Namespace) -> int:
                 args.query,
                 limit=args.limit,
                 thread_id=args.thread_id,
-                topic_id=args.topic_id,
                 content_type=args.content_type,
                 exclude_content_type=args.exclude_content_type,
                 since=args.since,
@@ -136,7 +135,7 @@ def cmd_search(args: argparse.Namespace) -> int:
 
 
 def cmd_read(args: argparse.Namespace) -> int:
-    """``thread_archive read`` — the ``thread_read`` tool, rendered to stdout."""
+    """``thread-archive read`` — the ``thread_read`` tool, rendered to stdout."""
     from . import _api as api
     from . import _tools
 
@@ -171,7 +170,7 @@ def cmd_import(args: argparse.Namespace) -> int:
     if provider not in line_streams and provider not in scanners:
         known = ", ".join(sorted({**line_streams, **scanners}))
         raise SystemExit(
-            f"thread_archive import: unknown provider '{provider}' (known: {known})"
+            f"thread-archive import: unknown provider '{provider}' (known: {known})"
         )
 
     result = api.import_path(args.path, home=args.home, provider=provider)  # checkpoints internally
@@ -411,7 +410,7 @@ def cmd_daemon(args: argparse.Namespace) -> int:
         if args.action == "install":
             if not args.dest:
                 print(
-                    "thread_archive daemon install --backup needs --dest <path>",
+                    "thread-archive daemon install --backup needs --dest <path>",
                     file=sys.stderr,
                 )
                 return 2
@@ -438,8 +437,8 @@ def cmd_daemon(args: argparse.Namespace) -> int:
     if args.action == "install":
         path = _service.install_watcher(args.home, web=args.web, web_port=args.web_port)
         print(f"installed {_service.label('watcher')} ({path})")
-        print("the watcher is always-on (starts at login); `thread_archive daemon status` to check,")
-        print("`thread_archive daemon restart` to apply a code edit.")
+        print("the watcher is always-on (starts at login); `thread-archive daemon status` to check,")
+        print("`thread-archive daemon restart` to apply a code edit.")
         if args.web:
             print(f"web viewer: http://127.0.0.1:{args.web_port}")
     elif args.action == "uninstall":
@@ -485,7 +484,7 @@ def cmd_fix_import(args: argparse.Namespace) -> int:
     print(target)
     print(
         f"read {target}/PROTOCOL.md, write the fix, then "
-        f"`thread_archive fix-import {args.provider} --activate`"
+        f"`thread-archive fix-import {args.provider} --activate`"
     )
     return 0
 
@@ -656,7 +655,7 @@ def report_backup(res: dict) -> int:
     if not res["verify_ok"]:
         print(
             "WARNING: pre-backup verify FAILED — the source truth has integrity "
-            "problems; mirror ran additively (no deletions). Run `thread_archive verify`."
+            "problems; mirror ran additively (no deletions). Run `thread-archive verify`."
         )
     if res.get("rehomed_twins_deleted"):
         print(
@@ -724,7 +723,7 @@ def report_verify(
     if t["parse_errors"]:
         print(
             f"       torn tails={t['parse_errors_torn_tail']} "
-            f"interior={t['parse_errors_interior']} — `thread_archive repair` quarantines "
+            f"interior={t['parse_errors_interior']} — `thread-archive repair` quarantines "
             "these and restores any committed content they shadow"
         )
         print(f"       parse error sample: {t['parse_error_sample']}")
@@ -741,7 +740,7 @@ def report_verify(
     if fts["shadow_rows"] != fts["fts5_rows"] or fts["orphan_rows"]:
         print(
             f"fts:   shadow={fts['shadow_rows']} fts5={fts['fts5_rows']} "
-            f"orphans={fts['orphan_rows']} — `thread_archive reindex` rebuilds the search surface"
+            f"orphans={fts['orphan_rows']} — `thread-archive reindex` rebuilds the search surface"
         )
     if deep:
         dp = res["deep"]
@@ -1020,9 +1019,9 @@ def report_repair(res: dict) -> int:
         f"{res['thread_records_restored']} thread record(s)"
     )
     if not res["dry_run"] and res["fragments_quarantined"]:
-        print("note: the repaired files shrank — the next `thread_archive backup` may need --allow-shrink")
+        print("note: the repaired files shrank — the next `thread-archive backup` may need --allow-shrink")
     if not res["dry_run"]:
-        print("run `thread_archive verify` to confirm the archive is clean")
+        print("run `thread-archive verify` to confirm the archive is clean")
     return 0
 
 
@@ -1181,13 +1180,13 @@ def report_status(st: dict) -> int:
     if u:
         # Only ever printed once the operator has run a release check; nothing
         # checks on its own. The line names an available release so the next
-        # `thread_archive self-update` is an informed choice.
+        # `thread-archive self-update` is an informed choice.
         action = u.get("action", "?")
         if action == "updated":
             print(f"update:  {u.get('reason')} {u['at']} ({_age(u['at'])})")
         elif action == "update":
             print(
-                f"update:  {u.get('tag')} available — run `thread_archive self-update` "
+                f"update:  {u.get('tag')} available — run `thread-archive self-update` "
                 f"to apply; checked {u['at']} ({_age(u['at'])})"
             )
         elif u.get("ok"):
@@ -1243,7 +1242,7 @@ def report_self_update(res: dict) -> int:
         print(f"self-update: {res['reason']}")
     elif action == "update":  # --check found one
         print(f"self-update: {res['tag']} available ({res['reason']}) — "
-              "run `thread_archive self-update` to apply")
+              "run `thread-archive self-update` to apply")
     elif action == "up-to-date":
         print(f"self-update: up to date (v{res['current']}) — {res['reason']}")
     else:
@@ -1286,7 +1285,7 @@ def report_coverage(r: dict) -> int:
         since = f" since {str(v.get('since'))[:10]}" if v.get("since") else ""
         print(
             f"degraded: {name} ({v.get('reason')}{since}) — "
-            f"remedy: thread_archive fix-import {name}"
+            f"remedy: thread-archive fix-import {name}"
         )
     for name, gen in sorted((r.get("drift_snapshots") or {}).items()):
         print(f"quarantined: {name} raw store snapshot → {gen}")
@@ -1331,14 +1330,14 @@ def report_mirror(r: dict) -> int:
 
 
 def cmd_setup(args: argparse.Namespace) -> int:
-    """The `thread_archive setup` front door — delegate to the wizard flow."""
+    """The `thread-archive setup` front door — delegate to the wizard flow."""
     from ._setup.wizard import run_setup
 
     return run_setup(args)
 
 
 def cmd_uninstall(args: argparse.Namespace) -> int:
-    """The `thread_archive uninstall` front door — delegate to the removal flow."""
+    """The `thread-archive uninstall` front door — delegate to the removal flow."""
     from ._setup.uninstall import run_uninstall
 
     return run_uninstall(args)
@@ -1346,11 +1345,11 @@ def cmd_uninstall(args: argparse.Namespace) -> int:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        prog="thread_archive",
+        prog="thread-archive",
         description="Serverless-native local archive for AI conversations (JSONL truth + SQLite index).",
         epilog="`search` and `read` are the archive-mcp tools at a terminal — same "
                "implementation, same results. The web viewer is the third door, "
-               "cohosted by `thread_archive watch --web` (`thread_archive web` opens it).",
+               "cohosted by `thread-archive watch --web` (`thread-archive web` opens it).",
     )
     parser.add_argument("--version", action="version", version=f"thread-archive {__version__}")
     sub = parser.add_subparsers(dest="command", metavar="<command>")
@@ -1393,8 +1392,8 @@ def build_parser() -> argparse.ArgumentParser:
         ),
         epilog=(
             "examples:\n"
-            "  thread_archive uninstall --dry-run   # what would go, changing nothing\n"
-            "  thread_archive uninstall --yes       # no prompt (agent/script mode)\n"
+            "  thread-archive uninstall --dry-run   # what would go, changing nothing\n"
+            "  thread-archive uninstall --yes       # no prompt (agent/script mode)\n"
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
@@ -1426,10 +1425,10 @@ def build_parser() -> argparse.ArgumentParser:
         ),
         epilog=(
             "examples:\n"
-            "  thread_archive search 'retry backoff' --since 7d\n"
-            "  thread_archive search --source cursor --limit 20   # browse: recent cursor sessions\n"
-            "  thread_archive search --path _retrieval/rank.py --path-ops edit,write\n"
-            "  thread_archive search auth --group browse --page 2\n"
+            "  thread-archive search 'retry backoff' --since 7d\n"
+            "  thread-archive search --source cursor --limit 20   # browse: recent cursor sessions\n"
+            "  thread-archive search --path _retrieval/rank.py --path-ops edit,write\n"
+            "  thread-archive search auth --group browse --page 2\n"
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
@@ -1446,8 +1445,6 @@ def build_parser() -> argparse.ArgumentParser:
     p_search.add_argument("--thread-id", default=None, metavar="REF",
                           help="scope to one conversation (ULID, legacy integer id, or "
                                "provider session id)")
-    p_search.add_argument("--topic-id", default=None, metavar="REF",
-                          help="scope to a topic's member conversations")
     p_search.add_argument("--content-type", default=None, metavar="TYPE",
                           help="one of user/text/thinking/tool/title/summary/... "
                                "(default: everything but derived summaries; 'all' folds those in)")
@@ -1462,7 +1459,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_search.add_argument("--source", default=None, metavar="PROVIDERS",
                           help="comma-separated providers, e.g. claude-code,cursor")
     p_search.add_argument("--types", default=None, metavar="TYPES",
-                          help="comma-separated thread_type values: conversation, topic, system")
+                          help="comma-separated thread_type values: conversation, system")
     p_search.add_argument("--agents", default=None, metavar="MODE",
                           help="agent-run (subagent/machinery) threads: exclude (default), "
                                "include, or only")
@@ -1510,7 +1507,6 @@ def build_parser() -> argparse.ArgumentParser:
             "Replay a thread from the event log. The id is whatever you have: the\n"
             "archive's ULID (what search results carry), a legacy integer id, or the\n"
             "session uuid the harness knows the conversation by — all three resolve.\n"
-            "A topic id reads as that topic's page.\n"
             "\n"
             "The read is size-budgeted, so a long thread comes back in chunks with a\n"
             "footer naming the offset to continue from. Exits nonzero when the id\n"
@@ -1518,9 +1514,9 @@ def build_parser() -> argparse.ArgumentParser:
         ),
         epilog=(
             "examples:\n"
-            "  thread_archive read 01JQ8ZK4X0000000000000000 --mode chat\n"
-            "  thread_archive read 4d1c9f2e-… --summary files    # what this session changed\n"
-            "  thread_archive read 812 --around-event 90210      # open a search hit in context\n"
+            "  thread-archive read 01JQ8ZK4X0000000000000000 --mode chat\n"
+            "  thread-archive read 4d1c9f2e-… --summary files    # what this session changed\n"
+            "  thread-archive read 812 --around-event 90210      # open a search hit in context\n"
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
@@ -1571,7 +1567,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_import.add_argument(
         "--provider",
         default=None,
-        help="source provider (default: claude-code; `thread_archive providers` lists them)",
+        help="source provider (default: claude-code; `thread-archive providers` lists them)",
     )
     p_import.set_defaults(func=cmd_import)
 
@@ -1819,7 +1815,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _add_home_arg(p_fix)
     p_fix.add_argument(
-        "provider", help="the drifted provider (`thread_archive providers` lists them)"
+        "provider", help="the drifted provider (`thread-archive providers` lists them)"
     )
     p_fix.add_argument(
         "--activate", action="store_true",
@@ -1863,7 +1859,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_daemon.add_argument(
         "--backup", action="store_true",
         help="target the nightly-backup agent: the scheduled backup → verify → "
-             "restore-drill pipeline (`thread_archive nightly`)",
+             "restore-drill pipeline (`thread-archive nightly`)",
     )
     p_daemon.add_argument(
         "--dest", default=None, metavar="PATH",

@@ -13,16 +13,14 @@ gold corpus whose labels were established by *searching this same stack* — a
 labeler sweeping the corpus with the ranker under test can only ever mark what
 that ranker already reaches, so a systematic blind spot never scores as a miss
 and every delta measured that way is an upper bound on itself by an unknown
-margin. Those protocols are retired (``search_lab/mine/__init__.py`` states the
-admission rule the registry now enforces), and with them the per-file deltas that
+margin. Those protocols are retired, and with them the per-file deltas that
 justified each weight. What is written below is therefore the **mechanism** each
 term exists for — which is a property of the scoring function and stays true —
-plus the measurements that came from labels fixed outside retrieval: the
-provenance-linked SWE-chat corpus and the external IR benchmarks. Read the values
-as *inherited and not currently re-derived*: they are what ships and what every
-candidate is scored against, not a configuration the present bench has confirmed.
-Re-deriving them is a deliberate run over the surviving gold
-(``search_lab/README.md`` → "Taking a baseline").
+plus the measurements that came from labels somebody else fixed: the external IR
+benchmarks. Read the values as *inherited and not currently re-derived*: they are
+what ships and what every candidate is scored against, not a configuration the
+present bench has confirmed. Re-deriving them is a deliberate run over the public
+benchmarks (``search_lab/README.md`` → "Taking a baseline").
 
 - ``fusion_weight`` 400.0 — the cross-backend fusion term (the normalized
   ``_rrf`` agreement score), weighted to compete with density. Density is

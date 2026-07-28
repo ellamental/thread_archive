@@ -2,6 +2,67 @@
 
 ## Unreleased
 
+- **The command is `thread-archive`.** It now matches the distribution name, the
+  MCP server name, and the spelling every other CLI on a shell uses; the
+  underscore was the one thing a user typed daily that didn't. `--help`, error
+  messages, notices, the setup wizard, the uninstall report, and every doc say
+  the hyphen.
+
+  `thread_archive` stays installed as an alias and is not deprecated on a clock —
+  shell history, operator scripts, and service units already on disk keep
+  working. What changed is which one is written down: nothing documents the
+  underscore, and newly installed units resolve the hyphen, so a `daemon install`
+  moves a machine over.
+
+- **The topic graph is out of the product surface — it was never archive's to
+  ship.** An external knowledge layer writes the topic graph; archive only
+  stores it. But the shipped surface had been advertising it as a feature:
+  `thread_search` carried a `topic_id` parameter (and `thread_archive search
+  --topic-id`), both tool docstrings explained topics, `thread_read` reserved
+  the ref `topics`, and `docs/format.md` specified `kg_events.jsonl` and its
+  two projections as part of the versioned format contract.
+
+  `archive-mcp` generates its tool schema from those signatures and docstrings,
+  so every install advertised a scope it could never make return anything —
+  no install creates a topic. The format contract was the worse half: it bound
+  archive's version discipline to records written by a package outside this
+  repo, which could then never change them without a format bump.
+
+  All of it is gone from the public surface. What remains is storage: the truth
+  region is stored, folded into its projections, verified, backed up and
+  restored like everything else, and `docs/format.md` now describes it under
+  **Extension region** — explicitly outside the version contract, usually
+  absent, with an archive that lacks it complete. `thread_archive._knowledge`
+  keeps the private seam the writing layer calls; `types='topic'` still passes
+  through the open `thread_type` vocabulary. `thread_read` on a thread the
+  region minted still renders what the region knows, as a courtesy for a ref
+  that would otherwise report an empty conversation.
+
+  `tests/test_public_api.py` ratchets it: a topic parameter or paragraph
+  reappearing on either retrieval tool reds the suite.
+
+- **The gold miners and the mining pipeline framework are gone.** `search_lab/mine/`
+  (the `commit` / `edited` / `pooled` miners, the declared *supply → admit → produce
+  → verify* funnel, the agent seam, the CLI), `mine_runs.py`, the `/lab` funnel and
+  mining panels, and their tests are deleted; `python -m search_lab mine` no longer
+  exists.
+
+  Nothing scored against what they produced, and the reasons for that were already
+  written down: a label established by searching the corpus grades the ranker with
+  itself, and a label fixed outside search forces the query to be authored from an
+  artifact nobody would have typed. `docs/search-quality.md` had carried both as a
+  standing conclusion rather than a gap. The declared-funnel work made the spend
+  legible, which is not the same as making the output usable — and a benchmark
+  apparatus that cannot license a claim is maintenance with no measurement on the
+  other end. Quality claims live on the public benchmarks
+  (`python -m search_lab benchmark`); the local instruments detect damage.
+
+  `gold_stats.py` keeps the panels that describe any case file (pool shape, query
+  distribution, coverage) and loses the two that read miner-only artifacts — the
+  yield/funnel panel off the mining ledger, and the refusals panel. `swechat_corpus.py`
+  keeps building the corpus and its commit linkage; `retrieval_eval.py --cases` still
+  scores a snapshot-bound case file.
+
 - **The bench grew from four datasets to seven, chosen so each measures something
   the others cannot — plus two built and held off on cost.**
 

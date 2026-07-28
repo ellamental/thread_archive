@@ -264,7 +264,7 @@ test('a silenced warning stays one click from being read and restored', async ({
     tone: 'warn',
     title: 'Backup is on the same filesystem as the archive',
     detail: 'Move the scheduled destination to another disk.',
-    command: 'thread_archive daemon install --backup --dest /Volumes/disk',
+    command: 'thread-archive daemon install --backup --dest /Volumes/disk',
     fingerprint: 'e2e',
     silenced_at: new Date().toISOString(),
   }

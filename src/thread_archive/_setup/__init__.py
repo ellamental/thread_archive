@@ -1,4 +1,4 @@
-"""Setup + status for humans — the flow behind ``thread_archive setup``.
+"""Setup + status for humans — the flow behind ``thread-archive setup``.
 
 See :mod:`.wizard` for the flow, :mod:`.machine` for the host it reads and
 installs onto, and :mod:`.clients` for MCP client wiring. The ``setup`` verb of

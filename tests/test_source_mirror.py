@@ -52,7 +52,7 @@ def test_transcripts_and_sidecars_round_trip(archive_home, tmp_path):
     assert p["copied"] == 2 and p["sidecars"] == 1 and p["sidecars_capped"] == 1
     assert _mirrored(archive_home, "stubprov", transcript) == transcript.read_bytes()
     assert _mirrored(archive_home, "stubprov", sidecar) == sidecar.read_bytes()
-    # Health record lands for `thread_archive status`.
+    # Health record lands for `thread-archive status`.
     health = json.loads((archive_home / "health.json").read_text())
     assert health["source_mirror_last"]["ok"] is True
 

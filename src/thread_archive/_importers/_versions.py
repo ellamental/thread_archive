@@ -5,7 +5,7 @@ version that wrote it — so the *first sighting* of a new version string is the
 earliest drift warning available: it fires before any field has drifted, and
 when one later does, it names the release that grew it. Each first sighting
 appends one record to the validation-drift ledger (the same trail
-``thread_archive coverage`` and the nightly's escalation read) and is remembered here
+``thread-archive coverage`` and the nightly's escalation read) and is remembered here
 so it never fires twice. The record is flagged ``advisory``: a release is a
 heads-up, not a finding, so it shows in the trail without counting toward the
 drift volume that warns or degrades the source.
