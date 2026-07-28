@@ -2,7 +2,25 @@
 
 ## Unreleased
 
-- **The CLI has a tree instead of 25 flat verbs.** `--help` had become a wall:
+- **A failing backup now leaves evidence behind, the way a failing verify
+  already did.** `verify` appends its full result to `verify-failures.jsonl`
+  when it goes red; `backup` recorded only `backup_last` in `health.json` —
+  four booleans and a file count, last-write-wins. Everything that says *what*
+  broke (the shrink guard's sample, the missing/divergent counts, the skipped
+  deletions, a recovery-bundle error) lived in a dict that was returned, printed
+  once, and discarded.
+
+  That is long enough to lose on a real install: the nightly and the graduated
+  slot job both back up to the same mirror half an hour apart, so a red backup
+  at 04:00 is described by a record the 04:30 run has already overwritten by the
+  time anyone reads it. A shrink guard that fired against 4091 truth files was
+  undiagnosable the next day for exactly this reason — the sample naming the
+  files was gone.
+
+  Red runs now append to `backup-failures.jsonl` beside its verify counterpart,
+  same append-only fail-soft discipline, and it rides the recovery bundle so the
+  history survives loss of the home. The path comes back on the result as
+  `failure_log`. `--help` had become a wall:
   one column listing every verb the product has, with no signal that `search`
   and `read` are what you type all day and `restore-drill` is what you type
   twice a year. The tree is frequency at the top, nouns for groups —

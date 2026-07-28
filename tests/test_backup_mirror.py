@@ -20,7 +20,10 @@ The backup is a true mirror with guardrails:
   delete-sync);
 * ``thread-archive backup drill`` rebuilds a full index from the mirror in a
   throwaway home, compares it to the mirror's own scan, and leaves the live
-  archive untouched.
+  archive untouched;
+* a red run appends its full result — shrink sample included — to
+  ``backup-failures.jsonl``, which outlives the single last-write-wins health
+  record that only says *that* something broke.
 """
 
 from __future__ import annotations
@@ -215,6 +218,41 @@ def test_backup_shrink_guard_keeps_the_larger_backup_copy(archive_home, tmp_path
     res = ta.backup(str(dest), allow_shrink=True)
     assert res["shrinks_skipped"] == 0
     assert dp.stat().st_size == tf.stat().st_size
+
+
+def test_failing_backup_keeps_evidence(archive_home, tmp_path) -> None:
+    """A red backup must stay diagnosable after the fact. ``backup_last`` in
+    health.json is last-write-wins and carries booleans, so the next run — on a
+    scheduled install, possibly minutes later — erases what actually broke. The
+    ledger is where the shrink sample and the divergence counts survive it."""
+    import_cc_session(tmp_path)
+    dest = tmp_path / "dest"
+    assert ta.backup(str(dest))["mirror_complete"]
+    ledger = archive_home / "backup-failures.jsonl"
+    assert not ledger.exists(), "a green backup leaves no failure record"
+
+    # Same source-loss scenario as the shrink guard above — it makes the run red.
+    tf = one_thread_file(archive_home)
+    tf.write_text(tf.read_text(encoding="utf-8").splitlines()[0] + "\n", encoding="utf-8")
+    jsonl_log.reset_handles()
+
+    res = ta.backup(str(dest))
+    assert res["failure_log"] == str(ledger)
+    rec = json.loads(ledger.read_text(encoding="utf-8").splitlines()[-1])
+    assert rec["at"] and rec["ok"] is False
+    assert rec["shrinks_skipped"] == res["shrinks_skipped"] == 1
+    assert rec["shrink_sample"] == res["shrink_sample"], "the sample must survive"
+    assert rec["dest_divergent_files"] == res["dest_divergent_files"]
+
+    # The asymmetry the ledger exists to close: health.json says a backup went
+    # wrong, never what went wrong.
+    last = ta.status()["last_backup"]
+    assert last["ok"] is False and "shrink_sample" not in last
+
+    # Append-only, so a run-over-run history survives the single health record
+    # being rewritten underneath it.
+    ta.backup(str(dest))
+    assert len(ledger.read_text(encoding="utf-8").splitlines()) == 2
 
 
 def test_backup_verify_gate_disables_delete_sync(archive_home, tmp_path) -> None:

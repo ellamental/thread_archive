@@ -3,9 +3,13 @@
 A ``cp``/``rsync`` of the truth dir *is* the backup (index.db is rebuildable from
 it), so :func:`backup` checkpoints, verifies, then mirrors incrementally — with
 the guards that keep a sick source or a mid-flight rebalance from destroying the
-last good copy (shrink guard, bounded delete-sync, hardlink generations).
-:func:`restore_drill` is the end-to-end rehearsal: rebuild a full index from the
-mirror in a throwaway home and prove it reads and searches.
+last good copy (shrink guard, bounded delete-sync, hardlink generations). A run
+that trips a guard appends its full result to ``<home>/backup-failures.jsonl``
+(:func:`_append_backup_failure`) — ``backup_last`` in health.json is
+last-write-wins and holds booleans, so the ledger is where a red run's detail
+outlives the next backup. :func:`restore_drill` is the end-to-end rehearsal:
+rebuild a full index from the mirror in a throwaway home and prove it reads and
+searches.
 
 The destination is a *complete* restore set, not just the truth: each
 run also syncs the home's non-truth recovery material into a reserved
@@ -28,6 +32,7 @@ neither should anyone reviewing or operating it.
 from __future__ import annotations
 
 import filecmp
+import json
 import os
 from pathlib import Path
 from typing import Optional
@@ -69,6 +74,7 @@ _BUNDLE_HOME_FILES = (
     "seen-versions.json",
     "validation-drift.jsonl",
     "verify-failures.jsonl",
+    "backup-failures.jsonl",
 )
 
 
@@ -694,17 +700,31 @@ def backup(
     result["dest_missing_files"] = missing
     result["dest_divergent_files"] = divergent
 
+    ok = bool(
+        verify_ok
+        and result["mirror_complete"]
+        and not result["deletions_skipped"]
+        and "bundle_error" not in result
+    )
+    if not ok:
+        # Keep the evidence, for the same reason verify keeps its own: the shrink
+        # sample, the missing/divergent counts and the skipped deletions exist
+        # only in this dict, and the health record below holds booleans that the
+        # next backup overwrites. A red observed later — after the mirror and the
+        # source have both moved on — is otherwise undiagnosable, and a backup
+        # runs often enough that "later" can mean half an hour.
+        ledger = _append_backup_failure(
+            {"dest": str(dest_path), "ok": ok, "verify_ok": verify_ok, **result}
+        )
+        if ledger:
+            result["failure_log"] = ledger
+
     # Record the outcome in the home's health file (surfaced by `thread-archive status`):
     # a backup agent that quietly stops running is indistinguishable from a
     # healthy one by its log files alone — the record's age is the signal.
     record_health("backup_last", {
         "dest": str(dest_path),
-        "ok": bool(
-            verify_ok
-            and result["mirror_complete"]
-            and not result["deletions_skipped"]
-            and "bundle_error" not in result
-        ),
+        "ok": ok,
         "verify_ok": verify_ok,
         "mirror_complete": result["mirror_complete"],
         "files_copied": result["files_copied"],
@@ -717,6 +737,32 @@ def backup(
         "verify_ok": verify_ok,
         **result,
     }
+
+
+def _append_backup_failure(result: dict) -> Optional[str]:
+    """Append the full result of a failing backup to ``<home>/backup-failures.jsonl``
+    — the durable evidence a red run leaves behind, the counterpart to verify's
+    ``verify-failures.jsonl``. ``backup_last`` in health.json is last-write-wins
+    and carries four booleans; the shrink sample, the missing/divergent counts and
+    the skipped-deletion count live only in the result dict. Append-only and
+    fail-soft: the ledger is advisory, so a write error is logged, never raised.
+    Returns the ledger path, or None when it could not be written."""
+    from datetime import datetime, timezone
+
+    p = resolve_paths().home / "backup-failures.jsonl"
+    try:
+        with open(p, "a", encoding="utf-8") as fh:
+            fh.write(json.dumps(
+                {"at": datetime.now(timezone.utc).isoformat(), **result},
+                default=str,
+            ))
+            fh.write("\n")
+        return str(p)
+    except OSError:
+        import logging
+
+        logging.getLogger(__name__).exception("could not append to backup-failures.jsonl")
+        return None
 
 
 def restore_drill(
