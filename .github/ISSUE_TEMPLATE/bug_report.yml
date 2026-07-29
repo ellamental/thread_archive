@@ -58,7 +58,7 @@ body:
     attributes:
       label: Version
       description: "`thread-archive --version`, or the release tag / commit if you run from a clone."
-      placeholder: "0.0.7"
+      placeholder: "0.0.8"
     validations:
       required: true
 

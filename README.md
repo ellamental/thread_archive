@@ -1,7 +1,8 @@
 # thread-archive
 
+[![PyPI](https://img.shields.io/pypi/v/thread-archive)](https://pypi.org/project/thread-archive/)
 [![CI](https://github.com/ellamental/thread_archive/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/ellamental/thread_archive/actions/workflows/ci.yml?query=branch%3Amain)
-[![Python](https://img.shields.io/badge/python-3.12%2B-blue)](https://github.com/ellamental/thread_archive)
+[![Python](https://img.shields.io/pypi/pyversions/thread-archive)](https://pypi.org/project/thread-archive/)
 [![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Linux-black)](https://github.com/ellamental/thread_archive)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](https://github.com/ellamental/thread_archive/blob/main/LICENSE)
 
@@ -69,7 +70,9 @@ Python API.
 
 ## Install
 
-Python ≥ 3.12, macOS or Linux:
+Python ≥ 3.12 (Ubuntu 24.04's default `python3` clears that floor as-is; an
+older release needs a newer interpreter first — deadsnakes PPA or pyenv), macOS
+or Linux:
 
 ```bash
 pip install thread-archive        # or: uv tool install thread-archive
@@ -101,7 +104,16 @@ machine): `pip install 'thread-archive[embeddings]'`. It brings the corpus-graph
 ranking stack with it (the `[leiden]` extra: `leidenalg` + `igraph`),
 since that signal is computed over the vectors. `[all]` is every runtime feature
 under one name; the base install is lexical-only and pulls no C extension beyond
-what `numpy` and `mcp` already need.
+what `numpy` and `mcp` already need. `igraph` and `leidenalg` publish narrower
+wheel matrices than those, so where pip finds no wheel it builds from source and
+wants a C toolchain: the Xcode Command Line Tools (`xcode-select --install`) on
+macOS, `build-essential` on Debian/Ubuntu.
+
+**Updating.** `pip install -U thread-archive` (or `uv tool upgrade
+thread-archive`), then `thread-archive service restart` so the always-on watcher
+runs the new code; MCP clients pick it up on their next session. Nothing updates
+itself — no probe, no background apply. A source clone updates differently
+(below).
 
 **Without the wizard.** The same pieces by hand: `thread-archive watch --once`
 runs one ingest pass over this machine's stores (or `thread-archive source import
@@ -134,18 +146,16 @@ python3 -m venv .venv
 sed "s|ABSOLUTE_REPO_PATH|$(pwd)|g" .mcp.json.example > .mcp.json
 ```
 
-Or let the agent do it: open the clone in Claude Code and say *"install this,
-following [claude-install.md](https://github.com/ellamental/thread_archive/blob/main/claude-install.md)"*
-— venv, tests green, MCP wiring, first import, asking you exactly once
-(embeddings or not). On Ubuntu, hand it
-[claude-install-ubuntu.md](https://github.com/ellamental/thread_archive/blob/main/claude-install-ubuntu.md)
-instead — same flow, systemd for the always-on pieces.
+Then populate it the same way a packaged install does — `.venv/bin/thread-archive
+setup` for the wizard, or `.venv/bin/thread-archive watch --once` for a single
+ingest pass — and restart the client so it loads the server.
 
 A clone's absolute path is baked into its `.mcp.json` wiring and any service
 units installed from it, so relocating the clone means re-running that wiring
-plus `thread-archive service restart`, not a plain `mv`. A clone updates by
-fast-forwarding to a release tag (`thread-archive self-update`); a pip install
-updates with `pip install -U thread-archive`.
+plus `thread-archive service restart`, not a plain `mv`. A clone updates through
+git — fetch, check out the newer release tag, `pip install -e .`, restart the
+agents. `thread-archive self-update` is for packaged installs and says so when
+run from a clone; its code is the checkout, and moving that is git's job.
 
 **Uninstall.** `thread-archive uninstall` takes back everything setup put on the
 machine — the service agents, the MCP wiring in your client, the family manifest
@@ -175,7 +185,7 @@ index, a backup, a service agent — and lives under that noun:
 # retrieval
 thread-archive search [query]   # the thread_search tool: filters by time, source, tool, content type,
                                 #   file (--path) or commit; no query browses recent threads;
-                                #   --group browse lists matched threads, --output linkable emits JSON
+                                #   --page walks the matched threads, --output linkable emits JSON
 thread-archive read <id>        # the thread_read tool: replay a thread (--mode user|chat|full|last|ends,
                                 #   --summary files, --around-event <id> to open a search hit);
                                 #   takes a ULID, a legacy integer id, or a provider session uuid
@@ -218,9 +228,9 @@ thread-archive service <action> # install/uninstall/restart/status a service age
                                 #   systemd --user on Linux) — the always-on watcher (default), --mcp
                                 #   the shared server, --backup the nightly pipeline
                                 #   (`service install --backup --dest <path> [--at HH:MM]`)
-thread-archive self-update      # source clones only: fast-forward to the newest release tag — operator-
-                                #   driven, nothing updates on its own (--check reports without applying;
-                                #   a pip install updates with `pip install -U thread-archive`)
+thread-archive self-update      # packaged installs only: install the newest release from PyPI — operator-
+                                #   driven, nothing updates on its own (--check reports without installing;
+                                #   a clone updates with git, a uv/pipx install with its own upgrade verb)
 thread-archive uninstall        # remove this machine's archive machinery — agents, MCP wiring, manifest,
                                 #   heartbeat, install record; the conversations are never touched
                                 #   (--dry-run reports, --yes skips the confirmation)
@@ -341,9 +351,9 @@ answer is a support tier plus a repair loop, not a promise nobody can keep:
   Activation is deterministic — the scaffold's tests must pass in a fresh
   subprocess (including a dedup re-import guard) before the override is enabled
   and the ledger-driven re-import recovers the gap.
-- **Patches are temporary by default.** The next self-update retires them (a
-  core release is the proper fix's vehicle; if drift persists, the notice
-  re-fires and the fix re-runs against the new core). `thread-archive source fix
+- **Patches are temporary by default.** The next `thread-archive self-update`
+  retires them (a core release is the proper fix's vehicle; if drift persists,
+  the notice re-fires and the fix re-runs against the new core). `thread-archive source fix
   <provider> --pin` keeps yours forever. Every lifecycle step is audited in
   `patch-log.jsonl`, and `thread-archive source list` shows `patched` / `patched
   (pinned)` state.
@@ -401,8 +411,8 @@ these paths keep working:
 | Path | What it is |
 | --- | --- |
 | `/` | landing: recent threads, global search |
-| `/search` | search results |
-| `/threads` | every thread |
+| `/search` | search results (`?q=` plus filters; `?page=` walks them) |
+| `/threads` | every thread (`?page=` walks them) |
 | `/stats` | token/cost analytics (`/stats/model/<model>` drills in) |
 | `/health` | the archive's own status page |
 | `/upload` | import an account export: drop the ZIP, and where to get one |

@@ -81,18 +81,18 @@ def test_key_covers_every_pool_reaching_search_param() -> None:
 
 
 def test_hits_are_insulated_from_caller_mutation() -> None:
-    # The pipeline writes onto the hits it ranks (thread_title, _thread_more,
-    # context). Handing out the stored dicts would leak one config's grouping
-    # into the next one's scoring.
+    # The pipeline writes onto the hits it ranks (thread_title, context).
+    # Handing out the stored dicts would leak one config's enrichment into the
+    # next one's scoring.
     cache = pool_cache.PoolCache()
     cache.put(("k",), [_hit(1, "alpha")])
 
     first = cache.get(("k",))
-    first[0]["_thread_more"] = 3
+    first[0]["context"] = "  1 | mutated"
     first[0]["thread_title"] = "mutated"
 
     second = cache.get(("k",))
-    assert "_thread_more" not in second[0]
+    assert "context" not in second[0]
     assert "thread_title" not in second[0]
 
 

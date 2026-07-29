@@ -55,17 +55,34 @@ threat model is correspondingly narrow, and these are its load-bearing walls:
   live. If you hand the scaffold to an agent, the samples are untrusted input
   to it, and its blast radius is whatever scope you grant it.
 
-## The self-update mechanism
+## The update model
 
-Nothing updates itself. An installed clone never checks for releases on its own
-and never applies one; `thread-archive self-update` is the only thing that
-moves the checkout, and you run it. `--check` fetches release tags and reports
-what is available without touching the clone.
+Nothing updates itself, in either install shape. No install probes for
+releases on its own, none applies one, and no configuration turns unattended
+apply on. When an update happens, you ran the command.
 
-Applied, it fast-forwards the clone to the newest release tag, reinstalls,
-smoke-checks, and rolls back on failure. Its trust anchor is transport security
-to the git remote you cloned from — the same trust the install itself made.
-There is no signature layer, so applying a malicious tag is the supply-chain
-risk to weigh, and the timing of that exposure is yours to choose. The updater
-never crosses a truth-format bump without an explicit flag and never touches a
-tree with local changes.
+**A packaged install** (`pip install thread-archive`) updates with
+`thread-archive self-update`, which is `pip install -U thread-archive` with
+guardrails: `--check` resolves the newest release and reports it without
+installing anything, and applying downloads that one wheel, gates it, installs
+it, smoke-checks the result, and rolls back to the running version on failure.
+Its trust anchor is PyPI plus transport security to it. The artifacts are built
+and uploaded by this repo's own Publish workflow, triggered by the release tag,
+authenticated to PyPI by Trusted Publishing (OIDC) — no long-lived API token
+exists to leak or rotate. PyPI records a published attestation for each file,
+binding it to that workflow and tag, so what the index serves is verifiably
+what the tagged build produced. A compromise of the repo or the tag still
+reaches you, which is the risk the attestation does not cover — applying a
+release is the exposure, and its timing is yours to choose. The updater never
+crosses a truth-format bump without an explicit flag, and it reads that gate
+out of the wheel it is about to install rather than off any other artifact.
+
+**A tool-managed install** (`uv tool`, `pipx`) is its manager's to move:
+self-update detects the receipt beside the environment and names that manager's
+own upgrade command instead of driving pip inside it.
+
+**A source clone** updates through git — fetch, check out the newer release
+tag, reinstall, restart the agents. Its trust anchor is transport security to
+the git remote you cloned from, the same trust the install itself made; there
+is no signature layer on that path. Self-update does not touch a clone: its
+code is the checkout, and what moves the checkout is you.

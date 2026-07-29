@@ -5,7 +5,9 @@ fixes the same drift properly. Left active past that release it would shadow
 the proper fix forever — plugin-shadows-builtin is permanent by design, which
 is the *pin* case, not the default. So self-update retires them: any release
 newer than the core a patch was built against disables it (``enabled: false``
-in config.json — the seam discovery already honors), with a ledger note.
+in config.json — the seam discovery already honors), with a ledger note. That
+rides the packaged install's update; a clone moved by hand retires nothing, and
+the notice loop below is the whole mechanism there.
 
 Deliberately no cleverness about whether the release actually fixed that
 provider's drift — that can't be known cheaply. If the drift persists past the

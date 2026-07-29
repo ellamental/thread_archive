@@ -77,13 +77,13 @@ def _append(record: dict) -> None:
 
 #: The recorded parameters a replay reproduces. Every one of these changes what a
 #: search costs, so replaying a call without them measures a workload nobody ran —
-#: a ``group='browse', match='substring'`` ask replayed as bare text at the default
+#: a ``match='substring'`` ask replayed as bare text at the default
 #: limit understates it by 12x on this corpus. ``page`` is here because a walk's
 #: later pages are the expensive ones. Filters that only narrow (``thread_id``,
 #: ``path``) are deliberately absent: they bind to ids that may no longer exist, and
 #: a replay that raises measures nothing at all.
 REPLAYED_PARAMS = (
-    "limit", "page", "group", "match", "since", "until", "source", "agents",
+    "limit", "page", "match", "since", "until", "source", "agents",
     "types", "sort", "startswith", "tool_name",
 )
 

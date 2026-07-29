@@ -1303,7 +1303,7 @@ def test_status_self_update_checked_clean(capsys) -> None:
     old = "2026-07-10T00:00:00+00:00"
     st = _status_base(
         last_self_update={"ok": True, "action": "up-to-date", "current": "0.9.1",
-                          "reason": "newest tag is installed", "at": old},
+                          "reason": "0.9.1 is the newest release", "at": old},
     )
     assert cli.report_status(st) == 0
     assert "update:  up-to-date (v0.9.1) checked" in capsys.readouterr().out
@@ -1313,11 +1313,11 @@ def test_status_self_update_available_names_explicit_apply(capsys) -> None:
     old = "2026-07-10T00:00:00+00:00"
     st = _status_base(
         last_self_update={"ok": True, "action": "update", "current": "0.9.0",
-                          "tag": "v0.9.1", "reason": "newest release tag", "at": old},
+                          "target": "0.9.1", "reason": "newest release", "at": old},
     )
     assert cli.report_status(st) == 0
     out = capsys.readouterr().out
-    assert "update:  v0.9.1 available" in out
+    assert "update:  0.9.1 available" in out
     assert "run `thread-archive self-update` to apply" in out
 
 
@@ -1414,35 +1414,35 @@ def test_self_update_applied(monkeypatch, capsys) -> None:
 
     def fake_update(*, home=None, check_only=False, allow_format_bump=False):
         seen.update(home=home, check_only=check_only, allow_format_bump=allow_format_bump)
-        return {"ok": True, "action": "updated", "current": "0.9.0", "tag": "v0.9.1",
-                "reason": "updated 0.9.0 → v0.9.1"}
+        return {"ok": True, "action": "updated", "current": "0.9.0", "target": "0.9.1",
+                "reason": "updated 0.9.0 → 0.9.1"}
 
     monkeypatch.setattr(_update, "self_update", fake_update)
     rc = main(["self-update", "--home", "/h", "--allow-format-bump"])
     assert rc == 0
     assert seen == {"home": "/h", "check_only": False, "allow_format_bump": True}
-    assert "self-update: updated 0.9.0 → v0.9.1" in capsys.readouterr().out
+    assert "self-update: updated 0.9.0 → 0.9.1" in capsys.readouterr().out
 
 
 def test_self_update_check_reports_available(capsys) -> None:
     """``--check`` plans only, so its output has to name the verb that applies it."""
     rc = cli.report_self_update(
-        {"ok": True, "action": "update", "current": "0.9.0", "tag": "v0.9.1",
-         "reason": "v0.9.1 is the newest release tag"},
+        {"ok": True, "action": "update", "current": "0.9.0", "target": "0.9.1",
+         "reason": "0.9.1 is the newest release"},
     )
     assert rc == 0
     out = capsys.readouterr().out
-    assert "self-update: v0.9.1 available (v0.9.1 is the newest release tag)" in out
+    assert "self-update: 0.9.1 available (0.9.1 is the newest release)" in out
     assert "run `thread-archive self-update` to apply" in out
 
 
 def test_self_update_up_to_date(capsys) -> None:
     rc = cli.report_self_update(
         {"ok": True, "action": "up-to-date", "current": "0.9.1",
-         "reason": "newest tag is installed"},
+         "reason": "0.9.1 is the newest release for this install"},
     )
     assert rc == 0
-    assert "self-update: up to date (v0.9.1) — newest tag is installed" in \
+    assert "self-update: up to date (v0.9.1) — 0.9.1 is the newest release for this install" in \
         capsys.readouterr().out
 
 

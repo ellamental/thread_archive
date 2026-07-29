@@ -1,46 +1,55 @@
-"""Self-update from the release tags — how a fix reaches a from-source install.
+"""Self-update from PyPI — how a release reaches a packaged install.
 
-A source install is a git clone with an editable venv, so its update is a
-``git fetch`` + ``git checkout <tag>`` + ``pip install -e .`` + agent restart.
-This module automates exactly that, off the annotated release tags
-(``vX.Y.Z``, see docs/releasing.md). A packaged (wheel) install updates
-through its package manager instead — ``pip install -U thread-archive`` — and
-this module reports it as such rather than touching anything.
+A packaged install is a wheel in some environment's site-packages, so its
+update is a ``pip install`` of the newest release plus an agent restart. This
+module automates exactly that, against whatever index this environment's pip
+resolves (PyPI by default). A **source install** — the editable install a git
+clone makes — has no package to upgrade: its code *is* the checkout, moving it
+is git's job, and this module reports it as unavailable rather than touching
+the clone.
 
 **The operator drives it.** ``thread-archive self-update`` is the whole
 mechanism: nothing polls for releases, nothing applies one on its own, and no
-configuration turns unattended apply on. ``--check`` plans and reports without
-changing the clone. Guardrails on the explicit operation, on a machine that
-holds someone's entire conversation history:
+configuration turns unattended apply on. ``--check`` resolves and reports
+without changing the environment. Guardrails on the explicit operation, on a
+machine that holds someone's entire conversation history:
 
-- **Tags only, never a branch head.** The candidate is the highest semver tag
-  newer than the running ``__version__``. A moved tag is not followed (plain
-  ``fetch --tags`` won't clobber an existing local tag).
-- **Never with local work in play.** A dirty working tree, or local commits
-  the release line doesn't contain (HEAD not an ancestor of the tag), blocks
-  the update. A development clone is therefore never clobbered; a consumer
-  clone is always clean.
+- **Released versions only.** The candidate is the newest ``X.Y.Z`` release pip
+  resolves *for this interpreter* — a release that raised its Python floor is
+  simply not offered here. Pre-releases are never taken (nothing passes
+  ``--pre``), and a candidate no newer than the running ``__version__`` reads
+  as up-to-date, never as a downgrade.
+- **What is inspected is what is installed.** The candidate wheel is downloaded
+  once (``pip download --no-deps``), gated on what that file declares, and then
+  installed from the file itself — the gate cannot be read off one artifact and
+  applied to another.
 - **Never across a truth-format bump without asking.** A reader refuses a truth
   directory newer than it understands (docs/format.md), so applying a release
-  that bumps ``TRUTH_FORMAT_VERSION`` makes rollback a hard stop the moment
-  the new code touches the store. The tag's declared format version is read
-  out of the tag itself (``git grep``); if it is newer than ours — or cannot
-  be determined — the update requires ``thread-archive self-update
-  --allow-format-bump``.
-- **Verify, then roll back.** After checkout + reinstall, the new code must
-  pass a smoke check (``thread-archive status`` under the new install). On failure
-  the previous commit is checked out and reinstalled — the archive keeps
-  running the code that worked.
+  that bumps ``TRUTH_FORMAT_VERSION`` makes rollback a hard stop the moment the
+  new code touches the store. The candidate's declared format version is read
+  out of the wheel; if it is newer than ours — or cannot be determined — the
+  update requires ``thread-archive self-update --allow-format-bump``.
+- **Verify, then roll back.** After the install, the new code must pass a smoke
+  check (``thread-archive status`` under it). On failure the previous version
+  is reinstalled from the index — the archive keeps running the code that
+  worked.
 
 The outcome of each run is stamped in ``health.json``, which is what
 ``thread-archive status`` and the web viewer's health panel report. Config
 rides ``config.json``::
 
-    {"update": {"remote": "origin"}}
+    {"update": {"enabled": true}}
 
-A wheel install (no clone) has nothing to update against and is reported as
-unavailable. Trust anchor: HTTPS to the remote the user cloned from — the same
-trust the install itself made; there is no signature layer.
+The install keeps the shape it had: this upgrades the base distribution, and
+dependencies that arrived with an extra stay installed at the versions they are
+at — the same thing ``pip install -U thread-archive`` does by hand. An
+environment whose packages someone else manages (a ``uv tool`` or ``pipx``
+install, or any environment without pip) is reported as unavailable, naming
+that manager's own upgrade command.
+
+Trust anchor: HTTPS to the index the environment resolves against, plus the
+build attestation PyPI records for what this project's release workflow
+publishes. There is no separate signature layer here.
 """
 
 from __future__ import annotations
@@ -49,22 +58,24 @@ import logging
 import re
 import subprocess
 import sys
+import tempfile
+import zipfile
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, Optional
+from typing import Callable, Optional, Sequence
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_REMOTE = "origin"
+DIST = "thread-archive"
 
-# Network ops (fetch) get the long leash; local git is fast but not instant on
-# a cold disk. pip + the smoke check get their own, longer, budgets.
-_GIT_TIMEOUT = 300
+# Network ops (download, install) get the long leash; the local probes are fast
+# but not instant on a cold disk. The smoke check and migration get their own.
 _PIP_TIMEOUT = 900
+_PROBE_TIMEOUT = 60
 _SMOKE_TIMEOUT = 300
 _MIGRATE_TIMEOUT = 1800
 
-_TAG_RE = re.compile(r"^v(\d+)\.(\d+)\.(\d+)$")
+_VERSION_RE = re.compile(r"^(\d+)\.(\d+)\.(\d+)$")
 _FORMAT_RE = re.compile(r"TRUTH_FORMAT_VERSION\s*=\s*(\d+)")
 
 HEALTH_KEY = "self_update_last"
@@ -72,12 +83,13 @@ HEALTH_KEY = "self_update_last"
 
 @dataclass
 class UpdatePlan:
-    """The decision one check reached — what to do and why."""
+    """The decision one check reached — what to do, why, and off which file."""
 
     action: str  # "up-to-date" | "update" | "blocked"
     reason: str
     current: str
-    tag: Optional[str] = None
+    target: Optional[str] = None
+    wheel: Optional[Path] = None
     current_format: Optional[int] = None
     target_format: Optional[int] = None
 
@@ -104,146 +116,187 @@ def _local_format_version() -> int:
     return TRUTH_FORMAT_VERSION
 
 
-# ── the clone ────────────────────────────────────────────────────────────────
+# ── the install shape ────────────────────────────────────────────────────────
 
 
-def install_repo() -> Optional[Path]:
-    """The git clone this package runs from, or ``None`` when the install has
-    no working tree to update (a wheel install into site-packages)."""
+def source_checkout() -> Optional[Path]:
+    """The git clone this package runs from, or ``None`` when it runs from a
+    packaged install. A clone's code is the checkout — nothing pip installs can
+    move it, so this is what makes self-update unavailable."""
     root = Path(__file__).resolve().parents[2]
     if (root / ".git").exists() and (root / "pyproject.toml").is_file():
         return root
     return None
 
 
-def _git(
-    repo: Path, *args: str, timeout: int = _GIT_TIMEOUT
-) -> subprocess.CompletedProcess:
+def managed_environment(prefix: Optional[Path] = None) -> Optional[str]:
+    """The upgrade command for an environment whose packages a tool other than
+    pip owns, or ``None`` when pip is the way in.
+
+    ``uv tool`` and ``pipx`` each leave a receipt beside the environment they
+    built. Driving pip inside one either fails outright (a ``uv tool`` venv has
+    no pip) or leaves the manager's own record of what is installed lying about
+    the version — so the manager's command is the answer, not this module's."""
+    prefix = Path(sys.prefix) if prefix is None else prefix
+    if (prefix / "uv-receipt.toml").is_file():
+        return f"uv tool upgrade {DIST}"
+    if (prefix / "pipx_metadata.json").is_file():
+        return f"pipx upgrade {DIST}"
+    return None
+
+
+def _pip(*args: str, timeout: int) -> subprocess.CompletedProcess:
     return subprocess.run(
-        ["git", "-C", str(repo), *args],
+        [sys.executable, "-m", "pip", *args],
         capture_output=True, text=True, timeout=timeout,
     )
 
 
-def _parse_tag(tag: str) -> Optional[tuple[int, int, int]]:
-    m = _TAG_RE.match(tag)
+def pip_available() -> bool:
+    """Whether this interpreter can run pip at all — an environment built
+    without it can be read, but never upgraded from in-process."""
+    try:
+        return _pip("--version", timeout=_PROBE_TIMEOUT).returncode == 0
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+
+
+# ── the candidate wheel ──────────────────────────────────────────────────────
+
+
+def _parse_version(version: str) -> Optional[tuple[int, int, int]]:
+    m = _VERSION_RE.match(version)
     return tuple(int(g) for g in m.groups()) if m else None  # type: ignore[return-value]
 
 
-# Where TRUTH_FORMAT_VERSION lives. The anchored probe reads exactly this file
-# so an unrelated assignment elsewhere in the tag (a test, a fixture) can never
-# shadow the real constant on a safety gate.
-_FORMAT_HOME = "src/thread_archive/_truth/layout.py"
+# Where TRUTH_FORMAT_VERSION lives inside the wheel. The anchored probe reads
+# exactly this file so an unrelated assignment elsewhere in the artifact can
+# never shadow the real constant on a safety gate.
+_FORMAT_HOME = "thread_archive/_truth/layout.py"
 
 
-def _tag_format_version(repo: Path, tag: str) -> Optional[int]:
-    """The ``TRUTH_FORMAT_VERSION`` a tag's code declares, read out of the tag
-    itself. Probes the constant's home module first; a whole-tag ``git grep``
-    is the fallback so the check survives the module moving in a future
-    release. ``None`` when it can't be found — callers treat that as a gate,
-    not a pass."""
-    r = _git(repo, "grep", "-h", "-E", "TRUTH_FORMAT_VERSION[[:space:]]*=", tag,
-             "--", _FORMAT_HOME)
-    m = _FORMAT_RE.search(r.stdout)
-    if m is None:
-        r = _git(repo, "grep", "-h", "-E", "TRUTH_FORMAT_VERSION[[:space:]]*=", tag,
-                 "--", "*.py")
-        m = _FORMAT_RE.search(r.stdout)
-    return int(m.group(1)) if m else None
+def _wheel_format_version(wheel: Path) -> Optional[int]:
+    """The ``TRUTH_FORMAT_VERSION`` a candidate wheel's code declares, read out
+    of the wheel itself. Probes the constant's home module first; a scan of the
+    artifact's other modules is the fallback so the check survives the module
+    moving in a future release. ``None`` when it can't be found — callers treat
+    that as a gate, not a pass."""
+    try:
+        with zipfile.ZipFile(wheel) as z:
+            names = z.namelist()
+            ordered = ([_FORMAT_HOME] if _FORMAT_HOME in names else []) + sorted(
+                n for n in names if n.endswith(".py") and n != _FORMAT_HOME
+            )
+            for name in ordered:
+                m = _FORMAT_RE.search(z.read(name).decode("utf-8", "replace"))
+                if m is not None:
+                    return int(m.group(1))
+    except (OSError, KeyError, zipfile.BadZipFile) as e:
+        logger.warning("self-update: could not read %s: %s", wheel.name, e)
+    return None
+
+
+def download_candidate(
+    dest: Path, *, pip_args: Sequence[str] = ()
+) -> tuple[Optional[Path], str]:
+    """Fetch the newest release wheel into ``dest``; return it and an empty
+    reason, or ``None`` and why not.
+
+    ``--no-deps`` keeps this to the one artifact under judgement, and
+    ``--only-binary`` keeps it an inspectable wheel rather than a source tree
+    that would have to be built to answer the format gate."""
+    try:
+        r = _pip(
+            "download", "--no-deps", "--only-binary", ":all:", "--quiet",
+            "--dest", str(dest), *pip_args, DIST, timeout=_PIP_TIMEOUT,
+        )
+    except subprocess.TimeoutExpired:
+        return None, f"`pip download {DIST}` timed out"
+    except OSError as e:
+        return None, f"could not run pip: {e}"
+    if r.returncode != 0:
+        return None, f"`pip download {DIST}` failed: {(r.stderr or r.stdout).strip()[-300:]}"
+    wheels = sorted(dest.glob("*.whl"))
+    if not wheels:
+        return None, f"pip resolved no wheel for {DIST}"
+    return wheels[0], ""
+
+
+def _wheel_version(wheel: Path) -> Optional[str]:
+    """The version a wheel's filename declares (``name-version-…​.whl``)."""
+    parts = wheel.name.split("-")
+    return parts[1] if len(parts) >= 3 else None
 
 
 # ── plan ─────────────────────────────────────────────────────────────────────
 
 
 def plan_update(
-    repo: Path,
+    dest: Path,
     *,
-    remote: str = DEFAULT_REMOTE,
+    pip_args: Sequence[str] = (),
     allow_format_bump: bool = False,
-    fetch: bool = True,
     current_version: Optional[str] = None,
     local_format_version: Optional[int] = None,
 ) -> UpdatePlan:
-    """Decide whether — and to which tag — this clone should update.
+    """Decide whether — and to which release — this install should update.
 
-    Pure decision, no mutation (the fetch updates refs, nothing else). The
-    candidate is the **highest** release tag newer than the running version;
-    it is taken only if it is reachable from HEAD (fast-forward only) and
-    inside the truth-format gate. A format-gated candidate blocks rather than
-    falling back to a lower tag — the operator asked for the newest release,
-    and stopping short of it deserves to be said out loud.
+    Nothing here changes the environment: the candidate lands in ``dest``, a
+    caller-owned scratch dir, and is read there. A format-gated candidate blocks
+    rather than falling back to a lower release — the operator asked for the
+    newest one, and stopping short of it deserves to be said out loud.
     """
     version: str = _running_version() if current_version is None else current_version
     local_fmt: int = (
         _local_format_version() if local_format_version is None else local_format_version
     )
-    current = _parse_tag(f"v{version}")
+    current = _parse_version(version)
     if current is None:
         return UpdatePlan("blocked", f"unparseable running version {version!r}", version)
 
-    if fetch:
-        try:
-            r = _git(repo, "fetch", "--tags", "--quiet", remote)
-        except subprocess.TimeoutExpired:
-            return UpdatePlan("blocked", f"fetch from {remote!r} timed out", version)
-        if r.returncode != 0:
-            return UpdatePlan(
-                "blocked", f"fetch from {remote!r} failed: {r.stderr.strip()}",
-                version,
-            )
+    wheel, why = download_candidate(dest, pip_args=pip_args)
+    if wheel is None:
+        return UpdatePlan("blocked", why, version)
 
-    r = _git(repo, "status", "--porcelain")
-    if r.returncode != 0:
-        return UpdatePlan("blocked", f"git status failed: {r.stderr.strip()}", version)
-    if r.stdout.strip():
-        return UpdatePlan("blocked", "working tree not clean — local work in play",
-                          version)
+    target = _wheel_version(wheel)
+    parsed = _parse_version(target or "")
+    if parsed is None:
+        return UpdatePlan(
+            "blocked", f"{wheel.name} does not name a plain X.Y.Z release", version,
+        )
+    if parsed <= current:
+        return UpdatePlan(
+            "up-to-date", f"{version} is the newest release for this install", version,
+            target=target,
+        )
 
-    tags = [t for t in _git(repo, "tag", "--list", "v*").stdout.split()
-            if (v := _parse_tag(t)) is not None and v > current]
-    if not tags:
-        return UpdatePlan("up-to-date", "no release tag newer than the running version",
-                          version)
-
-    tag = max(tags, key=lambda t: _parse_tag(t) or (0, 0, 0))
-    fmt = _tag_format_version(repo, tag)
+    fmt = _wheel_format_version(wheel)
     if fmt is None:
         return UpdatePlan(
-            "blocked",
-            f"{tag} does not declare a readable truth-format version",
-            version, tag=tag, current_format=local_fmt,
+            "blocked", f"{target} does not declare a readable truth-format version",
+            version, target=target, wheel=wheel, current_format=local_fmt,
         )
     if not allow_format_bump and fmt > local_fmt:
         return UpdatePlan(
             "blocked",
-            f"{tag} declares truth-format version {fmt} > local {local_fmt} — "
+            f"{target} declares truth-format version {fmt} > local {local_fmt} — "
             "a one-way door; run `thread-archive self-update --allow-format-bump` deliberately",
-            version, tag=tag, current_format=local_fmt, target_format=fmt,
-        )
-    r = _git(repo, "merge-base", "--is-ancestor", "HEAD", tag)
-    if r.returncode != 0:
-        return UpdatePlan(
-            "blocked",
-            f"local history diverged from the release line (HEAD is not an "
-            f"ancestor of {tag})",
-            version, tag=tag,
+            version, target=target, wheel=wheel,
+            current_format=local_fmt, target_format=fmt,
         )
     return UpdatePlan(
-        "update", f"{tag} is the newest release tag", version,
-        tag=tag, current_format=local_fmt, target_format=fmt,
+        "update", f"{target} is the newest release", version,
+        target=target, wheel=wheel, current_format=local_fmt, target_format=fmt,
     )
 
 
 # ── apply ────────────────────────────────────────────────────────────────────
 
 
-def _default_reinstall(repo: Path) -> None:
-    r = subprocess.run(
-        [sys.executable, "-m", "pip", "install", "-e", str(repo), "--quiet"],
-        capture_output=True, text=True, timeout=_PIP_TIMEOUT,
-    )
+def _default_install(requirement: str, *, pip_args: Sequence[str] = ()) -> None:
+    r = _pip("install", "--quiet", *pip_args, requirement, timeout=_PIP_TIMEOUT)
     if r.returncode != 0:
-        raise RuntimeError(f"pip install failed: {r.stderr.strip()[-500:]}")
+        raise RuntimeError(f"pip install failed: {(r.stderr or r.stdout).strip()[-500:]}")
 
 
 def _default_smoke(home: Optional[str]) -> None:
@@ -312,21 +365,20 @@ def _default_restart() -> None:
             logger.warning("self-update: could not restart %s agent: %s", agent, e)
 
 
-def _default_retire(home: Optional[str], tag: str) -> None:
+def _default_retire(home: Optional[str], target: str) -> None:
     """Disable unpinned ``thread-archive source fix`` override patches built against a
-    core older than ``tag`` — patches are temporary bridges to the next release
+    core older than ``target`` — patches are temporary bridges to the next release
     by default, and pinned ones opt out (see :mod:`._repair.retire`)."""
     from ._repair import retire_patches
 
-    retire_patches(home, target=tag)
+    retire_patches(home, target=target)
 
 
 def apply_update(
-    repo: Path,
     plan: UpdatePlan,
     *,
     home: Optional[str] = None,
-    reinstall: Optional[Callable[[Path], None]] = None,
+    install: Optional[Callable[[str], None]] = None,
     smoke: Optional[Callable[[Optional[str]], None]] = None,
     restart: Optional[Callable[[], None]] = None,
     retire: Optional[Callable[[Optional[str], str], None]] = None,
@@ -335,16 +387,17 @@ def apply_update(
 ) -> dict:
     """Execute an update, migrating truth before target-format writers restart.
 
-    Install/smoke failures still roll back. Once migration begins, the target
-    checkout is retained on failure: the truth may already have crossed the
-    one-way format boundary and rolling its reader back would be unsafe.
-    ``retire`` disables unpinned fix-import override patches built
-    against the older core (see :mod:`._repair.retire`) — after smoke so it
-    only ever runs on a proven install, before restart so the reloading agents
-    come back without stale overrides. Returns the result dict that also lands
-    in ``health.json``."""
-    assert plan.action == "update" and plan.tag
-    reinstall = _default_reinstall if reinstall is None else reinstall
+    The forward install is the inspected wheel by path; a rollback is the
+    running version pinned by name, which the index still serves. Install/smoke
+    failures roll back. Once migration begins, the target install is retained on
+    failure: the truth may already have crossed the one-way format boundary and
+    rolling its reader back would be unsafe. ``retire`` disables unpinned
+    fix-import override patches built against the older core (see
+    :mod:`._repair.retire`) — after smoke so it only ever runs on a proven
+    install, before restart so the reloading agents come back without stale
+    overrides. Returns the result dict that also lands in ``health.json``."""
+    assert plan.action == "update" and plan.target and plan.wheel
+    install = _default_install if install is None else install
     smoke = _default_smoke if smoke is None else smoke
     restart = _default_restart if restart is None else restart
     retire = _default_retire if retire is None else retire
@@ -357,31 +410,21 @@ def apply_update(
         and home_format_version(home) < plan.target_format
     )
 
-    prev = _git(repo, "rev-parse", "HEAD").stdout.strip()
-    r = _git(repo, "checkout", "--quiet", plan.tag)
-    if r.returncode != 0:
-        return {"ok": False, "action": "failed", "current": plan.current, "tag": plan.tag,
-                "reason": f"checkout {plan.tag} failed: {r.stderr.strip()}"}
-
     try:
-        reinstall(repo)
+        install(str(plan.wheel))
         smoke(home)
     except Exception as e:  # noqa: BLE001 — anything here means roll back
         reason = str(e)
         logger.error("self-update: install of %s failed — rolling back to %s: %s",
-                     plan.tag, prev[:12], reason)
-        rb = _git(repo, "checkout", "--quiet", prev)
-        rolled_back = rb.returncode == 0
-        if rolled_back:
-            try:
-                reinstall(repo)
-            except Exception as e2:  # noqa: BLE001 — report, nothing left to try
-                rolled_back = False
-                reason += f"; rollback reinstall also failed: {e2}"
-        else:
-            reason += f"; rollback checkout also failed: {rb.stderr.strip()}"
+                     plan.target, plan.current, reason)
+        rolled_back = True
+        try:
+            install(f"{DIST}=={plan.current}")
+        except Exception as e2:  # noqa: BLE001 — report, nothing left to try
+            rolled_back = False
+            reason += f"; rollback to {plan.current} also failed: {e2}"
         return {"ok": False, "action": "rolled-back" if rolled_back else "failed",
-                "current": plan.current, "tag": plan.tag, "reason": reason}
+                "current": plan.current, "target": plan.target, "reason": reason}
 
     if needs_migration:
         try:
@@ -391,24 +434,24 @@ def apply_update(
             reason = str(e)
             logger.error(
                 "self-update: truth migration for %s failed; retaining target code: %s",
-                plan.tag, reason,
+                plan.target, reason,
             )
             return {
                 "ok": False, "action": "migration-failed", "current": plan.current,
-                "tag": plan.tag, "reason": reason, "rolled_back": False,
+                "target": plan.target, "reason": reason, "rolled_back": False,
             }
 
     try:
-        retire(home, plan.tag)
+        retire(home, plan.target)
     except Exception as e:  # noqa: BLE001 — advisory; a good update must not roll back on this
-        logger.warning("self-update: patch retirement after %s: %s", plan.tag, e)
+        logger.warning("self-update: patch retirement after %s: %s", plan.target, e)
     try:
         restart()
     except Exception as e:  # noqa: BLE001 — advisory; the update itself succeeded
-        logger.warning("self-update: agent restart after %s: %s", plan.tag, e)
+        logger.warning("self-update: agent restart after %s: %s", plan.target, e)
     return {
-        "ok": True, "action": "updated", "current": plan.current, "tag": plan.tag,
-        "reason": f"updated {plan.current} → {plan.tag}", "migrated": needs_migration,
+        "ok": True, "action": "updated", "current": plan.current, "target": plan.target,
+        "reason": f"updated {plan.current} → {plan.target}", "migrated": needs_migration,
     }
 
 
@@ -420,33 +463,49 @@ def self_update(
     *,
     check_only: bool = False,
     allow_format_bump: bool = False,
-    reinstall: Optional[Callable[[Path], None]] = None,
+    pip_args: Sequence[str] = (),
+    install: Optional[Callable[[str], None]] = None,
     smoke: Optional[Callable[[Optional[str]], None]] = None,
     restart: Optional[Callable[[], None]] = None,
     retire: Optional[Callable[[Optional[str], str], None]] = None,
 ) -> dict:
     """One full check-and-maybe-apply, recorded in ``health.json`` (the record
     behind the ``thread-archive status`` line and the viewer's health panel).
-    ``check_only`` plans and reports without changing the installed
-    checkout."""
-    repo = install_repo()
-    if repo is None:
-        return {"ok": False, "action": "unavailable", "current": "",
-                "reason": "not a git install — update with `pip install -U thread-archive`"}
-
-    cfg = update_config(home)
-    plan = plan_update(
-        repo,
-        remote=str(cfg.get("remote", DEFAULT_REMOTE)),
-        allow_format_bump=allow_format_bump,
-    )
-    if plan.action == "update" and not check_only:
-        result = apply_update(repo, plan, home=home,
-                              reinstall=reinstall, smoke=smoke, restart=restart,
-                              retire=retire)
+    ``check_only`` resolves and reports without installing anything.
+    ``pip_args`` rides every pip invocation — what lets the suite resolve
+    against a local index instead of the live one."""
+    version = _running_version()
+    checkout = source_checkout()
+    manager = managed_environment()
+    if checkout is not None:
+        result = {
+            "ok": False, "action": "unavailable", "current": version,
+            "reason": f"source install — this runs from the clone at {checkout}; "
+                      "move it with git (checkout the release tag, reinstall)",
+        }
+    elif manager is not None:
+        result = {"ok": False, "action": "unavailable", "current": version,
+                  "reason": f"this environment is managed — update with `{manager}`"}
+    elif not pip_available():
+        result = {"ok": False, "action": "unavailable", "current": version,
+                  "reason": f"no pip in this environment ({sys.executable}) — "
+                            f"update {DIST} with whatever installed it"}
     else:
-        result = {"ok": plan.action != "blocked", "action": plan.action,
-                  "current": plan.current, "tag": plan.tag, "reason": plan.reason}
+        with tempfile.TemporaryDirectory(prefix="thread-archive-update-") as scratch:
+            plan = plan_update(
+                Path(scratch), pip_args=pip_args,
+                allow_format_bump=allow_format_bump, current_version=version,
+            )
+            if plan.action == "update" and not check_only:
+                result = apply_update(
+                    plan, home=home,
+                    install=install or (lambda req: _default_install(req, pip_args=pip_args)),
+                    smoke=smoke, restart=restart, retire=retire,
+                )
+            else:
+                result = {"ok": plan.action != "blocked", "action": plan.action,
+                          "current": plan.current, "target": plan.target,
+                          "reason": plan.reason}
 
     try:
         from ._ops.health import record_health

@@ -128,7 +128,7 @@ export interface SelfUpdateRecord extends HealthRecord {
   ok: boolean
   action?: 'updated' | 'update' | 'up-to-date' | 'blocked' | 'unavailable' | string
   current?: string
-  tag?: string
+  target?: string
   reason?: string
 }
 
@@ -596,19 +596,10 @@ export interface SearchHit {
   // Ranked search only: how many of the query's terms literally appear in this
   // hit (the response's quality.n_terms is the denominator).
   term_hits?: number
-  // Other threads whose matching text is identical to this hit's — a forked
-  // session, a fleet of agents carrying one prompt. Folded into this row by the
-  // search rather than repeated as rows of their own.
-  dup_threads?: DupThread[]
   // Browse rows only (empty-query search: one row per thread, by last activity;
   // event_id is the thread's newest event — a ready tail anchor).
   thread_source?: string | null
   n_events?: number
-}
-
-export interface DupThread {
-  thread_id: string
-  title: string | null
 }
 
 // The top-hit match-quality verdict (the MCP header's signal): how much to
@@ -633,6 +624,20 @@ export interface SearchResponse {
   hits: SearchHit[]
   quality?: SearchQuality | null
   subjects?: SearchSubject[]
+  // ── where this page sits in the match set ────────────────────────────────
+  // `total` counts the *set*, not the page — messages for a ranked search, threads
+  // for a browse (`total_threads` carries the conversation count either way).
+  total?: number | null
+  total_threads?: number | null
+  /** The totals are floors: the set scan stopped at its cap. Render them as `N+`. */
+  capped?: boolean
+  /** Every match is reachable by paging. False for a ranked search whose candidate
+   *  pool saturated — the total is real, the walk is what stops at the pool, so
+   *  `pages` counts what paging reaches rather than what exists. */
+  exhaustive?: boolean
+  page?: number
+  pages?: number | null
+  page_size?: number
 }
 
 // Binary content on a block (a pasted screenshot, a tool-result image, a
@@ -760,9 +765,9 @@ export interface SearchFilters {
   until?: string
 }
 
-// One page of hits; when a response comes back full the UI says "top N" and
-// asks for a narrower query instead of pretending the list is complete.
-export const SEARCH_LIMIT = 40
+// Rows per page of search results (ranked hits, or browse rows). The set is
+// walked with ?page=, so this bounds one screen rather than the answer.
+export const SEARCH_PAGE_SIZE = 40
 
 // ── stats page ──────────────────────────────────────────────────────────────
 export interface StatsOverview {
@@ -1019,9 +1024,14 @@ export const api = {
   },
   threadTypes: () =>
     getJSON<{ types: ThreadTypeCount[] }>('/api/thread-types').then((d) => d.types),
-  // An empty q browses: one row per thread by last activity, same filters.
-  search: (q: string, filters: SearchFilters = {}) => {
-    const params = new URLSearchParams({ limit: String(SEARCH_LIMIT), q })
+  // An empty q browses: one row per thread by last activity, same filters. Both
+  // shapes page (1-based); the response says where the page sits in the set.
+  search: (q: string, filters: SearchFilters = {}, page = 1) => {
+    const params = new URLSearchParams({
+      limit: String(SEARCH_PAGE_SIZE),
+      q,
+      page: String(page),
+    })
     for (const key of ['source', 'since', 'until'] as const)
       if (filters[key]) params.set(key, filters[key])
     return getJSON<SearchResponse>('/api/search?' + params.toString())

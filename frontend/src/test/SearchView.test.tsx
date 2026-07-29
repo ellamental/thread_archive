@@ -2,12 +2,12 @@
 // clicking a group or hit navigates to the thread, plus the empty-query browse
 // view and the quality / subjects orientation the results line carries.
 import { describe, expect, it } from 'vitest'
-import { render, screen } from '@testing-library/react'
+import { render, screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom'
 import { SearchView } from '../components/SearchView'
-import type { SearchHit } from '../api'
-import { mswError, mswJson, mswPending, recordRequests } from './msw'
+import { SEARCH_PAGE_SIZE, type SearchHit } from '../api'
+import { http, HttpResponse, mswError, mswHandler, mswJson, mswPending, recordRequests } from './msw'
 
 // Stub page that echoes where it was opened, so click tests can assert the
 // deep-link (?e=<event_id>) and not just that navigation happened.
@@ -16,15 +16,49 @@ function ThreadStub() {
   return <div>THREAD PAGE {loc.pathname + loc.search}</div>
 }
 
+function LocationStub() {
+  const loc = useLocation()
+  return <div data-testid="location">{loc.pathname + loc.search}</div>
+}
+
 function renderAt(url: string) {
   mswJson('/api/sources', { sources: [{ source: 'demo-harness', threads: 3 }] })
   return render(
     <MemoryRouter initialEntries={[url]}>
+      <LocationStub />
       <Routes>
         <Route path="/search" element={<SearchView />} />
         <Route path="/archive/:id" element={<ThreadStub />} />
       </Routes>
     </MemoryRouter>,
+  )
+}
+
+/** Stub /api/search as a real paginated set: it slices the fixture by the
+ * request's `page`/`limit` and reports the whole set's size, the same contract
+ * the server's `Results` carries. */
+function stubPagedSearch(fixture: SearchHit[], extra: Record<string, unknown> = {}) {
+  mswHandler(
+    http.get('/api/search', ({ request }) => {
+      const params = new URL(request.url).searchParams
+      const page = Number(params.get('page') ?? 1)
+      const size = Number(params.get('limit') ?? SEARCH_PAGE_SIZE)
+      return HttpResponse.json({
+        query: params.get('q') ?? '',
+        browse: !params.get('q'),
+        quality: null,
+        subjects: [],
+        hits: fixture.slice((page - 1) * size, page * size),
+        total: fixture.length,
+        total_threads: new Set(fixture.map((h) => h.thread_id)).size,
+        capped: false,
+        exhaustive: true,
+        page,
+        pages: Math.ceil(fixture.length / size),
+        page_size: size,
+        ...extra,
+      })
+    }),
   )
 }
 
@@ -119,43 +153,19 @@ describe('SearchView', () => {
     expect(screen.getByText('THREAD PAGE /archive/42?e=9&q=x')).toBeInTheDocument()
   })
 
-  it('folds threads carrying the same text behind an expander, and opens them', async () => {
-    const user = userEvent.setup()
+  it('lists every thread carrying the same text as its own result', async () => {
+    // A fork or a fleet of agents on one prompt produces several threads with
+    // identical text. They are several conversations, so they are several rows.
     mswJson('/api/search', {
       query: 'x',
-      hits: [hit({
-        dup_threads: [
-          { thread_id: '77', title: 'Fork One' },
-          { thread_id: '78', title: null },
-        ],
-      })],
+      hits: [
+        hit({ event_id: 1, thread_id: '77', thread_title: 'Fork One' }),
+        hit({ event_id: 2, thread_id: '78', thread_title: 'Fork Two' }),
+      ],
     })
     renderAt('/search?q=x')
-    const toggle = await screen.findByRole('button', { name: /same text in 2 other threads/ })
-    // Collapsed by default: the fold is noise removal, not a second result list.
-    expect(toggle).toHaveAttribute('aria-expanded', 'false')
-    expect(screen.queryByText('Fork One')).not.toBeInTheDocument()
-
-    await user.click(toggle)
-    expect(toggle).toHaveAttribute('aria-expanded', 'true')
-    // A folded thread with no title still has to be reachable.
-    expect(screen.getByText('thread 78')).toBeInTheDocument()
-    await user.click(screen.getByText('Fork One'))
-    expect(screen.getByText('THREAD PAGE /archive/77')).toBeInTheDocument()
-  })
-
-  it('says "1 other thread" when a single thread folded', async () => {
-    mswJson('/api/search', {
-      query: 'x', hits: [hit({ dup_threads: [{ thread_id: '77', title: 'Fork One' }] })],
-    })
-    renderAt('/search?q=x')
-    expect(await screen.findByRole('button', { name: /same text in 1 other thread$/ })).toBeInTheDocument()
-  })
-
-  it('shows no fold affordance on a hit nothing duplicates', async () => {
-    mswJson('/api/search', { query: 'x', hits: [hit({})] })
-    renderAt('/search?q=x')
-    await screen.findByText('a snippet')
+    expect(await screen.findByText('Fork One')).toBeInTheDocument()
+    expect(screen.getByText('Fork Two')).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: /same text in/ })).not.toBeInTheDocument()
   })
 
@@ -209,12 +219,94 @@ describe('SearchView', () => {
     expect(screen.getByText(/demo-harness · from 2026-01-01 · to 2026-02-01/)).toBeInTheDocument()
   })
 
-  it('says when only the top page of hits is shown', async () => {
-    mswJson('/api/search', {
-      query: 'x',
-      hits: Array.from({ length: 40 }, (_, i) => hit({ event_id: i + 1, thread_id: '1' })),
-    })
+  it('walks the ranked results and carries the page in the URL', async () => {
+    const user = userEvent.setup()
+    stubPagedSearch(
+      Array.from({ length: SEARCH_PAGE_SIZE + 1 }, (_, i) =>
+        hit({ event_id: i + 1, thread_id: String(i + 1), snippet: `snippet ${i + 1}` }),
+      ),
+    )
     renderAt('/search?q=x')
-    expect(await screen.findByText(/top 40 hits shown/)).toBeInTheDocument()
+    expect(await screen.findByText('snippet 1')).toBeInTheDocument()
+    expect(screen.getByText(/40 of 41 matches · page 1 of 2/)).toBeInTheDocument()
+    expect(screen.queryByText('snippet 41')).not.toBeInTheDocument()
+
+    await user.click(
+      within(screen.getByRole('navigation', { name: 'result pages top' })).getByText('Next'),
+    )
+    expect(await screen.findByText('snippet 41')).toBeInTheDocument()
+    expect(screen.getByText(/1 of 41 matches · page 2 of 2/)).toBeInTheDocument()
+    expect(screen.getByTestId('location')).toHaveTextContent('/search?q=x&page=2')
+  })
+
+  it('walks the browse rows too, counting threads', async () => {
+    const user = userEvent.setup()
+    stubPagedSearch(
+      Array.from({ length: SEARCH_PAGE_SIZE + 1 }, (_, i) =>
+        hit({ event_id: i + 1, thread_id: String(i + 1), thread_title: `Session ${i + 1}` }),
+      ),
+    )
+    renderAt('/search')
+    expect(await screen.findByText('Session 1')).toBeInTheDocument()
+    expect(screen.getByText(/40 of 41 threads · page 1 of 2/)).toBeInTheDocument()
+
+    await user.click(
+      within(screen.getByRole('navigation', { name: 'result pages bottom' })).getByText('Last'),
+    )
+    expect(await screen.findByText('Session 41')).toBeInTheDocument()
+    expect(screen.getByTestId('location')).toHaveTextContent('/search?page=2')
+  })
+
+  it('opens a page named in the URL', async () => {
+    stubPagedSearch(
+      Array.from({ length: SEARCH_PAGE_SIZE + 1 }, (_, i) =>
+        hit({ event_id: i + 1, thread_id: String(i + 1), snippet: `snippet ${i + 1}` }),
+      ),
+    )
+    renderAt('/search?q=x&page=2')
+    expect(await screen.findByText('snippet 41')).toBeInTheDocument()
+    expect(screen.queryByText('snippet 1')).not.toBeInTheDocument()
+  })
+
+  it('lands on the last real page when the URL names one past the end', async () => {
+    stubPagedSearch([hit({ snippet: 'the only match' })])
+    renderAt('/search?q=x&page=7')
+    expect(await screen.findByText('the only match')).toBeInTheDocument()
+    expect(screen.getByTestId('location')).toHaveTextContent('/search?q=x')
+    expect(screen.getByTestId('location')).not.toHaveTextContent('page=')
+  })
+
+  it('offers no walker when one page holds the whole set', async () => {
+    stubPagedSearch([hit({ snippet: 'the only match' })])
+    renderAt('/search?q=x')
+    await screen.findByText('the only match')
+    expect(screen.queryByRole('navigation', { name: /result pages/ })).not.toBeInTheDocument()
+    expect(screen.getByText(/1 of 1 match$/)).toBeInTheDocument()
+  })
+
+  it('says so when the ranked walk cannot reach every match', async () => {
+    // A saturated candidate pool: the total is real, the walk stops at what the
+    // ranker scored — so the count reads `≥` and the page says what to do.
+    stubPagedSearch(
+      Array.from({ length: SEARCH_PAGE_SIZE }, (_, i) => hit({ event_id: i + 1, thread_id: '1' })),
+      { exhaustive: false, total: 900, pages: 5 },
+    )
+    renderAt('/search?q=x')
+    await screen.findByText(/of ≥900 matches/)
+    expect(screen.getByText(/narrow the query or filters to reach the rest/)).toBeInTheDocument()
+  })
+
+  it('marks a capped total as the floor it is', async () => {
+    stubPagedSearch([hit({})], { capped: true, total: 10000, pages: 1 })
+    renderAt('/search?q=x')
+    expect(await screen.findByText(/of 10,000\+ matches/)).toBeInTheDocument()
+  })
+
+  it('asks the server for the page named in the URL', async () => {
+    const requests = recordRequests()
+    stubPagedSearch([hit({})])
+    renderAt('/search?q=x&page=3')
+    await screen.findByText('a snippet')
+    expect(requests.some((r) => r.startsWith('/api/search') && r.includes('page=3'))).toBe(true)
   })
 })

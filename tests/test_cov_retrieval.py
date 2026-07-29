@@ -908,11 +908,10 @@ def test_a_hit_renders_its_snippet_when_no_context_was_asked_for() -> None:
     assert "  x   y" not in format_results([_render_hit(snippet="  x \n\n y ")], "retry")
 
 
-def test_nested_rows_fall_back_to_the_snippet_the_same_way() -> None:
+def test_a_row_without_a_context_window_falls_back_to_its_snippet() -> None:
     hits = [
-        _render_hit(_group="nested", event_id=1, context="  1 | from the context block"),
-        _render_hit(_group="nested", event_id=2, context=None,
-                    snippet="from the snippet instead"),
+        _render_hit(event_id=1, context="  1 | from the context block"),
+        _render_hit(event_id=2, context=None, snippet="from the snippet instead"),
     ]
     rendered = format_results(hits, "retry budget")
     assert "from the context block" in rendered

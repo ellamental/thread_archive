@@ -252,8 +252,6 @@ def thread_search(
     commit: Optional[str] = None,
     repo: Optional[str] = None,
     sort: Optional[str] = None,
-    group: Optional[str] = None,
-    collapse: bool = False,
     output: Optional[str] = None,
     context_lines: int = 2,
     context_events: Optional[str] = None,
@@ -306,27 +304,11 @@ def thread_search(
     ``agents='only'`` for just them ("what did my subagents do"). An explicit
     ``thread_id`` scope always reaches them.
 
-    ``group`` chooses how results relate to threads. Ranked results default to
-    **one row per thread** — the thread's best hit, with its other hits folded
-    into a ``+N more in thread`` note (drill in with a ``thread_id``-scoped
-    search). ``limit`` counts threads, and **every matched thread gets a row**:
-    when the candidate pool cuts the set, the threads it never reached are
-    reconciled back in from the exact match set, so paging to the end reaches all
-    of them. Pass ``group='none'`` for every hit as its own row.
-
-    Threads carrying content near-identical to a row already on screen (forked
-    sessions, fleet-spawned copies of one prompt) are *marked* — a
-    ``= same content in thread(s) …`` note — but still get their own row: an
-    identical prompt does not mean identical work, and hiding those rows answers
-    "which threads mention this" with a smaller number than the truth. Pass
-    ``collapse=True`` to fold them into that note instead, when you would rather
-    spend result slots on distinct content than on completeness.
-
-    ``group='nested'`` keeps the messages, clustered under their thread in event
-    order — up to 5 hits per thread, the rest folded into its header. Reach for
-    the default to see *which conversations* touched something, nested to read
-    *what they said* about it
-    with the thread structure intact.
+    **Every matching message is a row.** Results are not grouped or folded by
+    thread: a conversation matching eight times returns eight rows, each with its
+    own snippet and context, and ``limit`` counts messages rather than threads. Ask
+    for more with ``limit``, or walk with ``page``; the header names how many
+    matched in total and says ``truncated`` when the walk stops short of them.
 
     **The code axis.** Search finds where something was *discussed*; ``path`` and
     ``commit`` find where it was *done*. Every path the archive's tools named — each
@@ -387,7 +369,7 @@ def thread_search(
     and paging to the last page reaches every matched thread — for "find me every
     thread that mentions X", just page to the end. A ``+`` on a total (``≥5000+``)
     means even the set scan stopped early, so it is a floor. The hit-granular
-    shapes (``group='none'``, ``'dup'``) rank a bounded pool and report
+    shapes rank a bounded pool and report
     ``N of ≥M`` with ``truncated``, since a hit list has no set to reconcile
     against.
 
@@ -469,8 +451,6 @@ def thread_search(
             path_ops=op_list,
             thread_ids=commit_threads,
             sort=sort,
-            group=group,
-            collapse=collapse,
             output=output,
             context_lines=context_lines,
             context_events=context_events,
@@ -527,7 +507,7 @@ def thread_search(
                 "until": until, "tool_name": tool_name, "source": source,
                 "types": types, "agents": agents, "path": path,
                 "path_ops": path_ops, "commit": commit,
-                "startswith": startswith, "sort": sort, "group": group,
+                "startswith": startswith, "sort": sort,
                 "output": output, "match": match, "page": page,
                 "surface": _served_by(),
             },

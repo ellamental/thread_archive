@@ -305,10 +305,10 @@ def _report_leftovers(home: Optional[str], extra_dests: tuple[Optional[str], ...
 def _report_finish(home: Optional[str], blocked: list[Item]) -> None:
     """What is left to do to be rid of the archive entirely: the code, and
     anything the run reported but would not touch."""
-    from .._update import install_repo
+    from .._update import source_checkout
 
     _say("To finish the removal:")
-    repo = install_repo()
+    repo = source_checkout()
     if repo is not None:
         _say(f"  the code:   this install runs from the clone {repo} — delete that "
              "directory (its venv goes with it)")

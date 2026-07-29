@@ -263,7 +263,7 @@ def build_notices(records: dict) -> list[dict]:
     if update.get("action") == "update":
         out.append(_notice(
             "update", "good",
-            f"{update.get('tag') or 'A new release'} is available",
+            f"{update.get('target') or 'A new release'} is available",
             str(update.get("reason") or "Applying updates is explicit."),
             "thread-archive self-update",
         ))

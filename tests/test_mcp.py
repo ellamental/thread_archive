@@ -130,7 +130,7 @@ def test_mcp_search_filters_by_tool_name_and_until(archive_home) -> None:
     ta.import_path(late)
 
     # until bounds the window: the June turn drops, the January one stays.
-    bounded = thread_search("changelog", until="2026-02-01", group="none")
+    bounded = thread_search("changelog", until="2026-02-01")
     assert "grep the changelog" in bounded
     assert "changelog again" not in bounded
 
@@ -224,20 +224,20 @@ def test_mcp_search_pages_through_the_result_set(archive_home) -> None:
                        "message": {"role": "user", "content": f"the widget report {i}"}}])
         ta.import_path(f)
 
-    first = thread_search("widget", limit=3, group="browse")
+    first = thread_search("widget", limit=3)
     assert "page 1/3" in first and "of 7" in first
-    second = thread_search("widget", limit=3, page=2, group="browse")
+    second = thread_search("widget", limit=3, page=2)
     assert "page 2/3" in second
 
     # disjoint pages: no thread served twice across the walk
     def _ids(rendered):
         return {ln.split()[0] for ln in rendered.splitlines() if ln.startswith("01")}
 
-    walked = [_ids(thread_search("widget", limit=3, page=p, group="browse"))
+    walked = [_ids(thread_search("widget", limit=3, page=p))
               for p in (1, 2, 3)]
     assert sum(len(p) for p in walked) == len(set().union(*walked))
 
-    past = thread_search("widget", limit=3, page=9, group="browse")
+    past = thread_search("widget", limit=3, page=9)
     assert "past the end" in past
 
 

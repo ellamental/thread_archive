@@ -321,7 +321,7 @@ def _shape_search_hits(hits: "list[EventHit]", query: str) -> "list[EventHit]":
 def _hit_thread_sources(hits: "list[EventHit]") -> "dict[str, Optional[str]]":
     """``{thread_id: source}`` for the threads these hits belong to.
 
-    Hits already carrying ``thread_source`` (the grouped/browse shapes annotate it)
+    Hits already carrying ``thread_source`` (a browse row annotates it)
     are taken as they are; the rest are looked up in one query. A thread that has
     since vanished simply has no source and renders as stored."""
     from sqlalchemy import select
@@ -355,29 +355,26 @@ def _quality_signal(hits: "list[EventHit]", query: str) -> Optional[dict]:
     verdict, note = _search_quality(hits[0]["term_hits"], len(terms))
     return {"verdict": verdict, "note": note, "n_terms": len(terms)}
 
+def _page_facts(hits, limit: int) -> dict:
+    """The pagination facts a result page carries, read off the
+    :class:`.._retrieval._types.Results` the search returned.
 
-def _resolve_dup_threads(hits: "list[EventHit]") -> None:
-    """Resolve each hit's ``_dup_thread_ids`` fold into a ``dup_threads`` list of
-    ``{thread_id, title}`` — the other conversations whose matching text is
-    identical to this hit's (a forked session, a fleet of agents carrying one
-    prompt). Ids alone would render as bare numbers; the reader needs a name to
-    decide whether the twin is worth opening. One query for the whole page."""
-    from sqlalchemy import select
-
-    from .._store import Thread, get_session
-
-    wanted = {tid for h in hits for tid in h.get("_dup_thread_ids") or ()}
-    if not wanted:
-        return
-    with get_session() as s:
-        titles: dict[str, Optional[str]] = {
-            r.id: r.title
-            for r in s.execute(select(Thread.id, Thread.title).where(Thread.id.in_(wanted))).all()
-        }
-    for h in hits:
-        ids = h.get("_dup_thread_ids")
-        if ids:
-            h["dup_threads"] = [{"thread_id": t, "title": titles.get(t)} for t in ids]
+    Read with ``getattr`` defaults rather than by type: ``rank`` and the test
+    helpers hand back plain lists, and a page that can't state its position is
+    better than an attribute error. ``exhaustive`` is the field that decides how
+    the viewer may phrase ``total``: false means the ranked walk stopped at the
+    pool it scored, so the total is real but paging cannot reach all of it —
+    exactly the distinction the MCP renderer draws with ``of`` versus ``≥``.
+    """
+    return {
+        "total": getattr(hits, "total", None),
+        "total_threads": getattr(hits, "total_threads", None),
+        "capped": bool(getattr(hits, "capped", False)),
+        "exhaustive": bool(getattr(hits, "exhaustive", False)),
+        "page": int(getattr(hits, "page", 1)),
+        "pages": getattr(hits, "pages", None),
+        "page_size": limit,
+    }
 
 
 def _subjects_payload(hits: "list[EventHit]") -> list[dict]:
@@ -1030,39 +1027,42 @@ def route(
 
     if path == "/api/search":
         q = (_first(params, "q") or "").strip()
+        # Both shapes page. `page` is 1-based and every page is a slice of ONE
+        # ordering (see _retrieval.search) — the viewer walks a result set rather
+        # than being handed a cut and told to narrow the query.
+        limit = _int(params, "limit", 30)
+        page = _int(params, "page", 1, hi=1_000_000)
         if not q:
             # Empty query = browse, the same contract as MCP thread_search: one
             # row per thread by last activity, honoring the structural filters.
             # Rows carry thread_source / n_events; content options don't apply.
             hits = api.search(
                 "",
-                limit=_int(params, "limit", 30),
+                limit=limit,
+                page=page,
                 source=_csv(params, "source"),
                 since=_first(params, "since"),
                 until=_first(params, "until"),
                 agents=_first(params, "agents"),
             )
             return _ok({"query": "", "browse": True, "hits": hits,
-                        "quality": None, "subjects": _subjects_payload(hits)})
+                        "quality": None, "subjects": _subjects_payload(hits),
+                        **_page_facts(hits, limit)})
         hits = api.search(
             q,
-            limit=_int(params, "limit", 30),
+            limit=limit,
+            page=page,
             source=_csv(params, "source"),
             content_types=_csv(params, "content_types"),
             since=_first(params, "since"),
             until=_first(params, "until"),
             agents=_first(params, "agents"),
-            # Fold cross-thread duplicate content only: a query matching a common
-            # opener ("hey grok") otherwise spends the whole page on N threads
-            # showing the same line. A thread's *own* several matches still each
-            # get a row — the reader is browsing, not spending result slots.
-            group="dup",
             context_lines=0,  # the viewer builds its own ±1 snippet from full_content
         )
         quality = _quality_signal(hits, q)
-        _resolve_dup_threads(hits)
         return _ok({"query": q, "browse": False, "hits": _shape_search_hits(hits, q),
-                    "quality": quality, "subjects": _subjects_payload(hits)})
+                    "quality": quality, "subjects": _subjects_payload(hits),
+                    **_page_facts(hits, limit)})
 
     if path.startswith("/api/read/") or path.startswith("/api/thread/"):
         # The tail is a thread ref — a ULID id, a legacy integer alias, or a

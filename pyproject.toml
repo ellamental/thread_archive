@@ -89,6 +89,7 @@ testing = ["pytest>=8.0"]
 Homepage = "https://github.com/ellamental/thread_archive"
 Repository = "https://github.com/ellamental/thread_archive"
 Changelog = "https://github.com/ellamental/thread_archive/blob/main/CHANGELOG.md"
+Issues = "https://github.com/ellamental/thread_archive/issues"
 
 [project.scripts]
 # The single front door — setup wizard AND every operator verb, one namespaced
@@ -144,7 +145,6 @@ only-include = [
     "scripts",
     "search_lab",
     "CHANGELOG.md",
-    "claude-install.md",
     ".mcp.json.example",
 ]
 exclude = [

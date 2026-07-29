@@ -909,7 +909,7 @@ def _set_memo_get(key: tuple) -> Any:
     """A memoized exact-set answer for ``key``, or ``None``.
 
     The exact-set scan is the one stage whose cost does not depend on the page
-    being asked for: ``group='browse'`` resolves the whole match set to decide
+    being asked for: a saturated pool resolves the whole match set to decide
     membership and totals, then slices one page out of it — so a caller walking
     N pages pays the identical scan N times, and it is the largest stage in that
     walk. Memoizing it is also what makes the walk *coherent*: pages are sold as

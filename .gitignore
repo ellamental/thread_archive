@@ -34,7 +34,8 @@ __pycache__/
 /*.sqlite
 
 # Machine-specific MCP client config — generated at install time with absolute paths
-# to this clone's venv (see claude-install.md). The tracked template is .mcp.json.example.
+# to this clone's venv (see the README's from-source install). The tracked
+# template is .mcp.json.example.
 /.mcp.json
 
 # Obfuscated corpus built from real local stores by tests/install/obfuscate_fixtures.py.

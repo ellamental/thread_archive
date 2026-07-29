@@ -2,7 +2,32 @@
 
 ## Unreleased
 
+- `self-update` updates the PyPI distribution: it resolves the newest release, gates the wheel it downloaded on that
+  file's declared truth format, installs it, smoke-checks, and rolls back to the running version on failure. A clone
+  and a `uv tool`/`pipx` environment each report unavailable, naming the command that does move them.
 - Development moves to the `dev` branch; `main` now holds one snapshot commit per release, with the tags clones follow.
+- **Search returns every matching message.** Results are no longer grouped by thread: a conversation matching eight
+  times gives eight rows, each with its own snippet and context, and `limit` counts messages. The `group=` parameter
+  is gone (`thread`/`nested`/`dup`/`none`/`browse`), as is `collapse=` and the CLI's `--group` / `--collapse`. A fold
+  to one-row-per-thread bought brevity with the thing a search is for — it dropped every match after the first, and
+  answered "which threads mention this" with a smaller number than the truth. What survives is the same-anchor
+  dedup, which is deduplication rather than grouping: a title doc and the event it anchors to are one message.
+  Costed at ~1.8x rendered tokens for equal conversation coverage on real traffic, 3.4x worst case.
+- The viewer's search results and browse rows **paginate**. Both pages of `/search` carry a first/prev/next/last
+  walker above and below the rows, the page rides the URL (`?page=`) so a deep page is shareable and survives opening
+  a thread and coming back, and the results line says where the page sits in the match set — in the same words the
+  MCP renderer uses, `≥` and all, so the two surfaces describe one archive alike. The old "top 40 shown — narrow the
+  query" line is gone: it named a cut nothing could walk past.
+- A search whose candidate pool saturated now reports the **real** size of the match set (`count_matches`) rather than
+  how far the pool reached, still flagged `exhaustive=False`; `pages` divides what a walk can actually reach, so it
+  advertises no page that returns nothing. The walk itself is bounded by pool depth.
+- The docs read from the packaged install outward: PyPI badges, how a pip install updates, SECURITY.md's update model
+  covering both install shapes and PyPI's build attestation, and a provider plugin installed into whatever environment
+  archive runs from (venv, `uv tool --with`, `pipx inject`) rather than a clone's `.venv`.
+- The agent-driven installers (`claude-install.md`, `claude-install-ubuntu.md`) are gone: `pip install thread-archive`
+  plus `thread-archive setup` is the install, and the README's from-source block is the clone path. It absorbs what
+  only lived in them — the C toolchain the `[leiden]`/`[embeddings]` wheels can want, and the Python floor on older
+  Ubuntu.
 
 ## 0.0.8 — 2026-07-28
 
@@ -24,6 +49,9 @@
 - Search's p99 falls from 57s to ~1.5s: the cross-encoder is gone and the vector pack rebuilds off the request path.
 - Ranking now scores its arms rather than their ranks, and weighs match coverage; BEIR scifact nDCG@10 0.509 → 0.650.
 - Search enumerates as well as finds — `page=`, real totals, `path=`/`commit=` scopes; tool output leaves the index.
+- Search stops hiding threads: near-identical rows are marked (`_dup_thread_ids`), not folded away — the fold fired
+  on 55% of real queries. `collapse=True` restores it. A ranked walk now reaches past its pool via the exact-set
+  reconciliation, so `group='browse'` is no longer a separate shape — it is a legacy spelling of the default.
 - Gone: redaction and its keyring, the topic graph, and the measurement surface; updates are operator-run only.
 - Python floor 3.12; the base install is lexical-only (Leiden behind an extra); a `setup` re-run keeps your opt-outs.
 - The viewer opens as a retrieval workspace, takes an account export by drag-and-drop, and routes no dev page.

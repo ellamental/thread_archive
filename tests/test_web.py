@@ -332,6 +332,51 @@ def test_empty_query_browses(archive_home):
     assert isinstance(row["occurred_at"], (str, type(None)))
 
 
+def test_search_page_states_where_it_sits(archive_home):
+    # A page that names no whole is the defect pagination exists to close: ten
+    # rows read identically whether they are all of them or ten of nine hundred.
+    _seed_many_matches(archive_home, n=40)
+    status, _, payload = _get("/api/search", q="hello", limit=10)
+    assert status == 200
+    assert payload["page"] == 1 and payload["page_size"] == 10
+    assert payload["total"] == 40 and payload["pages"] == 4
+    assert payload["capped"] is False and payload["exhaustive"] is True
+    assert payload["total_threads"] == 1
+
+
+def test_search_paginates_over_one_ordering(archive_home):
+    # Every page is a slice of ONE ordering — a walk must reach each match once,
+    # not repeat rows while skipping others.
+    _seed_many_matches(archive_home, n=40)
+    pages = [_get("/api/search", q="hello", limit=10, page=n)[2] for n in (1, 2, 3, 4)]
+    assert [(p["page"], p["pages"]) for p in pages] == [(1, 4), (2, 4), (3, 4), (4, 4)]
+    assert [len(p["hits"]) for p in pages] == [10, 10, 10, 10]
+    seen = [h["event_id"] for p in pages for h in p["hits"]]
+    assert len(seen) == 40 and len(set(seen)) == 40
+
+
+def test_search_page_past_the_end_is_an_empty_page(archive_home):
+    # Not an error and not page one: a walk that stepped off the end has to be
+    # able to tell that from a query that matches nothing.
+    _seed_many_matches(archive_home, n=40)
+    status, _, payload = _get("/api/search", q="hello", limit=10, page=9)
+    assert status == 200
+    assert payload["hits"] == []
+    assert payload["page"] == 9 and payload["pages"] == 4 and payload["total"] == 40
+
+
+def test_browse_paginates_every_thread(archive_home):
+    # The browse shape resolves its population exactly, so its walk reaches
+    # every thread — page metadata over an exact total, not over a cut pool.
+    _seed(archive_home)
+    _seed_demo_harness(archive_home)
+    pages = [_get("/api/search", q="", limit=1, page=n)[2] for n in (1, 2)]
+    assert [(p["page"], p["pages"], p["total"]) for p in pages] == [(1, 2, 2), (2, 2, 2)]
+    assert all(p["exhaustive"] is True for p in pages)
+    listed = [h["thread_id"] for p in pages for h in p["hits"]]
+    assert len(listed) == 2 and len(set(listed)) == 2
+
+
 def test_browse_honors_source_filter(archive_home):
     _seed(archive_home)
     _seed_demo_harness(archive_home)
@@ -443,18 +488,14 @@ def _seed_forks(archive_home, n, text="the identical opening prompt"):
         ta.import_path(f)
 
 
-def test_search_folds_threads_sharing_one_opening_line(archive_home):
-    # Four sessions opening with the same prompt collapse to one row carrying the
-    # other three, instead of spending the whole result page on the same line.
+def test_search_keeps_every_thread_sharing_one_opening_line(archive_home):
+    # Four sessions opening with the same prompt are four conversations, and each
+    # keeps its row: they went on to do different work, however identical the line.
     _seed_forks(archive_home, 4)
     _, _, payload = _get("/api/search", q="identical opening prompt")
     rows = [h for h in payload["hits"] if "identical opening prompt" in h["snippet"]]
-    assert len(rows) == 1
-    dups = rows[0]["dup_threads"]
-    assert len(dups) == 3
-    # Resolved to titles, not bare ids — the reader needs a name to decide.
-    assert all(d["thread_id"] and "title" in d for d in dups)
-    assert rows[0]["thread_id"] not in [d["thread_id"] for d in dups]
+    assert len(rows) == 4
+    assert len({h["thread_id"] for h in rows}) == 4
 
 
 def test_search_keeps_every_hit_within_one_thread(archive_home):

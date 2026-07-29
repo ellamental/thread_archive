@@ -1,18 +1,19 @@
 # Releasing thread-archive
 
-Distribution is the git clone (an editable install from a checkout, or
-`pip install "git+<repo-url>@vX.Y.Z"`) and PyPI
-(`pip install thread-archive`). A release is a pointer: compress the
+Distribution is PyPI (`pip install thread-archive`) and the git clone (an
+editable install from a checkout, or
+`pip install "git+<repo-url>@vX.Y.Z"`). A release is a pointer: compress the
 changelog, bump the version, one release commit on `dev`, a snapshot of it
 on `main`, and an annotated tag pushed to GitHub. The tag is what a clone
 pins and fast-forwards to, what
 `thread-archive status` / bug reports correlate against — and what triggers
 the PyPI upload (`.github/workflows/publish.yml`, via Trusted Publishing).
 
-**Pushing the tag is the point of no return.** A clone gets the release when it
-runs `thread-archive self-update` (`--check` is how it sees one exists). That
-is a delay, not a safety net: the release is offered to every install the
-moment the tag lands, and the preflight below is the only gate between a bad
+**Pushing the tag is the point of no return.** A packaged install gets the
+release when its operator runs `thread-archive self-update` (`--check` is how
+they see one exists); a clone gets it when someone checks the tag out. That is
+a delay, not a safety net: the release is offered to every install the moment
+the publish lands, and the preflight below is the only gate between a bad
 release and the first operator who reaches for it. This machine's clone runs
 ahead of consumers, so a bad release should hurt here first.
 
@@ -34,10 +35,10 @@ back into `dev`.
 
 ## 0. The repo is release infrastructure — keep it hardened
 
-Release tags are executable software offered to every installed clone, and a
-`self-update` fast-forwards to whatever the newest one contains. The GitHub
-repo's protections are therefore part of the release mechanism, not optional
-hygiene. The standing
+A release tag is executable software offered to every install — it is what
+publishes the wheel `self-update` installs, and what a clone checks out. The
+GitHub repo's protections are therefore part of the release mechanism, not
+optional hygiene. The standing
 requirements: two-factor auth on every account that can push, a tag protection
 rule covering `v*` (nobody but the release path can create or move release
 tags), and branch protection on `main` and `dev`.
@@ -120,8 +121,8 @@ git update-ref refs/heads/main "$sha"
 ```
 
 The annotated tag goes on the `main` commit — clones park on `main`, and a
-tag must descend from their checkout for `self-update`'s fast-forward to
-work. The push is the ship:
+tag must descend from their checkout for their fast-forward to work. The push
+is the ship:
 
 ```bash
 git tag -a vX.Y.Z -m "thread-archive X.Y.Z — <one-line theme of the release>" "$sha"
@@ -168,18 +169,18 @@ follow-throughs:
 
 ## Yanking a bad release
 
-Delete the bad tag as soon as possible:
+Yank the release on PyPI first (project → release → Options → Yank) — that is
+where self-update resolves from, and a yanked version stops being a candidate
+for it and for every fresh `pip install`. A `==X.Y.Z` pin still gets it, and the
+version number is burned: PyPI never accepts a re-upload of it. Then delete the
+bad tag, which is the clone path and what a `git+…@vX.Y.Z` install resolves:
 
 ```bash
 git push origin :refs/tags/vX.Y.Z     # delete the remote tag
 ```
 
-That removes the version from future self-update checks. It does not heal an
-install whose operator already applied it, nor remove a tag a check already
-fetched locally. On PyPI, yank the release (project → release → Options →
-Yank): resolvers stop picking it for fresh installs, but a `==X.Y.Z` pin still
-gets it, and the version number is burned — PyPI never accepts a re-upload of
-it. Always follow with the real fix:
+Neither heals an install whose operator already applied the release, nor
+removes a tag a clone already fetched locally. Always follow with the real fix:
 
 ```bash
 # fix, then release vX.Y.(Z+1) normally

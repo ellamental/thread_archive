@@ -13,8 +13,8 @@ written to be handed to one.
 
 - **Work only inside this directory.** The one exception: running `archive`
   commands named in this protocol. Never edit the thread-archive source tree —
-  a patched core breaks the user's self-update path permanently; an override
-  plugin here does not.
+  an edited core is lost the moment the install is updated, and it blocks a
+  clone's own update; an override plugin here survives both.
 - **Never weaken the pre-wired tests.** They are the exit bar. In particular
   the watermark-reset re-import test guards dedup identity — the one way a fix
   corrupts an archive instead of degrading it. Add tests freely.

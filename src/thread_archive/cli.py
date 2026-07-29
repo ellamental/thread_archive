@@ -283,8 +283,6 @@ def cmd_search(args: argparse.Namespace) -> int:
                 commit=args.commit,
                 repo=args.repo,
                 sort=args.sort,
-                group=args.group,
-                collapse=args.collapse,
                 output=args.output,
                 context_lines=args.context_lines,
                 context_events=args.context_events,
@@ -292,7 +290,7 @@ def cmd_search(args: argparse.Namespace) -> int:
                 page=args.page,
             )
     except ValueError as e:
-        # The engine rejects an out-of-contract scope by name (--agents, --group,
+        # The engine rejects an out-of-contract scope by name (--agents,
         # --sort) and its message names the values that do work. Print that rather
         # than restating the set here as argparse choices: a second copy of the
         # valid values is a copy that drifts from the engine's.
@@ -1457,7 +1455,7 @@ def report_status(st: dict) -> int:
             print(f"update:  {u.get('reason')} {u['at']} ({_age(u['at'])})")
         elif action == "update":
             print(
-                f"update:  {u.get('tag')} available — run `thread-archive self-update` "
+                f"update:  {u.get('target')} available — run `thread-archive self-update` "
                 f"to apply; checked {u['at']} ({_age(u['at'])})"
             )
         elif u.get("ok"):
@@ -1512,7 +1510,7 @@ def report_self_update(res: dict) -> int:
     if action == "updated":
         print(f"self-update: {res['reason']}")
     elif action == "update":  # --check found one
-        print(f"self-update: {res['tag']} available ({res['reason']}) — "
+        print(f"self-update: {res['target']} available ({res['reason']}) — "
               "run `thread-archive self-update` to apply")
     elif action == "up-to-date":
         print(f"self-update: up to date (v{res['current']}) — {res['reason']}")
@@ -1709,8 +1707,8 @@ def build_parser() -> argparse.ArgumentParser:
             "\n"
             "An empty query is a browse: one row per thread, newest activity first,\n"
             "honoring the structural filters. Results are one page — the header names\n"
-            "the page and the total, --page walks them, and --group browse is the\n"
-            "shape that enumerates every matched thread completely.\n"
+            "the page and the total, and --page walks them, reaching every matched\n"
+            "thread even past the depth the candidate pool ranked.\n"
             "\n"
             "Read the quality signal in the header before trusting a hit: weak, or a\n"
             "0-of-N term count, means these are nearest-neighbour guesses."
@@ -1720,7 +1718,7 @@ def build_parser() -> argparse.ArgumentParser:
             "  thread-archive search 'retry backoff' --since 7d\n"
             "  thread-archive search --source cursor --limit 20   # browse: recent cursor sessions\n"
             "  thread-archive search --path _retrieval/rank.py --path-ops edit,write\n"
-            "  thread-archive search auth --group browse --page 2\n"
+            "  thread-archive search auth --page 2\n"
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
@@ -1773,13 +1771,6 @@ def build_parser() -> argparse.ArgumentParser:
     p_search.add_argument("--sort", default=None, metavar="ORDER",
                           help="'oldest' for chronological order (when was this first "
                                "discussed); the default is relevance")
-    p_search.add_argument("--group", default=None, metavar="MODE",
-                          help="how hits relate to threads: the default is one row per "
-                               "matched thread; 'none' is every hit, 'dup' folds duplicate "
-                               "content, 'nested' clusters hits under their thread")
-    p_search.add_argument("--collapse", action="store_true",
-                          help="fold threads whose matched content is near-identical into "
-                               "one row (default: mark them, but keep every thread's row)")
     p_search.add_argument("--output", default=None, metavar="SHAPE",
                           help="'count' for a per-thread tally, 'linkable' for JSON event/thread ids")
     p_search.add_argument("--context-lines", type=int, default=2, metavar="N",
@@ -1981,14 +1972,15 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_self_update = sub.add_parser(
         "self-update",
-        help="update this clone to the newest released tag",
-        description="Update this clone to the newest released tag: fetch, checkout, "
-                    "reinstall, restart the service agents.",
+        help="update this install to the newest release on PyPI",
+        description="Update this packaged install to the newest release on PyPI: "
+                    "resolve, install, smoke-check, restart the service agents. A "
+                    "source clone updates with git instead.",
     )
     _add_home_arg(p_self_update)
     p_self_update.add_argument(
         "--check", action="store_true",
-        help="fetch release tags and report availability; do not change the clone",
+        help="resolve the newest release and report availability; install nothing",
     )
     p_self_update.add_argument(
         "--allow-format-bump", action="store_true",

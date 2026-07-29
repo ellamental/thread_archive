@@ -97,6 +97,65 @@ test('browse reaches every thread through URL-backed pagination', async ({ page 
   expect(errors).toEqual([])
 })
 
+test('search results walk page by page from the URL', async ({ page }) => {
+  const errors = monitorPage(page)
+  const unhandled = await mockApi(page)
+  const hits = Array.from({ length: 41 }, (_, i) => ({
+    event_id: i + 1,
+    thread_id: `${THREAD_ID.slice(0, -3)}${String(i + 1).padStart(3, '0')}`,
+    thread_title: `Match Thread ${i + 1}`,
+    content_type: 'text',
+    snippet: `matching snippet ${i + 1}`,
+    full_content: `matching snippet ${i + 1}`,
+    occurred_at: '2026-07-20T12:00:00Z',
+  }))
+  await page.route('**/api/search?*', async (route) => {
+    const url = new URL(route.request().url())
+    const current = Number(url.searchParams.get('page') ?? 1)
+    const pageSize = Number(url.searchParams.get('limit') ?? 40)
+    await route.fulfill({
+      contentType: 'application/json',
+      body: JSON.stringify({
+        query: url.searchParams.get('q') ?? '',
+        browse: false,
+        quality: null,
+        subjects: [],
+        hits: hits.slice((current - 1) * pageSize, current * pageSize),
+        total: hits.length,
+        total_threads: hits.length,
+        capped: false,
+        exhaustive: true,
+        page: current,
+        pages: Math.ceil(hits.length / pageSize),
+        page_size: pageSize,
+      }),
+    })
+  })
+
+  await page.goto('/search?q=needle')
+  const results = page.locator('main .wrap')
+  const topPager = page.getByRole('navigation', { name: 'result pages top' })
+  await expect(topPager).toContainText('Page 1 of 2')
+  await expect(results).toContainText('40 of 41 matches · page 1 of 2')
+  await expect(results.getByText('matching snippet 1', { exact: true })).toBeVisible()
+  await expect(results.getByText('matching snippet 41', { exact: true })).toHaveCount(0)
+
+  await topPager.getByRole('button', { name: 'Next' }).click()
+  await expect(page).toHaveURL(/\/search\?q=needle&page=2$/)
+  await expect(results.getByText('matching snippet 41', { exact: true })).toBeVisible()
+  await expect(results.getByText('matching snippet 1', { exact: true })).toHaveCount(0)
+
+  // The bottom copy walks the same set: a page of results is taller than the
+  // window, and the reader finishes at its foot.
+  await page.getByRole('navigation', { name: 'result pages bottom' })
+    .getByRole('button', { name: 'First' }).click()
+  await expect(page).toHaveURL(/\/search\?q=needle$/)
+  await expect(results.getByText('matching snippet 1', { exact: true })).toBeVisible()
+
+  expect(unhandled).toEqual([])
+  expect(errors).toEqual([])
+})
+
 test('thread reader find and detail controls work in the browser', async ({ page }) => {
   const errors = monitorPage(page)
   const unhandled = await mockApi(page)

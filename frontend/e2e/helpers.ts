@@ -627,6 +627,14 @@ export async function mockApi(page: Page): Promise<string[]> {
             n_events: 3,
           },
         ],
+        // The page's position in the match set, as the real endpoint states it.
+        total: 1,
+        total_threads: 1,
+        capped: false,
+        exhaustive: true,
+        page: Number(url.searchParams.get('page') ?? 1),
+        pages: 1,
+        page_size: Number(url.searchParams.get('limit') ?? 40),
       })
     }
     if (path === `/api/thread/${THREAD_ID}`) {

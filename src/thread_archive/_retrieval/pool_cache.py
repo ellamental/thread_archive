@@ -106,10 +106,10 @@ class PoolCache:
     """A keyed store of fused candidate pools, optionally backed by a file.
 
     Hits are handed out as fresh per-hit dicts. The pipeline downstream *mutates*
-    the hits it ranks — ``thread_title``, ``_thread_more``, ``_dup_thread_ids``,
-    ``context`` all get written onto them — so a cache that
-    returned its own dicts would let one configuration's grouping leak into the
-    next one's scoring. The stored copy is never handed out.
+    the hits it ranks — ``thread_title`` and ``context`` get written onto them —
+    so a cache that returned its own dicts would let one configuration's
+    enrichment leak into the next one's scoring. The stored copy is never handed
+    out.
 
     ``namespace`` scopes the whole cache to one corpus (see the module docstring);
     it is written into the file and a load from a different namespace is discarded
