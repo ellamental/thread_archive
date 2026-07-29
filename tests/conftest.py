@@ -67,6 +67,7 @@ def _isolate_home(monkeypatch):
 @pytest.fixture(autouse=True)
 def _isolate_archive(tmp_path, monkeypatch):
     from thread_archive import _config as config
+    from thread_archive import _tools
     from thread_archive._retrieval import embed_graph, fts, model_slot, vectors
     from thread_archive._store import _base
     from thread_archive._truth import jsonl_log
@@ -102,6 +103,10 @@ def _isolate_archive(tmp_path, monkeypatch):
     # the worker serving lexical-only, which looks like a ranking bug rather than a
     # leaked flag.
     model_slot.set_defer_construction(False)
+    # Same shape for the default retrieval surface: a daemon declares it once at
+    # startup (`set_default_surface`), so a test that boots the web viewer would
+    # relabel every ledger row the worker's later tests write as served-by-web.
+    _tools._DEFAULT_SURFACE = _tools.UNATTRIBUTED
     _base.close_engine()
     jsonl_log.reset_handles()
     # The retrieval caches key on id(get_engine()); a closed engine's id can be reused
