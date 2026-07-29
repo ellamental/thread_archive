@@ -48,6 +48,14 @@ logger = logging.getLogger(__name__)
 
 LEDGER_FILE = "retrieval-usage.jsonl"
 
+#: What ``surface`` means when it is absent: nothing claimed the call. Every row
+#: written before the front doors began naming themselves reads this way, so a
+#: reader must treat it as *unattributed* rather than resolve it to a door.
+#: Defined here rather than beside the code that stamps it because the ledger owns
+#: its own field's vocabulary, and a reader should be able to learn it without
+#: importing the tool surface (:mod:`.._tools`, ~400 ms of engine).
+UNATTRIBUTED = "mcp"
+
 _MAX_RESULT_IDS = 20  # per-search result ids retained — enough to judge rank quality
 
 
@@ -273,6 +281,7 @@ def record_warm(
     duration_ms: float,
     stages: dict[str, float],
     failed: Optional[list[str]] = None,
+    surface: Optional[str] = None,
 ) -> None:
     """Record one :func:`thread_archive._retrieval.warm_models` pass — how long a
     process took to become useful, split by stage (``embed_ms``, ``graph_ms``,
@@ -284,7 +293,13 @@ def record_warm(
     slow first search means warming is broken or merely that a query arrived
     before it finished. ``failed`` names the stages that raised; a warm pass is
     best-effort, so a partial one is normal and worth distinguishing from a
-    complete one that was simply slow."""
+    complete one that was simply slow.
+
+    ``surface`` names the process that paid it, on the same vocabulary the search
+    rows use. These rows are the only count of process starts there is, and
+    several daemons warm independently — without it a restart rate is a total over
+    services that restart for unrelated reasons, and cannot be lined up with the
+    latency of the one front door a reader is looking at."""
     if not _enabled():
         return
     record: dict[str, Any] = {
@@ -292,6 +307,8 @@ def record_warm(
         "kind": "warm",
         "duration_ms": round(duration_ms, 1),
     }
+    if surface:
+        record["surface"] = surface
     record.update({k: round(v, 1) for k, v in stages.items()})
     if failed:
         record["failed_stages"] = failed

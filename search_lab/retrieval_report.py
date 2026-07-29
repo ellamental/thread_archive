@@ -30,15 +30,24 @@ would have to be made by searching this archive. The public benchmarks
 (``search_lab/benchmark.py``) are where the quality claims live, on corpora whose
 labels somebody else made.
 
-Two rules are baked in here rather than left to the caller, because getting either
-wrong produces a plausible chart that is simply false:
+Four rules are baked in here rather than left to the caller, because getting any
+of them wrong produces a plausible chart that is simply false:
 
 - **Probe queries are excluded.** A bench or a smoke test leaves one-character
   queries in the ledger; they return in ~1 ms and pull every percentile down.
 - **Cold and warm are separated, never averaged.** A process's first search runs an
   order of magnitude slower than its thousandth, and restarts are frequent, so a
-  single daily median is mostly a measure of how often the daemon bounced.
-  ``uptime_s`` is what makes the split possible and is absent on older rows.
+  single daily median is mostly a measure of how often the daemon bounced. The
+  split is read off what a search recorded paying, not off how young its process
+  was — see :func:`_regime` for why the obvious proxy inverts the answer.
+- **Front doors are counted apart.** The shared HTTP server warms once and serves
+  from resident models; a stdio server and a CLI verb are one process per call and
+  pay the load inside it. Pooled, the one-shot surfaces *are* the cold line, and
+  the page indicts a server that is behaving correctly — see :func:`by_surface`.
+- **Workloads are counted apart.** A first-page query and a ``limit=50`` walk to
+  page 40 are different work, and most warm traffic in a bulk-export week is the
+  latter. Pooled, the "typical search" number measures the workload mix of the
+  window rather than what asking a question costs — see :func:`_workload`.
 """
 
 from __future__ import annotations
@@ -50,6 +59,8 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Iterator, Optional
 
+from thread_archive._retrieval.usage import UNATTRIBUTED
+
 logger = logging.getLogger(__name__)
 
 #: Queries a bench or a smoke test left behind rather than an agent asking
@@ -57,11 +68,22 @@ logger = logging.getLogger(__name__)
 #: are the honest answer to.
 PROBE_QUERIES = ("x", "test", "warmup", "hello", "bogus")
 
-#: Below this many seconds of process uptime, a search is charged to the cold
-#: regime. Two minutes covers a warm pass that has not finished (measured at
-#: 15-45 s) plus the first searches racing it. Rows without ``uptime_s`` predate
-#: the field and are counted as neither rather than guessed at.
-COLD_UPTIME_S = 120.0
+#: The flags a search sets when it paid a process-startup cost inside itself:
+#: ``cold`` for a model loaded on the request thread, ``matrix_built`` for a vector
+#: pack read off disk there. Either one is what "cold" means — the regime is read
+#: off what the search recorded, never inferred from how young the process was.
+COLD_FLAGS = ("cold", "matrix_built")
+
+#: The widest ``limit`` an interactive question plausibly asks for. The MCP and
+#: CLI default is 10; anything past it, or any ``page`` beyond the first, is an
+#: agent sweeping the corpus rather than asking it something.
+INTERACTIVE_LIMIT = 10
+
+#: Present on every row the probe touched, so its absence — and only its absence —
+#: means a search this page cannot classify at all. Chosen because
+#: :meth:`.._probe.SearchProbe.as_record` emits it unconditionally while the cold
+#: flags ride along only when they fired.
+REGIME_EVIDENCE = "pool_size"
 
 #: Stages worth charting, in pipeline order. The two arms run concurrently, so
 #: they do not sum to the total and are never drawn as a stacked share of one.
@@ -166,14 +188,78 @@ def _searches(home: Path, *, hours: int) -> list[dict]:
 
 
 def _regime(rec: dict) -> str:
-    """``cold`` / ``warm`` / ``unknown`` for one search, by the age of the process
-    that served it. ``unknown`` is its own bucket rather than a default, so a chart
-    can show how much of the window predates the measurement instead of quietly
-    folding it into whichever regime is more flattering."""
-    uptime = rec.get("uptime_s")
-    if uptime is None:
+    """``cold`` / ``warm`` / ``unknown`` for one search, off what the search itself
+    recorded paying (:data:`COLD_FLAGS`).
+
+    Process age is the wrong instrument even though it is the obvious one. It is a
+    *proxy* for a fact the row already carries, and the two disagree in both
+    directions: a young process serving from a warm sibling's caches gets charged
+    for a load it never paid, while a long-lived one whose matrix cache was reset
+    goes uncounted. Read against the observed ledger the proxy misfiled two rows in
+    three — enough to invert the chart's answer, since it also swept in every search
+    from the one-shot surfaces, whose processes are *always* young and so were
+    always the cold line no matter how the warmed servers behaved.
+
+    A search that sat the vector arm out because the process was still warming
+    counts as cold, and is fast: it did not pay the load, but it did not get the
+    vector arm either, and calling that regime warm would claim a result quality
+    the process could not yet serve.
+
+    ``unknown`` is its own bucket rather than a default, so a chart can show how
+    much of the window predates the measurement instead of quietly folding it into
+    whichever regime is more flattering."""
+    if any(rec.get(flag) for flag in COLD_FLAGS):
+        return "cold"
+    if rec.get(REGIME_EVIDENCE) is None:
         return "unknown"
-    return "cold" if uptime < COLD_UPTIME_S else "warm"
+    return "warm"
+
+
+def _surface(rec: dict) -> str:
+    """Which front door served one call. An absent field is reported as
+    :data:`UNATTRIBUTED` rather than resolved to a door: it is what every row
+    written before the surfaces declared themselves looks like, and naming one
+    would invent an attribution the ledger does not carry."""
+    return rec.get("surface") or UNATTRIBUTED
+
+
+def _workload(rec: dict) -> str:
+    """``interactive`` or ``bulk`` for one search, off the shape of the ask.
+
+    A search past the first page, or asking for more than :data:`INTERACTIVE_LIMIT`
+    hits, is bulk work — pagination sweeps and wide exports an agent runs over the
+    corpus, legitimately slower because they hydrate and render many times the
+    rows. They are real traffic and stay on the page, but pooled into one median
+    they *are* the median whenever a sweep ran that week, and the headline stops
+    describing what asking a question costs. A row that recorded neither field
+    counts as interactive: bulk is a claim about what was asked for, and it needs
+    evidence."""
+    if (rec.get("page") or 1) > 1 or (rec.get("limit") or 0) > INTERACTIVE_LIMIT:
+        return "bulk"
+    return "interactive"
+
+
+def by_surface(rows: list[dict]) -> list[dict[str, Any]]:
+    """Latency per front door, each with its own cold share.
+
+    The surfaces are not one population. The shared HTTP server warms at startup
+    and serves every client off resident models; a per-client stdio server and a
+    one-shot CLI process load nothing ahead of time, so *every* search they serve
+    is the first one that process will ever run. Pooled, the one-shot surfaces put
+    their whole distribution on the cold line and the page reads as a warming
+    failure in a server that is warming correctly — which is the misreading this
+    breakdown exists to make impossible.
+
+    Sorted by volume, so the door most searches came through leads."""
+    grouped: dict[str, list[dict]] = defaultdict(list)
+    for r in rows:
+        grouped[_surface(r)].append(r)
+    out = [{"surface": name,
+            "n": len(rs),
+            "n_cold": sum(1 for r in rs if _regime(r) == "cold"),
+            **_band([r["duration_ms"] for r in rs]),
+            } for name, rs in grouped.items()]
+    return sorted(out, key=lambda s: -s["n"])
 
 
 def served(home: Path, *, hours: int = DEFAULT_HOURS,
@@ -184,7 +270,13 @@ def served(home: Path, *, hours: int = DEFAULT_HOURS,
     — with a count and p50/p90 per regime, so the chart can draw warm and cold as
     separate series. Drawing them as one is the thing this exists to prevent: over
     a restart-heavy window the combined median tracks the restart rate rather than
-    the code."""
+    the code.
+
+    ``by_surface`` is the second cut the same rows need, and for the same reason —
+    see :func:`by_surface`. ``warm_interactive`` / ``warm_bulk`` split the warm
+    pool by :func:`_workload`, so a headline can quote what a first-page question
+    costs without a pagination sweep sitting inside its median; ``warm`` stays the
+    whole pool."""
     bucket = bucket or default_bucket(hours)
     rows = _searches(home, hours=hours)
     grouped: dict[str, dict[str, list[float]]] = defaultdict(lambda: defaultdict(list))
@@ -197,7 +289,8 @@ def served(home: Path, *, hours: int = DEFAULT_HOURS,
         for regime, xs in found.items():
             entry[regime] = _band(xs)
         buckets.append(entry)
-    warm = [r["duration_ms"] for r in rows if _regime(r) == "warm"]
+    warm_rows = [r for r in rows if _regime(r) == "warm"]
+    warm = [r["duration_ms"] for r in warm_rows]
     cold = [r["duration_ms"] for r in rows if _regime(r) == "cold"]
     return {
         "hours": hours,
@@ -206,7 +299,12 @@ def served(home: Path, *, hours: int = DEFAULT_HOURS,
         "n_unknown_regime": sum(1 for r in rows if _regime(r) == "unknown"),
         "buckets": buckets,
         "warm": _band(warm, p99=True),
+        "warm_interactive": _band(
+            [r["duration_ms"] for r in warm_rows if _workload(r) == "interactive"], p99=True),
+        "warm_bulk": _band(
+            [r["duration_ms"] for r in warm_rows if _workload(r) == "bulk"], p99=True),
         "cold": _band(cold, p99=True),
+        "by_surface": by_surface(rows),
     }
 
 
@@ -215,9 +313,9 @@ def stages(home: Path, *, hours: int = DEFAULT_HOURS) -> dict[str, Any]:
 
     Known-cold searches are excluded — a cold process's first search is nearly all
     model and pack loading, and averaging that in makes every stage look like the
-    embedder. Excluded rather than *warm required*, because ``uptime_s`` is recent
-    and most of the window predates it: demanding proof of warmth would empty the
-    chart for as long as the ledger's memory is older than the field. Those rows
+    embedder. Excluded rather than *warm required*, because the flags that prove
+    warmth only exist on rows the probe touched: demanding proof would empty the
+    chart for as long as the ledger's memory is older than the probe. Those rows
     are counted in ``n_unproven`` so the caller can say so rather than imply a
     certainty the data does not carry.
 
@@ -250,7 +348,12 @@ def restarts(home: Path, *, hours: int = DEFAULT_HOURS,
     beside the latency charts rather than in a separate operational corner.
 
     Unlike :func:`served` this is sparse: it is read as a table, and a table of
-    empty rows is only noise where an empty chart point is information."""
+    empty rows is only noise where an empty chart point is information.
+
+    ``by_surface`` splits the count by which daemon restarted. Several warm
+    independently and for unrelated reasons, so the total answers "how much warming
+    did this box do" while only the split answers "how often did the thing I am
+    looking at bounce" — and it is the second question a latency chart raises."""
     bucket = bucket or default_bucket(hours)
     cutoff = (datetime.now(timezone.utc) - timedelta(hours=hours)).isoformat()
     from thread_archive._retrieval.usage import LEDGER_FILE
@@ -258,11 +361,14 @@ def restarts(home: Path, *, hours: int = DEFAULT_HOURS,
     rows = [r for r in _rows(home / LEDGER_FILE)
             if r.get("kind") == "warm" and r.get("at", "") >= cutoff]
     per_bucket = Counter(_bucket_key(r["at"], bucket) for r in rows)
+    per_surface = Counter(_surface(r) for r in rows)
     durations = [r["duration_ms"] for r in rows if r.get("duration_ms")]
     return {
         "n": len(rows),
         "bucket": bucket,
         "buckets": [{"at": b, "n": per_bucket[b]} for b in sorted(per_bucket)],
+        "by_surface": [{"surface": s, "n": n}
+                       for s, n in per_surface.most_common()],
         "p50_ms": round(percentile(durations, 0.50), 1),
         "total_s": round(sum(durations) / 1000.0, 1),
     }

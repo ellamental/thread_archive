@@ -237,11 +237,13 @@ def warm_models(embedder=None) -> None:
 
     try:
         from . import usage as _usage
+        from .._tools import _served_by
 
         _usage.record_warm(
             duration_ms=(perf_counter() - started) * 1000.0,
             stages=stage_ms,
             failed=failed,
+            surface=_served_by(),
         )
     except Exception:  # noqa: BLE001 — telemetry is advisory; warming stays fail-soft
         logger.debug("warm_models: could not record the warm pass", exc_info=True)

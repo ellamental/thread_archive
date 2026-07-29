@@ -505,6 +505,7 @@ def cmd_watch(args: argparse.Namespace) -> int:
     # with the watcher's writes (see store._base).
     httpd = None
     if args.web:
+        from . import _tools
         from ._retrieval import start_warm_models
         from ._web import serve_in_thread
 
@@ -520,6 +521,11 @@ def cmd_watch(args: argparse.Namespace) -> int:
         # forms it, by an order of magnitude it never repeats. Only
         # the cohosting process warms: the watcher's own indexing loads the embedder
         # when it has work, and a headless watcher answers no queries.
+        #
+        # Claimed before the warm starts, so the restart this pass records is
+        # counted against the viewer rather than against whichever service a
+        # reader happened to be looking at.
+        _tools.set_default_surface("web")
         start_warm_models()
 
     available = [w.source_name for w in watcher.available()]

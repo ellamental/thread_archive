@@ -245,11 +245,16 @@ def test_apply_does_not_roll_back_after_migration_starts(
 # ── the install shape ────────────────────────────────────────────────────────
 
 
+@pytest.mark.skipif(_update.source_checkout() is None,
+                    reason="packaged install, not a clone: no source checkout to report on")
 def test_source_checkout_is_unavailable_and_still_recorded() -> None:
-    """The suite runs from the clone, which is exactly the install shape that
-    has no package to upgrade: the run reports unavailable, names the clone —
-    and still stamps health.json, the record behind the status line and the
-    viewer's health panel."""
+    """Run from the clone, which is exactly the install shape that has no package
+    to upgrade: the run reports unavailable, names the clone — and still stamps
+    health.json, the record behind the status line and the viewer's health panel.
+
+    Gated because ``tests/install/`` runs this same suite from a wheel, where the
+    subject of the test — a checkout — does not exist and the run resolves against
+    pip instead."""
     from thread_archive._ops.health import read_health
 
     res = _update.self_update()

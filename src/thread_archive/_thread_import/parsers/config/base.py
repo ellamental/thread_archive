@@ -264,7 +264,6 @@ CLAUDE_CODE_CONFIG = ProviderConfig(
         "file-history-delta",  # file-backup bookkeeping, sibling of file-history-snapshot
         "started",  # Workflow orchestration journal: a subagent began (keyed by cache hash)
         "result",  # Workflow orchestration journal: a subagent finished, carrying its result
-        "cloth_meta",  # cloth harness meta line (cloth writes claude-code-format transcripts)
     },
     timestamp_format="iso",
     # Field-level drift ledger: every top-level key observed on real user /

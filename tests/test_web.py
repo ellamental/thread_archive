@@ -7,6 +7,7 @@ exercise it directly (no sockets) against a seeded throwaway archive.
 
 from __future__ import annotations
 
+import importlib.util
 import json
 
 import pytest
@@ -164,6 +165,19 @@ def test_disk_endpoint(archive_home):
     assert "disk" not in _get("/api/status")[2]
 
 
+#: The dev pages are fed by the search lab, which ships in the source tree and is
+#: excluded from the wheel, so a packaged install serves none of them and the routes
+#: below 404 by design — the shape ``tests/install/`` runs this suite in. Gate on
+#: whether the dev tree is importable at all, which is the same fact the endpoint
+#: itself turns on; the install side is asserted by
+#: ``test_the_dev_page_is_a_source_tree_thing_only``.
+_dev_pages = pytest.mark.skipif(
+    importlib.util.find_spec("thread_archive._dev") is None,
+    reason="no dev tree: packaged install, not a checkout",
+)
+
+
+@_dev_pages
 def test_retrieval_endpoint_serves_the_dev_report(archive_home):
     """The dev page's source. Its subject is the search pipeline rather than the
     corpus, so it reads the ledgers and answers whether or not the index is
@@ -174,6 +188,7 @@ def test_retrieval_endpoint_serves_the_dev_report(archive_home):
     assert payload["hours"] > 0 and payload["bucket"] in ("hour", "day")
 
 
+@_dev_pages
 def test_search_lab_endpoint_serves_the_bench_inventory(archive_home):
     """The other dev page's source: what the bench has to measure with. Its rows
     come off the lab's registries and the corpora on disk, so it answers on a box
@@ -186,6 +201,7 @@ def test_search_lab_endpoint_serves_the_bench_inventory(archive_home):
         "missing", "fresh", "stale", "never-run"}
 
 
+@_dev_pages
 def test_the_run_ledger_is_its_own_route(archive_home):
     """Every recorded benchmark run, rather than the newest of each row the
     inventory carries. Its own route because it is a file read and the inventory
@@ -203,6 +219,7 @@ def test_the_run_ledger_is_its_own_route(archive_home):
         assert run["code_current"] in (True, False, None)
 
 
+@_dev_pages
 def test_a_runs_per_query_detail_is_its_own_route(archive_home):
     """Off the run's own sidecar, so opening one run reads one file and the runs
     list above reads none. A run with no detail kept answers empty rather than
@@ -215,6 +232,7 @@ def test_a_runs_per_query_detail_is_its_own_route(archive_home):
     assert payload["rows"] == []
 
 
+@_dev_pages
 def test_a_run_id_in_the_url_cannot_reach_out_of_the_store(archive_home):
     """The id is a URL segment reaching a filename. The viewer is unauthenticated
     and binds to localhost, so this is the request nobody gets to make."""
@@ -224,6 +242,7 @@ def test_a_run_id_in_the_url_cannot_reach_out_of_the_store(archive_home):
         assert status == 200 and payload["rows"] == []
 
 
+@_dev_pages
 def test_the_ledger_read_is_bounded(archive_home):
     """The ledger is append-only and never pruned, and the viewer is
     unauthenticated — so no request gets to ask for an unbounded read."""
@@ -232,6 +251,7 @@ def test_the_ledger_read_is_bounded(archive_home):
     assert payload["returned"] <= 1
 
 
+@_dev_pages
 def test_the_inventory_is_assembled_once_and_served_from_cache(archive_home):
     """Assembling it walks the eval cache root — tens of GB across the built
     corpora — so a page that refreshes must not turn into a filesystem sweep per

@@ -2,6 +2,23 @@
 
 ## Unreleased
 
+- **The retrieval page's "typical search" excludes bulk sweeps.** Fixing the cold/warm classifier moved the warm pool
+  from 12 rows to ~160, and most of the new rows were pagination walks (`limit=50`, pages deep into the corpus) and
+  wide exports — real traffic, but different work, and pooling them lifted the headline median from ~0.15s to ~2.1s
+  without a single ordinary search getting slower. The warm pool is now split by workload: `warm_interactive`
+  (first page, `limit ≤ 10`) feeds the "typical search" and "slow 1 in 10" tiles, and bulk/paged traffic gets its
+  own tile instead of a share of the headline. A row recording neither a deep page nor a wide limit counts as
+  interactive — bulk is a claim about what was asked for and needs evidence.
+- **The retrieval page's cold/warm split is read off what a search paid, not off how young its process was.** The
+  regime was decided by a `uptime_s < 120s` proxy for a fact the ledger already carried — the probe's `cold` /
+  `matrix_built` flags, set when a search loads a model or builds a vector pack on the request thread. The proxy
+  disagreed with the fact in both directions and, over the observed window, misfiled two rows in three: warm searches
+  on freshly restarted daemons were drawn on the cold line while it read as evidence that pre-warming was broken. It
+  also swept in every search from the one-shot surfaces, whose processes are young by construction — so the cold line
+  was largely the CLI and per-client stdio servers, neither of which warms and neither of which any warm pass could
+  help. Searches and warm passes now record which **front door** served them (`mcp-http`, `mcp-stdio`, `cli`, `web`;
+  absent means recorded before the doors were named), the page breaks served latency and cold share down by door, and
+  restarts are attributed to the daemon that paid them rather than totalled across every service that warms.
 - **Stored thread summaries are no longer indexed.** They were only excluded at query time, so the index still carried
   a doc and a vector per summarized thread (5.8k of each here) and two documented arguments — `content_type='summary'`
   and `content_type='all'` — reached them. A summary is derived text a curation tool wrote *over* the archive, not the

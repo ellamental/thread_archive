@@ -19,6 +19,18 @@ const WARM = 'var(--accent)'
 const COLD = '#d1604a'
 const QUIET = 'var(--muted)'
 
+/** What each front door is, in the reader's terms. The ledger's names are
+ *  process-shaped; the question being asked of them is "who felt this". An
+ *  unlisted surface renders as itself rather than being dropped — a new front
+ *  door must show up as traffic nobody has labelled yet, not as no traffic. */
+const SURFACES: Record<string, string> = {
+  'mcp-http': 'shared server — the door agents use',
+  'mcp-stdio': 'per-client stdio server — one process per agent, never warmed',
+  cli: 'terminal — one process per search, never warmed',
+  web: 'web viewer',
+  mcp: 'unattributed — recorded before the doors were named',
+}
+
 function ms(v: number | null | undefined): string {
   if (v == null) return '—'
   if (v < 1) return '<1ms'
@@ -294,10 +306,10 @@ export function RetrievalView() {
         { label: 'warm p50', color: WARM, points: buckets.map((b, i) => pick(b, 'warm', i)) },
         { label: 'cold p50', color: COLD, points: buckets.map((b, i) => pick(b, 'cold', i)) },
         {
-          // Not a third regime — a blend of the other two, from before the
-          // process age was recorded. Kept so the window has history, drawn
-          // subordinate so it cannot be mistaken for the current number.
-          label: 'before process age was recorded (cold and warm mixed)',
+          // Not a third regime — a blend of the other two, from before the stage
+          // probe recorded what a search paid. Kept so the window has history,
+          // drawn subordinate so it cannot be mistaken for the current number.
+          label: 'before the stage probe (cold and warm mixed)',
           color: QUIET,
           muted: true,
           points: buckets.map((b, i) => pick(b, 'unknown', i)),
@@ -351,18 +363,23 @@ export function RetrievalView() {
 
       <div className="stat-tiles">
         <Tile
-          value={ms(band(served?.warm, 'p50'))}
+          value={ms(band(served?.warm_interactive, 'p50'))}
           label="typical search"
           sub={
-            served?.warm.n
-              ? `warm · ${served.warm.n} calls`
+            served?.warm_interactive.n
+              ? `warm first-page · ${served.warm_interactive.n} calls`
               : 'no search yet on a settled process'
           }
         />
         <Tile
-          value={ms(band(served?.warm, 'p90'))}
+          value={ms(band(served?.warm_interactive, 'p90'))}
           label="slow 1 in 10"
-          sub={`p99 ${ms(band(served?.warm, 'p99'))}`}
+          sub={`p99 ${ms(band(served?.warm_interactive, 'p99'))}`}
+        />
+        <Tile
+          value={ms(band(served?.warm_bulk, 'p50'))}
+          label="bulk & paged"
+          sub={`${served?.warm_bulk.n ?? 0} wide or paged calls`}
         />
         <Tile
           value={ms(band(served?.cold, 'p50'))}
@@ -382,7 +399,9 @@ export function RetrievalView() {
           Median served latency per {servedSeries.unit}. Warm and cold are drawn apart on
           purpose — every cache search leans on is process-local, so a restart resets them
           and the first search pays the reload. Averaging the two tracks the restart rate,
-          not the code.
+          not the code. A search counts as cold when it recorded paying that load itself
+          (a model loaded or a vector pack built on the request thread), never because its
+          process happened to be young.
           {servedSeries.unit === 'hour' &&
             ' At this resolution a point is often a handful of searches, sometimes one; hover for the count.'}
         </p>
@@ -400,11 +419,56 @@ export function RetrievalView() {
         />
         {served && served.n_unknown_regime > 0 && (
           <p className="muted small">
-            {served.n_unknown_regime} of {served.n} searches predate the process-age field
-            and cannot be sorted into either regime.
+            {served.n_unknown_regime} of {served.n} searches predate the stage probe and
+            cannot be sorted into either regime.
           </p>
         )}
       </section>
+
+      {/* One door is not a comparison, and every section here comes back
+          independently — a report assembled without this one must render the rest
+          rather than take the page down with it. */}
+      {(served?.by_surface?.length ?? 0) > 1 && (
+        <section>
+          <h2>Which door they came through</h2>
+          <p className="muted">
+            Only the shared server warms at startup and keeps its models resident across
+            calls. A stdio server and a terminal search are one process per call, so every
+            search they serve is that process's first — cold by construction, and nothing
+            a warm pass could fix. Read the cold column against the shared server's row;
+            pooled with the others it is a chart of how often somebody used a one-shot.
+          </p>
+          <div className="stat-table-wrap">
+            <table className="stat-table rv-surfaces">
+              <thead>
+                <tr>
+                  <th>surface</th>
+                  <th className="num">searches</th>
+                  <th className="num">cold</th>
+                  <th className="num">median</th>
+                  <th className="num">slow 1 in 10</th>
+                </tr>
+              </thead>
+              <tbody>
+                {served!.by_surface.map((s) => (
+                  <tr key={s.surface}>
+                    <td>
+                      <code>{s.surface}</code>
+                      <span className="muted small"> {SURFACES[s.surface] ?? ''}</span>
+                    </td>
+                    <td className="num">{s.n}</td>
+                    <td className="num">
+                      {s.n_cold} <span className="muted">({Math.round((100 * s.n_cold) / s.n)}%)</span>
+                    </td>
+                    <td className="num">{ms(s.p50)}</td>
+                    <td className="num">{ms(s.p90)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </section>
+      )}
 
       <section>
         <h2>Where the time goes</h2>
@@ -415,7 +479,7 @@ export function RetrievalView() {
         </p>
         {stages?.stages?.length ? (
           <div className="stat-table-wrap">
-            <table className="stat-table">
+            <table className="stat-table rv-stages">
               <thead>
                 <tr>
                   <th>stage</th>
@@ -451,8 +515,8 @@ export function RetrievalView() {
         )}
         {stages && stages.n_unproven > 0 && (
           <p className="muted small">
-            Known-cold searches are excluded; {stages.n_unproven} of {stages.n} have no
-            recorded process age, so they are included without proof of being warm.
+            Known-cold searches are excluded; {stages.n_unproven} of {stages.n} predate the
+            stage probe, so they are included without proof of being warm.
           </p>
         )}
       </section>
@@ -496,6 +560,12 @@ export function RetrievalView() {
             it is the largest single influence on what agents feel: {ms(restarts.p50_ms)} of
             warm-up per start, {restarts.total_s.toFixed(0)}s across the window. Only
             {' '}{restarts.bucket}s with a start are listed.
+            {(restarts.by_surface?.length ?? 0) > 0 && (
+              <>
+                {' '}Counted across every daemon that warms — this window:{' '}
+                {restarts.by_surface.map((s) => `${s.surface} ${s.n}`).join(' · ')}.
+              </>
+            )}
           </p>
           <div className="stat-table-wrap">
             <table className="stat-table">

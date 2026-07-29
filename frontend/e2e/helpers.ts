@@ -38,7 +38,13 @@ const retrieval = {
       { at: '2026-07-21', n: 12, warm: { n: 11, p50: 210, p90: 800 }, cold: { n: 1, p50: 9100, p90: 9100 } },
     ],
     warm: { n: 22, p50: 228, p90: 860, p99: 2415 },
+    warm_interactive: { n: 18, p50: 205, p90: 640, p99: 1900 },
+    warm_bulk: { n: 4, p50: 4100, p90: 9800, p99: 11200 },
     cold: { n: 2, p50: 8600, p90: 9100, p99: 9100 },
+    by_surface: [
+      { surface: 'mcp-http', n: 22, n_cold: 0, p50: 228, p90: 860 },
+      { surface: 'cli', n: 2, n_cold: 2, p50: 8600, p90: 9100 },
+    ],
   },
   stages: {
     n: 22,
@@ -48,7 +54,11 @@ const retrieval = {
       { stage: 'semantic_ms', n: 22, p50: 90, p90: 293 },
     ],
   },
-  restarts: { n: 3, bucket: 'day', buckets: [{ at: '2026-07-20', n: 3 }], p50_ms: 22300, total_s: 67 },
+  restarts: {
+    n: 3, bucket: 'day', buckets: [{ at: '2026-07-20', n: 3 }],
+    by_surface: [{ surface: 'mcp-http', n: 2 }, { surface: 'web', n: 1 }],
+    p50_ms: 22300, total_s: 67,
+  },
   bench: {
     observed: [{ at: now, commit: 'abc1234', p50: 228, p95: 1412, p99: 2415, n_queries: 40, tuning: false }],
   },
