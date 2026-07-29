@@ -10,9 +10,9 @@ satisfies them. The shapes here are the ones a ranked window can't serve:
   corpus noise cannot fuzz a term that exists nowhere else, so these assertions
   stay exact as the corpus grows. Note what is *not* the claim: a ranked call
   sized past the answer reaches the same set (the pool follows ``limit``), and a
-  ranked result already reports ``total`` / ``pages`` / ``exhaustive``. The
-  enumerating shapes' distinct property is that they do not fold cross-thread
-  duplicates — see ``test_browse_does_not_fold_what_the_ranked_shape_folds``.
+  ranked result already reports ``total`` / ``pages`` / ``exhaustive``. Rows are
+  *messages*, so a thread matching several times contributes several of them —
+  ``_threads`` is what these assert conversation membership through.
 - **chronological** — "the first / last time we discussed X", a question about
   dates that relevance order answers wrongly by construction. Scored on the
   dated series block, built so the earliest mention is the *weakest* match.
@@ -49,15 +49,24 @@ def _names(hits, corpus: dict[str, str]) -> list[str]:
     return [by_id[h["thread_id"]] for h in hits]
 
 
+def _threads(hits, corpus: dict[str, str]) -> list[str]:
+    """The conversations behind a row list, first appearance first. Rows are
+    messages, so a thread matching three times contributes three of them."""
+    out: list[str] = []
+    for n in _names(hits, corpus):
+        if n not in out:
+            out.append(n)
+    return out
+
+
 # ── exhaustive recall ────────────────────────────────────────────────────────
 
 def test_every_thread_carrying_a_term_is_enumerable(corpus) -> None:
     """The list shape returns all ``SENTINEL_N`` threads — more than the default
     result window holds — and nothing else. This is the assertion the ordering
     metrics cannot make: not "the best one ranked", but "none went missing"."""
-    rows = search(SENTINEL, group="browse", limit=SENTINEL_N + 10)
-    assert sorted(_names(rows, corpus)) == sorted(SENTINEL_THREADS)
-    assert len({r["thread_id"] for r in rows}) == SENTINEL_N  # one row per thread
+    rows = search(SENTINEL, limit=SENTINEL_N * 4)
+    assert sorted(_threads(rows, corpus)) == sorted(SENTINEL_THREADS)
 
 
 def test_ranked_window_cuts_the_set_but_does_not_corrupt_it(corpus) -> None:
@@ -90,41 +99,23 @@ def test_a_cut_window_says_so_rather_than_looking_complete(corpus) -> None:
     the whole reason a ranked search can be trusted to say when it is done."""
     cut = search(SENTINEL, limit=20)
     assert len(cut) == 20
-    assert cut.total_threads == SENTINEL_N
-    assert cut.pages == 2
+    assert cut.total > 20        # the set is bigger than the page, and says so
+    assert cut.pages > 1
 
-    whole = search(SENTINEL, limit=SENTINEL_N + 26)
-    assert len(whole) == SENTINEL_N
-    assert whole.total_threads == SENTINEL_N
+    whole = search(SENTINEL, limit=SENTINEL_N * 4)
+    assert len(whole) == whole.total
     assert whole.pages == 1
+    assert whole.exhaustive is True
 
 
 def test_near_identical_threads_each_keep_a_row(corpus) -> None:
     """The series threads mention the term in identical assistant text — an agent
-    fan-out's shape, one prompt spawned many ways. They are still eleven separate
-    conversations, so "which threads mention this" must count eleven: a fold that
-    *removes* rows answers a smaller number than the truth, and identical wording
-    is not identical work.
-
-    The near-duplicate relation is still reported — ``_dup_thread_ids`` marks the
-    rows that share content — it just no longer decides membership."""
-    hits = search(SERIES, limit=len(SERIES_ORDER) + 10)
-    assert sorted(_names(hits, corpus)) == sorted(SERIES_ORDER)
-    assert hits.total_threads == len(SERIES_ORDER)
-    assert any(h.get("_dup_thread_ids") for h in hits), (
-        "the duplicate relation must still be visible, just not enforced by deletion")
-
-
-def test_collapse_is_available_for_callers_that_want_brevity(corpus) -> None:
-    """``collapse=True`` restores the fold for a caller spending result slots on
-    distinct content rather than on completeness — and it annotates rather than
-    discards, so every collapsed thread is still named on the row that absorbed
-    it."""
-    folded = search(SERIES, limit=len(SERIES_ORDER) + 10, collapse=True)
-    assert len(folded) < len(SERIES_ORDER)
-    absorbed = {t for h in folded for t in (h.get("_dup_thread_ids") or [])}
-    assert len(folded) + len(absorbed) == len(SERIES_ORDER), (
-        "a collapsed thread must be named on the row that absorbed it, not dropped")
+    fan-out's shape, one prompt spawned many ways. They are still separate
+    conversations, so "which threads mention this" must count them all: a fold
+    that *removes* rows answers a smaller number than the truth, and identical
+    wording is not identical work."""
+    hits = search(SERIES, limit=len(SERIES_ORDER) * 4)
+    assert sorted(_threads(hits, corpus)) == sorted(SERIES_ORDER)
 
 
 def test_count_output_tallies_every_matching_thread(corpus) -> None:
@@ -148,8 +139,8 @@ def test_oldest_sort_enumerates_the_whole_series_in_order(corpus) -> None:
     """Strictly chronological *and* complete: every thread mentioning the term
     appears, once, in date order. A scan that ordered correctly while dropping
     mentions in the middle would pass an ordering-only assertion."""
-    rows = search(SERIES, group="browse", sort="oldest", limit=len(SERIES_ORDER) + 10)
-    assert _names(rows, corpus) == SERIES_ORDER
+    rows = search(SERIES, sort="oldest", limit=len(SERIES_ORDER) * 4)
+    assert _threads(rows, corpus) == SERIES_ORDER
 
     stamps = [h["occurred_at"] for h in search(SERIES, sort="oldest", limit=40)]
     assert stamps == sorted(stamps)
@@ -160,7 +151,7 @@ def test_last_mention_is_answerable_from_the_enumerated_set(corpus) -> None:
     enumerated set, which means every row must carry the timestamp of the event
     that matched. Losing ``occurred_at`` on a list row would leave the question
     unanswerable while search still looked healthy."""
-    rows = search(SERIES, group="browse", limit=len(SERIES_ORDER) + 10)
+    rows = search(SERIES, limit=len(SERIES_ORDER) + 10)
     assert all(r.get("occurred_at") for r in rows)
     latest = max(rows, key=lambda r: r["occurred_at"])
     assert _names([latest], corpus) == [SERIES_ORDER[-1]]

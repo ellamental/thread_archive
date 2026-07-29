@@ -172,20 +172,20 @@ def test_contention_context_rides_search_and_read(archive_home) -> None:
 
 def test_read_calls_replays_the_arguments_not_just_the_words(archive_home) -> None:
     """The ledger is the query set the latency replay runs, and the parameters are
-    part of the cost — a browse ask and a bare one are different workloads."""
+    part of the cost — a substring ask and a bare one are different workloads."""
     f = archive_home / "sess.jsonl"
     _write_cc(f, [USER, ASSISTANT])
     ta.import_path(f)
 
-    thread_search("hello ledger", limit=5, group="browse")
+    thread_search("hello ledger", limit=5, match="substring")
     thread_search("hello ledger", limit=5)
     calls = usage.read_calls(archive_home)
     # Deduped on the whole call, not the text: same words, two workloads.
     assert len(calls) == 2
     assert all(q == "hello ledger" for q, _ in calls)
-    assert any(kw.get("group") == "browse" for _, kw in calls)
+    assert any(kw.get("match") == "substring" for _, kw in calls)
     # Newest first, so a limit takes the current distribution not an archaeological one.
-    assert calls[0][1].get("group") is None
+    assert calls[0][1].get("match") is None
 
 
 def test_read_calls_drops_the_probes_a_bench_leaves_behind(archive_home) -> None:

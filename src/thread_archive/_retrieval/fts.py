@@ -909,7 +909,7 @@ def _set_memo_get(key: tuple) -> Any:
     """A memoized exact-set answer for ``key``, or ``None``.
 
     The exact-set scan is the one stage whose cost does not depend on the page
-    being asked for: ``group='browse'`` resolves the whole match set to decide
+    being asked for: a saturated pool resolves the whole match set to decide
     membership and totals, then slices one page out of it — so a caller walking
     N pages pays the identical scan N times, and it is the largest stage in that
     walk. Memoizing it is also what makes the walk *coherent*: pages are sold as
@@ -1115,19 +1115,24 @@ def _write_doc(
         occurred_at=occurred_at,
     ))
 
-# Thread-meta docs: the thread's title and short summary, indexed as searchable
-# docs so "find the thread about X" works when X never appears verbatim in a
-# message. Rows carry event_type='thread_meta' and content_type 'title'/'summary',
-# anchored to the thread's first indexed event so every hit keeps a real
-# [thread/event] anchor (reading from it lands at the thread's opening).
+# Thread-meta docs: the thread's title, indexed as a searchable doc so "find the
+# thread about X" works when X never appears verbatim in a message. Rows carry
+# event_type='thread_meta' and content_type='title', anchored to the thread's
+# first indexed event so every hit keeps a real [thread/event] anchor (reading
+# from it lands at the thread's opening).
+#
+# A title is the thread's own words. Stored summaries are not — they are derived
+# text a curation tool wrote *over* the archive, so indexing them would let a
+# search answer from a machine's description of a conversation instead of from
+# the conversation. They are stored and readable (``thread_read
+# summary='short'``) and never indexed.
 THREAD_META_EVENT_TYPE = "thread_meta"
-THREAD_META_CONTENT_TYPES = ("title", "summary")
 
 
 def _thread_meta_desired(s: Session, thread_ids: Optional[list[str]]) -> dict[tuple[str, str], str]:
     """The meta docs that *should* exist: ``(thread_id, content_type) → content``.
     Conversations only (topics read through their pages, not meta docs), search-
-    excluded threads omitted, empty title/summary omitted."""
+    excluded threads omitted, empty titles omitted."""
     where = "t.thread_type = 'conversation' AND NOT t.exclude_from_search"
     params: dict = {}
     if thread_ids is not None:
@@ -1135,22 +1140,21 @@ def _thread_meta_desired(s: Session, thread_ids: Optional[list[str]]) -> dict[tu
             return {}
         where += " AND " + _in_clause("t.id", list(thread_ids), "tid", params, negate=False)
     rows = s.execute(
-        sa_text("SELECT t.id, t.title, t.summary FROM threads t WHERE " + where), params
+        sa_text("SELECT t.id, t.title FROM threads t WHERE " + where), params
     ).all()
     desired: dict[tuple[str, str], str] = {}
-    for tid, title, summary in rows:
+    for tid, title in rows:
         if title and title.strip():
             desired[(tid, "title")] = title.strip()
-        if summary and summary.strip():
-            desired[(tid, "summary")] = summary.strip()
     return desired
 
 
 def index_thread_meta(session: Optional[Session] = None, thread_ids: Optional[list[str]] = None) -> int:
-    """Sync thread titles + short summaries into the FTS surface (shadow + FTS5)
-    as thread-meta docs. Diff-based: an unchanged thread writes nothing, a changed
-    title/summary replaces its rows (and drops its stale vector so the embed cohost
-    re-embeds it), a vanished one is deleted. ``thread_ids=None`` syncs every
+    """Sync thread titles into the FTS surface (shadow + FTS5) as thread-meta
+    docs. Diff-based: an unchanged thread writes nothing, a changed title replaces
+    its rows (and drops its stale vector so the embed cohost re-embeds it), a
+    vanished one is deleted — which is also how a summary doc left over from when
+    summaries were indexed gets collected. ``thread_ids=None`` syncs every
     thread — cheap enough for the watcher's maintenance cadence. Returns the
     number of rows written."""
     ensure_fts(session)

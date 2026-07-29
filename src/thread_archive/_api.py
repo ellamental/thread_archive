@@ -113,8 +113,6 @@ def search(
     path_ops: Optional[list[str]] = None,
     thread_ids: Optional[list[str]] = None,
     sort: Optional[str] = None,
-    group: Optional[str] = None,
-    collapse: bool = False,
     output: Optional[str] = None,
     context_lines: int = 2,
     context_events: Optional[str] = None,
@@ -137,13 +135,9 @@ def search(
     ``context_lines`` / ``context_events`` shape what each hit carries;
     ``params`` is a
     :class:`thread_archive._retrieval.SearchParams` retrieval configuration
-    (default: the shipped weights — the search-lab experiment seam). The ranked shape returns one row per
-    thread, repeats folded into ``_thread_more`` / ``_dup_thread_ids``
-    annotations; ``group='none'`` returns every hit as its own row, and
-    ``group='dup'`` folds only cross-thread duplicate content, keeping each
-    surviving thread's own hits. ``group='browse'`` / ``group='nested'`` turn a
-    keyword search into the thread-granular list shapes — matched threads alone,
-    or every hit clustered under its thread — with ``limit`` counting threads.
+    (default: the shipped weights — the search-lab experiment seam). Every matching
+    message is its own row — results are not grouped or folded by thread, and
+    ``limit`` counts messages.
     ``path`` (narrowed by ``path_ops``) restricts to the conversations that touched
     a file — the code axis; with an empty query that browse IS the "who worked on
     this file" answer, its rows carrying the op tally. ``thread_ids`` is a
@@ -177,8 +171,6 @@ def search(
         path_ops=path_ops,
         thread_ids=thread_ids,
         sort=sort,
-        group=group,
-        collapse=collapse,
         output=output,
         context_lines=context_lines,
         context_events=context_events,
@@ -689,6 +681,7 @@ def operational_records(*, home: Optional[str] = None) -> dict:
         "last_restore_drill": health.get("restore_drill_last"),
         "last_nightly": health.get("nightly_last"),
         "last_watch_errors": health.get("watch_errors_last"),
+        "last_schema_mismatch": health.get("schema_mismatch_last"),
         "last_watch_pass": health.get("watch_pass_last"),
         "last_coverage": health.get("coverage_last"),
         "last_source_mirror": health.get("source_mirror_last"),

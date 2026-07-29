@@ -12,9 +12,12 @@
 
 name: CI
 
+# dev is where development lands; release/* branches stabilize a cut while dev
+# keeps moving; main only moves when a release PR merges (docs/releasing.md),
+# so the README badge pins main.
 on:
   push:
-    branches: [main]
+    branches: [main, dev, "release/**"]
   pull_request:
 
 # A newer push to the same branch/PR supersedes an in-flight run.

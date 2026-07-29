@@ -22,10 +22,10 @@ from datetime import datetime
 from time import perf_counter
 from typing import Optional
 
-from sqlalchemy import func, select
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from .._store import Event, Thread, use_session
+from .._store import Thread, use_session
 from . import _probe, fts, pool_cache
 from . import embed_graph as _embed_graph
 from . import rank as _rank
@@ -51,15 +51,16 @@ from .read import read_thread, read_thread_structured, resolve_thread_ref
 logger = logging.getLogger(__name__)
 
 #: The content scope a search runs in when its caller names none: everything the
-#: index holds except derived thread summaries, which are derived text rather
-#: than the record and so stay opt-in.
+#: index holds. Nothing is filtered out at query time — what a search must not
+#: answer from is kept out of the index itself instead (tool output, derived
+#: thread summaries), because a query-time exclusion is a filter every caller can
+#: drop while the index keeps paying to store and embed what it hides.
 #:
 #: Defined here rather than at the agent surface because two callers must agree on
 #: it: the surface, and :func:`warm_models` — the vector matrix caches per
 #: content-type scope, so a warm pass primed against a different scope leaves the
 #: first real query to build a matrix inside the request.
 DEFAULT_CONTENT_TYPES: Optional[list[str]] = None
-DEFAULT_EXCLUDE_CONTENT_TYPES = ("summary",)
 
 
 def _enrich_thread_titles(hits: list[EventHit], *, session: Optional[Session] = None) -> None:
@@ -72,30 +73,6 @@ def _enrich_thread_titles(hits: list[EventHit], *, session: Optional[Session] = 
     titles = {tid: (title or name) for tid, title, name in rows}
     for h in hits:
         h["thread_title"] = titles.get(h["thread_id"])
-
-
-def _enrich_thread_rows(hits: list[EventHit], *, session: Optional[Session] = None) -> None:
-    """Fill the thread-list columns — provider and event count — on hits the
-    thread-granular shapes render as threads rather than as messages (one query).
-    Mirrors what :func:`.browse.browse_threads` puts on a browse row, so the same
-    row vocabulary reads the same whether the list came from a query or not."""
-    if not hits:
-        return
-    ids = {h["thread_id"] for h in hits}
-    n_events = (
-        select(func.count()).where(Event.thread_id == Thread.id).scalar_subquery()
-    )
-    with use_session(session) as s:
-        rows = s.execute(
-            select(Thread.id, Thread.source, n_events.label("n_events"))
-            .where(Thread.id.in_(ids))
-        ).all()
-    meta = {r.id: r for r in rows}
-    for h in hits:
-        row = meta.get(h["thread_id"])
-        if row is not None:
-            h["thread_source"] = row.source
-            h["n_events"] = row.n_events
 
 
 def _rrf_merge(result_lists: list[list[EventHit]], limit: int, k: int = 60) -> list[EventHit]:
@@ -228,8 +205,7 @@ def warm_models(embedder=None) -> None:
     try:
         from .. import _api as api
 
-        api.search(_WARM_QUERY, limit=1, content_types=DEFAULT_CONTENT_TYPES,
-                   exclude_content_types=list(DEFAULT_EXCLUDE_CONTENT_TYPES))
+        api.search(_WARM_QUERY, limit=1, content_types=DEFAULT_CONTENT_TYPES)
     except Exception:  # noqa: BLE001 — a store that isn't ready just warms the models, not the caches
         failed.append("search")
         logger.debug("warm_models: dummy warm search skipped", exc_info=True)
@@ -260,12 +236,14 @@ def warm_models(embedder=None) -> None:
     release_accelerator_cache()
 
     try:
+        from .._tools import _served_by
         from . import usage as _usage
 
         _usage.record_warm(
             duration_ms=(perf_counter() - started) * 1000.0,
             stages=stage_ms,
             failed=failed,
+            surface=_served_by(),
         )
     except Exception:  # noqa: BLE001 — telemetry is advisory; warming stays fail-soft
         logger.debug("warm_models: could not record the warm pass", exc_info=True)
@@ -360,7 +338,7 @@ def retrieve_pool(
             return Pool(cached, raw=max(len(cached), over))
 
     # A tool_name scope also sits the vector arm out: tool docs aren't embedded
-    # (only user/text/title/summary are), so every semantic hit in a tool-scoped
+    # (only user/text/title are), so every semantic hit in a tool-scoped
     # search would be a hit the filter should have excluded. A types scope sits
     # it out too: vectors carry no thread-type filter, so its hits could leak
     # threads the filter excludes.
@@ -472,98 +450,6 @@ def retrieve_pool(
     if cache is not None and key is not None:
         cache.put(key, fused)
     return fused
-
-
-def _nested_page(clustered: list[EventHit], offset: int, limit: int) -> list[EventHit]:
-    """One page of a nested result, counted in threads.
-
-    ``group='nested'`` returns every hit clustered under its thread, so a row
-    slice would split one thread's hits across a page boundary — the reader would
-    see a thread's 2nd and 3rd matches with no idea the 1st was on the previous
-    page. Windows whole clusters instead, keeping their order."""
-    order: list[str] = []
-    for r in clustered:
-        tid = r["thread_id"]
-        if tid not in order:
-            order.append(tid)
-    keep = set(order[offset:offset + limit])
-    return [r for r in clustered if r["thread_id"] in keep]
-
-
-def _extend_with_unranked_threads(
-    ranked: list[EventHit],
-    query: str,
-    *,
-    match_mode: str,
-    startswith: Optional[str],
-    oldest_first: bool,
-    scope: dict,
-    session: Optional[Session] = None,
-    drop_unmatched: bool = False,
-) -> tuple[list[EventHit], bool]:
-    """Reconcile a ranked page against the real match set, so a thread list
-    enumerates exactly the threads that match. Returns ``(rows, capped)``.
-
-    The match set is authoritative here and the pool supplies only *order*. Both
-    directions of the reconciliation matter:
-
-    - Threads past the pool boundary are invisible to the ranker — not ranked
-      low, **absent** — and a list that quietly ends there is indistinguishable
-      from one that ended because the matches did. They are appended behind the
-      ranked rows, ordered by their newest match, which is the only ordering that
-      exists for rows no ranking pass ever scored.
-    - Threads *in* the pool but not in the set are dropped **only under
-      ``drop_unmatched``**. The pool is federated: the vector arm contributes
-      semantic neighbours that need not contain the query at all. For a list that
-      answers "which threads contain this", those are a relevance aid rather than
-      set membership. For a *search*, they are the answer — dropping them would
-      delete exactly the vocab-mismatch hits the vector arm exists to find — so a
-      search reconciles by appending only, and its set is "matched the query, or
-      ranked as relevant to it".
-
-    ``capped`` means the set scan itself stopped early
-    (:data:`.fts.SET_SCAN_CAP`), so the enumeration is a floor and the dropping
-    above is suspended — a thread the truncated scan simply never reached must
-    not be deleted from a page it legitimately ranked onto.
-
-    Appended rows carry the same columns as a browse row, and their
-    ``_thread_more`` counts raw matching events rather than the post-collapse
-    hits the ranked rows report — the pool is what collapses same-anchor twins,
-    and these never entered it.
-    """
-    rows, capped = fts.matched_threads(
-        query, match_mode=match_mode, startswith=startswith, session=session, **scope
-    )
-    if not rows:
-        return ([], capped) if (drop_unmatched and not capped) else (ranked, capped)
-    if drop_unmatched and not capped:
-        in_set = {r["thread_id"] for r in rows}
-        ranked = [r for r in ranked if r["thread_id"] in in_set]
-    present = {r["thread_id"] for r in ranked}
-    tail: list[EventHit] = []
-    for row in rows:
-        if row["thread_id"] in present:
-            continue
-        hit: EventHit = {
-            "event_id": row["event_id"] or 0,
-            "thread_id": row["thread_id"],
-            "thread_title": None,
-            "event_type": "thread",
-            "content_type": None,
-            "snippet": "",
-            "full_content": "",
-            "occurred_at": _parse_stored_dt(row["last_match"]),
-        }
-        if row["n_hits"] > 1:
-            hit["_thread_more"] = row["n_hits"] - 1
-        tail.append(hit)
-    # matched_threads returns newest-match-first; a chronological ask wants the
-    # earliest of the unranked threads to lead.
-    if oldest_first:
-        tail.reverse()
-    return list(ranked) + tail, capped
-
-
 def _parse_stored_dt(value) -> Optional[datetime]:
     """A stored ``occurred_at`` string as the naive datetime the hit shape carries
     (see :func:`.fts.build_event_hit`, which does the same for a pool row)."""
@@ -595,8 +481,6 @@ def search(
     path_ops: Optional[list[str]] = None,
     thread_ids: Optional[list[str]] = None,
     sort: Optional[str] = None,
-    group: Optional[str] = None,
-    collapse: bool = False,
     output: Optional[str] = None,
     context_lines: int = 2,
     context_events: Optional[str] = None,
@@ -658,36 +542,17 @@ def search(
     ``thread_id``/``topic_id`` bypasses it (like the blacklist), and an explicit
     ``types`` list — the raw thread-type scope — wins over it entirely.
 
-    ``group`` picks how hits relate to threads. The default ranked shape,
-    ``group='thread'``, returns **one row per thread** (:func:`rank.group_by_thread`):
-    a thread's best hit represents it, with further hits folded into its
-    ``_thread_more`` count and cross-thread duplicate content (forks, fleets of
-    spawned agents carrying one prompt) folded into ``_dup_thread_ids`` — the
-    fold annotates rather than discards. ``group='none'`` returns every ranked
-    hit as its own row; ``group='dup'`` folds only the cross-thread duplicates
-    (:func:`rank.fold_duplicate_threads`), keeping each surviving thread's own
-    hits — the reader's shape, where a result list lays a thread's matches out
-    rather than collapsing them to a count.
+    **Every matching message is its own row.** Results are not grouped, folded, or
+    collapsed by thread: a conversation with eight matches returns eight rows, each
+    with its own snippet and context window, and ``limit`` counts messages. A fold
+    to one-row-per-thread buys brevity with the thing a search is for — it drops
+    every match after the first, and its count answers "which threads mention this"
+    with a smaller number than the truth.
 
-    Two further modes turn a keyword search into a thread-granular *list*, the
-    shape an empty query already returns, and are flagged ``_group`` for the
-    renderer. ``group='browse'`` is the list of matched **threads** — one row
-    each, thread metadata instead of a snippet, ``limit`` counting threads.
-    ``group='nested'`` is the same list with the **messages** kept, clustered
-    under their thread (:func:`rank.cluster_by_thread`): ``limit`` counts
-    threads there too, each capped at :data:`rank.NESTED_HITS_PER_THREAD` hits
-    with the remainder folded into the cluster's ``_thread_more``. Both
-    enumerate every matched thread — no cross-thread duplicate fold, which would
-    drop a thread from a list that exists to enumerate them — and both apply to
-    the structural shapes and under a ``thread_id`` scope, since asking for them
-    is explicit. ``output='count'`` still wins over either (it tallies the whole
-    unranked pool per thread already).
-
-    Otherwise a ``thread_id`` scope, the structural shapes, and the
-    ``count``/``linkable`` outputs are never grouped. Hits sharing one
-    ``(thread_id, event_id)`` anchor (a thread-meta title/summary doc and the
-    first event it anchors to) collapse to the better-placed row in every
-    row-shaped output, grouped or not.
+    The one fold that remains is deduplication rather than grouping: hits sharing
+    one ``(thread_id, event_id)`` anchor (a thread-meta title doc and the
+    first event it anchors to) collapse to the better-placed row, because they are
+    one message that would otherwise open identically twice in ``thread_read``.
 
     ``match`` selects what "matches" means. ``'token'`` (default) is the indexed
     FTS5 pipeline described above. ``'substring'`` replaces the lexical arm's
@@ -728,15 +593,6 @@ def search(
 
     if agents is not None and agents not in ("exclude", "include", "only"):
         raise ValueError("agents must be 'exclude', 'include', or 'only'")
-    if group is not None and group not in ("thread", "browse", "nested", "dup", "none"):
-        raise ValueError("group must be 'thread', 'nested', 'dup', or 'none'")
-    # 'browse' is the thread shape under an older name. It once named a separate
-    # code path that enumerated the exact match set while the ranked path could
-    # not; the ranked path does that itself now (the reconciliation below), and
-    # keeping two shapes meant two things to test for one behaviour. Accepted
-    # rather than rejected so a caller carrying the old name still works.
-    if group == "browse":
-        group = "thread"
     # 'oldest' is the only sort — relevance is the unnamed default. Rejected rather
     # than ignored because the plausible guesses ('newest', 'recent') are asks for a
     # *chronological* answer, and silently serving relevance order answers "when was
@@ -808,21 +664,6 @@ def search(
     # neighbours, which can't strengthen a chronological first-mention scan or a
     # tally of literal matches, only pollute them.
     structural = startswith is not None or sort == "oldest" or is_count
-    # One row per thread for the ranked shape (rank.group_by_thread): folds
-    # annotate the surviving row instead of spending result slots on repeats.
-    # Deliberate scopes stand it down — a thread_id scope wants every hit — and
-    # count/linkable are ungrouped by shape ('count' already tallies per thread,
-    # 'linkable' links every event). group='none' turns it off; group='dup'
-    # keeps per-thread hits and folds only cross-thread duplicate content.
-    #
-    # The list shapes are the exception to all of that: asking for one is an
-    # explicit request for a thread-granular view, so it outranks the shape-based
-    # suppressions above. Only output='count' still wins, via the is_count guard
-    # on the block that applies the fold.
-    listing = group in ("thread", "nested")
-    grouping = group != "none" and (
-        listing or (not structural and thread_id is None and output is None)
-    )
     # Candidate pool depth. 200 (not depth*5) because reachability dies at the pool
     # boundary: for a high-frequency term over a ~1M-doc index, a relevant-but-old
     # hit past bm25's top-N is unreachable no matter how the ranker weighs it. The
@@ -832,10 +673,10 @@ def search(
     # pool's mass — so a pool that grew per page would hand each page a different
     # ordering to slice, and a walk would repeat rows and skip others (measured:
     # 122 duplicates over a 721-thread walk). One pool per (query, limit) means one
-    # ordering, and every page is a slice of it. What that costs is depth: the
-    # ranked shapes reach only pool-deep, which is why they report their total as a
-    # floor. ``group='browse'`` is unbounded by it — the exact set supplies whatever
-    # the pool never reached.
+    # ordering, and every page is a slice of it. What that costs is depth: a walk
+    # reaches pool-deep and no further, which is why a saturated pool reports its
+    # true size (below) and flags ``exhaustive=False`` rather than passing the
+    # reach of a cut off as a total.
     over = max(limit, COUNT_FETCH_CAP) if is_count else max(limit * 5, p.pool_floor)
 
     terms = _rank.search_terms(query)
@@ -865,12 +706,11 @@ def search(
     elif structural:
         ranked = fused  # structural recency order from the scan; the final cut caps it
     else:
-        # Weighted lexical rank. Grouping ranks the whole pool — folded rows must
-        # backfill from ranked candidates past `limit`, and sorting the pool costs
-        # microseconds either way; otherwise rank just what the cut needs.
-        rank_to = len(fused) if grouping else depth
+        # Weighted lexical rank over the WHOLE pool, not just the cut: the pool is
+        # what a walk pages over, so ranking only to `depth` would make every page
+        # past the first a slice of an unranked tail. Sorting it costs microseconds.
         _t_rank = perf_counter()
-        ranked = _rank.rank_search_results(fused, terms, rank_to, params=p)
+        ranked = _rank.rank_search_results(fused, terms, len(fused), params=p)
         _probe.record("rank_ms", _t_rank)
         # Community-coherence re-rank from the corpus-native embedding graph
         # (default on — measured recall lift at every depth on the log-mined
@@ -897,91 +737,39 @@ def search(
     capped = False
 
     if not is_count:
-        # Every row-shaped output collapses same-anchor twins (a thread-meta
-        # title/summary doc and the first event it anchors to — one anchor,
-        # two rows that open identically in thread_read).
+        # The one fold left, and it is deduplication rather than grouping: a
+        # thread-meta title doc and the first event it anchors to are one
+        # anchor, so they are two rows that open identically in thread_read.
         _t_group = perf_counter()
         ranked = _rank.collapse_same_anchor(ranked)
-        if grouping:
-            if group == "nested":
-                # Clusters before the cut, and caps itself by thread — so the cut
-                # can't slice a thread's cluster in half.
-                ranked = _rank.cluster_by_thread(ranked, max_threads=depth)
-            elif group == "dup":
-                ranked = _rank.fold_duplicate_threads(ranked)
-            else:
-                # ``collapse`` decides whether near-identical content from
-                # *different* threads folds into one annotated row. It defaults
-                # off: a fold that removes rows answers "which threads mention
-                # this" with a smaller number than the truth, and on real traffic
-                # it fires on the majority of queries — a thread doing different
-                # work behind an identical prompt is a different answer, however
-                # identical the matched message. ``_dup_thread_ids`` is attached
-                # either way, so the near-duplicate relation stays visible without
-                # being enforced by deletion.
-                ranked = _rank.group_by_thread(ranked, fold_duplicates=collapse)
-            # Reach. The pool orders the set; it does not decide membership. A pool
-            # that saturated cut threads off the bottom, and no window widening
-            # recovers them because the cut happened before ranking — so the exact
-            # match set supplies whatever the pool never reached. Skipped when the
-            # pool came back short, which proves it already held everything: the
-            # gate is a pure optimization, not a change of answer.
-            #
-            # Scoped to the one-row-per-thread shape, the only one whose rows are
-            # threads: 'dup' and 'none' hand back hits, and 'nested' hands back
-            # hits clustered under them, so appending a bare thread row to any of
-            # those would mix two row shapes in one list.
-            if grouping and group in (None, "thread") and not exhaustive:
-                # Unrelated cost models — the fold scales with the pool, this with
-                # the whole match set — so the group clock closes and reopens
-                # rather than billing both to one number.
-                _probe.record("group_ms", _t_group)
-                _t_extend = perf_counter()
-                ranked, capped = _extend_with_unranked_threads(
-                    ranked, query, match_mode=match, startswith=startswith,
-                    oldest_first=sort == "oldest", session=session,
-                    scope=dict(
-                        thread_id=thread_id, thread_ids=thread_ids,
-                        tool_name=tool_name, path=path, types=types,
-                        content_types=content_types,
-                        exclude_content_types=exclude_content_types,
-                        source=source, since=since_r, until=until_r,
-                        agents=agents_eff,
-                    ),
-                )
-                _probe.record("extend_ms", _t_extend)
-                _t_group = perf_counter()
-                exhaustive = not capped
         _probe.record("group_ms", _t_group)
 
-    # What this page is a page OF. The shaped row count is the honest total
-    # whenever the pool held everything; past that only the browse shape resolves
-    # its true set, so the others report the pool's reach and say so via
-    # ``exhaustive=False`` rather than passing a cut off as a total.
+    # What this page is a page OF. Every matching message is its own row, so the
+    # rows count in messages and so does the total. A pool that came back short
+    # held the whole match set, and its length IS the total — exact and free.
+    # A saturated pool ranked a cut, so its length is only the cut's size: ask the
+    # index for the real one rather than pass the reach of a window off as a total.
     total = len(ranked)
     total_threads = len({r["thread_id"] for r in ranked}) if not is_count else None
+    if not is_count and pool_saturated:
+        _t_set = perf_counter()
+        total, total_threads, capped = fts.count_matches(
+            query, match_mode=match, startswith=startswith, session=session,
+            thread_id=thread_id, thread_ids=thread_ids, tool_name=tool_name,
+            path=path, types=types, content_types=content_types,
+            exclude_content_types=exclude_content_types, source=source,
+            since=since_r, until=until_r, agents=agents_eff,
+        )
+        _probe.record("extend_ms", _t_set)
 
     if is_count:
         hits = ranked
-    elif grouping and group == "nested":
-        # Nested counts in threads, so its page is a window over *clusters* — a
-        # row slice would cut a thread's hits in half across two pages.
-        hits = _nested_page(ranked, offset, limit)
     else:
         hits = ranked[offset:offset + limit]
 
     # Per-hit enrichments the renderer reads. A pure tally (count) needs none.
     _t_enrich = perf_counter()
     if not is_count:
-        if grouping and group != "dup":
-            # One row per thread (or a thread's cluster), so the rows are threads
-            # and want the thread columns. Stamped even when the caller named no
-            # group, because the *shape* is what the renderer counts in — a header
-            # reading "12 result(s)" over twelve threads counts the right number
-            # in the wrong unit.
-            for r in hits:
-                r["_group"] = group or "thread"
-            _enrich_thread_rows(hits, session=session)
         if context_lines > 0:
             for r in hits:
                 if r.get("full_content"):
@@ -995,16 +783,20 @@ def search(
 
     _enrich_thread_titles(hits, session=session)
     _probe.record("enrich_ms", _t_enrich)
-    # The list shapes count in threads, so that is the number their pages divide;
-    # every other shape counts in rows. A tally (output='count') is not a page of
-    # anything — it already reports over the whole pool — so it carries no
-    # pagination facts rather than misleading ones.
+    # A tally (output='count') is not a page of anything — it already reports over
+    # the whole pool — so it carries no pagination facts rather than misleading
+    # ones. Everything else counts in rows.
+    #
+    # ``pages`` divides what a walk can actually *reach*, not ``total``: the pool
+    # bounds the walk, so on a saturated set ``total`` is the size of the answer
+    # and ``len(ranked)`` is how much of it paging can hand back. Dividing the
+    # true total would advertise pages that return nothing, which is the same lie
+    # as a short page claiming to be the whole set, pointed the other way.
     if is_count:
         return Results(hits, page=1)
-    unit = total_threads if listing else total
     return Results(
         hits, total=total, total_threads=total_threads, capped=capped, page=page,
-        pages=max(1, (unit + limit - 1) // limit) if unit is not None else None,
+        pages=max(1, (len(ranked) + limit - 1) // limit),
         exhaustive=exhaustive,
     )
 

@@ -1,0 +1,74 @@
+# Turns a release merge into the release tag. Merging the release PR
+# (docs/releasing.md §4) is the ship; this workflow is the follow-through:
+# on every push to main it reads `__version__`, and if that version's tag
+# doesn't exist yet, creates the annotated tag on the pushed commit
+# (message: the version's CHANGELOG section) and pushes it.
+#
+# The push authenticates with a write deploy key (RELEASE_TAG_DEPLOY_KEY
+# secret) rather than GITHUB_TOKEN, for two reasons that share one root —
+# GitHub treats token-minted refs specially: a GITHUB_TOKEN tag can't clear
+# the `v*` tag ruleset on a personal repo (the Actions app can't be a bypass
+# actor there; the deploy key is), and it wouldn't fire other workflows. The
+# deploy-key push does both: the tag lands, and its push event triggers
+# publish.yml exactly as a hand-pushed tag would — one publish path, no
+# double-fire.
+
+name: Release
+
+on:
+  push:
+    branches: [main]
+
+concurrency:
+  group: release-${{ github.ref }}
+
+jobs:
+  tag:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Read version
+        id: version
+        run: |
+          v=$(python3 -c "
+          import re, pathlib
+          text = pathlib.Path('src/thread_archive/__init__.py').read_text()
+          print(re.search(r'__version__ = \"([^\"]+)\"', text).group(1))
+          ")
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+
+      - name: Create and push tag if absent
+        env:
+          DEPLOY_KEY: ${{ secrets.RELEASE_TAG_DEPLOY_KEY }}
+        run: |
+          tag="v${{ steps.version.outputs.version }}"
+          if git ls-remote --exit-code --tags origin "refs/tags/$tag" >/dev/null; then
+            echo "Tag $tag already exists; nothing to do."
+            exit 0
+          fi
+          # Tag message: subject line + that version's CHANGELOG section,
+          # verbatim. A missing section fails the release loudly — the tag
+          # must carry the changelog, and its absence means the release
+          # commit skipped the compression step.
+          python3 - "${{ steps.version.outputs.version }}" > tag-message.txt <<'PY'
+          import re, pathlib, sys
+          version = sys.argv[1]
+          text = pathlib.Path("CHANGELOG.md").read_text()
+          m = re.search(
+              rf"^## {re.escape(version)}[^\n]*\n(.*?)(?=^## |\Z)",
+              text, re.M | re.S,
+          )
+          if not m:
+              sys.exit(f"CHANGELOG.md has no '## {version}' section")
+          print(f"thread-archive {version}\n")
+          print(m.group(1).strip())
+          PY
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -a "$tag" -F tag-message.txt "$GITHUB_SHA"
+          install -d -m 700 "$HOME/.ssh"
+          printf '%s\n' "$DEPLOY_KEY" > "$HOME/.ssh/release_key"
+          chmod 600 "$HOME/.ssh/release_key"
+          GIT_SSH_COMMAND="ssh -i $HOME/.ssh/release_key -o StrictHostKeyChecking=accept-new" \
+            git push "git@github.com:${{ github.repository }}.git" "$tag"

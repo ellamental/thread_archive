@@ -1,11 +1,14 @@
-"""Self-update: plan gating (dirty tree, divergence, format bump) and
-apply/rollback — against real throwaway git repos, with the mutating steps
-(pip, smoke, restarts) stubbed."""
+"""Self-update: plan gating (resolution, format bump) and apply/rollback.
+
+The resolution half runs the real pip against a local wheel index standing in
+for PyPI — real subprocess, real artifacts, real filename/marker rules, no
+network. The apply half injects the mutating steps (install, smoke, migrate,
+restart) rather than upgrading the venv running the suite.
+"""
 
 from __future__ import annotations
 
-import subprocess
-import time
+import zipfile
 from pathlib import Path
 
 import pytest
@@ -13,225 +16,202 @@ import pytest
 from thread_archive import _update
 from thread_archive._update import UpdatePlan, apply_update, plan_update
 
-OLD = {"GIT_COMMITTER_DATE": "2026-01-01T00:00:00Z",
-       "GIT_AUTHOR_DATE": "2026-01-01T00:00:00Z"}
+FORMAT_HOME = "thread_archive/_truth/layout.py"
 
 
-def _git(repo: Path, *args: str, env: dict | None = None) -> str:
-    import os
-
-    full_env = {**os.environ, "GIT_CONFIG_NOSYSTEM": "1", **(env or {})}
-    r = subprocess.run(["git", "-C", str(repo), *args],
-                       capture_output=True, text=True, env=full_env)
-    assert r.returncode == 0, f"git {args}: {r.stderr}"
-    return r.stdout
-
-
-def _commit(repo: Path, msg: str) -> None:
-    _git(repo, "add", "-A")
-    _git(repo, "commit", "-q", "-m", msg, env=OLD)
-
-
-def _tag(repo: Path, name: str, *, env: dict | None = None) -> None:
-    _git(repo, "tag", "-a", name, "-m", name, env=env or OLD)
-
-
-def _write_format(repo: Path, version: int) -> None:
-    layout = repo / "src" / "thread_archive" / "_truth" / "layout.py"
-    layout.parent.mkdir(parents=True, exist_ok=True)
-    layout.write_text(f"TRUTH_FORMAT_VERSION = {version}\n", encoding="utf-8")
+def _wheel(index: Path, version: str, *, fmt: int | None = 1,
+           module: str = FORMAT_HOME) -> Path:
+    """A minimal but genuine wheel of ``thread-archive``: enough metadata for
+    pip to resolve and copy it, and the one constant the format gate reads."""
+    path = index / f"thread_archive-{version}-py3-none-any.whl"
+    info = f"thread_archive-{version}.dist-info"
+    with zipfile.ZipFile(path, "w") as z:
+        z.writestr("thread_archive/__init__.py", f'__version__ = "{version}"\n')
+        if fmt is not None:
+            z.writestr(module, f"TRUTH_FORMAT_VERSION = {fmt}\n")
+        z.writestr(f"{info}/METADATA",
+                   f"Metadata-Version: 2.1\nName: thread-archive\nVersion: {version}\n")
+        z.writestr(f"{info}/WHEEL", "Wheel-Version: 1.0\nGenerator: test 1.0\n"
+                                    "Root-Is-Purelib: true\nTag: py3-none-any\n")
+        z.writestr(f"{info}/RECORD", "")
+    return path
 
 
 @pytest.fixture()
-def repo(tmp_path: Path) -> Path:
-    """A minimal 'clone': one tracked source file carrying the format version,
-    a pyproject, and an old, matured release tag v0.0.4."""
-    repo = tmp_path / "clone"
-    repo.mkdir()
-    _git(repo, "init", "-q")
-    _git(repo, "config", "user.email", "t@example.invalid")
-    _git(repo, "config", "user.name", "t")
-    (repo / "pyproject.toml").write_text("[project]\nname='x'\n", encoding="utf-8")
-    _write_format(repo, 1)
-    _commit(repo, "v0.0.4")
-    _tag(repo, "v0.0.4")
-    return repo
+def index(tmp_path: Path) -> Path:
+    """The index this install resolves against: the running 0.0.4 is published."""
+    d = tmp_path / "index"
+    d.mkdir()
+    _wheel(d, "0.0.4")
+    return d
 
 
-def _plan(repo: Path, **kw) -> UpdatePlan:
-    kw.setdefault("fetch", False)  # no remote in these fixtures
+@pytest.fixture()
+def dest(tmp_path: Path) -> Path:
+    """The scratch dir a plan downloads its candidate into."""
+    d = tmp_path / "scratch"
+    d.mkdir()
+    return d
+
+
+def _plan(index: Path, dest: Path, **kw) -> UpdatePlan:
     kw.setdefault("current_version", "0.0.4")
     kw.setdefault("local_format_version", 1)
-    return plan_update(repo, **kw)
+    return plan_update(dest, pip_args=["--no-index", "--find-links", str(index)], **kw)
 
 
 # ── plan ─────────────────────────────────────────────────────────────────────
 
 
-def test_up_to_date_when_no_newer_tag(repo: Path) -> None:
-    plan = _plan(repo)
-    assert plan.action == "up-to-date"
+def test_up_to_date_when_the_index_has_nothing_newer(index: Path, dest: Path) -> None:
+    plan = _plan(index, dest)
+    assert (plan.action, plan.target) == ("up-to-date", "0.0.4")
 
 
-def test_updates_to_matured_newer_tag(repo: Path) -> None:
-    (repo / "f").write_text("1")
-    _commit(repo, "v0.0.5")
-    _tag(repo, "v0.0.5")
-    plan = _plan(repo)
-    assert (plan.action, plan.tag) == ("update", "v0.0.5")
+def test_updates_to_the_newest_published_release(index: Path, dest: Path) -> None:
+    _wheel(index, "0.0.5")
+    _wheel(index, "0.0.6")
+    plan = _plan(index, dest)
+    assert (plan.action, plan.target) == ("update", "0.0.6")
+    assert plan.wheel is not None and plan.wheel.is_file()
+    assert plan.wheel.name == "thread_archive-0.0.6-py3-none-any.whl"
 
 
-def test_newest_tag_wins_however_recently_it_was_cut(repo: Path) -> None:
-    """No age gate: the candidate is the highest release tag, full stop — an
-    intermediate release is never a stepping stone, and a tag cut a minute ago
-    is as eligible as one from last month."""
-    (repo / "f").write_text("1")
-    _commit(repo, "v0.0.5")
-    _tag(repo, "v0.0.5")
-    (repo / "f").write_text("2")
-    _commit(repo, "v0.0.6")
-    _tag(repo, "v0.0.6", env={"GIT_COMMITTER_DATE": time.strftime("%Y-%m-%dT%H:%M:%S")})
-    _git(repo, "checkout", "-q", "v0.0.4")  # the consumer sits at their installed release
-    assert (_plan(repo).action, _plan(repo).tag) == ("update", "v0.0.6")
+def test_a_prerelease_is_not_a_candidate(index: Path, dest: Path) -> None:
+    """Nothing passes ``--pre``: an rc on the index is invisible to an install
+    that asked for a release, and its presence must not read as an update."""
+    _wheel(index, "0.1.0rc1")
+    assert _plan(index, dest).action == "up-to-date"
 
 
-def test_dirty_tree_blocks(repo: Path) -> None:
-    (repo / "f").write_text("1")
-    _commit(repo, "v0.0.5")
-    _tag(repo, "v0.0.5")
-    (repo / "scratch.txt").write_text("uncommitted")
-    plan = _plan(repo)
-    assert plan.action == "blocked"
-    assert "not clean" in plan.reason
+def test_a_version_ahead_of_the_index_is_not_downgraded(index: Path, dest: Path) -> None:
+    """An install running ahead of what is published (this clone's own shape
+    between releases) is up to date, never walked backwards."""
+    plan = _plan(index, dest, current_version="9.9.9")
+    assert (plan.action, plan.target) == ("up-to-date", "0.0.4")
 
 
-def test_diverged_history_blocks(repo: Path) -> None:
-    """A local commit the release line doesn't contain (the dev-clone shape)
-    must never be fast-forwarded over."""
-    _git(repo, "checkout", "-q", "-b", "release")
-    (repo / "f").write_text("1")
-    _commit(repo, "v0.0.5")
-    _tag(repo, "v0.0.5")
-    _git(repo, "checkout", "-q", "-")  # back to the original branch
-    (repo / "local.txt").write_text("local work")
-    _commit(repo, "local-only commit")
-    plan = _plan(repo)
-    assert plan.action == "blocked"
-    assert "diverged" in plan.reason
-
-
-def test_format_bump_blocks_without_override(repo: Path) -> None:
-    _write_format(repo, 2)
-    _commit(repo, "v0.1.0 format bump")
-    _tag(repo, "v0.1.0")
-    plan = _plan(repo)
+def test_format_bump_blocks_without_override(index: Path, dest: Path) -> None:
+    _wheel(index, "0.1.0", fmt=2)
+    plan = _plan(index, dest)
     assert plan.action == "blocked"
     assert "truth-format" in plan.reason
-    assert _plan(repo, allow_format_bump=True).action == "update"
+    assert (plan.current_format, plan.target_format) == (1, 2)
+    assert _plan(index, dest, allow_format_bump=True).action == "update"
 
 
-def test_missing_format_declaration_blocks(repo: Path) -> None:
-    """A tag whose format version can't be read is a gate, not a pass."""
-    (repo / "src" / "thread_archive" / "_truth" / "layout.py").write_text(
-        "nothing here\n", encoding="utf-8")
-    _commit(repo, "v0.0.5 drops the constant")
-    _tag(repo, "v0.0.5")
-    plan = _plan(repo)
+def test_missing_format_declaration_blocks(index: Path, dest: Path) -> None:
+    """A release whose format version can't be read is a gate, not a pass."""
+    _wheel(index, "0.0.5", fmt=None)
+    plan = _plan(index, dest)
     assert plan.action == "blocked"
     assert "truth-format" in plan.reason
 
 
-def test_fetch_failure_blocks(repo: Path) -> None:
-    plan = plan_update(repo, remote="no-such-remote", fetch=True,
-                       current_version="0.0.4", local_format_version=1)
+def test_format_probe_survives_the_constant_moving(index: Path, dest: Path) -> None:
+    """The anchored probe reads the constant's home module; a release that moved
+    it is still readable from the rest of the wheel, so the gate holds."""
+    _wheel(index, "0.0.5", fmt=1, module="thread_archive/_truth/elsewhere.py")
+    assert _plan(index, dest).action == "update"
+
+
+def test_unresolvable_index_blocks(tmp_path: Path, dest: Path) -> None:
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    plan = _plan(empty, dest)
     assert plan.action == "blocked"
-    assert "fetch" in plan.reason
+    assert "pip download" in plan.reason
+
+
+def test_unparseable_running_version_blocks(index: Path, dest: Path) -> None:
+    plan = _plan(index, dest, current_version="0.0.4.dev1")
+    assert plan.action == "blocked"
+    assert "unparseable" in plan.reason
 
 
 # ── apply ────────────────────────────────────────────────────────────────────
 
 
-def _release(repo: Path, tag: str) -> None:
-    (repo / "f").write_text(tag)
-    _commit(repo, tag)
-    _tag(repo, tag)
-
-
-def test_apply_checks_out_reinstalls_and_restarts(repo: Path) -> None:
-    _release(repo, "v0.0.5")
-    _git(repo, "checkout", "-q", "v0.0.4")
-    calls: list[str] = []
-    plan = _plan(repo)
+def _update_plan(index: Path, dest: Path) -> UpdatePlan:
+    _wheel(index, "0.0.5")
+    plan = _plan(index, dest)
     assert plan.action == "update"
+    return plan
+
+
+def test_apply_installs_the_inspected_wheel_then_restarts(
+        index: Path, dest: Path) -> None:
+    """What the gate read is what lands: the install argument is the very file
+    the plan downloaded, not a name the index could re-resolve."""
+    plan = _update_plan(index, dest)
+    calls: list[str] = []
     res = apply_update(
-        repo, plan, home=None,
-        reinstall=lambda r: calls.append("reinstall"),
+        plan, home=None,
+        install=lambda req: calls.append(f"install:{req}"),
         smoke=lambda h: calls.append("smoke"),
         restart=lambda: calls.append("restart"),
+        retire=lambda h, t: calls.append(f"retire:{t}"),
     )
     assert res["ok"] and res["action"] == "updated"
-    assert calls == ["reinstall", "smoke", "restart"]
-    assert _git(repo, "rev-parse", "HEAD").strip() == \
-        _git(repo, "rev-parse", "v0.0.5^{commit}").strip()
+    assert res["current"] == "0.0.4" and res["target"] == "0.0.5"
+    assert calls == [f"install:{plan.wheel}", "smoke", "retire:0.0.5", "restart"]
 
 
-def test_apply_retires_patches_after_smoke_before_restart(repo: Path) -> None:
-    """Unpinned fix-import overrides are temporary bridges to the next release:
-    the update that might carry the proper fix disables them — after smoke (only
-    on a proven install), before restart (the reloading agents must not come
-    back under stale overrides). A retirement failure is advisory."""
-    _release(repo, "v0.0.5")
-    _git(repo, "checkout", "-q", "v0.0.4")
-    calls: list[str] = []
-    res = apply_update(
-        repo, _plan(repo),
-        reinstall=lambda r: calls.append("reinstall"),
-        smoke=lambda h: calls.append("smoke"),
-        restart=lambda: calls.append("restart"),
-        retire=lambda home, tag: calls.append(f"retire:{tag}"),
-    )
-    assert res["ok"]
-    assert calls == ["reinstall", "smoke", "retire:v0.0.5", "restart"]
-
-    def _boom(home, tag):
+def test_apply_retirement_failure_is_advisory(index: Path, dest: Path) -> None:
+    """Unpinned fix-import overrides are temporary bridges to the next release,
+    so the update that might carry the proper fix disables them — but a
+    retirement hiccup never costs a good install."""
+    def boom(home, target):
         raise RuntimeError("retirement hiccup")
 
-    _release(repo, "v0.0.6")
-    _git(repo, "checkout", "-q", "v0.0.5")
-    res = apply_update(repo, _plan(repo, current_version="0.0.5"),
-                       reinstall=lambda r: None, smoke=lambda h: None,
-                       restart=lambda: None, retire=_boom)
-    assert res["ok"] and res["action"] == "updated"  # advisory, never a rollback
+    res = apply_update(_update_plan(index, dest), install=lambda req: None,
+                       smoke=lambda h: None, restart=lambda: None, retire=boom)
+    assert res["ok"] and res["action"] == "updated"
 
 
-def test_apply_rolls_back_when_smoke_fails(repo: Path) -> None:
-    _release(repo, "v0.0.5")
-    _git(repo, "checkout", "-q", "v0.0.4")
-    prev = _git(repo, "rev-parse", "HEAD").strip()
+def test_apply_rolls_back_to_the_running_version_when_smoke_fails(
+        index: Path, dest: Path) -> None:
+    plan = _update_plan(index, dest)
+    calls: list[str] = []
 
     def smoke(_h):
         raise RuntimeError("new install does not stand up")
 
-    plan = _plan(repo)
-    res = apply_update(repo, plan, reinstall=lambda r: None, smoke=smoke,
-                       restart=lambda: pytest.fail("must not restart onto a rollback"),
-                       retire=lambda h, t: pytest.fail("must not retire on a rollback"))
+    res = apply_update(
+        plan, install=lambda req: calls.append(req), smoke=smoke,
+        restart=lambda: pytest.fail("must not restart onto a rollback"),
+        retire=lambda h, t: pytest.fail("must not retire on a rollback"),
+    )
     assert not res["ok"] and res["action"] == "rolled-back"
-    assert _git(repo, "rev-parse", "HEAD").strip() == prev
+    assert calls == [str(plan.wheel), "thread-archive==0.0.4"]
 
 
-def test_apply_format_bump_migrates_and_resmokes_before_restart(repo: Path) -> None:
-    _write_format(repo, 2)
-    _commit(repo, "v0.1.0 format bump")
-    _tag(repo, "v0.1.0")
-    _git(repo, "checkout", "-q", "v0.0.4")
-    calls: list[str] = []
-    plan = _plan(repo, allow_format_bump=True)
+def test_apply_reports_failed_when_the_rollback_cannot_run(
+        index: Path, dest: Path) -> None:
+    """A rollback that itself fails leaves an install nobody proved — say so
+    rather than reporting the softer 'rolled-back'."""
+    plan = _update_plan(index, dest)
+
+    def install(req: str) -> None:
+        raise RuntimeError(f"pip install failed: {req}")
+
+    res = apply_update(plan, install=install, smoke=lambda h: None,
+                       restart=lambda: pytest.fail("must not restart"),
+                       retire=lambda h, t: pytest.fail("must not retire"))
+    assert not res["ok"] and res["action"] == "failed"
+    assert "rollback to 0.0.4 also failed" in res["reason"]
+
+
+def test_apply_format_bump_migrates_and_resmokes_before_restart(
+        index: Path, dest: Path) -> None:
+    _wheel(index, "0.1.0", fmt=2)
+    plan = _plan(index, dest, allow_format_bump=True)
     assert plan.target_format == 2
+    calls: list[str] = []
 
     res = apply_update(
-        repo, plan,
-        reinstall=lambda r: calls.append("reinstall"),
+        plan,
+        install=lambda req: calls.append("install"),
         smoke=lambda h: calls.append("smoke"),
         migrate=lambda h: calls.append("migrate"),
         home_format_version=lambda h: 1,
@@ -240,21 +220,19 @@ def test_apply_format_bump_migrates_and_resmokes_before_restart(repo: Path) -> N
     )
 
     assert res["ok"] and res["migrated"]
-    assert calls == ["reinstall", "smoke", "migrate", "smoke", "retire", "restart"]
+    assert calls == ["install", "smoke", "migrate", "smoke", "retire", "restart"]
 
 
-def test_apply_does_not_roll_back_after_migration_starts(repo: Path) -> None:
-    _write_format(repo, 2)
-    _commit(repo, "v0.1.0 format bump")
-    _tag(repo, "v0.1.0")
-    _git(repo, "checkout", "-q", "v0.0.4")
+def test_apply_does_not_roll_back_after_migration_starts(
+        index: Path, dest: Path) -> None:
+    _wheel(index, "0.1.0", fmt=2)
+    plan = _plan(index, dest, allow_format_bump=True)
 
     def fail_migration(_home) -> None:
         raise RuntimeError("migration stopped after swap")
 
-    plan = _plan(repo, allow_format_bump=True)
     res = apply_update(
-        repo, plan, reinstall=lambda r: None, smoke=lambda h: None,
+        plan, install=lambda req: None, smoke=lambda h: None,
         migrate=fail_migration, home_format_version=lambda h: 1,
         retire=lambda h, t: pytest.fail("must not retire after migration failure"),
         restart=lambda: pytest.fail("must not restart after migration failure"),
@@ -262,32 +240,56 @@ def test_apply_does_not_roll_back_after_migration_starts(repo: Path) -> None:
 
     assert not res["ok"] and res["action"] == "migration-failed"
     assert not res["rolled_back"]
-    assert _git(repo, "rev-parse", "HEAD").strip() == \
-        _git(repo, "rev-parse", "v0.1.0^{commit}").strip()
 
 
-def test_self_update_records_health(repo: Path, monkeypatch) -> None:
-    """The orchestrator stamps health.json — the record behind the status line
-    and the viewer's health panel."""
+# ── the install shape ────────────────────────────────────────────────────────
+
+
+@pytest.mark.skipif(_update.source_checkout() is None,
+                    reason="packaged install, not a clone: no source checkout to report on")
+def test_source_checkout_is_unavailable_and_still_recorded() -> None:
+    """Run from the clone, which is exactly the install shape that has no package
+    to upgrade: the run reports unavailable, names the clone — and still stamps
+    health.json, the record behind the status line and the viewer's health panel.
+
+    Gated because ``tests/install/`` runs this same suite from a wheel, where the
+    subject of the test — a checkout — does not exist and the run resolves against
+    pip instead."""
     from thread_archive._ops.health import read_health
 
-    monkeypatch.setattr(_update, "install_repo", lambda: repo)
-    monkeypatch.setattr(_update, "plan_update",
-                        lambda *a, **k: _plan(repo))  # skip the real fetch
-    res = _update.self_update(check_only=True)
-    assert res["action"] == "up-to-date"
-    rec = read_health()[_update.HEALTH_KEY]
-    assert rec["action"] == "up-to-date" and rec["ok"]
-
-    res = _update.self_update()
-    rec = read_health()[_update.HEALTH_KEY]
-    assert rec["action"] == "up-to-date" and rec["ok"]
-
-
-def test_self_update_unavailable_without_clone(monkeypatch) -> None:
-    monkeypatch.setattr(_update, "install_repo", lambda: None)
     res = _update.self_update()
     assert res["action"] == "unavailable" and not res["ok"]
+    assert "source install" in res["reason"]
+    assert str(_update.source_checkout()) in res["reason"]
+    assert read_health()[_update.HEALTH_KEY]["action"] == "unavailable"
+
+
+def test_a_managed_environment_names_its_own_upgrade_command(tmp_path: Path) -> None:
+    """A `uv tool` / pipx environment is somebody else's to change; pip inside
+    one is the wrong door even when it exists."""
+    assert _update.managed_environment(tmp_path) is None
+    (tmp_path / "uv-receipt.toml").write_text("[tool]\n", encoding="utf-8")
+    assert _update.managed_environment(tmp_path) == "uv tool upgrade thread-archive"
+
+    pipx = tmp_path / "pipx-venv"
+    pipx.mkdir()
+    (pipx / "pipx_metadata.json").write_text("{}", encoding="utf-8")
+    assert _update.managed_environment(pipx) == "pipx upgrade thread-archive"
+
+
+def test_self_update_records_a_check_from_a_packaged_install(
+        index: Path, monkeypatch) -> None:
+    """The packaged path end to end: real pip resolution against the index, the
+    outcome stamped in health.json. Only the install *shape* is forced — the
+    suite has no packaged install to run from."""
+    from thread_archive._ops.health import read_health
+
+    monkeypatch.setattr(_update, "source_checkout", lambda: None)
+    res = _update.self_update(
+        check_only=True, pip_args=["--no-index", "--find-links", str(index)])
+    assert res["action"] in ("up-to-date", "update")
+    rec = read_health()[_update.HEALTH_KEY]
+    assert rec["action"] == res["action"] and rec["ok"]
 
 
 # ── the default executors ────────────────────────────────────────────────
@@ -297,12 +299,14 @@ def test_self_update_unavailable_without_clone(monkeypatch) -> None:
 
 
 @pytest.mark.integration
-def test_default_reinstall_translates_a_pip_failure(tmp_path: Path) -> None:
-    """A directory that isn't an installable project makes the real pip fail;
+def test_default_install_translates_a_pip_failure(tmp_path: Path) -> None:
+    """A file that isn't an installable distribution makes the real pip fail;
     the executor must surface that as the RuntimeError apply_update rolls back
     on — never a silent zero."""
+    junk = tmp_path / "not-a-wheel.whl"
+    junk.write_text("not a zip", encoding="utf-8")
     with pytest.raises(RuntimeError, match="pip install failed"):
-        _update._default_reinstall(tmp_path)
+        _update._default_install(str(junk), pip_args=["--no-index"])
 
 
 @pytest.mark.integration
@@ -325,6 +329,7 @@ def test_default_smoke_passes_on_a_real_home_and_fails_on_a_broken_one(
 def test_default_migrate_runs_the_real_cli_and_translates_failure(
         archive_home, tmp_path: Path, monkeypatch) -> None:
     import os
+    import subprocess
     import sys
 
     from .helpers import cc_assistant, cc_user, write_jsonl
@@ -370,7 +375,7 @@ def test_default_retire_runs_real_retirement(archive_home) -> None:
         "enabled": True, "patch": {"built_against": "0.0.1", "pinned": False},
     }
     save_config(cfg)
-    _update._default_retire(None, "v9.9.9")
+    _update._default_retire(None, "9.9.9")
     assert load_config()["providers"]["codex"]["enabled"] is False
 
 

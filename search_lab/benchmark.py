@@ -181,8 +181,6 @@ def manifest() -> list[Row]:
       (``--domain govt``, 49.6K passages) buys that comparison for about a seventh
       of the embed, at the cost of comparability with the published 4-domain
       macro-average.
-    - **``arguana``** is cheap to build and expensive to keep: its 1,406 queries
-      are each a whole document, so a pass costs over an hour of query time.
     - **LongMemEval's ``--vectors`` pass** would embed 470 per-question corpora for
       a number whose published reference is measured on a different split, so the
       cost buys no comparison.

@@ -111,8 +111,14 @@ def _fingerprint(key: str, title: str, detail: str) -> str:
     carries an age all rewrite themselves constantly without the underlying
     fault changing. Hashing the raw text would expire a silence every time the
     clock moved; hashing the shape expires it when the fault moves.
+
+    Thousands separators are part of the number, not the shape. A count that
+    renders ``4,832`` past a thousand and ``12`` below it would otherwise change
+    identity as it crossed — expiring the silence precisely when the fault got bad
+    enough to group its digits. The group pattern is exact (``,`` then three
+    digits), so ordinary prose commas still separate the shapes around them.
     """
-    shape = re.sub(r"\d+", "#", f"{key}\n{title}\n{detail}")
+    shape = re.sub(r"\d+(?:,\d{3})*", "#", f"{key}\n{title}\n{detail}")
     return hashlib.sha256(shape.encode("utf-8")).hexdigest()[:16]
 
 
@@ -164,13 +170,43 @@ def build_notices(records: dict) -> list[dict]:
             "thread-archive watch --once",
         ))
 
+    # Ahead of the generic capture errors below: a schema mismatch is the *cause* of
+    # a whole class of them, and an operator reading "no such column" fifty times
+    # should be told which disagreement produces it rather than left to infer one.
+    schema_mismatch = records.get("last_schema_mismatch")
+    if schema_mismatch:
+        missing = "; ".join(
+            f"{kind.removeprefix('missing_').replace('_', ' ')}: {', '.join(items)}"
+            for kind, items in schema_mismatch.items()
+            if kind != "at" and items
+        )
+        out.append(_notice(
+            "schema-mismatch", "bad",
+            "The index is behind the declared models",
+            f"Imports and queries touching the missing objects fail until the index is "
+            f"rebuilt. Missing — {missing}",
+            "thread-archive index rebuild",
+        ))
+
     watch_errors = records.get("last_watch_errors")
     if watch_errors:
+        # Magnitude, not just presence. One failed poll and a source that has failed
+        # every poll for a day raise the identical condition, and the second is the
+        # one that means conversations are being lost while the harness prunes them.
+        # The count is free here (the record already carries it) and the fingerprint
+        # elides digits, so a rising number never expires a silence someone made.
+        count = watch_errors.get("count_since_start")
+        scale = (
+            f"{count:,} failures since this capture process started. "
+            if isinstance(count, int) and count > 1 else ""
+        )
         out.append(_notice(
             "watch-errors", "bad",
             "A provider failed during capture",
-            " · ".join(watch_errors.get("errors") or [])
-            or "The latest watcher run recorded provider errors.",
+            scale + (
+                " · ".join(watch_errors.get("errors") or [])
+                or "The latest watcher run recorded provider errors."
+            ),
             "thread-archive status",
         ))
 
@@ -263,7 +299,7 @@ def build_notices(records: dict) -> list[dict]:
     if update.get("action") == "update":
         out.append(_notice(
             "update", "good",
-            f"{update.get('tag') or 'A new release'} is available",
+            f"{update.get('target') or 'A new release'} is available",
             str(update.get("reason") or "Applying updates is explicit."),
             "thread-archive self-update",
         ))

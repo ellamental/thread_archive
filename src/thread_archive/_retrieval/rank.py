@@ -207,7 +207,7 @@ def dedup_results(results: list[EventHit]) -> list[EventHit]:
 
 def collapse_same_anchor(results: list[EventHit]) -> list[EventHit]:
     """Collapse hits sharing one ``(thread_id, event_id)`` anchor. A thread-meta
-    doc (title/summary) is anchored to its thread's first indexed event, so it
+    doc (title) is anchored to its thread's first indexed event, so it
     and that event can both match one query — two rows that open identically in
     ``thread_read``. Runs post-rank, order-preserving: the better-placed row
     survives."""
@@ -228,152 +228,19 @@ def collapse_same_anchor(results: list[EventHit]) -> list[EventHit]:
 # run index, or timestamp that makes each of a fleet of otherwise-identical
 # messages (routine ops, a re-asked question, a pending-todo restatement, a swarm
 # of agents on one templated prompt) byte-distinct. Folding every digit run to one
-# placeholder gives the near-copies a single identity, so the cross-thread fold
-# collapses the flood to one representative instead of letting dozens of them fill
-# the ranked window and push out the distinct thread the query actually wants.
+# placeholder gives the near-copies a single identity, so a thread emitting twenty
+# copies of one status line counts as having said it once.
 _VOLATILE_DIGITS = re.compile(r"\d+")
 
 
 def _norm_content(r: EventHit) -> str:
-    """Whitespace-collapsed, lowercased, digit-folded hit content — the cross-thread
-    near-duplicate identity ``group_by_thread`` and ``fold_duplicate_threads`` fold
-    on. Two hits whose text differs only in its digit runs (a counter, a run index,
-    a timestamp) share one identity, so a flood of near-copies collapses to a single
-    row rather than monopolizing the result window."""
+    """Whitespace-collapsed, lowercased, digit-folded hit content — the
+    near-duplicate identity :func:`score_features` counts a thread's evidence by.
+    Two hits whose text differs only in its digit runs (a counter, a run index, a
+    timestamp) share one identity, so a fleet of near-copies is recognizable as one
+    piece of content however many times it was emitted."""
     text = " ".join((r.get("full_content") or r.get("snippet") or "").split()).lower()
     return _VOLATILE_DIGITS.sub("#", text)
-
-
-def fold_duplicate_threads(results: list[EventHit]) -> list[EventHit]:
-    """Fold *only* cross-thread duplicate content, leaving every surviving
-    thread's own hits intact — the half of :func:`group_by_thread` that removes
-    redundancy without also collapsing a thread to a single row.
-
-    A hit whose content is near-identical (:func:`_norm_content` — equal once
-    digit runs are folded) to a row already on screen from a **different** thread
-    folds into that row's ``_dup_thread_ids``. Repeats *within* one thread survive:
-    a reader paging a result list wants the thread's several matches laid out,
-    where an agent spending result slots wants the one representative row.
-
-    Ranked order in, ranked order out. A thread whose hit folds here can still
-    appear on a later hit of its own that nothing else duplicates."""
-    by_content: dict[str, EventHit] = {}
-    out: list[EventHit] = []
-    for r in results:
-        norm = _norm_content(r)
-        dup = by_content.get(norm) if norm else None
-        if dup is not None and dup.get("thread_id") != r.get("thread_id"):
-            ids = dup.setdefault("_dup_thread_ids", [])
-            if r.get("thread_id") not in ids:
-                ids.append(r.get("thread_id"))
-            continue
-        if norm and dup is None:
-            by_content[norm] = r
-        out.append(r)
-    return out
-
-
-def group_by_thread(results: list[EventHit], *, fold_duplicates: bool = True) -> list[EventHit]:
-    """Collapse a ranked hit list to one row per thread, annotated instead of
-    truncated — result slots are an agent's budget, and redundancy spends them:
-
-    - further hits in an already-represented thread fold into its row's
-      ``_thread_more`` count (drill in with a ``thread_id``-scoped search);
-    - a hit whose content is near-identical (:func:`_norm_content` — equal once
-      digit runs are folded) to a row already on screen from a *different*
-      thread — a forked session, a fleet of spawned agents carrying one prompt,
-      a flood of routine near-copies differing only by a run index — folds into
-      that row's ``_dup_thread_ids`` instead of repeating the content. A thread
-      folded this way can still surface later on a distinct hit of its own.
-
-    ``fold_duplicates=False`` (the default for a search) keeps the per-thread
-    collapse and still *marks* the near-duplicates in ``_dup_thread_ids``, but
-    stops that second fold removing rows, so **every** matched thread keeps one.
-    Removing them answers "which threads mention this" with a smaller number than
-    the truth; marking them spends a result slot to stay honest about it.
-
-    Ranked order in, ranked order out: a thread ranks where its best hit ranks.
-    """
-    by_thread: dict[str, EventHit] = {}
-    by_content: dict[str, EventHit] = {}
-    out: list[EventHit] = []
-    for r in results:
-        tid = r.get("thread_id")
-        rep = by_thread.get(tid)
-        if rep is not None:
-            rep["_thread_more"] = rep.get("_thread_more", 0) + 1
-            continue
-        norm = _norm_content(r)
-        if norm:
-            dup = by_content.get(norm)
-            if dup is not None:
-                # The near-duplicate relation is recorded either way; only
-                # ``fold_duplicates`` decides whether it also removes the row.
-                # Marking without removing is what lets a reader see that two
-                # threads carry the same text while "which threads mention this"
-                # still counts both — an identical prompt is not identical work.
-                ids = dup.setdefault("_dup_thread_ids", [])
-                if tid not in ids:
-                    ids.append(tid)
-                if fold_duplicates:
-                    continue
-        by_thread[tid] = r
-        if norm and by_content.get(norm) is None:
-            by_content[norm] = r
-        out.append(r)
-    return out
-
-
-# Per-thread hit budget for the nested shape. A nested render is bounded by
-# threads, not hits, so one sprawling thread must not eat the whole view: past
-# this many hits a thread's remainder folds into its cluster's ``_thread_more``
-# (drill in with a thread_id-scoped search, which is never grouped).
-NESTED_HITS_PER_THREAD = 5
-
-
-def cluster_by_thread(
-    results: list[EventHit],
-    *,
-    max_threads: int,
-    max_per_thread: int = NESTED_HITS_PER_THREAD,
-) -> list[EventHit]:
-    """Reorder a ranked hit list so each thread's hits sit together — the nested
-    shape: every match kept, laid out under the thread it came from.
-
-    Threads keep their ranked order (a thread sits where its best hit ranked) and
-    the first ``max_threads`` of them survive; within a thread the hits go back to
-    **event order**, since a thread's matches read as a sequence, not a ranking.
-    Hits past ``max_per_thread`` fold into the cluster's leading row as
-    ``_thread_more``. Unlike :func:`group_by_thread` no cross-thread duplicate
-    fold runs: a nested view enumerates what matched.
-    """
-    order: list[str] = []
-    buckets: dict[str, list[EventHit]] = {}
-    overflow: dict[str, int] = {}
-    for pos, r in enumerate(results):
-        tid = r.get("thread_id")
-        if tid not in buckets:
-            if len(buckets) >= max_threads:
-                continue
-            buckets[tid] = []
-            order.append(tid)
-        bucket = buckets[tid]
-        if len(bucket) >= max_per_thread:
-            overflow[tid] = overflow.get(tid, 0) + 1
-            continue
-        # Clustering destroys the ranked order this list arrived in, and the
-        # match-quality verdict is a statement about the TOP-ranked hit — so each
-        # surviving hit carries where it ranked (see format._top_hit).
-        r["_rank_pos"] = pos
-        bucket.append(r)
-
-    out: list[EventHit] = []
-    for tid in order:
-        bucket = sorted(buckets[tid], key=lambda h: h.get("event_id") or 0)
-        if overflow.get(tid):
-            bucket[0]["_thread_more"] = overflow[tid]
-        out.extend(bucket)
-    return out
 
 
 #: One doc's ranking features, in the order :func:`score_from_features` weights
@@ -426,9 +293,9 @@ def score_features(
     what a subject-shaped query asks for.
 
     Two things keep it evidence rather than a length prior. Matches are counted by
-    :func:`_norm_content` identity, the same digit-folded near-duplicate key the
-    cross-thread fold uses, so a thread emitting twenty copies of one status line
-    counts once — the corpus's routine floods are the threads a raw count would
+    :func:`_norm_content` identity — a digit-folded near-duplicate key — so a
+    thread emitting twenty copies of one status line
+    counts once; the corpus's routine floods are the threads a raw count would
     reward most. And the count is log-damped, so the chattiest thread on a subject
     cannot outweigh a specific conversation that a query names outright.
     """

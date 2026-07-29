@@ -3,7 +3,7 @@
 # without that tool it is inert documentation of the full local quality bar.
 # {repo} = this repo root, {home} = the user's home.
 #
-# Gates the documented quality bar (README → "confirm green"): ruff + the pytest
+# Gates the documented quality bar (docs/install.md → "confirm green"): ruff + the pytest
 # suite from the repo's own venv, and a typecheck of the frontend. Fast gates
 # first so failures surface early.
 

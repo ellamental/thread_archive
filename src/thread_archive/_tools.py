@@ -30,26 +30,44 @@ from typing import Any, Optional
 from . import _api as api
 from ._retrieval import (
     DEFAULT_CONTENT_TYPES,
-    DEFAULT_EXCLUDE_CONTENT_TYPES,
     _contention,
     _probe,
     format_results,
 )
 from ._retrieval import usage as _usage
 
-# Which front door a call is being served through. It rides the usage ledger only
-# when it isn't the MCP default, which keeps every recorded agent search
-# byte-identical to what it has always been while still telling an operator's own
-# terminal searches apart from an agent's — different query populations, and the
-# evals built off this ledger sample from it.
-_SURFACE: ContextVar[str] = ContextVar("thread_archive_surface", default="mcp")
+# Which front door a call is being served through. It rides the usage ledger so an
+# operator's own terminal searches can be told apart from an agent's — different
+# query populations, and the evals built off this ledger sample from it. It is also
+# the only thing that distinguishes the *cache states* the front doors run in: the
+# shared HTTP server warms its models at startup and serves thousands of calls from
+# one resident copy, while a per-client stdio server and a one-shot CLI process load
+# nothing ahead of time and pay that load inside their first search. Latency from
+# those three, pooled, is a distribution nobody experienced.
+#
+# The vocabulary belongs to the ledger that carries the field (see
+# :data:`.._retrieval.usage.UNATTRIBUTED`); this module is the one that stamps it.
+UNATTRIBUTED = _usage.UNATTRIBUTED
+
+# The process's own answer, for a server that is one front door for its whole life;
+# the ContextVar overrides it per call for a process that is several (the CLI, whose
+# verbs wrap their one call). A module global rather than a ContextVar default so a
+# background thread — the warm pass, which records its own row — sees it too.
+_DEFAULT_SURFACE = UNATTRIBUTED
+_SURFACE: ContextVar[Optional[str]] = ContextVar("thread_archive_surface", default=None)
+
+
+def set_default_surface(surface: str) -> None:
+    """Declare what this process is, for every call it serves. Called once at
+    startup by a server that is a single front door."""
+    global _DEFAULT_SURFACE
+    _DEFAULT_SURFACE = surface
 
 
 @contextmanager
 def serving(surface: str) -> Iterator[None]:
     """Name the front door the retrieval calls inside this block are served
-    through. The MCP server needs no such block — it is the default; the CLI
-    verbs wrap their one call in it."""
+    through, overriding the process default for their duration."""
     token = _SURFACE.set(surface)
     try:
         yield
@@ -57,11 +75,20 @@ def serving(surface: str) -> Iterator[None]:
         _SURFACE.reset(token)
 
 
+def current_surface() -> str:
+    """The front door this call is being served through — the innermost
+    :func:`serving` block, else what the process declared, else
+    :data:`UNATTRIBUTED`."""
+    return _SURFACE.get() or _DEFAULT_SURFACE
+
+
 def _served_by() -> Optional[str]:
-    """The front door for the usage ledger — None for the MCP default, so its
-    records keep exactly the shape they have always had (None params are dropped)."""
-    surface = _SURFACE.get()
-    return None if surface == "mcp" else surface
+    """The front door for the usage ledger — None when nothing has claimed the
+    call, which is what every row written before any surface declared itself
+    means, and is why readers must treat an absent value as *unattributed* rather
+    than as any particular door (None params are dropped)."""
+    surface = current_surface()
+    return None if surface == UNATTRIBUTED else surface
 
 
 # What the tool itself measured on this call, for a surface that wraps it and
@@ -122,18 +149,14 @@ def _resolve_ref(ref: int | str) -> Optional[str]:
 # narrower than the transcript makes "not found" mean "not found *here*", which
 # reads identically to the conversation not existing.
 #
-# What tool handed *back* is not in scope, because it is not in the index at all
-# (see :data:`._retrieval._extract.UNINDEXED_CONTENT_TYPES`) — the one exclusion
-# that measured better rather than merely cheaper.
-#
-# Stored thread summaries stay opt-in: they are derived text (a curation tool
-# writes them over the archive), not the record, so a search should not answer from them
-# unless asked — content_type='summary' targets them, content_type='all' includes
-# them.
+# Nothing is excluded at query time. What a search must not answer from is kept
+# out of the index instead: what a tool handed *back* (see
+# :data:`._retrieval._extract.UNINDEXED_CONTENT_TYPES`, the one exclusion that
+# measured better rather than merely cheaper), and stored thread summaries, which
+# are derived text a curation tool wrote over the archive rather than the record.
 #
 # The scope itself lives in the retrieval layer, which shares it with the warm pass.
 DEFAULT_SEARCH_CONTENT_TYPES = DEFAULT_CONTENT_TYPES
-DEFAULT_SEARCH_EXCLUDE = DEFAULT_EXCLUDE_CONTENT_TYPES
 
 
 def _commit_note(scope: dict) -> str:
@@ -252,8 +275,6 @@ def thread_search(
     commit: Optional[str] = None,
     repo: Optional[str] = None,
     sort: Optional[str] = None,
-    group: Optional[str] = None,
-    collapse: bool = False,
     output: Optional[str] = None,
     context_lines: int = 2,
     context_events: Optional[str] = None,
@@ -279,21 +300,21 @@ def thread_search(
     options (content_type, context) don't apply.
 
     The whole conversation is searched by default — user messages, thread titles,
-    assistant text, its reasoning, and the tool calls that were run. What a tool
-    handed **back** is not searchable at all: tool output is preserved in full and
-    replays in ``thread_read``, but it is deliberately left out of the index, where
-    it buried real answers under grep dumps and re-read files. Stored thread
-    summaries (derived text, not the record) are the one opt-in scope:
-    pass ``content_type='summary'`` to target them or ``content_type='all'`` to
-    fold them in; a specific ``content_type`` (user/text/thinking/tool/title/...)
-    narrows to one.
+    assistant text, its reasoning, and the tool calls that were run; a specific
+    ``content_type`` (user/text/thinking/tool/title) narrows to one. Two things are
+    not searchable at all, by design. What a tool handed **back**: tool output is
+    preserved in full and replays in ``thread_read``, but it is left out of the
+    index, where it buried real answers under grep dumps and re-read files. And
+    stored thread summaries: they are derived text a curation tool wrote *over* the
+    archive, not the record, so a search must not answer from a machine's
+    description of a conversation — read one deliberately with ``thread_read(...,
+    summary='short')``.
 
     Query grammar: natural language, "quoted phrases", boolean AND/OR/NOT,
     pipe-OR (a|b), and code identifiers (get_session, a.b.c). Filter by
     ``thread_id`` — a ULID thread id, a legacy integer alias, or a provider
     session id, the same ref shapes ``thread_read`` takes —
-    ``content_type`` (default: everything but derived summaries; 'all' folds
-    those in too),
+    ``content_type`` (default: everything indexed),
     ``exclude_content_type`` (comma-separated types to drop), ``tool_name``,
     ``source`` (comma-separated providers, e.g. 'claude-code,cursor'),
     ``types`` (comma-separated ``thread_type`` values — 'conversation',
@@ -306,27 +327,11 @@ def thread_search(
     ``agents='only'`` for just them ("what did my subagents do"). An explicit
     ``thread_id`` scope always reaches them.
 
-    ``group`` chooses how results relate to threads. Ranked results default to
-    **one row per thread** — the thread's best hit, with its other hits folded
-    into a ``+N more in thread`` note (drill in with a ``thread_id``-scoped
-    search). ``limit`` counts threads, and **every matched thread gets a row**:
-    when the candidate pool cuts the set, the threads it never reached are
-    reconciled back in from the exact match set, so paging to the end reaches all
-    of them. Pass ``group='none'`` for every hit as its own row.
-
-    Threads carrying content near-identical to a row already on screen (forked
-    sessions, fleet-spawned copies of one prompt) are *marked* — a
-    ``= same content in thread(s) …`` note — but still get their own row: an
-    identical prompt does not mean identical work, and hiding those rows answers
-    "which threads mention this" with a smaller number than the truth. Pass
-    ``collapse=True`` to fold them into that note instead, when you would rather
-    spend result slots on distinct content than on completeness.
-
-    ``group='nested'`` keeps the messages, clustered under their thread in event
-    order — up to 5 hits per thread, the rest folded into its header. Reach for
-    the default to see *which conversations* touched something, nested to read
-    *what they said* about it
-    with the thread structure intact.
+    **Every matching message is a row.** Results are not grouped or folded by
+    thread: a conversation matching eight times returns eight rows, each with its
+    own snippet and context, and ``limit`` counts messages rather than threads. Ask
+    for more with ``limit``, or walk with ``page``; the header names how many
+    matched in total and says ``truncated`` when the walk stops short of them.
 
     **The code axis.** Search finds where something was *discussed*; ``path`` and
     ``commit`` find where it was *done*. Every path the archive's tools named — each
@@ -387,7 +392,7 @@ def thread_search(
     and paging to the last page reaches every matched thread — for "find me every
     thread that mentions X", just page to the end. A ``+`` on a total (``≥5000+``)
     means even the set scan stopped early, so it is a floor. The hit-granular
-    shapes (``group='none'``, ``'dup'``) rank a bounded pool and report
+    shapes rank a bounded pool and report
     ``N of ≥M`` with ``truncated``, since a hit list has no set to reconcile
     against.
 
@@ -421,17 +426,15 @@ def thread_search(
             return (f"thread {thread_id} not found — thread_id takes a ULID thread id, "
                     f"a legacy integer id, or a provider session id")
         thread_id = resolved
-    # Default scope is the whole conversation minus derived summaries; an explicit
-    # type targets one, and content_type='all' drops even the summary exclusion
-    # (see the constants).
-    default_exclude: tuple[str, ...] = ()
-    if content_type == "all":
-        content_types = None
-    elif content_type:
+    # Default scope is everything indexed; an explicit type targets one. ``'all'``
+    # is accepted as a spelling of that default rather than rejected: it is a
+    # content type no doc carries, so treating it literally would filter the search
+    # down to nothing and return a confident "No results".
+    content_types: Optional[list[str]]
+    if content_type and content_type != "all":
         content_types = [content_type]
     else:
         content_types = DEFAULT_SEARCH_CONTENT_TYPES
-        default_exclude = DEFAULT_SEARCH_EXCLUDE
     exclude = [c.strip() for c in exclude_content_type.split(",") if c.strip()] if exclude_content_type else None
     sources = [s.strip() for s in source.split(",") if s.strip()] if source else None
     type_list = [t.strip() for t in types.split(",") if t.strip()] if types else None
@@ -451,13 +454,13 @@ def thread_search(
         if not commit_threads:
             return _degradation_notices() + commit_note
 
-    def _run(cts, extra_exclude=()):
+    def _run(cts):
         return api.search(
             query,
             limit=limit,
             thread_id=thread_id,
             content_types=cts,
-            exclude_content_types=[*(exclude or []), *extra_exclude] or None,
+            exclude_content_types=exclude,
             since=since,
             until=until,
             tool_name=tool_name,
@@ -469,8 +472,6 @@ def thread_search(
             path_ops=op_list,
             thread_ids=commit_threads,
             sort=sort,
-            group=group,
-            collapse=collapse,
             output=output,
             context_lines=context_lines,
             context_events=context_events,
@@ -503,7 +504,7 @@ def thread_search(
         # peers that slow a search include the ones that arrive while it runs.
         with _contention.in_flight() as span, _probe.install() as probe:
             context = _contention.sample()
-            hits = _run(content_types, extra_exclude=default_exclude)
+            hits = _run(content_types)
 
         retrieval_ms = (time.monotonic() - started) * 1000.0
         _t_render = time.monotonic()
@@ -527,7 +528,7 @@ def thread_search(
                 "until": until, "tool_name": tool_name, "source": source,
                 "types": types, "agents": agents, "path": path,
                 "path_ops": path_ops, "commit": commit,
-                "startswith": startswith, "sort": sort, "group": group,
+                "startswith": startswith, "sort": sort,
                 "output": output, "match": match, "page": page,
                 "surface": _served_by(),
             },

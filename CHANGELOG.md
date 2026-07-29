@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+## 0.0.9 — 2026-07-29
+
+- Releases ship by PR: `release/X.Y.Z` stabilizes off `dev` in a worktree, the operator merging to `main` is the
+  ship, and `release.yml` turns the merge into the annotated tag and the PyPI publish.
+- Search returns every matching message — no thread grouping (`group=`/`collapse=` gone); viewer search and browse
+  paginate; a saturated pool reports the real match count; stored thread summaries are no longer indexed.
+- Retrieval cost: id-scoped semantic masks build in vector space (~2× faster), an indexing batch yields the embed
+  model per chunk so queries wait ~1s not the batch, and a Cursor poll costs what moved (4.6s → 15ms).
+- Ingest faults get a durable folded record (`ingest-errors.jsonl`; a `faults:` line in `status`); notices carry
+  failure counts; schema mismatches report as themselves; ops split interactive from bulk, cold starts by door.
+- `self-update` moves PyPI installs, format-gated with rollback; README is a landing page with reference in `docs/`;
+  the agent-driven installers and the `arguana` benchmark are gone.
+
 ## 0.0.8 — 2026-07-28
 
 - PyPI is a supported install (`pip install thread-archive`): a `v*` release tag publishes the wheel + sdist via
@@ -22,6 +35,9 @@
 - Search's p99 falls from 57s to ~1.5s: the cross-encoder is gone and the vector pack rebuilds off the request path.
 - Ranking now scores its arms rather than their ranks, and weighs match coverage; BEIR scifact nDCG@10 0.509 → 0.650.
 - Search enumerates as well as finds — `page=`, real totals, `path=`/`commit=` scopes; tool output leaves the index.
+- Search stops hiding threads: near-identical rows are marked (`_dup_thread_ids`), not folded away — the fold fired
+  on 55% of real queries. `collapse=True` restores it. A ranked walk now reaches past its pool via the exact-set
+  reconciliation, so `group='browse'` is no longer a separate shape — it is a legacy spelling of the default.
 - Gone: redaction and its keyring, the topic graph, and the measurement surface; updates are operator-run only.
 - Python floor 3.12; the base install is lexical-only (Leiden behind an extra); a `setup` re-run keeps your opt-outs.
 - The viewer opens as a retrieval workspace, takes an account export by drag-and-drop, and routes no dev page.

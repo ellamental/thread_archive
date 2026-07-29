@@ -27,16 +27,13 @@ first — is a different shape, and these two blocks are built for it:
   can tell "these are all of them" from "these are 20 of 24" without a second
   query.
 
-  What the enumerating shapes actually own is the **duplicate fold**.
-  ``group='thread'`` collapses cross-thread duplicate content into one annotated
-  row (``_dup_thread_ids``) and reports the *post-fold* count as ``total``;
-  ``group='browse'`` resolves the exact match set and folds nothing, because a
-  list whose purpose is to enumerate threads must not drop one. The
-  :data:`SERIES` block is where that bites — its passing mentions share identical
-  assistant text, so the ranked shape reports 2 threads and browse reports 12.
-  Both are honest; they answer different questions. The sentinel threads carry
-  distinct subject vocabulary precisely so this block measures the window and not
-  the fold.
+  Nothing is folded away on the caller's behalf. The :data:`SERIES` block is
+  built to prove it: its passing mentions share identical assistant text, the
+  shape a fleet of agents on one prompt produces, and all of them come back —
+  identical wording is not identical work, and a fold that removed them would
+  answer "which threads mention this" with 2 when it is 12. The sentinel threads
+  carry distinct subject vocabulary precisely so that block measures the window
+  and nothing else.
 - the :data:`SERIES` block mentions a second nonce term across
   ``len(SERIES_DATES)`` threads spread over a year, with the chronologically
   first mention deliberately the *weakest* lexical match — so a chronological

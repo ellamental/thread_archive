@@ -106,10 +106,10 @@ def test_search_rejects_an_out_of_contract_filter(seeded, capsys) -> None:
     """The engine names the values that work; the verb hands that message to
     stderr and exits 2, so a script sees a bad flag as a failure rather than as a
     search that found nothing."""
-    assert main(["search", "x", "--group", "sideways", "--home", str(seeded)]) == 2
+    assert main(["search", "x", "--agents", "sideways", "--home", str(seeded)]) == 2
     captured = capsys.readouterr()
     assert captured.out == ""
-    assert "group must be" in captured.err
+    assert "agents must be" in captured.err
 
 
 # ── read ─────────────────────────────────────────────────────────────────────
@@ -166,8 +166,8 @@ def test_the_two_doors_answer_identically(seeded) -> None:
     the verb prints are the same string, filters and all."""
     from thread_archive._mcp.server import thread_read, thread_search
 
-    over_mcp = thread_search("parser", limit=5, group="none")
-    over_cli = _tools.thread_search("parser", limit=5, group="none")
+    over_mcp = thread_search("parser", limit=5)
+    over_cli = _tools.thread_search("parser", limit=5)
     assert over_mcp == over_cli
 
     thread = _thread_id("parser")

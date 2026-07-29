@@ -904,7 +904,7 @@ export function HealthView() {
           </div>
           <dl>
             <div><dt>Installed</dt><dd>{status.last_self_update?.current ? `v${status.last_self_update.current.replace(/^v/, '')}` : '—'}</dd></div>
-            <div><dt>Available</dt><dd>{status.last_self_update?.tag || '—'}</dd></div>
+            <div><dt>Available</dt><dd>{status.last_self_update?.target || '—'}</dd></div>
             <div><dt>Last check</dt><dd title={dateTime(status.last_self_update?.at)}>{age(status.last_self_update?.at)}</dd></div>
           </dl>
           <Command>thread-archive self-update --check</Command>

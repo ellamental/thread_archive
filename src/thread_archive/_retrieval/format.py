@@ -50,7 +50,7 @@ def _scale(hits, unit: str) -> str:
     rows read identically whether they are all of them or ten of nine hundred,
     and an agent trying to enumerate has no way to tell that it stopped early.
     ``+`` marks a floor (the set scan capped), and a set the pipeline cut rather
-    than resolved says ``≥`` and names the shape that *can* enumerate it."""
+    than resolved says ``≥`` — the total is real, the walk is what stops short."""
     total = getattr(hits, "total_threads" if unit == "thread" else "total", None)
     if total is None:
         return ""
@@ -64,16 +64,13 @@ def _scale(hits, unit: str) -> str:
     if pages and pages > 1:
         out += f" · page {page}/{pages}{mark}"
     if not exhaustive:
-        out += " · truncated (a thread-granular search enumerates every match)"
+        out += " · truncated (widen --limit or page for more)"
     return out
 
 
 def top_hit(hits: list[EventHit]) -> EventHit:
-    """The best-ranked hit — what the match-quality verdict judges. Row order is
-    ranked order in every shape but the nested one, which re-sorts hits into
-    per-thread event order and leaves ``_rank_pos`` behind to recover the head."""
-    if "_rank_pos" in hits[0]:
-        return min(hits, key=lambda h: h.get("_rank_pos", 0))
+    """The best-ranked hit — what the match-quality verdict judges. Rows come back
+    in ranked order, so it is the first."""
     return hits[0]
 
 
@@ -186,49 +183,6 @@ def _format_browse(hits: list[EventHit]) -> str:
         )
     return "\n".join(lines)
 
-
-def _format_nested(hits: list[EventHit], lines: list[str], terms: list[str]) -> str:
-    """group='nested': every match, clustered under the thread it came from.
-    Hits arrive already clustered and in event order (rank.cluster_by_thread), so
-    a thread change is simply the next cluster."""
-    n_terms = len(terms)
-    sizes = Counter(h["thread_id"] for h in hits)
-    lines = lines + [
-        "  grouped: hits clustered under their thread, in event order — "
-        "group='browse' for threads only, group='none' for every hit flat",
-        "  open a hit: thread_read(thread_id, around_event=event_id)",
-    ]
-    current = None
-    for h in hits:
-        tid = h["thread_id"]
-        if tid != current:
-            current = tid
-            shown = sizes[tid]
-            more = h.get("_thread_more") or 0
-            tally = f"{shown}+{more} hits" if more else f"{shown} hit{'s' if shown > 1 else ''}"
-            lines.append("")
-            lines.append(
-                f"[{tid}] {h.get('thread_title') or '(untitled)'} · "
-                f"{h.get('thread_source') or '?'} · {tally}"
-                + (" (thread_id=… for the rest)" if more else "")
-            )
-        ct = h.get("content_type") or h["event_type"]
-        head = f"  [{h['event_id']}] {ct}"
-        if n_terms:
-            k = term_hit_count(_hit_text(h), terms)
-            head += f" · {k}/{n_terms}" + (" (semantic)" if k == 0 else "")
-        lines.append(head)
-
-        context = h.get("context")
-        if context:
-            lines.extend(f"      {ln}" for ln in context.split("\n"))
-        else:
-            snippet = " ".join((h.get("snippet") or "").split())
-            if snippet:
-                lines.append(f"      {snippet}")
-    return "\n".join(lines)
-
-
 def format_results(hits: list[EventHit], query: str, *, output: str | None = None) -> str:
     if hits and hits[0].get("_browse"):
         # Browse rows: linkable stays JSON; count is meaningless for a list that
@@ -260,17 +214,12 @@ def format_results(hits: list[EventHit], query: str, *, output: str | None = Non
     top = top_hit(hits)
     verdict = _search_quality(term_hit_count(_hit_text(top), terms), n_terms) if n_terms else None
 
-    # The thread-granular shapes count in threads; the hit-granular ones count in
-    # rows. The default search is thread-granular, so it counts threads.
-    group = hits[0].get("_group")
+    # Every row is one matching message, so the count is in messages — and the
+    # conversation count rides along, because "18 messages across 4 threads" and
+    # "18 messages across 18 threads" are different answers to the same query.
     n_threads = len({h["thread_id"] for h in hits})
-    if group == "thread":
-        header = f'{n_threads} thread(s) for "{query}"' + _scale(hits, "thread")
-    elif group == "nested":
-        header = (f'{len(hits)} result(s) in {n_threads} thread(s) for "{query}"'
-                  + _scale(hits, "thread"))
-    else:
-        header = f'{len(hits)} result(s) for "{query}"' + _scale(hits, "row")
+    header = (f'{len(hits)} result(s) in {n_threads} thread(s) for "{query}"'
+              + _scale(hits, "row"))
     if verdict:
         header += f" · quality={verdict[0]}"
 
@@ -282,16 +231,9 @@ def format_results(hits: list[EventHit], query: str, *, output: str | None = Non
     if subj_line:  # the topic graph as orientation: what subjects these hits cluster under
         prelude.append(subj_line)
 
-    if group == "nested":
-        return _format_nested(hits, prelude, terms)
-
     lines = [prelude[0]]
     if verdict and verdict[1]:
         lines.append(f"  note: {verdict[1]}")
-    if any(h.get("_thread_more") or h.get("_dup_thread_ids") for h in hits):
-        lines.append("  grouped: one row per thread — repeats fold into '+N more in thread' / "
-                     "'= same content'; group='nested' to keep every hit under its thread, "
-                     "group='none' for every hit flat")
     if subj_line:
         lines.append(subj_line)
     lines.append("  open a hit: thread_read(thread_id, around_event=event_id)")
@@ -308,9 +250,6 @@ def format_results(hits: list[EventHit], query: str, *, output: str | None = Non
             head += f" · {k}/{n_terms}"
             if k == 0:
                 head += " (semantic)"
-        more = h.get("_thread_more")
-        if more:
-            head += f" · +{more} more in thread"
         lines.append(head)
 
         context = h.get("context")
@@ -320,12 +259,6 @@ def format_results(hits: list[EventHit], query: str, *, output: str | None = Non
             snippet = " ".join((h.get("snippet") or "").split())
             if snippet:
                 lines.append(f"    {snippet}")
-
-        dups = h.get("_dup_thread_ids")
-        if dups:
-            shown = ", ".join(str(t) for t in dups[:3])
-            extra = f", +{len(dups) - 3} more" if len(dups) > 3 else ""
-            lines.append(f"    = same content in thread(s) {shown}{extra}")
 
         ctx_events = h.get("context_events") or {}
         for direction in ("before", "after"):

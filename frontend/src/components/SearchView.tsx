@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { Link, useSearchParams } from 'react-router-dom'
-import { api, SEARCH_LIMIT, type SearchHit, type SearchResponse } from '../api'
+import { api, type SearchHit, type SearchResponse } from '../api'
+import { Pager } from './Pager'
 import { SearchBox } from './SearchBox'
 
 function fmtDate(iso: string | null): string {
@@ -38,6 +39,20 @@ const qualityLabels = {
   semantic: 'meaning-based match',
 } as const
 
+// Where this page sits in the match set, in the words the MCP renderer uses for
+// the same search — the two surfaces read one archive and must not describe it
+// differently. `of` says paging can reach every match; `≥` says the ranked walk
+// stopped at the pool it scored, so the total is real and the walk is what falls
+// short. A trailing `+` marks a total the set scan capped, which is a floor.
+function scale(resp: SearchResponse, one: string, many: string): string | null {
+  const total = one === 'thread' ? (resp.total_threads ?? resp.total) : resp.total
+  if (total == null) return null
+  const mark = resp.capped ? '+' : ''
+  const reach = resp.exhaustive ? '' : '≥'
+  const noun = total === 1 && !mark && !reach ? one : many
+  return `${resp.hits.length.toLocaleString()} of ${reach}${total.toLocaleString()}${mark} ${noun}`
+}
+
 function hitUrl(g: Group, eventId: number, query: string): string {
   const p = new URLSearchParams({ e: String(eventId) })
   if (query) p.set('q', query)
@@ -51,45 +66,68 @@ export function SearchView() {
   // them), so navigating into a thread and coming back — or sharing the
   // address — restores the exact same result page. An empty query is a browse:
   // recent threads, one row each, honoring the same filters.
-  const [params] = useSearchParams()
+  const [params, setParams] = useSearchParams()
   const q = params.get('q') ?? ''
   const source = params.get('source') ?? ''
   const since = params.get('since') ?? ''
   const until = params.get('until') ?? ''
+  // The page rides the URL like the query and the filters do, so a result page
+  // deep in a walk is shareable and survives opening a thread and coming back.
+  // A garbled ?page= reads as the first page rather than as no results.
+  const parsedPage = Number(params.get('page') ?? '1')
+  const page = Number.isInteger(parsedPage) && parsedPage > 0 ? parsedPage : 1
   const [resp, setResp] = useState<SearchResponse | null>(null)
   const [err, setErr] = useState<string | null>(null)
-  // Which hits have their duplicate-thread fold expanded, by event id. The fold
-  // hides threads from a browsable list, so it stays openable rather than being
-  // a bare count of things the reader can't reach.
-  const [openDups, setOpenDups] = useState<Set<number>>(new Set())
   const browse = !q
 
   useEffect(() => {
     setResp(null)
     setErr(null)
-    setOpenDups(new Set())
     // Stale guard: only the latest request may land — without it a slow older
     // search can resolve after a newer one and silently replace its results.
     let live = true
     // A bare `until` date resolves server-side to that day's midnight, which
     // excludes the day itself; a "to" filter should include the chosen day.
     api
-      .search(q, {
-        source: source || undefined,
-        since: since || undefined,
-        until: until ? until + 'T23:59:59' : undefined,
+      .search(
+        q,
+        {
+          source: source || undefined,
+          since: since || undefined,
+          until: until ? until + 'T23:59:59' : undefined,
+        },
+        page,
+      )
+      .then((r) => {
+        if (!live) return
+        // A page past the end of a set that has one — a narrowed filter, a
+        // shared link into a shrunken archive — lands on the last real page
+        // instead of on a blank one the reader has to guess their way out of.
+        if (r.pages != null && r.pages > 0 && page > r.pages) {
+          goToPage(r.pages, { replace: true })
+          return
+        }
+        setResp(r)
       })
-      .then((r) => live && setResp(r))
       .catch((e) => live && setErr(String(e.message ?? e)))
     return () => {
       live = false
     }
-  }, [q, source, since, until])
+  }, [q, source, since, until, page])
+
+  function goToPage(next: number, opts?: { replace?: boolean }) {
+    const nextParams = new URLSearchParams(params)
+    if (next <= 1) nextParams.delete('page')
+    else nextParams.set('page', String(next))
+    setParams(nextParams, { replace: opts?.replace ?? false })
+  }
 
   const filters = [source, since && `from ${since}`, until && `to ${until}`].filter(Boolean)
   const hits = resp?.hits ?? null
   const quality = resp?.quality
   const subjects = resp?.subjects ?? []
+  const position = resp ? scale(resp, browse ? 'thread' : 'match', browse ? 'threads' : 'matches') : null
+  const pages = resp?.pages ?? 0
 
   return (
     <div className="wrap">
@@ -99,6 +137,8 @@ export function SearchView() {
       <div className="submeta">
         {browse ? 'recent threads — newest activity first' : `results for “${q}”`}
         {filters.length > 0 && ` · ${filters.join(' · ')}`}
+        {position && ` · ${position}`}
+        {pages > 1 && ` · page ${page.toLocaleString()} of ${pages.toLocaleString()}`}
         {quality && (
           <>
             {' · '}
@@ -131,11 +171,19 @@ export function SearchView() {
       {!err && hits && hits.length === 0 && (
         <div className="empty">{browse ? 'no threads in this window' : 'no matches'}</div>
       )}
-      {hits && hits.length >= SEARCH_LIMIT && (
-        <div className="submeta">
-          top {SEARCH_LIMIT} {browse ? 'threads' : 'hits'} shown — narrow the{' '}
-          {browse ? 'window or filters' : 'query or filters'} to see the rest
+      {/* A ranked walk reaches pool-deep and no further, and the pages it offers
+          are the ones that return rows — so the matches past them are reachable
+          only by asking a narrower question. Said once, where the count that
+          provoked it is, rather than left for the reader to discover at the last
+          page. */}
+      {resp && resp.exhaustive === false && (
+        <div className="quality-note">
+          paging reaches the best-scoring matches — narrow the{' '}
+          {browse ? 'window or filters' : 'query or filters'} to reach the rest
         </div>
+      )}
+      {hits && hits.length > 0 && (
+        <Pager page={page} pages={pages} label="result pages" position="top" onGo={goToPage} />
       )}
       {browse &&
         hits &&
@@ -168,8 +216,6 @@ export function SearchView() {
               </span>
             </Link>
             {g.hits.map((h) => (
-              // The dup disclosure is a sibling of the hit link, not a child:
-              // an expander nested inside an <a> would be an anchor in an anchor.
               <div key={h.event_id}>
                 <Link className="hit" to={hitUrl(g, h.event_id, q)}>
                   <div className="snip">{h.snippet || h.full_content.slice(0, 280)}</div>
@@ -191,39 +237,13 @@ export function SearchView() {
                     {h.occurred_at && <span className="badge">{fmtDate(h.occurred_at)}</span>}
                   </div>
                 </Link>
-                {h.dup_threads && h.dup_threads.length > 0 && (
-                  <div className="dups">
-                    <button
-                      type="button"
-                      className="dups-toggle"
-                      aria-expanded={openDups.has(h.event_id)}
-                      onClick={() =>
-                        setOpenDups((prev) => {
-                          const next = new Set(prev)
-                          if (!next.delete(h.event_id)) next.add(h.event_id)
-                          return next
-                        })
-                      }
-                    >
-                      {openDups.has(h.event_id) ? '▾' : '▸'} same text in {h.dup_threads.length} other
-                      thread{h.dup_threads.length === 1 ? '' : 's'}
-                    </button>
-                    {openDups.has(h.event_id) && (
-                      <div className="dups-list">
-                        {h.dup_threads.map((d) => (
-                          <Link className="dup" key={d.thread_id} to={'/archive/' + d.thread_id}>
-                            {d.title || 'thread ' + d.thread_id}
-                            <span className="src">#{d.thread_id}</span>
-                          </Link>
-                        ))}
-                      </div>
-                    )}
-                  </div>
-                )}
               </div>
             ))}
           </div>
         ))}
+      {hits && hits.length > 0 && (
+        <Pager page={page} pages={pages} label="result pages" position="bottom" onGo={goToPage} />
+      )}
     </div>
   )
 }

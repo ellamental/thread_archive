@@ -51,6 +51,16 @@ class SentenceEncoder(Protocol):
 # (mean doc is ~300 chars) and runs ~7× faster with no hang.
 EMBEDDING_CHAR_CAP = 2048
 
+# How many documents one forward pass encodes while holding the model's use-lock.
+# The lock serializes passes on the shared model, so an indexing batch and a search
+# query contend for it, and a *query* waits out whatever pass is in flight — one
+# 256-doc batch holds it ~16s, which lands on a search as an embed that took
+# seconds on a process that had been warm for an hour. Chunking bounds that wait to
+# one chunk (~1s here) and costs no throughput: the same 256 docs encode at the
+# same rate whole or in sixteens, because the cost is per-document, not per-call.
+# Only the lock hold is divided, which is the whole point.
+EMBED_BATCH_CHUNK = 16
+
 DEFAULT_MODEL = "nomic-ai/nomic-embed-text-v1.5"
 
 # Pinned upstream snapshots, by model. The nomic loader executes repo-hosted code
@@ -306,20 +316,28 @@ class Embedder:
         # stays fast) rather than blocking on the tens-of-seconds cold load.
         if defer_construction() and not self.is_loaded():
             return None
+        # One lock acquisition per chunk rather than one for the whole batch, so a
+        # search query waits out at most :data:`EMBED_BATCH_CHUNK` documents instead
+        # of the caller's entire batch. A query embeds one string, so it is a single
+        # chunk and pays nothing for the loop.
+        out: list[list[float]] = []
         try:
-            with self._slot.use() as model:
-                if model is None:
-                    return None
-                # Un-normalized to match the contract — the vector store normalizes on write.
-                # No progress bar: every caller here is a daemon or a library call,
-                # so the bar renders into a log file — one multi-KB line of carriage
-                # returns per batch, written to disk, read by nobody.
-                vecs = model.encode(prefixed, normalize_embeddings=False,
-                                    convert_to_numpy=True, show_progress_bar=False)
+            for i in range(0, len(prefixed), EMBED_BATCH_CHUNK):
+                with self._slot.use() as model:
+                    if model is None:
+                        return None
+                    # Un-normalized to match the contract — the vector store normalizes on write.
+                    # No progress bar: every caller here is a daemon or a library call,
+                    # so the bar renders into a log file — one multi-KB line of carriage
+                    # returns per batch, written to disk, read by nobody.
+                    vecs = model.encode(prefixed[i:i + EMBED_BATCH_CHUNK],
+                                        normalize_embeddings=False,
+                                        convert_to_numpy=True, show_progress_bar=False)
+                out.extend(v.astype("float32").tolist() for v in vecs)
         except Exception as e:  # noqa: BLE001
             logger.warning("embed: encode failed (%s)", e)
             return None
-        return [v.astype("float32").tolist() for v in vecs]
+        return out
 
     def embed_query(self, text: str) -> Optional[list[float]]:
         """Embed a search query (nomic ``search_query:`` prefix). None on any failure."""

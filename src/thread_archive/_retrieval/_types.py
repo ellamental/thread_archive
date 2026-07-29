@@ -27,11 +27,8 @@ class EventHit(TypedDict):
     MATCH pass), ``_bm25`` (that arm's own bm25 score, peak-normalized over the
     pool; absent on a hit no MATCH pass scored),
     ``_rrf`` (normalized fusion score),
-    ``context`` (±N-line window around the match), ``context_events``
-    (neighbouring events, ``{"before": [...], "after": [...]}``), and the
-    grouping annotations ``_thread_more`` (further hits in this thread folded
-    into this row) / ``_dup_thread_ids`` (other threads whose hit carried the
-    same content, folded into this row — see ``rank.group_by_thread``).
+    ``context`` (±N-line window around the match) and ``context_events``
+    (neighbouring events, ``{"before": [...], "after": [...]}``).
 
     A *browse* row (empty-query search — see :mod:`.browse`) rides the same
     shape with ``_browse=True``: one row per thread, ``event_id`` = the
@@ -49,16 +46,8 @@ class EventHit(TypedDict):
     the first of them) — and its ``event_id`` is re-pointed at the strongest, newest
     touch, so opening the row lands on the work rather than on the thread's tail.
 
-    A keyword search asked for a thread-granular list (``search(group=…)``)
-    carries ``_group`` naming the shape, the same ``thread_source`` /
-    ``n_events`` columns, and — under ``group='nested'``, whose clustering
-    replaces ranked order with per-thread event order — ``_rank_pos``, so
-    ``format.top_hit`` can still find the head the quality verdict judges.
-
-    Two further keys are stamped by the web layer when it shapes hits for the
-    viewer's JSON: ``term_hits`` (how many query terms literally appear in the
-    hit, for the per-hit K/N badge) and ``dup_threads`` (``_dup_thread_ids``
-    resolved to ``{thread_id, title}`` so the fold renders as names)."""
+    ``term_hits`` is stamped by the web layer when it shapes hits for the viewer's
+    JSON: how many query terms literally appear in the hit, for the K/N badge."""
 
     event_id: int
     thread_id: str
@@ -72,13 +61,9 @@ class EventHit(TypedDict):
     _lex: NotRequired[float]
     _bm25: NotRequired[float]
     _rrf: NotRequired[float]
-    _thread_more: NotRequired[int]
-    _dup_thread_ids: NotRequired[list[str]]
     context: NotRequired[str]
     context_events: NotRequired[dict]
     _browse: NotRequired[bool]
-    _group: NotRequired[str]
-    _rank_pos: NotRequired[int]
     thread_source: NotRequired[Optional[str]]
     n_events: NotRequired[int]
     _browse_order: NotRequired[str]
@@ -88,7 +73,6 @@ class EventHit(TypedDict):
     _path_files: NotRequired[int]
     _path_sample: NotRequired[list[str]]
     term_hits: NotRequired[int]
-    dup_threads: NotRequired[list[dict]]
 
 
 class Pool(list):

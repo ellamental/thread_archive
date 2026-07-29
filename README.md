@@ -1,511 +1,106 @@
 # thread-archive
 
-[![CI](https://github.com/ellamental/thread_archive/actions/workflows/ci.yml/badge.svg)](https://github.com/ellamental/thread_archive/actions/workflows/ci.yml)
-[![Python](https://img.shields.io/badge/python-3.12%2B-blue)](https://github.com/ellamental/thread_archive)
+[![PyPI](https://img.shields.io/pypi/v/thread-archive)](https://pypi.org/project/thread-archive/)
+[![CI](https://github.com/ellamental/thread_archive/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/ellamental/thread_archive/actions/workflows/ci.yml?query=branch%3Amain)
+[![Python](https://img.shields.io/pypi/pyversions/thread-archive)](https://pypi.org/project/thread-archive/)
 [![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Linux-black)](https://github.com/ellamental/thread_archive)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](https://github.com/ellamental/thread_archive/blob/main/LICENSE)
 
-**Thread Archive is a local-first archive for the AI agents that work on your machine — built by Claude Code, for Claude Code.** Preservation is the product: every session your agent harnesses record lands in one durable, append-only archive you own, on your own disk — kept safe past harness rotation, provider format drift, and index corruption, and served back to your agents over MCP. Claude Code is the supported, first-class source; the other harnesses it reads — Codex, Cursor, OpenCode, Grok, and friends — are best-effort and community-maintainable (see *When an import drifts*). Web chats (claude.ai, ChatGPT, xAI) import too, from account exports you download by hand and drop on the viewer's upload page; the live, self-feeding path is the agent tooling.
+**A local-first archive for the AI agents that work on your machine — built by
+Claude Code, for Claude Code.** Every session your agent harnesses record lands
+in one durable, append-only archive you own, on your own disk — and your agents
+can search and read all of it, mid-conversation, over MCP.
 
-**Your agent's transcripts are temporary by default.** Claude Code writes each session to `~/.claude` as JSONL, keeps it for 30 days, and deletes it — a sensible default for a harness's working files, a lossy one for the only record of how the work got decided. Nothing searches them in the meantime either.
+**Your agent's transcripts are temporary by default.** Claude Code writes each
+session to `~/.claude` as JSONL, keeps it for 30 days, and deletes it — a
+sensible default for a harness's working files, a lossy one for the only record
+of how the work got decided. Nothing searches them in the meantime either.
 
-**Day one still gives you something to search.** Point archive at this machine's stores and whatever is still on disk imports as a head start; from then on every session lands in an append-only log you own, and the window stops mattering. Minutes after setup, ask mid-conversation:
-
-> *"what did we decide about the auth flow?"*
-
-Your agent searches, reads around the hits, and comes back with what you decided and why — a few `thread_search` calls and a couple of `thread_read`s, the way it would work through a codebase it hadn't seen. What it reads is the conversation itself, not a summary someone made of one. No workflow to adopt, no notes you were supposed to be taking — from here on the record is being written.
-
-**Searchable by you — and by your AI.**
-- Full-text and semantic search, fused and re-ranked, filterable by time, source, tool, and content type; an empty query browses recent activity.
-- Exposed over MCP (`thread_search`, `thread_read`), so Claude (or any MCP client) can search and read your entire history mid-conversation.
-- The same two tools are CLI verbs — `thread-archive search "auth flow" --since 30d`, `thread-archive read <id>` — one implementation behind both, so what you get at a prompt is what your agent gets.
-- Search is the access layer over the archive, not the archive itself — an agent typically fires several searches, reformulates, and reads around a hit, and the archive underneath guarantees the conversation is *there* to find. Quality is measured against public benchmarks somebody else labeled, read beside the baseline their own leaderboard publishes — a deliberate run on a ranking change, and a gate at release time that holds those numbers to a checked-in bar, but not a CI row; what rides CI is a probe that the search arms still load at all. No protocol that labels this archive's own corpus certifies that search is good, and nothing gates on one. The numbers, the protocol, and its limits live in [docs/search-quality.md](https://github.com/ellamental/thread_archive/blob/main/docs/search-quality.md). Your install reports whether search is *degraded* (`thread-archive status`, the viewer's health page) rather than a score — a metric with no baseline beside it isn't something you can act on.
-
-**Indexed by code, not just by words.** Every path your agents' tools named — each
-`Edit`, `Read`, `Write`, `apply_patch` header, and path-shaped shell argument, in
-every provider's spelling — is folded into a structural index. It arrives as two
-new scopes on the tools that already exist, because the questions are the ones
-search already had shapes for — list the conversations, or search inside them:
-
-- `thread_search(path='rank.py')` — *which conversations worked on this file*. With
-  an empty query it is the list, ordered changes-before-looks, each row carrying its
-  op tally and opening at the touch rather than at the session's tail; with a query
-  it scopes the search to those sessions. A directory asks about a whole repo or
-  module (`path='/repo', path_ops='edit,write,delete'`), a glob about a file type.
-- `thread_search(commit='31bade5')` — *which conversations this commit is made of*,
-  the loop back from `git blame`. Not one session: a commit carries work from several
-  sittings, so it resolves to every session whose edits fall inside the commit's
-  authorship window — after each of its files was last committed, up to this commit —
-  ranked by how much of it they account for. The session that *ran* `git commit` is
-  flagged among them rather than standing in for them, which matters most where you
-  commit by hand and it is nobody.
-- `thread_read(thread_id, summary='files')` — the same index backwards: *what this
-  session actually changed.*
-
-The index is a disposable projection of the event log: it backfills itself over an
-existing archive and rebuilds with `reindex`.
-
-**Built like a database, not a folder of exports.**
-- Plain JSONL files are the source of truth — human-readable, greppable, yours. The search index is disposable and rebuilds from them at any time.
-- Crash-safe writes with intent journaling, fsync discipline, and automatic recovery. Your history survives power loss, killed processes, and corrupted indexes.
-- Built-in backup, integrity verification, and restore drills: recovers from corruption or an errant delete, and the nightly pipeline checks that the backup actually restores. The archive is ordinary files on disk — whatever backs up the rest of your data covers it the same way.
-
-**Fixes itself where it broke.** A provider's transcript format drifts on the provider's schedule, not a maintainer's. Archive makes that drift loud and locally repairable: drift ledgers and a nightly coverage check catch the degradation, the raw source files are quarantined before the provider prunes them, the in-session search notice names the remedy, and `thread-archive source fix <provider>` scaffolds an override patch — module, tests, evidence, real samples, and the repair protocol — so the fix gets written on the machine that has the samples, by you or by an agent you hand the scaffold to. The patch goes live only when its scaffolded test suite passes in a fresh subprocess, then re-import recovers everything consumed during the gap. The supported provider's worst case is *preserved but partially modeled until fixed* — and the fix doesn't wait on a release.
-
-**No hosted backend. No cloud. No subscription to lose your history to.** A background watcher keeps it current; every process — the MCP server, the web viewer, the daemons — runs locally, on your machine.
-
-**Dev tooling for one well-provisioned workstation.** macOS and Linux are the supported platforms — the always-on daemons are launchd LaunchAgents on macOS and systemd `--user` units on Linux (public CI runs the Linux lane; the launchd lifecycle is verified on the maintainer's own machine, which is also where the product has the most mileage) — and the archive is single-user, single-machine. It assumes workstation-class headroom, too: optional semantic search keeps a multi-GB torch model resident, a normal cost on the machine this is for.
-
-## How it works
-
-Serverless-native, single-user, single-machine: it watches this machine's
-agent-harness stores and imports provider transcripts into one event model.
-
-It is a standalone package — no hosted backend, no cloud service, no host
-application it depends on. The supported interfaces are the retrieval tools
-(over MCP, or as the `search` / `read` CLI verbs), the documented on-disk
-format, and the provider plugin API (see Stability) — there is no other public
-Python API.
-
-## Install
-
-Python ≥ 3.12, macOS or Linux:
+## Quickstart
 
 ```bash
-pip install thread-archive        # or: uv tool install thread-archive
+pip install thread-archive
 thread-archive setup
 ```
 
-**`setup` is the onboarding.** On first run it discovers this machine's
-conversation stores and shows what it found — counts, sizes, date ranges —
-*before* touching anything, then asks: import (all, a selection, or skip),
-install the always-on watcher (launchd on macOS, systemd on Linux; includes
-the web viewer at :8787), **schedule a nightly backup** (a second question —
-*where should backups go?* — that installs the daily backup → verify →
-restore-drill pipeline to a disk you name), wire the MCP server into detected
-clients (the `claude` CLI, or it prints the JSON block for any other client),
-and — with the watcher serving it — open the archive in your browser. Every
-choice is skippable and persists in `<home>/config.json`; a disabled source
-stays disabled across every ingest path — and across later runs of `setup`,
-which only changes a source's policy where you state a new one (the edit
-selection). The end state is a populated, searchable archive served over MCP,
-plus the `thread-archive` operator CLI and the pre-built web viewer (no node at
-any point). `thread-archive status` shows status; `thread-archive setup`
-revisits the choices. Non-interactive (agents,
-scripts): `thread-archive setup --yes` accepts every default — without `--yes`,
-a non-TTY run only prints guidance and never ingests, and neither shape opens a
-browser.
+`setup` discovers this machine's conversation stores and shows what it found —
+counts, sizes, date ranges — *before* touching anything. Whatever is still on
+disk imports as a head start; from then on a background watcher keeps the
+archive current and the 30-day window stops mattering. It also wires the MCP
+server into your client and starts a local web viewer at
+`http://127.0.0.1:8787`. Every choice is skippable.
 
-Local semantic search is optional and heavy (pulls torch — sized for a dev
-machine): `pip install 'thread-archive[embeddings]'`. It brings the corpus-graph
-ranking stack with it (the `[leiden]` extra: `leidenalg` + `igraph`),
-since that signal is computed over the vectors. `[all]` is every runtime feature
-under one name; the base install is lexical-only and pulls no C extension beyond
-what `numpy` and `mcp` already need.
+Minutes after setup, ask mid-conversation:
 
-**Without the wizard.** The same pieces by hand: `thread-archive watch --once`
-runs one ingest pass over this machine's stores (or `thread-archive source import
-<path> --provider <name>` brings in a single transcript or store),
-`thread-archive status` confirms it landed, `thread-archive service install`
-upgrades to the always-on watcher, and the JSON block under [MCP](#mcp) wires
-the server into any client — `archive-mcp` lands on the same PATH as
-`thread-archive`. Restart the client so it loads the server.
+> *"what did we decide about the auth flow?"*
 
-Skipped the watcher? Still covered: setup-generated MCP entries explicitly set
-`THREAD_ARCHIVE_MCP_INGEST=1`, opting `archive-mcp` into **lazy catch-up
-ingest**. A background pass at startup and (throttled) around tool calls imports
-whatever landed in your local AI-tool stores since the last pass. A bare
-`archive-mcp` invocation without that setting is fully read-only. On a fresh
-archive give the first pass a minute to chew before expecting search hits; the
-watcher install (`thread-archive setup`, or `thread-archive service install`) is the
-always-fresh upgrade. With the daemon installed, opted-in MCP passes degrade to
-no-op lock probes — exactly one process ingests at a time, however many clients
-are open.
+Your agent searches, reads around the hits, and comes back with what you
+decided and why — a few `thread_search` calls and a couple of `thread_read`s,
+the way it would work through a codebase it hadn't seen. What it reads is an
+efficient representation of the conversation itself, not a summary someone made
+of one. No workflow to adopt,
+no notes you were supposed to be taking — from here on the record is being
+written.
 
-**From source.** The development install is a clone with an editable venv:
+## What you get
 
-```bash
-git clone https://github.com/ellamental/thread_archive.git thread-archive && cd thread-archive
-python3 -m venv .venv
-.venv/bin/pip install -e '.[dev]'          # add -e '.[embeddings]' for local semantic search
-.venv/bin/pytest tests/ -q                 # confirm green (add `-m package` for the wheel/sdist release lane)
+- **Search, three doors, one implementation** — MCP tools (`thread_search`,
+  `thread_read`) for agents, the same verbs on the CLI
+  (`thread-archive search "auth flow" --since 30d`), and a local web viewer for
+  reading. What you get at a prompt is what your agent gets.
+- **Full-text and semantic search**, fused and re-ranked, filterable by time,
+  source, tool, and content type; an empty query browses recent activity.
+- **Indexed by code, not just by words** — ask which conversations worked on a
+  file (`thread_search(path='rank.py')`), which sessions a commit is made of
+  (`thread_search(commit='31bade5')`), or what a session actually changed.
+- **Built like a database, not a folder of exports** — plain JSONL as the
+  source of truth, crash-safe writes with intent journaling, built-in backup
+  with nightly restore drills. The index is a disposable projection that
+  rebuilds at any time.
+- **Import drift is loud and repairable** — when a provider changes its
+  transcript format, coverage checks catch it, raw files are preserved before
+  the provider prunes them, and `thread-archive source fix` scaffolds the
+  repair for you (or your agent) to finish.
+- **No hosted backend. No cloud. No subscription to lose your history to.**
+  Every process runs locally, on your machine.
 
-# wire the read MCP server into this clone's .mcp.json (absolute venv path)
-sed "s|ABSOLUTE_REPO_PATH|$(pwd)|g" .mcp.json.example > .mcp.json
-```
+Claude Code is the supported, first-class source. The other harnesses it reads
+— Codex, Cursor, OpenCode, Grok, and friends — are best-effort and
+community-maintainable via the plugin API. Web chats (claude.ai, ChatGPT, xAI)
+import from account exports you download by hand.
 
-Or let the agent do it: open the clone in Claude Code and say *"install this,
-following [claude-install.md](https://github.com/ellamental/thread_archive/blob/main/claude-install.md)"*
-— venv, tests green, MCP wiring, first import, asking you exactly once
-(embeddings or not). On Ubuntu, hand it
-[claude-install-ubuntu.md](https://github.com/ellamental/thread_archive/blob/main/claude-install-ubuntu.md)
-instead — same flow, systemd for the always-on pieces.
+## Documentation
 
-A clone's absolute path is baked into its `.mcp.json` wiring and any service
-units installed from it, so relocating the clone means re-running that wiring
-plus `thread-archive service restart`, not a plain `mv`. A clone updates by
-fast-forwarding to a release tag (`thread-archive self-update`); a pip install
-updates with `pip install -U thread-archive`.
+- [Install](https://github.com/ellamental/thread_archive/blob/main/docs/install.md) — the setup wizard, optional semantic search, updating, from-source, uninstall
+- [Search and retrieval](https://github.com/ellamental/thread_archive/blob/main/docs/retrieval.md) — the two tools, filters, and the code index
+- [CLI](https://github.com/ellamental/thread_archive/blob/main/docs/cli.md) — every verb, grouped by what it acts on
+- [MCP](https://github.com/ellamental/thread_archive/blob/main/docs/mcp.md) — server modes and client wiring
+- [Web viewer](https://github.com/ellamental/thread_archive/blob/main/docs/web-viewer.md) — the local UI and its supported URLs
+- [How it works](https://github.com/ellamental/thread_archive/blob/main/docs/architecture.md) — the event model, durability, platform assumptions, repo layout
+- [Stability](https://github.com/ellamental/thread_archive/blob/main/docs/stability.md) — the four public interfaces and what may change
+- [When an import drifts](https://github.com/ellamental/thread_archive/blob/main/docs/import-drift.md) — the support tier and the repair loop
+- [Not supported](https://github.com/ellamental/thread_archive/blob/main/docs/scope.md) — the deliberate scope: one machine, one user, macOS/Linux
+- [On-disk format](https://github.com/ellamental/thread_archive/blob/main/docs/format.md) · [Provider plugin API](https://github.com/ellamental/thread_archive/blob/main/docs/providers.md) · [Search quality](https://github.com/ellamental/thread_archive/blob/main/docs/search-quality.md) · [Related projects](https://github.com/ellamental/thread_archive/blob/main/docs/related.md)
 
-**Uninstall.** `thread-archive uninstall` takes back everything setup put on the
-machine — the service agents, the MCP wiring in your client, the family manifest
-and monitor heartbeat, and setup's own record in `config.json` — and **never
-touches the archive**. Conversations, index, source choices, logs and exports
-stay where they are, and `search` / `read` keep answering from them with nothing
-installed. It closes by naming **every place the data still is** — the home, a
-truth dir or index pointed outside it, every backup mirror any stage ever
-recorded (plus one scheduled but not yet run), a home an earlier `restore
---replace` set aside, the `~/.thread_archive` compat symlink — and then how to
-finish: `pip uninstall thread-archive`, or the clone to delete when the install
-runs from one. Deleting any of the data is yours to do. `--dry-run` reports what
-would go without changing anything, `--yes` skips the confirmation. An agent or
-client entry serving a *different* archive home is reported and left alone.
+## Scope
 
-## CLI
-
-One namespaced command. **`thread-archive setup`** runs the wizard (discover →
-consent → import → watcher → backup → MCP wiring); **`thread-archive status`**
-is the status view. **`search`** and **`read`** are retrieval — the MCP tools at
-a terminal.
-
-What gets typed stays flat. Everything else acts *on* something — a source, the
-index, a backup, a service agent — and lives under that noun:
-
-```bash
-# retrieval
-thread-archive search [query]   # the thread_search tool: filters by time, source, tool, content type,
-                                #   file (--path) or commit; no query browses recent threads;
-                                #   --group browse lists matched threads, --output linkable emits JSON
-thread-archive read <id>        # the thread_read tool: replay a thread (--mode user|chat|full|last|ends,
-                                #   --summary files, --around-event <id> to open a search hit);
-                                #   takes a ULID, a legacy integer id, or a provider session uuid
-thread-archive web              # open the cohosted viewer (the watcher serves it)
-
-# ingest
-thread-archive watch            # watch local AI-tool stores and import incrementally
-thread-archive source list      # registered providers (built-in + installed plugins)
-thread-archive source import <path>          # import a transcript / provider store
-thread-archive source import-account <path>  # import a downloaded claude.ai / ChatGPT / xAI export
-thread-archive source mirror    # mirror raw harness stores into <home>/source-mirror
-                                #   (verbatim, gzip; nothing ever deleted)
-thread-archive source coverage  # capture-coverage check: source stores reconciled against the archive
-thread-archive source loads     # load progress: the in-flight load and recent runs, by phase
-thread-archive source fix <provider>  # scaffold an override patch for a drifted import
-
-# the index — everything rebuildable from the JSONL truth
-thread-archive index rebuild    # rebuild index.db from the JSONL truth directory
-thread-archive index embed      # embed user/text events still missing a vector (incremental
-                                #   catch-up; --rebuild re-embeds everything)
-thread-archive index migrate    # migrate older truth, then rebuild and verify
-thread-archive index verify     # integrity check: truth parses + matches the index
-thread-archive index repair     # quarantine damaged truth lines; restore committed content from the index
-
-# durability
-thread-archive backup run <dest>      # mirror the truth dir (hardlink generations under <dest>/.generations)
-                                      #   + the recovery bundle under <dest>/.recovery (config, retained
-                                      #   exports, health/ledger snapshots)
-thread-archive backup nightly <dest>  # the scheduled pipeline: backup → verify (age-gated escalation)
-                                      #   → restore drill → coverage
-thread-archive backup drill <dest>    # prove the backup restores: rebuild an index from the mirror
-                                      #   + smoke read/search
-thread-archive backup restore <mirror> --to <home>  # actually restore: staged rebuild + verify, then
-                                      #   atomic publish (--generation <stamp> picks a retained
-                                      #   snapshot; --list-generations shows them)
-
-# this machine
-thread-archive status           # archive health / counts / last verify + backup + drill + coverage outcomes
-thread-archive service <action> # install/uninstall/restart/status a service agent (launchd on macOS,
-                                #   systemd --user on Linux) — the always-on watcher (default), --mcp
-                                #   the shared server, --backup the nightly pipeline
-                                #   (`service install --backup --dest <path> [--at HH:MM]`)
-thread-archive self-update      # source clones only: fast-forward to the newest release tag — operator-
-                                #   driven, nothing updates on its own (--check reports without applying;
-                                #   a pip install updates with `pip install -U thread-archive`)
-thread-archive uninstall        # remove this machine's archive machinery — agents, MCP wiring, manifest,
-                                #   heartbeat, install record; the conversations are never touched
-                                #   (--dry-run reports, --yes skips the confirmation)
-```
-
-Every pre-group spelling still resolves — `reindex`, `nightly <dest>`,
-`daemon install`, `backup <dest>` and the rest run exactly what they always did.
-They are listed nowhere: what keeps working is a machine already wired to them,
-not a second documented way to type a verb.
-
-`search` and `read` are supported surface — the same implementation
-`archive-mcp` serves, so a query typed here and the same query asked
-mid-conversation return the same answer. Everything else in the CLI is private
-operational tooling (see Stability below): the process seam the service agents,
-cron, and operators use. The third door onto the same archive is the web viewer,
-cohosted by `thread-archive watch --web`.
-
-## Layout
-
-```text
-src/thread_archive/
-  _api.py           # internal coordination layer the CLI / MCP / web call into
-  cli.py            # the `thread-archive` command — every verb, incl. `setup`
-  _setup/           # what the archive puts on a machine and takes back off it: the wizard
-                    #   behind `thread-archive setup` (first-run setup + status), and the
-                    #   `thread-archive uninstall` flow
-  _config.py        # truth dir + index path resolution, config.json (source opt-outs)
-  _store/           # SQLite store + schema
-  _truth/           # JSONL truth log + reindex
-  _ops/             # backup kit: backup/mirror + restore drill, verify tiers, nightly,
-                    #   health records, the action queue + its silences (notices.py)
-  _importers/       # incremental import orchestration
-  _retrieval/       # FTS5 + vector search, read reconstruction, the code axis (code.py)
-  _knowledge/       # storage seam for the truth format's extension region — an
-                    #   external knowledge layer's records, stored and backed up
-                    #   here, written and specified elsewhere (docs/format.md)
-  _watcher/         # local-source watcher (self-feeding ingest)
-  _mcp/             # the library-native read MCP server
-  _web/             # the viewer: stdlib server + built bundle (cohosted by `watch --web`)
-  _service/         # `thread-archive service`: the watcher / MCP / nightly-backup agents behind a
-                      #   platform registry — launchd (macOS) and systemd --user (Linux) backends
-  _thread_import/   # vendored provider parsers (a clean, dependency-free island)
-  _providers/       # the provider registry: built-in descriptors + plugin discovery
-  provider/         # PUBLIC: the plugin API a third-party provider is written against
-frontend/           # the viewer's React+Vite source (dev-only; builds into _web/static/)
-host/               # operator layer: Makefile over `thread-archive service`, family-manifest writer
-scripts/            # repo tooling (coverage gate, frontend-build check, license notices)
-search_lab/         # the search lab (never shipped): the scoring core, quality + calibration
-                      #   harnesses, corpus freezing, run ledgers — see
-                      #   search_lab/README.md
-tests/install/      # from-nothing install proofs: clean-container Docker + realistic
-                      #   discovery-driven first run (~/.claude-style stores, macOS + Linux)
-```
-
-## Stability
-
-The public API is exactly four things:
-
-- **the retrieval tools** — `thread_search` and `thread_read`, served to agents
-  by `archive-mcp` and to a person by the `thread-archive search` /
-  `thread-archive read` verbs. One implementation, two front doors: their
-  parameters, defaults, and output are the same contract either way;
-- **the on-disk truth format** — versioned by `manifest.json`'s `version` and
-  specified in [docs/format.md](https://github.com/ellamental/thread_archive/blob/main/docs/format.md).
-  Data written by one release
-  stays readable by the next; a reader refuses a truth directory newer than it
-  understands. Programmatic read access to the documented stores (`index.db`
-  is plain SQLite; the truth directory is documented JSONL) rides on this
-  contract.
-- **the provider plugin API** — `thread_archive.provider` and its `parse` /
-  `testing` submodules, documented in
-  [docs/providers.md](https://github.com/ellamental/thread_archive/blob/main/docs/providers.md).
-  A provider maintained outside this repo is written against it and cannot
-  follow the private tree's churn, so these names keep working.
-- **the web viewer's URLs** — the local UI at `http://127.0.0.1:8787`
-  ([below](#web-viewer)): its page routes and the two JSON endpoints other
-  programs call. Editor buttons, sibling navbars, and health probes link these
-  from outside the repo, so they keep working.
-
-Everything else is private support machinery and may change without notice:
-the rest of the `thread-archive` CLI, the viewer's bundle and markup, and every
-other Python module. More surface gets exposed
-deliberately as it matures. `tests/test_public_api.py` ratchets the boundary,
-with the viewer's page routes pinned in `frontend/e2e/route-coverage.spec.ts`
-against the route table itself.
-
-Releases (changelog compression, version bump, release commit, annotated tag)
-follow [docs/releasing.md](https://github.com/ellamental/thread_archive/blob/main/docs/releasing.md).
-
-## When an import drifts
-
-Providers change their on-disk formats without notice, and no maintainer runs a
-harness that exercises every variation at every provider release. Archive's
-answer is a support tier plus a repair loop, not a promise nobody can keep:
-
-- **Claude Code is first-class.** Its parser carries the full drift ledger
-  (validators, residual preservation, the version tripwire), so its worst
-  failure mode is *soft*: content is preserved — unmodeled fields ride along
-  under `annotations`, skipped files land on the audit ledgers — but partially
-  modeled until fixed. Everything else is best-effort: same machinery where it
-  reaches, community-maintainable via the plugin API.
-- **Drift is loud.** The skip and validation ledgers plus the nightly coverage
-  check produce per-source *degradation verdicts* (`thread-archive source coverage` prints
-  them; the MCP search notice prepends a one-liner naming the remedy the next
-  time you search, which is the moment you care).
-- **Preservation doesn't wait for the fix.** A degraded source's recently
-  active raw files are snapshotted into `dumps/drift/<source>/` — bounded,
-  incremental, never auto-deleted — so a fix that comes months later can still
-  recover everything the provider has since pruned.
-- **The user's own agent writes the fix.** `thread-archive source fix <provider>`
-  scaffolds an override patch under `<home>/plugins/` (module, tests, collected
-  samples, drift evidence, per-provider quirk notes, and a `PROTOCOL.md`
-  written to be handed to an agent), leaving one job open: the parse logic.
-  Archive runs no agent itself — you work the scaffold, or point yours at it
-  under whatever scope you choose, remembering that the samples are transcript
-  data an agent should treat as untrusted input (see
-  [SECURITY.md](https://github.com/ellamental/thread_archive/blob/main/SECURITY.md)).
-  Activation is deterministic — the scaffold's tests must pass in a fresh
-  subprocess (including a dedup re-import guard) before the override is enabled
-  and the ledger-driven re-import recovers the gap.
-- **Patches are temporary by default.** The next self-update retires them (a
-  core release is the proper fix's vehicle; if drift persists, the notice
-  re-fires and the fix re-runs against the new core). `thread-archive source fix
-  <provider> --pin` keeps yours forever. Every lifecycle step is audited in
-  `patch-log.jsonl`, and `thread-archive source list` shows `patched` / `patched
-  (pinned)` state.
-
-## Not supported
-
-The scope is deliberately narrow. These are design decisions, not gaps waiting
-on a release:
-
-- **More than one machine — and merging archives.** An archive belongs to one
-  machine. There is no merge tool, no sync, and no federated search across
-  archives — a deliberate single-machine scope, not a technical wall. Thread
-  ids are globally-unique ULIDs, so two archives never collide there; what a
-  merge would still have to reconcile is the locally-minted **event id** space
-  wired through the truth layer — the append-only event log, causality links,
-  amendment records — by remapping one archive's ids past the other's.
-  Mechanical, but unbuilt. *Moving* an archive to another machine is supported
-  — carry the directory, or `thread-archive backup restore <mirror> --to <home>`;
-  running two and reconciling them later is not.
-- **Anything but macOS and Linux.** The always-on pieces — watcher, scheduled
-  backup, shared MCP server — are launchd LaunchAgents on macOS and systemd
-  `--user` units on Linux. Public CI runs on Linux, including the systemd
-  lifecycle against a real user manager. The launchd lifecycle is not something
-  a hosted macOS runner can exercise — it drives the `gui/<uid>` domain, which
-  needs a login session no hosted runner has — so it is verified on the
-  maintainer's machine instead: macOS has the most mileage in daily use and the
-  least in public CI. Windows is not supported, and no other platform exists
-  here.
-- **More than one user.** No accounts, no authentication, no per-user scoping.
-  The web viewer binds to `127.0.0.1` and assumes whoever reaches it owns
-  everything in the archive.
-- **Live capture of web chats.** claude.ai, ChatGPT, and xAI arrive from account
-  exports you download by hand — drop the ZIP on the viewer's `/upload` page (or
-  into `<home>/dumps/`, or run `thread-archive source import-account`). The self-feeding
-  path is the local agent harnesses.
-- **Driving a conversation.** The archive preserves and retrieves. It never
-  writes back to a harness store and never sends a message.
-
-## Web viewer
-
-The always-on watcher cohosts a local search + reader UI: `thread-archive watch --web`
-(the shipped watcher service passes it) serves at `http://127.0.0.1:8787` — a stdlib
-HTTP server handing out a pre-built React bundle plus a few JSON endpoints, in
-the watcher's *own* process. One process, one SQLite engine — the viewer reads
-concurrently with the watcher's writes, which WAL makes safe (`_store/_base.py`).
-No second daemon: the viewer exists where the persistent URL is.
-
-`thread-archive web` opens that URL in a browser. An opener, not a server.
-`thread-archive web dev` turns on the dev panels (below) and opens it.
-
-**The URLs are a supported interface.** Other programs link into the viewer —
-editor "open in archive" buttons, sibling consoles' navbars, health probes — so
-these paths keep working:
-
-| Path | What it is |
-| --- | --- |
-| `/` | landing: recent threads, global search |
-| `/search` | search results |
-| `/threads` | every thread |
-| `/stats` | token/cost analytics (`/stats/model/<model>` drills in) |
-| `/health` | the archive's own status page |
-| `/upload` | import an account export: drop the ZIP, and where to get one |
-| `/archive/<thread_id>` | one conversation, rendered |
-| `GET /api/health` | `{ok, home}` — cheap liveness for probes |
-| `GET /api/archive-link?id=<session-uuid>` | resolve a provider session id to its thread (below) |
-
-Every page route has a real-browser case in `frontend/e2e/` — one Chromium
-navigation per route, asserting its landmark renders with no console errors and
-no unmocked fetch — and `route-coverage.spec.ts` keeps that a bijection, so a
-new route without a browser case reds the suite.
-
-**Dev panels** are the exception to the table above, and deliberately not part of
-its contract. `/retrieval` reports on the search *pipeline* — served latency by
-warm and cold regime, per-stage costs — and `/lab` reports on what the bench has
-to measure it with. Both are maintainer's instruments rather than anything the
-archive is for, so **a viewer does not have them unless its operator asks**: one
-line in the home's `config.json`,
-
-```json
-{ "dev_panels": true }
-```
-
-which `thread-archive web dev` writes and `web --no-dev` clears. The server
-stamps that answer onto every shell it serves and the app mounts their routes
-only when it is there, so without the line those addresses route nowhere — not
-hidden behind an unadvertised link, absent. It is read per request: flipping the
-line lands on the next page load, with nothing to restart. Their data comes from
-`search_lab/`, which lives in the source repo and not in an install, so a `pip
-install` serves a `404` there even with the line set, and the page says so.
-
-Everything under `/api/` other than those two backs the viewer's own bundle and
-is private — it changes with the frontend. So is the markup: the interface is
-the URL, not the DOM. No page view touches the conversation record; the stats
-pages do fold a derived rollup into the index, which is the rebuildable
-projection. The server binds loopback only, since it serves the whole archive
-with no auth (a non-loopback bind needs `THREAD_ARCHIVE_WEB_NONLOCAL=1`).
-
-**One endpoint writes**: `POST /api/upload` takes an account-export ZIP and puts
-it in the drop zone the cohosting watcher already imports from, which is what
-`/upload` is a page for — the import itself stays the watcher's, with the settle
-and retain/quarantine rules it already owns. Reading is what a `GET` can do; every
-other method on every other path is a `405`. A write carries two guards past the
-Host check every request passes: a loopback `Origin`, and an `X-Archive-Upload`
-header — which no cross-origin form can set, so a page this server did not serve
-must first win a preflight that is never answered.
-
-**Runtime is node-free**: the bundle is built ahead of time and committed under
-`_web/static/`, so the install never touches node. Node is a *build*-only tool:
-
-```bash
-# rebuild the bundle after editing the frontend (node only here):
-cd frontend && npm install && npm run build   # → ../src/thread_archive/_web/static/
-```
-
-**Archive-links.** With that persistent server, the archive owns the editor
-"open this conversation" link itself: `GET /api/archive-link?id=<session-uuid>&source=claude-code`
-resolves the session to its thread via `ImportState` and returns `{thread_id, url}`,
-or `&redirect=1` → a `302` to `/archive/<id>`. (Local — no separate backend
-involved.) `id` may repeat — a caller that cannot tell which uuid it holds is the
-session id sends every candidate, best guess first, and the first that resolves
-wins; ids that were never imported are skipped, not fatal.
-
-## MCP
-
-One server, two explicit process modes. **`thread-archive`** (`archive-mcp`)
-serves the read-only `thread_search` / `thread_read` tools. The process is also
-read-only by default. Setting `THREAD_ARCHIVE_MCP_INGEST=1` opts it into local
-lazy catch-up ingest, throttled and cross-process-safe via the ingest-owner
-lock. This server exposes no write surface. Client
-config with catch-up enabled:
-
-```json
-{
-  "mcpServers": {
-    "thread-archive": {
-      "command": "archive-mcp",
-      "env": {
-        "THREAD_ARCHIVE_HOME": "~/.thread/archive",
-        "THREAD_ARCHIVE_MCP_INGEST": "1"
-      }
-    }
-  }
-}
-```
-
-The shared HTTP server daemon is read-only by default too. Install it with
-`thread-archive service install --mcp --mcp-ingest` only when it should own catch-up;
-leave the flag off when the watcher already owns ingestion.
+Deliberately narrow: one machine, one user, macOS and Linux only. The archive
+preserves and retrieves — it never writes back to a harness store and never
+sends a message. Live capture of web chats is out; account exports are the
+path. The reasoning behind each line is in
+[docs/scope.md](https://github.com/ellamental/thread_archive/blob/main/docs/scope.md).
 
 ## Similar and related projects
 
 Preserving and searching AI conversation history is a crowded space, and a lot
 of the work in it is good — session-search neighbors (CASS, ctx, deja-vu,
 episodic-memory, synty, and more), agent memory layers (mem0, Letta, Zep), and
-the prior art outside AI (notmuch). The annotated survey — including where each
-neighbor leads and how thread-archive differs — lives in
+the prior art outside AI (notmuch). The annotated survey lives in
 [docs/related.md](https://github.com/ellamental/thread_archive/blob/main/docs/related.md).
-The short version of the difference: most
-tools treat the harness's own files as the record and their index as a cache
-over it; archive treats preservation as the product — its own append-only truth
-log, backup with restore drills, and unmodeled provider fields preserved
-verbatim.
+The short version of the difference: most tools treat the harness's own files
+as the record and their index as a cache over it; archive treats preservation
+as the product — its own append-only truth log, backup with restore drills, and
+unmodeled provider fields preserved verbatim.
 
 ## License
 

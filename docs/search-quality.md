@@ -132,16 +132,17 @@ yet run.
   |---|---|---|
   | query length, median | 20 words / 122 chars | 4 words / 31 chars |
   | shape | grammatical descriptive sentence | bag of terms (`watcher ingest lock`) |
-  | carries a scope/shape param | 0% | 43% (`content_type` 37%, `group=browse` 35%, `match` 31%) |
+  | carries a scope/shape param | 0% | 43% (`content_type` 37%, `match` 31%) |
   | paginates | 0% | 49% |
   | uses an operator (`OR`, quotes, `|`) | 0% | ~11% |
   | subject | "find the session that made this code change" | infra debugging, ontology work, personal and emotional material |
 
-  Two consequences. The **browse and scoped code paths are unmeasured entirely** —
-  a third of real searches, and `group='browse'` is a different retrieval shape,
-  not a filter on this one. And a weight swept against 20-word queries may not
-  hold for 4-word ones: density normalizes matched terms against a fixed
-  `density_norm_chars` window, and the OR-fallback tier in `fts.py` fires when the
+  Two consequences. The **scoped and structural code paths are unmeasured
+  entirely** — `path`, `content_type`, `match='substring'` and the query-less
+  browse carry a third of real searches and none of the authored ones, and the
+  last two are different retrieval shapes rather than filters on this one. And a
+  weight swept against 20-word queries may not hold for 4-word ones: density
+  normalizes matched terms against a fixed `density_norm_chars` window, and the OR-fallback tier in `fts.py` fires when the
   strict all-terms pass comes up short — far likelier on a long query than a
   three-token one. The two populations exercise different parts of the pipeline.
 

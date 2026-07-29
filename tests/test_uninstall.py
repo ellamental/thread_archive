@@ -403,8 +403,16 @@ def test_the_closing_report_names_every_place_the_data_is(
     assert str(aside) in out
     assert f"a symlink to {archive_home}" in out  # a second name, not a second copy
     assert "Deleting any of it is yours to do" in out
-    # And how to be rid of the code — this suite runs from the clone it names.
-    assert "this install runs from the clone" in out
+    # And how to be rid of the code, which is a different sentence per install
+    # shape — a clone is a directory to delete, a wheel is a pip uninstall. The
+    # suite runs from both (tests/install/ runs it from a wheel), so assert the
+    # one that matches the shape rather than assuming the checkout.
+    from thread_archive._update import source_checkout
+
+    if source_checkout() is not None:
+        assert "this install runs from the clone" in out
+    else:
+        assert "pip uninstall thread-archive" in out
     assert "thread-archive setup" in out
 
 

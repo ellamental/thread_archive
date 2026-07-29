@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { Link, useSearchParams } from 'react-router-dom'
 import { api, type ThreadPage, type ThreadTypeCount } from '../api'
+import { Pager } from './Pager'
 
 export const ALL_THREADS_PAGE_SIZE = 100
 
@@ -109,41 +110,15 @@ export function AllThreadsView() {
   }
 
   function pager(position: 'top' | 'bottom') {
-    if (!result || result.pages <= 1) return null
+    if (!result) return null
     return (
-      <nav className="thread-pagination" aria-label={`thread pages ${position}`}>
-        <button
-          className="toolbar-btn"
-          disabled={result.page === 1}
-          onClick={() => goToPage(1)}
-        >
-          First
-        </button>
-        <button
-          className="toolbar-btn"
-          disabled={result.page === 1}
-          onClick={() => goToPage(result.page - 1)}
-        >
-          Previous
-        </button>
-        <span>
-          Page {result.page.toLocaleString()} of {result.pages.toLocaleString()}
-        </span>
-        <button
-          className="toolbar-btn"
-          disabled={result.page === result.pages}
-          onClick={() => goToPage(result.page + 1)}
-        >
-          Next
-        </button>
-        <button
-          className="toolbar-btn"
-          disabled={result.page === result.pages}
-          onClick={() => goToPage(result.pages)}
-        >
-          Last
-        </button>
-      </nav>
+      <Pager
+        page={result.page}
+        pages={result.pages}
+        label="thread pages"
+        position={position}
+        onGo={goToPage}
+      />
     )
   }
 

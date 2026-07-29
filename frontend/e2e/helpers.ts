@@ -38,7 +38,13 @@ const retrieval = {
       { at: '2026-07-21', n: 12, warm: { n: 11, p50: 210, p90: 800 }, cold: { n: 1, p50: 9100, p90: 9100 } },
     ],
     warm: { n: 22, p50: 228, p90: 860, p99: 2415 },
+    warm_interactive: { n: 18, p50: 205, p90: 640, p99: 1900 },
+    warm_bulk: { n: 4, p50: 4100, p90: 9800, p99: 11200 },
     cold: { n: 2, p50: 8600, p90: 9100, p99: 9100 },
+    by_surface: [
+      { surface: 'mcp-http', n: 22, n_cold: 0, p50: 228, p90: 860 },
+      { surface: 'cli', n: 2, n_cold: 2, p50: 8600, p90: 9100 },
+    ],
   },
   stages: {
     n: 22,
@@ -48,7 +54,11 @@ const retrieval = {
       { stage: 'semantic_ms', n: 22, p50: 90, p90: 293 },
     ],
   },
-  restarts: { n: 3, bucket: 'day', buckets: [{ at: '2026-07-20', n: 3 }], p50_ms: 22300, total_s: 67 },
+  restarts: {
+    n: 3, bucket: 'day', buckets: [{ at: '2026-07-20', n: 3 }],
+    by_surface: [{ surface: 'mcp-http', n: 2 }, { surface: 'web', n: 1 }],
+    p50_ms: 22300, total_s: 67,
+  },
   bench: {
     observed: [{ at: now, commit: 'abc1234', p50: 228, p95: 1412, p99: 2415, n_queries: 40, tuning: false }],
   },
@@ -148,14 +158,14 @@ const searchLab = {
       on_bench: ['beir:nfcorpus[lexical]'],
     },
     {
-      name: 'arguana',
+      name: 'scidocs',
       family: 'beir',
-      harness: 'search_lab/beir_eval.py --dataset arguana',
-      download: { path: '/Users/test/.cache/thread-evals/arguana', present: false },
+      harness: 'search_lab/beir_eval.py --dataset scidocs',
+      download: { path: '/Users/test/.cache/thread-evals/scidocs', present: false },
       homes: [
         {
           label: 'corpus',
-          path: '/Users/test/.cache/thread-evals/homes/arguana',
+          path: '/Users/test/.cache/thread-evals/homes/scidocs',
           built: false,
           snapshot_id: null,
           counts: {},
@@ -163,7 +173,7 @@ const searchLab = {
           created_at: null,
         },
       ],
-      reference: { metric: 'nDCG@10', bm25: 0.315, dense: 0.48 },
+      reference: { metric: 'nDCG@10', bm25: 0.158, dense: 0.2 },
       on_bench: [],
     },
   ],
@@ -627,6 +637,14 @@ export async function mockApi(page: Page): Promise<string[]> {
             n_events: 3,
           },
         ],
+        // The page's position in the match set, as the real endpoint states it.
+        total: 1,
+        total_threads: 1,
+        capped: false,
+        exhaustive: true,
+        page: Number(url.searchParams.get('page') ?? 1),
+        pages: 1,
+        page_size: Number(url.searchParams.get('limit') ?? 40),
       })
     }
     if (path === `/api/thread/${THREAD_ID}`) {

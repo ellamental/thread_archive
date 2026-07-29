@@ -253,6 +253,15 @@ class ServePlan:
     host: str = "127.0.0.1"
     port: int = 8788
 
+    @property
+    def surface(self) -> str:
+        """What to stamp on this process's usage rows. The two transports are two
+        different products from a latency reader's seat — the shared HTTP server
+        warms once and serves every client off resident models, a stdio server is
+        spawned per client and pays the load inside its first search — so pooling
+        their latency describes neither."""
+        return "mcp-http" if self.transport else "mcp-stdio"
+
 
 def _parser() -> argparse.ArgumentParser:
     # stdio (default) is one server per client — every connecting agent spawns its own
@@ -324,6 +333,9 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
     """Serve, per ``argv`` (the process's command line by default). Blocks in the
     transport's run loop until the client disconnects or the process is stopped."""
     plan = plan_serve(argv)
+    # Claim every row this process writes before it can write one — including the
+    # warm pass's, which is what makes a restart countable per transport.
+    _tools.set_default_surface(plan.surface)
     # Warm the embedding model at startup. The cold load is tens of
     # seconds; when it lands inside the first conceptual search it can exceed the client's
     # MCP request timeout (commonly 60s), which surfaces to the model as a failed tool call.

@@ -130,7 +130,7 @@ def test_mcp_search_filters_by_tool_name_and_until(archive_home) -> None:
     ta.import_path(late)
 
     # until bounds the window: the June turn drops, the January one stays.
-    bounded = thread_search("changelog", until="2026-02-01", group="none")
+    bounded = thread_search("changelog", until="2026-02-01")
     assert "grep the changelog" in bounded
     assert "changelog again" not in bounded
 
@@ -224,20 +224,20 @@ def test_mcp_search_pages_through_the_result_set(archive_home) -> None:
                        "message": {"role": "user", "content": f"the widget report {i}"}}])
         ta.import_path(f)
 
-    first = thread_search("widget", limit=3, group="browse")
+    first = thread_search("widget", limit=3)
     assert "page 1/3" in first and "of 7" in first
-    second = thread_search("widget", limit=3, page=2, group="browse")
+    second = thread_search("widget", limit=3, page=2)
     assert "page 2/3" in second
 
     # disjoint pages: no thread served twice across the walk
     def _ids(rendered):
         return {ln.split()[0] for ln in rendered.splitlines() if ln.startswith("01")}
 
-    walked = [_ids(thread_search("widget", limit=3, page=p, group="browse"))
+    walked = [_ids(thread_search("widget", limit=3, page=p))
               for p in (1, 2, 3)]
     assert sum(len(p) for p in walked) == len(set().union(*walked))
 
-    past = thread_search("widget", limit=3, page=9, group="browse")
+    past = thread_search("widget", limit=3, page=9)
     assert "past the end" in past
 
 
@@ -589,12 +589,13 @@ def test_maybe_catch_up_runs_the_pass_off_the_caller_thread(archive_home, monkey
             raise AssertionError("the background pass never released the slot")
 
 
-def test_default_scope_is_the_whole_transcript_minus_summaries() -> None:
-    """The default search scope names no content type — everything the index holds
-    is in play — and excludes only the librarian's derived summaries. Tool output
-    needs no exclusion here because it never reaches the index at all."""
+def test_default_scope_is_the_whole_transcript() -> None:
+    """The default search scope names no content type and excludes none: everything
+    the index holds is in play. What a search must not answer from — tool output,
+    the librarian's derived summaries — never reaches the index at all, so there is
+    nothing left for a query-time filter to hide."""
     assert _tools.DEFAULT_SEARCH_CONTENT_TYPES is None
-    assert _tools.DEFAULT_SEARCH_EXCLUDE == ("summary",)
+    assert not hasattr(_tools, "DEFAULT_SEARCH_EXCLUDE")
 
 
 def test_warm_pass_primes_the_scope_agents_search() -> None:
@@ -604,7 +605,6 @@ def test_warm_pass_primes_the_scope_agents_search() -> None:
     from thread_archive import _retrieval
 
     assert _tools.DEFAULT_SEARCH_CONTENT_TYPES is _retrieval.DEFAULT_CONTENT_TYPES
-    assert _tools.DEFAULT_SEARCH_EXCLUDE is _retrieval.DEFAULT_EXCLUDE_CONTENT_TYPES
 
 
 def test_degradation_notice_accepts_naive_timestamp(archive_home) -> None:

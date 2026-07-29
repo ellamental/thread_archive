@@ -111,8 +111,8 @@ def test_an_available_release_asks_without_alarming():
     """Maintenance, not a fault: applying an update is explicit here, so the
     notice must not read like something is broken."""
     notices = build_notices(_records(last_self_update={
-        "at": None, "ok": True, "action": "update", "tag": "v0.9.2",
-        "reason": "past soak window",
+        "at": None, "ok": True, "action": "update", "target": "0.9.2",
+        "reason": "0.9.2 is the newest release",
     }))
 
     assert [(n["key"], n["tone"]) for n in notices] == [("update", "good")]
@@ -124,9 +124,9 @@ def test_a_disabled_updater_raises_nothing_it_cannot_refresh():
     mechanism that is not running. Both the block and the available-release
     notice go quiet — an update you are not taking is not maintenance you owe."""
     blocked = {"at": None, "ok": False, "action": "blocked",
-               "reason": "working tree not clean — local work in play"}
-    available = {"at": None, "ok": True, "action": "update", "tag": "v0.9.2",
-                 "reason": "past soak window"}
+               "reason": "0.1.0 declares truth-format version 4 > local 3"}
+    available = {"at": None, "ok": True, "action": "update", "target": "0.9.2",
+                 "reason": "0.9.2 is the newest release"}
 
     for record in (blocked, available):
         assert build_notices(_records(
@@ -316,7 +316,7 @@ def test_config_turning_the_updater_off_reaches_the_board(archive_home):
     ta.open_archive(str(archive_home))
     record_health("self_update_last", {
         "ok": False, "action": "blocked", "current": "0.0.6",
-        "reason": "working tree not clean — local work in play",
+        "reason": "0.1.0 declares truth-format version 4 > local 3",
     })
 
     assert "update-blocked" in _keys(ta.notices()["active"])

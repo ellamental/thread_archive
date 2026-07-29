@@ -1,8 +1,9 @@
 """Thread-meta search docs, the search blacklist, canonical time bounds, and the
 two-pass code/pipe-OR federation.
 
-- ``index_thread_meta`` derives title/summary docs (diff-based sync, anchored to
-  the thread's first indexed event) and search surfaces them
+- ``index_thread_meta`` derives title docs (diff-based sync, anchored to the
+  thread's first indexed event) and search surfaces them; a stored summary is
+  derived text and never becomes one
 - ``exclude_from_search`` actually drops a thread's hits (and its meta docs)
 - since/until bounds resolve to the store's canonical timestamp form
 - code-identifier / pipe-OR queries reach old hits through the MATCH pass
@@ -55,14 +56,12 @@ def test_thread_meta_docs_searchable(archive_home) -> None:
     # Vocabulary that appears ONLY in the title / summary, never in a message.
     _set_thread(tid, title="Kazoo orchestra migration",
                 summary="Moving the kazoo orchestra to the new concert hall.")
-    assert index_thread_meta() == 2
+    # One doc, not two: the title is indexed, the stored summary never is.
+    assert index_thread_meta() == 1
 
     title_hits = search("kazoo orchestra", content_types=["title"])
     assert title_hits and title_hits[0]["thread_id"] == tid
     assert title_hits[0]["content_type"] == "title"
-
-    summary_hits = search("concert hall", content_types=["summary"])
-    assert summary_hits and summary_hits[0]["thread_id"] == tid
 
     # Diff-based: a second sync with nothing changed writes nothing.
     assert index_thread_meta() == 0

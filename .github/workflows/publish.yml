@@ -1,5 +1,7 @@
-# PyPI publish, driven by the release tag. The tag push (docs/releasing.md §4)
-# is already the ship; this workflow makes PyPI one of the places it ships to.
+# PyPI publish, driven by the release tag. release.yml pushes the tag once a
+# release PR merges on main (docs/releasing.md §5) — its deploy-key push fires
+# this trigger like any other tag push — and a hand-pushed tag is the manual
+# path. One trigger, one publish path, either way.
 #
 # Auth is PyPI Trusted Publishing (OIDC): PyPI trusts this repo + workflow +
 # environment tuple directly, so no API token exists to leak or rotate. The

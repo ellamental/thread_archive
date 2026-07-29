@@ -284,10 +284,12 @@ def test_tool_error_output_follows_the_same_rule(tmp_path) -> None:
         str(thread), mode="full", tool_results=True)
 
 
-def test_summaries_stay_out_of_search_unless_named(tmp_path) -> None:
-    """Stored thread summaries are derived text (the librarian's, not the
-    record), so neither the default scope nor its auto-widen may read them —
-    only an explicit content_type reaches them."""
+def test_summaries_are_never_searchable(tmp_path) -> None:
+    """Stored thread summaries are derived text (the librarian's, not the record),
+    so they are kept out of the index entirely rather than filtered at query
+    time — there is no scope, named or default, that reaches them. A query-time
+    exclusion would leave the vocabulary one argument away."""
+    from sqlalchemy import text as sa_text
     from sqlalchemy import update
 
     from thread_archive._mcp.server import thread_search
@@ -303,12 +305,17 @@ def test_summaries_stay_out_of_search_unless_named(tmp_path) -> None:
         s.commit()
     index_thread_meta()
 
-    # Control: the summary doc is indexed and reachable once named.
-    assert str(tid) in thread_search(query, content_type="summary")
-    # A dry default scope guarantees the widen fires here — and even the widened
-    # everything-scope must not surface the summary-only vocabulary.
-    assert str(tid) not in thread_search(query), (
-        "a stored summary leaked into a search that never asked for summaries")
+    # No doc was written, so there is nothing for any scope to find.
+    with use_session() as s:
+        assert s.execute(sa_text(
+            "SELECT count(*) FROM events_fts WHERE content_type = 'summary'"
+        )).scalar() == 0
+    # A dry default scope guarantees the auto-widen fires here; the summary-only
+    # vocabulary must not surface through it, through the named scope that used to
+    # reach it, or through 'all'.
+    for kwargs in ({}, {"content_type": "summary"}, {"content_type": "all"}):
+        assert str(tid) not in thread_search(query, **kwargs), (
+            f"a stored summary surfaced for {kwargs or 'the default scope'}")
 
 
 # ── semantic scope filtering ─────────────────────────────────────────────────

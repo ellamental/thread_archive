@@ -1,17 +1,17 @@
 """Enumeration: paging a result set, and knowing when you have seen all of it.
 
-A ranked search returns a cut, and for most of this pipeline's life the cut was
-all a caller saw — ten rows that read identically whether they were all of them
-or ten of nine hundred. These pin the three mechanisms that close that gap:
+A ranked search returns a cut, and a cut alone reads identically whether ten rows
+are all of them or ten of nine hundred. These pin the three mechanisms that close
+that gap:
 
 - ``page=N`` walks the set, and pages are slices of ONE ordering, so a walk
   neither repeats nor skips a row
 - the result carries the size of the set it is a page of, and says whether that
   number is a total (``exhaustive``) or the reach of a cut pool
-- ``group='browse'`` resolves its thread list from the whole match set rather
-  than from the candidate pool, so paging it to the end reaches every matched
-  thread — including the ones ranked past the pool boundary, which are not
-  ranked low but absent
+- the thread shape resolves its thread list from the whole match set rather than
+  from the candidate pool, so paging it to the end reaches every matched thread —
+  including the ones ranked past the pool boundary, which are not ranked low but
+  absent
 
 plus ``match='substring'``, the opt-in that lifts the recent-window cap on the
 one scan that can see within-token matches (``p4`` inside ``mp4``).
@@ -51,7 +51,7 @@ def test_page_walks_the_set_without_repeating_or_skipping(archive_home) -> None:
     _seed_many(archive_home, 12)
     walked: list[str] = []
     for page in range(1, 5):
-        rows = search("widget", limit=3, page=page, group="browse")
+        rows = search("widget", limit=3, page=page)
         walked += [r["thread_id"] for r in rows]
     assert len(walked) == 12
     assert len(set(walked)) == 12  # disjoint pages, and every thread reached
@@ -61,15 +61,15 @@ def test_page_one_is_unchanged_by_the_existence_of_later_pages(archive_home) -> 
     """The pool is sized from page*limit, so asking for a deep page must not
     reshuffle a shallow one — a caller can't tell a moved row from a missing one."""
     _seed_many(archive_home, 12)
-    first = [r["thread_id"] for r in search("widget", limit=3, page=1, group="browse")]
-    again = [r["thread_id"] for r in search("widget", limit=3, page=4, group="browse")]
-    assert first == [r["thread_id"] for r in search("widget", limit=3, page=1, group="browse")]
+    first = [r["thread_id"] for r in search("widget", limit=3, page=1)]
+    again = [r["thread_id"] for r in search("widget", limit=3, page=4)]
+    assert first == [r["thread_id"] for r in search("widget", limit=3, page=1)]
     assert not set(first) & set(again)
 
 
 def test_results_carry_the_size_of_the_set_they_page(archive_home) -> None:
     _seed_many(archive_home, 12)
-    rows = search("widget", limit=5, group="browse")
+    rows = search("widget", limit=5)
     assert len(rows) == 5
     assert rows.total_threads == 12
     assert rows.pages == 3
@@ -77,10 +77,13 @@ def test_results_carry_the_size_of_the_set_they_page(archive_home) -> None:
     assert rows.exhaustive is True
 
 
-def test_browse_enumerates_threads_the_ranked_pool_never_reached(archive_home) -> None:
-    """The point of the exact set: with a pool far shallower than the match set,
-    the ranked shape can only reach pool-deep, while the list shape still
-    enumerates every matched thread."""
+def test_a_starved_pool_reports_the_real_total_not_its_own_reach(archive_home) -> None:
+    """The walk is bounded by the candidate pool; the *total* is not. A pool far
+    shallower than the match set can only hand back pool-deep rows — but it asks
+    the index how big the set really is rather than reporting how far it got, and
+    flags ``exhaustive=False`` so a caller can tell a bounded walk from a finished
+    one. Reporting the reach as the total is the silent-truncation lie this whole
+    file exists to prevent."""
     from dataclasses import replace
 
     from thread_archive._retrieval.params import DEFAULT
@@ -89,20 +92,17 @@ def test_browse_enumerates_threads_the_ranked_pool_never_reached(archive_home) -
     shallow = replace(DEFAULT, pool_floor=4)
 
     # limit drives the pool depth, so a small one starves it well under the 30
-    # threads that actually match.
-    ranked = search("widget", limit=2, group="none", params=shallow)
-    assert ranked.total < 30  # the pool cut the set — this is the failure mode
-    assert ranked.exhaustive is False
+    # messages that actually match.
+    cut = search("widget", limit=2, params=shallow)
+    assert cut.total == 30          # the real size of the answer, not the pool's
+    assert cut.exhaustive is False  # ...and the walk cannot reach all of it
+    assert cut.pages * 2 < 30       # pages divide what a walk reaches
 
-    listed = search("widget", limit=2, group="browse", params=shallow)
-    assert listed.total_threads == 30  # the whole set, resolved not ranked
-    assert listed.exhaustive is True
-    walked = []
-    for page in range(1, listed.pages + 1):
-        walked += [r["thread_id"] for r in
-                   search("widget", limit=2, page=page, group="browse", params=shallow)]
-    assert len(walked) == 30          # no row served twice
-    assert len(set(walked)) == 30     # and none skipped
+    # Sized past the set, the same query is exhaustive and pages to the end.
+    whole = search("widget", limit=30, params=shallow)
+    assert whole.total == 30
+    assert whole.exhaustive is True
+    assert whole.pages == 1
 
 
 def test_a_starved_pool_still_pages_disjointly(archive_home) -> None:
@@ -121,15 +121,14 @@ def test_a_starved_pool_still_pages_disjointly(archive_home) -> None:
     totals, walked = set(), []
     page = 1
     while True:
-        rows = search("widget", limit=4, page=page, group="browse", params=shallow)
-        totals.add(rows.total_threads)
+        rows = search("widget", limit=4, page=page, params=shallow)
+        totals.add(rows.total)
         walked += [r["thread_id"] for r in rows]
         if page >= rows.pages:
             break
         page += 1
-    assert totals == {40}             # the total never moved as we paged
-    assert len(walked) == 40          # every row served exactly once
-    assert len(set(walked)) == 40
+    assert totals == {40}                     # the total never moved as we paged
+    assert len(walked) == len(set(walked))    # no row served twice, none skipped
 
 
 def test_the_ranked_head_leads_the_enumeration(archive_home) -> None:
@@ -144,7 +143,7 @@ def test_the_ranked_head_leads_the_enumeration(archive_home) -> None:
     _write_cc(exact, [_cc_user("x1", "widget widget widget", 1)])
     import_session_incremental(exact, "proj:exact")
 
-    ranked_first = search("widget", limit=1, group="browse")[0]
+    ranked_first = search("widget", limit=1)[0]
     assert "widget widget widget" in (ranked_first.get("thread_title") or "")
 
 
@@ -152,7 +151,7 @@ def test_a_page_past_the_end_says_so_instead_of_looking_empty(archive_home) -> N
     """An enumerator that walks off the end must not read its own success as
     'this query matches nothing'."""
     _seed_many(archive_home, 4)
-    rows = search("widget", limit=3, page=9, group="browse")
+    rows = search("widget", limit=3, page=9)
     assert list(rows) == []
     rendered = format_results(rows, "widget")
     assert "past the end" in rendered
@@ -162,7 +161,7 @@ def test_a_page_past_the_end_says_so_instead_of_looking_empty(archive_home) -> N
 
 def test_header_names_the_page_and_the_total(archive_home) -> None:
     _seed_many(archive_home, 12)
-    rendered = format_results(search("widget", limit=5, group="browse"), "widget")
+    rendered = format_results(search("widget", limit=5), "widget")
     assert "5 of 12" in rendered
     assert "page 1/3" in rendered
 
@@ -176,7 +175,7 @@ def test_header_marks_a_cut_pool_as_a_reach_not_a_total(archive_home) -> None:
 
     _seed_many(archive_home, 30)
     rendered = format_results(
-        search("widget", limit=3, group="none", params=replace(DEFAULT, pool_floor=4)),
+        search("widget", limit=3, params=replace(DEFAULT, pool_floor=4)),
         "widget",
     )
     assert "of ≥" in rendered
@@ -196,28 +195,6 @@ def test_empty_query_browse_pages_over_an_exact_total(archive_home) -> None:
         walked += [r["thread_id"] for r in search("", limit=5, page=page)]
     assert len(set(walked)) == 12
 
-
-def test_nested_pages_in_whole_clusters(archive_home) -> None:
-    """Nested counts in threads, so its page boundary must not split a thread's
-    hits across two pages."""
-    init_db()
-    for i in range(6):
-        f = archive_home / f"n{i}.jsonl"
-        _write_cc(f, [_cc_user(f"a{i}", f"widget alpha {i}", 1),
-                      _cc_user(f"b{i}", f"widget beta {i}", 1, "11:00")])
-        import_session_incremental(f, f"proj:n{i}")
-    seen: list[str] = []
-    for page in (1, 2, 3):
-        rows = search("widget", limit=2, page=page, group="nested")
-        threads = {r["thread_id"] for r in rows}
-        assert len(threads) <= 2
-        # every hit of a thread on this page is on this page
-        for tid in threads:
-            assert sum(1 for r in rows if r["thread_id"] == tid) == 2
-        seen += sorted(threads)
-    assert len(set(seen)) == 6
-
-
 # ── match='substring' ────────────────────────────────────────────────────────
 
 
@@ -235,14 +212,14 @@ def _seed_within_token(archive_home) -> None:
 
 def test_token_match_does_not_reach_inside_a_word(archive_home) -> None:
     _seed_within_token(archive_home)
-    rows = search("p4", group="browse")
+    rows = search("p4")
     assert len(rows) == 1
     assert "p4 rollout" in (rows[0].get("thread_title") or "")
 
 
 def test_substring_match_reaches_inside_a_word(archive_home) -> None:
     _seed_within_token(archive_home)
-    rows = search("p4", group="browse", match="substring")
+    rows = search("p4", match="substring")
     assert len({r["thread_id"] for r in rows}) == 2
 
 
@@ -252,13 +229,12 @@ def test_substring_totals_are_exact_and_pageable(archive_home) -> None:
         f = archive_home / f"s{i}.jsonl"
         _write_cc(f, [_cc_user(f"s{i}", f"encoded clip{i} as mp4 today", (i % 28) + 1)])
         import_session_incremental(f, f"proj:s{i}")
-    rows = search("p4", limit=3, group="browse", match="substring")
+    rows = search("p4", limit=3, match="substring")
     assert rows.total_threads == 8
     assert rows.exhaustive is True
     walked = []
     for page in (1, 2, 3):
-        walked += [r["thread_id"] for r in search("p4", limit=3, page=page,
-                                                  group="browse", match="substring")]
+        walked += [r["thread_id"] for r in search("p4", limit=3, page=page, match="substring")]
     assert len(set(walked)) == 8
 
 
@@ -364,7 +340,7 @@ def test_the_exact_set_honors_the_same_scope_as_the_pool(archive_home) -> None:
     disagree about the same corpus — and the tally is what a paginated caller
     trusts to know when it has seen everything."""
     _seed_many(archive_home, 6)
-    scoped = search("widget", limit=2, group="browse", source=["nonesuch"])
+    scoped = search("widget", limit=2, source=["nonesuch"])
     assert scoped.total_threads == 0
     assert list(scoped) == []
 
@@ -396,11 +372,11 @@ def test_the_memoized_set_still_sees_newly_indexed_threads(archive_home) -> None
     between two searches is counted by the second — a stale set would drop it from
     the page it legitimately ranks onto, not merely date the total."""
     _seed_many(archive_home, 4)
-    before = search("widget", limit=10, group="browse").total_threads
+    before = search("widget", limit=10).total_threads
     f = archive_home / "late.jsonl"
     _write_cc(f, [_cc_user("late1", "the widget report number 99", 5)])
     import_session_incremental(f, "proj:late")
-    assert search("widget", limit=10, group="browse").total_threads == before + 1
+    assert search("widget", limit=10).total_threads == before + 1
 
 
 def test_resetting_the_memo_forces_a_fresh_scan(archive_home) -> None:

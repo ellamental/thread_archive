@@ -128,7 +128,7 @@ export interface SelfUpdateRecord extends HealthRecord {
   ok: boolean
   action?: 'updated' | 'update' | 'up-to-date' | 'blocked' | 'unavailable' | string
   current?: string
-  tag?: string
+  target?: string
   reason?: string
 }
 
@@ -250,7 +250,7 @@ export type Bucket = 'hour' | 'day'
 /** One bucket of served searches. `at` is its UTC start — `2026-07-26` for a day,
  *  `2026-07-26T14` for an hour. `warm`/`cold` are separate because a process's
  *  first search runs an order of magnitude slower than its thousandth; `unknown`
- *  is the window that predates the uptime field, kept apart rather than assumed.
+ *  is the window that predates the stage probe, kept apart rather than assumed.
  *  A bucket with no searches carries only `at` and `n: 0` — the span is dense, so
  *  a quiet stretch draws as a gap rather than closing up. */
 export interface ServedBucket {
@@ -261,6 +261,19 @@ export interface ServedBucket {
   unknown?: LatencyBand
 }
 
+/** One front door's traffic. `mcp-http` is the shared always-on server, which
+ *  warms at startup; `mcp-stdio` and `cli` are one process per call and pay that
+ *  load inside their first (and only) search, so they are near-entirely cold by
+ *  construction. `mcp` is unattributed — rows written before the surfaces
+ *  declared themselves, not a fourth door. */
+export interface SurfaceRow {
+  surface: string
+  n: number
+  n_cold: number
+  p50: number
+  p90: number
+}
+
 export interface Served {
   hours: number
   bucket: Bucket
@@ -268,7 +281,13 @@ export interface Served {
   n_unknown_regime: number
   buckets: ServedBucket[]
   warm: LatencyBand
+  /** Warm first-page searches with an ordinary limit — what asking a question
+   *  costs. Kept apart from `warm_bulk` (pagination sweeps, wide exports) so the
+   *  headline median measures the question, not the window's workload mix. */
+  warm_interactive: LatencyBand
+  warm_bulk: LatencyBand
   cold: LatencyBand
+  by_surface: SurfaceRow[]
 }
 
 export interface StageRow {
@@ -280,7 +299,7 @@ export interface StageRow {
 
 export interface Stages {
   n: number
-  /** Rows whose process age is unknown — included, but not provably warm. */
+  /** Rows the stage probe never touched — included, but not provably warm. */
   n_unproven: number
   stages: StageRow[]
 }
@@ -291,6 +310,9 @@ export interface Restarts {
   n: number
   bucket: Bucket
   buckets: { at: string; n: number }[]
+  /** Which daemon restarted. Several warm independently, so the total says how
+   *  much warming the box did and only this says how often one service bounced. */
+  by_surface: { surface: string; n: number }[]
   p50_ms: number
   total_s: number
 }
@@ -596,19 +618,10 @@ export interface SearchHit {
   // Ranked search only: how many of the query's terms literally appear in this
   // hit (the response's quality.n_terms is the denominator).
   term_hits?: number
-  // Other threads whose matching text is identical to this hit's — a forked
-  // session, a fleet of agents carrying one prompt. Folded into this row by the
-  // search rather than repeated as rows of their own.
-  dup_threads?: DupThread[]
   // Browse rows only (empty-query search: one row per thread, by last activity;
   // event_id is the thread's newest event — a ready tail anchor).
   thread_source?: string | null
   n_events?: number
-}
-
-export interface DupThread {
-  thread_id: string
-  title: string | null
 }
 
 // The top-hit match-quality verdict (the MCP header's signal): how much to
@@ -633,6 +646,20 @@ export interface SearchResponse {
   hits: SearchHit[]
   quality?: SearchQuality | null
   subjects?: SearchSubject[]
+  // ── where this page sits in the match set ────────────────────────────────
+  // `total` counts the *set*, not the page — messages for a ranked search, threads
+  // for a browse (`total_threads` carries the conversation count either way).
+  total?: number | null
+  total_threads?: number | null
+  /** The totals are floors: the set scan stopped at its cap. Render them as `N+`. */
+  capped?: boolean
+  /** Every match is reachable by paging. False for a ranked search whose candidate
+   *  pool saturated — the total is real, the walk is what stops at the pool, so
+   *  `pages` counts what paging reaches rather than what exists. */
+  exhaustive?: boolean
+  page?: number
+  pages?: number | null
+  page_size?: number
 }
 
 // Binary content on a block (a pasted screenshot, a tool-result image, a
@@ -760,9 +787,9 @@ export interface SearchFilters {
   until?: string
 }
 
-// One page of hits; when a response comes back full the UI says "top N" and
-// asks for a narrower query instead of pretending the list is complete.
-export const SEARCH_LIMIT = 40
+// Rows per page of search results (ranked hits, or browse rows). The set is
+// walked with ?page=, so this bounds one screen rather than the answer.
+export const SEARCH_PAGE_SIZE = 40
 
 // ── stats page ──────────────────────────────────────────────────────────────
 export interface StatsOverview {
@@ -1019,9 +1046,14 @@ export const api = {
   },
   threadTypes: () =>
     getJSON<{ types: ThreadTypeCount[] }>('/api/thread-types').then((d) => d.types),
-  // An empty q browses: one row per thread by last activity, same filters.
-  search: (q: string, filters: SearchFilters = {}) => {
-    const params = new URLSearchParams({ limit: String(SEARCH_LIMIT), q })
+  // An empty q browses: one row per thread by last activity, same filters. Both
+  // shapes page (1-based); the response says where the page sits in the set.
+  search: (q: string, filters: SearchFilters = {}, page = 1) => {
+    const params = new URLSearchParams({
+      limit: String(SEARCH_PAGE_SIZE),
+      q,
+      page: String(page),
+    })
     for (const key of ['source', 'since', 'until'] as const)
       if (filters[key]) params.set(key, filters[key])
     return getJSON<SearchResponse>('/api/search?' + params.toString())

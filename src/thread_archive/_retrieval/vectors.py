@@ -22,8 +22,8 @@ cap of a long message is semantically invisible (the embed provider truncates),
 and the vocab-mismatch queries the vector arm exists for are exactly the ones
 that can't fall back to keywords.
 
-Populated from the ``events_fts`` shadow's ``user`` / ``text`` / ``title`` /
-``summary`` pools via the ``[embeddings]`` provider (:mod:`.embed`). Cached durably in a ``vectors.sqlite``
+Populated from the ``events_fts`` shadow's ``user`` / ``text`` / ``title``
+pools via the ``[embeddings]`` provider (:mod:`.embed`). Cached durably in a ``vectors.sqlite``
 sidecar so the hours-long embed survives ``rm index.db && reindex``. Degrades to
 lexical-only when the extra isn't installed or nothing's indexed.
 """
@@ -41,6 +41,7 @@ from typing import Optional
 
 import numpy as np
 from sqlalchemy import text as sa_text
+from sqlalchemy.exc import OperationalError
 
 from .._store import get_engine, get_session
 from . import _probe
@@ -117,10 +118,10 @@ def _length_batched(pending: list, window: int) -> list:
     return out
 
 # Embedded content-type pools: user → default pool; text → scoped assistant pool;
-# title/summary → the thread-meta docs (thread-level aboutness).
+# title → the thread-meta doc (thread-level aboutness).
 _USER_CONTENT_TYPES = ("user",)
 _ASSISTANT_CONTENT_TYPES = ("text",)
-_META_CONTENT_TYPES = ("title", "summary")
+_META_CONTENT_TYPES = ("title",)
 
 # Process-local matrix cache: {(engine_id, cts): (validity_token, ids, ctypes, mat,
 # doc_inverse, doc_rep, scope_rows)}. Keys are canonicalized (sorted cts tuple) so
@@ -553,7 +554,7 @@ def index_events_local(
     phase=None,
     sort_window: int = _SORT_WINDOW,
 ) -> int:
-    """Compute event vectors in-process from the FTS shadow (user/text/title/summary
+    """Compute event vectors in-process from the FTS shadow (user/text/title
     pools), one vector per :data:`CHUNK_CHARS` chunk (long docs get several).
 
     ``rebuild=False`` only embeds docs with fewer vectors than their content needs
@@ -611,7 +612,7 @@ def index_events_local(
         "LEFT JOIN (SELECT event_id, content_type, count(*) AS nv FROM event_vectors "
         "           GROUP BY event_id, content_type) v "
         "  ON v.event_id = f.event_id AND v.content_type = f.content_type "
-        "WHERE f.content_type IN ('user', 'text', 'title', 'summary') "
+        "WHERE f.content_type IN ('user', 'text', 'title') "
         "AND f.content IS NOT NULL AND f.content != ''"
         f" GROUP BY f.event_id, f.content_type{missing}"
         f" ORDER BY f.event_id {order}" + limit
@@ -822,10 +823,35 @@ def _bump_version() -> None:
 def _validity_token(s) -> tuple:
     """Cheap cross-process staleness probe for the matrix cache. Catches inserts
     (max rowid grows) and deletes (count shrinks); an in-place upsert of an existing
-    row is invisible, which the in-process ``_write_version`` covers."""
-    row = s.execute(
-        sa_text("SELECT count(*), coalesce(max(rowid), 0) FROM event_vectors")
-    ).one()
+    row is invisible, which the in-process ``_write_version`` covers.
+
+    A store with no ``event_vectors`` table tokens as the empty store it is, rather
+    than raising. That state is reached without a write path having run
+    :func:`ensure_index` — a freshly rebuilt index (the restore drill's), a reader
+    opened against a store nothing has embedded into yet — and it is the same state
+    as a table holding zero rows, which every consumer already handles by degrading
+    to the lexical arm. Raising instead made the probe an error at the one seam
+    where "no vectors" is an ordinary answer, and a background refresh (which must
+    never raise) logged a traceback per rebuild for it. Creating the table here is
+    the wrong repair: a staleness probe is a read.
+
+    The table's absence is confirmed against ``sqlite_master`` rather than inferred
+    from the error, so a lock or a corrupt page still raises — those are not an
+    empty store and must not token as one. The confirmation runs only on the
+    failing path, leaving the probe one statement when the table is there."""
+    try:
+        row = s.execute(
+            sa_text("SELECT count(*), coalesce(max(rowid), 0) FROM event_vectors")
+        ).one()
+    except OperationalError:
+        s.rollback()  # the failed statement poisons the transaction for the re-probe
+        present = s.execute(
+            sa_text("SELECT 1 FROM sqlite_master WHERE name = :n"),
+            {"n": "event_vectors"},
+        ).scalar()
+        if present:
+            raise
+        return (_write_version, 0, 0)
     return (_write_version, int(row[0]), int(row[1]))
 
 
@@ -1162,9 +1188,19 @@ def search(
             from .code import path_scope_sql
 
             awhere.append(path_scope_sql(path, aparams, column="e.thread_id"))
+        # The mask only ever narrows rows the pack holds, so ids outside it are
+        # fetched to be discarded: a broad scope like ``source='claude-code'``
+        # selects 3.5M event ids to mask a pack of 272k, and 94% of them name rows
+        # the matrix does not contain. Restricting the fetch to embedded ids is the
+        # same intersection :func:`_knn` would compute anyway — the id set it ends
+        # up with is identical — moved to where it is an index probe instead of
+        # millions of rows through the driver and a numpy membership test over
+        # them. It is the id-scope twin of what :func:`_time_rows` does for a
+        # window, and for the same reason.
+        awhere.append("EXISTS (SELECT 1 FROM event_vectors v WHERE v.event_id = e.id)")
         # Bulk-fetch the in-scope ids in one buffered round-trip, not row-by-row:
-        # a broad time bound puts millions of ids in scope, and fetchone-per-row
-        # through the ORM spends seconds on Python overhead the numpy mask doesn't need.
+        # fetchone-per-row through the ORM spends seconds on Python overhead the
+        # numpy mask doesn't need.
         _t = time.perf_counter()
         with get_session() as s:
             rows = s.execute(

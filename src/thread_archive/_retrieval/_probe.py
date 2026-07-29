@@ -41,23 +41,24 @@ all the way down to the scan.
 
 ``set_ms`` is the fourth stage and the odd one out: the exact-set scan
 (:func:`~.fts.matched_threads` / :func:`~.fts.count_matches`) that answers *how
-many* rather than *which*. It rides no arm — it runs beside them, on the shapes
-that promise a caller a complete enumeration — and its cost scales with the match
-list rather than with the pool, so a search whose latency moved into this bucket
-moved there for a different reason than any of the three above.
+many* rather than *which*. It rides no arm — it runs beside them, whenever a
+saturated pool means the rows alone cannot say how big the answer was — and its
+cost scales with the match list rather than with the pool, so a search whose
+latency moved into this bucket moved there for a different reason than any of the
+three above.
 
 Everything above measures how the pool was *found*. :data:`SHAPE_SUBSTAGES`
-measures what happens to it afterwards — ranking, the coherence pass, grouping,
-the exact-set reconciliation, and the per-hit enrichments — and it is the half of
-a search that scales with the pool rather than with the corpus. That distinction
-is why it is worth its own group: an arm gets slower because the index or the
-matrix is slow, and these get slower because the pool is *large*, which a caller
-controls through ``over`` and ``group`` and an index tune cannot touch.
+measures what happens to it afterwards — ranking, the coherence pass, the
+same-anchor collapse, the exact-set count, and the per-hit enrichments — and it is
+the half of a search that scales with the pool rather than with the corpus. That
+distinction is why it is worth its own group: an arm gets slower because the index
+or the matrix is slow, and these get slower because the pool is *large*, which a
+caller controls through ``limit`` and an index tune cannot touch.
 
 Unlike the arms, these five run strictly in sequence, so they do sum — to the
 part of a search's latency that sits after its pool. ``extend_ms`` contains
-``set_ms`` (the exact-set scan runs inside the reconciliation), the one nesting
-in the set; the other four are disjoint.
+``set_ms`` (the exact-set scan is the work it times), the one nesting in the set;
+the other four are disjoint.
 """
 
 from __future__ import annotations
@@ -85,10 +86,10 @@ SEMANTIC_SUBSTAGES = ("embed_ms", "scope_ms", "matrix_ms", "knn_ms", "hydrate_ms
 FTS_SUBSTAGES = ("match_ms", "scan_ms", "rescan_ms", "build_ms")
 
 #: The post-pool half of a search, in the order it runs. ``rank_ms`` is the weighted
-#: lexical ranker, which a grouping shape makes run over the *whole* pool rather than
-#: just the cut; ``coherence_ms`` the corpus-graph head re-order; ``group_ms`` the
-#: anchor collapse and the thread fold; ``extend_ms`` the browse shape's exact-set
-#: reconciliation (and so the outer bound on ``set_ms``); ``enrich_ms`` the per-hit
+#: lexical ranker, which runs over the *whole* pool rather than just the cut, since
+#: the pool is what a walk pages over; ``coherence_ms`` the corpus-graph head re-order; ``group_ms`` the
+#: anchor collapse; ``extend_ms`` a saturated pool's exact-set count
+#: (and so the outer bound on ``set_ms``); ``enrich_ms`` the per-hit
 #: thread columns, titles, and context windows. Sequential, so unlike the arms these
 #: sum — to whatever a search spent after its pool was fused.
 SHAPE_SUBSTAGES = ("rank_ms", "coherence_ms", "group_ms", "extend_ms", "enrich_ms")

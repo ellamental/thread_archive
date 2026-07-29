@@ -89,6 +89,7 @@ testing = ["pytest>=8.0"]
 Homepage = "https://github.com/ellamental/thread_archive"
 Repository = "https://github.com/ellamental/thread_archive"
 Changelog = "https://github.com/ellamental/thread_archive/blob/main/CHANGELOG.md"
+Issues = "https://github.com/ellamental/thread_archive/issues"
 
 [project.scripts]
 # The single front door — setup wizard AND every operator verb, one namespaced
@@ -144,7 +145,6 @@ only-include = [
     "scripts",
     "search_lab",
     "CHANGELOG.md",
-    "claude-install.md",
     ".mcp.json.example",
 ]
 exclude = [
@@ -174,7 +174,7 @@ testpaths = ["tests"]
 # silently gates nothing.
 #
 # No `-q` here, deliberately: pytest's verbosity is cumulative, so an addopts
-# `-q` plus the `-q` every caller habitually types (the README's own line, the
+# `-q` plus the `-q` every caller habitually types (docs/install.md's own line, the
 # ci.toml rows) lands at -qq — which drops the `N passed in Xs` counts line
 # entirely. A green run then prints dots and nothing else, and the standard
 # `pytest … | grep -E 'passed|failed'` check comes back empty, indistinguishable

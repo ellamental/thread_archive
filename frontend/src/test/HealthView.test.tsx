@@ -45,7 +45,7 @@ function healthyStatus(): Status {
     },
     last_coverage: { at, ok: true, sources_checked: 2, failed: [], warnings: [], skips_recent: 0, drift_recent: 0 },
     last_source_mirror: { at, ok: true, copied: 3, files: 12, bytes_out: 4096, errors: 0 },
-    last_self_update: { at, ok: true, action: 'up-to-date', current: '0.9.1', reason: 'newest tag is installed' },
+    last_self_update: { at, ok: true, action: 'up-to-date', current: '0.9.1', reason: '0.9.1 is the newest release for this install' },
     source_last_import: { 'claude-code': at, codex: new Date(Date.now() - 3 * 86_400_000).toISOString() },
     pipeline: {
       ran: true,
@@ -249,8 +249,8 @@ it('prioritizes unresolved protection gaps and gives executable remedies', async
       notice({
         key: 'update',
         tone: 'good',
-        title: 'v0.9.2 is available',
-        detail: 'past soak window',
+        title: '0.9.2 is available',
+        detail: '0.9.2 is the newest release',
         command: 'thread-archive self-update',
       }),
     ],
@@ -263,7 +263,7 @@ it('prioritizes unresolved protection gaps and gives executable remedies', async
   expect(screen.getByRole('heading', { name: '1 protection gap' })).toBeInTheDocument()
   expect(screen.getByText('Protection failed at backup')).toBeInTheDocument()
   expect(screen.getByText('Backup is on the same filesystem as the archive')).toBeInTheDocument()
-  expect(screen.getByText('v0.9.2 is available')).toBeInTheDocument()
+  expect(screen.getByText('0.9.2 is available')).toBeInTheDocument()
   expect(screen.getByText('thread-archive nightly /Volumes/backup/thread-archive')).toBeInTheDocument()
   expect(screen.getByText('thread-archive self-update')).toBeInTheDocument()
 })

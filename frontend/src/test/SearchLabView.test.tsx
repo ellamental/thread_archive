@@ -73,14 +73,14 @@ function inventory(over: Partial<LabInventory> = {}): LabInventory {
         on_bench: ['beir:scifact[lexical]'],
       },
       {
-        name: 'arguana',
+        name: 'scidocs',
         family: 'beir',
-        harness: 'search_lab/beir_eval.py --dataset arguana',
-        download: { path: '/arguana', present: false },
+        harness: 'search_lab/beir_eval.py --dataset scidocs',
+        download: { path: '/scidocs', present: false },
         homes: [
           {
             label: 'corpus',
-            path: '/homes/arguana',
+            path: '/homes/scidocs',
             built: false,
             snapshot_id: null,
             counts: {},
@@ -88,7 +88,7 @@ function inventory(over: Partial<LabInventory> = {}): LabInventory {
             created_at: null,
           },
         ],
-        reference: { metric: 'nDCG@10', bm25: 0.315, dense: 0.48 },
+        reference: { metric: 'nDCG@10', bm25: 0.158, dense: 0.2 },
         on_bench: [],
       },
     ],
@@ -283,7 +283,7 @@ it('distinguishes a built corpus from one merely downloaded and one not here', a
 
   await screen.findByRole('heading', { name: 'Datasets' })
   expect(within(rowFor('scifact')).getByText('built')).toBeInTheDocument()
-  expect(within(rowFor('arguana')).getByText('available')).toBeInTheDocument()
+  expect(within(rowFor('scidocs')).getByText('available')).toBeInTheDocument()
   // A built corpus reports what it holds, so the page answers "is this worth
   // scoring on?" without opening the home.
   expect(within(rowFor('scifact')).getByText(/5,183 threads/)).toBeInTheDocument()
