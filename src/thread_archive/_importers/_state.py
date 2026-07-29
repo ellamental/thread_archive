@@ -238,6 +238,20 @@ def get_import_state(session: Session, source: str, source_id: str) -> Optional[
     ).scalars().first()
 
 
+def get_import_states(session: Session, source: str) -> dict[str, ImportState]:
+    """Every watermark ``source`` holds, keyed by ``source_id``.
+
+    For scan importers that must decide *which* items moved before paying to read
+    them: one query answers for the whole store, where a per-item
+    :func:`get_import_state` would make the decision cost a round trip each."""
+    return {
+        state.source_id: state
+        for state in session.execute(
+            select(ImportState).where(ImportState.source == source)
+        ).scalars()
+    }
+
+
 def upsert_import_state(
     session: Session,
     *,

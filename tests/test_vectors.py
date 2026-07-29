@@ -478,6 +478,48 @@ def test_ensure_index_migrates_prechunk_table(archive_home) -> None:
     assert vectors.index_vectors([(7, "user", 1, _unit((1, 1.0)))]) == 1
 
 
+def test_validity_token_reads_a_vectorless_store_as_empty(archive_home) -> None:
+    """An index nothing has embedded into has no ``event_vectors`` table at all —
+    the shape of a freshly rebuilt index, which is what the restore drill searches.
+    The probe must answer "empty store" there, not raise: the corpus graph's
+    background refresh reaches it on a read path and can only log the exception,
+    so a raise costs a traceback per rebuild for an ordinary state."""
+    from sqlalchemy import text as sa_text
+
+    from thread_archive._store import get_session
+
+    init_db()  # no ensure_index(): the table is genuinely absent
+    with get_session() as s:
+        assert not s.execute(sa_text(
+            "SELECT 1 FROM sqlite_master WHERE name = 'event_vectors'"
+        )).scalar(), "the case under test is an absent table, not an empty one"
+        assert vectors._validity_token(s) == (vectors._write_version, 0, 0)
+
+    # And the graph degrades to None rather than propagating the failure.
+    from thread_archive._retrieval import embed_graph
+
+    assert embed_graph.build() is None
+
+
+def test_validity_token_still_raises_when_the_table_exists(archive_home) -> None:
+    """The absent-table absorption is confirmed against sqlite_master, not inferred
+    from the error — a store whose table is present but unreadable is not empty, and
+    tokening it as empty would quietly serve an unbuilt graph as a built one."""
+    from sqlalchemy import text as sa_text
+
+    from thread_archive._store import get_session
+
+    init_db()
+    vectors.ensure_index()
+    with get_session() as s:
+        # Present in sqlite_master, unreadable through this name.
+        s.execute(sa_text("ALTER TABLE event_vectors RENAME TO event_vectors_moved"))
+        s.execute(sa_text("CREATE VIEW event_vectors AS SELECT * FROM missing_source"))
+        s.commit()
+        with pytest.raises(Exception):
+            vectors._validity_token(s)
+
+
 def test_knn_pools_chunks_before_topk_cut(archive_home) -> None:
     """Several strong chunks of one long doc count as ONE candidate: with cand=2,
     doc 2 still surfaces even though doc 1's three chunks all outscore it."""
@@ -709,6 +751,53 @@ def test_the_vector_arm_runs_beside_the_lexical_one(archive_home) -> None:
     assert all(t is not caller for t in emb.threads), "the vector arm stayed on the caller"
     assert all(emb.saw_probe), "the arm thread could not see the installed probe"
     assert probe.embed_ms > 0, "the arm's stages did not reach the caller's probe"
+
+
+def test_the_scope_mask_fetches_only_ids_the_pack_holds(archive_home) -> None:
+    """An id-scoped search masks the pack, so ids outside the pack are fetched only
+    to be discarded — on this corpus ``source='claude-code'`` selected 3.5M event ids
+    to mask 272k vectors, and the fetch was the search's dominant cost.
+
+    The mask now intersects ``event_vectors`` in SQL. That is the same intersection
+    the KNN applies anyway, so the *answer* must not move — which is what this pins,
+    from both sides: an in-scope embedded event still ranks, and a mountain of
+    in-scope events that were never embedded neither adds hits nor hides them."""
+    import json
+
+    from thread_archive import _api as ta
+
+    init_db()
+    emb = _FixedEmbedder()
+    lines = [{"type": "user", "uuid": "e1", "cwd": "/p", "timestamp": "2026-01-02T10:00:00Z",
+              "message": {"role": "user", "content": "vector search ranking embedded"}}]
+    f = archive_home / "embedded.jsonl"
+    f.write_text("\n".join(json.dumps(ln) for ln in lines) + "\n", encoding="utf-8")
+    ta.import_path(f)
+    assert vectors.index_events_local(embedder=emb) > 0
+
+    # Imported after the drain, so these carry the same source and sit in scope
+    # while owning no vector at all — exactly the rows the old mask paid to fetch.
+    later = archive_home / "unembedded.jsonl"
+    later.write_text("\n".join(json.dumps(
+        {"type": "user", "uuid": f"n{i}", "cwd": "/p",
+         "timestamp": f"2026-01-03T10:0{i}:00Z",
+         "message": {"role": "user", "content": "vector search ranking unembedded"}},
+    ) for i in range(5)) + "\n", encoding="utf-8")
+    ta.import_path(later)
+
+    from sqlalchemy import text as sa_text
+
+    from thread_archive._store import get_session
+    with get_session() as s:
+        source = s.execute(sa_text("SELECT source FROM threads LIMIT 1")).scalar()
+        embedded = {r[0] for r in s.execute(
+            sa_text("SELECT DISTINCT event_id FROM event_vectors")).fetchall()}
+
+    hits = vectors.search("vector search ranking", source=[source], embedder=emb) or []
+    assert hits, "the source-scoped vector arm returned nothing"
+    got = {h["event_id"] for h in hits}
+    assert got <= embedded, "the arm returned an event the pack does not hold"
+    assert got == embedded, "an embedded in-scope event went missing from the mask"
 
 
 def test_a_time_scoped_search_still_excludes_agent_threads(archive_home) -> None:

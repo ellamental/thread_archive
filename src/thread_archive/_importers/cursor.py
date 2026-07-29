@@ -5,6 +5,20 @@ open it read-only, extract every composer, and run the per-composer importer
 (incremental skip via the import_state cursor on ``lastUpdatedAt``). Pure
 ``_cursor_*`` / ``_build_cursor_messages`` helpers copied verbatim; orchestration
 rewired onto our store + ``assemble_events``.
+
+**The scan pays for what moved, not for what exists.** ``state.vscdb`` is the
+editor's whole key-value store, not a conversation file: it is hundreds of
+megabytes, the bubbles (message bodies) are the bulk of it, and Cursor rewrites
+some key in it constantly — so the watcher's mtime fingerprint advances many times
+an hour whether or not a conversation did. Two properties keep a no-op scan from
+costing the size of the store:
+
+* **Key ranges, never ``LIKE``.** ``key LIKE 'prefix%'`` is opaque to SQLite's
+  planner and degrades to a full table scan; the half-open range
+  :func:`_prefix_range` builds is an index seek on the key's unique index.
+* **Bubbles are read per stale composer.** ``lastUpdatedAt`` lives in the composer
+  blob, which is small, so the set of conversations that actually moved is known
+  before a single message body is read — and on the common pass that set is empty.
 """
 
 from __future__ import annotations
@@ -25,12 +39,22 @@ from ._result import DbScanResult
 from ._state import (
     create_thread,
     get_import_state,
+    get_import_states,
     get_thread_by_source,
     last_import_epoch_ms,
     upsert_import_state,
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _prefix_range(prefix: str) -> tuple[str, str]:
+    """``(lo, hi)`` bounding every key starting with ``prefix``, half-open.
+
+    ``hi`` increments the prefix's last character, which is the successor of every
+    string the prefix can begin — so ``lo <= key < hi`` selects exactly the prefix's
+    keys and SQLite serves it from the key index instead of scanning the table."""
+    return prefix, prefix[:-1] + chr(ord(prefix[-1]) + 1)
 
 
 @dataclass
@@ -41,7 +65,11 @@ class CursorImportResult:
 
 
 def import_cursor_db(db_path) -> DbScanResult:
-    """Open a Cursor ``state.vscdb`` and import every composer in it."""
+    """Open a Cursor ``state.vscdb`` and import every composer whose conversation moved.
+
+    Every composer counts as ``processed`` — the scan looked at all of them, and the
+    watcher's "checked" figure means what it says. Only the ones past their watermark
+    cost a bubble read."""
     import sqlite3
 
     db_path = Path(db_path)
@@ -59,7 +87,8 @@ def import_cursor_db(db_path) -> DbScanResult:
             return DbScanResult()
 
         for key, value in conn.execute(
-            "SELECT key, value FROM cursorDiskKV WHERE key LIKE 'composerData:%'"
+            "SELECT key, value FROM cursorDiskKV WHERE key >= ? AND key < ?",
+            _prefix_range("composerData:"),
         ):
             composer_id = key.replace("composerData:", "")
             try:
@@ -80,37 +109,44 @@ def import_cursor_db(db_path) -> DbScanResult:
                     )
                 continue
 
-        for key, value in conn.execute(
-            "SELECT key, value FROM cursorDiskKV WHERE key LIKE 'bubbleId:%'"
-        ):
-            parts = key.split(":")
-            if len(parts) < 3:
-                logger.warning("import_cursor_db: malformed bubble key %r; skipping", key)
-                continue
-            composer_id, bubble_id = parts[1], parts[2]
-            try:
-                data = json.loads(value)
-                data["_composerId"] = composer_id
-            except (json.JSONDecodeError, TypeError) as e:
-                # A corrupt bubble must not vanish on a silent `continue`. Keep a raw
-                # stub: if a header references it, the unknown-bubble path
-                # (_cursor_to_normalized) preserves it as a `message` event.
-                logger.warning(
-                    "import_cursor_db: bubble %s failed to parse; keeping raw stub: %s", key, e
-                )
-                data = {
-                    "_composerId": composer_id,
-                    "_parse_error": str(e),
-                    "_raw": value,
-                    "type": None,
-                }
-            bubbles[f"{composer_id}:{bubble_id}"] = data
+        # Which conversations moved — decided off the composer blobs alone, before
+        # any message body is read. A pass where nothing moved reads no bubbles.
+        stale = _cursor_stale_composers(composers)
+        for composer_id in stale:
+            for key, value in conn.execute(
+                "SELECT key, value FROM cursorDiskKV WHERE key >= ? AND key < ?",
+                _prefix_range(f"bubbleId:{composer_id}:"),
+            ):
+                parts = key.split(":")
+                if len(parts) < 3:
+                    logger.warning("import_cursor_db: malformed bubble key %r; skipping", key)
+                    continue
+                bubble_id = parts[2]
+                try:
+                    data = json.loads(value)
+                    data["_composerId"] = composer_id
+                except (json.JSONDecodeError, TypeError) as e:
+                    # A corrupt bubble must not vanish on a silent `continue`. Keep a raw
+                    # stub: if a header references it, the unknown-bubble path
+                    # (_cursor_to_normalized) preserves it as a `message` event.
+                    logger.warning(
+                        "import_cursor_db: bubble %s failed to parse; keeping raw stub: %s", key, e
+                    )
+                    data = {
+                        "_composerId": composer_id,
+                        "_parse_error": str(e),
+                        "_raw": value,
+                        "type": None,
+                    }
+                bubbles[f"{composer_id}:{bubble_id}"] = data
     finally:
         conn.close()
 
     summary = DbScanResult()
     for composer_id, composer_data in composers.items():
         summary.processed += 1
+        if composer_id not in stale:
+            continue
         composer_bubbles = {
             k: v for k, v in bubbles.items() if k.startswith(f"{composer_id}:")
         }
@@ -241,6 +277,30 @@ def _cursor_composer_unchanged(import_state: Optional[ImportState], composer_dat
         return False
     last_updated_ms = composer_data.get("lastUpdatedAt", 0)
     return last_updated_ms <= last_import_epoch_ms(import_state)
+
+
+def _cursor_stale_composers(composers: dict[str, dict[str, Any]]) -> set[str]:
+    """Of ``composers``, the ids whose conversation is past its watermark.
+
+    The same predicate :func:`_cursor_composer_unchanged` applies per composer inside
+    the import, hoisted to the whole scan so it can gate the bubble read. Deciding it
+    twice is deliberate: this set is an optimization the importer must not depend on,
+    and the inner check stays the authority for a composer imported by any other path.
+
+    A store that cannot be read yields every composer — the scan then behaves exactly
+    as it would with no watermarks at all, which is slow but never silently skips a
+    conversation."""
+    try:
+        with get_session() as session:
+            states = get_import_states(session, "cursor")
+    except Exception:  # noqa: BLE001 — an unreadable watermark must not skip an import
+        logger.warning("import_cursor_db: could not read cursor watermarks", exc_info=True)
+        return set(composers)
+    return {
+        composer_id
+        for composer_id, composer_data in composers.items()
+        if not _cursor_composer_unchanged(states.get(composer_id), composer_data)
+    }
 
 
 def _cursor_resolve_thread(session, import_state, source_id, composer_data) -> tuple[str, bool]:

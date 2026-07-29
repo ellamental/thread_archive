@@ -2,6 +2,42 @@
 
 ## Unreleased
 
+- **The README is a landing page; the reference moved to `docs/`.** The README's
+  reference sections now live as focused docs — `install.md`, `cli.md`,
+  `retrieval.md`, `mcp.md`, `web-viewer.md`, `architecture.md`, `stability.md`,
+  `import-drift.md`, `scope.md` — and the README itself is a short
+  first-impression page: pitch, quickstart, feature list, and a documentation
+  index. Content moved rather than changed; in-repo pointers to README sections
+  now name the docs files.
+- **A store with no vectors reads as empty rather than as an error.** The matrix
+  cache's staleness probe queried `event_vectors` unguarded, so an index nothing
+  has embedded into — no table at all, which is the shape of a freshly rebuilt one
+  — raised instead of answering "no vectors". The corpus graph's background refresh
+  reaches that probe on a read path and can only log what it catches, so every
+  restore drill (which rebuilds an index and then searches it, nightly) wrote a
+  page of traceback to the backup job's stderr for an ordinary state the graph
+  already degrades on. The probe now tokens an absent table as the empty store it
+  is, confirmed against `sqlite_master` so a lock or a corrupt page still raises —
+  those are not an empty store. Creating the table from the probe would be the
+  wrong repair: a staleness check is a read.
+- **An indexing batch no longer holds the embedding model for its whole run.** The model slot's use-lock serializes
+  forward passes on the shared model, so a document batch and a search query contend for it — and the query waits out
+  whatever pass is in flight. A 256-document drain holds the lock ~16s, which reaches a search as an *embed* that took
+  seconds on a process warm for an hour: measured 24ms idle against 1.1–2.2s with a batch running beside it, a 46–93×
+  penalty that reads as a slow pipeline and is a queue. The two collide in one process wherever serving and draining
+  share it — the watcher hosts the web viewer, and the MCP server runs the lazy catch-up whenever it owns the ingest
+  flock. `_encode` now takes the lock per `EMBED_BATCH_CHUNK` documents instead of per batch, bounding a query's wait
+  to one chunk (~1s) rather than the caller's whole batch. Throughput is unchanged — 256 docs encode at the same rate
+  whole or in sixteens, because the cost is per document — and the vectors are bit-identical, so nothing reindexes.
+- **An id-scoped semantic search no longer materializes ids the pack cannot hold.** The vector arm's scope mask —
+  what a `source`, `path`, `thread_id` or `agents='only'` scope builds — selected every matching event id from
+  `events`, then handed the array to a KNN that can only ever return rows the pack contains. On this corpus
+  `source='claude-code'` fetched 3.5M ids to mask 272k vectors: 94% of them named rows the matrix does not have, and
+  the fetch was the search's dominant cost (measured 2.0s end to end against 35ms unscoped, 1.3s of it in the mask).
+  The mask now intersects `event_vectors` in SQL, which is the same intersection the KNN applied anyway — the id set
+  it ends up with is identical — so the answer does not move and the cost roughly halves (2.0s → 1.1s; the mask
+  itself 1.3s → 0.6s). This is the id-scope twin of the fix that let a time window ride the pack's own dates, and
+  for the same reason: a mask should be built in the space it masks.
 - **The retrieval page's "typical search" excludes bulk sweeps.** Fixing the cold/warm classifier moved the warm pool
   from 12 rows to ~160, and most of the new rows were pagination walks (`limit=50`, pages deep into the corpus) and
   wide exports — real traffic, but different work, and pooling them lifted the headline median from ~0.15s to ~2.1s

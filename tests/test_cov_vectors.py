@@ -486,6 +486,42 @@ def test_embedder_degrades_after_one_failed_load(monkeypatch) -> None:
     assert attempts == [1]  # one load attempt, then the cached failure
 
 
+def test_a_document_batch_encodes_in_lock_sized_chunks(monkeypatch) -> None:
+    """The model's use-lock serializes forward passes, so an indexing batch and a
+    search query contend for it and the *query* waits out whatever pass is in
+    flight. One pass over a whole 256-doc batch holds it for seconds — which
+    reaches a search as an embed that took seconds on a long-warm process — so the
+    batch is encoded a chunk at a time and the lock is released between chunks.
+
+    Pinned through the model's own view: how many passes it was asked for and how
+    wide each was. The vectors are unchanged by the split (encoding is per
+    document), so order and count are pinned here too — a chunked path that
+    silently reordered or dropped a document would corrupt the index."""
+    _models_on(monkeypatch)
+
+    class _IndexedModel(_ScriptedModel):
+        """Returns a vector naming its input's position, so a reorder is visible."""
+
+        def encode(self, prefixed, **kw):
+            super().encode(prefixed, **kw)
+            return np.asarray([[float(p.rsplit(" ", 1)[-1])] * self.width
+                               for p in prefixed], dtype=self.dtype)
+
+    model = _IndexedModel(width=2)
+    e = embed.Embedder(model=model)
+    n = embed.EMBED_BATCH_CHUNK * 2 + 3
+    out = e.embed_documents([f"doc {i}" for i in range(n)])
+
+    assert [v[0] for v in out] == [float(i) for i in range(n)], "the batch came back reordered"
+    assert len(model.seen) == 3, "the batch was not split across passes"
+    assert [len(call) for call in model.seen] == [
+        embed.EMBED_BATCH_CHUNK, embed.EMBED_BATCH_CHUNK, 3]
+    # A query is one string, so it stays one pass and pays nothing for the loop.
+    model.seen.clear()
+    e.embed_query("a question")
+    assert len(model.seen) == 1
+
+
 def test_embed_query_prefixes_caps_and_short_circuits(monkeypatch) -> None:
     _models_on(monkeypatch)
     model = _ScriptedModel(width=2)

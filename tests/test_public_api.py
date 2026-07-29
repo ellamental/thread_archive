@@ -5,7 +5,7 @@ The public API is exactly four things: the retrieval tools
 to a person by the ``thread-archive search`` / ``thread-archive read`` verbs),
 the on-disk truth format (docs/format.md), the provider plugin API
 (``thread_archive.provider``, docs/providers.md), and the web viewer's URLs
-(README → "Web viewer"). Everything else — the rest of the
+(docs/web-viewer.md). Everything else — the rest of the
 ``thread_archive`` CLI, the ``_api`` coordination layer, every underscore-prefixed
 module — is private support machinery. These tests make
 widening the surface a deliberate act (edit the pinned sets here) instead of
