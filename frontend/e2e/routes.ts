@@ -49,7 +49,13 @@ export const ROUTES: SmokeRoute[] = [
     landmark: (page) => page.getByRole('heading', { name: 'Retrieval', level: 1 }),
   },
   {
-    // The other dev panel — same rule, same stamp.
+    // Operational histories that are useful only while developing the archive —
+    // same dev-panel gate, same shell stamp.
+    path: '/telemetry',
+    landmark: (page) => page.getByRole('heading', { name: 'Telemetry', level: 1 }),
+  },
+  {
+    // The benchmark inventory — the third dev panel, under the same gate.
     path: '/lab',
     landmark: (page) => page.getByRole('heading', { name: 'Search lab', level: 1 }),
   },

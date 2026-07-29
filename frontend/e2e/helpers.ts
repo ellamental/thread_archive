@@ -64,6 +64,86 @@ const retrieval = {
   },
 }
 
+const telemetry = {
+  home: '/tmp/browser-archive',
+  hours: 24,
+  at: now,
+  web: {
+    requests: 84,
+    errors: 1,
+    bytes: 260_000,
+    concurrent: 12,
+    p50: 14,
+    p95: 410,
+    p99: 960,
+    max: 1250,
+    retained_bytes: 4_500_000,
+    endpoints: [
+      {
+        method: 'GET',
+        path: '/api/search-lab',
+        n: 4,
+        errors: 0,
+        bytes: 90_000,
+        concurrent: 2,
+        p50: 340,
+        p95: 960,
+        p99: 960,
+        max: 960,
+      },
+      {
+        method: 'GET',
+        path: '/api/status',
+        n: 80,
+        errors: 1,
+        bytes: 170_000,
+        concurrent: 10,
+        p50: 12,
+        p95: 35,
+        p99: 80,
+        max: 120,
+      },
+    ],
+  },
+  ingest: {
+    hours: 24,
+    sources: {
+      codex: {
+        passes: 18,
+        items: 18,
+        events: 142,
+        lines: 790,
+        bytes: 520_000,
+        errors: 0,
+        pass_p50_ms: 14,
+        pass_p95_ms: 38,
+        total_s: 0.4,
+      },
+    },
+    stages: { write_ms: 120, parse_ms: 72, fts_ms: 40 },
+    maintenance: { passes: 3, total_s: 1.2, p95_ms: 580 },
+    embed: { passes: 2, embedded: 42, total_s: 4.8, p95_ms: 2700 },
+    retained_bytes: 930_000,
+  },
+  faults: [
+    {
+      signature: 'codex: failed to read <path>',
+      source: 'codex',
+      count: 10,
+      first: '2026-07-18T10:00:00Z',
+      last: now,
+      sample: 'codex: failed to read /tmp/session.jsonl',
+    },
+  ],
+  ledgers: [
+    { file: 'web-requests.jsonl', label: 'web requests', view: 'telemetry', bytes: 4_500_000, segments: 1 },
+    { file: 'ingest-runs.jsonl', label: 'ingest work', view: 'telemetry', bytes: 930_000, segments: 1 },
+    { file: 'retrieval-usage.jsonl', label: 'retrieval calls', view: 'retrieval', bytes: 460_000, segments: 1 },
+    { file: 'load-runs.jsonl', label: 'load runs', view: 'health', bytes: 12_000, segments: 1 },
+    { file: 'ingest-errors.jsonl', label: 'ingest faults', view: 'telemetry', bytes: 2_000, segments: 1 },
+  ],
+}
+
 // The lab page is an inventory, so the fixture's job is to carry one of every
 // *state* rather than a plausible bench: a benchmark row that can run and one
 // whose corpus is absent, and a corpus built / merely downloaded / not here at
@@ -681,6 +761,7 @@ export async function mockApi(page: Page): Promise<string[]> {
     if (path === '/api/stats') return json(route, stats)
     if (path === `/api/stats/model/${MODEL}`) return json(route, modelStats)
     if (path === '/api/retrieval') return json(route, retrieval)
+    if (path === '/api/telemetry') return json(route, telemetry)
     if (path === '/api/search-lab') return json(route, searchLab)
     if (path === '/api/search-lab/runs') return json(route, searchLabRuns)
     if (/^\/api\/search-lab\/runs\/[^/]+\/queries$/.test(path))

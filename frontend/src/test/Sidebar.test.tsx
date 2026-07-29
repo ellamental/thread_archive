@@ -94,16 +94,18 @@ describe('dev panels in the rail', () => {
   it('keeps the retrieval report out of the navigation by default', () => {
     renderAt('/')
     expect(screen.queryByRole('link', { name: 'retrieval' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('link', { name: 'telemetry' })).not.toBeInTheDocument()
     expect(screen.queryByRole('link', { name: 'lab' })).not.toBeInTheDocument()
   })
 
-  it('names both panels once the shell says the operator asked for them', () => {
+  it('names the developer panels once the shell says the operator asked for them', () => {
     const meta = document.createElement('meta')
     meta.setAttribute('name', 'thread-archive-dev-panels')
     meta.setAttribute('content', '1')
     document.head.appendChild(meta)
     renderAt('/')
     expect(screen.getByRole('link', { name: 'retrieval' })).toHaveAttribute('href', '/retrieval')
+    expect(screen.getByRole('link', { name: 'telemetry' })).toHaveAttribute('href', '/telemetry')
     expect(screen.getByRole('link', { name: 'lab' })).toHaveAttribute('href', '/lab')
   })
 })

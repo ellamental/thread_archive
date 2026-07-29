@@ -340,6 +340,91 @@ export interface RetrievalReport {
   bench: Record<string, BenchPoint[]> | null
 }
 
+// --- developer telemetry ---------------------------------------------------
+// These are summaries over retained operational ledgers, not corpus statistics.
+// The page is mounted only when the served shell enables developer panels.
+
+export interface TelemetryWebEndpoint {
+  method: string
+  path: string
+  n: number
+  errors: number
+  bytes: number
+  concurrent: number
+  p50: number
+  p95: number
+  p99: number
+  max: number
+}
+
+export interface TelemetryWeb {
+  requests: number
+  errors: number
+  bytes: number
+  concurrent: number
+  p50: number
+  p95: number
+  p99: number
+  max: number
+  endpoints: TelemetryWebEndpoint[]
+  retained_bytes: number
+}
+
+export interface TelemetryIngestSource {
+  passes: number
+  items: number
+  events: number
+  lines: number
+  bytes: number
+  errors: number
+  pass_p50_ms: number
+  pass_p95_ms: number
+  total_s: number
+}
+
+export interface TelemetryBackgroundWork {
+  passes: number
+  total_s: number
+  p95_ms: number
+  embedded?: number
+}
+
+export interface TelemetryIngest {
+  hours: number
+  sources: Record<string, TelemetryIngestSource>
+  stages: Record<string, number>
+  maintenance: TelemetryBackgroundWork
+  embed: TelemetryBackgroundWork
+  retained_bytes: number
+}
+
+export interface TelemetryFault {
+  signature: string
+  source: string
+  count: number
+  first: string
+  last: string
+  sample: string
+}
+
+export interface TelemetryLedger {
+  file: string
+  label: string
+  view: 'telemetry' | 'retrieval' | 'health' | string
+  bytes: number
+  segments: number
+}
+
+export interface TelemetryReport {
+  home: string
+  hours: number
+  at: string
+  web: TelemetryWeb
+  ingest: TelemetryIngest
+  faults: TelemetryFault[]
+  ledgers: TelemetryLedger[]
+}
+
 // --- the search lab's inventory --------------------------------------------
 // What the bench has to measure with, as opposed to what it measured. Every row
 // is read off the lab's own registries, so this describes the box rather than a
@@ -1085,6 +1170,9 @@ export const api = {
   // is invisible in a 14-day median for a week. A dev page: the report is the
   // search lab's, so an install without the lab answers 404 and the view says so.
   retrieval: (hours = 14 * 24) => getJSON<RetrievalReport>(`/api/retrieval?hours=${hours}`),
+  // Developer survey over the operational ledgers that do not have their own
+  // page. Windowed because retained histories grow indefinitely.
+  telemetry: (hours = 24) => getJSON<TelemetryReport>(`/api/telemetry?hours=${hours}`),
   // What the bench has on hand: benchmark rows and whether each can run, and the
   // corpora on disk and what they hold. A dev page like `retrieval` and for the
   // same reason — the inventory is the search lab's, and an install has no lab to

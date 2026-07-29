@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- **The viewer has a developer telemetry page.** Web endpoint latency and errors,
+  ingest throughput and stage cost, retained ingest-fault signatures, and the
+  operational ledger inventory are readable together at `/telemetry`; the route
+  and navigation exist only when developer panels are enabled.
 - **PerLTQA's standing measurement is a deterministic 2,000-question sample.**
   The complete 8,588-question set costs about 44 minutes across its lexical and
   vector arms; the hash sample preserves coverage across people and memory types,

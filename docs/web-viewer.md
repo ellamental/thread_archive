@@ -33,10 +33,11 @@ new route without a browser case reds the suite.
 
 **Dev panels** are the exception to the table above, and deliberately not part of
 its contract. `/retrieval` reports on the search *pipeline* — served latency by
-warm and cold regime, per-stage costs — and `/lab` reports on what the bench has
-to measure it with. Both are maintainer's instruments rather than anything the
-archive is for, so **a viewer does not have them unless its operator asks**: one
-line in the home's `config.json`,
+warm and cold regime, per-stage costs; `/telemetry` reports web endpoint latency,
+ingest cost, folded ingest faults, and retained ledger size; and `/lab` reports
+on what the bench has to measure it with. These are maintainer instruments rather
+than anything the archive is for, so **a viewer does not have them unless its
+operator asks**: one line in the home's `config.json`,
 
 ```json
 { "dev_panels": true }
@@ -46,11 +47,12 @@ which `thread-archive web dev` writes and `web --no-dev` clears. The server
 stamps that answer onto every shell it serves and the app mounts their routes
 only when it is there, so without the line those addresses route nowhere — not
 hidden behind an unadvertised link, absent. It is read per request: flipping the
-line lands on the next page load, with nothing to restart. Their data comes from
-`search_lab/`, which lives in the source repo and not in an install, so a `pip
-install` serves a `404` there even with the line set, and the page says so.
+line lands on the next page load, with nothing to restart. Retrieval and lab data
+come from `search_lab/`, which lives in the source repo and not in an install, so
+a `pip install` serves a `404` for those endpoints even with the line set, and
+their pages say so. Telemetry reads the package's own operational ledgers.
 
-Everything under `/api/` other than those two backs the viewer's own bundle and
+Everything under `/api/` other than those three backs the viewer's own bundle and
 is private — it changes with the frontend. So is the markup: the interface is
 the URL, not the DOM. No page view touches the conversation record; the stats
 pages do fold a derived rollup into the index, which is the rebuildable

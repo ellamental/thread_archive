@@ -122,3 +122,25 @@ it('routes the lab once the shell says the operator asked for the dev panels', a
 
   expect(await screen.findByRole('heading', { name: 'Search lab', level: 1 })).toBeInTheDocument()
 })
+
+it('routes telemetry only when developer panels are enabled', async () => {
+  const requested = recordRequests()
+  mswJson('/api/threads', { threads: [] })
+  mswJson('/api/sources', { sources: [] })
+  render(
+    <MemoryRouter initialEntries={['/telemetry']}>
+      <App />
+    </MemoryRouter>,
+  )
+  expect(document.querySelector('.content')).toBeEmptyDOMElement()
+  expect(requested.some((url) => url.startsWith('/api/telemetry'))).toBe(false)
+
+  stampDevPanels()
+  mswError('/api/telemetry', 503, 'offline')
+  render(
+    <MemoryRouter initialEntries={['/telemetry']}>
+      <App />
+    </MemoryRouter>,
+  )
+  expect(await screen.findByText(/Could not load telemetry/)).toBeInTheDocument()
+})

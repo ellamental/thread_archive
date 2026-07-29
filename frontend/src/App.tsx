@@ -10,6 +10,7 @@ import { StatsView } from './components/StatsView'
 import { ModelStatsView } from './components/ModelStatsView'
 import { HealthView } from './components/HealthView'
 import { RetrievalView } from './components/RetrievalView'
+import { TelemetryView } from './components/TelemetryView'
 import { SearchLabView } from './components/SearchLabView'
 import { BenchRunView } from './components/BenchRunView'
 import { UploadView } from './components/UploadView'
@@ -97,6 +98,7 @@ export function App() {
             {dev && (
               <>
                 <Route path="/retrieval" element={<RetrievalView />} />
+                <Route path="/telemetry" element={<TelemetryView />} />
                 <Route path="/lab" element={<SearchLabView />} />
                 <Route path="/lab/run/:id" element={<BenchRunView />} />
               </>

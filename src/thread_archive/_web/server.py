@@ -972,6 +972,18 @@ def route(
         limit = int(models) if models and models.isdigit() else None
         return _ok(api.stats(model_limit=limit))
 
+    if path == "/api/telemetry":
+        # Developer instrument over the append-only operational ledgers. This is
+        # intentionally separate from status/stats: it reads retained histories,
+        # which is useful on demand and wasteful on every ordinary page load.
+        from .telemetry import report as telemetry_report
+
+        paths = api.open_archive()
+        return _ok(telemetry_report(
+            paths.home,
+            hours=_int(params, "hours", 24, hi=365 * 24),
+        ))
+
     if path.startswith("/api/stats/model/"):
         # Per-model drill-down. The tail is the model name — taken whole (model ids
         # like 'deepseek/deepseek-v4-pro' contain slashes) and percent-decoded (the

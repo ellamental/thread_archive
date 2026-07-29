@@ -87,6 +87,13 @@ export function Sidebar({
               retrieval
             </Link>
             <Link
+              className={'rail-link' + (pathname === '/telemetry' ? ' active' : '')}
+              to="/telemetry"
+              onClick={onClose}
+            >
+              telemetry
+            </Link>
+            <Link
               // A run's own page is still the lab, so the rail keeps its mark:
               // an unlit nav on a page reached from it reads as having left.
               className={'rail-link' + (pathname.startsWith('/lab') ? ' active' : '')}

@@ -165,6 +165,82 @@ def test_disk_endpoint(archive_home):
     assert "disk" not in _get("/api/status")[2]
 
 
+def test_telemetry_endpoint_assembles_web_ingest_faults_and_ledger_cost(archive_home):
+    """The developer page reads the retained ledgers without moving their data
+    into a second metrics store."""
+    from datetime import datetime, timezone
+
+    from thread_archive._ops import ingest_errors, ledger
+    from thread_archive._watcher import ingest_log
+    from thread_archive._web import metrics
+
+    at = datetime.now(timezone.utc).isoformat()
+    for row in (
+        {"at": at, "path": "/api/status", "status": 200,
+         "duration_ms": 10.0, "size": 100},
+        {"at": at, "path": "/api/status", "status": 503,
+         "duration_ms": 50.0, "size": 20, "concurrent": 2},
+        {"at": at, "path": "/api/upload", "method": "POST", "status": 201,
+         "duration_ms": 100.0, "size": 10},
+    ):
+        ledger.append(archive_home / metrics.LEDGER_FILE, row, max_bytes=1 << 20)
+    ledger.append(
+        archive_home / ingest_log.LEDGER_FILE,
+        {
+            "at": at,
+            "kind": "ingest-pass",
+            "source": "codex",
+            "pass_ms": 25.0,
+            "items": 1,
+            "events": 8,
+            "lines": 20,
+            "bytes": 400,
+            "parse_ms": 5.0,
+            "write_ms": 10.0,
+            "total_ms": 15.0,
+        },
+        max_bytes=1 << 20,
+    )
+    ingest_errors.record(["codex: could not parse /tmp/session-123.jsonl"], home=archive_home)
+
+    status, ctype, payload = _get("/api/telemetry", hours=24)
+
+    assert status == 200 and ctype == "application/json"
+    assert payload["hours"] == 24
+    assert payload["web"]["requests"] == 3
+    assert payload["web"]["errors"] == 1
+    assert payload["web"]["concurrent"] == 1
+    assert payload["web"]["endpoints"][0]["path"] == "/api/upload"
+    status_row = next(
+        row for row in payload["web"]["endpoints"] if row["path"] == "/api/status"
+    )
+    assert status_row["n"] == 2 and status_row["errors"] == 1
+    assert payload["ingest"]["sources"]["codex"]["events"] == 8
+    assert payload["ingest"]["stages"]["write_ms"] == 10.0
+    assert payload["faults"][0]["source"] == "codex"
+    ledgers = {row["file"]: row for row in payload["ledgers"]}
+    assert ledgers["web-requests.jsonl"]["bytes"] > 0
+    assert ledgers["ingest-runs.jsonl"]["segments"] == 1
+
+
+def test_telemetry_endpoint_honors_its_window(archive_home):
+    from datetime import datetime, timezone
+
+    from thread_archive._ops import ledger
+    from thread_archive._web import metrics
+
+    for at in ("2020-01-01T00:00:00+00:00", datetime.now(timezone.utc).isoformat()):
+        ledger.append(
+            archive_home / metrics.LEDGER_FILE,
+            {"at": at, "path": "/api/status", "status": 200,
+             "duration_ms": 10.0, "size": 1},
+            max_bytes=1 << 20,
+        )
+
+    payload = _get("/api/telemetry", hours=1)[2]
+    assert payload["web"]["requests"] == 1
+
+
 #: The dev pages are fed by the search lab, which ships in the source tree and is
 #: excluded from the wheel, so a packaged install serves none of them and the routes
 #: below 404 by design — the shape ``tests/install/`` runs this suite in. Gate on

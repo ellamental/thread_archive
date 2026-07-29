@@ -1,9 +1,11 @@
 // The dev panels: the views whose subject is the machinery rather than the
-// archive — the retrieval report (`/retrieval`) and the search lab (`/lab`).
+// archive — the retrieval report (`/retrieval`), operational telemetry
+// (`/telemetry`), and the search lab (`/lab`).
 //
-// They report on the search *pipeline* and on what the bench has to measure it
-// with: a maintainer's instruments, of no use to someone who came here to read
-// their conversations. So a viewer does not have them unless its operator says
+// They report on the search *pipeline*, retained operational histories, and what
+// the bench has to measure with: maintainer instruments, of no use to someone
+// who came here to read their conversations. So a viewer does not have them
+// unless its operator says
 // so — not merely unadvertised, unrouted: App mounts their routes only when this
 // returns true, and until then those addresses are as unknown as any other.
 //
