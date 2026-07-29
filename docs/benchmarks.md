@@ -79,12 +79,11 @@ floor of several points and never read a small delta on it.
 ### Free — `beir_eval.py` already supports these
 
 [beir_eval.py](../search_lab/beir_eval.py) carries published BM25 and dense
-references for 13 BEIR datasets; four are on the bench. Adding another is a
+references for 12 BEIR datasets; four are on the bench. Adding another is a
 `--dataset` value and CPU time.
 
 | dataset | docs | embed | why it would be informative |
 |---|---|---|---|
-| `arguana` | 8.7K | ~19 min | counterargument retrieval over long passages. Cheap to build and **expensive to keep**: its 1,406 queries are each an entire document, so a pass costs over an hour of query time — the worst value-per-minute on the list, and why it is off the bench |
 | `scidocs` | 25.6K | ~1 hr | title+abstract, citation relevance — no *named* sensitivity, which is why it is not on the bench |
 | `fiqa` | 57.6K | ~2 hr | financial QA with conversational query shapes — but MTRAG ships the same FiQA corpus chunked to passages, so a row here would measure one corpus twice |
 | `quora` | 523K | ~19 hr | near-paraphrase duplicate detection. High lexical overlap, so it isolates the semantic arm — and its 10K queries make it the heaviest *recurring* row on the list, which is what keeps it off |

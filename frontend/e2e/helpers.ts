@@ -158,14 +158,14 @@ const searchLab = {
       on_bench: ['beir:nfcorpus[lexical]'],
     },
     {
-      name: 'arguana',
+      name: 'scidocs',
       family: 'beir',
-      harness: 'search_lab/beir_eval.py --dataset arguana',
-      download: { path: '/Users/test/.cache/thread-evals/arguana', present: false },
+      harness: 'search_lab/beir_eval.py --dataset scidocs',
+      download: { path: '/Users/test/.cache/thread-evals/scidocs', present: false },
       homes: [
         {
           label: 'corpus',
-          path: '/Users/test/.cache/thread-evals/homes/arguana',
+          path: '/Users/test/.cache/thread-evals/homes/scidocs',
           built: false,
           snapshot_id: null,
           counts: {},
@@ -173,7 +173,7 @@ const searchLab = {
           created_at: null,
         },
       ],
-      reference: { metric: 'nDCG@10', bm25: 0.315, dense: 0.48 },
+      reference: { metric: 'nDCG@10', bm25: 0.158, dense: 0.2 },
       on_bench: [],
     },
   ],

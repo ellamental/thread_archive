@@ -106,15 +106,32 @@ class Watcher:
         self._lag_s: Optional[float] = None
 
     def _record_errors(self, errors: list[str]) -> None:
-        """Surface poll errors into ``<home>/health.json`` (``watch_errors_last``),
-        throttled to once a minute so a persistently broken source doesn't churn
-        the file every poll. Log lines alone leave a failing source invisible to
-        ``thread-archive status`` and anything watching health — a provider format
-        change could stall one source's ingest for weeks while everything looks
-        green. The record's age is the recency signal; ``count_since_start``
-        distinguishes a one-off from a streak. Fail-soft: recording is advisory
-        and must never take the poll loop down."""
+        """Surface poll errors two ways: the current state, and the durable record.
+
+        ``health.json``'s ``watch_errors_last`` is the *state* — the last five
+        messages and a running count, throttled to once a minute so a persistently
+        broken source doesn't churn the file every poll. It answers "is ingest
+        healthy right now", which is what ``thread-archive status`` and anything
+        watching health need, and it is cleared once a poll comes back green.
+
+        Being cleared is why it cannot be the only record. A fault that ran for two
+        days and then resolved leaves ``health.json`` saying nothing happened, while
+        the conversations it failed to capture are gone from the harness on the
+        harness's own schedule. :mod:`.._ops.ingest_errors` keeps the history, folded
+        by signature so a fault that fires every poll costs a handful of rows.
+
+        The ledger is written ahead of the throttle: the throttle exists to spare
+        ``health.json`` a rewrite, and applying it to the ledger would drop the first
+        sighting of a new fault whenever an old one had written recently. Fail-soft
+        throughout: recording is advisory and must never take the poll loop down."""
         self._errors_total += len(errors)
+        try:
+            from .._config import resolve_paths
+            from .._ops import ingest_errors
+
+            ingest_errors.record(errors, home=resolve_paths().home)
+        except Exception:  # noqa: BLE001 — advisory; the loop must survive
+            logger.debug("watch: could not record poll errors in the ledger", exc_info=True)
         now = time.monotonic()
         if self._errors_recorded_at is not None and now - self._errors_recorded_at < 60:
             return
@@ -582,6 +599,7 @@ class Watcher:
         it running lockless for good (see :meth:`_run_loop`)."""
         from .lazy import acquire_ingest_owner
 
+        self._check_schema()
         self._owner_fd = acquire_ingest_owner()
         if self._owner_fd is None:
             logger.warning(
@@ -591,6 +609,48 @@ class Watcher:
             self._run_loop()
         finally:
             self._release_owner()
+
+    def _check_schema(self) -> None:
+        """Name a model/index schema mismatch at startup, before it can only be read
+        as thousands of failing imports.
+
+        A daemon holds its declared models for its whole lifetime, so an index
+        migrated (or rebuilt, or restored) underneath a running one leaves the two
+        disagreeing until something restarts the process. Every import then fails on
+        the first column the daemon expects and the index lacks — the same opaque
+        ``no such column`` per session, per poll, for as long as it takes someone to
+        notice. The condition is one PRAGMA sweep to detect and is invisible from the
+        symptom, which names a column rather than the disagreement that explains it.
+
+        Advisory, and deliberately non-fatal: capture is the product, a mismatch is
+        usually *partial* (an absent column costs the queries that touch it, not all
+        of them), and a daemon that refuses to start captures nothing at all. So it
+        reports and runs. Recording it under its own health key is what makes it
+        legible while it lasts — ``watch_errors_last`` would carry the symptom, and
+        only for as long as the errors keep coming."""
+        try:
+            from .._ops.health import clear_health, record_health
+            from .._ops.verify import _verify_schema
+
+            schema = _verify_schema()
+            if schema.get("ok"):
+                clear_health("schema_mismatch_last")
+                return
+            missing = {
+                k: schema.get(k) or []
+                for k in ("missing_tables", "missing_columns",
+                          "missing_indexes", "missing_unique_constraints")
+                if schema.get(k)
+            }
+            logger.error(
+                "watch: index schema is behind the declared models — imports touching "
+                "the missing objects will fail until the index is rebuilt "
+                "(`thread-archive index rebuild`). Missing: %s",
+                "; ".join(f"{k.removeprefix('missing_')}: {', '.join(v)}" for k, v in missing.items()),
+            )
+            record_health("schema_mismatch_last", missing)
+        except Exception:  # noqa: BLE001 — advisory; a check must not stop capture
+            logger.debug("watch: could not check the index schema", exc_info=True)
 
     def _release_owner(self) -> None:
         """Release the ingest-owner lock if held; idempotent. Closing the fd

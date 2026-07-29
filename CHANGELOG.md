@@ -2,6 +2,61 @@
 
 ## Unreleased
 
+- **`arguana` is off the benchmark candidate list.** Counterargument retrieval over
+  standalone argument passages is not the task this archive serves, and the row it
+  would have bought was already the worst value-per-minute on the page — 1,406
+  queries that are each an entire document, over an hour of query time per pass.
+  Dropped from `beir_eval.REFERENCE` (so the lab inventory no longer lists it) and
+  from `docs/benchmarks.md`; the built corpus and download are deleted from the
+  eval cache. The BEIR `ignore_identical_ids` self-hit rule stays — it is the
+  published protocol, not an arguana accommodation.
+- **A schema mismatch is reported as itself, not as thousands of failing imports.**
+  A daemon holds its declared models for its whole lifetime, so an index migrated,
+  rebuilt, or restored underneath a running one leaves the two disagreeing until
+  something restarts the process — and every import then fails on the first column
+  the daemon expects and the index lacks. What that looks like is one opaque `no
+  such column` per session, per poll, for as long as it takes someone to notice
+  (4,832 of them in a day here, naming a column and never the disagreement that
+  explains it). The watcher now runs the existing schema introspection at startup,
+  records a mismatch under its own health key, and raises a notice naming the
+  repair. Deliberately non-fatal: a mismatch is usually partial, and a daemon that
+  refuses to start captures nothing at all.
+- **A capture failure says how big it is.** The `watch-errors` notice reported one
+  failed poll and a source that had failed every poll for a day identically, and
+  the second is the one that means conversations are being lost while the harness
+  prunes them on its own schedule. It now carries the failure count the health
+  record already held.
+- **A notice's identity survives its count crossing a thousand.** `_fingerprint`
+  elides digits so a silence tracks the condition rather than the number in it, but
+  it elided them one run at a time — so a grouped `4,832` hashed differently from
+  `12` and an operator's dismissal expired exactly when the fault got bad enough to
+  need a thousands separator. Grouped digits are now one number to the shape.
+- **A Cursor poll costs what moved, not what the store holds.** `state.vscdb` is
+  the editor's whole key-value store — 759 MB here, 37k message bodies — and Cursor
+  writes to it constantly, so the watcher's mtime fingerprint advanced many times an
+  hour whether or not a conversation did. Each of those polls read and JSON-parsed
+  every bubble in the store (264 MB) to discover, from the composer blobs, that
+  nothing had changed: 4.6s per pass, 90% of the watch loop's total, for a source
+  that produced zero events in five days. Two changes: the key scans use half-open
+  ranges instead of `LIKE` (opaque to SQLite's planner, so `LIKE 'composerData:%'`
+  degraded to a full table scan of the 759 MB table — 785ms, against 2ms for the
+  index seek), and the set of composers past their watermark is now computed from
+  the composer blobs alone, so bubbles are read only for conversations that actually
+  moved. Measured on the live store: **4,606ms → 15ms**, with the same
+  `processed` count, so the watcher's "checked" figure still means what it says.
+- **Ingest faults now have a durable record: `<home>/ingest-errors.jsonl`.** Every
+  existing fault signal was perishable or lossy — `watch_errors_last` keeps the last
+  five messages and is *cleared on green*, `ingest-runs.jsonl` keeps a count with no
+  messages, and the messages themselves only reached the daemon's stderr, which
+  nothing reads and nothing bounds (36 MB here). That left the one question an
+  archive most needs answered — "was ingest ever broken, for how long, how badly" —
+  answerable only by a human opening a log. A two-day file-descriptor exhaustion
+  that fired 64,648 times and then resolved left no trace at all. Rows fold by
+  signature (ids, paths, and numbers normalized out) and are written at powers of
+  ten, so a fault that fires 65,000 times costs five rows and first sightings are
+  never delayed. Replaying this install's real watcher log: 77,640 messages → 114
+  rows, 51 KB. `thread-archive status` grew a `faults:` line reporting the history
+  the `watch:` line above it is designed to forget.
 - **The README is a landing page; the reference moved to `docs/`.** The README's
   reference sections now live as focused docs — `install.md`, `cli.md`,
   `retrieval.md`, `mcp.md`, `web-viewer.md`, `architecture.md`, `stability.md`,

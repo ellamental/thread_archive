@@ -78,7 +78,6 @@ BEIR_URL ="https://public.ukp.informatik.tu-darmstadt.de/thakur/BEIR/datasets/{n
 REFERENCE = {
     "scifact":     {"bm25": 0.665, "dense": 0.68},
     "nfcorpus":    {"bm25": 0.325, "dense": 0.33},
-    "arguana":     {"bm25": 0.315, "dense": 0.48},
     "scidocs":     {"bm25": 0.158, "dense": 0.20},
     "trec-covid":  {"bm25": 0.656, "dense": 0.60},
     "fiqa":        {"bm25": 0.236, "dense": 0.30},
@@ -384,13 +383,12 @@ def run(args) -> int:
             stage_samples.append(sample)
         # Map thread hits back to BEIR doc ids, preserving rank order, deduped.
         # A hit whose doc id *is* the query id is dropped, matching BEIR's own
-        # ``ignore_identical_ids`` default. On most datasets this never fires —
-        # queries and documents are disjoint id spaces. On arguana they are the
-        # same space: every query is itself a corpus document and the task is to
-        # find its counterargument, so the query retrieves itself at rank 1, that
-        # self-hit is never in the qrels, and scoring it as a miss would report a
-        # number a full point of nDCG below what the same ranking scores under the
-        # published protocol.
+        # ``ignore_identical_ids`` default. On every dataset carried here it never
+        # fires — queries and documents are disjoint id spaces. It exists because
+        # the published protocol specifies it: on a set where the two share one id
+        # space, every query retrieves itself at rank 1, that self-hit is never in
+        # the qrels, and scoring it as a miss reports a number a full point of nDCG
+        # below what the same ranking scores under the published protocol.
         ranked: list[str] = []
         seen: set[str] = set()
         for h in hits:
@@ -472,7 +470,7 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--dataset", default="scifact",
-                    help="BEIR dataset name (scifact, nfcorpus, arguana, scidocs, ...)")
+                    help="BEIR dataset name (scifact, nfcorpus, scidocs, trec-covid, ...)")
     ap.add_argument("--data-dir", default=str(eval_home.CACHE_ROOT),
                     help="cache dir for downloaded datasets AND built archive homes "
                          "(persistent; shared with the other benchmarks)")

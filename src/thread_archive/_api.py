@@ -681,6 +681,7 @@ def operational_records(*, home: Optional[str] = None) -> dict:
         "last_restore_drill": health.get("restore_drill_last"),
         "last_nightly": health.get("nightly_last"),
         "last_watch_errors": health.get("watch_errors_last"),
+        "last_schema_mismatch": health.get("schema_mismatch_last"),
         "last_watch_pass": health.get("watch_pass_last"),
         "last_coverage": health.get("coverage_last"),
         "last_source_mirror": health.get("source_mirror_last"),

@@ -1476,8 +1476,38 @@ def report_status(st: dict) -> int:
         )
         for err in w.get("errors", [])[:3]:
             print(f"         {err}")
+    _report_ingest_faults()
     _report_silenced(st)
     return 0
+
+
+def _report_ingest_faults() -> None:
+    """The ingest faults this install has ever seen, worst first.
+
+    Distinct from the ``watch:`` line above, which is cleared the moment a poll
+    comes back green. A fault that ran for two days and then resolved leaves that
+    record empty while the conversations it dropped stay dropped — so the question
+    this answers is "was ingest ever broken", which a green daemon cannot answer
+    about itself. Fail-soft: an unreadable ledger costs these lines, nothing more."""
+    try:
+        from ._config import resolve_paths
+        from ._ops import ingest_errors
+
+        faults = ingest_errors.summarize(resolve_paths().home)
+    except Exception:  # noqa: BLE001 — advisory; status must still print
+        return
+    if not faults:
+        return
+    total = sum(f["count"] for f in faults)
+    # A floor, not a total: rows land on powers of ten, so a fault seen 1,200 times
+    # last recorded itself at 1,000. Saying "at least" costs nothing and stops the
+    # number reading as exact — the magnitude is the point, and it is intact.
+    print(
+        f"faults:  at least {total:,} ingest error(s) on record across "
+        f"{len(faults)} distinct fault(s), newest {_age(faults[0]['last'])}"
+    )
+    for fault in faults[:3]:
+        print(f"         {fault['count']:,}x [{fault['source']}] {fault['signature'][:88]}")
 
 
 def _report_silenced(st: dict) -> None:

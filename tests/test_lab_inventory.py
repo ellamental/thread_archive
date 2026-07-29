@@ -98,7 +98,7 @@ def test_a_built_but_unstamped_home_still_reports_what_it_holds(tmp_path) -> Non
 def test_an_unbuilt_home_is_a_row_rather_than_an_absence(tmp_path) -> None:
     # "Available but not installed" is the question the page exists to answer, so
     # an unbuilt corpus must be distinguishable from one nobody defined.
-    row = inventory._home_row(tmp_path / "homes" / "arguana", label="corpus")
+    row = inventory._home_row(tmp_path / "homes" / "scidocs", label="corpus")
     assert row["built"] is False
     assert row["snapshot_id"] is None
     assert "bytes" not in row
