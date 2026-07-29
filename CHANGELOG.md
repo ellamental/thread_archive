@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- **Releases ship by PR, from a stabilization branch.** A release now cuts
+  `release/X.Y.Z` off `dev` into its own worktree, hardens there while `dev`
+  keeps moving, and opens a PR to `main`; the operator's merge is the ship. A
+  new `release.yml` workflow turns the merge into the annotated tag (message:
+  the version's changelog section) and chains into `publish.yml` via
+  `workflow_call` for the PyPI upload — tags minted with `GITHUB_TOKEN` don't
+  fire other workflows, so the tag-push trigger now serves only the manual
+  path. The release branch merges back into `dev` afterward; `main` is a
+  merge-commit chain rather than synthesized snapshots. CI runs on
+  `release/**`. `docs/releasing.md` is rewritten around the new flow.
 - **`arguana` is off the benchmark candidate list.** Counterargument retrieval over
   standalone argument passages is not the task this archive serves, and the row it
   would have bought was already the worst value-per-minute on the page — 1,406

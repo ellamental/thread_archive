@@ -2,48 +2,97 @@
 
 Distribution is PyPI (`pip install thread-archive`) and the git clone (an
 editable install from a checkout, or
-`pip install "git+<repo-url>@vX.Y.Z"`). A release is a pointer: compress the
-changelog, bump the version, one release commit on `dev`, a snapshot of it
-on `main`, and an annotated tag pushed to GitHub. The tag is what a clone
-pins and fast-forwards to, what
-`thread-archive status` / bug reports correlate against — and what triggers
-the PyPI upload (`.github/workflows/publish.yml`, via Trusted Publishing).
+`pip install "git+<repo-url>@vX.Y.Z"`). A release is a stabilization branch:
+cut `release/X.Y.Z` from `dev`, harden it in its own worktree while `dev`
+keeps moving, and open a PR to `main`. The operator merging that PR is the
+ship. A workflow on `main` turns the merge into the annotated tag — what a
+clone pins and fast-forwards to, what `thread-archive status` / bug reports
+correlate against — and the PyPI upload
+(`.github/workflows/release.yml` → `publish.yml`, via Trusted Publishing).
 
-**Pushing the tag is the point of no return.** A packaged install gets the
-release when its operator runs `thread-archive self-update` (`--check` is how
-they see one exists); a clone gets it when someone checks the tag out. That is
-a delay, not a safety net: the release is offered to every install the moment
-the publish lands, and the preflight below is the only gate between a bad
-release and the first operator who reaches for it. This machine's clone runs
-ahead of consumers, so a bad release should hurt here first.
+**Merging the release PR is the point of no return.** A packaged install gets
+the release when its operator runs `thread-archive self-update` (`--check` is
+how they see one exists); a clone gets it when someone checks the tag out.
+That is a delay, not a safety net: the release is offered to every install
+the moment the publish lands, and the preflight below is the only gate
+between a bad release and the first operator who reaches for it. This
+machine's clone runs ahead of consumers, so a bad release should hurt here
+first.
 
 The version's single source of truth is `__version__` in
 `src/thread_archive/__init__.py`; pyproject declares `version` dynamic and
 hatch reads it from there. Nothing else carries the number.
 
-## Branches: dev develops, main is the release chain
+## Branches: dev develops, release/X.Y.Z stabilizes, main is the release history
 
 Development lives on `dev` — the local clone sits there, every change lands
-there, CI runs there. `main` is the repo's public face and holds only the
-release chain: one commit per version, tree-identical to `dev` at the cut,
-its message the version's changelog. What a visitor sees on GitHub — README,
-CI badge, browsable code — is therefore always the latest release, and
-`pip install git+…@main` means something. Release tags point at `main`'s
-commits, so a clone parked on `main` fast-forwards cleanly from tag to tag.
-`main` is written only by step 4 below; nothing ever merges from `main`
-back into `dev`.
+there, CI runs there. A release cuts `release/X.Y.Z` from `dev`'s tip;
+preflight, the changelog compression, the version bump, and any fixes found
+during stabilization all land on that branch, in a dedicated worktree, while
+`dev` moves on underneath. `main` advances only by merging release PRs — one
+merge commit per version, its tree identical to the release branch's tip —
+so what a visitor sees on GitHub (README, CI badge, browsable code) is
+always the latest release, and `pip install git+…@main` means something.
+Release tags point at `main`'s merge commits, so a clone parked on `main`
+fast-forwards cleanly from tag to tag.
+
+Two rules keep the topology sound:
+
+- **Release PRs merge with a merge commit — never squash, never rebase.**
+  Long-lived branches pin their squash-merge base at the fork point, so
+  repeated squash merges replay old diffs and eventually conflict; true
+  merges advance the base every release.
+- **The release branch merges back into `dev` right after the release**
+  (§7). The back-merge carries the release commit and any stabilization
+  fixes home and keeps everything ancestor-connected — it is what makes the
+  *next* release's merge to `main` conflict-free. Skip it and the drift
+  compounds.
 
 ## 0. The repo is release infrastructure — keep it hardened
 
 A release tag is executable software offered to every install — it is what
 publishes the wheel `self-update` installs, and what a clone checks out. The
 GitHub repo's protections are therefore part of the release mechanism, not
-optional hygiene. The standing
-requirements: two-factor auth on every account that can push, a tag protection
-rule covering `v*` (nobody but the release path can create or move release
-tags), and branch protection on `main` and `dev`.
+optional hygiene. The standing requirements:
 
-## 1. Preflight — the tree must already be releasable
+- Two-factor auth on every account that can push.
+- A tag protection ruleset covering `v*`, with a bypass for GitHub Actions —
+  `release.yml` is the only thing that mints release tags on the normal
+  path; nobody else can create or move them.
+- Branch protection on `main`: PRs only, no direct pushes. Squash and rebase
+  merging disabled in the repo's merge settings, so the merge-commit rule
+  above is enforced, not remembered.
+- Branch protection on `dev`.
+
+## 1. Cut the release branch
+
+The primary checkout stays on `dev` — the daemons run from it and other work
+continues there — so the release branch gets its own worktree:
+
+```bash
+git worktree add "$HOME/dev/archive-rc" -b release/X.Y.Z dev
+cd ~/dev/archive-rc
+python3 -m venv .venv
+.venv/bin/pip install -e ".[dev,embeddings,leiden]"
+(cd frontend && npm ci)
+git push -u origin release/X.Y.Z
+```
+
+Push at the cut so GitHub CI starts running the branch, and open the PR to
+`main` immediately as a draft — it is the release's workbench: CI fills in,
+the diff is the whole release, the body will become the changelog section.
+
+Everything that follows happens in the worktree, on `release/X.Y.Z`. The cut
+is frozen: `dev` landing more work does not move it, which is what buys the
+benchmarks and preflight a calm tree. A fix discovered during stabilization
+is committed on the release branch and flows back to `dev` in the §7
+back-merge — not the other way around. (If `dev` has meanwhile landed a fix
+the release genuinely needs, cherry-pick it in and say so in the PR; the
+back-merge reconciles the duplicate.)
+
+## 2. Preflight — the branch must be releasable
+
+All in the worktree:
 
 - Full suite green: `.venv/bin/pytest tests/`.
 - The package lane green: `.venv/bin/pytest -m package --no-cov
@@ -52,18 +101,21 @@ tags), and branch protection on `main` and `dev`.
   venv, and runs the real entry points. Nothing is uploaded anywhere; this is
   the gate that proves a fresh-clone install actually works (files present,
   console scripts wired), rather than only the long-lived editable install.
-- GitHub CI green on `dev` (ruff, mypy, coverage floor, the pytest suite on
-  the 3.12 floor and 3.14, frontend checks, and the same package lane).
+- GitHub CI green on `release/X.Y.Z` (ruff, mypy, coverage floor, the pytest
+  suite on the 3.12 floor and 3.14, frontend checks, and the same package
+  lane).
 - The search-quality gate green: `python -m search_lab gate --run`. The bench's
   numbers against the accepted ones in `search_lab/quality-baseline.json` —
   public benchmarks whose labels somebody else made, so a breach is real
   evidence the retrieval components got worse. `--run` measures whatever the
   code has invalidated first: rows unchanged since their last run are fresh and
-  cost milliseconds, a ranking edit re-runs the set (a few hours cold). A row
+  cost milliseconds, a ranking edit re-runs the set (a few hours cold — the
+  frozen branch is what makes that affordable). The ledger and corpus cache
+  live in the lab's own state home, so a fresh worktree starts warm. A row
   last measured at other code fails as **stale** rather than passing on old
   numbers — shipping an unmeasured ranking change under a green gate is the
-  failure this exists to prevent. See `search_lab/README.md` for the tiers below
-  it and what each one licenses.
+  failure this exists to prevent. See `search_lab/README.md` for the tiers
+  below it and what each one licenses.
 
   A breach is a decision, not a formality. Either it is a regression — fix or
   revert — or it is a deliberate trade, accepted with
@@ -74,7 +126,7 @@ tags), and branch protection on `main` and `dev`.
   and the regenerated static assets committed with the change that caused
   them — a clone install ships whatever bundle is in the tree.
 
-## 2. Compress the changelog
+## 3. Compress the changelog, bump the version
 
 `CHANGELOG.md` accumulates verbose in-flight entries under `## Unreleased`
 while work happens — each written for reviewers of that day's change, dates
@@ -90,53 +142,46 @@ and narration included. Releasing rewrites them for readers of the release:
   the conversation archive; the changelog is the index, not the record.
 - Open a fresh empty `## Unreleased` above it.
 
-## 3. Version bump
-
 Pick the number (semver; pre-0.1.0, all/breaking changes bump the minor). Edit
 `__version__` in `src/thread_archive/__init__.py`. If the truth-directory
 layout changed incompatibly, the format version in `docs/format.md` moves on
 its own rules — that is a separate, deliberate decision, not part of the
 package bump.
 
-## 4. Release commit, snapshot to main, tag
-
-One commit on `dev` containing exactly the changelog compression and the
-version bump:
+One commit on `release/X.Y.Z` containing exactly the changelog compression
+and the version bump:
 
 ```
 Release X.Y.Z: compress changelog, bump version
 ```
 
-Then write `main`'s release commit. Not a merge — long-lived branches pin
-their merge base at the fork point, so repeated squash merges replay old
-diffs and eventually conflict. `commit-tree` sidesteps the merge machinery
-entirely: it writes a commit whose tree is bit-identical to `dev`'s tip,
-parented on the previous release, carrying the version's changelog section
-as its message:
+## 4. The release PR — the operator ships it
 
-```bash
-sha=$(git commit-tree 'dev^{tree}' -p main \
-        -m "Release X.Y.Z" -m "<the X.Y.Z section of CHANGELOG.md, verbatim>")
-git update-ref refs/heads/main "$sha"
-```
+Push, set the PR's title to `Release X.Y.Z` and its body to the version's
+changelog section, and mark it ready for review. The diff is everything since
+the last release; the preflight above is already green on exactly this tree.
 
-The annotated tag goes on the `main` commit — clones park on `main`, and a
-tag must descend from their checkout for their fast-forward to work. The push
-is the ship:
+The operator merges it (merge commit). That merge is the ship — everything
+after this section is follow-through, not gate.
 
-```bash
-git tag -a vX.Y.Z -m "thread-archive X.Y.Z — <one-line theme of the release>" "$sha"
-git push origin dev main vX.Y.Z
-```
+## 5. Tag and publish — automated on the merge
 
-The tag push also triggers the Publish workflow, which builds the wheel +
-sdist on the runner and uploads them to PyPI via Trusted Publishing (no
+`.github/workflows/release.yml` runs on every push to `main`: it reads
+`__version__`, and — if `vX.Y.Z` does not already exist — creates the
+annotated tag on the merge commit, message carrying the version's changelog
+section, then runs the build + publish jobs from `publish.yml` (wheel +
+sdist built on the runner, uploaded to PyPI via Trusted Publishing — no
 tokens; PyPI trusts the repo/workflow/environment tuple configured under the
-project's Publishing settings on pypi.org). Watch the run — a publish failure
-means the tag exists but PyPI lags it, and the fix is a fixed vX.Y.(Z+1),
-since PyPI refuses re-uploads of a once-seen version even after deletion.
+project's Publishing settings on pypi.org).
 
-## 5. Verify from the outside
+Watch the run. A publish failure means the tag exists but PyPI lags it, and
+the fix is a fixed vX.Y.(Z+1), since PyPI refuses re-uploads of a once-seen
+version even after deletion.
+
+A tag pushed by hand still triggers `publish.yml` directly — that is the
+manual path, for a release shipped without the PR machinery.
+
+## 6. Verify from the outside
 
 Prove the release installs from the tag, not just from this checkout's
 long-lived venv:
@@ -155,17 +200,38 @@ a minute or two):
 /tmp/ta-verify/bin/thread-archive --help
 ```
 
-## 6. Roll the local deployment
+## 7. Back-merge, roll the local deployment, clean up
 
-The daemons on this machine run from the clone's editable install on `dev`,
-so being on `dev`'s release commit *is* the deployment — with two
+Merge the release branch into `dev` — from the primary checkout, which sits
+on `dev`:
+
+```bash
+git merge --no-ff release/X.Y.Z -m "Merge release/X.Y.Z back into dev"
+git push origin dev
+```
+
+Conflicts arise only where `dev` diverged from a stabilization fix while the
+release was in flight — resolve them here, once. This step is load-bearing
+(see the branch rules above): it is what keeps the next release's merge to
+`main` clean.
+
+The daemons on this machine run from the primary checkout's editable install
+on `dev`, so the back-merge landing *is* the deployment — with two
 follow-throughs:
 
 - If dependencies or entry points changed, re-run `.venv/bin/pip install -e .`
   (editable installs pick up code automatically, not metadata).
-- Restart whatever loaded the old code: `thread-archive service restart` for the
-  watcher/backup agents; MCP clients pick up the new server on their next
+- Restart whatever loaded the old code: `thread-archive service restart` for
+  the watcher/backup agents; MCP clients pick up the new server on their next
   session.
+
+Then retire the branch:
+
+```bash
+git worktree remove ~/dev/archive-rc
+git branch -d release/X.Y.Z
+git push origin :release/X.Y.Z   # unless GitHub already deleted it on merge
+```
 
 ## Yanking a bad release
 
@@ -192,9 +258,13 @@ the archive, which is why applying one requires an explicit flag.
 
 ## Who runs this
 
-The agent, end to end — preflight, changelog compression, version bump,
-release commit, the `main` snapshot, tag, push, verification, and rolling
-the local deployment. The release commit, snapshot, and tag are part of the
-release process the agent is executing (an explicit exception to any
-standing no-commit convention in the operator's environment). Asking for
-release means asking for all of it.
+The agent, end to end, except the merge button: preflight, changelog
+compression, version bump, the release-branch commits and pushes, the PR,
+watching the tag-and-publish run, verification, the back-merge into `dev`,
+rolling the local deployment, and retiring the branch. The commits, branch
+operations, and pushes here are part of the release process the agent is
+executing (an explicit exception to any standing no-commit convention in the
+operator's environment) — and the worktree keeps all of it out of the
+primary checkout, whose branch never moves. Merging the release PR is the
+operator's act alone; asking for a release means asking for everything on
+either side of it.

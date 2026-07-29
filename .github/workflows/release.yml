@@ -1,0 +1,84 @@
+# Turns a release merge into the tag and the PyPI upload. Merging the release
+# PR (docs/releasing.md §4) is the ship; this workflow is the follow-through:
+# on every push to main it reads `__version__`, and if that version's tag
+# doesn't exist yet, creates the annotated tag on the pushed commit (message:
+# the version's CHANGELOG section) and hands off to publish.yml for the
+# build + Trusted Publishing upload.
+#
+# The handoff is an explicit workflow_call, not the tag-push trigger: tags
+# created with the default GITHUB_TOKEN never fire other workflows, so
+# publish.yml's own `on: push: tags` only serves a hand-pushed tag (the
+# manual release path). No double-publish either way.
+#
+# Requires a bypass for GitHub Actions on the `v*` tag protection ruleset —
+# tag creation is otherwise reserved for this path.
+
+name: Release
+
+on:
+  push:
+    branches: [main]
+
+concurrency:
+  group: release-${{ github.ref }}
+
+jobs:
+  tag:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    outputs:
+      created: ${{ steps.tag.outputs.created }}
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Read version
+        id: version
+        run: |
+          v=$(python3 -c "
+          import re, pathlib
+          text = pathlib.Path('src/thread_archive/__init__.py').read_text()
+          print(re.search(r'__version__ = \"([^\"]+)\"', text).group(1))
+          ")
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+
+      - name: Create tag if absent
+        id: tag
+        run: |
+          tag="v${{ steps.version.outputs.version }}"
+          if git ls-remote --exit-code --tags origin "refs/tags/$tag" >/dev/null; then
+            echo "Tag $tag already exists; nothing to do."
+            echo "created=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          # Tag message: subject line + that version's CHANGELOG section,
+          # verbatim. A missing section fails the release loudly — the tag
+          # must carry the changelog, and its absence means the release
+          # commit skipped the compression step.
+          python3 - "${{ steps.version.outputs.version }}" > tag-message.txt <<'PY'
+          import re, pathlib, sys
+          version = sys.argv[1]
+          text = pathlib.Path("CHANGELOG.md").read_text()
+          m = re.search(
+              rf"^## {re.escape(version)}[^\n]*\n(.*?)(?=^## |\Z)",
+              text, re.M | re.S,
+          )
+          if not m:
+              sys.exit(f"CHANGELOG.md has no '## {version}' section")
+          print(f"thread-archive {version}\n")
+          print(m.group(1).strip())
+          PY
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -a "$tag" -F tag-message.txt "$GITHUB_SHA"
+          git push origin "$tag"
+          echo "created=true" >> "$GITHUB_OUTPUT"
+
+  publish:
+    needs: tag
+    if: needs.tag.outputs.created == 'true'
+    uses: ./.github/workflows/publish.yml
+    permissions:
+      id-token: write
+      contents: read
