@@ -1736,8 +1736,8 @@ def build_parser() -> argparse.ArgumentParser:
                           help="scope to one conversation (ULID, legacy integer id, or "
                                "provider session id)")
     p_search.add_argument("--content-type", default=None, metavar="TYPE",
-                          help="one of user/text/thinking/tool/title/summary/... "
-                               "(default: everything but derived summaries; 'all' folds those in)")
+                          help="one of user/text/thinking/tool/title/... "
+                               "(default: everything indexed)")
     p_search.add_argument("--exclude-content-type", default=None, metavar="TYPES",
                           help="comma-separated content types to drop")
     p_search.add_argument("--since", default=None, metavar="WHEN",

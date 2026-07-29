@@ -51,15 +51,16 @@ from .read import read_thread, read_thread_structured, resolve_thread_ref
 logger = logging.getLogger(__name__)
 
 #: The content scope a search runs in when its caller names none: everything the
-#: index holds except derived thread summaries, which are derived text rather
-#: than the record and so stay opt-in.
+#: index holds. Nothing is filtered out at query time — what a search must not
+#: answer from is kept out of the index itself instead (tool output, derived
+#: thread summaries), because a query-time exclusion is a filter every caller can
+#: drop while the index keeps paying to store and embed what it hides.
 #:
 #: Defined here rather than at the agent surface because two callers must agree on
 #: it: the surface, and :func:`warm_models` — the vector matrix caches per
 #: content-type scope, so a warm pass primed against a different scope leaves the
 #: first real query to build a matrix inside the request.
 DEFAULT_CONTENT_TYPES: Optional[list[str]] = None
-DEFAULT_EXCLUDE_CONTENT_TYPES = ("summary",)
 
 
 def _enrich_thread_titles(hits: list[EventHit], *, session: Optional[Session] = None) -> None:
@@ -204,8 +205,7 @@ def warm_models(embedder=None) -> None:
     try:
         from .. import _api as api
 
-        api.search(_WARM_QUERY, limit=1, content_types=DEFAULT_CONTENT_TYPES,
-                   exclude_content_types=list(DEFAULT_EXCLUDE_CONTENT_TYPES))
+        api.search(_WARM_QUERY, limit=1, content_types=DEFAULT_CONTENT_TYPES)
     except Exception:  # noqa: BLE001 — a store that isn't ready just warms the models, not the caches
         failed.append("search")
         logger.debug("warm_models: dummy warm search skipped", exc_info=True)
@@ -336,7 +336,7 @@ def retrieve_pool(
             return Pool(cached, raw=max(len(cached), over))
 
     # A tool_name scope also sits the vector arm out: tool docs aren't embedded
-    # (only user/text/title/summary are), so every semantic hit in a tool-scoped
+    # (only user/text/title are), so every semantic hit in a tool-scoped
     # search would be a hit the filter should have excluded. A types scope sits
     # it out too: vectors carry no thread-type filter, so its hits could leak
     # threads the filter excludes.
@@ -548,7 +548,7 @@ def search(
     with a smaller number than the truth.
 
     The one fold that remains is deduplication rather than grouping: hits sharing
-    one ``(thread_id, event_id)`` anchor (a thread-meta title/summary doc and the
+    one ``(thread_id, event_id)`` anchor (a thread-meta title doc and the
     first event it anchors to) collapse to the better-placed row, because they are
     one message that would otherwise open identically twice in ``thread_read``.
 
@@ -736,7 +736,7 @@ def search(
 
     if not is_count:
         # The one fold left, and it is deduplication rather than grouping: a
-        # thread-meta title/summary doc and the first event it anchors to are one
+        # thread-meta title doc and the first event it anchors to are one
         # anchor, so they are two rows that open identically in thread_read.
         _t_group = perf_counter()
         ranked = _rank.collapse_same_anchor(ranked)

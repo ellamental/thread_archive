@@ -30,7 +30,6 @@ from typing import Any, Optional
 from . import _api as api
 from ._retrieval import (
     DEFAULT_CONTENT_TYPES,
-    DEFAULT_EXCLUDE_CONTENT_TYPES,
     _contention,
     _probe,
     format_results,
@@ -122,18 +121,14 @@ def _resolve_ref(ref: int | str) -> Optional[str]:
 # narrower than the transcript makes "not found" mean "not found *here*", which
 # reads identically to the conversation not existing.
 #
-# What tool handed *back* is not in scope, because it is not in the index at all
-# (see :data:`._retrieval._extract.UNINDEXED_CONTENT_TYPES`) — the one exclusion
-# that measured better rather than merely cheaper.
-#
-# Stored thread summaries stay opt-in: they are derived text (a curation tool
-# writes them over the archive), not the record, so a search should not answer from them
-# unless asked — content_type='summary' targets them, content_type='all' includes
-# them.
+# Nothing is excluded at query time. What a search must not answer from is kept
+# out of the index instead: what a tool handed *back* (see
+# :data:`._retrieval._extract.UNINDEXED_CONTENT_TYPES`, the one exclusion that
+# measured better rather than merely cheaper), and stored thread summaries, which
+# are derived text a curation tool wrote over the archive rather than the record.
 #
 # The scope itself lives in the retrieval layer, which shares it with the warm pass.
 DEFAULT_SEARCH_CONTENT_TYPES = DEFAULT_CONTENT_TYPES
-DEFAULT_SEARCH_EXCLUDE = DEFAULT_EXCLUDE_CONTENT_TYPES
 
 
 def _commit_note(scope: dict) -> str:
@@ -277,21 +272,21 @@ def thread_search(
     options (content_type, context) don't apply.
 
     The whole conversation is searched by default — user messages, thread titles,
-    assistant text, its reasoning, and the tool calls that were run. What a tool
-    handed **back** is not searchable at all: tool output is preserved in full and
-    replays in ``thread_read``, but it is deliberately left out of the index, where
-    it buried real answers under grep dumps and re-read files. Stored thread
-    summaries (derived text, not the record) are the one opt-in scope:
-    pass ``content_type='summary'`` to target them or ``content_type='all'`` to
-    fold them in; a specific ``content_type`` (user/text/thinking/tool/title/...)
-    narrows to one.
+    assistant text, its reasoning, and the tool calls that were run; a specific
+    ``content_type`` (user/text/thinking/tool/title) narrows to one. Two things are
+    not searchable at all, by design. What a tool handed **back**: tool output is
+    preserved in full and replays in ``thread_read``, but it is left out of the
+    index, where it buried real answers under grep dumps and re-read files. And
+    stored thread summaries: they are derived text a curation tool wrote *over* the
+    archive, not the record, so a search must not answer from a machine's
+    description of a conversation — read one deliberately with ``thread_read(...,
+    summary='short')``.
 
     Query grammar: natural language, "quoted phrases", boolean AND/OR/NOT,
     pipe-OR (a|b), and code identifiers (get_session, a.b.c). Filter by
     ``thread_id`` — a ULID thread id, a legacy integer alias, or a provider
     session id, the same ref shapes ``thread_read`` takes —
-    ``content_type`` (default: everything but derived summaries; 'all' folds
-    those in too),
+    ``content_type`` (default: everything indexed),
     ``exclude_content_type`` (comma-separated types to drop), ``tool_name``,
     ``source`` (comma-separated providers, e.g. 'claude-code,cursor'),
     ``types`` (comma-separated ``thread_type`` values — 'conversation',
@@ -403,17 +398,14 @@ def thread_search(
             return (f"thread {thread_id} not found — thread_id takes a ULID thread id, "
                     f"a legacy integer id, or a provider session id")
         thread_id = resolved
-    # Default scope is the whole conversation minus derived summaries; an explicit
-    # type targets one, and content_type='all' drops even the summary exclusion
-    # (see the constants).
-    default_exclude: tuple[str, ...] = ()
-    if content_type == "all":
-        content_types = None
-    elif content_type:
+    # Default scope is everything indexed; an explicit type targets one. ``'all'``
+    # is accepted as a spelling of that default rather than rejected: it is a
+    # content type no doc carries, so treating it literally would filter the search
+    # down to nothing and return a confident "No results".
+    if content_type and content_type != "all":
         content_types = [content_type]
     else:
         content_types = DEFAULT_SEARCH_CONTENT_TYPES
-        default_exclude = DEFAULT_SEARCH_EXCLUDE
     exclude = [c.strip() for c in exclude_content_type.split(",") if c.strip()] if exclude_content_type else None
     sources = [s.strip() for s in source.split(",") if s.strip()] if source else None
     type_list = [t.strip() for t in types.split(",") if t.strip()] if types else None
@@ -433,13 +425,13 @@ def thread_search(
         if not commit_threads:
             return _degradation_notices() + commit_note
 
-    def _run(cts, extra_exclude=()):
+    def _run(cts):
         return api.search(
             query,
             limit=limit,
             thread_id=thread_id,
             content_types=cts,
-            exclude_content_types=[*(exclude or []), *extra_exclude] or None,
+            exclude_content_types=exclude,
             since=since,
             until=until,
             tool_name=tool_name,
@@ -483,7 +475,7 @@ def thread_search(
         # peers that slow a search include the ones that arrive while it runs.
         with _contention.in_flight() as span, _probe.install() as probe:
             context = _contention.sample()
-            hits = _run(content_types, extra_exclude=default_exclude)
+            hits = _run(content_types)
 
         retrieval_ms = (time.monotonic() - started) * 1000.0
         _t_render = time.monotonic()

@@ -376,7 +376,7 @@ class Watcher:
         # The checkpoint's own split (lock wait, snapshots, rebalance, backstop),
         # read from the pass that just ran on this thread.
         checkpoint_split = last_timings()
-        # Sync title/summary search docs (diff-based — unchanged threads write
+        # Sync title search docs (diff-based — unchanged threads write
         # nothing). Catches both fresh imports and out-of-band summary writes.
         meta_started = time.monotonic()
         try:

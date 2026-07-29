@@ -1000,7 +1000,7 @@ def test_search_partial_exclude_drops_type_in_hydration(archive_home) -> None:
 def test_search_exclude_all_embedded_returns_none(archive_home) -> None:
     emb = _seeded(archive_home)
     assert vectors.search(
-        "hi", exclude_content_types=["user", "text", "title", "summary"], embedder=emb
+        "hi", exclude_content_types=["user", "text", "title"], embedder=emb
     ) is None
     assert emb.queries == []  # sat out before embedding
 
@@ -1056,9 +1056,9 @@ def test_search_none_when_query_embed_raises(archive_home) -> None:
 
 def test_search_hydration_skips_row_without_candidate_sim(archive_home) -> None:
     emb = _seeded(archive_home)
-    # Inject an extra events_fts row for the user event under a content_type that
-    # was never embedded (no vector → never a KNN candidate). Hydration selects by
-    # event_id, not content_type, so the row surfaces but has no candidate
+    # Inject an extra events_fts row for the user event under a content_type this
+    # fixture never embedded (no vector → never a KNN candidate). Hydration selects
+    # by event_id, not content_type, so the row surfaces but has no candidate
     # similarity and is skipped.
     with get_session() as s:
         uid = int(s.execute(sa_text(
@@ -1072,11 +1072,11 @@ def test_search_hydration_skips_row_without_candidate_sim(archive_home) -> None:
             "(event_id, thread_id, event_type, content, content_type, tool_name) "
             "VALUES (:event_id, :thread_id, :event_type, :content, :content_type, :tool_name)"
         ), {"event_id": uid, "thread_id": tid, "event_type": "thread_meta",
-            "content": "injected meta row", "content_type": "summary", "tool_name": None})
+            "content": "injected meta row", "content_type": "title", "tool_name": None})
         s.commit()
     hits = vectors.search("hello", embedder=emb)
     assert hits is not None
-    assert all(h["content_type"] != "summary" for h in hits)  # injected row skipped
+    assert all(h["content_type"] != "title" for h in hits)  # injected row skipped
 
 
 # ── the in-process embed drain (embedder injected) ────────────────────────────

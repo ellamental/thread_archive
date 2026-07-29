@@ -507,7 +507,7 @@ def test_matrix_cache_canonical_key_and_bounded(archive_home) -> None:
     vectors._load_matrix(("text", "user"))
     assert len(vectors._MATRIX_CACHE) == 1
 
-    for cts in (("user",), ("text",), ("title",), ("summary",), ("user", "title")):
+    for cts in (("user",), ("text",), ("title",), ("user", "text"), ("user", "title")):
         vectors._load_matrix(cts)
     assert len(vectors._MATRIX_CACHE) <= vectors._MATRIX_CACHE_MAX
 
@@ -518,7 +518,7 @@ def test_exclude_all_embedded_types_sits_semantic_out(archive_home) -> None:
     init_db()
     vectors.ensure_index()
     assert vectors.index_vectors([(1, "user", _unit((0, 1.0)))]) == 1
-    assert vectors.search("anything", exclude_content_types=["user", "text", "title", "summary"]) is None
+    assert vectors.search("anything", exclude_content_types=["user", "text", "title"]) is None
 
 
 def test_semantic_arm_sits_out_for_toolname_count_oldest(archive_home) -> None:

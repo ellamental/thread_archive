@@ -22,8 +22,8 @@ cap of a long message is semantically invisible (the embed provider truncates),
 and the vocab-mismatch queries the vector arm exists for are exactly the ones
 that can't fall back to keywords.
 
-Populated from the ``events_fts`` shadow's ``user`` / ``text`` / ``title`` /
-``summary`` pools via the ``[embeddings]`` provider (:mod:`.embed`). Cached durably in a ``vectors.sqlite``
+Populated from the ``events_fts`` shadow's ``user`` / ``text`` / ``title``
+pools via the ``[embeddings]`` provider (:mod:`.embed`). Cached durably in a ``vectors.sqlite``
 sidecar so the hours-long embed survives ``rm index.db && reindex``. Degrades to
 lexical-only when the extra isn't installed or nothing's indexed.
 """
@@ -117,10 +117,10 @@ def _length_batched(pending: list, window: int) -> list:
     return out
 
 # Embedded content-type pools: user → default pool; text → scoped assistant pool;
-# title/summary → the thread-meta docs (thread-level aboutness).
+# title → the thread-meta doc (thread-level aboutness).
 _USER_CONTENT_TYPES = ("user",)
 _ASSISTANT_CONTENT_TYPES = ("text",)
-_META_CONTENT_TYPES = ("title", "summary")
+_META_CONTENT_TYPES = ("title",)
 
 # Process-local matrix cache: {(engine_id, cts): (validity_token, ids, ctypes, mat,
 # doc_inverse, doc_rep, scope_rows)}. Keys are canonicalized (sorted cts tuple) so
@@ -553,7 +553,7 @@ def index_events_local(
     phase=None,
     sort_window: int = _SORT_WINDOW,
 ) -> int:
-    """Compute event vectors in-process from the FTS shadow (user/text/title/summary
+    """Compute event vectors in-process from the FTS shadow (user/text/title
     pools), one vector per :data:`CHUNK_CHARS` chunk (long docs get several).
 
     ``rebuild=False`` only embeds docs with fewer vectors than their content needs
@@ -611,7 +611,7 @@ def index_events_local(
         "LEFT JOIN (SELECT event_id, content_type, count(*) AS nv FROM event_vectors "
         "           GROUP BY event_id, content_type) v "
         "  ON v.event_id = f.event_id AND v.content_type = f.content_type "
-        "WHERE f.content_type IN ('user', 'text', 'title', 'summary') "
+        "WHERE f.content_type IN ('user', 'text', 'title') "
         "AND f.content IS NOT NULL AND f.content != ''"
         f" GROUP BY f.event_id, f.content_type{missing}"
         f" ORDER BY f.event_id {order}" + limit

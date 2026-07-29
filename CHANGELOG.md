@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- **Stored thread summaries are no longer indexed.** They were only excluded at query time, so the index still carried
+  a doc and a vector per summarized thread (5.8k of each here) and two documented arguments — `content_type='summary'`
+  and `content_type='all'` — reached them. A summary is derived text a curation tool wrote *over* the archive, not the
+  record, so a search must not be able to answer from a machine's description of a conversation; a query-time
+  exclusion left that one argument away while still paying to store and embed what it hid. The thread-meta sync now
+  writes titles only, the embed drain's pool drops `summary`, and the sync's ordinary stale-doc path collects the
+  docs and vectors already written. Summaries are still stored and still read deliberately — `thread_read(...,
+  summary='short')`, the viewer, the librarian's writer — all unchanged. `content_type='all'` stays accepted as a
+  spelling of the default scope (which is now every indexed type) rather than becoming a filter that matches nothing.
 - `self-update` updates the PyPI distribution: it resolves the newest release, gates the wheel it downloaded on that
   file's declared truth format, installs it, smoke-checks, and rolls back to the running version on failure. A clone
   and a `uv tool`/`pipx` environment each report unavailable, naming the command that does move them.

@@ -6,7 +6,7 @@ eight times returns eight rows, each with its own snippet and context, and
 which is deduplication rather than grouping:
 
 - ``rank.collapse_same_anchor`` folds rows sharing one (thread_id, event_id): a
-  thread-meta title/summary doc and the event it anchors to are one message, and
+  thread-meta title doc and the event it anchors to are one message, and
   two rows that would open identically in ``thread_read``
 - ``search`` returns a row per match under every scope — a ``thread_id`` scope,
   the structural shapes, and the ordinary ranked query alike

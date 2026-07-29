@@ -100,7 +100,7 @@ def parse_context_events_spec(spec: str) -> tuple[int, int, Optional[list[str]]]
 def _neighbors(s: Session, tid: str, eid: int, op: str, order: str,
                lim: int, content_types: Optional[list[str]]) -> list[dict]:
     params: dict = {"tid": tid, "eid": eid, "lim": lim}
-    # thread-meta docs (title/summary) share the first event's id — they're not
+    # thread-meta docs (title) share the first event's id — they're not
     # conversation neighbours.
     where = ["thread_id = :tid", "event_id " + op + " :eid", "event_type != 'thread_meta'"]
     if content_types:

@@ -207,7 +207,7 @@ def dedup_results(results: list[EventHit]) -> list[EventHit]:
 
 def collapse_same_anchor(results: list[EventHit]) -> list[EventHit]:
     """Collapse hits sharing one ``(thread_id, event_id)`` anchor. A thread-meta
-    doc (title/summary) is anchored to its thread's first indexed event, so it
+    doc (title) is anchored to its thread's first indexed event, so it
     and that event can both match one query — two rows that open identically in
     ``thread_read``. Runs post-rank, order-preserving: the better-placed row
     survives."""
