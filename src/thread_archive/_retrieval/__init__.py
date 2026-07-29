@@ -236,8 +236,8 @@ def warm_models(embedder=None) -> None:
     release_accelerator_cache()
 
     try:
-        from . import usage as _usage
         from .._tools import _served_by
+        from . import usage as _usage
 
         _usage.record_warm(
             duration_ms=(perf_counter() - started) * 1000.0,
