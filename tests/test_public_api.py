@@ -1,12 +1,12 @@
 """Ratchet the public API boundary.
 
-The public API is exactly four things: the retrieval tools
+The public API is exactly five things: the retrieval tools
 (``thread_search`` / ``thread_read`` — served to agents by ``archive-mcp`` and
 to a person by the ``thread-archive search`` / ``thread-archive read`` verbs),
-the on-disk truth format (docs/format.md), the provider plugin API
-(``thread_archive.provider``, docs/providers.md), and the web viewer's URLs
-(docs/web-viewer.md). Everything else — the rest of the
-``thread_archive`` CLI, the ``_api`` coordination layer, every underscore-prefixed
+the ``thread-archive`` CLI (docs/cli.md), the on-disk truth format
+(docs/format.md), the provider plugin API (``thread_archive.provider``,
+docs/providers.md), and the web viewer's URLs (docs/web-viewer.md). Everything
+else — the ``_api`` coordination layer, every underscore-prefixed
 module — is private support machinery. These tests make
 widening the surface a deliberate act (edit the pinned sets here) instead of
 a naming accident.
@@ -33,26 +33,28 @@ from thread_archive.cli import (
 # here is an API commitment — it must survive until a deliberate deprecation.
 PUBLIC_API = ["__version__"]
 
-# The modules allowed to live at a public (non-underscore) name. `cli` is the
-# entry point; `provider` is the plugin API — the one surface archive commits to
-# keeping stable, because a provider defined outside the package is written
-# against it and cannot follow the private tree's churn. Installer machinery (the
+# The modules allowed to live at a public (non-underscore) name. `cli` is what
+# the console script resolves to — the *command* is public surface, its Python
+# names are not; `provider` is the plugin API, whose Python names are the
+# commitment, because a provider defined outside the package is written
+# against them and cannot follow the private tree's churn. Installer machinery (the
 # family manifest writer) lives in host/, outside the package — it needs a repo
 # checkout and is never shipped.
 PUBLIC_MODULES = {"cli", "provider"}
 
 # The command tree: each listed root command mapped to the actions under it
-# (empty for a leaf). Most of the CLI is private tooling, but its verbs are wired
-# into the LaunchAgent plists, lab's cron script, the /ci skill, and the
-# monitor's heartbeat contract — this pin makes renaming one a deliberate act
-# that updates those in the same change, not a compatibility promise to anyone
-# external.
-# `search` and `read` are the exception: they are the retrieval tools with a
-# terminal in front of them (one implementation in thread_archive/_tools.py,
-# served over MCP and here), so they carry the same public promise the tools do
-# and there is nothing to keep out. What stays out is a *second implementation* —
-# `web` is an opener, not a read surface: it hands the cohosted viewer's URL to a
-# browser and returns nothing itself.
+# (empty for a leaf). The tree is public surface — the verbs are wired into the
+# LaunchAgent plists, lab's cron script, the /ci skill, and the monitor's
+# heartbeat contract, and named by operators and scripts this repo never sees.
+# Adding an entry is free; deleting one is a break, paid for by leaving the old
+# spelling resolving (`_LEGACY_VERBS`, exercised below). Either way this pin
+# makes the move deliberate.
+# `search` and `read` carry a second promise on top: they are the retrieval
+# tools with a terminal in front of them (one implementation in
+# thread_archive/_tools.py, served over MCP and here), so their *output* is
+# contract too, where every other verb's is free to change. What stays out is a
+# *second implementation* — `web` is an opener, not a read surface: it hands the
+# cohosted viewer's URL to a browser and returns nothing itself.
 CLI_TREE = {
     "search": set(),
     "read": set(),

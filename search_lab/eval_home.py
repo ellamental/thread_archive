@@ -161,6 +161,39 @@ def marker_stale(marker: dict | None, want: dict) -> bool:
     return any(marker.get(key) != value for key, value in want.items())
 
 
+def embed_corpus(home: Path | str | None = None) -> dict:
+    """Embed the open corpus, then persist the vectors to the durable sidecar.
+    Returns what ``api.embed`` returned.
+
+    ``api.embed`` writes vectors into ``index.db``, which is the *disposable* half
+    of an archive home — truth is the record and the index is a projection over it.
+    So an index-format migration, a repair, or a ``--rebuild`` pass drops every
+    vector, and on these corpora that is hours — the bench's built homes hold
+    ~341K vectors, and beam embeds at a measured 160 docs/min.
+    ``truth/vectors.sqlite`` is the copy that
+    survives, keyed by the event ids truth fixes and tagged with the embedding
+    space, so a rebuild restores the vectors instead of re-running the embed.
+
+    A one-shot corpus build is the right place to pay for the write. The sidecar is
+    rewritten whole, which is proportional right after a bulk embed and would not
+    be on a live archive's incremental drain — which is why the save lives here and
+    not inside ``api.embed``.
+
+    Fail-soft: a corpus that embedded fine must still score when the cache cannot
+    be written. The vectors are in the index either way; the sidecar only decides
+    whether they survive losing it."""
+    from thread_archive import _api as api
+    from thread_archive._config import resolve_paths
+    from thread_archive._retrieval.vectors import save_vectors_sidecar
+
+    res = api.embed()
+    try:
+        save_vectors_sidecar(resolve_paths(str(home) if home else None).truth_dir)
+    except Exception:  # noqa: BLE001 — an uncached embed beats a failed build
+        pass
+    return res or {}
+
+
 def stamp_corpus(home: Path, *, restamp: bool = False) -> str | None:
     """Give a built benchmark corpus the same identity a mined corpus has, and
     return it.

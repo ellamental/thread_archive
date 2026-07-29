@@ -7,8 +7,8 @@
 # It builds the wheel and installs THAT (never `pip install -e .` — an editable install
 # runs from the checkout and can't catch a schema, web asset, or entry point missing
 # from the artifact), runs the full unit suite against the installed package, then the
-# end-to-end install check (import every provider -> reindex -> search) on a synthetic
-# corpus (or an obfuscated real one mounted at /work/fixtures).
+# end-to-end install check (import every provider -> reindex -> search) on the committed
+# synthetic corpus.
 FROM python:3.12-slim
 
 # build-essential covers any source build of a C-extension dependency (they

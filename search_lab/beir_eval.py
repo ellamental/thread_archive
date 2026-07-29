@@ -336,7 +336,7 @@ def run(args) -> int:
             t0 = time.monotonic()
             # Incremental (anti-join on missing vectors): embeds the whole fresh
             # corpus, or fills a gap left by an interrupted earlier run.
-            res = api.embed()
+            res = eval_home.embed_corpus(home)
             _log(f"embedded {res.get('embedded')} events in {time.monotonic() - t0:.0f}s")
             marker["embedded"] = len(doc_of_thread)
             marker_path.write_text(json.dumps(marker), encoding="utf-8")
@@ -367,14 +367,11 @@ def run(args) -> int:
     for i, (qid, qtext) in enumerate(scorable):
         with _probe.install() as probe:
             s0 = time.monotonic()
-            # group='none': every ranked hit as its own row. A flat doc-retrieval
-            # benchmark must not fold cross-thread duplicate content (group='thread'
-            # would hide a distinct gold doc that shares text with another); dedup to
-            # one row per doc happens below, on doc_id.
-            hits = api.search(
-                qtext, limit=max(ks) * 2, content_types=["user"],
-                group="none",
-            )
+            # Search returns every ranked hit as its own row, which is what a flat
+            # doc-retrieval benchmark needs: folding by thread would hide a distinct
+            # gold doc that shares text with another. Dedup to one row per doc
+            # happens below, on doc_id.
+            hits = api.search(qtext, limit=max(ks) * 2, content_types=["user"])
             elapsed = time.monotonic() - s0
         latencies.append(elapsed)
         if probe.ran:
@@ -438,10 +435,17 @@ def run(args) -> int:
         print(f"  Recall@{k:<3} {recall[k]:.3f}")
     print()
     if "bm25" in ref:
-        delta = ndcg10 - ref["bm25"]
-        verdict = ("in BM25 ballpark" if abs(delta) < 0.05
-                   else "ABOVE BM25" if delta > 0 else "BELOW BM25 — investigate")
-        print(f"  vs BM25 reference: {delta:+.3f}  ({verdict})")
+        # The published number is scored over the dataset's whole query set and a
+        # whole corpus. A subset run is a different measurement, so it gets the
+        # reference for scale and no verdict — a "BELOW BM25 — investigate" earned
+        # on 300 of 1,583 queries reads as a finding and is an artifact.
+        if eval_core.comparable_to_published(sample=args.sample, max_docs=args.max_docs):
+            delta = ndcg10 - ref["bm25"]
+            verdict = ("in BM25 ballpark" if abs(delta) < 0.05
+                       else "ABOVE BM25" if delta > 0 else "BELOW BM25 — investigate")
+            print(f"  vs BM25 reference: {delta:+.3f}  ({verdict})")
+        else:
+            print(eval_core.NOT_COMPARABLE)
     print()
 
     if args.json_out:

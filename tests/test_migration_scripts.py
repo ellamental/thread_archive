@@ -7,8 +7,8 @@ drives the ``run()`` / ``main()`` orchestration those tests bypass — the code 
 actually touches the live store when a migration is executed — plus the whole of
 ``repair_grok_tool_names``, driven by a synthetic plan of the production shape
 (the real plan/backup dumps are operator data holding private conversation
-payloads — they live untracked in ``host/repair-dumps/``, never in the repo,
-so no test may depend on them existing).
+payloads — they live under the archive home, never in the repo, so no test may
+depend on them existing).
 """
 
 from __future__ import annotations
@@ -325,6 +325,15 @@ def grok_plan_seeded(archive_home, tmp_path):
     mod, plan = _write_grok_plan(tmp_path, patches)
     _seed_grok_events(patches)
     return mod, plan, patches
+
+
+def test_grok_default_dumps_live_under_the_archive_home(archive_home) -> None:
+    """Plan and undo dumps hold real conversation payloads, so they resolve against
+    the archive home — never against the checkout that happens to hold the script,
+    which would put private transcripts inside a git repo and a wheel build."""
+    from thread_archive._scripts import repair_grok_tool_names as mod
+
+    assert mod.default_plan_path().parent == archive_home / "repair-dumps"
 
 
 def test_grok_backup_path_is_stamped_when_it_is_written() -> None:

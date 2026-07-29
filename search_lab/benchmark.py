@@ -88,6 +88,11 @@ class Row:
     #: instead of all of them. None means the row is already cheap enough to run
     #: whole in both tiers — which is the better answer when it is true, because
     #: then quick and full share one ledger series and one history.
+    #:
+    #: Sampled rows share one **n**, not one fraction. What a sampled row can
+    #: resolve is set by how many queries it scored, not by what share of the set
+    #: that was, so 300 of 1,583 and 300 of 8,588 carry the same error bar and
+    #: belong at the same number.
     quick_sample: int | None = None
 
     def dataset_name(self) -> str:
@@ -157,10 +162,8 @@ def manifest() -> list[Row]:
 
     **Completeness.** Every other row is effectively single-gold and therefore
     scores findability alone. ``beam``'s median question needs 2–3 messages and
-    its worst needs 96, so ``recall_all@k`` there is the one number on the bench
-    that asks whether a window holds *everything* bearing on a question. Its
-    three tiers are one conversation set at growing lengths, so the ladder reads
-    degradation as history grows.
+    its worst needs 16, so ``recall_all@k`` there is the one number on the bench
+    that asks whether a window holds *everything* bearing on a question.
 
     **Retrieval granularity.** ``locomo`` retrieves a turn, ``longmemeval`` a
     session, and ``perltqa`` a curated memory *unit* — three granularities of the
@@ -203,17 +206,6 @@ def manifest() -> list[Row]:
     # made on. Every one of them is replaced by the row's own elapsed time as
     # soon as it has run once (see `estimate`), so they only ever have to be
     # right to the nearest hour.
-    def beam_rows(tier: str, lexical: int, vectors: int,
-                  quick: int | None) -> list[Row]:
-        return [
-            Row(name=f"beam:{tier}[lexical]", cost_min=lexical, dataset="beam",
-                argv=[hay, "--dataset", "beam", "--beam-tier", tier],
-                build_hint=first_run, measure_keys=hay_keys, quick_sample=quick),
-            Row(name=f"beam:{tier}[vectors]", cost_min=vectors, dataset="beam",
-                argv=[hay, "--dataset", "beam", "--beam-tier", tier, "--vectors"],
-                build_hint=first_run, measure_keys=hay_keys, quick_sample=quick),
-        ]
-
     # Ordered cheapest-first: a cold pass is dominated by whichever corpora have
     # to be built, and a set that runs those first is a set nobody watches to the
     # end — every quick row would sit behind hours of embed before printing
@@ -242,19 +234,22 @@ def manifest() -> list[Row]:
         Row(name="longmemeval[lexical]", cost_min=15,
             argv=[hay, "--dataset", "longmemeval"],
             build_hint=first_run, measure_keys=hay_keys),
-        *beam_rows("100K", 4, 16, quick=8),
-        *beam_rows("500K", 12, 95, quick=8),
-        Row(name="perltqa[lexical]", cost_min=20,
-            argv=[perltqa], home=homes / "perltqa", build_hint=first_run,
-            measure_keys=ir, quick_sample=800),
-        Row(name="perltqa[vectors]", cost_min=40,
-            argv=[perltqa, "--vectors"], home=homes / "perltqa",
-            build_hint=first_run, measure_keys=ir, quick_sample=800),
+        Row(name="beam:100K[lexical]", cost_min=4, dataset="beam",
+            argv=[hay, "--dataset", "beam", "--beam-tier", "100K"],
+            build_hint=first_run, measure_keys=hay_keys, quick_sample=8),
+        Row(name="beam:100K[vectors]", cost_min=16, dataset="beam",
+            argv=[hay, "--dataset", "beam", "--beam-tier", "100K", "--vectors"],
+            build_hint=first_run, measure_keys=hay_keys, quick_sample=8),
+        Row(name="perltqa[lexical]~2000", cost_min=4,
+            argv=[perltqa, "--sample", "2000"], home=homes / "perltqa",
+            build_hint=first_run, measure_keys=ir),
+        Row(name="perltqa[vectors]~2000", cost_min=5,
+            argv=[perltqa, "--vectors", "--sample", "2000"],
+            home=homes / "perltqa", build_hint=first_run, measure_keys=ir),
         Row(name="cdr[vectors]", cost_min=20,
             argv=[cdr, "--vectors"],
             home=homes / "cdr", build_hint=first_run, measure_keys=ir,
             quick_sample=300),
-        *beam_rows("1M", 22, 185, quick=6),
     ]
 
 

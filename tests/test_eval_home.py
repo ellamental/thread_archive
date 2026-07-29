@@ -119,3 +119,68 @@ def test_home_name_gives_a_capped_corpus_its_own_home() -> None:
     assert eval_home.home_name("scifact", max_docs=None) == "scifact"
     assert eval_home.home_name("scifact", max_docs=0) == "scifact"
     assert eval_home.home_name("scifact", max_docs=200) == "scifact-max200"
+
+
+# ── the embed's durable half ──────────────────────────────────────────────────
+def _seeded_vectors(home):
+    """A home holding two vectors in ``index.db`` and nothing in truth — the state
+    a harness is in the moment ``api.embed`` returns."""
+    from thread_archive._retrieval import vectors
+    from thread_archive._store import init_db
+
+    init_db()
+    vectors.ensure_index()
+    vectors.index_vectors([(1, "user", [1.0] + [0.0] * 767),
+                           (2, "text", [0.0, 1.0] + [0.0] * 766)])
+    (home / "truth").mkdir(parents=True, exist_ok=True)
+
+
+def test_embed_corpus_persists_the_vectors_to_the_durable_sidecar(archive_home) -> None:
+    # index.db is the disposable half of a home. Without this the corpus embeds
+    # count for nothing the moment the index is rebuilt, which on the bench's
+    # corpora is hours.
+    _seeded_vectors(archive_home)
+
+    eval_home.embed_corpus(archive_home)
+
+    assert (archive_home / "truth" / "vectors.sqlite").exists()
+
+
+def test_embed_corpus_sidecar_survives_losing_the_index(archive_home) -> None:
+    """The state the sidecar exists for: vectors gone from the index, restored
+    from truth without re-running the embed."""
+    from sqlalchemy import text as sa_text
+
+    from thread_archive._retrieval import vectors
+    from thread_archive._store import get_session
+
+    _seeded_vectors(archive_home)
+    eval_home.embed_corpus(archive_home)
+
+    with get_session() as s:
+        s.execute(sa_text("DELETE FROM event_vectors"))
+        s.commit()
+    vectors._bump_version()
+    assert vectors.get_status()["indexed"] == 0
+
+    assert vectors.load_vectors_sidecar(archive_home / "truth") == 2
+    assert vectors.get_status()["indexed"] == 2
+
+
+def test_embed_corpus_is_fail_soft_when_the_cache_cannot_be_written(archive_home) -> None:
+    # The vectors are in the index either way — a corpus that embedded fine must
+    # still score when only the cache write failed. Driven by the real condition
+    # (a truth dir the save cannot build its temp file in), not a stand-in.
+    from thread_archive._retrieval import vectors
+
+    _seeded_vectors(archive_home)
+    truth = archive_home / "truth"
+    # A directory where the sidecar file goes: the publishing rename cannot land,
+    # which is the shape of every real cause (a full disk, a permission, a stray).
+    (truth / "vectors.sqlite").mkdir()
+
+    eval_home.embed_corpus(archive_home)  # does not raise
+
+    assert (truth / "vectors.sqlite").is_dir()  # nothing published
+    # …and the vectors it could not cache are still right there in the index.
+    assert vectors.get_status()["indexed"] == 2

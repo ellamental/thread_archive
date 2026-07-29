@@ -100,7 +100,7 @@ everywhere, coherence included), and the same warm-before-scoring rule.
 ## Running the whole bench
 
 ```
-python -m search_lab benchmark                  # the full set — the release bar
+python -m search_lab benchmark                  # the standard set — the release bar
 python -m search_lab benchmark --quick          # the quick check — minutes
 python -m search_lab benchmark --only locomo    # just the rows whose name matches
 python -m search_lab benchmark --list           # the plan: what runs, what is fresh
@@ -108,8 +108,11 @@ python -m search_lab benchmark --list           # the plan: what runs, what is f
 
 **Two depths, and they are for different questions.**
 
-The **full** set scores every judged query of every dataset. It is what a release
-is cut against and the only depth a quality claim may cite.
+The **standard** set scores every judged query except PerLTQA, whose 8,588
+questions make its two arms a 44-minute measurement by themselves. PerLTQA uses
+a fixed deterministic sample of 2,000 questions in both tiers, broad enough to
+resolve a 0.0005 delta while keeping the pair near 10 minutes. This set is what a
+release is cut against and the only depth a quality claim may cite.
 
 The **quick** check (`--quick`) scores a deterministic sample on the rows heavy
 enough to need one and every query on the rest — same seven datasets, minutes
@@ -129,12 +132,13 @@ same size, because the cap took one person's entire profile block.
 Two rules follow, and the runner prints both:
 
 - **A sampled row is a different measurement**, not a cheaper look at the same
-  one, so it records under its own name (`perltqa[lexical]~800`) and never mixes
-  into the full run's history. Rows cheap enough to score whole keep one name and
-  one continuous series across both depths.
+  one, so it records the sample size in its own name
+  (`perltqa[lexical]~2000`) and never mixes with a measurement over a different
+  query set. Rows cheap enough to score whole keep one name and one continuous
+  series across both depths.
 - **Resolution is 1/n.** At a sample of 100 a row cannot read a delta finer than
-  0.01. Use the quick check to catch damage; re-run the full set before claiming
-  a change helped.
+  0.01. Use the quick check to catch damage; re-run the standard set before
+  claiming a change helped.
 
 Sampling cuts query time and nothing else — a corpus that has never been built
 pays the same ingest and embed either way.

@@ -5,11 +5,12 @@ and several thinking/text blocks were anchored at a stale previous-turn timestam
 
 The fix realigns those events to a canonical deterministic parse: this repo's own
 importer run over the *complete* ``chat_history.jsonl`` files (no chunk
-boundaries). The patch plan (``repair_grok_tool_names_plan_20260704.json``,
-untracked in ``host/repair-dumps/`` — it holds real conversation payloads, so it
-never enters git) carries old + new values; this script applies its ``sa``
-(standalone) entries. Old payloads are asserted before writing and the changed
-rows are dumped to a backup file first. Truth-file history is inherent: the
+boundaries). The patch plan (``repair_grok_tool_names_plan_20260704.json``, under
+the archive home's ``repair-dumps/`` — it holds real conversation payloads, so it
+is operator data beside the store it patches, never repository content) carries
+old + new values; this script applies its ``sa`` (standalone) entries. Old
+payloads are asserted before writing and the changed rows are dumped to a backup
+file first. Truth-file history is inherent: the
 corrected event lines append via the normal ``append_event_row`` seam and reindex
 is last-wins by id, so the pre-repair lines remain in the per-thread JSONL as
 history. FTS rows for the patched events are re-indexed (tool_name is an FTS
@@ -31,15 +32,24 @@ from typing import Optional
 from sqlalchemy import delete
 
 from thread_archive._api import open_archive
+from thread_archive._config import resolve_paths
 from thread_archive._retrieval.fts import index_events
 from thread_archive._store import use_session
 from thread_archive._store.models import Event, EventFts
 from thread_archive._truth.jsonl_log import append_event_row
 
-# Undo/plan dumps live in host/repair-dumps (outside the package tree, so they
-# never ship in the wheel — tests/meta/test_package_tree.py ratchets this).
-DUMPS_DIR = Path(__file__).resolve().parents[3] / "host" / "repair-dumps"
-PLAN_PATH = DUMPS_DIR / "repair_grok_tool_names_plan_20260704.json"
+# Undo/plan dumps carry real transcript payloads, so they live with the archive
+# they describe — under the home, never under the checkout. Keeping them out of
+# the repo keeps them out of the wheel and out of git at once; the two halves of
+# that are ratcheted by tests/meta/test_package_tree.py.
+DUMPS_DIRNAME = "repair-dumps"
+PLAN_NAME = "repair_grok_tool_names_plan_20260704.json"
+
+
+def default_plan_path(home: Optional[str] = None) -> Path:
+    """The plan a run reads when none is named. Resolved at call time, so
+    ``$THREAD_ARCHIVE_HOME`` picks the archive whose dumps these are."""
+    return resolve_paths(home).home / DUMPS_DIRNAME / PLAN_NAME
 
 
 def backup_path_for(plan_path: Path, *, now: Optional[datetime] = None) -> Path:
@@ -62,7 +72,7 @@ def run(
     backup_path: Optional[Path] = None,
 ) -> int:
     """Apply (or preview) the plan's standalone half. Returns the process exit code."""
-    plan_path = plan_path or PLAN_PATH
+    plan_path = plan_path or default_plan_path()
     patches = json.loads(plan_path.read_text())["sa"]
     print(f"{len(patches)} standalone patches loaded from {plan_path.name}")
 
@@ -97,6 +107,7 @@ def run(
             return 0
 
         backup = backup_path or backup_path_for(plan_path)
+        backup.parent.mkdir(parents=True, exist_ok=True)
         backup.write_text(json.dumps(
             [{"id": ev.id, "thread_id": ev.thread_id, "event_type": ev.event_type,
               "occurred_at": str(ev.occurred_at), "payload": ev.payload,
@@ -126,7 +137,10 @@ def run(
 def main(argv: Optional[list[str]] = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--apply", action="store_true", help="write (default: preview only)")
-    ap.add_argument("--plan", type=Path, default=PLAN_PATH, help="patch plan JSON")
+    ap.add_argument(
+        "--plan", type=Path, default=None,
+        help="patch plan JSON (default: <archive home>/repair-dumps/ + the plan's name)",
+    )
     ap.add_argument(
         "--backup", type=Path, default=None,
         help="undo dump for the rows about to change "

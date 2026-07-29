@@ -77,7 +77,7 @@ import from account exports you download by hand.
 - [MCP](https://github.com/ellamental/thread_archive/blob/main/docs/mcp.md) — server modes and client wiring
 - [Web viewer](https://github.com/ellamental/thread_archive/blob/main/docs/web-viewer.md) — the local UI and its supported URLs
 - [How it works](https://github.com/ellamental/thread_archive/blob/main/docs/architecture.md) — the event model, durability, platform assumptions, repo layout
-- [Stability](https://github.com/ellamental/thread_archive/blob/main/docs/stability.md) — the four public interfaces and what may change
+- [Stability](https://github.com/ellamental/thread_archive/blob/main/docs/stability.md) — the five public interfaces and what may change
 - [When an import drifts](https://github.com/ellamental/thread_archive/blob/main/docs/import-drift.md) — the support tier and the repair loop
 - [Not supported](https://github.com/ellamental/thread_archive/blob/main/docs/scope.md) — the deliberate scope: one machine, one user, macOS/Linux
 - [On-disk format](https://github.com/ellamental/thread_archive/blob/main/docs/format.md) · [Provider plugin API](https://github.com/ellamental/thread_archive/blob/main/docs/providers.md) · [Search quality](https://github.com/ellamental/thread_archive/blob/main/docs/search-quality.md) · [Related projects](https://github.com/ellamental/thread_archive/blob/main/docs/related.md)

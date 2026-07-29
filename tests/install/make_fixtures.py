@@ -19,10 +19,6 @@ made it all the way through import → reindex → search. (The ``cloth`` provid
 plugin-registered on the operator's box, not part of the packaged distribution, so the
 corpus deliberately has no session for it.)
 
-To exercise the install against your *actual* conversations, run ``obfuscate_fixtures.py``
-to produce an obfuscated corpus from your local stores (gitignored) and point the install
-test at it instead.
-
 Usage: ``python make_fixtures.py <out_dir>`` writes the flat layout + a manifest the e2e
 check consumes.
 """

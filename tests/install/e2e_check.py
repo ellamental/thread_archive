@@ -8,7 +8,7 @@ non-zero on any failure so the Docker install test (or a host run) fails loudly.
 Run after ``pip install -e .`` (it imports the installed library):
 
     python tests/install/e2e_check.py                 # synthetic corpus in a temp home
-    python tests/install/e2e_check.py --fixtures DIR  # a prebuilt corpus (e.g. obfuscated)
+    python tests/install/e2e_check.py --fixtures DIR  # a prebuilt corpus (make_fixtures.py)
     python tests/install/e2e_check.py --keep          # leave the temp home for inspection
 """
 

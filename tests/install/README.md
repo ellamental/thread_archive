@@ -38,32 +38,18 @@ python tests/install/e2e_check.py        # just the importer-level check
 python tests/install/first_run.py --keep # leave the fake home for inspection
 ```
 
-## Test against your real conversations (obfuscated)
-
-The default corpus is synthetic and committed. To exercise the importer-level check against
-the real shape/scale of your own data without committing anything private:
-
-```bash
-python tests/install/obfuscate_fixtures.py --limit 20      # reads ~/.claude, ~/.codex, …
-tests/install/run_install_test.sh                          # auto-mounts the obfuscated corpus
-```
-
-`obfuscate_fixtures.py` scrubs every free-text field (deterministic per-word hashing;
-structural tags + discriminators preserved so the importers still parse) and writes to
-`tests/install/fixtures-real/` — which is **gitignored**. Point `--claude-dir` /
-`--codex-dir` / `--grok-dir` / `--opencode-db` at your stores if they aren't in the
-default locations. Obfuscation is lossy but not a hard guarantee — never commit the
-output; review a sample before sharing. (`first_run.py` uses its own synthetic realistic
-layout and does not read the obfuscated corpus.)
+The corpus is synthetic and committed, and it is the only corpus these lanes read. Real
+conversations never enter the checkout — not even scrubbed: the importers' exposure to
+genuine upstream shapes comes from the `source fix` scaffold, which collects real drifted
+samples under the archive home where operator data belongs.
 
 ## Pieces
 
 | file | role |
 |------|------|
 | `Dockerfile` | clean `python:3.12-slim` (the supported floor); builds the wheel, installs it + `[dev]`, runs `run_in_container.sh` |
-| `run_install_test.sh` | host: ensure a daemon (colima if needed), build the image + run (mounts the obfuscated corpus if present) |
+| `run_install_test.sh` | host: ensure a daemon (colima if needed), build the image + run |
 | `run_in_container.sh` | container entrypoint: unit suite + `e2e_check.py` + `first_run.py` |
 | `make_fixtures.py` | the synthetic provider corpus (safe to commit) — content defined once; `generate()` writes the flat layout, `realistic_layout()` writes each store in its real default location |
 | `e2e_check.py` | importer-level: import-all (by path) → reindex → search assertions |
 | `first_run.py` | realistic first run: `watch --once` discovery + `import-export` → reindex → search, OS-aware; also driven by the `package` pytest lane |
-| `obfuscate_fixtures.py` | opt-in: real local stores → obfuscated corpus (gitignored) |

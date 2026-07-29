@@ -215,11 +215,10 @@ def score_domain(api_mod, doc_of_thread: dict[str, str], queries: dict[str, str]
     for i, (qid, qtext) in enumerate(scorable):
         with _probe.install() as probe:
             s0 = time.monotonic()
-            # group='none' for the same reason BEIR uses it: this is flat passage
-            # retrieval, and folding hits by thread would hide a distinct gold
-            # passage that shares text with another.
-            hits = api_mod.search(qtext, limit=max(ks) * 2,
-                                  content_types=["user"], group="none")
+            # Every ranked hit as its own row, for the same reason BEIR needs it:
+            # this is flat passage retrieval, and folding hits by thread would hide
+            # a distinct gold passage that shares text with another.
+            hits = api_mod.search(qtext, limit=max(ks) * 2, content_types=["user"])
             elapsed = time.monotonic() - s0
         latencies.append(elapsed)
         if probe.ran:

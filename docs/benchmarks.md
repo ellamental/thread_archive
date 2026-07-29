@@ -51,12 +51,31 @@ the others don't is a number without a question behind it.
 | CDR | shared corpus | conversational retrieval | human | nDCG@10 | conversational query shapes |
 | LoCoMo | per-question haystack | multi-session dialog, turn-level | human | recall@k | turn-granularity memory |
 | LongMemEval-S | per-question haystack | long-history QA, session-level | human | recall@k | session-granularity memory |
-| BEAM | per-question haystack | long-conversation memory, message-level | human-validated | recall@k | **completeness** — multi-answer gold, and a length ladder |
+| BEAM (100K tier) | per-question haystack | long-conversation memory, message-level | human-validated | recall@k | **completeness** — the only multi-answer gold on the bench |
 | PerLTQA | shared corpus | personal-memory unit retrieval | by construction | nDCG@10 / MRR@10 | memory-*unit* granularity |
 
 Every one is deterministic in scoring. Two carry no published retrieval baseline
 (BEAM, PerLTQA) and say so in their own output rather than borrowing a number
 from a different task.
+
+**PerLTQA carries a fixed 2,000-question sample.** Its full 8,588-question set
+takes about 44 minutes across the lexical and vector arms; the deterministic
+hash sample preserves coverage across people and memory types while bringing the
+pair near 10 minutes. The `~2000` row names make that measurement boundary
+explicit, and n=2,000 resolves deltas to 0.0005.
+
+**BEAM is scored narrower than it ships**, and both deviations are stated where a
+reader of a number will meet them. Only the **100K tier** is carried: the 500K and
+1M tiers are the same 20 conversations extended, so the length ladder they buy
+costs ~11 hours of embed to re-ask questions the 100K tier already asks. And three
+of its ten categories are skipped as not-retrieval-questions — `abstention` (no
+gold by design), `summarization` (matches the whole corpus by construction, and
+gold up to 16 messages caps a perfect retriever at recall@10 = 0.625), and
+`event_ordering` (asks for a sequencing over a broad topic, with no distinguishing
+content to match on). The list and the reasoning live in
+`haystack_eval.BEAM_UNSCORED`. `instruction_following` scores low and is
+deliberately kept: finding the message that answers a broad question is retrieval
+doing its job.
 
 ### Built and runnable, held off the bench on cost
 

@@ -16,22 +16,24 @@ spelling still resolves (``_LEGACY_VERBS``, and ``backup <dest>`` via
 :func:`_normalize`): the installed service manifests carry them, and a rename
 that strands a running agent is not a rename.
 
-Two kinds of verb live here.
+**The whole tree is public surface** (``docs/stability.md``). This is the
+process seam: the service manifests, lab's cron script, the /ci skill, the
+monitor's heartbeat contract and an operator's shell history all name these
+verbs, and none of them can follow a rename. What a verb is called and what
+flags it takes is the contract; what it *prints* is not, except where a flag
+names a machine-readable shape (``search --output linkable``). Adding a verb or
+a flag is free; taking one away means leaving the old spelling resolving.
+``tests/test_public_api.py`` pins the tree so either move is deliberate.
 
-**Retrieval — ``search`` and ``read`` — is supported surface.** They are the
-``thread_search`` / ``thread_read`` tools with a terminal in front of them: one
-implementation (:mod:`thread_archive._tools`), served to agents over MCP and to
-a person here, so what you get at a prompt is what the agent would have gotten,
-notes and all. Their flags mirror the tool parameters one for one.
+Search quality is not a verb here at all: the scoring surface is the repo-only
+``search_lab/``, which no install carries.
 
-**Every other verb is private operational tooling** — the process seam the
-service manager, cron, and operators use to run the private machinery. Search
-quality is not a verb here at all: the scoring surface is the repo-only
-``search_lab/``, which no install carries. Those verbs may change without
-external notice, but they are *wired into* the service manifests, lab's cron
-script, the /ci skill, and the monitor's heartbeat contract — renaming one means
-updating those in the same change (``tests/test_public_api.py`` pins the tree so
-the change is deliberate).
+**Retrieval — ``search`` and ``read`` — carries a second promise on top.** They
+are the ``thread_search`` / ``thread_read`` tools with a terminal in front of
+them: one implementation (:mod:`thread_archive._tools`), served to agents over
+MCP and to a person here, so what you get at a prompt is what the agent would
+have gotten, notes and all. Their flags mirror the tool parameters one for one,
+and unlike every other verb, their *output* is contract too.
 
 The web viewer is the same archive through a browser, cohosted by the always-on
 watcher (``thread-archive watch --web``); ``web`` is not a third read surface —

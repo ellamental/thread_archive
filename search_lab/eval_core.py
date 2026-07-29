@@ -255,6 +255,31 @@ def _trail_events(s, after: str | None = None) -> list[tuple[object, str, object
     return resolve_read_refs(events, _resolve)
 
 
+#: What a harness prints where the published-baseline verdict would go when the
+#: run is not the measurement the baseline describes.
+NOT_COMPARABLE = ("  NOT COMPARABLE — the published number is scored over the whole "
+                  "query set and corpus; this run is a subset. Reference shown for "
+                  "scale only.")
+
+
+def comparable_to_published(*, sample: Optional[int] = None,
+                            max_docs: Optional[int] = None) -> bool:
+    """Whether this run may be scored *against* its published baseline, rather
+    than merely printed beside it.
+
+    A published nDCG@10 describes one measurement: every query, over the whole
+    corpus. Narrow either and the number is still useful — it is the same ranker
+    on the same data — but the comparison is not, and a verdict is worse than no
+    verdict because it reads as a finding. A ``BELOW BM25 — investigate`` earned on
+    300 of 1,583 sampled queries sends someone after a regression that is sampling
+    error, and the quick tier exists precisely to be run often.
+
+    The sampled row still keeps its own history: the ledger records it under its
+    own name, so it is compared against *itself* across passes, which is what a
+    fast tier is for."""
+    return not sample and not max_docs
+
+
 def sample_queries(items: list, n: Optional[int], key) -> list:
     """A deterministic subset of ``n`` items, or all of them.
 

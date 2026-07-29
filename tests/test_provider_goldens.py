@@ -19,7 +19,8 @@ Volatile fields are normalized before comparison: per-run uuids (stream_id /
 api_call_id) become ordinals, wall-clock fields (id, recorded_at) are dropped,
 and any fixture tmp-path leaking into payloads is scrubbed to a placeholder.
 These goldens lock OUR normalization; drift in the providers' upstream formats
-still needs real captures (tests/install/obfuscate_fixtures.py).
+still needs real captures — collected by ``thread-archive source fix`` into the
+scaffold's ``samples/`` under the archive home, never into this repo.
 
 The comparison machinery is the PUBLIC plugin harness
 (:mod:`thread_archive.provider.testing`) — the same ``assert_golden`` /

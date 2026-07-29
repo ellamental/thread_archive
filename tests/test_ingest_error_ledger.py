@@ -24,7 +24,7 @@ from thread_archive._ops.ledger import iter_rows
 # tens of thousands of times across two days, varying only in which session it
 # failed on.
 _ERRNO24 = (
-    "claude-code import error for -Users-ella-dev-thread:{uuid}: "
+    "claude-code import error for -Users-sam-dev-proj:{uuid}: "
     "[Errno 24] Too many open files"
 )
 #: Two canonical and one reshaped — providers do not reliably hand out well-formed

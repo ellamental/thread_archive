@@ -215,7 +215,7 @@ def run(args) -> int:
         else:
             _log("embedding corpus (real model) ...")
             t0 = time.monotonic()
-            res = api.embed()
+            res = eval_home.embed_corpus(home)
             _log(f"embedded {res.get('embedded')} events in {time.monotonic() - t0:.0f}s")
             marker["embedded"] = len(doc_of_thread)
             marker_path.write_text(json.dumps(marker), encoding="utf-8")
@@ -246,12 +246,9 @@ def run(args) -> int:
     for i, (qid, qtext) in enumerate(scorable):
         with _probe.install() as probe:
             s0 = time.monotonic()
-            # group='none': a flat doc-retrieval benchmark scores every hit as its
-            # own row; dedup to one row per conversation happens below, on corpus_id.
-            hits = api.search(
-                qtext, limit=max(ks) * 2, content_types=["user"],
-                group="none",
-            )
+            # A flat doc-retrieval benchmark scores every hit as its own row; dedup
+            # to one row per conversation happens below, on corpus_id.
+            hits = api.search(qtext, limit=max(ks) * 2, content_types=["user"])
             elapsed = time.monotonic() - s0
         latencies.append(elapsed)
         if probe.ran:
@@ -302,11 +299,14 @@ def run(args) -> int:
     for k in ks:
         print(f"  Recall@{k:<3} {recall[k]:.4f}")
     print()
-    delta = ndcg10 - BEST_MODEL_NDCG10
-    verdict = ("at the CDR frontier" if abs(delta) < 0.03
-               else "ABOVE the best CDR model" if delta > 0
-               else "below the best CDR model")
-    print(f"  vs CDR best-of-16: {delta:+.4f}  ({verdict})")
+    if eval_core.comparable_to_published(sample=args.sample):
+        delta = ndcg10 - BEST_MODEL_NDCG10
+        verdict = ("at the CDR frontier" if abs(delta) < 0.03
+                   else "ABOVE the best CDR model" if delta > 0
+                   else "below the best CDR model")
+        print(f"  vs CDR best-of-16: {delta:+.4f}  ({verdict})")
+    else:
+        print(eval_core.NOT_COMPARABLE)
     print()
 
     if args.json_out:

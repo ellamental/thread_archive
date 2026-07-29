@@ -38,15 +38,6 @@ __pycache__/
 # template is .mcp.json.example.
 /.mcp.json
 
-# Obfuscated corpus built from real local stores by tests/install/obfuscate_fixtures.py.
-# Private even after obfuscation — never commit it.
-tests/install/fixtures-real/
-
-# Live-repair undo records: real transcript/tool payloads from this host's
-# archive. Operator data, never repository content — tracking one publishes
-# private conversations. tests/meta/test_package_tree.py gates this in CI.
-/host/repair-dumps/
-
 # coverage data (pytest --cov; the CI pytest row reports coverage per run,
 # and writes coverage.json for the coverage-gate row). Unanchored — a pytest
 # run from any subdirectory drops its .coverage there, not just at the root.
@@ -59,6 +50,12 @@ coverage-*.json
 # BEIR calibration cache (search_lab/beir_eval.py, the `beir` test lane): downloaded
 # datasets + the built archive/embeddings, kept so re-runs skip the rebuild.
 /.beir-cache/
+
+# env files — none exist today; forward-looking guard so a local secrets file
+# can never be committed by accident.
+.env
+.env.*
+.envrc
 
 # os
 .DS_Store

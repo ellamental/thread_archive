@@ -84,6 +84,17 @@ def test_the_quick_tier_still_covers_every_dataset() -> None:
     assert full == quick
 
 
+def test_perltqa_uses_the_fixed_ten_minute_sample() -> None:
+    rows = [r for r in benchmark.manifest() if r.dataset_name() == "perltqa"]
+
+    assert {r.name for r in rows} == {
+        "perltqa[lexical]~2000",
+        "perltqa[vectors]~2000",
+    }
+    assert all(r.argv[-2:] == ["--sample", "2000"] for r in rows)
+    assert all(r.quick() is r for r in rows)
+
+
 def test_only_narrows_by_name_fragment() -> None:
     chosen = benchmark.select(benchmark.manifest(), only=["locomo"])
     assert chosen and all("locomo" in r.name for r in chosen)

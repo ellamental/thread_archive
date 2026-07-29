@@ -27,6 +27,8 @@ thread-archive source mirror    # mirror raw harness stores into <home>/source-m
                                 #   (verbatim, gzip; nothing ever deleted)
 thread-archive source coverage  # capture-coverage check: source stores reconciled against the archive
 thread-archive source loads     # load progress: the in-flight load and recent runs, by phase
+thread-archive source ingest    # what ingest cost over a window (--hours, default 24): per
+                                #   source, and where the time went by stage
 thread-archive source fix <provider>  # scaffold an override patch for a drifted import
 
 # the index — everything rebuildable from the JSONL truth
@@ -68,9 +70,14 @@ Every pre-group spelling still resolves — `reindex`, `nightly <dest>`,
 They are listed nowhere: what keeps working is a machine already wired to them,
 not a second documented way to type a verb.
 
-`search` and `read` are supported surface — the same implementation
-`archive-mcp` serves, so a query typed here and the same query asked
-mid-conversation return the same answer. Everything else in the CLI is private
-operational tooling (see [stability.md](stability.md)): the process seam the
-service agents, cron, and operators use. The third door onto the same archive is
-the web viewer, cohosted by `thread-archive watch --web`.
+**Every verb here is supported surface** (see [stability.md](stability.md)):
+the CLI is the process seam the service agents, cron, operator scripts and
+fingers drive, and a machine already wired to a verb cannot follow a rename.
+What a verb is called and what flags it takes is the contract; what it *prints*
+is not, except where a flag names a machine-readable shape
+(`search --output linkable`).
+
+`search` and `read` carry a second promise on top: they are the same
+implementation `archive-mcp` serves, so a query typed here and the same query
+asked mid-conversation return the same answer. The third door onto the same
+archive is the web viewer, cohosted by `thread-archive watch --web`.

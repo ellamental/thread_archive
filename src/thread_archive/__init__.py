@@ -3,11 +3,16 @@
 JSONL is the durable truth log; SQLite is a rebuildable projection. One storage
 path, no server backends.
 
-The public API is exactly four things:
+The public API is exactly five things:
 
 * the retrieval tools — ``thread_search`` and ``thread_read``, served to agents
   by ``archive-mcp`` and to a person by the ``thread-archive search`` /
   ``thread-archive read`` verbs (one implementation behind both),
+* the ``thread-archive`` CLI (``docs/cli.md``) — every verb, and the flags each
+  takes. It is the process seam: service manifests, cron entries and operator
+  scripts name these verbs, so a spelling that ever worked keeps resolving.
+  What a verb *prints* is not the contract, only what it is called and what it
+  accepts,
 * the on-disk truth format (``docs/format.md``, versioned by
   ``manifest.json``'s ``version``) — the durability promise: data written by
   one release stays readable by the next. Read-only access to the documented
@@ -25,10 +30,11 @@ The public API is exactly four things:
   endpoints back the viewer's own bundle and are private.
 
 **Everything else is private support machinery for those products** and
-may change without notice: the rest of the ``archive`` CLI (the process seam
-launchd, cron, and operators use), the viewer's bundle and markup, and every
+may change without notice: the viewer's bundle and markup, and every
 underscore-prefixed module — :mod:`._api`, the coordination layer, included.
-There is no public Python API. More surface gets exposed deliberately as it
+There is no public Python API: :mod:`.cli` carries a public name because the
+console script resolves to it, not because its Python names are callable from
+outside. More surface gets exposed deliberately as it
 matures, not by accident of being installed or importable.
 ``tests/test_public_api.py`` ratchets this boundary.
 """
@@ -37,9 +43,9 @@ from __future__ import annotations
 
 # Single source of version truth — pyproject declares `dynamic = ["version"]`
 # and hatchling reads it from here at build time.
-# Versioning policy: 0.0.x while the public API is the retrieval tools +
-# the truth format + the provider plugin API + the web viewer's URLs only;
-# everything else is free to change without notice.
+# Versioning policy: 0.0.x while the public API is the retrieval tools + the
+# CLI + the truth format + the provider plugin API + the web viewer's URLs
+# only; everything else is free to change without notice.
 # Don't bump past 0.0.x as part of release mechanics.
 __version__ = "0.0.9"
 

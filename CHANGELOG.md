@@ -2,6 +2,58 @@
 
 ## Unreleased
 
+- **PerLTQA's standing measurement is a deterministic 2,000-question sample.**
+  The complete 8,588-question set costs about 44 minutes across its lexical and
+  vector arms; the hash sample preserves coverage across people and memory types,
+  resolves deltas to 0.0005, and puts the pair near 10 minutes. Both rows carry
+  `~2000` in their names so their ledger history cannot mix with a different
+  query set.
+- **The CLI is public surface, and the docs finally say so.** Every verb is a supported interface, not just
+  `search` and `read` — the service manifests, cron entries, operator scripts and shell histories that name them
+  cannot follow a rename, which is why nothing here has ever renamed a verb without leaving the old spelling
+  resolving (`_LEGACY_VERBS`). The docs described that seam as private operational tooling anyway, and
+  `tests/test_public_api.py` pinned the tree while explicitly disclaiming it as "not a compatibility promise to
+  anyone external." `docs/stability.md` now lists **five** public interfaces, with the line drawn at what a verb
+  is called and what flags it takes — what a verb *prints* is still free to change, except for `search` / `read`,
+  whose output is contract because it is what `archive-mcp` serves. Also `source ingest`, which the CLI has and
+  `docs/cli.md` didn't list, and the durability verbs in `docs/format.md`, which were still spelled
+  `verify` / `reindex` / `restore-drill` from before the noun groups.
+- **The bench runs again: every harness still passed the `group=` that 0.0.9 removed.** Dropping thread grouping
+  from `search` left all five lab harnesses (`beir_eval`, `cdr_eval`, `haystack_eval`, `mtrag_eval`,
+  `perltqa_eval`) calling `api.search(..., group="none")`, so every scored row died on `TypeError` — the whole
+  bench, not one dataset. `group='none'` asked for exactly what search now always does, so the argument is gone
+  and the comments explaining it state the behavior instead.
+- **BEAM is scored as the retrieval benchmark it partly is: one tier, seven categories.** Only the **100K tier**
+  is carried — the 500K and 1M tiers are the same 20 conversations extended, so the length ladder they buy costs
+  ~11 hours of embed to re-ask questions 100K already asks (their parquets and built homes are deleted). And
+  three of the ten categories are skipped as not-retrieval-questions, listed with their reasons in
+  `haystack_eval.BEAM_UNSCORED`: `abstention` (no gold by design, already skipped), `summarization` (matches the
+  whole corpus by construction, and gold up to 16 messages caps a *perfect* retriever at recall@10 = 0.625), and
+  `event_ordering` (asks for a sequencing over a broad topic, with no distinguishing content to match on).
+  `instruction_following` scores 0.163 and is deliberately kept: finding the message that answers a broad
+  question is retrieval doing its job, and dropping a row for being hard is how a bench stops measuring anything.
+  354 queries → 279, and the bench set goes 16 rows/~412 min to 12 rows/~98 min.
+- **Real conversations never land in the checkout.** Two paths put private transcript payloads inside the repo,
+  both reachable only on a maintainer's box. `repair_grok_tool_names` resolved its plan and undo dumps from
+  `Path(__file__).parents[3]` — the checkout root, which is not even a real directory once the package is installed
+  from a wheel — so it now resolves them against the archive home (`repair-dumps/`, beside the store it patches,
+  the same shape `migrate_thread_ulids` already used for `pre-ulid-backup`). And `obfuscate_fixtures.py`, which
+  scrubbed your live `~/.claude`/`~/.codex`/`~/.grok`/opencode stores into a gitignored corpus under
+  `tests/install/`, is deleted along with the mount plumbing that served it: obfuscation was lossy but never a
+  guarantee, and the install lanes read the committed synthetic corpus. Real upstream shapes still reach the
+  importers — through the `source fix` scaffold's `samples/`, which is already under the home. The package-tree
+  ratchet keeps its git half, now on dump-marked filenames anywhere rather than one blessed directory.
+
+- **A benchmark corpus's embed survives losing its index.** `api.embed` writes vectors into `index.db`, the
+  disposable half of an archive home, and the lab's five build paths stopped there — so a rebuild, an index-format
+  migration, or a `--rebuild` pass threw away hours. `eval_home.embed_corpus` now embeds and then writes
+  `truth/vectors.sqlite`, the durable cache keyed by the event ids truth fixes; every harness (`beir_eval`,
+  `cdr_eval`, `perltqa_eval`, `haystack_eval`, `haystack_corpus`) goes through it. The save stays in the lab rather
+  than inside `api.embed` because the sidecar is rewritten whole: proportional after a one-shot corpus build, not
+  after a live archive's incremental drain. Fail-soft — the vectors are in the index either way. Backfilled across
+  the 30 already-embedded homes on this box (1.40 GB), and verified end to end: a real beam corpus with `index.db`
+  deleted rebuilt to `vectors_restored 309` with the embedder switched off.
+
 ## 0.0.9 — 2026-07-29
 
 - Releases ship by PR: `release/X.Y.Z` stabilizes off `dev` in a worktree, the operator merging to `main` is the

@@ -14,13 +14,7 @@ pytest tests/ -q
 echo
 
 echo "=== end-to-end install check (import all providers -> reindex -> search) ==="
-if [ -n "${FIXTURES_DIR:-}" ]; then
-  echo "using mounted corpus: $FIXTURES_DIR"
-  python tests/install/e2e_check.py --fixtures "$FIXTURES_DIR"
-else
-  echo "using synthetic corpus"
-  python tests/install/e2e_check.py
-fi
+python tests/install/e2e_check.py
 echo
 
 # The realistic first run: discover each provider's store in its real default
