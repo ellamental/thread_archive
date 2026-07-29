@@ -1,17 +1,17 @@
-# Turns a release merge into the tag and the PyPI upload. Merging the release
-# PR (docs/releasing.md §4) is the ship; this workflow is the follow-through:
+# Turns a release merge into the release tag. Merging the release PR
+# (docs/releasing.md §4) is the ship; this workflow is the follow-through:
 # on every push to main it reads `__version__`, and if that version's tag
-# doesn't exist yet, creates the annotated tag on the pushed commit (message:
-# the version's CHANGELOG section) and hands off to publish.yml for the
-# build + Trusted Publishing upload.
+# doesn't exist yet, creates the annotated tag on the pushed commit
+# (message: the version's CHANGELOG section) and pushes it.
 #
-# The handoff is an explicit workflow_call, not the tag-push trigger: tags
-# created with the default GITHUB_TOKEN never fire other workflows, so
-# publish.yml's own `on: push: tags` only serves a hand-pushed tag (the
-# manual release path). No double-publish either way.
-#
-# Requires a bypass for GitHub Actions on the `v*` tag protection ruleset —
-# tag creation is otherwise reserved for this path.
+# The push authenticates with a write deploy key (RELEASE_TAG_DEPLOY_KEY
+# secret) rather than GITHUB_TOKEN, for two reasons that share one root —
+# GitHub treats token-minted refs specially: a GITHUB_TOKEN tag can't clear
+# the `v*` tag ruleset on a personal repo (the Actions app can't be a bypass
+# actor there; the deploy key is), and it wouldn't fire other workflows. The
+# deploy-key push does both: the tag lands, and its push event triggers
+# publish.yml exactly as a hand-pushed tag would — one publish path, no
+# double-fire.
 
 name: Release
 
@@ -25,11 +25,6 @@ concurrency:
 jobs:
   tag:
     runs-on: ubuntu-latest
-    permissions:
-      contents: write
-    outputs:
-      created: ${{ steps.tag.outputs.created }}
-      version: ${{ steps.version.outputs.version }}
     steps:
       - uses: actions/checkout@v4
 
@@ -43,13 +38,13 @@ jobs:
           ")
           echo "version=$v" >> "$GITHUB_OUTPUT"
 
-      - name: Create tag if absent
-        id: tag
+      - name: Create and push tag if absent
+        env:
+          DEPLOY_KEY: ${{ secrets.RELEASE_TAG_DEPLOY_KEY }}
         run: |
           tag="v${{ steps.version.outputs.version }}"
           if git ls-remote --exit-code --tags origin "refs/tags/$tag" >/dev/null; then
             echo "Tag $tag already exists; nothing to do."
-            echo "created=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
           # Tag message: subject line + that version's CHANGELOG section,
@@ -72,13 +67,8 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git tag -a "$tag" -F tag-message.txt "$GITHUB_SHA"
-          git push origin "$tag"
-          echo "created=true" >> "$GITHUB_OUTPUT"
-
-  publish:
-    needs: tag
-    if: needs.tag.outputs.created == 'true'
-    uses: ./.github/workflows/publish.yml
-    permissions:
-      id-token: write
-      contents: read
+          install -d -m 700 "$HOME/.ssh"
+          printf '%s\n' "$DEPLOY_KEY" > "$HOME/.ssh/release_key"
+          chmod 600 "$HOME/.ssh/release_key"
+          GIT_SSH_COMMAND="ssh -i $HOME/.ssh/release_key -o StrictHostKeyChecking=accept-new" \
+            git push "git@github.com:${{ github.repository }}.git" "$tag"

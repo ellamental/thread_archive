@@ -56,13 +56,18 @@ GitHub repo's protections are therefore part of the release mechanism, not
 optional hygiene. The standing requirements:
 
 - Two-factor auth on every account that can push.
-- A tag protection ruleset covering `v*`, with a bypass for GitHub Actions —
-  `release.yml` is the only thing that mints release tags on the normal
-  path; nobody else can create or move them.
-- Branch protection on `main`: PRs only, no direct pushes. Squash and rebase
-  merging disabled in the repo's merge settings, so the merge-commit rule
-  above is enforced, not remembered.
-- Branch protection on `dev`.
+- A tag ruleset covering `v*` — creation, update, and deletion restricted to
+  its bypass actors: the release deploy key (`RELEASE_TAG_DEPLOY_KEY`, the
+  write deploy key `release.yml` pushes tags with — a personal repo can't
+  put the Actions app itself on a bypass list) and the repository admin
+  (the manual path, and deleting a yanked release's tag).
+- A branch ruleset on `main`: PRs only, no direct pushes, allowed merge
+  method `merge` alone — the merge-commit rule above is enforced, not
+  remembered. Empty bypass list, deliberately: nothing skips the PR path,
+  because the merge is the ship.
+- A branch ruleset on `dev`: collaborators go through a PR with one
+  approval; the repository admin bypasses, which is what lets the operator —
+  and the agents pushing as the operator — land work directly.
 
 ## 1. Cut the release branch
 
@@ -169,17 +174,17 @@ after this section is follow-through, not gate.
 `.github/workflows/release.yml` runs on every push to `main`: it reads
 `__version__`, and — if `vX.Y.Z` does not already exist — creates the
 annotated tag on the merge commit, message carrying the version's changelog
-section, then runs the build + publish jobs from `publish.yml` (wheel +
-sdist built on the runner, uploaded to PyPI via Trusted Publishing — no
-tokens; PyPI trusts the repo/workflow/environment tuple configured under the
-project's Publishing settings on pypi.org).
+section, and pushes it with the release deploy key. That push fires
+`publish.yml` like any other tag push: wheel + sdist built on the runner,
+uploaded to PyPI via Trusted Publishing (no tokens; PyPI trusts the
+repo/workflow/environment tuple configured under the project's Publishing
+settings on pypi.org). A tag pushed by hand takes the identical publish
+path — that is the manual route, for a release shipped without the PR
+machinery.
 
-Watch the run. A publish failure means the tag exists but PyPI lags it, and
+Watch the runs. A publish failure means the tag exists but PyPI lags it, and
 the fix is a fixed vX.Y.(Z+1), since PyPI refuses re-uploads of a once-seen
 version even after deletion.
-
-A tag pushed by hand still triggers `publish.yml` directly — that is the
-manual path, for a release shipped without the PR machinery.
 
 ## 6. Verify from the outside
 

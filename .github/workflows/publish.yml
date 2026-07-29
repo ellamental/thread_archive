@@ -1,8 +1,7 @@
-# PyPI publish. The normal path is a workflow_call from release.yml, which
-# runs after it tags the release merge on main (docs/releasing.md §5). The
-# tag-push trigger serves the manual path — a hand-pushed release tag — and
-# only that: tags created by release.yml use the default GITHUB_TOKEN, whose
-# events never fire other workflows, so the two triggers cannot double-publish.
+# PyPI publish, driven by the release tag. release.yml pushes the tag once a
+# release PR merges on main (docs/releasing.md §5) — its deploy-key push fires
+# this trigger like any other tag push — and a hand-pushed tag is the manual
+# path. One trigger, one publish path, either way.
 #
 # Auth is PyPI Trusted Publishing (OIDC): PyPI trusts this repo + workflow +
 # environment tuple directly, so no API token exists to leak or rotate. The
@@ -18,7 +17,6 @@ name: Publish
 on:
   push:
     tags: ["v*"]
-  workflow_call:
 
 jobs:
   build:
