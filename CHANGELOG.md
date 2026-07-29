@@ -6,10 +6,10 @@
   `release/X.Y.Z` off `dev` into its own worktree, hardens there while `dev`
   keeps moving, and opens a PR to `main`; the operator's merge is the ship. A
   new `release.yml` workflow turns the merge into the annotated tag (message:
-  the version's changelog section) and chains into `publish.yml` via
-  `workflow_call` for the PyPI upload — tags minted with `GITHUB_TOKEN` don't
-  fire other workflows, so the tag-push trigger now serves only the manual
-  path. The release branch merges back into `dev` afterward; `main` is a
+  the version's changelog section), pushed with a write deploy key so it both
+  clears the `v*` tag ruleset (the Actions app can't be a bypass actor on a
+  personal repo) and fires `publish.yml`'s tag trigger like a hand-pushed tag —
+  one publish path. The release branch merges back into `dev` afterward; `main` is a
   merge-commit chain rather than synthesized snapshots. CI runs on
   `release/**`. `docs/releasing.md` is rewritten around the new flow.
 - **`arguana` is off the benchmark candidate list.** Counterargument retrieval over
